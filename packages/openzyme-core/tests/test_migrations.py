@@ -10,6 +10,196 @@ from openzyme_core import connect_sqlite
 from openzyme_core import get_migration_sql
 
 
+def _initialize_sqlite_at_version(
+    connection: sqlite3.Connection,
+    *,
+    version: int,
+) -> None:
+    for migration_id in MIGRATION_IDS[:version]:
+        connection.executescript(get_migration_sql(migration_id))
+    connection.execute(f"PRAGMA user_version = {version}")
+    connection.commit()
+
+
+def _insert_v25_legacy_controlled_operation(
+    connection: sqlite3.Connection,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO sessions (
+            session_id, project_id, title, objective, status, created_at, updated_at
+        ) VALUES (
+            'sess_upgrade', 'proj_upgrade', 'Upgrade', 'Upgrade',
+            'active', 'now', 'now'
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO agent_members (
+            member_id, agent_id, session_id, name, role, status, created_at, updated_at
+        ) VALUES (
+            'member_upgrade', 'agent:master', 'sess_upgrade',
+            'master', 'master', 'active', 'now', 'now'
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO sandbox_workspace_records (
+            sandbox_workspace_id,
+            session_id,
+            agent_member_id,
+            agent_id,
+            status,
+            image_ref,
+            image_compatibility,
+            manifest_version,
+            quota_summary_json,
+            directory_summary_json,
+            materialized_input_artifact_ids_json,
+            registered_artifact_ids_json,
+            source_code_artifact_ids_json,
+            created_at,
+            last_attached_at
+        ) VALUES (
+            'workspace_upgrade',
+            'sess_upgrade',
+            'member_upgrade',
+            'agent:master',
+            'attached',
+            'image:test',
+            'compatible',
+            'sandbox_workspace_manifest@1',
+            '{}',
+            '{}',
+            '[]',
+            '[]',
+            '[]',
+            'now',
+            'now'
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO sandbox_run_records (
+            sandbox_run_id,
+            session_id,
+            sandbox_workspace_id,
+            agent_id,
+            argv_json,
+            argv_digest,
+            cwd,
+            env_digest,
+            resource_policy_json,
+            status,
+            changed_files_summary_json,
+            compatibility_json,
+            created_at,
+            updated_at
+        ) VALUES (
+            'sandbox_run_upgrade',
+            'sess_upgrade',
+            'workspace_upgrade',
+            'agent:master',
+            '[]',
+            'sha256:argv',
+            '.',
+            'sha256:env',
+            '{}',
+            'running',
+            '{}',
+            '{}',
+            'now',
+            'now'
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO approval_requests (
+            approval_id,
+            session_id,
+            kind,
+            requested_action,
+            status,
+            created_at
+        ) VALUES (
+            'approval_upgrade',
+            'sess_upgrade',
+            'execution',
+            'Run legacy operation',
+            'approved',
+            'now'
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO controlled_operation_records (
+            operation_id,
+            session_id,
+            sandbox_workspace_id,
+            sandbox_run_id,
+            approval_id,
+            logical_operation_key,
+            operation_digest,
+            params_digest,
+            backend_category,
+            input_artifact_digests_json,
+            expected_outputs_summary_json,
+            resource_estimate_json,
+            result_summary_json,
+            status,
+            created_at,
+            updated_at
+        ) VALUES (
+            'operation_upgrade',
+            'sess_upgrade',
+            'workspace_upgrade',
+            'sandbox_run_upgrade',
+            'approval_upgrade',
+            'legacy-key',
+            'sha256:operation',
+            'sha256:params',
+            'fixture',
+            '[]',
+            '{}',
+            '{}',
+            '{}',
+            'running',
+            'now',
+            'now'
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO continuation_state_records (
+            continuation_id,
+            session_id,
+            operation_id,
+            sandbox_run_id,
+            approval_id,
+            status,
+            created_at,
+            updated_at
+        ) VALUES (
+            'continuation_upgrade',
+            'sess_upgrade',
+            'operation_upgrade',
+            'sandbox_run_upgrade',
+            'approval_upgrade',
+            'approved',
+            'now',
+            'now'
+        )
+        """
+    )
+    connection.commit()
+
+
 def test_migration_asset_is_available() -> None:
     sql = get_migration_sql("001_v3_control_plane_foundation")
     lane_sql = get_migration_sql("002_v3_lane_isolation")
@@ -41,6 +231,21 @@ def test_migration_asset_is_available() -> None:
     )
     sandbox_stdio_metadata_sql = get_migration_sql(
         "025_v3_sandbox_stdio_metadata"
+    )
+    controlled_execution_sql = get_migration_sql(
+        "026_v3_controlled_operation_execution"
+    )
+    runtime_command_sql = get_migration_sql(
+        "027_v3_runtime_commands_and_continuations"
+    )
+    mutation_quiescence_sql = get_migration_sql(
+        "028_v3_mutation_quiescence"
+    )
+    dispatch_request_sql = get_migration_sql(
+        "029_v3_controlled_operation_dispatch_requests"
+    )
+    result_artifact_sql = get_migration_sql(
+        "030_v3_controlled_operation_result_artifacts"
     )
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
@@ -85,6 +290,28 @@ def test_migration_asset_is_available() -> None:
     assert "ADD COLUMN adapter_result_origin" in adapter_result_origin_sql
     assert "ADD COLUMN stdout_metadata_json" in sandbox_stdio_metadata_sql
     assert "ADD COLUMN stderr_metadata_json" in sandbox_stdio_metadata_sql
+    assert "ADD COLUMN owner_mode" in controlled_execution_sql
+    assert "CREATE TABLE controlled_operation_execution_records" in controlled_execution_sql
+    assert "CREATE TABLE controlled_operation_execution_events" in controlled_execution_sql
+    assert "CREATE TABLE controlled_operation_result_handles" in controlled_execution_sql
+    assert "CREATE TABLE runtime_command_records" in runtime_command_sql
+    assert "ADD COLUMN resume_strategy" in runtime_command_sql
+    assert "ADD COLUMN delivery_fencing_token" in runtime_command_sql
+    assert "CREATE TABLE mutation_scope_records" in mutation_quiescence_sql
+    assert "CREATE TABLE mutation_writer_records" in mutation_quiescence_sql
+    assert "CREATE TABLE quiescence_receipt_records" in mutation_quiescence_sql
+    assert (
+        "CREATE TABLE controlled_operation_dispatch_requests"
+        in dispatch_request_sql
+    )
+    assert (
+        "controlled_operation_dispatch_requests_immutable_update"
+        in dispatch_request_sql
+    )
+    assert "CREATE TABLE controlled_operation_result_artifacts" in result_artifact_sql
+    assert "controlled_operation_result_artifacts_immutable_update" in (
+        result_artifact_sql
+    )
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -111,6 +338,12 @@ def test_migration_asset_is_available() -> None:
         "023_v3_research_source_provenance",
         "024_v3_host_owned_adapter_result_origin",
         "025_v3_sandbox_stdio_metadata",
+        "026_v3_controlled_operation_execution",
+        "027_v3_runtime_commands_and_continuations",
+        "028_v3_mutation_quiescence",
+        "029_v3_controlled_operation_dispatch_requests",
+        "030_v3_controlled_operation_result_artifacts",
+        "031_v3_mutation_authority_and_snapshots",
     )
 
 
@@ -157,6 +390,15 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "sandbox_command_log_artifacts",
         "controlled_operation_records",
         "continuation_state_records",
+        "controlled_operation_execution_records",
+        "controlled_operation_execution_events",
+        "controlled_operation_result_handles",
+        "controlled_operation_dispatch_requests",
+        "controlled_operation_result_artifacts",
+        "runtime_command_records",
+        "mutation_scope_records",
+        "mutation_writer_records",
+        "quiescence_receipt_records",
         "durable_event_records",
         "command_receipt_records",
     }.issubset(table_names)
@@ -243,7 +485,34 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "adapter_approval_envelope_json",
         "adapter_result_envelope_json",
         "adapter_result_origin",
+        "owner_mode",
     }.issubset(operation_columns)
+    continuation_columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(continuation_state_records)"
+        ).fetchall()
+    }
+    assert {
+        "originating_signal_id",
+        "originating_agent_id",
+        "originating_task_id",
+        "originating_lane_id",
+        "originating_tool_call_id",
+        "originating_invocation_id",
+        "sandbox_workspace_id",
+        "sandbox_runtime_identity",
+        "process_epoch",
+        "resume_strategy",
+        "delivery_state",
+        "delivery_generation",
+        "delivery_result_digest",
+        "state_version",
+        "delivery_claim_owner",
+        "delivery_lease_token",
+        "delivery_lease_expires_at",
+        "delivery_fencing_token",
+    }.issubset(continuation_columns)
     sandbox_run_columns = {
         row[1]
         for row in connection.execute(
@@ -267,6 +536,17 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "durable_event_records_append_only_delete",
         "command_receipt_records_immutable_update",
         "command_receipt_records_immutable_delete",
+        "controlled_operation_owner_mode_immutable",
+        "controlled_operation_execution_events_append_only_update",
+        "controlled_operation_execution_events_append_only_delete",
+        "controlled_operation_result_handles_immutable_update",
+        "controlled_operation_result_handles_immutable_delete",
+        "controlled_operation_dispatch_requests_immutable_update",
+        "controlled_operation_dispatch_requests_immutable_delete",
+        "controlled_operation_result_artifacts_immutable_update",
+        "controlled_operation_result_artifacts_immutable_delete",
+        "quiescence_receipt_records_immutable_update",
+        "quiescence_receipt_records_immutable_delete",
     }.issubset(trigger_names)
 
 
@@ -455,6 +735,68 @@ def test_sqlite_migrations_are_idempotent_for_current_connection() -> None:
     assert user_version == CURRENT_SQLITE_SCHEMA_VERSION
 
 
+def test_sqlite_migrations_upgrade_v25_without_fabricating_durable_authority() -> None:
+    connection = connect_sqlite(":memory:")
+    _initialize_sqlite_at_version(connection, version=25)
+    _insert_v25_legacy_controlled_operation(connection)
+
+    apply_sqlite_migrations(connection)
+
+    user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+    operation = connection.execute(
+        """
+        SELECT owner_mode, status
+        FROM controlled_operation_records
+        WHERE operation_id = 'operation_upgrade'
+        """
+    ).fetchone()
+    continuation = connection.execute(
+        """
+        SELECT
+            resume_strategy,
+            delivery_state,
+            delivery_generation,
+            state_version,
+            delivery_fencing_token
+        FROM continuation_state_records
+        WHERE continuation_id = 'continuation_upgrade'
+        """
+    ).fetchone()
+
+    assert user_version == CURRENT_SQLITE_SCHEMA_VERSION
+    assert tuple(operation) == ("legacy_sync", "running")
+    assert tuple(continuation) == (
+        "legacy_non_resumable",
+        "legacy_unavailable",
+        0,
+        0,
+        0,
+    )
+    assert connection.execute(
+        "SELECT COUNT(*) FROM controlled_operation_execution_records"
+    ).fetchone()[0] == 0
+    assert connection.execute(
+        "SELECT COUNT(*) FROM controlled_operation_result_handles"
+    ).fetchone()[0] == 0
+    assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_sqlite_migration_keeps_legacy_owner_mode_immutable() -> None:
+    connection = connect_sqlite(":memory:")
+    _initialize_sqlite_at_version(connection, version=25)
+    _insert_v25_legacy_controlled_operation(connection)
+    apply_sqlite_migrations(connection)
+
+    with pytest.raises(sqlite3.IntegrityError, match="owner_mode is immutable"):
+        connection.execute(
+            """
+            UPDATE controlled_operation_records
+            SET owner_mode = 'durable_async_v1'
+            WHERE operation_id = 'operation_upgrade'
+            """
+        )
+
+
 def test_sqlite_migrations_reject_unmarked_non_empty_database() -> None:
     connection = connect_sqlite(":memory:")
     connection.execute("CREATE TABLE legacy_state (id TEXT PRIMARY KEY)")
@@ -463,11 +805,27 @@ def test_sqlite_migrations_reject_unmarked_non_empty_database() -> None:
         apply_sqlite_migrations(connection)
 
 
-def test_sqlite_migrations_reject_old_schema_version() -> None:
+def test_sqlite_migrations_reject_schema_older_than_v25() -> None:
+    connection = connect_sqlite(":memory:")
+    connection.execute("PRAGMA user_version = 24")
+
+    with pytest.raises(SQLiteSchemaMismatchError, match="minimum automatic upgrade"):
+        apply_sqlite_migrations(connection)
+
+
+def test_sqlite_migrations_reject_upgradeable_version_with_missing_base() -> None:
     connection = connect_sqlite(":memory:")
     connection.execute(f"PRAGMA user_version = {CURRENT_SQLITE_SCHEMA_VERSION - 1}")
 
-    with pytest.raises(SQLiteSchemaMismatchError, match="does not match"):
+    with pytest.raises(SQLiteSchemaMismatchError, match="missing required base tables"):
+        apply_sqlite_migrations(connection)
+
+
+def test_sqlite_migrations_reject_newer_schema_version() -> None:
+    connection = connect_sqlite(":memory:")
+    connection.execute(f"PRAGMA user_version = {CURRENT_SQLITE_SCHEMA_VERSION + 1}")
+
+    with pytest.raises(SQLiteSchemaMismatchError, match="newer than current"):
         apply_sqlite_migrations(connection)
 
 

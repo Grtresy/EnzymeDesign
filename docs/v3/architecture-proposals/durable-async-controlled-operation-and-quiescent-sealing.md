@@ -1,6 +1,14 @@
 # Deferred: durable async controlled operations and quiescent sealing
 
-Status: proposed, not implemented in the current AOX/HMM blank-world Goal.
+Status: implemented by `runtime-hpc-reliability-refactor` for single-Host durable
+execution, attached-process delivery, and generic mutation freeze/receipt/seal.
+Process-isolated hard-kill and distributed writers remain deferred.
+
+Stable contract: [`../07-runtime-hpc-reliability.md`](../07-runtime-hpc-reliability.md).
+The decision-boundary and current-facts sections below are the pre-refactor baseline.
+
+重构收敛说明：本文继续作为 external-operation 与 quiescence 的详细设计；`ControlledOperationExecution` 是 external effect 的 canonical owner，相邻 admission/delivery/continuation 草图只能作为其周围的 facets 实现，不能成为并列 operation 真状态。统一 ownership 与 decision gates 见
+[`runtime-hpc-reliability-refactor-roadmap.md`](runtime-hpc-reliability-refactor-roadmap.md)。
 
 ## Decision boundary for the current Goal
 

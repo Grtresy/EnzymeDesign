@@ -6,10 +6,15 @@ from datetime import UTC
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
+from typing import ClassVar
 
 from .models import ArtifactKind
 from .models import RunStatus
 from .models import SourceRefKind
+from .reliability import ContinuationDeliveryState
+from .reliability import ContinuationResumeStrategy
+from .reliability import CONTINUATION_STATE_SCHEMA_VERSION
+from .reliability import ControlledOperationOwnerMode
 
 
 def utc_now_iso() -> str:
@@ -681,10 +686,12 @@ class ControlledOperation:
     error_code: str | None = None
     error_summary: str | None = None
     idempotency_key: str | None = None
+    owner_mode: ControlledOperationOwnerMode = ControlledOperationOwnerMode.LEGACY_SYNC
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["status"] = self.status.value
+        data["owner_mode"] = self.owner_mode.value
         data["input_artifact_ids"] = list(self.input_artifact_ids)
         data["input_artifact_digests"] = list(self.input_artifact_digests)
         data["stage_refs"] = [dict(item) for item in self.stage_refs]
@@ -693,6 +700,8 @@ class ControlledOperation:
 
 @dataclass(frozen=True, slots=True)
 class ContinuationState:
+    SCHEMA_VERSION: ClassVar[str] = CONTINUATION_STATE_SCHEMA_VERSION
+
     continuation_id: str
     session_id: str
     operation_id: str
@@ -708,10 +717,34 @@ class ContinuationState:
     completed_at: str | None = None
     error_code: str | None = None
     error_message: str | None = None
+    originating_signal_id: str | None = None
+    originating_agent_id: str | None = None
+    originating_task_id: str | None = None
+    originating_lane_id: str | None = None
+    originating_tool_call_id: str | None = None
+    originating_invocation_id: str | None = None
+    sandbox_workspace_id: str | None = None
+    sandbox_runtime_identity: str | None = None
+    process_epoch: int | None = None
+    resume_strategy: ContinuationResumeStrategy = (
+        ContinuationResumeStrategy.LEGACY_NON_RESUMABLE
+    )
+    delivery_state: ContinuationDeliveryState = (
+        ContinuationDeliveryState.LEGACY_UNAVAILABLE
+    )
+    delivery_generation: int = 0
+    delivery_result_digest: str | None = None
+    state_version: int = 0
+    delivery_claim_owner: str | None = None
+    delivery_lease_token: str | None = None
+    delivery_lease_expires_at: str | None = None
+    delivery_fencing_token: int = 0
 
     def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
+        data = {"schema_version": self.SCHEMA_VERSION, **asdict(self)}
         data["status"] = self.status.value
+        data["resume_strategy"] = self.resume_strategy.value
+        data["delivery_state"] = self.delivery_state.value
         return data
 
 

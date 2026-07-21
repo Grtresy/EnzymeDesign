@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 
 import pytest
@@ -16,6 +17,7 @@ from openzyme_domain import LaneStatus
 from openzyme_domain import MemoryEntry
 from openzyme_domain import MemoryKind
 from openzyme_domain import MemoryScopeKind
+from openzyme_domain import MutationWriterKind
 from openzyme_domain import Session
 from openzyme_domain import SessionStatus
 from openzyme_domain import Task
@@ -348,6 +350,13 @@ def test_oversized_tool_result_is_artifactized_before_next_llm_prompt(monkeypatc
     monkeypatch.delenv("OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS", raising=False)
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    writer_scopes: list[dict[str, object]] = []
+
+    @contextmanager
+    def writer_scope(**kwargs):  # type: ignore[no-untyped-def]
+        writer_scopes.append(dict(kwargs))
+        yield None
+
     context = SessionRuntimeContext(
         repositories=repositories,
         event_sink=MemoryEventBus(),
@@ -355,6 +364,7 @@ def test_oversized_tool_result_is_artifactized_before_next_llm_prompt(monkeypatc
         tool_registry=ToolRegistry(),
         restore_focus=RestoreFocus(),
         model_factory=BudgetTestModelFactory(RecordingToolInvoker([])),
+        mutation_writer_scope_factory=writer_scope,
     )
     context.refresh_restore_context()
     original = ToolResult(
@@ -394,6 +404,15 @@ def test_oversized_tool_result_is_artifactized_before_next_llm_prompt(monkeypatc
     assert persisted is not None
     assert persisted.document_kind == "tool_result_full"
     assert persisted.payload["original_tool_ok"] is True
+    assert writer_scopes[0] == {
+        "session_id": session.session_id,
+        "owner_kind": MutationWriterKind.ARTIFACT_PUBLISHER,
+        "owner_ref": "tool-result-artifact:f4470660cba85443",
+        "process_epoch": None,
+    }
+    assert len(writer_scopes) == 2
+    assert writer_scopes[1]["owner_kind"] is MutationWriterKind.EVENT_OUTBOX_PUBLISHER
+    assert str(writer_scopes[1]["owner_ref"]).startswith("event:evt_")
 
 
 def test_tool_result_artifact_observation_survives_prompt_compaction_rebuild(
@@ -1061,6 +1080,112 @@ def test_harness_returns_waiting_approval_when_tool_creates_pending_approval() -
     ]
     assert calls == ["approval_tool"]
     assert driver.calls == 1
+
+
+class RuntimeSuspensionDriver:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input, tool_results
+        self.calls += 1
+        if self.calls > 1:
+            raise AssertionError("a suspended runtime must end the current agent turn")
+        return HarnessStep(
+            tool_invocations=(
+                ToolInvocation(
+                    call_id="call_suspend",
+                    tool_name="suspending_tool",
+                    arguments={},
+                    task_id="task_001",
+                ),
+                ToolInvocation(
+                    call_id="call_after_suspend",
+                    tool_name="after_suspend_tool",
+                    arguments={},
+                    task_id="task_001",
+                ),
+            )
+        )
+
+
+def test_runtime_suspension_releases_harness_without_terminalizing_task() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+    calls: list[str] = []
+    driver = RuntimeSuspensionDriver()
+
+    def suspending_tool(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> ToolResult:
+        calls.append(invocation.tool_name)
+        context.repositories.approvals.save(
+            ApprovalRequest(
+                approval_id="appr_suspend_001",
+                session_id=session.session_id,
+                task_id=invocation.task_id,
+                lane_id=invocation.lane_id,
+                kind="controlled_operation",
+                requested_action="Approve the suspended operation.",
+                status=ApprovalRequestStatus.PENDING,
+                request_ref="continuation:cont_suspend_001",
+                resolution_ref=None,
+                created_at="2026-04-17T09:05:00+00:00",
+            )
+        )
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=True,
+            content="runtime suspended",
+            status="suspended_waiting_approval",
+            task_id=invocation.task_id,
+            terminal_action="runtime_suspended",
+            terminates_turn=True,
+        )
+
+    registry.register("suspending_tool", suspending_tool)
+    registry.register(
+        "after_suspend_tool",
+        lambda _context, invocation: calls.append(invocation.tool_name) or "late",
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=3,
+            agent_id="agent:primary",
+            actor_kind="teammate",
+            actor_role="execution",
+        ),
+        driver=driver,
+        tool_registry=registry,
+    )
+
+    task = repositories.tasks.get("task_001")
+    assert result.status is HarnessStatus.WAITING_APPROVAL
+    assert result.pending_approval_id == "appr_suspend_001"
+    assert [item.approval_id for item in result.snapshot.pending_approvals] == [
+        "appr_suspend_001"
+    ]
+    assert task is not None
+    assert task.status is TaskStatus.TODO
+    assert calls == ["suspending_tool"]
+    assert driver.calls == 1
+    assert len(result.tool_results) == 1
+    assert result.tool_results[0].terminal_action == "runtime_suspended"
+    assert {event.event_type for event in result.events} >= {
+        "tool.completed",
+        "harness.terminal_action",
+    }
+    assert "task.finished" not in {event.event_type for event in result.events}
 
 
 class ApprovalDriver:
@@ -3650,6 +3775,96 @@ def test_tool_router_rejects_write_before_stale_runtime_side_effect(
     assert result.error_code == "runtime_fencing_rejected"
 
 
+def test_tool_router_registers_publishers_only_for_mutating_tools() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    writer_scopes: list[dict[str, object]] = []
+
+    @contextmanager
+    def writer_scope(**kwargs):  # type: ignore[no-untyped-def]
+        writer_scopes.append(dict(kwargs))
+        yield None
+
+    class PublishingRuntime:
+        def __init__(self, tool_name: str, side_effect: ToolSideEffect) -> None:
+            self.tool_name = tool_name
+            self.side_effect = side_effect
+
+        def spec(self, step_context):  # type: ignore[no-untyped-def]
+            del step_context
+            return ToolDescriptor(
+                tool_name=self.tool_name,
+                description="Exercise mutation writer routing.",
+                input_schema={"type": "object", "properties": {}},
+            ).to_tool_spec()
+
+        def is_visible(self, step_context):  # type: ignore[no-untyped-def]
+            del step_context
+            return True
+
+        def governance(self, step_context):  # type: ignore[no-untyped-def]
+            del step_context
+            return ToolGovernance(side_effect=self.side_effect)
+
+        def validate(self, step_context, invocation):  # type: ignore[no-untyped-def]
+            del step_context, invocation
+            return None
+
+        def dispatch(
+            self,
+            step_context,  # type: ignore[no-untyped-def]
+            invocation,  # type: ignore[no-untyped-def]
+            runtime_context,  # type: ignore[no-untyped-def]
+        ) -> ToolResult:
+            del step_context, runtime_context
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=True,
+                content="ok",
+                status="ok",
+            )
+
+    registry = ToolRegistry()
+    registry.register_runtime(
+        PublishingRuntime("deep_research.start", ToolSideEffect.WRITE)
+    )
+    registry.register_runtime(
+        PublishingRuntime("deep_research.status", ToolSideEffect.READ)
+    )
+    registry.register_runtime(PublishingRuntime("report.publish", ToolSideEffect.WRITE))
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+        mutation_writer_scope_factory=writer_scope,
+    )
+    router = registry.to_tool_router(context)
+    step_context = build_agent_step_context(context, call_index=1)
+
+    for call_id, tool_name in (
+        ("call_research_write", "deep_research.start"),
+        ("call_research_read", "deep_research.status"),
+        ("call_report_publish", "report.publish"),
+    ):
+        result = router.dispatch(
+            step_context,
+            ToolInvocation(call_id=call_id, tool_name=tool_name, arguments={}),
+        )
+        assert result.ok is True
+
+    assert [scope["owner_kind"] for scope in writer_scopes] == [
+        MutationWriterKind.ARTIFACT_PUBLISHER,
+        MutationWriterKind.REPORT_PUBLISHER,
+    ]
+    assert [scope["owner_ref"] for scope in writer_scopes] == [
+        "tool:deep_research.start:79fec9feaccefe68",
+        "tool:report.publish:727a8369c4bf79c4",
+    ]
+
+
 def test_tool_registry_register_runtime_coexists_with_legacy_and_typed_wins() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
@@ -4022,6 +4237,47 @@ def test_llm_conversation_driver_system_prompt_lists_teammates_not_capability_to
     assert "explicit structured workflow reference" in prompt
     assert "AOX" not in prompt
     assert "HMM" not in prompt
+
+
+def test_llm_provider_call_registers_live_token_ledger_writer() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    writer_scopes: list[dict[str, object]] = []
+
+    @contextmanager
+    def writer_scope(**kwargs):  # type: ignore[no-untyped-def]
+        writer_scopes.append(dict(kwargs))
+        yield None
+
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        active_skill_keys=(),
+        skill_registry=SkillRegistry(),
+        mutation_writer_scope_factory=writer_scope,
+    )
+    context.refresh_restore_context()
+    driver = LlmConversationDriver(
+        FakeModelFactory({"content": "done", "tool_calls": []})
+    )
+
+    driver.plan(
+        context,
+        HarnessInput(session_id=session.session_id, message="continue"),
+        (),
+    )
+
+    assert writer_scopes == [
+        {
+            "session_id": session.session_id,
+            "owner_kind": MutationWriterKind.LIVE_TOKEN_LEDGER,
+            "owner_ref": "llm:master:1",
+            "process_epoch": None,
+        }
+    ]
 
 
 def test_llm_conversation_driver_does_not_duplicate_current_user_message_in_harness_loop() -> (

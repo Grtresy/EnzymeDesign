@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextlib import nullcontext
 from dataclasses import asdict
-from dataclasses import replace
 from dataclasses import dataclass
+from dataclasses import field
+from dataclasses import replace
 from enum import StrEnum
 import hashlib
 import json
 from pathlib import Path
 from typing import Any
 from typing import Callable
+from typing import Iterator
 from typing import Protocol
 from uuid import uuid4
 
@@ -23,6 +27,7 @@ from openzyme_domain import Lane
 from openzyme_domain import MemoryEntry
 from openzyme_domain import MemoryKind
 from openzyme_domain import MemoryScopeKind
+from openzyme_domain import MutationWriterKind
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionRuntimeLease
@@ -41,6 +46,8 @@ from openzyme_runtime import sanitize_tool_result_diagnostics
 from openzyme_runtime import sanitize_public_diagnostic_text
 
 from .engines import EngineRegistry
+from .mutation_authority import current_mutation_write_authority
+from .mutation_quiescence import MutationScopeService
 from .repositories import EngineDocumentRecord
 from .repositories import CoreRepositories
 from .repositories import TaskWriteIntent
@@ -114,7 +121,11 @@ def _message_role(message: Any) -> str:
 
 
 def _message_content(message: Any) -> str:
-    value = message.get("content") if isinstance(message, dict) else getattr(message, "content", "")
+    value = (
+        message.get("content")
+        if isinstance(message, dict)
+        else getattr(message, "content", "")
+    )
     if isinstance(value, str):
         return value
     return json.dumps(value, ensure_ascii=True, sort_keys=True, default=str)
@@ -439,6 +450,10 @@ class SessionRuntimeContext:
     sandbox_workspace_root: Path | None = None
     artifact_blob_root: Path | None = None
     signal_notifier: Any | None = None
+    reliability_shadow_observer: Any | None = None
+    reliability_settings: Any | None = None
+    durable_route_adapter_policy_ids: dict[str, str] = field(default_factory=dict)
+    mutation_writer_scope_factory: Callable[..., Any] | None = None
     session_runtime_lease: SessionRuntimeLease | None = None
     agent_id: str | None = None
     actor_kind: str | None = None
@@ -448,6 +463,71 @@ class SessionRuntimeContext:
     wakeup_reason: str | None = None
     current_step_context: AgentStepContext | None = None
     current_tool_router: ToolRouter | None = None
+
+    @contextmanager
+    def mutation_writer_scope(
+        self,
+        *,
+        owner_kind: MutationWriterKind,
+        owner_ref: str,
+        process_epoch: int | None = None,
+    ) -> Iterator[object | None]:
+        parent_authority = current_mutation_write_authority()
+        if parent_authority is not None:
+            scope = MutationScopeService(self.repositories).writer_turn(
+                session_id=self.snapshot.session.session_id,
+                owner_kind=owner_kind,
+                owner_ref=owner_ref,
+                process_epoch=process_epoch,
+            )
+        elif self.mutation_writer_scope_factory is None:
+            scope = nullcontext(None)
+        else:
+            scope = self.mutation_writer_scope_factory(
+                session_id=self.snapshot.session.session_id,
+                owner_kind=owner_kind,
+                owner_ref=owner_ref,
+                process_epoch=process_epoch,
+            )
+        with scope as writer_authority:
+            authority = current_mutation_write_authority()
+            if authority is None:
+                yield writer_authority
+                return
+            with self.repositories.mutation_write_authority(authority):
+                yield writer_authority
+
+    def tool_mutation_writer_scope(
+        self,
+        *,
+        tool_name: str,
+        call_id: str,
+    ) -> Any:
+        artifact_publishing_tools = {
+            "interpro.query",
+            "pubmed.search",
+            "rcsb_pdb.download_structure",
+            "rcsb_pdb.search",
+            "semantic_scholar.search",
+            "uniprot.download_fasta",
+            "uniprot.lookup",
+            "web.fetch",
+            "web.search",
+        }
+        if (
+            tool_name.startswith(("artifact.", "artifacts.", "deep_research."))
+            or tool_name in artifact_publishing_tools
+        ):
+            owner_kind = MutationWriterKind.ARTIFACT_PUBLISHER
+        elif tool_name == "report.publish" or tool_name.startswith("report_draft."):
+            owner_kind = MutationWriterKind.REPORT_PUBLISHER
+        else:
+            return nullcontext(None)
+        call_digest = hashlib.sha256(call_id.encode("utf-8")).hexdigest()[:16]
+        return self.mutation_writer_scope(
+            owner_kind=owner_kind,
+            owner_ref=f"tool:{tool_name}:{call_digest}",
+        )
 
     def refresh(self) -> SessionRuntimeSnapshot:
         self.snapshot = SessionRuntimeSnapshot.load(
@@ -464,7 +544,11 @@ class SessionRuntimeContext:
             created_at=utc_now_iso(),
             payload=payload,
         )
-        self.event_sink.emit(event)
+        with self.mutation_writer_scope(
+            owner_kind=MutationWriterKind.EVENT_OUTBOX_PUBLISHER,
+            owner_ref=f"event:{event.event_id}",
+        ):
+            self.event_sink.emit(event)
         return event
 
     def build_restore_context(
@@ -923,9 +1007,7 @@ def _provider_tokenizer_result(
         return None
     public_result = dict(result)
     if public_result.get("error") is not None:
-        public_result["error"] = sanitize_public_diagnostic_text(
-            public_result["error"]
-        )
+        public_result["error"] = sanitize_public_diagnostic_text(public_result["error"])
     return public_result
 
 
@@ -1097,6 +1179,26 @@ def persist_tool_result_observation_artifact(
     reason: str,
     token_estimate: int,
 ) -> ToolResult:
+    call_digest = hashlib.sha256(result.call_id.encode("utf-8")).hexdigest()[:16]
+    with context.mutation_writer_scope(
+        owner_kind=MutationWriterKind.ARTIFACT_PUBLISHER,
+        owner_ref=f"tool-result-artifact:{call_digest}",
+    ):
+        return _persist_tool_result_observation_artifact_scoped(
+            context,
+            result,
+            reason=reason,
+            token_estimate=token_estimate,
+        )
+
+
+def _persist_tool_result_observation_artifact_scoped(
+    context: SessionRuntimeContext,
+    result: ToolResult,
+    *,
+    reason: str,
+    token_estimate: int,
+) -> ToolResult:
     created_at = utc_now_iso()
     document_id = _new_id("toolresult")
     artifact_id = _new_id("art")
@@ -1201,7 +1303,11 @@ def budget_tool_results_for_prompt(
     config = prompt_budget_config_from_env()
     for result in tool_results:
         tool_message_content = result.to_tool_message_content()
-        candidate_messages = [*messages, *[item.to_tool_message_content() for item in budgeted], tool_message_content]
+        candidate_messages = [
+            *messages,
+            *[item.to_tool_message_content() for item in budgeted],
+            tool_message_content,
+        ]
         single_tokens = max(1, (len(tool_message_content) + 3) // 4)
         decision = estimate_and_decide_prompt_budget(
             system_prompt=system_prompt,
@@ -1211,7 +1317,9 @@ def budget_tool_results_for_prompt(
             config=config,
         )
         result_alone_over_budget = (
-            single_tokens + decision.reserved_output_tokens + decision.safety_margin_tokens
+            single_tokens
+            + decision.reserved_output_tokens
+            + decision.safety_margin_tokens
             >= int(decision.context_window_tokens * config.auto_compact_ratio)
         )
         if result_alone_over_budget or decision.action in {
@@ -1243,7 +1351,9 @@ def _pending_approval_id(snapshot: SessionRuntimeSnapshot) -> str | None:
 
 
 def _format_runtime_error(exc: Exception) -> str:
-    message = sanitize_public_diagnostic_text(str(exc)).strip() or exc.__class__.__name__
+    message = (
+        sanitize_public_diagnostic_text(str(exc)).strip() or exc.__class__.__name__
+    )
     return f"OpenZyme could not complete this turn: {message}"
 
 
@@ -1316,6 +1426,10 @@ def run_agent_harness_loop(
     sandbox_workspace_root: Path | None = None,
     artifact_blob_root: Path | None = None,
     signal_notifier: Any | None = None,
+    reliability_shadow_observer: Any | None = None,
+    reliability_settings: Any | None = None,
+    durable_route_adapter_policy_ids: dict[str, str] | None = None,
+    mutation_writer_scope_factory: Callable[..., Any] | None = None,
 ) -> HarnessResult:
     from .skills import SkillRegistry
 
@@ -1339,6 +1453,10 @@ def run_agent_harness_loop(
         sandbox_workspace_root=sandbox_workspace_root,
         artifact_blob_root=artifact_blob_root,
         signal_notifier=signal_notifier,
+        reliability_shadow_observer=reliability_shadow_observer,
+        reliability_settings=reliability_settings,
+        durable_route_adapter_policy_ids=dict(durable_route_adapter_policy_ids or {}),
+        mutation_writer_scope_factory=mutation_writer_scope_factory,
         agent_id=harness_input.agent_id,
         actor_kind=harness_input.actor_kind,
         actor_role=harness_input.actor_role,
@@ -1632,8 +1750,7 @@ def run_agent_harness_loop(
                         "task_id": result.task_id or invocation.task_id,
                         "lane_id": result.lane_id or invocation.lane_id,
                         "ok": result.ok,
-                        "status": result.status
-                        or ("ok" if result.ok else "failed"),
+                        "status": result.status or ("ok" if result.ok else "failed"),
                         "error_code": result.error_code,
                         **_tool_event_metadata(context, invocation),
                     },
@@ -1658,6 +1775,30 @@ def run_agent_harness_loop(
                         all_tool_results=all_tool_results,
                     )
                     context.refresh()
+                    if result.terminal_action == "runtime_suspended":
+                        pending_approval_id = _pending_approval_id(context.snapshot)
+                        if pending_approval_id is None:
+                            error = RuntimeError(
+                                "runtime suspension omitted its durable pending approval"
+                            )
+                            return HarnessResult(
+                                session_id=harness_input.session_id,
+                                status=HarnessStatus.FAILED,
+                                snapshot=context.snapshot,
+                                events=tuple(sink.events),
+                                outputs=tuple(outputs),
+                                tool_results=tuple(all_tool_results),
+                                error=error,
+                            )
+                        return HarnessResult(
+                            session_id=harness_input.session_id,
+                            status=HarnessStatus.WAITING_APPROVAL,
+                            snapshot=context.snapshot,
+                            events=tuple(sink.events),
+                            outputs=tuple(outputs),
+                            tool_results=tuple(all_tool_results),
+                            pending_approval_id=pending_approval_id,
+                        )
                     return HarnessResult(
                         session_id=harness_input.session_id,
                         status=HarnessStatus.COMPLETED,
@@ -1710,10 +1851,7 @@ def run_agent_harness_loop(
         if (
             harness_input.resume is not None
             and last_status is HarnessStatus.COMPLETED
-            and (
-                not outputs
-                or outputs == ["No user-facing response was generated."]
-            )
+            and (not outputs or outputs == ["No user-facing response was generated."])
         ):
             if outputs == ["No user-facing response was generated."]:
                 outputs.clear()

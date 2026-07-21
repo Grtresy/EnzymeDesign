@@ -15,14 +15,26 @@ import pytest
 
 from openzyme_core import ArtifactBoundaryService
 from openzyme_core import CoreRepositories
+from openzyme_core import ContinuationDeliveryWorker
+from openzyme_core import ControlledOperationExecutionTransitionService
+from openzyme_core import ControlledOperationExecutionWorker
+from openzyme_core import DurableRouteMaterializedResult
+from openzyme_core import DurableRouteObservation
+from openzyme_core import DurableRouteObservationKind
+from openzyme_core import MemoryEventBus
+from openzyme_core import RestoreFocus
 from openzyme_core import SandboxRuntimeError
 from openzyme_core import SandboxRuntimeService
 from openzyme_core import SandboxWorkspaceService
+from openzyme_core import SessionRuntimeContext
+from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import RuntimeWriteFencingError
 from openzyme_core import ToolInvocation
+from openzyme_core import ToolRegistry
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
+from openzyme_core import controlled_operation_artifact_set_digest
 from openzyme_core import sandbox_image_record
 from openzyme_core.sandbox_runtime import S12_ROUTE_POLICIES
 from openzyme_core.sandbox_runtime import CONTROL_SOCKET_FRAME_MAX_BYTES
@@ -32,12 +44,21 @@ from openzyme_core.sandbox_runtime import _sanitize_toolchain_runtime_identity
 from openzyme_core.sandbox_runtime import _structured_adapter_message
 from openzyme_core.sandbox_runtime import _tool_success
 from openzyme_core.sandbox_runtime import _ControlSocketServer
+from openzyme_core.sandbox_runtime import register_sandbox_runtime_tools
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
+from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import ContinuationStateStatus
 from openzyme_domain import ControlledOperation
+from openzyme_domain import ControlledOperationDispatchRequest
+from openzyme_domain import ControlledOperationExecution
+from openzyme_domain import ControlledOperationExecutionEvent
+from openzyme_domain import ControlledOperationExecutionLifecycle
+from openzyme_domain import ControlledOperationExecutionPhase
+from openzyme_domain import ControlledOperationExecutionTerminalOutcome
+from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import SandboxRunRecord
 from openzyme_domain import SandboxRunStatus
@@ -47,7 +68,14 @@ from openzyme_domain import ArtifactKind
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionStatus
+from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import MutationWriterKind
+from openzyme_domain import RetryEligibility
 from openzyme_runtime import PodmanContainerLease
+from openzyme_runtime import ControlledOperationOwnerPolicy
+from openzyme_runtime import ReliabilityRefactorSettings
+from openzyme_runtime import ReliabilityShadowObserver
+from openzyme_runtime import ShadowObservabilityMode
 
 
 def _build_repositories() -> CoreRepositories:
@@ -249,6 +277,62 @@ def test_control_socket_runtime_write_fence_is_typed_fail_closed(
     assert "/tmp/private-runtime.sock" not in serialized
 
 
+def test_control_socket_registers_nested_artifact_publisher_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[dict[str, object]] = []
+
+    @contextmanager
+    def writer_scope(**kwargs):  # type: ignore[no-untyped-def]
+        observed.append(dict(kwargs))
+        yield None
+
+    def register(
+        _server: _ControlSocketServer,
+        request: dict[str, object],
+        method: str,
+        params: dict[str, object],
+    ) -> dict[str, object]:
+        del method, params
+        return {"jsonrpc": "2.0", "id": request["id"], "result": {"ok": True}}
+
+    monkeypatch.setattr(_ControlSocketServer, "_handle_artifact_boundary", register)
+    server = _control_socket_server(tmp_path, name="artifact_writer")
+    server.mutation_writer_scope_factory = writer_scope
+
+    registered = server._handle(
+        {
+            "jsonrpc": "2.0",
+            "id": "register",
+            "method": "artifacts.register",
+            "params": {"path": "/workspace/output/result.csv"},
+        }
+    )
+    fetched = server._handle(
+        {
+            "jsonrpc": "2.0",
+            "id": "get",
+            "method": "artifacts.get",
+            "params": {"artifact_id": "art_result"},
+        }
+    )
+
+    assert registered["result"] == {"ok": True}
+    assert fetched["result"] == {"ok": True}
+    assert observed == [
+        {
+            "session_id": "sess_artifact_writer",
+            "owner_kind": MutationWriterKind.ARTIFACT_PUBLISHER,
+            "owner_ref": (
+                "sandbox-artifact-publisher:srun_artifact_writer:"
+                "artifacts.register"
+            ),
+            "process_epoch": None,
+        }
+    ]
+
+
 def test_control_socket_round_trips_frames_larger_than_one_recv(
     tmp_path: Path,
 ) -> None:
@@ -298,12 +382,9 @@ def test_control_socket_round_trips_frames_larger_than_one_recv(
     [
         (b'{"jsonrpc":"2.0","method":\xff}\n', False, None),
         (b'{"jsonrpc":"2.0",\n', False, None),
-        (b'{"jsonrpc":"2.0","id":' + b"9" * 5_000 + b'}\n', False, None),
+        (b'{"jsonrpc":"2.0","id":' + b"9" * 5_000 + b"}\n", False, None),
         (
-            b'{"jsonrpc":"2.0","id":'
-            + b"[" * 20_000
-            + b"]" * 20_000
-            + b'}\n',
+            b'{"jsonrpc":"2.0","id":' + b"[" * 20_000 + b"]" * 20_000 + b"}\n",
             False,
             None,
         ),
@@ -342,7 +423,9 @@ def test_control_socket_rejects_invalid_frame_and_remains_available(
     shutdown_write: bool,
     expected_response_id: str | None,
 ) -> None:
-    server = _control_socket_server(tmp_path, name=f"invalid_{hashlib.sha256(payload).hexdigest()[:8]}")
+    server = _control_socket_server(
+        tmp_path, name=f"invalid_{hashlib.sha256(payload).hexdigest()[:8]}"
+    )
     server.start()
     try:
         response = _send_control_socket_bytes(
@@ -376,15 +459,18 @@ def test_control_socket_bounds_request_id_and_error_envelope(
 ) -> None:
     server = _control_socket_server(tmp_path, name="bounded_request_id")
     oversized_id = "x" * (CONTROL_SOCKET_FRAME_MAX_BYTES - 128)
-    encoded = json.dumps(
-        {
-            "jsonrpc": "2.0",
-            "id": oversized_id,
-            "method": "s09.transport_smoke",
-            "params": {},
-        },
-        separators=(",", ":"),
-    ).encode("utf-8") + b"\n"
+    encoded = (
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": oversized_id,
+                "method": "s09.transport_smoke",
+                "params": {},
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
     assert len(encoded) <= CONTROL_SOCKET_FRAME_MAX_BYTES
 
     server.start()
@@ -483,9 +569,15 @@ def test_control_socket_bounds_request_and_response_before_mutation(
     finally:
         server.stop()
 
-    assert oversized_request["error"]["error_code"] == "sandbox_transport_request_too_large"
+    assert (
+        oversized_request["error"]["error_code"]
+        == "sandbox_transport_request_too_large"
+    )
     assert "oversized_request" not in handled
-    assert oversized_response["error"]["error_code"] == "sandbox_transport_response_too_large"
+    assert (
+        oversized_response["error"]["error_code"]
+        == "sandbox_transport_response_too_large"
+    )
     assert handled == ["oversized_response", "bounded_valid"]
     assert valid_response["result"]["padding"] == "x" * 16
 
@@ -707,7 +799,9 @@ def test_toolchain_runtime_identity_requires_ssh_summary_execution_mode(
         assert sanitized["execution_mode"] == summary_execution_mode
 
 
-def _seed_session(repositories: CoreRepositories, *, session_id: str = "sess_s09") -> Session:
+def _seed_session(
+    repositories: CoreRepositories, *, session_id: str = "sess_s09"
+) -> Session:
     session = Session(
         session_id=session_id,
         project_id="proj_001",
@@ -777,6 +871,9 @@ def _service(
     adapter_executor=None,
     hpc_fetch_executor=None,
     repository_scope_factory=None,
+    reliability_shadow_observer=None,
+    reliability_settings=None,
+    durable_route_adapter_policy_ids=None,
 ) -> SandboxRuntimeService:
     return SandboxRuntimeService(
         repositories,
@@ -787,6 +884,9 @@ def _service(
         adapter_executor=adapter_executor,
         hpc_fetch_executor=hpc_fetch_executor,
         repository_scope_factory=repository_scope_factory,
+        reliability_shadow_observer=reliability_shadow_observer,
+        reliability_settings=reliability_settings,
+        durable_route_adapter_policy_ids=dict(durable_route_adapter_policy_ids or {}),
     )
 
 
@@ -833,13 +933,12 @@ def test_sandbox_sdk_registration_uses_attempt_scoped_roots(
     assert run.status is SandboxRunStatus.COMPLETED
     artifacts = repositories.artifacts.list_by_session(session.session_id)
     result = next(item for item in artifacts if item.relative_path == "result.json")
-    source_snapshot = repositories.artifacts.get(
-        str(run.source_snapshot_artifact_id)
-    )
+    source_snapshot = repositories.artifacts.get(str(run.source_snapshot_artifact_id))
     assert source_snapshot is not None
-    assert workspace_root.resolve() in (
-        workspace_root / workspace.sandbox_workspace_id
-    ).resolve().parents
+    assert (
+        workspace_root.resolve()
+        in (workspace_root / workspace.sandbox_workspace_id).resolve().parents
+    )
     assert blob_root.resolve() in Path(result.storage_uri).resolve().parents
     assert blob_root.resolve() in Path(source_snapshot.storage_uri).resolve().parents
 
@@ -1113,8 +1212,7 @@ def test_second_sandbox_exec_registration_binds_current_source_snapshot(
     assert prior_run.status is SandboxRunStatus.COMPLETED, prior_run.stderr_summary
     assert current_run.status is SandboxRunStatus.COMPLETED, current_run.stderr_summary
     assert (
-        current_run.source_snapshot_artifact_id
-        != prior_run.source_snapshot_artifact_id
+        current_run.source_snapshot_artifact_id != prior_run.source_snapshot_artifact_id
     )
     artifact = next(
         item
@@ -1167,7 +1265,7 @@ def test_sandbox_sdk_forwards_typed_zero_record_fasta_profile(
             "        'empty_result_reason': 'no_candidates_after_length_filter',\n"
             "        'derivation_contract_id': 'aox_sequence_length_join@2',\n"
             "    },\n"
-            ")[\"artifact\"][\"artifact_id\"])\n"
+            ')["artifact"]["artifact_id"])\n'
         ),
         create_dirs=True,
     )
@@ -1248,10 +1346,141 @@ def _resolve_s10_approval(
     )
 
 
+class _DurableProviderFixtureAdapter:
+    route_policy_id = "bio.ncbi_fetch_proteins.provider:v1"
+    selected_backend = "provider_http"
+    adapter_policy_id = "test_durable_provider_adapter:v1"
+
+    def __init__(self) -> None:
+        self.dispatch_count = 0
+        self.reconcile_count = 0
+
+    def prepare_dispatch(
+        self,
+        execution: ControlledOperationExecution,
+        request: ControlledOperationDispatchRequest,
+    ) -> str:
+        del request
+        digest = hashlib.sha256(
+            f"{execution.execution_id}:{execution.dispatch_generation}".encode()
+        ).hexdigest()[:24]
+        return f"provider_req_{digest}"
+
+    def dispatch(
+        self,
+        execution: ControlledOperationExecution,
+        request: ControlledOperationDispatchRequest,
+    ) -> DurableRouteObservation:
+        del request
+        self.dispatch_count += 1
+        assert execution.backend_handle_ref is not None
+        return self._materialized(execution.backend_handle_ref)
+
+    def poll(
+        self,
+        execution: ControlledOperationExecution,
+        request: ControlledOperationDispatchRequest,
+    ) -> DurableRouteObservation:
+        del request
+        return self._materialized(str(execution.backend_handle_ref))
+
+    def reconcile(
+        self,
+        execution: ControlledOperationExecution,
+        request: ControlledOperationDispatchRequest,
+    ) -> DurableRouteObservation:
+        del request
+        self.reconcile_count += 1
+        return self._materialized(str(execution.backend_handle_ref))
+
+    def materialize(
+        self,
+        execution: ControlledOperationExecution,
+        request: ControlledOperationDispatchRequest,
+    ) -> DurableRouteObservation:
+        del request
+        return self._materialized(str(execution.backend_handle_ref))
+
+    @staticmethod
+    def _materialized(backend_handle_ref: str) -> DurableRouteObservation:
+        return DurableRouteObservation(
+            kind=DurableRouteObservationKind.RESULT_MATERIALIZED,
+            effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+            retry_eligibility=RetryEligibility.TERMINAL,
+            backend_handle_ref=backend_handle_ref,
+            safe_receipt_digest="sha256:" + "8" * 64,
+            safe_summary="fixture provider result materialized",
+            terminal_outcome=(ControlledOperationExecutionTerminalOutcome.SUCCEEDED),
+            materialized_result=DurableRouteMaterializedResult(
+                bounded_result_envelope={
+                    "status": "completed",
+                    "records": 1,
+                },
+                artifact_set_digest=controlled_operation_artifact_set_digest(()),
+                origin="test_durable_provider_adapter",
+            ),
+        )
+
+
+def _approve_durable_operation(
+    repositories: CoreRepositories,
+    operation: ControlledOperation,
+) -> ControlledOperationExecution:
+    approval = repositories.approvals.get(str(operation.approval_id))
+    execution = repositories.controlled_operation_executions.get_by_operation_id(
+        operation.operation_id
+    )
+    assert approval is not None
+    assert execution is not None
+    now = "2026-07-21T01:00:00+00:00"
+    approved = replace(
+        approval,
+        status=ApprovalRequestStatus.APPROVED,
+        resolved_at=now,
+    )
+    ready = replace(
+        execution,
+        lifecycle_state=ControlledOperationExecutionLifecycle.READY,
+        state_version=execution.state_version + 1,
+        updated_at=now,
+    )
+    event = ControlledOperationExecutionEvent(
+        event_id=f"test_approval_{execution.execution_id}",
+        execution_id=execution.execution_id,
+        operation_id=execution.operation_id,
+        session_id=execution.session_id,
+        state_version=ready.state_version,
+        dispatch_generation=ready.dispatch_generation,
+        phase=ControlledOperationExecutionPhase.APPROVAL,
+        previous_lifecycle_state=execution.lifecycle_state,
+        lifecycle_state=ready.lifecycle_state,
+        terminal_outcome=ready.terminal_outcome,
+        effect_certainty=ready.effect_certainty,
+        retry_eligibility=ready.retry_eligibility,
+        fencing_token=ready.fencing_token,
+        safe_summary="durable operation approved",
+        created_at=now,
+    )
+    with repositories.atomic(prefix="test_durable_approval"):
+        repositories.approvals.save(approved)
+        repositories.continuation_states.resolve_for_approval(
+            approval.approval_id,
+            decision="approved",
+        )
+        ControlledOperationExecutionTransitionService(repositories).transition(
+            execution=ready,
+            event=event,
+            expected_state_version=execution.state_version,
+        )
+    return ready
+
+
 def test_sandbox_file_crud_records_audit_and_rejects_bad_patch(tmp_path: Path) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
 
     written = service.write_file(
         session_id=session.session_id,
@@ -1317,14 +1546,20 @@ def test_sandbox_file_crud_records_audit_and_rejects_bad_patch(tmp_path: Path) -
         expected_digest=str(patched["new_digest"]),
     )
     assert deleted["deleted"] is True
-    audit = repositories.file_audit_entries.list_by_workspace(workspace.sandbox_workspace_id)
+    audit = repositories.file_audit_entries.list_by_workspace(
+        workspace.sandbox_workspace_id
+    )
     assert [entry.operation for entry in audit] == ["write", "patch", "delete"]
 
 
-def test_sandbox_file_mutations_reject_prospective_quota_overflow(tmp_path: Path) -> None:
+def test_sandbox_file_mutations_reject_prospective_quota_overflow(
+    tmp_path: Path,
+) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
     repositories.sandbox_workspaces.save(
         replace(
             workspace,
@@ -1348,11 +1583,14 @@ def test_sandbox_file_mutations_reject_prospective_quota_overflow(tmp_path: Path
         "used_bytes": 0,
         "prospective_bytes": 9,
     }
-    assert not (workspace_root / workspace.sandbox_workspace_id / "src" / "too-large.txt").exists()
+    assert not (
+        workspace_root / workspace.sandbox_workspace_id / "src" / "too-large.txt"
+    ).exists()
 
     repositories.sandbox_workspaces.save(
         replace(
-            repositories.sandbox_workspaces.get(workspace.sandbox_workspace_id) or workspace,
+            repositories.sandbox_workspaces.get(workspace.sandbox_workspace_id)
+            or workspace,
             quota_summary={"limit_bytes": 12, "used_bytes": 0, "exceeded": False},
         )
     )
@@ -1381,9 +1619,9 @@ def test_sandbox_file_mutations_reject_prospective_quota_overflow(tmp_path: Path
             patch=patch,
         )
     assert patch_error.value.error_code == "sandbox_quota_exceeded"
-    assert (workspace_root / workspace.sandbox_workspace_id / "src" / "value.txt").read_text(
-        encoding="utf-8"
-    ) == "small\n"
+    assert (
+        workspace_root / workspace.sandbox_workspace_id / "src" / "value.txt"
+    ).read_text(encoding="utf-8") == "small\n"
 
 
 def test_sandbox_write_conflicts_with_active_exec(tmp_path: Path) -> None:
@@ -1404,7 +1642,9 @@ def test_sandbox_write_conflicts_with_active_exec(tmp_path: Path) -> None:
         changed_files_summary={},
     )
     repositories.sandbox_runs.save(active)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
 
     with pytest.raises(SandboxRuntimeError) as exc_info:
         service.write_file(
@@ -1418,10 +1658,14 @@ def test_sandbox_write_conflicts_with_active_exec(tmp_path: Path) -> None:
     assert exc_info.value.error_code == "sandbox_run_conflict"
 
 
-def test_sandbox_exec_snapshots_source_and_allows_output_registration(tmp_path: Path) -> None:
+def test_sandbox_exec_snapshots_source_and_allows_output_registration(
+    tmp_path: Path,
+) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -1476,13 +1720,77 @@ def test_sandbox_exec_snapshots_source_and_allows_output_registration(tmp_path: 
         kind="result",
         format="text",
     )
-    assert registered.artifact.metadata["source_snapshot_artifact_id"] == run.source_snapshot_artifact_id
+    assert (
+        registered.artifact.metadata["source_snapshot_artifact_id"]
+        == run.source_snapshot_artifact_id
+    )
 
 
-def test_sandbox_exec_marks_run_and_workspace_when_output_exceeds_disk_quota(tmp_path: Path) -> None:
+def test_sandbox_exec_tool_registers_exact_process_writer(
+    tmp_path: Path,
+) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+    ).write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/process_writer.py",
+        content="print('writer-covered')\n",
+        create_dirs=True,
+    )
+    observed: list[dict[str, object]] = []
+
+    @contextmanager
+    def writer_scope(**kwargs):  # type: ignore[no-untyped-def]
+        observed.append(dict(kwargs))
+        yield None
+
+    registry = ToolRegistry()
+    register_sandbox_runtime_tools(registry, agent_id=agent.agent_id)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+        sandbox_workspace_root=workspace_root,
+        mutation_writer_scope_factory=writer_scope,
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_process_writer",
+            tool_name="sandbox.exec",
+            arguments={
+                "sandbox_workspace_id": workspace.sandbox_workspace_id,
+                "argv": ["python", "src/process_writer.py"],
+            },
+        ),
+    )
+
+    assert result.ok is True
+    assert len(observed) == 1
+    assert observed[0]["session_id"] == session.session_id
+    assert observed[0]["owner_kind"] is MutationWriterKind.SANDBOX_PROCESS
+    assert observed[0]["owner_ref"] == "sandbox-exec:cadbd77f7f1a86e3"
+    assert isinstance(observed[0]["process_epoch"], int)
+    assert int(observed[0]["process_epoch"]) > 0
+
+
+def test_sandbox_exec_marks_run_and_workspace_when_output_exceeds_disk_quota(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -1517,7 +1825,9 @@ def test_sandbox_exec_marks_run_and_workspace_when_output_exceeds_disk_quota(tmp
 
     assert run.status is SandboxRunStatus.RESOURCE_EXCEEDED
     assert run.error_code == "sandbox_quota_exceeded"
-    exceeded_workspace = repositories.sandbox_workspaces.get(workspace.sandbox_workspace_id)
+    exceeded_workspace = repositories.sandbox_workspaces.get(
+        workspace.sandbox_workspace_id
+    )
     assert exceeded_workspace is not None
     assert exceeded_workspace.status is SandboxWorkspaceStatus.QUOTA_EXCEEDED
     assert (exceeded_workspace.quota_summary or {})["exceeded"] is True
@@ -1534,7 +1844,9 @@ def test_sandbox_exec_marks_run_and_workspace_when_output_exceeds_disk_quota(tmp
 def test_sandbox_exec_transport_smoke_returns_identity_binding(tmp_path: Path) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -1626,10 +1938,22 @@ def test_control_socket_opens_thread_owned_repository_scope(tmp_path: Path) -> N
         assert json.loads(str(run.stdout_summary))["artifact_id"] == "art_thread_owned"
 
 
-def test_sandbox_exec_controlled_operation_approval_resumes_same_rpc(tmp_path: Path) -> None:
+def test_sandbox_exec_controlled_operation_approval_resumes_same_rpc(
+    tmp_path: Path,
+) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    shadow_observer = ReliabilityShadowObserver(
+        ReliabilityRefactorSettings(
+            shadow_observability=ShadowObservabilityMode.SHADOW_V1
+        )
+    )
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+        reliability_shadow_observer=shadow_observer,
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -1671,7 +1995,9 @@ def test_sandbox_exec_controlled_operation_approval_resumes_same_rpc(tmp_path: P
     thread.start()
     pending = None
     for _ in range(100):
-        pending_items = repositories.approvals.list_pending_by_session(session.session_id)
+        pending_items = repositories.approvals.list_pending_by_session(
+            session.session_id
+        )
         if pending_items:
             pending = pending_items[0]
             break
@@ -1681,7 +2007,16 @@ def test_sandbox_exec_controlled_operation_approval_resumes_same_rpc(tmp_path: P
     operation = repositories.controlled_operations.get(str(pending.request_ref))
     assert operation is not None
     assert operation.status is ControlledOperationStatus.WAITING_APPROVAL
-    continuation = repositories.continuation_states.get_by_operation_id(operation.operation_id)
+    assert operation.owner_mode is ControlledOperationOwnerMode.LEGACY_SYNC
+    assert (
+        repositories.controlled_operation_executions.get_by_operation_id(
+            operation.operation_id
+        )
+        is None
+    )
+    continuation = repositories.continuation_states.get_by_operation_id(
+        operation.operation_id
+    )
     assert continuation is not None
     assert continuation.status is ContinuationStateStatus.WAITING_APPROVAL
     assert thread.is_alive()
@@ -1701,7 +2036,9 @@ def test_sandbox_exec_controlled_operation_approval_resumes_same_rpc(tmp_path: P
             resolved_at="2026-05-28T00:05:00+00:00",
         )
     )
-    repositories.continuation_states.resolve_for_approval(pending.approval_id, decision="approved")
+    repositories.continuation_states.resolve_for_approval(
+        pending.approval_id, decision="approved"
+    )
     thread.join(timeout=5)
     assert not thread.is_alive()
     assert "error" not in holder
@@ -1714,18 +2051,282 @@ def test_sandbox_exec_controlled_operation_approval_resumes_same_rpc(tmp_path: P
     assert payload["status"] == "completed"
     assert payload["result_summary"] == {"message": "approved result"}
     completed_operation = repositories.controlled_operations.get(operation.operation_id)
-    completed_continuation = repositories.continuation_states.get(continuation.continuation_id)
+    completed_continuation = repositories.continuation_states.get(
+        continuation.continuation_id
+    )
     assert completed_operation is not None
     assert completed_operation.status is ControlledOperationStatus.COMPLETED
+    assert completed_operation.owner_mode is ControlledOperationOwnerMode.LEGACY_SYNC
+    assert (
+        repositories.controlled_operation_executions.get_by_operation_id(
+            operation.operation_id
+        )
+        is None
+    )
     assert completed_continuation is not None
     assert completed_continuation.status is ContinuationStateStatus.COMPLETED
-    assert completed_continuation.claimed_by == f"sandbox-supervisor:{run.sandbox_run_id}"
+    assert (
+        completed_continuation.claimed_by == f"sandbox-supervisor:{run.sandbox_run_id}"
+    )
+    shadow = shadow_observer.snapshot()
+    assert len(shadow) == 1
+    assert shadow[0]["kind"] == "approval_wait"
+    assert shadow[0]["dimensions"]["resolution"] == "approved"
+    assert operation.operation_id not in json.dumps(shadow, sort_keys=True)
+
+
+def test_sandbox_exec_durable_route_admits_once_and_never_calls_legacy_adapter(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "attached-process.sqlite3"
+    connection = connect_sqlite(str(database_path), check_same_thread=False)
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+
+    @contextmanager
+    def repository_scope():  # type: ignore[no-untyped-def]
+        scoped_connection = connect_sqlite(
+            str(database_path),
+            check_same_thread=False,
+        )
+        try:
+            yield CoreRepositories.from_connection(scoped_connection)
+        finally:
+            scoped_connection.close()
+
+    session, agent, workspace, workspace_root = _seed_workspace(
+        repositories,
+        tmp_path,
+    )
+    route_policy_id = "bio.ncbi_fetch_proteins.provider:v1"
+    fixture_adapter = _DurableProviderFixtureAdapter()
+    legacy_adapter_calls: list[str] = []
+
+    def _legacy_adapter_executor(
+        operation: ControlledOperation,
+        envelope: dict[str, object],
+    ) -> dict[str, object]:
+        del envelope
+        legacy_adapter_calls.append(operation.operation_id)
+        raise AssertionError("durable owner reached the legacy adapter")
+
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+        adapter_executor=_legacy_adapter_executor,
+        reliability_settings=ReliabilityRefactorSettings(
+            controlled_operation_owner_policy=(
+                ControlledOperationOwnerPolicy.ROUTE_ALLOWLIST_V1
+            ),
+            durable_execution_route_allowlist=(route_policy_id,),
+        ),
+        durable_route_adapter_policy_ids={
+            route_policy_id: fixture_adapter.adapter_policy_id,
+        },
+        repository_scope_factory=repository_scope,
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/durable_provider.py",
+        content=(
+            "import json\n"
+            "from openzyme_pipeline.client import call, canonical_digest\n"
+            "params = {'accessions': ['AAB57849.1']}\n"
+            "result = call('s10.controlled_operation', {\n"
+            "    'schema_version': 's12.adapter_envelope.v1',\n"
+            "    'route_policy_id': 'bio.ncbi_fetch_proteins.provider:v1',\n"
+            "    'sdk_module': 'bio',\n"
+            "    'function_name': 'ncbi_fetch_proteins',\n"
+            "    'idempotency_key': 'durable_provider_001',\n"
+            "    'params_digest': canonical_digest(params),\n"
+            "    'params': params,\n"
+            "    'expected_outputs': {'kind': 'fasta'},\n"
+            "    'resource_estimate': {'requests': 1},\n"
+            "})\n"
+            "print(json.dumps(result, sort_keys=True))\n"
+        ),
+        create_dirs=True,
+    )
+    holder: dict[str, object] = {}
+
+    def _run() -> None:
+        holder["run"] = service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/durable_provider.py"],
+            timeout_seconds=10,
+            originating_signal_id="signal_durable_provider",
+            originating_tool_call_id="tool_call_durable_provider",
+            originating_invocation_id="invocation_durable_provider",
+        )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    pending = _wait_for_pending_approval(repositories, session.session_id)
+    operation = _wait_for_operation_with_approval(
+        repositories,
+        str(pending.request_ref),
+        pending.approval_id,
+    )
+    execution = repositories.controlled_operation_executions.get_by_operation_id(
+        operation.operation_id
+    )
+    continuation = repositories.continuation_states.get_by_operation_id(
+        operation.operation_id
+    )
+    assert operation.owner_mode is ControlledOperationOwnerMode.DURABLE_ASYNC_V1
+    assert execution is not None
+    assert execution.lifecycle_state is (
+        ControlledOperationExecutionLifecycle.AWAITING_APPROVAL
+    )
+    assert execution.adapter_policy_id == fixture_adapter.adapter_policy_id
+    assert continuation is not None
+    assert (
+        repositories.controlled_operation_dispatch_requests.get_by_execution_id(
+            execution.execution_id
+        )
+        is not None
+    )
+    assert (
+        len(
+            repositories.controlled_operation_execution_events.list_by_execution(
+                execution.execution_id
+            )
+        )
+        == 1
+    )
+    assert legacy_adapter_calls == []
+
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    suspended_run = holder["run"]
+    assert isinstance(suspended_run, SandboxRunRecord)
+    assert suspended_run.status is SandboxRunStatus.RUNNING
+    assert (suspended_run.compatibility or {})["suspension"]["status"] == (
+        "suspended_waiting_approval"
+    )
+
+    ready = _approve_durable_operation(repositories, operation)
+
+    worker = ControlledOperationExecutionWorker(
+        repository_scope_factory=repository_scope,
+        adapters={route_policy_id: fixture_adapter},
+        worker_id="test:durable-provider",
+    )
+    assert worker.run_execution_once(ready.execution_id).action == "dispatch"
+    assert worker.run_execution_once(ready.execution_id).action == "terminalize_result"
+    assert service.live_process_registry is not None
+    delivery_worker = ContinuationDeliveryWorker(
+        repository_scope_factory=repository_scope,
+        live_process_registry=service.live_process_registry,
+        worker_id="test:continuation-delivery",
+    )
+    assert delivery_worker.run_once().action == "delivered"
+    run = suspended_run
+    for _ in range(100):
+        current_run = repositories.sandbox_runs.get(run.sandbox_run_id)
+        assert current_run is not None
+        if current_run.status is not SandboxRunStatus.RUNNING:
+            run = current_run
+            break
+        time.sleep(0.05)
+    assert run.status is SandboxRunStatus.COMPLETED
+    payload = json.loads(str(run.stdout_summary))
+    assert payload["status"] == "completed"
+    assert payload["result_summary"] == {"records": 1, "status": "completed"}
+    assert fixture_adapter.dispatch_count == 1
+    assert fixture_adapter.reconcile_count == 0
+    assert legacy_adapter_calls == []
+    completed = repositories.controlled_operations.get(operation.operation_id)
+    assert completed is not None
+    assert completed.owner_mode is ControlledOperationOwnerMode.DURABLE_ASYNC_V1
+    assert completed.status is ControlledOperationStatus.COMPLETED
+    owner_wakeups = [
+        signal
+        for signal in repositories.runtime_signals.list_by_session(session.session_id)
+        if signal.reason is AgentRuntimeSignalReason.ENGINE_COMPLETED
+        and signal.source_ref == continuation.continuation_id
+    ]
+    assert len(owner_wakeups) == 1
+    assert delivery_worker.run_once().action == "idle"
+    assert service.live_process_registry.active_count() == 0
+
+
+def test_sandbox_exec_durable_route_without_exact_adapter_fails_closed(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(
+        repositories,
+        tmp_path,
+    )
+    route_policy_id = "bio.ncbi_fetch_proteins.provider:v1"
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+        reliability_settings=ReliabilityRefactorSettings(
+            controlled_operation_owner_policy=(
+                ControlledOperationOwnerPolicy.ROUTE_ALLOWLIST_V1
+            ),
+            durable_execution_route_allowlist=(route_policy_id,),
+        ),
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/missing_durable_adapter.py",
+        content=(
+            "import json\n"
+            "from openzyme_pipeline.client import PipelineSdkError, call, canonical_digest\n"
+            "params = {'accessions': ['AAB57849.1']}\n"
+            "try:\n"
+            "    call('s10.controlled_operation', {\n"
+            "        'schema_version': 's12.adapter_envelope.v1',\n"
+            "        'route_policy_id': 'bio.ncbi_fetch_proteins.provider:v1',\n"
+            "        'sdk_module': 'bio',\n"
+            "        'function_name': 'ncbi_fetch_proteins',\n"
+            "        'idempotency_key': 'durable_missing_adapter_001',\n"
+            "        'params_digest': canonical_digest(params),\n"
+            "        'params': params,\n"
+            "        'expected_outputs': {'kind': 'fasta'},\n"
+            "        'resource_estimate': {'requests': 1},\n"
+            "    })\n"
+            "except PipelineSdkError as exc:\n"
+            "    print(json.dumps({'error_code': exc.error_code}, sort_keys=True))\n"
+            "else:\n"
+            "    raise SystemExit('expected durable adapter rejection')\n"
+        ),
+        create_dirs=True,
+    )
+
+    run = service.exec_command(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=["python", "src/missing_durable_adapter.py"],
+        timeout_seconds=10,
+    )
+
+    assert run.status is SandboxRunStatus.COMPLETED
+    assert json.loads(str(run.stdout_summary)) == {
+        "error_code": "durable_route_adapter_unavailable"
+    }
+    assert repositories.approvals.list_by_session(session.session_id) == []
+    assert repositories.controlled_operations.list_by_run(run.sandbox_run_id) == []
 
 
 def test_sandbox_exec_timeout_excludes_pending_approval_wait(tmp_path: Path) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -1775,10 +2376,14 @@ def test_sandbox_exec_timeout_excludes_pending_approval_wait(tmp_path: Path) -> 
     assert payload["result_summary"] == {"message": "approved after wait"}
 
 
-def test_sandbox_exec_controlled_operation_reject_returns_sdk_error(tmp_path: Path) -> None:
+def test_sandbox_exec_controlled_operation_reject_returns_sdk_error(
+    tmp_path: Path,
+) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -1813,7 +2418,9 @@ def test_sandbox_exec_controlled_operation_reject_returns_sdk_error(tmp_path: Pa
     thread.start()
     pending = None
     for _ in range(100):
-        pending_items = repositories.approvals.list_pending_by_session(session.session_id)
+        pending_items = repositories.approvals.list_pending_by_session(
+            session.session_id
+        )
         if pending_items:
             pending = pending_items[0]
             break
@@ -1834,7 +2441,9 @@ def test_sandbox_exec_controlled_operation_reject_returns_sdk_error(tmp_path: Pa
             resolved_at="2026-05-28T00:06:00+00:00",
         )
     )
-    repositories.continuation_states.resolve_for_approval(pending.approval_id, decision="rejected")
+    repositories.continuation_states.resolve_for_approval(
+        pending.approval_id, decision="rejected"
+    )
     thread.join(timeout=5)
     assert not thread.is_alive()
     run = holder["run"]
@@ -1848,10 +2457,14 @@ def test_sandbox_exec_controlled_operation_reject_returns_sdk_error(tmp_path: Pa
     assert operation.error_code == "approval_rejected"
 
 
-def test_sandbox_exec_controlled_operation_detects_idempotency_digest_drift(tmp_path: Path) -> None:
+def test_sandbox_exec_controlled_operation_detects_idempotency_digest_drift(
+    tmp_path: Path,
+) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -1922,7 +2535,9 @@ def test_sandbox_exec_controlled_operation_structured_schema_and_prerequisite_er
 ) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -1978,7 +2593,9 @@ def test_sandbox_exec_s12_rejects_sandbox_supplied_results_and_toolchain_identit
 ) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -2087,7 +2704,9 @@ def test_sandbox_exec_s12_adapter_envelopes_separate_approval_and_host_result(
     executor_calls: list[str] = []
     executor_envelopes: list[dict[str, object]] = []
 
-    def _adapter_executor(operation: ControlledOperation, envelope: dict[str, object]) -> dict[str, object]:
+    def _adapter_executor(
+        operation: ControlledOperation, envelope: dict[str, object]
+    ) -> dict[str, object]:
         executor_calls.append(operation.operation_id)
         executor_envelopes.append(dict(envelope))
         return {
@@ -2165,7 +2784,10 @@ def test_sandbox_exec_s12_adapter_envelopes_separate_approval_and_host_result(
         pending.approval_id,
     )
     approval_envelope = operation.adapter_approval_envelope or {}
-    assert approval_envelope["adapter_envelope_schema_version"] == "s12.adapter_envelope.v1"
+    assert (
+        approval_envelope["adapter_envelope_schema_version"]
+        == "s12.adapter_envelope.v1"
+    )
     assert approval_envelope["approval_id"] == pending.approval_id
     assert approval_envelope["sdk_module"] == "bio"
     assert approval_envelope["function_name"] == "ncbi_fetch_proteins"
@@ -2481,13 +3103,10 @@ def test_sandbox_exec_s12_rejects_unsuccessful_or_inconsistent_host_result(
         "adapter_result_inconsistent",
         "adapter_result_unsuccessful",
     ]
-    operations = repositories.controlled_operations.list_by_session(
-        session.session_id
-    )
+    operations = repositories.controlled_operations.list_by_session(session.session_id)
     assert len(operations) == 3
     assert all(
-        operation.status is ControlledOperationStatus.FAILED
-        for operation in operations
+        operation.status is ControlledOperationStatus.FAILED for operation in operations
     )
     assert {operation.error_code for operation in operations} == {
         "provider_contract_failed",
@@ -2509,7 +3128,9 @@ def test_sandbox_exec_public_bio_sdk_uses_s12_controlled_operation(
 ) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -2552,7 +3173,9 @@ def test_sandbox_exec_public_bio_sdk_uses_s12_controlled_operation(
     assert operation.route_policy_id == "bio.ncbi_fetch_proteins.provider:v1"
     assert operation.selected_backend == "provider_http"
     assert operation.provider_config_digest == "provider_config:ncbi:v1"
-    assert operation.expected_outputs_summary == {"output_dir": "/workspace/output/bio/ncbi"}
+    assert operation.expected_outputs_summary == {
+        "output_dir": "/workspace/output/bio/ncbi"
+    }
 
     _resolve_s10_approval(repositories, pending.approval_id, decision="approved")
     thread.join(timeout=5)
@@ -2577,8 +3200,15 @@ def test_sandbox_exec_public_bio_sdk_uses_adapter_executor_after_approval(
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
     calls: list[dict[str, object]] = []
 
-    def _adapter_executor(operation: ControlledOperation, envelope: dict[str, object]) -> dict[str, object]:
-        calls.append({"operation_id": operation.operation_id, "params": dict(envelope["adapter_params"])})
+    def _adapter_executor(
+        operation: ControlledOperation, envelope: dict[str, object]
+    ) -> dict[str, object]:
+        calls.append(
+            {
+                "operation_id": operation.operation_id,
+                "params": dict(envelope["adapter_params"]),
+            }
+        )
         return {
             "adapter_result": {
                 "status": "succeeded",
@@ -2642,9 +3272,15 @@ def test_sandbox_exec_public_bio_sdk_uses_adapter_executor_after_approval(
     assert isinstance(run, SandboxRunRecord)
     assert run.status is SandboxRunStatus.COMPLETED
     payload = json.loads(str(run.stdout_summary))
-    assert payload["adapter_result_envelope"]["provider_request_id"] == "provider_req_core"
-    assert payload["adapter_result_envelope"]["result_origin"] == "host_adapter_executor"
-    assert payload["adapter_result_envelope"]["registered_artifact_ids"] == ["artifact_provider_core"]
+    assert (
+        payload["adapter_result_envelope"]["provider_request_id"] == "provider_req_core"
+    )
+    assert (
+        payload["adapter_result_envelope"]["result_origin"] == "host_adapter_executor"
+    )
+    assert payload["adapter_result_envelope"]["registered_artifact_ids"] == [
+        "artifact_provider_core"
+    ]
     assert calls == [
         {
             "operation_id": operation.operation_id,
@@ -2684,8 +3320,15 @@ def test_sandbox_exec_public_rcsb_sdk_uses_s12_controlled_operation(
         },
     }
 
-    def _adapter_executor(operation: ControlledOperation, envelope: dict[str, object]) -> dict[str, object]:
-        calls.append({"operation_id": operation.operation_id, "params": dict(envelope["adapter_params"])})
+    def _adapter_executor(
+        operation: ControlledOperation, envelope: dict[str, object]
+    ) -> dict[str, object]:
+        calls.append(
+            {
+                "operation_id": operation.operation_id,
+                "params": dict(envelope["adapter_params"]),
+            }
+        )
         result_summary = {
             "provider": "rcsb_pdb",
             "pdb_id": "6LEH",
@@ -2753,7 +3396,9 @@ def test_sandbox_exec_public_rcsb_sdk_uses_s12_controlled_operation(
     assert operation.route_policy_id == "rcsb_pdb.download_structure.provider:v1"
     assert operation.selected_backend == "provider_http"
     assert operation.provider_config_digest == "provider_config:rcsb_pdb:v1"
-    assert operation.expected_outputs_summary == {"output_dir": "/workspace/output/rcsb_pdb/6leh"}
+    assert operation.expected_outputs_summary == {
+        "output_dir": "/workspace/output/rcsb_pdb/6leh"
+    }
 
     _resolve_s10_approval(repositories, pending.approval_id, decision="approved")
     thread.join(timeout=5)
@@ -2799,7 +3444,9 @@ def test_sandbox_exec_public_bio_tools_hpc_run_can_fetch_declared_outputs(
         "image_digest": "sha256:" + "b" * 64,
     }
 
-    def _adapter_executor(operation: ControlledOperation, envelope: dict[str, object]) -> dict[str, object]:
+    def _adapter_executor(
+        operation: ControlledOperation, envelope: dict[str, object]
+    ) -> dict[str, object]:
         params = dict(envelope["adapter_params"])
         adapter_calls.append({"operation_id": operation.operation_id, "params": params})
         run_handle = {
@@ -2917,8 +3564,7 @@ def test_sandbox_exec_public_bio_tools_hpc_run_can_fetch_declared_outputs(
     assert input_artifact is not None
     input_metadata = dict(input_artifact.metadata or {})
     assert (
-        input_metadata["source_snapshot_artifact_id"]
-        == run.source_snapshot_artifact_id
+        input_metadata["source_snapshot_artifact_id"] == run.source_snapshot_artifact_id
     )
     assert (
         dict(input_metadata["provenance"])["source_snapshot_artifact_id"]
@@ -2928,10 +3574,7 @@ def test_sandbox_exec_public_bio_tools_hpc_run_can_fetch_declared_outputs(
     assert payload["run"]["kind"] == "hpc_run_handle"
     assert payload["run"]["run_id"] == "run_hpc_core"
     assert payload["run"]["operation_id"] == operation.operation_id
-    assert (
-        payload["run"]["toolchain_runtime_identity"]
-        == safe_toolchain_identity
-    )
+    assert payload["run"]["toolchain_runtime_identity"] == safe_toolchain_identity
     assert "/private/tool.sif" not in json.dumps(payload["run"])
     assert "must-not-propagate" not in json.dumps(payload["run"])
     assert payload["fetch"]["registered_artifact_ids"] == ["artifact_alignment_core"]
@@ -2947,8 +3590,13 @@ def test_sandbox_exec_public_bio_tools_hpc_run_can_fetch_declared_outputs(
         == safe_toolchain_identity
     )
     assert persisted.adapter_result_envelope is not None
-    assert persisted.adapter_result_envelope["registered_artifact_ids"] == ["artifact_alignment_core"]
-    assert persisted.adapter_result_envelope["fetch_refs"][0]["fetch_ref_id"] == "fetch_alignment_core"
+    assert persisted.adapter_result_envelope["registered_artifact_ids"] == [
+        "artifact_alignment_core"
+    ]
+    assert (
+        persisted.adapter_result_envelope["fetch_refs"][0]["fetch_ref_id"]
+        == "fetch_alignment_core"
+    )
     assert (
         persisted.adapter_result_envelope["bounded_summary"][
             "toolchain_runtime_identity"
@@ -2962,7 +3610,9 @@ def test_sandbox_exec_public_artifacts_hpc_and_bio_tools_sdk_use_control_socket(
 ) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -3019,7 +3669,11 @@ def test_sandbox_exec_public_artifacts_hpc_and_bio_tools_sdk_use_control_socket(
     assert operation.stage_refs[0]["artifact_id"]
     assert operation.planned_fetch_intent == {
         "declared_outputs": [
-            {"path": "bio_tools/mafft/alignment.fasta", "kind": "sequence", "format": "fasta"}
+            {
+                "path": "bio_tools/mafft/alignment.fasta",
+                "kind": "sequence",
+                "format": "fasta",
+            }
         ]
     }
 
@@ -3033,7 +3687,8 @@ def test_sandbox_exec_public_artifacts_hpc_and_bio_tools_sdk_use_control_socket(
     assert run.error_code == "sandbox_exec_nonzero"
     assert "adapter_execution_unavailable" in run.stderr_summary
     registered_artifacts = [
-        artifact for artifact in repositories.artifacts.list_by_session(session.session_id)
+        artifact
+        for artifact in repositories.artifacts.list_by_session(session.session_id)
         if artifact.relative_path == "inputs/reference.fasta"
     ]
     assert registered_artifacts
@@ -3049,7 +3704,9 @@ def test_sandbox_exec_public_structure_tools_fpocket_uses_controlled_operation(
 ) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -3117,12 +3774,17 @@ def test_sandbox_exec_public_structure_tools_fpocket_uses_controlled_operation(
     assert len(operation.stage_refs) == 1
     assert operation.stage_refs[0]["kind"] == "hpc_stage_ref"
     assert operation.stage_refs[0]["artifact_id"] == operation.input_artifact_ids[0]
-    assert operation.stage_refs[0]["artifact_digest"] == operation.input_artifact_digests[0]
+    assert (
+        operation.stage_refs[0]["artifact_digest"]
+        == operation.input_artifact_digests[0]
+    )
     assert operation.expected_outputs_summary == {
         "items": [{"path": "target_out", "kind": "directory", "format": "fpocket"}]
     }
     assert operation.planned_fetch_intent == {
-        "declared_outputs": [{"path": "target_out", "kind": "directory", "format": "fpocket"}]
+        "declared_outputs": [
+            {"path": "target_out", "kind": "directory", "format": "fpocket"}
+        ]
     }
 
     _resolve_s10_approval(repositories, pending.approval_id, decision="approved")
@@ -3142,7 +3804,9 @@ def test_sandbox_exec_public_hpc_fetch_outputs_fails_structured_without_run(
 ) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -3281,7 +3945,9 @@ def test_sandbox_exec_s12_route_policy_failures_do_not_create_operations(
 ) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -3373,8 +4039,14 @@ def test_sandbox_runtime_s14_bio_tool_route_policy_table_is_fail_closed() -> Non
     enabled = {
         "bio_tools.cdhit.hpc:v1": ("cdhit", "cdhit_4.8.1.hpc_apptainer_sif:v1"),
         "bio_tools.mafft.hpc:v1": ("mafft", "mafft_7.525.hpc_apptainer_sif:v1"),
-        "bio_tools.hmmbuild.hpc:v1": ("hmmbuild", "hmmer_3.4.hmmbuild.hpc_apptainer_sif:v1"),
-        "bio_tools.hmmalign.hpc:v1": ("hmmalign", "hmmer_3.4.hmmalign.hpc_apptainer_sif:v1"),
+        "bio_tools.hmmbuild.hpc:v1": (
+            "hmmbuild",
+            "hmmer_3.4.hmmbuild.hpc_apptainer_sif:v1",
+        ),
+        "bio_tools.hmmalign.hpc:v1": (
+            "hmmalign",
+            "hmmer_3.4.hmmalign.hpc_apptainer_sif:v1",
+        ),
     }
     for route_policy_id, (function_name, toolchain_id) in enabled.items():
         policy = S12_ROUTE_POLICIES[route_policy_id]
@@ -3402,7 +4074,9 @@ def test_sandbox_exec_s12_hpc_requires_explicit_placement_stage_and_fetch_intent
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
 
-    def _adapter_executor(operation: ControlledOperation, envelope: dict[str, object]) -> dict[str, object]:
+    def _adapter_executor(
+        operation: ControlledOperation, envelope: dict[str, object]
+    ) -> dict[str, object]:
         del operation, envelope
         return {
             "adapter_result": {
@@ -3594,7 +4268,9 @@ def test_sandbox_exec_s12_reuses_only_host_persisted_result_without_second_execu
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
     executor_calls: list[str] = []
 
-    def _adapter_executor(operation: ControlledOperation, envelope: dict[str, object]) -> dict[str, object]:
+    def _adapter_executor(
+        operation: ControlledOperation, envelope: dict[str, object]
+    ) -> dict[str, object]:
         del envelope
         executor_calls.append(operation.operation_id)
         return {
@@ -3697,18 +4373,41 @@ def test_sandbox_exec_s12_reuses_only_host_persisted_result_without_second_execu
     }
     for operation in operations:
         assert operation.adapter_result_envelope is not None
-        assert operation.adapter_result_envelope["provider_request_id"] == "provider_req_host"
-        assert operation.adapter_result_envelope["result_origin"] == "host_adapter_executor"
+        assert (
+            operation.adapter_result_envelope["provider_request_id"]
+            == "provider_req_host"
+        )
+        assert (
+            operation.adapter_result_envelope["result_origin"]
+            == "host_adapter_executor"
+        )
 
 
 def test_sandbox_exec_s12_untrusted_legacy_result_requires_fresh_approval(
     tmp_path: Path,
 ) -> None:
-    repositories = _build_repositories()
+    database_path = tmp_path / "legacy-result-reuse.sqlite3"
+    service_connection = connect_sqlite(
+        str(database_path),
+        check_same_thread=False,
+    )
+    apply_sqlite_migrations(service_connection)
+    repositories = CoreRepositories.from_connection(service_connection)
+
+    @contextmanager
+    def repository_scope():  # type: ignore[no-untyped-def]
+        connection = connect_sqlite(str(database_path), check_same_thread=False)
+        try:
+            yield CoreRepositories.from_connection(connection)
+        finally:
+            connection.close()
+
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
     executor_calls: list[str] = []
 
-    def _adapter_executor(operation: ControlledOperation, envelope: dict[str, object]) -> dict[str, object]:
+    def _adapter_executor(
+        operation: ControlledOperation, envelope: dict[str, object]
+    ) -> dict[str, object]:
         del envelope
         executor_calls.append(operation.operation_id)
         request_id = f"provider_req_host_{len(executor_calls)}"
@@ -3726,6 +4425,7 @@ def test_sandbox_exec_s12_untrusted_legacy_result_requires_fresh_approval(
         workspace_root=workspace_root,
         log_root=tmp_path / "logs",
         adapter_executor=_adapter_executor,
+        repository_scope_factory=repository_scope,
     )
     service.write_file(
         session_id=session.session_id,
@@ -3786,29 +4486,36 @@ def test_sandbox_exec_s12_untrusted_legacy_result_requires_fresh_approval(
 
     thread = threading.Thread(target=_run)
     thread.start()
-    pending = _wait_for_pending_approval(repositories, session.session_id)
-    _resolve_s10_approval(repositories, pending.approval_id, decision="approved")
+    observer_connection = connect_sqlite(str(database_path), check_same_thread=False)
+    observer = CoreRepositories.from_connection(observer_connection)
+    pending = _wait_for_pending_approval(observer, session.session_id)
+    _resolve_s10_approval(observer, pending.approval_id, decision="approved")
 
     first_operation: ControlledOperation | None = None
     for _ in range(100):
-        operations = repositories.controlled_operations.list_by_session(session.session_id)
-        if len(operations) == 1 and operations[0].status is ControlledOperationStatus.COMPLETED:
+        operations = observer.controlled_operations.list_by_session(
+            session.session_id
+        )
+        if (
+            len(operations) == 1
+            and operations[0].status is ControlledOperationStatus.COMPLETED
+        ):
             first_operation = operations[0]
             break
         time.sleep(0.01)
     assert first_operation is not None
     legacy_result = dict(first_operation.adapter_result_envelope or {})
     assert legacy_result["result_origin"] == "host_adapter_executor"
-    repositories.controlled_operations.save(
+    observer.controlled_operations.save(
         # Simulate a pre-migration row whose caller-controlled JSON happens to
         # contain the new marker.  Only the Host-owned column grants reuse.
         replace(first_operation, adapter_result_origin=None)
     )
 
-    fresh_approval = _wait_for_pending_approval(repositories, session.session_id)
+    fresh_approval = _wait_for_pending_approval(observer, session.session_id)
     assert fresh_approval.approval_id != pending.approval_id
     _resolve_s10_approval(
-        repositories,
+        observer,
         fresh_approval.approval_id,
         decision="approved",
     )
@@ -3824,8 +4531,10 @@ def test_sandbox_exec_s12_untrusted_legacy_result_requires_fresh_approval(
         "same_key_error": "adapter_result_origin_untrusted",
         "fresh_provider_request_id": "provider_req_host_2",
     }
-    assert len(repositories.approvals.list_by_session(session.session_id)) == 2
+    assert len(observer.approvals.list_by_session(session.session_id)) == 2
     assert len(executor_calls) == 2
+    observer_connection.close()
+    service_connection.close()
 
 
 def test_sandbox_exec_controlled_operation_reuses_approved_digest_without_second_approval(
@@ -3833,7 +4542,9 @@ def test_sandbox_exec_controlled_operation_reuses_approved_digest_without_second
 ) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -3914,7 +4625,9 @@ def test_sandbox_exec_controlled_operation_does_not_reuse_rejected_digest(
 ) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -3960,7 +4673,9 @@ def test_sandbox_exec_controlled_operation_does_not_reuse_rejected_digest(
     thread = threading.Thread(target=_run)
     thread.start()
     first_pending = _wait_for_pending_approval(repositories, session.session_id)
-    first_operation = repositories.controlled_operations.get(str(first_pending.request_ref))
+    first_operation = repositories.controlled_operations.get(
+        str(first_pending.request_ref)
+    )
     assert first_operation is not None
     _resolve_s10_approval(
         repositories,
@@ -3968,7 +4683,9 @@ def test_sandbox_exec_controlled_operation_does_not_reuse_rejected_digest(
         decision="rejected",
     )
     second_pending = _wait_for_pending_approval(repositories, session.session_id)
-    second_operation = repositories.controlled_operations.get(str(second_pending.request_ref))
+    second_operation = repositories.controlled_operations.get(
+        str(second_pending.request_ref)
+    )
     assert second_operation is not None
     assert second_pending.approval_id != first_pending.approval_id
     assert second_operation.operation_digest == first_operation.operation_digest
@@ -3989,18 +4706,26 @@ def test_sandbox_exec_controlled_operation_does_not_reuse_rejected_digest(
         "second_approval": second_pending.approval_id,
         "second_status": "completed",
     }
-    completed_first = repositories.controlled_operations.get(first_operation.operation_id)
-    completed_second = repositories.controlled_operations.get(second_operation.operation_id)
+    completed_first = repositories.controlled_operations.get(
+        first_operation.operation_id
+    )
+    completed_second = repositories.controlled_operations.get(
+        second_operation.operation_id
+    )
     assert completed_first is not None
     assert completed_first.status is ControlledOperationStatus.FAILED
     assert completed_second is not None
     assert completed_second.status is ControlledOperationStatus.COMPLETED
 
 
-def test_sandbox_exec_requires_source_snapshot_and_forbids_env_secrets(tmp_path: Path) -> None:
+def test_sandbox_exec_requires_source_snapshot_and_forbids_env_secrets(
+    tmp_path: Path,
+) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
 
     with pytest.raises(SandboxRuntimeError) as empty_source:
         service.exec_command(
@@ -4015,9 +4740,10 @@ def test_sandbox_exec_requires_source_snapshot_and_forbids_env_secrets(tmp_path:
         "sandbox.exec; sandbox.exec snapshots the whole source tree. This failure "
         "occurs before SandboxRun creation or process invocation."
     )
-    assert repositories.sandbox_runs.list_by_workspace(
-        workspace.sandbox_workspace_id
-    ) == []
+    assert (
+        repositories.sandbox_runs.list_by_workspace(workspace.sandbox_workspace_id)
+        == []
+    )
     assert repositories.artifacts.list_by_session(session.session_id) == []
 
     service.write_file(
@@ -4058,15 +4784,13 @@ def test_sandbox_exec_rejects_unwrapped_python_heredoc_before_snapshot(
             argv=["python", "- <<'PY'\nprint('must not run')\nPY"],
         )
 
-    assert (
-        invalid_argv.value.error_code
-        == "sandbox_argv_shell_syntax_unsupported"
-    )
+    assert invalid_argv.value.error_code == "sandbox_argv_shell_syntax_unsupported"
     assert invalid_argv.value.hint is not None
     assert "sandbox.file.write" in invalid_argv.value.hint
-    assert repositories.sandbox_runs.list_by_workspace(
-        workspace.sandbox_workspace_id
-    ) == []
+    assert (
+        repositories.sandbox_runs.list_by_workspace(workspace.sandbox_workspace_id)
+        == []
+    )
     assert repositories.artifacts.list_by_session(session.session_id) == []
     for python_argv in (
         ("python3.12", "-u", "<<-EOF\nprint('must not run')\nEOF"),
@@ -4075,10 +4799,7 @@ def test_sandbox_exec_rejects_unwrapped_python_heredoc_before_snapshot(
     ):
         with pytest.raises(SandboxRuntimeError) as unsupported:
             service._validate_argv(python_argv)
-        assert (
-            unsupported.value.error_code
-            == "sandbox_argv_shell_syntax_unsupported"
-        )
+        assert unsupported.value.error_code == "sandbox_argv_shell_syntax_unsupported"
 
     for direct_argv in (
         ("python", "src/script.py", "<<literal"),
@@ -4095,7 +4816,9 @@ def test_sandbox_exec_rejects_unwrapped_python_heredoc_before_snapshot(
 def test_sandbox_exec_timeout_nonzero_and_truncated_logs(tmp_path: Path) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -4120,9 +4843,7 @@ def test_sandbox_exec_timeout_nonzero_and_truncated_logs(tmp_path: Path) -> None
     assert failed.exit_code == 7
     assert failed.error_code == "sandbox_exec_nonzero"
     assert failed.log_artifact_ref == f"sandbox-log://{failed.sandbox_run_id}/stdout"
-    log_records = repositories.command_log_artifacts.list_by_run(
-        failed.sandbox_run_id
-    )
+    log_records = repositories.command_log_artifacts.list_by_run(failed.sandbox_run_id)
     assert len(log_records) == 2
     log_records_by_stream = {record.stream: record for record in log_records}
     log_root = tmp_path / "logs"
@@ -4200,11 +4921,7 @@ def test_sandbox_exec_timeout_nonzero_and_truncated_logs(tmp_path: Path) -> None
         sandbox_workspace_id=workspace.sandbox_workspace_id,
         actor_ref=agent.agent_id,
         path="/workspace/src/invalid_utf8.py",
-        content=(
-            "import os\n"
-            "os.write(1, b'\\xff' * 40000)\n"
-            "raise SystemExit(9)\n"
-        ),
+        content=("import os\nos.write(1, b'\\xff' * 40000)\nraise SystemExit(9)\n"),
         create_dirs=True,
     )
     invalid_utf8 = service.exec_command(
@@ -4216,9 +4933,7 @@ def test_sandbox_exec_timeout_nonzero_and_truncated_logs(tmp_path: Path) -> None
     invalid_records = repositories.command_log_artifacts.list_by_run(
         invalid_utf8.sandbox_run_id
     )
-    invalid_raw = (
-        log_root / invalid_utf8.sandbox_run_id / "stdout.log"
-    ).read_bytes()
+    invalid_raw = (log_root / invalid_utf8.sandbox_run_id / "stdout.log").read_bytes()
     assert invalid_utf8.status is SandboxRunStatus.FAILED
     assert invalid_raw == b"\xff" * 40000
     assert invalid_records[0].size_bytes == 40000
@@ -4261,7 +4976,9 @@ def test_sandbox_command_log_root_rejects_symlink(tmp_path: Path) -> None:
     assert error.value.error_code == "sandbox_log_boundary_invalid"
 
 
-def test_sandbox_exec_podman_backend_uses_isolation_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sandbox_exec_podman_backend_uses_isolation_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
     service = SandboxRuntimeService(
@@ -4296,12 +5013,24 @@ def test_sandbox_exec_podman_backend_uses_isolation_policy(tmp_path: Path, monke
         env: dict[str, str] | None = None,
         timeout_seconds: int,
         sandbox_run_id: str,
+        control_server: _ControlSocketServer,
+        container_lease: PodmanContainerLease | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        del self, cwd, env, timeout_seconds, sandbox_run_id
+        del (
+            self,
+            cwd,
+            env,
+            timeout_seconds,
+            sandbox_run_id,
+            control_server,
+            container_lease,
+        )
         captured["command"] = command
         return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
 
-    monkeypatch.setattr(SandboxRuntimeService, "_run_process_with_active_timeout", fake_active_timeout)
+    monkeypatch.setattr(
+        SandboxRuntimeService, "_run_process_with_active_timeout", fake_active_timeout
+    )
 
     run = service.exec_command(
         session_id=session.session_id,
@@ -4310,7 +5039,10 @@ def test_sandbox_exec_podman_backend_uses_isolation_policy(tmp_path: Path, monke
         argv=["python", "src/podman.py"],
     )
 
-    assert run.status is SandboxRunStatus.COMPLETED, (run.error_code, run.stderr_summary)
+    assert run.status is SandboxRunStatus.COMPLETED, (
+        run.error_code,
+        run.stderr_summary,
+    )
     command = captured["command"]
     assert "--network=none" in command
     assert "--read-only" in command
@@ -4327,14 +5059,11 @@ def test_sandbox_exec_podman_backend_uses_isolation_policy(tmp_path: Path, monke
     assert cidfile.parent == workspace_root / ".podman-leases"
     assert workspace_root / workspace.sandbox_workspace_id not in cidfile.parents
     labels = [
-        command[index + 1]
-        for index, item in enumerate(command)
-        if item == "--label"
+        command[index + 1] for index, item in enumerate(command) if item == "--label"
     ]
     assert any(label.startswith("io.openzyme.run_id=") for label in labels)
     assert any(
-        label.startswith("io.openzyme.sandbox_root_digest=sha256:")
-        for label in labels
+        label.startswith("io.openzyme.sandbox_root_digest=sha256:") for label in labels
     )
     assert command[-3:] == [workspace.image_digest, "python", "src/podman.py"]
     assert run.compatibility is not None
@@ -4386,8 +5115,10 @@ def test_sandbox_exec_podman_timeout_retires_container_lease(
         env: dict[str, str] | None = None,
         timeout_seconds: int,
         sandbox_run_id: str,
+        control_server: _ControlSocketServer,
+        container_lease: PodmanContainerLease | None = None,
     ) -> subprocess.CompletedProcess[bytes]:
-        del self, cwd, env, sandbox_run_id
+        del self, cwd, env, sandbox_run_id, control_server, container_lease
         lifecycle.append("run")
         raise subprocess.TimeoutExpired(
             command,
@@ -4449,7 +5180,10 @@ def test_sandbox_exec_rejects_missing_ready_workspace_layout_before_snapshot(
         "invalid_directories": [],
     }
     assert str(workspace_root) not in str(error.value)
-    assert repositories.sandbox_runs.list_by_workspace(workspace.sandbox_workspace_id) == []
+    assert (
+        repositories.sandbox_runs.list_by_workspace(workspace.sandbox_workspace_id)
+        == []
+    )
     assert repositories.artifacts.list_by_session(session.session_id) == []
 
 
@@ -4518,8 +5252,10 @@ def test_sandbox_exec_redacts_host_paths_before_persisting_stdio(
         env: dict[str, str] | None = None,
         timeout_seconds: int,
         sandbox_run_id: str,
+        control_server: _ControlSocketServer,
+        container_lease: PodmanContainerLease | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        del self, cwd, env, timeout_seconds
+        del self, cwd, env, timeout_seconds, control_server, container_lease
         socket_path = Path(tempfile.gettempdir()) / f"oz-{sandbox_run_id}.sock"
         return subprocess.CompletedProcess(
             command,
@@ -4562,7 +5298,9 @@ def test_sandbox_exec_redacts_host_paths_before_persisting_stdio(
     assert refreshed.last_command_summary["stderr_summary"] == run.stderr_summary
 
 
-def test_sandbox_exec_podman_rejects_non_immutable_image_identity(tmp_path: Path) -> None:
+def test_sandbox_exec_podman_rejects_non_immutable_image_identity(
+    tmp_path: Path,
+) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
     repositories.sandbox_workspaces.save(
@@ -4596,7 +5334,10 @@ def test_sandbox_exec_podman_rejects_non_immutable_image_identity(tmp_path: Path
         )
 
     assert error.value.error_code == "sandbox_image_identity_invalid"
-    assert repositories.sandbox_runs.list_by_workspace(workspace.sandbox_workspace_id) == []
+    assert (
+        repositories.sandbox_runs.list_by_workspace(workspace.sandbox_workspace_id)
+        == []
+    )
 
 
 def test_sandbox_exec_rejects_pipeline_sdk_digest_drift_before_process(
@@ -4605,7 +5346,9 @@ def test_sandbox_exec_rejects_pipeline_sdk_digest_drift_before_process(
 ) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service = _service(
+        repositories, workspace_root=workspace_root, log_root=tmp_path / "logs"
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -4615,7 +5358,9 @@ def test_sandbox_exec_rejects_pipeline_sdk_digest_drift_before_process(
         create_dirs=True,
     )
     digests = iter(("sha256:" + "a" * 64, "sha256:" + "b" * 64))
-    monkeypatch.setattr(SandboxRuntimeService, "_pipeline_sdk_digest", lambda self: next(digests))
+    monkeypatch.setattr(
+        SandboxRuntimeService, "_pipeline_sdk_digest", lambda self: next(digests)
+    )
 
     run = service.exec_command(
         session_id=session.session_id,

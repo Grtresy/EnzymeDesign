@@ -73,7 +73,10 @@ Public envelopes expose only:
 
 - a runner-generated opaque `run_id`
 - normalized status, selected mode, exit/error codes
-- bounded log payloads and declared artifact references
+- closed `phase`, `effect_certainty`, `retry_eligibility`, and
+  `reconciliation_required` facts
+- bounded log payloads and opaque `runner-artifact://` references for verified,
+  declared outputs
 
 `job_id`, `remote_run_dir`, sbatch paths, commands, and the persisted `JobHandle`
 remain server-internal. Every `job.*` lifecycle call reloads the matching
@@ -87,13 +90,57 @@ not parse it or manufacture candidate values.
 Operational features:
 
 - server-generated per-run opaque `run_id` and isolated remote directories
-- staging via `rsync` over SSH (with `scp` fallback)
+- staging via operator-selected `rsync` or `scp` over the same transport identity
 - local artifact store per `run_id` (logs, manifests, fetched outputs)
 - normalized relative staging/output paths and artifact-store symlink containment
 - operator-configured CPU, memory, GPU, wall-time, partition, and log-tail limits
 - output validation (missing/empty outputs + declared success checks)
 - redaction and bounded log payloads
 - failure-signature mapping to stable error codes
+
+## Persistent SSH transport and recovery
+
+`[ssh_transport].mode = "controlmaster_v1"` makes the long-lived runner server
+own one OpenSSH ControlMaster generation for each effective trusted transport
+identity. The identity includes deployment, normalized target, credential and
+host-key policy ids, and every effective transport-policy field. Its socket and
+ownership metadata live below the configured mode-`0700` private control root.
+They are never exposed to callers or mounted into a sandbox.
+
+`runner.transport_control_root` must be a short absolute, deployment-scoped
+path because OpenSSH `ControlPath` is bounded by the platform Unix-socket byte
+limit. The example uses `/tmp/ozhpc-local-runner`; choose a distinct short root
+for every deployment. The runner validates the maximum generation path before
+creating the directory or opening an SSH connection and fails startup with a
+configuration error when the path is too long.
+
+Connection reuse does not create a persistent shell. Layout, hashing,
+preflight, upload, payload, status, and fetch remain separate bounded SSH
+channels with independent argv, environment, cwd, timeout, stdout/stderr, and
+exit status. SSH, SCP, and rsync options come from one compiler, and the
+per-target semaphore bounds concurrent channels.
+
+Every run has a private append-only `runner_attempt@1` journal. It binds the
+RunSpec, operation/execution/approval references, selected route, expected
+outputs, effective config, and transport identity. Automatic recovery is
+limited to one additional attempt for the same frozen run and only while the
+scientific payload is proven `no_effect`. Persistent mode never silently falls
+back from rsync to SCP or changes backend. A direct-SSH connection loss after
+payload transmission begins becomes `dispatch_in_doubt` and requires
+reconciliation; the payload is not replayed. Once terminal success is known,
+the runner may reconnect only to fetch and verify the same declared outputs.
+
+Inputs and outputs are verified by exact file SHA-256 or a versioned canonical
+tree manifest. Transfer candidates are digest-bound and atomically promoted;
+cache equality and a successful copy command alone are not proof. Public
+`retryable` is compatibility information only. Replay authority comes solely
+from the closed retry eligibility and the private attempt journal.
+
+Shutdown stops channel admission, waits only for the configured bounded
+deadline, records any active direct dispatch as reconciliation-required, and
+requests exit only for masters whose ownership is proven. A failed or timed-out
+master exit remains unclosed evidence; cleanup never claims that the remote
+payload was cancelled.
 
 ## Trust And Validation Boundary
 
@@ -188,6 +235,24 @@ uv --project apps/mcp-hpc-runner --directory apps/mcp-hpc-runner run pytest -m "
 Integration tests (SSH + Slurm) are marked with `@pytest.mark.integration` and
 will run when an integration config exists and points to a reachable cluster
 with key-based auth.
+
+The deterministic fake-ControlMaster soak is part of the non-integration test
+suite and does not contact a cluster. A real-SSH transport-only soak is a
+separate, doubly opted-in command. It executes only bounded remote `true`
+channels, may rotate owned generations between channels, and never starts a
+numbered `rxx` or scientific payload:
+
+```bash
+OPENZYME_HPC_TRANSPORT_SOAK_OPT_IN=true \
+  uv --project apps/mcp-hpc-runner run mcp-hpc-runner \
+  --config apps/mcp-hpc-runner/config/hpc_runner.toml \
+  transport-soak --confirm-real-ssh --iterations 32 --replace-every 8
+```
+
+Do not enable or run this command against a deployment until its config,
+credentials, host-key policy, maintenance window, and non-scientific scope have
+been explicitly approved. The emitted report contains counts and clean-shutdown
+facts only; it omits target, user, ControlPath, commands, and remote paths.
 
 To use a different config path:
 

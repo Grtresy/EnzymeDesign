@@ -72,6 +72,9 @@ def register_report_draft_tools(registry: ToolRegistry) -> None:
 
     def update_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
         session_id = context.snapshot.session.session_id
+        context.repositories.assert_report_publication_authority(
+            session_id=session_id
+        )
         task_id = str(invocation.arguments.get("task_id") or invocation.task_id or "")
         if not task_id:
             return ToolResult(
@@ -133,6 +136,9 @@ def register_report_draft_tools(registry: ToolRegistry) -> None:
 
     def publish_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
         session_id = context.snapshot.session.session_id
+        context.repositories.assert_report_publication_authority(
+            session_id=session_id
+        )
         draft_id = invocation.arguments.get("draft_id")
         task_id = invocation.arguments.get("task_id")
         draft = None

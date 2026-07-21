@@ -1,14 +1,23 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
+from enum import StrEnum
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .config import RunnerConfig
 from .models import RunSpec
-from .remote import CommandRunner, wrap_ssh
+from .recovery import classify_pre_effect_failure
+from .recovery import PreEffectFailureClass
+from .remote import CommandRunner
+from .transport import SshCommandCompiler
+from .transport import SshTransportManager
+from .verification import AuthorizedInput
+from .verification import RemoteInputVerifier
+from .verification import RemoteVerificationStatus
 
 
 # ── check descriptor schema ───────────────────────────────────────────────────
@@ -20,10 +29,12 @@ _REMOTE_CHECK_SCRIPT = """\
 import json, os, sys
 
 checks = {checks_json}
+descriptor_set_digest = {descriptor_set_digest_json}
 results = []
 for check in checks:
     kind = check["kind"]
-    path = os.path.expanduser(check["path"])
+    declared_path = check["path"]
+    path = os.path.expanduser(declared_path)
     severity = check.get("severity", "error")
     status = "pass"
     reason = None
@@ -46,24 +57,74 @@ for check in checks:
     else:
         status = "warn"
         reason = f"unknown check kind: {{kind}}"
-    r = {{"kind": kind, "path": path, "status": status}}
+    r = {{
+        "check_id": check["check_id"],
+        "kind": kind,
+        "declared_path": declared_path,
+        "path": path,
+        "status": status,
+    }}
     if reason:
         r["reason"] = reason
     results.append(r)
-print(json.dumps(results))
+print(json.dumps({{
+    "schema_version": "remote_preflight_receipt@1",
+    "descriptor_set_digest": descriptor_set_digest,
+    "checks": results,
+}}))
 """
+
+
+def _canonical_digest(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _bind_check_descriptors(
+    descriptors: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str]:
+    bound: list[dict[str, Any]] = []
+    for ordinal, descriptor in enumerate(descriptors, start=1):
+        identity = {
+            "schema_version": "preflight_check_descriptor@1",
+            "ordinal": ordinal,
+            "kind": descriptor["kind"],
+            "path": descriptor["path"],
+            "severity": descriptor["severity"],
+        }
+        bound.append({**descriptor, "check_id": _canonical_digest(identity)})
+    return bound, _canonical_digest(
+        {
+            "schema_version": "preflight_descriptor_set@1",
+            "descriptors": bound,
+        }
+    )
+
+
+class PreflightFailureClass(StrEnum):
+    NONE = "none"
+    DETERMINISTIC_VALIDATION = "deterministic_validation"
+    AUTHENTICATED_TRANSPORT = "authenticated_transport"
 
 
 @dataclass(slots=True)
 class PreflightResult:
     checks: list[dict[str, Any]] = field(default_factory=list)
     passed: bool = True
+    failure_class: PreflightFailureClass = PreflightFailureClass.NONE
     timestamp: str = field(default_factory=lambda: datetime.now(tz=UTC).isoformat())
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "timestamp": self.timestamp,
             "passed": self.passed,
+            "failure_class": self.failure_class.value,
             "checks": self.checks,
         }
 
@@ -77,12 +138,23 @@ class PreflightError(RuntimeError):
 
 
 class PreflightChecker:
-    def __init__(self, config: RunnerConfig, command_runner: CommandRunner) -> None:
+    def __init__(
+        self,
+        config: RunnerConfig,
+        command_runner: CommandRunner,
+        ssh_compiler: SshCommandCompiler | None = None,
+        transport_manager: SshTransportManager | None = None,
+    ) -> None:
         self.config = config
         self.command_runner = command_runner
-
-    def _ssh_target(self) -> str:
-        return self.config.cluster.ssh_target
+        self.ssh_compiler = ssh_compiler or SshCommandCompiler.legacy(
+            config.cluster.ssh_target
+        )
+        self.transport_manager = transport_manager or SshTransportManager(
+            config,
+            command_runner,
+        )
+        self.remote_verifier = RemoteInputVerifier(self.transport_manager)
 
     def _build_check_descriptors(
         self, spec: RunSpec, remote_run_dir: str
@@ -141,58 +213,218 @@ class PreflightChecker:
 
         return descriptors
 
-    def run_checks(self, spec: RunSpec, remote_run_dir: str) -> PreflightResult:
+    def run_checks(
+        self,
+        spec: RunSpec,
+        remote_run_dir: str,
+        *,
+        verified_inputs: list[dict[str, Any]] | None = None,
+    ) -> PreflightResult:
+        digest_checks, digest_failure_class = self._reverify_inputs(
+            verified_inputs or []
+        )
+        if digest_failure_class is not PreflightFailureClass.NONE:
+            return PreflightResult(
+                checks=digest_checks,
+                passed=False,
+                failure_class=digest_failure_class,
+            )
         descriptors = self._build_check_descriptors(spec, remote_run_dir)
         if not descriptors:
-            return PreflightResult(checks=[], passed=True)
+            return PreflightResult(checks=digest_checks, passed=True)
+
+        bound_descriptors, descriptor_set_digest = _bind_check_descriptors(
+            descriptors
+        )
 
         script = _REMOTE_CHECK_SCRIPT.format(
-            checks_json=json.dumps(descriptors)
+            checks_json=json.dumps(bound_descriptors),
+            descriptor_set_digest_json=json.dumps(descriptor_set_digest),
         )
-        ssh_cmd = wrap_ssh(
-            self._ssh_target(),
+        raw = self.transport_manager.run_ssh(
             ["python3", "-c", script],
-        )
-        raw = self.command_runner.run(
-            ssh_cmd,
             check=False,
             timeout=self.config.execution.preflight_timeout_seconds,
             stage="preflight",
         )
 
         if raw.returncode != 0:
-            # Could not even run the preflight script — treat as a single error.
+            failure_class = classify_pre_effect_failure(raw)
             checks = [{
                 "kind": "preflight_script",
                 "path": "",
                 "status": "error",
-                "reason": f"preflight script failed to run: {raw.stderr.strip()}",
+                "reason": (
+                    "authenticated_transport_unavailable"
+                    if failure_class is PreEffectFailureClass.AUTHENTICATED_TRANSPORT
+                    else "preflight_script_failed"
+                ),
             }]
-            return PreflightResult(checks=checks, passed=False)
+            return PreflightResult(
+                checks=[*digest_checks, *checks],
+                passed=False,
+                failure_class=(
+                    PreflightFailureClass.AUTHENTICATED_TRANSPORT
+                    if failure_class is PreEffectFailureClass.AUTHENTICATED_TRANSPORT
+                    else PreflightFailureClass.DETERMINISTIC_VALIDATION
+                ),
+            )
 
         try:
-            checks: list[dict[str, Any]] = json.loads(raw.stdout.strip())
-        except json.JSONDecodeError:
+            decoded = json.loads(raw.stdout.strip())
+            if (
+                not isinstance(decoded, dict)
+                or set(decoded) != {
+                    "schema_version",
+                    "descriptor_set_digest",
+                    "checks",
+                }
+                or decoded.get("schema_version") != "remote_preflight_receipt@1"
+                or decoded.get("descriptor_set_digest") != descriptor_set_digest
+                or not isinstance(decoded.get("checks"), list)
+                or len(decoded["checks"]) != len(bound_descriptors)
+            ):
+                raise ValueError("preflight receipt binding is invalid")
+            checks = []
+            for item, expected in zip(
+                decoded["checks"],
+                bound_descriptors,
+                strict=True,
+            ):
+                if (
+                    not isinstance(item, dict)
+                    or not {
+                        "check_id",
+                        "kind",
+                        "declared_path",
+                        "path",
+                        "status",
+                    }.issubset(item)
+                    or not set(item).issubset(
+                        {
+                            "check_id",
+                            "kind",
+                            "declared_path",
+                            "path",
+                            "status",
+                            "reason",
+                        }
+                    )
+                    or item.get("check_id") != expected["check_id"]
+                    or item.get("kind") != expected["kind"]
+                    or item.get("declared_path") != expected["path"]
+                    or not isinstance(item.get("kind"), str)
+                    or not isinstance(item.get("path"), str)
+                    or item.get("status") not in {"pass", "warn", "error"}
+                    or (
+                        item.get("status") != "pass"
+                        and item.get("status") != expected["severity"]
+                    )
+                    or (
+                        item.get("reason") is not None
+                        and not isinstance(item.get("reason"), str)
+                    )
+                ):
+                    raise ValueError("preflight receipt entry is invalid")
+                checks.append(dict(item))
+        except (json.JSONDecodeError, ValueError):
             checks = [{
                 "kind": "preflight_script",
                 "path": "",
                 "status": "error",
-                "reason": f"preflight script returned non-JSON: {raw.stdout[:200]}",
+                "reason": "preflight_receipt_invalid",
             }]
-            return PreflightResult(checks=checks, passed=False)
+            return PreflightResult(
+                checks=[*digest_checks, *checks],
+                passed=False,
+                failure_class=PreflightFailureClass.DETERMINISTIC_VALIDATION,
+            )
 
         passed = all(c["status"] != "error" for c in checks)
-        return PreflightResult(checks=checks, passed=passed)
+        return PreflightResult(
+            checks=[*digest_checks, *checks],
+            passed=passed,
+            failure_class=(
+                PreflightFailureClass.NONE
+                if passed
+                else PreflightFailureClass.DETERMINISTIC_VALIDATION
+            ),
+        )
+
+    def _reverify_inputs(
+        self,
+        verified_inputs: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], PreflightFailureClass]:
+        checks: list[dict[str, Any]] = []
+        failure_class = PreflightFailureClass.NONE
+        for raw in verified_inputs:
+            ordinal = int(raw["input_ordinal"])
+            authorized = AuthorizedInput.from_path(Path(str(raw["local_path"])))
+            if (
+                authorized.content_digest != raw.get("content_digest")
+                or authorized.contract_digest != raw.get("authorized_input_digest")
+            ):
+                checks.append(
+                    {
+                        "kind": "input_digest",
+                        "path": "",
+                        "input_ordinal": ordinal,
+                        "status": "error",
+                        "reason": "authorized_input_changed_after_staging",
+                    }
+                )
+                failure_class = PreflightFailureClass.DETERMINISTIC_VALIDATION
+                continue
+            verification = self.remote_verifier.verify(
+                str(raw["remote_path"]),
+                authorized,
+                timeout=self.config.execution.preflight_timeout_seconds,
+            )
+            checks.append(
+                {
+                    "kind": "input_digest",
+                    "path": "",
+                    "input_ordinal": ordinal,
+                    "status": "pass" if verification.verified else "error",
+                    "reason": verification.status.value,
+                    "content_digest": authorized.content_digest,
+                    "verification_receipt_digest": verification.receipt_digest,
+                }
+            )
+            if verification.verified:
+                continue
+            if verification.status is RemoteVerificationStatus.TRANSPORT_ERROR:
+                failure_class = PreflightFailureClass.AUTHENTICATED_TRANSPORT
+            elif failure_class is PreflightFailureClass.NONE:
+                failure_class = PreflightFailureClass.DETERMINISTIC_VALIDATION
+        return checks, failure_class
 
 
 def run_preflight(
     spec: RunSpec,
     remote_run_dir: str,
     config: RunnerConfig,
-    command_runner: CommandRunner,
+    command_runner: CommandRunner | SshTransportManager,
+    *,
+    verified_inputs: list[dict[str, Any]] | None = None,
 ) -> PreflightResult:
-    checker = PreflightChecker(config, command_runner)
-    return checker.run_checks(spec, remote_run_dir)
+    if isinstance(command_runner, SshTransportManager):
+        transport_manager = command_runner
+        raw_command_runner = command_runner.command_runner
+    else:
+        transport_manager = None
+        raw_command_runner = command_runner
+    checker = PreflightChecker(
+        config,
+        raw_command_runner,  # type: ignore[arg-type]
+        None,
+        transport_manager,
+    )
+    return checker.run_checks(
+        spec,
+        remote_run_dir,
+        verified_inputs=verified_inputs,
+    )
 
 
 def format_preflight_summary(result: PreflightResult) -> str:
@@ -211,6 +443,7 @@ def preflight_manifest(
     adapter_id: str,
     result: PreflightResult,
     sbatch_args: dict[str, Any] | None = None,
+    runner_attempt_link: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     manifest = {
         "run_id": run_id,
@@ -219,4 +452,6 @@ def preflight_manifest(
     }
     if sbatch_args:
         manifest["sbatch_args"] = sbatch_args
+    if runner_attempt_link:
+        manifest["runner_attempt"] = dict(runner_attempt_link)
     return manifest

@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from openzyme_runtime import AgentStepContext
 from openzyme_runtime import ToolSpec
+from openzyme_domain import MutationWriterKind
 
 from .engines import EngineRegistry
 from .harness import HarnessInput
@@ -417,11 +418,15 @@ class LlmConversationDriver:
         invoker = self.model_factory.create_tool_calling_invoker(
             purpose="v3_harness_loop"
         )
-        response = invoker.invoke_with_tools(
-            system_prompt=system_prompt,
-            messages=list(self._messages),
-            tools=tools,
-        )
+        with context.mutation_writer_scope(
+            owner_kind=MutationWriterKind.LIVE_TOKEN_LEDGER,
+            owner_ref=f"llm:master:{call_index}",
+        ):
+            response = invoker.invoke_with_tools(
+                system_prompt=system_prompt,
+                messages=list(self._messages),
+                tools=tools,
+            )
         self._messages.append(response)
         response_text = _stringify_content(
             getattr(response, "content", None)

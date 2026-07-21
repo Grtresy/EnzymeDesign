@@ -7,9 +7,41 @@ V3 Host API app for OpenZyme.
 This app exposes the V3 Host-side API surface for:
 
 - session creation and workspace queries
-- message ingress and explicit `runtime/drain`
+- message ingress and durable command-based `runtime/drain`
 - task board, lane, approval, and debug endpoints
 - V3 session events consumed by the Web UI
+
+## Runtime Drain Contract
+
+`POST /v3/sessions/{session_id}/runtime/drain` is command admission, not a
+synchronous scheduler call. It requires `Idempotency-Key`, accepts only
+`max_signals`, `max_steps_per_agent`, and `auto_enqueue_ready_tasks`, and always
+returns HTTP `202` with a closed `runtime_command_status@1` body. An optional
+exact `Prefer: wait=<seconds>` value may be between `0` and `2`; it only waits
+briefly for an updated command state and never transfers provider/HPC ownership
+to the request.
+
+```sh
+curl -i -X POST \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: drain:sess_demo:1' \
+  -H 'Prefer: wait=1' \
+  --data '{"max_signals":3,"max_steps_per_agent":8,"auto_enqueue_ready_tasks":false}' \
+  http://127.0.0.1:8000/v3/sessions/sess_demo/runtime/drain
+```
+
+Poll the returned session-scoped `status_url` until the status is one of
+`completed`, `failed`, `locked`, or `cancelled`. `locked` is terminal for that
+command and provides only a safe retry hint; owner ids, lease/fence values,
+process/socket identities, and private paths are never public. The legacy
+synchronous composite-workspace response is retired.
+
+Controlled-operation execution and attached-process result delivery are driven
+by the lifespan-owned durable supervisor. They do not hold the HTTP request or
+agent session lease across approval/provider/HPC wall time. See
+[Runtime/HPC reliability](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/07-runtime-hpc-reliability.md)
+and the
+[operations runbook](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/runtime-hpc-reliability-operations.md).
 
 ## Local Workflow Evals
 
@@ -71,7 +103,7 @@ Useful commands:
 2. `uv run pytest -m "integration and live_e2e"`
 3. `uv run pytest -m quality_eval`
 
-The live E2E poller exits as soon as a failed task is quiescent (no working agent, pending runtime signal, or unread inbox). Provider rate limits, missing artifacts, and other fail-closed outcomes remain explicit failures instead of waiting for the full graph timeout or being treated as cutover evidence.
+The ordinary live E2E poller may stop after its bounded operational-idle checks, but that is not a cutover quiescence proof. Formal closure requires the generic mutation scope to freeze admission, retire every covered writer, capture stable snapshots, issue and verify a receipt, and seal the exact generation. Provider rate limits, missing artifacts, and other fail-closed outcomes remain explicit failures instead of waiting for the full graph timeout or being treated as cutover evidence.
 
 ## V3 `/ui` fpocket Smoke Test
 

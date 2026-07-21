@@ -2,6 +2,39 @@ from .models import ArtifactKind
 from .models import RunStatus
 from .models import SourceRefKind
 from .models import utc_now_iso
+from .reliability import CONTROLLED_OPERATION_EXECUTION_EVENT_SCHEMA_VERSION
+from .reliability import CONTROLLED_OPERATION_EXECUTION_SCHEMA_VERSION
+from .reliability import CONTROLLED_OPERATION_DISPATCH_REQUEST_SCHEMA_VERSION
+from .reliability import CONTROLLED_OPERATION_RESULT_HANDLE_SCHEMA_VERSION
+from .reliability import CONTINUATION_STATE_SCHEMA_VERSION
+from .reliability import MUTATION_SCOPE_SCHEMA_VERSION
+from .reliability import MUTATION_WRITER_SCHEMA_VERSION
+from .reliability import QUIESCENCE_RECEIPT_SCHEMA_VERSION
+from .reliability import QUIESCENCE_SNAPSHOT_SCHEMA_VERSION
+from .reliability import RUNTIME_COMMAND_SCHEMA_VERSION
+from .reliability import ContinuationDeliveryState
+from .reliability import ContinuationResumeStrategy
+from .reliability import ControlledOperationExecution
+from .reliability import ControlledOperationExecutionEvent
+from .reliability import ControlledOperationDispatchRequest
+from .reliability import ControlledOperationExecutionLifecycle
+from .reliability import ControlledOperationExecutionPhase
+from .reliability import ControlledOperationExecutionTerminalOutcome
+from .reliability import ControlledOperationOwnerMode
+from .reliability import ControlledOperationResultHandle
+from .reliability import ExternalEffectCertainty
+from .reliability import MutationScope
+from .reliability import MutationScopeKind
+from .reliability import MutationScopeState
+from .reliability import MutationWriter
+from .reliability import MutationWriterKind
+from .reliability import MutationWriterState
+from .reliability import QuiescenceReceipt
+from .reliability import QuiescenceSnapshot
+from .reliability import RetryEligibility
+from .reliability import RuntimeCommandRecord
+from .reliability import RuntimeCommandStatus
+from .reliability import RuntimeCommandType
 from .control_plane import CONTROL_PLANE_ENTITY_NAMES
 from .control_plane import AgentMember
 from .control_plane import AgentMemberStatus
@@ -62,8 +95,23 @@ __all__ = [
     "ApprovalRequest",
     "ApprovalRequestStatus",
     "CommandLogArtifactRecord",
+    "CONTROLLED_OPERATION_EXECUTION_EVENT_SCHEMA_VERSION",
+    "CONTROLLED_OPERATION_EXECUTION_SCHEMA_VERSION",
+    "CONTROLLED_OPERATION_DISPATCH_REQUEST_SCHEMA_VERSION",
+    "CONTROLLED_OPERATION_RESULT_HANDLE_SCHEMA_VERSION",
+    "CONTINUATION_STATE_SCHEMA_VERSION",
     "ControlledOperation",
+    "ControlledOperationExecution",
+    "ControlledOperationExecutionEvent",
+    "ControlledOperationDispatchRequest",
+    "ControlledOperationExecutionLifecycle",
+    "ControlledOperationExecutionPhase",
+    "ControlledOperationExecutionTerminalOutcome",
+    "ControlledOperationOwnerMode",
+    "ControlledOperationResultHandle",
     "ControlledOperationStatus",
+    "ContinuationDeliveryState",
+    "ContinuationResumeStrategy",
     "ContinuationState",
     "ContinuationStateStatus",
     "CONTROL_PLANE_ENTITY_NAMES",
@@ -78,6 +126,20 @@ __all__ = [
     "MemoryEntry",
     "MemoryKind",
     "MemoryScopeKind",
+    "MUTATION_SCOPE_SCHEMA_VERSION",
+    "MUTATION_WRITER_SCHEMA_VERSION",
+    "MutationScope",
+    "MutationScopeKind",
+    "MutationScopeState",
+    "MutationWriter",
+    "MutationWriterKind",
+    "MutationWriterState",
+    "ExternalEffectCertainty",
+    "QUIESCENCE_RECEIPT_SCHEMA_VERSION",
+    "QUIESCENCE_SNAPSHOT_SCHEMA_VERSION",
+    "QuiescenceReceipt",
+    "QuiescenceSnapshot",
+    "RetryEligibility",
     "RunRecord",
     "SandboxImageCompatibility",
     "SandboxImageRecord",
@@ -96,6 +158,10 @@ __all__ = [
     "SessionReportStatus",
     "ArtifactKind",
     "RunStatus",
+    "RUNTIME_COMMAND_SCHEMA_VERSION",
+    "RuntimeCommandRecord",
+    "RuntimeCommandStatus",
+    "RuntimeCommandType",
     "SessionArtifactRecord",
     "Session",
     "SessionStatus",

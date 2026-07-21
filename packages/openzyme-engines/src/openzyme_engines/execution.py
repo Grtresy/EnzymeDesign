@@ -193,6 +193,11 @@ def _hpc_failure_details(result: dict[str, Any]) -> dict[str, Any] | None:
         "exit_code": result.get("exit_code"),
         "error_code": raw.get("error_code"),
         "stage": raw.get("stage") or result.get("stage"),
+        "phase": raw.get("phase"),
+        "effect_certainty": raw.get("effect_certainty"),
+        "retry_eligibility": raw.get("retry_eligibility"),
+        "reconciliation_required": raw.get("reconciliation_required"),
+        "runner_attempt_receipt_digest": raw.get("runner_attempt_receipt_digest"),
     }
     return {key: value for key, value in details.items() if value is not None}
 
@@ -207,9 +212,7 @@ _TOOLCHAIN_RUNTIME_IDENTITY_FIELDS = (
     "runner_contract_digest",
     "image_digest",
 )
-_SAFE_TOOLCHAIN_IDENTIFIER_PATTERN = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$"
-)
+_SAFE_TOOLCHAIN_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$")
 _SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SAFE_RUNNER_RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _RUNNER_STAGING_FAILURE_PHASES = frozenset(
@@ -217,6 +220,7 @@ _RUNNER_STAGING_FAILURE_PHASES = frozenset(
         "remote_layout",
         "input_parent",
         "input_transfer",
+        "input_verification",
         "runner_control_transfer",
     }
 )
@@ -250,8 +254,7 @@ def _project_toolchain_runtime_identity(
     }
     if (
         identity["schema_id"] != "mcp_hpc_toolchain_runtime_identity@1"
-        or identity["attestation_scope"]
-        != "same_ssh_login_shell_pre_exec"
+        or identity["attestation_scope"] != "same_ssh_login_shell_pre_exec"
         or identity["execution_mode"] != "ssh"
         or any(
             _SAFE_TOOLCHAIN_IDENTIFIER_PATTERN.fullmatch(identity[field]) is None
@@ -702,7 +705,9 @@ def _sanitize_provider_content(content: str) -> str:
             try:
                 raw = base64.b64decode(str(encoded), validate=True)
             except (ValueError, TypeError) as exc:
-                raise ValueError("provider raw response body is not canonical base64") from exc
+                raise ValueError(
+                    "provider raw response body is not canonical base64"
+                ) from exc
             if (
                 record.get("body_encoding") != "base64"
                 or record.get("size_bytes") != len(raw)
@@ -1615,12 +1620,8 @@ class ProviderHttpBioDatabaseAdapter:
                 + urllib_parse.urlencode(params)
             )
             page_in_query = 0
-            query_accessions_digest = _sha256_text(
-                _json_text(list(query_accessions))
-            )
-            query_accession_start = (
-                query_batch_index - 1
-            ) * self.config.batch_size_cap
+            query_accessions_digest = _sha256_text(_json_text(list(query_accessions)))
+            query_accession_start = (query_batch_index - 1) * self.config.batch_size_cap
             while next_url is not None:
                 try:
                     response = self._http_request(
@@ -1792,9 +1793,7 @@ class ProviderHttpBioDatabaseAdapter:
             "response_digests": response_digests,
             "aggregate_response_digest": aggregate_response_digest,
             "source_sequence_identity_count": len(source_sequence_identities or {}),
-            "sequence_mismatch_resolution_count": len(
-                sequence_mismatch_choices or {}
-            ),
+            "sequence_mismatch_resolution_count": len(sequence_mismatch_choices or {}),
             "api_version": self.api_version,
         }
         summary = {
@@ -1823,9 +1822,7 @@ class ProviderHttpBioDatabaseAdapter:
             "uniprot_release_date": release_date,
             "aggregate_response_digest": aggregate_response_digest,
             "source_sequence_identity_count": len(source_sequence_identities or {}),
-            "sequence_mismatch_resolution_count": len(
-                sequence_mismatch_choices or {}
-            ),
+            "sequence_mismatch_resolution_count": len(sequence_mismatch_choices or {}),
         }
         artifacts = [
             self._draft(
@@ -1863,9 +1860,7 @@ class ProviderHttpBioDatabaseAdapter:
             "identity_contract_id": _UNIPROT_IDENTITY_CONTRACT_ID,
             **_sequence_digest_index_metadata(
                 {
-                    str(record["primary_accession"]): str(
-                        record["sequence_digest"]
-                    )
+                    str(record["primary_accession"]): str(record["sequence_digest"])
                     for record in normalized_records
                 }
             ),
@@ -1930,8 +1925,7 @@ class ProviderHttpBioDatabaseAdapter:
                     str(record["primary_accession"]) for record in normalized_records
                 ],
                 "inactive_accessions": [
-                    str(record["requested_accession"])
-                    for record in inactive_records
+                    str(record["requested_accession"]) for record in inactive_records
                 ],
                 "active_record_count": len(normalized_records),
                 "inactive_record_count": len(inactive_records),
@@ -1940,9 +1934,7 @@ class ProviderHttpBioDatabaseAdapter:
                 "uniprot_release": release,
                 "uniprot_release_date": release_date,
                 "aggregate_response_digest": aggregate_response_digest,
-                "source_sequence_identity_count": len(
-                    source_sequence_identities or {}
-                ),
+                "source_sequence_identity_count": len(source_sequence_identities or {}),
                 "sequence_mismatch_resolution_count": len(
                     sequence_mismatch_choices or {}
                 ),
@@ -2163,11 +2155,13 @@ class ProviderHttpBioDatabaseAdapter:
         )
         retrieved_raw_hit_count = len(raw_hits_with_provenance)
         bounded_partial_result = (
-            reported_hit_count > max_hits
-            and retrieved_raw_hit_count >= max_hits
+            reported_hit_count > max_hits and retrieved_raw_hit_count >= max_hits
         )
         if (
-            (reported_hit_count == 0 and (retrieved_raw_hit_count != 0 or page_count != 0))
+            (
+                reported_hit_count == 0
+                and (retrieved_raw_hit_count != 0 or page_count != 0)
+            )
             or (reported_hit_count > 0 and page_count in {None, 0})
             or (
                 retrieved_raw_hit_count != reported_hit_count
@@ -2643,9 +2637,7 @@ class ProviderHttpBioDatabaseAdapter:
         for accession in normalized:
             accession_counts[accession] = accession_counts.get(accession, 0) + 1
         duplicate_accessions = sorted(
-            accession
-            for accession, count in accession_counts.items()
-            if count > 1
+            accession for accession, count in accession_counts.items() if count > 1
         )
         if duplicate_accessions:
             raise PipelineSdkFailure(
@@ -3035,9 +3027,15 @@ class ProviderHttpBioDatabaseAdapter:
                     details={"source_accession_key": str(raw_accession)},
                 )
             identity = {
-                "source_database": str(raw_identity.get("source_database") or "").strip(),
-                "source_accession": str(raw_identity.get("source_accession") or "").strip(),
-                "sequence_digest": str(raw_identity.get("sequence_digest") or "").strip(),
+                "source_database": str(
+                    raw_identity.get("source_database") or ""
+                ).strip(),
+                "source_accession": str(
+                    raw_identity.get("source_accession") or ""
+                ).strip(),
+                "sequence_digest": str(
+                    raw_identity.get("sequence_digest") or ""
+                ).strip(),
             }
             if (
                 not identity["source_database"]
@@ -3138,9 +3136,7 @@ class ProviderHttpBioDatabaseAdapter:
                             details={
                                 "provider": "uniprot",
                                 "primary_accession": primary_accession,
-                                "query_batch_index": page_request[
-                                    "query_batch_index"
-                                ],
+                                "query_batch_index": page_request["query_batch_index"],
                                 "query_accession_start": query_accession_start,
                                 "query_accession_count": query_accession_count,
                                 "query_accessions_digest": page_request[
@@ -3421,7 +3417,10 @@ class ProviderHttpBioDatabaseAdapter:
                 primary_owner = primary_to_request.get(primary_accession)
                 if primary_owner is not None and primary_owner != requested_accession:
                     other = records_by_request.get(primary_owner)
-                    if other is not None and other["sequence_digest"] != sequence_digest:
+                    if (
+                        other is not None
+                        and other["sequence_digest"] != sequence_digest
+                    ):
                         raise self._uniprot_sequence_conflict(
                             requested_accession=requested_accession,
                             identities=[
@@ -3450,9 +3449,8 @@ class ProviderHttpBioDatabaseAdapter:
                         },
                     )
                 identifier = str(result.get("uniProtkbId") or primary_accession).strip()
-                if (
-                    result.get("uniProtkbId") not in {None, identifier}
-                    or any(ord(character) < 32 for character in identifier)
+                if result.get("uniProtkbId") not in {None, identifier} or any(
+                    ord(character) < 32 for character in identifier
                 ):
                     raise self._uniprot_schema_failure(
                         "UniProt active record contained a malformed identifier.",
@@ -5356,6 +5354,10 @@ class ExecutionEngine:
     sandbox_workspace_root: Path | None = None
     artifact_blob_root: Path | None = None
     repository_scope_factory: Any | None = None
+    sandbox_process_repository_scope_factory: Any | None = None
+    sandbox_process_mutation_writer_scope_factory: Any | None = None
+    sandbox_process_registry: Any | None = None
+    sandbox_process_signal_notifier: Any | None = None
 
     @property
     def descriptor(self) -> EngineDescriptor:
@@ -5419,12 +5421,18 @@ class ExecutionEngine:
                 operation=operation,
                 method=method,
                 params=dict(params),
+                frozen_provider_request_id=(
+                    str(envelope.get("_durable_backend_handle_ref") or "") or None
+                ),
             )
         if operation.sdk_module == "bio_tools" and operation.selected_backend == "hpc":
             return self._execute_sandbox_bio_tool_hpc_operation(
                 operation=operation,
                 method=method,
                 params=dict(params),
+                reserved_runner_run_id=(
+                    str(envelope.get("_durable_backend_handle_ref") or "") or None
+                ),
             )
         if (
             operation.sdk_module == "structure_tools"
@@ -5434,6 +5442,9 @@ class ExecutionEngine:
                 operation=operation,
                 method=method,
                 params=dict(params),
+                reserved_runner_run_id=(
+                    str(envelope.get("_durable_backend_handle_ref") or "") or None
+                ),
             )
         raise PipelineSdkFailure(
             error_type="adapter_execution_unavailable",
@@ -5632,12 +5643,61 @@ class ExecutionEngine:
                     "sandbox_workspace_id": sandbox_workspace_id,
                 },
             )
+        controlled_operation_id = str(params.get("operation_id") or "")
+        controlled_operation_digest = str(params.get("operation_digest") or "")
+        if bool(controlled_operation_id) != bool(controlled_operation_digest):
+            raise PipelineSdkFailure(
+                error_type="hpc_fetch_controlled_operation_identity_incomplete",
+                message=(
+                    "Durable HPC output fetch requires both operation_id and "
+                    "operation_digest."
+                ),
+                hint="Retry from the canonical durable execution using its frozen identity.",
+                stage="hpc_fetch_validation",
+                retryable=False,
+                sdk_method="hpc.fetch_outputs",
+            )
+        if controlled_operation_id:
+            operation = self.repositories.controlled_operations.get(
+                controlled_operation_id
+            )
+            workspace = self._require_hpc_workspace(
+                params.get("hpc_workspace"), sdk_method="hpc.fetch_outputs"
+            )
+            expected_invocation_id = f"inv_sandbox_adapter_{controlled_operation_id}"
+            if (
+                operation is None
+                or operation.session_id != session_id
+                or operation.operation_digest != controlled_operation_digest
+                or operation.sandbox_workspace_id != sandbox_workspace_id
+                or operation.hpc_workspace_id != str(workspace["hpc_workspace_id"])
+                or operation.selected_backend != "hpc"
+                or invocation.invocation_id != expected_invocation_id
+            ):
+                raise PipelineSdkFailure(
+                    error_type="hpc_fetch_controlled_operation_identity_drift",
+                    message=(
+                        "Durable HPC output fetch identity differs from its frozen "
+                        "controlled operation."
+                    ),
+                    hint="Preserve the execution for exact reconciliation; do not bind these outputs.",
+                    stage="hpc_fetch_validation",
+                    retryable=False,
+                    sdk_method="hpc.fetch_outputs",
+                    details={
+                        "operation_id": controlled_operation_id,
+                        "run_id": run_id,
+                        "invocation_id": invocation.invocation_id,
+                    },
+                )
         result = self._run_pipeline_hpc_fetch_outputs(
             session=session,
             invocation=invocation,
             params={
                 "hpc_workspace": dict(params.get("hpc_workspace") or {}),
                 "run_id": run_id,
+                "controlled_operation_id": controlled_operation_id,
+                "controlled_operation_digest": controlled_operation_digest,
             },
         )
         return {
@@ -5653,6 +5713,7 @@ class ExecutionEngine:
         operation: ControlledOperation,
         method: str,
         params: dict[str, Any],
+        reserved_runner_run_id: str | None = None,
     ) -> dict[str, Any]:
         route_policy = self._require_bio_tool_route_policy(method)
         if operation.route_policy_id != route_policy["route_policy_id"]:
@@ -5692,6 +5753,7 @@ class ExecutionEngine:
             invocation=invocation,
             method=method,
             params=params,
+            reserved_runner_run_id=reserved_runner_run_id,
         )
         run_handle = {
             **run_handle,
@@ -5727,6 +5789,7 @@ class ExecutionEngine:
         operation: ControlledOperation,
         method: str,
         params: dict[str, Any],
+        reserved_runner_run_id: str | None = None,
     ) -> dict[str, Any]:
         route_policy = self._require_structure_tool_route_policy(method)
         if operation.route_policy_id != route_policy["route_policy_id"]:
@@ -5766,6 +5829,7 @@ class ExecutionEngine:
             invocation=invocation,
             method=method,
             params=params,
+            reserved_runner_run_id=reserved_runner_run_id,
         )
         run_handle = {
             **run_handle,
@@ -7506,6 +7570,45 @@ class ExecutionEngine:
                     "hpc_workspace_id": workspace["hpc_workspace_id"],
                 },
             )
+        operation_payload = dict(pending)
+        controlled_operation_id = str(params.get("controlled_operation_id") or "")
+        controlled_operation_digest = str(
+            params.get("controlled_operation_digest") or ""
+        )
+        if controlled_operation_id:
+            request_metadata = dict(operation_payload.get("request_metadata") or {})
+            existing_operation_id = str(
+                request_metadata.get("controlled_operation_id") or ""
+            )
+            existing_operation_digest = str(
+                request_metadata.get("controlled_operation_digest") or ""
+            )
+            if (
+                existing_operation_id
+                and existing_operation_id != controlled_operation_id
+            ) or (
+                existing_operation_digest
+                and existing_operation_digest != controlled_operation_digest
+            ):
+                raise PipelineSdkFailure(
+                    error_type="hpc_fetch_controlled_operation_identity_drift",
+                    message=(
+                        "Pending HPC outputs belong to a different controlled "
+                        "operation identity."
+                    ),
+                    hint="Preserve the pending outputs for operator reconciliation.",
+                    stage="hpc_fetch_validation",
+                    retryable=False,
+                    sdk_method="hpc.fetch_outputs",
+                    details={"run_id": run_id},
+                )
+            request_metadata.update(
+                {
+                    "controlled_operation_id": controlled_operation_id,
+                    "controlled_operation_digest": controlled_operation_digest,
+                }
+            )
+            operation_payload["request_metadata"] = request_metadata
         existing_fetch = self._load_hpc_fetch_result(
             session_id=session.session_id, run_id=run_id
         )
@@ -7518,7 +7621,7 @@ class ExecutionEngine:
                 self._prepare_hpc_pending_output_source(
                     invocation=invocation,
                     pending=output,
-                    operation_payload=pending,
+                    operation_payload=operation_payload,
                 ),
             )
             for output in list(pending.get("outputs") or [])
@@ -7533,7 +7636,7 @@ class ExecutionEngine:
                 run=run,
                 hpc_workspace_id=str(workspace["hpc_workspace_id"]),
                 pending=output,
-                operation_payload=pending,
+                operation_payload=operation_payload,
                 source_path=source_path,
             )
             registered.append(registered_artifact)
@@ -7543,6 +7646,8 @@ class ExecutionEngine:
             "hpc_workspace_id": str(workspace["hpc_workspace_id"]),
             "run_id": run_id,
             "status": run.status.value,
+            "controlled_operation_id": controlled_operation_id or None,
+            "controlled_operation_digest": controlled_operation_digest or None,
             "registered_artifact_ids": [
                 artifact.artifact_id for artifact in registered
             ],
@@ -8023,9 +8128,7 @@ class ExecutionEngine:
                 }
             )
         format_value = pending.get("format") or declared.get("format")
-        pipeline = dict(
-            self._require_input_payload(invocation).get("pipeline") or {}
-        )
+        pipeline = dict(self._require_input_payload(invocation).get("pipeline") or {})
         source_snapshot_artifact_id = None
         if pipeline.get("adapter_operation_id"):
             source_snapshot_artifact_id = str(
@@ -9634,6 +9737,7 @@ class ExecutionEngine:
         operation: ControlledOperation,
         method: str,
         params: dict[str, Any],
+        frozen_provider_request_id: str | None = None,
     ) -> dict[str, Any]:
         route_policy = self._require_bio_route_policy(method)
         if operation.route_policy_id != route_policy["route_policy_id"]:
@@ -9696,10 +9800,26 @@ class ExecutionEngine:
                 details={"operation_id": operation.operation_id},
             )
         retrieved_at = utc_now_iso()
-        provider_request_id = self._sandbox_bio_provider_request_id(
-            operation=operation,
-            output_dir_relative=output_dir_relative,
-            retrieved_at=retrieved_at,
+        if (
+            frozen_provider_request_id is not None
+            and re.fullmatch(r"provider_req_[0-9a-f]{24}", frozen_provider_request_id)
+            is None
+        ):
+            raise PipelineSdkFailure(
+                error_type="provider_request_identity_invalid",
+                message="Durable provider execution has an invalid frozen request identity.",
+                hint="Do not dispatch; preserve the canonical execution for operator inspection.",
+                stage="provider_route_policy_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"operation_id": operation.operation_id},
+            )
+        provider_request_id = frozen_provider_request_id or (
+            self._sandbox_bio_provider_request_id(
+                operation=operation,
+                output_dir_relative=output_dir_relative,
+                retrieved_at=retrieved_at,
+            )
         )
         request_metadata = self._sandbox_bio_request_metadata(
             operation=operation,
@@ -9737,12 +9857,8 @@ class ExecutionEngine:
                     ),
                     batch_size=batch_size,
                     retrieved_at=retrieved_at,
-                    source_sequence_identities=params.get(
-                        "source_sequence_identities"
-                    ),
-                    sequence_mismatch_choices=params.get(
-                        "sequence_mismatch_choices"
-                    ),
+                    source_sequence_identities=params.get("source_sequence_identities"),
+                    sequence_mismatch_choices=params.get("sequence_mismatch_choices"),
                 )
             elif method == "rcsb_pdb.download_structure":
                 result = adapter.rcsb_download_structure(
@@ -10028,12 +10144,8 @@ class ExecutionEngine:
                     ),
                     batch_size=batch_size,
                     retrieved_at=retrieved_at,
-                    source_sequence_identities=params.get(
-                        "source_sequence_identities"
-                    ),
-                    sequence_mismatch_choices=params.get(
-                        "sequence_mismatch_choices"
-                    ),
+                    source_sequence_identities=params.get("source_sequence_identities"),
+                    sequence_mismatch_choices=params.get("sequence_mismatch_choices"),
                 )
             except PipelineSdkFailure as exc:
                 raise self._persist_bio_failure_transcript(
@@ -10317,13 +10429,22 @@ class ExecutionEngine:
         invocation: EngineInvocation,
         method: str,
         params: dict[str, Any],
+        reserved_runner_run_id: str | None = None,
     ) -> dict[str, Any]:
         operation_key = self._pipeline_operation_key(method, params)
         route_policy = self._require_bio_tool_route_policy(method)
         pipeline = dict(self._require_input_payload(invocation).get("pipeline") or {})
         completed = dict(pipeline.get("completed_operations") or {})
-        if operation_key in completed:
-            return dict(completed[operation_key])
+        completed_result = dict(completed.get(operation_key) or {})
+        if operation_key in completed and not (
+            reserved_runner_run_id is not None
+            and completed_result.get("status")
+            in {
+                RunStatus.QUEUED.value,
+                RunStatus.RUNNING.value,
+            }
+        ):
+            return completed_result
         placement = self._require_hpc_workspace(
             params.get("placement"), sdk_method=method
         )
@@ -10422,6 +10543,7 @@ class ExecutionEngine:
             stage_refs=stage_refs,
             declared_outputs=declared_outputs,
             allow_explicit_fixture_placeholders=False,
+            reserved_runner_run_id=reserved_runner_run_id,
         )
         if result.get("status") != RunStatus.SUCCEEDED.value:
             raise self._bio_tool_runner_failure(method=method, result=result)
@@ -10447,9 +10569,7 @@ class ExecutionEngine:
         }
         toolchain_runtime_identity = result.get("toolchain_runtime_identity")
         if isinstance(toolchain_runtime_identity, dict):
-            run_handle["toolchain_runtime_identity"] = dict(
-                toolchain_runtime_identity
-            )
+            run_handle["toolchain_runtime_identity"] = dict(toolchain_runtime_identity)
         parsed_result = result.get("parsed_result")
         if isinstance(parsed_result, dict):
             result_summary = str(parsed_result.get("result_summary") or "")
@@ -10478,12 +10598,21 @@ class ExecutionEngine:
         invocation: EngineInvocation,
         method: str,
         params: dict[str, Any],
+        reserved_runner_run_id: str | None = None,
     ) -> dict[str, Any]:
         operation_key = self._pipeline_operation_key(method, params)
         pipeline = dict(self._require_input_payload(invocation).get("pipeline") or {})
         completed = dict(pipeline.get("completed_operations") or {})
-        if operation_key in completed:
-            return dict(completed[operation_key])
+        completed_result = dict(completed.get(operation_key) or {})
+        if operation_key in completed and not (
+            reserved_runner_run_id is not None
+            and completed_result.get("status")
+            in {
+                RunStatus.QUEUED.value,
+                RunStatus.RUNNING.value,
+            }
+        ):
+            return completed_result
         placement = self._require_hpc_workspace(
             params.get("placement"), sdk_method=method
         )
@@ -10586,6 +10715,7 @@ class ExecutionEngine:
             stage_refs=stage_refs,
             declared_outputs=expected_outputs,
             allow_explicit_fixture_placeholders=True,
+            reserved_runner_run_id=reserved_runner_run_id,
         )
         run_handle = {
             "kind": "hpc_run_handle",
@@ -10621,9 +10751,7 @@ class ExecutionEngine:
         }
         toolchain_runtime_identity = result.get("toolchain_runtime_identity")
         if isinstance(toolchain_runtime_identity, dict):
-            run_handle["toolchain_runtime_identity"] = dict(
-                toolchain_runtime_identity
-            )
+            run_handle["toolchain_runtime_identity"] = dict(toolchain_runtime_identity)
         parsed_result = result.get("parsed_result")
         if isinstance(parsed_result, dict):
             result_summary = str(parsed_result.get("result_summary") or "")
@@ -10787,6 +10915,7 @@ class ExecutionEngine:
         stage_refs: list[dict[str, Any]],
         declared_outputs: list[dict[str, Any]],
         allow_explicit_fixture_placeholders: bool = False,
+        reserved_runner_run_id: str | None = None,
     ) -> dict[str, Any]:
         required_artifacts = self._resolve_artifacts(
             session.session_id, handoff.required_artifact_ids
@@ -10831,8 +10960,59 @@ class ExecutionEngine:
         self._validate_compiled_runspec_inputs(
             request=request, allowed_artifacts=(*required_artifacts, *context_artifacts)
         )
+        existing_run = None
+        if reserved_runner_run_id is not None:
+            matching_runs = [
+                candidate
+                for candidate in self.repositories.runs.list_by_session(
+                    session.session_id
+                )
+                if candidate.runner_run_id == reserved_runner_run_id
+            ]
+            if len(matching_runs) > 1:
+                raise PipelineSdkFailure(
+                    error_type="durable_runner_identity_conflict",
+                    message="The reserved runner identity is bound to multiple Host runs.",
+                    hint="Quarantine the conflicting Host records before recovery.",
+                    stage="hpc_reconciliation",
+                    retryable=False,
+                    sdk_method=sdk_method,
+                )
+            if matching_runs:
+                existing_run = matching_runs[0]
+                if (
+                    existing_run.invocation_id != invocation.invocation_id
+                    or existing_run.task_id != invocation.task_id
+                    or existing_run.approval_id != invocation.approval_id
+                ):
+                    raise PipelineSdkFailure(
+                        error_type="durable_runner_identity_conflict",
+                        message="The reserved runner identity belongs to another Host execution context.",
+                        hint="Preserve both records and stop automatic recovery.",
+                        stage="hpc_reconciliation",
+                        retryable=False,
+                        sdk_method=sdk_method,
+                    )
         try:
-            outcome = self.runner.submit_execution(session.session_id, request)
+            if reserved_runner_run_id is None:
+                outcome = self.runner.submit_execution(session.session_id, request)
+            else:
+                submit_reserved = getattr(
+                    self.runner,
+                    "submit_reserved_execution",
+                    None,
+                )
+                if not callable(submit_reserved):
+                    raise RuntimeError(
+                        "execution runner does not support reserved dispatch"
+                    )
+                outcome = submit_reserved(
+                    session.session_id,
+                    request,
+                    run_id=reserved_runner_run_id,
+                )
+                if outcome.run_id != reserved_runner_run_id:
+                    raise RuntimeError("reserved runner outcome identity drift")
         except Exception as exc:  # noqa: BLE001 - runner boundary errors must become SDK failures.
             has_projector, runner_failure = _project_runner_staging_failure(exc)
             if runner_failure is not None:
@@ -10851,22 +11031,42 @@ class ExecutionEngine:
                 details=details,
             ) from exc
         now = utc_now_iso()
-        run = RunRecord(
-            run_id=f"run_{invocation.invocation_id}_{len(self.repositories.runs.list_by_invocation(session.session_id, invocation.invocation_id)) + 1}",
-            session_id=session.session_id,
-            task_id=invocation.task_id,
-            lane_id=invocation.lane_id,
-            invocation_id=invocation.invocation_id,
-            approval_id=invocation.approval_id,
-            engine_name=invocation.engine_name,
-            runner_run_id=outcome.run_id,
-            status=outcome.status,
-            execution_mode=outcome.execution_mode,
-            remote_run_dir=outcome.remote_run_dir,
-            summary=None,
-            created_at=now,
-            updated_at=now,
-            finished_at=now if outcome.status.is_terminal else None,
+        run = (
+            RunRecord(
+                run_id=f"run_{invocation.invocation_id}_{len(self.repositories.runs.list_by_invocation(session.session_id, invocation.invocation_id)) + 1}",
+                session_id=session.session_id,
+                task_id=invocation.task_id,
+                lane_id=invocation.lane_id,
+                invocation_id=invocation.invocation_id,
+                approval_id=invocation.approval_id,
+                engine_name=invocation.engine_name,
+                runner_run_id=outcome.run_id,
+                status=outcome.status,
+                execution_mode=outcome.execution_mode,
+                remote_run_dir=outcome.remote_run_dir,
+                summary=None,
+                created_at=now,
+                updated_at=now,
+                finished_at=now if outcome.status.is_terminal else None,
+            )
+            if existing_run is None
+            else RunRecord(
+                run_id=existing_run.run_id,
+                session_id=existing_run.session_id,
+                task_id=existing_run.task_id,
+                lane_id=existing_run.lane_id,
+                invocation_id=existing_run.invocation_id,
+                approval_id=existing_run.approval_id,
+                engine_name=existing_run.engine_name,
+                runner_run_id=existing_run.runner_run_id,
+                status=outcome.status,
+                execution_mode=outcome.execution_mode,
+                remote_run_dir=outcome.remote_run_dir,
+                summary=existing_run.summary,
+                created_at=existing_run.created_at,
+                updated_at=now,
+                finished_at=now if outcome.status.is_terminal else None,
+            )
         )
         self.repositories.runs.save(run)
         final_outcome = outcome
@@ -10885,10 +11085,7 @@ class ExecutionEngine:
         explicit_non_cutover_fixture = final_outcome.execution_mode in {
             "fixture_non_cutover",
             "simulation_non_cutover",
-        } and bool(
-            safe_raw_result.get("fixture")
-            or safe_raw_result.get("simulation")
-        )
+        } and bool(safe_raw_result.get("fixture") or safe_raw_result.get("simulation"))
         allow_synthetic_missing = (
             allow_explicit_fixture_placeholders and explicit_non_cutover_fixture
         )
@@ -10952,12 +11149,20 @@ class ExecutionEngine:
                 "stdout": safe_raw_result.get("stdout"),
                 "stderr": safe_raw_result.get("stderr"),
                 "logs": safe_raw_result.get("logs"),
+                "phase": safe_raw_result.get("phase"),
+                "effect_certainty": safe_raw_result.get("effect_certainty"),
+                "retry_eligibility": safe_raw_result.get("retry_eligibility"),
+                "reconciliation_required": safe_raw_result.get(
+                    "reconciliation_required"
+                ),
+                "retryable": safe_raw_result.get("retryable"),
+                "runner_attempt_receipt_digest": safe_raw_result.get(
+                    "runner_attempt_receipt_digest"
+                ),
             },
         }
         if toolchain_runtime_identity is not None:
-            step_result["toolchain_runtime_identity"] = dict(
-                toolchain_runtime_identity
-            )
+            step_result["toolchain_runtime_identity"] = dict(toolchain_runtime_identity)
         return step_result
 
     def _run_pipeline_preprocess(
@@ -11448,18 +11653,22 @@ class ExecutionEngine:
                     hpc_failure = _hpc_failure_details(completed_result)
                     if hpc_failure is not None:
                         break
-            if hpc_failure is not None and str(
-                hpc_failure.get("error_code") or ""
-            ).lower() in _HPC_RUNNER_TIMEOUT_ERROR_CODES:
+            if (
+                hpc_failure is not None
+                and str(hpc_failure.get("error_code") or "").lower()
+                in _HPC_RUNNER_TIMEOUT_ERROR_CODES
+            ):
                 error_type = "hpc_runner_timeout"
                 error_hint = (
                     "The Host-supervised HPC SDK call timed out while waiting on the runner or remote SSH/HPC boundary. "
                     "Treat this as an HPC runner timeout, not a Podman sandbox startup failure."
                 )
                 error_retryable = True
-            elif hpc_failure is not None and str(
-                hpc_failure.get("error_code") or ""
-            ).lower() in _HPC_RUNNER_UNAVAILABLE_ERROR_CODES:
+            elif (
+                hpc_failure is not None
+                and str(hpc_failure.get("error_code") or "").lower()
+                in _HPC_RUNNER_UNAVAILABLE_ERROR_CODES
+            ):
                 error_type = "hpc_runner_unavailable"
                 error_hint = (
                     "The trusted HPC runner transport was unavailable before the SDK call could complete. "
@@ -12296,9 +12505,7 @@ class ExecutionEngine:
                     ),
                     invocation_id=None,
                     run_id=None,
-                    source_snapshot_artifact_id=(
-                        operation.source_snapshot_artifact_id
-                    ),
+                    source_snapshot_artifact_id=(operation.source_snapshot_artifact_id),
                 )
             except ArtifactBoundaryError as exc:
                 raise PipelineSdkFailure(

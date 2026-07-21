@@ -57,6 +57,8 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   追加修正记录：message admission 不再把临时 `SessionRuntimeContext.restore_focus` 当作异步 turn 的权威。去重后的显式 `skill_keys` 与 canonical user conversation document 一起持久化，`AgentRuntimeSignal` 仍只保留 `source_ref`；master 在 `working` / `agent.woken` / provider 之前按 exact source 校验并恢复。普通 agent protocol inbox 只提供 wakeup context、不授予 workflow refs；损坏 public user binding fail closed；每条 user source 独立生效，background/manual drain 都不能注入、sticky 或 union authority。
 
+  追加修正记录：public `/runtime/drain` 已从同步 scheduler 调用改为严格 durable command admission。POST 原子创建 command/outbox、始终返回 `202`，独立 `RuntimeCommandWorker` 后续获取 session lease 并执行 bounded batch；GET 返回闭集脱敏状态。HTTP request、command 和 session lease 均不拥有 approval/provider/HPC wall time。
+
 - [x] Host API 在 teammate 终态结果后触发 service-level master response turn，而不是排队 master wakeup。
 
   证据：历史实现中的 service helper 会在 teammate outcomes 后启动另一次 top-level master loop。
@@ -67,7 +69,7 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   后续修正方向：将 teammate result 表达为 inbox / protocol state 加 master wakeup signal，让 master loop 自己决定是否回复以及如何回复。
 
-  修正记录：`post_message()` 和 approval resolve 不再在隐藏副作用中触发 master response turn。teammate terminal outcome 只写 task/protocol/report state 并排队 `agent:master` wakeup；master loop 只能由 scheduler claim signal 后启动，由 master 自己决定是否回复用户以及如何回复。配置化 Host 默认由 background runtime worker 推进 scheduler claim，显式 `/runtime/drain` 仅作为 debug/operator/manual recovery 命令。
+  修正记录：`post_message()` 和 approval resolve 不再在隐藏副作用中触发 master response turn。teammate terminal outcome 只写 task/protocol/report state 并排队 `agent:master` wakeup；master loop 只能由 scheduler claim signal 后启动，由 master 自己决定是否回复用户以及如何回复。配置化 Host 默认由 background runtime worker 推进 scheduler claim；显式 `/runtime/drain` 仅 admission debug/operator/manual-recovery durable command。
 
 - [x] `protocol.send(await_response=true)` 同时承担消息投递和同步 teammate 执行。
 
@@ -79,7 +81,7 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   后续修正方向：从正常 protocol 语义中移除 `await_response`，或拆成单独的 `runtime.drain` / `agent.resume` tool 或 API。
 
-  修正记录：已从正常 `protocol.send` 语义中移除同步 teammate 执行。`protocol.send` 现在只持久化 message 并排队 wakeup signal；`await_response` / `max_steps` 参数会返回 `sync_execution_not_supported`，recipient turn 由 scheduler claim signal 后运行。`/runtime/drain` 只能作为 debug/manual claim 工具。
+  修正记录：已从正常 `protocol.send` 语义中移除同步 teammate 执行。`protocol.send` 现在只持久化 message 并排队 wakeup signal；`await_response` / `max_steps` 参数会返回 `sync_execution_not_supported`，recipient turn 由 scheduler claim signal 后运行。`/runtime/drain` 只能 admission durable debug/manual command，不能由 POST 直接 claim 或运行 recipient。
 
 - [x] Delegation 存在多条重叠路径。
 
@@ -174,6 +176,16 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
   目标边界：planner/provider 失败应产出明确 failed decision / failed dossier；tool argument validation 可以作为 tool error observation 返回给 LLM；unexpected exception 应直接暴露给测试和 live gate。
 
   修正记录：design graph 保留 state-machine recommendation 作为 prompt guidance，但不再作为恢复 action 执行；missing model、planner exception 和 illegal action 均持久化 failed decision。deep research 删除 fallback supervisor / researcher / query，缺 model 或缺 unit plan 返回 failed dossier，tool 参数 validation 返回 failed observation，unexpected tool/provider exception 继续抛出。
+
+- [x] Approval 与长时 external operation 占用原 agent signal、session lease 和同步 HTTP request。
+
+  证据：历史 sandbox control worker 在 `_wait_for_approval_and_claim()` 中轮询 approval，批准后由同一调用栈 dispatch adapter；`runtime/drain` 只有等 agent turn、sandbox/provider/HPC 与 composite workspace 全部返回后才能结束。rxx 失败表明 SSH 抖动和 session fencing 会在 scientific payload 之外互相放大。
+
+  Doctrine 风险：一个 bounded agent turn 同时成为 HTTP、approval wait、external-effect dispatch、result delivery 与 closure owner。任何 timeout/restart 都无法区分 effect 是否发生，也无法在不重放科学动作的前提下恢复。
+
+  目标边界：保持 task/agent 策略自由，同时把真实世界约束拆为四种显式 authority：session signal、external execution、exact continuation delivery 与 mutation closure。每类 worker 只认领自己的短 slice，任一 terminal/idle 不推断 task 终态。
+
+  修正记录：`runtime-hpc-reliability-refactor` 已建立唯一 `ControlledOperationExecution`、immutable dispatch/result records、execution fence/effect certainty、attached-process continuation、durable `202` runtime command、generic mutation scope/writer/receipt 与 runner-owned per-target ControlMaster。durable wait 会 park exact sandbox process并在 bounded deadline 内释放 signal/session/request；direct SSH dispatch ambiguity fail closed，只有 proven pre-effect 允许一次有界恢复；closure 等待显式 writer retirement 和两次一致 snapshot，不以 runtime idle 代替。真实 SSH transport-only soak 仍是恢复 rxx 前的独立外部门禁，不因本项代码/文档完成而自动获得 GO。
 
 ## 4. 后续工作流
 

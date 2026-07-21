@@ -12,6 +12,7 @@ from typing import Any
 from .limits import DEFAULT_PROVIDER_LIMITS
 from .live_token_ledger import DEFAULT_LIVE_MICU_TOKEN_LEDGER_PATH
 from .live_token_ledger import configured_live_micu_token_ledger_path
+from .reliability import ReliabilityRefactorSettings
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -678,6 +679,9 @@ class OpenZymeSettings:
     execution: ExecutionSettings
     test: TestSettings
     limits: LimiterSettings = field(default_factory=_default_limiter_settings)
+    reliability: ReliabilityRefactorSettings = field(
+        default_factory=ReliabilityRefactorSettings
+    )
 
     @classmethod
     def from_env(cls) -> "OpenZymeSettings":
@@ -692,6 +696,7 @@ class OpenZymeSettings:
             execution=ExecutionSettings.from_env(),
             limits=LimiterSettings.from_env(),
             test=TestSettings.from_env(),
+            reliability=ReliabilityRefactorSettings.from_env(),
         )
 
 
@@ -727,6 +732,7 @@ __all__ = [
     "REPO_ROOT",
     "ResolvedLlmPolicy",
     "ResearchSettings",
+    "ReliabilityRefactorSettings",
     "TracingSettings",
     "V3BackgroundRuntimeSettings",
     "get_settings",

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import re
 from typing import Any
 
 import pytest
 
+from mcp_hpc_runner.attempts import RunnerAttemptPhase
+from mcp_hpc_runner.attempts import RunnerAttemptState
+from mcp_hpc_runner.attempts import RunnerEffectCertainty
+from mcp_hpc_runner.attempts import RunnerRetryEligibility
 from mcp_hpc_runner.errors import HpcStagingFailure
 from mcp_hpc_runner.models import JobHandle, RunResult, RunSpec
 from mcp_hpc_runner.preflight import PreflightResult
@@ -61,6 +66,21 @@ def _mafft_runspec(**extra: Any) -> dict[str, Any]:
     )
 
 
+def _reservation_identity(**extra: Any) -> dict[str, Any]:
+    return {
+        "schema_version": "runner_execution_reservation_identity@1",
+        "execution_id": "exec_durable_001",
+        "operation_id": "op_durable_001",
+        "operation_digest": "sha256:" + "1" * 64,
+        "approval_digest": "sha256:" + "2" * 64,
+        "route_policy_id": "bio_tools.mafft.hpc:v1",
+        "adapter_policy_id": "host_s12_durable_adapter:fixture:v1",
+        "request_digest": "sha256:" + "3" * 64,
+        "execution_mode": "ssh",
+        **extra,
+    }
+
+
 def _persist_async_run(
     server: MCPHpcServer,
     run_id: str,
@@ -92,6 +112,164 @@ def test_submit_tools_reject_caller_supplied_run_id(
 
     with pytest.raises(ValueError, match="run_id is server-generated"):
         server.call_tool(tool_name, {"runspec": _runspec(run_id="caller-run")})
+
+
+def test_reserved_execution_is_idempotent_restart_safe_and_no_effect(
+    tmp_path: Path,
+) -> None:
+    config_path = _config_path(tmp_path)
+    first = MCPHpcServer(config_path)
+
+    reserved = first.reserve_execution(_reservation_identity())
+    replay = first.reserve_execution(_reservation_identity())
+    observation = first.inspect_reserved_execution(reserved["run_id"])
+
+    assert replay == reserved
+    assert re.fullmatch(r"[0-9a-f]{32}", reserved["run_id"])
+    assert observation == {
+        "run_id": reserved["run_id"],
+        "status": "reserved",
+        "selected_mode": "ssh",
+        "phase": "allocated",
+        "effect_certainty": "no_effect",
+        "retry_eligibility": "same_phase_safe",
+        "reconciliation_required": False,
+        "retryable": True,
+        "runner_attempt_receipt_digest": observation[
+            "runner_attempt_receipt_digest"
+        ],
+        "artifacts": {},
+    }
+    assert re.fullmatch(
+        r"sha256:[0-9a-f]{64}",
+        observation["runner_attempt_receipt_digest"],
+    )
+
+    restarted = MCPHpcServer(config_path)
+    assert restarted.reserve_execution(_reservation_identity()) == reserved
+    assert restarted.inspect_reserved_execution(reserved["run_id"]) == observation
+
+
+def test_reserved_execution_dispatch_uses_exact_handle_and_rejects_replay(
+    tmp_path: Path,
+) -> None:
+    server = MCPHpcServer(_config_path(tmp_path))
+    reserved = server.reserve_execution(_reservation_identity())
+    captured: dict[str, RunSpec] = {}
+
+    def fake_exec(spec: RunSpec) -> RunResult:
+        captured["spec"] = spec
+        server.store.write_json(str(spec.run_id), "runspec.json", spec.to_dict())
+        server.attempt_journal.create(spec, selected_mode="ssh")
+        server.attempt_journal.transition(
+            str(spec.run_id),
+            phase=RunnerAttemptPhase.TERMINAL,
+            state=RunnerAttemptState.TERMINAL,
+            effect_certainty=RunnerEffectCertainty.TERMINAL_KNOWN,
+            retry_eligibility=RunnerRetryEligibility.TERMINAL,
+            reason_code="fake_terminal",
+        )
+        return RunResult(
+            run_id=str(spec.run_id),
+            requested_mode="ssh",
+            selected_mode="ssh",
+            remote_run_dir=f"mcp_runs/{spec.run_id}",
+            status="completed",
+            exit_code=0,
+            metadata={},
+        )
+
+    server.ssh_runner.exec_run = fake_exec  # type: ignore[method-assign]
+    result = server.submit_reserved_execution(
+        run_id=reserved["run_id"],
+        runspec=_runspec(),
+    )
+
+    assert result["run_id"] == reserved["run_id"]
+    assert captured["spec"].run_id == reserved["run_id"]
+    durable_identity = captured["spec"].metadata["openzyme_durable_execution"]
+    assert durable_identity["execution_id"] == "exec_durable_001"
+    assert durable_identity["reservation_identity_digest"] == reserved[
+        "identity_digest"
+    ]
+    with pytest.raises(ValueError, match="already crossed dispatch"):
+        server.submit_reserved_execution(
+            run_id=reserved["run_id"],
+            runspec=_runspec(),
+        )
+
+
+def test_reserved_execution_restart_routes_only_proven_pre_effect_same_run_resume(
+    tmp_path: Path,
+) -> None:
+    config_path = _config_path(tmp_path)
+    first = MCPHpcServer(config_path)
+    reserved = first.reserve_execution(_reservation_identity())
+
+    def interrupt_before_dispatch(spec: RunSpec) -> RunResult:
+        first.attempt_journal.create(spec, selected_mode="ssh")
+        first.attempt_journal.transition(
+            str(spec.run_id),
+            phase=RunnerAttemptPhase.INPUT_STAGING,
+            reason_code="simulated_process_interruption",
+        )
+        raise KeyboardInterrupt
+
+    first.ssh_runner.exec_run = interrupt_before_dispatch  # type: ignore[method-assign]
+    with pytest.raises(KeyboardInterrupt):
+        first.submit_reserved_execution(
+            run_id=reserved["run_id"],
+            runspec=_runspec(),
+        )
+
+    restarted = MCPHpcServer(config_path)
+    resume_count = 0
+
+    def resume_same_run(spec: RunSpec) -> RunResult:
+        nonlocal resume_count
+        resume_count += 1
+        assert spec.run_id == reserved["run_id"]
+        restarted.attempt_journal.transition(
+            str(spec.run_id),
+            phase=RunnerAttemptPhase.TERMINAL,
+            state=RunnerAttemptState.TERMINAL,
+            effect_certainty=RunnerEffectCertainty.TERMINAL_KNOWN,
+            retry_eligibility=RunnerRetryEligibility.TERMINAL,
+            reason_code="simulated_resume_terminal",
+        )
+        return RunResult(
+            run_id=str(spec.run_id),
+            requested_mode="ssh",
+            selected_mode="ssh",
+            remote_run_dir=f"mcp_runs/{spec.run_id}",
+            status="completed",
+            exit_code=0,
+            metadata={},
+        )
+
+    restarted.ssh_runner.resume_pre_effect = resume_same_run  # type: ignore[method-assign]
+    result = restarted.submit_reserved_execution(
+        run_id=reserved["run_id"],
+        runspec=_runspec(),
+    )
+
+    assert result["run_id"] == reserved["run_id"]
+    assert result["status"] == "completed"
+    assert resume_count == 1
+    with pytest.raises(ValueError, match="already crossed dispatch"):
+        restarted.submit_reserved_execution(
+            run_id=reserved["run_id"],
+            runspec=_runspec(),
+        )
+
+
+def test_reserved_execution_rejects_identity_drift(tmp_path: Path) -> None:
+    server = MCPHpcServer(_config_path(tmp_path))
+
+    with pytest.raises(ValueError, match="invalid digest"):
+        server.reserve_execution(
+            _reservation_identity(operation_digest="sha256:not-a-digest")
+        )
 
 
 def test_exec_run_staging_failure_keeps_server_issued_opaque_run_id(
@@ -136,6 +314,13 @@ def test_exec_run_assigns_opaque_id_and_hides_internal_handle_fields(
     def fake_exec(spec: RunSpec) -> RunResult:
         captured["spec"] = spec
         assert spec.run_id is not None
+        output = (
+            server.store.ensure_run_layout(spec.run_id)["outputs"]
+            / "a"
+            / "result.json"
+        )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("{}", encoding="utf-8")
         return RunResult(
             run_id=spec.run_id,
             requested_mode="ssh",
@@ -148,7 +333,7 @@ def test_exec_run_assigns_opaque_id_and_hides_internal_handle_fields(
             stderr="",
             artifacts={
                 f"mcp_runs/{spec.run_id}/out/a/result.json": (
-                    f"/local/artifacts/{spec.run_id}/outputs/a/result.json"
+                    str(output)
                 )
             },
             logs={"stdout": {"inline": "bounded"}},
@@ -170,10 +355,16 @@ def test_exec_run_assigns_opaque_id_and_hides_internal_handle_fields(
         "stage",
         "artifacts",
         "logs",
+        "phase",
+        "effect_certainty",
+        "retry_eligibility",
+        "reconciliation_required",
+        "retryable",
     }
     assert result["artifacts"] == {
-        "a/result.json": f"/local/artifacts/{result['run_id']}/outputs/a/result.json"
+        "a/result.json": f"runner-artifact://{result['run_id']}/a/result.json"
     }
+    assert str(tmp_path) not in json.dumps(result, sort_keys=True)
     assert "job_id" not in result
     assert "remote_run_dir" not in result
     assert "stdout" not in result
@@ -709,6 +900,11 @@ def test_lifecycle_responses_hide_raw_handles_and_fetch_uses_persisted_runspec(
     def fake_fetch(spec: RunSpec, handle: JobHandle) -> RunResult:
         captured["fetch_spec"] = spec
         captured["fetch_handle"] = handle
+        output = (
+            server.store.ensure_run_layout(handle.run_id)["outputs"]
+            / "result.json"
+        )
+        output.write_text("{}", encoding="utf-8")
         return RunResult(
             run_id=handle.run_id,
             requested_mode="sbatch",
@@ -718,7 +914,7 @@ def test_lifecycle_responses_hide_raw_handles_and_fetch_uses_persisted_runspec(
             job_id=handle.job_id,
             artifacts={
                 f"{handle.remote_run_dir}/out/result.json": (
-                    f"/local/{handle.run_id}/outputs/result.json"
+                    str(output)
                 )
             },
         )
@@ -740,7 +936,7 @@ def test_lifecycle_responses_hide_raw_handles_and_fetch_uses_persisted_runspec(
         assert "job_id" not in response
         assert "remote_run_dir" not in response
     assert fetched["artifacts"] == {
-        "result.json": "/local/run-001/outputs/result.json"
+        "result.json": "runner-artifact://run-001/result.json"
     }
     assert captured["tail_lines"] == 20
     assert isinstance(captured["fetch_spec"], RunSpec)

@@ -1,10 +1,13 @@
 # Deferred V3 architecture proposals
 
-本目录记录实施中发现、会影响 agent 发挥但超出局部修复边界的架构调整。每份文档对应一个独立计划；它们不是当前产品合同，也不表示代码已实现。
+本目录记录实施中发现、会影响 agent 发挥的架构调整。多数文档仍是 deferred proposal；已经被 umbrella change 实施的文档保留为设计历史，并在顶部标明状态。当前产品合同始终以 `docs/v3/` 稳定文档、当前代码和对应 OpenSpec checkpoint 为准，不能仅凭目录名推断“未实现”。
 
-进入本目录的调整通常涉及顶层真状态、跨包 ownership、scheduler/approval/protocol 语义或 workflow schema 的整体迁移。当前 Goal 只允许记录问题、目标、不变量、方案、迁移、风险与验收，不实施这些大调整。
+进入本目录的调整通常涉及顶层真状态、跨包 ownership、scheduler/approval/protocol 语义或 workflow schema 的整体迁移。实施前它们只记录问题、目标、不变量、方案、迁移、风险与验收；实施后必须链接 stable contract 与 change evidence，并明确仍延后的边界。
 
 当前提案：
+
+- `runtime-hpc-reliability-refactor-roadmap.md`：D1-D8 决策与跨 proposal ownership 的历史总路线；已由 `runtime-hpc-reliability-refactor` umbrella change 实施，当前收口状态看稳定文档与 OpenSpec checkpoints。
+- `durable-hpc-transport-staging-and-dispatch-reconciliation.md`：runner-owned SSH transport generation、ControlMaster 复用、phase journal、staged-byte verification、pre-effect 有界恢复与 post-dispatch reconcile 已实现；真实 SSH transport-only soak 与 disabled-mode rollback audit 已通过，实际 campaign 启动仍需 operator 显式决定。
 
 - `request-lineage-workflow-authority.md`：用 versioned durable authority binding 与 opaque causal link 让显式 workflow selection 在同一 user request 的后续 master wake 中可验证延续，同时禁止把 raw `skill_keys` 复制进 signal、扫描 latest/all conversation 或跨 request 隐式 union；当前 Goal 只修 admission 到 exact first drain。
 - `role-scoped-workflow-composition.md`：把一个显式 workflow 选择拆成可验证的 role-scoped knowledge bindings，同时避免固定 agent 拓扑。
@@ -20,21 +23,21 @@
 - `attempt-scoped-storage-capability.md`：把 SQLite/sandbox/Blob/private-log/HPC roots 收敛为 Host 构造的 typed、不可拆分 storage capability，消除各层可空 path 与共享 `/tmp` fallback；当前 Goal 只修复同一 attempt root 的透传、无 canonical row 时 workspace leaf 的 no-replace 创建与预存 leaf 拒绝，以及 attempt-local Host-private raw command log 的 exclusive `0700`/`0600` 写入和 public opaque-ref 边界。
 - `canonical-public-diagnostic-boundary.md`：用 versioned typed diagnostic envelope、private raw record 与 source-specific projection policy替代跨所有业务文本的无类型正则；当前 Goal 只加固已触达的高风险 error/public evidence seam。
 - `bounded-streaming-sandbox-stdio-capture.md`：把 sandbox 子进程 stdout/stderr 改为边读边写的 Host-private bounded spool、增量 digest 与显式 capture-completeness 状态，消除完整输出在 Host 内存无界累积；当前 Goal 只保留原始 bytes 的私有封存和闭合公开 metadata，不实施 capture pipeline 重构。
-- `nonblocking-supervised-continuation.md`：把 supervised operation park、approval resolve 与 continuation resume 拆成持久化的非阻塞阶段，释放同步 drain/request 与 session lease；当前 Goal 只为 cutover driver 增加同进程 bounded 并发协调，不改变产品 runtime/approval 语义。
+- `nonblocking-supervised-continuation.md`：attached-process park、execution/result/delivery 拆分与 `202` runtime command 已实现；任意 Python stack 的 journaled replay 仍延后。
 - `canonical-approval-command-vs-activity-projection-events.md`：把 authenticated approval command fact 与 derived activity projection 分成不同的 versioned event taxonomy，避免同名 status echo 冒充 operator decision；当前 Goal 只实施 consumer guard，不迁移 event store、SSE、UI 或 verifier schema。
-- `process-isolated-live-attempt-supervision.md`：把 live attempt 的 Host/SQLite/artifact writer 放入可由父进程有界退休的独立子进程，只有 OS 确认所有本地 writer 退出后才取证；当前 Goal 的同进程路径在永久 mutation 上宁可阻塞且不封存，本提案只记录 bounded fail-stop、fatal evidence、MICU/HPC reconciliation 与 Chrome handoff，不实施。
+- `process-isolated-live-attempt-supervision.md`：仍延后。generic mutation quiescence 已实现逻辑 writer freeze/receipt/seal，但不提供 OS 级 hard-kill，因此永久失联的本地 writer 仍需本提案解决。
 - `versioned-scientific-calculation-capability-projection.md`：把散落在 Pipeline SDK、Host collector、workflow 文档和 verifier 中的版本化科学计算收敛为单一 immutable registry，并生成 typed callable、serializer、agent facts projection 与 receipt；当前 Goal 只投影既有 AOX callable 并继续 sealed-byte 重算，不实施跨包 ownership/schema 迁移。
 - `host-authoritative-scientific-calculation-placement-and-sandbox-resource-class.md`：为 sandbox-local scientific calculation 建立 Host-authoritative per-command calculation identity、等价 placement、effective resource class、approval 与 execution receipt，使 sandbox/受控 Host/HPC 选择忠实呈现真实 cgroup/资源约束而不改写 agent 科学策略；当前 Goal 只做 exact Biopython/NumPy backend、trace correction 与已实证 root `cpu.max` 的 cgroup-aware worker 小修，不实施 placement 架构。
 - `reproducible-sandbox-scientific-dependency-manifest-and-build.md`：用 immutable base digest、Python ABI/platform、uv/hash-closed wheelhouse、offline build、canonical dependency manifest/SBOM/attestation 和 namespaced backend capability 使 scientific sandbox 可重建并进入 runtime health/campaign pin；当前 Goal 只保留 Biopython `1.87` / NumPy `2.4.4` exact direct pins、runtime algorithm/numeric/trace/correction assertions 与 actual immutable image digest，不实施供应链迁移。
 - `bounded-capability-facts-query.md`：把 `world.inspect.capabilities` 从“完整 hydrate 各类 payload 后只取 ID/count”迁移为 task-scoped、窄列、SQL 聚合及 per-invocation bounded refs 的只读 query repository；当前 Goal 只收紧 public opaque refs、invocation/ref 上限与 serialized-byte budget，不实施 repository/index/cursor 重构。
 - `canonical-scientific-chain-adoption-and-attempt-closure.md`：为跨 run 的纠正性重试建立显式 adopted/superseded scientific chain 与 attempt closure authority，保留全部失败和 abandoned facts；当前 Goal 只阻止同一 attempt 内重复 operation，不实施顶层 schema/迁移。
 - `canonical-research-evidence-adoption-and-invocation-history.md`：把 research scope 的完整 invocation universe、accepted/exploratory/failed/empty/superseded disposition、selection 与 completeness root 封入 `@2` archive/verifier；当前 Goal 只允许 researcher 在 `task.finish` 显式采用一个 PubMed primary，并继续使用 `@1` bundle。
-- `durable-async-controlled-operation-and-quiescent-sealing.md`：把长时 provider controlled operation 从同步 sandbox SDK/control worker/drain 调用栈拆成 durable opaque handle、分段 poll、幂等 result delivery 与独立 timeout/lease/fencing 生命周期，并以 Host mutation freeze/quiescence receipt 阻止未退休 writer 后封存及 post-seal SQLite mutation；当前 Goal 不实施该跨 SDK/runtime/Host/evidence 迁移。
+- `durable-async-controlled-operation-and-quiescent-sealing.md`：canonical durable execution、分段 worker、immutable result、attached delivery 与 generic mutation freeze/receipt/seal 已实现；process isolation 和跨 Host writer 仍延后。
 - `transactional-attempt-evidence-collection-and-root-closure.md`：在已证明 writer quiescence 后，以 private staging 的 prepare/verify 和 atomic no-replace rename 或 marker-last commit 发布 attempt archive，要求 committed `artifacts/` 与 declared inventory exact closure，并定义失败原子性、crash recovery、schema/migration 和 fresh-live 验收；当前 Goal 只记录，不实施。
 - `host-authoritative-controlled-operation-resource-estimate-and-limit-snapshot.md`：把 sandbox `resource_estimate` 降级为需求/透明预测，由 Host 按 exact route policy 与 injected provider/tool config 编译 canonical estimate、hard limits 和 actual-usage receipt，并绑定 operation/approval/config identity；解决 SDK 常量与 Host 收紧配置漂移，当前 Goal 只记录，不实施。
 - `transactional-provider-batch-attempt-evidence.md`：为单次 controlled operation 内的 provider batch/page/retry 建立 durable attempt transcript、checkpoint、CAS/fencing、reconcile 与 exact closure，避免晚批失败丢失已经发生的 effect 或在恢复时静默重放；当前 Goal 只记录，不实施。
 - `streaming-provider-response-and-artifact-persistence.md`：把 provider body、解析结果与大 artifact 改为 bounded streaming、增量 digest/size、backpressure 和 atomic Blob commit，消除多份完整 bytes 在 Host 内存驻留；当前 Goal 只记录，不实施。
 - `provider-retry-policy-and-failed-attempt-evidence.md`：把 `Retry-After`、错误分类、backoff/jitter、预算与每次失败 HTTP attempt 纳入 Host 权威 retry policy 和 secret-safe durable evidence；当前 Goal 只记录，不实施。
 - `artifact-path-addressing-for-arbitrary-dictionary-keys.md`：为 `artifact.get` 引入 key/index 分型的结构化 path segments，使包含点、空格、空键或 Unicode 的 dictionary key 可无歧义寻址；当前 Goal 只对不可寻址 key 返回 `root_only` 父容器 hint，不实施新寻址合同。
-- `controlled-operation-outcome-unknown-after-response-failure.md`：分离 handler effect commit 与 control-response delivery，在序列化、frame cap 或传输失败后用 stable result handle、`outcome_unknown` 和只读 reconcile 防止把已提交副作用误报成普通失败并重复执行；当前 Goal 只记录，不实施。
+- `controlled-operation-outcome-unknown-after-response-failure.md`：durable controlled-operation 已实现 effect/result/delivery 分离、stable handle 与 fail-closed reconciliation；generic 非 controlled side-effect RPC 尚未统一迁移。
 - `bounded-canonical-artifact-metadata-manifest-references.md`：把大型 catalog metadata 从重复 SQLite JSON row 正规化为 immutable manifest binding，增加真正 bounded 的分页读取、去重、GC、迁移与 verifier closure；当前 Goal 只实现 attempt-local digest-bound transport sidecar 和 bounded registration response，不实施 repository/schema 迁移。

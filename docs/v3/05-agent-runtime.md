@@ -68,8 +68,8 @@ session ownership 与 signal claim 是两层不同语义：
 
 - `SessionRuntimeLease` 是 session-scoped ownership：同一 session 同时只能有一个 active runtime owner，不同 session 可并行推进
 - `AgentRuntimeSignal.claimed_by / claim_expires_at` 是 signal-scoped lease：它只避免同一条 signal 被重复处理，不足以阻止同一 session 内不同 signal 被多个 worker 并发推进
-- background runtime、manual `/runtime/drain`、recovery worker 和测试 scheduler 在推进某个 session 前都必须先 acquire session lease
-- `/runtime/drain` 是 debug/operator/manual recovery command；如果 session 已由 background/manual/recovery worker 持有未过期 lease，它必须返回结构化 locked/blocked 结果或等价 HTTP conflict，而不能并发推进
+- background runtime、`RuntimeCommandWorker`、recovery worker 和测试 scheduler 在实际推进某个 session 前都必须先 acquire session lease
+- `/runtime/drain` POST 只 admission durable command 并返回 `202`；若 command worker 发现 session 已由 background/manual/recovery owner 持有未过期 lease，它把 command 终结为脱敏 `locked`，不能并发推进、替换 command 或让 HTTP request 直接运行 scheduler
 - session lease 过期后可由新 owner reclaim，并通过单调 fencing token 让旧 worker 迟到写回失败
 - scheduler 在 blocking provider/tool turn 期间持续 heartbeat；heartbeat 失败后停止 claim 新 signal，正在运行的 worker 只能以 fenced failure 收尾
 - session lease 只管理 runtime 推进权，不判断 task 是否完成或失败
@@ -88,7 +88,20 @@ signal claim 语义：
 
 当前单进程 scheduler 的 coordinator 在自己的 connection 上获取 session lease 并 claim signal；heartbeat 则在每次尝试时重新打开并关闭独立 repository scope，不能复用 coordinator 或 blocking worker connection。只有 SQLite `BUSY` / `LOCKED` 可以用 capped backoff 持续重试到成功或当前 observed lease expiry；非 contention 异常必须显式传播，repository 返回 lease 不再 active 或 observed expiry 到达时记录 failure/loss 并停止。repository 在 heartbeat/acquire 中必须先取得 writer lock，再计算 `now` 与新 expiry，因锁等待跨过旧 expiry 的 heartbeat 返回 loss，不能复活 authority。即使 heartbeat task 抛出异常，scheduler cleanup 仍恢复原 context lease 并 release 可释放的 row，然后传播原异常。blocking agent turn 进入 worker thread 后，必须在该 worker 内重新打开 repository scope、重建绑定同一 scope 的 engine registry，并从 canonical state 重载 snapshot。worker 不得复用 coordinator/request connection。该 worker scope 可以跨 provider 等待，但不持 `BEGIN IMMEDIATE`；每个本地 mutation 仍需是短提交，并在 commit 前校验绑定的 `session_id + lease_token + fencing_token` 仍 active。write/approval/external tool dispatch 前先做 fence preflight，commit 时再次检查以封住检查后失效竞态；stale callback 的公开错误稳定为 non-retryable `runtime_write_fenced`，不能退化成可重试 transport failure。
 
-sandbox SDK control server、adapter executor 与 HPC fetch 回调线程遵循相同 ownership 规则：每次 callback 打开独立 scope，但必须继承发起 runtime turn 的 lease fence。若 callback 在 timeout/cancel 后迟到，或 lease 已被新 owner reclaim，其 canonical task/operation/run/artifact/report/event 写回必须失败。外部动作是否已被远端接受由 operation digest、idempotency key 与 opaque handle 解决；不能因本地 write 被 fence 就无条件重复提交外部动作。
+sandbox SDK control server、adapter executor 与 HPC fetch 回调线程都必须打开独立 repository scope，但 authority 取决于 owner mode：`legacy_sync` callback 继承发起 turn 的 session lease fence；`durable_async_v1` callback 必须继承 canonical execution lease/fence 和 mutation-writer authority，不能借用或伪造 session lease。若 callback 在 timeout/cancel 后迟到，或对应 fence 已被新 owner reclaim，其 canonical operation/run/artifact/report/event 写回必须失败。外部动作是否已被远端接受由 effect certainty、operation digest、idempotency key 与 opaque handle 解决；不能因本地 write 被 fence 就无条件重复提交外部动作。
+
+### 3.1.1 Durable Work Supervisor 与 suspension
+
+同一 FastAPI lifespan 中的 `V3DurableWorkSupervisor` 管理多类彼此独立的短 worker：
+
+- `RuntimeCommandWorker` claim 显式 command，获取 session lease 后执行一个 bounded scheduler batch；
+- `ControlledOperationExecutionWorker` claim execution，按短 slice dispatch/poll/reconcile/materialize，不持 session lease；
+- continuation-delivery worker claim ready result，并只向 exact attached process epoch 投递一次；
+- startup recovery 检查 stale claim、active durable route、missing attached process 与 result-ready delivery，不把进程重启解释为 external-effect replay 授权。
+
+当 durable SDK call 等待 approval 或 external effect 时，sandbox process 可以继续被 outer supervisor 持有，但原 agent bounded turn必须在有界时间内以 suspension 收口：释放 signal claim、session lease、runtime concurrency slot 与 command/request ownership。Suspension 不是 task failure，也不 terminalize execution。result-ready 后，delivery transaction 绑定 execution result digest、delivery generation 与 process identity；投递成功后再排队 agent signal。Host restart 导致 attached process 不存在时，continuation 明确 failed，已完成 execution/result 保留，绝不重发 scientific effect。
+
+四种 authority 必须分开：session lease/signal claim、execution lease/fence、continuation delivery claim/process epoch、mutation scope generation/writer fence。一个 authority 的 idle、expiry、terminal 或 recovery 不能替代另一个 authority，也不能推断 `task.finish`。
 
 runtime state consistency guard 是只读诊断层。它可以在 workspace projection 与 events 中报告：
 
@@ -149,7 +162,7 @@ sender teammate
 
 request-response protocol 统一使用 correlation id 追踪 pending、approved、rejected、completed、failed 等状态。shutdown、plan review、handoff、clarification、result completion 都应复用同一套 thread/read model，而不是各自发明独立消息机制。
 
-teammate 完成、阻塞、失败或取消当前 task stage 时必须通过 `task.finish` 显式写入 task 业务出口，并在同一 correlation thread 上写 `delegation_result` 或普通 follow-up response。`task.update`、HarnessStep task update 与 Host task CRUD 保留为普通 task 字段编辑和 `todo` / `in_progress` 等非出口状态迁移；tool/service/repository 三层都必须拒绝把普通 update 用作 completed / failed / blocked / cancelled 业务出口。blocked task 保持 blocked 时允许非状态 edit，但不能再次 finish，必须先显式 resume/reopen；completed / failed / cancelled task edit fail closed。finish intent 只允许 status / updated_at / failure fields 变化，并在单个 transaction 内写 finish document 与 task row，commit 后才发送 task mutation / finished events；rollback 不得泄漏 document、terminal status 或 event。runtime 不根据 teammate loop 的 `idle`、`failed` 或 `max_steps_exceeded` 推断业务 task 已完成或失败。teammate terminal outcome 只更新 canonical state / protocol，并排队 `agent:master` wakeup；master 由 scheduler claim signal 后读取 restore context 和 `protocol.thread(correlation_id)`，再决定是否回复用户、追问 teammate、更新 task 或请求用户澄清。approval resolve 只负责写入 approval 与对应恢复状态：agent-level approval 可以排队必要 wakeup；S10 SDK controlled-operation approval 先恢复 Host-owned sandbox continuation，不能直接 drain teammate 或触发 master response turn。
+teammate 完成、阻塞、失败或取消当前 task stage 时必须通过 `task.finish` 显式写入 task 业务出口，并在同一 correlation thread 上写 `delegation_result` 或普通 follow-up response。`task.update`、HarnessStep task update 与 Host task CRUD 保留为普通 task 字段编辑和 `todo` / `in_progress` 等非出口状态迁移；tool/service/repository 三层都必须拒绝把普通 update 用作 completed / failed / blocked / cancelled 业务出口。blocked task 保持 blocked 时允许非状态 edit，但不能再次 finish，必须先显式 resume/reopen；completed / failed / cancelled task edit fail closed。finish intent 只允许 status / updated_at / failure fields 变化，并在单个 transaction 内写 finish document 与 task row，commit 后才发送 task mutation / finished events；rollback 不得泄漏 document、terminal status 或 event。runtime 不根据 teammate loop 的 `idle`、`failed` 或 `max_steps_exceeded` 推断业务 task 已完成或失败。teammate terminal outcome 只更新 canonical state / protocol，并排队 `agent:master` wakeup；master 由 scheduler claim signal 后读取 restore context 和 `protocol.thread(correlation_id)`，再决定是否回复用户、追问 teammate、更新 task 或请求用户澄清。approval resolve 只负责写入 approval 与对应恢复状态：agent-level approval 可以排队必要 wakeup；durable SDK controlled-operation approval 只开放 execution claim，由独立 execution/continuation workers 推进，不能直接 drain teammate 或触发 master response turn。
 
 ### Failed Delegation Follow-up Flow
 
@@ -170,7 +183,7 @@ scheduler master turn or protocol.thread shows failed / unclear summary
   -> teammate replies on the same thread with a normal protocol message
 ```
 
-`protocol.send` does not run the recipient. It only persists the message, creates the wakeup signal, and returns message / signal / thread metadata. Synchronous execution parameters such as `await_response` and `max_steps` are not part of normal protocol semantics; recipient execution is performed by the scheduler after claim. `/runtime/drain` may manually claim signals for debug/operator use, but it is not the product path.
+`protocol.send` does not run the recipient. It only persists the message, creates the wakeup signal, and returns message / signal / thread metadata. Synchronous execution parameters such as `await_response` and `max_steps` are not part of normal protocol semantics; recipient execution is performed by the scheduler after claim. `/runtime/drain` may admit a durable debug/operator command whose worker later claims signals, but POST itself never owns or runs the turn.
 
 `protocol.send` recipient resolution:
 
@@ -216,7 +229,7 @@ auto-claim 启用时也只能做窄范围机械匹配：
 
 `blocked_by` 表示下游输入尚未形成，不是只用于展示的 UI 状态。blocked task 不能被 auto-claim，也不能被 `task.delegate` 提前委派；master 应在上游完成后读取 protocol thread、artifacts 或 task result，更新下游 task 的 description / instructions，再显式委派。
 
-runtime wakeup 也必须执行同一防线：`TASK_AVAILABLE` 只允许 claim `todo + unassigned + no blockers` 的 task；普通 delegation / inbox wakeup 不得把 `blocked` task 机械推进到 `in_progress`。agent-level approval resume 是例外：`APPROVAL_RESOLVED` 可以把已 assigned 给该 agent、且没有未完成 `blocked_by` 的 approval-blocked task 恢复到 `in_progress`。S10 SDK controlled-operation approval 不使用 `APPROVAL_RESOLVED` 恢复 agent turn；它恢复 blocked SDK RPC / sandbox continuation，agent 只在 `sandbox.exec` tool result 返回后继续。
+runtime wakeup 也必须执行同一防线：`TASK_AVAILABLE` 只允许 claim `todo + unassigned + no blockers` 的 task；普通 delegation / inbox wakeup 不得把 `blocked` task 机械推进到 `in_progress`。agent-level approval resume 是例外：`APPROVAL_RESOLVED` 可以把已 assigned 给该 agent、且没有未完成 `blocked_by` 的 approval-blocked task 恢复到 `in_progress`。durable SDK controlled-operation approval 不使用 `APPROVAL_RESOLVED` 恢复 agent turn；它开放 execution worker 的 claim 条件，agent 只在 result 经 exact continuation delivery 后继续。
 
 除 task claim、pending approval block 与 approval resume 这类已文档化机械迁移外，业务终态必须由 agent 显式 `task.finish` 写入。mechanical transition 必须调用窄范围命名 command、携带 repository mechanical intent并真实改变 status；除 status / updated_at 与 claim 所需 assigned_ref 外不得修改其它 task 字段。raw save、generic update 与 runtime recovery 不得复用该 intent。测试 fixture 若需要预置历史终态，只能显式调用 fixture seed path，该 path 不属于产品 runtime surface。
 
@@ -290,8 +303,8 @@ master 与 teammate 都可以通过 `artifact.list` / `artifact.get` / `artifact
 ## 7. Failure And Recovery Defaults
 
 - teammate work loop 仍然必须 bounded，避免无限 tool-call 循环。
-- 任一 tool call 创建 pending approval 后，当前 teammate/master work loop 必须停止并进入 `blocked` / `waiting approval`；同批后续 tool calls 不再执行。
-- agent-level approval resolved 是唤醒相关 resident agent 的 runtime signal；恢复 agent turn 前必须先通过 harness/API resolve approval。S10 SDK controlled-operation approval resolved 不是 agent runtime signal，它只授权 Host supervisor 恢复同一个 blocked SDK RPC / sandbox continuation。
+- 任一 tool call 创建 pending approval 后，当前 teammate/master work loop 必须停止并进入 `blocked` / `waiting approval`；同批后续 tool calls 不再执行。durable sandbox call 同时 park exact attached process，由 outer supervisor 持有，不让 agent signal/session lease 等待。
+- agent-level approval resolved 是唤醒相关 resident agent 的 runtime signal；恢复 agent turn 前必须先通过 harness/API resolve approval。durable SDK controlled-operation approval resolved 不是 agent runtime signal，它只授权 execution worker 推进 canonical execution；result-ready 后由 continuation worker 投递 exact blocked SDK response。
 - approved execution pipeline 的成功、失败和取消都回到原 executor：Host 只继续 engine invocation、记录 run/artifact/activity 证据并发出唤醒信号，不直接合成用户最终答复。
 - task canonical 终态由 task board 表达；protocol/chat 只承载沟通内容。成功执行由 executor 总结结果后通过 `task.finish(status="completed")` 完成 task，失败执行只在明确不可修复时由 executor 调用 `task.finish(status="failed")` 并提供 `failure_summary` 或 `failure_ref`。阻塞退出必须提供 `blocked_reason` 或 `recovery_hint`。
 - scheduler 只根据 user message、approval、engine completion、inbox、task availability 等信号唤醒 agent；它不根据 sandbox dirty state、可用 backend 或工具探测结果替 executor 选择 plan、切换本地/HPC 后端、自动重写 pipeline，或把 run 结果自动解释成任务终态。

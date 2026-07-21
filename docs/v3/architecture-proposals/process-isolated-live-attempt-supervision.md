@@ -1,6 +1,12 @@
 # Deferred: process-isolated live-attempt supervision
 
-Status: proposed, not implemented in the current AOX/HMM blank-world Goal.
+Status: deferred. Generic mutation freeze/receipt/seal is implemented, but this
+proposal's OS-level bounded hard-kill and parent-owned evidence isolation are not.
+
+Stable logical-closure contract: [`../07-runtime-hpc-reliability.md`](../07-runtime-hpc-reliability.md).
+
+重构收敛说明：process isolation 是最终 bounded fail-stop 与 parent-owned evidence 层，不替代正常 operation recovery、runner reconciliation、continuation ownership 或 quiescence。实施顺序与共享 ownership 统一定义在
+[`runtime-hpc-reliability-refactor-roadmap.md`](runtime-hpc-reliability-refactor-roadmap.md)。
 
 ## Decision boundary for the current Goal
 

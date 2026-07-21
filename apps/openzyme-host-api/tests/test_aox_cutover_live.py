@@ -20,6 +20,7 @@ import pytest
 from openzyme_domain import ArtifactKind
 from openzyme_domain import ControlledOperation
 from openzyme_domain import ControlledOperationStatus
+from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionReportDraftRecord
 from openzyme_domain import SessionReportDraftStatus
@@ -28,6 +29,7 @@ from openzyme_domain import SessionReportStatus
 from openzyme_core import DurableEventRecord
 from openzyme_core import EngineDocumentRecord
 from openzyme_core import SQLiteRepositoryProvider
+from openzyme_core import verify_quiescence_evidence
 from openzyme_host_api import aox_cutover_live as live
 from openzyme_host_api.aox_cutover_cli import build_parser
 from openzyme_host_api.aox_cutover_evidence import AttemptRunContext
@@ -44,6 +46,10 @@ from openzyme_pipeline import aox_reference
 from openzyme_pipeline import aox_sequence_join
 from openzyme_pipeline import aox_similarity
 from openzyme_runtime import OpenZymeSettings
+from openzyme_runtime import ControlledOperationOwnerPolicy
+from openzyme_runtime import LiveMicuTokenLedger
+from openzyme_runtime import MutationClosureMode
+from openzyme_runtime import RuntimeDrainContract
 from openzyme_host_api import aox_cutover_evidence as cutover_evidence
 
 
@@ -241,6 +247,26 @@ def _approval_projection_response(
     return _JsonResponse(payload)
 
 
+def _runtime_command_response(
+    *,
+    session_id: str,
+    status: str,
+    command_id: str = "runtime_command_001",
+    status_code: int = 200,
+) -> _JsonResponse:
+    return _JsonResponse(
+        {
+            "session_id": session_id,
+            "command_id": command_id,
+            "status": status,
+            "status_url": (
+                f"/v3/sessions/{session_id}/runtime/commands/{command_id}"
+            ),
+        },
+        status_code=status_code,
+    )
+
+
 class _SerialApprovalJsonClient:
     base_url = "http://127.0.0.1:54321"
 
@@ -258,13 +284,21 @@ class _SerialApprovalJsonClient:
 
     def get(self, route: str) -> _JsonResponse:
         self.get_routes.append(route)
-        with self._condition:
-            ready = self._condition.wait_for(
-                lambda: self._current_index is not None or self._force_release,
-                timeout=2.0,
+        if route == (
+            "/v3/sessions/sess_serial/runtime/commands/runtime_command_001"
+        ):
+            with self._condition:
+                completed = self._force_release or (
+                    self._current_index is not None
+                    and self._current_index >= len(self.approval_ids)
+                )
+                if completed:
+                    self._drain_inflight = False
+            return _runtime_command_response(
+                session_id="sess_serial",
+                status="completed" if completed else "claimed",
             )
-            if not ready:
-                raise AssertionError("blocking drain never exposed its first approval")
+        with self._condition:
             pending: list[dict[str, object]] = []
             if (
                 not self._force_release
@@ -295,18 +329,11 @@ class _SerialApprovalJsonClient:
                 self._drain_inflight = True
                 self.drain_started.set()
                 self._condition.notify_all()
-                finished = self._condition.wait_for(
-                    lambda: self._force_release
-                    or (
-                        self._current_index is not None
-                        and self._current_index >= len(self.approval_ids)
-                    ),
-                    timeout=2.0,
-                )
-                self._drain_inflight = False
-                if not finished:
-                    raise AssertionError("serial approvals were not resolved")
-            return _JsonResponse({"status": "completed"})
+            return _runtime_command_response(
+                session_id="sess_serial",
+                status="accepted",
+                status_code=202,
+            )
 
         prefix = "/v3/approvals/"
         suffix = "/resolve"
@@ -351,7 +378,7 @@ class _FailingDrainJsonClient:
 
 
 class _ConcurrentDrainAndWorkspaceFailureJsonClient:
-    """Synchronize a workspace failure behind a failed drain unwind."""
+    """Fail command observation, then fail the first cleanup projection."""
 
     base_url = "http://127.0.0.1:54321"
 
@@ -359,25 +386,29 @@ class _ConcurrentDrainAndWorkspaceFailureJsonClient:
         self.drain_thread_name = drain_thread_name
         self.workspace_get_started = threading.Event()
         self.drain_failure_started = threading.Event()
+        self.command_get_count = 0
+        self.workspace_get_count = 0
 
     def get(self, route: str) -> _JsonResponse:
-        assert route == (
-            "/v3/sessions/sess_concurrent_failure/pending-approvals"
-        )
+        if route.endswith("/runtime/commands/runtime_command_001"):
+            self.command_get_count += 1
+            if self.command_get_count == 1:
+                self.drain_failure_started.set()
+                raise RuntimeError("private command status failure detail")
+            return _runtime_command_response(
+                session_id="sess_concurrent_failure",
+                status="failed",
+            )
+        assert route == "/v3/sessions/sess_concurrent_failure/pending-approvals"
         self.workspace_get_started.set()
-        assert self.drain_failure_started.wait(timeout=2.0)
-        drain_thread = next(
-            (
-                thread
-                for thread in threading.enumerate()
-                if thread.name == self.drain_thread_name
-            ),
-            None,
+        self.workspace_get_count += 1
+        if self.workspace_get_count == 1:
+            raise RuntimeError("private workspace failure detail")
+        return _approval_projection_response(
+            route,
+            session_id="sess_concurrent_failure",
+            pending_approvals=[],
         )
-        assert drain_thread is not None
-        drain_thread.join(timeout=2.0)
-        assert not drain_thread.is_alive()
-        raise RuntimeError("private workspace failure detail")
 
     def post(
         self,
@@ -390,9 +421,11 @@ class _ConcurrentDrainAndWorkspaceFailureJsonClient:
         assert route == (
             "/v3/sessions/sess_concurrent_failure/runtime/drain"
         )
-        assert self.workspace_get_started.wait(timeout=2.0)
-        self.drain_failure_started.set()
-        raise RuntimeError("private concurrent drain failure detail")
+        return _runtime_command_response(
+            session_id="sess_concurrent_failure",
+            status="accepted",
+            status_code=202,
+        )
 
 
 class _CoordinationCleanupFailureJsonClient:
@@ -415,16 +448,33 @@ class _CoordinationCleanupFailureJsonClient:
         self.drain_error = RuntimeError("private drain failure detail")
 
     def get(self, route: str) -> _JsonResponse:
-        assert route == (
-            "/v3/sessions/sess_cleanup_precedence/pending-approvals"
-        )
+        if route.endswith("/runtime/commands/runtime_command_001"):
+            terminal = self.release_drain.is_set()
+            if terminal:
+                self.drain_finished.set()
+            return _runtime_command_response(
+                session_id="sess_cleanup_precedence",
+                status=(
+                    "failed"
+                    if terminal and self.drain_fails
+                    else "completed"
+                    if terminal
+                    else "claimed"
+                ),
+            )
+        assert route == "/v3/sessions/sess_cleanup_precedence/pending-approvals"
         self.workspace_get_count += 1
         if self.workspace_get_count == 1:
             raise self.primary_error
-        assert self.workspace_get_count == 2
-        self.cleanup_attempted.set()
-        self.release_drain.set()
-        raise self.cleanup_error
+        if self.workspace_get_count == 2:
+            self.cleanup_attempted.set()
+            self.release_drain.set()
+            raise self.cleanup_error
+        return _approval_projection_response(
+            route,
+            session_id="sess_cleanup_precedence",
+            pending_approvals=[],
+        )
 
     def post(
         self,
@@ -437,14 +487,11 @@ class _CoordinationCleanupFailureJsonClient:
         assert route == (
             "/v3/sessions/sess_cleanup_precedence/runtime/drain"
         )
-        try:
-            if not self.release_drain.wait(timeout=2.0):
-                raise AssertionError("cleanup did not release the drain test worker")
-            if self.drain_fails:
-                raise self.drain_error
-            return _JsonResponse({"status": "failed"})
-        finally:
-            self.drain_finished.set()
+        return _runtime_command_response(
+            session_id="sess_cleanup_precedence",
+            status="accepted",
+            status_code=202,
+        )
 
 
 class _DelayedCoordinationCleanupApprovalJsonClient:
@@ -473,9 +520,15 @@ class _DelayedCoordinationCleanupApprovalJsonClient:
         self.resolve_calls: list[tuple[str, str]] = []
 
     def get(self, route: str) -> _JsonResponse:
-        assert route == (
-            "/v3/sessions/sess_delayed_cleanup/pending-approvals"
-        )
+        if route.endswith("/runtime/commands/runtime_command_001"):
+            terminal = self.release_drain.is_set()
+            if terminal:
+                self.drain_finished.set()
+            return _runtime_command_response(
+                session_id="sess_delayed_cleanup",
+                status="failed" if terminal else "claimed",
+            )
+        assert route == "/v3/sessions/sess_delayed_cleanup/pending-approvals"
         self.workspace_get_count += 1
         if self.workspace_get_count == 1:
             raise self.primary_error
@@ -507,12 +560,11 @@ class _DelayedCoordinationCleanupApprovalJsonClient:
     ) -> _JsonResponse:
         del headers
         if route == "/v3/sessions/sess_delayed_cleanup/runtime/drain":
-            try:
-                if not self.release_drain.wait(timeout=2.0):
-                    raise AssertionError("delayed approval was not rejected")
-                return _JsonResponse({"status": "failed"})
-            finally:
-                self.drain_finished.set()
+            return _runtime_command_response(
+                session_id="sess_delayed_cleanup",
+                status="accepted",
+                status_code=202,
+            )
 
         assert route == f"/v3/approvals/{self.approval_id}/resolve"
         decision = str(json.get("decision") or "")
@@ -536,6 +588,13 @@ class _DrainReturnsPendingApprovalJsonClient:
         self.resolve_calls: list[tuple[str, str, bool]] = []
 
     def get(self, route: str) -> _JsonResponse:
+        if route == (
+            "/v3/sessions/sess_post_response/runtime/commands/runtime_command_001"
+        ):
+            return _runtime_command_response(
+                session_id="sess_post_response",
+                status="completed",
+            )
         return _approval_projection_response(
             route,
             session_id="sess_post_response",
@@ -555,7 +614,11 @@ class _DrainReturnsPendingApprovalJsonClient:
         if route == "/v3/sessions/sess_post_response/runtime/drain":
             self.pending = True
             self.drain_returned.set()
-            return _JsonResponse({"status": "waiting_approval"})
+            return _runtime_command_response(
+                session_id="sess_post_response",
+                status="completed",
+                status_code=202,
+            )
 
         expected_route = f"/v3/approvals/{self.approval_id}/resolve"
         assert route == expected_route
@@ -1445,6 +1508,170 @@ def test_live_runner_registers_sandbox_identity_before_first_session(
 
     assert observed["registered_before_session"] is True
     assert evidence["scientific_outcome"]["blocker_code"] == "test_stop"
+
+
+def test_live_session_mutation_scope_seals_real_private_snapshot(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+    )
+    ledger = LiveMicuTokenLedger(ledger_path)
+    reservation = ledger.reserve_attempt(
+        scenario="aox_blank_world_cutover",
+        purpose="v3_harness_loop",
+        kind="tool_calling",
+        model="test-model",
+        attempt=1,
+        estimated_input_tokens=11,
+        reserved_output_tokens=13,
+    )
+    ledger.finalize_estimated(reservation, status="succeeded_estimated")
+    provider = SQLiteRepositoryProvider(str(tmp_path / "scope.sqlite3"))
+    session = Session.create(
+        session_id="sess_probe_r41",
+        project_id="aox-blank-world-cutover",
+        title="probe",
+        objective="prove exact mutation closure",
+    )
+    with provider.write() as unit_of_work:
+        unit_of_work.repositories.sessions.save(session)
+    blob_root = tmp_path / "blobs"
+    source = blob_root / "sealed" / "result.json"
+    source.parent.mkdir(parents=True)
+    content = b'{"status":"complete"}'
+    source.write_bytes(content)
+    projection: dict[str, object] = {}
+
+    with runner._session_mutation_scope(
+        provider,
+        session_id=session.session_id,
+        purpose="probe",
+        attempt_id="r41",
+        blob_root=blob_root,
+        projection=projection,
+        require_sealed=True,
+    ):
+        with runner._provider_repository_scope(provider) as repositories:
+            repositories.artifacts.save(
+                SessionArtifactRecord(
+                    artifact_id="art_probe_result",
+                    session_id=session.session_id,
+                    task_id=None,
+                    lane_id=None,
+                    invocation_id=None,
+                    run_id=None,
+                    kind=ArtifactKind.RESULT,
+                    storage_uri=str(source),
+                    relative_path="result.json",
+                    created_at="2026-07-21T00:00:00+00:00",
+                    metadata={
+                        "content_digest": "sha256:"
+                        + hashlib.sha256(content).hexdigest()
+                    },
+                )
+            )
+
+    assert projection["state"] == "sealed"
+    assert projection["active_writer_counts"] == {}
+    assert projection["writer_counts"] == {"attempt_driver": 1}
+    public_receipt = projection["receipt"]
+    assert isinstance(public_receipt, dict)
+    with provider.read() as unit_of_work:
+        receipt = unit_of_work.repositories.quiescence_receipts.get(
+            str(public_receipt["receipt_id"])
+        )
+        snapshot = unit_of_work.repositories.quiescence_snapshots.get(
+            str(public_receipt["snapshot_id"])
+        )
+    assert receipt is not None
+    assert snapshot is not None
+    verify_quiescence_evidence(receipt=receipt, snapshot=snapshot)
+    external = snapshot.evidence["external_artifact_snapshot"]
+    assert isinstance(external, dict)
+    assert external["artifact_count"] == 1
+    ledger_snapshot = external["live_token_ledger"]
+    assert isinstance(ledger_snapshot, dict)
+    assert ledger_snapshot["exists"] is True
+    assert ledger_snapshot["attempt_count"] == 1
+    assert ledger_snapshot["last_record_id"] == reservation.record_id
+    records = ledger_snapshot["records"]
+    assert isinstance(records, list)
+    assert records[0]["status"] == "succeeded_estimated"
+    assert str(ledger_path) not in repr(ledger_snapshot)
+
+
+def test_live_fault_scope_fails_without_receipt_when_artifact_bytes_drift(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+    )
+    provider = SQLiteRepositoryProvider(str(tmp_path / "scope.sqlite3"))
+    session = Session.create(
+        session_id="sess_formal_r41",
+        project_id="aox-blank-world-cutover",
+        title="formal",
+        objective="prove fail-closed mutation closure",
+    )
+    with provider.write() as unit_of_work:
+        unit_of_work.repositories.sessions.save(session)
+    blob_root = tmp_path / "blobs"
+    source = blob_root / "sealed" / "result.json"
+    source.parent.mkdir(parents=True)
+    original = b'{"status":"complete"}'
+    source.write_bytes(original)
+    projection: dict[str, object] = {}
+
+    with runner._session_mutation_scope(
+        provider,
+        session_id=session.session_id,
+        purpose="formal",
+        attempt_id="r41",
+        blob_root=blob_root,
+        projection=projection,
+        require_sealed=False,
+    ):
+        with runner._provider_repository_scope(provider) as repositories:
+            repositories.artifacts.save(
+                SessionArtifactRecord(
+                    artifact_id="art_formal_result",
+                    session_id=session.session_id,
+                    task_id=None,
+                    lane_id=None,
+                    invocation_id=None,
+                    run_id=None,
+                    kind=ArtifactKind.RESULT,
+                    storage_uri=str(source),
+                    relative_path="result.json",
+                    created_at="2026-07-21T00:00:00+00:00",
+                    metadata={
+                        "content_digest": "sha256:"
+                        + hashlib.sha256(original).hexdigest()
+                    },
+                )
+            )
+        source.write_bytes(b'{"status":"corrupted"}')
+
+    assert projection["state"] == "failed"
+    assert projection["blocker_code"] == "artifact_snapshot_digest_mismatch"
+    assert projection["receipt"] is None
+    assert projection["active_writer_counts"] == {}
+    with provider.read() as unit_of_work:
+        scope = unit_of_work.repositories.mutation_scopes.get(
+            str(projection["scope_id"])
+        )
+        receipt = unit_of_work.repositories.quiescence_receipts.get_by_scope(
+            scope_id=str(projection["scope_id"]),
+            seal_generation=int(projection["generation"]),
+        )
+    assert scope is not None
+    assert scope.state.value == "failed"
+    assert receipt is None
 
 
 def test_known_positive_probe_prompt_exposes_fixed_runner_output_contracts(
@@ -2395,6 +2622,82 @@ def test_live_runner_seals_exact_no_go_when_live_opt_in_is_absent(
     assert verification.passed, verification.to_dict()
 
 
+def test_live_runner_requires_durable_routes_and_generic_closure_before_cutover(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    settings = OpenZymeSettings.from_env()
+    settings = replace(
+        settings,
+        llm=replace(settings.llm, api_key="test-live-key"),
+        execution=replace(settings.execution, backend="hpc"),
+        research=replace(settings.research, pubmed_email="aox@example.org"),
+        test=replace(
+            settings.test,
+            enable_live_e2e=True,
+            live_llm=replace(
+                settings.test.live_llm,
+                token_ledger_path=str(ledger_path),
+            ),
+        ),
+    )
+    roots = create_blank_world_roots(
+        tmp_path / "campaign",
+        attempt_kind="positive",
+        allowed_prerequisites=_allowed_prerequisites(),
+    )
+    context = AttemptRunContext(
+        roots=roots,
+        identity=_identity(),
+        ledger_before=safe_micu_ledger_snapshot(ledger_path),
+        attempt_number=1,
+    )
+
+    legacy_runner = live.LiveAoxAttemptRunner(
+        settings=settings,
+        ledger_path=ledger_path,
+    )
+    assert legacy_runner._settings_blocker(context) == {
+        "code": "aox_durable_operation_ownership_required",
+        "message": (
+            "AOX cutover requires durable_async_v1 ownership for every provider "
+            "and HPC route"
+        ),
+    }
+
+    durable_settings = replace(
+        settings,
+        reliability=replace(
+            settings.reliability,
+            controlled_operation_owner_policy=(
+                ControlledOperationOwnerPolicy.DURABLE_ONLY_V1
+            ),
+        ),
+    )
+    durable_runner = live.LiveAoxAttemptRunner(
+        settings=durable_settings,
+        ledger_path=ledger_path,
+    )
+    assert durable_runner._settings_blocker(context) == {
+        "code": "generic_mutation_closure_required",
+        "message": "AOX cutover requires generic Host quiescence and sealing",
+    }
+
+    ready_settings = replace(
+        durable_settings,
+        reliability=replace(
+            durable_settings.reliability,
+            runtime_drain_contract=RuntimeDrainContract.COMMAND_V1,
+            mutation_closure_mode=MutationClosureMode.GENERIC_V1,
+        ),
+    )
+    ready_runner = live.LiveAoxAttemptRunner(
+        settings=ready_settings,
+        ledger_path=ledger_path,
+    )
+    assert ready_runner._settings_blocker(context) is None
+
+
 def test_cli_exposes_real_live_campaign_command(tmp_path: Path) -> None:
     parser = build_parser()
     args = parser.parse_args(
@@ -2590,8 +2893,16 @@ def test_runtime_drain_coordinates_three_serial_approvals_while_blocked(
     assert raw_client.get_routes.count(
         "/v3/sessions/sess_serial/workspace"
     ) == 1
+    assert (
+        "/v3/sessions/sess_serial/runtime/commands/runtime_command_001"
+        in raw_client.get_routes
+    )
     assert all(
-        route == "/v3/sessions/sess_serial/pending-approvals"
+        route
+        in {
+            "/v3/sessions/sess_serial/pending-approvals",
+            "/v3/sessions/sess_serial/runtime/commands/runtime_command_001",
+        }
         for route in raw_client.get_routes[:-1]
     )
     sealed = api.sealed_receipts
@@ -2861,11 +3172,11 @@ def test_runtime_drain_failure_wins_over_concurrent_workspace_failure(
     assert raw_client.workspace_get_started.is_set()
     assert raw_client.drain_failure_started.is_set()
     assert error.value.code == "runtime_drain_command_failed"
-    assert error.value.details == {"failure_type": "RuntimeError"}
-    assert isinstance(error.value.__cause__, RuntimeError)
-    assert str(error.value.__cause__) == (
-        "private concurrent drain failure detail"
-    )
+    assert error.value.details == {
+        "command_status": "failed",
+        "cleanup_failure_type": "RuntimeError",
+    }
+    assert error.value.__cause__ is None
     assert "workspace failure" not in str(error.value)
     assert all(
         not thread.is_alive() or thread.name != drain_thread_name
@@ -2906,7 +3217,6 @@ def test_runtime_drain_primary_error_wins_over_cleanup_failure(
     finally:
         raw_client.release_drain.set()
 
-    assert error.value is raw_client.primary_error
     assert error.value.code == "scientific_primary_failure"
     assert error.value.details == {
         "scientific_stage": "motif",
@@ -2940,7 +3250,7 @@ def test_runtime_drain_rejects_approval_delayed_past_old_cleanup_window(
     monkeypatch.setattr(
         live,
         "time",
-        SimpleNamespace(monotonic=stepped_monotonic),
+        SimpleNamespace(monotonic=stepped_monotonic, sleep=lambda _seconds: None),
     )
     runner = live.LiveAoxAttemptRunner(
         settings=_runner_settings(ledger_path),
@@ -2973,7 +3283,8 @@ def test_runtime_drain_rejects_approval_delayed_past_old_cleanup_window(
     finally:
         raw_client.release_drain.set()
 
-    assert error.value is raw_client.primary_error
+    assert error.value.code == "runtime_drain_command_failed"
+    assert error.value.details == {"command_status": "failed"}
     assert raw_client.cleanup_read_count >= 2
     assert raw_client.resolve_calls == [(raw_client.approval_id, "rejected")]
     assert raw_client.drain_finished.is_set()
@@ -3020,8 +3331,11 @@ def test_runtime_drain_cleanup_read_recovers_and_rejects_later_approval(
     finally:
         raw_client.release_drain.set()
 
-    assert error.value is raw_client.primary_error
-    assert error.value.details == {"cleanup_failure_type": "RuntimeError"}
+    assert error.value.code == "runtime_drain_command_failed"
+    assert error.value.details == {
+        "command_status": "failed",
+        "cleanup_failure_type": "RuntimeError",
+    }
     assert raw_client.cleanup_read_count >= 3
     assert raw_client.resolve_calls == [(raw_client.approval_id, "rejected")]
     assert raw_client.drain_finished.is_set()
@@ -3053,6 +3367,7 @@ def test_sealed_failure_details_allowlists_only_safe_machine_identifiers() -> No
     assert live._sealed_failure_details(
         {
             "failure_type": "RuntimeError",
+            "command_status": "failed",
             "coordination_failure_type": "LiveProductPathError",
             "cleanup_failure_type": "OSError",
             "route": "/v3/private/runtime/drain",
@@ -3060,6 +3375,7 @@ def test_sealed_failure_details_allowlists_only_safe_machine_identifiers() -> No
         }
     ) == {
         "cleanup_failure_type": "OSError",
+        "command_status": "failed",
         "coordination_failure_type": "LiveProductPathError",
         "failure_type": "RuntimeError",
     }
@@ -3100,10 +3416,10 @@ def test_runtime_drain_command_failure_wins_over_primary_and_cleanup_failures(
 
     assert error.value.code == "runtime_drain_command_failed"
     assert error.value.details == {
-        "failure_type": "RuntimeError",
+        "command_status": "failed",
         "cleanup_failure_type": "RuntimeError",
     }
-    assert error.value.__cause__ is raw_client.drain_error
+    assert error.value.__cause__ is None
     assert raw_client.cleanup_attempted.is_set()
     assert raw_client.drain_finished.is_set()
     assert "private cleanup failure detail" not in str(error.value)

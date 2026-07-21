@@ -40,6 +40,14 @@ from .public_diagnostics import sanitize_public_diagnostic_text
 from .public_diagnostics import safe_public_machine_identifier
 from .podman_lifecycle import PodmanContainerLease
 from .runtime_identity import immutable_source_tree_digest
+from .reliability import ControlledOperationOwnerPolicy
+from .reliability import MutationClosureMode
+from .reliability import ReliabilityRefactorSettings
+from .reliability import ReliabilityShadowObservation
+from .reliability import ReliabilityShadowObservationKind
+from .reliability import ReliabilityShadowObserver
+from .reliability import RuntimeDrainContract
+from .reliability import ShadowObservabilityMode
 from .bootstrap import RuntimeFoundation
 from .bootstrap import validate_runtime_foundation_support
 from .artifact_boundary import ArtifactBoundaryError
@@ -174,6 +182,7 @@ __all__ = [
     "FASTA_ZERO_RECORDS_VALIDATION_PROFILE",
     "ConstraintItem",
     "ConstraintSet",
+    "ControlledOperationOwnerPolicy",
     "DesignNextAction",
     "DesignTool",
     "DesignToolCallResult",
@@ -232,6 +241,7 @@ __all__ = [
     "MissingLangChainProviderDependencyError",
     "MissingLangGraphPostgresDependencyError",
     "MissingLlmConfigurationError",
+    "MutationClosureMode",
     "OpenAICompatibleChatModelFactory",
     "openai_tool_from_spec",
     "AsyncConcurrencyLimiter",
@@ -267,6 +277,10 @@ __all__ = [
     "ResearchTurnRecord",
     "REPO_ROOT",
     "ResearchSettings",
+    "ReliabilityRefactorSettings",
+    "ReliabilityShadowObservation",
+    "ReliabilityShadowObservationKind",
+    "ReliabilityShadowObserver",
     "TestSettings",
     "ResearchUnitDraft",
     "ResearchUnitPlan",
@@ -297,6 +311,8 @@ __all__ = [
     "TracingSettings",
     "V3BackgroundRuntimeSettings",
     "RuntimeFoundation",
+    "RuntimeDrainContract",
+    "ShadowObservabilityMode",
     "DEFAULT_HOST_BASE_URL",
     "DEFAULT_HOST_API_BIND_HOST",
     "DEFAULT_HOST_API_BIND_PORT",

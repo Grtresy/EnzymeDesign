@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 from pathlib import Path
+import time
 from typing import Any
 
 import pytest
@@ -92,14 +93,56 @@ def _manual_debug_drain_until_report(
         _log_phase(f"manual/debug draining V3 runtime cycle {cycle + 1}/{max_cycles}")
         drained = client.post(
             f"/v3/sessions/{session_id}/runtime/drain",
+            headers={
+                "Idempotency-Key": f"seeded-smoke-drain:{session_id}:{cycle + 1}"
+            },
             json={
                 "max_signals": 10,
                 "max_steps_per_agent": 8,
             },
         )
         _raise_for_status_with_body(drained, step="manual_debug_runtime_drain")
-        latest = drained.json()
-        workspace = latest["workspace"]
+        assert drained.status_code == 202
+        admitted = drained.json()
+        status_url = admitted["status_url"]
+        assert status_url == (
+            f"/v3/sessions/{session_id}/runtime/commands/"
+            f"{admitted['command_id']}"
+        )
+        deadline = time.monotonic() + 60.0
+        while True:
+            observed = client.get(status_url)
+            _raise_for_status_with_body(
+                observed,
+                step="observe_manual_debug_runtime_command",
+            )
+            command = observed.json()
+            if command["status"] in {
+                "completed",
+                "failed",
+                "locked",
+                "cancelled",
+            }:
+                break
+            if time.monotonic() >= deadline:
+                pytest.fail(
+                    "manual_debug_runtime_command remained nonterminal",
+                    pytrace=False,
+                )
+            time.sleep(0.05)
+        if command["status"] != "completed":
+            pytest.fail(
+                "manual_debug_runtime_command terminated as "
+                f"{command['status']}: {command.get('safe_error_summary')}",
+                pytrace=False,
+            )
+        workspace_response = client.get(f"/v3/sessions/{session_id}/workspace")
+        _raise_for_status_with_body(
+            workspace_response,
+            step="read_workspace_after_runtime_command",
+        )
+        workspace = workspace_response.json()
+        latest = {"command": command, "workspace": workspace}
 
         approvals = workspace["pending_approvals"]
         if approvals:
@@ -192,6 +235,7 @@ def test_seeded_v3_master_message_execution_smoke_reaches_report(tmp_path) -> No
             )
         )
     )
+    client.__enter__()
 
     session_id = "sess_seeded_v3_smoke"
     try:
@@ -251,5 +295,5 @@ def test_seeded_v3_master_message_execution_smoke_reaches_report(tmp_path) -> No
             assert research_capability["source_refs"]
     finally:
         _log_phase("closing FastAPI test client")
-        client.close()
+        client.__exit__(None, None, None)
         observer_scope.__exit__(None, None, None)

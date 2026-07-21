@@ -379,13 +379,24 @@ def _public_api_receipts(
             "sequence": 4,
             "method": "POST",
             "route": f"/v3/sessions/{session_id}/runtime/drain",
-            "status_code": 200,
+            "status_code": 202,
             "request_digest": canonical_digest(drain_request),
             "response_digest": _digest("drain-response"),
             "response_semantic_digest": _digest("drain-semantic"),
         },
         {
             "sequence": 5,
+            "method": "GET",
+            "route": (
+                f"/v3/sessions/{session_id}/runtime/commands/runtime_command_001"
+            ),
+            "status_code": 200,
+            "request_digest": canonical_digest({}),
+            "response_digest": _digest("runtime-command-response"),
+            "response_semantic_digest": _digest("runtime-command-semantic"),
+        },
+        {
+            "sequence": 6,
             "method": "GET",
             "route": f"/v3/sessions/{session_id}/workspace",
             "status_code": 200,
@@ -394,7 +405,7 @@ def _public_api_receipts(
             "response_semantic_digest": _digest("public-final-workspace"),
         },
         {
-            "sequence": 6,
+            "sequence": 7,
             "method": "GET",
             "route": f"/v3/sessions/{session_id}/events?replay=1&after_cursor=0",
             "status_code": 200,
@@ -412,6 +423,13 @@ def test_public_api_receipt_route_accepts_compact_pending_approval_read() -> Non
     assert not cutover_evidence._public_api_route_is_canonical("POST", route)
     assert not cutover_evidence._public_api_route_is_canonical(
         "GET", f"{route}?include=workspace"
+    )
+    command_route = (
+        "/v3/sessions/sess_aox_live/runtime/commands/runtime_command_001"
+    )
+    assert cutover_evidence._public_api_route_is_canonical("GET", command_route)
+    assert not cutover_evidence._public_api_route_is_canonical(
+        "POST", command_route
     )
 
 
@@ -1956,6 +1974,50 @@ def _apply_hmmer_upstream_empty_fixture(
     _refresh_fixture_operation_identities(evidence)
 
 
+def _mutation_scope_projection(
+    purpose: str,
+    *,
+    state: str = "sealed",
+) -> dict[str, object]:
+    policy_digest = _digest("mutation-policy")
+    coverage_digest = _digest("mutation-coverage")
+    projection: dict[str, object] = {
+        "schema_version": "mutation_scope_projection@1",
+        "scope_id": f"mutation_scope_{purpose}",
+        "scope_kind": "attempt",
+        "state": state,
+        "generation": 1,
+        "policy_digest": policy_digest,
+        "coverage_digest": coverage_digest,
+        "opened_at": "2026-07-17T00:00:00+00:00",
+        "freeze_requested_at": "2026-07-17T00:01:00+00:00",
+        "quiescent_at": (
+            "2026-07-17T00:01:01+00:00" if state == "sealed" else None
+        ),
+        "sealed_at": (
+            "2026-07-17T00:01:02+00:00" if state == "sealed" else None
+        ),
+        "failed_at": (
+            None if state == "sealed" else "2026-07-17T00:01:01+00:00"
+        ),
+        "writer_counts": {"attempt_driver": 3},
+        "active_writer_counts": {},
+        "blocker_code": (
+            None if state == "sealed" else "artifact_snapshot_digest_mismatch"
+        ),
+        "receipt": None,
+    }
+    if state == "sealed":
+        projection["receipt"] = {
+            "receipt_id": f"quiescence_receipt_{purpose}",
+            "snapshot_id": f"quiescence_snapshot_{purpose}",
+            "receipt_digest": _digest(f"quiescence-receipt:{purpose}"),
+            "snapshot_digest": _digest(f"quiescence-snapshot:{purpose}"),
+            "issued_at": "2026-07-17T00:01:01+00:00",
+        }
+    return projection
+
+
 def _valid_evidence(
     artifact_root: Path,
     *,
@@ -3282,7 +3344,7 @@ def _valid_evidence(
             "event_log_digest": _digest("event-log"),
             "public_final_workspace_digest": _digest("public-final-workspace"),
             "public_final_workspace_response_binding": {
-                "receipt_sequence": 5,
+                "receipt_sequence": 6,
                 "route": "/v3/sessions/sess_aox_live/workspace",
                 "response_digest": _digest("public-final-workspace-response"),
                 "response_semantic_digest": _digest("public-final-workspace"),
@@ -3290,7 +3352,7 @@ def _valid_evidence(
             "public_final_event_stream_digest": _digest("public-final-events"),
             "public_final_event_last_cursor": 12,
             "public_final_event_response_binding": {
-                "receipt_sequence": 6,
+                "receipt_sequence": 7,
                 "route": (
                     "/v3/sessions/sess_aox_live/events?replay=1&after_cursor=0"
                 ),
@@ -3308,6 +3370,13 @@ def _valid_evidence(
                 "executor": "task_execute",
                 "reporter": "task_report",
                 "researcher": "task_research",
+            },
+            "mutation_quiescence": {
+                "probe": _mutation_scope_projection("probe"),
+                "formal": _mutation_scope_projection(
+                    "formal",
+                    state="sealed" if attempt_kind == "positive" else "failed",
+                ),
             },
             "hpc_workspace_binding": {
                 "schema_id": "aox_hpc_workspace_binding@1",
@@ -4701,7 +4770,17 @@ def test_effective_config_closed_schema_tamper_is_rejected_offline(
     )
 
 
-@pytest.mark.parametrize("tamper", ("digest", "sequence", "route"))
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "digest",
+        "sequence",
+        "route",
+        "drain_status",
+        "missing_command_receipt",
+        "command_before_drain",
+    ),
+)
 def test_public_api_receipt_chain_tamper_fails_offline_verification(
     tmp_path: Path,
     tamper: str,
@@ -4718,8 +4797,21 @@ def test_public_api_receipt_chain_tamper_fails_offline_verification(
         elif tamper == "sequence":
             receipts[1]["sequence"] = 9
             launch["public_api_receipt_digest"] = canonical_digest(receipts)
-        else:
+        elif tamper == "route":
             receipts[0]["route"] = "/v3/internal/driver-shortcut"
+            launch["public_api_receipt_digest"] = canonical_digest(receipts)
+        elif tamper == "drain_status":
+            receipts[3]["status_code"] = 200
+            launch["public_api_receipt_digest"] = canonical_digest(receipts)
+        elif tamper == "missing_command_receipt":
+            receipts.pop(4)
+            for sequence, receipt in enumerate(receipts, start=1):
+                receipt["sequence"] = sequence
+            launch["public_api_receipt_digest"] = canonical_digest(receipts)
+        else:
+            receipts[3], receipts[4] = receipts[4], receipts[3]
+            receipts[3]["sequence"] = 4
+            receipts[4]["sequence"] = 5
             launch["public_api_receipt_digest"] = canonical_digest(receipts)
         envelope["bundle_digest"] = canonical_digest(payload)
 
@@ -5053,11 +5145,11 @@ def _browser_approval_receipt(payload: dict[str, object]) -> dict[str, object]:
         }
 
     event_records = [resolution_event, continuation_event]
-    receipts = _public_api_receipts(session_id)[:4]
+    receipts = _public_api_receipts(session_id)[:5]
     receipts.extend(
         [
             {
-                "sequence": 5,
+                "sequence": 6,
                 "method": "GET",
                 "route": f"/v3/sessions/{session_id}/workspace",
                 "status_code": 200,
@@ -5066,7 +5158,7 @@ def _browser_approval_receipt(payload: dict[str, object]) -> dict[str, object]:
                 "response_semantic_digest": canonical_digest(pre_workspace),
             },
             {
-                "sequence": 6,
+                "sequence": 7,
                 "method": "GET",
                 "route": (
                     f"/v3/sessions/{session_id}/events?replay=1&after_cursor=10"
@@ -5079,7 +5171,7 @@ def _browser_approval_receipt(payload: dict[str, object]) -> dict[str, object]:
                 "response_semantic_digest": canonical_digest(event_records),
             },
             {
-                "sequence": 7,
+                "sequence": 8,
                 "method": "GET",
                 "route": f"/v3/sessions/{session_id}/workspace",
                 "status_code": 200,
@@ -5088,7 +5180,7 @@ def _browser_approval_receipt(payload: dict[str, object]) -> dict[str, object]:
                 "response_semantic_digest": canonical_digest(post_workspace),
             },
             {
-                "sequence": 8,
+                "sequence": 9,
                 "method": "GET",
                 "route": f"/v3/sessions/{session_id}/workspace",
                 "status_code": 200,
@@ -5099,7 +5191,7 @@ def _browser_approval_receipt(payload: dict[str, object]) -> dict[str, object]:
                 ],
             },
             {
-                "sequence": 9,
+                "sequence": 10,
                 "method": "GET",
                 "route": (
                     f"/v3/sessions/{session_id}/events?replay=1&after_cursor=0"
@@ -5117,13 +5209,13 @@ def _browser_approval_receipt(payload: dict[str, object]) -> dict[str, object]:
     )
     product_path["public_api_receipts"] = receipts
     product_path["public_final_workspace_response_binding"] = {
-        "receipt_sequence": 8,
+        "receipt_sequence": 9,
         "route": f"/v3/sessions/{session_id}/workspace",
         "response_digest": _digest("public-final-workspace-response"),
         "response_semantic_digest": product_path["public_final_workspace_digest"],
     }
     product_path["public_final_event_response_binding"] = {
-        "receipt_sequence": 9,
+        "receipt_sequence": 10,
         "route": f"/v3/sessions/{session_id}/events?replay=1&after_cursor=0",
         "response_digest": _digest("public-final-events-response"),
         "response_semantic_digest": product_path[
@@ -5151,7 +5243,7 @@ def _browser_approval_receipt(payload: dict[str, object]) -> dict[str, object]:
         "pre_workspace_snapshot": pre_workspace,
         "pre_workspace_digest": canonical_digest(pre_workspace),
         "pre_workspace_response_binding": {
-            "receipt_sequence": 5,
+            "receipt_sequence": 6,
             "route": f"/v3/sessions/{session_id}/workspace",
             "response_digest": _digest("browser-pre-workspace-response"),
             "response_semantic_digest": canonical_digest(pre_workspace),
@@ -5168,7 +5260,7 @@ def _browser_approval_receipt(payload: dict[str, object]) -> dict[str, object]:
         "continuation_event_record": closed_event(continuation_event),
         "event_response_bindings": [
             {
-                "receipt_sequence": 6,
+                "receipt_sequence": 7,
                 "route": (
                     f"/v3/sessions/{session_id}/events?replay=1&after_cursor=10"
                 ),
@@ -5181,7 +5273,7 @@ def _browser_approval_receipt(payload: dict[str, object]) -> dict[str, object]:
         "post_workspace_snapshot": post_workspace,
         "post_workspace_digest": canonical_digest(post_workspace),
         "post_workspace_response_binding": {
-            "receipt_sequence": 7,
+            "receipt_sequence": 8,
             "route": f"/v3/sessions/{session_id}/workspace",
             "response_digest": _digest("browser-post-workspace-response"),
             "response_semantic_digest": canonical_digest(post_workspace),

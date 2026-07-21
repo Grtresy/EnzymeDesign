@@ -310,9 +310,16 @@ def _text_artifact_path(
     version: int,
     artifact_id: str,
     filename: str,
+    *,
+    blob_store_root: Path | None = None,
 ) -> tuple[Path, str]:
     relative_path = f"code/{lineage_root}/v{version}/{artifact_id}/{filename}"
-    storage_path = _artifact_text_root() / session_id / relative_path
+    storage_root = (
+        _artifact_text_root()
+        if blob_store_root is None
+        else blob_store_root.resolve() / "session-text"
+    )
+    storage_path = storage_root / session_id / relative_path
     storage_path.parent.mkdir(parents=True, exist_ok=True)
     return storage_path, relative_path
 
@@ -348,6 +355,9 @@ def _create_pipeline_source_artifact(
     version: int = 1,
     extra_metadata: dict[str, Any] | None = None,
 ) -> SessionArtifactRecord:
+    context.repositories.assert_artifact_publication_authority(
+        session_id=context.snapshot.session.session_id
+    )
     artifact_id = _new_artifact_id()
     root_artifact_id = lineage_root_artifact_id or artifact_id
     digest = _sha256_digest(content)
@@ -357,6 +367,7 @@ def _create_pipeline_source_artifact(
         version,
         artifact_id,
         filename,
+        blob_store_root=context.artifact_blob_root,
     )
     storage_path.write_text(content, encoding="utf-8")
     metadata = {

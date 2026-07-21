@@ -17,6 +17,8 @@ from openzyme_runtime import ToolResult
 from openzyme_runtime import ToolSideEffect
 
 from .artifact_projection import project_artifact_for_agent
+from .controlled_operation_projection import project_controlled_operation_summary
+from .controlled_operation_projection import is_controlled_operation_artifact_public
 from .harness import SessionRuntimeContext
 from .harness import ToolRegistry
 from .runtime_consistency import RuntimeConsistencyService
@@ -429,7 +431,16 @@ class WorldInspectionService:
         approvals = self.context.repositories.approvals.list_by_session(session_id)
         invocations = self.context.repositories.invocations.list_by_session(session_id)
         operations = self.context.repositories.controlled_operations.list_by_session(session_id)
-        artifacts = self.context.repositories.artifacts.list_by_session(session_id)
+        artifacts = [
+            artifact
+            for artifact in self.context.repositories.artifacts.list_by_session(
+                session_id
+            )
+            if is_controlled_operation_artifact_public(
+                self.context.repositories,
+                artifact,
+            )
+        ]
         runtime_audit = RuntimeConsistencyService(self.context.repositories).audit_session(session_id)
 
         payload: dict[str, Any] = {
@@ -545,7 +556,10 @@ class WorldInspectionService:
             payload["operations"] = {
                 "items": [
                     {
-                        **operation.to_dict(),
+                        **project_controlled_operation_summary(
+                            self.context.repositories,
+                            operation,
+                        ),
                         "engine_invocation_id": f"inv_sandbox_adapter_{operation.operation_id}",
                         "engine_invocation_status": self._operation_invocation_status(
                             operation.operation_id

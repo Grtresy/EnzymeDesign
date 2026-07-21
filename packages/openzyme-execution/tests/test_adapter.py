@@ -27,6 +27,78 @@ _TOOLCHAIN_RUNTIME_IDENTITY = {
 class FakeRunnerServer:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
+        self.resolved_artifact_refs: list[str] = []
+
+    def resolve_artifact_ref(self, artifact_ref: str) -> str:
+        self.resolved_artifact_refs.append(artifact_ref)
+        return "/tmp/" + artifact_ref.rsplit("/", maxsplit=1)[-1]
+
+    def reserve_execution(self, identity):  # type: ignore[no-untyped-def]
+        self.calls.append(("reserve_execution", dict(identity)))
+        return {
+            "run_id": "reserved_run_001",
+            "identity_digest": "sha256:" + "1" * 64,
+        }
+
+    def submit_reserved_execution(
+        self,
+        *,
+        run_id,
+        runspec,
+        mode_override=None,
+    ):  # type: ignore[no-untyped-def]
+        self.calls.append(
+            (
+                "submit_reserved_execution",
+                {
+                    "run_id": run_id,
+                    "runspec": runspec,
+                    "mode_override": mode_override,
+                },
+            )
+        )
+        return {
+            "run_id": run_id,
+            "selected_mode": "ssh",
+            "status": "completed",
+            "artifacts": {},
+        }
+
+    def inspect_reserved_execution(self, run_id):  # type: ignore[no-untyped-def]
+        self.calls.append(("inspect_reserved_execution", {"run_id": run_id}))
+        return {
+            "run_id": run_id,
+            "status": "reserved",
+            "selected_mode": "ssh",
+            "phase": "allocated",
+            "effect_certainty": "no_effect",
+            "retry_eligibility": "same_phase_safe",
+            "reconciliation_required": False,
+            "retryable": True,
+            "runner_attempt_receipt_digest": "sha256:" + "2" * 64,
+            "artifacts": {},
+        }
+
+    def recover_reserved_execution_outcome(
+        self,
+        run_id,
+    ):  # type: ignore[no-untyped-def]
+        self.calls.append(
+            ("recover_reserved_execution_outcome", {"run_id": run_id})
+        )
+        return {
+            "run_id": run_id,
+            "status": "completed",
+            "selected_mode": "ssh",
+            "phase": "terminal",
+            "effect_certainty": "terminal_known",
+            "retry_eligibility": "terminal",
+            "reconciliation_required": False,
+            "retryable": False,
+            "runner_attempt_receipt_digest": "sha256:" + "3" * 64,
+            "exit_code": 0,
+            "artifacts": {},
+        }
 
     def call_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object]:
         self.calls.append((name, arguments))
@@ -43,7 +115,9 @@ class FakeRunnerServer:
                 "selected_mode": "sbatch",
                 "status": "completed",
                 "artifacts": {
-                    "a/result.json": "/tmp/a/result.json",
+                    "a/result.json": (
+                        f"runner-artifact://{arguments['run_id']}/a/result.json"
+                    ),
                 },
             }
         return {
@@ -52,7 +126,7 @@ class FakeRunnerServer:
             "selected_mode": "ssh",
             "status": "completed",
             "artifacts": {
-                "result.json": "/tmp/result.json",
+                "result.json": "runner-artifact://run_001/result.json",
             },
         }
 
@@ -98,6 +172,9 @@ def test_hpc_runner_adapter_calls_real_boundary_shape_and_normalizes_output() ->
     assert outcome.job_id is None
     assert outcome.artifacts[0].storage_uri == "/tmp/result.json"
     assert outcome.artifacts[0].kind.value == "result"
+    assert server.resolved_artifact_refs == [
+        "runner-artifact://run_001/result.json"
+    ]
 
 
 def test_hpc_runner_adapter_projects_only_safe_ssh_toolchain_identity_fields() -> None:
@@ -265,6 +342,56 @@ def test_hpc_runner_adapter_queries_status_and_fetches_artifacts() -> None:
         assert arguments == {"run_id": "run_001"}
 
 
+def test_hpc_runner_adapter_reserves_dispatches_and_inspects_exact_run() -> None:
+    server = FakeRunnerServer()
+    adapter = HpcRunnerExecutionAdapter(server=server)
+    identity = {
+        "schema_version": "runner_execution_reservation_identity@1",
+        "execution_id": "exec_001",
+    }
+
+    reserved = adapter.reserve_execution(identity)
+    outcome = adapter.submit_reserved_execution(
+        "sess_001",
+        {
+            "tool_name": "exec.run",
+            "runspec": {
+                "name": "durable-run",
+                "stage": "execution",
+                "command": ["true"],
+                "execution_mode": "ssh",
+            },
+        },
+        run_id=reserved["run_id"],
+    )
+    observation = adapter.inspect_reserved_execution(
+        run_id=reserved["run_id"]
+    )
+
+    assert outcome.run_id == "reserved_run_001"
+    assert observation.run_id == "reserved_run_001"
+    assert observation.status == "reserved"
+    assert observation.effect_certainty == "no_effect"
+    sent = server.calls[1][1]
+    assert sent["run_id"] == "reserved_run_001"
+    assert sent["runspec"]["metadata"]["openzyme"]["session_id"] == "sess_001"
+
+
+def test_hpc_runner_adapter_recovers_only_an_exact_terminal_reserved_run() -> None:
+    server = FakeRunnerServer()
+    adapter = HpcRunnerExecutionAdapter(server=server)
+
+    outcome = adapter.recover_reserved_execution_outcome(
+        run_id="reserved_run_001"
+    )
+
+    assert outcome.run_id == "reserved_run_001"
+    assert outcome.status is RunStatus.SUCCEEDED
+    assert [name for name, _ in server.calls] == [
+        "recover_reserved_execution_outcome"
+    ]
+
+
 def test_hpc_runner_adapter_treats_pdbqt_as_structure() -> None:
     server = FakeRunnerServer()
     adapter = HpcRunnerExecutionAdapter(server=server)
@@ -275,7 +402,7 @@ def test_hpc_runner_adapter_treats_pdbqt_as_structure() -> None:
             "selected_mode": "ssh",
             "status": "completed",
             "artifacts": {
-                "vina_out.pdbqt": "/tmp/vina_out.pdbqt",
+                "vina_out.pdbqt": "runner-artifact://run_001/vina_out.pdbqt",
             },
         }
     )

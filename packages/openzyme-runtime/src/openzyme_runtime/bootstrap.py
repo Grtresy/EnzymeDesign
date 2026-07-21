@@ -5,6 +5,7 @@ from typing import Any
 
 from .ai import ChatModelFactory
 from .limits import LimiterRegistry
+from .reliability import ReliabilityShadowObserver
 from .seams import ExecutionAdapter
 from .seams import HpcCatalogProvider
 from .seams import HpcExecutionRegistry
@@ -24,6 +25,7 @@ class RuntimeFoundation:
     model_factory: ChatModelFactory | None = None
     limiter_registry: LimiterRegistry | None = None
     settings: OpenZymeSettings | None = None
+    reliability_shadow_observer: ReliabilityShadowObserver | None = None
 
 
 def validate_runtime_foundation_support() -> None:

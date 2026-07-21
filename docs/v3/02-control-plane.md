@@ -29,6 +29,7 @@ SQLite connection / transaction ownership：
 - `020_v3_task_integrity` 将 task dependency 的 INSERT / UPDATE integrity triggers 纳入 current schema；缺少这些 triggers 的旧本地库不是 current-version input，必须按 fresh database 流程重建
 - `021_v3_durable_event_outbox` 将 durable event、command receipt 与 append-only/immutable triggers 纳入 current schema；缺少任一项同样 fail fast
 - `022_v3_session_access_control` 将 session principal/role 授权事实纳入 current schema；授权不能只存在于 API token claims、浏览器状态或 project 字符串比较
+- `026` 至 `031` 将 canonical controlled-operation execution、runtime command/continuation、mutation scope/writer/receipt、immutable dispatch request、result artifact set 与 external snapshot 纳入 current schema；缺少 closed enum、identity、append-only 或 writer-fence trigger 的数据库不是 current-version input
 
 ## 2. Canonical Objects
 
@@ -278,7 +279,7 @@ claimed --operator release--> pending
 用途：
 
 - 表达某个 session 当前由哪个 runtime worker 拥有推进权
-- 阻止 background runtime、manual `/runtime/drain`、recovery 或测试 worker 同时推进同一 session 的不同 signal
+- 阻止 background runtime、runtime-command worker、recovery 或测试 worker 同时推进同一 session 的不同 signal
 - 为 signal claim / complete / fail 提供 fencing token，防止过期 worker 迟到写回
 
 建议字段：
@@ -286,7 +287,7 @@ claimed --operator release--> pending
 - `session_id`
 - `owner_id`
 - `lease_token`
-- `mode` (`background` / `manual_drain` / `recovery` / `test`)
+- `mode` (`background` / `manual_drain` / `recovery` / `test`；`manual_drain` 是 command worker 的内部 scheduler mode，不表示 HTTP ownership)
 - `acquired_at`
 - `heartbeat_at`
 - `expires_at`
@@ -301,10 +302,28 @@ claimed --operator release--> pending
 - heartbeat / extend / release 必须校验 `owner_id + lease_token`
 - scheduler 在 blocking provider/tool turn 期间按 lease TTL 的有界分数持续 heartbeat；heartbeat 更新失败或返回 no-match 表示 ownership 已丢失，不得继续 claim 新 signal
 - runtime worker connection 绑定 `session_id + lease_token + fencing_token`；write commit 前必须重新确认 lease 未过期且未释放，session-scoped write 还必须与 leased session 一致
-- scheduler worker 重建的 capability engine、sandbox SDK control server、adapter executor 与 HPC fetch callback scope 必须继承同一 fence；不能因为切换线程/connection 而退化成 unfenced Host write
+- scheduler worker 重建的 capability engine 与 `legacy_sync` sandbox callback 必须继承同一 session fence；`durable_async_v1` adapter/HPC callback 改为继承 execution fence 与 mutation-writer authority，不能因为切换线程/connection 而退化成 unfenced Host write，也不能借用 session lease冒充 external-effect ownership
 - write/approval/external tool 在 side effect 前做 fence preflight；commit fence 是竞态条件下的第二道防线。超时或取消后迟到返回的旧 callback 不得写 task、operation、run、artifact、report 或 event
 - session runtime lease 只管理“谁有权推进 session runtime”，不判断 task 是否完成或失败
-- `/runtime/drain`、background runtime、recovery worker 和测试 scheduler 都必须尊重同一 session lease；已被占用时返回或记录 locked diagnostic
+- `/runtime/drain` POST 只 admission command；其 `RuntimeCommandWorker`、background runtime、recovery worker 和测试 scheduler 在实际推进 bounded batch 时都必须尊重同一 session lease。已被占用时 command 终结为脱敏 `locked` diagnostic
+
+### 2.7.3 Runtime/HPC reliability authority objects
+
+这些对象属于 control-plane runtime truth，但不形成第二套 task graph：
+
+- `ControlledOperationExecution`：`durable_async_v1` operation 的唯一 external-effect owner，冻结 operation/session/approval/route/backend/input/expected-output/runtime identity，记录 lifecycle、effect certainty、dispatch generation、state version、execution lease/fence、opaque backend handle、terminal/result refs 与 reconciliation state
+- `ControlledOperationExecutionEvent`：append-only transition journal；用于审计与 recovery，不是并列 reducer
+- `ControlledOperationDispatchRequest`：在 dispatch 前冻结的 immutable request；worker 不从 mutable workspace 或 prompt重建外部 side effect
+- `ControlledOperationResultArtifactSet`：Host-owned immutable result handle、declared artifact identity/digest 与 promotion state；partial 或 drifted set 不得发布
+- `RuntimeCommandRecord`：显式 `/runtime/drain` 的 durable admission、idempotency、closed limits、claim/fence 与 bounded terminal outcome；不持 approval/provider/HPC wall time
+- `ContinuationState` / delivery attempt：绑定 sandbox run/workspace/runtime identity/process epoch/tool call/invocation/signal、resume strategy、result digest 与 delivery generation；只拥有 exact result delivery
+- `MutationScope` / `MutationWriter` / `MutationQuiescenceReceipt`：冻结 session/attempt generation、coverage manifest、writer ancestry/fence、两次一致 snapshot 与 immutable closure proof
+
+四种 authority 独立存在：session lease/signal claim、execution lease/fence、continuation delivery claim/process epoch、mutation scope generation/writer fence。它们的 acquire、heartbeat、stale recovery 与 terminal 条件不可互相替代；任何一个对象的 terminal 都不能自动 terminalize task。
+
+`ControlledOperation.status/result/error` 对 durable owner 只是由唯一 transition service 在同一 transaction 中派生的兼容投影。raw repository save、legacy adapter、approval row、continuation 或 runtime signal 都不得成为第二个 dispatch/reducer owner。恢复边界由 effect certainty 决定：仅 `no_effect` 可做同 phase 有界恢复，`dispatch_in_doubt` 禁止 replay，`effect_known` 只查询 exact handle，`terminal_known` 只恢复 result/materialization。
+
+Mutation scope 的 closure 顺序固定为 close admission/advance fence、显式等待全部 writer/descendant 退休、捕获两次一致的 bounded SQLite/event/external snapshot、签发 receipt、验证后 seal exact generation。runtime idle、空队列、lease expiry、HTTP 返回、timeout、disconnect 或 missing handle 不能推断 writer retirement；receipt/seal 也不表示 task completed。后续合法写入必须进入显式链接的新 generation。
 
 ### 2.8 EngineInvocation
 

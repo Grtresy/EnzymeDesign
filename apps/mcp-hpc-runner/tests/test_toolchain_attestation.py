@@ -16,7 +16,9 @@ from mcp_hpc_runner.config import (
 )
 from mcp_hpc_runner.errors import FailureMapper
 from mcp_hpc_runner.models import ExpectedOutput, RunSpec
-from mcp_hpc_runner.preflight import PreflightChecker, PreflightResult
+from mcp_hpc_runner.preflight import PreflightChecker
+from mcp_hpc_runner.preflight import PreflightFailureClass
+from mcp_hpc_runner.preflight import PreflightResult
 from mcp_hpc_runner.remote import CommandResult
 from mcp_hpc_runner.ssh_runner import (
     SSHRunner,
@@ -87,10 +89,12 @@ class FakeCommandRunner:
         *,
         remote_returncode: int = 0,
         remote_stderr: str = "",
+        preflight_stdout: str = "",
     ) -> None:
         self.remote_stdout = remote_stdout
         self.remote_returncode = remote_returncode
         self.remote_stderr = remote_stderr
+        self.preflight_stdout = preflight_stdout
         self.commands: list[tuple[str | None, list[str]]] = []
 
     def run(
@@ -102,7 +106,11 @@ class FakeCommandRunner:
         stage: str | None = None,
     ) -> CommandResult:  # noqa: ARG002
         self.commands.append((stage, args))
-        stdout = self.remote_stdout if stage == "remote_execution" else ""
+        stdout = (
+            self.remote_stdout
+            if stage == "remote_execution"
+            else (self.preflight_stdout if stage == "preflight" else "")
+        )
         returncode = self.remote_returncode if stage == "remote_execution" else 0
         stderr = self.remote_stderr if stage == "remote_execution" else ""
         return CommandResult(
@@ -345,6 +353,20 @@ def test_preflight_checks_runner_bound_sif_but_does_not_claim_execution_digest(
     assert all("content_digest" not in descriptor for descriptor in descriptors)
 
 
+def test_preflight_rejects_unbound_or_truncated_success_receipt(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    command_runner = FakeCommandRunner("", preflight_stdout="[]")
+    checker = PreflightChecker(config, command_runner)  # type: ignore[arg-type]
+
+    result = checker.run_checks(_spec(), "mcp_runs/run-001")
+
+    assert result.passed is False
+    assert result.failure_class is PreflightFailureClass.DETERMINISTIC_VALIDATION
+    assert result.checks[-1]["reason"] == "preflight_receipt_invalid"
+
+
 @pytest.mark.parametrize(
     "executable",
     ["apptainer", "../bin/apptainer", "/usr/bin/apptainer;true", "/usr/bin/tool"],
@@ -527,7 +549,7 @@ def test_ssh_runner_fails_closed_when_attestation_marker_is_not_unique_and_valid
     assert _TOOLCHAIN_IDENTITY_MARKER not in result.stdout
 
 
-def test_ssh_runner_preserves_transport_timeout_over_missing_success_marker(
+def test_ssh_runner_maps_post_transmission_timeout_to_dispatch_in_doubt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -544,11 +566,12 @@ def test_ssh_runner_preserves_transport_timeout_over_missing_success_marker(
     result = _runner(tmp_path, command_runner).exec_run(_spec())
 
     assert result.status == "failed"
-    assert result.error_code == "SSH_CONNECTION_TIMEOUT"
-    assert result.metadata["toolchain_runtime_identity"] is None
-    assert result.metadata["status"] == "failed"
-    assert result.metadata["exit_code"] == 255
-    assert result.metadata["error_code"] == "SSH_CONNECTION_TIMEOUT"
+    assert result.error_code == "DISPATCH_IN_DOUBT"
+    assert result.artifacts == {}
+    assert result.metadata["runner_phase"] == "dispatching"
+    assert result.metadata["effect_certainty"] == "dispatch_in_doubt"
+    assert result.metadata["retry_eligibility"] == "reconcile_required"
+    assert result.metadata["reconciliation_required"] is True
 
 
 def test_ssh_runner_preserves_unknown_nonzero_over_missing_outputs(

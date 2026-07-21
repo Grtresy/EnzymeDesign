@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from dataclasses import replace
 from enum import StrEnum
@@ -523,9 +524,28 @@ class ToolRouter:
                         },
                     )
         try:
-            return sanitize_tool_result_diagnostics(
-                runtime.dispatch(step_context, invocation, self.dispatch_context)
+            mutation_scope_factory = getattr(
+                self.dispatch_context,
+                "tool_mutation_writer_scope",
+                None,
             )
+            mutation_scope = (
+                mutation_scope_factory(
+                    tool_name=invocation.tool_name,
+                    call_id=invocation.call_id,
+                )
+                if governance.side_effect is not ToolSideEffect.READ
+                and callable(mutation_scope_factory)
+                else nullcontext(None)
+            )
+            with mutation_scope:
+                return sanitize_tool_result_diagnostics(
+                    runtime.dispatch(
+                        step_context,
+                        invocation,
+                        self.dispatch_context,
+                    )
+                )
         except RuntimeError:
             if governance.side_effect is ToolSideEffect.READ:
                 raise

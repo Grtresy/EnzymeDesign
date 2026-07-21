@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from dataclasses import replace
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
@@ -12,6 +13,7 @@ import sqlite3
 from typing import Any
 from typing import Callable
 from typing import Iterator
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from openzyme_domain import AgentMember
@@ -25,7 +27,11 @@ from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import CommandLogArtifactRecord
 from openzyme_domain import ControlledOperation
+from openzyme_domain import ControlledOperationExecution
+from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import ControlledOperationStatus
+from openzyme_domain import ContinuationDeliveryState
+from openzyme_domain import ContinuationResumeStrategy
 from openzyme_domain import ContinuationState
 from openzyme_domain import ContinuationStateStatus
 from openzyme_domain import EngineInvocation
@@ -64,6 +70,27 @@ from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 
 from .migration_assets import apply_sqlite_migrations
+from .mutation_authority import MutationResourceCategory
+from .mutation_authority import MutationWriteAuthority
+from .mutation_authority import MutationWriteFencingError
+from .mutation_authority import writer_allows_resource
+
+if TYPE_CHECKING:
+    from .durable_coordination_repositories import ContinuationDeliveryRepository
+    from .durable_coordination_repositories import MutationScopeRepository
+    from .durable_coordination_repositories import MutationWriterRepository
+    from .durable_coordination_repositories import QuiescenceReceiptRepository
+    from .durable_coordination_repositories import QuiescenceSnapshotRepository
+    from .durable_coordination_repositories import RuntimeCommandRepository
+    from .reliability_repositories import ControlledOperationExecutionEventRepository
+    from .reliability_repositories import ControlledOperationExecutionRepository
+    from .reliability_repositories import (
+        ControlledOperationDispatchRequestRepository,
+    )
+    from .reliability_repositories import ControlledOperationResultHandleRepository
+    from .reliability_repositories import (
+        ControlledOperationResultArtifactRepository,
+    )
 
 
 class OwnershipError(ValueError):
@@ -119,6 +146,19 @@ class RuntimeWriteFencingError(RuntimeError):
         }
 
 
+class DurableControlledOperationWriteError(RuntimeError):
+    """Raised when a raw compatibility writer targets a durable-owned operation."""
+
+    error_code = "durable_controlled_operation_raw_write_rejected"
+
+
+class ControlledOperationWriteFencingError(RuntimeError):
+    """Raised when a durable execution callback no longer owns canonical writes."""
+
+    error_code = "controlled_operation_write_fenced"
+    retryable = False
+
+
 @dataclass(frozen=True, slots=True)
 class SessionRuntimeLeaseAcquireResult:
     acquired: bool
@@ -133,6 +173,10 @@ class _OpenZymeSQLiteConnection(sqlite3.Connection):
 
     _openzyme_managed_transaction_depth: int = 0
     _openzyme_runtime_write_fence: tuple[str, str, int] | None = None
+    _openzyme_controlled_operation_write_fence: ControlledOperationExecution | None = (
+        None
+    )
+    _openzyme_mutation_write_authority: MutationWriteAuthority | None = None
 
 
 def connect_sqlite(
@@ -154,6 +198,17 @@ def connect_sqlite(
     )
     connection._openzyme_managed_transaction_depth = 0  # type: ignore[attr-defined]
     connection._openzyme_runtime_write_fence = None  # type: ignore[attr-defined]
+    connection._openzyme_controlled_operation_write_fence = None  # type: ignore[attr-defined]
+    connection._openzyme_mutation_write_authority = None  # type: ignore[attr-defined]
+    connection.create_function(
+        "openzyme_mutation_write_allowed",
+        2,
+        lambda session_id, resource_category: _mutation_write_allowed(
+            connection,
+            session_id=session_id,
+            resource_category=resource_category,
+        ),
+    )
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
@@ -177,8 +232,14 @@ def _commit(connection: sqlite3.Connection) -> None:
     """Commit standalone repository calls, but never an owning UoW transaction."""
 
     if _managed_transaction_depth(connection) == 0:
-        _validate_runtime_write_fence(connection)
-        connection.commit()
+        try:
+            _validate_runtime_write_fence(connection)
+            _validate_controlled_operation_write_fence(connection)
+            _validate_mutation_write_authority(connection)
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
 
 
 def _runtime_write_fence(
@@ -221,6 +282,221 @@ def _validate_runtime_write_fence(
     if row is None:
         raise RuntimeWriteFencingError(
             "session runtime lease fencing rejected a stale business write"
+        )
+
+
+def _controlled_operation_write_fence(
+    connection: sqlite3.Connection,
+) -> ControlledOperationExecution | None:
+    value = getattr(connection, "_openzyme_controlled_operation_write_fence", None)
+    return value if isinstance(value, ControlledOperationExecution) else None
+
+
+def _validate_controlled_operation_write_fence(
+    connection: sqlite3.Connection,
+    *,
+    expected_session_id: str | None = None,
+) -> None:
+    captured = _controlled_operation_write_fence(connection)
+    if captured is None:
+        return
+    if expected_session_id is not None and expected_session_id != captured.session_id:
+        raise ControlledOperationWriteFencingError(
+            "controlled operation callback crossed its session boundary"
+        )
+    row = connection.execute(
+        """
+        SELECT *
+        FROM controlled_operation_execution_records
+        WHERE execution_id = ?
+        """,
+        (captured.execution_id,),
+    ).fetchone()
+    now = _utc_now_iso()
+    if row is None:
+        raise ControlledOperationWriteFencingError(
+            "controlled operation callback execution is missing"
+        )
+    actual_identity = (
+        row["operation_id"],
+        row["session_id"],
+        row["approval_id"],
+        row["operation_digest"],
+        row["approval_digest"],
+        row["route_policy_id"],
+        row["selected_backend"],
+        row["adapter_policy_id"],
+        row["input_identity_digest"],
+        row["expected_output_contract_digest"],
+        row["runtime_identity_digest"],
+    )
+    expected_identity = (
+        captured.operation_id,
+        captured.session_id,
+        captured.approval_id,
+        captured.operation_digest,
+        captured.approval_digest,
+        captured.route_policy_id,
+        captured.selected_backend,
+        captured.adapter_policy_id,
+        captured.input_identity_digest,
+        captured.expected_output_contract_digest,
+        captured.runtime_identity_digest,
+    )
+    if (
+        actual_identity != expected_identity
+        or int(row["state_version"]) != captured.state_version
+        or row["lease_owner"] != captured.lease_owner
+        or row["lease_token"] != captured.lease_token
+        or int(row["fencing_token"]) != captured.fencing_token
+        or captured.lease_owner is None
+        or captured.lease_token is None
+        or row["lease_expires_at"] is None
+        or str(row["lease_expires_at"]) <= now
+    ):
+        raise ControlledOperationWriteFencingError(
+            "controlled operation callback lost its lease, fence, version, or identity"
+        )
+
+
+def _mutation_write_authority(
+    connection: sqlite3.Connection,
+) -> MutationWriteAuthority | None:
+    value = getattr(connection, "_openzyme_mutation_write_authority", None)
+    return value if isinstance(value, MutationWriteAuthority) else None
+
+
+def _session_has_mutation_scope(
+    connection: sqlite3.Connection,
+    *,
+    session_id: str,
+) -> bool:
+    try:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM mutation_scope_records
+            WHERE session_id = ?
+            LIMIT 1
+            """,
+            (session_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return row is not None
+
+
+def _mutation_authority_is_current(
+    connection: sqlite3.Connection,
+    *,
+    authority: MutationWriteAuthority,
+    session_id: str | None = None,
+    resource_category: MutationResourceCategory | None = None,
+) -> bool:
+    if session_id is not None and not session_id:
+        return False
+    scope_row = connection.execute(
+        """
+        SELECT session_id
+        FROM mutation_scope_records
+        WHERE scope_id = ?
+          AND generation = ?
+          AND mutation_fencing_token = ?
+          AND state = 'open'
+        """,
+        (
+            authority.scope_id,
+            authority.scope_generation,
+            authority.scope_fencing_token,
+        ),
+    ).fetchone()
+    if scope_row is None or scope_row["session_id"] is None:
+        return False
+    if session_id is not None and str(scope_row["session_id"]) != session_id:
+        return False
+    writer_row = connection.execute(
+        """
+        SELECT owner_kind
+        FROM mutation_writer_records
+        WHERE writer_id = ?
+          AND scope_id = ?
+          AND scope_generation = ?
+          AND fencing_token = ?
+          AND state = 'registered'
+        """,
+        (
+            authority.writer_id,
+            authority.scope_id,
+            authority.scope_generation,
+            authority.writer_fencing_token,
+        ),
+    ).fetchone()
+    if (
+        writer_row is None
+        or str(writer_row["owner_kind"]) != authority.owner_kind.value
+    ):
+        return False
+    return resource_category is None or writer_allows_resource(
+        authority.owner_kind,
+        resource_category,
+    )
+
+
+def _mutation_write_allowed(
+    connection: sqlite3.Connection,
+    *,
+    session_id: object,
+    resource_category: object,
+) -> int:
+    """SQLite-trigger callback; it must fail closed and never leak diagnostics."""
+
+    try:
+        normalized_session_id = str(session_id)
+        category = MutationResourceCategory(str(resource_category))
+        if not _session_has_mutation_scope(
+            connection,
+            session_id=normalized_session_id,
+        ):
+            return 1
+        authority = _mutation_write_authority(connection)
+        if authority is None:
+            return 0
+        return int(
+            _mutation_authority_is_current(
+                connection,
+                authority=authority,
+                session_id=normalized_session_id,
+                resource_category=category,
+            )
+        )
+    except BaseException:
+        return 0
+
+
+def _validate_mutation_write_authority(
+    connection: sqlite3.Connection,
+    *,
+    expected_session_id: str | None = None,
+    resource_category: MutationResourceCategory | None = None,
+) -> None:
+    authority = _mutation_write_authority(connection)
+    if authority is None:
+        if expected_session_id is not None and _session_has_mutation_scope(
+            connection,
+            session_id=expected_session_id,
+        ):
+            raise MutationWriteFencingError(
+                "covered session mutation requires a registered writer"
+            )
+        return
+    if not _mutation_authority_is_current(
+        connection,
+        authority=authority,
+        session_id=expected_session_id,
+        resource_category=resource_category,
+    ):
+        raise MutationWriteFencingError(
+            "mutation writer lost its scope generation, fence, state, or resource authority"
         )
 
 
@@ -407,9 +683,7 @@ def _utc_now_iso() -> str:
 
 def _require_enum_member(value: Any, enum_type: type[Enum], field_name: str) -> None:
     if not isinstance(value, enum_type):
-        raise ValueError(
-            f"{field_name} must be {enum_type.__name__}, got {value!r}"
-        )
+        raise ValueError(f"{field_name} must be {enum_type.__name__}, got {value!r}")
 
 
 def _parse_iso_datetime(value: str) -> datetime:
@@ -420,7 +694,9 @@ def _parse_iso_datetime(value: str) -> datetime:
 
 
 def _retry_after_seconds(expires_at: str, *, now_iso: str) -> int:
-    seconds = (_parse_iso_datetime(expires_at) - _parse_iso_datetime(now_iso)).total_seconds()
+    seconds = (
+        _parse_iso_datetime(expires_at) - _parse_iso_datetime(now_iso)
+    ).total_seconds()
     return max(0, int(seconds))
 
 
@@ -462,7 +738,9 @@ def _json_loads_object_tuple(value: str | None) -> tuple[dict[str, Any], ...]:
 
 
 def _slugify_agent_handle(value: str) -> str:
-    text = value.strip().lower().replace("agent:", "").replace(" ", "-").replace(":", "-")
+    text = (
+        value.strip().lower().replace("agent:", "").replace(" ", "-").replace(":", "-")
+    )
     chars = [char if char.isalnum() or char in {"-", "_"} else "-" for char in text]
     slug = "".join(chars).strip("-_")
     while "--" in slug:
@@ -620,20 +898,18 @@ class TaskRepository:
         existing = self.get(task.task_id)
         previous_status = None if existing is None else existing.status
         if intent is TaskWriteIntent.EDIT:
-            status_changed = previous_status is None or previous_status is not task.status
+            status_changed = (
+                previous_status is None or previous_status is not task.status
+            )
             crosses_exit_boundary = status_changed and (
                 task.status in self._EXIT_STATUSES
                 or previous_status in self._EXIT_STATUSES
             )
-            edits_terminal_task = (
-                not status_changed
-                and task.status
-                in {
-                    TaskStatus.COMPLETED,
-                    TaskStatus.FAILED,
-                    TaskStatus.CANCELLED,
-                }
-            )
+            edits_terminal_task = not status_changed and task.status in {
+                TaskStatus.COMPLETED,
+                TaskStatus.FAILED,
+                TaskStatus.CANCELLED,
+            }
             if crosses_exit_boundary or edits_terminal_task:
                 raise TaskWriteIntentError(
                     "generic task save cannot cross a business exit boundary or "
@@ -789,7 +1065,9 @@ class TaskRepository:
             for row in rows
         ]
 
-    def list_ready_by_session(self, session_id: str, *, lane_id: str | None = None) -> list[Task]:
+    def list_ready_by_session(
+        self, session_id: str, *, lane_id: str | None = None
+    ) -> list[Task]:
         lane_clause = ""
         params: list[str] = [session_id, TaskStatus.TODO.value]
         if lane_id is None:
@@ -1115,7 +1393,9 @@ class SessionAccessRepository:
             created_at=str(row["created_at"]),
         )
 
-    def list_session_ids(self, principal_id: str, *, project_id: str) -> tuple[str, ...]:
+    def list_session_ids(
+        self, principal_id: str, *, project_id: str
+    ) -> tuple[str, ...]:
         rows = self.connection.execute(
             """
             SELECT access.session_id
@@ -1138,7 +1418,9 @@ class DurableEventRepository:
         if event.cursor is not None:
             raise ValueError("cursor is assigned by durable event storage")
         if event.visibility not in {"public", "audit", "internal"}:
-            raise ValueError(f"unsupported durable event visibility: {event.visibility}")
+            raise ValueError(
+                f"unsupported durable event visibility: {event.visibility}"
+            )
         payload_json = json.dumps(event.payload, sort_keys=True, separators=(",", ":"))
         try:
             cursor = self.connection.execute(
@@ -1339,7 +1621,10 @@ class CommandReceiptRepository:
                 command_type=receipt.command_type,
                 idempotency_key=receipt.idempotency_key,
             )
-            if existing is not None and existing.request_digest == receipt.request_digest:
+            if (
+                existing is not None
+                and existing.request_digest == receipt.request_digest
+            ):
                 return existing
             raise CommandIdempotencyConflictError(
                 "idempotency key was reused with a different request"
@@ -1411,7 +1696,9 @@ class LaneLifecycleEventRepository:
                 event.lane_id,
                 event.task_id,
                 event.event_type,
-                json.dumps({} if event.payload is None else event.payload, sort_keys=True),
+                json.dumps(
+                    {} if event.payload is None else event.payload, sort_keys=True
+                ),
                 event.created_at,
             ),
         )
@@ -1429,7 +1716,9 @@ class LaneLifecycleEventRepository:
         ).fetchall()
         return [self._row_to_event(row) for row in rows]
 
-    def list_by_lane(self, session_id: str, lane_id: str) -> list[LaneLifecycleEventRecord]:
+    def list_by_lane(
+        self, session_id: str, lane_id: str
+    ) -> list[LaneLifecycleEventRecord]:
         rows = self.connection.execute(
             """
             SELECT *
@@ -1585,7 +1874,9 @@ class ApprovalRequestRepository:
         ]
 
 
-def _coerce_inbox_participant_kind(value: Any, participant: Any) -> InboxParticipantKind:
+def _coerce_inbox_participant_kind(
+    value: Any, participant: Any
+) -> InboxParticipantKind:
     if value not in {None, ""}:
         try:
             return InboxParticipantKind(str(value))
@@ -1649,7 +1940,9 @@ class InboxMessageRepository:
         ).fetchall()
         return [self._row_to_message(row) for row in rows]
 
-    def list_by_correlation(self, session_id: str, correlation_id: str) -> list[InboxMessage]:
+    def list_by_correlation(
+        self, session_id: str, correlation_id: str
+    ) -> list[InboxMessage]:
         rows = self.connection.execute(
             """
             SELECT *
@@ -1673,7 +1966,9 @@ class InboxMessageRepository:
         ).fetchall()
         return [self._row_to_message(row) for row in rows]
 
-    def list_unread_for_recipient(self, session_id: str, recipient: str) -> list[InboxMessage]:
+    def list_unread_for_recipient(
+        self, session_id: str, recipient: str
+    ) -> list[InboxMessage]:
         rows = self.connection.execute(
             """
             SELECT *
@@ -1681,7 +1976,12 @@ class InboxMessageRepository:
             WHERE session_id = ? AND recipient = ? AND status IN (?, ?)
             ORDER BY created_at, rowid
             """,
-            (session_id, recipient, InboxStatus.UNREAD.value, InboxStatus.PENDING.value),
+            (
+                session_id,
+                recipient,
+                InboxStatus.UNREAD.value,
+                InboxStatus.PENDING.value,
+            ),
         ).fetchall()
         return [self._row_to_message(row) for row in rows]
 
@@ -1719,9 +2019,13 @@ class InboxMessageRepository:
             message_id=row["message_id"],
             session_id=row["session_id"],
             sender=row["sender"],
-            sender_kind=_coerce_inbox_participant_kind(row["sender_kind"], row["sender"]),
+            sender_kind=_coerce_inbox_participant_kind(
+                row["sender_kind"], row["sender"]
+            ),
             recipient=row["recipient"],
-            recipient_kind=_coerce_inbox_participant_kind(row["recipient_kind"], row["recipient"]),
+            recipient_kind=_coerce_inbox_participant_kind(
+                row["recipient_kind"], row["recipient"]
+            ),
             message_type=row["message_type"],
             correlation_id=row["correlation_id"],
             payload_ref=row["payload_ref"],
@@ -1781,7 +2085,9 @@ class MemoryEntryRepository:
         )
         _commit(self.connection)
 
-    def list_by_scope(self, session_id: str, scope_kind: MemoryScopeKind, scope_ref: str) -> list[MemoryEntry]:
+    def list_by_scope(
+        self, session_id: str, scope_kind: MemoryScopeKind, scope_ref: str
+    ) -> list[MemoryEntry]:
         rows = self.connection.execute(
             """
             SELECT *
@@ -1860,7 +2166,11 @@ class AgentMemberRepository:
                 session_id=agent.session_id,
                 agent_id=agent.parent_agent_id,
             )
-        member_id = agent.member_id or self._existing_member_id(agent.session_id, agent.agent_id) or f"member_{uuid4().hex[:12]}"
+        member_id = (
+            agent.member_id
+            or self._existing_member_id(agent.session_id, agent.agent_id)
+            or f"member_{uuid4().hex[:12]}"
+        )
         nickname, display_name, handle = _agent_identity_defaults(agent)
         self.connection.execute(
             """
@@ -2138,7 +2448,9 @@ class SandboxWorkspaceRecordRepository:
                 _json_dumps(list(record.materialized_input_artifact_ids)),
                 _json_dumps(list(record.registered_artifact_ids)),
                 _json_dumps(list(record.source_code_artifact_ids)),
-                None if record.last_command_summary is None else _json_dumps(record.last_command_summary),
+                None
+                if record.last_command_summary is None
+                else _json_dumps(record.last_command_summary),
                 None if record.last_error is None else _json_dumps(record.last_error),
                 record.created_at,
                 record.last_attached_at,
@@ -2198,9 +2510,15 @@ class SandboxWorkspaceRecordRepository:
             volume_digest=row["volume_digest"],
             quota_summary=_json_loads_object(row["quota_summary_json"]) or {},
             directory_summary=_json_loads_object(row["directory_summary_json"]) or {},
-            materialized_input_artifact_ids=_json_loads_list(row["materialized_input_artifact_ids_json"]),
-            registered_artifact_ids=_json_loads_list(row["registered_artifact_ids_json"]),
-            source_code_artifact_ids=_json_loads_list(row["source_code_artifact_ids_json"]),
+            materialized_input_artifact_ids=_json_loads_list(
+                row["materialized_input_artifact_ids_json"]
+            ),
+            registered_artifact_ids=_json_loads_list(
+                row["registered_artifact_ids_json"]
+            ),
+            source_code_artifact_ids=_json_loads_list(
+                row["source_code_artifact_ids_json"]
+            ),
             last_command_summary=_json_loads_object(row["last_command_summary_json"]),
             last_error=_json_loads_object(row["last_error_json"]),
             created_at=row["created_at"],
@@ -2219,7 +2537,9 @@ class SandboxRunRecordRepository:
             (record.sandbox_workspace_id,),
         ).fetchone()
         if workspace is None:
-            raise OwnershipError(f"sandbox_workspace_records.sandbox_workspace_id={record.sandbox_workspace_id!r} does not exist")
+            raise OwnershipError(
+                f"sandbox_workspace_records.sandbox_workspace_id={record.sandbox_workspace_id!r} does not exist"
+            )
         if workspace["session_id"] != record.session_id:
             raise OwnershipError(
                 f"sandbox workspace {record.sandbox_workspace_id!r} belongs to session {workspace['session_id']!r}, not {record.session_id!r}"
@@ -2319,7 +2639,9 @@ class SandboxRunRecordRepository:
             return None
         return self._row_to_record(row)
 
-    def get_active_by_workspace(self, sandbox_workspace_id: str) -> SandboxRunRecord | None:
+    def get_active_by_workspace(
+        self, sandbox_workspace_id: str
+    ) -> SandboxRunRecord | None:
         row = self.connection.execute(
             """
             SELECT * FROM sandbox_run_records
@@ -2333,7 +2655,9 @@ class SandboxRunRecordRepository:
             return None
         return self._row_to_record(row)
 
-    def list_by_workspace(self, sandbox_workspace_id: str, *, limit: int | None = None) -> list[SandboxRunRecord]:
+    def list_by_workspace(
+        self, sandbox_workspace_id: str, *, limit: int | None = None
+    ) -> list[SandboxRunRecord]:
         sql = """
             SELECT * FROM sandbox_run_records
             WHERE sandbox_workspace_id = ?
@@ -2346,7 +2670,9 @@ class SandboxRunRecordRepository:
         rows = self.connection.execute(sql, params).fetchall()
         return [self._row_to_record(row) for row in rows]
 
-    def list_by_session(self, session_id: str, *, limit: int | None = None) -> list[SandboxRunRecord]:
+    def list_by_session(
+        self, session_id: str, *, limit: int | None = None
+    ) -> list[SandboxRunRecord]:
         sql = """
             SELECT * FROM sandbox_run_records
             WHERE session_id = ?
@@ -2381,7 +2707,8 @@ class SandboxRunRecordRepository:
             stderr_metadata=_json_loads_object(row["stderr_metadata_json"]),
             exit_code=row["exit_code"],
             duration_ms=row["duration_ms"],
-            changed_files_summary=_json_loads_object(row["changed_files_summary_json"]) or {},
+            changed_files_summary=_json_loads_object(row["changed_files_summary_json"])
+            or {},
             log_artifact_ref=row["log_artifact_ref"],
             error_code=row["error_code"],
             compatibility=_json_loads_object(row["compatibility_json"]) or {},
@@ -2399,6 +2726,28 @@ class ControlledOperationRepository:
     def save(self, record: ControlledOperation) -> None:
         _require_enum_member(
             record.status, ControlledOperationStatus, "ControlledOperation.status"
+        )
+        existing_owner = self.connection.execute(
+            """
+            SELECT owner_mode
+            FROM controlled_operation_records
+            WHERE operation_id = ?
+            """,
+            (record.operation_id,),
+        ).fetchone()
+        if (
+            existing_owner is not None
+            and existing_owner["owner_mode"]
+            == ControlledOperationOwnerMode.DURABLE_ASYNC_V1.value
+        ):
+            raise DurableControlledOperationWriteError(
+                "durable-owned controlled operation compatibility fields may only "
+                "be changed by the canonical execution transition service"
+            )
+        _require_enum_member(
+            record.owner_mode,
+            ControlledOperationOwnerMode,
+            "ControlledOperation.owner_mode",
         )
         _require_session_exists(self.connection, record.session_id)
         _require_linked_session_id(
@@ -2456,11 +2805,11 @@ class ControlledOperationRepository:
                 adapter_result_origin,
                 expected_outputs_summary_json, resource_estimate_json,
                 result_summary_json, error_code, error_summary,
-                idempotency_key, status, created_at, updated_at
+                idempotency_key, status, owner_mode, created_at, updated_at
             )
             VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             ON CONFLICT(operation_id) DO UPDATE SET
                 approval_id = excluded.approval_id,
@@ -2518,6 +2867,7 @@ class ControlledOperationRepository:
                 record.error_summary,
                 record.idempotency_key,
                 record.status.value,
+                record.owner_mode.value,
                 record.created_at,
                 record.updated_at,
             ),
@@ -2661,12 +3011,23 @@ class ControlledOperationRepository:
             provider_config_digest=row["provider_config_digest"],
             input_artifact_ids=_json_loads_list(row["input_artifact_ids_json"]),
             stage_refs=_json_loads_object_tuple(row["stage_refs_json"]),
-            planned_fetch_intent=_json_loads_object(row["planned_fetch_intent_json"]) or {},
-            approval_requirement=_json_loads_object(row["approval_requirement_json"]) or {},
-            adapter_approval_envelope=_json_loads_object(row["adapter_approval_envelope_json"]) or {},
-            adapter_result_envelope=_json_loads_object(row["adapter_result_envelope_json"]) or {},
+            planned_fetch_intent=_json_loads_object(row["planned_fetch_intent_json"])
+            or {},
+            approval_requirement=_json_loads_object(row["approval_requirement_json"])
+            or {},
+            adapter_approval_envelope=_json_loads_object(
+                row["adapter_approval_envelope_json"]
+            )
+            or {},
+            adapter_result_envelope=_json_loads_object(
+                row["adapter_result_envelope_json"]
+            )
+            or {},
             adapter_result_origin=row["adapter_result_origin"],
-            expected_outputs_summary=_json_loads_object(row["expected_outputs_summary_json"]) or {},
+            expected_outputs_summary=_json_loads_object(
+                row["expected_outputs_summary_json"]
+            )
+            or {},
             resource_estimate=_json_loads_object(row["resource_estimate_json"]) or {},
             result_summary=_json_loads_object(row["result_summary_json"]) or {},
             error_code=row["error_code"],
@@ -2675,6 +3036,7 @@ class ControlledOperationRepository:
             status=ControlledOperationStatus(row["status"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            owner_mode=ControlledOperationOwnerMode(row["owner_mode"]),
         )
 
 
@@ -2683,6 +3045,16 @@ class ContinuationStateRepository:
     connection: sqlite3.Connection
 
     def save(self, record: ContinuationState) -> None:
+        _require_enum_member(
+            record.resume_strategy,
+            ContinuationResumeStrategy,
+            "ContinuationState.resume_strategy",
+        )
+        _require_enum_member(
+            record.delivery_state,
+            ContinuationDeliveryState,
+            "ContinuationState.delivery_state",
+        )
         _require_session_exists(self.connection, record.session_id)
         _require_linked_session_id(
             self.connection,
@@ -2710,9 +3082,19 @@ class ContinuationStateRepository:
             INSERT INTO continuation_state_records (
                 continuation_id, session_id, operation_id, sandbox_run_id, approval_id,
                 status, claimed_at, claimed_by, claim_expires_at, attempt_count,
-                completed_at, error_code, error_message, created_at, updated_at
+                completed_at, error_code, error_message, created_at, updated_at,
+                originating_signal_id, originating_agent_id, originating_task_id,
+                originating_lane_id, originating_tool_call_id,
+                originating_invocation_id, sandbox_workspace_id,
+                sandbox_runtime_identity, process_epoch, resume_strategy,
+                delivery_state, delivery_generation, delivery_result_digest,
+                state_version, delivery_claim_owner, delivery_lease_token,
+                delivery_lease_expires_at, delivery_fencing_token
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
             ON CONFLICT(continuation_id) DO UPDATE SET
                 status = excluded.status,
                 claimed_at = excluded.claimed_at,
@@ -2722,7 +3104,25 @@ class ContinuationStateRepository:
                 completed_at = excluded.completed_at,
                 error_code = excluded.error_code,
                 error_message = excluded.error_message,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                originating_signal_id = excluded.originating_signal_id,
+                originating_agent_id = excluded.originating_agent_id,
+                originating_task_id = excluded.originating_task_id,
+                originating_lane_id = excluded.originating_lane_id,
+                originating_tool_call_id = excluded.originating_tool_call_id,
+                originating_invocation_id = excluded.originating_invocation_id,
+                sandbox_workspace_id = excluded.sandbox_workspace_id,
+                sandbox_runtime_identity = excluded.sandbox_runtime_identity,
+                process_epoch = excluded.process_epoch,
+                resume_strategy = excluded.resume_strategy,
+                delivery_state = excluded.delivery_state,
+                delivery_generation = excluded.delivery_generation,
+                delivery_result_digest = excluded.delivery_result_digest,
+                state_version = excluded.state_version,
+                delivery_claim_owner = excluded.delivery_claim_owner,
+                delivery_lease_token = excluded.delivery_lease_token,
+                delivery_lease_expires_at = excluded.delivery_lease_expires_at,
+                delivery_fencing_token = excluded.delivery_fencing_token
             """,
             (
                 record.continuation_id,
@@ -2740,6 +3140,24 @@ class ContinuationStateRepository:
                 record.error_message,
                 record.created_at,
                 record.updated_at,
+                record.originating_signal_id,
+                record.originating_agent_id,
+                record.originating_task_id,
+                record.originating_lane_id,
+                record.originating_tool_call_id,
+                record.originating_invocation_id,
+                record.sandbox_workspace_id,
+                record.sandbox_runtime_identity,
+                record.process_epoch,
+                record.resume_strategy.value,
+                record.delivery_state.value,
+                record.delivery_generation,
+                record.delivery_result_digest,
+                record.state_version,
+                record.delivery_claim_owner,
+                record.delivery_lease_token,
+                record.delivery_lease_expires_at,
+                record.delivery_fencing_token,
             ),
         )
         _commit(self.connection)
@@ -2765,11 +3183,16 @@ class ContinuationStateRepository:
         ).fetchone()
         return None if row is None else self._row_to_record(row)
 
-    def resolve_for_approval(self, approval_id: str, *, decision: str) -> ContinuationState | None:
+    def resolve_for_approval(
+        self, approval_id: str, *, decision: str
+    ) -> ContinuationState | None:
         existing = self.get_by_approval_id(approval_id)
         if existing is None:
             return None
-        if decision == "approved" and existing.status is ContinuationStateStatus.CLAIMED:
+        if (
+            decision == "approved"
+            and existing.status is ContinuationStateStatus.CLAIMED
+        ):
             return existing
         if existing.status.is_terminal:
             return existing
@@ -2778,18 +3201,15 @@ class ContinuationStateRepository:
             if decision == "approved"
             else ContinuationStateStatus.REJECTED
         )
-        updated = ContinuationState(
-            continuation_id=existing.continuation_id,
-            session_id=existing.session_id,
-            operation_id=existing.operation_id,
-            sandbox_run_id=existing.sandbox_run_id,
-            approval_id=existing.approval_id,
+        updated = replace(
+            existing,
             status=status,
-            claimed_at=existing.claimed_at,
-            claimed_by=existing.claimed_by,
-            claim_expires_at=existing.claim_expires_at,
-            attempt_count=existing.attempt_count,
-            created_at=existing.created_at,
+            state_version=(
+                existing.state_version + 1
+                if existing.resume_strategy
+                is not ContinuationResumeStrategy.LEGACY_NON_RESUMABLE
+                else existing.state_version
+            ),
             updated_at=_utc_now_iso(),
         )
         self.save(updated)
@@ -2811,18 +3231,13 @@ class ContinuationStateRepository:
             and existing.claim_expires_at > now
         ):
             return None
-        updated = ContinuationState(
-            continuation_id=existing.continuation_id,
-            session_id=existing.session_id,
-            operation_id=existing.operation_id,
-            sandbox_run_id=existing.sandbox_run_id,
-            approval_id=existing.approval_id,
+        updated = replace(
+            existing,
             status=ContinuationStateStatus.CLAIMED,
             claimed_at=now,
             claimed_by=claimed_by,
             claim_expires_at=_utc_after_iso(lease_seconds),
             attempt_count=existing.attempt_count + 1,
-            created_at=existing.created_at,
             updated_at=now,
         )
         self.save(updated)
@@ -2833,19 +3248,10 @@ class ContinuationStateRepository:
         if existing is None:
             return None
         now = _utc_now_iso()
-        updated = ContinuationState(
-            continuation_id=existing.continuation_id,
-            session_id=existing.session_id,
-            operation_id=existing.operation_id,
-            sandbox_run_id=existing.sandbox_run_id,
-            approval_id=existing.approval_id,
+        updated = replace(
+            existing,
             status=ContinuationStateStatus.COMPLETED,
-            claimed_at=existing.claimed_at,
-            claimed_by=existing.claimed_by,
-            claim_expires_at=existing.claim_expires_at,
-            attempt_count=existing.attempt_count,
             completed_at=now,
-            created_at=existing.created_at,
             updated_at=now,
         )
         self.save(updated)
@@ -2863,23 +3269,14 @@ class ContinuationStateRepository:
         if existing is None:
             return None
         now = _utc_now_iso()
-        updated = ContinuationState(
-            continuation_id=existing.continuation_id,
-            session_id=existing.session_id,
-            operation_id=existing.operation_id,
-            sandbox_run_id=existing.sandbox_run_id,
-            approval_id=existing.approval_id,
+        updated = replace(
+            existing,
             status=ContinuationStateStatus.RECOVERY_FAILED
             if recovery_failed
             else ContinuationStateStatus.FAILED,
-            claimed_at=existing.claimed_at,
-            claimed_by=existing.claimed_by,
-            claim_expires_at=existing.claim_expires_at,
-            attempt_count=existing.attempt_count,
             completed_at=now,
             error_code=error_code,
             error_message=error_message,
-            created_at=existing.created_at,
             updated_at=now,
         )
         self.save(updated)
@@ -2930,6 +3327,24 @@ class ContinuationStateRepository:
             error_message=row["error_message"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            originating_signal_id=row["originating_signal_id"],
+            originating_agent_id=row["originating_agent_id"],
+            originating_task_id=row["originating_task_id"],
+            originating_lane_id=row["originating_lane_id"],
+            originating_tool_call_id=row["originating_tool_call_id"],
+            originating_invocation_id=row["originating_invocation_id"],
+            sandbox_workspace_id=row["sandbox_workspace_id"],
+            sandbox_runtime_identity=row["sandbox_runtime_identity"],
+            process_epoch=row["process_epoch"],
+            resume_strategy=ContinuationResumeStrategy(row["resume_strategy"]),
+            delivery_state=ContinuationDeliveryState(row["delivery_state"]),
+            delivery_generation=int(row["delivery_generation"]),
+            delivery_result_digest=row["delivery_result_digest"],
+            state_version=int(row["state_version"]),
+            delivery_claim_owner=row["delivery_claim_owner"],
+            delivery_lease_token=row["delivery_lease_token"],
+            delivery_lease_expires_at=row["delivery_lease_expires_at"],
+            delivery_fencing_token=int(row["delivery_fencing_token"]),
         )
 
 
@@ -2944,7 +3359,9 @@ class FileAuditEntryRepository:
             (entry.sandbox_workspace_id,),
         ).fetchone()
         if workspace is None:
-            raise OwnershipError(f"sandbox_workspace_records.sandbox_workspace_id={entry.sandbox_workspace_id!r} does not exist")
+            raise OwnershipError(
+                f"sandbox_workspace_records.sandbox_workspace_id={entry.sandbox_workspace_id!r} does not exist"
+            )
         if workspace["session_id"] != entry.session_id:
             raise OwnershipError(
                 f"sandbox workspace {entry.sandbox_workspace_id!r} belongs to session {workspace['session_id']!r}, not {entry.session_id!r}"
@@ -3035,9 +3452,16 @@ class CommandLogArtifactRepository:
             (record.sandbox_run_id,),
         ).fetchone()
         if run is None:
-            raise OwnershipError(f"sandbox_run_records.sandbox_run_id={record.sandbox_run_id!r} does not exist")
-        if run["session_id"] != record.session_id or run["sandbox_workspace_id"] != record.sandbox_workspace_id:
-            raise OwnershipError("command log artifact does not belong to the sandbox run session/workspace")
+            raise OwnershipError(
+                f"sandbox_run_records.sandbox_run_id={record.sandbox_run_id!r} does not exist"
+            )
+        if (
+            run["session_id"] != record.session_id
+            or run["sandbox_workspace_id"] != record.sandbox_workspace_id
+        ):
+            raise OwnershipError(
+                "command log artifact does not belong to the sandbox run session/workspace"
+            )
         self.connection.execute(
             """
             INSERT INTO sandbox_command_log_artifacts (
@@ -3144,9 +3568,7 @@ class SessionRuntimeLeaseRepository:
                     """,
                     (session_id,),
                 ).fetchone()
-                fencing_token = int(
-                    row["next_fencing_token"] if row is not None else 1
-                )
+                fencing_token = int(row["next_fencing_token"] if row is not None else 1)
                 lease_token = f"lease_{uuid4().hex[:12]}"
                 self.connection.execute(
                     """
@@ -3656,7 +4078,9 @@ class AgentRuntimeSignalRepository:
             if retryable and existing.attempt_count < max_attempts
             else AgentRuntimeSignalStatus.FAILED
         )
-        completed_at = None if next_status is AgentRuntimeSignalStatus.PENDING else _utc_now_iso()
+        completed_at = (
+            None if next_status is AgentRuntimeSignalStatus.PENDING else _utc_now_iso()
+        )
         self.connection.execute(
             """
             UPDATE agent_runtime_signals
@@ -3719,7 +4143,10 @@ class AgentRuntimeSignalRepository:
         expected_session_lease_token: str | None,
         expected_session_fencing_token: int | None,
     ) -> bool:
-        if expected_session_lease_token is None and expected_session_fencing_token is None:
+        if (
+            expected_session_lease_token is None
+            and expected_session_fencing_token is None
+        ):
             return True
         if (expected_session_lease_token is None) != (
             expected_session_fencing_token is None
@@ -4032,7 +4459,9 @@ class EngineDocumentRepository:
             pipeline = dict(payload.get("pipeline") or {})
             counts = {
                 str(key): int(value)
-                for key, value in dict(pipeline.get("operation_call_counts") or {}).items()
+                for key, value in dict(
+                    pipeline.get("operation_call_counts") or {}
+                ).items()
             }
             consumed = counts.get(method, 0)
             if consumed >= max_calls:
@@ -4067,7 +4496,9 @@ class EngineDocumentRepository:
         ).fetchall()
         return [self._row_to_document(row) for row in rows]
 
-    def list_by_invocation(self, session_id: str, invocation_id: str) -> list[EngineDocumentRecord]:
+    def list_by_invocation(
+        self, session_id: str, invocation_id: str
+    ) -> list[EngineDocumentRecord]:
         rows = self.connection.execute(
             """
             SELECT *
@@ -4180,7 +4611,9 @@ class RunRecordRepository:
             return None
         return self._row_to_run(row)
 
-    def get_by_invocation(self, session_id: str, invocation_id: str) -> RunRecord | None:
+    def get_by_invocation(
+        self, session_id: str, invocation_id: str
+    ) -> RunRecord | None:
         row = self.connection.execute(
             """
             SELECT *
@@ -4218,7 +4651,9 @@ class RunRecordRepository:
         ).fetchall()
         return [self._row_to_run(row) for row in rows]
 
-    def list_by_invocation(self, session_id: str, invocation_id: str) -> list[RunRecord]:
+    def list_by_invocation(
+        self, session_id: str, invocation_id: str
+    ) -> list[RunRecord]:
         rows = self.connection.execute(
             """
             SELECT *
@@ -4322,7 +4757,10 @@ class SessionArtifactRepository:
                 artifact.relative_path,
                 artifact.title,
                 artifact.description,
-                json.dumps({} if artifact.metadata is None else artifact.metadata, sort_keys=True),
+                json.dumps(
+                    {} if artifact.metadata is None else artifact.metadata,
+                    sort_keys=True,
+                ),
                 artifact.created_at,
             ),
         )
@@ -4382,7 +4820,10 @@ class SessionArtifactRepository:
                 artifact.relative_path,
                 artifact.title,
                 artifact.description,
-                json.dumps({} if artifact.metadata is None else artifact.metadata, sort_keys=True),
+                json.dumps(
+                    {} if artifact.metadata is None else artifact.metadata,
+                    sort_keys=True,
+                ),
                 artifact.created_at,
             ),
         )
@@ -4409,7 +4850,9 @@ class SessionArtifactRepository:
         ).fetchall()
         return [self._row_to_artifact(row) for row in rows]
 
-    def list_by_task(self, session_id: str, task_id: str) -> list[SessionArtifactRecord]:
+    def list_by_task(
+        self, session_id: str, task_id: str
+    ) -> list[SessionArtifactRecord]:
         rows = self.connection.execute(
             """
             SELECT *
@@ -4433,7 +4876,9 @@ class SessionArtifactRepository:
         ).fetchall()
         return [self._row_to_artifact(row) for row in rows]
 
-    def list_by_invocation(self, session_id: str, invocation_id: str) -> list[SessionArtifactRecord]:
+    def list_by_invocation(
+        self, session_id: str, invocation_id: str
+    ) -> list[SessionArtifactRecord]:
         rows = self.connection.execute(
             """
             SELECT *
@@ -4479,7 +4924,10 @@ class SessionArtifactRepository:
             metadata = _json_loads_object(row["metadata_json"]) or {}
             if metadata.get(key) != value:
                 continue
-            if any(metadata.get(filter_key) != filter_value for filter_key, filter_value in expected.items()):
+            if any(
+                metadata.get(filter_key) != filter_value
+                for filter_key, filter_value in expected.items()
+            ):
                 continue
             return self._row_to_artifact(row)
         return None
@@ -4670,9 +5118,9 @@ class SessionReportRepository:
             (
                 report.report_id,
                 report.session_id,
-            report.task_id,
-            report.lane_id,
-            report.invocation_id,
+                report.task_id,
+                report.lane_id,
+                report.invocation_id,
                 report.run_id,
                 report.artifact_id,
                 report.status.value,
@@ -4694,7 +5142,9 @@ class SessionReportRepository:
             return None
         return self._row_to_report(row)
 
-    def get_by_invocation(self, session_id: str, invocation_id: str) -> SessionReportRecord | None:
+    def get_by_invocation(
+        self, session_id: str, invocation_id: str
+    ) -> SessionReportRecord | None:
         row = self.connection.execute(
             """
             SELECT *
@@ -4809,7 +5259,9 @@ class SessionReportDraftRepository:
             return None
         return self._row_to_draft(row)
 
-    def get_by_task(self, session_id: str, task_id: str) -> SessionReportDraftRecord | None:
+    def get_by_task(
+        self, session_id: str, task_id: str
+    ) -> SessionReportDraftRecord | None:
         row = self.connection.execute(
             """
             SELECT *
@@ -4925,7 +5377,9 @@ class ResearchSummaryRepository:
             return None
         return self._row_to_summary(row)
 
-    def get_by_invocation(self, session_id: str, invocation_id: str) -> ResearchSummary | None:
+    def get_by_invocation(
+        self, session_id: str, invocation_id: str
+    ) -> ResearchSummary | None:
         row = self.connection.execute(
             """
             SELECT *
@@ -4982,7 +5436,7 @@ class ResearchEvidenceRepository:
         )
         _require_linked_session_id(
             self.connection,
-                table_name="session_research_summaries",
+            table_name="session_research_summaries",
             id_column="summary_id",
             record_id=evidence.summary_id,
             expected_session_id=evidence.session_id,
@@ -5047,7 +5501,9 @@ class ResearchEvidenceRepository:
         ).fetchall()
         return [self._row_to_evidence(row) for row in rows]
 
-    def list_by_invocation(self, session_id: str, invocation_id: str) -> list[ResearchEvidence]:
+    def list_by_invocation(
+        self, session_id: str, invocation_id: str
+    ) -> list[ResearchEvidence]:
         rows = self.connection.execute(
             """
             SELECT *
@@ -5100,7 +5556,7 @@ class ResearchSourceRefRepository:
         )
         _require_linked_session_id(
             self.connection,
-                table_name="session_research_evidence",
+            table_name="session_research_evidence",
             id_column="evidence_id",
             record_id=source_ref.evidence_id,
             expected_session_id=source_ref.session_id,
@@ -5209,7 +5665,9 @@ class ResearchSourceRefRepository:
         ).fetchall()
         return [self._row_to_source_ref(row) for row in rows]
 
-    def list_by_invocation(self, session_id: str, invocation_id: str) -> list[ResearchSourceRef]:
+    def list_by_invocation(
+        self, session_id: str, invocation_id: str
+    ) -> list[ResearchSourceRef]:
         rows = self.connection.execute(
             """
             SELECT *
@@ -5262,17 +5720,14 @@ class ResearchSourceRefRepository:
             pmid=row["pmid"],
             doi=row["doi"],
             authors=tuple(
-                dict(author)
-                for author in json.loads(row["authors_json"] or "[]")
+                dict(author) for author in json.loads(row["authors_json"] or "[]")
             ),
             venue=row["venue"],
             publication_date=row["publication_date"],
             retrieved_at=row["retrieved_at"],
             request_digest=row["request_digest"],
             response_digest=row["response_digest"],
-            provider_provenance=json.loads(
-                row["provider_provenance_json"] or "{}"
-            ),
+            provider_provenance=json.loads(row["provider_provenance_json"] or "{}"),
             evidence_artifact_id=row["evidence_artifact_id"],
         )
 
@@ -5292,7 +5747,7 @@ class ResearchGapRepository:
         )
         _require_linked_session_id(
             self.connection,
-                table_name="session_research_summaries",
+            table_name="session_research_summaries",
             id_column="summary_id",
             record_id=gap.summary_id,
             expected_session_id=gap.session_id,
@@ -5352,7 +5807,9 @@ class ResearchGapRepository:
         ).fetchall()
         return [self._row_to_gap(row) for row in rows]
 
-    def list_by_invocation(self, session_id: str, invocation_id: str) -> list[ResearchGap]:
+    def list_by_invocation(
+        self, session_id: str, invocation_id: str
+    ) -> list[ResearchGap]:
         rows = self.connection.execute(
             """
             SELECT *
@@ -5405,7 +5862,20 @@ class CoreRepositories:
     sandbox_workspaces: SandboxWorkspaceRecordRepository
     sandbox_runs: SandboxRunRecordRepository
     controlled_operations: ControlledOperationRepository
+    controlled_operation_executions: "ControlledOperationExecutionRepository"
+    controlled_operation_dispatch_requests: (
+        "ControlledOperationDispatchRequestRepository"
+    )
+    controlled_operation_execution_events: "ControlledOperationExecutionEventRepository"
+    controlled_operation_results: "ControlledOperationResultHandleRepository"
+    controlled_operation_result_artifacts: "ControlledOperationResultArtifactRepository"
     continuation_states: ContinuationStateRepository
+    continuation_deliveries: "ContinuationDeliveryRepository"
+    runtime_commands: "RuntimeCommandRepository"
+    mutation_scopes: "MutationScopeRepository"
+    mutation_writers: "MutationWriterRepository"
+    quiescence_receipts: "QuiescenceReceiptRepository"
+    quiescence_snapshots: "QuiescenceSnapshotRepository"
     file_audit_entries: FileAuditEntryRepository
     command_log_artifacts: CommandLogArtifactRepository
     session_runtime_leases: SessionRuntimeLeaseRepository
@@ -5433,6 +5903,40 @@ class CoreRepositories:
             expected_session_id=session_id,
         )
 
+    def assert_controlled_operation_write_fence(
+        self,
+        *,
+        session_id: str | None = None,
+    ) -> None:
+        _validate_controlled_operation_write_fence(
+            self.tasks.connection,
+            expected_session_id=session_id,
+        )
+
+    def assert_mutation_write_authority(
+        self,
+        *,
+        session_id: str,
+        resource_category: MutationResourceCategory,
+    ) -> None:
+        _validate_mutation_write_authority(
+            self.tasks.connection,
+            expected_session_id=session_id,
+            resource_category=resource_category,
+        )
+
+    def assert_artifact_publication_authority(self, *, session_id: str) -> None:
+        self.assert_mutation_write_authority(
+            session_id=session_id,
+            resource_category=MutationResourceCategory.ARTIFACT_PUBLICATION,
+        )
+
+    def assert_report_publication_authority(self, *, session_id: str) -> None:
+        self.assert_mutation_write_authority(
+            session_id=session_id,
+            resource_category=MutationResourceCategory.REPORT_PUBLICATION,
+        )
+
     @contextmanager
     def runtime_write_fence(
         self,
@@ -5457,12 +5961,109 @@ class CoreRepositories:
             setattr(connection, "_openzyme_runtime_write_fence", previous)
 
     @contextmanager
-    def atomic(self, *, prefix: str) -> Iterator[None]:
-        with _sqlite_savepoint(self.tasks.connection, prefix=prefix):
+    def controlled_operation_write_fence(
+        self,
+        execution: ControlledOperationExecution,
+    ) -> Iterator[None]:
+        connection = self.tasks.connection
+        previous = _controlled_operation_write_fence(connection)
+        if previous is not None and previous != execution:
+            raise ControlledOperationWriteFencingError(
+                "repository connection is already bound to another execution callback"
+            )
+        setattr(
+            connection,
+            "_openzyme_controlled_operation_write_fence",
+            execution,
+        )
+        try:
+            _validate_controlled_operation_write_fence(connection)
             yield
+        finally:
+            setattr(
+                connection,
+                "_openzyme_controlled_operation_write_fence",
+                previous,
+            )
+
+    @contextmanager
+    def mutation_write_authority(
+        self,
+        authority: MutationWriteAuthority,
+    ) -> Iterator[None]:
+        connection = self.tasks.connection
+        previous = _mutation_write_authority(connection)
+        if previous is not None and previous != authority:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM mutation_writer_records
+                WHERE writer_id = ?
+                  AND parent_writer_id = ?
+                  AND scope_id = ?
+                  AND scope_generation = ?
+                  AND state = 'registered'
+                """,
+                (
+                    authority.writer_id,
+                    previous.writer_id,
+                    previous.scope_id,
+                    previous.scope_generation,
+                ),
+            ).fetchone()
+            if row is None:
+                raise MutationWriteFencingError(
+                    "repository connection is already bound to unrelated mutation authority"
+                )
+        setattr(connection, "_openzyme_mutation_write_authority", authority)
+        try:
+            _validate_mutation_write_authority(connection)
+            yield
+        finally:
+            setattr(connection, "_openzyme_mutation_write_authority", previous)
+
+    @contextmanager
+    def atomic(self, *, prefix: str) -> Iterator[None]:
+        connection = self.tasks.connection
+        previous_depth = _managed_transaction_depth(connection)
+        if previous_depth > 0:
+            with _sqlite_savepoint(connection, prefix=prefix):
+                yield
+            return
+        connection.execute("BEGIN IMMEDIATE")
+        _set_managed_transaction_depth(connection, previous_depth + 1)
+        try:
+            yield
+            _validate_runtime_write_fence(connection)
+            _validate_controlled_operation_write_fence(connection)
+            _validate_mutation_write_authority(connection)
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            _set_managed_transaction_depth(connection, previous_depth)
 
     @classmethod
     def from_connection(cls, connection: sqlite3.Connection) -> "CoreRepositories":
+        from .durable_coordination_repositories import ContinuationDeliveryRepository
+        from .durable_coordination_repositories import MutationScopeRepository
+        from .durable_coordination_repositories import MutationWriterRepository
+        from .durable_coordination_repositories import QuiescenceReceiptRepository
+        from .durable_coordination_repositories import QuiescenceSnapshotRepository
+        from .durable_coordination_repositories import RuntimeCommandRepository
+        from .reliability_repositories import (
+            ControlledOperationDispatchRequestRepository,
+        )
+        from .reliability_repositories import (
+            ControlledOperationExecutionEventRepository,
+        )
+        from .reliability_repositories import ControlledOperationExecutionRepository
+        from .reliability_repositories import ControlledOperationResultHandleRepository
+        from .reliability_repositories import (
+            ControlledOperationResultArtifactRepository,
+        )
+
         return cls(
             sessions=SessionRepository(connection),
             session_access=SessionAccessRepository(connection),
@@ -5479,7 +6080,28 @@ class CoreRepositories:
             sandbox_workspaces=SandboxWorkspaceRecordRepository(connection),
             sandbox_runs=SandboxRunRecordRepository(connection),
             controlled_operations=ControlledOperationRepository(connection),
+            controlled_operation_executions=ControlledOperationExecutionRepository(
+                connection
+            ),
+            controlled_operation_dispatch_requests=(
+                ControlledOperationDispatchRequestRepository(connection)
+            ),
+            controlled_operation_execution_events=(
+                ControlledOperationExecutionEventRepository(connection)
+            ),
+            controlled_operation_results=ControlledOperationResultHandleRepository(
+                connection
+            ),
+            controlled_operation_result_artifacts=(
+                ControlledOperationResultArtifactRepository(connection)
+            ),
             continuation_states=ContinuationStateRepository(connection),
+            continuation_deliveries=ContinuationDeliveryRepository(connection),
+            runtime_commands=RuntimeCommandRepository(connection),
+            mutation_scopes=MutationScopeRepository(connection),
+            mutation_writers=MutationWriterRepository(connection),
+            quiescence_receipts=QuiescenceReceiptRepository(connection),
+            quiescence_snapshots=QuiescenceSnapshotRepository(connection),
             file_audit_entries=FileAuditEntryRepository(connection),
             command_log_artifacts=CommandLogArtifactRepository(connection),
             session_runtime_leases=SessionRuntimeLeaseRepository(connection),
@@ -5562,6 +6184,8 @@ class CoreUnitOfWork:
                 if exc_type is None:
                     try:
                         _validate_runtime_write_fence(connection)
+                        _validate_controlled_operation_write_fence(connection)
+                        _validate_mutation_write_authority(connection)
                         connection.commit()
                     except BaseException:
                         connection.rollback()

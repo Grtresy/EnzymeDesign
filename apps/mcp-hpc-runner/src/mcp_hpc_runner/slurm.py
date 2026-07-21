@@ -1,19 +1,37 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import hashlib
 from pathlib import Path, PurePosixPath
 import shlex
+from typing import Any
 import uuid
 
+from .attempts import receipt_digest
+from .attempts import runner_phase_precedes
+from .attempts import RunnerAttempt
+from .attempts import RunnerAttemptError
+from .attempts import RunnerAttemptJournal
+from .attempts import RunnerAttemptPhase
+from .attempts import RunnerAttemptState
+from .attempts import RunnerEffectCertainty
+from .attempts import RunnerRetryEligibility
 from .config import RunnerConfig
 from .errors import FailureMapper
+from .errors import HpcOutputFailure
+from .errors import HpcStagingFailure
 from .logging_utils import prepare_log_payload, redact_text
 from .models import JobHandle, JobStatus, RunResult, RunSpec
 from .preflight import PreflightError, preflight_manifest, run_preflight
-from .remote import CommandRunner, wrap_ssh
+from .preflight import PreflightFailureClass
+from .preflight import PreflightResult
+from .recovery import classify_pre_effect_failure
+from .recovery import PreEffectFailureClass
+from .recovery import safe_transport_failure_receipt
+from .remote import CommandResult, CommandRunner
 from .staging import StagingManager
 from .store import ArtifactStore
+from .transport import SshCommandCompiler
+from .transport import SshTransportManager
 from .validation import (
     ensure_safe_slurm_token,
     ensure_valid_runspec,
@@ -21,6 +39,8 @@ from .validation import (
     safe_remote_run_dir,
     validate_expected_outputs,
 )
+from .verification import AuthorizedInput
+from .verification import RemoteVerificationStatus
 
 
 def _map_slurm_state(raw: str) -> str:
@@ -48,12 +68,35 @@ class SlurmRunner:
         staging: StagingManager,
         command_runner: CommandRunner,
         failure_mapper: FailureMapper,
+        ssh_compiler: SshCommandCompiler | None = None,
+        transport_manager: SshTransportManager | None = None,
+        attempt_journal: RunnerAttemptJournal | None = None,
     ) -> None:
         self.config = config
         self.store = store
         self.staging = staging
         self.command_runner = command_runner
         self.failure_mapper = failure_mapper
+        self.ssh_compiler = ssh_compiler or SshCommandCompiler.legacy(
+            config.cluster.ssh_target
+        )
+        self.transport_manager = transport_manager or staging.transport_manager
+        self.attempt_journal = attempt_journal or RunnerAttemptJournal(
+            store,
+            config,
+            self.transport_manager,
+        )
+
+    @property
+    def command_runner(self) -> CommandRunner:
+        return self._command_runner
+
+    @command_runner.setter
+    def command_runner(self, value: CommandRunner) -> None:
+        self._command_runner = value
+        manager = getattr(self, "transport_manager", None)
+        if manager is not None:
+            manager.command_runner = value
 
     def _make_run_id(self) -> str:
         return uuid.uuid4().hex[:12]
@@ -62,8 +105,7 @@ class SlurmRunner:
         return str(PurePosixPath(self.config.cluster.remote_base_dir) / run_id)
 
     def _ensure_remote_layout(self, run_id: str, remote_run_dir: str) -> None:
-        cmd = wrap_ssh(
-            self.config.cluster.ssh_target,
+        result = self.transport_manager.run_ssh(
             [
                 "mkdir",
                 "-p",
@@ -72,9 +114,6 @@ class SlurmRunner:
                 str(PurePosixPath(remote_run_dir) / "tmp"),
                 str(PurePosixPath(remote_run_dir) / "logs"),
             ],
-        )
-        result = self.command_runner.run(
-            cmd,
             check=False,
             timeout=self.config.execution.staging_timeout_seconds,
             stage="staging",
@@ -86,48 +125,359 @@ class SlurmRunner:
                 result=result,
             )
 
+    @staticmethod
+    def _staging_failure_result(failure: HpcStagingFailure) -> CommandResult:
+        return CommandResult(
+            args=[failure.executable],
+            returncode=failure.returncode,
+            stdout="",
+            stderr="",
+            timed_out=failure.timed_out,
+            elapsed_seconds=failure.elapsed_seconds,
+            process_started=failure.process_started,
+            stage=failure.phase,
+        )
+
+    @staticmethod
+    def _output_failure_result(failure: HpcOutputFailure) -> CommandResult:
+        return CommandResult(
+            args=[failure.executable],
+            returncode=failure.returncode,
+            stdout="",
+            stderr="",
+            timed_out=failure.timed_out,
+            elapsed_seconds=failure.elapsed_seconds,
+            process_started=failure.process_started,
+            stage=failure.phase,
+        )
+
+    def _fetch_outputs_with_recovery(
+        self,
+        spec: RunSpec,
+        run_id: str,
+        remote_run_dir: str,
+    ) -> tuple[list[dict[str, object]], RunnerAttempt | None, str | None]:
+        while True:
+            try:
+                return (
+                    self.staging.download_outputs(
+                        run_id,
+                        spec.expected_outputs,
+                        remote_run_dir,
+                    ),
+                    None,
+                    None,
+                )
+            except HpcOutputFailure as exc:
+                result = self._output_failure_result(exc)
+                failure_receipt = exc.to_safe_diagnostic()
+                if (
+                    classify_pre_effect_failure(result)
+                    is PreEffectFailureClass.AUTHENTICATED_TRANSPORT
+                ):
+                    recovered = self.attempt_journal.authorize_output_fetch_recovery(
+                        run_id,
+                        spec,
+                        selected_mode="sbatch",
+                        failure_receipt=failure_receipt,
+                    )
+                    if recovered is not None:
+                        continue
+                    terminal = self.attempt_journal.terminalize_output_fetch_failure(
+                        run_id,
+                        spec,
+                        selected_mode="sbatch",
+                        failure_receipt=failure_receipt,
+                        safe_failure_code="output_fetch_recovery_exhausted",
+                    )
+                    return [], terminal, "OUTPUT_FETCH_INTERRUPTED"
+                quarantined = self.attempt_journal.quarantine_output_conflict(
+                    run_id,
+                    spec,
+                    selected_mode="sbatch",
+                    failure_receipt=failure_receipt,
+                )
+                return [], quarantined, "OUTPUT_CONTRACT_CONFLICT"
+
+    @staticmethod
+    def _attempt_metadata(attempt: RunnerAttempt) -> dict[str, object]:
+        return {
+            "runner_attempt_safe_receipt_digest": attempt.safe_receipt_digest,
+            "runner_phase": attempt.phase.value,
+            "effect_certainty": attempt.effect_certainty.value,
+            "retry_eligibility": attempt.retry_eligibility.value,
+            "reconciliation_required": attempt.reconciliation_required,
+        }
+
+    def _closed_attempt_result(
+        self,
+        spec: RunSpec,
+        attempt: RunnerAttempt,
+        *,
+        error_code: str,
+    ) -> RunResult:
+        run_id = str(spec.run_id)
+        return RunResult(
+            run_id=run_id,
+            requested_mode=spec.execution_mode,
+            selected_mode="sbatch",
+            remote_run_dir=self._remote_run_dir(run_id),
+            status="failed",
+            error_code=error_code,
+            artifacts={},
+            logs={},
+            metadata=self._attempt_metadata(attempt),
+        )
+
+    def _ensure_remote_layout_with_recovery(
+        self,
+        spec: RunSpec,
+        run_id: str,
+        remote_run_dir: str,
+    ) -> None:
+        while True:
+            try:
+                self._ensure_remote_layout(run_id, remote_run_dir)
+                return
+            except HpcStagingFailure as exc:
+                result = self._staging_failure_result(exc)
+                if (
+                    classify_pre_effect_failure(result)
+                    is not PreEffectFailureClass.AUTHENTICATED_TRANSPORT
+                ):
+                    raise
+                recovered = self.attempt_journal.authorize_pre_effect_recovery(
+                    run_id,
+                    spec,
+                    selected_mode="sbatch",
+                    reason_code="remote_layout_transport_recovered",
+                    failure_receipt=safe_transport_failure_receipt(
+                        result,
+                        phase="remote_layout",
+                    ),
+                )
+                if recovered is None:
+                    raise
+
+    def _upload_inputs_with_recovery(
+        self,
+        spec: RunSpec,
+        run_id: str,
+        remote_run_dir: str,
+        *,
+        verify_before_transfer: bool = False,
+    ) -> list[dict[str, object]]:
+        while True:
+            try:
+                if self.transport_manager.enabled:
+                    return self.staging.upload_inputs(
+                        run_id,
+                        spec.inputs,
+                        remote_run_dir,
+                        verify_before_transfer=verify_before_transfer,
+                    )
+                return self.staging.upload_inputs(
+                    run_id,
+                    spec.inputs,
+                    remote_run_dir,
+                )
+            except HpcStagingFailure as exc:
+                result = self._staging_failure_result(exc)
+                if (
+                    classify_pre_effect_failure(result)
+                    is not PreEffectFailureClass.AUTHENTICATED_TRANSPORT
+                ):
+                    raise
+                recovered = self.attempt_journal.authorize_pre_effect_recovery(
+                    run_id,
+                    spec,
+                    selected_mode="sbatch",
+                    reason_code="input_staging_transport_recovered",
+                    failure_receipt=safe_transport_failure_receipt(
+                        result,
+                        phase=exc.phase,
+                    ),
+                )
+                if recovered is None:
+                    raise
+                verify_before_transfer = True
+
+    def _run_preflight_with_recovery(
+        self,
+        spec: RunSpec,
+        run_id: str,
+        remote_run_dir: str,
+        upload_entries: list[dict[str, object]],
+    ) -> PreflightResult:
+        while True:
+            result = run_preflight(
+                spec,
+                remote_run_dir,
+                self.config,
+                self.transport_manager,
+                verified_inputs=upload_entries,
+            )
+            if (
+                result.passed
+                or result.failure_class
+                is not PreflightFailureClass.AUTHENTICATED_TRANSPORT
+            ):
+                return result
+            recovered = self.attempt_journal.authorize_pre_effect_recovery(
+                run_id,
+                spec,
+                selected_mode="sbatch",
+                reason_code="preflight_transport_recovered",
+                failure_receipt={
+                    "schema_version": "preflight_transport_failure@1",
+                    "failure_class": result.failure_class.value,
+                    "manifest_digest": receipt_digest(result.to_dict()),
+                },
+            )
+            if recovered is None:
+                return result
+
     def _transfer_runner_control_file(
         self,
         *,
         run_id: str,
         local_script: Path,
         remote_script: str,
-    ) -> None:
-        content_digest = f"sha256:{hashlib.sha256(local_script.read_bytes()).hexdigest()}"
-        upload_cmd = self.staging.build_upload_command(
+        verify_before_transfer: bool = False,
+    ) -> str | None:
+        authorized = AuthorizedInput.from_path(local_script)
+        content_digest = authorized.content_digest
+        if self.transport_manager.enabled and verify_before_transfer:
+            existing = self.staging.remote_verifier.verify(
+                remote_script,
+                authorized,
+                timeout=self.config.execution.staging_timeout_seconds,
+            )
+            if existing.verified:
+                return existing.receipt_digest
+            if existing.status not in {
+                RemoteVerificationStatus.MISSING,
+                RemoteVerificationStatus.DIGEST_MISMATCH,
+            }:
+                self.staging.raise_staging_failure(
+                    phase="runner_control_transfer",
+                    run_id=run_id,
+                    result=CommandResult(
+                        args=[],
+                        returncode=existing.returncode or 69,
+                        stdout="",
+                        stderr="",
+                        timed_out=existing.timed_out,
+                        elapsed_seconds=existing.elapsed_seconds,
+                        process_started=existing.process_started,
+                        stage="input_verification",
+                    ),
+                    content_digest=content_digest,
+                )
+        upload = self.transport_manager.run_upload(
             local_script,
             remote_script,
             use_rsync=self.config.execution.use_rsync,
-        )
-        upload = self.command_runner.run(
-            upload_cmd,
             check=False,
             timeout=self.config.execution.staging_timeout_seconds,
             stage="staging",
         )
         if upload.returncode == 0:
-            return
-        if self.config.execution.use_rsync:
-            fallback_cmd = self.staging.build_upload_command(
+            pass
+        elif self.transport_manager.enabled:
+            self.staging.raise_staging_failure(
+                phase="runner_control_transfer",
+                run_id=run_id,
+                result=upload,
+                content_digest=content_digest,
+            )
+        elif self.config.execution.use_rsync:
+            fallback = self.transport_manager.run_upload(
                 local_script,
                 remote_script,
                 use_rsync=False,
-            )
-            fallback = self.command_runner.run(
-                fallback_cmd,
                 check=False,
                 timeout=self.config.execution.staging_timeout_seconds,
                 stage="staging",
             )
             if fallback.returncode == 0:
-                return
+                return None
             upload = fallback
-        self.staging.raise_staging_failure(
-            phase="runner_control_transfer",
-            run_id=run_id,
-            result=upload,
-            content_digest=content_digest,
+            self.staging.raise_staging_failure(
+                phase="runner_control_transfer",
+                run_id=run_id,
+                result=upload,
+                content_digest=content_digest,
+            )
+        elif upload.returncode != 0:
+            self.staging.raise_staging_failure(
+                phase="runner_control_transfer",
+                run_id=run_id,
+                result=upload,
+                content_digest=content_digest,
+            )
+        if not self.transport_manager.enabled:
+            return None
+        verification = self.staging.remote_verifier.verify(
+            remote_script,
+            authorized,
+            timeout=self.config.execution.staging_timeout_seconds,
         )
+        if not verification.verified:
+            self.staging.raise_staging_failure(
+                phase="runner_control_transfer",
+                run_id=run_id,
+                result=CommandResult(
+                    args=[],
+                    returncode=verification.returncode or 66,
+                    stdout="",
+                    stderr="",
+                    timed_out=verification.timed_out,
+                    elapsed_seconds=verification.elapsed_seconds,
+                    process_started=verification.process_started,
+                    stage="input_verification",
+                ),
+                content_digest=content_digest,
+            )
+        return verification.receipt_digest
+
+    def _transfer_runner_control_file_with_recovery(
+        self,
+        spec: RunSpec,
+        *,
+        run_id: str,
+        local_script: Path,
+        remote_script: str,
+    ) -> str | None:
+        verify_before_transfer = False
+        while True:
+            try:
+                return self._transfer_runner_control_file(
+                    run_id=run_id,
+                    local_script=local_script,
+                    remote_script=remote_script,
+                    verify_before_transfer=verify_before_transfer,
+                )
+            except HpcStagingFailure as exc:
+                result = self._staging_failure_result(exc)
+                if (
+                    classify_pre_effect_failure(result)
+                    is not PreEffectFailureClass.AUTHENTICATED_TRANSPORT
+                ):
+                    raise
+                recovered = self.attempt_journal.authorize_pre_effect_recovery(
+                    run_id,
+                    spec,
+                    selected_mode="sbatch",
+                    reason_code="runner_control_transport_recovered",
+                    failure_receipt=safe_transport_failure_receipt(
+                        result,
+                        phase="runner_control_transfer",
+                    ),
+                )
+                if recovered is None:
+                    raise
+                verify_before_transfer = True
 
     def _partition_for(self, spec: RunSpec) -> str | None:
         if spec.resources.partition:
@@ -244,18 +594,232 @@ class SlurmRunner:
             limits=self.config.limits,
             allowed_partitions=self.config.slurm.allowed_partitions,
         )
+        spec.run_id = spec.run_id or self._make_run_id()
+        self.attempt_journal.create(spec, selected_mode="sbatch")
+        return self._run_existing_attempt(spec, resuming=False)
+
+    def resume_pre_effect(self, spec: RunSpec) -> RunResult:
+        if spec.run_id is None:
+            raise ValueError("pre-effect recovery requires an exact run id")
+        recovered = self.attempt_journal.authorize_restart_pre_effect_recovery(
+            spec.run_id,
+            spec,
+            selected_mode="sbatch",
+        )
+        if recovered is None:
+            raise RunnerAttemptError(
+                "runner_attempt_not_resumable",
+                "runner attempt cannot resume before dispatch",
+            )
+        if recovered.state is RunnerAttemptState.TERMINAL:
+            return self._closed_attempt_result(
+                spec,
+                recovered,
+                error_code="PRE_EFFECT_RECOVERY_EXHAUSTED",
+            )
+        return self._run_existing_attempt(spec, resuming=True)
+
+    def _run_existing_attempt(
+        self,
+        spec: RunSpec,
+        *,
+        resuming: bool,
+    ) -> RunResult:
+        try:
+            return self._submit_attempt(spec, resuming=resuming)
+        except RunnerAttemptError:
+            raise
+        except Exception as exc:
+            self._record_attempt_exception(spec.run_id, exc)
+            if self.transport_manager.enabled:
+                attempt = self.attempt_journal.load(spec.run_id)
+                if attempt.state is RunnerAttemptState.RECONCILIATION_REQUIRED:
+                    return self._closed_attempt_result(
+                        spec,
+                        attempt,
+                        error_code="DISPATCH_IN_DOUBT",
+                    )
+                if attempt.state is RunnerAttemptState.TERMINAL:
+                    return self._closed_attempt_result(
+                        spec,
+                        attempt,
+                        error_code=(
+                            "PRE_EFFECT_RECOVERY_EXHAUSTED"
+                            if attempt.safe_failure_code
+                            == "pre_effect_recovery_exhausted"
+                            else (
+                                "PREFLIGHT_FAILED"
+                                if isinstance(exc, PreflightError)
+                                else "PRE_EFFECT_RUNNER_FAILED"
+                            )
+                        ),
+                    )
+            raise
+
+    def _record_attempt_exception(self, run_id: str, exc: Exception) -> None:
+        attempt = self.attempt_journal.load(run_id)
+        if attempt.state in {
+            RunnerAttemptState.TERMINAL,
+            RunnerAttemptState.RECONCILIATION_REQUIRED,
+            RunnerAttemptState.QUARANTINED,
+        }:
+            return
+        if attempt.effect_certainty is RunnerEffectCertainty.NO_EFFECT:
+            failure_code = attempt.safe_failure_code or (
+                "deterministic_preflight_failed"
+                if isinstance(exc, PreflightError)
+                else "pre_effect_runner_failed"
+            )
+            self.attempt_journal.transition(
+                run_id,
+                phase=RunnerAttemptPhase.TERMINAL,
+                state=RunnerAttemptState.TERMINAL,
+                retry_eligibility=RunnerRetryEligibility.TERMINAL,
+                safe_failure_code=failure_code,
+                reason_code=failure_code,
+            )
+            return
+        if attempt.effect_certainty is RunnerEffectCertainty.DISPATCH_IN_DOUBT:
+            self.attempt_journal.transition(
+                run_id,
+                state=RunnerAttemptState.RECONCILIATION_REQUIRED,
+                retry_eligibility=RunnerRetryEligibility.RECONCILE_REQUIRED,
+                reconciliation_required=True,
+                safe_failure_code="dispatch_in_doubt",
+                reason_code="dispatch_outcome_unknown",
+            )
+            return
+        self.attempt_journal.transition(
+            run_id,
+            retry_eligibility=RunnerRetryEligibility.VERIFY_THEN_RETRY,
+            safe_failure_code="slurm_reconciliation_required",
+            reason_code="slurm_reconciliation_required",
+        )
+
+    def _advance_attempt_phase(
+        self,
+        run_id: str,
+        phase: RunnerAttemptPhase,
+        *,
+        reason_code: str,
+        **changes: Any,
+    ) -> RunnerAttempt:
+        current = self.attempt_journal.load(run_id)
+        if not runner_phase_precedes(current.phase, phase):
+            return current
+        return self.attempt_journal.transition(
+            run_id,
+            phase=phase,
+            reason_code=reason_code,
+            **changes,
+        )
+
+    def _submit_attempt(
+        self,
+        spec: RunSpec,
+        *,
+        resuming: bool = False,
+    ) -> RunResult:
+        ensure_valid_runspec(
+            spec,
+            limits=self.config.limits,
+            allowed_partitions=self.config.slurm.allowed_partitions,
+        )
         run_id = spec.run_id or self._make_run_id()
         remote_run_dir = self._remote_run_dir(run_id)
         self.store.ensure_run_layout(run_id)
         self.store.write_json(run_id, "runspec.json", spec.to_dict())
-        self._ensure_remote_layout(run_id, remote_run_dir)
-        upload_entries = self.staging.upload_inputs(run_id, spec.inputs, remote_run_dir)
-
-        preflight_result = run_preflight(
-            spec, remote_run_dir, self.config, self.command_runner
+        generation = self.transport_manager.ensure_ready()
+        attempt = self._advance_attempt_phase(
+            run_id,
+            RunnerAttemptPhase.TRANSPORT_READY,
+            reason_code="transport_ready",
+            transport_generation=generation,
         )
+        self._ensure_remote_layout_with_recovery(spec, run_id, remote_run_dir)
+        attempt = self._advance_attempt_phase(
+            run_id,
+            RunnerAttemptPhase.REMOTE_LAYOUT_READY,
+            reason_code="remote_layout_ready",
+            transport_generation=self.transport_manager.current_generation,
+        )
+        attempt = self._advance_attempt_phase(
+            run_id,
+            RunnerAttemptPhase.INPUT_STAGING,
+            reason_code="input_staging_started",
+        )
+        upload_entries = self._upload_inputs_with_recovery(
+            spec,
+            run_id,
+            remote_run_dir,
+            verify_before_transfer=resuming,
+        )
+        if self.transport_manager.enabled:
+            if any(
+                entry.get("verification_status") != "verified"
+                for entry in upload_entries
+            ):
+                raise RuntimeError("persistent transport input verification is incomplete")
+            attempt = self._advance_attempt_phase(
+                run_id,
+                RunnerAttemptPhase.INPUTS_VERIFIED,
+                reason_code="inputs_verified",
+                receipt_digests={
+                    "inputs_manifest": receipt_digest(
+                        self.store.read_json(run_id, "inputs_manifest.json")
+                    )
+                },
+            )
+
+        if self.transport_manager.enabled:
+            preflight_result = self._run_preflight_with_recovery(
+                spec,
+                run_id,
+                remote_run_dir,
+                upload_entries,
+            )
+        else:
+            preflight_result = run_preflight(
+                spec,
+                remote_run_dir,
+                self.config,
+                self.transport_manager,
+            )
         adapter_id = spec.metadata.get("tool_contract", {}).get("adapter_id", spec.name)
-        pf_manifest = preflight_manifest(run_id, adapter_id, preflight_result)
+        pf_body = preflight_manifest(run_id, adapter_id, preflight_result)
+        if preflight_result.passed:
+            attempt = self._advance_attempt_phase(
+                run_id,
+                RunnerAttemptPhase.PREFLIGHT_PASSED,
+                receipt_digests={"preflight_manifest": receipt_digest(pf_body)},
+                safe_failure_code=None,
+                reason_code="preflight_passed",
+            )
+        else:
+            current = self.attempt_journal.load(run_id)
+            attempt = self.attempt_journal.transition(
+                run_id,
+                phase=current.phase,
+                receipt_digests={"preflight_manifest": receipt_digest(pf_body)},
+                safe_failure_code=(
+                    f"preflight_{preflight_result.failure_class.value}"
+                ),
+                reason_code="preflight_failed",
+            )
+        pf_manifest = preflight_manifest(
+            run_id,
+            adapter_id,
+            preflight_result,
+            runner_attempt_link={
+                "schema_version": "runner_attempt_link@1",
+                "attempt_id": attempt.attempt_id,
+                "state_version": attempt.state_version,
+                "safe_receipt_digest": attempt.safe_receipt_digest,
+                "manifest_body_digest": attempt.receipt_digests[
+                    "preflight_manifest"
+                ],
+            },
+        )
         self.store.write_preflight_manifest(run_id, pf_manifest)
         if not preflight_result.passed:
             raise PreflightError(pf_manifest)
@@ -266,17 +830,35 @@ class SlurmRunner:
         local_script.write_text(script, encoding="utf-8")
 
         remote_script = str(PurePosixPath(remote_run_dir) / "logs" / "job.sbatch")
-        self._transfer_runner_control_file(
+        control_receipt = self._transfer_runner_control_file_with_recovery(
+            spec,
             run_id=run_id,
             local_script=local_script,
             remote_script=remote_script,
         )
 
-        submit_cmd = wrap_ssh(
-            self.config.cluster.ssh_target,
-            ["sbatch", "--parsable", remote_script],
+        self._advance_attempt_phase(
+            run_id,
+            RunnerAttemptPhase.DISPATCH_PREPARED,
+            reason_code="dispatch_prepared",
+            receipt_digests=(
+                {}
+                if control_receipt is None
+                else {"slurm_control_script": control_receipt}
+            ),
         )
-        submit = self.command_runner.run(submit_cmd, check=False)
+        self.attempt_journal.transition(
+            run_id,
+            phase=RunnerAttemptPhase.DISPATCHING,
+            effect_certainty=RunnerEffectCertainty.DISPATCH_IN_DOUBT,
+            retry_eligibility=RunnerRetryEligibility.RECONCILE_REQUIRED,
+            reconciliation_required=True,
+            reason_code="payload_transmission_started",
+        )
+        submit = self.transport_manager.run_ssh(
+            ["sbatch", "--parsable", remote_script],
+            check=False,
+        )
         stderr = redact_text(submit.stderr, self.config.logging.redact_patterns)
 
         job_id = None
@@ -292,11 +874,36 @@ class SlurmRunner:
         if handle:
             self.store.write_json(run_id, "job_handle.json", handle.to_dict())
 
+        if handle is not None:
+            attempt = self.attempt_journal.transition(
+                run_id,
+                phase=RunnerAttemptPhase.REMOTE_PENDING,
+                effect_certainty=RunnerEffectCertainty.EFFECT_KNOWN,
+                retry_eligibility=RunnerRetryEligibility.VERIFY_THEN_RETRY,
+                reconciliation_required=False,
+                receipt_digests={"slurm_handle": receipt_digest(handle.to_dict())},
+                reason_code="slurm_handle_persisted",
+            )
+        else:
+            attempt = self.attempt_journal.transition(
+                run_id,
+                state=RunnerAttemptState.RECONCILIATION_REQUIRED,
+                retry_eligibility=RunnerRetryEligibility.RECONCILE_REQUIRED,
+                reconciliation_required=True,
+                safe_failure_code="dispatch_in_doubt",
+                reason_code="slurm_receipt_missing",
+            )
+
         metadata = {
             "submitted_at": datetime.now(tz=UTC).isoformat(),
             "upload_entries": upload_entries,
             "sbatch_script": str(local_script),
             "submit_stdout": submit.stdout.strip(),
+            "runner_attempt_safe_receipt_digest": attempt.safe_receipt_digest,
+            "runner_phase": attempt.phase.value,
+            "effect_certainty": attempt.effect_certainty.value,
+            "retry_eligibility": attempt.retry_eligibility.value,
+            "reconciliation_required": attempt.reconciliation_required,
         }
         self.store.write_json(run_id, "submit_metadata.json", metadata)
 
@@ -342,11 +949,10 @@ class SlurmRunner:
 
     def status(self, handle: JobHandle) -> JobStatus:
         self._validate_handle(handle)
-        squeue_cmd = wrap_ssh(
-            self.config.cluster.ssh_target,
+        squeue = self.transport_manager.run_ssh(
             ["squeue", "-h", "-j", handle.job_id, "-o", "%T"],
+            check=False,
         )
-        squeue = self.command_runner.run(squeue_cmd, check=False)
         raw_state = squeue.stdout.strip()
 
         mapped_squeue_state = _map_slurm_state(raw_state)
@@ -355,15 +961,16 @@ class SlurmRunner:
             and raw_state
             and mapped_squeue_state in {"queued", "running"}
         ):
-            return JobStatus(
+            status = JobStatus(
                 run_id=handle.run_id,
                 job_id=handle.job_id,
                 state=mapped_squeue_state,
                 raw_state=raw_state,
             )
+            self._record_status_observation(status)
+            return status
 
-        sacct_cmd = wrap_ssh(
-            self.config.cluster.ssh_target,
+        sacct = self.transport_manager.run_ssh(
             [
                 "sacct",
                 "-j",
@@ -372,8 +979,8 @@ class SlurmRunner:
                 "--parsable2",
                 "--noheader",
             ],
+            check=False,
         )
-        sacct = self.command_runner.run(sacct_cmd, check=False)
         raw = sacct.stdout.strip().splitlines()[0] if sacct.stdout.strip() else ""
         state_token = raw.split("|")[0] if raw else ""
         exit_code = None
@@ -384,13 +991,79 @@ class SlurmRunner:
             except ValueError:
                 exit_code = None
 
-        return JobStatus(
+        status = JobStatus(
             run_id=handle.run_id,
             job_id=handle.job_id,
             state=_map_slurm_state(state_token),
             raw_state=state_token,
             exit_code=exit_code,
         )
+        self._record_status_observation(status)
+        return status
+
+    def _record_status_observation(self, status: JobStatus) -> None:
+        if not self.attempt_journal.has_attempt(status.run_id):
+            return
+        current = self.attempt_journal.load(status.run_id)
+        if current.state is RunnerAttemptState.TERMINAL:
+            return
+        terminal = status.state in {"completed", "failed", "cancelled"}
+        observed_phase = (
+            RunnerAttemptPhase.REMOTE_TERMINAL
+            if terminal
+            else RunnerAttemptPhase.REMOTE_PENDING
+        )
+        next_phase = (
+            observed_phase
+            if runner_phase_precedes(current.phase, observed_phase)
+            else current.phase
+        )
+        observed_retry = (
+            RunnerRetryEligibility.VERIFY_THEN_RETRY
+            if status.state == "completed" and status.exit_code == 0
+            else (
+                RunnerRetryEligibility.TERMINAL
+                if terminal
+                else RunnerRetryEligibility.VERIFY_THEN_RETRY
+            )
+        )
+        self.attempt_journal.transition(
+            status.run_id,
+            phase=next_phase,
+            state=(
+                RunnerAttemptState.ACTIVE
+                if current.state is RunnerAttemptState.RECONCILIATION_REQUIRED
+                else current.state
+            ),
+            effect_certainty=(
+                RunnerEffectCertainty.TERMINAL_KNOWN
+                if terminal
+                else RunnerEffectCertainty.EFFECT_KNOWN
+            ),
+            retry_eligibility=(
+                current.retry_eligibility
+                if current.retry_eligibility is RunnerRetryEligibility.TERMINAL
+                else observed_retry
+            ),
+            reconciliation_required=False,
+            receipt_digests={
+                f"slurm_status_v{current.state_version + 1}": (
+                    receipt_digest(status.to_dict())
+                )
+            },
+            reason_code=(
+                "slurm_terminal_observed" if terminal else "slurm_status_observed"
+            ),
+        )
+
+    def _output_entries(self, run_id: str) -> list[dict[str, object]]:
+        manifest = self.store.read_json(run_id, "outputs_manifest.json")
+        if manifest.get("run_id") != run_id:
+            raise ValueError("persisted output manifest belongs to another run")
+        entries = list(manifest.get("entries") or [])
+        if not all(isinstance(item, dict) for item in entries):
+            raise ValueError("persisted output manifest entries are invalid")
+        return [dict(item) for item in entries]
 
     def logs(self, handle: JobHandle, tail_lines: int = 200) -> dict[str, object]:
         if tail_lines < 1 or tail_lines > self.config.limits.max_tail_lines:
@@ -405,16 +1078,14 @@ class SlurmRunner:
             PurePosixPath(handle.remote_run_dir) / "logs" / f"slurm-{handle.job_id}.err"
         )
 
-        out_tail_cmd = wrap_ssh(
-            self.config.cluster.ssh_target,
+        out_tail = self.transport_manager.run_ssh(
             ["tail", "-n", str(tail_lines), out_path],
+            check=False,
         )
-        err_tail_cmd = wrap_ssh(
-            self.config.cluster.ssh_target,
+        err_tail = self.transport_manager.run_ssh(
             ["tail", "-n", str(tail_lines), err_path],
+            check=False,
         )
-        out_tail = self.command_runner.run(out_tail_cmd, check=False)
-        err_tail = self.command_runner.run(err_tail_cmd, check=False)
 
         stdout = redact_text(out_tail.stdout, self.config.logging.redact_patterns)
         stderr = redact_text(err_tail.stdout, self.config.logging.redact_patterns)
@@ -433,28 +1104,95 @@ class SlurmRunner:
 
     def cancel(self, handle: JobHandle) -> RunResult:
         self._validate_handle(handle)
-        cancel_cmd = wrap_ssh(
-            self.config.cluster.ssh_target, ["scancel", handle.job_id]
+        current = (
+            self.attempt_journal.load(handle.run_id)
+            if self.attempt_journal.has_attempt(handle.run_id)
+            else None
         )
-        cancelled = self.command_runner.run(cancel_cmd, check=False)
+        if current is not None and (
+            current.state is RunnerAttemptState.TERMINAL
+            or current.effect_certainty is RunnerEffectCertainty.TERMINAL_KNOWN
+        ):
+            return RunResult(
+                run_id=handle.run_id,
+                requested_mode="sbatch",
+                selected_mode="sbatch",
+                remote_run_dir=handle.remote_run_dir,
+                status="failed",
+                job_id=handle.job_id,
+                error_code="RUN_ALREADY_TERMINAL",
+                artifacts={},
+                metadata=self._attempt_metadata(current),
+            )
+        cancelled = self.transport_manager.run_ssh(
+            ["scancel", handle.job_id],
+            check=False,
+        )
         stderr = redact_text(cancelled.stderr, self.config.logging.redact_patterns)
         mapped = self.failure_mapper.map_error(stderr)
+        if current is not None:
+            effect_certainty = current.effect_certainty
+            attempt_state = current.state
+            retry_eligibility = current.retry_eligibility
+            reconciliation_required = current.reconciliation_required
+            if effect_certainty is RunnerEffectCertainty.DISPATCH_IN_DOUBT:
+                # The persisted exact Slurm handle is acceptance proof.  It is
+                # sufficient to leave submission reconciliation without ever
+                # submitting a replacement job.
+                effect_certainty = RunnerEffectCertainty.EFFECT_KNOWN
+                attempt_state = RunnerAttemptState.ACTIVE
+                retry_eligibility = RunnerRetryEligibility.VERIFY_THEN_RETRY
+                reconciliation_required = False
+            current = self.attempt_journal.transition(
+                handle.run_id,
+                phase=RunnerAttemptPhase.REMOTE_PENDING,
+                state=attempt_state,
+                effect_certainty=effect_certainty,
+                retry_eligibility=retry_eligibility,
+                reconciliation_required=reconciliation_required,
+                receipt_digests={
+                    f"slurm_cancel_request_v{current.state_version + 1}": (
+                        receipt_digest(
+                            {
+                                "returncode": cancelled.returncode,
+                                "timed_out": cancelled.timed_out,
+                                "process_started": cancelled.process_started,
+                            }
+                        )
+                    )
+                },
+                reason_code=(
+                    "slurm_cancel_requested"
+                    if cancelled.returncode == 0
+                    else "slurm_cancel_request_failed"
+                ),
+            )
         return RunResult(
             run_id=handle.run_id,
             requested_mode="sbatch",
             selected_mode="sbatch",
             remote_run_dir=handle.remote_run_dir,
-            status="cancelled" if cancelled.returncode == 0 else "failed",
+            # A successful scancel command proves only that the cancellation
+            # request was accepted.  The job remains nonterminal until an
+            # exact-handle status observation proves a Slurm terminal state.
+            status="pending",
             exit_code=cancelled.returncode,
             job_id=handle.job_id,
             stdout=cancelled.stdout.strip(),
             stderr=stderr,
-            error_code=(mapped.code if mapped else None),
+            error_code=(
+                None
+                if cancelled.returncode == 0
+                else (mapped.code if mapped else "CANCEL_REQUEST_FAILED")
+            ),
             logs={
                 "cancel": prepare_log_payload(
                     cancelled.stdout + stderr, self.config.logging.inline_log_limit
                 )
             },
+            metadata=(
+                {} if current is None else self._attempt_metadata(current)
+            ),
         )
 
     def fetch_artifacts(self, spec: RunSpec, handle: JobHandle) -> RunResult:
@@ -462,25 +1200,137 @@ class SlurmRunner:
         job_status = self.status(handle)
         if job_status.state != "completed" or job_status.exit_code != 0:
             active = job_status.state in {"queued", "running", "unknown"}
+            observed_attempt = None
+            if not active and self.attempt_journal.has_attempt(handle.run_id):
+                observed_attempt = self.attempt_journal.transition(
+                    handle.run_id,
+                    phase=RunnerAttemptPhase.TERMINAL,
+                    state=RunnerAttemptState.TERMINAL,
+                    effect_certainty=RunnerEffectCertainty.TERMINAL_KNOWN,
+                    retry_eligibility=RunnerRetryEligibility.TERMINAL,
+                    reconciliation_required=False,
+                    safe_failure_code="slurm_terminal_failed",
+                    reason_code="slurm_terminal_failed",
+                )
+            elif self.attempt_journal.has_attempt(handle.run_id):
+                observed_attempt = self.attempt_journal.load(handle.run_id)
             return RunResult(
                 run_id=handle.run_id,
                 requested_mode="sbatch",
                 selected_mode="sbatch",
                 remote_run_dir=handle.remote_run_dir,
-                status=job_status.state if active else "failed",
+                status=(
+                    job_status.state
+                    if job_status.state in {"queued", "running"}
+                    else ("pending" if active else "failed")
+                ),
                 exit_code=job_status.exit_code,
                 job_id=handle.job_id,
                 error_code=(
                     "JOB_NOT_TERMINAL" if active else "JOB_TERMINAL_FAILED"
                 ),
                 artifacts={},
-                metadata={"job_status": job_status.to_dict()},
+                metadata={
+                    "job_status": job_status.to_dict(),
+                    **(
+                        {}
+                        if observed_attempt is None
+                        else self._attempt_metadata(observed_attempt)
+                    ),
+                },
             )
-        entries = self.staging.download_outputs(
-            handle.run_id,
-            spec.expected_outputs,
-            handle.remote_run_dir,
+        current_attempt = (
+            self.attempt_journal.load_bound(
+                handle.run_id,
+                spec,
+                selected_mode="sbatch",
+            )
+            if self.attempt_journal.has_attempt(handle.run_id)
+            else None
         )
+        if (
+            current_attempt is not None
+            and current_attempt.state is RunnerAttemptState.TERMINAL
+            and current_attempt.safe_failure_code is not None
+        ):
+            return self._closed_attempt_result(
+                spec,
+                current_attempt,
+                error_code=(
+                    "OUTPUT_FETCH_INTERRUPTED"
+                    if current_attempt.safe_failure_code
+                    == "output_fetch_recovery_exhausted"
+                    else "JOB_TERMINAL_FAILED"
+                ),
+            )
+        if (
+            current_attempt is not None
+            and current_attempt.state is RunnerAttemptState.ACTIVE
+            and current_attempt.phase is RunnerAttemptPhase.OUTPUTS_FETCHING
+        ):
+            current_attempt = (
+                self.attempt_journal.authorize_restart_output_fetch_recovery(
+                    handle.run_id,
+                    spec,
+                    selected_mode="sbatch",
+                )
+            )
+            if current_attempt is None:
+                raise RunnerAttemptError(
+                    "runner_output_fetch_not_resumable",
+                    "Slurm output fetch cannot resume safely",
+                )
+            if current_attempt.state is RunnerAttemptState.TERMINAL:
+                return self._closed_attempt_result(
+                    spec,
+                    current_attempt,
+                    error_code="OUTPUT_FETCH_INTERRUPTED",
+                )
+
+        reuse_verified_outputs = (
+            current_attempt is not None
+            and (
+                current_attempt.state is RunnerAttemptState.TERMINAL
+                or current_attempt.phase is RunnerAttemptPhase.OUTPUTS_VERIFIED
+            )
+        )
+        if reuse_verified_outputs:
+            entries = self._output_entries(handle.run_id)
+            output_failure_attempt = None
+            output_failure_code = None
+        else:
+            if current_attempt is not None and (
+                current_attempt.phase is not RunnerAttemptPhase.OUTPUTS_FETCHING
+            ):
+                current_attempt = self.attempt_journal.transition(
+                    handle.run_id,
+                    phase=RunnerAttemptPhase.OUTPUTS_FETCHING,
+                    retry_eligibility=RunnerRetryEligibility.VERIFY_THEN_RETRY,
+                    reason_code="outputs_fetching",
+                )
+            entries, output_failure_attempt, output_failure_code = (
+                self._fetch_outputs_with_recovery(
+                    spec,
+                    handle.run_id,
+                    handle.remote_run_dir,
+                )
+            )
+        if output_failure_attempt is not None:
+            assert output_failure_code is not None
+            return RunResult(
+                run_id=handle.run_id,
+                requested_mode="sbatch",
+                selected_mode="sbatch",
+                remote_run_dir=handle.remote_run_dir,
+                status="failed",
+                job_id=handle.job_id,
+                error_code=output_failure_code,
+                artifacts={},
+                metadata={
+                    "job_status": job_status.to_dict(),
+                    **self._attempt_metadata(output_failure_attempt),
+                },
+            )
 
         outputs_root = self.store.run_root(handle.run_id) / "outputs"
         missing_outputs, empty_outputs = validate_expected_outputs(
@@ -501,14 +1351,98 @@ class SlurmRunner:
         if status != "completed":
             artifacts = {}
 
+        if current_attempt is not None:
+            if current_attempt.state is RunnerAttemptState.ACTIVE and (
+                current_attempt.phase is not RunnerAttemptPhase.OUTPUTS_VERIFIED
+            ):
+                current_attempt = self.attempt_journal.transition(
+                    handle.run_id,
+                    phase=RunnerAttemptPhase.OUTPUTS_VERIFIED,
+                    retry_eligibility=RunnerRetryEligibility.TERMINAL,
+                    receipt_digests={
+                        "outputs_manifest": receipt_digest(
+                            self.store.read_json(
+                                handle.run_id,
+                                "outputs_manifest.json",
+                            )
+                        )
+                    },
+                    reason_code="outputs_verified",
+                )
+            outputs_receipt = current_attempt.receipt_digests.get(
+                "outputs_manifest"
+            )
+            if outputs_receipt is None:
+                raise RunnerAttemptError(
+                    "runner_outputs_receipt_missing",
+                    "verified Slurm outputs have no immutable receipt",
+                )
+            terminal_receipt = {
+                "status": status,
+                "error_code": error_code,
+                "artifacts": sorted(artifacts),
+                "outputs_receipt": outputs_receipt,
+            }
+            if current_attempt.state is RunnerAttemptState.ACTIVE:
+                terminal_attempt = self.attempt_journal.transition(
+                    handle.run_id,
+                    phase=RunnerAttemptPhase.TERMINAL,
+                    state=RunnerAttemptState.TERMINAL,
+                    retry_eligibility=RunnerRetryEligibility.TERMINAL,
+                    reconciliation_required=False,
+                    safe_failure_code=(
+                        None
+                        if status == "completed"
+                        else "output_validation_failed"
+                    ),
+                    receipt_digests={
+                        "run_result": receipt_digest(terminal_receipt)
+                    },
+                    reason_code=(
+                        "run_succeeded"
+                        if status == "completed"
+                        else "run_failed"
+                    ),
+                )
+            elif current_attempt.receipt_digests.get("run_result") != receipt_digest(
+                terminal_receipt
+            ):
+                raise RunnerAttemptError(
+                    "runner_terminal_result_unrecoverable",
+                    "Slurm terminal result evidence is incomplete",
+                )
+            else:
+                terminal_attempt = current_attempt
+        else:
+            terminal_attempt = None
+
         metadata = {
             "job_status": job_status.to_dict(),
+            "status": status,
+            "exit_code": job_status.exit_code,
+            "error_code": error_code,
             "validation": {
                 "missing_outputs": missing_outputs,
                 "empty_outputs": empty_outputs,
                 "success_check_failures": success_check_failures,
-            }
+            },
+            **(
+                {}
+                if terminal_attempt is None
+                else {
+                    "runner_attempt_safe_receipt_digest": (
+                        terminal_attempt.safe_receipt_digest
+                    ),
+                    "runner_phase": terminal_attempt.phase.value,
+                    "effect_certainty": terminal_attempt.effect_certainty.value,
+                    "retry_eligibility": terminal_attempt.retry_eligibility.value,
+                    "reconciliation_required": (
+                        terminal_attempt.reconciliation_required
+                    ),
+                }
+            ),
         }
+        self.store.write_json(handle.run_id, "run_result_metadata.json", metadata)
 
         return RunResult(
             run_id=handle.run_id,

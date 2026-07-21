@@ -16,6 +16,9 @@ import subprocess
 import tempfile
 import threading
 import time
+from contextlib import nullcontext
+from contextlib import contextmanager
+from contextvars import copy_context
 from typing import Any
 from uuid import uuid4
 
@@ -23,15 +26,27 @@ from openzyme_domain import CommandLogArtifactRecord
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import ControlledOperation
+from openzyme_domain import ControlledOperationDispatchRequest
+from openzyme_domain import ControlledOperationExecution
+from openzyme_domain import ControlledOperationExecutionEvent
+from openzyme_domain import ControlledOperationExecutionLifecycle
+from openzyme_domain import ControlledOperationExecutionPhase
+from openzyme_domain import ControlledOperationExecutionTerminalOutcome
+from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import ContinuationState
 from openzyme_domain import ContinuationStateStatus
+from openzyme_domain import ContinuationDeliveryState
+from openzyme_domain import ContinuationResumeStrategy
+from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import FileAuditEntry
+from openzyme_domain import MutationWriterKind
 from openzyme_domain import SandboxImageCompatibility
 from openzyme_domain import SandboxRunRecord
 from openzyme_domain import SandboxRunStatus
 from openzyme_domain import SandboxWorkspaceRecord
 from openzyme_domain import SandboxWorkspaceStatus
+from openzyme_domain import RetryEligibility
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import immutable_source_tree_digest
 from openzyme_runtime import PodmanContainerLease
@@ -47,6 +62,16 @@ from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolRegistry
 from .harness import ToolResult
+from .controlled_operation_execution import DurableControlledOperationAdmission
+from .controlled_operation_execution import (
+    DurableControlledOperationAdmissionService,
+)
+from .controlled_operation_execution import controlled_operation_approval_digest
+from .continuation_delivery import ContinuationWakeService
+from .live_process_registry import AttachedProcessDelivery
+from .live_process_registry import AttachedProcessIdentity
+from .live_process_registry import LiveProcessRegistry
+from .live_process_registry import LiveProcessRegistryConflictError
 from .sandbox_workspace import SANDBOX_PROTOCOL_VERSION
 from .sandbox_workspace import SANDBOX_WORKSPACE_MANIFEST_VERSION
 from .sandbox_workspace import DEFAULT_SANDBOX_QUOTA_BYTES
@@ -110,6 +135,8 @@ PRIVATE_ADAPTER_PAYLOAD_KEYS = {
     "complete_command",
     "raw_command",
 }
+
+
 class SandboxRuntimeError(RuntimeError):
     def __init__(
         self,
@@ -144,7 +171,9 @@ def _sha256_bytes(content: bytes) -> str:
 
 
 def _json_digest(value: Any) -> str:
-    return _sha256_bytes(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    return _sha256_bytes(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
 
 
 def _reject_json_constant(value: str) -> None:
@@ -231,9 +260,7 @@ _TOOLCHAIN_RUNTIME_IDENTITY_FIELDS = (
     "runner_contract_digest",
     "image_digest",
 )
-_SAFE_TOOLCHAIN_IDENTIFIER_PATTERN = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$"
-)
+_SAFE_TOOLCHAIN_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$")
 _PYTHON_EXECUTABLE_PATTERN = re.compile(r"python(?:\d+(?:\.\d+)*t?)?\Z")
 _UNWRAPPED_HEREDOC_ARG_PATTERN = re.compile(
     r"^[ \t]*(?:-[ \t]*)?<<-?[ \t]*[^\s\r\n]+[ \t]*\r?\n"
@@ -249,8 +276,7 @@ def _project_toolchain_runtime_identity(value: Any) -> dict[str, str] | None:
     }
     if (
         identity["schema_id"] != "mcp_hpc_toolchain_runtime_identity@1"
-        or identity["attestation_scope"]
-        != "same_ssh_login_shell_pre_exec"
+        or identity["attestation_scope"] != "same_ssh_login_shell_pre_exec"
         or identity["execution_mode"] != "ssh"
         or any(
             _SAFE_TOOLCHAIN_IDENTIFIER_PATTERN.fullmatch(identity[field]) is None
@@ -285,7 +311,9 @@ def _sanitize_toolchain_runtime_identity(
     return safe_summary
 
 
-def _structured_adapter_message(value: Any, *, default_code: str) -> dict[str, Any] | None:
+def _structured_adapter_message(
+    value: Any, *, default_code: str
+) -> dict[str, Any] | None:
     if value is None or value == "":
         return None
     if isinstance(value, dict):
@@ -353,12 +381,17 @@ def _public_path(value: str | None, *, default: PurePosixPath) -> PurePosixPath:
         return default
     text = str(value)
     if text.startswith("/openzyme/"):
-        raise SandboxRuntimeError("sandbox_path_forbidden", "agent-facing sandbox paths must use /workspace")
+        raise SandboxRuntimeError(
+            "sandbox_path_forbidden", "agent-facing sandbox paths must use /workspace"
+        )
     candidate = PurePosixPath(text)
     if not candidate.is_absolute():
         candidate = WORKSPACE_ROOT / candidate
     if any(part in {"", ".", ".."} for part in candidate.parts[1:]):
-        raise SandboxRuntimeError("sandbox_path_forbidden", "workspace path must not contain empty, '.', or '..' segments")
+        raise SandboxRuntimeError(
+            "sandbox_path_forbidden",
+            "workspace path must not contain empty, '.', or '..' segments",
+        )
     return candidate
 
 
@@ -366,13 +399,18 @@ def _is_under(path: PurePosixPath, root: PurePosixPath) -> bool:
     return path == root or root in path.parents
 
 
-def _allowed_root_for(path: PurePosixPath, *, allow_workspace_root: bool = False) -> PurePosixPath:
+def _allowed_root_for(
+    path: PurePosixPath, *, allow_workspace_root: bool = False
+) -> PurePosixPath:
     if allow_workspace_root and path == WORKSPACE_ROOT:
         return WORKSPACE_ROOT
     for root in ALLOWED_FILE_ROOTS:
         if _is_under(path, root):
             return root
-    raise SandboxRuntimeError("sandbox_path_forbidden", "path must be under /workspace/src, /workspace/work, /workspace/output, or /workspace/logs")
+    raise SandboxRuntimeError(
+        "sandbox_path_forbidden",
+        "path must be under /workspace/src, /workspace/work, /workspace/output, or /workspace/logs",
+    )
 
 
 def _resolve_host_path(
@@ -387,22 +425,39 @@ def _resolve_host_path(
     else:
         relative = public_path.relative_to(root)
     if relative != PurePosixPath("."):
-        if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
-            raise SandboxRuntimeError("sandbox_path_forbidden", "path escapes the allowed sandbox workspace root")
-    host_root = workspace_path if root == WORKSPACE_ROOT else workspace_path / root.relative_to(WORKSPACE_ROOT)
-    host_path = (host_root / Path(*(() if relative == PurePosixPath(".") else relative.parts))).resolve()
+        if relative.is_absolute() or any(
+            part in {"", ".", ".."} for part in relative.parts
+        ):
+            raise SandboxRuntimeError(
+                "sandbox_path_forbidden",
+                "path escapes the allowed sandbox workspace root",
+            )
+    host_root = (
+        workspace_path
+        if root == WORKSPACE_ROOT
+        else workspace_path / root.relative_to(WORKSPACE_ROOT)
+    )
+    host_path = (
+        host_root / Path(*(() if relative == PurePosixPath(".") else relative.parts))
+    ).resolve()
     resolved_root = host_root.resolve()
     if host_path != resolved_root and resolved_root not in host_path.parents:
-        raise SandboxRuntimeError("sandbox_path_forbidden", "path escapes the allowed sandbox workspace root")
+        raise SandboxRuntimeError(
+            "sandbox_path_forbidden", "path escapes the allowed sandbox workspace root"
+        )
     for parent in (host_path, *host_path.parents):
         if parent == resolved_root.parent:
             break
         if parent.exists() and parent.is_symlink():
-            raise SandboxRuntimeError("sandbox_path_forbidden", "path traverses a symlink")
+            raise SandboxRuntimeError(
+                "sandbox_path_forbidden", "path traverses a symlink"
+            )
     return host_path
 
 
-def _bounded_text(value: str, *, limit: int = STDIO_INLINE_LIMIT) -> tuple[str, bool, int, str]:
+def _bounded_text(
+    value: str, *, limit: int = STDIO_INLINE_LIMIT
+) -> tuple[str, bool, int, str]:
     encoded = value.encode("utf-8", errors="replace")
     digest = _sha256_bytes(encoded)
     if len(encoded) <= limit:
@@ -440,13 +495,17 @@ def _parse_hunk_header(line: str) -> tuple[int, int]:
         start_text = old_part.removeprefix("-").split(",", 1)[0]
         return int(start_text), 0
     except (IndexError, ValueError) as exc:
-        raise SandboxRuntimeError("sandbox_patch_failed", "invalid unified diff hunk header") from exc
+        raise SandboxRuntimeError(
+            "sandbox_patch_failed", "invalid unified diff hunk header"
+        ) from exc
 
 
 def _strip_patch_path(value: str) -> PurePosixPath:
     text = value.strip().split("\t", 1)[0].split(" ", 1)[0]
     if text in {"---", "+++", "/dev/null", ""}:
-        raise SandboxRuntimeError("sandbox_path_forbidden", "patch must target an existing single file")
+        raise SandboxRuntimeError(
+            "sandbox_path_forbidden", "patch must target an existing single file"
+        )
     if text.startswith("a/") or text.startswith("b/"):
         text = text[2:]
     path = PurePosixPath(text)
@@ -455,16 +514,23 @@ def _strip_patch_path(value: str) -> PurePosixPath:
     return _public_path(path.as_posix(), default=WORKSPACE_ROOT)
 
 
-def _apply_unified_diff(original: str, patch: str, *, public_path: PurePosixPath) -> str:
+def _apply_unified_diff(
+    original: str, patch: str, *, public_path: PurePosixPath
+) -> str:
     patch_lines = patch.splitlines(keepends=True)
     if len([line for line in patch_lines if line.startswith("@@")]) == 0:
-        raise SandboxRuntimeError("sandbox_patch_failed", "patch must contain at least one unified diff hunk")
+        raise SandboxRuntimeError(
+            "sandbox_patch_failed", "patch must contain at least one unified diff hunk"
+        )
     header_paths: list[PurePosixPath] = []
     for line in patch_lines:
         if line.startswith("--- ") or line.startswith("+++ "):
             header_paths.append(_strip_patch_path(line[4:]))
     if header_paths and any(path != public_path for path in header_paths):
-        raise SandboxRuntimeError("sandbox_path_forbidden", "unified diff path must match the tool path argument")
+        raise SandboxRuntimeError(
+            "sandbox_path_forbidden",
+            "unified diff path must match the tool path argument",
+        )
     original_lines = original.splitlines(keepends=True)
     output: list[str] = []
     original_index = 0
@@ -480,7 +546,9 @@ def _apply_unified_diff(original: str, patch: str, *, public_path: PurePosixPath
         old_start, _ = _parse_hunk_header(line)
         target_index = max(old_start - 1, 0)
         if target_index < original_index:
-            raise SandboxRuntimeError("sandbox_patch_failed", "patch hunks overlap or move backwards")
+            raise SandboxRuntimeError(
+                "sandbox_patch_failed", "patch hunks overlap or move backwards"
+            )
         output.extend(original_lines[original_index:target_index])
         original_index = target_index
         index += 1
@@ -492,20 +560,37 @@ def _apply_unified_diff(original: str, patch: str, *, public_path: PurePosixPath
             marker = hunk_line[:1]
             content = hunk_line[1:]
             if marker == " ":
-                if original_index >= len(original_lines) or original_lines[original_index] != content:
-                    raise SandboxRuntimeError("sandbox_patch_failed", "patch context does not match the target file")
+                if (
+                    original_index >= len(original_lines)
+                    or original_lines[original_index] != content
+                ):
+                    raise SandboxRuntimeError(
+                        "sandbox_patch_failed",
+                        "patch context does not match the target file",
+                    )
                 output.append(original_lines[original_index])
                 original_index += 1
             elif marker == "-":
-                if original_index >= len(original_lines) or original_lines[original_index] != content:
-                    raise SandboxRuntimeError("sandbox_patch_failed", "patch removal does not match the target file")
+                if (
+                    original_index >= len(original_lines)
+                    or original_lines[original_index] != content
+                ):
+                    raise SandboxRuntimeError(
+                        "sandbox_patch_failed",
+                        "patch removal does not match the target file",
+                    )
                 original_index += 1
             elif marker == "+":
                 output.append(content)
             elif hunk_line.strip() == "":
-                raise SandboxRuntimeError("sandbox_patch_failed", "blank hunk lines must be prefixed with a diff marker")
+                raise SandboxRuntimeError(
+                    "sandbox_patch_failed",
+                    "blank hunk lines must be prefixed with a diff marker",
+                )
             else:
-                raise SandboxRuntimeError("sandbox_patch_failed", "patch contains an invalid hunk line")
+                raise SandboxRuntimeError(
+                    "sandbox_patch_failed", "patch contains an invalid hunk line"
+                )
             index += 1
     output.extend(original_lines[original_index:])
     return "".join(output)
@@ -523,19 +608,45 @@ class _ControlSocketServer:
     source_tree_digest: str
     task_id: str | None = None
     lane_id: str | None = None
+    originating_signal_id: str | None = None
+    originating_tool_call_id: str | None = None
+    originating_invocation_id: str | None = None
+    sandbox_runtime_identity: str | None = None
+    process_epoch: int | None = None
+    live_process_registry: LiveProcessRegistry | None = None
     workspace_root: Path | None = None
     artifact_blob_root: Path | None = None
     adapter_executor: SandboxAdapterExecutor | None = None
     hpc_fetch_executor: SandboxHpcFetchExecutor | None = None
     repository_scope_factory: Callable[[], Any] | None = None
+    mutation_writer_scope_factory: Callable[..., Any] | None = None
+    reliability_shadow_observer: Any | None = None
+    reliability_settings: Any | None = None
+    durable_route_adapter_policy_ids: dict[str, str] = field(default_factory=dict)
     _thread: threading.Thread | None = None
     _stop: threading.Event = field(default_factory=threading.Event)
     _ready: threading.Event = field(default_factory=threading.Event)
+    _parked: threading.Event = field(default_factory=threading.Event)
+    _delivery_condition: threading.Condition = field(
+        default_factory=threading.Condition,
+        repr=False,
+    )
+    _current_attached_identity: AttachedProcessIdentity | None = None
+    _last_attached_identity: AttachedProcessIdentity | None = None
+    _pending_delivery: AttachedProcessDelivery | None = None
+    _accepted_deliveries: dict[tuple[str, int], AttachedProcessDelivery] = field(
+        default_factory=dict, repr=False
+    )
 
     def start(self) -> None:
         self._stop = threading.Event()
         self._ready = threading.Event()
-        self._thread = threading.Thread(target=self._serve, daemon=False)
+        self._parked = threading.Event()
+        server_context = copy_context()
+        self._thread = threading.Thread(
+            target=lambda: server_context.run(self._serve_with_mutation_writer),
+            daemon=False,
+        )
         self._thread.start()
         for _ in range(_CONTROL_SOCKET_START_ATTEMPTS):
             if self._ready.wait(timeout=_CONTROL_SOCKET_START_POLL_SECONDS):
@@ -543,27 +654,135 @@ class _ControlSocketServer:
             if not self._thread.is_alive():
                 break
         self.stop()
-        raise SandboxRuntimeError("sandbox_transport_unavailable", "control socket did not start")
+        raise SandboxRuntimeError(
+            "sandbox_transport_unavailable", "control socket did not start"
+        )
+
+    def _serve_with_mutation_writer(self) -> None:
+        writer_scope = (
+            nullcontext(None)
+            if self.mutation_writer_scope_factory is None
+            else self.mutation_writer_scope_factory(
+                session_id=self.session_id,
+                owner_kind=MutationWriterKind.ENGINE_CALLBACK,
+                owner_ref=f"sandbox-control-server:{self.sandbox_run_id}",
+                process_epoch=self.process_epoch,
+            )
+        )
+        with writer_scope:
+            self._serve()
+
+    @contextmanager
+    def _nested_mutation_writer(
+        self,
+        *,
+        owner_kind: MutationWriterKind,
+        owner_ref: str,
+    ):  # type: ignore[no-untyped-def]
+        factory = self.mutation_writer_scope_factory
+        if factory is None:
+            yield
+            return
+        with factory(
+            session_id=self.session_id,
+            owner_kind=owner_kind,
+            owner_ref=owner_ref,
+            process_epoch=self.process_epoch,
+        ) as authority:
+            if authority is None:
+                yield
+            else:
+                with self.repositories.mutation_write_authority(authority):
+                    yield
 
     def stop(self) -> None:
         self._stop.set()
+        with self._delivery_condition:
+            self._delivery_condition.notify_all()
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
                 client.connect(str(self.socket_path))
                 client.sendall(b"\n")
         except OSError:
             pass
+        if self._thread is threading.current_thread():
+            raise SandboxRuntimeError(
+                "sandbox_control_self_shutdown_forbidden",
+                "control socket worker cannot synchronously join itself",
+            )
         if self._thread is not None:
-            self._thread.join(timeout=_CONTROL_SOCKET_STOP_GRACE_SECONDS)
-            if self._thread.is_alive():
-                # The grace period only bounds the cooperative shutdown path.
-                # Returning with a live control worker would let repository and
-                # socket ownership escape the sandbox lifecycle boundary.
-                self._thread.join()
+            # A response timeout or request disconnect is not proof that the
+            # server-side mutation handler retired.  Keep this owner blocked
+            # until the exact thread terminates; the outer Host supervisor owns
+            # the bounded shutdown deadline and must report incomplete closure.
+            while self._thread.is_alive():
+                self._thread.join(timeout=_CONTROL_SOCKET_STOP_GRACE_SECONDS)
         try:
             self.socket_path.unlink()
         except FileNotFoundError:
             pass
+
+    def parked_identity(self) -> AttachedProcessIdentity | None:
+        with self._delivery_condition:
+            return self._current_attached_identity
+
+    def last_attached_identity(self) -> AttachedProcessIdentity | None:
+        with self._delivery_condition:
+            return self._last_attached_identity
+
+    def has_accepted_delivery(self, identity: AttachedProcessIdentity) -> bool:
+        with self._delivery_condition:
+            return (
+                identity.continuation_id,
+                identity.delivery_generation,
+            ) in self._accepted_deliveries
+
+    def is_parked(self) -> bool:
+        return self._parked.is_set()
+
+    def bind_attached_identity(self, identity: AttachedProcessIdentity) -> None:
+        with self._delivery_condition:
+            current = self._current_attached_identity
+            if current is not None and current != identity:
+                raise LiveProcessRegistryConflictError(
+                    "control channel is parked on a different continuation identity"
+                )
+            if self._last_attached_identity is not None and not (
+                self._last_attached_identity.same_process(identity)
+            ):
+                raise LiveProcessRegistryConflictError(
+                    "control channel process epoch changed during attachment"
+                )
+            self._current_attached_identity = identity
+            self._last_attached_identity = identity
+
+    def deliver_attached_result(
+        self,
+        identity: AttachedProcessIdentity,
+        delivery: AttachedProcessDelivery,
+    ) -> None:
+        key = (identity.continuation_id, identity.delivery_generation)
+        with self._delivery_condition:
+            accepted = self._accepted_deliveries.get(key)
+            if accepted is not None:
+                if accepted != delivery:
+                    raise LiveProcessRegistryConflictError(
+                        "delivery generation was reused for another immutable result"
+                    )
+                return
+            if self._current_attached_identity != identity:
+                raise LiveProcessRegistryConflictError(
+                    "delivery does not match the currently parked control channel"
+                )
+            if self._pending_delivery is not None:
+                if self._pending_delivery != delivery:
+                    raise LiveProcessRegistryConflictError(
+                        "control channel already has a different pending delivery"
+                    )
+                return
+            self._pending_delivery = delivery
+            self._accepted_deliveries[key] = delivery
+            self._delivery_condition.notify_all()
 
     def _serve(self) -> None:
         if self.repository_scope_factory is None:
@@ -708,7 +927,10 @@ class _ControlSocketServer:
     @classmethod
     def _validate_request_frame(cls, request: dict[str, Any]) -> None:
         raw_request_id = request.get("id")
-        if raw_request_id is not None and cls._response_request_id(raw_request_id) is None:
+        if (
+            raw_request_id is not None
+            and cls._response_request_id(raw_request_id) is None
+        ):
             raise SandboxRuntimeError(
                 "sandbox_transport_request_invalid",
                 "control socket request id is outside the bounded JSON-RPC identity contract",
@@ -792,9 +1014,7 @@ class _ControlSocketServer:
                 getattr(exc, "error_code", None),
                 fallback="sandbox_transport_error",
             ),
-            "hint": sanitize_public_diagnostic_text(
-                getattr(exc, "hint", None) or ""
-            ),
+            "hint": sanitize_public_diagnostic_text(getattr(exc, "hint", None) or ""),
             "details": sanitize_public_diagnostic_payload(
                 getattr(exc, "details", None)
             ),
@@ -820,18 +1040,39 @@ class _ControlSocketServer:
             if method == "s10.controlled_operation":
                 return self._handle_controlled_operation(request, params)
             if method.startswith("artifacts."):
+                if method in {
+                    "artifacts.register",
+                    "artifacts.register_many",
+                    "artifacts.snapshot_code",
+                }:
+                    with self._nested_mutation_writer(
+                        owner_kind=MutationWriterKind.ARTIFACT_PUBLISHER,
+                        owner_ref=(
+                            f"sandbox-artifact-publisher:{self.sandbox_run_id}:{method}"
+                        ),
+                    ):
+                        return self._handle_artifact_boundary(request, method, params)
                 return self._handle_artifact_boundary(request, method, params)
             if method == "hpc.workspace":
                 return self._handle_hpc_workspace(request, params)
             if method == "hpc.stage_artifact":
                 return self._handle_hpc_stage_artifact(request, params)
             if method == "hpc.fetch_outputs":
-                return self._handle_hpc_fetch_outputs(request, params)
-            raise SandboxRuntimeError("sandbox_transport_method_forbidden", "control socket only supports supervised sandbox calls")
+                with self._nested_mutation_writer(
+                    owner_kind=MutationWriterKind.ARTIFACT_PUBLISHER,
+                    owner_ref=f"sandbox-hpc-fetch:{self.sandbox_run_id}",
+                ):
+                    return self._handle_hpc_fetch_outputs(request, params)
+            raise SandboxRuntimeError(
+                "sandbox_transport_method_forbidden",
+                "control socket only supports supervised sandbox calls",
+            )
         except Exception as exc:
             return self._error_response(request_id=request.get("id"), exc=exc)
 
-    def _handle_transport_smoke(self, request: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def _handle_transport_smoke(
+        self, request: dict[str, Any], params: dict[str, Any]
+    ) -> dict[str, Any]:
         call_identity = str(params.get("call_identity") or request.get("id") or "")
         result = {
             "sandbox_workspace_id": self.sandbox_workspace_id,
@@ -858,6 +1099,7 @@ class _ControlSocketServer:
         params: dict[str, Any],
     ) -> dict[str, Any]:
         try:
+
             def _optional_object(
                 payload: dict[str, Any],
                 key: str,
@@ -873,30 +1115,39 @@ class _ControlSocketServer:
                 return dict(value)
 
             if method == "artifacts.get":
-                artifact = self.repositories.artifacts.get(str(params.get("artifact_id") or ""))
+                artifact = self.repositories.artifacts.get(
+                    str(params.get("artifact_id") or "")
+                )
                 if artifact is None or artifact.session_id != self.session_id:
-                    raise ArtifactBoundaryError("artifact_scope_forbidden", "artifact is not available in this session")
+                    raise ArtifactBoundaryError(
+                        "artifact_scope_forbidden",
+                        "artifact is not available in this session",
+                    )
                 result = project_artifact_for_agent(artifact)
             elif method == "artifacts.materialize":
-                result = self._artifact_boundary_service().materialize(
-                    session_id=self.session_id,
-                    sandbox_workspace_id=self.sandbox_workspace_id,
-                    artifact_id=str(params.get("artifact_id") or ""),
-                    target=None if params.get("target") in {None, ""} else str(params.get("target")),
-                    mode=str(params.get("mode") or "copy"),
-                ).to_payload()
+                result = (
+                    self._artifact_boundary_service()
+                    .materialize(
+                        session_id=self.session_id,
+                        sandbox_workspace_id=self.sandbox_workspace_id,
+                        artifact_id=str(params.get("artifact_id") or ""),
+                        target=None
+                        if params.get("target") in {None, ""}
+                        else str(params.get("target")),
+                        mode=str(params.get("mode") or "copy"),
+                    )
+                    .to_payload()
+                )
             elif method == "artifacts.register":
                 service = self._artifact_boundary_service()
                 result = service.register(
                     session_id=self.session_id,
                     sandbox_workspace_id=self.sandbox_workspace_id,
                     path=str(params.get("path") or ""),
-                    kind=(
-                        str(params["kind"])
-                        if "kind" in params
-                        else "result"
-                    ),
-                    format=None if params.get("format") in {None, ""} else str(params.get("format")),
+                    kind=(str(params["kind"]) if "kind" in params else "result"),
+                    format=None
+                    if params.get("format") in {None, ""}
+                    else str(params.get("format")),
                     validation_profile=(
                         None
                         if params.get("validation_profile") in {None, ""}
@@ -908,8 +1159,13 @@ class _ControlSocketServer:
                 ).to_control_payload()
             elif method == "artifacts.register_many":
                 items = params.get("items", [])
-                if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
-                    raise ArtifactBoundaryError("invalid_tool_arguments", "artifacts.register_many items must be objects")
+                if not isinstance(items, list) or not all(
+                    isinstance(item, dict) for item in items
+                ):
+                    raise ArtifactBoundaryError(
+                        "invalid_tool_arguments",
+                        "artifacts.register_many items must be objects",
+                    )
                 if len(items) > _ARTIFACT_REGISTER_MANY_MAX_ITEMS:
                     raise ArtifactBoundaryError(
                         "artifact_register_many_too_many_items",
@@ -979,12 +1235,10 @@ class _ControlSocketServer:
                         session_id=self.session_id,
                         sandbox_workspace_id=self.sandbox_workspace_id,
                         path=str(item.get("path") or ""),
-                        kind=(
-                            str(item["kind"])
-                            if "kind" in item
-                            else "result"
-                        ),
-                        format=None if item.get("format") in {None, ""} else str(item.get("format")),
+                        kind=(str(item["kind"]) if "kind" in item else "result"),
+                        format=None
+                        if item.get("format") in {None, ""}
+                        else str(item.get("format")),
                         validation_profile=(
                             None
                             if item.get("validation_profile") in {None, ""}
@@ -1000,15 +1254,22 @@ class _ControlSocketServer:
                     )
                 ]
             elif method == "artifacts.snapshot_code":
-                result = self._artifact_boundary_service().snapshot_code(
-                    session_id=self.session_id,
-                    sandbox_workspace_id=self.sandbox_workspace_id,
-                    paths=params.get("paths"),
-                    entrypoint=str(params.get("entrypoint") or ""),
-                    metadata=dict(params.get("metadata") or {}),
-                ).to_payload()
+                result = (
+                    self._artifact_boundary_service()
+                    .snapshot_code(
+                        session_id=self.session_id,
+                        sandbox_workspace_id=self.sandbox_workspace_id,
+                        paths=params.get("paths"),
+                        entrypoint=str(params.get("entrypoint") or ""),
+                        metadata=dict(params.get("metadata") or {}),
+                    )
+                    .to_payload()
+                )
             else:
-                raise SandboxRuntimeError("sandbox_transport_method_forbidden", "artifact method is not supported by the sandbox control socket")
+                raise SandboxRuntimeError(
+                    "sandbox_transport_method_forbidden",
+                    "artifact method is not supported by the sandbox control socket",
+                )
         except ArtifactBoundaryError as exc:
             raise SandboxRuntimeError(
                 exc.error_code,
@@ -1020,7 +1281,9 @@ class _ControlSocketServer:
         return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
 
     def _normalize_hpc_workspace_label(self, label: str) -> str:
-        normalized = "".join(char if char.isalnum() or char in "._-" else "-" for char in label.strip()).strip("-._")
+        normalized = "".join(
+            char if char.isalnum() or char in "._-" else "-" for char in label.strip()
+        ).strip("-._")
         if normalized in {"", ".", ".."} or len(normalized) > 80:
             raise SandboxRuntimeError(
                 "hpc_workspace_label_invalid",
@@ -1029,10 +1292,14 @@ class _ControlSocketServer:
             )
         return normalized
 
-    def _handle_hpc_workspace(self, request: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def _handle_hpc_workspace(
+        self, request: dict[str, Any], params: dict[str, Any]
+    ) -> dict[str, Any]:
         label = str(params.get("label") or "")
         normalized = self._normalize_hpc_workspace_label(label)
-        digest = hashlib.sha256(f"{self.sandbox_workspace_id}:{normalized}".encode("utf-8")).hexdigest()[:16]
+        digest = hashlib.sha256(
+            f"{self.sandbox_workspace_id}:{normalized}".encode("utf-8")
+        ).hexdigest()[:16]
         result = {
             "kind": "hpc_workspace",
             "hpc_workspace_id": f"hpcws_{digest}",
@@ -1043,10 +1310,14 @@ class _ControlSocketServer:
         }
         return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
 
-    def _handle_hpc_stage_artifact(self, request: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def _handle_hpc_stage_artifact(
+        self, request: dict[str, Any], params: dict[str, Any]
+    ) -> dict[str, Any]:
         workspace = params.get("hpc_workspace")
         if not isinstance(workspace, dict) or not workspace.get("hpc_workspace_id"):
-            raise SandboxRuntimeError("hpc_workspace_forbidden", "hpc.stage_artifact requires hpc_workspace")
+            raise SandboxRuntimeError(
+                "hpc_workspace_forbidden", "hpc.stage_artifact requires hpc_workspace"
+            )
         hpc_workspace_id = str(workspace["hpc_workspace_id"])
         artifact_id = str(params.get("artifact_id") or "")
         artifact = self.repositories.artifacts.get(artifact_id)
@@ -1070,10 +1341,17 @@ class _ControlSocketServer:
                 "artifact does not expose a sealed digest for HPC staging",
                 details={"artifact_id": artifact_id},
             )
-        workspace_relative_path = self._validated_hpc_workspace_path(str(params.get("workspace_path") or ""))
-        stage_ref_id = "stage_" + hashlib.sha256(
-            f"{hpc_workspace_id}:{artifact_id}:{artifact_digest}:{workspace_relative_path}".encode("utf-8")
-        ).hexdigest()[:16]
+        workspace_relative_path = self._validated_hpc_workspace_path(
+            str(params.get("workspace_path") or "")
+        )
+        stage_ref_id = (
+            "stage_"
+            + hashlib.sha256(
+                f"{hpc_workspace_id}:{artifact_id}:{artifact_digest}:{workspace_relative_path}".encode(
+                    "utf-8"
+                )
+            ).hexdigest()[:16]
+        )
         result = {
             "kind": "hpc_stage_ref",
             "stage_ref_id": stage_ref_id,
@@ -1086,10 +1364,14 @@ class _ControlSocketServer:
         }
         return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
 
-    def _handle_hpc_fetch_outputs(self, request: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def _handle_hpc_fetch_outputs(
+        self, request: dict[str, Any], params: dict[str, Any]
+    ) -> dict[str, Any]:
         workspace = params.get("hpc_workspace")
         if not isinstance(workspace, dict) or not workspace.get("hpc_workspace_id"):
-            raise SandboxRuntimeError("hpc_workspace_forbidden", "hpc.fetch_outputs requires hpc_workspace")
+            raise SandboxRuntimeError(
+                "hpc_workspace_forbidden", "hpc.fetch_outputs requires hpc_workspace"
+            )
         run_id = str(params.get("run_id") or "")
         if not run_id:
             raise SandboxRuntimeError(
@@ -1102,7 +1384,12 @@ class _ControlSocketServer:
             raise SandboxRuntimeError(
                 "hpc_fetch_not_declared",
                 "hpc.fetch_outputs requires a completed Host-supervised HPC run with declared outputs",
-                details={"run_id": run_id, "operation_id": None if operation is None else operation.operation_id},
+                details={
+                    "run_id": run_id,
+                    "operation_id": None
+                    if operation is None
+                    else operation.operation_id,
+                },
             )
         try:
             result = self.hpc_fetch_executor(
@@ -1129,20 +1416,33 @@ class _ControlSocketServer:
                 error_summary,
                 stage=stage,
                 hint=hint,
-                details={"run_id": run_id, "operation_id": None if operation is None else operation.operation_id, **details},
+                details={
+                    "run_id": run_id,
+                    "operation_id": None
+                    if operation is None
+                    else operation.operation_id,
+                    **details,
+                },
                 retryable=retryable,
             ) from exc
         if not isinstance(result, dict):
             raise SandboxRuntimeError(
                 "hpc_fetch_result_invalid",
                 "Host fetch executor returned a non-object result.",
-                details={"run_id": run_id, "operation_id": None if operation is None else operation.operation_id},
+                details={
+                    "run_id": run_id,
+                    "operation_id": None
+                    if operation is None
+                    else operation.operation_id,
+                },
             )
         if operation is not None:
             self._record_hpc_fetch_result(operation, dict(result))
         return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
 
-    def _hpc_fetch_operation(self, params: dict[str, Any]) -> ControlledOperation | None:
+    def _hpc_fetch_operation(
+        self, params: dict[str, Any]
+    ) -> ControlledOperation | None:
         operation_id = str(params.get("operation_id") or "")
         if not operation_id:
             return None
@@ -1170,8 +1470,16 @@ class _ControlSocketServer:
                 },
             )
         hpc_workspace = params.get("hpc_workspace")
-        hpc_workspace_id = str(dict(hpc_workspace).get("hpc_workspace_id") or "") if isinstance(hpc_workspace, dict) else ""
-        if operation.hpc_workspace_id and hpc_workspace_id and operation.hpc_workspace_id != hpc_workspace_id:
+        hpc_workspace_id = (
+            str(dict(hpc_workspace).get("hpc_workspace_id") or "")
+            if isinstance(hpc_workspace, dict)
+            else ""
+        )
+        if (
+            operation.hpc_workspace_id
+            and hpc_workspace_id
+            and operation.hpc_workspace_id != hpc_workspace_id
+        ):
             raise SandboxRuntimeError(
                 "hpc_fetch_not_declared",
                 "hpc.fetch_outputs workspace does not match the approved operation",
@@ -1183,16 +1491,31 @@ class _ControlSocketServer:
             )
         return operation
 
-    def _record_hpc_fetch_result(self, operation: ControlledOperation, result: dict[str, Any]) -> None:
+    def _record_hpc_fetch_result(
+        self, operation: ControlledOperation, result: dict[str, Any]
+    ) -> None:
         adapter_result = dict(operation.adapter_result_envelope or {})
-        fetch_refs = [dict(item) for item in list(result.get("fetch_refs") or []) if isinstance(item, dict)]
-        registered_artifact_ids = [str(value) for value in list(result.get("registered_artifact_ids") or [])]
+        fetch_refs = [
+            dict(item)
+            for item in list(result.get("fetch_refs") or [])
+            if isinstance(item, dict)
+        ]
+        registered_artifact_ids = [
+            str(value) for value in list(result.get("registered_artifact_ids") or [])
+        ]
         if not fetch_refs and not registered_artifact_ids:
             return
         adapter_result["fetch_refs"] = fetch_refs
         adapter_result["registered_artifact_ids"] = registered_artifact_ids
-        adapter_result["output_artifact_ids"] = [str(value) for value in list(result.get("output_artifact_ids") or registered_artifact_ids)]
-        bounded_summary = dict(adapter_result.get("bounded_summary") or operation.result_summary or {})
+        adapter_result["output_artifact_ids"] = [
+            str(value)
+            for value in list(
+                result.get("output_artifact_ids") or registered_artifact_ids
+            )
+        ]
+        bounded_summary = dict(
+            adapter_result.get("bounded_summary") or operation.result_summary or {}
+        )
         bounded_summary.update(
             {
                 "fetch_status": result.get("status"),
@@ -1210,10 +1533,13 @@ class _ControlSocketServer:
             )
         )
 
-    def _handle_controlled_operation(self, request: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def _handle_controlled_operation(
+        self, request: dict[str, Any], params: dict[str, Any]
+    ) -> dict[str, Any]:
         envelope = self._validated_s10_envelope(params)
         operation_digest = self._operation_digest(envelope)
         idempotency_key = str(envelope["idempotency_key"])
+        owner_mode = self._owner_mode_for_envelope(envelope)
         existing = self.repositories.controlled_operations.find_by_idempotency_key(
             session_id=self.session_id,
             sandbox_run_id=self.sandbox_run_id,
@@ -1230,12 +1556,22 @@ class _ControlSocketServer:
                         "new_operation_digest": operation_digest,
                     },
                 )
-            return {"jsonrpc": "2.0", "id": request.get("id"), "result": self._resume_or_return(existing, envelope)}
+            result = (
+                self._wait_for_durable_execution(existing)
+                if existing.owner_mode is ControlledOperationOwnerMode.DURABLE_ASYNC_V1
+                else self._resume_or_return(existing, envelope)
+            )
+            return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
 
         reusable = self.repositories.controlled_operations.find_reusable_approved(
             session_id=self.session_id,
             operation_digest=operation_digest,
         )
+        if owner_mode is ControlledOperationOwnerMode.DURABLE_ASYNC_V1:
+            # Result reuse is a separate immutable-result decision.  A new
+            # durable admission never inherits another operation's approval or
+            # falls through to the legacy synchronous executor.
+            reusable = None
         if (
             reusable is not None
             and envelope["schema_version"] == S12_ADAPTER_ENVELOPE_SCHEMA
@@ -1273,6 +1609,17 @@ class _ControlSocketServer:
             result = self._complete_running_operation(operation, envelope)
             return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
 
+        if owner_mode is ControlledOperationOwnerMode.DURABLE_ASYNC_V1:
+            operation = self._admit_durable_operation(
+                envelope,
+                operation_digest=operation_digest,
+            )
+            return {
+                "jsonrpc": "2.0",
+                "id": request.get("id"),
+                "result": self._wait_for_durable_execution(operation),
+            }
+
         operation = self._create_operation(
             envelope,
             operation_digest=operation_digest,
@@ -1280,13 +1627,21 @@ class _ControlSocketServer:
             approval_state=ApprovalRequestStatus.PENDING.value,
         )
         approval = self._create_approval(operation, envelope)
-        operation = replace(operation, approval_id=approval.approval_id, updated_at=utc_now_iso())
+        operation = replace(
+            operation, approval_id=approval.approval_id, updated_at=utc_now_iso()
+        )
         if operation.adapter_envelope_schema_version == S12_ADAPTER_ENVELOPE_SCHEMA:
-            operation = replace(operation, adapter_approval_envelope=self._adapter_approval_envelope(operation))
+            operation = replace(
+                operation,
+                adapter_approval_envelope=self._adapter_approval_envelope(operation),
+            )
         self.repositories.controlled_operations.save(operation)
         continuation = self._create_continuation(operation, approval)
         claimed = self._wait_for_approval_and_claim(continuation.continuation_id)
-        operation = self.repositories.controlled_operations.get(operation.operation_id) or operation
+        operation = (
+            self.repositories.controlled_operations.get(operation.operation_id)
+            or operation
+        )
         if claimed.status is ContinuationStateStatus.CLAIMED:
             operation = replace(
                 operation,
@@ -1327,17 +1682,23 @@ class _ControlSocketServer:
             )
         input_artifact_digests = params.get("input_artifact_digests") or []
         if not isinstance(input_artifact_digests, list):
-            raise SandboxRuntimeError("invalid_tool_arguments", "input_artifact_digests must be a list")
+            raise SandboxRuntimeError(
+                "invalid_tool_arguments", "input_artifact_digests must be a list"
+            )
         expected_outputs_summary = params.get("expected_outputs_summary") or {}
         resource_estimate = params.get("resource_estimate") or {}
-        if not isinstance(expected_outputs_summary, dict) or not isinstance(resource_estimate, dict):
+        if not isinstance(expected_outputs_summary, dict) or not isinstance(
+            resource_estimate, dict
+        ):
             raise SandboxRuntimeError(
                 "invalid_tool_arguments",
                 "expected_outputs_summary and resource_estimate must be objects",
             )
         result_summary = params.get("result_summary") or {"status": "completed"}
         if not isinstance(result_summary, dict):
-            raise SandboxRuntimeError("invalid_tool_arguments", "result_summary must be an object")
+            raise SandboxRuntimeError(
+                "invalid_tool_arguments", "result_summary must be an object"
+            )
         return {
             "schema_version": schema_version,
             "adapter_envelope_schema_version": None,
@@ -1351,7 +1712,9 @@ class _ControlSocketServer:
             "function_name": None,
             "params_digest": params_digest,
             "input_artifact_ids": [],
-            "input_artifact_digests": sorted(str(item) for item in input_artifact_digests),
+            "input_artifact_digests": sorted(
+                str(item) for item in input_artifact_digests
+            ),
             "backend_category": backend_category,
             "route_policy_id": None,
             "placement": None,
@@ -1367,15 +1730,277 @@ class _ControlSocketServer:
             "expected_outputs_summary": expected_outputs_summary,
             "resource_estimate": resource_estimate,
             "result_summary": result_summary,
-            "route_reason": str(params.get("route_reason") or "s10_generic_backend_category"),
+            "route_reason": str(
+                params.get("route_reason") or "s10_generic_backend_category"
+            ),
             "adapter_result": {},
         }
 
+    def _owner_mode_for_envelope(
+        self,
+        envelope: dict[str, Any],
+    ) -> ControlledOperationOwnerMode:
+        if envelope.get("schema_version") != S12_ADAPTER_ENVELOPE_SCHEMA:
+            return ControlledOperationOwnerMode.LEGACY_SYNC
+        route_policy_id = str(envelope.get("route_policy_id") or "")
+        settings = self.reliability_settings
+        if settings is None:
+            return ControlledOperationOwnerMode.LEGACY_SYNC
+        owner_mode = settings.owner_mode_for_route(route_policy_id)
+        if (
+            owner_mode is ControlledOperationOwnerMode.DURABLE_ASYNC_V1
+            and route_policy_id not in self.durable_route_adapter_policy_ids
+        ):
+            raise SandboxRuntimeError(
+                "durable_route_adapter_unavailable",
+                "The selected durable route has no exact Host adapter policy.",
+                details={"route_policy_id": route_policy_id},
+            )
+        return owner_mode
+
+    def _admit_durable_operation(
+        self,
+        envelope: dict[str, Any],
+        *,
+        operation_digest: str,
+    ) -> ControlledOperation:
+        operation = self._create_operation(
+            envelope,
+            operation_digest=operation_digest,
+            status=ControlledOperationStatus.WAITING_APPROVAL,
+            approval_state=ApprovalRequestStatus.PENDING.value,
+            owner_mode=ControlledOperationOwnerMode.DURABLE_ASYNC_V1,
+            persist=False,
+        )
+        approval = self._create_approval(operation, envelope, persist=False)
+        operation = replace(
+            operation,
+            approval_id=approval.approval_id,
+            adapter_approval_envelope=self._adapter_approval_envelope(
+                replace(operation, approval_id=approval.approval_id)
+            ),
+        )
+        continuation = self._create_continuation(
+            operation,
+            approval,
+            persist=False,
+            attached_process=True,
+        )
+        now = operation.created_at
+        route_policy_id = str(operation.route_policy_id or "")
+        execution = ControlledOperationExecution(
+            execution_id=_new_id("exec"),
+            operation_id=operation.operation_id,
+            session_id=operation.session_id,
+            task_id=operation.task_id,
+            lane_id=operation.lane_id,
+            approval_id=approval.approval_id,
+            owner_mode=ControlledOperationOwnerMode.DURABLE_ASYNC_V1,
+            operation_digest=operation.operation_digest,
+            approval_digest=controlled_operation_approval_digest(approval),
+            route_policy_id=route_policy_id,
+            selected_backend=str(operation.selected_backend or ""),
+            adapter_policy_id=self.durable_route_adapter_policy_ids[route_policy_id],
+            input_identity_digest=_json_digest(
+                {
+                    "source_snapshot_artifact_id": (
+                        operation.source_snapshot_artifact_id
+                    ),
+                    "source_snapshot_digest": operation.source_snapshot_digest,
+                    "input_artifact_ids": list(operation.input_artifact_ids),
+                    "input_artifact_digests": list(operation.input_artifact_digests),
+                    "stage_refs": [dict(item) for item in operation.stage_refs],
+                }
+            ),
+            expected_output_contract_digest=_json_digest(
+                {
+                    "expected_outputs": operation.expected_outputs_summary or {},
+                    "planned_fetch_intent": operation.planned_fetch_intent or {},
+                }
+            ),
+            runtime_identity_digest=_json_digest(
+                {
+                    "selected_backend": operation.selected_backend,
+                    "route_policy_id": operation.route_policy_id,
+                    "runtime_packaging_id": operation.runtime_packaging_id,
+                    "toolchain_id": operation.toolchain_id,
+                    "provider_config_digest": operation.provider_config_digest,
+                    "source_snapshot_digest": operation.source_snapshot_digest,
+                }
+            ),
+            lifecycle_state=(ControlledOperationExecutionLifecycle.AWAITING_APPROVAL),
+            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+            retry_eligibility=RetryEligibility.SAME_PHASE_SAFE,
+            dispatch_generation=0,
+            state_version=1,
+            fencing_token=0,
+            created_at=now,
+            updated_at=now,
+        )
+        request_envelope = dict(envelope)
+        request_encoded = json.dumps(
+            request_envelope,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        dispatch_request = ControlledOperationDispatchRequest(
+            request_id=_new_id("dispatch_req"),
+            execution_id=execution.execution_id,
+            operation_id=operation.operation_id,
+            session_id=operation.session_id,
+            request_digest=_sha256_bytes(request_encoded),
+            request_envelope=request_envelope,
+            request_size_bytes=len(request_encoded),
+            created_at=now,
+        )
+        event = ControlledOperationExecutionEvent(
+            event_id=_new_id("exec_evt"),
+            execution_id=execution.execution_id,
+            operation_id=operation.operation_id,
+            session_id=operation.session_id,
+            state_version=1,
+            dispatch_generation=0,
+            phase=ControlledOperationExecutionPhase.ADMISSION,
+            lifecycle_state=(ControlledOperationExecutionLifecycle.AWAITING_APPROVAL),
+            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+            retry_eligibility=RetryEligibility.SAME_PHASE_SAFE,
+            fencing_token=0,
+            safe_summary="durable operation admitted",
+            created_at=now,
+        )
+        DurableControlledOperationAdmissionService(self.repositories).admit(
+            DurableControlledOperationAdmission(
+                operation=operation,
+                approval=approval,
+                execution=execution,
+                dispatch_request=dispatch_request,
+                continuation=continuation,
+                event=event,
+            )
+        )
+        return operation
+
+    def _wait_for_durable_execution(
+        self,
+        operation: ControlledOperation,
+    ) -> dict[str, Any]:
+        execution = (
+            self.repositories.controlled_operation_executions.get_by_operation_id(
+                operation.operation_id
+            )
+        )
+        if execution is None:
+            raise SandboxRuntimeError(
+                "durable_execution_missing",
+                "Durable controlled operation has no canonical execution owner.",
+                details={"operation_id": operation.operation_id},
+            )
+        continuation = self.repositories.continuation_states.get_by_operation_id(
+            operation.operation_id
+        )
+        if continuation is None:
+            raise SandboxRuntimeError(
+                "durable_continuation_missing",
+                "Durable controlled operation has no continuation identity.",
+                details={"operation_id": operation.operation_id},
+            )
+        try:
+            identity = AttachedProcessIdentity.from_continuation(
+                continuation,
+                execution_id=execution.execution_id,
+            )
+        except ValueError as exc:
+            raise SandboxRuntimeError(
+                "durable_continuation_identity_invalid",
+                "Durable continuation lacks exact attached-process identity.",
+                details={"operation_id": operation.operation_id},
+                retryable=False,
+            ) from exc
+        with self._delivery_condition:
+            if self._current_attached_identity not in {None, identity}:
+                raise SandboxRuntimeError(
+                    "durable_continuation_channel_busy",
+                    "The sandbox control channel is already parked on another continuation.",
+                    retryable=False,
+                )
+            self._current_attached_identity = identity
+            self._last_attached_identity = identity
+            self._pending_delivery = None
+            self._parked.set()
+        registry = self.live_process_registry
+        if (
+            registry is not None
+            and registry.get_by_run(self.sandbox_run_id) is not None
+        ):
+            try:
+                registry.rebind(identity)
+            except LiveProcessRegistryConflictError as exc:
+                raise SandboxRuntimeError(
+                    "attached_process_identity_mismatch",
+                    "The live sandbox process no longer matches this continuation.",
+                    retryable=False,
+                ) from exc
+
+        with self._delivery_condition:
+            while self._pending_delivery is None and not self._stop.is_set():
+                self._delivery_condition.wait()
+            delivery = self._pending_delivery
+            self._pending_delivery = None
+            self._parked.clear()
+            self._current_attached_identity = None
+        if delivery is None:
+            raise SandboxRuntimeError(
+                "durable_execution_recovery_required",
+                "The attached process stopped before its exact result was delivered.",
+                details={"operation_id": operation.operation_id},
+                retryable=False,
+            )
+        delivered_continuation = self.repositories.continuation_states.get(
+            continuation.continuation_id
+        )
+        if (
+            delivered_continuation is None
+            or delivery.result_digest != delivered_continuation.delivery_result_digest
+        ):
+            raise SandboxRuntimeError(
+                "durable_result_identity_mismatch",
+                "Delivered result digest does not match the durable continuation.",
+                details={"operation_id": operation.operation_id},
+                retryable=False,
+            )
+        if delivery.terminal_outcome != (
+            ControlledOperationExecutionTerminalOutcome.SUCCEEDED.value
+        ):
+            error_code = safe_public_machine_identifier(
+                delivery.bounded_result_envelope.get("error_code"),
+                fallback="durable_execution_failed",
+            )
+            safe_summary = sanitize_public_diagnostic_text(
+                str(
+                    delivery.bounded_result_envelope.get("safe_error_summary")
+                    or "Durable controlled operation failed."
+                )
+            )
+            raise SandboxRuntimeError(
+                error_code or "durable_execution_failed",
+                safe_summary,
+                details={"operation_id": operation.operation_id},
+                retryable=False,
+            )
+        canonical_operation = self.repositories.controlled_operations.get(
+            operation.operation_id
+        )
+        if canonical_operation is None:
+            raise SandboxRuntimeError(
+                "durable_operation_missing",
+                "Durable operation disappeared before result delivery.",
+                retryable=False,
+            )
+        return self._operation_response(canonical_operation)
+
     def _validated_s12_envelope(self, params: dict[str, Any]) -> dict[str, Any]:
         caller_result_fields = sorted(
-            field
-            for field in ("adapter_result", "result_summary")
-            if field in params
+            field for field in ("adapter_result", "result_summary") if field in params
         )
         if caller_result_fields:
             raise SandboxRuntimeError(
@@ -1387,7 +2012,10 @@ class _ControlSocketServer:
         policy = self._route_policy(route_policy_id)
         sdk_module = str(params.get("sdk_module") or policy["sdk_module"])
         function_name = str(params.get("function_name") or policy["function_name"])
-        if sdk_module != policy["sdk_module"] or function_name != policy["function_name"]:
+        if (
+            sdk_module != policy["sdk_module"]
+            or function_name != policy["function_name"]
+        ):
             raise SandboxRuntimeError(
                 "adapter_schema_incompatible",
                 "SDK module/function does not match the selected route policy",
@@ -1407,7 +2035,10 @@ class _ControlSocketServer:
             raise SandboxRuntimeError(
                 str(policy.get("error_code") or "operation_prerequisite_missing"),
                 "route policy prerequisite is not satisfied",
-                details={"route_policy_id": route_policy_id, "status": policy.get("status")},
+                details={
+                    "route_policy_id": route_policy_id,
+                    "status": policy.get("status"),
+                },
             )
         self._require_policy_refs(policy, route_policy_id=route_policy_id)
         idempotency_key = str(params.get("idempotency_key") or "")
@@ -1421,7 +2052,9 @@ class _ControlSocketServer:
         if "params" in params:
             raw_adapter_params = params.get("params")
             if not isinstance(raw_adapter_params, dict):
-                raise SandboxRuntimeError("invalid_tool_arguments", "adapter params must be an object")
+                raise SandboxRuntimeError(
+                    "invalid_tool_arguments", "adapter params must be an object"
+                )
             if _json_digest(raw_adapter_params) != params_digest:
                 raise SandboxRuntimeError(
                     "adapter_params_digest_mismatch",
@@ -1429,12 +2062,18 @@ class _ControlSocketServer:
                     details={"params_digest": params_digest},
                 )
             scrubbed_params = _scrub_private_adapter_payload(raw_adapter_params)
-            adapter_params = dict(scrubbed_params) if isinstance(scrubbed_params, dict) else {}
+            adapter_params = (
+                dict(scrubbed_params) if isinstance(scrubbed_params, dict) else {}
+            )
         input_artifact_ids = params.get("input_artifact_ids") or []
         input_artifact_digests = params.get("input_artifact_digests") or []
         stage_refs = params.get("stage_refs") or []
-        if not isinstance(input_artifact_ids, list) or not isinstance(input_artifact_digests, list):
-            raise SandboxRuntimeError("invalid_tool_arguments", "input artifact fields must be lists")
+        if not isinstance(input_artifact_ids, list) or not isinstance(
+            input_artifact_digests, list
+        ):
+            raise SandboxRuntimeError(
+                "invalid_tool_arguments", "input artifact fields must be lists"
+            )
         if len(input_artifact_ids) != len(input_artifact_digests):
             raise SandboxRuntimeError(
                 "invalid_tool_arguments",
@@ -1461,17 +2100,29 @@ class _ControlSocketServer:
                 "adapter_input_binding_mismatch",
                 "S12 approved input artifacts require canonical IDs and sha256 digests.",
             )
-        if not isinstance(stage_refs, list) or not all(isinstance(item, dict) for item in stage_refs):
-            raise SandboxRuntimeError("invalid_tool_arguments", "stage_refs must be a list of objects")
-        expected_outputs = params.get("expected_outputs", params.get("expected_outputs_summary") or {})
+        if not isinstance(stage_refs, list) or not all(
+            isinstance(item, dict) for item in stage_refs
+        ):
+            raise SandboxRuntimeError(
+                "invalid_tool_arguments", "stage_refs must be a list of objects"
+            )
+        expected_outputs = params.get(
+            "expected_outputs", params.get("expected_outputs_summary") or {}
+        )
         expected_outputs_summary = self._expected_outputs_summary(expected_outputs)
         resource_estimate = params.get("resource_estimate") or {}
         if not isinstance(resource_estimate, dict):
-            raise SandboxRuntimeError("invalid_tool_arguments", "resource_estimate must be an object")
+            raise SandboxRuntimeError(
+                "invalid_tool_arguments", "resource_estimate must be an object"
+            )
         planned_fetch_intent = params.get("planned_fetch_intent") or {}
         if not isinstance(planned_fetch_intent, dict):
-            raise SandboxRuntimeError("invalid_tool_arguments", "planned_fetch_intent must be an object")
-        planned_fetch_intent = dict(_scrub_private_adapter_payload(planned_fetch_intent))
+            raise SandboxRuntimeError(
+                "invalid_tool_arguments", "planned_fetch_intent must be an object"
+            )
+        planned_fetch_intent = dict(
+            _scrub_private_adapter_payload(planned_fetch_intent)
+        )
         placement = str(params.get("placement") or "provider")
         hpc_workspace_id = str(params.get("hpc_workspace_id") or "")
         if policy["selected_backend"] == "hpc":
@@ -1487,8 +2138,12 @@ class _ControlSocketServer:
                     "HPC route operations require stage_refs",
                     details={"route_policy_id": route_policy_id},
                 )
-            stage_refs = self._validated_hpc_stage_refs(stage_refs, hpc_workspace_id=hpc_workspace_id)
-            planned_fetch_intent = self._validated_hpc_fetch_intent(planned_fetch_intent)
+            stage_refs = self._validated_hpc_stage_refs(
+                stage_refs, hpc_workspace_id=hpc_workspace_id
+            )
+            planned_fetch_intent = self._validated_hpc_fetch_intent(
+                planned_fetch_intent
+            )
         else:
             stage_refs = self._validated_provider_stage_refs(stage_refs)
         stage_ref_pairs = _artifact_ref_pairs(stage_refs)
@@ -1552,7 +2207,9 @@ class _ControlSocketServer:
 
     def _route_policy(self, route_policy_id: str) -> dict[str, Any]:
         if not route_policy_id:
-            raise SandboxRuntimeError("route_policy_missing", "route_policy_id is required")
+            raise SandboxRuntimeError(
+                "route_policy_missing", "route_policy_id is required"
+            )
         policy = S12_ROUTE_POLICIES.get(route_policy_id)
         if policy is None:
             raise SandboxRuntimeError(
@@ -1562,7 +2219,9 @@ class _ControlSocketServer:
             )
         return dict(policy)
 
-    def _require_policy_refs(self, policy: dict[str, Any], *, route_policy_id: str) -> None:
+    def _require_policy_refs(
+        self, policy: dict[str, Any], *, route_policy_id: str
+    ) -> None:
         if not policy.get("evidence_ref") or not policy.get("parameter_inventory_ref"):
             raise SandboxRuntimeError(
                 "operation_prerequisite_missing",
@@ -1575,7 +2234,9 @@ class _ControlSocketServer:
                 "route policy must include runtime_packaging_id",
                 details={"route_policy_id": route_policy_id},
             )
-        if policy.get("backend_category") == "provider_http" and not policy.get("provider_config_digest"):
+        if policy.get("backend_category") == "provider_http" and not policy.get(
+            "provider_config_digest"
+        ):
             raise SandboxRuntimeError(
                 "operation_prerequisite_missing",
                 "provider route policy must include provider_config_digest",
@@ -1619,14 +2280,20 @@ class _ControlSocketServer:
                     "HPC stage ref belongs to a different workspace",
                     details={"hpc_workspace_id": hpc_workspace_id},
                 )
-            if not item.get("stage_ref_id") or not item.get("artifact_id") or not item.get("artifact_digest"):
+            if (
+                not item.get("stage_ref_id")
+                or not item.get("artifact_id")
+                or not item.get("artifact_digest")
+            ):
                 raise SandboxRuntimeError(
                     "hpc_stage_ref_required",
                     "HPC stage refs must include stage_ref_id, artifact_id, and artifact_digest",
                 )
             workspace_path = str(item.get("workspace_relative_path") or "")
             if workspace_path:
-                item["workspace_relative_path"] = self._validated_hpc_workspace_path(workspace_path)
+                item["workspace_relative_path"] = self._validated_hpc_workspace_path(
+                    workspace_path
+                )
             validated.append(item)
         return validated
 
@@ -1676,9 +2343,7 @@ class _ControlSocketServer:
 
         if route == ("bio", "hmmer_search"):
             artifact_id = str(adapter_params.get("hmm_artifact_id") or "")
-            artifact_digest = str(
-                adapter_params.get("hmm_artifact_digest") or ""
-            )
+            artifact_digest = str(adapter_params.get("hmm_artifact_digest") or "")
             if (
                 not artifact_id
                 or artifact_id != artifact_id.strip()
@@ -1727,9 +2392,7 @@ class _ControlSocketServer:
         }.get(route)
         if hpc_slots is not None:
             stage_refs_by_pair = {
-                pair: ref
-                for ref in stage_refs
-                for pair in _artifact_ref_pairs(ref)
+                pair: ref for ref in stage_refs for pair in _artifact_ref_pairs(ref)
             }
             pairs: list[tuple[str, str]] = []
             for slot in hpc_slots:
@@ -1767,9 +2430,13 @@ class _ControlSocketServer:
             )
         return []
 
-    def _validated_hpc_fetch_intent(self, planned_fetch_intent: dict[str, Any]) -> dict[str, Any]:
+    def _validated_hpc_fetch_intent(
+        self, planned_fetch_intent: dict[str, Any]
+    ) -> dict[str, Any]:
         intent = dict(_scrub_private_adapter_payload(planned_fetch_intent))
-        declared_outputs = intent.get("declared_outputs") or intent.get("expected_outputs") or []
+        declared_outputs = (
+            intent.get("declared_outputs") or intent.get("expected_outputs") or []
+        )
         if not isinstance(declared_outputs, list) or not declared_outputs:
             raise SandboxRuntimeError(
                 "hpc_fetch_not_declared",
@@ -1783,7 +2450,9 @@ class _ControlSocketServer:
                     "planned_fetch_intent declared_outputs must be objects",
                 )
             item = dict(output)
-            item["path"] = self._validated_hpc_workspace_path(str(item.get("path") or ""))
+            item["path"] = self._validated_hpc_workspace_path(
+                str(item.get("path") or "")
+            )
             validated_outputs.append(item)
         intent["declared_outputs"] = validated_outputs
         return intent
@@ -1791,7 +2460,25 @@ class _ControlSocketServer:
     def _validated_hpc_workspace_path(self, value: str) -> str:
         normalized = value.strip()
         path = PurePosixPath(normalized)
-        forbidden_chars = (";", "&", "|", "`", "$", "\\", "\n", "\r", "<", ">", "*", "?", "[", "]", "{", "}", "!")
+        forbidden_chars = (
+            ";",
+            "&",
+            "|",
+            "`",
+            "$",
+            "\\",
+            "\n",
+            "\r",
+            "<",
+            ">",
+            "*",
+            "?",
+            "[",
+            "]",
+            "{",
+            "}",
+            "!",
+        )
         if (
             not normalized
             or path.is_absolute()
@@ -1809,7 +2496,9 @@ class _ControlSocketServer:
             return dict(_scrub_private_adapter_payload(expected_outputs))
         if isinstance(expected_outputs, list):
             return {"items": list(_scrub_private_adapter_payload(expected_outputs))}
-        raise SandboxRuntimeError("invalid_tool_arguments", "expected_outputs must be an object or list")
+        raise SandboxRuntimeError(
+            "invalid_tool_arguments", "expected_outputs must be an object or list"
+        )
 
     def _operation_digest(self, envelope: dict[str, Any]) -> str:
         if envelope["schema_version"] == S12_ADAPTER_ENVELOPE_SCHEMA:
@@ -1862,6 +2551,10 @@ class _ControlSocketServer:
         approval_id: str | None = None,
         approval_state: str | None = None,
         result_summary: dict[str, Any] | None = None,
+        owner_mode: ControlledOperationOwnerMode = (
+            ControlledOperationOwnerMode.LEGACY_SYNC
+        ),
+        persist: bool = True,
     ) -> ControlledOperation:
         now = utc_now_iso()
         operation = ControlledOperation(
@@ -1884,7 +2577,9 @@ class _ControlSocketServer:
             input_artifact_digests=tuple(envelope["input_artifact_digests"]),
             source_snapshot_artifact_id=str(envelope["source_snapshot_artifact_id"]),
             source_snapshot_digest=str(envelope["source_snapshot_digest"]),
-            adapter_envelope_schema_version=envelope.get("adapter_envelope_schema_version"),
+            adapter_envelope_schema_version=envelope.get(
+                "adapter_envelope_schema_version"
+            ),
             sdk_module=envelope.get("sdk_module"),
             function_name=envelope.get("function_name"),
             route_policy_id=envelope.get("route_policy_id"),
@@ -1903,19 +2598,25 @@ class _ControlSocketServer:
             resource_estimate=dict(envelope["resource_estimate"]),
             result_summary=result_summary,
             idempotency_key=str(envelope["idempotency_key"]),
+            owner_mode=owner_mode,
         )
         if envelope["schema_version"] == S12_ADAPTER_ENVELOPE_SCHEMA:
             operation = replace(
                 operation,
                 adapter_approval_envelope=self._adapter_approval_envelope(operation),
-                adapter_result_envelope=self._adapter_result_envelope(operation, envelope)
+                adapter_result_envelope=self._adapter_result_envelope(
+                    operation, envelope
+                )
                 if result_summary is not None
                 else {},
             )
-        self.repositories.controlled_operations.save(operation)
+        if persist:
+            self.repositories.controlled_operations.save(operation)
         return operation
 
-    def _adapter_approval_envelope(self, operation: ControlledOperation) -> dict[str, Any]:
+    def _adapter_approval_envelope(
+        self, operation: ControlledOperation
+    ) -> dict[str, Any]:
         return {
             "adapter_envelope_schema_version": operation.adapter_envelope_schema_version,
             "sandbox_workspace_id": operation.sandbox_workspace_id,
@@ -1947,7 +2648,9 @@ class _ControlSocketServer:
             "approval_requirement": operation.approval_requirement or {},
         }
 
-    def _adapter_result_envelope(self, operation: ControlledOperation, envelope: dict[str, Any]) -> dict[str, Any]:
+    def _adapter_result_envelope(
+        self, operation: ControlledOperation, envelope: dict[str, Any]
+    ) -> dict[str, Any]:
         if operation.adapter_envelope_schema_version != S12_ADAPTER_ENVELOPE_SCHEMA:
             return {}
         scrubbed_adapter_result = sanitize_public_diagnostic_payload(
@@ -1975,9 +2678,7 @@ class _ControlSocketServer:
         for key in forbidden_pre_run_keys:
             adapter_result.pop(key, None)
         raw_bounded_summary = (
-            adapter_result.get("bounded_summary")
-            or operation.result_summary
-            or {}
+            adapter_result.get("bounded_summary") or operation.result_summary or {}
         )
         bounded_summary = (
             _sanitize_toolchain_runtime_identity(
@@ -2000,8 +2701,12 @@ class _ControlSocketServer:
             "backend_run_id": adapter_result.get("backend_run_id"),
             "provider_request_id": adapter_result.get("provider_request_id"),
             "fetch_refs": list(adapter_result.get("fetch_refs") or []),
-            "registered_artifact_ids": list(adapter_result.get("registered_artifact_ids") or []),
-            "output_artifact_ids": list(adapter_result.get("output_artifact_ids") or []),
+            "registered_artifact_ids": list(
+                adapter_result.get("registered_artifact_ids") or []
+            ),
+            "output_artifact_ids": list(
+                adapter_result.get("output_artifact_ids") or []
+            ),
             "validation_results": adapter_result.get("validation_results") or {},
             "bounded_summary": bounded_summary,
             "warnings": _structured_adapter_warnings(adapter_result.get("warnings")),
@@ -2012,7 +2717,13 @@ class _ControlSocketServer:
             "safe_diagnostics_ref": adapter_result.get("safe_diagnostics_ref"),
         }
 
-    def _create_approval(self, operation: ControlledOperation, envelope: dict[str, Any]) -> ApprovalRequest:
+    def _create_approval(
+        self,
+        operation: ControlledOperation,
+        envelope: dict[str, Any],
+        *,
+        persist: bool = True,
+    ) -> ApprovalRequest:
         approval = ApprovalRequest(
             approval_id=_new_id("appr"),
             session_id=self.session_id,
@@ -2028,11 +2739,28 @@ class _ControlSocketServer:
             resolution_ref=None,
             created_at=utc_now_iso(),
         )
-        self.repositories.approvals.save(approval)
+        if persist:
+            self.repositories.approvals.save(approval)
         return approval
 
-    def _create_continuation(self, operation: ControlledOperation, approval: ApprovalRequest) -> ContinuationState:
+    def _create_continuation(
+        self,
+        operation: ControlledOperation,
+        approval: ApprovalRequest,
+        *,
+        persist: bool = True,
+        attached_process: bool = False,
+    ) -> ContinuationState:
         now = utc_now_iso()
+        if attached_process and (
+            not self.sandbox_runtime_identity
+            or self.process_epoch is None
+            or self.process_epoch < 1
+        ):
+            raise SandboxRuntimeError(
+                "sandbox_continuation_identity_missing",
+                "durable continuation requires an exact sandbox runtime identity and process epoch",
+            )
         continuation = ContinuationState(
             continuation_id=f"{operation.sandbox_run_id}:{operation.operation_id}",
             session_id=self.session_id,
@@ -2040,10 +2768,42 @@ class _ControlSocketServer:
             sandbox_run_id=operation.sandbox_run_id,
             approval_id=approval.approval_id,
             status=ContinuationStateStatus.WAITING_APPROVAL,
+            originating_signal_id=(
+                self.originating_signal_id if attached_process else None
+            ),
+            originating_agent_id=self.agent_id if attached_process else None,
+            originating_task_id=self.task_id if attached_process else None,
+            originating_lane_id=self.lane_id if attached_process else None,
+            originating_tool_call_id=(
+                self.originating_tool_call_id if attached_process else None
+            ),
+            originating_invocation_id=(
+                self.originating_invocation_id if attached_process else None
+            ),
+            sandbox_workspace_id=(
+                self.sandbox_workspace_id if attached_process else None
+            ),
+            sandbox_runtime_identity=(
+                self.sandbox_runtime_identity if attached_process else None
+            ),
+            process_epoch=self.process_epoch if attached_process else None,
+            resume_strategy=(
+                ContinuationResumeStrategy.ATTACHED_PROCESS
+                if attached_process
+                else ContinuationResumeStrategy.LEGACY_NON_RESUMABLE
+            ),
+            delivery_state=(
+                ContinuationDeliveryState.AWAITING_RESULT
+                if attached_process
+                else ContinuationDeliveryState.LEGACY_UNAVAILABLE
+            ),
+            delivery_generation=1 if attached_process else 0,
+            state_version=1 if attached_process else 0,
             created_at=now,
             updated_at=now,
         )
-        self.repositories.continuation_states.save(continuation)
+        if persist:
+            self.repositories.continuation_states.save(continuation)
         return continuation
 
     def _complete_running_operation(
@@ -2078,9 +2838,12 @@ class _ControlSocketServer:
         if completed.adapter_envelope_schema_version == S12_ADAPTER_ENVELOPE_SCHEMA:
             completed = replace(
                 completed,
-                adapter_result_envelope=self._adapter_result_envelope(completed, envelope),
+                adapter_result_envelope=self._adapter_result_envelope(
+                    completed, envelope
+                ),
                 adapter_result_origin=str(
-                    dict(envelope.get("adapter_result") or {}).get("result_origin") or ""
+                    dict(envelope.get("adapter_result") or {}).get("result_origin")
+                    or ""
                 )
                 or None,
             )
@@ -2188,11 +2951,13 @@ class _ControlSocketServer:
                 raw_adapter_error,
                 default_code="adapter_result_unsuccessful",
             )
-            error_code = safe_public_machine_identifier(
-                (structured_error or {}).get("code")
-                or raw_adapter_error_code,
-                fallback="adapter_result_unsuccessful",
-            ) or "adapter_result_unsuccessful"
+            error_code = (
+                safe_public_machine_identifier(
+                    (structured_error or {}).get("code") or raw_adapter_error_code,
+                    fallback="adapter_result_unsuccessful",
+                )
+                or "adapter_result_unsuccessful"
+            )
             error_summary = sanitize_public_diagnostic_text(
                 (structured_error or {}).get("summary")
                 or f"Host adapter executor returned non-success status {adapter_status or '<missing>'}."
@@ -2212,7 +2977,11 @@ class _ControlSocketServer:
             **adapter_result,
             "result_origin": S12_HOST_RESULT_ORIGIN,
         }
-        result_summary = execution.get("result_summary") or adapter_result.get("bounded_summary") or {"status": "completed"}
+        result_summary = (
+            execution.get("result_summary")
+            or adapter_result.get("bounded_summary")
+            or {"status": "completed"}
+        )
         if not isinstance(result_summary, dict):
             self._fail_adapter_operation(
                 operation,
@@ -2227,11 +2996,13 @@ class _ControlSocketServer:
             )
         summary_status = str(result_summary.get("status") or "").strip().lower()
         if (
-            summary_status
-            and summary_status not in {"completed", "succeeded", "success"}
-        ) or result_summary.get("error") not in (None, "", {}) or result_summary.get(
-            "error_code"
-        ) not in (None, ""):
+            (
+                summary_status
+                and summary_status not in {"completed", "succeeded", "success"}
+            )
+            or result_summary.get("error") not in (None, "", {})
+            or result_summary.get("error_code") not in (None, "")
+        ):
             self._fail_adapter_operation(
                 operation,
                 continuation_id,
@@ -2267,8 +3038,7 @@ class _ControlSocketServer:
         exc: Exception,
     ) -> tuple[str, str, str | None, bool | None, str | None, dict[str, Any]]:
         error_code = safe_public_machine_identifier(
-            getattr(exc, "error_code", None)
-            or getattr(exc, "error_type", None),
+            getattr(exc, "error_code", None) or getattr(exc, "error_type", None),
             fallback="adapter_execution_failed",
         )
         error_summary = sanitize_public_diagnostic_text(
@@ -2305,11 +3075,12 @@ class _ControlSocketServer:
             dict(scrubbed) if isinstance(scrubbed, dict) else {},
         )
 
-    def _resume_or_return(self, operation: ControlledOperation, envelope: dict[str, Any]) -> dict[str, Any]:
+    def _resume_or_return(
+        self, operation: ControlledOperation, envelope: dict[str, Any]
+    ) -> dict[str, Any]:
         if operation.status is ControlledOperationStatus.COMPLETED:
             if (
-                operation.adapter_envelope_schema_version
-                == S12_ADAPTER_ENVELOPE_SCHEMA
+                operation.adapter_envelope_schema_version == S12_ADAPTER_ENVELOPE_SCHEMA
                 and operation.adapter_result_origin != S12_HOST_RESULT_ORIGIN
             ):
                 # A completed historical S12 row may contain caller-authored
@@ -2322,7 +3093,9 @@ class _ControlSocketServer:
                     details={"operation_id": operation.operation_id},
                 )
             return self._operation_response(operation)
-        continuation = self.repositories.continuation_states.get_by_operation_id(operation.operation_id)
+        continuation = self.repositories.continuation_states.get_by_operation_id(
+            operation.operation_id
+        )
         if continuation is None:
             raise SandboxRuntimeError(
                 "operation_recovery_failed",
@@ -2344,10 +3117,13 @@ class _ControlSocketServer:
         error_code: str,
         error_summary: str,
     ) -> None:
-        error_code = safe_public_machine_identifier(
-            error_code,
-            fallback="adapter_execution_failed",
-        ) or "adapter_execution_failed"
+        error_code = (
+            safe_public_machine_identifier(
+                error_code,
+                fallback="adapter_execution_failed",
+            )
+            or "adapter_execution_failed"
+        )
         error_summary = sanitize_public_diagnostic_text(error_summary)
         if continuation_id is not None:
             self._fail_claimed_operation(
@@ -2375,10 +3151,13 @@ class _ControlSocketServer:
         error_code: str,
         error_summary: str,
     ) -> None:
-        error_code = safe_public_machine_identifier(
-            error_code,
-            fallback="adapter_execution_failed",
-        ) or "adapter_execution_failed"
+        error_code = (
+            safe_public_machine_identifier(
+                error_code,
+                fallback="adapter_execution_failed",
+            )
+            or "adapter_execution_failed"
+        )
         error_summary = sanitize_public_diagnostic_text(error_summary)
         failed = replace(
             operation,
@@ -2396,12 +3175,22 @@ class _ControlSocketServer:
         )
 
     def _wait_for_approval_and_claim(self, continuation_id: str) -> ContinuationState:
+        wait_started = time.monotonic()
+        observation_subject = continuation_id
         while not self._stop.is_set():
             continuation = self.repositories.continuation_states.get(continuation_id)
             if continuation is None:
-                raise SandboxRuntimeError("operation_recovery_failed", "continuation state disappeared")
+                self._observe_approval_wait(
+                    wait_started, observation_subject, "recovery_failed"
+                )
+                raise SandboxRuntimeError(
+                    "operation_recovery_failed", "continuation state disappeared"
+                )
+            observation_subject = continuation.operation_id
             if continuation.status is ContinuationStateStatus.REJECTED:
-                operation = self.repositories.controlled_operations.get(continuation.operation_id)
+                operation = self.repositories.controlled_operations.get(
+                    continuation.operation_id
+                )
                 if operation is not None:
                     failed = replace(
                         operation,
@@ -2412,6 +3201,9 @@ class _ControlSocketServer:
                         updated_at=utc_now_iso(),
                     )
                     self.repositories.controlled_operations.save(failed)
+                self._observe_approval_wait(
+                    wait_started, observation_subject, "rejected"
+                )
                 raise SandboxRuntimeError(
                     "approval_rejected",
                     "supervised SDK operation approval was rejected",
@@ -2426,6 +3218,9 @@ class _ControlSocketServer:
                     claimed_by=f"sandbox-supervisor:{self.sandbox_run_id}",
                 )
                 if claimed is not None:
+                    self._observe_approval_wait(
+                        wait_started, observation_subject, "approved"
+                    )
                     return claimed
                 latest = self.repositories.continuation_states.get(continuation_id)
                 if (
@@ -2434,15 +3229,22 @@ class _ControlSocketServer:
                     and latest.claim_expires_at is not None
                     and latest.claim_expires_at > utc_now_iso()
                 ):
+                    self._observe_approval_wait(
+                        wait_started, observation_subject, "recovery_failed"
+                    )
                     raise SandboxRuntimeError(
                         "operation_lease_conflict",
                         "SDK continuation is already claimed by another supervisor worker",
                         details={"continuation_id": continuation_id},
                     )
             if continuation.status.is_terminal:
+                self._observe_approval_wait(
+                    wait_started, observation_subject, "recovery_failed"
+                )
                 raise SandboxRuntimeError(
                     continuation.error_code or "operation_recovery_failed",
-                    continuation.error_message or "continuation reached a terminal state before resume",
+                    continuation.error_message
+                    or "continuation reached a terminal state before resume",
                 )
             time.sleep(0.05)
         failed = self.repositories.continuation_states.fail(
@@ -2451,7 +3253,11 @@ class _ControlSocketServer:
             error_message="control socket stopped before SDK continuation resumed",
             recovery_failed=True,
         )
-        operation = None if failed is None else self.repositories.controlled_operations.get(failed.operation_id)
+        operation = (
+            None
+            if failed is None
+            else self.repositories.controlled_operations.get(failed.operation_id)
+        )
         if operation is not None:
             self.repositories.controlled_operations.save(
                 replace(
@@ -2462,7 +3268,32 @@ class _ControlSocketServer:
                     updated_at=utc_now_iso(),
                 )
             )
-        raise SandboxRuntimeError("operation_recovery_failed", "control socket stopped before SDK continuation resumed")
+        self._observe_approval_wait(
+            wait_started, observation_subject, "recovery_failed"
+        )
+        raise SandboxRuntimeError(
+            "operation_recovery_failed",
+            "control socket stopped before SDK continuation resumed",
+        )
+
+    def _observe_approval_wait(
+        self,
+        started: float,
+        operation_id: str,
+        resolution: str,
+    ) -> None:
+        observer = self.reliability_shadow_observer
+        if observer is None:
+            return
+        try:
+            observer.observe_approval_wait(
+                operation_id=operation_id,
+                elapsed_ms=int((time.monotonic() - started) * 1_000),
+                resolution=resolution,
+            )
+        except Exception:
+            # Shadow telemetry cannot change approval or continuation behavior.
+            pass
 
     def _operation_response(self, operation: ControlledOperation) -> dict[str, Any]:
         response = {
@@ -2493,12 +3324,28 @@ class _ControlSocketServer:
                     "provider_config_digest": operation.provider_config_digest,
                     "stage_refs": [dict(item) for item in operation.stage_refs],
                     "planned_fetch_intent": operation.planned_fetch_intent or {},
-                    "adapter_approval_envelope": operation.adapter_approval_envelope or {},
+                    "adapter_approval_envelope": operation.adapter_approval_envelope
+                    or {},
                     "adapter_result_envelope": operation.adapter_result_envelope or {},
                 }
             )
         sanitized = sanitize_public_diagnostic_payload(response)
         return dict(sanitized) if isinstance(sanitized, dict) else {}
+
+
+@dataclass(slots=True)
+class _ParkedProcess:
+    process: subprocess.Popen[bytes]
+    argv: list[str]
+    stdout_chunks: list[bytes]
+    stderr_chunks: list[bytes]
+    stdout_thread: threading.Thread
+    stderr_thread: threading.Thread
+    started_monotonic: float
+    paused_seconds: float
+    paused_started: float | None
+    timeout_seconds: int
+    container_lease: PodmanContainerLease | None = None
 
 
 @dataclass(slots=True)
@@ -2512,6 +3359,12 @@ class SandboxRuntimeService:
     adapter_executor: SandboxAdapterExecutor | None = None
     hpc_fetch_executor: SandboxHpcFetchExecutor | None = None
     repository_scope_factory: Callable[[], Any] | None = None
+    mutation_writer_scope_factory: Callable[..., Any] | None = None
+    live_process_registry: LiveProcessRegistry | None = None
+    signal_notifier: Any | None = None
+    reliability_shadow_observer: Any | None = None
+    reliability_settings: Any | None = None
+    durable_route_adapter_policy_ids: dict[str, str] = field(default_factory=dict)
 
     def _local_pipeline_sdk_src(self) -> Path | None:
         candidate = Path(__file__).resolve().parents[3] / "openzyme-pipeline" / "src"
@@ -2588,22 +3441,38 @@ class SandboxRuntimeService:
         self._assert_workspace_layout(sandbox_workspace_id)
         workspace_path = self._workspace_path(workspace.sandbox_workspace_id)
         public_path = _public_path(path, default=WORKSPACE_ROOT)
-        host_path = _resolve_host_path(workspace_path, public_path, allow_workspace_root=True)
+        host_path = _resolve_host_path(
+            workspace_path, public_path, allow_workspace_root=True
+        )
         if not host_path.exists():
-            raise SandboxRuntimeError("sandbox_path_forbidden", "listed path does not exist")
+            raise SandboxRuntimeError(
+                "sandbox_path_forbidden", "listed path does not exist"
+            )
         if host_path.is_symlink():
-            raise SandboxRuntimeError("sandbox_path_forbidden", "listed path is a symlink")
+            raise SandboxRuntimeError(
+                "sandbox_path_forbidden", "listed path is a symlink"
+            )
         if host_path.is_file():
             items = [self._project_file(host_path, workspace_path)]
         else:
             if public_path == WORKSPACE_ROOT:
-                roots = [workspace_path / root.relative_to(WORKSPACE_ROOT) for root in ALLOWED_FILE_ROOTS]
-                iterator = (child for root in roots if root.exists() for child in (root.rglob("*") if recursive else (root,)))
+                roots = [
+                    workspace_path / root.relative_to(WORKSPACE_ROOT)
+                    for root in ALLOWED_FILE_ROOTS
+                ]
+                iterator = (
+                    child
+                    for root in roots
+                    if root.exists()
+                    for child in (root.rglob("*") if recursive else (root,))
+                )
             else:
                 iterator = host_path.rglob("*") if recursive else host_path.iterdir()
             items = []
             truncated = False
-            for child in sorted(iterator, key=lambda item: item.relative_to(workspace_path).as_posix()):
+            for child in sorted(
+                iterator, key=lambda item: item.relative_to(workspace_path).as_posix()
+            ):
                 if len(items) >= LIST_MAX_ITEMS:
                     truncated = True
                     break
@@ -2640,11 +3509,17 @@ class SandboxRuntimeService:
         self._assert_workspace_layout(sandbox_workspace_id)
         limit = self._bounded_read_limit(limit)
         if offset < 0:
-            raise SandboxRuntimeError("sandbox_read_limit_exceeded", "offset must be non-negative")
+            raise SandboxRuntimeError(
+                "sandbox_read_limit_exceeded", "offset must be non-negative"
+            )
         public_path = _public_path(path, default=WORKSPACE_ROOT)
-        host_path = _resolve_host_path(self._workspace_path(workspace.sandbox_workspace_id), public_path)
+        host_path = _resolve_host_path(
+            self._workspace_path(workspace.sandbox_workspace_id), public_path
+        )
         if not host_path.is_file() or host_path.is_symlink():
-            raise SandboxRuntimeError("sandbox_path_forbidden", "read path must be a regular file")
+            raise SandboxRuntimeError(
+                "sandbox_path_forbidden", "read path must be a regular file"
+            )
         content = host_path.read_bytes()
         digest = _sha256_bytes(content)
         try:
@@ -2689,7 +3564,9 @@ class SandboxRuntimeService:
         self._assert_workspace_layout(sandbox_workspace_id)
         encoded = content.encode("utf-8")
         if len(encoded) > WRITE_MAX_BYTES:
-            raise SandboxRuntimeError("sandbox_resource_exceeded", "sandbox.file.write content exceeds 256KiB")
+            raise SandboxRuntimeError(
+                "sandbox_resource_exceeded", "sandbox.file.write content exceeds 256KiB"
+            )
         public_path, host_path = self._regular_file_target(workspace, path)
         old_size = host_path.stat().st_size if host_path.exists() else 0
         self._assert_prospective_quota(
@@ -2697,12 +3574,19 @@ class SandboxRuntimeService:
             old_size=old_size,
             new_size=len(encoded),
         )
-        old_digest = _file_digest(host_path).content_digest if host_path.exists() else None
+        old_digest = (
+            _file_digest(host_path).content_digest if host_path.exists() else None
+        )
         if expected_digest not in {None, ""} and expected_digest != old_digest:
-            raise SandboxRuntimeError("sandbox_digest_conflict", "expected_digest does not match current file digest")
+            raise SandboxRuntimeError(
+                "sandbox_digest_conflict",
+                "expected_digest does not match current file digest",
+            )
         if not host_path.parent.exists():
             if not create_dirs:
-                raise SandboxRuntimeError("sandbox_path_forbidden", "parent directory does not exist")
+                raise SandboxRuntimeError(
+                    "sandbox_path_forbidden", "parent directory does not exist"
+                )
             host_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = host_path.parent / f".{host_path.name}.tmp.{uuid4().hex}"
         tmp.write_bytes(encoded)
@@ -2720,7 +3604,12 @@ class SandboxRuntimeService:
             new_digest=new_digest,
         )
         self._refresh_workspace_summary(workspace)
-        return {"path": public_path.as_posix(), "old_digest": old_digest, "new_digest": new_digest, "size_bytes": len(encoded)}
+        return {
+            "path": public_path.as_posix(),
+            "old_digest": old_digest,
+            "new_digest": new_digest,
+            "size_bytes": len(encoded),
+        }
 
     def patch_file(
         self,
@@ -2739,10 +3628,16 @@ class SandboxRuntimeService:
         self._assert_workspace_layout(sandbox_workspace_id)
         public_path, host_path = self._regular_file_target(workspace, path)
         if not host_path.is_file():
-            raise SandboxRuntimeError("sandbox_path_forbidden", "patch target must be an existing regular file")
+            raise SandboxRuntimeError(
+                "sandbox_path_forbidden",
+                "patch target must be an existing regular file",
+            )
         old_digest = _file_digest(host_path).content_digest
         if base_digest != old_digest:
-            raise SandboxRuntimeError("sandbox_digest_conflict", "base_digest does not match current file digest")
+            raise SandboxRuntimeError(
+                "sandbox_digest_conflict",
+                "base_digest does not match current file digest",
+            )
         original = host_path.read_text(encoding="utf-8")
         patched = _apply_unified_diff(original, patch, public_path=public_path)
         self._assert_prospective_quota(
@@ -2766,7 +3661,11 @@ class SandboxRuntimeService:
             new_digest=new_digest,
         )
         self._refresh_workspace_summary(workspace)
-        return {"path": public_path.as_posix(), "old_digest": old_digest, "new_digest": new_digest}
+        return {
+            "path": public_path.as_posix(),
+            "old_digest": old_digest,
+            "new_digest": new_digest,
+        }
 
     def delete_file(
         self,
@@ -2784,10 +3683,16 @@ class SandboxRuntimeService:
         self._assert_workspace_layout(sandbox_workspace_id)
         public_path, host_path = self._regular_file_target(workspace, path)
         if not host_path.is_file():
-            raise SandboxRuntimeError("sandbox_path_forbidden", "delete target must be an existing regular file")
+            raise SandboxRuntimeError(
+                "sandbox_path_forbidden",
+                "delete target must be an existing regular file",
+            )
         old_digest = _file_digest(host_path).content_digest
         if expected_digest not in {None, ""} and expected_digest != old_digest:
-            raise SandboxRuntimeError("sandbox_digest_conflict", "expected_digest does not match current file digest")
+            raise SandboxRuntimeError(
+                "sandbox_digest_conflict",
+                "expected_digest does not match current file digest",
+            )
         host_path.unlink()
         self._write_audit(
             session_id=session_id,
@@ -2801,7 +3706,11 @@ class SandboxRuntimeService:
             new_digest=None,
         )
         self._refresh_workspace_summary(workspace)
-        return {"path": public_path.as_posix(), "old_digest": old_digest, "deleted": True}
+        return {
+            "path": public_path.as_posix(),
+            "old_digest": old_digest,
+            "deleted": True,
+        }
 
     def exec_command(
         self,
@@ -2815,7 +3724,21 @@ class SandboxRuntimeService:
         env: dict[str, str] | None = None,
         task_id: str | None = None,
         lane_id: str | None = None,
+        originating_signal_id: str | None = None,
+        originating_tool_call_id: str | None = None,
+        originating_invocation_id: str | None = None,
+        process_epoch: int | None = None,
     ) -> SandboxRunRecord:
+        resolved_process_epoch = (
+            (time.time_ns() & ((1 << 63) - 1)) or 1
+            if process_epoch is None
+            else int(process_epoch)
+        )
+        if resolved_process_epoch <= 0:
+            raise SandboxRuntimeError(
+                "sandbox_process_epoch_invalid",
+                "sandbox process epoch must be a positive integer",
+            )
         workspace = self._require_ready_workspace(session_id, sandbox_workspace_id)
         self._ensure_no_active_run(sandbox_workspace_id)
         argv_tuple = self._validate_argv(argv)
@@ -2824,9 +3747,13 @@ class SandboxRuntimeService:
         cwd_public = _public_path(cwd, default=WORKSPACE_ROOT)
         workspace_path = self._workspace_path(sandbox_workspace_id)
         self._assert_workspace_layout(sandbox_workspace_id)
-        cwd_host = _resolve_host_path(workspace_path, cwd_public, allow_workspace_root=True)
+        cwd_host = _resolve_host_path(
+            workspace_path, cwd_public, allow_workspace_root=True
+        )
         if not cwd_host.is_dir():
-            raise SandboxRuntimeError("sandbox_path_forbidden", "cwd must be a directory under /workspace")
+            raise SandboxRuntimeError(
+                "sandbox_path_forbidden", "cwd must be a directory under /workspace"
+            )
         pipeline_sdk_digest = self._pipeline_sdk_digest()
         runtime_identity = self._sandbox_runtime_identity(
             workspace,
@@ -2866,10 +3793,18 @@ class SandboxRuntimeService:
         )
         self.repositories.sandbox_runs.save(run)
         started_at = utc_now_iso()
-        run = replace(run, status=SandboxRunStatus.RUNNING, started_at=started_at, updated_at=started_at)
+        run = replace(
+            run,
+            status=SandboxRunStatus.RUNNING,
+            started_at=started_at,
+            updated_at=started_at,
+        )
         self.repositories.sandbox_runs.save(run)
         pre_summary = self._workspace_file_snapshot(sandbox_workspace_id)
         socket_path = Path(tempfile.gettempdir()) / f"oz-{run.sandbox_run_id}.sock"
+        process_epoch = resolved_process_epoch
+        live_process_registry = self.live_process_registry or LiveProcessRegistry()
+        self.live_process_registry = live_process_registry
         server = _ControlSocketServer(
             socket_path=socket_path,
             repositories=self.repositories,
@@ -2881,14 +3816,29 @@ class SandboxRuntimeService:
             source_tree_digest=str(run.source_tree_digest),
             task_id=task_id,
             lane_id=lane_id,
+            originating_signal_id=originating_signal_id,
+            originating_tool_call_id=originating_tool_call_id,
+            originating_invocation_id=originating_invocation_id,
+            sandbox_runtime_identity=str(runtime_identity["runtime_identity_digest"]),
+            process_epoch=process_epoch,
+            live_process_registry=live_process_registry,
             workspace_root=self.workspace_root,
             artifact_blob_root=self.artifact_blob_root,
             adapter_executor=self.adapter_executor,
             hpc_fetch_executor=self.hpc_fetch_executor,
             repository_scope_factory=self.repository_scope_factory,
+            mutation_writer_scope_factory=self.mutation_writer_scope_factory,
+            reliability_shadow_observer=self.reliability_shadow_observer,
+            reliability_settings=self.reliability_settings,
+            durable_route_adapter_policy_ids=dict(
+                self.durable_route_adapter_policy_ids
+            ),
         )
-        completed: subprocess.CompletedProcess[bytes | str] | None = None
+        completed: subprocess.CompletedProcess[bytes | str] | _ParkedProcess | None = (
+            None
+        )
         started = time.monotonic()
+        detached = False
         try:
             server.start()
             completed = self._run_process(
@@ -2904,7 +3854,55 @@ class SandboxRuntimeService:
                 sandbox_workspace_id=sandbox_workspace_id,
                 sandbox_run_id=run.sandbox_run_id,
                 expected_pipeline_sdk_digest=pipeline_sdk_digest,
+                control_server=server,
             )
+            if isinstance(completed, _ParkedProcess):
+                identity = server.parked_identity()
+                if identity is None:
+                    raise SandboxRuntimeError(
+                        "sandbox_continuation_identity_missing",
+                        "sandbox process parked without an attached continuation identity",
+                    )
+                attached = _AttachedSandboxProcess(
+                    runtime_service=self,
+                    run=run,
+                    pre_summary=pre_summary,
+                    process_state=completed,
+                    control_server=server,
+                    registry=live_process_registry,
+                )
+                live_process_registry.register(identity, attached)
+                attached.start()
+                detached = True
+                parked_continuation = self.repositories.continuation_states.get(
+                    identity.continuation_id
+                )
+                if parked_continuation is None:
+                    raise SandboxRuntimeError(
+                        "durable_continuation_missing",
+                        "parked continuation disappeared before suspension projection",
+                    )
+                suspension = {
+                    "status": "suspended_waiting_approval",
+                    "continuation_id": identity.continuation_id,
+                    "operation_id": identity.operation_id,
+                    "execution_id": identity.execution_id,
+                    "approval_id": parked_continuation.approval_id,
+                    "sandbox_run_id": identity.sandbox_run_id,
+                    "resume_strategy": "attached_process",
+                    "recovery_level": "same_process_only",
+                    "arbitrary_python_restart_supported": False,
+                }
+                suspended = replace(
+                    run,
+                    compatibility={
+                        **dict(run.compatibility or {}),
+                        "suspension": suspension,
+                    },
+                    updated_at=utc_now_iso(),
+                )
+                self.repositories.sandbox_runs.save(suspended)
+                return suspended
             duration_ms = int((time.monotonic() - started) * 1000)
             return self._finish_run(
                 run,
@@ -2945,17 +3943,23 @@ class SandboxRuntimeService:
                 error_code=error_code,
             )
         finally:
-            server.stop()
+            if not detached:
+                server.stop()
 
-    def mark_stale_active_runs_failed(self, *, sandbox_workspace_id: str, reason: str = "stale active run") -> list[SandboxRunRecord]:
-        active = self.repositories.sandbox_runs.get_active_by_workspace(sandbox_workspace_id)
+    def mark_stale_active_runs_failed(
+        self, *, sandbox_workspace_id: str, reason: str = "stale active run"
+    ) -> list[SandboxRunRecord]:
+        active = self.repositories.sandbox_runs.get_active_by_workspace(
+            sandbox_workspace_id
+        )
         if active is None:
             return []
         now = utc_now_iso()
         public_reason = _public_sandbox_stdio(
             reason,
             workspace_path=self._workspace_path(sandbox_workspace_id),
-            socket_path=Path(tempfile.gettempdir()) / f"oz-{active.sandbox_run_id}.sock",
+            socket_path=Path(tempfile.gettempdir())
+            / f"oz-{active.sandbox_run_id}.sock",
         )
         failed = replace(
             active,
@@ -3097,7 +4101,10 @@ class SandboxRuntimeService:
                 },
                 last_error=None
                 if finished.status is SandboxRunStatus.COMPLETED
-                else {"error_code": finished.error_code, "hint": "Read the sandbox run summary before retrying."},
+                else {
+                    "error_code": finished.error_code,
+                    "hint": "Read the sandbox run summary before retrying.",
+                },
             )
         return finished
 
@@ -3205,21 +4212,44 @@ class SandboxRuntimeService:
             "content_digest": digest.content_digest,
         }
 
-    def _regular_file_target(self, workspace: SandboxWorkspaceRecord, path: str) -> tuple[PurePosixPath, Path]:
+    def _regular_file_target(
+        self, workspace: SandboxWorkspaceRecord, path: str
+    ) -> tuple[PurePosixPath, Path]:
         public_path = _public_path(path, default=WORKSPACE_ROOT)
         root = _allowed_root_for(public_path)
         if public_path in ALLOWED_FILE_ROOTS or root == WORKSPACE_ROOT:
-            raise SandboxRuntimeError("sandbox_path_forbidden", "file operation target must be a file path, not a workspace root")
-        host_path = _resolve_host_path(self._workspace_path(workspace.sandbox_workspace_id), public_path)
+            raise SandboxRuntimeError(
+                "sandbox_path_forbidden",
+                "file operation target must be a file path, not a workspace root",
+            )
+        host_path = _resolve_host_path(
+            self._workspace_path(workspace.sandbox_workspace_id), public_path
+        )
         if host_path.exists() and host_path.is_symlink():
-            raise SandboxRuntimeError("sandbox_path_forbidden", "file operation target must not be a symlink")
+            raise SandboxRuntimeError(
+                "sandbox_path_forbidden", "file operation target must not be a symlink"
+            )
         return public_path, host_path
 
     def _validate_argv(self, argv: list[str] | tuple[str, ...]) -> tuple[str, ...]:
         values = tuple(str(item) for item in argv)
         if not values:
-            raise SandboxRuntimeError("invalid_tool_arguments", "sandbox.exec argv must be non-empty")
-        forbidden = {"ssh", "scp", "sftp", "sbatch", "srun", "apptainer", "singularity", "docker", "podman", "curl", "wget"}
+            raise SandboxRuntimeError(
+                "invalid_tool_arguments", "sandbox.exec argv must be non-empty"
+            )
+        forbidden = {
+            "ssh",
+            "scp",
+            "sftp",
+            "sbatch",
+            "srun",
+            "apptainer",
+            "singularity",
+            "docker",
+            "podman",
+            "curl",
+            "wget",
+        }
         executable = Path(values[0]).name
         has_unwrapped_heredoc = False
         if _PYTHON_EXECUTABLE_PATTERN.fullmatch(executable):
@@ -3227,10 +4257,7 @@ class SandboxRuntimeService:
                 if _UNWRAPPED_HEREDOC_ARG_PATTERN.match(argument):
                     has_unwrapped_heredoc = True
                     break
-                if (
-                    argument in {"-", "--", "-c", "-m"}
-                    or not argument.startswith("-")
-                ):
+                if argument in {"-", "--", "-c", "-m"} or not argument.startswith("-"):
                     break
         if has_unwrapped_heredoc:
             raise SandboxRuntimeError(
@@ -3243,11 +4270,26 @@ class SandboxRuntimeService:
                 ),
             )
         if executable in forbidden:
-            raise SandboxRuntimeError("sandbox_path_forbidden", f"command {executable!r} is forbidden in sandbox.exec")
+            raise SandboxRuntimeError(
+                "sandbox_path_forbidden",
+                f"command {executable!r} is forbidden in sandbox.exec",
+            )
         joined = " ".join(values)
-        forbidden_markers = ("/home/", "/tmp/openzyme", ".ssh", "hpc_runner", "runner_config", "SLURM_", "AWS_SECRET", "OPENAI_API_KEY")
+        forbidden_markers = (
+            "/home/",
+            "/tmp/openzyme",
+            ".ssh",
+            "hpc_runner",
+            "runner_config",
+            "SLURM_",
+            "AWS_SECRET",
+            "OPENAI_API_KEY",
+        )
         if any(marker in joined for marker in forbidden_markers):
-            raise SandboxRuntimeError("sandbox_path_forbidden", "command contains a forbidden host path, runner, or secret marker")
+            raise SandboxRuntimeError(
+                "sandbox_path_forbidden",
+                "command contains a forbidden host path, runner, or secret marker",
+            )
         return values
 
     def _validate_user_env(self, env: dict[str, str]) -> dict[str, str]:
@@ -3255,12 +4297,25 @@ class SandboxRuntimeService:
         for key, value in env.items():
             text_key = str(key)
             upper = text_key.upper()
-            if any(marker in upper for marker in ("SECRET", "TOKEN", "PASSWORD", "CREDENTIAL", "KEY")):
-                raise SandboxRuntimeError("sandbox_env_forbidden", f"environment key {text_key!r} looks credential-like")
-            if text_key == "PYTHONPATH" or text_key.startswith("OPENZYME_") or text_key.startswith("TASK_"):
+            if any(
+                marker in upper
+                for marker in ("SECRET", "TOKEN", "PASSWORD", "CREDENTIAL", "KEY")
+            ):
+                raise SandboxRuntimeError(
+                    "sandbox_env_forbidden",
+                    f"environment key {text_key!r} looks credential-like",
+                )
+            if (
+                text_key == "PYTHONPATH"
+                or text_key.startswith("OPENZYME_")
+                or text_key.startswith("TASK_")
+            ):
                 safe[text_key] = str(value)
                 continue
-            raise SandboxRuntimeError("sandbox_env_forbidden", f"environment key {text_key!r} is not allowlisted")
+            raise SandboxRuntimeError(
+                "sandbox_env_forbidden",
+                f"environment key {text_key!r} is not allowlisted",
+            )
         return safe
 
     def _subprocess_env(
@@ -3324,7 +4379,8 @@ class SandboxRuntimeService:
         sandbox_workspace_id: str,
         sandbox_run_id: str,
         expected_pipeline_sdk_digest: str,
-    ) -> subprocess.CompletedProcess[bytes | str]:
+        control_server: _ControlSocketServer,
+    ) -> subprocess.CompletedProcess[bytes | str] | _ParkedProcess:
         current_sdk_digest = self._pipeline_sdk_digest()
         if current_sdk_digest != expected_pipeline_sdk_digest:
             raise SandboxRuntimeError(
@@ -3345,10 +4401,14 @@ class SandboxRuntimeService:
                 ),
                 timeout_seconds=timeout_seconds,
                 sandbox_run_id=sandbox_run_id,
+                control_server=control_server,
             )
         if self.execution_backend == "podman":
             if shutil.which(self.podman_binary) is None:
-                raise SandboxRuntimeError("sandbox_image_missing", "podman binary is not available for sandbox.exec")
+                raise SandboxRuntimeError(
+                    "sandbox_image_missing",
+                    "podman binary is not available for sandbox.exec",
+                )
             container_lease = PodmanContainerLease.create(
                 podman_binary=self.podman_binary,
                 workspace_root=_workspace_root(self.workspace_root),
@@ -3356,8 +4416,9 @@ class SandboxRuntimeService:
                 run_id=sandbox_run_id,
             )
             container_lease.require_absent_before_run()
+            retired = False
             try:
-                return self._run_process_with_active_timeout(
+                result = self._run_process_with_active_timeout(
                     self._podman_command(
                         workspace=workspace,
                         workspace_path=workspace_path,
@@ -3373,10 +4434,19 @@ class SandboxRuntimeService:
                     ),
                     timeout_seconds=timeout_seconds,
                     sandbox_run_id=sandbox_run_id,
+                    control_server=control_server,
+                    container_lease=container_lease,
                 )
+                if isinstance(result, _ParkedProcess):
+                    retired = True
+                return result
             finally:
-                container_lease.retire()
-        raise SandboxRuntimeError("invalid_tool_arguments", f"unknown sandbox execution backend {self.execution_backend!r}")
+                if not retired:
+                    container_lease.retire()
+        raise SandboxRuntimeError(
+            "invalid_tool_arguments",
+            f"unknown sandbox execution backend {self.execution_backend!r}",
+        )
 
     def _run_process_with_active_timeout(
         self,
@@ -3386,7 +4456,9 @@ class SandboxRuntimeService:
         env: dict[str, str] | None = None,
         timeout_seconds: int,
         sandbox_run_id: str,
-    ) -> subprocess.CompletedProcess[bytes]:
+        control_server: _ControlSocketServer,
+        container_lease: PodmanContainerLease | None = None,
+    ) -> subprocess.CompletedProcess[bytes] | _ParkedProcess:
         process = subprocess.Popen(
             argv,
             cwd=cwd,
@@ -3406,8 +4478,12 @@ class SandboxRuntimeService:
             finally:
                 stream.close()
 
-        stdout_thread = threading.Thread(target=_drain_output, args=(process.stdout, stdout_chunks), daemon=False)
-        stderr_thread = threading.Thread(target=_drain_output, args=(process.stderr, stderr_chunks), daemon=False)
+        stdout_thread = threading.Thread(
+            target=_drain_output, args=(process.stdout, stdout_chunks), daemon=False
+        )
+        stderr_thread = threading.Thread(
+            target=_drain_output, args=(process.stderr, stderr_chunks), daemon=False
+        )
         stdout_thread.start()
         stderr_thread.start()
         started = time.monotonic()
@@ -3415,6 +4491,22 @@ class SandboxRuntimeService:
         paused_seconds = 0.0
         while process.poll() is None:
             now = time.monotonic()
+            if control_server.is_parked():
+                if paused_started is None:
+                    paused_started = now
+                return _ParkedProcess(
+                    process=process,
+                    argv=argv,
+                    stdout_chunks=stdout_chunks,
+                    stderr_chunks=stderr_chunks,
+                    stdout_thread=stdout_thread,
+                    stderr_thread=stderr_thread,
+                    started_monotonic=started,
+                    paused_seconds=paused_seconds,
+                    paused_started=paused_started,
+                    timeout_seconds=timeout_seconds,
+                    container_lease=container_lease,
+                )
             if self._sandbox_run_waiting_for_user_approval(sandbox_run_id):
                 if paused_started is None:
                     paused_started = now
@@ -3446,13 +4538,18 @@ class SandboxRuntimeService:
         )
 
     def _sandbox_run_waiting_for_user_approval(self, sandbox_run_id: str) -> bool:
-        for operation in self.repositories.controlled_operations.list_by_run(sandbox_run_id):
+        for operation in self.repositories.controlled_operations.list_by_run(
+            sandbox_run_id
+        ):
             if operation.status is not ControlledOperationStatus.WAITING_APPROVAL:
                 continue
             if operation.approval_id is None:
                 continue
             approval = self.repositories.approvals.get(operation.approval_id)
-            if approval is not None and approval.status is ApprovalRequestStatus.PENDING:
+            if (
+                approval is not None
+                and approval.status is ApprovalRequestStatus.PENDING
+            ):
                 return True
         return False
 
@@ -3547,10 +4644,14 @@ class SandboxRuntimeService:
     def _bounded_read_limit(self, limit: int) -> int:
         value = int(limit)
         if value < 0 or value > READ_MAX_LIMIT:
-            raise SandboxRuntimeError("sandbox_read_limit_exceeded", "read limit must be between 0 and 256KiB")
+            raise SandboxRuntimeError(
+                "sandbox_read_limit_exceeded", "read limit must be between 0 and 256KiB"
+            )
         return value
 
-    def _snapshot_source(self, *, session_id: str, sandbox_workspace_id: str, entrypoint: str) -> dict[str, Any]:
+    def _snapshot_source(
+        self, *, session_id: str, sandbox_workspace_id: str, entrypoint: str
+    ) -> dict[str, Any]:
         try:
             result = ArtifactBoundaryService(
                 self.repositories,
@@ -3588,24 +4689,43 @@ class SandboxRuntimeService:
             return "bash -lc"
         return Path(argv[0]).name
 
-    def _require_workspace(self, session_id: str, sandbox_workspace_id: str) -> SandboxWorkspaceRecord:
+    def _require_workspace(
+        self, session_id: str, sandbox_workspace_id: str
+    ) -> SandboxWorkspaceRecord:
         workspace = self.repositories.sandbox_workspaces.get(sandbox_workspace_id)
         if workspace is None or workspace.session_id != session_id:
-            raise SandboxRuntimeError("sandbox_workspace_not_found", "sandbox workspace is not available in this session")
+            raise SandboxRuntimeError(
+                "sandbox_workspace_not_found",
+                "sandbox workspace is not available in this session",
+            )
         return workspace
 
-    def _require_ready_workspace(self, session_id: str, sandbox_workspace_id: str) -> SandboxWorkspaceRecord:
+    def _require_ready_workspace(
+        self, session_id: str, sandbox_workspace_id: str
+    ) -> SandboxWorkspaceRecord:
         workspace = self._require_workspace(session_id, sandbox_workspace_id)
         if workspace.status is not SandboxWorkspaceStatus.READY:
-            raise SandboxRuntimeError((workspace.last_error or {}).get("error_code", workspace.status.value), "sandbox workspace is not ready")
+            raise SandboxRuntimeError(
+                (workspace.last_error or {}).get("error_code", workspace.status.value),
+                "sandbox workspace is not ready",
+            )
         if workspace.image_compatibility is SandboxImageCompatibility.MISSING:
-            raise SandboxRuntimeError("sandbox_image_missing", "sandbox image digest is not registered")
+            raise SandboxRuntimeError(
+                "sandbox_image_missing", "sandbox image digest is not registered"
+            )
         if workspace.image_compatibility is SandboxImageCompatibility.INCOMPATIBLE:
-            raise SandboxRuntimeError("sandbox_image_incompatible", "sandbox image is incompatible")
+            raise SandboxRuntimeError(
+                "sandbox_image_incompatible", "sandbox image is incompatible"
+            )
         if workspace.sandbox_protocol_version != SANDBOX_PROTOCOL_VERSION:
-            raise SandboxRuntimeError("sandbox_image_incompatible", "sandbox protocol version is incompatible")
+            raise SandboxRuntimeError(
+                "sandbox_image_incompatible", "sandbox protocol version is incompatible"
+            )
         if workspace.manifest_version != SANDBOX_WORKSPACE_MANIFEST_VERSION:
-            raise SandboxRuntimeError("sandbox_image_incompatible", "workspace manifest version is incompatible")
+            raise SandboxRuntimeError(
+                "sandbox_image_incompatible",
+                "workspace manifest version is incompatible",
+            )
         return workspace
 
     def _assert_workspace_layout(self, sandbox_workspace_id: str) -> None:
@@ -3633,7 +4753,9 @@ class SandboxRuntimeService:
             )
 
     def _ensure_no_active_run(self, sandbox_workspace_id: str) -> None:
-        active = self.repositories.sandbox_runs.get_active_by_workspace(sandbox_workspace_id)
+        active = self.repositories.sandbox_runs.get_active_by_workspace(
+            sandbox_workspace_id
+        )
         if active is not None:
             raise SandboxRuntimeError(
                 "sandbox_run_conflict",
@@ -3748,21 +4870,34 @@ class SandboxRuntimeService:
                 },
             )
 
-    def _changed_files(self, before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
-        before_entries = {item["relative_path"]: item for item in before.get("entries", []) if isinstance(item, dict)}
-        after_entries = {item["relative_path"]: item for item in after.get("entries", []) if isinstance(item, dict)}
+    def _changed_files(
+        self, before: dict[str, Any], after: dict[str, Any]
+    ) -> dict[str, Any]:
+        before_entries = {
+            item["relative_path"]: item
+            for item in before.get("entries", [])
+            if isinstance(item, dict)
+        }
+        after_entries = {
+            item["relative_path"]: item
+            for item in after.get("entries", [])
+            if isinstance(item, dict)
+        }
         added = sorted(set(after_entries) - set(before_entries))[:100]
         removed = sorted(set(before_entries) - set(after_entries))[:100]
         modified = sorted(
             path
             for path in set(before_entries) & set(after_entries)
-            if before_entries[path].get("content_digest") != after_entries[path].get("content_digest")
+            if before_entries[path].get("content_digest")
+            != after_entries[path].get("content_digest")
         )[:100]
         return {
             "added": added,
             "modified": modified,
             "removed": removed,
-            "truncated": any(len(values) >= 100 for values in (added, modified, removed)),
+            "truncated": any(
+                len(values) >= 100 for values in (added, modified, removed)
+            ),
         }
 
     def _workspace_file_snapshot(self, sandbox_workspace_id: str) -> dict[str, Any]:
@@ -3772,15 +4907,302 @@ class SandboxRuntimeService:
             root = workspace_path / root_name
             if not root.exists():
                 continue
-            for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(workspace_path).as_posix()):
+            for path in sorted(
+                root.rglob("*"),
+                key=lambda item: item.relative_to(workspace_path).as_posix(),
+            ):
                 if path.is_dir():
                     continue
                 relative_path = path.relative_to(workspace_path).as_posix()
                 if path.is_symlink():
-                    entries.append({"relative_path": relative_path, "content_digest": "sha256:symlink"})
+                    entries.append(
+                        {
+                            "relative_path": relative_path,
+                            "content_digest": "sha256:symlink",
+                        }
+                    )
                 else:
-                    entries.append({"relative_path": relative_path, "content_digest": _file_digest(path).content_digest})
+                    entries.append(
+                        {
+                            "relative_path": relative_path,
+                            "content_digest": _file_digest(path).content_digest,
+                        }
+                    )
         return {"entries": entries}
+
+
+@dataclass(slots=True)
+class _AttachedSandboxProcess:
+    runtime_service: SandboxRuntimeService
+    run: SandboxRunRecord
+    pre_summary: dict[str, Any]
+    process_state: _ParkedProcess
+    control_server: _ControlSocketServer
+    registry: LiveProcessRegistry
+    _thread: threading.Thread | None = None
+    _identity: AttachedProcessIdentity | None = None
+    _identity_lock: threading.Lock = field(
+        default_factory=threading.Lock,
+        repr=False,
+    )
+    _stop_reason: str | None = None
+    _terminalization_error: str | None = None
+    _writer_ready: threading.Event = field(
+        default_factory=threading.Event,
+        init=False,
+        repr=False,
+    )
+    _writer_start_error: str | None = field(default=None, init=False)
+
+    def start(self) -> None:
+        if self._thread is not None:
+            raise RuntimeError("attached sandbox process monitor already started")
+        monitor_context = copy_context()
+        self._thread = threading.Thread(
+            target=lambda: monitor_context.run(self._monitor_with_mutation_writer),
+            name=f"sandbox-process-monitor:{self.run.sandbox_run_id}",
+            daemon=False,
+        )
+        self._thread.start()
+        if not self._writer_ready.wait(timeout=5.0):
+            self.request_stop(reason="mutation_writer_start_timeout")
+            raise SandboxRuntimeError(
+                "sandbox_mutation_writer_start_timeout",
+                "sandbox process mutation writer did not start within its bound",
+            )
+        if self._writer_start_error is not None:
+            self.request_stop(reason="mutation_writer_start_failed")
+            raise SandboxRuntimeError(
+                "sandbox_mutation_writer_start_failed",
+                "sandbox process mutation writer registration failed",
+            )
+
+    def _monitor_with_mutation_writer(self) -> None:
+        with self._identity_lock:
+            identity = self._identity
+        factory = self.runtime_service.mutation_writer_scope_factory
+        writer_scope = (
+            nullcontext(None)
+            if factory is None or identity is None
+            else factory(
+                session_id=identity.session_id,
+                owner_kind=MutationWriterKind.SANDBOX_PROCESS,
+                owner_ref=f"sandbox-process:{identity.sandbox_run_id}",
+                process_epoch=identity.process_epoch,
+            )
+        )
+        try:
+            with writer_scope:
+                self._writer_ready.set()
+                self._monitor()
+        except BaseException as exc:
+            self._writer_start_error = type(exc).__name__
+            self._terminalization_error = type(exc).__name__
+            self._writer_ready.set()
+            if self.process_state.process.poll() is None:
+                self.process_state.process.kill()
+
+    def is_alive(self) -> bool:
+        return self.process_state.process.poll() is None
+
+    def bind_identity(self, identity: AttachedProcessIdentity) -> None:
+        self.control_server.bind_attached_identity(identity)
+        with self._identity_lock:
+            current = self._identity
+            if current is not None and not current.same_process(identity):
+                raise LiveProcessRegistryConflictError(
+                    "attached sandbox process epoch changed during rebind"
+                )
+            self._identity = identity
+
+    def deliver(
+        self,
+        identity: AttachedProcessIdentity,
+        delivery: AttachedProcessDelivery,
+    ) -> None:
+        if not self.is_alive():
+            raise LiveProcessRegistryConflictError(
+                "attached sandbox process exited before delivery"
+            )
+        with self._identity_lock:
+            if self._identity != identity:
+                raise LiveProcessRegistryConflictError(
+                    "attached sandbox process is bound to another continuation"
+                )
+        self.control_server.deliver_attached_result(identity, delivery)
+
+    def request_stop(self, *, reason: str) -> None:
+        self._stop_reason = reason
+        process = self.process_state.process
+        if process.poll() is None:
+            process.kill()
+
+    def wait_stopped(self, *, timeout_seconds: float) -> bool:
+        thread = self._thread
+        if thread is None:
+            return not self.is_alive()
+        if thread is threading.current_thread():
+            return False
+        thread.join(timeout=max(0.0, timeout_seconds))
+        return not thread.is_alive() and self._terminalization_error is None
+
+    def _monitor(self) -> None:
+        state = self.process_state
+        process = state.process
+        paused_started = state.paused_started
+        paused_seconds = state.paused_seconds
+        forced_status: SandboxRunStatus | None = None
+        error_code: str | None = None
+        supervisor_failed = False
+        try:
+            while process.poll() is None:
+                now = time.monotonic()
+                if self.control_server.is_parked():
+                    if paused_started is None:
+                        paused_started = now
+                elif paused_started is not None:
+                    paused_seconds += now - paused_started
+                    paused_started = None
+                current_pause = 0.0 if paused_started is None else now - paused_started
+                active_elapsed = (
+                    now - state.started_monotonic - paused_seconds - current_pause
+                )
+                if active_elapsed > state.timeout_seconds:
+                    forced_status = SandboxRunStatus.TIMEOUT
+                    error_code = "sandbox_exec_timeout"
+                    process.kill()
+                    break
+                time.sleep(0.05)
+            process.wait()
+            if self._stop_reason is not None and forced_status is None:
+                forced_status = SandboxRunStatus.FAILED
+                error_code = "sandbox_run_recovery_failed"
+        except Exception:
+            supervisor_failed = True
+            forced_status = SandboxRunStatus.FAILED
+            error_code = "sandbox_process_monitor_failed"
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+            try:
+                process.wait(timeout=5)
+            except Exception:
+                pass
+        finally:
+            for output_thread in (state.stdout_thread, state.stderr_thread):
+                output_thread.join(timeout=2)
+                if output_thread.is_alive():
+                    supervisor_failed = True
+            try:
+                self.control_server.stop()
+            except Exception:
+                supervisor_failed = True
+            if state.container_lease is not None:
+                try:
+                    state.container_lease.retire()
+                except Exception:
+                    supervisor_failed = True
+
+        if supervisor_failed:
+            forced_status = SandboxRunStatus.FAILED
+            error_code = "sandbox_supervisor_cleanup_failed"
+
+        duration_ms = int((time.monotonic() - state.started_monotonic) * 1_000)
+        try:
+            if self.runtime_service.repository_scope_factory is None:
+                self._finalize_with_repositories(
+                    self.runtime_service.repositories,
+                    duration_ms=duration_ms,
+                    forced_status=forced_status,
+                    error_code=error_code,
+                )
+            else:
+                with self.runtime_service.repository_scope_factory() as repositories:
+                    self._finalize_with_repositories(
+                        repositories,
+                        duration_ms=duration_ms,
+                        forced_status=forced_status,
+                        error_code=error_code,
+                    )
+        except Exception as exc:
+            self._terminalization_error = exc.__class__.__name__
+        finally:
+            with self._identity_lock:
+                identity = self._identity
+            if identity is not None:
+                try:
+                    self.registry.remove_run(
+                        identity.sandbox_run_id,
+                        expected_process_epoch=identity.process_epoch,
+                    )
+                except LiveProcessRegistryConflictError:
+                    self._terminalization_error = (
+                        self._terminalization_error
+                        or "LiveProcessRegistryConflictError"
+                    )
+
+    def _finalize_with_repositories(
+        self,
+        repositories: Any,
+        *,
+        duration_ms: int,
+        forced_status: SandboxRunStatus | None,
+        error_code: str | None,
+    ) -> None:
+        state = self.process_state
+        service = replace(self.runtime_service, repositories=repositories)
+        with self._identity_lock:
+            identity = self._identity or self.control_server.last_attached_identity()
+        notify_session_id: str | None = None
+        with repositories.atomic(prefix="attached_sandbox_process_terminal"):
+            service._finish_run(
+                self.run,
+                stdout=b"".join(state.stdout_chunks),
+                stderr=b"".join(state.stderr_chunks),
+                exit_code=state.process.returncode,
+                duration_ms=duration_ms,
+                pre_summary=self.pre_summary,
+                forced_status=forced_status,
+                error_code=error_code,
+            )
+            if identity is None:
+                return
+            continuation = repositories.continuation_states.get(
+                identity.continuation_id
+            )
+            if continuation is None:
+                return
+            accepted = self.control_server.has_accepted_delivery(identity)
+            if not continuation.delivery_state.is_terminal and not accepted:
+                continuation = repositories.continuation_deliveries.mark_recovery_failed(
+                    continuation.continuation_id,
+                    expected_state_version=continuation.state_version,
+                    completed_at=utc_now_iso(),
+                    error_code="attached_process_exited_before_delivery",
+                    error_message=(
+                        "The attached sandbox process exited before its exact result was delivered."
+                    ),
+                )
+            signal = ContinuationWakeService(
+                repositories,
+                signal_notifier=self.runtime_service.signal_notifier,
+            ).enqueue_locked(
+                continuation,
+                created_at=utc_now_iso(),
+                recovery_failed=(
+                    continuation.delivery_state
+                    is ContinuationDeliveryState.RECOVERY_FAILED
+                ),
+            )
+            if signal is not None:
+                notify_session_id = signal.session_id
+        if notify_session_id is not None:
+            ContinuationWakeService(
+                repositories,
+                signal_notifier=self.runtime_service.signal_notifier,
+            ).notify(notify_session_id)
 
 
 def _tool_error(invocation: ToolInvocation, exc: SandboxRuntimeError) -> ToolResult:
@@ -3799,9 +5221,7 @@ def _tool_error(invocation: ToolInvocation, exc: SandboxRuntimeError) -> ToolRes
         status=exc.error_code,
         summary=sanitize_public_diagnostic_text(str(exc)),
         error_code=exc.error_code,
-        hint=None
-        if exc.hint is None
-        else sanitize_public_diagnostic_text(exc.hint),
+        hint=None if exc.hint is None else sanitize_public_diagnostic_text(exc.hint),
         details=payload,
     )
 
@@ -3813,6 +5233,9 @@ def register_sandbox_runtime_tools(
     adapter_executor: SandboxAdapterExecutor | None = None,
     hpc_fetch_executor: SandboxHpcFetchExecutor | None = None,
     repository_scope_factory: Callable[[], Any] | None = None,
+    mutation_writer_scope_factory: Callable[..., Any] | None = None,
+    live_process_registry: LiveProcessRegistry | None = None,
+    signal_notifier: Any | None = None,
 ) -> None:
     def _service(context: SessionRuntimeContext) -> SandboxRuntimeService:
         return SandboxRuntimeService(
@@ -3822,9 +5245,19 @@ def register_sandbox_runtime_tools(
             adapter_executor=adapter_executor,
             hpc_fetch_executor=hpc_fetch_executor,
             repository_scope_factory=repository_scope_factory,
+            mutation_writer_scope_factory=mutation_writer_scope_factory,
+            live_process_registry=live_process_registry,
+            signal_notifier=signal_notifier or context.signal_notifier,
+            reliability_shadow_observer=context.reliability_shadow_observer,
+            reliability_settings=context.reliability_settings,
+            durable_route_adapter_policy_ids=dict(
+                context.durable_route_adapter_policy_ids
+            ),
         )
 
-    def _workspace_id(context: SessionRuntimeContext, invocation: ToolInvocation) -> str:
+    def _workspace_id(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> str:
         raw = invocation.arguments.get("sandbox_workspace_id")
         workspace, error_code, hint = SandboxWorkspaceService(
             context.repositories,
@@ -3837,10 +5270,15 @@ def register_sandbox_runtime_tools(
             focus_lane_id=context.restore_focus.lane_id,
         )
         if workspace is None:
-            raise SandboxRuntimeError(error_code or "sandbox_workspace_not_found", hint or "sandbox workspace is unavailable")
+            raise SandboxRuntimeError(
+                error_code or "sandbox_workspace_not_found",
+                hint or "sandbox workspace is unavailable",
+            )
         return workspace.sandbox_workspace_id
 
-    def list_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+    def list_handler(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> ToolResult:
         try:
             result = _service(context).list_files(
                 session_id=context.snapshot.session.session_id,
@@ -3852,7 +5290,9 @@ def register_sandbox_runtime_tools(
             return _tool_error(invocation, exc)
         return _tool_success(invocation, result, status="sandbox_files_listed")
 
-    def read_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+    def read_handler(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> ToolResult:
         try:
             result = _service(context).read_file(
                 session_id=context.snapshot.session.session_id,
@@ -3865,7 +5305,9 @@ def register_sandbox_runtime_tools(
             return _tool_error(invocation, exc)
         return _tool_success(invocation, result, status="sandbox_file_read")
 
-    def write_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+    def write_handler(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> ToolResult:
         try:
             result = _service(context).write_file(
                 session_id=context.snapshot.session.session_id,
@@ -3884,7 +5326,9 @@ def register_sandbox_runtime_tools(
             return _tool_error(invocation, exc)
         return _tool_success(invocation, result, status="sandbox_file_written")
 
-    def patch_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+    def patch_handler(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> ToolResult:
         try:
             result = _service(context).patch_file(
                 session_id=context.snapshot.session.session_id,
@@ -3900,7 +5344,9 @@ def register_sandbox_runtime_tools(
             return _tool_error(invocation, exc)
         return _tool_success(invocation, result, status="sandbox_file_patched")
 
-    def delete_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+    def delete_handler(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> ToolResult:
         try:
             result = _service(context).delete_file(
                 session_id=context.snapshot.session.session_id,
@@ -3917,22 +5363,64 @@ def register_sandbox_runtime_tools(
             return _tool_error(invocation, exc)
         return _tool_success(invocation, result, status="sandbox_file_deleted")
 
-    def exec_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+    def exec_handler(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> ToolResult:
+        process_epoch = (time.time_ns() & ((1 << 63) - 1)) or 1
         try:
-            result = _service(context).exec_command(
-                session_id=context.snapshot.session.session_id,
-                sandbox_workspace_id=_workspace_id(context, invocation),
-                agent_id=agent_id or "agent:unknown",
-                argv=list(invocation.arguments["argv"]),
-                cwd=str(invocation.arguments.get("cwd") or "/workspace"),
-                timeout_seconds=int(invocation.arguments.get("timeout_seconds") or EXEC_DEFAULT_TIMEOUT_SECONDS),
-                env=dict(invocation.arguments.get("env") or {}),
-                task_id=context.restore_focus.task_id,
-                lane_id=context.restore_focus.lane_id,
-            ).to_dict()
+            call_digest = hashlib.sha256(
+                invocation.call_id.encode("utf-8")
+            ).hexdigest()[:16]
+            with context.mutation_writer_scope(
+                owner_kind=MutationWriterKind.SANDBOX_PROCESS,
+                owner_ref=f"sandbox-exec:{call_digest}",
+                process_epoch=process_epoch,
+            ):
+                run = _service(context).exec_command(
+                    session_id=context.snapshot.session.session_id,
+                    sandbox_workspace_id=_workspace_id(context, invocation),
+                    agent_id=agent_id or "agent:unknown",
+                    argv=list(invocation.arguments["argv"]),
+                    cwd=str(invocation.arguments.get("cwd") or "/workspace"),
+                    timeout_seconds=int(
+                        invocation.arguments.get("timeout_seconds")
+                        or EXEC_DEFAULT_TIMEOUT_SECONDS
+                    ),
+                    env=dict(invocation.arguments.get("env") or {}),
+                    task_id=context.restore_focus.task_id,
+                    lane_id=context.restore_focus.lane_id,
+                    originating_signal_id=context.signal_id,
+                    originating_tool_call_id=invocation.call_id,
+                    originating_invocation_id=(
+                        None
+                        if context.current_step_context is None
+                        else context.current_step_context.step_id
+                    ),
+                    process_epoch=process_epoch,
+                )
         except SandboxRuntimeError as exc:
             return _tool_error(invocation, exc)
-        return _tool_success(invocation, result, status=str(result.get("status") or "sandbox_exec_finished"))
+        result = run.to_dict()
+        suspension = dict((run.compatibility or {}).get("suspension") or {})
+        if suspension:
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=True,
+                content=json.dumps(suspension, sort_keys=True),
+                task_id=invocation.task_id,
+                lane_id=invocation.lane_id,
+                status="suspended_waiting_approval",
+                summary=("sandbox process parked under durable continuation ownership"),
+                details=suspension,
+                terminal_action="runtime_suspended",
+                terminates_turn=True,
+            )
+        return _tool_success(
+            invocation,
+            result,
+            status=str(result.get("status") or "sandbox_exec_finished"),
+        )
 
     registry.register("sandbox.file.list", list_handler)
     registry.register("sandbox.file.read", read_handler)
@@ -3942,7 +5430,9 @@ def register_sandbox_runtime_tools(
     registry.register("sandbox.exec", exec_handler)
 
 
-def _tool_success(invocation: ToolInvocation, payload: dict[str, Any], *, status: str) -> ToolResult:
+def _tool_success(
+    invocation: ToolInvocation, payload: dict[str, Any], *, status: str
+) -> ToolResult:
     return ToolResult(
         call_id=invocation.call_id,
         tool_name=invocation.tool_name,

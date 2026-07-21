@@ -5,6 +5,8 @@ import shlex
 import subprocess
 import time
 
+from .transport import compile_legacy_ssh
+
 
 @dataclass(slots=True)
 class CommandResult:
@@ -15,6 +17,7 @@ class CommandResult:
     stage: str | None = None
     timed_out: bool = False
     elapsed_seconds: float = 0.0
+    process_started: bool = True
 
 
 class CommandRunner:
@@ -65,6 +68,7 @@ class CommandRunner:
                 stderr=str(exc),
                 stage=stage,
                 elapsed_seconds=elapsed_seconds,
+                process_started=False,
             )
             if check:
                 raise RuntimeError(
@@ -141,17 +145,4 @@ def make_remote_shell_command_with_env(
 
 
 def wrap_ssh(target: str, remote_argv: list[str]) -> list[str]:
-    return [
-        "ssh",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ConnectTimeout=15",
-        "-o",
-        "ServerAliveInterval=30",
-        "-o",
-        "ServerAliveCountMax=2",
-        target,
-        "--",
-        shlex.join(remote_argv),
-    ]
+    return compile_legacy_ssh(target, remote_argv)

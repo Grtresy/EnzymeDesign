@@ -19,6 +19,8 @@ from .repositories import CoreRepositories
 from .task_board import TaskBoardService
 from .lane_manager import LaneManager
 from .conversation import build_conversation_projection
+from .controlled_operation_projection import project_controlled_operation_summary
+from .controlled_operation_projection import is_controlled_operation_artifact_public
 from .protocols import ProtocolService
 from .runtime_consistency import RuntimeConsistencyService
 from .trace_projection import project_public_llm_trace_step
@@ -216,6 +218,7 @@ class SessionProjectionBuilder:
         artifacts = tuple(
             self._project_workspace_artifact(artifact)
             for artifact in self.repositories.artifacts.list_by_session(session_id)
+            if is_controlled_operation_artifact_public(self.repositories, artifact)
         )
         artifact_index = tuple(self._build_artifact_index(artifacts))
         sandbox_workspaces = tuple(
@@ -311,28 +314,7 @@ class SessionProjectionBuilder:
 
     def _project_operation_summary(self, operation: Any) -> dict[str, Any]:
         return self._sanitize_execution_projection(
-            {
-                "operation_id": operation.operation_id,
-                "logical_operation_key": operation.logical_operation_key,
-                "operation_digest": operation.operation_digest,
-                "status": operation.status.value,
-                "approval_id": operation.approval_id,
-                "approval_state": operation.approval_state,
-                "sandbox_workspace_id": operation.sandbox_workspace_id,
-                "sandbox_run_id": operation.sandbox_run_id,
-                "backend_category": operation.backend_category,
-                "route_policy_id": operation.route_policy_id,
-                "selected_backend": operation.selected_backend,
-                "input_artifact_ids": list(operation.input_artifact_ids),
-                "input_artifact_digests": list(operation.input_artifact_digests),
-                "resource_estimate": operation.resource_estimate or {},
-                "expected_outputs_summary": operation.expected_outputs_summary or {},
-                "source_snapshot_artifact_id": operation.source_snapshot_artifact_id,
-                "source_snapshot_digest": operation.source_snapshot_digest,
-                "error_code": operation.error_code,
-                "created_at": operation.created_at,
-                "updated_at": operation.updated_at,
-            }
+            project_controlled_operation_summary(self.repositories, operation)
         )
 
     def _project_report_summary(self, report: Any) -> dict[str, Any]:
@@ -1224,6 +1206,11 @@ class SessionProjectionBuilder:
                 )
             )
         for artifact in self.repositories.artifacts.list_by_session(session_id):
+            if not is_controlled_operation_artifact_public(
+                self.repositories,
+                artifact,
+            ):
+                continue
             artifact_payload = self._project_workspace_artifact(artifact)
             if artifact.metadata and artifact.metadata.get("source") == "preprocess":
                 items.append(

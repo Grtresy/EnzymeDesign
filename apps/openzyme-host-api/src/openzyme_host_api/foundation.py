@@ -17,6 +17,7 @@ from openzyme_runtime import LimiterRegistry
 from openzyme_runtime import is_micu_provider_url
 from openzyme_runtime import LiveMicuTokenLedger
 from openzyme_runtime import OpenZymeSettings
+from openzyme_runtime import ReliabilityShadowObserver
 from openzyme_runtime import RuntimeFoundation
 from openzyme_tools import DefaultHpcExecutionRegistry
 from openzyme_tools import RepoBackedHpcCatalogProvider
@@ -419,6 +420,9 @@ def build_local_eval_foundation(
         model_factory=DeterministicLocalModelFactory(),
         limiter_registry=limiter_registry,
         settings=effective_settings,
+        reliability_shadow_observer=ReliabilityShadowObserver(
+            effective_settings.reliability
+        ),
     )
 
 
@@ -456,4 +460,7 @@ def build_configured_foundation(
         ),
         limiter_registry=limiter_registry,
         settings=effective_settings,
+        reliability_shadow_observer=ReliabilityShadowObserver(
+            effective_settings.reliability
+        ),
     )

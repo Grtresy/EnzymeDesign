@@ -12,7 +12,7 @@
 - 顶层只复用 LangChain / LangGraph 的模型接入与 tool-calling 能力
 - 顶层不引入新的 graph / agent orchestration
 - capability engine 内部可以继续使用 LangGraph
-- conversation、task、lane、approval、memory、engine invocation 仍以 control plane 为真状态
+- conversation、task、lane、approval、memory、engine invocation、controlled-operation execution、continuation 与 mutation scope 仍以 control plane 为真状态
 - 顶层 loop 的职责是支撑 master agent 与用户对话、编排 task、发起 delegation，而不是直接承担所有具体工作执行
 - 顶层 loop 默认不直接扮演 teammate worker；delegation 后的具体推进应由 teammate loop 在共享 workspace 上继续完成
 - 顶层 loop 只能由 scheduler acquire session runtime lease 并 claim `agent:master` wakeup signal 后启动；REST handler 只持久化用户动作并排队 signal
@@ -41,12 +41,13 @@ user message
               -> feed bounded tool observations back into model
        no  -> persist assistant output and end turn
   -> waiting state?
-       approval / delegation -> persist wait state and return
+       delegation -> persist wait state and return
+       durable approval/external operation -> park exact process, persist continuation, release turn
   -> auto compact
   -> project workspace
 ```
 
-session runtime lease 只限制“谁有权推进当前 session runtime”。它不判断业务完成，也不替代 signal claim lease。background runtime、manual `/runtime/drain`、recovery 和测试 scheduler 必须共享这一 ownership 约束；locked session 应返回或记录 diagnostic，而不是并发推进。
+session runtime lease 只限制“谁有权推进当前 session runtime”。它不判断业务完成，也不替代 signal claim lease、execution lease、continuation delivery claim 或 mutation writer fence。background runtime、`RuntimeCommandWorker`、recovery 和测试 scheduler 在执行 bounded batch 时共享 session ownership；`/runtime/drain` POST 只写 durable command 并返回 `202`，不持有 lease。locked command 应返回脱敏 diagnostic，而不是并发推进。durable approval/provider/HPC wait 必须 park continuation 并释放当前 signal/session authority，不能让 agent turn 继续占有 external-operation wall time。
 
 After every tool call, master must first read the tool-result envelope fields `ok`, `status`, `summary`, `error_code`, `hint`, and `details`.
 
@@ -89,6 +90,8 @@ runtime governance 也是 router contract 的一部分。每个 `ToolRuntime` �
 
 role surface 由同一个 router 判定：master 即使注册了 engine runtimes，也不会直接看见 `deep_research.start` 或 `execution.pipeline.start`；researcher 可见 deep research runtime tools；executor 可见 execution compatibility runtime tools 与 sandbox-first 工具。provider adapter 只能消费 router 输出的 `ToolSpec`，不能绕回 engine descriptor 或 teammate descriptor 拼 schema。MICU 的 `task.create -> task_create` alias 只属于 provider request / LLM debug 层；workspace trace、tool invocation、tool result 和 runtime events 必须只出现 canonical dotted name。
 
+当 session/attempt 启用 generic mutation closure 时，harness turn 是显式 `agent_turn` writer。router 只为真正 mutating 的 producer 注册额外 writer：artifact/research publication 使用 `artifact_publisher`，report draft/publish 使用 `report_publisher`；对应 read tool 不得虚构 writer。所有模型请求进入 `LlmInvocationRuntime` 前注册 `live_token_ledger` writer，完成或失败后显式退休。event/outbox、sandbox process、controlled execution 和 continuation delivery 由各自 composition boundary 注册；不能仅因 tool dispatch 返回就推断这些 child writer 已退休。
+
 `supports_parallel` 只记录为 runtime governance metadata；本阶段顶层 loop 仍不启用真实并行 dispatch。
 
 ## 5. 顶层允许暴露给模型的工具
@@ -117,7 +120,7 @@ role surface 由同一个 router 判定：master 即使注册了 engine runtimes
 - workflow knowledge pack 只表达版本化知识、所需 capability/tool 与真实约束，不替 master/executor 选择步骤；普通用户文本即使包含 AOX、HMM、research 等词也不得改写 delegation 或隐藏可用工具
 - 顶层模型不应把用户请求直接裸翻译成 capability invocation
 - `deep_research.start` 以及迁移兼容的 execution engine start 调用默认应由 teammate loop 围绕明确的 `task_id` 发生，而不是由 master 直接调用；execution teammate 的稳定 authoring path 是 sandbox-first，不是让 master 或 executor 直接编排 `execution.pipeline.start`
-- 任一 capability tool 或其下游 SDK/supervisor 创建 pending approval 后，当前 loop 必须硬阻塞并返回 `waiting_approval`；不得继续执行同批后续 tool calls，也不得再进入下一轮 LLM planning
+- 任一 capability tool 或其下游 SDK/supervisor 创建 pending approval 后，当前 loop 必须停止当前 planning batch；不得继续执行同批后续 tool calls，也不得再进入下一轮 LLM planning。agent-level approval 返回 `waiting_approval`；durable SDK operation 则 park exact sandbox process、持久化 continuation，并让当前 bounded turn 在有界时间内释放 signal/session authority
 - reporting 默认不要求 engine start；report teammate 应优先围绕 `report_draft` 推进交付
 
 首批不默认暴露给模型的高风险操作：
@@ -162,6 +165,7 @@ role surface 由同一个 router 判定：master 即使注册了 engine runtimes
 
 ## 9. 测试
 
-- 有 `model_factory` 时，`POST /v3/sessions/{session_id}/messages` 默认只排队 `agent:master` signal；scheduler acquire session lease 并 claim signal 后运行真实顶层 LLM driver。配置化 Host 默认由 FastAPI background runtime worker 自动推进；`/runtime/drain` 只用于 debug/operator/manual recovery，且必须尊重同一 session lease
+- 有 `model_factory` 时，`POST /v3/sessions/{session_id}/messages` 默认只排队 `agent:master` signal；scheduler acquire session lease 并 claim signal 后运行真实顶层 LLM driver。配置化 Host 默认由 FastAPI background runtime worker 自动推进；`/runtime/drain` 只 admission debug/operator/manual-recovery command，command worker 必须尊重同一 session lease，POST 始终返回 `202`
+- mutation-scope tests 必须证明 LLM provider writer、mutating/read-only tool publisher 区分、oversized tool-result artifact publication、event/outbox child writer 与 post-freeze/post-seal拒写
 - live LLM smoke 至少覆盖一次真实 tool call
 - 顶层单回合 tool call 并发上限固定为 `3`

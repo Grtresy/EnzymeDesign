@@ -4485,6 +4485,13 @@ def _public_api_route_is_canonical(method: str, route: str) -> bool:
             and method == "POST"
             and segments[3:] == ["runtime", "drain"]
         )
+    if len(segments) == 6 and segments[:2] == ["v3", "sessions"]:
+        return (
+            _ATTEMPT_ID_PATTERN.fullmatch(segments[2]) is not None
+            and method == "GET"
+            and segments[3:5] == ["runtime", "commands"]
+            and bool(segments[5])
+        )
     if len(segments) == 4 and segments[:2] == ["v3", "approvals"]:
         return (
             _ATTEMPT_ID_PATTERN.fullmatch(segments[2]) is not None
@@ -4616,7 +4623,10 @@ def _validate_public_api_receipts(
         elif method == "GET":
             valid = valid and receipt.get("request_digest") == canonical_digest({})
         elif method == "POST" and route.endswith("/runtime/drain"):
-            valid = valid and receipt.get("request_digest") == expected_drain_digest
+            valid = valid and (
+                status_code == 202
+                and receipt.get("request_digest") == expected_drain_digest
+            )
         elif method == "POST" and route.startswith("/v3/approvals/"):
             valid = valid and receipt.get("request_digest") == canonical_digest(
                 {"decision": "approved"}
@@ -4638,6 +4648,21 @@ def _validate_public_api_receipts(
         for item in receipts
         if item.get("method") == "POST" and item.get("route") == drain_route
     ]
+    runtime_command_route_prefix = (
+        f"/v3/sessions/{session_id}/runtime/commands/"
+    )
+    matching_runtime_commands = [
+        item
+        for item in receipts
+        if item.get("method") == "GET"
+        and str(item.get("route") or "").startswith(runtime_command_route_prefix)
+    ]
+    runtime_command_routes = {
+        str(item.get("route") or "") for item in matching_runtime_commands
+    }
+    valid = valid and all(
+        item.get("status_code") == 200 for item in matching_runtime_commands
+    )
     matching_workspaces = [
         item
         for item in receipts
@@ -4654,6 +4679,7 @@ def _validate_public_api_receipts(
         len(matching_creates) != 1
         or len(matching_messages) != 1
         or not matching_drains
+        or len(runtime_command_routes) != len(matching_drains)
         or not matching_workspaces
         or not matching_events
         or matching_messages[0].get("request_digest")
@@ -4663,7 +4689,10 @@ def _validate_public_api_receipts(
     else:
         create_sequence = int(matching_creates[0]["sequence"])
         message_sequence = int(matching_messages[0]["sequence"])
-        first_drain_sequence = min(int(item["sequence"]) for item in matching_drains)
+        ordered_drain_sequences = sorted(
+            int(item["sequence"]) for item in matching_drains
+        )
+        first_drain_sequence = ordered_drain_sequences[0]
         valid = valid and (
             create_sequence < message_sequence < first_drain_sequence
             and any(
@@ -4673,6 +4702,18 @@ def _validate_public_api_receipts(
             and any(
                 int(item["sequence"]) > first_drain_sequence
                 for item in matching_events
+            )
+            and all(
+                any(
+                    int(command["sequence"]) > drain_sequence
+                    and (
+                        drain_index + 1 == len(ordered_drain_sequences)
+                        or int(command["sequence"])
+                        < ordered_drain_sequences[drain_index + 1]
+                    )
+                    for command in matching_runtime_commands
+                )
+                for drain_index, drain_sequence in enumerate(ordered_drain_sequences)
             )
         )
     final_workspace_digest = str(
@@ -6195,6 +6236,10 @@ def _validate_attempt_semantics(
     if kind == "positive":
         eligible = outcome.get("cutover_eligible") is True
         if eligible:
+            _validate_mutation_quiescence_projection(
+                product_path,
+                allow_formal_failed=False,
+            )
             _validate_effective_config_attestation(payload)
             _validate_attempt_hpc_workspace_binding(payload)
             _validate_required_live_chain(payload, artifact_root=artifact_root)
@@ -6286,6 +6331,10 @@ def _validate_attempt_semantics(
             and str(fault.get("negative_state_closure_artifact_id") or "")
         )
         if controlled_fault:
+            _validate_mutation_quiescence_projection(
+                product_path,
+                allow_formal_failed=True,
+            )
             _validate_effective_config_attestation(payload)
             _validate_attempt_hpc_workspace_binding(payload)
             launch_receipt = dict(product_path.get("launch_receipt") or {})
@@ -6336,6 +6385,116 @@ def _validate_attempt_semantics(
                 "fault attempt must prove a reached controlled seam and no eligible success",
                 details={"identity": "fault_injection"},
             )
+
+
+def _validate_mutation_quiescence_projection(
+    product_path: Mapping[str, Any],
+    *,
+    allow_formal_failed: bool,
+) -> None:
+    raw = product_path.get("mutation_quiescence")
+    if not isinstance(raw, dict):
+        raise CutoverEvidenceError(
+            "mutation_quiescence_missing",
+            "eligible AOX evidence requires generic Host mutation closure",
+            details={"identity": "product_path.mutation_quiescence"},
+        )
+    projections: dict[str, dict[str, Any]] = {}
+    for purpose in ("probe", "formal"):
+        candidate = raw.get(purpose)
+        if not isinstance(candidate, dict):
+            raise CutoverEvidenceError(
+                "mutation_quiescence_missing",
+                "probe and formal sessions require bounded mutation projections",
+                details={
+                    "identity": f"product_path.mutation_quiescence.{purpose}"
+                },
+            )
+        projections[purpose] = dict(candidate)
+    for purpose, projection in projections.items():
+        identity = f"product_path.mutation_quiescence.{purpose}"
+        allowed_states = (
+            {"sealed", "failed"}
+            if purpose == "formal" and allow_formal_failed
+            else {"sealed"}
+        )
+        writer_counts = projection.get("writer_counts")
+        active_writer_counts = projection.get("active_writer_counts")
+        if (
+            projection.get("schema_version") != "mutation_scope_projection@1"
+            or projection.get("scope_kind") != "attempt"
+            or projection.get("state") not in allowed_states
+            or not isinstance(projection.get("generation"), int)
+            or isinstance(projection.get("generation"), bool)
+            or int(projection["generation"]) < 1
+            or _DIGEST_PATTERN.fullmatch(
+                str(projection.get("policy_digest") or "")
+            )
+            is None
+            or _DIGEST_PATTERN.fullmatch(
+                str(projection.get("coverage_digest") or "")
+            )
+            is None
+            or not isinstance(writer_counts, dict)
+            or not writer_counts
+            or any(
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 1
+                for value in writer_counts.values()
+            )
+            or active_writer_counts != {}
+            or int(writer_counts.get("attempt_driver") or 0) < 1
+        ):
+            raise CutoverEvidenceError(
+                "mutation_quiescence_projection_invalid",
+                "mutation closure projection is incomplete or still active",
+                details={"identity": identity},
+            )
+        if projection.get("state") == "failed":
+            if (
+                not allow_formal_failed
+                or not str(projection.get("blocker_code") or "")
+                or projection.get("receipt") is not None
+            ):
+                raise CutoverEvidenceError(
+                    "mutation_quiescence_failure_invalid",
+                    "failed mutation closure lacks a bounded blocker",
+                    details={"identity": identity},
+                )
+            continue
+        receipt = projection.get("receipt")
+        if not isinstance(receipt, dict) or (
+            not str(receipt.get("receipt_id") or "")
+            or not str(receipt.get("snapshot_id") or "")
+            or _DIGEST_PATTERN.fullmatch(
+                str(receipt.get("receipt_digest") or "")
+            )
+            is None
+            or _DIGEST_PATTERN.fullmatch(
+                str(receipt.get("snapshot_digest") or "")
+            )
+            is None
+            or not str(receipt.get("issued_at") or "")
+            or not str(projection.get("sealed_at") or "")
+            or projection.get("blocker_code") is not None
+        ):
+            raise CutoverEvidenceError(
+                "mutation_quiescence_receipt_invalid",
+                "sealed mutation closure lacks an exact public receipt identity",
+                details={"identity": f"{identity}.receipt"},
+            )
+    if (
+        projections["probe"].get("policy_digest")
+        != projections["formal"].get("policy_digest")
+        or projections["probe"].get("coverage_digest")
+        != projections["formal"].get("coverage_digest")
+    ):
+        raise CutoverEvidenceError(
+            "mutation_quiescence_contract_drift",
+            "probe and formal closures use different mutation contracts",
+            details={"identity": "product_path.mutation_quiescence"},
+        )
 
 
 def _validate_attempt_hpc_workspace_binding(payload: Mapping[str, Any]) -> None:

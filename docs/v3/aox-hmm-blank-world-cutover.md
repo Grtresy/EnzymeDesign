@@ -1,6 +1,8 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: implementation and offline gates in progress; local Live cutover remains **NO-GO** until two real positive attempts and one real controlled fault attempt are sealed and verified on one commit/config identity.
+Status: Runtime/HPC reliability refactor implementation is landed and its non-live gates are being closed. The numbered `rxx` campaign remains frozen and local Live cutover remains **NO-GO** until the refactor gates, explicitly approved real-SSH transport-only soak, two real positive attempts, and one real controlled fault attempt are all sealed and verified on one commit/config identity.
+
+Historical r14-r40 incident sections below intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, and quiescence semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md).
 
 This document describes the operator/evidence boundary implemented by `openzyme_host_api.aox_cutover_evidence`. It does not turn the historical S15 fixture into live evidence and does not authorize seeded state, cached scientific outputs, the reference notebook, or copied reference results as attempt inputs.
 
@@ -261,9 +263,10 @@ availability correction fixes the observed hierarchy at HMMER polling
 `1800s`, HMM-capable `sandbox.exec=3600s` (`s09.exec_policy.v2`), and formal
 session/public request at least `7200s`, all checked before external dispatch.
 Durable asynchronous continuation, cancellation fencing and quiescent sealing
-are larger work recorded in
+were not implemented by that AOX attempt/goal. They were subsequently implemented
+by `runtime-hpc-reliability-refactor`; the historical design is recorded in
 [durable async controlled operation and quiescent sealing](architecture-proposals/durable-async-controlled-operation-and-quiescent-sealing.md)
-and are not implemented in this goal.
+and the current contract is `07-runtime-hpc-reliability.md`.
 
 r15 pinned commit `8a5a98fc483784c222e7a5c2e35f50114e559822`, config digest
 `sha256:b6952e6aaf2eb0af312b116a57b5c842ac20d89720cccaf3a8538421fae1ce54`,
@@ -1666,77 +1669,67 @@ uv --project apps/openzyme-host-api run openzyme-aox-cutover run-live \
 ```
 
 Every live attempt, including the known-positive probe, positive 2 and the
-controlled-fault attempt, uses a same-process loopback HTTP Host.  The current
-product drain remains synchronous while a supervised sandbox waits for an
-approval, so the cutover driver keeps at most one bounded drain request in
-flight and polls the same-row compact
-`GET /v3/sessions/{session_id}/pending-approvals` control projection before
-resolving through the public approval route. Ordinary auto-approval and
-fail-closed cleanup never poll the composite workspace; the driver reads that
-bounded collection projection only at the Chrome handoff and after drain
-retirement. The compact response derives from the same durable
+controlled-fault attempt, uses a same-process loopback HTTP Host. Before any
+attempt is admitted, the driver requires `command_v1`, `generic_v1`, and
+`durable_async_v1` ownership for every AOX provider/HPC route. Missing or mixed
+ownership fails before session or operation creation.
+
+For each bounded runtime step, the driver POSTs one command with a unique
+idempotency key and `max_signals_per_drain=1`, validates HTTP `202`,
+`command_id`, and the exact session-scoped `status_url`, then polls GET until
+`completed|failed|locked|cancelled`. The POST request never owns the scheduler,
+approval, sandbox, provider, or HPC wall time. A command becomes terminal when
+its bounded scheduler batch finishes or parks work; a durable operation and its
+attached process continue under execution/continuation ownership. A failed
+turn may leave a master wakeup queued as evidence, but the driver stops before
+admitting a later command that could create a replacement task or operation.
+
+The driver polls the compact
+`GET /v3/sessions/{session_id}/pending-approvals` projection and resolves only
+through the public approval route. The response derives from the same
 Approval/ControlledOperation/SandboxRun rows as `workspace.pending_approvals`
-and fails closed on response, session, or approval identity drift. Cutover pins
-`max_signals_per_drain=1`: each response is followed by a durable
-operation/task/sandbox terminal-state check before another signal may be
-claimed. Multiple approvals emitted serially inside that one agent turn remain
-coordinated by the same in-flight drain. A failed turn may leave a master
-wakeup queued as evidence, but the driver must stop and must not let that
-wakeup create a replacement task or operation. It auto-resolves
-probe and non-Chrome approvals, keeps positive 1's first formal approval
-exclusively for the browser, and continues coordinating any later serial
-approvals from that same drain. A coordination failure rejects every
-still-pending or later-published operation until the existing attempt deadline,
-solely to release the failed worker; it never approves an operation as cleanup
-or continues scientific execution. Transient cleanup reads/resolves are
-retried with stable idempotency while the original coordination blocker remains
-authoritative. A successful drain response is not by itself
-proof that no last approval became visible: after observing worker terminal,
-the coordinator performs one compact pending-approval GET known to begin after
-that response, then reads one bounded public workspace as the final semantic
-snapshot. Failure arbitration happens only after the drain worker joins:
-a drain-command exception remains authoritative, otherwise the earliest public
-coordination exception remains authoritative, and a cleanup-only exception uses
-`runtime_drain_coordination_cleanup_failed`. Cleanup is still attempted
-fail-closed; when it also fails, its safe failure type is retained as secondary
-diagnostic metadata in the sealed failure blocker instead of replacing either
-earlier blocker. Thus a
-background drain exception retains `runtime_drain_command_failed`; only public
-coordination/cleanup failures use the coordination taxonomy. The worker must
-join before Host teardown or
-evidence collection.  Because a client timeout does not prove the synchronous
-FastAPI handler has stopped, the loopback Host also tracks every server-side
-mutation lifetime, initiates server shutdown, and waits through server retirement
-until all of them become idle;
-failure/fault/positive evidence and MICU-after collection occur only after the
-Host context has fully exited.  If server-side retirement cannot complete, the
-campaign remains blocked rather than reading mutable attempt state or claiming
-a closed receipt chain. Mutation handlers are forbidden from returning while a
-detached writer can still change attempt state. The canonical core and Podman
-sandbox control-socket workers are non-daemon; startup failure and stop use a
-finite cooperative grace but then wait without a timeout until the worker has
-retired, and only then remove its socket. Both core `sandbox.exec` and the
-compatibility Podman pipeline runner bind a random container name, protected
-unmounted CID file, run-id label and sandbox-root-digest label through the
-shared Host runtime lease. Every normal/error/timeout path retires the exact CID
-with `kill -> wait -> rm` before stopping the control worker, and returns only
-after stable repeated absence of both CID and name; name drift, malformed CID,
-identity ambiguity and Podman lifecycle errors remain fail-stop. This
-same-process fail-stop may
-therefore remain blocked forever after an unrecoverable mutation; process-level
-bounded retirement and safe fatal evidence require the separately proposed
+and fails closed on response, session, or identity drift. Probe and non-Chrome
+approvals may follow the fixed campaign policy; positive 1's first formal
+approval remains exclusively browser-owned. Approval resolution only opens the
+exact execution claim. Result delivery targets the exact attached process
+epoch, and Host restart cannot replay an already completed external effect.
+
+A coordination failure rejects still-pending or later-published operations
+until the existing attempt deadline solely for fail-closed cleanup; it never
+approves cleanup or continues scientific execution. Transient compact reads and
+resolve requests reuse stable idempotency while the original blocker remains
+authoritative. After command/continuation terminal observation, the driver
+performs a later compact approval read and one bounded public workspace read as
+the final semantic snapshot. Command failure remains authoritative; public
+coordination and cleanup failures retain their separate taxonomy.
+
+Each session is enclosed by a generic mutation scope rooted in the attempt.
+Eligible closure first freezes admission and advances the fence, then requires
+explicit retirement of every covered writer/descendant, two identical bounded
+SQLite/event/external snapshots, one immutable quiescence receipt, offline
+receipt verification, and sealing of the exact generation. The external
+snapshot includes catalog bytes/tree identity and the bounded MICU ledger
+high-watermark/rows. HTTP idle, an empty signal queue, a terminal command, a
+client timeout, or a missing process handle cannot substitute for this proof.
+
+The loopback HTTP tracker remains only a same-process liveness aid before server
+thread retirement; it has no mutation-admission, fence, snapshot, receipt, or
+seal authority. Core and Podman sandbox workers remain non-daemon and use exact
+container/process identities. If an unrecoverable local writer cannot retire,
+the current same-process path stays blocked and emits no eligible evidence.
+OS-level bounded hard-kill and parent-owned fatal evidence remain deferred to
 [process-isolated live-attempt supervision](architecture-proposals/process-isolated-live-attempt-supervision.md).
-This is a cutover-driver workaround, not product-level async drain or
-restart-safe continuation; that larger product-runtime change is recorded in
-[non-blocking supervised continuation](architecture-proposals/nonblocking-supervised-continuation.md).
+The implemented product contract is
+[Runtime/HPC reliability](07-runtime-hpc-reliability.md), not the historical
+sync-drain workaround retained in older rxx incident narratives.
 
 Public API receipt sequence is reserved when each request begins and finalized
-with that exact response.  This preserves `create < message < drain <
-workspace/events` even when the workspace response completes before the blocked
-drain response.  Final evidence accepts the sorted contiguous chain only after
-all reservations have completed; thread-local response binding prevents a
-concurrent drain response from being substituted for the workspace/event call
-that produced a semantic snapshot.  A transport or response-normalization
+with that exact response. This preserves `create < message < command admission
+< command status/approval < workspace/events` even when independent GETs
+complete out of order. Final evidence accepts the sorted contiguous chain only
+after all reservations have completed; thread-local response binding prevents a
+concurrent command response from being substituted for the workspace/event call
+that produced a semantic snapshot. A transport or response-normalization
 failure retires its reservation as failed and preserves the original blocker in
 non-eligible failure evidence; completed response receipts may then contain an
 intentional sequence gap and can never be sealed or verified as an eligible
@@ -1749,8 +1742,8 @@ public Web UI, which resolves the canonical approval, and the driver observes
 ordered durable resolution/continuation events before allowing the same
 `operation_id`, operation digest, sandbox run/workspace and continuation to
 reach terminal state. The launch receipt seals this lineage and the built UI
-dist digest. The event cursor is captured before the drain that exposes the
-handoff, so an immediate browser resolution is reconstructed from durable
+dist digest. The event cursor is captured before the runtime command/operation
+that exposes the handoff, so an immediate browser resolution is reconstructed from durable
 events instead of racing a later snapshot. A resolution consumer treats only
 the canonical `approval.resolved` command event carrying a closed
 `decision=approved|rejected` as operator evidence. An activity-backfill
@@ -1784,8 +1777,8 @@ bounded `artifact.list` item contract; exact canonical metadata remains in the
 catalog and is available through paged `artifact.get`, rather than being
 repeated across artifact, activity, index, and capability branches. Browser
 approval evidence is valid only for `chrome-once` positive 1.
-Because the synchronous sandbox can commit a pending approval before the drain
-returns and before its `approval.requested` event is backfilled, the Web UI also
+Because durable execution can commit a pending approval independently of command
+status polling and before its `approval.requested` activity projection is backfilled, the Web UI also
 reconciles the currently selected public workspace every five seconds. These
 reads are single-flight per active generation and session/version guarded.
 Session switches, mutations and applied SSE reducers abort/invalidate older

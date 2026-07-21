@@ -424,6 +424,14 @@ class AgentRuntimeService:
             sandbox_workspace_root=self.context.sandbox_workspace_root,
             artifact_blob_root=self.context.artifact_blob_root,
             signal_notifier=self.context.signal_notifier,
+            reliability_shadow_observer=self.context.reliability_shadow_observer,
+            reliability_settings=self.context.reliability_settings,
+            durable_route_adapter_policy_ids=(
+                self.context.durable_route_adapter_policy_ids
+            ),
+            mutation_writer_scope_factory=(
+                self.context.mutation_writer_scope_factory
+            ),
         )
         ok = result.status is not HarnessStatus.FAILED
         if ok:

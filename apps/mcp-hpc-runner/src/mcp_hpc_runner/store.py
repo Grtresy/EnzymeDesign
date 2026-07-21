@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from pathlib import Path
 import json
+import os
+from pathlib import Path
 import re
 from typing import Any
+import uuid
 
 
 _SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SAFE_LEAF_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ArtifactStore:
@@ -18,6 +21,11 @@ class ArtifactStore:
             self.root / "cache",
             root=self.root,
             field="artifact cache directory",
+        )
+        self.reservations_dir = self._ensure_contained_directory(
+            self.root / "reservations",
+            root=self.root,
+            field="runner reservation directory",
         )
 
     @staticmethod
@@ -107,10 +115,102 @@ class ArtifactStore:
 
     def write_json(self, run_id: str, name: str, data: dict[str, Any]) -> Path:
         output_path = self._metadata_path(run_id, name)
-        output_path.write_text(
-            json.dumps(data, indent=2, sort_keys=True), encoding="utf-8"
+        self._atomic_write(
+            output_path,
+            json.dumps(data, indent=2, sort_keys=True).encode("utf-8"),
+            replace=True,
         )
         return output_path
+
+    def write_json_once(
+        self,
+        run_id: str,
+        name: str,
+        data: dict[str, Any],
+    ) -> Path:
+        output_path = self._metadata_path(run_id, name)
+        self._atomic_write(
+            output_path,
+            json.dumps(data, indent=2, sort_keys=True).encode("utf-8"),
+            replace=False,
+        )
+        return output_path
+
+    def write_reservation_once(
+        self,
+        identity_digest: str,
+        data: dict[str, Any],
+    ) -> Path:
+        output_path = self._reservation_path(identity_digest)
+        self._atomic_write(
+            output_path,
+            json.dumps(data, indent=2, sort_keys=True).encode("utf-8"),
+            replace=False,
+        )
+        return output_path
+
+    def read_reservation(self, identity_digest: str) -> dict[str, Any]:
+        path = self._reservation_path(identity_digest)
+        if not path.exists():
+            raise FileNotFoundError(
+                "No persisted runner execution reservation exists for the identity"
+            )
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("runner execution reservation is not a regular file")
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _reservation_path(self, identity_digest: str) -> Path:
+        normalized = str(identity_digest)
+        if _SHA256_HEX.fullmatch(normalized) is None:
+            raise ValueError("runner reservation identity digest must be sha256 hex")
+        return self._safe_leaf_path(
+            self.reservations_dir,
+            f"{normalized}.json",
+            field="runner reservation path",
+        )
+
+    def list_metadata(self, run_id: str, *, prefix: str) -> tuple[Path, ...]:
+        if not _SAFE_LEAF_NAME.fullmatch(prefix):
+            raise ValueError("artifact metadata prefix must be a safe leaf prefix")
+        layout = self.ensure_run_layout(run_id)
+        metadata_root = layout["metadata"].resolve()
+        matches: list[Path] = []
+        for path in metadata_root.iterdir():
+            if not path.name.startswith(prefix):
+                continue
+            if path.is_symlink() or not path.is_file():
+                raise ValueError("artifact metadata entries must be regular files")
+            if path.resolve().parent != metadata_root:
+                raise ValueError("artifact metadata entry escapes the run root")
+            matches.append(path)
+        return tuple(sorted(matches, key=lambda item: item.name))
+
+    @staticmethod
+    def _atomic_write(path: Path, content: bytes, *, replace: bool) -> None:
+        directory = path.parent.resolve()
+        temporary = directory / f".{path.name}.{uuid.uuid4().hex}.tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(temporary, flags, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if replace:
+                os.replace(temporary, path)
+            else:
+                os.link(temporary, path, follow_symlinks=False)
+                temporary.unlink()
+            directory_descriptor = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
 
     def read_json(self, run_id: str, name: str) -> dict[str, Any]:
         normalized = str(name)
@@ -147,6 +247,22 @@ class ArtifactStore:
         output_path.write_text(content, encoding="utf-8")
         return output_path
 
+    def read_log(self, run_id: str, name: str) -> str:
+        layout = self.ensure_run_layout(run_id)
+        normalized = str(name)
+        if not _SAFE_LEAF_NAME.fullmatch(normalized):
+            raise ValueError("artifact log name must be a safe leaf filename")
+        path = self._safe_leaf_path(
+            layout["logs"],
+            normalized,
+            field="artifact log path",
+        )
+        if path.is_symlink() or not path.is_file():
+            raise FileNotFoundError(
+                f"No persisted runner log exists for run_id {run_id!r}"
+            )
+        return path.read_text(encoding="utf-8")
+
     def write_inputs_manifest(self, run_id: str, data: dict[str, Any]) -> Path:
         return self.write_json(run_id, "inputs_manifest.json", data)
 
@@ -176,5 +292,9 @@ class ArtifactStore:
 
     def save_dedup_cache(self, cache: dict[str, str]) -> Path:
         path = self.dedup_cache_path()
-        path.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
+        self._atomic_write(
+            path,
+            json.dumps(cache, indent=2, sort_keys=True).encode("utf-8"),
+            replace=True,
+        )
         return path

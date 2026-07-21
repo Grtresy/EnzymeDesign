@@ -1171,6 +1171,13 @@ class ArtifactBoundaryService:
         run_id: str | None = None,
         source_snapshot_artifact_id: str | None = None,
     ) -> RegisterResult:
+        assert_authority = getattr(
+            self.repositories,
+            "assert_artifact_publication_authority",
+            None,
+        )
+        if callable(assert_authority):
+            assert_authority(session_id=session_id)
         workspace = self._require_workspace(session_id, sandbox_workspace_id)
         workspace_path = self._workspace_path(sandbox_workspace_id)
         kind_value = _artifact_kind(kind)
@@ -1403,6 +1410,13 @@ class ArtifactBoundaryService:
         Host file is already sealed.
         """
 
+        assert_authority = getattr(
+            self.repositories,
+            "assert_artifact_publication_authority",
+            None,
+        )
+        if callable(assert_authority):
+            assert_authority(session_id=session_id)
         kind_value = _artifact_kind(kind)
         if not isinstance(content, bytes) or not content:
             raise ArtifactBoundaryError(
@@ -1535,6 +1549,13 @@ class ArtifactBoundaryService:
         entrypoint: str,
         metadata: dict[str, Any] | None = None,
     ) -> SourceSnapshotResult:
+        assert_authority = getattr(
+            self.repositories,
+            "assert_artifact_publication_authority",
+            None,
+        )
+        if callable(assert_authority):
+            assert_authority(session_id=session_id)
         workspace = self._require_workspace(session_id, sandbox_workspace_id)
         workspace_path = self._workspace_path(sandbox_workspace_id)
         source_root = (workspace_path / "src").resolve()

@@ -505,6 +505,28 @@ class ToolchainIdentitySuccessRunner(ImmediateSuccessRunner):
             toolchain_runtime_identity=unsafe_identity,  # type: ignore[arg-type]
         )
 
+    def submit_reserved_execution(
+        self,
+        session_id: str,
+        payload: dict[str, object],
+        *,
+        run_id: str,
+    ):  # type: ignore[no-untyped-def]
+        from openzyme_engines.execution import ExecutionOutcome
+
+        outcome = self.submit_execution(session_id, payload)
+        self.reserved_run_id = run_id
+        return ExecutionOutcome(
+            run_id=run_id,
+            status=outcome.status,
+            execution_mode=outcome.execution_mode,
+            remote_run_dir=f"opaque://{run_id}",
+            raw_result=outcome.raw_result,
+            artifacts=outcome.artifacts,
+            exit_code=outcome.exit_code,
+            toolchain_runtime_identity=outcome.toolchain_runtime_identity,
+        )
+
 
 def test_toolchain_runtime_identity_projection_is_ssh_only() -> None:
     from openzyme_engines.execution import _project_toolchain_runtime_identity
@@ -4103,6 +4125,7 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs(
         sandbox_workspace_id=sandbox_workspace_id,
         sandbox_run_id=operation.sandbox_run_id,
     )
+    repositories.controlled_operations.save(operation)
     source_path = workspace_root / sandbox_workspace_id / "src" / "pipeline.py"
     source_path.write_text(
         "from openzyme_pipeline import bio_tools\n# later unrelated snapshot\n",
@@ -4119,20 +4142,26 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs(
         metadata={"producer": "test-later"},
     )
     assert later_snapshot.artifact.artifact_id != operation.source_snapshot_artifact_id
+    runner = ToolchainIdentitySuccessRunner()
     engine = ExecutionEngine(
         repositories,
-        ToolchainIdentitySuccessRunner(),
+        runner,
         sandbox_workspace_root=workspace_root,
     )
 
     result = engine.execute_sandbox_adapter_operation(
-        operation, {"adapter_params": params}
+        operation,
+        {
+            "adapter_params": params,
+            "_durable_backend_handle_ref": "reserved_runner_hpc_001",
+        },
     )
 
     run_handle = result["result_summary"]
     assert run_handle["kind"] == "hpc_run_handle"
     assert run_handle["operation_id"] == operation.operation_id
-    assert run_handle["runner_run_id"].startswith("runner_run_")
+    assert run_handle["runner_run_id"] == "reserved_runner_hpc_001"
+    assert runner.reserved_run_id == "reserved_runner_hpc_001"
     assert (
         run_handle["toolchain_runtime_identity"]
         == TOOLCHAIN_RUNTIME_IDENTITY
@@ -4169,6 +4198,11 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs(
     artifact = artifacts[0]
     assert artifact.metadata is not None
     assert artifact.metadata["source"] == "sandbox_artifact_boundary"
+    assert artifact.metadata["controlled_operation_id"] == operation.operation_id
+    assert (
+        artifact.metadata["controlled_operation_digest"]
+        == operation.operation_digest
+    )
     assert (
         artifact.metadata["pipeline_invocation_id"]
         == "inv_sandbox_adapter_op_sandbox_hpc_mafft"
@@ -5739,10 +5773,14 @@ def test_pipeline_bio_tools_real_runner_stack_projects_transport_timeout_closed(
     assert failed.invocation.status is EngineInvocationStatus.FAILED
     assert failed.parsed_result is not None
     error = failed.parsed_result.structured_findings["error"]
-    assert error["type"] == "hpc_runner_timeout"
+    assert error["type"] == "hpc_operation_failed"
     assert error["stage"] == "remote_execution"
-    assert error["retryable"] is True
-    assert error["hpc_failure"]["error_code"] == "SSH_CONNECTION_TIMEOUT"
+    assert error["retryable"] is False
+    assert error["hpc_failure"]["error_code"] == "DISPATCH_IN_DOUBT"
+    assert error["hpc_failure"]["phase"] == "dispatching"
+    assert error["hpc_failure"]["effect_certainty"] == "dispatch_in_doubt"
+    assert error["hpc_failure"]["retry_eligibility"] == "reconcile_required"
+    assert error["hpc_failure"]["reconciliation_required"] is True
     assert "stderr_excerpt" not in error["hpc_failure"]
     assert private_stderr.strip() not in str(error)
     assert repositories.artifacts.list_by_invocation(
@@ -5755,10 +5793,10 @@ def test_pipeline_bio_tools_real_runner_stack_projects_transport_timeout_closed(
     )
     assert len(metadata_paths) == 1
     runner_metadata = json.loads(metadata_paths[0].read_text(encoding="utf-8"))
-    assert runner_metadata["stage"] == "remote_execution"
-    assert runner_metadata["status"] == "failed"
-    assert runner_metadata["exit_code"] == 255
-    assert runner_metadata["error_code"] == "SSH_CONNECTION_TIMEOUT"
+    assert runner_metadata["runner_phase"] == "dispatching"
+    assert runner_metadata["effect_certainty"] == "dispatch_in_doubt"
+    assert runner_metadata["retry_eligibility"] == "reconcile_required"
+    assert runner_metadata["reconciliation_required"] is True
 
 
 def test_pipeline_bio_tools_missing_declared_output_does_not_synthesize_artifact() -> (

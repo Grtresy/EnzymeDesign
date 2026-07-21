@@ -5,6 +5,7 @@ from dataclasses import field
 from dataclasses import replace
 from datetime import datetime
 from datetime import timedelta
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import threading
@@ -14,13 +15,20 @@ from typing import ContextManager
 from uuid import uuid4
 
 from openzyme_core import CoreRepositories
+from openzyme_core import ControlledOperationExecutionTransitionService
+from openzyme_core import build_controlled_operation_result_handle
+from openzyme_core import controlled_operation_artifact_set_digest
+from openzyme_core import current_mutation_write_authority
 from openzyme_core import DurableEventRecord
 from openzyme_core import EngineRegistry
 from openzyme_core import HarnessEvent
 from openzyme_core import HarnessStatus
 from openzyme_core import LaneManager
+from openzyme_core import MutationScopeService
 from openzyme_core import RestoreFocus
 from openzyme_core import RuntimeConsistencyService
+from openzyme_core import CommandIdempotencyConflictError
+from openzyme_core import runtime_command_request_digest
 from openzyme_core import RuntimeWriteFencingError
 from openzyme_core import SessionProjectionBuilder
 from openzyme_core import SessionRuntimeContext
@@ -39,10 +47,22 @@ from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import ControlledOperationStatus
+from openzyme_domain import ContinuationDeliveryState
+from openzyme_domain import ControlledOperationExecutionEvent
+from openzyme_domain import ControlledOperationExecutionLifecycle
+from openzyme_domain import ControlledOperationExecutionPhase
+from openzyme_domain import ControlledOperationExecutionTerminalOutcome
+from openzyme_domain import ControlledOperationOwnerMode
+from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import InboxMessage
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
+from openzyme_domain import MutationWriterKind
 from openzyme_domain import SandboxRunStatus
+from openzyme_domain import RetryEligibility
+from openzyme_domain import RuntimeCommandRecord
+from openzyme_domain import RuntimeCommandStatus
+from openzyme_domain import RuntimeCommandType
 from openzyme_domain import Session
 from openzyme_domain import SessionStatus
 from openzyme_domain import TaskPriority
@@ -83,7 +103,9 @@ class V3EventStore:
 
     def bind(self, repositories: CoreRepositories) -> None:
         if self.repositories is not None and self.repositories is not repositories:
-            raise RuntimeError("V3EventStore is already bound to another repository scope")
+            raise RuntimeError(
+                "V3EventStore is already bound to another repository scope"
+            )
         self.repositories = repositories
 
     def _repository(self):  # type: ignore[no-untyped-def]
@@ -92,6 +114,24 @@ class V3EventStore:
             raise RuntimeError("V3EventStore must be bound to CoreRepositories")
         return repositories.durable_events
 
+    @contextmanager
+    def _mutation_writer_scope(self, session_id: str):  # type: ignore[no-untyped-def]
+        repositories = self.repositories
+        authority = current_mutation_write_authority()
+        if (
+            repositories is None
+            or authority is None
+            or authority.owner_kind is MutationWriterKind.EVENT_OUTBOX_PUBLISHER
+        ):
+            yield
+            return
+        with MutationScopeService(repositories).writer_turn(
+            session_id=session_id,
+            owner_kind=MutationWriterKind.EVENT_OUTBOX_PUBLISHER,
+            owner_ref=f"v3-event-store:{session_id}",
+        ):
+            yield
+
     def append(
         self,
         session_id: str,
@@ -99,34 +139,42 @@ class V3EventStore:
     ) -> list[dict[str, Any]]:
         stored_events: list[dict[str, Any]] = []
         with self._lock:
-            for event in events:
-                if str(event.get("session_id")) != session_id:
-                    raise ValueError("durable event session_id does not match append scope")
-                payload = event.get("payload", {})
-                if not isinstance(payload, dict):
-                    raise ValueError("durable event payload must be an object")
-                visibility = str(event.get("visibility") or "public")
-                stored = self._repository().append(
-                    DurableEventRecord(
-                        event_id=str(event["event_id"]),
-                        session_id=session_id,
-                        event_type=str(event["event_type"]),
-                        schema_version=str(
-                            event.get("schema_version") or "openzyme.v3.event.v1"
-                        ),
-                        visibility=visibility,
-                        payload=payload,
-                        command_id=event.get("command_id"),
-                        correlation_id=event.get("correlation_id"),
-                        causation_id=event.get("causation_id"),
-                        actor_ref=event.get("actor_ref"),
-                        created_at=str(event["created_at"]),
+            with self._mutation_writer_scope(session_id):
+                for event in events:
+                    if str(event.get("session_id")) != session_id:
+                        raise ValueError(
+                            "durable event session_id does not match append scope"
+                        )
+                    payload = event.get("payload", {})
+                    if not isinstance(payload, dict):
+                        raise ValueError("durable event payload must be an object")
+                    visibility = str(event.get("visibility") or "public")
+                    stored = (
+                        self._repository()
+                        .append(
+                            DurableEventRecord(
+                                event_id=str(event["event_id"]),
+                                session_id=session_id,
+                                event_type=str(event["event_type"]),
+                                schema_version=str(
+                                    event.get("schema_version")
+                                    or "openzyme.v3.event.v1"
+                                ),
+                                visibility=visibility,
+                                payload=payload,
+                                command_id=event.get("command_id"),
+                                correlation_id=event.get("correlation_id"),
+                                causation_id=event.get("causation_id"),
+                                actor_ref=event.get("actor_ref"),
+                                created_at=str(event["created_at"]),
+                            )
+                        )
+                        .to_dict()
                     )
-                ).to_dict()
-                event.clear()
-                event.update(stored)
-                stored_events.append(event)
-            events.sort(key=lambda item: int(item["cursor"]))
+                    event.clear()
+                    event.update(stored)
+                    stored_events.append(event)
+                events.sort(key=lambda item: int(item["cursor"]))
         return stored_events
 
     def list(
@@ -193,6 +241,9 @@ class V3CommandResult:
     outputs: tuple[str, ...]
     events: list[dict[str, Any]]
     workspace: dict[str, Any]
+    processed_signal_count: int = 0
+    suspended: bool = False
+    safe_retry_hint: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -216,13 +267,21 @@ class V3HostApiService:
     artifact_blob_root: Path | None = None
     scheduler_limits: dict[str, int] = field(default_factory=dict)
     signal_notifier: Any | None = None
-    runtime_repository_scope_factory: Callable[
-        [], ContextManager[CoreRepositories]
-    ] | None = None
-    engine_registry_factory: Callable[
-        [CoreRepositories, SessionRuntimeLease | None],
-        EngineRegistry,
-    ] | None = None
+    durable_work_notifier: Any | None = None
+    reliability_shadow_observer: Any | None = None
+    reliability_settings: Any | None = None
+    durable_route_adapter_policy_ids: dict[str, str] = field(default_factory=dict)
+    runtime_repository_scope_factory: (
+        Callable[[], ContextManager[CoreRepositories]] | None
+    ) = None
+    engine_registry_factory: (
+        Callable[
+            [CoreRepositories, SessionRuntimeLease | None],
+            EngineRegistry,
+        ]
+        | None
+    ) = None
+    mutation_writer_scope_factory: Callable[..., ContextManager[object]] | None = None
     operation_lock: threading.RLock = field(default_factory=threading.RLock)
 
     def __post_init__(self) -> None:
@@ -231,8 +290,80 @@ class V3HostApiService:
     def _event_sink(self) -> V3EventStoreSink:
         return V3EventStoreSink(self.event_store)
 
+    def admit_runtime_command(
+        self,
+        *,
+        session_id: str,
+        idempotency_key: str,
+        max_signals: int,
+        max_steps_per_agent: int,
+        auto_enqueue_ready_tasks: bool,
+    ) -> tuple[RuntimeCommandRecord, bool]:
+        if self.repositories.sessions.get(session_id) is None:
+            raise KeyError(f"session {session_id!r} does not exist")
+        normalized_key = idempotency_key.strip()
+        if not normalized_key or len(normalized_key) > 256:
+            raise ValueError("Idempotency-Key must contain 1 to 256 characters")
+        if max_signals <= 0 or max_signals > 100:
+            raise ValueError("max_signals must be between 1 and 100")
+        if max_steps_per_agent <= 0 or max_steps_per_agent > 100:
+            raise ValueError("max_steps_per_agent must be between 1 and 100")
+        if not isinstance(auto_enqueue_ready_tasks, bool):
+            raise ValueError("auto_enqueue_ready_tasks must be boolean")
+        request_digest = runtime_command_request_digest(
+            session_id=session_id,
+            command_type=RuntimeCommandType.RUNTIME_DRAIN,
+            max_signals=max_signals,
+            max_steps_per_agent=max_steps_per_agent,
+            auto_enqueue_ready_tasks=auto_enqueue_ready_tasks,
+        )
+        existing = self.repositories.runtime_commands.find_by_idempotency_key(
+            session_id=session_id,
+            command_type=RuntimeCommandType.RUNTIME_DRAIN,
+            idempotency_key=normalized_key,
+        )
+        if existing is not None:
+            if existing.request_digest != request_digest:
+                raise CommandIdempotencyConflictError(
+                    "runtime command idempotency key was reused with a different request"
+                )
+            return existing, False
+        accepted_at = utc_now_iso()
+        command = RuntimeCommandRecord(
+            command_id=_new_id("runtime_command"),
+            session_id=session_id,
+            command_type=RuntimeCommandType.RUNTIME_DRAIN,
+            request_digest=request_digest,
+            idempotency_key=normalized_key,
+            status=RuntimeCommandStatus.ACCEPTED,
+            max_signals=max_signals,
+            max_steps_per_agent=max_steps_per_agent,
+            auto_enqueue_ready_tasks=auto_enqueue_ready_tasks,
+            state_version=1,
+            fencing_token=0,
+            accepted_at=accepted_at,
+        )
+        stored = self.repositories.runtime_commands.add(command)
+        event = _event(
+            "runtime.command.accepted",
+            session_id,
+            {
+                "command_id": stored.command_id,
+                "command_type": stored.command_type.value,
+                "status": stored.status.value,
+                "accepted_at": stored.accepted_at,
+            },
+        )
+        event["command_id"] = stored.command_id
+        self.event_store.append(session_id, [event])
+        self._touch_session(session_id)
+        return stored, True
+
     def _record_events(
-        self, session_id: str, target: list[dict[str, Any]], events: list[dict[str, Any]]
+        self,
+        session_id: str,
+        target: list[dict[str, Any]],
+        events: list[dict[str, Any]],
     ) -> None:
         target.extend(events)
         self.event_store.append(session_id, events)
@@ -303,64 +434,86 @@ class V3HostApiService:
         actor_ref: str,
     ) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
-        touched_session_ids: set[str] = set()
         for continuation in self.repositories.continuation_states.list_recoverable():
-            failed_continuation = self.repositories.continuation_states.fail(
-                continuation.continuation_id,
-                error_code="operation_recovery_failed",
-                error_message="Host restarted before the SDK continuation could be resumed.",
-                recovery_failed=True,
-            )
             operation = self.repositories.controlled_operations.get(
                 continuation.operation_id
             )
-            if operation is not None and not operation.status.is_terminal:
-                operation = replace(
-                    operation,
-                    status=ControlledOperationStatus.RECOVERY_FAILED,
+            if (
+                operation is not None
+                and operation.owner_mode
+                is ControlledOperationOwnerMode.DURABLE_ASYNC_V1
+            ):
+                # Durable execution and continuation delivery are recovered by
+                # their own fenced workers.  The legacy startup sweep must not
+                # relabel their operation or infer external-effect failure.
+                continue
+            with self._startup_continuation_writer_scope(continuation):
+                failed_continuation = self.repositories.continuation_states.fail(
+                    continuation.continuation_id,
                     error_code="operation_recovery_failed",
-                    error_summary=(
+                    error_message=(
                         "Host restarted before the SDK continuation could be resumed."
                     ),
-                    updated_at=utc_now_iso(),
+                    recovery_failed=True,
                 )
-                self.repositories.controlled_operations.save(operation)
-            run = self.repositories.sandbox_runs.get(continuation.sandbox_run_id)
-            if run is not None and not run.status.is_terminal:
-                now = utc_now_iso()
-                self.repositories.sandbox_runs.save(
-                    replace(
-                        run,
-                        status=SandboxRunStatus.FAILED,
-                        stderr_summary=(
-                            "operation_recovery_failed: Host restarted before the "
-                            "SDK continuation could be resumed."
-                        ),
+                if operation is not None and not operation.status.is_terminal:
+                    operation = replace(
+                        operation,
+                        status=ControlledOperationStatus.RECOVERY_FAILED,
                         error_code="operation_recovery_failed",
-                        ended_at=now,
-                        updated_at=now,
+                        error_summary=(
+                            "Host restarted before the SDK continuation could be resumed."
+                        ),
+                        updated_at=utc_now_iso(),
                     )
+                    self.repositories.controlled_operations.save(operation)
+                run = self.repositories.sandbox_runs.get(continuation.sandbox_run_id)
+                if run is not None and not run.status.is_terminal:
+                    now = utc_now_iso()
+                    self.repositories.sandbox_runs.save(
+                        replace(
+                            run,
+                            status=SandboxRunStatus.FAILED,
+                            stderr_summary=(
+                                "operation_recovery_failed: Host restarted before the "
+                                "SDK continuation could be resumed."
+                            ),
+                            error_code="operation_recovery_failed",
+                            ended_at=now,
+                            updated_at=now,
+                        )
+                    )
+                event = _event(
+                    "sdk_controlled_operation.recovery_failed",
+                    continuation.session_id,
+                    {
+                        "actor_ref": actor_ref,
+                        "approval_id": continuation.approval_id,
+                        "continuation_id": continuation.continuation_id,
+                        "operation_id": continuation.operation_id,
+                        "sandbox_run_id": continuation.sandbox_run_id,
+                        "status": None
+                        if failed_continuation is None
+                        else failed_continuation.status.value,
+                        "error_code": "operation_recovery_failed",
+                    },
                 )
-            event = _event(
-                "sdk_controlled_operation.recovery_failed",
-                continuation.session_id,
-                {
-                    "actor_ref": actor_ref,
-                    "approval_id": continuation.approval_id,
-                    "continuation_id": continuation.continuation_id,
-                    "operation_id": continuation.operation_id,
-                    "sandbox_run_id": continuation.sandbox_run_id,
-                    "status": None
-                    if failed_continuation is None
-                    else failed_continuation.status.value,
-                    "error_code": "operation_recovery_failed",
-                },
-            )
-            self._record_events(continuation.session_id, events, [event])
-            touched_session_ids.add(continuation.session_id)
-        for session_id in touched_session_ids:
-            self._touch_session(session_id)
+                self._record_events(continuation.session_id, events, [event])
+                self._touch_session(continuation.session_id)
         return events
+
+    @contextmanager
+    def _startup_continuation_writer_scope(self, continuation: Any):  # type: ignore[no-untyped-def]
+        if self.mutation_writer_scope_factory is None:
+            yield
+            return
+        with MutationScopeService(self.repositories).writer_turn(
+            session_id=continuation.session_id,
+            owner_kind=MutationWriterKind.CONTINUATION_DELIVERY,
+            owner_ref=f"legacy-continuation-startup:{continuation.continuation_id}",
+            process_epoch=continuation.process_epoch,
+        ):
+            yield
 
     def _ensure_master_agent(self, session_id: str) -> AgentMember:
         existing = self.repositories.agents.get(session_id, "agent:master")
@@ -485,8 +638,7 @@ class V3HostApiService:
         self, session_id: str, events: list[dict[str, Any]]
     ) -> None:
         existing = {
-            _event_fingerprint(event)
-            for event in self.events(session_id, limit=10_000)
+            _event_fingerprint(event) for event in self.events(session_id, limit=10_000)
         }
         current = {_event_fingerprint(event) for event in events}
         # Activity-event backfill needs only the activity projection.  Building
@@ -584,6 +736,12 @@ class V3HostApiService:
             sandbox_workspace_root=self.sandbox_workspace_root,
             artifact_blob_root=self.artifact_blob_root,
             signal_notifier=self.signal_notifier,
+            reliability_shadow_observer=self.reliability_shadow_observer,
+            reliability_settings=self.reliability_settings,
+            durable_route_adapter_policy_ids=dict(
+                self.durable_route_adapter_policy_ids
+            ),
+            mutation_writer_scope_factory=self.mutation_writer_scope_factory,
         )
 
     async def run_background_runtime_once(
@@ -637,6 +795,7 @@ class V3HostApiService:
             max_agent_concurrency=int(self.scheduler_limits.get("agent", 1)),
             repository_scope_factory=self.runtime_repository_scope_factory,
             engine_registry_factory=self.engine_registry_factory,
+            mutation_writer_scope_factory=self.mutation_writer_scope_factory,
         )
 
     def _runtime_locked_event(
@@ -647,11 +806,11 @@ class V3HostApiService:
             session_id,
             {
                 "status": "locked",
-                "owner_id": exc.active_lease.owner_id,
-                "mode": exc.active_lease.mode.value,
-                "fencing_token": exc.active_lease.fencing_token,
-                "expires_at": exc.active_lease.expires_at,
                 "retry_after_seconds": exc.retry_after_seconds,
+                "safe_retry_hint": (
+                    "Retry after the current bounded session runtime owner releases "
+                    "its authority."
+                ),
             },
         )
 
@@ -685,6 +844,7 @@ class V3HostApiService:
         max_signals: int = 3,
         max_steps_per_agent: int = 8,
         auto_enqueue_ready_tasks: bool = False,
+        worker_id: str = "host-api:runtime-drain",
     ) -> V3CommandResult:
         with self.operation_lock:
             if self.repositories.sessions.get(session_id) is None:
@@ -697,6 +857,7 @@ class V3HostApiService:
                 max_signals=max_signals,
                 max_steps_per_agent=max_steps_per_agent,
                 auto_enqueue_ready_tasks=auto_enqueue_ready_tasks,
+                worker_id=worker_id,
             )
         except SessionRuntimeLeaseLockedError as exc:
             with self.operation_lock:
@@ -710,12 +871,18 @@ class V3HostApiService:
                 outputs=(),
                 events=events,
                 workspace=workspace,
+                safe_retry_hint=(
+                    "Submit a new drain command after the active session runtime "
+                    "lease has been released."
+                ),
             )
         with self.operation_lock:
             has_pending_approval = bool(
                 self.repositories.approvals.list_pending_by_session(session_id)
             )
-            if has_pending_approval or self._outcomes_include_waiting_approval(outcomes):
+            if has_pending_approval or self._outcomes_include_waiting_approval(
+                outcomes
+            ):
                 response_status = HarnessStatus.WAITING_APPROVAL
             elif self._outcomes_include_failure(outcomes):
                 response_status = HarnessStatus.FAILED
@@ -741,6 +908,11 @@ class V3HostApiService:
             outputs=response_outputs,
             events=events,
             workspace=workspace,
+            processed_signal_count=len(outcomes),
+            suspended=(
+                has_pending_approval
+                or self._outcomes_include_waiting_approval(outcomes)
+            ),
         )
 
     def _terminal_teammate_outcomes(
@@ -937,19 +1109,34 @@ class V3HostApiService:
             },
         )
         resolved_event["actor_ref"] = actor_ref
-        self._record_events(
-            approval.session_id,
-            events,
-            [resolved_event],
-        )
-        resolved = self._resolve_approval_record(approval, decision=decision, actor_ref=actor_ref)
         if approval.kind == "sdk_controlled_operation":
-            self._resolve_sdk_controlled_operation(
-                resolved,
-                decision=decision,
-                events=events,
-            )
+            with self.repositories.atomic(prefix="sdk_controlled_operation_approval"):
+                self._record_events(
+                    approval.session_id,
+                    events,
+                    [resolved_event],
+                )
+                resolved = self._resolve_approval_record(
+                    approval,
+                    decision=decision,
+                    actor_ref=actor_ref,
+                )
+                self._resolve_sdk_controlled_operation(
+                    resolved,
+                    decision=decision,
+                    events=events,
+                )
         else:
+            self._record_events(
+                approval.session_id,
+                events,
+                [resolved_event],
+            )
+            resolved = self._resolve_approval_record(
+                approval,
+                decision=decision,
+                actor_ref=actor_ref,
+            )
             assigned_agent_id = self._approval_assigned_agent_id(approval)
             if assigned_agent_id is not None:
                 self._enqueue_approval_resolved_signal(
@@ -1012,6 +1199,21 @@ class V3HostApiService:
         decision: str,
         events: list[dict[str, Any]],
     ) -> None:
+        existing_continuation = (
+            self.repositories.continuation_states.get_by_approval_id(
+                approval.approval_id
+            )
+        )
+        if (
+            decision == "approved"
+            and existing_continuation is not None
+            and existing_continuation.delivery_state
+            is ContinuationDeliveryState.RECOVERY_FAILED
+        ):
+            raise ValueError(
+                "continuation_recovery_failed: the exact attached process is no "
+                "longer resumable; approval cannot authorize dispatch"
+            )
         continuation = self.repositories.continuation_states.resolve_for_approval(
             approval.approval_id,
             decision=decision,
@@ -1020,6 +1222,33 @@ class V3HostApiService:
             approval.approval_id
         )
         if operation is not None:
+            if operation.owner_mode is ControlledOperationOwnerMode.DURABLE_ASYNC_V1:
+                self._resolve_durable_sdk_controlled_operation(
+                    operation_id=operation.operation_id,
+                    decision=decision,
+                )
+                self._record_events(
+                    approval.session_id,
+                    events,
+                    [
+                        _event(
+                            "sdk_controlled_operation.approval_resolved",
+                            approval.session_id,
+                            {
+                                "approval_id": approval.approval_id,
+                                "operation_id": operation.operation_id,
+                                "operation_digest": operation.operation_digest,
+                                "continuation_id": (
+                                    None
+                                    if continuation is None
+                                    else continuation.continuation_id
+                                ),
+                                "decision": decision,
+                            },
+                        )
+                    ],
+                )
+                return
             status = operation.status
             error_code = operation.error_code
             error_summary = operation.error_summary
@@ -1045,16 +1274,125 @@ class V3HostApiService:
                     approval.session_id,
                     {
                         "approval_id": approval.approval_id,
-                        "operation_id": None if operation is None else operation.operation_id,
+                        "operation_id": None
+                        if operation is None
+                        else operation.operation_id,
                         "operation_digest": (
                             None if operation is None else operation.operation_digest
                         ),
-                        "continuation_id": None if continuation is None else continuation.continuation_id,
+                        "continuation_id": None
+                        if continuation is None
+                        else continuation.continuation_id,
                         "decision": decision,
                     },
                 )
             ],
         )
+
+    def _resolve_durable_sdk_controlled_operation(
+        self,
+        *,
+        operation_id: str,
+        decision: str,
+    ) -> None:
+        execution = (
+            self.repositories.controlled_operation_executions.get_by_operation_id(
+                operation_id
+            )
+        )
+        if execution is None:
+            raise RuntimeError(
+                "durable controlled operation has no canonical execution owner"
+            )
+        target_lifecycle = (
+            ControlledOperationExecutionLifecycle.READY
+            if decision == "approved"
+            else ControlledOperationExecutionLifecycle.TERMINAL
+        )
+        if execution.lifecycle_state is target_lifecycle:
+            return
+        if execution.lifecycle_state is not (
+            ControlledOperationExecutionLifecycle.AWAITING_APPROVAL
+        ):
+            raise ValueError(
+                "durable controlled operation approval conflicts with execution state"
+            )
+        now = utc_now_iso()
+        updated = replace(
+            execution,
+            lifecycle_state=target_lifecycle,
+            terminal_outcome=(
+                None
+                if decision == "approved"
+                else ControlledOperationExecutionTerminalOutcome.CANCELLED
+            ),
+            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+            retry_eligibility=(
+                RetryEligibility.SAME_PHASE_SAFE
+                if decision == "approved"
+                else RetryEligibility.TERMINAL
+            ),
+            state_version=execution.state_version + 1,
+            error_code=None if decision == "approved" else "approval_rejected",
+            safe_error_summary=(
+                None
+                if decision == "approved"
+                else "User rejected supervised SDK operation."
+            ),
+            updated_at=now,
+            terminal_at=None if decision == "approved" else now,
+        )
+        result_handle = None
+        if decision == "rejected":
+            result_handle = build_controlled_operation_result_handle(
+                execution,
+                terminal_outcome=(
+                    ControlledOperationExecutionTerminalOutcome.CANCELLED
+                ),
+                bounded_result_envelope={
+                    "status": "cancelled",
+                    "error_code": "approval_rejected",
+                    "safe_error_summary": ("User rejected supervised SDK operation."),
+                    "output_artifact_ids": [],
+                },
+                artifact_set_digest=controlled_operation_artifact_set_digest(()),
+                origin="host_approval_gate",
+                created_at=now,
+            )
+            updated = replace(
+                updated,
+                result_handle_ref=result_handle.result_handle_id,
+                result_digest=result_handle.result_digest,
+                artifact_set_digest=result_handle.artifact_set_digest,
+            )
+        ControlledOperationExecutionTransitionService(self.repositories).transition(
+            execution=updated,
+            event=ControlledOperationExecutionEvent(
+                event_id=_new_id("exec_evt"),
+                execution_id=updated.execution_id,
+                operation_id=updated.operation_id,
+                session_id=updated.session_id,
+                state_version=updated.state_version,
+                dispatch_generation=updated.dispatch_generation,
+                phase=ControlledOperationExecutionPhase.APPROVAL,
+                previous_lifecycle_state=execution.lifecycle_state,
+                lifecycle_state=updated.lifecycle_state,
+                terminal_outcome=updated.terminal_outcome,
+                effect_certainty=updated.effect_certainty,
+                retry_eligibility=updated.retry_eligibility,
+                fencing_token=updated.fencing_token,
+                safe_summary=(
+                    "durable operation approved"
+                    if decision == "approved"
+                    else "durable operation rejected before dispatch"
+                ),
+                created_at=now,
+            ),
+            expected_state_version=execution.state_version,
+            result_handle=result_handle,
+        )
+        if decision == "approved" and self.durable_work_notifier is not None:
+            self.durable_work_notifier.notify(execution.session_id)
 
     def _enqueue_approval_resolved_signal(
         self,

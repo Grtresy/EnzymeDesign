@@ -1,6 +1,14 @@
 # Deferred: controlled-operation outcome unknown after response failure
 
-Status: proposed; not implemented in the current AOX/HMM blank-world Goal.
+Status: implemented for `durable_async_v1` controlled operations by
+`runtime-hpc-reliability-refactor`; generic non-controlled side-effect RPCs remain deferred.
+
+Stable contract: [`../07-runtime-hpc-reliability.md`](../07-runtime-hpc-reliability.md).
+The decision-boundary and current-facts sections below are the pre-refactor baseline and
+must not override current code or OpenSpec checkpoints.
+
+重构收敛说明：本文只拥有 effect-versus-delivery protocol 与 reconciliation 语义，不拥有第二个 external-operation scheduler。admission、result、delivery、reconciliation records 必须附着于整合路线定义的唯一 canonical `ControlledOperationExecution`：
+[`runtime-hpc-reliability-refactor-roadmap.md`](runtime-hpc-reliability-refactor-roadmap.md)。
 
 ## Decision boundary for the current Goal
 

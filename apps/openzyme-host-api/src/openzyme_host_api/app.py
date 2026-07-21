@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
+from decimal import InvalidOperation
 import hashlib
 import json
 from contextlib import asynccontextmanager
@@ -8,7 +10,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
+import re
 import tempfile
+import threading
 from typing import Any
 from typing import AsyncIterator
 from typing import Callable
@@ -34,6 +38,8 @@ from pydantic import model_validator
 from openzyme_runtime import MissingLlmConfigurationError
 from openzyme_runtime import LimiterRegistry
 from openzyme_runtime import RuntimeFoundation
+from openzyme_runtime import RuntimeDrainContract
+from openzyme_runtime import S12_ROUTE_POLICIES
 from openzyme_runtime import get_llm_debug_recorder
 from openzyme_runtime import llm_debug_context
 from openzyme_runtime import safe_public_machine_identifier
@@ -42,6 +48,11 @@ from openzyme_runtime import sanitize_public_diagnostic_text
 
 from .background_runtime import RuntimeSignalNotifier
 from .background_runtime import V3BackgroundRuntimeService
+from .background_runtime import V3DurableWorkCoordinator
+from .background_runtime import V3DurableWorkSupervisor
+from .durable_routes import build_host_hpc_route_adapters
+from .durable_routes import build_host_provider_route_adapters
+from .runtime_commands import HostRuntimeCommandExecutor
 from .tracing import host_request_trace_context
 from .security import HostAuthenticationError
 from .security import HostPrincipal
@@ -50,11 +61,21 @@ from .v3_service import V3EventStore
 from .v3_service import V3HostApiService
 
 from openzyme_core import CoreRepositories
+from openzyme_core import ContinuationDeliveryWorker
+from openzyme_core import ControlledOperationExecutionWorker
+from openzyme_core import ControlledOperationRouteAdapter
 from openzyme_core import CommandIdempotencyConflictError
 from openzyme_core import CommandReceiptRecord
 from openzyme_core import EngineRegistry
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import SessionAccessRecord
+from openzyme_core import RuntimeCommandWorker
+from openzyme_core import LiveProcessRegistry
+from openzyme_core import MutationWriterTurnFactory
+from openzyme_core import MutationScopeService
+from openzyme_core import current_mutation_write_authority
+from openzyme_core import project_runtime_command
+from openzyme_core import recover_unattached_continuations
 from openzyme_engines import DeepResearchEngine
 from openzyme_engines import ExecutionEngine
 from openzyme_engines import ExecutionOutcome as V3ExecutionOutcome
@@ -65,6 +86,8 @@ from openzyme_engines import ProviderHttpBioDatabaseAdapter
 from openzyme_engines import build_engine_registry
 from openzyme_engines.execution import ExecutionArtifactRef as V3ExecutionArtifactRef
 from openzyme_domain import RunStatus
+from openzyme_domain import RuntimeCommandRecord
+from openzyme_domain import MutationWriterKind
 from openzyme_domain import SessionRuntimeLease
 from openzyme_domain.control_plane import utc_now_iso
 
@@ -221,6 +244,31 @@ class V3CommandResponse(BaseModel):
     events: list[V3EventDto]
 
 
+class V3RuntimeCommandResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["runtime_command_status@1"] = "runtime_command_status@1"
+    session_id: str
+    command_id: str
+    command_type: Literal["runtime.drain"]
+    status: Literal[
+        "accepted",
+        "claimed",
+        "completed",
+        "failed",
+        "locked",
+        "cancelled",
+    ]
+    status_url: str
+    accepted_at: str
+    started_at: str | None = None
+    completed_at: str | None = None
+    bounded_outcome_summary: dict[str, Any] | None = None
+    error_code: str | None = None
+    safe_error_summary: str | None = None
+    safe_retry_hint: str | None = None
+
+
 class V3TaskMutationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -268,7 +316,9 @@ def _configured_component_status(
     normalized = type_name.lower()
     if type_name in unavailable_type_names:
         return "unavailable"
-    if any(marker in normalized for marker in ("deterministic", "fixture", "simulation")):
+    if any(
+        marker in normalized for marker in ("deterministic", "fixture", "simulation")
+    ):
         return "fixture_non_cutover"
     if type_name in ready_type_names:
         return "ready"
@@ -289,6 +339,76 @@ class V3ExecutionRunnerAdapter:
                 lambda: self.execution_adapter.submit_execution(session_id, payload)
             )
         )
+        self._outcomes_by_run_id[outcome.run_id] = outcome
+        return outcome
+
+    def reserve_execution(self, identity: dict[str, Any]) -> dict[str, str]:
+        callback = getattr(self.execution_adapter, "reserve_execution", None)
+        if not callable(callback):
+            raise RuntimeError(
+                "execution adapter does not support durable run reservation"
+            )
+        result = self._run_limited(lambda: callback(dict(identity)))
+        if not isinstance(result, dict):
+            raise ValueError("execution reservation returned a non-object result")
+        return {str(key): str(value) for key, value in result.items()}
+
+    def submit_reserved_execution(
+        self,
+        session_id: str,
+        payload: dict[str, Any],
+        *,
+        run_id: str,
+    ) -> V3ExecutionOutcome:
+        callback = getattr(self.execution_adapter, "submit_reserved_execution", None)
+        if not callable(callback):
+            raise RuntimeError(
+                "execution adapter does not support durable reserved dispatch"
+            )
+        outcome = self._convert_outcome(
+            self._run_limited(
+                lambda: callback(
+                    session_id,
+                    payload,
+                    run_id=run_id,
+                )
+            )
+        )
+        if outcome.run_id != run_id:
+            raise ValueError("reserved execution outcome identity drift")
+        self._outcomes_by_run_id[outcome.run_id] = outcome
+        return outcome
+
+    def inspect_reserved_execution(self, *, run_id: str) -> Any:
+        callback = getattr(self.execution_adapter, "inspect_reserved_execution", None)
+        if not callable(callback):
+            raise RuntimeError(
+                "execution adapter does not support durable run inspection"
+            )
+        observation = self._run_limited(lambda: callback(run_id=run_id))
+        if str(getattr(observation, "run_id", "")) != run_id:
+            raise ValueError("reserved execution observation identity drift")
+        return observation
+
+    def recover_reserved_execution_outcome(
+        self,
+        *,
+        run_id: str,
+    ) -> V3ExecutionOutcome:
+        callback = getattr(
+            self.execution_adapter,
+            "recover_reserved_execution_outcome",
+            None,
+        )
+        if not callable(callback):
+            raise RuntimeError(
+                "execution adapter does not support durable outcome recovery"
+            )
+        outcome = self._convert_outcome(
+            self._run_limited(lambda: callback(run_id=run_id))
+        )
+        if outcome.run_id != run_id:
+            raise ValueError("recovered execution outcome identity drift")
         self._outcomes_by_run_id[outcome.run_id] = outcome
         return outcome
 
@@ -429,7 +549,17 @@ class HostApiDependencies:
     v3_signal_notifier: RuntimeSignalNotifier = field(
         default_factory=RuntimeSignalNotifier
     )
+    v3_durable_work_notifier: RuntimeSignalNotifier = field(
+        default_factory=RuntimeSignalNotifier
+    )
+    v3_live_process_registry: LiveProcessRegistry = field(
+        default_factory=LiveProcessRegistry
+    )
     v3_background_runtime_enabled: bool | None = None
+    v3_durable_work_enabled: bool | None = None
+    v3_durable_route_adapters: dict[str, ControlledOperationRouteAdapter] = field(
+        default_factory=dict
+    )
     v3_pipeline_sandbox_runner: Any | None = None
     v3_bio_adapter: Any | None = None
     v3_allow_bio_fixture_adapter: bool = False
@@ -486,7 +616,12 @@ class HostApiDependencies:
     ) -> Iterator[CoreRepositories]:
         legacy = self.v3_legacy_repositories_for_tests
         if legacy is not None:
-            yield legacy
+            authority = current_mutation_write_authority()
+            if authority is None:
+                yield legacy
+            else:
+                with legacy.mutation_write_authority(authority):
+                    yield legacy
             return
         provider = self._ensure_v3_repository_provider()
         if mode == "read":
@@ -498,7 +633,29 @@ class HostApiDependencies:
         else:  # pragma: no cover - Literal protects production callers
             raise ValueError(f"unsupported V3 repository scope mode {mode!r}")
         with owner as scope:
-            yield scope.repositories
+            authority = current_mutation_write_authority()
+            if authority is None:
+                yield scope.repositories
+            else:
+                with scope.repositories.mutation_write_authority(authority):
+                    yield scope.repositories
+
+    def v3_mutation_writer_scope(
+        self,
+        *,
+        session_id: str,
+        owner_kind: MutationWriterKind,
+        owner_ref: str,
+        process_epoch: int | None = None,
+    ) -> Any:
+        return MutationWriterTurnFactory(
+            repository_scope_factory=lambda: self.v3_repository_scope(mode="connection")
+        ).open(
+            session_id=session_id,
+            owner_kind=owner_kind,
+            owner_ref=owner_ref,
+            process_epoch=process_epoch,
+        )
 
     @contextmanager
     def v3_service_scope(
@@ -513,6 +670,7 @@ class HostApiDependencies:
         self,
         repositories: CoreRepositories,
     ) -> V3HostApiService:
+        durable_route_adapters = self.build_v3_durable_route_adapters()
         return V3HostApiService(
             repositories=repositories,
             event_store=V3EventStore(repositories),
@@ -523,12 +681,85 @@ class HostApiDependencies:
             sandbox_workspace_root=self.v3_sandbox_workspace_root,
             artifact_blob_root=self.v3_artifact_blob_root,
             signal_notifier=self.v3_signal_notifier,
+            durable_work_notifier=self.v3_durable_work_notifier,
+            reliability_shadow_observer=(self.foundation.reliability_shadow_observer),
+            reliability_settings=(
+                None
+                if self.foundation.settings is None
+                else self.foundation.settings.reliability
+            ),
+            durable_route_adapter_policy_ids={
+                route_policy_id: adapter.adapter_policy_id
+                for route_policy_id, adapter in durable_route_adapters.items()
+            },
             runtime_repository_scope_factory=self.v3_repository_scope,
             engine_registry_factory=self.build_v3_engine_registry,
+            mutation_writer_scope_factory=self.v3_mutation_writer_scope,
             scheduler_limits={}
             if self.foundation.settings is None
             else dict(self.foundation.settings.limits.provider_limits),
         )
+
+    def build_v3_durable_route_adapters(
+        self,
+    ) -> dict[str, ControlledOperationRouteAdapter]:
+        settings = self.foundation.settings
+        reliability = None if settings is None else settings.reliability
+        owner_policy = (
+            "legacy_only_v1"
+            if reliability is None
+            else reliability.controlled_operation_owner_policy.value
+        )
+        admission_route_ids: tuple[str, ...] = ()
+        if reliability is not None:
+            if owner_policy == "durable_only_v1":
+                admission_route_ids = tuple(S12_ROUTE_POLICIES)
+            else:
+                admission_route_ids = tuple(
+                    reliability.durable_execution_route_allowlist
+                )
+        durable_route_ids = tuple(
+            sorted(set(admission_route_ids) | set(self.active_v3_durable_route_ids()))
+        )
+        adapters = dict(self.v3_durable_route_adapters)
+        provider_adapters = build_host_provider_route_adapters(
+            route_policy_ids=durable_route_ids,
+            repository_scope_factory=self.v3_repository_scope,
+            engine_registry_factory=lambda repositories: self.build_v3_engine_registry(
+                repositories
+            ),
+        )
+        for route_policy_id, adapter in provider_adapters.items():
+            adapters.setdefault(route_policy_id, adapter)
+        hpc_adapters = build_host_hpc_route_adapters(
+            route_policy_ids=durable_route_ids,
+            repository_scope_factory=self.v3_repository_scope,
+            engine_registry_factory=lambda repositories: self.build_v3_engine_registry(
+                repositories
+            ),
+        )
+        for route_policy_id, adapter in hpc_adapters.items():
+            adapters.setdefault(route_policy_id, adapter)
+        return adapters
+
+    def active_v3_durable_route_ids(self) -> tuple[str, ...]:
+        """Return frozen routes needed to drain already-admitted durable rows."""
+
+        with self.v3_repository_scope(mode="read") as repositories:
+            active = repositories.controlled_operation_executions.list_nonterminal()
+        return tuple(sorted({execution.route_policy_id for execution in active}))
+
+    def active_v3_durable_execution_count(self) -> int:
+        with self.v3_repository_scope(mode="read") as repositories:
+            return repositories.controlled_operation_executions.count_nonterminal()
+
+    def active_v3_runtime_command_count(self) -> int:
+        with self.v3_repository_scope(mode="read") as repositories:
+            return repositories.runtime_commands.count_active()
+
+    def active_v3_continuation_count(self) -> int:
+        with self.v3_repository_scope(mode="read") as repositories:
+            return repositories.continuation_deliveries.count_active()
 
     def build_v3_engine_registry(
         self,
@@ -570,6 +801,12 @@ class HostApiDependencies:
                 sandbox_workspace_root=self.v3_sandbox_workspace_root,
                 artifact_blob_root=self.v3_artifact_blob_root,
                 repository_scope_factory=runtime_repository_scope,
+                sandbox_process_repository_scope_factory=self.v3_repository_scope,
+                sandbox_process_mutation_writer_scope_factory=(
+                    self.v3_mutation_writer_scope
+                ),
+                sandbox_process_registry=self.v3_live_process_registry,
+                sandbox_process_signal_notifier=self.v3_signal_notifier,
             ),
         )
 
@@ -582,17 +819,18 @@ def _api_error_payload(
     details: Any | None = None,
 ) -> dict[str, Any]:
     safe_details = sanitize_public_diagnostic_payload(details)
-    safe_code = safe_public_machine_identifier(
-        code,
-        fallback="internal_error",
-    ) or "internal_error"
+    safe_code = (
+        safe_public_machine_identifier(
+            code,
+            fallback="internal_error",
+        )
+        or "internal_error"
+    )
     return ApiErrorResponse(
         error=ApiErrorDetail(
             code=safe_code,
             message=sanitize_public_diagnostic_text(message),
-            hint=None
-            if hint is None
-            else sanitize_public_diagnostic_text(hint),
+            hint=None if hint is None else sanitize_public_diagnostic_text(hint),
             details=safe_details,
         )
     ).model_dump(mode="json", exclude_none=True)
@@ -640,7 +878,127 @@ def _as_http_error(exc: Exception) -> HTTPException:
     )
 
 
+_PREFER_WAIT_PATTERN = re.compile(r"wait=([0-9]+(?:\.[0-9]+)?)")
+_PREFER_WAIT_CAP_SECONDS = Decimal("2")
+
+
+def _parse_prefer_wait(value: str | None) -> float:
+    if value is None:
+        return 0.0
+    normalized = value.strip()
+    match = _PREFER_WAIT_PATTERN.fullmatch(normalized)
+    if match is None:
+        raise ValueError("Prefer must use the exact form wait=<seconds>")
+    try:
+        seconds = Decimal(match.group(1))
+    except InvalidOperation as exc:  # guarded by the regex
+        raise ValueError("Prefer wait is invalid") from exc
+    if seconds > _PREFER_WAIT_CAP_SECONDS:
+        raise ValueError("Prefer wait must not exceed 2 seconds")
+    return float(seconds)
+
+
+def _project_runtime_command(record: RuntimeCommandRecord) -> dict[str, Any]:
+    return project_runtime_command(record)
+
+
+async def _observe_runtime_command(
+    dependencies: HostApiDependencies,
+    *,
+    session_id: str,
+    command_id: str,
+    wait_seconds: float,
+) -> RuntimeCommandRecord:
+    deadline = asyncio.get_running_loop().time() + wait_seconds
+    while True:
+        with dependencies.v3_repository_scope(mode="read") as repositories:
+            record = repositories.runtime_commands.get_for_session(
+                session_id=session_id,
+                command_id=command_id,
+            )
+        if record is None:
+            raise KeyError(f"runtime command {command_id!r} does not exist")
+        if record.status.is_terminal:
+            return record
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return record
+        await asyncio.sleep(min(0.05, remaining))
+
+
+def _runtime_drain_contract(
+    dependencies: HostApiDependencies,
+) -> RuntimeDrainContract:
+    settings = getattr(getattr(dependencies, "foundation", None), "settings", None)
+    reliability = None if settings is None else getattr(settings, "reliability", None)
+    configured = (
+        RuntimeDrainContract.COMMAND_V1
+        if reliability is None
+        else RuntimeDrainContract(str(reliability.runtime_drain_contract))
+    )
+    if configured is RuntimeDrainContract.SYNC_V1:
+        active_commands = dependencies.active_v3_runtime_command_count()
+        active_continuations = dependencies.active_v3_continuation_count()
+        if active_commands > 0 or active_continuations > 0:
+            raise RuntimeError(
+                "runtime drain API cannot downgrade while active durable commands "
+                "or continuations exist"
+            )
+        raise RuntimeError(
+            "sync_v1 runtime drain contract is retired; synchronous fallback is "
+            "not available"
+        )
+    return configured
+
+
 def _execute_idempotent_command(
+    service: V3HostApiService,
+    *,
+    command_type: str,
+    scope_ref: str,
+    session_id: str | None,
+    idempotency_key: str | None,
+    request_payload: object,
+    operation: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    with _host_command_write_scope(
+        service,
+        command_type=command_type,
+        scope_ref=scope_ref,
+        session_id=session_id,
+    ):
+        return _execute_idempotent_command_scoped(
+            service,
+            command_type=command_type,
+            scope_ref=scope_ref,
+            session_id=session_id,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            operation=operation,
+        )
+
+
+@contextmanager
+def _host_command_write_scope(
+    service: V3HostApiService,
+    *,
+    command_type: str,
+    scope_ref: str,
+    session_id: str | None,
+) -> Iterator[None]:
+    writer_scope_factory = service.mutation_writer_scope_factory
+    if writer_scope_factory is None or session_id is None:
+        yield
+        return
+    with MutationScopeService(service.repositories).writer_turn(
+        session_id=session_id,
+        owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+        owner_ref=f"host-command:{command_type}:{scope_ref}",
+    ):
+        yield
+
+
+def _execute_idempotent_command_scoped(
     service: V3HostApiService,
     *,
     command_type: str,
@@ -660,13 +1018,16 @@ def _execute_idempotent_command(
         "scope_ref": scope_ref,
         "request": request_payload,
     }
-    request_digest = "sha256:" + hashlib.sha256(
-        json.dumps(
-            digest_payload,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
+    request_digest = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                digest_payload,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+    )
     existing = service.repositories.command_receipts.find(
         scope_ref=scope_ref,
         command_type=command_type,
@@ -713,7 +1074,9 @@ def _request_principal(request: Request) -> HostPrincipal:
 
 def _require_project_access(principal: HostPrincipal, project_id: str) -> None:
     if not principal.can_access_project(project_id):
-        raise _http_exception(404, code="project_not_found", message="project does not exist")
+        raise _http_exception(
+            404, code="project_not_found", message="project does not exist"
+        )
 
 
 def _require_session_access(
@@ -725,11 +1088,15 @@ def _require_session_access(
 ) -> None:
     session = service.repositories.sessions.get(session_id)
     if session is None:
-        raise _http_exception(404, code="session_not_found", message="session does not exist")
+        raise _http_exception(
+            404, code="session_not_found", message="session does not exist"
+        )
     if not security.shared:
         return
     if not principal.can_access_project(session.project_id):
-        raise _http_exception(404, code="session_not_found", message="session does not exist")
+        raise _http_exception(
+            404, code="session_not_found", message="session does not exist"
+        )
     if principal.has_role("admin"):
         return
     access = service.repositories.session_access.get(
@@ -737,7 +1104,9 @@ def _require_session_access(
         principal.principal_id,
     )
     if access is None:
-        raise _http_exception(404, code="session_not_found", message="session does not exist")
+        raise _http_exception(
+            404, code="session_not_found", message="session does not exist"
+        )
 
 
 def _sse_encode(event: dict[str, Any], *, envelope: bool = False) -> str:
@@ -803,7 +1172,9 @@ def create_app(
     *,
     ui_dist_dir: Path | None = None,
 ) -> FastAPI:
+    _runtime_drain_contract(dependencies)
     background_runtime = _build_background_runtime_service(dependencies)
+    durable_work = _build_durable_work_supervisor(dependencies)
     security = getattr(dependencies, "security_policy", None)
     if security is None:
         foundation = getattr(dependencies, "foundation", None)
@@ -815,13 +1186,25 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         app.state.v3_background_runtime = background_runtime
+        app.state.v3_durable_work = durable_work
         with dependencies.v3_service_scope(mode="write") as service:
             service.recover_abandoned_sdk_continuations()
+        recover_unattached_continuations(
+            repository_scope_factory=dependencies.v3_repository_scope,
+            live_process_registry=dependencies.v3_live_process_registry,
+            signal_notifier=dependencies.v3_signal_notifier,
+            mutation_writer_scope_factory=dependencies.v3_mutation_writer_scope,
+        )
+        durable_work.start()
         background_runtime.start()
         try:
             yield
         finally:
+            dependencies.v3_live_process_registry.stop_all(
+                reason="host_lifespan_stopping"
+            )
             await background_runtime.stop()
+            await durable_work.stop()
             dependencies.close_owned_v3_storage()
 
     app = FastAPI(title="OpenZyme Host API", version="0.1.0", lifespan=lifespan)
@@ -837,9 +1220,7 @@ def create_app(
             content = _api_error_payload(
                 code=detail["code"],
                 message=str(detail.get("message") or "HTTP request failed."),
-                hint=None
-                if detail.get("hint") is None
-                else str(detail.get("hint")),
+                hint=None if detail.get("hint") is None else str(detail.get("hint")),
                 details=detail.get("details"),
             )
         else:
@@ -902,7 +1283,9 @@ def create_app(
                 )
             if is_v3 or is_debug:
                 try:
-                    principal = security.authenticate(request.headers.get("authorization"))
+                    principal = security.authenticate(
+                        request.headers.get("authorization")
+                    )
                 except HostAuthenticationError as exc:
                     return JSONResponse(
                         status_code=401,
@@ -912,8 +1295,10 @@ def create_app(
                         ),
                         headers={"WWW-Authenticate": "Bearer"},
                     )
-                if is_debug and security.shared and not principal.has_role(
-                    "operator", "admin"
+                if (
+                    is_debug
+                    and security.shared
+                    and not principal.has_role("operator", "admin")
                 ):
                     return JSONResponse(
                         status_code=403,
@@ -1033,10 +1418,7 @@ def create_app(
         }
         overall_status = (
             "ready"
-            if all(
-                component.status == "ready"
-                for component in components.values()
-            )
+            if all(component.status == "ready" for component in components.values())
             else "degraded"
         )
         return RuntimeHealthResponse(
@@ -1063,6 +1445,7 @@ def create_app(
             principal = _request_principal(http_request)
             _require_project_access(principal, request.project_id)
             with dependencies.v3_service_scope(mode="write") as service:
+
                 def create_owned_session() -> dict[str, Any]:
                     result = service.create_session(
                         project_id=request.project_id,
@@ -1190,25 +1573,30 @@ def create_app(
 
     @app.post(
         "/v3/sessions/{session_id}/runtime/drain",
-        response_model=V3CommandResponse,
-        responses={400: {"model": ApiErrorResponse}, 422: {"model": ApiErrorResponse}},
+        response_model=V3RuntimeCommandResponse,
+        status_code=202,
+        responses={
+            400: {"model": ApiErrorResponse},
+            409: {"model": ApiErrorResponse},
+            422: {"model": ApiErrorResponse},
+        },
     )
-    def drain_v3_runtime(
+    async def drain_v3_runtime(
         session_id: str,
         request: DrainV3RuntimeRequest,
         http_request: Request,
-        idempotency_key: str | None = Header(
-            default=None,
-            alias="Idempotency-Key",
-        ),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        prefer: str | None = Header(default=None, alias="Prefer"),
     ) -> dict[str, Any]:
         try:
+            wait_seconds = _parse_prefer_wait(prefer)
             principal = _request_principal(http_request)
             if security.shared and not principal.has_role("operator", "admin"):
-                raise HTTPException(status_code=403, detail="operator role is required")
-            # Runtime drain may call LLM/provider/runner boundaries. It owns a
-            # connection, but intentionally does not hold a SQLite transaction.
-            with dependencies.v3_service_scope(mode="connection") as service:
+                raise HTTPException(
+                    status_code=403,
+                    detail="operator role is required",
+                )
+            with dependencies.v3_service_scope(mode="write") as service:
                 _require_session_access(
                     service,
                     principal=principal,
@@ -1220,20 +1608,58 @@ def create_app(
                     session_id=session_id,
                     actor=principal.principal_id,
                 ):
-                    return _execute_idempotent_command(
+                    with _host_command_write_scope(
                         service,
-                        command_type="runtime.drain",
+                        command_type="runtime.drain.admit",
                         scope_ref=f"session:{session_id}",
                         session_id=session_id,
-                        idempotency_key=idempotency_key,
-                        request_payload=request.model_dump(mode="json"),
-                        operation=lambda: service.drain_runtime(
+                    ):
+                        command, _created = service.admit_runtime_command(
                             session_id=session_id,
+                            idempotency_key=idempotency_key,
                             max_signals=request.max_signals,
                             max_steps_per_agent=request.max_steps_per_agent,
-                            auto_enqueue_ready_tasks=request.auto_enqueue_ready_tasks,
-                        ).to_dict(),
-                    )
+                            auto_enqueue_ready_tasks=(
+                                request.auto_enqueue_ready_tasks
+                            ),
+                        )
+            dependencies.v3_durable_work_notifier.notify(session_id)
+            observed = await _observe_runtime_command(
+                dependencies,
+                session_id=session_id,
+                command_id=command.command_id,
+                wait_seconds=wait_seconds,
+            )
+            return _project_runtime_command(observed)
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.get(
+        "/v3/sessions/{session_id}/runtime/commands/{command_id}",
+        response_model=V3RuntimeCommandResponse,
+        responses={404: {"model": ApiErrorResponse}},
+    )
+    def get_v3_runtime_command(
+        session_id: str,
+        command_id: str,
+        http_request: Request,
+    ) -> dict[str, Any]:
+        try:
+            principal = _request_principal(http_request)
+            with dependencies.v3_service_scope(mode="read") as service:
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=session_id,
+                )
+                command = service.repositories.runtime_commands.get_for_session(
+                    session_id=session_id,
+                    command_id=command_id,
+                )
+                if command is None:
+                    raise KeyError(f"runtime command {command_id!r} does not exist")
+                return _project_runtime_command(command)
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
@@ -1256,9 +1682,7 @@ def create_app(
         "/v3/sessions/{session_id}/pending-approvals",
         response_model=V3PendingApprovalsResponse,
     )
-    def get_v3_pending_approvals(
-        session_id: str, request: Request
-    ) -> dict[str, Any]:
+    def get_v3_pending_approvals(session_id: str, request: Request) -> dict[str, Any]:
         try:
             principal = _request_principal(request)
             with dependencies.v3_service_scope(mode="read") as service:
@@ -1647,6 +2071,10 @@ def create_app(
     def get_v3_runtime_debug() -> dict[str, Any]:
         return background_runtime.status()
 
+    @app.get("/debug/v3-durable-work")
+    def get_v3_durable_work_debug() -> dict[str, Any]:
+        return durable_work.status()
+
     if ui_dist_dir is not None and ui_dist_dir.exists():
         app.mount("/ui", StaticFiles(directory=str(ui_dist_dir), html=True), name="ui")
 
@@ -1694,4 +2122,105 @@ def _build_background_runtime_service(
         shutdown_timeout_seconds=10.0
         if runtime_settings is None
         else float(runtime_settings.shutdown_timeout_seconds),
+    )
+
+
+def _build_durable_work_supervisor(
+    dependencies: HostApiDependencies,
+) -> V3DurableWorkSupervisor:
+    settings = getattr(getattr(dependencies, "foundation", None), "settings", None)
+    reliability = None if settings is None else getattr(settings, "reliability", None)
+    owner_policy = (
+        "legacy_only_v1"
+        if reliability is None
+        else str(reliability.controlled_operation_owner_policy.value)
+    )
+    enabled_override = dependencies.v3_durable_work_enabled
+    active_execution_count = dependencies.active_v3_durable_execution_count()
+    active_command_count = dependencies.active_v3_runtime_command_count()
+    active_continuation_count = dependencies.active_v3_continuation_count()
+    command_contract = (
+        RuntimeDrainContract.COMMAND_V1
+        if reliability is None
+        else reliability.runtime_drain_contract
+    )
+    durable_worker_required = (
+        owner_policy != "legacy_only_v1"
+        or active_execution_count > 0
+        or command_contract is RuntimeDrainContract.COMMAND_V1
+        or active_command_count > 0
+        or active_continuation_count > 0
+    )
+    if enabled_override is False and durable_worker_required:
+        raise RuntimeError(
+            "durable work cannot be disabled while durable admission or active rows exist"
+        )
+    enabled = (
+        enabled_override if enabled_override is not None else durable_worker_required
+    )
+    adapters = dependencies.build_v3_durable_route_adapters()
+    coordinators: dict[str, V3DurableWorkCoordinator] = {}
+    coordinator_lock = threading.Lock()
+
+    def worker_factory(worker_id: str) -> V3DurableWorkCoordinator:
+        with coordinator_lock:
+            existing = coordinators.get(worker_id)
+            if existing is not None:
+                return existing
+            workers = []
+            if owner_policy != "legacy_only_v1" or active_execution_count > 0:
+                workers.append(
+                    ControlledOperationExecutionWorker(
+                        repository_scope_factory=dependencies.v3_repository_scope,
+                        adapters=adapters,
+                        worker_id=f"{worker_id}:execution",
+                        mutation_writer_scope_factory=(
+                            dependencies.v3_mutation_writer_scope
+                        ),
+                    )
+                )
+            if owner_policy != "legacy_only_v1" or active_continuation_count > 0:
+                workers.append(
+                    ContinuationDeliveryWorker(
+                        repository_scope_factory=dependencies.v3_repository_scope,
+                        live_process_registry=(dependencies.v3_live_process_registry),
+                        signal_notifier=dependencies.v3_signal_notifier,
+                        worker_id=f"{worker_id}:continuation-delivery",
+                        mutation_writer_scope_factory=(
+                            dependencies.v3_mutation_writer_scope
+                        ),
+                    )
+                )
+            if (
+                command_contract is RuntimeDrainContract.COMMAND_V1
+                or active_command_count > 0
+            ):
+                workers.append(
+                    RuntimeCommandWorker(
+                        repository_scope_factory=dependencies.v3_repository_scope,
+                        executor=HostRuntimeCommandExecutor(
+                            service_scope=lambda: dependencies.v3_service_scope(
+                                mode="connection"
+                            ),
+                            worker_id=f"{worker_id}:runtime-command",
+                        ),
+                        worker_id=f"{worker_id}:runtime-command",
+                        mutation_writer_scope_factory=(
+                            dependencies.v3_mutation_writer_scope
+                        ),
+                    )
+                )
+            if not workers:
+                raise RuntimeError("durable work has no configured worker kind")
+            coordinator = V3DurableWorkCoordinator(tuple(workers))
+            coordinators[worker_id] = coordinator
+            return coordinator
+
+    return V3DurableWorkSupervisor(
+        worker_factory=worker_factory,
+        notifier=dependencies.v3_durable_work_notifier,
+        enabled=enabled,
+        max_concurrency=(
+            1 if dependencies.v3_legacy_repositories_for_tests is not None else 2
+        ),
     )

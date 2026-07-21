@@ -4,13 +4,16 @@ import asyncio
 from dataclasses import dataclass
 from dataclasses import field
 import inspect
+import threading
 from typing import Any
 from typing import Callable
 from typing import ContextManager
+from typing import Protocol
 from contextlib import contextmanager
 
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import llm_debug_context
+from openzyme_runtime import sanitize_public_diagnostic_text
 
 from .v3_service import V3HostApiService
 
@@ -35,6 +38,65 @@ def _run_background_runtime_once_in_worker(
         if inspect.isawaitable(result):
             return asyncio.run(result)
         return result
+
+
+class DurableWorkWorker(Protocol):
+    def run_once(self) -> object: ...
+
+
+@dataclass(slots=True)
+class V3DurableWorkCoordinator:
+    """Round-robin independent durable worker kinds within one worker slot."""
+
+    workers: tuple[DurableWorkWorker, ...]
+    _cursor: int = field(default=0, init=False)
+
+    def __post_init__(self) -> None:
+        if not self.workers:
+            raise ValueError("durable work coordinator requires at least one worker")
+
+    def run_once(self) -> object:
+        last_outcome: object | None = None
+        for offset in range(len(self.workers)):
+            index = (self._cursor + offset) % len(self.workers)
+            outcome = self.workers[index].run_once()
+            last_outcome = outcome
+            action = str(getattr(outcome, "action", ""))
+            if action not in {"idle", "claim_raced", "not_claimable"}:
+                self._cursor = (index + 1) % len(self.workers)
+                return outcome
+        self._cursor = (self._cursor + 1) % len(self.workers)
+        if last_outcome is None:  # guarded by __post_init__
+            raise RuntimeError("durable work coordinator has no worker outcome")
+        return last_outcome
+
+
+def _run_durable_work_once_in_worker(
+    worker_factory: Callable[[str], DurableWorkWorker],
+    *,
+    worker_id: str,
+) -> dict[str, Any]:
+    outcome = worker_factory(worker_id).run_once()
+    field_names = (
+        "execution_id",
+        "command_id",
+        "continuation_id",
+        "action",
+        "status",
+        "delivery_state",
+        "lifecycle_state",
+        "state_version",
+        "effect_certainty",
+        "retry_eligibility",
+    )
+    serialized = {
+        field_name: getattr(outcome, field_name)
+        for field_name in field_names
+        if hasattr(outcome, field_name)
+    }
+    if "action" not in serialized:
+        raise TypeError("durable worker outcome omitted action")
+    return serialized
 
 
 @dataclass(slots=True)
@@ -100,7 +162,9 @@ class V3BackgroundRuntimeService:
                 yield service
             return
         if self.build_service is None:
-            raise RuntimeError("V3 background runtime service factory is not configured")
+            raise RuntimeError(
+                "V3 background runtime service factory is not configured"
+            )
         # Compatibility path for unit-test fakes that own no external resources.
         yield self.build_service()
 
@@ -181,7 +245,7 @@ class V3BackgroundRuntimeService:
                 outcomes.extend(session_outcomes)
                 remaining -= len(session_outcomes)
         except Exception as exc:
-            self.last_error = str(exc)
+            self.last_error = sanitize_public_diagnostic_text(str(exc))
         self.processed_signal_count += len(outcomes)
         self.last_outcomes = outcomes[-20:]
         return tuple(outcomes)
@@ -203,4 +267,181 @@ class V3BackgroundRuntimeService:
         }
 
 
-__all__ = ["RuntimeSignalNotifier", "V3BackgroundRuntimeService"]
+@dataclass(slots=True)
+class V3DurableWorkSupervisor:
+    """Host-lifespan owner for bounded, execution-fenced durable work."""
+
+    worker_factory: Callable[[str], DurableWorkWorker]
+    notifier: RuntimeSignalNotifier
+    enabled: bool
+    poll_interval_seconds: float = 1.0
+    max_concurrency: int = 2
+    shutdown_timeout_seconds: float = 10.0
+    worker_id_prefix: str = "host-api:durable-work"
+    _task: asyncio.Task[None] | None = field(default=None, init=False)
+    _stop_event: asyncio.Event | None = field(default=None, init=False)
+    _running: bool = field(default=False, init=False)
+    _accepting_work: bool = field(default=False, init=False)
+    _active_worker_ids: set[str] = field(default_factory=set, init=False)
+    _active_worker_lock: threading.Lock = field(
+        default_factory=threading.Lock,
+        init=False,
+        repr=False,
+    )
+    _shutdown_incomplete: bool = field(default=False, init=False)
+    disabled_reason: str | None = field(default=None, init=False)
+    last_tick_at: str | None = field(default=None, init=False)
+    tick_count: int = field(default=0, init=False)
+    processed_count: int = field(default=0, init=False)
+    database_busy_count: int = field(default=0, init=False)
+    last_error: str | None = field(default=None, init=False)
+    last_outcomes: list[dict[str, Any]] = field(default_factory=list, init=False)
+
+    def __post_init__(self) -> None:
+        if self.poll_interval_seconds <= 0:
+            raise ValueError("durable work poll interval must be positive")
+        if self.max_concurrency <= 0 or self.max_concurrency > 32:
+            raise ValueError("durable work concurrency must be between 1 and 32")
+        if self.shutdown_timeout_seconds <= 0:
+            raise ValueError("durable work shutdown timeout must be positive")
+        self._accepting_work = self.enabled
+
+    def start(self) -> None:
+        if not self.enabled:
+            self.disabled_reason = "disabled by configuration"
+            return
+        self.disabled_reason = None
+        if self._active_worker_count() > 0:
+            raise RuntimeError("durable work supervisor still has active workers")
+        self._accepting_work = True
+        self._shutdown_incomplete = False
+        self.notifier.bind()
+        self._stop_event = asyncio.Event()
+        self._task = asyncio.create_task(self._run_loop())
+
+    async def stop(self) -> None:
+        self._accepting_work = False
+        if self._task is None:
+            return
+        if self._stop_event is not None:
+            self._stop_event.set()
+        self.notifier.notify()
+        try:
+            await asyncio.wait_for(self._task, timeout=self.shutdown_timeout_seconds)
+        except TimeoutError:
+            self._shutdown_incomplete = self._active_worker_count() > 0
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        finally:
+            self._task = None
+            self._running = False
+            if self._active_worker_count() == 0:
+                self._shutdown_incomplete = False
+
+    async def _run_loop(self) -> None:
+        self._running = True
+        self.notifier.notify()
+        try:
+            while self._stop_event is None or not self._stop_event.is_set():
+                await self.notifier.wait(self.poll_interval_seconds)
+                if self._stop_event is not None and self._stop_event.is_set():
+                    break
+                await self.run_tick()
+        finally:
+            self._accepting_work = False
+            self._running = False
+
+    async def run_tick(self) -> tuple[dict[str, Any], ...]:
+        if not self._accepting_work:
+            return ()
+        self.last_tick_at = utc_now_iso()
+        self.tick_count += 1
+        self.last_error = None
+        try:
+            outcomes = await asyncio.gather(
+                *(
+                    asyncio.to_thread(
+                        self._run_worker_slot,
+                        worker_id=f"{self.worker_id_prefix}:{slot}",
+                    )
+                    for slot in range(self.max_concurrency)
+                )
+            )
+        except Exception as exc:
+            self.last_error = sanitize_public_diagnostic_text(str(exc))
+            self.last_outcomes = []
+            return ()
+        observed = [outcome for outcome in outcomes if outcome.get("action") != "idle"]
+        database_busy = [
+            outcome for outcome in observed if outcome.get("action") == "database_busy"
+        ]
+        progressed = [
+            outcome for outcome in observed if outcome.get("action") != "database_busy"
+        ]
+        self.processed_count += len(progressed)
+        self.database_busy_count += len(database_busy)
+        if database_busy:
+            self.last_error = "durable database busy; retry deferred"
+        self.last_outcomes = observed[-20:]
+        if len(progressed) == self.max_concurrency:
+            # Continue a bounded backlog promptly without recursively running work.
+            self.notifier.notify()
+        return tuple(observed)
+
+    def _run_worker_slot(self, *, worker_id: str) -> dict[str, Any]:
+        with self._active_worker_lock:
+            if not self._accepting_work:
+                return {
+                    "execution_id": None,
+                    "action": "idle",
+                    "lifecycle_state": None,
+                    "state_version": None,
+                    "effect_certainty": None,
+                    "retry_eligibility": None,
+                }
+            self._active_worker_ids.add(worker_id)
+        try:
+            return _run_durable_work_once_in_worker(
+                self.worker_factory,
+                worker_id=worker_id,
+            )
+        finally:
+            with self._active_worker_lock:
+                self._active_worker_ids.discard(worker_id)
+                if not self._accepting_work and not self._active_worker_ids:
+                    self._shutdown_incomplete = False
+
+    def _active_worker_count(self) -> int:
+        with self._active_worker_lock:
+            return len(self._active_worker_ids)
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "running": self._running,
+            "accepting_work": self._accepting_work,
+            "active_worker_count": self._active_worker_count(),
+            "shutdown_incomplete": self._shutdown_incomplete,
+            "disabled_reason": self.disabled_reason,
+            "last_tick_at": self.last_tick_at,
+            "tick_count": self.tick_count,
+            "processed_count": self.processed_count,
+            "database_busy_count": self.database_busy_count,
+            "last_error": self.last_error,
+            "last_outcomes": self.last_outcomes,
+            "worker_id_prefix": self.worker_id_prefix,
+            "poll_interval_seconds": self.poll_interval_seconds,
+            "max_concurrency": self.max_concurrency,
+        }
+
+
+__all__ = [
+    "DurableWorkWorker",
+    "RuntimeSignalNotifier",
+    "V3BackgroundRuntimeService",
+    "V3DurableWorkCoordinator",
+    "V3DurableWorkSupervisor",
+]

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 import pytest
 from openzyme_domain import ArtifactKind
 from openzyme_domain import RunStatus
+from openzyme_host_api.app import HostApiDependencies
 from openzyme_host_api.app import V3ExecutionRunnerAdapter
 from openzyme_host_api.app import create_app
 from openzyme_host_api.foundation import apply_live_llm_test_budget
@@ -459,21 +460,20 @@ def test_app_can_mount_ui_when_dist_exists(tmp_path) -> None:
     (dist_dir / "index.html").write_text("<html><body>ui</body></html>")
     (dist_dir / "debug.html").write_text("<html><body>debug</body></html>")
 
-    @dataclass(frozen=True, slots=True)
-    class DummyDependencies:
-        def build_projection_loader(self):
-            raise AssertionError("not used in this test")
+    dependencies = HostApiDependencies(
+        foundation=build_local_eval_foundation(),
+        v3_background_runtime_enabled=False,
+    )
+    try:
+        client = TestClient(create_app(dependencies, ui_dist_dir=dist_dir))
 
-        def build_service(self):
-            raise AssertionError("not used in this test")
+        response = client.get("/", follow_redirects=False)
 
-    client = TestClient(create_app(DummyDependencies(), ui_dist_dir=dist_dir))  # type: ignore[arg-type]
-
-    response = client.get("/", follow_redirects=False)
-
-    assert response.status_code == 307
-    assert response.headers["location"] == "/ui/"
-    assert client.get("/debug").status_code == 404
+        assert response.status_code == 307
+        assert response.headers["location"] == "/ui/"
+        assert client.get("/debug").status_code == 404
+    finally:
+        dependencies.close_owned_v3_storage()
 
 
 def test_deterministic_execution_adapter_scopes_run_ids_per_session_and_call_count() -> None:

@@ -1,7 +1,34 @@
+[runner]
+deployment_id = "local-runner"
+# OpenSSH ControlPath is a Unix socket with a short byte limit. Keep this root
+# absolute, short, private, and deployment-scoped; the runner creates it as 0700
+# and rejects foreign ownership metadata rather than reusing it.
+transport_control_root = "/tmp/ozhpc-local-runner"
+
 [cluster]
 ssh_host = "hpc-login"
 ssh_user = ""
 remote_base_dir = "mcp_runs"
+credential_policy_id = "ssh-agent-default-v1"
+host_key_policy_id = "system-known-hosts-v1"
+
+[ssh_transport]
+# Keep disabled for new admissions until deterministic transport/fault gates and
+# the explicitly opted-in, non-scientific real-SSH soak pass for this deployment.
+# controlmaster_v1 reuses authentication only: every action remains an isolated
+# bounded channel, and no caller/RunSpec may override any field in this section.
+mode = "disabled" # disabled | controlmaster_v1
+control_persist_seconds = 300
+max_channels_per_target = 4
+connect_attempts = 1
+pre_effect_recovery_attempts = 1
+backoff_initial_seconds = 0.25
+backoff_multiplier = 2.0
+backoff_max_seconds = 2.0
+health_check_interval_seconds = 30.0
+health_check_timeout_seconds = 5.0
+channel_acquire_timeout_seconds = 30.0
+shutdown_timeout_seconds = 10.0
 
 [slurm]
 default_partition = "" # optional; leave empty to use cluster default

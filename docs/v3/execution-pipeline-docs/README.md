@@ -19,6 +19,7 @@ Useful search keywords:
 - `tool adapter external bridge`
 - `hpc placement`
 - `runner_failure@1 staging phase`
+- `durable operation effect certainty continuation`
 - `stage_artifact`
 - `fetch_outputs`
 - `batch ligand docking`
@@ -39,6 +40,7 @@ Recommended reading paths:
 - Pocket detection: `hpc-fpocket.md` (`hpc.workspace + structure_tools.fpocket`)
 - Many ligands or repeated jobs: `batch-patterns.md`
 - Host/runner lifecycle boundary: `runner-opaque-run-id.md`
+- Runtime/HPC ownership and recovery boundary: `../07-runtime-hpc-reliability.md`
 
 Stable boundary:
 
@@ -46,6 +48,9 @@ Stable boundary:
 - Domain tool operations use `bio_tools`, `structure_tools`, and `docking`. Public executor docs and examples must not expose runner-backed tool shorthands under `hpc`.
 - Regardless of namespace, executor code must use Host-supervised SDK calls and must not call SSH, Slurm, runner config, external network clients, or Host artifact paths directly.
 - The Host/runner lifecycle credential is a server-issued opaque `run_id`; raw Slurm job IDs, remote directories, and inline recovery RunSpecs never cross the public runner boundary.
+- A durable SDK call may suspend its exact sandbox process while approval or an external effect is pending. Executor code still observes one request/response call; it must not invent a polling/replay loop, replacement operation, or a new idempotency key to recover transport ambiguity.
+- `ControlledOperationExecution` is the sole external-effect owner. Only a proven pre-effect failure may receive a bounded same-phase recovery; `dispatch_in_doubt` is a fail-closed reconciliation state, not permission to retry.
+- Runner-owned per-target ControlMaster reuse is transport infrastructure. It does not provide a persistent remote shell, preserve cwd/environment, or let executor code control SSH options.
 
 Examples:
 

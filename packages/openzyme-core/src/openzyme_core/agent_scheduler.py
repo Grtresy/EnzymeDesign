@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from contextlib import AbstractContextManager
+from contextlib import nullcontext
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
 from datetime import UTC
 from datetime import datetime
 import sqlite3
+import time
 from typing import Any
 from typing import Callable
 
@@ -17,6 +19,7 @@ from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignal
 from openzyme_domain import SessionRuntimeLease
 from openzyme_domain import SessionRuntimeLeaseMode
+from openzyme_domain import MutationWriterKind
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import classify_llm_provider_error
 from openzyme_runtime import sanitize_public_diagnostic_text
@@ -87,13 +90,19 @@ class AgentRuntimeScheduler:
     max_global_concurrency: int = 1
     max_session_concurrency: int = 1
     max_agent_concurrency: int = 1
-    repository_scope_factory: Callable[
-        [], AbstractContextManager[CoreRepositories]
-    ] | None = None
-    engine_registry_factory: Callable[
-        [CoreRepositories, SessionRuntimeLease | None],
-        EngineRegistry,
-    ] | None = None
+    repository_scope_factory: (
+        Callable[[], AbstractContextManager[CoreRepositories]] | None
+    ) = None
+    engine_registry_factory: (
+        Callable[
+            [CoreRepositories, SessionRuntimeLease | None],
+            EngineRegistry,
+        ]
+        | None
+    ) = None
+    mutation_writer_scope_factory: (
+        Callable[..., AbstractContextManager[object]] | None
+    ) = None
     _shutdown_requested: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
@@ -123,6 +132,7 @@ class AgentRuntimeScheduler:
         if self.context.model_factory is None and not auto_enqueue_ready_tasks:
             return ()
         session_lease, owns_session_lease = self._acquire_session_lease(session_id)
+        session_hold_started = time.monotonic()
         previous_session_lease = self.context.session_runtime_lease
         self.context.session_runtime_lease = session_lease
         heartbeat_task: asyncio.Task[None] | None = None
@@ -135,6 +145,7 @@ class AgentRuntimeScheduler:
         agent_limiters: dict[str, asyncio.Semaphore] = {}
 
         async def run_signal(signal: Any) -> AgentRuntimeOutcome:
+            signal_hold_started = time.monotonic()
             agent_limiter = agent_limiters.setdefault(
                 str(signal.agent_id),
                 asyncio.Semaphore(self.max_agent_concurrency),
@@ -143,7 +154,7 @@ class AgentRuntimeScheduler:
                 async with session_limiter:
                     async with agent_limiter:
                         try:
-                            return await asyncio.to_thread(
+                            outcome = await asyncio.to_thread(
                                 self._wake_signal_in_worker,
                                 signal=signal,
                                 max_steps=max_steps_per_agent,
@@ -170,7 +181,9 @@ class AgentRuntimeScheduler:
                                     {
                                         "signal_id": signal.signal_id,
                                         "attempted_status": "failed",
-                                        "session_fencing_token": session_lease.fencing_token,
+                                        "session_fencing_token": (
+                                            session_lease.fencing_token
+                                        ),
                                         "worker_id": self.worker_id,
                                     },
                                 )
@@ -179,7 +192,7 @@ class AgentRuntimeScheduler:
                                 agent = self._release_agent_after_runtime_exception(
                                     signal
                                 )
-                            return AgentRuntimeOutcome(
+                            outcome = AgentRuntimeOutcome(
                                 signal=failed,
                                 task=None,
                                 agent=agent
@@ -194,6 +207,22 @@ class AgentRuntimeScheduler:
                                     else "runtime_exception"
                                 ),
                             )
+            observer = self.context.reliability_shadow_observer
+            if observer is not None:
+                try:
+                    observer.observe_runtime_authority_hold(
+                        signal_id=str(signal.signal_id),
+                        signal_hold_ms=int(
+                            (time.monotonic() - signal_hold_started) * 1_000
+                        ),
+                        session_lease_hold_ms=int(
+                            (time.monotonic() - session_hold_started) * 1_000
+                        ),
+                    )
+                except Exception:
+                    # Shadow telemetry is deliberately non-authoritative.
+                    pass
+            return outcome
 
         try:
             if auto_enqueue_ready_tasks:
@@ -257,6 +286,27 @@ class AgentRuntimeScheduler:
         worker never touches the coordinator's thread-affine SQLite connection.
         """
 
+        writer_scope = (
+            nullcontext(None)
+            if self.mutation_writer_scope_factory is None
+            else self.mutation_writer_scope_factory(
+                session_id=signal.session_id,
+                owner_kind=MutationWriterKind.AGENT_TURN,
+                owner_ref=f"agent-turn:{signal.signal_id}",
+            )
+        )
+        with writer_scope:
+            return self._wake_signal_in_worker_scoped(
+                signal=signal,
+                max_steps=max_steps,
+            )
+
+    def _wake_signal_in_worker_scoped(
+        self,
+        *,
+        signal: AgentRuntimeSignal,
+        max_steps: int,
+    ) -> AgentRuntimeOutcome:
         if self.repository_scope_factory is None:
             lease = self.context.session_runtime_lease
             if lease is None:
@@ -454,10 +504,13 @@ class AgentRuntimeScheduler:
         self, session_id: str
     ) -> tuple[SessionRuntimeLease, bool]:
         existing = self.context.session_runtime_lease
-        if existing is not None and self.context.repositories.session_runtime_leases.is_active(
-            session_id=session_id,
-            lease_token=existing.lease_token,
-            fencing_token=existing.fencing_token,
+        if (
+            existing is not None
+            and self.context.repositories.session_runtime_leases.is_active(
+                session_id=session_id,
+                lease_token=existing.lease_token,
+                fencing_token=existing.fencing_token,
+            )
         ):
             return existing, False
         result = self.context.repositories.session_runtime_leases.acquire(

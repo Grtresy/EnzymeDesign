@@ -9,10 +9,13 @@ from threading import Thread
 import time
 
 import pytest
+import openzyme_core.agent_runtime as agent_runtime_module
 
 from openzyme_core import AgentRuntimeScheduler
 from openzyme_core import AgentRuntimeService
 from openzyme_core import CoreRepositories
+from openzyme_core import HarnessResult
+from openzyme_core import HarnessStatus
 from openzyme_core import MemoryEventBus
 from openzyme_core import RestoreFocus
 from openzyme_core import SQLiteRepositoryProvider
@@ -28,6 +31,8 @@ from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignal
 from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import AgentRuntimeSignalStatus
+from openzyme_domain import ApprovalRequest
+from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import Session
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
@@ -344,6 +349,130 @@ def test_scheduler_respects_max_signals_and_session_concurrency() -> None:
     task = repositories.tasks.get("task_0")
     assert task is not None
     assert task.status is TaskStatus.COMPLETED
+
+
+def test_scheduler_releases_session_lease_after_runtime_suspension(monkeypatch) -> None:
+    repositories, context = _build_context(model_factory=FakeModelFactory())
+
+    def suspended_teammate_loop(
+        runtime_context: SessionRuntimeContext,
+        **kwargs,
+    ) -> HarnessResult:
+        task_id = str(kwargs["task_id"])
+        approval_id = f"appr_{task_id}"
+        runtime_context.repositories.approvals.save(
+            ApprovalRequest(
+                approval_id=approval_id,
+                session_id="sess_scheduler",
+                task_id=task_id,
+                lane_id=None,
+                kind="controlled_operation",
+                requested_action="Approve the parked process.",
+                status=ApprovalRequestStatus.PENDING,
+                request_ref=f"continuation:{task_id}",
+                resolution_ref=None,
+                created_at="2026-04-16T10:01:00+00:00",
+            )
+        )
+        return HarnessResult(
+            session_id="sess_scheduler",
+            status=HarnessStatus.WAITING_APPROVAL,
+            snapshot=SessionRuntimeSnapshot.load(
+                runtime_context.repositories,
+                "sess_scheduler",
+            ),
+            events=(),
+            outputs=(),
+            tool_results=(),
+            pending_approval_id=approval_id,
+        )
+
+    original_teammate_loop = agent_runtime_module.run_teammate_loop
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "run_teammate_loop",
+        suspended_teammate_loop,
+    )
+
+    outcomes = AgentRuntimeScheduler(
+        context,
+        worker_id="test:suspended-runtime",
+    ).run_once_sync("sess_scheduler", max_signals=1)
+
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    signal = repositories.runtime_signals.get(outcome.signal.signal_id)
+    task = repositories.tasks.get("task_0")
+    agent = repositories.agents.get("sess_scheduler", outcome.signal.agent_id)
+    lease_row = repositories.session_runtime_leases.connection.execute(
+        """
+        SELECT released_at
+        FROM session_runtime_leases
+        WHERE session_id = ?
+        ORDER BY fencing_token DESC
+        LIMIT 1
+        """,
+        ("sess_scheduler",),
+    ).fetchone()
+
+    assert outcome.ok is True
+    assert outcome.teammate_status == "waiting_approval"
+    assert outcome.waiting_approval_id == "appr_task_0"
+    assert signal is not None
+    assert signal.status is AgentRuntimeSignalStatus.COMPLETED
+    assert task is not None
+    assert task.status is TaskStatus.BLOCKED
+    assert agent is not None
+    assert agent.status is AgentMemberStatus.BLOCKED
+    assert context.session_runtime_lease is None
+    assert lease_row is not None
+    assert lease_row["released_at"] is not None
+
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "run_teammate_loop",
+        original_teammate_loop,
+    )
+    other_agent = create_agent_member(
+        repositories,
+        session_id="sess_scheduler",
+        role="reporter",
+    )
+    repositories.tasks.save(
+        Task.create(
+            task_id="task_other_agent",
+            session_id="sess_scheduler",
+            subject="Other agent work",
+            description="Prove another signal can progress while approval remains pending.",
+        )
+    )
+    repositories.runtime_signals.save(
+        AgentRuntimeSignal(
+            signal_id="sig_other_agent",
+            session_id="sess_scheduler",
+            agent_id=other_agent.agent_id,
+            task_id="task_other_agent",
+            reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+            status=AgentRuntimeSignalStatus.PENDING,
+            created_at="2026-04-16T10:02:00+00:00",
+        )
+    )
+
+    progressed = AgentRuntimeScheduler(
+        context,
+        worker_id="test:other-agent-after-suspension",
+    ).run_once_sync(
+        "sess_scheduler",
+        max_signals=1,
+        signal_ids={"sig_other_agent"},
+    )
+
+    assert len(progressed) == 1
+    assert progressed[0].ok is True
+    progressed_signal = repositories.runtime_signals.get("sig_other_agent")
+    assert progressed_signal is not None
+    assert progressed_signal.status is AgentRuntimeSignalStatus.COMPLETED
+    assert repositories.approvals.get("appr_task_0") is not None
 
 
 def test_scheduler_heartbeats_session_lease_during_blocking_provider_call(

@@ -14,6 +14,10 @@ from openzyme_runtime import DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API
 from openzyme_runtime import DEFAULT_PROVIDER_LIMITS
 from openzyme_runtime import get_settings
 from openzyme_runtime import HostApiSettings
+from openzyme_runtime import ControlledOperationOwnerPolicy
+from openzyme_runtime import MutationClosureMode
+from openzyme_runtime import RuntimeDrainContract
+from openzyme_runtime import ShadowObservabilityMode
 from openzyme_runtime import reset_settings_cache
 
 
@@ -92,6 +96,12 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         "OPENZYME_V3_BACKGROUND_RUNTIME_MAX_SIGNALS_PER_TICK",
         "OPENZYME_V3_BACKGROUND_RUNTIME_MAX_STEPS_PER_AGENT",
         "OPENZYME_V3_BACKGROUND_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS",
+        "OPENZYME_RELIABILITY_SHADOW_OBSERVABILITY",
+        "OPENZYME_RELIABILITY_CONTROLLED_OPERATION_OWNER_POLICY",
+        "OPENZYME_RELIABILITY_DURABLE_EXECUTION_ROUTE_ALLOWLIST",
+        "OPENZYME_RELIABILITY_RUNTIME_DRAIN_CONTRACT",
+        "OPENZYME_RELIABILITY_MUTATION_CLOSURE_MODE",
+        "OPENZYME_RELIABILITY_SHADOW_MAX_OBSERVATIONS",
     ):
         monkeypatch.delenv(key, raising=False)
     for key in (
@@ -155,6 +165,18 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
     assert settings.v3_background_runtime.max_signals_per_tick == 3
     assert settings.v3_background_runtime.max_steps_per_agent == 12
     assert settings.v3_background_runtime.shutdown_timeout_seconds == 10.0
+    assert settings.reliability.shadow_observability is ShadowObservabilityMode.DISABLED
+    assert (
+        settings.reliability.controlled_operation_owner_policy
+        is ControlledOperationOwnerPolicy.LEGACY_ONLY_V1
+    )
+    assert settings.reliability.durable_execution_route_allowlist == ()
+    assert (
+        settings.reliability.runtime_drain_contract
+        is RuntimeDrainContract.COMMAND_V1
+    )
+    assert settings.reliability.mutation_closure_mode is MutationClosureMode.LEGACY_V1
+    assert settings.reliability.shadow_max_observations == 256
     assert settings.tracing.enabled is False
     assert settings.test.enable_live_llm is False
     assert settings.test.enable_live_tavily is False
@@ -245,6 +267,18 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("OPENZYME_LIMIT_LLM_PROVIDER_CONCURRENCY", "14")
     monkeypatch.setenv("OPENZYME_LIMIT_RESEARCH_PROVIDER_CONCURRENCY", "15")
     monkeypatch.setenv("OPENZYME_LIMIT_EXECUTION_PROVIDER_CONCURRENCY", "16")
+    monkeypatch.setenv("OPENZYME_RELIABILITY_SHADOW_OBSERVABILITY", "shadow_v1")
+    monkeypatch.setenv(
+        "OPENZYME_RELIABILITY_CONTROLLED_OPERATION_OWNER_POLICY",
+        "route_allowlist_v1",
+    )
+    monkeypatch.setenv(
+        "OPENZYME_RELIABILITY_DURABLE_EXECUTION_ROUTE_ALLOWLIST",
+        "route:b,route:a,route:a",
+    )
+    monkeypatch.setenv("OPENZYME_RELIABILITY_RUNTIME_DRAIN_CONTRACT", "command_v1")
+    monkeypatch.setenv("OPENZYME_RELIABILITY_MUTATION_CLOSURE_MODE", "generic_v1")
+    monkeypatch.setenv("OPENZYME_RELIABILITY_SHADOW_MAX_OBSERVATIONS", "17")
     monkeypatch.setenv("OPENZYME_TEST_ENABLE_LIVE_LLM", "true")
     monkeypatch.setenv("OPENZYME_TEST_ENABLE_LIVE_TAVILY", "true")
     monkeypatch.setenv("OPENZYME_TEST_ENABLE_LIVE_HPC", "true")
@@ -326,6 +360,20 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
         "research_provider": 15,
         "execution_provider": 16,
     }
+    assert settings.reliability.shadow_observability is ShadowObservabilityMode.SHADOW_V1
+    assert (
+        settings.reliability.controlled_operation_owner_policy
+        is ControlledOperationOwnerPolicy.ROUTE_ALLOWLIST_V1
+    )
+    assert settings.reliability.durable_execution_route_allowlist == (
+        "route:a",
+        "route:b",
+    )
+    assert (
+        settings.reliability.runtime_drain_contract is RuntimeDrainContract.COMMAND_V1
+    )
+    assert settings.reliability.mutation_closure_mode is MutationClosureMode.GENERIC_V1
+    assert settings.reliability.shadow_max_observations == 17
     assert settings.test.enable_live_llm is True
     assert settings.test.enable_live_tavily is True
     assert settings.test.enable_live_hpc is True

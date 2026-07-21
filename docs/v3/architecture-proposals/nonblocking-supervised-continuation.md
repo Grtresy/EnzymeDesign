@@ -1,6 +1,14 @@
 # Deferred: product-level non-blocking supervised continuation
 
-Status: proposed, not implemented in the current AOX/HMM blank-world Goal.
+Status: implemented by `runtime-hpc-reliability-refactor` for the
+`attached_process` strategy and durable `202` runtime commands. Arbitrary Python-stack
+or `journaled_sdk_call_boundary` replay remains deferred.
+
+Stable contract: [`../07-runtime-hpc-reliability.md`](../07-runtime-hpc-reliability.md).
+The decision-boundary and current-evidence sections below are the pre-refactor baseline.
+
+重构收敛说明：本文是 approval/runtime parking 的组件 proposal，其中的对象草图不再独立作为 schema authority。跨 proposal ownership、实施切片与待决策项统一收敛在
+[`runtime-hpc-reliability-refactor-roadmap.md`](runtime-hpc-reliability-refactor-roadmap.md)。
 
 ## Decision boundary for the current Goal
 

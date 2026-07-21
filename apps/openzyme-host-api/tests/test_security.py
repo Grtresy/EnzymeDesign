@@ -135,7 +135,22 @@ def test_shared_profile_authenticates_and_persists_session_ownership() -> None:
         assert alice_get.status_code == 200
         assert alice_drain.status_code == 403
         assert operator_created.status_code == 200
-        assert operator_drain.status_code == 200
+        assert operator_drain.status_code == 202
+        operator_command = operator_drain.json()
+        assert operator_command["session_id"] == "sess_operator"
+        assert operator_command["status_url"].endswith(
+            operator_command["command_id"]
+        )
+        operator_command_read = client.get(
+            operator_command["status_url"],
+            headers=_headers(OPERATOR_TOKEN),
+        )
+        hidden_from_alice = client.get(
+            operator_command["status_url"],
+            headers=_headers(ALICE_TOKEN),
+        )
+        assert operator_command_read.status_code == 200
+        assert hidden_from_alice.status_code == 404
         with dependencies.v3_repository_scope(mode="read") as repositories:
             owner = repositories.session_access.get("sess_alice", "user:alice")
             assert owner is not None

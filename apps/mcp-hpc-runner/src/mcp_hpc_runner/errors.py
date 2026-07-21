@@ -12,7 +12,13 @@ StagingFailurePhase = Literal[
     "remote_layout",
     "input_parent",
     "input_transfer",
+    "input_verification",
     "runner_control_transfer",
+]
+OutputFailurePhase = Literal[
+    "output_observation",
+    "output_fetch",
+    "output_verification",
 ]
 
 _STAGING_FAILURE_PHASES = frozenset(
@@ -20,6 +26,7 @@ _STAGING_FAILURE_PHASES = frozenset(
         "remote_layout",
         "input_parent",
         "input_transfer",
+        "input_verification",
         "runner_control_transfer",
     }
 )
@@ -47,6 +54,8 @@ class HpcStagingFailure(RuntimeError):
         returncode: int,
         timed_out: bool,
         elapsed_seconds: float,
+        process_started: bool = True,
+        executable: str = "ssh",
     ) -> None:
         normalized_phase = str(phase)
         normalized_run_id = str(run_id)
@@ -94,6 +103,8 @@ class HpcStagingFailure(RuntimeError):
         self.returncode = int(returncode)
         self.timed_out = bool(timed_out)
         self.elapsed_seconds = normalized_elapsed
+        self.process_started = bool(process_started)
+        self.executable = str(executable)
         super().__init__(
             "HPC pre-execution staging failed "
             f"(phase={self.phase}, run_id={self.run_id}, "
@@ -109,6 +120,79 @@ class HpcStagingFailure(RuntimeError):
             "phase": self.phase,
             "run_id": self.run_id,
             "input_ordinal": self.input_ordinal,
+            "content_digest": self.content_digest,
+            "returncode": self.returncode,
+            "timed_out": self.timed_out,
+            "elapsed_seconds": self.elapsed_seconds,
+        }
+
+
+class HpcOutputFailure(RuntimeError):
+    """Closed private failure for effect-preserving output retrieval."""
+
+    schema_id = "runner_output_failure@1"
+
+    def __init__(
+        self,
+        *,
+        phase: OutputFailurePhase,
+        run_id: str,
+        output_ordinal: int,
+        content_digest: str | None,
+        returncode: int,
+        timed_out: bool,
+        elapsed_seconds: float,
+        process_started: bool = True,
+        executable: str = "ssh",
+    ) -> None:
+        normalized_phase = str(phase)
+        normalized_elapsed = round(float(elapsed_seconds), 6)
+        if normalized_phase not in {
+            "output_observation",
+            "output_fetch",
+            "output_verification",
+        }:
+            raise ValueError("unsupported HPC output failure phase")
+        if _SAFE_RUN_ID.fullmatch(str(run_id)) is None:
+            raise ValueError("HPC output failure run_id is not a safe opaque id")
+        if (
+            isinstance(output_ordinal, bool)
+            or not isinstance(output_ordinal, int)
+            or output_ordinal < 1
+        ):
+            raise ValueError("HPC output failure ordinal must be positive")
+        if content_digest is not None and (
+            not isinstance(content_digest, str)
+            or _SHA256_DIGEST.fullmatch(content_digest) is None
+        ):
+            raise ValueError("HPC output failure content_digest must be sha256")
+        if isinstance(returncode, bool) or not isinstance(returncode, int):
+            raise ValueError("HPC output failure returncode must be an integer")
+        if not isinstance(timed_out, bool):
+            raise ValueError("HPC output failure timed_out must be boolean")
+        if not math.isfinite(normalized_elapsed) or normalized_elapsed < 0:
+            raise ValueError("HPC output failure elapsed_seconds must be finite")
+        self.phase = normalized_phase
+        self.run_id = str(run_id)
+        self.output_ordinal = output_ordinal
+        self.content_digest = content_digest
+        self.returncode = returncode
+        self.timed_out = timed_out
+        self.elapsed_seconds = normalized_elapsed
+        self.process_started = bool(process_started)
+        self.executable = str(executable)
+        super().__init__(
+            "HPC output retrieval failed "
+            f"(phase={self.phase}, run_id={self.run_id}, "
+            f"output_ordinal={self.output_ordinal}, returncode={self.returncode})"
+        )
+
+    def to_safe_diagnostic(self) -> dict[str, Any]:
+        return {
+            "schema_id": self.schema_id,
+            "phase": self.phase,
+            "run_id": self.run_id,
+            "output_ordinal": self.output_ordinal,
             "content_digest": self.content_digest,
             "returncode": self.returncode,
             "timed_out": self.timed_out,

@@ -6,6 +6,7 @@ from typing import Any
 
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import InboxParticipantKind
+from openzyme_domain import MutationWriterKind
 from openzyme_domain import ResearchSummaryStatus
 from openzyme_runtime import AgentStepContext
 from openzyme_runtime import ToolSpec
@@ -604,6 +605,9 @@ def build_teammate_registry(
     adapter_executor = None
     hpc_fetch_executor = None
     repository_scope_factory = None
+    live_process_registry = None
+    mutation_writer_scope_factory = None
+    signal_notifier = None
     if engine_registry is not None:
         execution_engine = engine_registry.get("execution")
         candidate = getattr(execution_engine, "execute_sandbox_adapter_operation", None)
@@ -614,7 +618,22 @@ def build_teammate_registry(
             hpc_fetch_executor = candidate
         repository_scope_factory = getattr(
             execution_engine,
-            "repository_scope_factory",
+            "sandbox_process_repository_scope_factory",
+            None,
+        ) or getattr(execution_engine, "repository_scope_factory", None)
+        live_process_registry = getattr(
+            execution_engine,
+            "sandbox_process_registry",
+            None,
+        )
+        mutation_writer_scope_factory = getattr(
+            execution_engine,
+            "sandbox_process_mutation_writer_scope_factory",
+            None,
+        )
+        signal_notifier = getattr(
+            execution_engine,
+            "sandbox_process_signal_notifier",
             None,
         )
     register_web_research_tools(registry, adapter=research_adapter)
@@ -628,6 +647,9 @@ def build_teammate_registry(
         adapter_executor=adapter_executor,
         hpc_fetch_executor=hpc_fetch_executor,
         repository_scope_factory=repository_scope_factory,
+        mutation_writer_scope_factory=mutation_writer_scope_factory,
+        live_process_registry=live_process_registry,
+        signal_notifier=signal_notifier,
     )
     register_protocol_tools(registry)
     register_report_draft_tools(registry)
@@ -802,35 +824,35 @@ class TeammateConversationDriver(HarnessDriver):
         display_name = self._display_name(context)
         handle = self._handle(context) or "none"
         sections = [
-                f"You are teammate {display_name} ({handle}).",
-                f"Canonical agent_id: {self.agent_id}. Use this for task ownership, runtime signals, leases, protocol routing, and task.finish authorization.",
-                f"Role: {self.role}. Role is a capability type for prompts, tools, and runtime policy; it is not your identity.",
-                "You are not user-facing. Do not speak to the user directly.",
-                "When coordinating with other agents, prefer their nickname or @handle in natural language, but tool calls must use resolvable agent references that the service can convert to canonical agent_id.",
-                "Work on your assigned task using the shared session workspace and your role-scoped tools.",
-                "Use world.inspect when you need structured facts about task state, artifacts, approvals, operations, outcomes, runtime warnings, visible tools, or route policies; it is an observation tool, not a workflow planner.",
-                "Prefer tools over narration. When you decide the assigned task stage is completed, blocked, failed, or cancelled, call task.finish with a concise summary and evidence refs instead of natural-language closure or ordinary task.update. task.finish ends your current turn; send protocol updates before it only when useful.",
-                "You may read any session artifact through artifact tools by artifact_id. Compatibility catalog tools such as artifact.create_text, artifact.patch_text, and artifact.diff_text remain available for immutable CODE snapshots. For execution, first inspect your persistent sandbox workspace with sandbox.workspace.status; day-to-day source authoring belongs in that sandbox workspace, while CODE artifacts are audit snapshots when approval, external SDK operations, or provenance require one. Stay focused on your assigned task and lane. Never request or use Host local paths, storage_uri, runner paths, or sandbox host paths.",
-                "Never request more than 3 tool calls in one response.",
-                "After every tool call, read ok, status, summary, error_code, hint, and details first. If ok is false, do not assume the requested action completed.",
-                "Researcher contract: choose between direct provider/web tools and available research engines based on the assigned task, evidence needs, cost, and uncertainty. No task wording forces one tool to run before another.",
-                "For structure-dependent research, distinguish source refs from persisted workspace artifacts; if you decide a real structure file is needed, use provider/download tools to create a catalog artifact instead of treating a fetched web page as one.",
-                "Executor contract: inspect the persistent sandbox workspace before changing it and use controlled docs when capability details are needed. Author source with sandbox.file.* and run it with sandbox.exec. Every otherwise-valid sandbox.exec invocation that reaches source preflight, including Python -c, package/signature inspection, and diagnostics, first snapshots the entire /workspace/src tree and therefore requires at least one eligible regular source file; never use sandbox.exec as a read-only environment-inspection shortcut. If runtime introspection is still necessary after reading controlled docs, author that inspection source under /workspace/src before executing it. External provider, tool, or HPC work must go through the Host-supervised SDK from inside that sandbox run. Never call a runner, SSH, Slurm, runner config, or external network directly. Do not treat execution.pipeline.start as the required authoring path.",
-                "Execution evidence must come from the real controlled operation and declared artifacts. Never present synthetic output, a local stand-in, or an undeclared fallback as a successful external/scientific result; return the structured failure and preserve evidence when the required route cannot complete.",
-                "Do not infer a workflow from task words. Only an explicit structured workflow reference selects versioned workflow knowledge; missing or digest-drifted references must fail closed.",
-                f"Assigned task: {self.task_id}",
-                f"Correlation thread: {self.correlation_id}",
-                f"Instructions: {instructions}",
-                f"Session objective: {context.snapshot.session.objective}",
-                f"Focused task: {restore.focused_task_id or 'none'}",
-                f"Focused lane: {restore.focused_lane_id or 'none'}",
-                "Artifact catalog: " + artifact_bits,
-                "Report draft catalog: " + draft_titles,
-                "Report catalog: " + report_titles,
-                "Known protocol threads: " + protocol_bits,
-                "Ready tasks: "
-                + (", ".join(task.task_id for task in restore.ready_tasks) or "none"),
-            ]
+            f"You are teammate {display_name} ({handle}).",
+            f"Canonical agent_id: {self.agent_id}. Use this for task ownership, runtime signals, leases, protocol routing, and task.finish authorization.",
+            f"Role: {self.role}. Role is a capability type for prompts, tools, and runtime policy; it is not your identity.",
+            "You are not user-facing. Do not speak to the user directly.",
+            "When coordinating with other agents, prefer their nickname or @handle in natural language, but tool calls must use resolvable agent references that the service can convert to canonical agent_id.",
+            "Work on your assigned task using the shared session workspace and your role-scoped tools.",
+            "Use world.inspect when you need structured facts about task state, artifacts, approvals, operations, outcomes, runtime warnings, visible tools, or route policies; it is an observation tool, not a workflow planner.",
+            "Prefer tools over narration. When you decide the assigned task stage is completed, blocked, failed, or cancelled, call task.finish with a concise summary and evidence refs instead of natural-language closure or ordinary task.update. task.finish ends your current turn; send protocol updates before it only when useful.",
+            "You may read any session artifact through artifact tools by artifact_id. Compatibility catalog tools such as artifact.create_text, artifact.patch_text, and artifact.diff_text remain available for immutable CODE snapshots. For execution, first inspect your persistent sandbox workspace with sandbox.workspace.status; day-to-day source authoring belongs in that sandbox workspace, while CODE artifacts are audit snapshots when approval, external SDK operations, or provenance require one. Stay focused on your assigned task and lane. Never request or use Host local paths, storage_uri, runner paths, or sandbox host paths.",
+            "Never request more than 3 tool calls in one response.",
+            "After every tool call, read ok, status, summary, error_code, hint, and details first. If ok is false, do not assume the requested action completed.",
+            "Researcher contract: choose between direct provider/web tools and available research engines based on the assigned task, evidence needs, cost, and uncertainty. No task wording forces one tool to run before another.",
+            "For structure-dependent research, distinguish source refs from persisted workspace artifacts; if you decide a real structure file is needed, use provider/download tools to create a catalog artifact instead of treating a fetched web page as one.",
+            "Executor contract: inspect the persistent sandbox workspace before changing it and use controlled docs when capability details are needed. Author source with sandbox.file.* and run it with sandbox.exec. Every otherwise-valid sandbox.exec invocation that reaches source preflight, including Python -c, package/signature inspection, and diagnostics, first snapshots the entire /workspace/src tree and therefore requires at least one eligible regular source file; never use sandbox.exec as a read-only environment-inspection shortcut. If runtime introspection is still necessary after reading controlled docs, author that inspection source under /workspace/src before executing it. External provider, tool, or HPC work must go through the Host-supervised SDK from inside that sandbox run. Never call a runner, SSH, Slurm, runner config, or external network directly. Do not treat execution.pipeline.start as the required authoring path.",
+            "Execution evidence must come from the real controlled operation and declared artifacts. Never present synthetic output, a local stand-in, or an undeclared fallback as a successful external/scientific result; return the structured failure and preserve evidence when the required route cannot complete.",
+            "Do not infer a workflow from task words. Only an explicit structured workflow reference selects versioned workflow knowledge; missing or digest-drifted references must fail closed.",
+            f"Assigned task: {self.task_id}",
+            f"Correlation thread: {self.correlation_id}",
+            f"Instructions: {instructions}",
+            f"Session objective: {context.snapshot.session.objective}",
+            f"Focused task: {restore.focused_task_id or 'none'}",
+            f"Focused lane: {restore.focused_lane_id or 'none'}",
+            "Artifact catalog: " + artifact_bits,
+            "Report draft catalog: " + draft_titles,
+            "Report catalog: " + report_titles,
+            "Known protocol threads: " + protocol_bits,
+            "Ready tasks: "
+            + (", ".join(task.task_id for task in restore.ready_tasks) or "none"),
+        ]
         selected_workflow_context = render_selected_workflow_context(
             restore.skill_documents
         )
@@ -936,7 +958,9 @@ class TeammateConversationDriver(HarnessDriver):
             "instructions": self.instructions,
             "seed_message": "\n".join(
                 _stringify_content(
-                    message.get("content") if isinstance(message, dict) else getattr(message, "content", "")
+                    message.get("content")
+                    if isinstance(message, dict)
+                    else getattr(message, "content", "")
                 )
                 for message in seed_messages
             ).strip(),
@@ -1024,9 +1048,7 @@ class TeammateConversationDriver(HarnessDriver):
                 )
                 rebuilt_messages.extend(_tool_messages(tool_results))
             return PromptPayload(
-                system_prompt=self._system_prompt(
-                    context, compact_instructions=True
-                ),
+                system_prompt=self._system_prompt(context, compact_instructions=True),
                 messages=rebuilt_messages,
                 tools=tools,
             )
@@ -1053,11 +1075,15 @@ class TeammateConversationDriver(HarnessDriver):
         invoker = self.model_factory.create_tool_calling_invoker(
             purpose=f"v3_teammate_loop:{self.role}"
         )
-        response = invoker.invoke_with_tools(
-            system_prompt=system_prompt,
-            messages=list(self._messages),
-            tools=tools,
-        )
+        with context.mutation_writer_scope(
+            owner_kind=MutationWriterKind.LIVE_TOKEN_LEDGER,
+            owner_ref=f"llm:teammate:{self.agent_id}:{call_index}",
+        ):
+            response = invoker.invoke_with_tools(
+                system_prompt=system_prompt,
+                messages=list(self._messages),
+                tools=tools,
+            )
         self._messages.append(response)
         response_text = _stringify_content(
             getattr(response, "content", None)
@@ -1072,7 +1098,12 @@ class TeammateConversationDriver(HarnessDriver):
             ):
                 args = dict(tool_call.get("args") or {})
                 if "task_id" not in args and tool_call["name"].startswith(
-                    ("deep_research.", "execution.pipeline.", "report_draft.", "report.")
+                    (
+                        "deep_research.",
+                        "execution.pipeline.",
+                        "report_draft.",
+                        "report.",
+                    )
                 ):
                     args["task_id"] = self.task_id
                 invocations.append(
@@ -1145,15 +1176,15 @@ def _delegated_workflow_refs(
     if not isinstance(raw_refs, list) or not all(
         isinstance(item, str) and is_workflow_ref(item) for item in raw_refs
     ):
-        raise ValueError("delegation workflow_refs must be explicit workflow references")
+        raise ValueError(
+            "delegation workflow_refs must be explicit workflow references"
+        )
     workflow_refs = tuple(raw_refs)
     if len(workflow_refs) != len(set(workflow_refs)):
         raise ValueError("delegation workflow_refs contain duplicates")
     if not workflow_refs:
         return ()
-    if not isinstance(raw_manifests, list) or len(raw_manifests) != len(
-        workflow_refs
-    ):
+    if not isinstance(raw_manifests, list) or len(raw_manifests) != len(workflow_refs):
         raise ValueError("delegation workflow manifests do not match workflow_refs")
     stored_manifests: dict[str, dict[str, Any]] = {}
     for item in raw_manifests:
@@ -1255,6 +1286,14 @@ def run_teammate_loop(
         sandbox_workspace_root=parent_context.sandbox_workspace_root,
         artifact_blob_root=parent_context.artifact_blob_root,
         signal_notifier=parent_context.signal_notifier,
+        reliability_shadow_observer=parent_context.reliability_shadow_observer,
+        reliability_settings=parent_context.reliability_settings,
+        durable_route_adapter_policy_ids=(
+            parent_context.durable_route_adapter_policy_ids
+        ),
+        mutation_writer_scope_factory=(
+            parent_context.mutation_writer_scope_factory
+        ),
     )
 
 

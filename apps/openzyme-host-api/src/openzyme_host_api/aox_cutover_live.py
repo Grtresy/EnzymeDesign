@@ -17,11 +17,17 @@ import sys
 import threading
 import time
 from typing import Any, Iterator, Literal
+from urllib.parse import quote
 import zlib
 
 import httpx
+from openzyme_core import CoreRepositories
 from openzyme_core import SQLiteRepositoryProvider
+from openzyme_core import MutationScopeError
+from openzyme_core import MutationScopeService
+from openzyme_core import MutationWriterTurnFactory
 from openzyme_core import build_conversation_projection
+from openzyme_core import current_mutation_write_authority
 from openzyme_core import sandbox_image_record
 from openzyme_core.sandbox_runtime import EXEC_POLICY_VERSION
 from openzyme_core.sandbox_workspace import DEFAULT_SANDBOX_IMAGE_REF
@@ -29,6 +35,8 @@ from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_domain import ArtifactKind
 from openzyme_domain import ControlledOperation
 from openzyme_domain import ControlledOperationStatus
+from openzyme_domain import MutationScopeKind
+from openzyme_domain import MutationWriterKind
 from openzyme_domain import SessionArtifactRecord
 from openzyme_pipeline import aox_hmmer
 from openzyme_pipeline import aox_motif
@@ -78,6 +86,8 @@ BROWSER_SEALED_PAGE_URL = (
 )
 _MAX_BROWSER_SCREENSHOT_BASE64_CHARS = 64 * 1024 * 1024
 _MAX_BROWSER_SCREENSHOT_DECODED_BYTES = 64 * 1024 * 1024
+_MAX_MUTATION_LEDGER_SNAPSHOT_ROWS = 50_000
+_MAX_MUTATION_LEDGER_SNAPSHOT_BYTES = 16 * 1024 * 1024
 FAULT_NEGATIVE_CLOSURE_SCHEMA_ID = "aox_fault_negative_state_closure@1"
 MANUAL_APPROVAL_HOST_SCHEMA_ID = "aox_manual_approval_host@1"
 MANUAL_APPROVAL_HANDOFF_SCHEMA_ID = "aox_manual_approval_handoff@1"
@@ -93,6 +103,17 @@ _KNOWN_POSITIVE_PROBE_CONTROLLED_OPERATIONS = frozenset(
         ("bio_tools", "hmmbuild"),
         ("bio_tools", "cdhit"),
         ("bio_tools", "hmmalign"),
+    }
+)
+_AOX_DURABLE_ROUTE_POLICY_IDS = frozenset(
+    {
+        "bio.ncbi_fetch_proteins.provider:v1",
+        "bio.uniprot_fetch.provider:v1",
+        "bio.hmmer_search.provider:v1",
+        "bio_tools.mafft.hpc:v1",
+        "bio_tools.hmmbuild.hpc:v1",
+        "bio_tools.cdhit.hpc:v1",
+        "bio_tools.hmmalign.hpc:v1",
     }
 )
 S12_OPERATION_IDENTITY_SCHEMA = "openzyme_controlled_operation_s12@1"
@@ -373,6 +394,7 @@ class LiveProductPathError(RuntimeError):
 _SEALED_FAILURE_DETAIL_KEYS = frozenset(
     {
         "cleanup_failure_type",
+        "command_status",
         "coordination_failure_type",
         "failure_type",
     }
@@ -487,6 +509,7 @@ class SessionDriveResult:
     approval_ids: tuple[str, ...]
     browser_approval_receipt: dict[str, object] | None = None
     browser_observation_receipt: dict[str, object] | None = None
+    mutation_scope: dict[str, object] = field(default_factory=dict)
 
     def safe_summary(self) -> dict[str, object]:
         task_items = list(
@@ -521,6 +544,7 @@ class SessionDriveResult:
             "projected_operation_count": len(operations),
             "workspace_digest": canonical_digest(self.workspace),
             "event_receipt": dict(self.event_receipt),
+            "mutation_scope": dict(self.mutation_scope),
         }
 
 
@@ -1342,6 +1366,11 @@ class _PublicHostClient:
             permitted = permitted or (method == "POST" and segments[3] == "messages")
         elif len(segments) == 5 and segments[:2] == ["v3", "sessions"]:
             permitted = method == "POST" and segments[3:] == ["runtime", "drain"]
+        elif len(segments) == 6 and segments[:2] == ["v3", "sessions"]:
+            permitted = method == "GET" and segments[3:5] == [
+                "runtime",
+                "commands",
+            ]
         elif len(segments) == 4 and segments[:2] == ["v3", "approvals"]:
             permitted = method == "POST" and segments[3] == "resolve"
         if not permitted:
@@ -1553,6 +1582,7 @@ class LiveAoxAttemptRunner:
                 message=self._probe_prompt(context),
                 workflow_refs=(),
                 fault_enabled=False,
+                blob_root=context.roots.blob_root,
                 fault_blob_root=None,
                 browser_gate_enabled=False,
             )[0]
@@ -1586,6 +1616,7 @@ class LiveAoxAttemptRunner:
                 message=self._formal_prompt(context),
                 workflow_refs=(context.identity["workflow_ref"],),
                 fault_enabled=context.roots.attempt_kind == "fault",
+                blob_root=context.roots.blob_root,
                 fault_blob_root=context.roots.blob_root,
                 browser_gate_enabled=browser_gate_enabled,
             )
@@ -1734,6 +1765,366 @@ class LiveAoxAttemptRunner:
         ) as client:
             yield client
 
+    @contextmanager
+    def _session_mutation_scope(
+        self,
+        provider: SQLiteRepositoryProvider,
+        *,
+        session_id: str,
+        purpose: Literal["probe", "formal"],
+        attempt_id: str,
+        blob_root: Path,
+        projection: dict[str, object],
+        require_sealed: bool,
+    ) -> Iterator[None]:
+        with self._provider_repository_scope(provider) as repositories:
+            scope = self._mutation_scope_service(
+                repositories,
+                blob_root=blob_root,
+            ).open_scope(
+                session_id=session_id,
+                scope_kind=MutationScopeKind.ATTEMPT,
+                scope_ref=f"aox-attempt:{attempt_id}:{purpose}",
+            )
+        writer_factory = MutationWriterTurnFactory(
+            repository_scope_factory=lambda: self._provider_repository_scope(
+                provider
+            )
+        )
+        try:
+            with writer_factory.open(
+                session_id=session_id,
+                owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+                owner_ref=f"aox-attempt-driver:{attempt_id}:{purpose}",
+            ):
+                yield
+        except BaseException:
+            try:
+                projection.update(
+                    self._close_session_mutation_scope(
+                        provider,
+                        scope_id=scope.scope_id,
+                        blob_root=blob_root,
+                    )
+                )
+            except Exception as closure_error:
+                projection.update(
+                    self._fail_session_mutation_scope(
+                        provider,
+                        scope_id=scope.scope_id,
+                        blob_root=blob_root,
+                        blocker_code=self._mutation_closure_blocker(closure_error),
+                    )
+                )
+            raise
+        else:
+            try:
+                projection.update(
+                    self._close_session_mutation_scope(
+                        provider,
+                        scope_id=scope.scope_id,
+                        blob_root=blob_root,
+                    )
+                )
+            except Exception as closure_error:
+                blocker_code = self._mutation_closure_blocker(closure_error)
+                projection.update(
+                    self._fail_session_mutation_scope(
+                        provider,
+                        scope_id=scope.scope_id,
+                        blob_root=blob_root,
+                        blocker_code=blocker_code,
+                    )
+                )
+                if require_sealed:
+                    raise LiveProductPathError(
+                        "mutation_quiescence_unproven",
+                        "session mutation scope did not produce an exact sealed receipt",
+                        details={"failure_type": type(closure_error).__name__},
+                    ) from closure_error
+
+    @staticmethod
+    @contextmanager
+    def _provider_repository_scope(
+        provider: SQLiteRepositoryProvider,
+    ) -> Iterator[CoreRepositories]:
+        with provider.connection_scope() as owner:
+            authority = current_mutation_write_authority()
+            if authority is None:
+                yield owner.repositories
+            else:
+                with owner.repositories.mutation_write_authority(authority):
+                    yield owner.repositories
+
+    def _mutation_scope_service(
+        self,
+        repositories: CoreRepositories,
+        *,
+        blob_root: Path,
+    ) -> MutationScopeService:
+        return MutationScopeService(
+            repositories,
+            artifact_snapshot_provider=lambda session_id: (
+                self._session_artifact_snapshot(
+                    repositories,
+                    session_id=session_id,
+                    blob_root=blob_root,
+                )
+            ),
+        )
+
+    def _close_session_mutation_scope(
+        self,
+        provider: SQLiteRepositoryProvider,
+        *,
+        scope_id: str,
+        blob_root: Path,
+    ) -> dict[str, object]:
+        with self._provider_repository_scope(provider) as repositories:
+            self._mutation_scope_service(
+                repositories,
+                blob_root=blob_root,
+            ).begin_freeze(scope_id)
+        deadline = time.monotonic() + min(15.0, self.timeout_seconds)
+        while True:
+            with self._provider_repository_scope(provider) as repositories:
+                active = repositories.mutation_writers.list_active(scope_id)
+            if not active:
+                break
+            if time.monotonic() >= deadline:
+                raise MutationScopeError(
+                    "mutation_writers_still_active",
+                    "registered mutation writers did not retire within the closure bound",
+                )
+            time.sleep(0.01)
+        with self._provider_repository_scope(provider) as repositories:
+            service = self._mutation_scope_service(
+                repositories,
+                blob_root=blob_root,
+            )
+            issued = service.issue_quiescence_receipt(scope_id)
+            service.seal_scope(
+                scope_id,
+                receipt_id=issued.receipt.receipt_id,
+            )
+            projected = service.project_scope(scope_id)
+        receipt = projected.get("receipt")
+        if (
+            projected.get("state") != "sealed"
+            or not isinstance(receipt, dict)
+            or not receipt.get("receipt_id")
+            or not receipt.get("snapshot_id")
+        ):
+            raise MutationScopeError(
+                "mutation_seal_projection_incomplete",
+                "sealed mutation scope lacks its public receipt identity",
+            )
+        return projected
+
+    def _fail_session_mutation_scope(
+        self,
+        provider: SQLiteRepositoryProvider,
+        *,
+        scope_id: str,
+        blob_root: Path,
+        blocker_code: str,
+    ) -> dict[str, object]:
+        try:
+            with self._provider_repository_scope(provider) as repositories:
+                service = self._mutation_scope_service(
+                    repositories,
+                    blob_root=blob_root,
+                )
+                service.fail_scope(scope_id, blocker_code=blocker_code)
+                return service.project_scope(scope_id)
+        except Exception:
+            return {
+                "schema_version": "mutation_scope_projection@1",
+                "scope_id": scope_id,
+                "state": "failed",
+                "blocker_code": blocker_code,
+            }
+
+    @staticmethod
+    def _mutation_closure_blocker(error: BaseException) -> str:
+        code = getattr(error, "code", None)
+        if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", code):
+            return code
+        return "mutation_quiescence_capture_failed"
+
+    def _session_artifact_snapshot(
+        self,
+        repositories: CoreRepositories,
+        *,
+        session_id: str,
+        blob_root: Path,
+    ) -> dict[str, object]:
+        root = blob_root.resolve()
+        artifacts = sorted(
+            repositories.artifacts.list_by_session(session_id),
+            key=lambda artifact: artifact.artifact_id,
+        )
+        if len(artifacts) > 10_000:
+            raise MutationScopeError(
+                "artifact_snapshot_entry_limit_exceeded",
+                "session artifact snapshot exceeded its bounded entry count",
+            )
+        entries: list[dict[str, object]] = []
+        for artifact in artifacts:
+            source = Path(artifact.storage_uri)
+            try:
+                resolved = source.resolve(strict=True)
+            except OSError as exc:
+                raise MutationScopeError(
+                    "artifact_snapshot_source_missing",
+                    "a catalog artifact has no readable sealed source",
+                ) from exc
+            if source.is_symlink() or (resolved != root and root not in resolved.parents):
+                raise MutationScopeError(
+                    "artifact_snapshot_storage_boundary_invalid",
+                    "a catalog artifact escapes the attempt blob boundary",
+                )
+            metadata = dict(artifact.metadata or {})
+            if resolved.is_file():
+                content = resolved.read_bytes()
+                observed_digest = _sha256(content)
+                declared_digest = str(
+                    metadata.get("content_digest")
+                    or metadata.get("sealed_digest")
+                    or ""
+                )
+                if declared_digest and declared_digest != observed_digest:
+                    raise MutationScopeError(
+                        "artifact_snapshot_digest_mismatch",
+                        "sealed artifact bytes do not match the catalog digest",
+                    )
+                entry = {
+                    "artifact_id": artifact.artifact_id,
+                    "relative_path": artifact.relative_path,
+                    "kind": artifact.kind.value,
+                    "storage_kind": "file",
+                    "size_bytes": len(content),
+                    "observed_digest": observed_digest,
+                    "declared_digest": declared_digest or None,
+                }
+            elif resolved.is_dir():
+                file_manifest: list[dict[str, object]] = []
+                for path in sorted(resolved.rglob("*")):
+                    if path.is_symlink():
+                        raise MutationScopeError(
+                            "artifact_snapshot_symlink_forbidden",
+                            "sealed artifact trees cannot contain symlinks",
+                        )
+                    if not path.is_file():
+                        continue
+                    if len(file_manifest) >= 50_000:
+                        raise MutationScopeError(
+                            "artifact_snapshot_file_limit_exceeded",
+                            "sealed artifact tree exceeded its bounded file count",
+                        )
+                    content = path.read_bytes()
+                    file_manifest.append(
+                        {
+                            "relative_path": path.relative_to(resolved).as_posix(),
+                            "size_bytes": len(content),
+                            "content_digest": _sha256(content),
+                        }
+                    )
+                entry = {
+                    "artifact_id": artifact.artifact_id,
+                    "relative_path": artifact.relative_path,
+                    "kind": artifact.kind.value,
+                    "storage_kind": "tree",
+                    "file_count": len(file_manifest),
+                    "observed_digest": canonical_digest(file_manifest),
+                    "declared_digest": metadata.get("tree_digest"),
+                    "file_manifest": file_manifest,
+                }
+            else:
+                raise MutationScopeError(
+                    "artifact_snapshot_source_invalid",
+                    "a catalog artifact is neither a regular file nor directory",
+                )
+            entries.append(entry)
+        return {
+            "schema_id": "aox_session_artifact_snapshot@1",
+            "session_id_digest": canonical_digest(session_id),
+            "artifact_count": len(entries),
+            "artifact_set_digest": canonical_digest(entries),
+            "artifacts": entries,
+            "live_token_ledger": self._live_token_ledger_snapshot(),
+        }
+
+    def _live_token_ledger_snapshot(self) -> dict[str, object]:
+        ledger_path = self.ledger_path.expanduser().resolve()
+        identity_digest = canonical_digest({"path": str(ledger_path)})
+        if not ledger_path.exists():
+            return {
+                "schema_id": "live_micu_token_ledger_snapshot@1",
+                "ledger_identity_digest": identity_digest,
+                "exists": False,
+                "attempt_count": 0,
+                "last_record_id": None,
+                "records_digest": canonical_digest([]),
+                "records": [],
+            }
+        connection = sqlite3.connect(
+            f"file:{quote(str(ledger_path))}?mode=ro",
+            uri=True,
+            timeout=30.0,
+        )
+        connection.row_factory = sqlite3.Row
+        try:
+            state = connection.execute(
+                "SELECT hard_limit_tokens FROM live_micu_token_state WHERE id = 1"
+            ).fetchone()
+            rows = connection.execute(
+                """
+                SELECT id, scenario, purpose, kind, model, attempt,
+                       input_tokens, output_tokens, charged_tokens, estimated,
+                       status, reservation_overage_tokens, hard_limit_breached,
+                       cumulative_tokens, created_at, updated_at
+                FROM live_micu_token_attempts
+                ORDER BY id
+                LIMIT ?
+                """,
+                (_MAX_MUTATION_LEDGER_SNAPSHOT_ROWS + 1,),
+            ).fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise MutationScopeError(
+                "ledger_snapshot_schema_invalid",
+                "live token ledger lacks its canonical state or attempt schema",
+            ) from exc
+        finally:
+            connection.close()
+        if state is None:
+            raise MutationScopeError(
+                "ledger_snapshot_state_missing",
+                "live token ledger lacks its canonical policy state",
+            )
+        if len(rows) > _MAX_MUTATION_LEDGER_SNAPSHOT_ROWS:
+            raise MutationScopeError(
+                "ledger_snapshot_row_limit_exceeded",
+                "live token ledger exceeded the bounded receipt row count",
+            )
+        records = [dict(row) for row in rows]
+        record_bytes = canonical_json_bytes(records)
+        if len(record_bytes) > _MAX_MUTATION_LEDGER_SNAPSHOT_BYTES:
+            raise MutationScopeError(
+                "ledger_snapshot_byte_limit_exceeded",
+                "live token ledger exceeded the bounded receipt byte count",
+            )
+        return {
+            "schema_id": "live_micu_token_ledger_snapshot@1",
+            "ledger_identity_digest": identity_digest,
+            "exists": True,
+            "hard_limit_tokens": int(state["hard_limit_tokens"]),
+            "attempt_count": len(records),
+            "last_record_id": None if not records else int(records[-1]["id"]),
+            "records_digest": canonical_digest(records),
+            "records": records,
+        }
+
     def _run_session(
         self,
         api: _PublicHostClient,
@@ -1745,6 +2136,7 @@ class LiveAoxAttemptRunner:
         message: str,
         workflow_refs: tuple[str, ...],
         fault_enabled: bool,
+        blob_root: Path,
         fault_blob_root: Path | None,
         browser_gate_enabled: bool,
     ) -> tuple[SessionDriveResult, FaultInjectionReceipt | None]:
@@ -1758,6 +2150,43 @@ class LiveAoxAttemptRunner:
             },
             idempotency_key=f"{session_id}:create",
         )
+        mutation_scope: dict[str, object] = {}
+        with self._session_mutation_scope(
+            provider,
+            session_id=session_id,
+            purpose=purpose,
+            attempt_id=session_id.removeprefix(f"sess_{purpose}_"),
+            blob_root=blob_root,
+            projection=mutation_scope,
+            require_sealed=not fault_enabled,
+        ):
+            return self._run_session_scoped(
+                api,
+                provider,
+                session_id=session_id,
+                purpose=purpose,
+                message=message,
+                workflow_refs=workflow_refs,
+                fault_enabled=fault_enabled,
+                fault_blob_root=fault_blob_root,
+                browser_gate_enabled=browser_gate_enabled,
+                mutation_scope=mutation_scope,
+            )
+
+    def _run_session_scoped(
+        self,
+        api: _PublicHostClient,
+        provider: SQLiteRepositoryProvider,
+        *,
+        session_id: str,
+        purpose: Literal["probe", "formal"],
+        message: str,
+        workflow_refs: tuple[str, ...],
+        fault_enabled: bool,
+        fault_blob_root: Path | None,
+        browser_gate_enabled: bool,
+        mutation_scope: dict[str, object],
+    ) -> tuple[SessionDriveResult, FaultInjectionReceipt | None]:
         api.post_json(
             f"/v3/sessions/{session_id}/messages",
             {"message": message, "skill_keys": list(workflow_refs)},
@@ -1843,6 +2272,7 @@ class LiveAoxAttemptRunner:
                         drain_count=drain_number,
                         approval_ids=tuple(approval_ids),
                         browser_approval_receipt=browser_approval_receipt,
+                        mutation_scope=mutation_scope,
                     ),
                     fault_receipt,
                 )
@@ -1873,6 +2303,7 @@ class LiveAoxAttemptRunner:
                 drain_count=self.max_drains,
                 approval_ids=tuple(approval_ids),
                 browser_approval_receipt=browser_approval_receipt,
+                mutation_scope=mutation_scope,
             ),
             fault_receipt,
         )
@@ -1893,101 +2324,102 @@ class LiveAoxAttemptRunner:
         fault_blob_root: Path | None,
         fault_receipt: FaultInjectionReceipt | None,
     ) -> _DrainCoordinationResult:
-        """Drive approvals while the bounded drain request remains in flight.
+        """Admit one bounded runtime command and coordinate its durable approvals."""
 
-        The current supervised sandbox waits synchronously for each controlled
-        operation decision.  The live evidence driver therefore has to observe
-        and resolve those requests through the public Host API concurrently with
-        the public drain command.  This is a cutover-driver coordination seam,
-        not a replacement for the durable runtime/continuation architecture.
-        """
-
-        drain_done = threading.Event()
-        drain_request_started = threading.Event()
         drain_errors: list[Exception] = []
         deadline = started + self.timeout_seconds
-
-        def post_drain() -> None:
-            try:
-                api.post_json(
-                    f"/v3/sessions/{session_id}/runtime/drain",
-                    {
-                        "max_signals": self.max_signals_per_drain,
-                        "max_steps_per_agent": self.max_steps_per_agent,
-                        "auto_enqueue_ready_tasks": False,
-                    },
-                    idempotency_key=f"{session_id}:drain:{drain_number}",
-                    _request_started=drain_request_started,
-                    _timeout_seconds=max(0.001, deadline - time.monotonic()),
-                )
-            except Exception as exc:  # propagated on the coordinating thread
-                drain_errors.append(exc)
-            finally:
-                drain_done.set()
-
-        drain_thread = threading.Thread(
-            target=post_drain,
-            name=f"aox-cutover-drain-{drain_number}",
-            daemon=False,
-        )
-        drain_thread.start()
-
         handled = set(prior_approval_ids)
         newly_approved: list[str] = []
         latest_workspace: dict[str, Any] = {}
         latest_binding: dict[str, object] = {}
         coordination_error: Exception | None = None
         cleanup_errors: list[Exception] = []
+        command_id = ""
+        command_route = ""
+        command_status = ""
+        command_status_observed = False
+        terminal_statuses = {"completed", "failed", "locked", "cancelled"}
+
+        def command_failure(status: str) -> LiveProductPathError:
+            return LiveProductPathError(
+                "runtime_drain_command_failed",
+                "the durable runtime command reached a failed terminal state",
+                details={"command_status": status},
+            )
 
         try:
-            while not drain_request_started.is_set():
-                if drain_done.is_set():
-                    break
+            command = api.post_json(
+                f"/v3/sessions/{session_id}/runtime/drain",
+                {
+                    "max_signals": self.max_signals_per_drain,
+                    "max_steps_per_agent": self.max_steps_per_agent,
+                    "auto_enqueue_ready_tasks": False,
+                },
+                idempotency_key=f"{session_id}:drain:{drain_number}",
+                _timeout_seconds=max(0.001, deadline - time.monotonic()),
+            )
+            command_id = str(command.get("command_id") or "")
+            command_route = str(command.get("status_url") or "")
+            expected_command_route = (
+                f"/v3/sessions/{session_id}/runtime/commands/{command_id}"
+            )
+            command_status = str(command.get("status") or "")
+            if (
+                command.get("session_id") != session_id
+                or not command_id
+                or command_route != expected_command_route
+                or command_status
+                not in {"accepted", "claimed", *terminal_statuses}
+            ):
+                raise LiveProductPathError(
+                    "runtime_command_admission_invalid",
+                    "public runtime drain did not return a closed command identity",
+                    details={"session_id": session_id},
+                )
+            while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise LiveProductPathError(
                         "runtime_drain_coordination_timeout",
-                        "public runtime drain did not begin before the attempt deadline",
+                        "public runtime command did not reach a bounded terminal state",
                         details={
                             "session_id": session_id,
                             "drain_number": drain_number,
                         },
                     )
-                drain_request_started.wait(
-                    timeout=min(self.browser_poll_interval_seconds, remaining)
-                )
-
-            while True:
-                # A failed drain has no bounded response whose post-response
-                # workspace projection needs observing.  Let the stable
-                # command-failure branch below report the original exception
-                # instead of allowing a follow-up GET failure to mask it as a
-                # coordination error.
-                if drain_done.is_set() and drain_errors:
-                    break
-                if time.monotonic() >= deadline:
-                    raise LiveProductPathError(
-                        "runtime_drain_coordination_timeout",
-                        "public runtime drain did not reach a bounded response",
-                        details={
-                            "session_id": session_id,
-                            "drain_number": drain_number,
-                        },
+                if (
+                    not command_status_observed
+                    or command_status not in terminal_statuses
+                ):
+                    command = api.get_json(
+                        command_route,
+                        _timeout_seconds=max(0.001, remaining),
                     )
-
-                # The compact approval response below must be known to have
-                # started after a bounded drain response before it can prove
-                # that the response exposed no new approval.  Durable events
-                # are not sufficient here: a synchronous sandbox can persist
-                # the approval row before the derived approval.requested
-                # activity event is backfilled.
-                drain_was_done = drain_done.is_set()
+                    if (
+                        command.get("session_id") != session_id
+                        or command.get("command_id") != command_id
+                    ):
+                        raise LiveProductPathError(
+                            "runtime_command_identity_drift",
+                            "runtime command status changed its durable identity",
+                        )
+                    command_status = str(command.get("status") or "")
+                    command_status_observed = True
+                    if command_status not in {
+                        "accepted",
+                        "claimed",
+                        *terminal_statuses,
+                    }:
+                        raise LiveProductPathError(
+                            "runtime_command_status_invalid",
+                            "runtime command returned an unknown status",
+                        )
+                    if command_status in {"failed", "cancelled"}:
+                        raise command_failure(command_status)
                 pending = list(
                     api.get_pending_approvals(
                         session_id,
-                        _timeout_seconds=max(
-                            0.001, deadline - time.monotonic()
-                        ),
+                        _timeout_seconds=max(0.001, deadline - time.monotonic()),
                     )
                 )
                 acted = False
@@ -2071,34 +2503,25 @@ class LiveAoxAttemptRunner:
                     acted = True
                     if browser_approval_receipt is not None:
                         break
-                if not acted:
-                    # A bounded drain may return ``waiting_approval`` after the
-                    # approval and continuation have become durable.  Always
-                    # inspect the post-response compact control view once
-                    # before leaving this coordination seam so that the
-                    # approval can be resolved and the next drain can resume
-                    # the continuation.
-                    if drain_was_done:
-                        break
-                    if drain_done.is_set():
-                        continue
-                    remaining = max(0.0, deadline - time.monotonic())
-                    drain_done.wait(
-                        timeout=min(self.browser_poll_interval_seconds, remaining)
-                    )
+                if acted:
+                    continue
+                if command_status in terminal_statuses:
+                    break
+                time.sleep(min(self.browser_poll_interval_seconds, remaining))
         except Exception as exc:
-            coordination_error = exc
+            if not command_id or (
+                isinstance(exc, LiveProductPathError)
+                and exc.code == "runtime_drain_command_failed"
+            ):
+                drain_errors.append(exc)
+            else:
+                coordination_error = exc
 
-        if coordination_error is not None and not drain_done.is_set():
-            # Once the public receipt/coordination chain is invalid, no later
-            # controlled operation may continue scientific execution.  Keep
-            # rejecting approvals until the bounded drain request retires or
-            # the attempt's existing deadline is reached.  A short, separate
-            # cleanup window can expire before a synchronously waiting sandbox
-            # publishes its next durable approval and strand the drain worker.
+        if coordination_error is not None and command_id:
             cleanup_deadline = deadline
             rejected: set[str] = set()
-            while not drain_done.is_set() and time.monotonic() < cleanup_deadline:
+            empty_terminal_reads = 0
+            while time.monotonic() < cleanup_deadline:
                 try:
                     cleanup_pending = api.get_pending_approvals(
                         session_id,
@@ -2125,27 +2548,30 @@ class LiveAoxAttemptRunner:
                             ),
                         )
                         rejected.add(approval_id)
+                    if command_status not in terminal_statuses:
+                        cleanup_command = api.get_json(
+                            command_route,
+                            _timeout_seconds=max(
+                                0.001, cleanup_deadline - time.monotonic()
+                            ),
+                        )
+                        command_status = str(cleanup_command.get("status") or "")
+                        if (
+                            command_status in {"failed", "cancelled"}
+                            and not drain_errors
+                        ):
+                            drain_errors.append(command_failure(command_status))
+                    if command_status in terminal_statuses and not cleanup_pending:
+                        empty_terminal_reads += 1
+                        if empty_terminal_reads >= 2:
+                            break
+                    else:
+                        empty_terminal_reads = 0
                 except Exception as exc:
                     if not cleanup_errors:
                         cleanup_errors.append(exc)
-                    # A transient public workspace/resolve failure is only a
-                    # bounded secondary cleanup diagnostic.  Retry with the
-                    # same idempotency keys so a later approval can still be
-                    # rejected and the primary failure can converge cleanly;
-                    # retaining repeated exception objects until a long
-                    # attempt deadline would provide no additional taxonomy.
                 remaining = max(0.0, cleanup_deadline - time.monotonic())
-                drain_done.wait(
-                    timeout=min(self.browser_poll_interval_seconds, remaining)
-                )
-
-        drain_thread.join(timeout=2.0)
-        if drain_thread.is_alive():
-            # The drain request itself has a finite remaining-attempt transport
-            # timeout.  Do not unwind the Host context while that request still
-            # owns a server-side runtime call; wait for the bounded request to
-            # retire its reservation first.
-            drain_thread.join()
+                time.sleep(min(self.browser_poll_interval_seconds, remaining))
         _raise_runtime_drain_failures(
             drain_errors=drain_errors,
             coordination_error=coordination_error,
@@ -3042,6 +3468,30 @@ class LiveAoxAttemptRunner:
                 "code": "ncbi_identity_missing",
                 "message": "the existing NCBI email identity is not configured",
             }
+        reliability = self.settings.reliability
+        if reliability.runtime_drain_contract.value != "command_v1":
+            return {
+                "code": "runtime_command_contract_required",
+                "message": "AOX cutover requires 202 command-based runtime drain",
+            }
+        owner_policy = reliability.controlled_operation_owner_policy.value
+        durable_routes = set(reliability.durable_execution_route_allowlist)
+        if owner_policy == "durable_only_v1":
+            durable_routes = set(_AOX_DURABLE_ROUTE_POLICY_IDS)
+        missing_routes = sorted(_AOX_DURABLE_ROUTE_POLICY_IDS - durable_routes)
+        if missing_routes:
+            return {
+                "code": "aox_durable_operation_ownership_required",
+                "message": (
+                    "AOX cutover requires durable_async_v1 ownership for every "
+                    "provider and HPC route"
+                ),
+            }
+        if reliability.mutation_closure_mode.value != "generic_v1":
+            return {
+                "code": "generic_mutation_closure_required",
+                "message": "AOX cutover requires generic Host quiescence and sealing",
+            }
         return None
 
     @staticmethod
@@ -3418,6 +3868,10 @@ class LiveAoxAttemptRunner:
         product_path["public_final_scientific_evidence_digest"] = canonical_digest(
             dict(formal.workspace.get("scientific_evidence") or {})
         )
+        product_path["mutation_quiescence"] = {
+            "probe": dict(probe.mutation_scope),
+            "formal": dict(formal.mutation_scope),
+        }
         launch_receipt = dict(product_path["launch_receipt"])
         public_api_receipts = [item.to_dict() for item in api_receipts]
         launch_receipt.update(
@@ -3641,6 +4095,12 @@ class LiveAoxAttemptRunner:
             },
             "fault_injection": fault_injection,
         }
+        product_path = dict(evidence["product_path"])
+        product_path["mutation_quiescence"] = {
+            "probe": None if probe is None else dict(probe.mutation_scope),
+            "formal": None if formal is None else dict(formal.mutation_scope),
+        }
+        evidence["product_path"] = product_path
         self._attach_effective_config(evidence, context, required=False)
         return evidence
 
@@ -3699,6 +4159,10 @@ class LiveAoxAttemptRunner:
         product_path["public_final_scientific_evidence_digest"] = canonical_digest(
             dict(formal.workspace.get("scientific_evidence") or {})
         )
+        product_path["mutation_quiescence"] = {
+            "probe": dict(probe.mutation_scope),
+            "formal": dict(formal.mutation_scope),
+        }
         launch_receipt = dict(product_path["launch_receipt"])
         public_api_receipts = [item.to_dict() for item in api_receipts]
         launch_receipt.update(
@@ -3852,6 +4316,17 @@ class LiveAoxAttemptRunner:
         byte_offset = min(4, len(content) - 1)
         mutated = bytearray(content)
         mutated[byte_offset] ^= 1
+        authority = current_mutation_write_authority()
+        if authority is None:
+            raise LiveProductPathError(
+                "fault_injection_mutation_authority_missing",
+                "controlled fault injection lacks active attempt-writer authority",
+            )
+        with self._provider_repository_scope(provider) as repositories:
+            with repositories.mutation_write_authority(authority):
+                repositories.assert_artifact_publication_authority(
+                    session_id=session_id
+                )
         path.chmod(0o600)
         try:
             path.write_bytes(bytes(mutated))

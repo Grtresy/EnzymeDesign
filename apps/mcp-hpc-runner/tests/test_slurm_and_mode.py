@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tempfile
 
 import pytest
 
@@ -11,7 +12,13 @@ from mcp_hpc_runner.config import (
     LoggingConfig,
     RunnerConfig,
     SlurmConfig,
+    SshTransportMode,
+    SshTransportPolicy,
 )
+from mcp_hpc_runner.attempts import RunnerAttemptPhase
+from mcp_hpc_runner.attempts import RunnerAttemptState
+from mcp_hpc_runner.attempts import RunnerEffectCertainty
+from mcp_hpc_runner.attempts import RunnerRetryEligibility
 from mcp_hpc_runner.errors import FailureMapper
 from mcp_hpc_runner.mode import select_execution_mode
 from mcp_hpc_runner.models import ExpectedOutput, JobHandle, JobStatus, ResourceSpec, RunSpec
@@ -244,7 +251,7 @@ def test_slurm_status_rejects_safe_but_out_of_scope_remote_dir(
     ("state", "exit_code", "expected_status", "expected_error"),
     [
         ("running", None, "running", "JOB_NOT_TERMINAL"),
-        ("unknown", None, "unknown", "JOB_NOT_TERMINAL"),
+        ("unknown", None, "pending", "JOB_NOT_TERMINAL"),
         ("failed", 1, "failed", "JOB_TERMINAL_FAILED"),
         ("cancelled", 0, "failed", "JOB_TERMINAL_FAILED"),
         ("completed", None, "failed", "JOB_TERMINAL_FAILED"),
@@ -340,3 +347,95 @@ def test_slurm_fetch_downloads_only_after_completed_zero_exit(
     assert result.artifacts == {
         "mcp_runs/run123/out/result.txt": str(output_path)
     }
+
+
+def test_slurm_restart_resumes_exact_output_fetch_without_job_resubmit(
+    tmp_path: Path,
+) -> None:
+    control = tempfile.TemporaryDirectory(prefix="ozs-", dir="/tmp")
+    config = RunnerConfig(
+        cluster=ClusterConfig(ssh_host="hpc"),
+        execution=ExecutionConfig(artifact_root=str(tmp_path / "artifacts")),
+        ssh_transport=SshTransportPolicy(
+            mode=SshTransportMode.CONTROLMASTER_V1,
+            backoff_initial_seconds=0.0,
+            backoff_max_seconds=0.0,
+        ),
+        transport_control_root=str(Path(control.name) / "c"),
+    )
+    store = ArtifactStore(config.artifact_root)
+    fake = FakeRunner()
+    staging = StagingManager(config, store, fake)  # type: ignore[arg-type]
+    runner = SlurmRunner(
+        config,
+        store,
+        staging,
+        fake,  # type: ignore[arg-type]
+        FailureMapper(),
+    )
+    run_id = "slurm-restart-output-fetch"
+    spec = RunSpec(
+        name="slurm-restart",
+        stage="execution",
+        command=["true"],
+        execution_mode="sbatch",
+        expected_outputs=[
+            ExpectedOutput(path="result.txt", required=True, non_empty=True)
+        ],
+        run_id=run_id,
+    )
+    handle = JobHandle(
+        run_id=run_id,
+        job_id="12345",
+        remote_run_dir=runner._remote_run_dir(run_id),
+    )
+    runner.attempt_journal.create(spec, selected_mode="sbatch")
+    runner.attempt_journal.transition(
+        run_id,
+        phase=RunnerAttemptPhase.OUTPUTS_FETCHING,
+        effect_certainty=RunnerEffectCertainty.TERMINAL_KNOWN,
+        retry_eligibility=RunnerRetryEligibility.VERIFY_THEN_RETRY,
+        transport_generation=1,
+        reason_code="interrupted_outputs_fetching",
+    )
+    runner.status = lambda _: JobStatus(  # type: ignore[method-assign]
+        run_id=run_id,
+        job_id=handle.job_id,
+        state="completed",
+        raw_state="COMPLETED",
+        exit_code=0,
+    )
+    download_count = 0
+
+    def download_outputs(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        nonlocal download_count
+        download_count += 1
+        output_path = store.run_root(run_id) / "outputs" / "result.txt"
+        output_path.write_text("complete\n", encoding="utf-8")
+        entries = [
+            {
+                "remote_path": f"mcp_runs/{run_id}/out/result.txt",
+                "local_path": str(output_path),
+                "returncode": 0,
+            }
+        ]
+        store.write_outputs_manifest(
+            run_id,
+            {"run_id": run_id, "entries": entries},
+        )
+        return entries
+
+    runner.staging.download_outputs = download_outputs  # type: ignore[method-assign]
+
+    recovered = runner.fetch_artifacts(spec, handle)
+    replayed_recovery = runner.fetch_artifacts(spec, handle)
+    attempt = runner.attempt_journal.load(run_id)
+    runner.transport_manager.shutdown()
+    control.cleanup()
+
+    assert recovered.status == "completed"
+    assert replayed_recovery.status == "completed"
+    assert attempt.state is RunnerAttemptState.TERMINAL
+    assert attempt.phase_attempt_counts["outputs_fetching"] == 2
+    assert download_count == 1
+    assert all("sbatch" not in " ".join(command) for command in fake.commands)

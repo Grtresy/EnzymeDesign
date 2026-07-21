@@ -10,6 +10,30 @@ from .conversation import ConversationEntry
 from .conversation import build_conversation_projection
 from .conversation import load_recent_conversation
 from .conversation import persist_conversation_message
+from .controlled_operation_execution import (
+    ControlledOperationExecutionTransitionService,
+)
+from .controlled_operation_execution import ControlledOperationExecutionLeaseService
+from .controlled_operation_execution import DurableControlledOperationAdmission
+from .controlled_operation_execution import (
+    DurableControlledOperationAdmissionService,
+)
+from .controlled_operation_execution import InvalidExecutionTransitionError
+from .controlled_operation_execution import controlled_operation_approval_digest
+from .controlled_operation_execution import build_controlled_operation_result_handle
+from .controlled_operation_projection import project_controlled_operation_execution
+from .controlled_operation_projection import project_controlled_operation_summary
+from .controlled_operation_projection import is_controlled_operation_artifact_public
+from .continuation_delivery import ContinuationDeliveryWorker
+from .continuation_delivery import ContinuationDeliveryWorkerOutcome
+from .continuation_delivery import ContinuationWakeService
+from .continuation_delivery import recover_unattached_continuations
+from .durable_execution_worker import ControlledOperationExecutionWorker
+from .durable_execution_worker import ControlledOperationExecutionWorkerOutcome
+from .durable_execution_worker import ControlledOperationRouteAdapter
+from .durable_execution_worker import DurableRouteMaterializedResult
+from .durable_execution_worker import DurableRouteObservation
+from .durable_execution_worker import DurableRouteObservationKind
 from .agent_runtime import AgentRuntimeOutcome
 from .agent_runtime import AgentRuntimeService
 from .agent_scheduler import AgentRuntimeScheduler
@@ -45,10 +69,24 @@ from .lane_manager import LaneManager
 from .lane_manager import LaneProjection
 from .lane_manager import LaneProjectionItem
 from .lane_manager import register_lane_tools
+from .live_process_registry import AttachedProcessDelivery
+from .live_process_registry import AttachedProcessHandle
+from .live_process_registry import AttachedProcessIdentity
+from .live_process_registry import LiveProcessRegistry
+from .live_process_registry import LiveProcessRegistryConflictError
+from .live_process_registry import LiveProcessRegistryEntry
 from .memory import MemoryService
 from .memory import ScopedMemorySummary
 from .memory import SessionRestoreContext
 from .memory import register_memory_tools
+from .mutation_quiescence import MutationScopeError
+from .mutation_quiescence import MutationScopeService
+from .mutation_quiescence import MutationWriterTurnFactory
+from .mutation_quiescence import QuiescenceIssueResult
+from .mutation_quiescence import build_quiescence_evidence_envelope
+from .mutation_quiescence import quiescence_receipt_digest
+from .mutation_quiescence import verify_quiescence_evidence
+from .mutation_quiescence import verify_quiescence_evidence_envelope
 from .projections import ActivityFeedItem
 from .projections import DelegationProjection
 from .projections import DelegationProjectionItem
@@ -106,6 +144,8 @@ from .repositories import EngineInvocationRepository
 from .repositories import DurableEventConflictError
 from .repositories import DurableEventRecord
 from .repositories import DurableEventRepository
+from .repositories import DurableControlledOperationWriteError
+from .repositories import ControlledOperationWriteFencingError
 from .repositories import FileAuditEntryRepository
 from .repositories import InboxMessageRepository
 from .repositories import LaneLifecycleEventRecord
@@ -121,6 +161,16 @@ from .repositories import ResearchSourceRefRepository
 from .repositories import ResearchSummaryRepository
 from .repositories import RunRecordRepository
 from .repositories import RuntimeWriteFencingError
+from .mutation_authority import HOST_MUTATION_COVERAGE_DIGEST
+from .mutation_authority import HOST_MUTATION_COVERAGE_MANIFEST
+from .mutation_authority import HOST_MUTATION_POLICY_DIGEST
+from .mutation_authority import HOST_MUTATION_POLICY_ID
+from .mutation_authority import MutationResourceCategory
+from .mutation_authority import MutationWriteAuthority
+from .mutation_authority import MutationWriteFencingError
+from .mutation_authority import bind_mutation_write_authority
+from .mutation_authority import current_mutation_write_authority
+from .mutation_authority import suspend_mutation_write_authority
 from .repositories import SandboxImageRecordRepository
 from .repositories import SandboxRunRecordRepository
 from .repositories import SandboxWorkspaceRecordRepository
@@ -137,6 +187,33 @@ from .repositories import LaneRepository
 from .repositories import TaskRepository
 from .repositories import ApprovalRequestRepository
 from .repositories import connect_sqlite
+from .durable_coordination_repositories import ContinuationDeliveryRepository
+from .durable_coordination_repositories import MutationScopeRepository
+from .durable_coordination_repositories import MutationWriterRepository
+from .durable_coordination_repositories import QuiescenceReceiptRepository
+from .durable_coordination_repositories import QuiescenceSnapshotRepository
+from .durable_coordination_repositories import RuntimeCommandRepository
+from .reliability_repositories import CanonicalRecordConflictError
+from .reliability_repositories import ControlledOperationDispatchRequestRepository
+from .reliability_repositories import ControlledOperationExecutionEventRepository
+from .reliability_repositories import ControlledOperationExecutionRepository
+from .reliability_repositories import ControlledOperationResultHandleRepository
+from .reliability_repositories import ControlledOperationResultArtifactRepository
+from .reliability_repositories import ImmutableIdentityConflictError
+from .reliability_repositories import OptimisticStateConflictError
+from .reliability_repositories import ReliabilityRepositoryError
+from .reliability_repositories import is_transient_sqlite_contention
+from .result_artifacts import ControlledOperationResultArtifactRef
+from .result_artifacts import controlled_operation_artifact_set_digest
+from .runtime_commands import RUNTIME_COMMAND_OUTCOME_MAX_BYTES
+from .runtime_commands import RUNTIME_COMMAND_OUTCOME_SCHEMA_VERSION
+from .runtime_commands import RuntimeCommandExecutionResult
+from .runtime_commands import RuntimeCommandExecutor
+from .runtime_commands import RuntimeCommandWorker
+from .runtime_commands import RuntimeCommandWorkerOutcome
+from .runtime_commands import runtime_command_request_digest
+from .runtime_command_projection import project_runtime_command
+from .runtime_command_projection import sanitize_runtime_command_outcome
 from .skills import SkillDescriptor
 from .skills import SkillDocument
 from .skills import SkillRegistry
@@ -187,7 +264,31 @@ __all__ = [
     "build_teammate_registry",
     "CommandLogArtifactRepository",
     "ControlledOperationRepository",
+    "ControlledOperationDispatchRequestRepository",
+    "ControlledOperationExecutionEventRepository",
+    "ControlledOperationExecutionRepository",
+    "ControlledOperationResultHandleRepository",
+    "ControlledOperationResultArtifactRepository",
+    "ControlledOperationResultArtifactRef",
+    "ControlledOperationExecutionTransitionService",
+    "ControlledOperationExecutionLeaseService",
+    "ControlledOperationExecutionWorker",
+    "ControlledOperationExecutionWorkerOutcome",
+    "ContinuationDeliveryWorker",
+    "ContinuationDeliveryWorkerOutcome",
+    "ContinuationWakeService",
+    "ControlledOperationRouteAdapter",
+    "DurableControlledOperationAdmission",
+    "DurableControlledOperationAdmissionService",
+    "DurableRouteMaterializedResult",
+    "DurableRouteObservation",
+    "DurableRouteObservationKind",
+    "controlled_operation_approval_digest",
+    "controlled_operation_artifact_set_digest",
+    "build_controlled_operation_result_handle",
+    "CanonicalRecordConflictError",
     "ContinuationStateRepository",
+    "ContinuationDeliveryRepository",
     "CURRENT_SQLITE_SCHEMA_VERSION",
     "register_bio_research_tools",
     "CapabilityEngine",
@@ -214,6 +315,8 @@ __all__ = [
     "DurableEventConflictError",
     "DurableEventRecord",
     "DurableEventRepository",
+    "DurableControlledOperationWriteError",
+    "ControlledOperationWriteFencingError",
     "FileAuditEntryRepository",
     "HarnessDriver",
     "HarnessEvent",
@@ -222,12 +325,20 @@ __all__ = [
     "HarnessStatus",
     "HarnessStep",
     "InboxMessageRepository",
+    "ImmutableIdentityConflictError",
+    "InvalidExecutionTransitionError",
     "LaneLifecycleEventRecord",
     "LaneLifecycleEventRepository",
     "LaneManager",
     "LaneRepository",
     "LaneProjection",
     "LaneProjectionItem",
+    "AttachedProcessDelivery",
+    "AttachedProcessHandle",
+    "AttachedProcessIdentity",
+    "LiveProcessRegistry",
+    "LiveProcessRegistryConflictError",
+    "LiveProcessRegistryEntry",
     "LlmConversationDriver",
     "LlmTraceStep",
     "LlmTraceToolCall",
@@ -235,9 +346,33 @@ __all__ = [
     "MemoryEventBus",
     "MemoryService",
     "MemoryEntryRepository",
+    "MutationScopeRepository",
+    "MutationScopeError",
+    "MutationScopeService",
+    "MutationWriterTurnFactory",
+    "MutationWriterRepository",
+    "MutationResourceCategory",
+    "MutationWriteAuthority",
+    "MutationWriteFencingError",
+    "bind_mutation_write_authority",
+    "current_mutation_write_authority",
+    "suspend_mutation_write_authority",
+    "HOST_MUTATION_COVERAGE_DIGEST",
+    "HOST_MUTATION_COVERAGE_MANIFEST",
+    "HOST_MUTATION_POLICY_DIGEST",
+    "HOST_MUTATION_POLICY_ID",
     "ModelContextProfile",
     "OwnershipError",
+    "OptimisticStateConflictError",
+    "is_transient_sqlite_contention",
     "ProtocolService",
+    "QuiescenceReceiptRepository",
+    "QuiescenceSnapshotRepository",
+    "QuiescenceIssueResult",
+    "build_quiescence_evidence_envelope",
+    "quiescence_receipt_digest",
+    "verify_quiescence_evidence",
+    "verify_quiescence_evidence_envelope",
     "PromptBudgetAction",
     "PromptBudgetConfig",
     "PromptBudgetDecision",
@@ -252,8 +387,19 @@ __all__ = [
     "ResearchGapRepository",
     "ResearchSourceRefRepository",
     "ResearchSummaryRepository",
+    "ReliabilityRepositoryError",
     "RunRecordRepository",
     "RuntimeWriteFencingError",
+    "RuntimeCommandRepository",
+    "RUNTIME_COMMAND_OUTCOME_MAX_BYTES",
+    "RUNTIME_COMMAND_OUTCOME_SCHEMA_VERSION",
+    "RuntimeCommandExecutionResult",
+    "RuntimeCommandExecutor",
+    "RuntimeCommandWorker",
+    "RuntimeCommandWorkerOutcome",
+    "runtime_command_request_digest",
+    "project_runtime_command",
+    "sanitize_runtime_command_outcome",
     "RuntimeConsistencyService",
     "RuntimeConsistencyWarning",
     "RuntimeStateAudit",
@@ -325,6 +471,10 @@ __all__ = [
     "normalize_immutable_image_id",
     "persist_conversation_message",
     "prompt_budget_config_from_env",
+    "project_controlled_operation_execution",
+    "project_controlled_operation_summary",
+    "recover_unattached_continuations",
+    "is_controlled_operation_artifact_public",
     "register_memory_tools",
     "register_docs_tools",
     "register_skill_tools",
