@@ -34,6 +34,7 @@ from openzyme_core.sandbox_workspace import DEFAULT_SANDBOX_IMAGE_REF
 from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_domain import ArtifactKind
 from openzyme_domain import ControlledOperation
+from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import MutationScopeKind
 from openzyme_domain import MutationWriterKind
@@ -170,7 +171,7 @@ AOX_DELIVERABLE_NORMALIZATION_CONTRACT_DIGEST = canonical_digest(
 _TERMINAL_OPERATION_STATUSES = {"completed", "failed", "recovery_failed"}
 _FAILED_OPERATION_STATUSES = {"failed", "recovery_failed"}
 _TERMINAL_TASK_STATUSES = {"completed", "failed", "cancelled", "blocked"}
-_FAILED_TASK_STATUSES = {"failed", "cancelled", "blocked"}
+_FAILED_TASK_STATUSES = {"failed", "cancelled"}
 _TERMINAL_SANDBOX_STATUSES = {"completed", "failed", "cancelled", "timed_out"}
 _SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
@@ -188,6 +189,99 @@ _BROWSER_DURABLE_EVENT_KEYS = {
     "payload",
     "payload_digest",
 }
+
+
+def _task_has_active_durable_suspension(
+    *,
+    task_id: str,
+    operations: list[Any],
+    continuations: list[Any],
+    runtime_signals: list[Any],
+) -> bool:
+    """Recognize only an exact durable continuation as non-business blocking."""
+
+    durable_operations = [
+        operation
+        for operation in operations
+        if operation.task_id == task_id
+        and operation.owner_mode is ControlledOperationOwnerMode.DURABLE_ASYNC_V1
+    ]
+    exact_continuations: list[Any] = []
+    for operation in durable_operations:
+        matches = [
+            continuation
+            for continuation in continuations
+            if continuation.operation_id == operation.operation_id
+            and continuation.approval_id == operation.approval_id
+            and continuation.sandbox_run_id == operation.sandbox_run_id
+            and continuation.originating_task_id == task_id
+        ]
+        if len(matches) != 1:
+            continue
+        continuation = matches[0]
+        exact_continuations.append(continuation)
+        if (
+            not operation.status.is_terminal
+            or not continuation.status.is_terminal
+            or not continuation.delivery_state.is_terminal
+        ):
+            return True
+    continuation_ids = {
+        continuation.continuation_id for continuation in exact_continuations
+    }
+    return any(
+        signal.task_id == task_id
+        and signal.reason.value == "engine_completed"
+        and signal.source_ref in continuation_ids
+        and not signal.status.is_terminal
+        for signal in runtime_signals
+    )
+
+
+def _session_has_inflight_mutation_writers(
+    provider: SQLiteRepositoryProvider,
+    *,
+    session_id: str,
+) -> bool:
+    """Return whether work below the exact attempt-driver writer is still live."""
+
+    with provider.read() as scope:
+        repositories = scope.repositories
+        active_scopes = [
+            mutation_scope
+            for mutation_scope in repositories.mutation_scopes.list_by_session(
+                session_id
+            )
+            if mutation_scope.state.value in {"open", "freezing", "quiescent"}
+        ]
+        if len(active_scopes) != 1 or active_scopes[0].state.value != "open":
+            raise LiveProductPathError(
+                "mutation_scope_coordination_invalid",
+                "runtime coordination lacks one exact open mutation scope",
+                details={"session_id": session_id},
+            )
+        active_writers = repositories.mutation_writers.list_active(
+            active_scopes[0].scope_id
+        )
+    attempt_drivers = [
+        writer
+        for writer in active_writers
+        if writer.owner_kind is MutationWriterKind.ATTEMPT_DRIVER
+    ]
+    if (
+        len(attempt_drivers) != 1
+        or attempt_drivers[0].parent_writer_id is not None
+        or not attempt_drivers[0].owner_ref.startswith("aox-attempt-driver:")
+    ):
+        raise LiveProductPathError(
+            "mutation_driver_writer_identity_invalid",
+            "runtime coordination lacks one exact outer attempt-driver writer",
+            details={"session_id": session_id},
+        )
+    return any(
+        writer.writer_id != attempt_drivers[0].writer_id
+        for writer in active_writers
+    )
 
 
 def _closed_browser_durable_event(
@@ -2506,6 +2600,14 @@ class LiveAoxAttemptRunner:
                 if acted:
                     continue
                 if command_status in terminal_statuses:
+                    if _session_has_inflight_mutation_writers(
+                        provider,
+                        session_id=session_id,
+                    ):
+                        time.sleep(
+                            min(self.browser_poll_interval_seconds, remaining)
+                        )
+                        continue
                     break
                 time.sleep(min(self.browser_poll_interval_seconds, remaining))
         except Exception as exc:
@@ -3229,12 +3331,18 @@ class LiveAoxAttemptRunner:
         with provider.read() as scope:
             repositories = scope.repositories
             operations = repositories.controlled_operations.list_by_session(session_id)
+            continuations = repositories.continuation_states.list_by_session(
+                session_id
+            )
             tasks = repositories.tasks.list_by_session(session_id)
             sandbox_runs = repositories.sandbox_runs.list_by_session(session_id)
             artifacts = repositories.artifacts.list_by_session(session_id)
             reports = repositories.reports.list_by_session(session_id)
             drafts = repositories.report_drafts.list_by_session(session_id)
             agents = repositories.agents.list_by_session(session_id)
+            runtime_signals = repositories.runtime_signals.list_by_session(
+                session_id
+            )
             messages = build_conversation_projection(repositories, session_id)
         failed_operation = next(
             (
@@ -3255,6 +3363,19 @@ class LiveAoxAttemptRunner:
         )
         if failed_task is not None:
             return "failed", f"task_{failed_task.status.value}"
+        blocked_tasks = [task for task in tasks if task.status.value == "blocked"]
+        if blocked_tasks:
+            if all(
+                _task_has_active_durable_suspension(
+                    task_id=task.task_id,
+                    operations=operations,
+                    continuations=continuations,
+                    runtime_signals=runtime_signals,
+                )
+                for task in blocked_tasks
+            ):
+                return "incomplete", None
+            return "failed", "task_blocked"
         failed_run = next(
             (
                 run

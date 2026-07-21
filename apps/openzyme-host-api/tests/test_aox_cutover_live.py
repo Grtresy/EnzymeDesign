@@ -19,7 +19,9 @@ import pytest
 
 from openzyme_domain import ArtifactKind
 from openzyme_domain import ControlledOperation
+from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import ControlledOperationStatus
+from openzyme_domain import MutationWriterKind
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionReportDraftRecord
@@ -129,6 +131,41 @@ class _OperationReadProvider:
         return self._Scope(self._operations, self._sandbox_runs)
 
 
+class _MutationReadProvider:
+    class _Scope:
+        def __init__(
+            self,
+            mutation_scopes: tuple[object, ...],
+            writers: tuple[object, ...],
+        ) -> None:
+            self.repositories = SimpleNamespace(
+                mutation_scopes=SimpleNamespace(
+                    list_by_session=lambda _session_id: mutation_scopes
+                ),
+                mutation_writers=SimpleNamespace(
+                    list_active=lambda _scope_id: writers
+                ),
+            )
+
+        def __enter__(self) -> _MutationReadProvider._Scope:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+    def __init__(
+        self,
+        *,
+        mutation_scopes: tuple[object, ...],
+        writers: tuple[object, ...],
+    ) -> None:
+        self._mutation_scopes = mutation_scopes
+        self._writers = writers
+
+    def read(self) -> _MutationReadProvider._Scope:
+        return self._Scope(self._mutation_scopes, self._writers)
+
+
 def _disable_cutover_operation_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep coordination-only tests independent from repository fixtures."""
 
@@ -137,10 +174,100 @@ def _disable_cutover_operation_budget(monkeypatch: pytest.MonkeyPatch) -> None:
         "_assert_cutover_operation_budget_before_approval",
         lambda *args, **kwargs: None,
     )
+    monkeypatch.setattr(
+        live,
+        "_session_has_inflight_mutation_writers",
+        lambda *args, **kwargs: False,
+    )
 
 
 def _chrome_effective_config() -> dict[str, object]:
     return {"driver": {"ui_dist_digest": _digest("built-ui-dist")}}
+
+
+def test_mutation_writer_coordination_requires_exact_attempt_driver() -> None:
+    mutation_scope = SimpleNamespace(
+        scope_id="scope_001",
+        state=SimpleNamespace(value="open"),
+    )
+    driver = SimpleNamespace(
+        writer_id="writer_driver",
+        owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+        owner_ref="aox-attempt-driver:attempt_001:formal",
+        parent_writer_id=None,
+    )
+    child = SimpleNamespace(
+        writer_id="writer_operation",
+        owner_kind=MutationWriterKind.CONTROLLED_OPERATION,
+        owner_ref="operation_001",
+        parent_writer_id=driver.writer_id,
+    )
+
+    assert live._session_has_inflight_mutation_writers(
+        _MutationReadProvider(
+            mutation_scopes=(mutation_scope,),
+            writers=(driver, child),
+        ),  # type: ignore[arg-type]
+        session_id="sess_001",
+    )
+    assert not live._session_has_inflight_mutation_writers(
+        _MutationReadProvider(
+            mutation_scopes=(mutation_scope,),
+            writers=(driver,),
+        ),  # type: ignore[arg-type]
+        session_id="sess_001",
+    )
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live._session_has_inflight_mutation_writers(
+            _MutationReadProvider(
+                mutation_scopes=(mutation_scope,),
+                writers=(child,),
+            ),  # type: ignore[arg-type]
+            session_id="sess_001",
+        )
+
+    assert error.value.code == "mutation_driver_writer_identity_invalid"
+
+
+def test_blocked_task_is_incomplete_only_for_exact_durable_suspension() -> None:
+    operation = SimpleNamespace(
+        operation_id="operation_001",
+        task_id="task_001",
+        approval_id="approval_001",
+        sandbox_run_id="run_001",
+        owner_mode=ControlledOperationOwnerMode.DURABLE_ASYNC_V1,
+        status=SimpleNamespace(is_terminal=False),
+    )
+    continuation = SimpleNamespace(
+        continuation_id="continuation_001",
+        operation_id=operation.operation_id,
+        approval_id=operation.approval_id,
+        sandbox_run_id=operation.sandbox_run_id,
+        originating_task_id=operation.task_id,
+        status=SimpleNamespace(is_terminal=False),
+        delivery_state=SimpleNamespace(is_terminal=False),
+    )
+
+    assert live._task_has_active_durable_suspension(
+        task_id="task_001",
+        operations=[operation],
+        continuations=[continuation],
+        runtime_signals=[],
+    )
+    assert not live._task_has_active_durable_suspension(
+        task_id="task_001",
+        operations=[operation],
+        continuations=[
+            SimpleNamespace(
+                **{
+                    **continuation.__dict__,
+                    "operation_id": "operation_drift",
+                }
+            )
+        ],
+        runtime_signals=[],
+    )
 
 
 def _public_receipt(
@@ -626,6 +753,56 @@ class _DrainReturnsPendingApprovalJsonClient:
         self.resolve_calls.append(
             (self.approval_id, decision, self.drain_returned.is_set())
         )
+        self.pending = False
+        return _JsonResponse(
+            {"approval_id": self.approval_id, "decision": decision}
+        )
+
+
+class _TerminalCommandDelayedApprovalJsonClient:
+    """Publish an attached approval after the bounded command is terminal."""
+
+    base_url = "http://127.0.0.1:54321"
+
+    def __init__(self, approval_id: str) -> None:
+        self.approval_id = approval_id
+        self.pending = False
+        self.resolve_calls: list[tuple[str, str]] = []
+
+    def get(self, route: str) -> _JsonResponse:
+        if route == (
+            "/v3/sessions/sess_terminal_writer/runtime/commands/"
+            "runtime_command_001"
+        ):
+            return _runtime_command_response(
+                session_id="sess_terminal_writer",
+                status="completed",
+            )
+        return _approval_projection_response(
+            route,
+            session_id="sess_terminal_writer",
+            pending_approvals=(
+                [{"approval_id": self.approval_id}] if self.pending else []
+            ),
+        )
+
+    def post(
+        self,
+        route: str,
+        *,
+        json: dict[str, object],
+        headers: dict[str, str],
+    ) -> _JsonResponse:
+        del headers
+        if route == "/v3/sessions/sess_terminal_writer/runtime/drain":
+            return _runtime_command_response(
+                session_id="sess_terminal_writer",
+                status="completed",
+                status_code=202,
+            )
+        assert route == f"/v3/approvals/{self.approval_id}/resolve"
+        decision = str(json.get("decision") or "")
+        self.resolve_calls.append((self.approval_id, decision))
         self.pending = False
         return _JsonResponse(
             {"approval_id": self.approval_id, "decision": decision}
@@ -2961,6 +3138,64 @@ def test_runtime_drain_resolves_approval_exposed_by_waiting_response(
         not thread.is_alive() or thread.name != "aox-cutover-drain-2"
         for thread in threading.enumerate()
     )
+
+
+def test_terminal_runtime_command_waits_for_attached_writer_and_late_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    approval_id = "approval_after_terminal_command"
+    raw_client = _TerminalCommandDelayedApprovalJsonClient(approval_id)
+    api = live._PublicHostClient(raw_client)
+    writer_checks = 0
+
+    monkeypatch.setattr(
+        live,
+        "_assert_cutover_operation_budget_before_approval",
+        lambda *args, **kwargs: None,
+    )
+
+    def has_attached_writer(*args: object, **kwargs: object) -> bool:
+        nonlocal writer_checks
+        del args, kwargs
+        writer_checks += 1
+        if writer_checks == 1:
+            raw_client.pending = True
+            return True
+        return False
+
+    monkeypatch.setattr(
+        live,
+        "_session_has_inflight_mutation_writers",
+        has_attached_writer,
+    )
+
+    coordination = runner._coordinate_runtime_drain(
+        api,
+        object(),  # type: ignore[arg-type]
+        session_id="sess_terminal_writer",
+        drain_number=5,
+        started=time.monotonic(),
+        pre_event_cursor=0,
+        prior_approval_ids=frozenset(),
+        browser_gate_enabled=False,
+        browser_approval_receipt=None,
+        fault_enabled=False,
+        fault_blob_root=None,
+        fault_receipt=None,
+    )
+
+    assert writer_checks == 2
+    assert raw_client.resolve_calls == [(approval_id, "approved")]
+    assert coordination.approval_ids == (approval_id,)
+    assert coordination.workspace == {"pending_approvals": []}
 
 
 def test_later_drain_auto_approves_after_chrome_receipt(

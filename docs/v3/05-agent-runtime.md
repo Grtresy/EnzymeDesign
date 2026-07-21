@@ -229,7 +229,7 @@ auto-claim 启用时也只能做窄范围机械匹配：
 
 `blocked_by` 表示下游输入尚未形成，不是只用于展示的 UI 状态。blocked task 不能被 auto-claim，也不能被 `task.delegate` 提前委派；master 应在上游完成后读取 protocol thread、artifacts 或 task result，更新下游 task 的 description / instructions，再显式委派。
 
-runtime wakeup 也必须执行同一防线：`TASK_AVAILABLE` 只允许 claim `todo + unassigned + no blockers` 的 task；普通 delegation / inbox wakeup 不得把 `blocked` task 机械推进到 `in_progress`。agent-level approval resume 是例外：`APPROVAL_RESOLVED` 可以把已 assigned 给该 agent、且没有未完成 `blocked_by` 的 approval-blocked task 恢复到 `in_progress`。durable SDK controlled-operation approval 不使用 `APPROVAL_RESOLVED` 恢复 agent turn；它开放 execution worker 的 claim 条件，agent 只在 result 经 exact continuation delivery 后继续。
+runtime wakeup 也必须执行同一防线：`TASK_AVAILABLE` 只允许 claim `todo + unassigned + no blockers` 的 task；普通 delegation / inbox wakeup 不得把 `blocked` task 机械推进到 `in_progress`。agent-level approval resume 是例外：`APPROVAL_RESOLVED` 可以把已 assigned 给该 agent、且没有未完成 `blocked_by` 的 approval-blocked task 恢复到 `in_progress`。durable SDK controlled-operation approval 不使用 `APPROVAL_RESOLVED` 恢复 agent turn；它开放 execution worker 的 claim 条件，agent 只在 result 经 exact continuation delivery 后继续。durable attached process park 时 agent 可投影为 `blocked` / `waiting approval`，但 task 必须保持 `in_progress`；`ENGINE_COMPLETED` owner wake 直接继续该 assigned task。
 
 除 task claim、pending approval block 与 approval resume 这类已文档化机械迁移外，业务终态必须由 agent 显式 `task.finish` 写入。mechanical transition 必须调用窄范围命名 command、携带 repository mechanical intent并真实改变 status；除 status / updated_at 与 claim 所需 assigned_ref 外不得修改其它 task 字段。raw save、generic update 与 runtime recovery 不得复用该 intent。测试 fixture 若需要预置历史终态，只能显式调用 fixture seed path，该 path 不属于产品 runtime surface。
 
@@ -303,7 +303,7 @@ master 与 teammate 都可以通过 `artifact.list` / `artifact.get` / `artifact
 ## 7. Failure And Recovery Defaults
 
 - teammate work loop 仍然必须 bounded，避免无限 tool-call 循环。
-- 任一 tool call 创建 pending approval 后，当前 teammate/master work loop 必须停止并进入 `blocked` / `waiting approval`；同批后续 tool calls 不再执行。durable sandbox call 同时 park exact attached process，由 outer supervisor 持有，不让 agent signal/session lease 等待。
+- 任一 tool call 创建 pending approval 后，当前 teammate/master work loop 必须停止并让 agent 进入 `blocked` / `waiting approval`；同批后续 tool calls 不再执行。agent-level / legacy approval 可使用机械 task block；durable sandbox call 则 park exact attached process、保持 task `in_progress`，由 outer supervisor 持有，不让 agent signal/session lease 等待，也不把 runtime suspension 伪装成业务 blocked。
 - agent-level approval resolved 是唤醒相关 resident agent 的 runtime signal；恢复 agent turn 前必须先通过 harness/API resolve approval。durable SDK controlled-operation approval resolved 不是 agent runtime signal，它只授权 execution worker 推进 canonical execution；result-ready 后由 continuation worker 投递 exact blocked SDK response。
 - approved execution pipeline 的成功、失败和取消都回到原 executor：Host 只继续 engine invocation、记录 run/artifact/activity 证据并发出唤醒信号，不直接合成用户最终答复。
 - task canonical 终态由 task board 表达；protocol/chat 只承载沟通内容。成功执行由 executor 总结结果后通过 `task.finish(status="completed")` 完成 task，失败执行只在明确不可修复时由 executor 调用 `task.finish(status="failed")` 并提供 `failure_summary` 或 `failure_ref`。阻塞退出必须提供 `blocked_reason` 或 `recovery_hint`。

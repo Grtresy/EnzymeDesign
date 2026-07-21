@@ -33,6 +33,18 @@ from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
+from openzyme_domain import ContinuationDeliveryState
+from openzyme_domain import ContinuationResumeStrategy
+from openzyme_domain import ContinuationState
+from openzyme_domain import ContinuationStateStatus
+from openzyme_domain import ControlledOperation
+from openzyme_domain import ControlledOperationOwnerMode
+from openzyme_domain import ControlledOperationStatus
+from openzyme_domain import SandboxImageCompatibility
+from openzyme_domain import SandboxRunRecord
+from openzyme_domain import SandboxRunStatus
+from openzyme_domain import SandboxWorkspaceRecord
+from openzyme_domain import SandboxWorkspaceStatus
 from openzyme_domain import Session
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
@@ -473,6 +485,149 @@ def test_scheduler_releases_session_lease_after_runtime_suspension(monkeypatch) 
     assert progressed_signal is not None
     assert progressed_signal.status is AgentRuntimeSignalStatus.COMPLETED
     assert repositories.approvals.get("appr_task_0") is not None
+
+
+def test_durable_continuation_suspension_keeps_task_in_progress(monkeypatch) -> None:
+    repositories, context = _build_context(model_factory=FakeModelFactory())
+
+    def suspended_durable_teammate_loop(
+        runtime_context: SessionRuntimeContext,
+        **kwargs,
+    ) -> HarnessResult:
+        task_id = str(kwargs["task_id"])
+        task = runtime_context.repositories.tasks.get(task_id)
+        assert task is not None
+        assert task.assigned_ref is not None
+        agent = runtime_context.repositories.agents.get(
+            "sess_scheduler", task.assigned_ref
+        )
+        assert agent is not None
+        assert agent.member_id is not None
+        approval_id = f"appr_{task_id}"
+        workspace_id = f"workspace_{task_id}"
+        run_id = f"run_{task_id}"
+        operation_id = f"operation_{task_id}"
+        runtime_context.repositories.sandbox_workspaces.save(
+            SandboxWorkspaceRecord(
+                sandbox_workspace_id=workspace_id,
+                session_id="sess_scheduler",
+                agent_member_id=agent.member_id,
+                agent_id=agent.agent_id,
+                status=SandboxWorkspaceStatus.READY,
+                image_ref="image:test",
+                image_digest="sha256:image",
+                image_version="test",
+                sandbox_protocol_version="1",
+                image_compatibility=SandboxImageCompatibility.COMPATIBLE,
+                manifest_version="1",
+                focus_task_id=task_id,
+                created_at="2026-04-16T10:01:00+00:00",
+                last_attached_at="2026-04-16T10:01:00+00:00",
+            )
+        )
+        runtime_context.repositories.sandbox_runs.save(
+            SandboxRunRecord(
+                sandbox_run_id=run_id,
+                session_id="sess_scheduler",
+                sandbox_workspace_id=workspace_id,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                argv=("python", "durable.py"),
+                argv_digest="sha256:argv",
+                cwd=".",
+                env_digest="sha256:env",
+                status=SandboxRunStatus.RUNNING,
+                created_at="2026-04-16T10:01:00+00:00",
+                updated_at="2026-04-16T10:01:00+00:00",
+            )
+        )
+        runtime_context.repositories.approvals.save(
+            ApprovalRequest(
+                approval_id=approval_id,
+                session_id="sess_scheduler",
+                task_id=task_id,
+                lane_id=None,
+                kind="sdk_controlled_operation",
+                requested_action="Approve the durable attached process.",
+                status=ApprovalRequestStatus.PENDING,
+                request_ref=operation_id,
+                resolution_ref=None,
+                created_at="2026-04-16T10:01:00+00:00",
+            )
+        )
+        runtime_context.repositories.controlled_operations.save(
+            ControlledOperation(
+                operation_id=operation_id,
+                session_id="sess_scheduler",
+                sandbox_workspace_id=workspace_id,
+                sandbox_run_id=run_id,
+                task_id=task_id,
+                logical_operation_key="fixture.durable",
+                operation_digest="sha256:operation",
+                params_digest="sha256:params",
+                backend_category="fixture",
+                status=ControlledOperationStatus.WAITING_APPROVAL,
+                approval_id=approval_id,
+                approval_state=ApprovalRequestStatus.PENDING.value,
+                owner_mode=ControlledOperationOwnerMode.DURABLE_ASYNC_V1,
+                created_at="2026-04-16T10:01:00+00:00",
+                updated_at="2026-04-16T10:01:00+00:00",
+            )
+        )
+        runtime_context.repositories.continuation_states.save(
+            ContinuationState(
+                continuation_id=f"continuation_{task_id}",
+                session_id="sess_scheduler",
+                operation_id=operation_id,
+                sandbox_run_id=run_id,
+                approval_id=approval_id,
+                status=ContinuationStateStatus.WAITING_APPROVAL,
+                originating_agent_id=agent.agent_id,
+                originating_task_id=task_id,
+                sandbox_workspace_id=workspace_id,
+                resume_strategy=ContinuationResumeStrategy.ATTACHED_PROCESS,
+                delivery_state=ContinuationDeliveryState.AWAITING_RESULT,
+                delivery_generation=1,
+                state_version=1,
+                created_at="2026-04-16T10:01:00+00:00",
+                updated_at="2026-04-16T10:01:00+00:00",
+            )
+        )
+        return HarnessResult(
+            session_id="sess_scheduler",
+            status=HarnessStatus.WAITING_APPROVAL,
+            snapshot=SessionRuntimeSnapshot.load(
+                runtime_context.repositories,
+                "sess_scheduler",
+            ),
+            events=(),
+            outputs=(),
+            tool_results=(),
+            pending_approval_id=approval_id,
+        )
+
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "run_teammate_loop",
+        suspended_durable_teammate_loop,
+    )
+
+    outcomes = AgentRuntimeScheduler(
+        context,
+        worker_id="test:durable-suspension",
+    ).run_once_sync("sess_scheduler", max_signals=1)
+
+    assert len(outcomes) == 1
+    assert outcomes[0].ok is True
+    assert outcomes[0].waiting_approval_id == "appr_task_0"
+    task = repositories.tasks.get("task_0")
+    agent = repositories.agents.get(
+        "sess_scheduler", outcomes[0].signal.agent_id
+    )
+    assert task is not None
+    assert task.status is TaskStatus.IN_PROGRESS
+    assert agent is not None
+    assert agent.status is AgentMemberStatus.BLOCKED
 
 
 def test_scheduler_heartbeats_session_lease_during_blocking_provider_call(

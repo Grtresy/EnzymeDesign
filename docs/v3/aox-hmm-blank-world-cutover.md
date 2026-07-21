@@ -1702,10 +1702,15 @@ A coordination failure rejects still-pending or later-published operations
 until the existing attempt deadline solely for fail-closed cleanup; it never
 approves cleanup or continues scientific execution. Transient compact reads and
 resolve requests reuse stable idempotency while the original blocker remains
-authoritative. After command/continuation terminal observation, the driver
-performs a later compact approval read and one bounded public workspace read as
-the final semantic snapshot. Command failure remains authoritative; public
-coordination and cleanup failures retain their separate taxonomy.
+authoritative. A terminal runtime command is only the bounded scheduler result:
+while the exact attempt mutation scope still has any active writer other than
+its outer driver, the cutover driver keeps polling the compact approval surface
+and does not advance or freeze. Writer retirement is only a quiescence gate, not
+a workflow-success signal. After command/continuation retirement observation,
+the driver performs a later compact approval read and one bounded public
+workspace read as the final semantic snapshot. Command failure remains
+authoritative; public coordination and cleanup failures retain their separate
+taxonomy.
 
 Each session is enclosed by a generic mutation scope rooted in the attempt.
 Eligible closure first freezes admission and advances the fence, then requires

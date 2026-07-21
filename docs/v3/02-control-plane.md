@@ -72,10 +72,10 @@ SQLite connection / transaction ownership：
 - `task` 的存在意义是让内部执行和外部对话解耦：用户与 master agent 对话，内部团队围绕 task 推进工作
 - `blocked_by` 是执行闸门：下游 task 可提前创建，但在 blocker terminal 前不能被 `task.delegate`、auto-claim 或普通 wakeup 推进执行
 - `blocked_by` 同时是 canonical same-session DAG：service 写前验证 cycle path，SQLite INSERT / UPDATE triggers 拒绝跨 session edge 与任意长度的 cycle；task row 和该 task 的完整 dependency replacement 原子提交
-- generic create/edit 不能写入或跨越 business-exit status。除 pending approval block 这类已文档化机械迁移外，`blocked`、`completed`、`failed`、`cancelled` 只能由 `task.finish` 写入；blocked task 保持 blocked 时允许描述修正、lane unbind 等非状态 edit，completed / failed / cancelled task 的 edit 则 fail closed。测试构造历史状态必须显式标记 fixture seed intent
+- generic create/edit 不能写入或跨越 business-exit status。除 agent-level / legacy pending approval block 这类已文档化机械迁移外，`blocked`、`completed`、`failed`、`cancelled` 只能由 `task.finish` 写入；durable SDK attached continuation 的 park 是 runtime suspension，task 保持 `in_progress`，不能借用业务 `blocked`。blocked task 保持 blocked 时允许描述修正、lane unbind 等非状态 edit，completed / failed / cancelled task 的 edit 则 fail closed。测试构造历史状态必须显式标记 fixture seed intent
 - 已处于任一 business-exit status 的 task 不能再次调用 `task.finish`；blocked task 必须先经显式 resume/reopen 回到 `in_progress`。finish intent 只允许改变 status、updated_at、failure_summary 与 failure_ref
 - `task.finish` 将 `task_finish` document、task status 与 durable canonical event 写入同一 transaction，commit 后才允许 SSE 读取；不能出现 finish document 已存在而 task 未退出，或 rollback 后仍泄漏 `task.finished` event
-- task claim、pending approval block、approval resume 是窄范围、已文档化的 mechanical commands；它们必须发生允许的 status transition，且除 status / updated_at 与 claim 必需的 assigned_ref 外不能夹带字段修改
+- task claim、agent-level / legacy pending approval block、approval resume 是窄范围、已文档化的 mechanical commands；它们必须发生允许的 status transition，且除 status / updated_at 与 claim 必需的 assigned_ref 外不能夹带字段修改。durable SDK approval 由 controlled-operation / continuation owner 推进，不触发 task block/resume
 
 建议字段：
 

@@ -10,6 +10,7 @@ from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignal
 from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import AgentRuntimeSignalStatus
+from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
@@ -285,7 +286,12 @@ class AgentRuntimeService:
             result=result,
         )
         if result.pending_approval_id is not None:
-            task = service.block_for_approval(task.task_id)
+            if not self._pending_approval_is_durable_continuation_owned(
+                session_id=agent.session_id,
+                task_id=task.task_id,
+                approval_id=result.pending_approval_id,
+            ):
+                task = service.block_for_approval(task.task_id)
             ok = True
         elif final_status in {AgentMemberStatus.IDLE, AgentMemberStatus.BLOCKED}:
             ok = True
@@ -361,6 +367,54 @@ class AgentRuntimeService:
             outputs=tuple(result.outputs),
             waiting_approval_id=result.pending_approval_id,
         )
+
+    def _pending_approval_is_durable_continuation_owned(
+        self,
+        *,
+        session_id: str,
+        task_id: str,
+        approval_id: str,
+    ) -> bool:
+        """Keep a durable attached SDK suspension out of task business state."""
+
+        operation_repository = self.context.repositories.controlled_operations
+        operations = [
+            operation
+            for operation in operation_repository.list_by_session(session_id)
+            if operation.approval_id == approval_id
+        ]
+        if not operations:
+            return False
+        if len(operations) != 1:
+            raise ValueError(
+                "pending approval is linked to an ambiguous controlled operation"
+            )
+        operation = operations[0]
+        if operation.owner_mode is not ControlledOperationOwnerMode.DURABLE_ASYNC_V1:
+            return False
+        continuation_repository = self.context.repositories.continuation_states
+        continuations = [
+            continuation
+            for continuation in continuation_repository.list_by_session(session_id)
+            if continuation.approval_id == approval_id
+        ]
+        if len(continuations) != 1:
+            raise ValueError(
+                "durable controlled operation lacks one exact continuation"
+            )
+        continuation = continuations[0]
+        if (
+            operation.session_id != session_id
+            or operation.task_id != task_id
+            or continuation.session_id != session_id
+            or continuation.operation_id != operation.operation_id
+            or continuation.sandbox_run_id != operation.sandbox_run_id
+            or continuation.originating_task_id != task_id
+        ):
+            raise ValueError(
+                "durable controlled operation continuation identity is inconsistent"
+            )
+        return True
 
     def _wake_master(
         self,
