@@ -186,7 +186,7 @@ def test_run_live_passes_canonical_launch_snapshot_to_runner_and_campaign(
     assert captured["campaign"]["positive_runner"] is captured["campaign"][
         "fault_runner"
     ]
-    assert captured["campaign"]["require_process_supervision"] is True
+    assert "_allow_unisolated_non_live_test_runner" not in captured["campaign"]
     output = json.loads(capsys.readouterr().out)
     assert output["decision"]["decision"] == "NO-GO"
     assert output["micu_ledger"] == {

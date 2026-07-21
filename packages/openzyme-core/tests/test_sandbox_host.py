@@ -253,12 +253,18 @@ def test_production_sandbox_host_path_has_no_weak_scope_escape_hatch() -> None:
         repository_root
         / "packages/openzyme-engines/src/openzyme_engines/execution.py"
     ).read_text(encoding="utf-8")
+    host_gateway = (
+        repository_root
+        / "apps/openzyme-host-api/src/openzyme_host_api/sandbox_host_gateway.py"
+    ).read_text(encoding="utf-8")
 
     assert "SandboxHpcFetchExecutor" not in sandbox_runtime
     assert "Callable[...," not in sandbox_runtime
     assert "sandbox_process_repository_scope_factory" not in execution
     assert "repositories: Any | None" not in execution
     assert "repository_scope_factory" not in execution
+    assert 'getattr(self.engine, "repository_scope_factory"' not in host_gateway
+    assert 'hasattr(self.engine, "repository_scope_factory")' not in host_gateway
     assert 'getattr(execution_engine, "execute_sandbox_adapter_operation"' not in teammates
     assert 'getattr(execution_engine, "fetch_sandbox_hpc_outputs"' not in teammates
 

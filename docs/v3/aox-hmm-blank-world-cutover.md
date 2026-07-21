@@ -1731,8 +1731,11 @@ a fresh local POSIX spawn child and dedicated process group. Matching quiescence
 terminal frames, SQLite/root sync, zero exit and an empty group are all required
 before the parent opens the child result. An unrecoverable writer is retired through
 bounded TERM/KILL and yields only parent-owned fatal evidence outside the attempt
-root; no ledger-after or normal attempt bundle is claimed. The exact harness contract
-and residual hardening split are documented in
+root; no ledger-after or normal attempt bundle is claimed. Ordinary
+`AoxCutoverCampaign` construction requires this supervision by default; only the
+explicit `AoxCutoverCampaign.for_non_live_test(...)` fixture seam may omit it, and
+that seam is not a numbered campaign entry. The exact harness contract and residual
+hardening split are documented in
 [process-isolated live-attempt supervision](/openspec/changes/archive/2026-07-21-add-process-isolated-live-attempt-supervision/architecture-proposals/process-isolated-live-attempt-supervision.md).
 The implemented product contract is
 [Runtime/HPC reliability](07-runtime-hpc-reliability.md), not the historical

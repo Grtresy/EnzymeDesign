@@ -555,7 +555,6 @@ def _run_live(args: argparse.Namespace) -> int:
         fault_runner=runner,
         allowed_prerequisites=launch.allowed_prerequisites,
         launch_guard=launch.assert_unchanged,
-        require_process_supervision=True,
     )
     records, decision = campaign.run()
     ledger_projection = (

@@ -66,7 +66,7 @@ class _OperationRepository:
 class _FakeExecutionEngine:
     artifacts: _ArtifactRepository
     repositories: object | None = None
-    repository_scope_factory: object | None = None
+    sandbox_host_call_context_factory: object | None = None
     _state: dict[str, object] = field(
         default_factory=lambda: {"call_count": 0, "seen_handle": None}
     )
@@ -85,7 +85,7 @@ class _FakeExecutionEngine:
         operation: object,
         envelope: dict[str, object],
     ) -> dict[str, object]:
-        assert self.repository_scope_factory is None
+        assert self.sandbox_host_call_context_factory is None
         self._state["call_count"] = self.call_count + 1
         self._state["seen_handle"] = str(envelope["_durable_backend_handle_ref"])
         artifact_id = "artifact_provider_result"
@@ -185,7 +185,7 @@ def test_provider_route_uses_frozen_handle_and_reconciles_without_redispatch() -
     engine = _FakeExecutionEngine(
         artifacts,
         repositories=repositories,
-        repository_scope_factory=lambda: None,
+        sandbox_host_call_context_factory=object(),
     )
 
     @contextmanager
@@ -333,6 +333,7 @@ class _FakeReservedRunner:
 class _FakeHpcExecutionEngine:
     repositories: object
     runner: object
+    sandbox_host_call_context_factory: object | None = None
     lose_first_callback: bool = False
     fail_before_submit: bool = False
     fail_fetch: bool = False

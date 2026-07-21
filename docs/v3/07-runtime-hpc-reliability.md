@@ -117,7 +117,9 @@ claim、session lease 和 HTTP request 在 bounded 时间内返回。等待中�
 当前 repositories 与 nested artifact-publisher mutation writer；engine 不能持有 scope factory、
 反射 callback 或接受可选 repository escape hatch。若 durable HPC materialization 已在
 immutable adapter envelope 中冻结 `run_id/fetch_refs/registered_artifact_ids/output_artifact_ids`，
-SDK fetch 只接受完全相同的投影并保持 operation row 不变；任何 drift 都 fail closed。
+SDK fetch 对 `run_id` 与逐项 `fetch_refs` 做 exact comparison，对两组 artifact-id
+列表按 durable artifact-set 合同规范化排序后检查完整、唯一成员，并保持
+operation row 不变；任何 identity/membership drift 都 fail closed。
 
 `POST /v3/sessions/{session_id}/runtime/drain` 只做 durable command admission：
 

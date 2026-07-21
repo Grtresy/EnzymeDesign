@@ -29,18 +29,15 @@ class ExecutionEngineSandboxHostGateway:
 
     def _bound_engine(self, context: SandboxHostCallContext) -> ExecutionEngine:
         if (
-            getattr(self.engine, "repositories", None) is context.repositories
-            and getattr(self.engine, "repository_scope_factory", None) is None
-            and getattr(self.engine, "sandbox_host_call_context_factory", None)
-            is None
+            self.engine.repositories is context.repositories
+            and self.engine.sandbox_host_call_context_factory is None
         ):
             return self.engine
-        updates: dict[str, object] = {"repositories": context.repositories}
-        if hasattr(self.engine, "repository_scope_factory"):
-            updates["repository_scope_factory"] = None
-        if hasattr(self.engine, "sandbox_host_call_context_factory"):
-            updates["sandbox_host_call_context_factory"] = None
-        return replace(self.engine, **updates)
+        return replace(
+            self.engine,
+            repositories=context.repositories,
+            sandbox_host_call_context_factory=None,
+        )
 
     @staticmethod
     def _validate_operation_owner(

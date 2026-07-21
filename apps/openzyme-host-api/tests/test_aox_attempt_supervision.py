@@ -332,7 +332,7 @@ def test_campaign_propagates_supervision_fatal_without_attempt_bundle(
     assert not list((tmp_path / "campaign").glob("*/evidence/attempt-bundle.json"))
 
 
-def test_live_campaign_requires_supervision_before_ledger_after(
+def test_campaign_requires_supervision_by_default_before_ledger_after(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -360,7 +360,6 @@ def test_live_campaign_requires_supervision_before_ledger_after(
         positive_runner=_ReturningRunner(create_sqlite=False),
         fault_runner=_ReturningRunner(create_sqlite=False),
         allowed_prerequisites={},
-        require_process_supervision=True,
     )
 
     records, decision = campaign.run()

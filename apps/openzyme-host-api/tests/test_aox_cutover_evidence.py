@@ -8977,7 +8977,7 @@ def test_campaign_derives_go_only_with_required_chrome_proof(
         launch["browser_observation_receipt"] = None
         return evidence
 
-    campaign = AoxCutoverCampaign(
+    campaign = AoxCutoverCampaign.for_non_live_test(
         campaign_root=tmp_path / "campaign",
         identity=campaign_identity,
         ledger_path=ledger_path,
@@ -9070,7 +9070,7 @@ def test_campaign_rejects_reused_positive_runtime_receipts(tmp_path: Path) -> No
         launch["browser_observation_receipt"] = None
         return evidence
 
-    campaign = AoxCutoverCampaign(
+    campaign = AoxCutoverCampaign.for_non_live_test(
         campaign_root=tmp_path / "campaign",
         identity=campaign_identity,
         ledger_path=ledger_path,
@@ -9172,7 +9172,7 @@ def test_fault_runner_exception_is_sealed_and_campaign_stays_no_go(
         del context
         raise RuntimeError("private fault runner detail")
 
-    campaign = AoxCutoverCampaign(
+    campaign = AoxCutoverCampaign.for_non_live_test(
         campaign_root=tmp_path / "campaign",
         identity=campaign_identity,
         ledger_path=ledger_path,
@@ -9218,7 +9218,7 @@ def test_campaign_runner_failure_is_sealed_as_safe_no_go_evidence(
         del context
         raise RuntimeError("private /tmp/detail and api_key=must-not-project")
 
-    campaign = AoxCutoverCampaign(
+    campaign = AoxCutoverCampaign.for_non_live_test(
         campaign_root=tmp_path / "campaign",
         identity=_identity(),
         ledger_path=tmp_path / "persistent-ledger.sqlite3",

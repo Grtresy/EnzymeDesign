@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 import base64
 import binascii
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -11,7 +11,7 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import re
-from typing import Any, Protocol
+from typing import Any, Protocol, Self
 from urllib.parse import urlsplit
 from uuid import uuid4
 import zlib
@@ -2485,7 +2485,36 @@ class AoxCutoverCampaign:
     fault_runner: AttemptRunner
     allowed_prerequisites: Mapping[str, object]
     launch_guard: Callable[[], None] | None = None
-    require_process_supervision: bool = False
+    _allow_unisolated_non_live_test_runner: bool = dataclass_field(
+        default=False,
+        init=False,
+        repr=False,
+    )
+
+    @classmethod
+    def for_non_live_test(
+        cls,
+        *,
+        campaign_root: Path,
+        identity: Mapping[str, object],
+        ledger_path: Path,
+        positive_runner: AttemptRunner,
+        fault_runner: AttemptRunner,
+        allowed_prerequisites: Mapping[str, object],
+        launch_guard: Callable[[], None] | None = None,
+    ) -> Self:
+        """Construct a fixture campaign that intentionally omits OS supervision."""
+        campaign = cls(
+            campaign_root=campaign_root,
+            identity=identity,
+            ledger_path=ledger_path,
+            positive_runner=positive_runner,
+            fault_runner=fault_runner,
+            allowed_prerequisites=allowed_prerequisites,
+            launch_guard=launch_guard,
+        )
+        campaign._allow_unisolated_non_live_test_runner = True
+        return campaign
 
     def run(self) -> tuple[tuple[AttemptRunRecord, ...], dict[str, Any]]:
         records: list[AttemptRunRecord] = []
@@ -2547,7 +2576,7 @@ class AoxCutoverCampaign:
                 failure_type=type(exc).__name__,
                 attempt_kind=kind,
             )
-        if self.require_process_supervision:
+        if not self._allow_unisolated_non_live_test_runner:
             from .aox_attempt_supervision import (
                 validate_attempt_supervision_receipt,
             )

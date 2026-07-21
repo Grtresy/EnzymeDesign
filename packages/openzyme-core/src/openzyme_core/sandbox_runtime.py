@@ -1538,18 +1538,24 @@ class _ControlSocketServer:
             expected_projection = {
                 "run_id": str(adapter_result.get("run_id") or ""),
                 "fetch_refs": list(adapter_result.get("fetch_refs") or []),
-                "registered_artifact_ids": list(
-                    adapter_result.get("registered_artifact_ids") or []
+                "registered_artifact_ids": sorted(
+                    str(value)
+                    for value in list(
+                        adapter_result.get("registered_artifact_ids") or []
+                    )
                 ),
-                "output_artifact_ids": list(
-                    adapter_result.get("output_artifact_ids") or []
+                "output_artifact_ids": sorted(
+                    str(value)
+                    for value in list(
+                        adapter_result.get("output_artifact_ids") or []
+                    )
                 ),
             }
             observed_projection = {
                 "run_id": str(result.get("run_id") or ""),
                 "fetch_refs": fetch_refs,
-                "registered_artifact_ids": registered_artifact_ids,
-                "output_artifact_ids": output_artifact_ids,
+                "registered_artifact_ids": sorted(registered_artifact_ids),
+                "output_artifact_ids": sorted(output_artifact_ids),
             }
             if observed_projection != expected_projection:
                 raise SandboxRuntimeError(

@@ -4043,6 +4043,36 @@ def test_sandbox_exec_public_bio_tools_hpc_run_can_fetch_declared_outputs(
         durable_operation,
         dict(payload["fetch"]),
     )
+    multi_output_operation = replace(
+        durable_operation,
+        adapter_result_envelope={
+            **dict(durable_operation.adapter_result_envelope or {}),
+            "registered_artifact_ids": ["artifact_a", "artifact_b"],
+            "output_artifact_ids": ["artifact_a", "artifact_b"],
+        },
+    )
+    projection_server._record_hpc_fetch_result(  # noqa: SLF001
+        multi_output_operation,
+        {
+            **dict(payload["fetch"]),
+            "registered_artifact_ids": ["artifact_b", "artifact_a"],
+            "output_artifact_ids": ["artifact_b", "artifact_a"],
+        },
+    )
+    membership_drifted_fetch = {
+        **dict(payload["fetch"]),
+        "registered_artifact_ids": ["artifact_b", "artifact_c"],
+        "output_artifact_ids": ["artifact_b", "artifact_c"],
+    }
+    with pytest.raises(SandboxRuntimeError) as membership_drift_error:
+        projection_server._record_hpc_fetch_result(  # noqa: SLF001
+            multi_output_operation,
+            membership_drifted_fetch,
+        )
+    assert (
+        membership_drift_error.value.error_code
+        == "durable_hpc_fetch_projection_drift"
+    )
     drifted_fetch = {**dict(payload["fetch"]), "run_id": "run_drifted"}
     with pytest.raises(SandboxRuntimeError) as drift_error:
         projection_server._record_hpc_fetch_result(  # noqa: SLF001

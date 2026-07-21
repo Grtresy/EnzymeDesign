@@ -1,7 +1,8 @@
 # live-attempt-supervision Specification
 
 ## Purpose
-TBD - created by archiving change add-process-isolated-live-attempt-supervision. Update Purpose after archive.
+Define the local POSIX process boundary, retirement proof, root-read gate, supervision receipt, and fatal evidence required before an AOX live attempt can contribute campaign evidence.
+
 ## Requirements
 ### Requirement: One spawned child owns all mutable attempt state
 Each live campaign attempt MUST run in a fresh `spawn` child with a dedicated process session/group and exact parent-created attempt identity. The child and its descendants MUST be the only live owners of attempt SQLite, artifact, blob, sandbox, evidence-result, and private-log mutation. The parent MUST NOT open or read those roots while that process identity or any descendant remains live.
@@ -66,7 +67,7 @@ The process supervisor MUST NOT resolve approval, dispatch or retry an operation
 - **THEN** the parent records only harness-fatal lifecycle facts and leaves product/remote outcome unknown rather than writing a task or operation decision
 
 ### Requirement: The live CLI requires process supervision
-The `run-live` campaign entry MUST invoke the live attempt runner only through the process-isolated supervisor and MUST require a valid supervision receipt before sealing a bundle-producing attempt. Direct same-process runner invocation MAY remain available only for focused non-live tests and MUST NOT be the numbered campaign entry.
+The `run-live` campaign entry MUST invoke the live attempt runner only through the process-isolated supervisor and MUST require a valid supervision receipt before sealing a bundle-producing attempt. Ordinary `AoxCutoverCampaign` construction MUST require the same receipt by default. Direct same-process runner invocation MAY remain available only through the explicitly named `AoxCutoverCampaign.for_non_live_test(...)` fixture seam for focused non-live tests and MUST NOT be the numbered campaign entry.
 
 #### Scenario: Compose a live campaign
 - **WHEN** the operator starts `run-live` from pinned declarations
@@ -75,3 +76,7 @@ The `run-live` campaign entry MUST invoke the live attempt runner only through t
 #### Scenario: Supervision receipt is missing
 - **WHEN** a runner returns apparent scientific evidence without the required exact supervision receipt
 - **THEN** the live campaign fails closed before ledger-after sealing or attempt-bundle publication
+
+#### Scenario: Construct an unisolated fixture campaign
+- **WHEN** a focused non-live test intentionally uses a direct runner without process supervision
+- **THEN** it must call the explicitly named non-live test constructor while the ordinary constructor remains supervision-required

@@ -90,6 +90,8 @@ signal claim 语义：
 
 sandbox SDK control server、adapter executor 与 HPC fetch 回调线程都必须打开独立 repository scope，并由 composition root 构造一个 typed `SandboxHostCallContext`。session-turn callback 只接受 exact runtime lease；attached control server 持有 exact sandbox run/process epoch，跨 park/delivery 保持不变；durable route callback 只接受 canonical execution lease/fence；continuation context 只接受 exact delivery lease/fence。`SandboxHostGateway` 显式把 engine 绑定到该 context，engine 不得反射 callback、选择第二套 scope factory，或通过可选 repositories 参数回退到创建时捕获的 authority。attached process 恢复后调用 `hpc.fetch_outputs` 时，fetch 使用 process context 与其 nested artifact-publisher writer，不复活 agent-turn 或 delivery lease。durable result 已由 transition service 投影时，fetch 只能验证返回 refs 与 immutable adapter envelope 完全一致，不能 raw save durable operation。若 callback 在 timeout/cancel 后迟到，或对应 fence 已被新 owner reclaim，其 canonical operation/run/artifact/report/event 写回必须失败。外部动作是否已被远端接受由 effect certainty、operation digest、idempotency key 与 opaque handle 解决；不能因本地 write 被 fence 就无条件重复提交外部动作。
 
+durable fetch 的“完全一致”是类型化合同：`run_id` 与带 path/digest 的逐项 `fetch_refs` exact，两组 artifact-id 列表则按 durable result artifact-set 合同规范化排序后比较唯一成员集合。只有 declared-output 与 canonical set 顺序不同时不应伪报 drift；任何 identity/membership 变化仍 fail closed。
+
 ### 3.1.1 Durable Work Supervisor 与 suspension
 
 同一 FastAPI lifespan 中的 `V3DurableWorkSupervisor` 管理多类彼此独立的短 worker：
