@@ -189,4 +189,10 @@ output = artifacts.fetched_output_ref(
 print(output["artifact_id"], output["content_digest"])
 ```
 
+`fetch_outputs` 是读取/登记已声明结果的后续 Host call，不会重发 preceding HPC effect。
+如果 sandbox 曾因 durable operation park 并由 continuation 恢复，同一 process 继续使用自己的
+process epoch 与 mutation-writer authority；它不会继承已经释放的 agent-turn lease，也不会
+借用只用于一次 result delivery 的 continuation lease。Host 只接受与 immutable run envelope
+完全一致的 `run_id`、declared output、digest 与 artifact refs，任何漂移都 fail closed。
+
 Before execution, the system runs a dry-run / validation pass. Fix dry-run errors in the sandbox working copy, snapshot source again when code changes, and resubmit. Dry-run output may also describe which SDK operations are expected to require approval.

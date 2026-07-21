@@ -2485,6 +2485,7 @@ class AoxCutoverCampaign:
     fault_runner: AttemptRunner
     allowed_prerequisites: Mapping[str, object]
     launch_guard: Callable[[], None] | None = None
+    require_process_supervision: bool = False
 
     def run(self) -> tuple[tuple[AttemptRunRecord, ...], dict[str, Any]]:
         records: list[AttemptRunRecord] = []
@@ -2539,9 +2540,23 @@ class AoxCutoverCampaign:
         try:
             evidence = runner(context)
         except Exception as exc:
+            if getattr(exc, "attempt_supervision_fatal", False) is True:
+                raise
             evidence = _campaign_runner_failure_evidence(
                 roots.artifact_root,
                 failure_type=type(exc).__name__,
+                attempt_kind=kind,
+            )
+        if self.require_process_supervision:
+            from .aox_attempt_supervision import (
+                validate_attempt_supervision_receipt,
+            )
+
+            validate_attempt_supervision_receipt(
+                dict(evidence.get("product_path") or {}).get(
+                    "attempt_supervision"
+                ),
+                attempt_id=roots.attempt_id,
                 attempt_kind=kind,
             )
         after = safe_micu_ledger_snapshot(self.ledger_path)
@@ -2581,6 +2596,11 @@ def _campaign_driver_failure_decision(
     failure: Exception,
     campaign_root: Path,
 ) -> dict[str, Any]:
+    driver_failure_kind = (
+        "attempt_supervision_fatal"
+        if getattr(failure, "attempt_supervision_fatal", False) is True
+        else "campaign_driver_failure"
+    )
     candidate_code = getattr(failure, "code", None)
     failure_code = (
         candidate_code
@@ -2592,6 +2612,7 @@ def _campaign_driver_failure_decision(
         "schema_id": "aox_campaign_driver_failure@1",
         "failure_code": failure_code,
         "failure_type": type(failure).__name__,
+        "driver_failure_kind": driver_failure_kind,
         "completed_attempt_digests": [record.bundle_digest for record in records],
     }
     failure_digest = canonical_digest(failure_payload)
@@ -2616,6 +2637,7 @@ def _campaign_driver_failure_decision(
             "message": "campaign driver failed before a qualifying attempt could be sealed",
         },
         "driver_failure_digest": failure_digest,
+        "driver_failure_kind": driver_failure_kind,
     }
     return {
         **decision_payload,
@@ -6098,6 +6120,8 @@ def _validate_attempt_semantics(
             "campaign identity digest does not match its fields",
             details={"identity": "identity.identity_digest"},
         )
+    product_path_for_supervision = dict(payload.get("product_path") or {})
+    supervision_receipt = product_path_for_supervision.get("attempt_supervision")
     _validate_clean_world_proof(payload)
     micu = dict(payload.get("micu_ledger") or {})
     _validate_ledger_transition(
@@ -6106,6 +6130,60 @@ def _validate_attempt_semantics(
     )
     outcome_for_config = dict(payload.get("scientific_outcome") or {})
     fault_for_config = dict(payload.get("fault_injection") or {})
+    supervision_required = (
+        kind == "positive" and outcome_for_config.get("cutover_eligible") is True
+    ) or (
+        kind == "fault" and fault_for_config.get("reached_target_seam") is True
+    )
+    if supervision_required or supervision_receipt is not None:
+        from .aox_attempt_supervision import DEFAULT_KILL_GRACE_SECONDS
+        from .aox_attempt_supervision import DEFAULT_TERM_GRACE_SECONDS
+        from .aox_attempt_supervision import (
+            derive_live_attempt_supervision_timeout_seconds,
+        )
+        from .aox_attempt_supervision import supervision_contract_digest
+        from .aox_attempt_supervision import validate_attempt_supervision_receipt
+
+        expected_supervision_contract_digest: str | None = None
+        if supervision_required:
+            try:
+                effective_config = dict(
+                    dict(product_path_for_supervision.get("launch_receipt") or {}).get(
+                        "effective_config"
+                    )
+                    or {}
+                )
+                driver_config = dict(effective_config.get("driver") or {})
+                timeout_seconds = derive_live_attempt_supervision_timeout_seconds(
+                    attempt_timeout_seconds=driver_config["timeout_seconds"],
+                    browser_approval_timeout_seconds=driver_config[
+                        "browser_approval_timeout_seconds"
+                    ],
+                    browser_completion_hold_seconds=driver_config[
+                        "browser_completion_hold_seconds"
+                    ],
+                    browser_observation_submission_timeout_seconds=driver_config[
+                        "browser_observation_submission_timeout_seconds"
+                    ],
+                )
+                expected_supervision_contract_digest = supervision_contract_digest(
+                    timeout_seconds=timeout_seconds,
+                    term_grace_seconds=DEFAULT_TERM_GRACE_SECONDS,
+                    kill_grace_seconds=DEFAULT_KILL_GRACE_SECONDS,
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise CutoverEvidenceError(
+                    "attempt_supervision_contract_mismatch",
+                    "process supervision bounds do not derive from effective config",
+                    details={"identity": "product_path.attempt_supervision"},
+                ) from exc
+
+        validate_attempt_supervision_receipt(
+            supervision_receipt,
+            attempt_id=str(payload.get("attempt_id") or ""),
+            attempt_kind=str(kind),
+            expected_contract_digest=expected_supervision_contract_digest,
+        )
     if (
         (kind == "positive" and outcome_for_config.get("cutover_eligible") is True)
         or (

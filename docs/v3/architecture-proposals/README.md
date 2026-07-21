@@ -1,43 +1,97 @@
-# Deferred V3 architecture proposals
+# V3 architecture proposal 生命周期索引
 
-本目录记录实施中发现、会影响 agent 发挥的架构调整。多数文档仍是 deferred proposal；已经被 umbrella change 实施的文档保留为设计历史，并在顶部标明状态。当前产品合同始终以 `docs/v3/` 稳定文档、当前代码和对应 OpenSpec checkpoint 为准，不能仅凭目录名推断“未实现”。
+本目录只保存尚未完成归档的架构提案。proposal 不是产品真状态；当前合同始终以
+`docs/v3/` 稳定文档、当前代码和对应 OpenSpec 为准。目录中的提案可以形成 umbrella
+关系，但不同 ownership、迁移风险或验收面不得为了“减少文件数”被强行合并。
 
-进入本目录的调整通常涉及顶层真状态、跨包 ownership、scheduler/approval/protocol 语义或 workflow schema 的整体迁移。实施前它们只记录问题、目标、不变量、方案、迁移、风险与验收；实施后必须链接 stable contract 与 change evidence，并明确仍延后的边界。
+## 生命周期与归档规则
 
-当前提案：
+状态闭集如下：
 
-- `runtime-hpc-reliability-refactor-roadmap.md`：D1-D8 决策与跨 proposal ownership 的历史总路线；已由 `runtime-hpc-reliability-refactor` umbrella change 实施，当前收口状态看稳定文档与 OpenSpec checkpoints。
-- `durable-hpc-transport-staging-and-dispatch-reconciliation.md`：runner-owned SSH transport generation、ControlMaster 复用、phase journal、staged-byte verification、pre-effect 有界恢复与 post-dispatch reconcile 已实现；真实 SSH transport-only soak 与 disabled-mode rollback audit 已通过，实际 campaign 启动仍需 operator 显式决定。
+- `proposed`：问题与边界已记录，尚无获批实施 change；
+- `active`：已有唯一 OpenSpec change 正在实施或验证；
+- `deferred`：方向保留，但明确不在当前实施范围；
+- `superseded`：结论或方案已被更新事实/提案替代，只保留历史追溯；
+- `implemented-archived`：声明范围已经实现和验证，proposal 已移到对应归档 OpenSpec。
 
-- `request-lineage-workflow-authority.md`：用 versioned durable authority binding 与 opaque causal link 让显式 workflow selection 在同一 user request 的后续 master wake 中可验证延续，同时禁止把 raw `skill_keys` 复制进 signal、扫描 latest/all conversation 或跨 request 隐式 union；当前 Goal 只修 admission 到 exact first drain。
-- `role-scoped-workflow-composition.md`：把一个显式 workflow 选择拆成可验证的 role-scoped knowledge bindings，同时避免固定 agent 拓扑。
-- `unified-provider-evidence-broker.md`：统一 direct/deep-research/execution provider mechanics 与证据 envelope，同时保留各调用面的 canonical owner 和 agent 策略自由。
-- `generic-scientific-campaign-attestation.md`：把跨 workflow 的 clean-root、snapshot、offline verifier 与 GO/NO-GO reducer 收敛为 Host-owned 证明服务，不形成第二套 control plane。
-- `dual-tier-scientific-evidence-boundary.md`：分离受限 artifact bytes 与 public attestation projection，让 agent 保留完整证据能力而不泄露许可内容、私有 locator 或 Host path。
-- `artifact-derived-conditional-capability-closure.md`：让 workflow 从封存 artifact 推导实际到达的科学分支与 capability closure，避免静态 required-operation 列表惩罚 agent 的正确早停。
-- `verified-artifact-materialization-handoff.md`：把 adapter input integrity 的已验证只读 materialization 变成 provider/compiler/runner 实际消费的唯一输入，并在 staging 前后绑定 approved digest；当前 Goal 只证明 pre-dispatch byte-flip canonical fail-closed，不实施跨层 handoff/ownership 迁移。
-- `single-source-hpc-toolchain-contract-registry.md`：未来把 runner manifest、route policy、command template、跨层 DTO 与 verifier 的 toolchain 常量收敛到单一 versioned logical contract；当前 Goal 只落地 same-SSH-shell runner attestation，不实施该跨包迁移。
-- `immutable-hpc-sif-execution-snapshot.md`：为每次 HPC operation 建立 runner-protected immutable SIF snapshot、lease 与 execution binding，消除全局 locator 的 hash-to-open TOCTOU；当前 Goal 只保留 pre/post path hash。
-- `runner-owned-hpc-command-compiler.md`：让 runner 从 typed tool intent 编译并封存 execution plan，退役对 caller shell text 的 parser/rewriter；当前 Goal 只保留 strict direct Apptainer grammar validation。
-- `verifiable-chrome-devtools-observation-transcript.md`：未来用 versioned closed observation protocol、restricted raw call artifacts 与 MCP/sidecar authority receipts 形成可独立离线复核的 Chrome transcript；当前 Goal 只使用 trusted-operator `aox_browser_observation_receipt@2`，不把 per-call digest 扩张解释为 signed/replayable proof。
-- `attempt-scoped-storage-capability.md`：把 SQLite/sandbox/Blob/private-log/HPC roots 收敛为 Host 构造的 typed、不可拆分 storage capability，消除各层可空 path 与共享 `/tmp` fallback；当前 Goal 只修复同一 attempt root 的透传、无 canonical row 时 workspace leaf 的 no-replace 创建与预存 leaf 拒绝，以及 attempt-local Host-private raw command log 的 exclusive `0700`/`0600` 写入和 public opaque-ref 边界。
-- `canonical-public-diagnostic-boundary.md`：用 versioned typed diagnostic envelope、private raw record 与 source-specific projection policy替代跨所有业务文本的无类型正则；当前 Goal 只加固已触达的高风险 error/public evidence seam。
-- `bounded-streaming-sandbox-stdio-capture.md`：把 sandbox 子进程 stdout/stderr 改为边读边写的 Host-private bounded spool、增量 digest 与显式 capture-completeness 状态，消除完整输出在 Host 内存无界累积；当前 Goal 只保留原始 bytes 的私有封存和闭合公开 metadata，不实施 capture pipeline 重构。
-- `nonblocking-supervised-continuation.md`：attached-process park、execution/result/delivery 拆分与 `202` runtime command 已实现；任意 Python stack 的 journaled replay 仍延后。
-- `canonical-approval-command-vs-activity-projection-events.md`：把 authenticated approval command fact 与 derived activity projection 分成不同的 versioned event taxonomy，避免同名 status echo 冒充 operator decision；当前 Goal 只实施 consumer guard，不迁移 event store、SSE、UI 或 verifier schema。
-- `process-isolated-live-attempt-supervision.md`：仍延后。generic mutation quiescence 已实现逻辑 writer freeze/receipt/seal，但不提供 OS 级 hard-kill，因此永久失联的本地 writer 仍需本提案解决。
-- `versioned-scientific-calculation-capability-projection.md`：把散落在 Pipeline SDK、Host collector、workflow 文档和 verifier 中的版本化科学计算收敛为单一 immutable registry，并生成 typed callable、serializer、agent facts projection 与 receipt；当前 Goal 只投影既有 AOX callable 并继续 sealed-byte 重算，不实施跨包 ownership/schema 迁移。
-- `host-authoritative-scientific-calculation-placement-and-sandbox-resource-class.md`：为 sandbox-local scientific calculation 建立 Host-authoritative per-command calculation identity、等价 placement、effective resource class、approval 与 execution receipt，使 sandbox/受控 Host/HPC 选择忠实呈现真实 cgroup/资源约束而不改写 agent 科学策略；当前 Goal 只做 exact Biopython/NumPy backend、trace correction 与已实证 root `cpu.max` 的 cgroup-aware worker 小修，不实施 placement 架构。
-- `reproducible-sandbox-scientific-dependency-manifest-and-build.md`：用 immutable base digest、Python ABI/platform、uv/hash-closed wheelhouse、offline build、canonical dependency manifest/SBOM/attestation 和 namespaced backend capability 使 scientific sandbox 可重建并进入 runtime health/campaign pin；当前 Goal 只保留 Biopython `1.87` / NumPy `2.4.4` exact direct pins、runtime algorithm/numeric/trace/correction assertions 与 actual immutable image digest，不实施供应链迁移。
-- `bounded-capability-facts-query.md`：把 `world.inspect.capabilities` 从“完整 hydrate 各类 payload 后只取 ID/count”迁移为 task-scoped、窄列、SQL 聚合及 per-invocation bounded refs 的只读 query repository；当前 Goal 只收紧 public opaque refs、invocation/ref 上限与 serialized-byte budget，不实施 repository/index/cursor 重构。
-- `canonical-scientific-chain-adoption-and-attempt-closure.md`：为跨 run 的纠正性重试建立显式 adopted/superseded scientific chain 与 attempt closure authority，保留全部失败和 abandoned facts；当前 Goal 只阻止同一 attempt 内重复 operation，不实施顶层 schema/迁移。
-- `canonical-research-evidence-adoption-and-invocation-history.md`：把 research scope 的完整 invocation universe、accepted/exploratory/failed/empty/superseded disposition、selection 与 completeness root 封入 `@2` archive/verifier；当前 Goal 只允许 researcher 在 `task.finish` 显式采用一个 PubMed primary，并继续使用 `@1` bundle。
-- `durable-async-controlled-operation-and-quiescent-sealing.md`：canonical durable execution、分段 worker、immutable result、attached delivery 与 generic mutation freeze/receipt/seal 已实现；process isolation 和跨 Host writer 仍延后。
-- `transactional-attempt-evidence-collection-and-root-closure.md`：在已证明 writer quiescence 后，以 private staging 的 prepare/verify 和 atomic no-replace rename 或 marker-last commit 发布 attempt archive，要求 committed `artifacts/` 与 declared inventory exact closure，并定义失败原子性、crash recovery、schema/migration 和 fresh-live 验收；当前 Goal 只记录，不实施。
-- `host-authoritative-controlled-operation-resource-estimate-and-limit-snapshot.md`：把 sandbox `resource_estimate` 降级为需求/透明预测，由 Host 按 exact route policy 与 injected provider/tool config 编译 canonical estimate、hard limits 和 actual-usage receipt，并绑定 operation/approval/config identity；解决 SDK 常量与 Host 收紧配置漂移，当前 Goal 只记录，不实施。
-- `transactional-provider-batch-attempt-evidence.md`：为单次 controlled operation 内的 provider batch/page/retry 建立 durable attempt transcript、checkpoint、CAS/fencing、reconcile 与 exact closure，避免晚批失败丢失已经发生的 effect 或在恢复时静默重放；当前 Goal 只记录，不实施。
-- `streaming-provider-response-and-artifact-persistence.md`：把 provider body、解析结果与大 artifact 改为 bounded streaming、增量 digest/size、backpressure 和 atomic Blob commit，消除多份完整 bytes 在 Host 内存驻留；当前 Goal 只记录，不实施。
-- `provider-retry-policy-and-failed-attempt-evidence.md`：把 `Retry-After`、错误分类、backoff/jitter、预算与每次失败 HTTP attempt 纳入 Host 权威 retry policy 和 secret-safe durable evidence；当前 Goal 只记录，不实施。
-- `artifact-path-addressing-for-arbitrary-dictionary-keys.md`：为 `artifact.get` 引入 key/index 分型的结构化 path segments，使包含点、空格、空键或 Unicode 的 dictionary key 可无歧义寻址；当前 Goal 只对不可寻址 key 返回 `root_only` 父容器 hint，不实施新寻址合同。
-- `controlled-operation-outcome-unknown-after-response-failure.md`：durable controlled-operation 已实现 effect/result/delivery 分离、stable handle 与 fail-closed reconciliation；generic 非 controlled side-effect RPC 尚未统一迁移。
-- `bounded-canonical-artifact-metadata-manifest-references.md`：把大型 catalog metadata 从重复 SQLite JSON row 正规化为 immutable manifest binding，增加真正 bounded 的分页读取、去重、GC、迁移与 verifier closure；当前 Goal 只实现 attempt-local digest-bound transport sidecar 和 bounded registration response，不实施 repository/schema 迁移。
+归档约定：一个 proposal 的声明范围完成并通过 OpenSpec verify 后，必须与该 change 一起
+放入 `openspec/changes/archive/<date>-<change>/architecture-proposals/`。本索引保留指向
+归档文件的唯一链接，不在本目录留下内容重复的 tombstone。若原 proposal 仍有不同的残余
+工作，先把残余边界拆成新的 proposal/change，再归档已完成范围。OpenSpec spec 的同步与
+archive 仍使用标准 OpenSpec 流程；移动 proposal 不改变 stable spec，也不改写历史 live
+evidence。
+
+## 当前 active / next
+
+当前没有正在实施、尚未归档的 architecture proposal。
+
+编号 AOX live campaign 当前保持暂停。已归档 proposal、deterministic tests 或旧资格 GO 均不
+构成新 attempt admission。
+
+## 已实现并随 OpenSpec 归档
+
+- [Process-isolated live-attempt supervision](/openspec/changes/archive/2026-07-21-add-process-isolated-live-attempt-supervision/architecture-proposals/process-isolated-live-attempt-supervision.md)：local POSIX spawn/process-group bounded retirement、root gate、exact receipt 与 parent-owned fatal evidence。
+- [Sandbox Host authority handoff](/openspec/changes/archive/2026-07-21-simplify-sandbox-host-authority-handoff/architecture-proposals/sandbox-host-authority-handoff.md)：typed Host-call authority、process-lifetime handoff、bounded runtime barrier 与 AOX observation cleanup。
+
+以下五份 proposal 的已声明 scope 由同一 runtime/HPC umbrella change 完成。任意 Python
+stack replay、generic 非 controlled RPC、distributed writer 与 process hard-kill 等残余边界
+已明确留在独立 proposal，不阻止已完成 scope 归档：
+
+- [Runtime/HPC reliability roadmap](/openspec/changes/archive/2026-07-21-runtime-hpc-reliability-refactor/architecture-proposals/runtime-hpc-reliability-refactor-roadmap.md)
+- [Durable HPC transport, staging and dispatch reconciliation](/openspec/changes/archive/2026-07-21-runtime-hpc-reliability-refactor/architecture-proposals/durable-hpc-transport-staging-and-dispatch-reconciliation.md)
+- [Non-blocking supervised continuation](/openspec/changes/archive/2026-07-21-runtime-hpc-reliability-refactor/architecture-proposals/nonblocking-supervised-continuation.md)
+- [Durable async controlled operation and quiescent sealing](/openspec/changes/archive/2026-07-21-runtime-hpc-reliability-refactor/architecture-proposals/durable-async-controlled-operation-and-quiescent-sealing.md)
+- [Controlled-operation outcome unknown after response failure](/openspec/changes/archive/2026-07-21-runtime-hpc-reliability-refactor/architecture-proposals/controlled-operation-outcome-unknown-after-response-failure.md)
+
+## Deferred umbrella 关系
+
+umbrella 只统一 ownership 与实施顺序，不把成员 proposal 的验收范围揉成一个 change。
+
+### Provider execution / evidence
+
+以 [unified-provider-evidence-broker.md](unified-provider-evidence-broker.md) 统一调用 mechanics
+与 envelope；retry、batch transcript、streaming persistence 仍是三个可独立验收的成员：
+
+- [provider-retry-policy-and-failed-attempt-evidence.md](provider-retry-policy-and-failed-attempt-evidence.md)
+- [transactional-provider-batch-attempt-evidence.md](transactional-provider-batch-attempt-evidence.md)
+- [streaming-provider-response-and-artifact-persistence.md](streaming-provider-response-and-artifact-persistence.md)
+
+### HPC input / toolchain / execution plan
+
+同一个 logical execution contract 下保持四个独立 migration seam：
+
+- [verified-artifact-materialization-handoff.md](verified-artifact-materialization-handoff.md)
+- [single-source-hpc-toolchain-contract-registry.md](single-source-hpc-toolchain-contract-registry.md)
+- [immutable-hpc-sif-execution-snapshot.md](immutable-hpc-sif-execution-snapshot.md)
+- [runner-owned-hpc-command-compiler.md](runner-owned-hpc-command-compiler.md)
+
+### Campaign storage / evidence / attestation
+
+按“typed roots → transactional archive commit → generic attestation reducer”排序：
+
+- [attempt-scoped-storage-capability.md](attempt-scoped-storage-capability.md)
+- [transactional-attempt-evidence-collection-and-root-closure.md](transactional-attempt-evidence-collection-and-root-closure.md)
+- [generic-scientific-campaign-attestation.md](generic-scientific-campaign-attestation.md)
+
+[dual-tier-scientific-evidence-boundary.md](dual-tier-scientific-evidence-boundary.md) 是相邻的
+公开/受限证据边界，不并入 archive-commit ownership。
+
+### Workflow request authority / role composition
+
+- [request-lineage-workflow-authority.md](request-lineage-workflow-authority.md)
+- [role-scoped-workflow-composition.md](role-scoped-workflow-composition.md)
+
+前者拥有同一 user request 的 durable authority lineage，后者只投影 role-scoped knowledge；
+二者共享 change 顺序但不能形成固定 agent 拓扑。
+
+## 其余独立 deferred proposals
+
+- Process supervision hardening: [live-attempt-supervision-hardening.md](live-attempt-supervision-hardening.md)，保留 different-UID/cgroup、escaped-descendant、external-handle 与 MICU crash reconciliation；不得反向扩张当前 local POSIX change。
+- Scientific closure/adoption: [artifact-derived-conditional-capability-closure.md](artifact-derived-conditional-capability-closure.md), [canonical-scientific-chain-adoption-and-attempt-closure.md](canonical-scientific-chain-adoption-and-attempt-closure.md), [canonical-research-evidence-adoption-and-invocation-history.md](canonical-research-evidence-adoption-and-invocation-history.md), [versioned-scientific-calculation-capability-projection.md](versioned-scientific-calculation-capability-projection.md).
+- Artifact/query boundaries: [artifact-path-addressing-for-arbitrary-dictionary-keys.md](artifact-path-addressing-for-arbitrary-dictionary-keys.md), [bounded-canonical-artifact-metadata-manifest-references.md](bounded-canonical-artifact-metadata-manifest-references.md), [bounded-capability-facts-query.md](bounded-capability-facts-query.md).
+- Sandbox/runtime mechanics: [bounded-streaming-sandbox-stdio-capture.md](bounded-streaming-sandbox-stdio-capture.md), [reproducible-sandbox-scientific-dependency-manifest-and-build.md](reproducible-sandbox-scientific-dependency-manifest-and-build.md), [host-authoritative-scientific-calculation-placement-and-sandbox-resource-class.md](host-authoritative-scientific-calculation-placement-and-sandbox-resource-class.md).
+- Control/public evidence: [canonical-approval-command-vs-activity-projection-events.md](canonical-approval-command-vs-activity-projection-events.md), [canonical-public-diagnostic-boundary.md](canonical-public-diagnostic-boundary.md), [verifiable-chrome-devtools-observation-transcript.md](verifiable-chrome-devtools-observation-transcript.md).
+- Resource policy: [host-authoritative-controlled-operation-resource-estimate-and-limit-snapshot.md](host-authoritative-controlled-operation-resource-estimate-and-limit-snapshot.md).
+
+这些提案目前均为 `proposed` 或 `deferred`，局部修复、文档定义或 fixture 通过都不得写成
+generic implementation complete。

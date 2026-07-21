@@ -25,6 +25,8 @@ from openzyme_core import MemoryEventBus
 from openzyme_core import RestoreFocus
 from openzyme_core import SandboxRuntimeError
 from openzyme_core import SandboxRuntimeService
+from openzyme_core import SandboxHostCallContext
+from openzyme_core import SandboxProcessHostAuthority
 from openzyme_core import SandboxWorkspaceService
 from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
@@ -68,6 +70,8 @@ from openzyme_domain import ArtifactKind
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionStatus
+from openzyme_domain import Task
+from openzyme_domain import TaskStatus
 from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import MutationWriterKind
 from openzyme_domain import RetryEligibility
@@ -89,16 +93,28 @@ def _digest_text(content: str) -> str:
 
 
 def _control_socket_server(tmp_path: Path, *, name: str) -> _ControlSocketServer:
-    return _ControlSocketServer(
+    repositories = _build_repositories()
+    server = _ControlSocketServer(
         socket_path=tmp_path / f"{name}.sock",
-        repositories=_build_repositories(),
+        repositories=repositories,
         session_id=f"sess_{name}",
         sandbox_workspace_id=f"sw_{name}",
         sandbox_run_id=f"srun_{name}",
         agent_id="agent:executor",
         source_snapshot_artifact_id="art_source",
         source_tree_digest=_digest_text("source"),
+        process_epoch=1,
     )
+    server._host_call_context = SandboxHostCallContext(
+        repositories=repositories,
+        owner=SandboxProcessHostAuthority(
+            session_id=f"sess_{name}",
+            sandbox_workspace_id=f"sw_{name}",
+            sandbox_run_id=f"srun_{name}",
+            process_epoch=1,
+        ),
+    )
+    return server
 
 
 def _send_control_socket_bytes(
@@ -299,7 +315,11 @@ def test_control_socket_registers_nested_artifact_publisher_writer(
 
     monkeypatch.setattr(_ControlSocketServer, "_handle_artifact_boundary", register)
     server = _control_socket_server(tmp_path, name="artifact_writer")
-    server.mutation_writer_scope_factory = writer_scope
+    assert server._host_call_context is not None
+    server._host_call_context = replace(
+        server._host_call_context,
+        mutation_writer_scope_factory=writer_scope,
+    )
 
     registered = server._handle(
         {
@@ -328,7 +348,7 @@ def test_control_socket_registers_nested_artifact_publisher_writer(
                 "sandbox-artifact-publisher:srun_artifact_writer:"
                 "artifacts.register"
             ),
-            "process_epoch": None,
+            "process_epoch": 1,
         }
     ]
 
@@ -862,6 +882,37 @@ def _seed_workspace(
     return session, agent, workspace, workspace_root
 
 
+class _CallbackSandboxHostGateway:
+    def __init__(self, *, adapter_executor=None, hpc_fetch_executor=None) -> None:
+        self.adapter_executor = adapter_executor
+        self.hpc_fetch_executor = hpc_fetch_executor
+
+    def execute_adapter_operation(
+        self,
+        *,
+        operation: ControlledOperation,
+        envelope: dict[str, object],
+        context: SandboxHostCallContext,
+    ) -> dict[str, object]:
+        del context
+        if self.adapter_executor is None:
+            raise RuntimeError("adapter executor is not configured")
+        return self.adapter_executor(operation, dict(envelope))
+
+    def fetch_hpc_outputs(
+        self,
+        *,
+        params: dict[str, object],
+        context: SandboxHostCallContext,
+    ) -> dict[str, object]:
+        if self.hpc_fetch_executor is None:
+            raise RuntimeError("HPC fetch executor is not configured")
+        return self.hpc_fetch_executor(
+            dict(params),
+            repositories=context.repositories,
+        )
+
+
 def _service(
     repositories: CoreRepositories,
     *,
@@ -875,15 +926,34 @@ def _service(
     reliability_settings=None,
     durable_route_adapter_policy_ids=None,
 ) -> SandboxRuntimeService:
+    host_gateway = None
+    if adapter_executor is not None or hpc_fetch_executor is not None:
+        host_gateway = _CallbackSandboxHostGateway(
+            adapter_executor=adapter_executor,
+            hpc_fetch_executor=hpc_fetch_executor,
+        )
+
+    host_call_context_factory = None
+    if repository_scope_factory is not None:
+
+        @contextmanager
+        def open_host_call_context(owner):  # type: ignore[no-untyped-def]
+            with repository_scope_factory() as scoped_repositories:
+                yield SandboxHostCallContext(
+                    repositories=scoped_repositories,
+                    owner=owner,
+                )
+
+        host_call_context_factory = open_host_call_context
+
     return SandboxRuntimeService(
         repositories,
         workspace_root=workspace_root,
         artifact_blob_root=artifact_blob_root,
         log_root=log_root,
         execution_backend="local",
-        adapter_executor=adapter_executor,
-        hpc_fetch_executor=hpc_fetch_executor,
-        repository_scope_factory=repository_scope_factory,
+        host_gateway=host_gateway,
+        host_call_context_factory=host_call_context_factory,
         reliability_shadow_observer=reliability_shadow_observer,
         reliability_settings=reliability_settings,
         durable_route_adapter_policy_ids=dict(durable_route_adapter_policy_ids or {}),
@@ -1424,6 +1494,106 @@ class _DurableProviderFixtureAdapter:
                 },
                 artifact_set_digest=controlled_operation_artifact_set_digest(()),
                 origin="test_durable_provider_adapter",
+            ),
+        )
+
+
+class _DurableHpcFetchFixtureAdapter:
+    route_policy_id = "bio_tools.mafft.hpc:v1"
+    selected_backend = "hpc"
+    adapter_policy_id = "test_durable_hpc_fetch_adapter:v1"
+
+    def __init__(self) -> None:
+        self.dispatch_count = 0
+        self.reconcile_count = 0
+
+    def prepare_dispatch(
+        self,
+        execution: ControlledOperationExecution,
+        request: ControlledOperationDispatchRequest,
+    ) -> str:
+        del request
+        return f"runner_{execution.execution_id}"
+
+    def dispatch(
+        self,
+        execution: ControlledOperationExecution,
+        request: ControlledOperationDispatchRequest,
+    ) -> DurableRouteObservation:
+        self.dispatch_count += 1
+        return self._materialized(execution, request)
+
+    def poll(
+        self,
+        execution: ControlledOperationExecution,
+        request: ControlledOperationDispatchRequest,
+    ) -> DurableRouteObservation:
+        return self._materialized(execution, request)
+
+    def reconcile(
+        self,
+        execution: ControlledOperationExecution,
+        request: ControlledOperationDispatchRequest,
+    ) -> DurableRouteObservation:
+        self.reconcile_count += 1
+        return self._materialized(execution, request)
+
+    def materialize(
+        self,
+        execution: ControlledOperationExecution,
+        request: ControlledOperationDispatchRequest,
+    ) -> DurableRouteObservation:
+        return self._materialized(execution, request)
+
+    @staticmethod
+    def _materialized(
+        execution: ControlledOperationExecution,
+        request: ControlledOperationDispatchRequest,
+    ) -> DurableRouteObservation:
+        adapter_params = dict(request.request_envelope["adapter_params"])
+        placement = dict(adapter_params["placement"])
+        run_handle = {
+            "kind": "hpc_run_handle",
+            "run_id": "run_hpc_after_continuation",
+            "status": "succeeded",
+            "execution_mode": "ssh",
+            "operation_id": execution.operation_id,
+            "operation_digest": execution.operation_digest,
+            "hpc_workspace_id": placement["hpc_workspace_id"],
+            "declared_outputs": list(adapter_params["expected_outputs"]),
+            "summary": "durable MAFFT fixture completed",
+            "warnings": [],
+        }
+        registered_artifact_ids = ["artifact_alignment_after_continuation"]
+        fetch_refs = [
+            {
+                "fetch_ref_id": "fetch_alignment_after_continuation",
+                "run_id": run_handle["run_id"],
+                "declared_output_path": "bio_tools/mafft/alignment.fasta",
+                "registered_artifact_id": registered_artifact_ids[0],
+                "output_digest": "sha256:alignment-after-continuation",
+            }
+        ]
+        return DurableRouteObservation(
+            kind=DurableRouteObservationKind.RESULT_MATERIALIZED,
+            effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+            retry_eligibility=RetryEligibility.TERMINAL,
+            backend_handle_ref=execution.backend_handle_ref,
+            safe_receipt_digest="sha256:" + "7" * 64,
+            safe_summary="durable HPC fixture result materialized",
+            terminal_outcome=ControlledOperationExecutionTerminalOutcome.SUCCEEDED,
+            materialized_result=DurableRouteMaterializedResult(
+                bounded_result_envelope={
+                    **run_handle,
+                    "status": "succeeded",
+                    "result_origin": "test_durable_hpc_fetch_adapter",
+                    "fetch_refs": fetch_refs,
+                    "registered_artifact_ids": registered_artifact_ids,
+                    "output_artifact_ids": registered_artifact_ids,
+                    "bounded_summary": run_handle,
+                },
+                artifact_set_digest=controlled_operation_artifact_set_digest(()),
+                origin="test_durable_hpc_fetch_adapter",
             ),
         )
 
@@ -2265,6 +2435,230 @@ def test_sandbox_exec_durable_route_admits_once_and_never_calls_legacy_adapter(
     assert len(owner_wakeups) == 1
     assert delivery_worker.run_once().action == "idle"
     assert service.live_process_registry.active_count() == 0
+
+
+def test_file_backed_attached_continuation_fetch_uses_process_authority_after_turn_release(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "attached-hpc-fetch.sqlite3"
+    connection = connect_sqlite(str(database_path), check_same_thread=False)
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+
+    @contextmanager
+    def repository_scope():  # type: ignore[no-untyped-def]
+        scoped_connection = connect_sqlite(
+            str(database_path),
+            check_same_thread=False,
+        )
+        try:
+            yield CoreRepositories.from_connection(scoped_connection)
+        finally:
+            scoped_connection.close()
+
+    session, agent, workspace, workspace_root = _seed_workspace(
+        repositories,
+        tmp_path,
+    )
+    task = Task.create(
+        task_id="task_attached_hpc_fetch",
+        session_id=session.session_id,
+        subject="Fetch declared MAFFT output",
+        description="Remain agent-owned after capability completion",
+        status=TaskStatus.IN_PROGRESS,
+        assigned_ref=agent.agent_id,
+    )
+    repositories.tasks.save(task)
+    route_policy_id = "bio_tools.mafft.hpc:v1"
+    durable_adapter = _DurableHpcFetchFixtureAdapter()
+    legacy_adapter_calls: list[str] = []
+    fetch_calls: list[dict[str, object]] = []
+    fetch_repository_scopes: list[CoreRepositories] = []
+    lease_holder: dict[str, object] = {}
+
+    def _legacy_adapter_executor(
+        operation: ControlledOperation,
+        envelope: dict[str, object],
+    ) -> dict[str, object]:
+        del envelope
+        legacy_adapter_calls.append(operation.operation_id)
+        raise AssertionError("durable owner reached the legacy adapter")
+
+    def _hpc_fetch_executor(
+        params: dict[str, object],
+        *,
+        repositories: CoreRepositories,
+    ) -> dict[str, object]:
+        old_lease = lease_holder["old"]
+        assert not repositories.session_runtime_leases.is_active(
+            session_id=session.session_id,
+            lease_token=old_lease.lease_token,  # type: ignore[attr-defined]
+            fencing_token=old_lease.fencing_token,  # type: ignore[attr-defined]
+        )
+        fetch_calls.append(dict(params))
+        fetch_repository_scopes.append(repositories)
+        return {
+            "kind": "hpc_fetch_result",
+            "run_id": params["run_id"],
+            "status": "succeeded",
+            "operation_id": params["operation_id"],
+            "operation_digest": params["operation_digest"],
+            "registered_artifact_ids": ["artifact_alignment_after_continuation"],
+            "fetch_refs": [
+                {
+                    "fetch_ref_id": "fetch_alignment_after_continuation",
+                    "run_id": params["run_id"],
+                    "declared_output_path": "bio_tools/mafft/alignment.fasta",
+                    "registered_artifact_id": (
+                        "artifact_alignment_after_continuation"
+                    ),
+                    "output_digest": "sha256:alignment-after-continuation",
+                }
+            ],
+        }
+
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+        adapter_executor=_legacy_adapter_executor,
+        hpc_fetch_executor=_hpc_fetch_executor,
+        reliability_settings=ReliabilityRefactorSettings(
+            controlled_operation_owner_policy=(
+                ControlledOperationOwnerPolicy.ROUTE_ALLOWLIST_V1
+            ),
+            durable_execution_route_allowlist=(route_policy_id,),
+        ),
+        durable_route_adapter_policy_ids={
+            route_policy_id: durable_adapter.adapter_policy_id,
+        },
+        repository_scope_factory=repository_scope,
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/durable_hpc_fetch.py",
+        content=(
+            "import json\n"
+            "from pathlib import Path\n"
+            "from openzyme_pipeline import artifacts, bio_tools, hpc\n"
+            "path = Path('output/inputs/reference.fasta')\n"
+            "path.parent.mkdir(parents=True, exist_ok=True)\n"
+            "path.write_text('>one\\nMSEQONE\\n>two\\nMSEQTWO\\n', encoding='utf-8')\n"
+            "registered = artifacts.register('/workspace/output/inputs/reference.fasta', kind='sequence', format='fasta')\n"
+            "ws = hpc.workspace('aox_hmm')\n"
+            "stage_ref = ws.stage_artifact(registered['artifact']['artifact_id'], workspace_path='inputs/reference.fasta')\n"
+            "run = bio_tools.mafft(\n"
+            "    input_fasta=stage_ref,\n"
+            "    placement=ws,\n"
+            "    expected_outputs=[{'path': 'bio_tools/mafft/alignment.fasta', 'kind': 'sequence', 'format': 'fasta'}],\n"
+            ")\n"
+            "fetch = ws.fetch_outputs(run)\n"
+            "print(json.dumps({'run': run, 'fetch': fetch}, sort_keys=True))\n"
+        ),
+        create_dirs=True,
+    )
+
+    acquired = repositories.session_runtime_leases.acquire(
+        session_id=session.session_id,
+        owner_id="worker:launching-agent-turn",
+        mode="test",
+        lease_seconds=60,
+    )
+    assert acquired.lease is not None
+    lease_holder["old"] = acquired.lease
+    holder: dict[str, object] = {}
+
+    def _run() -> None:
+        with repositories.runtime_write_fence(acquired.lease):
+            holder["run"] = service.exec_command(
+                session_id=session.session_id,
+                sandbox_workspace_id=workspace.sandbox_workspace_id,
+                agent_id=agent.agent_id,
+                argv=["python", "src/durable_hpc_fetch.py"],
+                timeout_seconds=10,
+                task_id=task.task_id,
+                originating_signal_id="signal_attached_hpc_fetch",
+                originating_tool_call_id="tool_call_attached_hpc_fetch",
+                originating_invocation_id="invocation_attached_hpc_fetch",
+            )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    pending = _wait_for_pending_approval(repositories, session.session_id)
+    operation = _wait_for_operation_with_approval(
+        repositories,
+        str(pending.request_ref),
+        pending.approval_id,
+    )
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    suspended_run = holder["run"]
+    assert isinstance(suspended_run, SandboxRunRecord)
+    assert suspended_run.status is SandboxRunStatus.RUNNING
+
+    released = repositories.session_runtime_leases.release(
+        session_id=session.session_id,
+        owner_id="worker:launching-agent-turn",
+        lease_token=acquired.lease.lease_token,
+    )
+    assert released is not None
+    replacement_lease = repositories.session_runtime_leases.acquire(
+        session_id=session.session_id,
+        owner_id="worker:continuation-agent-turn",
+        mode="test",
+        lease_seconds=60,
+    )
+    assert replacement_lease.acquired is True
+
+    ready = _approve_durable_operation(repositories, operation)
+    worker = ControlledOperationExecutionWorker(
+        repository_scope_factory=repository_scope,
+        adapters={route_policy_id: durable_adapter},
+        worker_id="test:durable-hpc-fetch",
+    )
+    assert worker.run_execution_once(ready.execution_id).action == "dispatch"
+    terminalized = worker.run_execution_once(ready.execution_id)
+    assert terminalized.action == "terminalize_result", (
+        repositories.controlled_operation_executions.get(ready.execution_id)
+    )
+    assert service.live_process_registry is not None
+    delivery_worker = ContinuationDeliveryWorker(
+        repository_scope_factory=repository_scope,
+        live_process_registry=service.live_process_registry,
+        worker_id="test:attached-hpc-fetch-delivery",
+    )
+    assert delivery_worker.run_once().action == "delivered"
+
+    final_run = suspended_run
+    for _ in range(100):
+        current_run = repositories.sandbox_runs.get(final_run.sandbox_run_id)
+        assert current_run is not None
+        if current_run.status is not SandboxRunStatus.RUNNING:
+            final_run = current_run
+            break
+        time.sleep(0.05)
+    assert final_run.status is SandboxRunStatus.COMPLETED, {
+        "error_code": final_run.error_code,
+        "stdout": final_run.stdout_summary,
+        "stderr": final_run.stderr_summary,
+    }
+    payload = json.loads(str(final_run.stdout_summary))
+    assert payload["run"]["run_id"] == "run_hpc_after_continuation"
+    assert payload["fetch"]["registered_artifact_ids"] == [
+        "artifact_alignment_after_continuation"
+    ]
+    assert durable_adapter.dispatch_count == 1
+    assert durable_adapter.reconcile_count == 0
+    assert legacy_adapter_calls == []
+    assert len(fetch_calls) == 1
+    assert fetch_calls[0]["operation_id"] == operation.operation_id
+    assert fetch_repository_scopes[0] is not repositories
+    persisted_task = repositories.tasks.get(task.task_id)
+    assert persisted_task is not None
+    assert persisted_task.status is TaskStatus.IN_PROGRESS
+    assert delivery_worker.run_once().action == "idle"
 
 
 def test_sandbox_exec_durable_route_without_exact_adapter_fails_closed(
@@ -4560,7 +4954,7 @@ def test_sandbox_exec_s12_untrusted_legacy_result_requires_fresh_approval(
         ):
             first_operation = operations[0]
             break
-        time.sleep(0.01)
+        time.sleep(0.05)
     assert first_operation is not None
     legacy_result = dict(first_operation.adapter_result_envelope or {})
     assert legacy_result["result_origin"] == "host_adapter_executor"

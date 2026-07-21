@@ -43,9 +43,9 @@ receipt、root closure 或 cutover qualification。
 
 ## Relationship to other proposals
 
-[process-isolated live-attempt supervision](process-isolated-live-attempt-supervision.md)
+[process-isolated live-attempt supervision](/openspec/changes/archive/2026-07-21-add-process-isolated-live-attempt-supervision/architecture-proposals/process-isolated-live-attempt-supervision.md)
 解决父进程如何有界退休 attempt child，并在 OS 确认本地 writer 消失后才读取 roots。
-[durable async controlled operation and quiescent sealing](durable-async-controlled-operation-and-quiescent-sealing.md)
+[durable async controlled operation and quiescent sealing](/openspec/changes/archive/2026-07-21-runtime-hpc-reliability-refactor/architecture-proposals/durable-async-controlled-operation-and-quiescent-sealing.md)
 解决长 provider operation、continuation、lease/fencing 与 Host mutation freeze。
 
 本提案只在这些 writer/quiescence 前置事实成立后开始 collection：

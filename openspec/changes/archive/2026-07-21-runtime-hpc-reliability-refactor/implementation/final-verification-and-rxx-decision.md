@@ -1,5 +1,13 @@
 # Final verification and `rxx` re-entry decision
 
+> Superseded status notice (later on 2026-07-21): the `GO` below was a point-in-time
+> eligibility decision, not a campaign success claim. r41-r44 subsequently exposed
+> runner-artifact launch, suspension observation, durable provider projection, and
+> post-continuation sandbox Host-authority gaps. Numbered campaign admission is now
+> `HOLD / PAUSED` until the authority-handoff and separate process-isolation changes
+> complete their gates and an operator makes a new explicit decision. The original
+> evidence and verdict are retained unchanged as historical qualification facts.
+
 - Recorded: 2026-07-21
 - Change: `runtime-hpc-reliability-refactor`
 - Deterministic implementation verdict: `GO`

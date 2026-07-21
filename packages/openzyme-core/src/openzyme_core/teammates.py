@@ -44,6 +44,8 @@ from .protocol_tools import register_protocol_tools
 from .protocols import ProtocolService
 from .report_drafts import register_report_draft_tools
 from .sandbox_workspace import register_sandbox_workspace_tools
+from .sandbox_host import SandboxHostBinding
+from .sandbox_host import SandboxMutationWriterScopeFactory
 from .sandbox_runtime import register_sandbox_runtime_tools
 from .task_board import register_task_board_tools
 from .skills import SkillRegistry
@@ -590,6 +592,8 @@ def build_teammate_registry(
     *,
     agent_id: str | None = None,
     engine_registry: EngineRegistry | None = None,
+    sandbox_host_binding: SandboxHostBinding | None = None,
+    mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None,
     bio_research_service: Any | None = None,
     research_adapter: Any | None = None,
 ) -> ToolRegistry:
@@ -602,33 +606,13 @@ def build_teammate_registry(
     if engine_registry is not None:
         for engine in engine_registry.list_engines():
             engine.register_tools(registry)
-    adapter_executor = None
-    hpc_fetch_executor = None
-    repository_scope_factory = None
     live_process_registry = None
-    mutation_writer_scope_factory = None
     signal_notifier = None
     if engine_registry is not None:
         execution_engine = engine_registry.get("execution")
-        candidate = getattr(execution_engine, "execute_sandbox_adapter_operation", None)
-        if callable(candidate):
-            adapter_executor = candidate
-        candidate = getattr(execution_engine, "fetch_sandbox_hpc_outputs", None)
-        if callable(candidate):
-            hpc_fetch_executor = candidate
-        repository_scope_factory = getattr(
-            execution_engine,
-            "sandbox_process_repository_scope_factory",
-            None,
-        ) or getattr(execution_engine, "repository_scope_factory", None)
         live_process_registry = getattr(
             execution_engine,
             "sandbox_process_registry",
-            None,
-        )
-        mutation_writer_scope_factory = getattr(
-            execution_engine,
-            "sandbox_process_mutation_writer_scope_factory",
             None,
         )
         signal_notifier = getattr(
@@ -644,9 +628,14 @@ def build_teammate_registry(
     register_sandbox_runtime_tools(
         registry,
         agent_id=agent_id,
-        adapter_executor=adapter_executor,
-        hpc_fetch_executor=hpc_fetch_executor,
-        repository_scope_factory=repository_scope_factory,
+        host_gateway=(
+            None if sandbox_host_binding is None else sandbox_host_binding.gateway
+        ),
+        host_call_context_factory=(
+            None
+            if sandbox_host_binding is None
+            else sandbox_host_binding.context_factory
+        ),
         mutation_writer_scope_factory=mutation_writer_scope_factory,
         live_process_registry=live_process_registry,
         signal_notifier=signal_notifier,
@@ -1239,9 +1228,22 @@ def run_teammate_loop(
         task_id=task_id,
         correlation_id=correlation_id,
     )
+    sandbox_host_binding = None
+    if (
+        parent_context.engine_registry is not None
+        and parent_context.sandbox_host_binding_factory is not None
+    ):
+        sandbox_host_binding = parent_context.sandbox_host_binding_factory(
+            parent_context.engine_registry,
+            parent_context.session_runtime_lease,
+        )
     registry = build_teammate_registry(
         agent_id=agent_id,
         engine_registry=parent_context.engine_registry,
+        sandbox_host_binding=sandbox_host_binding,
+        mutation_writer_scope_factory=(
+            parent_context.mutation_writer_scope_factory
+        ),
         bio_research_service=parent_context.bio_research_service,
         research_adapter=parent_context.research_adapter,
     )

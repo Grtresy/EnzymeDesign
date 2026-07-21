@@ -51,6 +51,8 @@ from .mutation_quiescence import MutationScopeService
 from .repositories import EngineDocumentRecord
 from .repositories import CoreRepositories
 from .repositories import TaskWriteIntent
+from .sandbox_host import SandboxHostBinding
+from .sandbox_host import SandboxMutationWriterScopeFactory
 from .conversation import persist_conversation_message
 from .prompt_budget import PromptBudgetAction
 from .prompt_budget import PromptBudgetDecision
@@ -453,7 +455,14 @@ class SessionRuntimeContext:
     reliability_shadow_observer: Any | None = None
     reliability_settings: Any | None = None
     durable_route_adapter_policy_ids: dict[str, str] = field(default_factory=dict)
-    mutation_writer_scope_factory: Callable[..., Any] | None = None
+    mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None
+    sandbox_host_binding_factory: (
+        Callable[
+            [EngineRegistry, SessionRuntimeLease | None],
+            SandboxHostBinding,
+        ]
+        | None
+    ) = None
     session_runtime_lease: SessionRuntimeLease | None = None
     agent_id: str | None = None
     actor_kind: str | None = None
@@ -1429,7 +1438,14 @@ def run_agent_harness_loop(
     reliability_shadow_observer: Any | None = None,
     reliability_settings: Any | None = None,
     durable_route_adapter_policy_ids: dict[str, str] | None = None,
-    mutation_writer_scope_factory: Callable[..., Any] | None = None,
+    mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None,
+    sandbox_host_binding_factory: (
+        Callable[
+            [EngineRegistry, SessionRuntimeLease | None],
+            SandboxHostBinding,
+        ]
+        | None
+    ) = None,
 ) -> HarnessResult:
     from .skills import SkillRegistry
 
@@ -1457,6 +1473,7 @@ def run_agent_harness_loop(
         reliability_settings=reliability_settings,
         durable_route_adapter_policy_ids=dict(durable_route_adapter_policy_ids or {}),
         mutation_writer_scope_factory=mutation_writer_scope_factory,
+        sandbox_host_binding_factory=sandbox_host_binding_factory,
         agent_id=harness_input.agent_id,
         actor_kind=harness_input.actor_kind,
         actor_role=harness_input.actor_role,

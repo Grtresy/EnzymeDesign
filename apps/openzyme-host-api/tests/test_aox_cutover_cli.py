@@ -135,21 +135,37 @@ def test_run_live_passes_canonical_launch_snapshot_to_runner_and_campaign(
         def __init__(self, **kwargs) -> None:
             captured["runner"] = kwargs
 
+    class FakeSupervisor:
+        def __init__(self, **kwargs) -> None:
+            captured["supervisor"] = kwargs
+
     class FakeCampaign:
         def __init__(self, **kwargs) -> None:
             captured["campaign"] = kwargs
 
         def run(self):
-            return (), {"decision": "NO-GO", "blockers": []}
+            return (), {
+                "decision": "NO-GO",
+                "blockers": [],
+                "driver_failure_kind": "attempt_supervision_fatal",
+            }
 
     monkeypatch.setattr(cli, "prepare_aox_cutover_launch", prepare_launch)
     monkeypatch.setattr(cli, "AoxCutoverCampaign", FakeCampaign)
     monkeypatch.setattr(
-        cli, "safe_micu_ledger_snapshot", lambda path: {"path": str(path)}
+        cli,
+        "safe_micu_ledger_snapshot",
+        lambda path: (_ for _ in ()).throw(
+            AssertionError(f"fatal supervision must not reread {path}")
+        ),
     )
     monkeypatch.setattr(
         "openzyme_host_api.aox_cutover_live.LiveAoxAttemptRunner",
         FakeRunner,
+    )
+    monkeypatch.setattr(
+        "openzyme_host_api.aox_attempt_supervision.ProcessIsolatedAttemptRunner",
+        FakeSupervisor,
     )
 
     result = cli._run_live(args)
@@ -160,11 +176,23 @@ def test_run_live_passes_canonical_launch_snapshot_to_runner_and_campaign(
     assert captured["prepare"]["driver"].timeout_seconds == 7_200.0
     assert captured["runner"]["settings"] is effective_settings
     assert captured["runner"]["effective_config"] is launch_config
+    assert captured["supervisor"]["runner"].__class__ is FakeRunner
+    assert captured["supervisor"]["ledger_path"] == args.ledger_path
+    assert captured["supervisor"]["timeout_seconds"] == 15_000.0
     assert captured["campaign"]["identity"] is launch_identity
     assert captured["campaign"]["allowed_prerequisites"] is launch_prerequisites
     assert captured["campaign"]["launch_guard"] is launch_guard
+    assert captured["campaign"]["positive_runner"].__class__ is FakeSupervisor
+    assert captured["campaign"]["positive_runner"] is captured["campaign"][
+        "fault_runner"
+    ]
+    assert captured["campaign"]["require_process_supervision"] is True
     output = json.loads(capsys.readouterr().out)
     assert output["decision"]["decision"] == "NO-GO"
+    assert output["micu_ledger"] == {
+        "status": "not_claimed",
+        "reason": "attempt_supervision_fatal",
+    }
 
 
 def test_pin_uses_same_driver_bounds_and_writes_safe_no_replace_json(

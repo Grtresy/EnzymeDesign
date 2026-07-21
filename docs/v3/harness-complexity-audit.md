@@ -183,9 +183,11 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   Doctrine 风险：一个 bounded agent turn 同时成为 HTTP、approval wait、external-effect dispatch、result delivery 与 closure owner。任何 timeout/restart 都无法区分 effect 是否发生，也无法在不重放科学动作的前提下恢复。
 
-  目标边界：保持 task/agent 策略自由，同时把真实世界约束拆为四种显式 authority：session signal、external execution、exact continuation delivery 与 mutation closure。每类 worker 只认领自己的短 slice，任一 terminal/idle 不推断 task 终态。
+  目标边界：保持 task/agent 策略自由，同时把真实世界约束拆为五个显式 authority boundary：session signal/turn、sandbox process epoch、external execution、exact continuation delivery 与 mutation closure。每类 worker 只认领自己的短 slice，任一 terminal/idle 不推断 task 终态。
 
   修正记录：`runtime-hpc-reliability-refactor` 已建立唯一 `ControlledOperationExecution`、immutable dispatch/result records、execution fence/effect certainty、attached-process continuation、durable `202` runtime command、generic mutation scope/writer/receipt 与 runner-owned per-target ControlMaster。durable wait 会 park exact sandbox process并在 bounded deadline 内释放 signal/session/request；direct SSH dispatch ambiguity fail closed，只有 proven pre-effect 允许一次有界恢复；closure 等待显式 writer retirement 和两次一致 snapshot，不以 runtime idle 代替。真实 SSH transport-only soak 仍是恢复 rxx 前的独立外部门禁，不因本项代码/文档完成而自动获得 GO。
+
+  追加修正记录：r44 证明 control server 虽拥有 exact process resume，engine callback 仍可能回到创建时捕获的 stale turn scope。`simplify-sandbox-host-authority-handoff` 将 session/process/execution/delivery owner 固化为 immutable `SandboxHostCallContext`，所有 adapter/fetch 只经 typed gateway；删除 reflected callback、双 scope factory 与 optional repository escape hatch。AOX 对 suspension/writer/runtime work 的直接数据库 helper 同时被 bounded read-only runtime barrier 替代，driver 不再复制 runtime ownership 规则。
 
 ## 4. 后续工作流
 

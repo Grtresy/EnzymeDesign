@@ -302,7 +302,7 @@ claimed --operator release--> pending
 - heartbeat / extend / release 必须校验 `owner_id + lease_token`
 - scheduler 在 blocking provider/tool turn 期间按 lease TTL 的有界分数持续 heartbeat；heartbeat 更新失败或返回 no-match 表示 ownership 已丢失，不得继续 claim 新 signal
 - runtime worker connection 绑定 `session_id + lease_token + fencing_token`；write commit 前必须重新确认 lease 未过期且未释放，session-scoped write 还必须与 leased session 一致
-- scheduler worker 重建的 capability engine 与 `legacy_sync` sandbox callback 必须继承同一 session fence；`durable_async_v1` adapter/HPC callback 改为继承 execution fence 与 mutation-writer authority，不能因为切换线程/connection 而退化成 unfenced Host write，也不能借用 session lease冒充 external-effect ownership
+- scheduler worker 重建的 session-turn engine 继承 exact session fence；attached sandbox control process、durable adapter/HPC callback 与 continuation delivery 分别使用 process epoch、execution fence 与 delivery fence，并共同接受 mutation-writer authority。它们不能因为切换线程/connection 而退化成 unfenced Host write，也不能互借 authority。所有 sandbox-to-Host engine call 只经 typed `SandboxHostCallContext/SandboxHostGateway`，不得回退到 engine 创建时捕获的 repository scope
 - write/approval/external tool 在 side effect 前做 fence preflight；commit fence 是竞态条件下的第二道防线。超时或取消后迟到返回的旧 callback 不得写 task、operation、run、artifact、report 或 event
 - session runtime lease 只管理“谁有权推进 session runtime”，不判断 task 是否完成或失败
 - `/runtime/drain` POST 只 admission command；其 `RuntimeCommandWorker`、background runtime、recovery worker 和测试 scheduler 在实际推进 bounded batch 时都必须尊重同一 session lease。已被占用时 command 终结为脱敏 `locked` diagnostic
@@ -318,8 +318,9 @@ claimed --operator release--> pending
 - `RuntimeCommandRecord`：显式 `/runtime/drain` 的 durable admission、idempotency、closed limits、claim/fence 与 bounded terminal outcome；不持 approval/provider/HPC wall time
 - `ContinuationState` / delivery attempt：绑定 sandbox run/workspace/runtime identity/process epoch/tool call/invocation/signal、resume strategy、result digest 与 delivery generation；只拥有 exact result delivery
 - `MutationScope` / `MutationWriter` / `MutationQuiescenceReceipt`：冻结 session/attempt generation、coverage manifest、writer ancestry/fence、两次一致 snapshot 与 immutable closure proof
+- `SandboxHostCallContext`：ephemeral typed composition boundary，只把一个 session-turn、sandbox-process、durable-execution 或 continuation-delivery owner 绑定到 thread-owned repositories；它不持久化，也不成为新的 control-plane reducer
 
-四种 authority 独立存在：session lease/signal claim、execution lease/fence、continuation delivery claim/process epoch、mutation scope generation/writer fence。它们的 acquire、heartbeat、stale recovery 与 terminal 条件不可互相替代；任何一个对象的 terminal 都不能自动 terminalize task。
+五个 authority boundary 独立存在：session lease/signal claim、sandbox process epoch、execution lease/fence、continuation delivery claim/fence、mutation scope generation/writer fence。process identity 不等于 delivery authority，delivery 也不把已释放的 session lease 交还给 process。它们的 acquire、heartbeat、stale recovery 与 terminal 条件不可互相替代；任何一个对象的 terminal 都不能自动 terminalize task。
 
 `ControlledOperation.status/result/error` 对 durable owner 只是由唯一 transition service 在同一 transaction 中派生的兼容投影。immutable result handle 若承载 S12 adapter envelope，完整 envelope 只投影到 `adapter_result_envelope`，其中 exact object `bounded_summary` 单独投影到 `result_summary`；不得把外层 envelope 再嵌入 `result_summary`，否则 sandbox SDK 会看到错误的 wire shape。存在但非 object 的 `bounded_summary` 必须使 transition fail closed；没有该字段的 HPC run handle 与 terminal failure envelope 保持 direct summary 投影。raw repository save、legacy adapter、approval row、continuation 或 runtime signal 都不得成为第二个 dispatch/reducer owner。恢复边界由 effect certainty 决定：仅 `no_effect` 可做同 phase 有界恢复，`dispatch_in_doubt` 禁止 replay，`effect_known` 只查询 exact handle，`terminal_known` 只恢复 result/materialization。
 

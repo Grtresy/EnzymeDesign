@@ -311,7 +311,7 @@ URL/cursor/path，offline verifier不查询provider或operator log。未来schem
   evidence和explicit failure；本文增加的是execution子级attempt/checkpoint，不改变engine ownership。
 - [Unified provider evidence broker](unified-provider-evidence-broker.md) 负责跨direct/deep/execution调用面的
   provider envelope与mechanics；未来broker可承载本文SPI，但不能夺走controlled-operation owner。
-- [Durable async controlled operation and quiescent sealing](durable-async-controlled-operation-and-quiescent-sealing.md)
+- [Durable async controlled operation and quiescent sealing](/openspec/changes/archive/2026-07-21-runtime-hpc-reliability-refactor/architecture-proposals/durable-async-controlled-operation-and-quiescent-sealing.md)
   负责长时operation handle、poll/continuation与quiescence；本文负责一个provider operation内部的
   request/page/batch evidence和resume high-watermark。
 - [Transactional attempt-evidence collection](transactional-attempt-evidence-collection-and-root-closure.md)

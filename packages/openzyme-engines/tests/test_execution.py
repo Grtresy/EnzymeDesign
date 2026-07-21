@@ -14,6 +14,8 @@ from openzyme_core import ArtifactBoundaryService
 from openzyme_core import MemoryEventBus
 from openzyme_core import RestoreFocus
 from openzyme_core import SandboxWorkspaceService
+from openzyme_core import SandboxHostCallContext
+from openzyme_core import SandboxProcessHostAuthority
 from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import SQLiteRepositoryProvider
@@ -4175,12 +4177,6 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs(
         == TOOLCHAIN_RUNTIME_IDENTITY
     )
     assert adapter_result["registered_artifact_ids"] == []
-    @contextmanager
-    def stale_runtime_scope():  # type: ignore[no-untyped-def]
-        raise AssertionError("sandbox-owned fetch reused the stale agent runtime scope")
-        yield
-
-    engine.repository_scope_factory = stale_runtime_scope
     fetch = engine.fetch_sandbox_hpc_outputs(
         {
             "session_id": "sess_001",
@@ -4189,8 +4185,7 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs(
             "run_id": run_handle["run_id"],
             "operation_id": operation.operation_id,
             "operation_digest": operation.operation_digest,
-        },
-        repositories=repositories,
+        }
     )
 
     assert fetch["kind"] == "hpc_fetch_result"
@@ -6118,6 +6113,23 @@ def test_s14_bio_tools_product_route_live_hpc_smoke(tmp_path: Path) -> None:
         with repository_provider.connection_scope() as owner:
             yield owner.repositories
 
+    @contextmanager
+    def sandbox_host_context(
+        *,
+        session_id: str,
+        invocation_id: str,
+    ):  # type: ignore[no-untyped-def]
+        with repository_scope() as scoped_repositories:
+            yield SandboxHostCallContext(
+                repositories=scoped_repositories,
+                owner=SandboxProcessHostAuthority(
+                    session_id=session_id,
+                    sandbox_workspace_id=f"pipeline_workspace:{invocation_id}",
+                    sandbox_run_id=f"pipeline_run:{invocation_id}",
+                    process_epoch=1,
+                ),
+            )
+
     _seed_session(repositories)
     fixture_root = (
         Path(__file__).resolve().parents[3]
@@ -6205,7 +6217,7 @@ def test_s14_bio_tools_product_route_live_hpc_smoke(tmp_path: Path) -> None:
             server=MCPHpcServer(settings.execution.hpc_runner_config),
         ),
         sandbox_runner=sandbox,
-        repository_scope_factory=repository_scope,
+        sandbox_host_call_context_factory=sandbox_host_context,
     )
 
     first = engine.start_pipeline(

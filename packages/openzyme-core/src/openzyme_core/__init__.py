@@ -111,6 +111,14 @@ from .report_drafts import register_report_draft_tools
 from .runtime_consistency import RuntimeConsistencyService
 from .runtime_consistency import RuntimeConsistencyWarning
 from .runtime_consistency import RuntimeStateAudit
+from .runtime_barrier import DEFAULT_RUNTIME_BARRIER_RECORD_LIMIT
+from .runtime_barrier import MAX_RUNTIME_BARRIER_RECORD_LIMIT
+from .runtime_barrier import RUNTIME_BARRIER_SCHEMA_VERSION
+from .runtime_barrier import RuntimeBarrierBlockerCode
+from .runtime_barrier import RuntimeBarrierCounts
+from .runtime_barrier import RuntimeBarrierObserverWriter
+from .runtime_barrier import RuntimeBarrierProjection
+from .runtime_barrier import RuntimeBarrierProjectionService
 from .sandbox_workspace import SandboxWorkspaceService
 from .sandbox_workspace import derive_sandbox_workspace_id
 from .sandbox_workspace import normalize_immutable_image_id
@@ -119,6 +127,17 @@ from .sandbox_workspace import sandbox_image_record
 from .sandbox_runtime import SandboxRuntimeError
 from .sandbox_runtime import SandboxRuntimeService
 from .sandbox_runtime import register_sandbox_runtime_tools
+from .sandbox_host import ContinuationDeliveryHostAuthority
+from .sandbox_host import DurableExecutionHostAuthority
+from .sandbox_host import SandboxHostAuthorityError
+from .sandbox_host import SandboxHostBinding
+from .sandbox_host import SandboxHostCallContext
+from .sandbox_host import SandboxHostCallContextFactory
+from .sandbox_host import SandboxHostGateway
+from .sandbox_host import SandboxHostOwnerAuthority
+from .sandbox_host import SandboxMutationWriterScopeFactory
+from .sandbox_host import SandboxProcessHostAuthority
+from .sandbox_host import SessionTurnHostAuthority
 from .artifact_boundary import ArtifactBoundaryError
 from .artifact_boundary import ArtifactBoundaryService
 from .artifact_boundary import register_artifact_boundary_tools
@@ -403,7 +422,25 @@ __all__ = [
     "RuntimeConsistencyService",
     "RuntimeConsistencyWarning",
     "RuntimeStateAudit",
+    "DEFAULT_RUNTIME_BARRIER_RECORD_LIMIT",
+    "MAX_RUNTIME_BARRIER_RECORD_LIMIT",
+    "RUNTIME_BARRIER_SCHEMA_VERSION",
+    "RuntimeBarrierBlockerCode",
+    "RuntimeBarrierCounts",
+    "RuntimeBarrierObserverWriter",
+    "RuntimeBarrierProjection",
+    "RuntimeBarrierProjectionService",
     "SandboxImageRecordRepository",
+    "ContinuationDeliveryHostAuthority",
+    "DurableExecutionHostAuthority",
+    "SandboxHostAuthorityError",
+    "SandboxHostBinding",
+    "SandboxHostCallContext",
+    "SandboxHostCallContextFactory",
+    "SandboxHostGateway",
+    "SandboxHostOwnerAuthority",
+    "SandboxMutationWriterScopeFactory",
+    "SandboxProcessHostAuthority",
     "SandboxRuntimeError",
     "SandboxRuntimeService",
     "register_sandbox_runtime_tools",
@@ -414,6 +451,7 @@ __all__ = [
     "SessionReportRepository",
     "SessionRuntimeLeaseAcquireResult",
     "SessionRuntimeLeaseRepository",
+    "SessionTurnHostAuthority",
     "SessionAccessRecord",
     "SessionAccessRepository",
     "SQLiteSchemaMismatchError",

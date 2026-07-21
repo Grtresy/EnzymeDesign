@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Iterator
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
@@ -72,6 +72,12 @@ from .live_process_registry import AttachedProcessDelivery
 from .live_process_registry import AttachedProcessIdentity
 from .live_process_registry import LiveProcessRegistry
 from .live_process_registry import LiveProcessRegistryConflictError
+from .repositories import CoreRepositories
+from .sandbox_host import SandboxHostCallContext
+from .sandbox_host import SandboxHostCallContextFactory
+from .sandbox_host import SandboxHostGateway
+from .sandbox_host import SandboxMutationWriterScopeFactory
+from .sandbox_host import SandboxProcessHostAuthority
 from .sandbox_workspace import SANDBOX_PROTOCOL_VERSION
 from .sandbox_workspace import SANDBOX_WORKSPACE_MANIFEST_VERSION
 from .sandbox_workspace import DEFAULT_SANDBOX_QUOTA_BYTES
@@ -107,8 +113,6 @@ _CONTROL_SOCKET_IO_TIMEOUT_SECONDS = 5.0
 _CONTROL_SOCKET_REQUEST_ID_MAX_BYTES = 256
 _ARTIFACT_REGISTER_MANY_MAX_ITEMS = 128
 _ARTIFACT_REGISTER_MANY_METADATA_MAX_BYTES = 32 * 1024 * 1024
-SandboxAdapterExecutor = Callable[[ControlledOperation, dict[str, Any]], dict[str, Any]]
-SandboxHpcFetchExecutor = Callable[..., dict[str, Any]]
 PRIVATE_ADAPTER_PAYLOAD_KEYS = {
     "host_path",
     "sandbox_host_path",
@@ -599,7 +603,7 @@ def _apply_unified_diff(
 @dataclass(slots=True)
 class _ControlSocketServer:
     socket_path: Path
-    repositories: Any
+    repositories: CoreRepositories
     session_id: str
     sandbox_workspace_id: str
     sandbox_run_id: str
@@ -616,10 +620,8 @@ class _ControlSocketServer:
     live_process_registry: LiveProcessRegistry | None = None
     workspace_root: Path | None = None
     artifact_blob_root: Path | None = None
-    adapter_executor: SandboxAdapterExecutor | None = None
-    hpc_fetch_executor: SandboxHpcFetchExecutor | None = None
-    repository_scope_factory: Callable[[], Any] | None = None
-    mutation_writer_scope_factory: Callable[..., Any] | None = None
+    host_gateway: SandboxHostGateway | None = None
+    host_call_context_factory: SandboxHostCallContextFactory | None = None
     reliability_shadow_observer: Any | None = None
     reliability_settings: Any | None = None
     durable_route_adapter_policy_ids: dict[str, str] = field(default_factory=dict)
@@ -637,6 +639,11 @@ class _ControlSocketServer:
     _accepted_deliveries: dict[tuple[str, int], AttachedProcessDelivery] = field(
         default_factory=dict, repr=False
     )
+    _host_call_context: SandboxHostCallContext | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
 
     def start(self) -> None:
         self._stop = threading.Event()
@@ -644,7 +651,7 @@ class _ControlSocketServer:
         self._parked = threading.Event()
         server_context = copy_context()
         self._thread = threading.Thread(
-            target=lambda: server_context.run(self._serve_with_mutation_writer),
+            target=lambda: server_context.run(self._serve),
             daemon=False,
         )
         self._thread.start()
@@ -658,42 +665,29 @@ class _ControlSocketServer:
             "sandbox_transport_unavailable", "control socket did not start"
         )
 
-    def _serve_with_mutation_writer(self) -> None:
-        writer_scope = (
-            nullcontext(None)
-            if self.mutation_writer_scope_factory is None
-            else self.mutation_writer_scope_factory(
-                session_id=self.session_id,
-                owner_kind=MutationWriterKind.ENGINE_CALLBACK,
-                owner_ref=f"sandbox-control-server:{self.sandbox_run_id}",
-                process_epoch=self.process_epoch,
-            )
-        )
-        with writer_scope:
-            self._serve()
-
     @contextmanager
     def _nested_mutation_writer(
         self,
         *,
         owner_kind: MutationWriterKind,
         owner_ref: str,
-    ):  # type: ignore[no-untyped-def]
-        factory = self.mutation_writer_scope_factory
-        if factory is None:
-            yield
-            return
-        with factory(
-            session_id=self.session_id,
+    ) -> Iterator[None]:
+        context = self._require_host_call_context()
+        with context.child_mutation_writer(
             owner_kind=owner_kind,
             owner_ref=owner_ref,
             process_epoch=self.process_epoch,
-        ) as authority:
-            if authority is None:
-                yield
-            else:
-                with self.repositories.mutation_write_authority(authority):
-                    yield
+        ):
+            yield
+
+    def _require_host_call_context(self) -> SandboxHostCallContext:
+        context = self._host_call_context
+        if context is None:
+            raise SandboxRuntimeError(
+                "sandbox_host_context_unavailable",
+                "sandbox control server has no active Host-call context",
+            )
+        return context
 
     def stop(self) -> None:
         self._stop.set()
@@ -785,15 +779,45 @@ class _ControlSocketServer:
             self._delivery_condition.notify_all()
 
     def _serve(self) -> None:
-        if self.repository_scope_factory is None:
-            self._serve_with_owned_repositories()
-            return
-        # The control socket has its own server thread.  Open the repository
-        # connection in that thread instead of capturing the sandbox.exec
-        # worker's thread-affine connection.
-        with self.repository_scope_factory() as repositories:
-            self.repositories = repositories
-            self._serve_with_owned_repositories()
+        process_epoch = self.process_epoch
+        if process_epoch is None:
+            if self.host_call_context_factory is not None:
+                raise SandboxRuntimeError(
+                    "sandbox_process_epoch_missing",
+                    "typed sandbox Host context requires an exact process epoch",
+                )
+            process_epoch = 1
+        owner = SandboxProcessHostAuthority(
+            session_id=self.session_id,
+            sandbox_workspace_id=self.sandbox_workspace_id,
+            sandbox_run_id=self.sandbox_run_id,
+            process_epoch=process_epoch,
+        )
+        context_scope = (
+            nullcontext(
+                SandboxHostCallContext(
+                    repositories=self.repositories,
+                    owner=owner,
+                )
+            )
+            if self.host_call_context_factory is None
+            else self.host_call_context_factory(owner)
+        )
+        original_repositories = self.repositories
+        try:
+            with context_scope as context:
+                context.require_sandbox_process(
+                    session_id=self.session_id,
+                    sandbox_workspace_id=self.sandbox_workspace_id,
+                    sandbox_run_id=self.sandbox_run_id,
+                    process_epoch=process_epoch,
+                )
+                self._host_call_context = context
+                self.repositories = context.repositories
+                self._serve_with_owned_repositories()
+        finally:
+            self._host_call_context = None
+            self.repositories = original_repositories
 
     def _serve_with_owned_repositories(self) -> None:
         try:
@@ -1380,7 +1404,7 @@ class _ControlSocketServer:
                 details={"run_id": run_id},
             )
         operation = self._hpc_fetch_operation(params)
-        if self.hpc_fetch_executor is None:
+        if self.host_gateway is None:
             raise SandboxRuntimeError(
                 "hpc_fetch_not_declared",
                 "hpc.fetch_outputs requires a completed Host-supervised HPC run with declared outputs",
@@ -1392,8 +1416,8 @@ class _ControlSocketServer:
                 },
             )
         try:
-            result = self.hpc_fetch_executor(
-                {
+            result = self.host_gateway.fetch_hpc_outputs(
+                params={
                     **dict(params),
                     "session_id": self.session_id,
                     "sandbox_workspace_id": self.sandbox_workspace_id,
@@ -1401,7 +1425,7 @@ class _ControlSocketServer:
                     "task_id": self.task_id,
                     "lane_id": self.lane_id,
                 },
-                repositories=self.repositories,
+                context=self._require_host_call_context(),
             )
         except Exception as exc:
             (
@@ -2889,7 +2913,7 @@ class _ControlSocketServer:
             return envelope
         if envelope.get("_host_validated_result_reuse") is True:
             return envelope
-        if self.adapter_executor is None:
+        if self.host_gateway is None:
             self._fail_adapter_operation(
                 operation,
                 continuation_id,
@@ -2914,7 +2938,11 @@ class _ControlSocketServer:
                 details={"operation_id": operation.operation_id},
             )
         try:
-            execution = self.adapter_executor(operation, dict(envelope))
+            execution = self.host_gateway.execute_adapter_operation(
+                operation=operation,
+                envelope=dict(envelope),
+                context=self._require_host_call_context(),
+            )
         except Exception as exc:
             (
                 error_code,
@@ -3376,16 +3404,15 @@ class _ParkedProcess:
 
 @dataclass(slots=True)
 class SandboxRuntimeService:
-    repositories: Any
+    repositories: CoreRepositories
     workspace_root: Path | None = None
     artifact_blob_root: Path | None = None
     log_root: Path | None = None
     execution_backend: str = "podman"
     podman_binary: str = "podman"
-    adapter_executor: SandboxAdapterExecutor | None = None
-    hpc_fetch_executor: SandboxHpcFetchExecutor | None = None
-    repository_scope_factory: Callable[[], Any] | None = None
-    mutation_writer_scope_factory: Callable[..., Any] | None = None
+    host_gateway: SandboxHostGateway | None = None
+    host_call_context_factory: SandboxHostCallContextFactory | None = None
+    mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None
     live_process_registry: LiveProcessRegistry | None = None
     signal_notifier: Any | None = None
     reliability_shadow_observer: Any | None = None
@@ -3850,10 +3877,8 @@ class SandboxRuntimeService:
             live_process_registry=live_process_registry,
             workspace_root=self.workspace_root,
             artifact_blob_root=self.artifact_blob_root,
-            adapter_executor=self.adapter_executor,
-            hpc_fetch_executor=self.hpc_fetch_executor,
-            repository_scope_factory=self.repository_scope_factory,
-            mutation_writer_scope_factory=self.mutation_writer_scope_factory,
+            host_gateway=self.host_gateway,
+            host_call_context_factory=self.host_call_context_factory,
             reliability_shadow_observer=self.reliability_shadow_observer,
             reliability_settings=self.reliability_settings,
             durable_route_adapter_policy_ids=dict(
@@ -5137,7 +5162,10 @@ class _AttachedSandboxProcess:
 
         duration_ms = int((time.monotonic() - state.started_monotonic) * 1_000)
         try:
-            if self.runtime_service.repository_scope_factory is None:
+            with self._identity_lock:
+                identity = self._identity
+            context_factory = self.runtime_service.host_call_context_factory
+            if context_factory is None or identity is None:
                 self._finalize_with_repositories(
                     self.runtime_service.repositories,
                     duration_ms=duration_ms,
@@ -5145,9 +5173,21 @@ class _AttachedSandboxProcess:
                     error_code=error_code,
                 )
             else:
-                with self.runtime_service.repository_scope_factory() as repositories:
+                owner = SandboxProcessHostAuthority(
+                    session_id=identity.session_id,
+                    sandbox_workspace_id=identity.sandbox_workspace_id,
+                    sandbox_run_id=identity.sandbox_run_id,
+                    process_epoch=identity.process_epoch,
+                )
+                with context_factory(owner) as context:
+                    context.require_sandbox_process(
+                        session_id=identity.session_id,
+                        sandbox_workspace_id=identity.sandbox_workspace_id,
+                        sandbox_run_id=identity.sandbox_run_id,
+                        process_epoch=identity.process_epoch,
+                    )
                     self._finalize_with_repositories(
-                        repositories,
+                        context.repositories,
                         duration_ms=duration_ms,
                         forced_status=forced_status,
                         error_code=error_code,
@@ -5256,10 +5296,9 @@ def register_sandbox_runtime_tools(
     registry: ToolRegistry,
     *,
     agent_id: str | None = None,
-    adapter_executor: SandboxAdapterExecutor | None = None,
-    hpc_fetch_executor: SandboxHpcFetchExecutor | None = None,
-    repository_scope_factory: Callable[[], Any] | None = None,
-    mutation_writer_scope_factory: Callable[..., Any] | None = None,
+    host_gateway: SandboxHostGateway | None = None,
+    host_call_context_factory: SandboxHostCallContextFactory | None = None,
+    mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None,
     live_process_registry: LiveProcessRegistry | None = None,
     signal_notifier: Any | None = None,
 ) -> None:
@@ -5268,9 +5307,8 @@ def register_sandbox_runtime_tools(
             context.repositories,
             workspace_root=context.sandbox_workspace_root,
             artifact_blob_root=context.artifact_blob_root,
-            adapter_executor=adapter_executor,
-            hpc_fetch_executor=hpc_fetch_executor,
-            repository_scope_factory=repository_scope_factory,
+            host_gateway=host_gateway,
+            host_call_context_factory=host_call_context_factory,
             mutation_writer_scope_factory=mutation_writer_scope_factory,
             live_process_registry=live_process_registry,
             signal_notifier=signal_notifier or context.signal_notifier,

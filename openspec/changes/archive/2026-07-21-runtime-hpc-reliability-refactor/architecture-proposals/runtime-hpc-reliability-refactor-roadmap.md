@@ -11,8 +11,8 @@
 本文后续的“尚未实现”“需要确认”段落保留的是当时的设计基线；不得用它们
 覆盖当前代码、OpenSpec tasks 或 checkpoint。
 
-当前稳定产品合同见 [`../07-runtime-hpc-reliability.md`](../07-runtime-hpc-reliability.md)，
-迁移与回滚见 [`../runtime-hpc-reliability-operations.md`](../runtime-hpc-reliability-operations.md)。
+当前稳定产品合同见 [Runtime/HPC reliability](/docs/v3/07-runtime-hpc-reliability.md)，
+迁移与回滚见 [operations runbook](/docs/v3/runtime-hpc-reliability-operations.md)。
 
 本文是 AOX/HMM live campaign 暴露出的两个未闭环根因的跨提案总入口：
 

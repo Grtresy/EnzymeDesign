@@ -4,8 +4,8 @@
 ControlMaster 与外部 real-SSH transport-only soak、disabled-mode rollback audit 均已通过。
 当前 deployment 配置已恢复 disabled，未启动任何 `rxx`。
 
-稳定合同见 [`../07-runtime-hpc-reliability.md`](../07-runtime-hpc-reliability.md)，
-操作与回滚见 [`../runtime-hpc-reliability-operations.md`](../runtime-hpc-reliability-operations.md)。
+稳定合同见 [Runtime/HPC reliability](/docs/v3/07-runtime-hpc-reliability.md)，
+操作与回滚见 [operations runbook](/docs/v3/runtime-hpc-reliability-operations.md)。
 下文“当前实现边界”保留的是重构前基线，不得覆盖当前代码与 OpenSpec checkpoint。
 
 本文补齐 staging diagnostic、durable controlled-operation lifecycle 与 outcome-unknown reconcile 之间缺失的 runner 专项架构。它不新增第二套 task、workflow、approval 或 controlled-operation 真状态。

@@ -10,6 +10,12 @@ from pathlib import Path
 
 import pytest
 
+from openzyme_host_api.aox_attempt_supervision import DEFAULT_KILL_GRACE_SECONDS
+from openzyme_host_api.aox_attempt_supervision import DEFAULT_TERM_GRACE_SECONDS
+from openzyme_host_api.aox_attempt_supervision import (
+    derive_live_attempt_supervision_timeout_seconds,
+)
+from openzyme_host_api.aox_attempt_supervision import supervision_contract_digest
 from openzyme_core.workflow_knowledge import default_workflow_registry
 import openzyme_host_api.aox_cutover_evidence as cutover_evidence
 from openzyme_host_api.aox_cutover_cli import main as cutover_cli_main
@@ -2034,6 +2040,46 @@ def _valid_evidence(
         effective_config_payload["driver"]["approval_mode"] = "chrome-once"
         effective_config_payload["driver"]["ui_dist_digest"] = _digest("ui-dist")
     effective_config_digest = canonical_digest(effective_config_payload)
+    driver_config = effective_config_payload["driver"]
+    supervision_timeout_seconds = derive_live_attempt_supervision_timeout_seconds(
+        attempt_timeout_seconds=driver_config["timeout_seconds"],
+        browser_approval_timeout_seconds=driver_config[
+            "browser_approval_timeout_seconds"
+        ],
+        browser_completion_hold_seconds=driver_config[
+            "browser_completion_hold_seconds"
+        ],
+        browser_observation_submission_timeout_seconds=driver_config[
+            "browser_observation_submission_timeout_seconds"
+        ],
+    )
+    supervision_receipt = {
+        "schema_id": "aox_live_attempt_supervision_receipt@1",
+        "mode": "process_isolated_spawn",
+        "attempt_id": clean_world["attempt_id"],
+        "attempt_kind": attempt_kind,
+        "campaign_id": _digest("campaign-supervision"),
+        "process_epoch": "a" * 32,
+        "protocol_final_sequence": 4,
+        "protocol_final_digest": _digest("supervision-terminal-frame"),
+        "child_exit_code": 0,
+        "quiescent": True,
+        "descendant_retirement_proven": True,
+        "active_mutation_scope_count": 0,
+        "active_mutation_writer_count": 0,
+        "sqlite_checkpoint": "passed",
+        "sqlite_integrity": "passed",
+        "declared_root_sync": True,
+        "result_digest": _digest("supervision-result"),
+        "supervisor_contract_digest": supervision_contract_digest(
+            timeout_seconds=supervision_timeout_seconds,
+            term_grace_seconds=DEFAULT_TERM_GRACE_SECONDS,
+            kill_grace_seconds=DEFAULT_KILL_GRACE_SECONDS,
+        ),
+        "timeout_seconds": supervision_timeout_seconds,
+        "term_grace_seconds": DEFAULT_TERM_GRACE_SECONDS,
+        "kill_grace_seconds": DEFAULT_KILL_GRACE_SECONDS,
+    }
     alignment_bytes = GOLDEN_ALIGNMENT.read_bytes()
     scoring_result = aox_motif.score_aligned_fasta(alignment_bytes)
     scored_bytes = scoring_result.to_csv().encode("utf-8")
@@ -3332,6 +3378,7 @@ def _valid_evidence(
         ],
         "known_positive_probe": probe_fixture["probe"],
         "product_path": {
+            "attempt_supervision": supervision_receipt,
             "entry_message_count": 1,
             "canonical_api_only": True,
             "cache_hit": False,
@@ -6654,6 +6701,58 @@ def test_report_content_tamper_is_detected_from_sealed_bytes(tmp_path: Path) -> 
         and issue.code == "artifact_content_digest_mismatch"
         for issue in result.issues
     )
+
+
+def test_cutover_eligible_bundle_requires_process_supervision_receipt(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(CutoverEvidenceError) as error:
+        _build_bundle(
+            tmp_path,
+            mutate_evidence=lambda evidence: evidence["product_path"].pop(
+                "attempt_supervision"
+            ),
+        )
+
+    assert error.value.code == "attempt_supervision_receipt_missing"
+
+
+def test_offline_verifier_rejects_removed_process_supervision_receipt(
+    tmp_path: Path,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def remove_receipt(envelope: dict[str, object]) -> None:
+        payload = envelope["payload"]
+        payload["product_path"].pop("attempt_supervision")
+        envelope["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, remove_receipt)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "attempt_supervision_receipt_missing"
+        for issue in result.issues
+    )
+
+
+def test_process_supervision_bounds_must_match_effective_config(
+    tmp_path: Path,
+) -> None:
+    def drift_bounds(evidence: dict[str, object]) -> None:
+        receipt = evidence["product_path"]["attempt_supervision"]
+        receipt["timeout_seconds"] += 1.0
+        receipt["supervisor_contract_digest"] = supervision_contract_digest(
+            timeout_seconds=receipt["timeout_seconds"],
+            term_grace_seconds=receipt["term_grace_seconds"],
+            kill_grace_seconds=receipt["kill_grace_seconds"],
+        )
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        _build_bundle(tmp_path, mutate_evidence=drift_bounds)
+
+    assert error.value.code == "attempt_supervision_receipt_invalid"
 
 
 def test_scoring_is_recomputed_not_trusted_from_declared_digest(tmp_path: Path) -> None:

@@ -491,6 +491,12 @@ def _run_live(args: argparse.Namespace) -> int:
     from openzyme_runtime import OpenZymeSettings
 
     from .aox_cutover_live import LiveAoxAttemptRunner
+    from .aox_attempt_supervision import DEFAULT_KILL_GRACE_SECONDS
+    from .aox_attempt_supervision import DEFAULT_TERM_GRACE_SECONDS
+    from .aox_attempt_supervision import ProcessIsolatedAttemptRunner
+    from .aox_attempt_supervision import (
+        derive_live_attempt_supervision_timeout_seconds,
+    )
 
     identity, prerequisites = _load_pinned_declarations(
         args.identity,
@@ -510,7 +516,7 @@ def _run_live(args: argparse.Namespace) -> int:
         declared_identity=identity,
         declared_prerequisites=prerequisites,
     )
-    runner = LiveAoxAttemptRunner(
+    live_runner = LiveAoxAttemptRunner(
         settings=launch.effective_settings,
         ledger_path=ledger_path,
         effective_config=launch.effective_config,
@@ -527,6 +533,20 @@ def _run_live(args: argparse.Namespace) -> int:
         ),
         browser_observation_receipt_path=args.browser_observation_receipt,
     )
+    runner = ProcessIsolatedAttemptRunner(
+        runner=live_runner,
+        ledger_path=ledger_path,
+        timeout_seconds=derive_live_attempt_supervision_timeout_seconds(
+            attempt_timeout_seconds=args.timeout_seconds,
+            browser_approval_timeout_seconds=args.browser_approval_timeout_seconds,
+            browser_completion_hold_seconds=args.browser_completion_hold_seconds,
+            browser_observation_submission_timeout_seconds=(
+                args.browser_observation_submission_timeout_seconds
+            ),
+        ),
+        term_grace_seconds=DEFAULT_TERM_GRACE_SECONDS,
+        kill_grace_seconds=DEFAULT_KILL_GRACE_SECONDS,
+    )
     campaign = AoxCutoverCampaign(
         campaign_root=args.campaign_root,
         identity=launch.identity,
@@ -535,8 +555,17 @@ def _run_live(args: argparse.Namespace) -> int:
         fault_runner=runner,
         allowed_prerequisites=launch.allowed_prerequisites,
         launch_guard=launch.assert_unchanged,
+        require_process_supervision=True,
     )
     records, decision = campaign.run()
+    ledger_projection = (
+        {
+            "status": "not_claimed",
+            "reason": "attempt_supervision_fatal",
+        }
+        if decision.get("driver_failure_kind") == "attempt_supervision_fatal"
+        else safe_micu_ledger_snapshot(ledger_path)
+    )
     _print(
         {
             "decision": decision,
@@ -551,7 +580,7 @@ def _run_live(args: argparse.Namespace) -> int:
                 }
                 for record in records
             ],
-            "micu_ledger": safe_micu_ledger_snapshot(ledger_path),
+            "micu_ledger": ledger_projection,
         }
     )
     return 0 if decision["decision"] == "GO" else 2
@@ -563,7 +592,7 @@ def _add_driver_arguments(parser: argparse.ArgumentParser) -> None:
         choices=("auto", "chrome-once"),
         default="auto",
         help=(
-            "chrome-once exposes positive 1 through the same-process loopback Host "
+            "chrome-once exposes positive 1 through the attempt-child loopback Host "
             "and waits for the first formal approval from the Web UI"
         ),
     )
@@ -739,8 +768,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_live = subparsers.add_parser(
         "run-live",
         help=(
-            "run the real same-process public Host campaign; any missing product "
-            "receipt is sealed as NO-GO"
+            "run the real public Host campaign in one supervised spawn child per "
+            "attempt; any missing product or retirement receipt is NO-GO"
         ),
     )
     run_live.add_argument("--campaign-root", required=True, type=Path)

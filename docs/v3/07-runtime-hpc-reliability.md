@@ -52,16 +52,18 @@ Runner 的 `runner_attempt@1` 冻结 run、operation/execution、approval、RunS
 expected outputs、input、effective config、transport identity 与 policy digest。它提供
 phase/effect/recovery 证据，但不成为 task、approval 或 Host execution 的并列 reducer。
 
-## 3. 四种彼此独立的 authority
+## 3. 五个彼此独立的 authority boundary
 
 | Authority | 负责什么 | 明确不负责什么 |
 | --- | --- | --- |
 | session runtime lease + signal claim | 某个 bounded agent turn 谁能推进 session runtime | 外部 effect、结果投递、task 终态 |
+| sandbox process identity + process epoch | 同一 attached process 发起的后续 Host call，以及其 process-scoped writer parentage | session 调度、external effect ownership、result delivery claim |
 | execution lease + fence | 某个 `ControlledOperationExecution` 谁能 dispatch/poll/reconcile/materialize | session agent 调度、SDK process identity |
-| continuation delivery claim + process epoch | exact result 向 exact attached process 的一次投递 | 重放 scientific effect、任意 Python stack 恢复 |
+| continuation delivery claim + fence | exact result 向 exact process epoch 的一次投递 | 接管该 process 后续 Host call、重放 scientific effect、任意 Python stack 恢复 |
 | mutation scope generation + writer fence | 哪些 Host writer 仍可改变 canonical evidence，以及何时可出具 receipt/seal | 业务成功、报告质量、下一步科学策略 |
 
-这些 authority 不得互相推断。例如 session lease 过期不表示 provider/HPC 已取消；本地
+这些 authority 不得互相推断。例如 session lease 过期不表示 provider/HPC 已取消；合法
+continuation delivery 不会把 delivery 或旧 session authority 安装到 sandbox process；本地
 sandbox process 退出只证明对应 local writer 可以退休；execution success 不表示
 continuation 已投递；continuation delivery 也不表示 task completed。
 
@@ -109,9 +111,11 @@ claim、session lease 和 HTTP request 在 bounded 时间内返回。等待中�
 - `journaled_sdk_call_boundary` 只是关闭的 schema 值，任意 Python stack replay 尚未实现。
 
 同一 attached process 在一次 durable result delivery 后可以继续执行 source 中的下一条 SDK
-语句，但这不会复活原 agent turn 的 session lease。`hpc.fetch_outputs` 使用 control-server
-当前 repository 与 nested artifact-publisher mutation writer；engine 必须优先采用该显式
-repository，不能进入创建时捕获的 stale runtime scope。若 durable HPC materialization 已在
+语句，但这不会复活原 agent turn 的 session lease。control server 在 process epoch 启动时
+获取 immutable sandbox-process Host context，并跨 park/delivery 保持；delivery worker 只完成
+短投递，不替换该 context。`hpc.fetch_outputs` 经 typed `SandboxHostGateway` 使用 control-server
+当前 repositories 与 nested artifact-publisher mutation writer；engine 不能持有 scope factory、
+反射 callback 或接受可选 repository escape hatch。若 durable HPC materialization 已在
 immutable adapter envelope 中冻结 `run_id/fetch_refs/registered_artifact_ids/output_artifact_ids`，
 SDK fetch 只接受完全相同的投影并保持 operation row 不变；任何 drift 都 fail closed。
 
@@ -196,7 +200,20 @@ Receipt 是 private bounded evidence，可离线重算 receipt、writer proof、
 snapshot digests。Sealed generation 不可重开；后续合法工作必须创建显式链接的新 generation。
 Seal/closure failure只产生 authority blocker，不改变 task 或自动选择替代 plan。
 
-## 8. Feature gates 与回滚边界
+## 8. Bounded runtime barrier
+
+operator/campaign 只能通过 `RuntimeBarrierProjectionService` 读取运行时是否仍在变化。该投影在
+一个 read scope 中读取现有 task、operation/execution、continuation、sandbox run、runtime
+command/signal、session lease、engine invocation 与 mutation writer；输出固定 blocker enum、
+有界计数、exact durable-suspension task ids 和 `ready` fact。达到 record bound、scope/observer
+identity 不精确或任一 owner仍 active 时一律 non-ready。
+
+Barrier 不持久化 row、不 acquire authority、不 drain/dispatch、不 resolve approval、不退休
+writer，也不写 task/campaign 状态。AOX driver 只消费该通用事实；scientific completion、失败、
+deadline 与 evidence reducer 仍属于 AOX policy。重复读取必须保持所有 canonical row version 与
+authority record 不变。
+
+## 9. Feature gates 与回滚边界
 
 Host gates：
 
@@ -217,14 +234,20 @@ admission，让旧 process 按 frozen policy drain/reconcile，再启动 disable
 完整操作步骤与 SQL audit 见
 [runtime-hpc-reliability-operations.md](runtime-hpc-reliability-operations.md)。
 
-## 9. 明确延后
+AOX numbered `run-live` 的 complete-attempt harness 已在产品 runtime 之外增加
+local POSIX `spawn`/process-group supervisor。它只在 matching quiescence、SQLite/root
+sync、zero exit 与 empty group 后交付 child result；否则 bounded TERM/KILL 并写
+parent-owned fatal evidence，不读取 ledger-after、不封 normal bundle，也不把进程退出解释为
+task/operation terminal。该边界不改变本文件的产品 ownership；different UID/cgroup 与
+remote-handle/MICU crash reconciliation 仍是独立 hardening。
+
+## 10. 明确延后
 
 - 任意 Python stack / journaled SDK replay；
 - supervised remote SSH daemon 或 stateful persistent shell；
 - direct SSH exactly-once；
 - Slurm job-internal scientific attestation；
 - multi-Host writer、distributed queue/consensus；
-- process-isolated live-attempt hard-kill supervision；
 - 自动恢复 `rxx` campaign。
 
 这些项目不得由 fallback、best-effort inference 或 proposal 草图冒充已实现能力。

@@ -34,7 +34,6 @@ from openzyme_core.sandbox_workspace import DEFAULT_SANDBOX_IMAGE_REF
 from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_domain import ArtifactKind
 from openzyme_domain import ControlledOperation
-from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import MutationScopeKind
 from openzyme_domain import MutationWriterKind
@@ -69,6 +68,8 @@ from .aox_cutover_evidence import typed_empty_artifact_validation_receipt
 from .aox_cutover_runtime_config import AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS
 from .aox_cutover_runtime_config import AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN
 from .aox_cutover_runtime_config import AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
+from .aox_runtime_observation import AoxRuntimeObservationError
+from .aox_runtime_observation import AoxRuntimeObservationService
 from .app import HostApiDependencies
 from .app import create_app
 from .evals import S15_AOX_HMM_FIXED_DELIVERABLES
@@ -96,16 +97,6 @@ DEFAULT_UI_DIST = REPO_ROOT / "apps" / "openzyme-web-ui" / "dist"
 KNOWN_POSITIVE_PROBE_ID = "independent_globin_provider_hpc_probe"
 KNOWN_POSITIVE_PROBE_NCBI_ACCESSIONS = ("NP_000509.1", "NP_000549.1")
 KNOWN_POSITIVE_PROBE_UNIPROT_ACCESSIONS = ("P68871", "P69905")
-_KNOWN_POSITIVE_PROBE_CONTROLLED_OPERATIONS = frozenset(
-    {
-        ("bio", "ncbi_fetch_proteins"),
-        ("bio", "uniprot_fetch"),
-        ("bio_tools", "mafft"),
-        ("bio_tools", "hmmbuild"),
-        ("bio_tools", "cdhit"),
-        ("bio_tools", "hmmalign"),
-    }
-)
 _AOX_DURABLE_ROUTE_POLICY_IDS = frozenset(
     {
         "bio.ncbi_fetch_proteins.provider:v1",
@@ -189,99 +180,6 @@ _BROWSER_DURABLE_EVENT_KEYS = {
     "payload",
     "payload_digest",
 }
-
-
-def _task_has_active_durable_suspension(
-    *,
-    task_id: str,
-    operations: list[Any],
-    continuations: list[Any],
-    runtime_signals: list[Any],
-) -> bool:
-    """Recognize only an exact durable continuation as non-business blocking."""
-
-    durable_operations = [
-        operation
-        for operation in operations
-        if operation.task_id == task_id
-        and operation.owner_mode is ControlledOperationOwnerMode.DURABLE_ASYNC_V1
-    ]
-    exact_continuations: list[Any] = []
-    for operation in durable_operations:
-        matches = [
-            continuation
-            for continuation in continuations
-            if continuation.operation_id == operation.operation_id
-            and continuation.approval_id == operation.approval_id
-            and continuation.sandbox_run_id == operation.sandbox_run_id
-            and continuation.originating_task_id == task_id
-        ]
-        if len(matches) != 1:
-            continue
-        continuation = matches[0]
-        exact_continuations.append(continuation)
-        if (
-            not operation.status.is_terminal
-            or not continuation.status.is_terminal
-            or not continuation.delivery_state.is_terminal
-        ):
-            return True
-    continuation_ids = {
-        continuation.continuation_id for continuation in exact_continuations
-    }
-    return any(
-        signal.task_id == task_id
-        and signal.reason.value == "engine_completed"
-        and signal.source_ref in continuation_ids
-        and not signal.status.is_terminal
-        for signal in runtime_signals
-    )
-
-
-def _session_has_inflight_mutation_writers(
-    provider: SQLiteRepositoryProvider,
-    *,
-    session_id: str,
-) -> bool:
-    """Return whether work below the exact attempt-driver writer is still live."""
-
-    with provider.read() as scope:
-        repositories = scope.repositories
-        active_scopes = [
-            mutation_scope
-            for mutation_scope in repositories.mutation_scopes.list_by_session(
-                session_id
-            )
-            if mutation_scope.state.value in {"open", "freezing", "quiescent"}
-        ]
-        if len(active_scopes) != 1 or active_scopes[0].state.value != "open":
-            raise LiveProductPathError(
-                "mutation_scope_coordination_invalid",
-                "runtime coordination lacks one exact open mutation scope",
-                details={"session_id": session_id},
-            )
-        active_writers = repositories.mutation_writers.list_active(
-            active_scopes[0].scope_id
-        )
-    attempt_drivers = [
-        writer
-        for writer in active_writers
-        if writer.owner_kind is MutationWriterKind.ATTEMPT_DRIVER
-    ]
-    if (
-        len(attempt_drivers) != 1
-        or attempt_drivers[0].parent_writer_id is not None
-        or not attempt_drivers[0].owner_ref.startswith("aox-attempt-driver:")
-    ):
-        raise LiveProductPathError(
-            "mutation_driver_writer_identity_invalid",
-            "runtime coordination lacks one exact outer attempt-driver writer",
-            details={"session_id": session_id},
-        )
-    return any(
-        writer.writer_id != attempt_drivers[0].writer_id
-        for writer in active_writers
-    )
 
 
 def _closed_browser_durable_event(
@@ -878,7 +776,7 @@ class _LoopbackHost:
                 self._close_listener()
                 raise LiveProductPathError(
                     "browser_approval_host_start_failed",
-                    "same-process loopback Host exited before it became ready",
+                    "loopback Host exited before it became ready",
                     details={
                         "failure_type": (
                             None
@@ -892,7 +790,7 @@ class _LoopbackHost:
                 self._close_listener()
                 raise LiveProductPathError(
                     "browser_approval_host_start_timeout",
-                    "same-process loopback Host did not become ready in time",
+                    "loopback Host did not become ready in time",
                 )
             time.sleep(0.05)
         try:
@@ -2331,11 +2229,21 @@ class LiveAoxAttemptRunner:
             approval_ids.extend(coordination.approval_ids)
             browser_approval_receipt = coordination.browser_approval_receipt
             fault_receipt = coordination.fault_receipt
-            state, blocker = self._session_state(
-                provider,
-                session_id=session_id,
-                purpose=purpose,
-            )
+            try:
+                observation = AoxRuntimeObservationService(
+                    provider
+                ).observe_session(
+                    session_id=session_id,
+                    purpose=purpose,
+                )
+            except AoxRuntimeObservationError as exc:
+                raise LiveProductPathError(
+                    exc.code,
+                    exc.message,
+                    details=exc.details,
+                ) from exc
+            state = observation.state
+            blocker = observation.blocker_code
             if state in {"completed", "failed"}:
                 if fault_receipt is not None:
                     fault_receipt = self._complete_fault_receipt(
@@ -2600,10 +2508,17 @@ class LiveAoxAttemptRunner:
                 if acted:
                     continue
                 if command_status in terminal_statuses:
-                    if _session_has_inflight_mutation_writers(
-                        provider,
-                        session_id=session_id,
-                    ):
+                    try:
+                        has_inflight_writers = AoxRuntimeObservationService(
+                            provider
+                        ).has_inflight_mutation_writers(session_id=session_id)
+                    except AoxRuntimeObservationError as exc:
+                        raise LiveProductPathError(
+                            exc.code,
+                            exc.message,
+                            details=exc.details,
+                        ) from exc
+                    if has_inflight_writers:
                         time.sleep(
                             min(self.browser_poll_interval_seconds, remaining)
                         )
@@ -3320,106 +3235,6 @@ class LiveAoxAttemptRunner:
             "host_observation_not_before_unix_ns": hold_wall_deadline_ns,
             "host_observation_accepted_at_unix_ns": accepted_at_unix_ns,
         }
-
-    def _session_state(
-        self,
-        provider: SQLiteRepositoryProvider,
-        *,
-        session_id: str,
-        purpose: Literal["probe", "formal"],
-    ) -> tuple[Literal["completed", "failed", "incomplete"], str | None]:
-        with provider.read() as scope:
-            repositories = scope.repositories
-            operations = repositories.controlled_operations.list_by_session(session_id)
-            continuations = repositories.continuation_states.list_by_session(
-                session_id
-            )
-            tasks = repositories.tasks.list_by_session(session_id)
-            sandbox_runs = repositories.sandbox_runs.list_by_session(session_id)
-            artifacts = repositories.artifacts.list_by_session(session_id)
-            reports = repositories.reports.list_by_session(session_id)
-            drafts = repositories.report_drafts.list_by_session(session_id)
-            agents = repositories.agents.list_by_session(session_id)
-            runtime_signals = repositories.runtime_signals.list_by_session(
-                session_id
-            )
-            messages = build_conversation_projection(repositories, session_id)
-        failed_operation = next(
-            (
-                operation
-                for operation in operations
-                if operation.status.value in _FAILED_OPERATION_STATUSES
-            ),
-            None,
-        )
-        if failed_operation is not None:
-            return (
-                "failed",
-                failed_operation.error_code or "controlled_operation_failed",
-            )
-        failed_task = next(
-            (task for task in tasks if task.status.value in _FAILED_TASK_STATUSES),
-            None,
-        )
-        if failed_task is not None:
-            return "failed", f"task_{failed_task.status.value}"
-        blocked_tasks = [task for task in tasks if task.status.value == "blocked"]
-        if blocked_tasks:
-            if all(
-                _task_has_active_durable_suspension(
-                    task_id=task.task_id,
-                    operations=operations,
-                    continuations=continuations,
-                    runtime_signals=runtime_signals,
-                )
-                for task in blocked_tasks
-            ):
-                return "incomplete", None
-            return "failed", "task_blocked"
-        failed_run = next(
-            (
-                run
-                for run in sandbox_runs
-                if run.status.value in (_TERMINAL_SANDBOX_STATUSES - {"completed"})
-            ),
-            None,
-        )
-        if failed_run is not None:
-            return "failed", failed_run.error_code or "sandbox_run_failed"
-        assistant_message = any(message.role == "assistant" for message in messages)
-        if purpose == "probe":
-            completed_functions = {
-                (operation.sdk_module, operation.function_name)
-                for operation in operations
-                if operation.status.value == "completed"
-            }
-            tasks_terminal = bool(tasks) and all(
-                task.status.value in _TERMINAL_TASK_STATUSES for task in tasks
-            )
-            if (
-                _KNOWN_POSITIVE_PROBE_CONTROLLED_OPERATIONS <= completed_functions
-                and tasks_terminal
-                and assistant_message
-            ):
-                return "completed", None
-            return "incomplete", None
-        artifact_paths = {artifact.relative_path for artifact in artifacts}
-        task_kinds = {task.kind for task in tasks if task.status.value == "completed"}
-        roles = {agent.role for agent in agents}
-        report_ready = any(
-            report.status.value in {"ready", "published"} for report in reports
-        )
-        draft_published = any(draft.status.value == "published" for draft in drafts)
-        if (
-            S15_AOX_HMM_FIXED_DELIVERABLES <= artifact_paths
-            and {"research", "execution", "reporting"} <= task_kinds
-            and {"researcher", "executor", "reporter"} <= roles
-            and report_ready
-            and draft_published
-            and assistant_message
-        ):
-            return "completed", None
-        return "incomplete", None
 
     @staticmethod
     def _fault_negative_state_is_closed(

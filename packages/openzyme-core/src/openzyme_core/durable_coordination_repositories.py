@@ -198,6 +198,18 @@ class RuntimeCommandRepository:
         ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
+    def list_by_session(self, session_id: str) -> list[RuntimeCommandRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM runtime_command_records
+            WHERE session_id = ?
+            ORDER BY accepted_at, command_id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
     def count_active(self) -> int:
         row = self.connection.execute(
             """

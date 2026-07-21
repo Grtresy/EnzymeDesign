@@ -36,7 +36,7 @@ The system MUST persist the controlled operation, approval, execution, continuat
 - **THEN** the execution terminates with `effect_certainty = no_effect` and no backend dispatch
 
 ### Requirement: Execution leases are independent and fenced
-The system MUST claim controlled-operation work with an execution-specific lease, monotonically increasing fencing token, and optimistic state version. The system MUST NOT use a session runtime lease, agent signal claim, sandbox process lease, or mutation seal token as execution authority. External calls MUST occur outside SQLite transactions, and every canonical callback commit MUST compare the current execution lease, fence, state version, and mutation authority in the same transaction.
+The system MUST claim controlled-operation work with an execution-specific lease, monotonically increasing fencing token, and optimistic state version. The system MUST NOT use a session runtime lease, agent signal claim, sandbox process lease, continuation-delivery lease, or mutation seal token as execution authority. External calls MUST occur outside SQLite transactions, and every canonical callback commit MUST compare the current execution lease, fence, state version, and mutation authority in the same transaction. An engine callback made for durable work MUST receive a typed sandbox Host-call context bound to that exact execution and its current repository connection; it MUST NOT recover authority from an engine-captured session scope or optional repository override.
 
 #### Scenario: Execute without a session lease
 - **WHEN** an approved operation waits on a provider or HPC backend
@@ -49,6 +49,10 @@ The system MUST claim controlled-operation work with an execution-specific lease
 #### Scenario: Avoid a long database transaction
 - **WHEN** an execution worker performs a slow dispatch, poll, or result fetch
 - **THEN** no SQLite transaction remains open across the external wait and the subsequent commit revalidates its authority
+
+#### Scenario: Reject a mismatched execution context
+- **WHEN** a durable adapter callback receives a Host context for another execution, session, state version, or fence
+- **THEN** it fails before dispatch or canonical mutation and does not fall back to session-turn or sandbox-process authority
 
 ### Requirement: Effect certainty and retry eligibility are closed facts
 The system MUST persist execution lifecycle, effect certainty, retry eligibility, dispatch generation, and an append-only transition journal using closed versioned values. Lease expiry, timeout, connection health, or a generic `retryable` boolean MUST NOT by themselves prove that an external effect did not occur.

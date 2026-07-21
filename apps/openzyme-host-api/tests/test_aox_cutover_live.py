@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import pickle
 import struct
 import threading
 import time
@@ -19,9 +20,7 @@ import pytest
 
 from openzyme_domain import ArtifactKind
 from openzyme_domain import ControlledOperation
-from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import ControlledOperationStatus
-from openzyme_domain import MutationWriterKind
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionReportDraftRecord
@@ -42,6 +41,9 @@ from openzyme_host_api.aox_cutover_evidence import safe_micu_ledger_snapshot
 from openzyme_host_api.aox_cutover_evidence import seal_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import verify_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import _report_publish_receipt_is_valid
+from openzyme_host_api.aox_runtime_observation import (
+    KNOWN_POSITIVE_PROBE_CONTROLLED_OPERATIONS,
+)
 from openzyme_pipeline import aox_hmmer
 from openzyme_pipeline import aox_motif
 from openzyme_pipeline import aox_reference
@@ -131,41 +133,6 @@ class _OperationReadProvider:
         return self._Scope(self._operations, self._sandbox_runs)
 
 
-class _MutationReadProvider:
-    class _Scope:
-        def __init__(
-            self,
-            mutation_scopes: tuple[object, ...],
-            writers: tuple[object, ...],
-        ) -> None:
-            self.repositories = SimpleNamespace(
-                mutation_scopes=SimpleNamespace(
-                    list_by_session=lambda _session_id: mutation_scopes
-                ),
-                mutation_writers=SimpleNamespace(
-                    list_active=lambda _scope_id: writers
-                ),
-            )
-
-        def __enter__(self) -> _MutationReadProvider._Scope:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            del args
-
-    def __init__(
-        self,
-        *,
-        mutation_scopes: tuple[object, ...],
-        writers: tuple[object, ...],
-    ) -> None:
-        self._mutation_scopes = mutation_scopes
-        self._writers = writers
-
-    def read(self) -> _MutationReadProvider._Scope:
-        return self._Scope(self._mutation_scopes, self._writers)
-
-
 def _disable_cutover_operation_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep coordination-only tests independent from repository fixtures."""
 
@@ -175,99 +142,14 @@ def _disable_cutover_operation_budget(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(
-        live,
-        "_session_has_inflight_mutation_writers",
+        live.AoxRuntimeObservationService,
+        "has_inflight_mutation_writers",
         lambda *args, **kwargs: False,
     )
 
 
 def _chrome_effective_config() -> dict[str, object]:
     return {"driver": {"ui_dist_digest": _digest("built-ui-dist")}}
-
-
-def test_mutation_writer_coordination_requires_exact_attempt_driver() -> None:
-    mutation_scope = SimpleNamespace(
-        scope_id="scope_001",
-        state=SimpleNamespace(value="open"),
-    )
-    driver = SimpleNamespace(
-        writer_id="writer_driver",
-        owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
-        owner_ref="aox-attempt-driver:attempt_001:formal",
-        parent_writer_id=None,
-    )
-    child = SimpleNamespace(
-        writer_id="writer_operation",
-        owner_kind=MutationWriterKind.CONTROLLED_OPERATION,
-        owner_ref="operation_001",
-        parent_writer_id=driver.writer_id,
-    )
-
-    assert live._session_has_inflight_mutation_writers(
-        _MutationReadProvider(
-            mutation_scopes=(mutation_scope,),
-            writers=(driver, child),
-        ),  # type: ignore[arg-type]
-        session_id="sess_001",
-    )
-    assert not live._session_has_inflight_mutation_writers(
-        _MutationReadProvider(
-            mutation_scopes=(mutation_scope,),
-            writers=(driver,),
-        ),  # type: ignore[arg-type]
-        session_id="sess_001",
-    )
-
-    with pytest.raises(live.LiveProductPathError) as error:
-        live._session_has_inflight_mutation_writers(
-            _MutationReadProvider(
-                mutation_scopes=(mutation_scope,),
-                writers=(child,),
-            ),  # type: ignore[arg-type]
-            session_id="sess_001",
-        )
-
-    assert error.value.code == "mutation_driver_writer_identity_invalid"
-
-
-def test_blocked_task_is_incomplete_only_for_exact_durable_suspension() -> None:
-    operation = SimpleNamespace(
-        operation_id="operation_001",
-        task_id="task_001",
-        approval_id="approval_001",
-        sandbox_run_id="run_001",
-        owner_mode=ControlledOperationOwnerMode.DURABLE_ASYNC_V1,
-        status=SimpleNamespace(is_terminal=False),
-    )
-    continuation = SimpleNamespace(
-        continuation_id="continuation_001",
-        operation_id=operation.operation_id,
-        approval_id=operation.approval_id,
-        sandbox_run_id=operation.sandbox_run_id,
-        originating_task_id=operation.task_id,
-        status=SimpleNamespace(is_terminal=False),
-        delivery_state=SimpleNamespace(is_terminal=False),
-    )
-
-    assert live._task_has_active_durable_suspension(
-        task_id="task_001",
-        operations=[operation],
-        continuations=[continuation],
-        runtime_signals=[],
-    )
-    assert not live._task_has_active_durable_suspension(
-        task_id="task_001",
-        operations=[operation],
-        continuations=[
-            SimpleNamespace(
-                **{
-                    **continuation.__dict__,
-                    "operation_id": "operation_drift",
-                }
-            )
-        ],
-        runtime_signals=[],
-    )
 
 
 def _public_receipt(
@@ -1448,7 +1330,7 @@ def test_live_collector_rejects_approval_identity_drift() -> None:
 
 
 def test_probe_runtime_completion_requires_the_full_v2_operation_set() -> None:
-    assert live._KNOWN_POSITIVE_PROBE_CONTROLLED_OPERATIONS == {
+    assert KNOWN_POSITIVE_PROBE_CONTROLLED_OPERATIONS == {
         ("bio", "ncbi_fetch_proteins"),
         ("bio", "uniprot_fetch"),
         ("bio_tools", "mafft"),
@@ -2910,6 +2792,21 @@ def _runner_settings(ledger_path: Path) -> OpenZymeSettings:
     )
 
 
+def test_live_runner_settings_are_spawn_pickleable(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=7_200.0,
+    )
+
+    restored = pickle.loads(pickle.dumps(runner, protocol=pickle.HIGHEST_PROTOCOL))
+
+    assert isinstance(restored, live.LiveAoxAttemptRunner)
+    assert restored.ledger_path == ledger_path
+    assert restored.timeout_seconds == 7_200.0
+
+
 def _minimal_fault_injection_receipt() -> live.FaultInjectionReceipt:
     return live.FaultInjectionReceipt(
         source_artifact_id="art_source",
@@ -3172,8 +3069,8 @@ def test_terminal_runtime_command_waits_for_attached_writer_and_late_approval(
         return False
 
     monkeypatch.setattr(
-        live,
-        "_session_has_inflight_mutation_writers",
+        live.AoxRuntimeObservationService,
+        "has_inflight_mutation_writers",
         has_attached_writer,
     )
 

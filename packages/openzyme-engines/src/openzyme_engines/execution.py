@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import base64
 import csv
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from dataclasses import replace
 from decimal import Decimal
@@ -79,6 +80,19 @@ class _DuplicateJsonKey(ValueError):
     def __init__(self, key: str) -> None:
         self.key = key
         super().__init__("duplicate JSON key")
+
+
+class ExecutionHostCallContext(Protocol):
+    repositories: Any
+
+
+class ExecutionHostCallContextFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        session_id: str,
+        invocation_id: str,
+    ) -> AbstractContextManager[ExecutionHostCallContext]: ...
 
 
 def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -5353,9 +5367,7 @@ class ExecutionEngine:
     allow_bio_fixture_adapter: bool = False
     sandbox_workspace_root: Path | None = None
     artifact_blob_root: Path | None = None
-    repository_scope_factory: Any | None = None
-    sandbox_process_repository_scope_factory: Any | None = None
-    sandbox_process_mutation_writer_scope_factory: Any | None = None
+    sandbox_host_call_context_factory: ExecutionHostCallContextFactory | None = None
     sandbox_process_registry: Any | None = None
     sandbox_process_signal_notifier: Any | None = None
 
@@ -5390,13 +5402,6 @@ class ExecutionEngine:
         operation: ControlledOperation,
         envelope: dict[str, Any],
     ) -> dict[str, Any]:
-        if self.repository_scope_factory is not None:
-            with self.repository_scope_factory() as repositories:
-                return replace(
-                    self,
-                    repositories=repositories,
-                    repository_scope_factory=None,
-                ).execute_sandbox_adapter_operation(operation, envelope)
         method = f"{operation.sdk_module}.{operation.function_name}"
         self._verify_sandbox_adapter_input_artifacts(
             operation,
@@ -5583,22 +5588,7 @@ class ExecutionEngine:
     def fetch_sandbox_hpc_outputs(
         self,
         params: dict[str, Any],
-        *,
-        repositories: Any | None = None,
     ) -> dict[str, Any]:
-        if repositories is not None:
-            return replace(
-                self,
-                repositories=repositories,
-                repository_scope_factory=None,
-            ).fetch_sandbox_hpc_outputs(params)
-        if self.repository_scope_factory is not None:
-            with self.repository_scope_factory() as repositories:
-                return replace(
-                    self,
-                    repositories=repositories,
-                    repository_scope_factory=None,
-                ).fetch_sandbox_hpc_outputs(params)
         session_id = str(params.get("session_id") or "")
         sandbox_workspace_id = str(params.get("sandbox_workspace_id") or "")
         run_id = str(params.get("run_id") or "")
@@ -7118,7 +7108,8 @@ class ExecutionEngine:
         method: str,
         params: dict[str, Any],
     ) -> Any:
-        if self.repository_scope_factory is None:
+        context_factory = self.sandbox_host_call_context_factory
+        if context_factory is None:
             return self._handle_pipeline_sdk_call(
                 session=session,
                 task=task,
@@ -7131,11 +7122,14 @@ class ExecutionEngine:
         # thread-affine, so every callback gets a fresh connection-owned engine.
         # This is not a UoW: provider/runner calls below must never sit inside a
         # long SQLite transaction.
-        with self.repository_scope_factory() as repositories:
+        with context_factory(
+            session_id=session.session_id,
+            invocation_id=invocation_id,
+        ) as host_context:
             scoped_engine = replace(
                 self,
-                repositories=repositories,
-                repository_scope_factory=None,
+                repositories=host_context.repositories,
+                sandbox_host_call_context_factory=None,
             )
             scoped_session = scoped_engine._require_session(session.session_id)
             scoped_task = scoped_engine._require_task(

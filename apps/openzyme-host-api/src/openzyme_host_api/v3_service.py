@@ -30,6 +30,8 @@ from openzyme_core import RuntimeConsistencyService
 from openzyme_core import CommandIdempotencyConflictError
 from openzyme_core import runtime_command_request_digest
 from openzyme_core import RuntimeWriteFencingError
+from openzyme_core import SandboxHostBinding
+from openzyme_core import SandboxMutationWriterScopeFactory
 from openzyme_core import SessionProjectionBuilder
 from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
@@ -281,7 +283,14 @@ class V3HostApiService:
         ]
         | None
     ) = None
-    mutation_writer_scope_factory: Callable[..., ContextManager[object]] | None = None
+    mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None
+    sandbox_host_binding_factory: (
+        Callable[
+            [EngineRegistry, SessionRuntimeLease | None],
+            SandboxHostBinding,
+        ]
+        | None
+    ) = None
     operation_lock: threading.RLock = field(default_factory=threading.RLock)
 
     def __post_init__(self) -> None:
@@ -742,6 +751,7 @@ class V3HostApiService:
                 self.durable_route_adapter_policy_ids
             ),
             mutation_writer_scope_factory=self.mutation_writer_scope_factory,
+            sandbox_host_binding_factory=self.sandbox_host_binding_factory,
         )
 
     async def run_background_runtime_once(

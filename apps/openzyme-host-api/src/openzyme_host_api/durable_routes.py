@@ -14,6 +14,8 @@ from openzyme_core import CoreRepositories
 from openzyme_core import DurableRouteMaterializedResult
 from openzyme_core import DurableRouteObservation
 from openzyme_core import DurableRouteObservationKind
+from openzyme_core import DurableExecutionHostAuthority
+from openzyme_core import SandboxHostCallContext
 from openzyme_core import controlled_operation_artifact_set_digest
 from openzyme_core import is_transient_sqlite_contention
 from openzyme_domain import ControlledOperationDispatchRequest
@@ -25,6 +27,8 @@ from openzyme_domain import RunStatus
 from openzyme_engines.execution import PipelineSdkFailure
 from openzyme_runtime import S12_ROUTE_POLICIES
 from openzyme_runtime import sanitize_public_diagnostic_payload
+
+from .sandbox_host_gateway import ExecutionEngineSandboxHostGateway
 
 
 _PROVIDER_ROUTE_IDS = frozenset(
@@ -63,18 +67,13 @@ RepositoryScopeFactory = Callable[
 EngineRegistryFactory = Callable[[CoreRepositories], Any]
 
 
-def _bind_engine_to_callback_scope(
-    engine: Any,
+def _durable_host_context(
     repositories: CoreRepositories,
-) -> Any:
-    """Keep durable callback writes on the connection carrying its lease fence."""
-
-    if getattr(engine, "repository_scope_factory", None) is None:
-        return engine
-    return replace(
-        engine,
+    execution: ControlledOperationExecution,
+) -> SandboxHostCallContext:
+    return SandboxHostCallContext(
         repositories=repositories,
-        repository_scope_factory=None,
+        owner=DurableExecutionHostAuthority.from_execution(execution),
     )
 
 
@@ -137,12 +136,12 @@ class HostProviderControlledOperationRouteAdapter:
                         error_code="durable_operation_missing",
                         effect_certainty=ExternalEffectCertainty.NO_EFFECT,
                     )
-                engine = _bind_engine_to_callback_scope(
-                    self.engine_registry_factory(repositories).require("execution"),
-                    repositories,
+                engine = self.engine_registry_factory(repositories).require(
+                    "execution"
                 )
-                callback = getattr(engine, "execute_sandbox_adapter_operation", None)
-                if not callable(callback):
+                if not callable(
+                    getattr(engine, "execute_sandbox_adapter_operation", None)
+                ):
                     return self._terminal_failure(
                         error_code="durable_provider_executor_unavailable",
                         effect_certainty=ExternalEffectCertainty.NO_EFFECT,
@@ -152,7 +151,13 @@ class HostProviderControlledOperationRouteAdapter:
                     execution.backend_handle_ref
                 )
                 with repositories.controlled_operation_write_fence(execution):
-                    raw_result = callback(operation, envelope)
+                    raw_result = ExecutionEngineSandboxHostGateway(
+                        engine
+                    ).execute_adapter_operation(
+                        operation=operation,
+                        envelope=envelope,
+                        context=_durable_host_context(repositories, execution),
+                    )
                 return self._materialized_from_callback(
                     repositories=repositories,
                     execution=execution,
@@ -511,9 +516,8 @@ class HostHpcControlledOperationRouteAdapter:
                 return local
             with self.repository_scope_factory() as repositories:
                 operation = self._require_operation(repositories, execution)
-                engine = _bind_engine_to_callback_scope(
-                    self.engine_registry_factory(repositories).require("execution"),
-                    repositories,
+                engine = self.engine_registry_factory(repositories).require(
+                    "execution"
                 )
                 runner = self._runner_from_engine(engine)
                 observation = self._inspect_runner(runner, execution)
@@ -527,8 +531,9 @@ class HostHpcControlledOperationRouteAdapter:
                         operation=operation,
                         repositories=repositories,
                     )
-                callback = getattr(engine, "execute_sandbox_adapter_operation", None)
-                if not callable(callback):
+                if not callable(
+                    getattr(engine, "execute_sandbox_adapter_operation", None)
+                ):
                     return self._terminal_failure(
                         error_code="durable_hpc_executor_unavailable",
                         effect_certainty=ExternalEffectCertainty.NO_EFFECT,
@@ -536,7 +541,13 @@ class HostHpcControlledOperationRouteAdapter:
                 envelope = dict(request.request_envelope)
                 envelope["_durable_backend_handle_ref"] = execution.backend_handle_ref
                 with repositories.controlled_operation_write_fence(execution):
-                    callback(operation, envelope)
+                    ExecutionEngineSandboxHostGateway(
+                        engine
+                    ).execute_adapter_operation(
+                        operation=operation,
+                        envelope=envelope,
+                        context=_durable_host_context(repositories, execution),
+                    )
                 observation = self._inspect_runner(runner, execution)
                 local = self._local_observation(
                     execution,
@@ -592,9 +603,8 @@ class HostHpcControlledOperationRouteAdapter:
                 return local
             with self.repository_scope_factory() as repositories:
                 operation = self._require_operation(repositories, execution)
-                engine = _bind_engine_to_callback_scope(
-                    self.engine_registry_factory(repositories).require("execution"),
-                    repositories,
+                engine = self.engine_registry_factory(repositories).require(
+                    "execution"
                 )
                 runner = self._runner_from_engine(engine)
                 observation = self._inspect_runner(runner, execution)
@@ -802,9 +812,12 @@ class HostHpcControlledOperationRouteAdapter:
             envelope = dict(request.request_envelope)
             envelope["_durable_backend_handle_ref"] = execution.backend_handle_ref
             with repositories.controlled_operation_write_fence(execution):
-                recovery_engine.execute_sandbox_adapter_operation(
-                    operation,
-                    envelope,
+                ExecutionEngineSandboxHostGateway(
+                    recovery_engine
+                ).execute_adapter_operation(
+                    operation=operation,
+                    envelope=envelope,
+                    context=_durable_host_context(repositories, execution),
                 )
             if proxy.submit_count != 1:
                 return None
@@ -831,11 +844,10 @@ class HostHpcControlledOperationRouteAdapter:
             return None
         if repositories is None:
             with self.repository_scope_factory() as scoped_repositories:
-                scoped_engine = _bind_engine_to_callback_scope(
-                    self.engine_registry_factory(scoped_repositories).require(
-                        "execution"
-                    ),
-                    scoped_repositories,
+                scoped_engine = self.engine_registry_factory(
+                    scoped_repositories
+                ).require(
+                    "execution"
                 )
                 return self._local_observation(
                     execution,
@@ -910,8 +922,10 @@ class HostHpcControlledOperationRouteAdapter:
             )
         try:
             with repositories.controlled_operation_write_fence(execution):
-                fetch_result = fetch_callback(
-                    {
+                fetch_result = ExecutionEngineSandboxHostGateway(
+                    engine
+                ).fetch_hpc_outputs(
+                    params={
                         "session_id": execution.session_id,
                         "sandbox_workspace_id": operation.sandbox_workspace_id,
                         "hpc_workspace": {
@@ -922,7 +936,8 @@ class HostHpcControlledOperationRouteAdapter:
                         "run_id": run.run_id,
                         "operation_id": execution.operation_id,
                         "operation_digest": execution.operation_digest,
-                    }
+                    },
+                    context=_durable_host_context(repositories, execution),
                 )
         except Exception as exc:  # noqa: BLE001 - terminal effect; staging may retry.
             if is_transient_sqlite_contention(exc):
@@ -1123,10 +1138,7 @@ class HostHpcControlledOperationRouteAdapter:
         return operation
 
     def _require_runner(self, repositories: CoreRepositories) -> Any:
-        engine = _bind_engine_to_callback_scope(
-            self.engine_registry_factory(repositories).require("execution"),
-            repositories,
-        )
+        engine = self.engine_registry_factory(repositories).require("execution")
         return self._runner_from_engine(engine)
 
     @staticmethod

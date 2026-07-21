@@ -4,7 +4,7 @@ Status: implemented by `runtime-hpc-reliability-refactor` for single-Host durabl
 execution, attached-process delivery, and generic mutation freeze/receipt/seal.
 Process-isolated hard-kill and distributed writers remain deferred.
 
-Stable contract: [`../07-runtime-hpc-reliability.md`](../07-runtime-hpc-reliability.md).
+Stable contract: [Runtime/HPC reliability](/docs/v3/07-runtime-hpc-reliability.md).
 The decision-boundary and current-facts sections below are the pre-refactor baseline.
 
 重构收敛说明：本文继续作为 external-operation 与 quiescence 的详细设计；`ControlledOperationExecution` 是 external effect 的 canonical owner，相邻 admission/delivery/continuation 草图只能作为其周围的 facets 实现，不能成为并列 operation 真状态。统一 ownership 与 decision gates 见
@@ -63,11 +63,11 @@ digest 来掩盖问题。本文件只记录完整目标架构、迁移与验收�
   主要解决 approval park/resolve/resume 不应长期占住 agent signal、session lease 和同步
   drain。本文把同一原则扩展到**已经批准但仍在远端运行的长时 controlled operation**，
   并定义 provider handle、分段 polling、result delivery 和 operation timeout。
-- [process-isolated live-attempt supervision](process-isolated-live-attempt-supervision.md)
+- [process-isolated live-attempt supervision](/openspec/changes/archive/2026-07-21-add-process-isolated-live-attempt-supervision/architecture-proposals/process-isolated-live-attempt-supervision.md)
   解决同进程 writer 永久不退休时，harness 如何由 OS 有界强制停止并只生成 parent-owned
   fatal evidence。本文定义正常产品路径如何主动达到 mutation quiescence；进程隔离是
   最终 fail-stop，不替代正确的 async operation state machine。
-- [bounded streaming sandbox stdio capture](bounded-streaming-sandbox-stdio-capture.md)
+- [bounded streaming sandbox stdio capture](/docs/v3/architecture-proposals/bounded-streaming-sandbox-stdio-capture.md)
   解决 stdout/stderr 内存与完整性边界，不负责外部 operation 的 ownership、deadline 或
   result delivery。
 

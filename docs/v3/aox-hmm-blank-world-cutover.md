@@ -1,8 +1,8 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: Runtime/HPC reliability refactor implementation is landed and its non-live gates are being closed. The numbered `rxx` campaign remains frozen and local Live cutover remains **NO-GO** until the refactor gates, explicitly approved real-SSH transport-only soak, two real positive attempts, and one real controlled fault attempt are all sealed and verified on one commit/config identity.
+Status: Runtime/HPC reliability refactor and its real-SSH transport-only qualification are landed, but r41-r44 later exposed composition-root authority handoff gaps. The numbered `rxx` campaign is paused again. Local Live cutover remains **NO-GO** until authority-handoff and process-isolation changes pass their non-live gates and a newly authorized campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
 
-Historical r14-r40 incident sections below intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, and quiescence semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md).
+Historical r14-r44 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, and sandbox Host-call semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md) and the active authority-handoff OpenSpec change.
 
 This document describes the operator/evidence boundary implemented by `openzyme_host_api.aox_cutover_evidence`. It does not turn the historical S15 fixture into live evidence and does not authorize seeded state, cached scientific outputs, the reference notebook, or copied reference results as attempt inputs.
 
@@ -131,9 +131,10 @@ keeps SSE as its prompt refresh path but also performs a low-frequency,
 single-flight read of the current canonical workspace. Session/version guards
 and abortable request generations prevent an old response from overwriting a
 newly selected session, mutation response or newer SSE reducer state; a hung
-old-session read cannot starve the next session. This does
-not add a second truth store or claim bounded process supervision; permanent
-worker retirement remains the separate process-isolation proposal.
+old-session read cannot starve the next session. At that incident-repair stage this
+did not add a second truth store or claim bounded process supervision. The later
+local POSIX attempt supervisor wraps the complete canonical Host path rather than
+changing this coordination logic.
 
 The next fresh campaign on commit `cde88dd` again remained strict **NO-GO**.
 Its real known-positive probe completed and the formal path entered research and
@@ -265,7 +266,7 @@ session/public request at least `7200s`, all checked before external dispatch.
 Durable asynchronous continuation, cancellation fencing and quiescent sealing
 were not implemented by that AOX attempt/goal. They were subsequently implemented
 by `runtime-hpc-reliability-refactor`; the historical design is recorded in
-[durable async controlled operation and quiescent sealing](architecture-proposals/durable-async-controlled-operation-and-quiescent-sealing.md)
+[durable async controlled operation and quiescent sealing](/openspec/changes/archive/2026-07-21-runtime-hpc-reliability-refactor/architecture-proposals/durable-async-controlled-operation-and-quiescent-sealing.md)
 and the current contract is `07-runtime-hpc-reliability.md`.
 
 r15 pinned commit `8a5a98fc483784c222e7a5c2e35f50114e559822`, config digest
@@ -1673,8 +1674,9 @@ uv --project apps/openzyme-host-api run openzyme-aox-cutover run-live \
 ```
 
 Every live attempt, including the known-positive probe, positive 2 and the
-controlled-fault attempt, uses a same-process loopback HTTP Host. Before any
-attempt is admitted, the driver requires `command_v1`, `generic_v1`, and
+controlled-fault attempt, runs its canonical loopback HTTP Host inside the one
+process-isolated child that owns that complete attempt. Before any attempt is
+admitted, the driver requires `command_v1`, `generic_v1`, and
 `durable_async_v1` ownership for every AOX provider/HPC route. Missing or mixed
 ownership fails before session or operation creation.
 
@@ -1721,13 +1723,17 @@ snapshot includes catalog bytes/tree identity and the bounded MICU ledger
 high-watermark/rows. HTTP idle, an empty signal queue, a terminal command, a
 client timeout, or a missing process handle cannot substitute for this proof.
 
-The loopback HTTP tracker remains only a same-process liveness aid before server
+The loopback HTTP tracker remains only a child-process liveness aid before server
 thread retirement; it has no mutation-admission, fence, snapshot, receipt, or
 seal authority. Core and Podman sandbox workers remain non-daemon and use exact
-container/process identities. If an unrecoverable local writer cannot retire,
-the current same-process path stays blocked and emits no eligible evidence.
-OS-level bounded hard-kill and parent-owned fatal evidence remain deferred to
-[process-isolated live-attempt supervision](architecture-proposals/process-isolated-live-attempt-supervision.md).
+container/process identities. Numbered `run-live` now wraps the complete attempt in
+a fresh local POSIX spawn child and dedicated process group. Matching quiescence and
+terminal frames, SQLite/root sync, zero exit and an empty group are all required
+before the parent opens the child result. An unrecoverable writer is retired through
+bounded TERM/KILL and yields only parent-owned fatal evidence outside the attempt
+root; no ledger-after or normal attempt bundle is claimed. The exact harness contract
+and residual hardening split are documented in
+[process-isolated live-attempt supervision](/openspec/changes/archive/2026-07-21-add-process-isolated-live-attempt-supervision/architecture-proposals/process-isolated-live-attempt-supervision.md).
 The implemented product contract is
 [Runtime/HPC reliability](07-runtime-hpc-reliability.md), not the historical
 sync-drain workaround retained in older rxx incident narratives.
@@ -1744,7 +1750,7 @@ non-eligible failure evidence; completed response receipts may then contain an
 intentional sequence gap and can never be sealed or verified as an eligible
 closed chain.
 
-`chrome-once` exposes positive 1 through the Web UI served by the same-process
+`chrome-once` exposes positive 1 through the Web UI served by the attempt child's
 loopback Host and waits for the first formal approval card. The campaign driver
 does not call the approval resolve route for that gate: the operator uses the
 public Web UI, which resolves the canonical approval, and the driver observes

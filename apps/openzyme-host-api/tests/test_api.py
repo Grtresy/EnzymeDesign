@@ -84,6 +84,8 @@ from openzyme_core import DurableControlledOperationAdmission
 from openzyme_core import DurableControlledOperationAdmissionService
 from openzyme_core import DurableEventRepository
 from openzyme_core import RuntimeWriteFencingError
+from openzyme_core import SandboxProcessHostAuthority
+from openzyme_core import SessionTurnHostAuthority
 from openzyme_core import SandboxWorkspaceService
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
@@ -937,7 +939,7 @@ def test_v3_execution_callback_scope_inherits_runtime_fence(
             acquired.lease,
         )
         execution_engine = registry.require("execution")
-        callback_scope = execution_engine.repository_scope_factory
+        callback_scope = execution_engine.sandbox_host_call_context_factory
         assert callback_scope is not None
 
         coordinator.connection.execute(
@@ -954,8 +956,87 @@ def test_v3_execution_callback_scope_inherits_runtime_fence(
         assert replacement.acquired is True
 
         with pytest.raises(RuntimeWriteFencingError, match="stale business write"):
-            with callback_scope():
+            with callback_scope(
+                session_id=session.session_id,
+                invocation_id="inv_stale_callback",
+            ):
                 pass
+
+
+def test_v3_sandbox_process_host_context_does_not_inherit_released_turn_lease(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    bootstrap_client, foundation = _build_client(monkeypatch)
+    del bootstrap_client
+    provider = SQLiteRepositoryProvider(str(tmp_path / "host-context.sqlite3"))
+    dependencies = HostApiDependencies(
+        foundation=foundation,
+        v3_repository_provider=provider,
+    )
+    session = Session.create(
+        "sess_host_context",
+        "proj_001",
+        "Host context",
+        "Keep the sandbox process independent from the launching turn",
+    )
+    with provider.write() as owner:
+        owner.repositories.sessions.save(session)
+    with provider.connection_scope() as coordinator:
+        acquired = coordinator.repositories.session_runtime_leases.acquire(
+            session_id=session.session_id,
+            owner_id="worker:launching-turn",
+            mode="test",
+            lease_seconds=60,
+        )
+        assert acquired.lease is not None
+        registry = dependencies.build_v3_engine_registry(
+            coordinator.repositories,
+            acquired.lease,
+        )
+        binding = dependencies.build_v3_sandbox_host_binding(
+            registry,
+            acquired.lease,
+        )
+        stale_session_authority = SessionTurnHostAuthority.from_lease(
+            acquired.lease
+        )
+
+        coordinator.connection.execute(
+            "UPDATE session_runtime_leases SET expires_at = ? WHERE lease_token = ?",
+            ("2020-01-01T00:00:00+00:00", acquired.lease.lease_token),
+        )
+        coordinator.connection.commit()
+        replacement = coordinator.repositories.session_runtime_leases.acquire(
+            session_id=session.session_id,
+            owner_id="worker:continuation-turn",
+            mode="test",
+            lease_seconds=60,
+        )
+        assert replacement.acquired is True
+
+        with binding.context_factory(
+            SandboxProcessHostAuthority(
+                session_id=session.session_id,
+                sandbox_workspace_id="sw_host_context",
+                sandbox_run_id="srun_host_context",
+                process_epoch=3,
+            )
+        ) as process_context:
+            current = process_context.repositories.sessions.get(session.session_id)
+            assert current is not None
+            process_context.repositories.sessions.save(
+                replace(current, objective="continued under sandbox-process authority")
+            )
+
+        with pytest.raises(RuntimeWriteFencingError, match="stale business write"):
+            with binding.context_factory(stale_session_authority):
+                pass
+
+    with provider.read() as reader:
+        saved = reader.repositories.sessions.get(session.session_id)
+        assert saved is not None
+        assert saved.objective == "continued under sandbox-process authority"
 
 
 def test_v3_execution_engine_uses_configured_blank_world_roots(
@@ -1027,7 +1108,7 @@ def test_v3_timed_out_callback_cannot_apply_late_business_effect(
             coordinator.repositories,
             acquired.lease,
         ).require("execution")
-        callback_scope = execution_engine.repository_scope_factory
+        callback_scope = execution_engine.sandbox_host_call_context_factory
         assert callback_scope is not None
         callback_started = threading.Event()
         release_callback = threading.Event()
@@ -1035,10 +1116,13 @@ def test_v3_timed_out_callback_cannot_apply_late_business_effect(
 
         def return_late_after_timeout() -> None:
             try:
-                with callback_scope() as callback_repositories:
+                with callback_scope(
+                    session_id=session.session_id,
+                    invocation_id="inv_late_callback",
+                ) as callback_context:
                     callback_started.set()
                     assert release_callback.wait(timeout=5)
-                    callback_repositories.sessions.save(
+                    callback_context.repositories.sessions.save(
                         replace(session, objective="Late stale callback overwrite")
                     )
             except BaseException as exc:
@@ -1445,6 +1529,8 @@ class FocusRecordingInvoker:
 
 
 class FocusRecordingModelFactory:
+    context_window_tokens = 100_000
+
     def __init__(self) -> None:
         self.prompts: list[str] = []
 

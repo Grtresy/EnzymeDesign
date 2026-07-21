@@ -195,7 +195,7 @@ offline verifier必须：
 - transport sidecar验证失败：effect前失败，不创建manifest或Artifact。
 - Blob staging成功、row commit失败：staging/ref进入GC queue，Artifact不可见。
 - row commit成功、response delivery失败：Artifact仍committed；按
-  `controlled-operation-outcome-unknown-after-response-failure.md` 使用result handle/reconcile，不能重写。
+  [controlled-operation outcome unknown](/openspec/changes/archive/2026-07-21-runtime-hpc-reliability-refactor/architecture-proposals/controlled-operation-outcome-unknown-after-response-failure.md) 使用result handle/reconcile，不能重写。
 - manifest损坏：Artifact保留identity fact但变为不可消费/不可cutover；不以summary代替。
 - refcount drift：GC fail-closed保留Blob并产生repair audit，不猜测删除。
 - Host restart：扫描staging、pending binding与GC queue；content-address/no-replace保证重复commit幂等。

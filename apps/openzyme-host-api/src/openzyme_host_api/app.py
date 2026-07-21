@@ -53,6 +53,8 @@ from .background_runtime import V3DurableWorkSupervisor
 from .durable_routes import build_host_hpc_route_adapters
 from .durable_routes import build_host_provider_route_adapters
 from .runtime_commands import HostRuntimeCommandExecutor
+from .sandbox_host_gateway import ExecutionEngineSandboxHostGateway
+from .sandbox_host_gateway import HostSandboxCallContextFactory
 from .tracing import host_request_trace_context
 from .security import HostAuthenticationError
 from .security import HostPrincipal
@@ -70,6 +72,10 @@ from openzyme_core import EngineRegistry
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import SessionAccessRecord
 from openzyme_core import RuntimeCommandWorker
+from openzyme_core import SandboxHostBinding
+from openzyme_core import SandboxHostCallContext
+from openzyme_core import SandboxProcessHostAuthority
+from openzyme_core import SessionTurnHostAuthority
 from openzyme_core import LiveProcessRegistry
 from openzyme_core import MutationWriterTurnFactory
 from openzyme_core import MutationScopeService
@@ -695,6 +701,7 @@ class HostApiDependencies:
             runtime_repository_scope_factory=self.v3_repository_scope,
             engine_registry_factory=self.build_v3_engine_registry,
             mutation_writer_scope_factory=self.v3_mutation_writer_scope,
+            sandbox_host_binding_factory=self.build_v3_sandbox_host_binding,
             scheduler_limits={}
             if self.foundation.settings is None
             else dict(self.foundation.settings.limits.provider_limits),
@@ -766,14 +773,34 @@ class HostApiDependencies:
         repositories: CoreRepositories,
         runtime_lease: SessionRuntimeLease | None = None,
     ) -> EngineRegistry:
+        host_context_factory = HostSandboxCallContextFactory(
+            repository_scope_factory=lambda: self.v3_repository_scope(
+                mode="connection"
+            ),
+            mutation_writer_scope_factory=self.v3_mutation_writer_scope,
+            runtime_lease=runtime_lease,
+        )
+
         @contextmanager
-        def runtime_repository_scope() -> Iterator[CoreRepositories]:
-            with self.v3_repository_scope(mode="connection") as scoped_repositories:
-                if runtime_lease is None:
-                    yield scoped_repositories
-                    return
-                with scoped_repositories.runtime_write_fence(runtime_lease):
-                    yield scoped_repositories
+        def pipeline_host_call_context(
+            *,
+            session_id: str,
+            invocation_id: str,
+        ) -> Iterator[SandboxHostCallContext]:
+            owner = (
+                SessionTurnHostAuthority.from_lease(runtime_lease)
+                if runtime_lease is not None
+                else SandboxProcessHostAuthority(
+                    session_id=session_id,
+                    sandbox_workspace_id=f"pipeline_workspace:{invocation_id}",
+                    sandbox_run_id=f"pipeline_run:{invocation_id}",
+                    process_epoch=1,
+                )
+            )
+            if owner.session_id != session_id:
+                raise RuntimeError("pipeline Host context crossed its session")
+            with host_context_factory(owner) as context:
+                yield context
 
         return build_engine_registry(
             DeepResearchEngine(
@@ -800,13 +827,28 @@ class HostApiDependencies:
                 or PodmanPipelineSandboxRunner(),
                 sandbox_workspace_root=self.v3_sandbox_workspace_root,
                 artifact_blob_root=self.v3_artifact_blob_root,
-                repository_scope_factory=runtime_repository_scope,
-                sandbox_process_repository_scope_factory=self.v3_repository_scope,
-                sandbox_process_mutation_writer_scope_factory=(
-                    self.v3_mutation_writer_scope
-                ),
+                sandbox_host_call_context_factory=pipeline_host_call_context,
                 sandbox_process_registry=self.v3_live_process_registry,
                 sandbox_process_signal_notifier=self.v3_signal_notifier,
+            ),
+        )
+
+    def build_v3_sandbox_host_binding(
+        self,
+        engine_registry: EngineRegistry,
+        runtime_lease: SessionRuntimeLease | None,
+    ) -> SandboxHostBinding:
+        execution_engine = engine_registry.require("execution")
+        if not isinstance(execution_engine, ExecutionEngine):
+            raise TypeError("execution engine does not support sandbox Host calls")
+        return SandboxHostBinding(
+            gateway=ExecutionEngineSandboxHostGateway(execution_engine),
+            context_factory=HostSandboxCallContextFactory(
+                repository_scope_factory=lambda: self.v3_repository_scope(
+                    mode="connection"
+                ),
+                mutation_writer_scope_factory=self.v3_mutation_writer_scope,
+                runtime_lease=runtime_lease,
             ),
         )
 

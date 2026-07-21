@@ -278,10 +278,10 @@ attempt chain/sealed artifacts。
   decision作为每个page的transport历史；batch checkpoint不应只记录最终success。
 - [Streaming provider response and artifact persistence](streaming-provider-response-and-artifact-persistence.md)
   为每次attempt提供bounded immutable response evidence；本文不自己实现Blob writer。
-- [Durable async controlled operation](durable-async-controlled-operation-and-quiescent-sealing.md) 提供nonblocking
+- [Durable async controlled operation](/openspec/changes/archive/2026-07-21-runtime-hpc-reliability-refactor/architecture-proposals/durable-async-controlled-operation-and-quiescent-sealing.md) 提供nonblocking
   wait、lease/fencing和long operation recovery；本文的`next_attempt_not_before`应复用该scheduler primitive，
   不创建第二套后台队列。
-- [Controlled-operation outcome unknown](controlled-operation-outcome-unknown-after-response-failure.md) 处理Host
+- [Controlled-operation outcome unknown](/openspec/changes/archive/2026-07-21-runtime-hpc-reliability-refactor/architecture-proposals/controlled-operation-outcome-unknown-after-response-failure.md) 处理Host
   handler已effect但SDK未收到结果的delivery ambiguity；本文处理provider HTTP attempt本身的dispatch/
   response ambiguity。两个unknown必须分别建模并可因果关联。
 

@@ -13,14 +13,18 @@ HPC 侧的 Host composition root 已经为一个 Host 生命周期构造单一 `
 - capability terminal 只表示 outcome/evidence ready，业务 task 仍只能由 agent 显式 `task.finish` 终结；
 - 单进程 SQLite 是当前唯一 writer deployment，不为未来多 Host 预引入分布式队列或共识。
 
-本设计整合以下 proposal，但不让其中任何对象草图形成并列 authority：
+本设计整合以下五份 proposal，但不让其中任何对象草图形成并列 authority：
 
-- `runtime-hpc-reliability-refactor-roadmap.md`
-- `durable-hpc-transport-staging-and-dispatch-reconciliation.md`
-- `nonblocking-supervised-continuation.md`
-- `durable-async-controlled-operation-and-quiescent-sealing.md`
-- `controlled-operation-outcome-unknown-after-response-failure.md`
-- `process-isolated-live-attempt-supervision.md`
+- `architecture-proposals/runtime-hpc-reliability-refactor-roadmap.md`
+- `architecture-proposals/durable-hpc-transport-staging-and-dispatch-reconciliation.md`
+- `architecture-proposals/nonblocking-supervised-continuation.md`
+- `architecture-proposals/durable-async-controlled-operation-and-quiescent-sealing.md`
+- `architecture-proposals/controlled-operation-outcome-unknown-after-response-failure.md`
+
+OS 级 attempt fail-stop 是后继独立边界，已由
+[process-isolated live-attempt supervision](/openspec/changes/archive/2026-07-21-add-process-isolated-live-attempt-supervision/architecture-proposals/process-isolated-live-attempt-supervision.md)
+及 OpenSpec `add-process-isolated-live-attempt-supervision` 单独实现、验证和归档；它不属于本
+runtime/HPC change 的完成声明。
 
 ## Goals / Non-Goals
 

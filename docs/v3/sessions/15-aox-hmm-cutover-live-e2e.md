@@ -235,7 +235,7 @@ r14 因此永久 NO-GO，无 terminal Chrome receipt，不能追认或复用。�
 HMM-capable path 固定为 poll `1800s`、`sandbox.exec=3600s`/`s09.exec_policy.v2`、
 formal session/public request `>=7200s`，并在 launch 与 HMMER approval 前 fail-fast；
 通用 async continuation/cancellation/quiescent sealing 只记录在
-[durable async controlled operation and quiescent sealing](../architecture-proposals/durable-async-controlled-operation-and-quiescent-sealing.md)，本 Goal 不实现。
+[durable async controlled operation and quiescent sealing](/openspec/changes/archive/2026-07-21-runtime-hpc-reliability-refactor/architecture-proposals/durable-async-controlled-operation-and-quiescent-sealing.md)，该历史 Goal 当时未实现，后续已由独立 reliability change 落地。
 
 r15 在 commit `8a5a98fc483784c222e7a5c2e35f50114e559822`、config digest
 `sha256:b6952e6aaf2eb0af312b116a57b5c842ac20d89720cccaf3a8538421fae1ce54`
@@ -971,6 +971,42 @@ snapshot 才读取 workspace。workspace/artifact activity/capability branches �
 不再递归构造整个 workspace。对 r38 DB 的 correction 后只读 benchmark 为 pending projection
 约 `0.0013s`，workspace build `2.771s`，JSON `727,362` bytes；该 benchmark 只是修复验证，
 绝不把 r38 追认为 positive。下一 campaign 必须使用 fresh clean commit/config pin 与全新 roots。
+
+## r41-r44：可靠性重构后的逐层 integration 暴露，全部永久 NO-GO
+
+`runtime-hpc-reliability-refactor` 的 deterministic、non-live 与 real-SSH transport-only
+资格门通过后，operator 曾允许恢复独立编号 attempt；该资格不是 campaign GO，也不保证
+尚未被 composition-root 生命周期测试覆盖的所有边界已经正确。r41-r44 随后依次暴露四个
+不同 integration seam，旧 roots/effects/evidence 均不可 adoption：
+
+- **r41** 在 campaign pin/launch 边界失败：可靠性 runner 正确返回 opaque
+  `runner-artifact://` 输出引用，旧 AOX launcher 却仍把它当 Host path 消费。纠正提交
+  `d2d5b0a` 只允许 trusted Host resolver 把 exact runner artifact 交给下一 pin；不可解析或
+  caller-supplied path 继续 fail closed。r41 没有证明正式科学链，也不是旧 SSH staging 故障
+  复发。
+- **r42** 暴露 AOX campaign driver 的观察错误：durable SDK call 正确 park attached process
+  并结束 bounded runtime command 后，driver/agent runtime 仍可能把 infrastructure suspension
+  写成 task `blocked`，或在 process/operation writer 尚未退休时过早推进/冻结。这是测试编排层
+  把“command terminal”误当“工作已经静止”，不是 agent 科学程序选择错误。纠正提交
+  `d68408e` 让 task 保持 `in_progress`，并要求 driver 等待 attempt-driver 之外的 writer；r42
+  仍无 eligible bundle。
+- **r43** 已产生 Host-verified durable provider result，但 compatibility transition 把完整
+  adapter envelope 错嵌进 `result_summary`，continuation 恢复后的 SDK 因 wire shape 漂移无法
+  读取 direct provider response。纠正提交 `7941209` 分开保存完整
+  `adapter_result_envelope` 与其中 exact bounded summary。已发生 provider effect 不因投影修复
+  被重放或追认为新 attempt。
+- **r44** 的 NCBI、MAFFT 与 MAFFT declared-output 登记均真实成功；同一 attached sandbox 在
+  continuation delivery 后调用不产生新 external effect 的 `ws.fetch_outputs()` 时，Host executor
+  仍回到 engine 创建时捕获、已经释放的 agent-turn session lease，因而被正确 fence 拒绝。
+  `342d20b` 的窄修复让 fetch 使用 control-server 当前 repository，但仍保留可选 repository
+  escape hatch。后续 `simplify-sandbox-host-authority-handoff` change 用 typed
+  `SandboxHostCallContext/SandboxHostGateway` 统一替换该弱路径，并以 file-backed 整体生命周期
+  测试证明 process authority 不继承 turn/delivery lease。
+
+r41-r44 都说明真实调用在跨 owner 组合处发现了测试矩阵未覆盖的 seam；它们不推翻各自已通过
+的局部机制，也不能被解释为“只修测试就能得到 GO”。在 authority-handoff 与独立
+process-isolation change 完成全部 gate、operator 再次显式批准前，不启动 r45 或任何新编号
+campaign。
 
 ## 当前实施状态的表述规则
 

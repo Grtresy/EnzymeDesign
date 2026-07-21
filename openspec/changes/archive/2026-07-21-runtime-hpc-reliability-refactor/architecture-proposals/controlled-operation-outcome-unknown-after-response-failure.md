@@ -3,7 +3,7 @@
 Status: implemented for `durable_async_v1` controlled operations by
 `runtime-hpc-reliability-refactor`; generic non-controlled side-effect RPCs remain deferred.
 
-Stable contract: [`../07-runtime-hpc-reliability.md`](../07-runtime-hpc-reliability.md).
+Stable contract: [Runtime/HPC reliability](/docs/v3/07-runtime-hpc-reliability.md).
 The decision-boundary and current-facts sections below are the pre-refactor baseline and
 must not override current code or OpenSpec checkpoints.
 
@@ -292,20 +292,20 @@ result handle协议。
 
 ## Relationship to existing proposals and stable contracts
 
-- [Harness doctrine](../00-harness-doctrine.md) 要求harness忠实呈现世界；effect/delivery分离防止agent基于
+- [Harness doctrine](/docs/v3/00-harness-doctrine.md) 要求harness忠实呈现世界；effect/delivery分离防止agent基于
   错误“未发生”事实决策。
-- [Sandbox external capability bridge](../sessions/10-sandbox-external-capability-bridge.md) 定义当前supervised
+- [Sandbox external capability bridge](/docs/v3/sessions/10-sandbox-external-capability-bridge.md) 定义当前supervised
   SDK/approval boundary；本文是未来versioned protocol，不改变当前合同。
 - [Durable async controlled operation and quiescent sealing](durable-async-controlled-operation-and-quiescent-sealing.md)
   定义submit/poll/continuation和long-operation state；本文聚焦terminal result与wire delivery歧义，应复用
   其handle、lease/fencing而非新建队列。
-- [Transactional provider batch evidence](transactional-provider-batch-attempt-evidence.md) 解决operation内部
+- [Transactional provider batch evidence](/docs/v3/architecture-proposals/transactional-provider-batch-attempt-evidence.md) 解决operation内部
   page effects；其terminal closure必须先commit，再由本文result handle交付。
-- [Provider retry policy](provider-retry-policy-and-failed-attempt-evidence.md) 解决provider HTTP attempt retry；
+- [Provider retry policy](/docs/v3/architecture-proposals/provider-retry-policy-and-failed-attempt-evidence.md) 解决provider HTTP attempt retry；
   provider-attempt unknown与control-delivery unknown是两个因果相连但不可混同的层级。
-- [Streaming provider response and artifact persistence](streaming-provider-response-and-artifact-persistence.md)
+- [Streaming provider response and artifact persistence](/docs/v3/architecture-proposals/streaming-provider-response-and-artifact-persistence.md)
   提供large result artifactization与atomic Blob commit；本文只传bounded handle。
-- [Transactional attempt evidence](transactional-attempt-evidence-collection-and-root-closure.md) 收集最终archive；
+- [Transactional attempt evidence](/docs/v3/architecture-proposals/transactional-attempt-evidence-collection-and-root-closure.md) 收集最终archive；
   collector不能因response delivery失败而重跑effect，也不能把unknown补成failed。
 
 未来实施必须统一operation/result handle和outcome taxonomy，同时保留provider attempt、handler effect、wire
