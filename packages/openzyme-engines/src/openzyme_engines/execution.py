@@ -5580,7 +5580,18 @@ class ExecutionEngine:
                     },
                 )
 
-    def fetch_sandbox_hpc_outputs(self, params: dict[str, Any]) -> dict[str, Any]:
+    def fetch_sandbox_hpc_outputs(
+        self,
+        params: dict[str, Any],
+        *,
+        repositories: Any | None = None,
+    ) -> dict[str, Any]:
+        if repositories is not None:
+            return replace(
+                self,
+                repositories=repositories,
+                repository_scope_factory=None,
+            ).fetch_sandbox_hpc_outputs(params)
         if self.repository_scope_factory is not None:
             with self.repository_scope_factory() as repositories:
                 return replace(

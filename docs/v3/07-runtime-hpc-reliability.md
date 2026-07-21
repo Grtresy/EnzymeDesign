@@ -108,6 +108,13 @@ claim、session lease 和 HTTP request 在 bounded 时间内返回。等待中�
   execution/result 仍被保留且绝不重跑；
 - `journaled_sdk_call_boundary` 只是关闭的 schema 值，任意 Python stack replay 尚未实现。
 
+同一 attached process 在一次 durable result delivery 后可以继续执行 source 中的下一条 SDK
+语句，但这不会复活原 agent turn 的 session lease。`hpc.fetch_outputs` 使用 control-server
+当前 repository 与 nested artifact-publisher mutation writer；engine 必须优先采用该显式
+repository，不能进入创建时捕获的 stale runtime scope。若 durable HPC materialization 已在
+immutable adapter envelope 中冻结 `run_id/fetch_refs/registered_artifact_ids/output_artifact_ids`，
+SDK fetch 只接受完全相同的投影并保持 operation row 不变；任何 drift 都 fail closed。
+
 `POST /v3/sessions/{session_id}/runtime/drain` 只做 durable command admission：
 
 - 必须带 `Idempotency-Key`；

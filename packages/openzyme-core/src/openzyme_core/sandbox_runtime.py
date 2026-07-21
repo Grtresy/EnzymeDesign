@@ -108,7 +108,7 @@ _CONTROL_SOCKET_REQUEST_ID_MAX_BYTES = 256
 _ARTIFACT_REGISTER_MANY_MAX_ITEMS = 128
 _ARTIFACT_REGISTER_MANY_METADATA_MAX_BYTES = 32 * 1024 * 1024
 SandboxAdapterExecutor = Callable[[ControlledOperation, dict[str, Any]], dict[str, Any]]
-SandboxHpcFetchExecutor = Callable[[dict[str, Any]], dict[str, Any]]
+SandboxHpcFetchExecutor = Callable[..., dict[str, Any]]
 PRIVATE_ADAPTER_PAYLOAD_KEYS = {
     "host_path",
     "sandbox_host_path",
@@ -1400,7 +1400,8 @@ class _ControlSocketServer:
                     "sandbox_run_id": self.sandbox_run_id,
                     "task_id": self.task_id,
                     "lane_id": self.lane_id,
-                }
+                },
+                repositories=self.repositories,
             )
         except Exception as exc:
             (
@@ -1503,16 +1504,41 @@ class _ControlSocketServer:
         registered_artifact_ids = [
             str(value) for value in list(result.get("registered_artifact_ids") or [])
         ]
-        if not fetch_refs and not registered_artifact_ids:
-            return
-        adapter_result["fetch_refs"] = fetch_refs
-        adapter_result["registered_artifact_ids"] = registered_artifact_ids
-        adapter_result["output_artifact_ids"] = [
+        output_artifact_ids = [
             str(value)
             for value in list(
                 result.get("output_artifact_ids") or registered_artifact_ids
             )
         ]
+        if operation.owner_mode is ControlledOperationOwnerMode.DURABLE_ASYNC_V1:
+            expected_projection = {
+                "run_id": str(adapter_result.get("run_id") or ""),
+                "fetch_refs": list(adapter_result.get("fetch_refs") or []),
+                "registered_artifact_ids": list(
+                    adapter_result.get("registered_artifact_ids") or []
+                ),
+                "output_artifact_ids": list(
+                    adapter_result.get("output_artifact_ids") or []
+                ),
+            }
+            observed_projection = {
+                "run_id": str(result.get("run_id") or ""),
+                "fetch_refs": fetch_refs,
+                "registered_artifact_ids": registered_artifact_ids,
+                "output_artifact_ids": output_artifact_ids,
+            }
+            if observed_projection != expected_projection:
+                raise SandboxRuntimeError(
+                    "durable_hpc_fetch_projection_drift",
+                    "hpc.fetch_outputs differs from the immutable durable result",
+                    details={"operation_id": operation.operation_id},
+                )
+            return
+        if not fetch_refs and not registered_artifact_ids:
+            return
+        adapter_result["fetch_refs"] = fetch_refs
+        adapter_result["registered_artifact_ids"] = registered_artifact_ids
+        adapter_result["output_artifact_ids"] = output_artifact_ids
         bounded_summary = dict(
             adapter_result.get("bounded_summary") or operation.result_summary or {}
         )

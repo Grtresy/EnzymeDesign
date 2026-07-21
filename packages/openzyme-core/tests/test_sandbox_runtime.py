@@ -3444,6 +3444,7 @@ def test_sandbox_exec_public_bio_tools_hpc_run_can_fetch_declared_outputs(
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
     adapter_calls: list[dict[str, object]] = []
     fetch_calls: list[dict[str, object]] = []
+    fetch_repository_scopes: list[CoreRepositories] = []
     safe_toolchain_identity = {
         "schema_id": "mcp_hpc_toolchain_runtime_identity@1",
         "attestation_scope": "same_ssh_login_shell_pre_exec",
@@ -3492,8 +3493,13 @@ def test_sandbox_exec_public_bio_tools_hpc_run_can_fetch_declared_outputs(
             "result_summary": run_handle,
         }
 
-    def _hpc_fetch_executor(params: dict[str, object]) -> dict[str, object]:
+    def _hpc_fetch_executor(
+        params: dict[str, object],
+        *,
+        repositories: CoreRepositories,
+    ) -> dict[str, object]:
         fetch_calls.append(dict(params))
+        fetch_repository_scopes.append(repositories)
         return {
             "kind": "hpc_fetch_result",
             "run_id": params["run_id"],
@@ -3592,6 +3598,7 @@ def test_sandbox_exec_public_bio_tools_hpc_run_can_fetch_declared_outputs(
     assert adapter_calls[0]["operation_id"] == operation.operation_id
     assert fetch_calls[0]["operation_id"] == operation.operation_id
     assert fetch_calls[0]["operation_digest"] == operation.operation_digest
+    assert fetch_repository_scopes == [repositories]
     persisted = repositories.controlled_operations.get(operation.operation_id)
     assert persisted is not None
     assert persisted.status is ControlledOperationStatus.COMPLETED
@@ -3614,6 +3621,41 @@ def test_sandbox_exec_public_bio_tools_hpc_run_can_fetch_declared_outputs(
         ]
         == safe_toolchain_identity
     )
+    projection_server = _ControlSocketServer(
+        socket_path=tmp_path / "durable-hpc-fetch-projection.sock",
+        repositories=repositories,
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        sandbox_run_id=run.sandbox_run_id,
+        agent_id=agent.agent_id,
+        source_snapshot_artifact_id=str(run.source_snapshot_artifact_id),
+        source_tree_digest=str(run.source_tree_digest),
+    )
+    durable_operation = replace(
+        persisted,
+        owner_mode=ControlledOperationOwnerMode.DURABLE_ASYNC_V1,
+        adapter_result_envelope={
+            **dict(payload["run"]),
+            "fetch_refs": list(payload["fetch"]["fetch_refs"]),
+            "registered_artifact_ids": list(
+                payload["fetch"]["registered_artifact_ids"]
+            ),
+            "output_artifact_ids": list(
+                payload["fetch"]["registered_artifact_ids"]
+            ),
+        },
+    )
+    projection_server._record_hpc_fetch_result(  # noqa: SLF001
+        durable_operation,
+        dict(payload["fetch"]),
+    )
+    drifted_fetch = {**dict(payload["fetch"]), "run_id": "run_drifted"}
+    with pytest.raises(SandboxRuntimeError) as drift_error:
+        projection_server._record_hpc_fetch_result(  # noqa: SLF001
+            durable_operation,
+            drifted_fetch,
+        )
+    assert drift_error.value.error_code == "durable_hpc_fetch_projection_drift"
 
 
 def test_sandbox_exec_public_artifacts_hpc_and_bio_tools_sdk_use_control_socket(
@@ -3884,7 +3926,12 @@ def test_sandbox_exec_hpc_fetch_preserves_typed_failure_for_pipeline_sdk(
             "remote_path": "/private/runner/output.fasta",
         }
 
-    def _hpc_fetch_executor(params: dict[str, object]) -> dict[str, object]:
+    def _hpc_fetch_executor(
+        params: dict[str, object],
+        *,
+        repositories: CoreRepositories,
+    ) -> dict[str, object]:
+        del repositories
         fetch_calls.append(str(params["run_id"]))
         raise TypedFetchFailure
 

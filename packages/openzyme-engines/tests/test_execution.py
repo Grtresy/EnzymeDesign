@@ -4175,6 +4175,12 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs(
         == TOOLCHAIN_RUNTIME_IDENTITY
     )
     assert adapter_result["registered_artifact_ids"] == []
+    @contextmanager
+    def stale_runtime_scope():  # type: ignore[no-untyped-def]
+        raise AssertionError("sandbox-owned fetch reused the stale agent runtime scope")
+        yield
+
+    engine.repository_scope_factory = stale_runtime_scope
     fetch = engine.fetch_sandbox_hpc_outputs(
         {
             "session_id": "sess_001",
@@ -4183,7 +4189,8 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs(
             "run_id": run_handle["run_id"],
             "operation_id": operation.operation_id,
             "operation_digest": operation.operation_digest,
-        }
+        },
+        repositories=repositories,
     )
 
     assert fetch["kind"] == "hpc_fetch_result"
