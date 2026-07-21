@@ -1413,8 +1413,14 @@ class _DurableProviderFixtureAdapter:
             terminal_outcome=(ControlledOperationExecutionTerminalOutcome.SUCCEEDED),
             materialized_result=DurableRouteMaterializedResult(
                 bounded_result_envelope={
-                    "status": "completed",
-                    "records": 1,
+                    "status": "succeeded",
+                    "result_origin": "test_durable_provider_adapter",
+                    "registered_artifact_ids": [],
+                    "output_artifact_ids": [],
+                    "bounded_summary": {
+                        "status": "completed",
+                        "records": 1,
+                    },
                 },
                 artifact_set_digest=controlled_operation_artifact_set_digest(()),
                 origin="test_durable_provider_adapter",
@@ -2245,6 +2251,11 @@ def test_sandbox_exec_durable_route_admits_once_and_never_calls_legacy_adapter(
     assert completed is not None
     assert completed.owner_mode is ControlledOperationOwnerMode.DURABLE_ASYNC_V1
     assert completed.status is ControlledOperationStatus.COMPLETED
+    assert completed.result_summary == {"records": 1, "status": "completed"}
+    assert (completed.adapter_result_envelope or {})["bounded_summary"] == {
+        "records": 1,
+        "status": "completed",
+    }
     owner_wakeups = [
         signal
         for signal in repositories.runtime_signals.list_by_session(session.session_id)

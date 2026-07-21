@@ -866,6 +866,14 @@ class ControlledOperationExecutionTransitionService:
     ) -> None:
         status = _compatibility_status(execution)
         result = {} if result_handle is None else result_handle.bounded_result_envelope
+        result_summary = result
+        if "bounded_summary" in result:
+            bounded_summary = result["bounded_summary"]
+            if not isinstance(bounded_summary, dict):
+                raise InvalidExecutionTransitionError(
+                    "durable result envelope bounded_summary must be an object"
+                )
+            result_summary = bounded_summary
         approval = (
             None
             if execution.approval_id is None
@@ -890,7 +898,7 @@ class ControlledOperationExecutionTransitionService:
                 status.value,
                 _json_dumps(result),
                 None if result_handle is None else result_handle.origin,
-                _json_dumps(result),
+                _json_dumps(result_summary),
                 execution.error_code,
                 execution.safe_error_summary,
                 execution.updated_at,

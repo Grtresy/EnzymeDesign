@@ -321,7 +321,7 @@ claimed --operator release--> pending
 
 四种 authority 独立存在：session lease/signal claim、execution lease/fence、continuation delivery claim/process epoch、mutation scope generation/writer fence。它们的 acquire、heartbeat、stale recovery 与 terminal 条件不可互相替代；任何一个对象的 terminal 都不能自动 terminalize task。
 
-`ControlledOperation.status/result/error` 对 durable owner 只是由唯一 transition service 在同一 transaction 中派生的兼容投影。raw repository save、legacy adapter、approval row、continuation 或 runtime signal 都不得成为第二个 dispatch/reducer owner。恢复边界由 effect certainty 决定：仅 `no_effect` 可做同 phase 有界恢复，`dispatch_in_doubt` 禁止 replay，`effect_known` 只查询 exact handle，`terminal_known` 只恢复 result/materialization。
+`ControlledOperation.status/result/error` 对 durable owner 只是由唯一 transition service 在同一 transaction 中派生的兼容投影。immutable result handle 若承载 S12 adapter envelope，完整 envelope 只投影到 `adapter_result_envelope`，其中 exact object `bounded_summary` 单独投影到 `result_summary`；不得把外层 envelope 再嵌入 `result_summary`，否则 sandbox SDK 会看到错误的 wire shape。存在但非 object 的 `bounded_summary` 必须使 transition fail closed；没有该字段的 HPC run handle 与 terminal failure envelope 保持 direct summary 投影。raw repository save、legacy adapter、approval row、continuation 或 runtime signal 都不得成为第二个 dispatch/reducer owner。恢复边界由 effect certainty 决定：仅 `no_effect` 可做同 phase 有界恢复，`dispatch_in_doubt` 禁止 replay，`effect_known` 只查询 exact handle，`terminal_known` 只恢复 result/materialization。
 
 Mutation scope 的 closure 顺序固定为 close admission/advance fence、显式等待全部 writer/descendant 退休、捕获两次一致的 bounded SQLite/event/external snapshot、签发 receipt、验证后 seal exact generation。runtime idle、空队列、lease expiry、HTTP 返回、timeout、disconnect 或 missing handle 不能推断 writer retirement；receipt/seal 也不表示 task completed。后续合法写入必须进入显式链接的新 generation。
 

@@ -1824,7 +1824,11 @@ def test_transition_service_is_the_only_durable_compatibility_writer() -> None:
         session_id=operation.session_id,
         dispatch_generation=1,
         terminal_outcome=ControlledOperationExecutionTerminalOutcome.SUCCEEDED,
-        bounded_result_envelope={"summary": "fixture complete"},
+        bounded_result_envelope={
+            "status": "succeeded",
+            "result_origin": "fixture_adapter",
+            "bounded_summary": {"summary": "fixture complete"},
+        },
         result_digest="sha256:transition-result",
         artifact_set_digest=controlled_operation_artifact_set_digest(()),
         origin="fixture_adapter",
@@ -1900,7 +1904,11 @@ def test_transition_service_is_the_only_durable_compatibility_writer() -> None:
     assert projected is not None
     assert projected.status is ControlledOperationStatus.COMPLETED
     assert projected.result_summary == {"summary": "fixture complete"}
-    assert projected.adapter_result_envelope == {"summary": "fixture complete"}
+    assert projected.adapter_result_envelope == {
+        "status": "succeeded",
+        "result_origin": "fixture_adapter",
+        "bounded_summary": {"summary": "fixture complete"},
+    }
     assert projected.adapter_result_origin == "fixture_adapter"
     assert (
         len(
@@ -1910,6 +1918,42 @@ def test_transition_service_is_the_only_durable_compatibility_writer() -> None:
         )
         == 5
     )
+
+
+def test_durable_compatibility_projection_rejects_malformed_bounded_summary() -> None:
+    _, repositories, operation = _durable_repositories()
+    service = ControlledOperationExecutionTransitionService(repositories)
+    execution = _execution(operation)
+    malformed = ControlledOperationResultHandle(
+        result_handle_id="malformed_compatibility_result",
+        execution_id=execution.execution_id,
+        operation_id=operation.operation_id,
+        session_id=operation.session_id,
+        dispatch_generation=execution.dispatch_generation,
+        terminal_outcome=ControlledOperationExecutionTerminalOutcome.SUCCEEDED,
+        bounded_result_envelope={
+            "status": "succeeded",
+            "bounded_summary": "not-an-object",
+        },
+        result_digest="sha256:malformed-compatibility-result",
+        artifact_set_digest=controlled_operation_artifact_set_digest(()),
+        origin="fixture_adapter",
+        created_at=NOW,
+    )
+
+    with pytest.raises(
+        InvalidExecutionTransitionError,
+        match="bounded_summary must be an object",
+    ):
+        service._project_compatibility(  # noqa: SLF001 - fail-closed seam regression
+            execution=execution,
+            result_handle=malformed,
+        )
+
+    projected = repositories.controlled_operations.get(operation.operation_id)
+    assert projected is not None
+    assert projected.status is ControlledOperationStatus.CREATED
+    assert projected.result_summary == {}
 
 
 def test_transition_rolls_back_execution_and_event_when_result_conflicts() -> None:
