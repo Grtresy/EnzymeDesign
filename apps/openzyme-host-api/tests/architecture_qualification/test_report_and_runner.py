@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from openzyme_host_api import architecture_qualification_runner as runner_module
 from openzyme_host_api import architecture_qualification_report as report_module
 from openzyme_host_api.architecture_qualification import (
     ArchitectureQualificationReportError,
@@ -208,6 +209,16 @@ def test_admission_requires_clean_full_zero_p0(
         runner_path=RUNNER_PATH,
     )
     assert verification.admission_eligible is True
+
+
+def test_non_admission_runner_green_allows_closed_but_not_open_p0() -> None:
+    report = _build("diagnostic")
+
+    assert runner_module._qualification_evidence_is_green(report.payload)  # noqa: SLF001
+
+    reopened = deepcopy(report.payload)
+    reopened["p0_records"][0]["status"] = "open"  # type: ignore[index]
+    assert not runner_module._qualification_evidence_is_green(reopened)  # noqa: SLF001
 
 
 def test_closed_p0_sidecar_is_canonical_ancestor_bound_and_report_recomputed(

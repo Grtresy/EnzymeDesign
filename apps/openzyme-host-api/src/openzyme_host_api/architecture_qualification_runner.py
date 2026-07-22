@@ -393,6 +393,38 @@ def _run_scenario(
     return dict(record)
 
 
+def _qualification_evidence_is_green(payload: Mapping[str, object]) -> bool:
+    harness = payload.get("harness")
+    scenario_results = payload.get("scenario_results")
+    invariants = payload.get("invariants")
+    p0_records = payload.get("p0_records")
+    if (
+        not isinstance(harness, Mapping)
+        or not isinstance(scenario_results, list)
+        or not isinstance(invariants, list)
+        or not isinstance(p0_records, list)
+    ):
+        return False
+    return (
+        harness.get("outcome") == "pass"
+        and all(
+            isinstance(item, Mapping)
+            and item.get("qualification_status") == "satisfied"
+            for item in scenario_results
+        )
+        and all(
+            isinstance(item, Mapping) and item.get("status") == "satisfied"
+            for item in invariants
+        )
+        and all(
+            isinstance(item, Mapping) and item.get("status") == "closed"
+            for item in p0_records
+        )
+        and payload.get("external_effects_real") is False
+        and payload.get("aox_live_started") is False
+    )
+
+
 def run_qualification(
     *,
     repo_root: Path,
@@ -479,20 +511,7 @@ def run_qualification(
         runner_path=runner_path,
     )
     payload = report.payload
-    qualification_green = (
-        payload["harness"]["outcome"] == "pass"  # type: ignore[index]
-        and all(
-            item["qualification_status"] == "satisfied"
-            for item in payload["scenario_results"]  # type: ignore[union-attr]
-        )
-        and all(
-            item["status"] == "satisfied"
-            for item in payload["invariants"]  # type: ignore[union-attr]
-        )
-        and not payload["p0_records"]
-        and payload["external_effects_real"] is False
-        and payload["aox_live_started"] is False
-    )
+    qualification_green = _qualification_evidence_is_green(payload)
     process_exit_code = (
         0
         if verification.admission_eligible

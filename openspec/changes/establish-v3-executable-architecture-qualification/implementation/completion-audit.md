@@ -44,6 +44,11 @@
 identity，由提交 `1c59a045c834c061f2f445fd3ba05ce0d52edfad` 修复；随后 clean admission
 通过。失败报告没有被降级或人工豁免。
 
+最终 clean mainline 随后暴露了第二项 qualification runner 集成缺陷：non-admission
+`premerge_subset` 的进程退出判定错误地要求 P0 历史记录列表为空，而不是只要求零 open
+P0，导致两条合法 closed P0 记录触发假阴性。runner 现在显式要求所有现存 P0 记录均为
+`closed`，并有 closed-green/open-red 的定向回归；报告 verifier 与 admission 语义未放宽。
+
 ## Requirement-by-requirement 审计
 
 | Requirement | 完成证据 |
