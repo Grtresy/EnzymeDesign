@@ -418,6 +418,8 @@ def test_oversized_tool_result_is_artifactized_before_next_llm_prompt(monkeypatc
 def test_tool_result_artifact_observation_survives_prompt_compaction_rebuild(
     monkeypatch,
 ) -> None:
+    monkeypatch.delenv("OPENZYME_LLM_CONTEXT_WINDOW_TOKENS", raising=False)
+    monkeypatch.delenv("OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS", raising=False)
     monkeypatch.setenv("OPENZYME_LLM_CONTEXT_WARN_RATIO", "0.45")
     monkeypatch.setenv("OPENZYME_LLM_CONTEXT_AUTO_COMPACT_RATIO", "0.50")
     monkeypatch.setenv("OPENZYME_LLM_CONTEXT_EMERGENCY_RATIO", "0.95")

@@ -57,17 +57,22 @@ class V3DurableWorkCoordinator:
 
     def run_once(self) -> object:
         last_outcome: object | None = None
+        last_non_idle_outcome: object | None = None
         for offset in range(len(self.workers)):
             index = (self._cursor + offset) % len(self.workers)
             outcome = self.workers[index].run_once()
             last_outcome = outcome
             action = str(getattr(outcome, "action", ""))
+            if action != "idle":
+                last_non_idle_outcome = outcome
             if action not in {"idle", "claim_raced", "not_claimable"}:
                 self._cursor = (index + 1) % len(self.workers)
                 return outcome
         self._cursor = (self._cursor + 1) % len(self.workers)
         if last_outcome is None:  # guarded by __post_init__
             raise RuntimeError("durable work coordinator has no worker outcome")
+        if last_non_idle_outcome is not None:
+            return last_non_idle_outcome
         return last_outcome
 
 

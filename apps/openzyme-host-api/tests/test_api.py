@@ -25,6 +25,7 @@ from openzyme_host_api.app import _build_durable_work_supervisor
 from openzyme_host_api.app import _iter_v3_event_stream
 from openzyme_host_api.background_runtime import RuntimeSignalNotifier
 from openzyme_host_api.background_runtime import V3BackgroundRuntimeService
+from openzyme_host_api.background_runtime import V3DurableWorkCoordinator
 from openzyme_host_api.background_runtime import V3DurableWorkSupervisor
 from openzyme_runtime import ConstraintItem
 from openzyme_runtime import ConstraintSet
@@ -3455,6 +3456,33 @@ def test_v3_durable_work_supervisor_is_bounded_and_nonblocking() -> None:
 
     assert order == ["event_loop_alive", "durable_done"]
     assert worker_ids == ["host-api:durable-work:0"]
+
+
+@pytest.mark.parametrize("action", ("claim_raced", "not_claimable"))
+def test_v3_durable_work_coordinator_retains_non_idle_no_progress(
+    action: str,
+) -> None:
+    class FakeOutcome:
+        semantic_progress = False
+
+        def __init__(self, outcome_action: str) -> None:
+            self.action = outcome_action
+
+    class FakeWorker:
+        def __init__(self, outcome_action: str) -> None:
+            self.outcome_action = outcome_action
+
+        def run_once(self) -> FakeOutcome:
+            return FakeOutcome(self.outcome_action)
+
+    coordinator = V3DurableWorkCoordinator(
+        workers=(FakeWorker(action), FakeWorker("idle"))
+    )
+
+    outcome = coordinator.run_once()
+
+    assert outcome.action == action
+    assert outcome.semantic_progress is False
 
 
 def test_v3_durable_work_supervisor_defers_database_busy_without_counting_progress() -> None:

@@ -1,10 +1,46 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r47 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. The numbered campaign remains paused before r48. Local Live cutover is **NO-GO** until the current clean commit first passes the full executable architecture qualification with zero open P0, and a separately authorized campaign then seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
+Status: r43-r47 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. The executable architecture-qualification gate is now implemented, but every tracked commit invalidates the preceding receipt until the new clean HEAD passes full admission again. The numbered campaign remains paused before r48. Local Live cutover stays **NO-GO** until a separately authorized campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
 
 Historical r14-r47 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
 This document describes the operator/evidence boundary implemented by `openzyme_host_api.aox_cutover_evidence`. It does not turn the historical S15 fixture into live evidence and does not authorize seeded state, cached scientific outputs, the reference notebook, or copied reference results as attempt inputs.
+
+## Pre-r48 launch-preparation boundary
+
+The no-attempt preparation phase may update local configuration, build and hash
+the Web UI, run non-live verification, produce and purely verify a full
+architecture-admission report from the final clean HEAD, inspect the cumulative
+MICU ledger, and run canonical `pin`. `pin` performs four deterministic,
+non-scientific forced-SSH toolchain attestations and publishes declarations
+outside the checkout, but it does not create an attempt root, contact scientific
+providers or MICU, request Chrome approval, or start the numbered campaign.
+
+The next r48 pin and `run-live` must resolve these effective LLM values after the
+live-test foundation overrides have been applied:
+
+- `OPENZYME_LLM_CONTEXT_WINDOW_TOKENS=200000`;
+- `OPENZYME_TEST_LIVE_LLM_MAX_TOKENS=8192`;
+- `OPENZYME_TEST_LIVE_LLM_TIMEOUT=300`;
+- `OPENZYME_TEST_LIVE_LLM_MAX_RETRIES=1`.
+
+The `OPENZYME_TEST_LIVE_LLM_*` values override the ordinary Host defaults for
+the live foundation. Checking only the base `OPENZYME_LLM_*` values is therefore
+insufficient. The effective-config compiler remains authoritative and must seal
+the resolved values; a hand-written declaration is not accepted.
+
+The CLI command named `preflight` is deliberately outside this no-attempt phase:
+it creates the first blank-world attempt root. `preflight`, `run-live`, the
+known-positive provider/model probe, canonical Chrome approval, positive
+attempts, and the controlled fault attempt require a separate explicit launch
+authorization. Standalone availability diagnostics can inform readiness but
+cannot satisfy campaign evidence or be adopted into an attempt.
+
+The pre-r48 documentation audit covers this stable contract, the main
+architecture document, the AOX execution guide, versioned workflow-pack
+documentation and manifest, Host live-integration instructions, and pytest
+marker semantics. Digest-pinned workflow knowledge is changed only when its
+content changes; an audit that finds it already synchronized does not repin it.
 
 ## Fixed scope
 
@@ -1457,6 +1493,10 @@ runtime-identity and protocol fields are sealed in the launch receipt, and the
 offline verifier compares the image/SDK fields to the campaign identity.
 
 Operator preflight example:
+
+This command creates an attempt root. It is the first campaign mutation and
+must not be used as a no-attempt readiness probe or run before the operator has
+explicitly authorized r48.
 
 ```bash
 uv --project apps/openzyme-host-api run openzyme-aox-cutover preflight \
