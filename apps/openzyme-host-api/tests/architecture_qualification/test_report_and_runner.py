@@ -139,8 +139,27 @@ def _build(mode: str, *, source: dict[str, object] | None = None):  # type: igno
     return report
 
 
-def test_dirty_diagnostic_binds_source_but_is_never_admissible() -> None:
-    report = _build("diagnostic")
+def test_dirty_diagnostic_binds_source_but_is_never_admissible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dirty = dict(collect_architecture_source_identity(repo_root=REPO_ROOT))
+    dirty.update(
+        {
+            "tracked_diff_digest": _EVIDENCE_DIGEST,
+            "tracked_dirty_paths": [
+                "apps/openzyme-host-api/tests/architecture_qualification/"
+                "test_report_and_runner.py"
+            ],
+            "worktree_clean": False,
+        }
+    )
+    monkeypatch.setattr(
+        report_module,
+        "collect_source_identity",
+        lambda *, repo_root: dirty,
+    )
+
+    report = _build("diagnostic", source=dirty)
 
     assert report.payload["admission_eligible"] is False
     assert "mode_not_admission" in report.payload["rejection_reasons"]
