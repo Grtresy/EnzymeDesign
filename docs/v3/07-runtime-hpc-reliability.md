@@ -83,6 +83,16 @@ materialize 或 terminalize。外部调用期间不持有 SQLite transaction，�
 lease。每次外部调用前，以及每次 callback canonical commit 前，必须重新比较 execution
 lease token、fence、state version、immutable identity 与当前 mutation writer authority。
 
+每个 durable worker outcome 还必须显式携带 typed `semantic_progress`。execution worker 只比较
+canonical lifecycle、terminal/effect/retry、dispatch generation、backend/result identity 与
+result/artifact-set digest；claim/lease/fence/version/timestamp、diagnostic/event churn 或 unchanged
+poll/reconcile 不计进展。runtime-command 只在 terminal command commit 后为 true，continuation
+只在 delivered/recovery-failed commit 后为 true；idle、race、fenced/unclaimable work 和
+database busy 均为 false。Host serialization seam 不为缺失/非 boolean 字段提供 action fallback。
+supervisor 保留 no-progress diagnostics，但只统计 true，且只有一个 bounded tick 的全部 slots
+都为 true 时才可通知一次可能 backlog；periodic poll 负责之后的 unchanged external state，
+该 scheduling fact 不授权 replay、effect、task terminal 或科学策略。
+
 Effect certainty 是闭集：
 
 - `no_effect`：只允许完全相同 phase 的有界机械恢复；
@@ -256,7 +266,19 @@ parent-owned fatal evidence，不读取 ledger-after、不封 normal bundle，�
 task/operation terminal。该边界不改变本文件的产品 ownership；different UID/cgroup 与
 remote-handle/MICU crash reconciliation 仍是独立 hardening。
 
-## 10. 明确延后
+## 10. Executable qualification 与 AOX admission
+
+`local_single_process_file_sqlite@1` 的 deterministic matrix 使用真实 file-backed composition 验证
+runtime-command、controlled-operation、continuation、sandbox authority、restart/fence、reconcile、
+operator retirement、boundary scale 与 evidence projection。它不证明 distributed writer、真实
+SSH/HPC/provider availability 或 remote cancellation。
+
+AOX `pin`、`preflight`、`run-live` 在任何 runner bootstrap、root 或外部 effect 前必须用当前
+checkout pure verifier 接受同一 clean/full/zero-P0 report，并把其 commit/digest-bound receipt
+贯穿 pin/root/launch/bundle/offline verifier。通过只解除 architecture blocker；不会自动恢复
+`rxx`、修改 owner policy、重放 operation 或放宽 scientific/live gate。
+
+## 11. 明确延后
 
 - 任意 Python stack / journaled SDK replay；
 - supervised remote SSH daemon 或 stateful persistent shell；

@@ -10,6 +10,16 @@ import tempfile
 
 from openzyme_runtime import REPO_ROOT
 
+from .aox_architecture_qualification import AoxArchitectureQualificationError
+from .aox_architecture_qualification import (
+    normalize_architecture_qualification_receipt,
+)
+from .aox_architecture_qualification import (
+    require_matching_architecture_qualification_receipt,
+)
+from .aox_architecture_qualification import (
+    verify_aox_architecture_qualification_report,
+)
 from .aox_browser_observation import BrowserObservationReceiptError
 from .aox_browser_observation import build_browser_observation_receipt
 from .aox_browser_observation import load_json_object
@@ -31,9 +41,10 @@ from .aox_cutover_runtime_config import AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN
 
 
 _PIN_COMMIT_BASENAME = ".aox-cutover-pin-commit.json"
-_PIN_COMMIT_SCHEMA_ID = "aox_cutover_pin_commit@1"
+_PIN_COMMIT_SCHEMA_ID = "aox_cutover_pin_commit@2"
 _PIN_COMMIT_FIELDS = frozenset(
     {
+        "architecture_qualification",
         "schema_id",
         "identity_file",
         "allowed_prerequisites_file",
@@ -234,8 +245,18 @@ def _pin_commit_payload(
     prerequisites_target: Path,
     identity: object,
     prerequisites: object,
-) -> dict[str, str]:
+    architecture_qualification: object,
+) -> dict[str, object]:
+    if not isinstance(architecture_qualification, dict):
+        raise AoxArchitectureQualificationError(
+            "aox_architecture_qualification_receipt_invalid",
+            "AOX pin marker requires an architecture qualification receipt",
+        )
+    normalized_qualification = normalize_architecture_qualification_receipt(
+        architecture_qualification
+    )
     return {
+        "architecture_qualification": normalized_qualification,
         "schema_id": _PIN_COMMIT_SCHEMA_ID,
         "identity_file": identity_target.name,
         "allowed_prerequisites_file": prerequisites_target.name,
@@ -250,6 +271,7 @@ def _write_pin_outputs_atomic_no_replace(
     prerequisites_target: Path,
     identity: object,
     prerequisites: object,
+    architecture_qualification: object,
 ) -> None:
     staged: list[tuple[Path, Path]] = []
     installed: list[Path] = []
@@ -270,6 +292,7 @@ def _write_pin_outputs_atomic_no_replace(
         prerequisites_target=prerequisites_target,
         identity=identity,
         prerequisites=prerequisites,
+        architecture_qualification=architecture_qualification,
     )
     try:
         for target, payload in (
@@ -347,7 +370,7 @@ def _existing_pin_target(path: Path) -> Path:
 def _load_pinned_declarations(
     identity_path: Path,
     prerequisites_path: Path,
-) -> tuple[dict[str, object], dict[str, object]]:
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
     identity_target = _existing_pin_target(identity_path)
     prerequisites_target = _existing_pin_target(prerequisites_path)
     if (
@@ -378,18 +401,30 @@ def _load_pinned_declarations(
         prerequisites_target=prerequisites_target,
         identity=identity,
         prerequisites=prerequisites,
+        architecture_qualification=commit.get("architecture_qualification"),
     )
     if set(commit) != _PIN_COMMIT_FIELDS or commit != expected_commit:
         raise AoxCutoverLaunchError(
             "aox_launch_pin_commit_invalid",
             "AOX declaration commit marker does not bind the exact pinned payloads",
         )
-    return identity, prerequisites
+    architecture_qualification = commit.get("architecture_qualification")
+    if not isinstance(architecture_qualification, dict):
+        raise AoxCutoverLaunchError(
+            "aox_launch_pin_commit_invalid",
+            "AOX declaration commit marker lacks architecture qualification",
+        )
+    return identity, prerequisites, dict(architecture_qualification)
 
 
 def _pin(args: argparse.Namespace) -> int:
     from openzyme_runtime import OpenZymeSettings
 
+    earliest_architecture_qualification = (
+        verify_aox_architecture_qualification_report(
+            args.architecture_qualification_report,
+        )
+    )
     identity_target, prerequisites_target = _pin_output_targets(
         args.identity_output,
         args.allowed_prerequisites_output,
@@ -404,17 +439,24 @@ def _pin(args: argparse.Namespace) -> int:
         settings=settings,
         driver=_driver_from_args(args),
         ledger_path=ledger_path,
+        architecture_qualification_report=args.architecture_qualification_report,
+    )
+    require_matching_architecture_qualification_receipt(
+        earliest_architecture_qualification,
+        launch.architecture_qualification,
     )
     _write_pin_outputs_atomic_no_replace(
         identity_target=identity_target,
         prerequisites_target=prerequisites_target,
         identity=launch.identity,
         prerequisites=launch.allowed_prerequisites,
+        architecture_qualification=launch.architecture_qualification,
     )
     _print(
         {
-            "schema_id": "aox_cutover_pin_receipt@1",
+            "schema_id": "aox_cutover_pin_receipt@2",
             "status": "pinned",
+            "architecture_qualification": launch.architecture_qualification,
             "git_commit": launch.identity["git_commit"],
             "config_digest": launch.identity["config_digest"],
             "declaration_commit_digest": _canonical_digest(
@@ -423,6 +465,7 @@ def _pin(args: argparse.Namespace) -> int:
                     prerequisites_target=prerequisites_target,
                     identity=launch.identity,
                     prerequisites=launch.allowed_prerequisites,
+                    architecture_qualification=launch.architecture_qualification,
                 )
             ),
         }
@@ -431,12 +474,16 @@ def _pin(args: argparse.Namespace) -> int:
 
 
 def _preflight(args: argparse.Namespace) -> int:
+    architecture_qualification = verify_aox_architecture_qualification_report(
+        args.architecture_qualification_report,
+    )
     prerequisites = _json_object(args.allowed_prerequisites)
     roots = create_blank_world_roots(
         args.campaign_root,
         attempt_kind=args.attempt_kind,
         attempt_id=args.attempt_id,
         allowed_prerequisites=prerequisites,
+        architecture_qualification=architecture_qualification,
     )
     _print(
         {
@@ -498,9 +545,20 @@ def _run_live(args: argparse.Namespace) -> int:
         derive_live_attempt_supervision_timeout_seconds,
     )
 
-    identity, prerequisites = _load_pinned_declarations(
-        args.identity,
-        args.allowed_prerequisites,
+    earliest_architecture_qualification = (
+        verify_aox_architecture_qualification_report(
+            args.architecture_qualification_report,
+        )
+    )
+    identity, prerequisites, pinned_architecture_qualification = (
+        _load_pinned_declarations(
+            args.identity,
+            args.allowed_prerequisites,
+        )
+    )
+    require_matching_architecture_qualification_receipt(
+        pinned_architecture_qualification,
+        earliest_architecture_qualification,
     )
     settings = OpenZymeSettings.from_env()
     ledger_path = (
@@ -515,6 +573,11 @@ def _run_live(args: argparse.Namespace) -> int:
         ledger_path=ledger_path,
         declared_identity=identity,
         declared_prerequisites=prerequisites,
+        architecture_qualification_report=args.architecture_qualification_report,
+    )
+    architecture_qualification = require_matching_architecture_qualification_receipt(
+        pinned_architecture_qualification,
+        launch.architecture_qualification,
     )
     live_runner = LiveAoxAttemptRunner(
         settings=launch.effective_settings,
@@ -554,6 +617,7 @@ def _run_live(args: argparse.Namespace) -> int:
         positive_runner=runner,
         fault_runner=runner,
         allowed_prerequisites=launch.allowed_prerequisites,
+        architecture_qualification=architecture_qualification,
         launch_guard=launch.assert_unchanged,
     )
     records, decision = campaign.run()
@@ -667,6 +731,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="new append-only path for the generated exact-seven identity JSON",
     )
     pin.add_argument(
+        "--architecture-qualification-report",
+        required=True,
+        type=Path,
+        help="current clean-commit full architecture admission report",
+    )
+    pin.add_argument(
         "--allowed-prerequisites-output",
         required=True,
         type=Path,
@@ -694,6 +764,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     preflight.add_argument("--attempt-id")
     preflight.add_argument("--allowed-prerequisites", required=True, type=Path)
+    preflight.add_argument(
+        "--architecture-qualification-report",
+        required=True,
+        type=Path,
+        help="current clean-commit full architecture admission report",
+    )
     preflight.set_defaults(handler=_preflight)
 
     verify = subparsers.add_parser(
@@ -779,6 +855,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="digest-pinned campaign identity JSON",
     )
     run_live.add_argument(
+        "--architecture-qualification-report",
+        required=True,
+        type=Path,
+        help="current clean-commit full architecture admission report",
+    )
+    run_live.add_argument(
         "--allowed-prerequisites",
         required=True,
         type=Path,
@@ -824,7 +906,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    except AoxCutoverLaunchError as exc:
+    except (AoxArchitectureQualificationError, AoxCutoverLaunchError) as exc:
         # Launch failures can wrap SSH/provider/config exceptions whose repr may
         # contain private locators or credentials.  The operator boundary gets
         # only the stable public code; Python's chained traceback stays closed.

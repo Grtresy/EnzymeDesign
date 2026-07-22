@@ -169,3 +169,10 @@ role surface 由同一个 router 判定：master 即使注册了 engine runtimes
 - mutation-scope tests 必须证明 LLM provider writer、mutating/read-only tool publisher 区分、oversized tool-result artifact publication、event/outbox child writer 与 post-freeze/post-seal拒写
 - live LLM smoke 至少覆盖一次真实 tool call
 - 顶层单回合 tool call 并发上限固定为 `3`
+
+## 10. Qualification 与 workflow eval 的区别
+
+architecture qualification 在 non-live、credential-scrubbed 环境验证顶层 loop 所依赖的 authority、
+bounded progress、restart/effect/evidence 不变量，不调用真实 LLM，也不评价回答质量。workflow eval
+验证产品行为样例，seeded/live smoke 验证特定配置或外部路径；三者不能替代 clean full
+qualification admission，qualification 也不能替代 live availability 或 scientific cutover proof。

@@ -54,6 +54,7 @@ from .aox_cutover_evidence import AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
 from .aox_cutover_evidence import AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS
 from .aox_cutover_evidence import AOX_TOOLCHAIN_RUNTIME_CONTRACTS
 from .aox_cutover_evidence import AOX_HPC_WORKSPACE_BINDING_CONTRACT_ID
+from .aox_cutover_evidence import AOX_LAUNCH_RECEIPT_SCHEMA_ID
 from .aox_cutover_evidence import FAULT_ARTIFACT_BYTE_FLIP_ID
 from .aox_cutover_evidence import canonical_digest
 from .aox_cutover_evidence import canonical_json_bytes
@@ -7735,6 +7736,10 @@ def _collect_positive_evidence(
         "micu_invocation_ids": [receipt.invocation_id for receipt in micu_receipts],
         "task_ids_by_role": task_ids_by_role,
         "launch_receipt": {
+            "schema_id": AOX_LAUNCH_RECEIPT_SCHEMA_ID,
+            "architecture_qualification": context.roots.proof[
+                "architecture_qualification"
+            ],
             "root_identity": context.roots.proof["root_identity"],
             "hpc_workspace_label": context.roots.hpc_workspace_label,
             "sqlite_initialized_fresh": True,
@@ -9633,6 +9638,10 @@ def _product_path_failure_receipt(
             [item.to_dict() for item in api_receipts]
         ),
         "launch_receipt": {
+            "schema_id": AOX_LAUNCH_RECEIPT_SCHEMA_ID,
+            "architecture_qualification": context.roots.proof[
+                "architecture_qualification"
+            ],
             "root_identity": context.roots.proof["root_identity"],
             "hpc_workspace_label": context.roots.hpc_workspace_label,
             "sqlite_initialized_fresh": context.roots.sqlite_path.is_file(),

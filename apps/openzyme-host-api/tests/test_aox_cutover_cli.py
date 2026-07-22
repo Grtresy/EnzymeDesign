@@ -8,8 +8,35 @@ from types import SimpleNamespace
 import pytest
 
 from openzyme_host_api import aox_cutover_cli as cli
+from openzyme_host_api.aox_architecture_qualification import (
+    build_architecture_qualification_receipt,
+)
+from openzyme_host_api.aox_architecture_qualification import (
+    AoxArchitectureQualificationError,
+)
 from openzyme_host_api.aox_cutover_launch import AoxCutoverLaunchError
 from openzyme_runtime import OpenZymeSettings
+
+
+def _architecture_qualification() -> dict[str, str]:
+    return build_architecture_qualification_receipt(
+        report_payload_digest="sha256:" + "1" * 64,
+        registry_digest="sha256:" + "2" * 64,
+        test_manifest_digest="sha256:" + "3" * 64,
+        profile_id="local_single_process_file_sqlite@1",
+        source_commit="a" * 40,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _verified_architecture_qualification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "verify_aox_architecture_qualification_report",
+        lambda path: _architecture_qualification(),
+    )
 
 
 def _run_live_args(tmp_path: Path):
@@ -20,6 +47,7 @@ def _run_live_args(tmp_path: Path):
         prerequisites_target=prerequisite_path,
         identity={"declared": "identity"},
         prerequisites={"declared": "prerequisites"},
+        architecture_qualification=_architecture_qualification(),
     )
     return cli.build_parser().parse_args(
         [
@@ -30,6 +58,8 @@ def _run_live_args(tmp_path: Path):
             str(identity_path),
             "--allowed-prerequisites",
             str(prerequisite_path),
+            "--architecture-qualification-report",
+            str(tmp_path / "architecture-qualification.json"),
             "--ledger-path",
             str(tmp_path / "ledger.sqlite3"),
             "--approval-mode",
@@ -48,6 +78,8 @@ def _pin_args(tmp_path: Path):
             str(tmp_path / "identity.json"),
             "--allowed-prerequisites-output",
             str(tmp_path / "prerequisites.json"),
+            "--architecture-qualification-report",
+            str(tmp_path / "architecture-qualification.json"),
             "--ledger-path",
             str(tmp_path / "ledger.sqlite3"),
             "--approval-mode",
@@ -70,6 +102,131 @@ def _pin_args(tmp_path: Path):
             "17",
         ]
     )
+
+
+def _reject_architecture_qualification(path: Path) -> dict[str, str]:
+    del path
+    raise AoxArchitectureQualificationError(
+        "aox_architecture_qualification_report_invalid",
+        "invalid report",
+    )
+
+
+def test_pin_rejects_architecture_report_before_settings_or_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _pin_args(tmp_path)
+    monkeypatch.setattr(
+        cli,
+        "verify_aox_architecture_qualification_report",
+        _reject_architecture_qualification,
+    )
+    monkeypatch.setattr(
+        OpenZymeSettings,
+        "from_env",
+        classmethod(lambda cls: (_ for _ in ()).throw(AssertionError(cls))),
+    )
+
+    with pytest.raises(AoxArchitectureQualificationError):
+        cli._pin(args)
+
+    assert not args.identity_output.exists()
+    assert not args.allowed_prerequisites_output.exists()
+
+
+def test_preflight_rejects_architecture_report_before_attempt_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = cli.build_parser().parse_args(
+        [
+            "preflight",
+            "--campaign-root",
+            str(tmp_path / "campaign"),
+            "--attempt-kind",
+            "positive",
+            "--allowed-prerequisites",
+            str(tmp_path / "prerequisites.json"),
+            "--architecture-qualification-report",
+            str(tmp_path / "qualification.json"),
+        ]
+    )
+    monkeypatch.setattr(
+        cli,
+        "verify_aox_architecture_qualification_report",
+        _reject_architecture_qualification,
+    )
+    monkeypatch.setattr(
+        cli,
+        "create_blank_world_roots",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError((args, kwargs))
+        ),
+    )
+
+    with pytest.raises(AoxArchitectureQualificationError):
+        cli._preflight(args)
+
+    assert not args.campaign_root.exists()
+
+
+def test_run_live_rejects_architecture_report_before_pin_or_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _run_live_args(tmp_path)
+    monkeypatch.setattr(
+        cli,
+        "verify_aox_architecture_qualification_report",
+        _reject_architecture_qualification,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_load_pinned_declarations",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError((args, kwargs))
+        ),
+    )
+    monkeypatch.setattr(
+        OpenZymeSettings,
+        "from_env",
+        classmethod(lambda cls: (_ for _ in ()).throw(AssertionError(cls))),
+    )
+
+    with pytest.raises(AoxArchitectureQualificationError):
+        cli._run_live(args)
+
+    assert not args.campaign_root.exists()
+
+
+def test_cli_contract_rejects_missing_report_and_bypass_flags(tmp_path: Path) -> None:
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "pin",
+                "--identity-output",
+                str(tmp_path / "identity.json"),
+                "--allowed-prerequisites-output",
+                str(tmp_path / "prerequisites.json"),
+            ]
+        )
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "run-live",
+                "--campaign-root",
+                str(tmp_path / "campaign"),
+                "--identity",
+                str(tmp_path / "identity.json"),
+                "--allowed-prerequisites",
+                str(tmp_path / "prerequisites.json"),
+                "--architecture-qualification-report",
+                str(tmp_path / "qualification.json"),
+                "--force",
+            ]
+        )
 
 
 def test_run_live_fails_launch_validation_before_campaign_root_creation(
@@ -128,6 +285,7 @@ def test_run_live_passes_canonical_launch_snapshot_to_runner_and_campaign(
             effective_config=launch_config,
             identity=launch_identity,
             allowed_prerequisites=launch_prerequisites,
+            architecture_qualification=_architecture_qualification(),
             assert_unchanged=launch_guard,
         )
 
@@ -181,6 +339,9 @@ def test_run_live_passes_canonical_launch_snapshot_to_runner_and_campaign(
     assert captured["supervisor"]["timeout_seconds"] == 15_000.0
     assert captured["campaign"]["identity"] is launch_identity
     assert captured["campaign"]["allowed_prerequisites"] is launch_prerequisites
+    assert captured["campaign"]["architecture_qualification"] == (
+        _architecture_qualification()
+    )
     assert captured["campaign"]["launch_guard"] is launch_guard
     assert captured["campaign"]["positive_runner"].__class__ is FakeSupervisor
     assert captured["campaign"]["positive_runner"] is captured["campaign"][
@@ -222,6 +383,7 @@ def test_pin_uses_same_driver_bounds_and_writes_safe_no_replace_json(
         return SimpleNamespace(
             identity=identity,
             allowed_prerequisites=prerequisites,
+            architecture_qualification=_architecture_qualification(),
         )
 
     monkeypatch.setattr(cli, "pin_aox_cutover_launch", fake_pin)
@@ -250,9 +412,10 @@ def test_pin_uses_same_driver_bounds_and_writes_safe_no_replace_json(
     assert cli._load_pinned_declarations(
         args.identity_output,
         args.allowed_prerequisites_output,
-    ) == (identity, prerequisites)
+    ) == (identity, prerequisites, _architecture_qualification())
     output = json.loads(capsys.readouterr().out)
-    assert output["schema_id"] == "aox_cutover_pin_receipt@1"
+    assert output["schema_id"] == "aox_cutover_pin_receipt@2"
+    assert output["architecture_qualification"] == _architecture_qualification()
     assert output["status"] == "pinned"
     assert output["git_commit"] == "a" * 40
     assert output["config_digest"] == "sha256:" + "b" * 64
@@ -309,6 +472,7 @@ def test_atomic_pin_pair_rolls_back_first_link_if_second_target_races(
             prerequisites_target=prerequisites_target,
             identity={"git_commit": "a" * 40},
             prerequisites={"git_commit": "a" * 40},
+            architecture_qualification=_architecture_qualification(),
         )
 
     assert error.value.code == "aox_launch_pin_output_exists"
@@ -339,6 +503,7 @@ def test_pin_staging_failure_cleans_already_staged_temporary(
             prerequisites_target=tmp_path / "prerequisites.json",
             identity={"git_commit": "a" * 40},
             prerequisites={"git_commit": "a" * 40},
+            architecture_qualification=_architecture_qualification(),
         )
 
     assert error.value.code == "aox_launch_pin_output_write_failed"
@@ -380,6 +545,7 @@ def test_run_live_rejects_uncommitted_or_tampered_pin_before_launch(
         prerequisites_target=args.allowed_prerequisites,
         identity={"declared": "identity"},
         prerequisites={"declared": "prerequisites"},
+        architecture_qualification=_architecture_qualification(),
     )
     marker_payload["identity_digest"] = "sha256:" + "f" * 64
     marker.write_text(json.dumps(marker_payload), encoding="utf-8")
@@ -443,6 +609,8 @@ def test_cli_redacts_chained_launch_failure(
             str(tmp_path / "identity.json"),
             "--allowed-prerequisites-output",
             str(tmp_path / "prerequisites.json"),
+            "--architecture-qualification-report",
+            str(tmp_path / "architecture-qualification.json"),
         ]
     )
 
@@ -481,6 +649,8 @@ def test_cli_redacts_unexpected_settings_failure(
             str(tmp_path / "identity.json"),
             "--allowed-prerequisites-output",
             str(tmp_path / "prerequisites.json"),
+            "--architecture-qualification-report",
+            str(tmp_path / "architecture-qualification.json"),
         ]
     )
 

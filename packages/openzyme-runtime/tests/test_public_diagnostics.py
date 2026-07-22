@@ -76,6 +76,47 @@ def test_public_diagnostic_text_redacts_credentials_and_is_idempotent() -> None:
     assert "operator:password" not in once
 
 
+def test_public_diagnostic_text_preserves_complete_64_kib_benign_scalar() -> None:
+    benign = "a" * (64 * 1024)
+
+    sanitized = sanitize_public_diagnostic_text(benign)
+
+    assert sanitized == benign
+    assert len(sanitized) == 64 * 1024
+
+
+def test_public_diagnostic_long_mixed_content_remains_safe_and_idempotent() -> None:
+    benign_prefix = "a" * (64 * 1024)
+    credential_uri = "https://operator:password@public.example/path"
+    original = f"{benign_prefix} {credential_uri}"
+
+    once = sanitize_public_diagnostic_text(original)
+    twice = sanitize_public_diagnostic_text(once)
+    nested = sanitize_public_diagnostic_payload(
+        {
+            "benign": benign_prefix,
+            "diagnostics": [
+                original,
+                r"postgresql:\/\/user:pass@db.internal\/openzyme",
+                "%2Fhome%2Foperator%2Fprivate.txt",
+            ],
+        }
+    )
+
+    assert once == f"{benign_prefix} [redacted-private-locator]"
+    assert twice == once
+    assert nested == {
+        "benign": benign_prefix,
+        "diagnostics": [
+            once,
+            "[redacted-private-locator]",
+            "[redacted-host-path]",
+        ],
+    }
+    assert credential_uri not in str(nested)
+    assert "user:pass" not in str(nested)
+
+
 @pytest.mark.parametrize(
     "private_value",
     (

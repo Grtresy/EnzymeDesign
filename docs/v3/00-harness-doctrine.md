@@ -138,3 +138,15 @@ V3 顶层真状态必须属于 harness control plane，而不是属于某个 cap
 `Agent != workflow graph. Prefer tool dispatch, task persistence, lane isolation, docs retrieval, context compaction, approval protocols, and canonical control-plane projections. Free-text or model-inferred workflow activation is forbidden. A caller may explicitly bind a versioned workflow knowledge pack by id, version, manifest digest, and pinned document digests; requirement or digest drift fails before the provider call, while the agent retains strategy choice inside the declared constraints. LangGraph is allowed inside capability engines, not as product truth.`
 
 除非用户明确要求，否则不得弱化这条 guardrail。
+
+## 8. 可执行架构资格边界
+
+架构资格系统位于 repository/operator validation plane，不进入 harness 产品状态。它从稳定合同
+和 closed invariant registry 出发，用真实 `HostApiDependencies + create_app()` composition、
+file-backed SQLite、当前 worker/gateway/projection 与 deterministic controlled adapter 观察系统，
+但不替 agent 创建 task、选择 plan、推断业务终态或调用真实外部系统。report/receipt 只能回答
+“当前提交是否满足已声明架构不变量”，不能成为 session、campaign 或 scientific truth。
+
+该边界落实同一原则：harness 忠实呈现真实约束，agent 在约束内保留策略自由。资格测试验证
+authority、fencing、effect、evidence 与 bounded progress，不把某条固定 AOX workflow 写回通用
+harness。

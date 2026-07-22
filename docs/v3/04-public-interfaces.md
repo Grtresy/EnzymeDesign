@@ -34,7 +34,7 @@ V3 公共接口以 harness-first 语义为唯一主线。
 
 Public JSON contract 由 Host API 的 request/response DTO 双向校验。未知请求字段、空 mutation、越界长度和非法 enum 返回 `422`，不得被静默忽略；response 顶层 shape 与 event envelope 同样经过 schema 校验，防止内部字段偶然泄漏或调用方依赖未声明字段。所有 JSON 错误统一为 `{"error":{"code","message","hint?","details?"}}`；调用方必须按稳定 `code` 分支，不能解析异常字符串。
 
-公开诊断采用 fail-closed sanitizer contract。ToolResult、workspace/run read model、runtime signal、`harness.failed`、event、eval 与 HTTP error 中由 schema 指定的 diagnostic/locator field，在 durable/public 落点前先把精确 sandbox workspace/control-socket Host root 映射为 `/workspace` 和 `/openzyme/control.sock`，再删除当前已测试的 high-risk Unix/HPC roots、Windows drive、UNC、`file://`、private/special-use URL、storage/runner locator 与 credential corpus。该 producer sanitizer 不声称识别任意自由文本中的所有 private path，也不得无类型改写 user conversation、scientific evidence 或 report 正文；更完整的 typed/versioned 边界见 [deferred proposal](architecture-proposals/canonical-public-diagnostic-boundary.md)。public projection 对历史 diagnostic 与 schema-declared locator field 再次投影；无法确认安全时退化为稳定 redacted diagnostic。原始异常与完整 stdout/stderr bytes 只能留在受保护 Host-private log，public event/API 只得到 sanitized summary、raw-byte digest/size、truncation marker 与 opaque non-readable ref。AOX verifier 对 surviving Host path/private locator 的独立严格拒绝不得因 sanitizer 存在而放宽。
+公开诊断采用 fail-closed sanitizer contract。ToolResult、workspace/run read model、runtime signal、`harness.failed`、event、eval 与 HTTP error 中由 schema 指定的 diagnostic/locator field，在 durable/public 落点前先把精确 sandbox workspace/control-socket Host root 映射为 `/workspace` 和 `/openzyme/control.sock`，再删除当前已测试的 high-risk Unix/HPC roots、Windows drive、UNC、`file://`、private/special-use URL、storage/runner locator 与 credential corpus。sanitizer 本身必须有界：credential-URI 候选只能从 scheme token 的真实左边界开始，完整 `64 KiB` benign scalar 必须在注册的 identity-bound child deadline 内完成且保持完整不变；长 benign 前缀后的 credential URI 仍须脱敏，不允许用截断、替代实现或 deadline 放宽掩盖复杂度缺陷。该 producer sanitizer 不声称识别任意自由文本中的所有 private path，也不得无类型改写 user conversation、scientific evidence 或 report 正文；更完整的 typed/versioned 边界见 [deferred proposal](architecture-proposals/canonical-public-diagnostic-boundary.md)。public projection 对历史 diagnostic 与 schema-declared locator field 再次投影；无法确认安全时退化为稳定 redacted diagnostic。原始异常与完整 stdout/stderr bytes 只能留在受保护 Host-private log，public event/API 只得到 sanitized summary、raw-byte digest/size、truncation marker 与 opaque non-readable ref。AOX verifier 对 surviving Host path/private locator 的独立严格拒绝不得因 sanitizer 存在而放宽。
 
 `GET /v3/runtime/health` 是经过脱敏的产品运维投影，返回 `v3.runtime_health.v1`、整体 `ready|degraded`、deployment/storage profile，以及 control plane、model、background runtime、execution、research、sandbox 的公开状态。它不得返回 worker identity、原始 exception、Host path、runner 配置或 secret；更深诊断仍属于受 operator/admin gate 保护的 `/debug/*`。`fixture_non_cutover`、`unavailable` 与 `disabled` 必须与 `ready` 区分，不能为获得绿色 health 而把 fixture 伪装成真实 provider。
 
@@ -439,3 +439,16 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - 主线不再维护旧 workflow API/UI/CLI 双栈。
 - `current_phase`、phase rail、supervisor-route 等词汇不是公共接口基线。
 - 新接口必须以 `session_id`、task、lane、approval、engine invocation、artifact、report draft 与 report 为锚点。
+
+## 8. Qualification report 与 AOX receipt
+
+`openzyme_v3_architecture_qualification_report@1` 是 checkout 外 canonical operator artifact，pure
+verifier 必须重算 source、registry、test manifest、implementation、selection、invariant 与 P0
+closure，不能信任 report 中的 pass boolean。它不进入 `/v3` workspace DTO。
+
+AOX 对外命令显式接收 report path，并只把 closed
+`aox_architecture_qualification_receipt@1` 写入 `aox_cutover_pin_commit@2`、
+`aox_cutover_pin_receipt@2`、`aox_blank_world_root_proof@2`、
+`aox_blank_world_launch_receipt@2` 与 `aox_blank_world_attempt_bundle@2`。public/offline consumer 必须
+拒绝 missing、unknown-version、digest/source mismatch 或 drift；receipt 不暴露 Host path、
+credential、private authority，也不扩张 exact-nine scientific prerequisites。

@@ -82,6 +82,7 @@ def _run_durable_work_once_in_worker(
         "command_id",
         "continuation_id",
         "action",
+        "semantic_progress",
         "status",
         "delivery_state",
         "lifecycle_state",
@@ -96,6 +97,8 @@ def _run_durable_work_once_in_worker(
     }
     if "action" not in serialized:
         raise TypeError("durable worker outcome omitted action")
+    if type(serialized.get("semantic_progress")) is not bool:
+        raise TypeError("durable worker outcome omitted typed semantic_progress")
     return serialized
 
 
@@ -378,9 +381,7 @@ class V3DurableWorkSupervisor:
         database_busy = [
             outcome for outcome in observed if outcome.get("action") == "database_busy"
         ]
-        progressed = [
-            outcome for outcome in observed if outcome.get("action") != "database_busy"
-        ]
+        progressed = [outcome for outcome in observed if outcome["semantic_progress"]]
         self.processed_count += len(progressed)
         self.database_busy_count += len(database_busy)
         if database_busy:
@@ -397,6 +398,7 @@ class V3DurableWorkSupervisor:
                 return {
                     "execution_id": None,
                     "action": "idle",
+                    "semantic_progress": False,
                     "lifecycle_state": None,
                     "state_version": None,
                     "effect_certainty": None,

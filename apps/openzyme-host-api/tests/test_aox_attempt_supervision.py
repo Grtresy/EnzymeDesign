@@ -8,6 +8,9 @@ import sys
 
 import pytest
 
+from openzyme_host_api.aox_architecture_qualification import (
+    build_architecture_qualification_receipt,
+)
 from openzyme_host_api import aox_attempt_supervision as supervision
 from openzyme_host_api.aox_attempt_supervision import AttemptRootAccessError
 from openzyme_host_api.aox_attempt_supervision import AttemptRootAccessGate
@@ -122,6 +125,16 @@ def _campaign_identity() -> dict[str, str]:
         "image_digest": "sha256:" + "f" * 64,
         "sdk_digest": "sha256:" + "1" * 64,
     }
+
+
+def _architecture_qualification() -> dict[str, str]:
+    return build_architecture_qualification_receipt(
+        report_payload_digest="sha256:" + "2" * 64,
+        registry_digest="sha256:" + "3" * 64,
+        test_manifest_digest="sha256:" + "4" * 64,
+        profile_id="local_single_process_file_sqlite@1",
+        source_commit=_campaign_identity()["git_commit"],
+    )
 
 
 def _supervisor(
@@ -321,6 +334,7 @@ def test_campaign_propagates_supervision_fatal_without_attempt_bundle(
         positive_runner=_FatalRunner("attempt_child_timeout"),
         fault_runner=_FatalRunner("attempt_child_timeout"),
         allowed_prerequisites={},
+        architecture_qualification=_architecture_qualification(),
     )
 
     records, decision = campaign.run()
@@ -360,6 +374,7 @@ def test_campaign_requires_supervision_by_default_before_ledger_after(
         positive_runner=_ReturningRunner(create_sqlite=False),
         fault_runner=_ReturningRunner(create_sqlite=False),
         allowed_prerequisites={},
+        architecture_qualification=_architecture_qualification(),
     )
 
     records, decision = campaign.run()

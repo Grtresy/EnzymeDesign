@@ -3413,6 +3413,7 @@ def test_v3_durable_work_supervisor_is_bounded_and_nonblocking() -> None:
     class FakeOutcome:
         execution_id = "exec_fixture"
         action = "dispatch"
+        semantic_progress = True
         lifecycle_state = "waiting_external"
         state_version = 3
         effect_certainty = "effect_known"
@@ -3431,9 +3432,10 @@ def test_v3_durable_work_supervisor_is_bounded_and_nonblocking() -> None:
         return BlockingWorker()
 
     async def run_check() -> None:
+        notifier = RuntimeSignalNotifier()
         supervisor = V3DurableWorkSupervisor(
             worker_factory=worker_factory,  # type: ignore[arg-type]
-            notifier=RuntimeSignalNotifier(),
+            notifier=notifier,
             enabled=True,
             max_concurrency=1,
         )
@@ -3445,6 +3447,9 @@ def test_v3_durable_work_supervisor_is_bounded_and_nonblocking() -> None:
         outcomes, _ = await asyncio.gather(supervisor.run_tick(), heartbeat())
         assert len(outcomes) == 1
         assert outcomes[0]["execution_id"] == "exec_fixture"
+        assert outcomes[0]["semantic_progress"] is True
+        assert supervisor.status()["processed_count"] == 1
+        assert notifier.notify_count == 1
 
     asyncio.run(run_check())
 
@@ -3456,6 +3461,7 @@ def test_v3_durable_work_supervisor_defers_database_busy_without_counting_progre
     class BusyOutcome:
         execution_id = "exec_database_busy"
         action = "database_busy"
+        semantic_progress = False
         lifecycle_state = None
         state_version = None
         effect_certainty = None
@@ -3477,11 +3483,93 @@ def test_v3_durable_work_supervisor_defers_database_busy_without_counting_progre
         status = supervisor.status()
 
         assert outcomes[0]["action"] == "database_busy"
+        assert outcomes[0]["semantic_progress"] is False
         assert status["processed_count"] == 0
         assert status["database_busy_count"] == 1
         assert status["last_error"] == "durable database busy; retry deferred"
 
     asyncio.run(run_check())
+
+
+def test_v3_durable_work_supervisor_retains_no_progress_without_self_wakeup() -> (
+    None
+):
+    class NoProgressOutcome:
+        execution_id = "exec_waiting"
+        action = "poll"
+        semantic_progress = False
+        lifecycle_state = "waiting_external"
+        state_version = 7
+        effect_certainty = "effect_known"
+        retry_eligibility = "verify_then_retry"
+
+    class NoProgressWorker:
+        def run_once(self) -> NoProgressOutcome:
+            return NoProgressOutcome()
+
+    async def run_check() -> None:
+        notifier = RuntimeSignalNotifier()
+        supervisor = V3DurableWorkSupervisor(
+            worker_factory=lambda worker_id: NoProgressWorker(),  # type: ignore[arg-type]
+            notifier=notifier,
+            enabled=True,
+            max_concurrency=1,
+        )
+
+        outcomes = await supervisor.run_tick()
+        status = supervisor.status()
+
+        assert outcomes == (
+            {
+                "execution_id": "exec_waiting",
+                "action": "poll",
+                "semantic_progress": False,
+                "lifecycle_state": "waiting_external",
+                "state_version": 7,
+                "effect_certainty": "effect_known",
+                "retry_eligibility": "verify_then_retry",
+            },
+        )
+        assert status["processed_count"] == 0
+        assert status["last_outcomes"] == list(outcomes)
+        assert notifier.notify_count == 0
+
+    asyncio.run(run_check())
+
+
+def test_v3_durable_work_supervisor_rejects_untyped_progress_contract() -> None:
+    class MissingProgressOutcome:
+        execution_id = "exec_missing_progress"
+        action = "dispatch"
+
+    class InvalidProgressOutcome:
+        execution_id = "exec_invalid_progress"
+        action = "dispatch"
+        semantic_progress = 1
+
+    class FixtureWorker:
+        def __init__(self, outcome: object) -> None:
+            self.outcome = outcome
+
+        def run_once(self) -> object:
+            return self.outcome
+
+    async def run_check(outcome: object) -> None:
+        notifier = RuntimeSignalNotifier()
+        supervisor = V3DurableWorkSupervisor(
+            worker_factory=lambda worker_id: FixtureWorker(outcome),
+            notifier=notifier,
+            enabled=True,
+            max_concurrency=1,
+        )
+
+        assert await supervisor.run_tick() == ()
+        assert supervisor.status()["processed_count"] == 0
+        assert "typed semantic_progress" in str(supervisor.status()["last_error"])
+        assert notifier.notify_count == 0
+
+    asyncio.run(run_check(MissingProgressOutcome()))
+    asyncio.run(run_check(InvalidProgressOutcome()))
 
 
 def test_v3_durable_work_supervisor_stops_claims_and_accounts_for_late_worker() -> None:
@@ -3492,6 +3580,7 @@ def test_v3_durable_work_supervisor_stops_claims_and_accounts_for_late_worker() 
     class LateOutcome:
         execution_id = "exec_late_shutdown"
         action = "poll"
+        semantic_progress = False
         lifecycle_state = "waiting_external"
         state_version = 4
         effect_certainty = "effect_known"

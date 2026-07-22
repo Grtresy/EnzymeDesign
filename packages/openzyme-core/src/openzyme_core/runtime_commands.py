@@ -55,6 +55,7 @@ class RuntimeCommandExecutor(Protocol):
 class RuntimeCommandWorkerOutcome:
     command_id: str | None
     action: str
+    semantic_progress: bool
     status: str | None
     state_version: int | None
 
@@ -155,6 +156,7 @@ class RuntimeCommandWorker:
             return RuntimeCommandWorkerOutcome(
                 command_id=None,
                 action="claim_raced",
+                semantic_progress=False,
                 status=None,
                 state_version=None,
             )
@@ -173,6 +175,7 @@ class RuntimeCommandWorker:
             return RuntimeCommandWorkerOutcome(
                 command_id=claimed.command_id,
                 action="claim_fenced",
+                semantic_progress=False,
                 status=RuntimeCommandStatus.CLAIMED.value,
                 state_version=claimed.state_version,
             )
@@ -199,6 +202,7 @@ class RuntimeCommandWorker:
                 return RuntimeCommandWorkerOutcome(
                     command_id=claimed.command_id,
                     action="failure_commit_fenced",
+                    semantic_progress=False,
                     status=RuntimeCommandStatus.CLAIMED.value,
                     state_version=claimed.state_version,
                 )
@@ -279,6 +283,7 @@ class RuntimeCommandWorker:
         return RuntimeCommandWorkerOutcome(
             command_id=stored.command_id,
             action=action or result.status.value,
+            semantic_progress=True,
             status=stored.status.value,
             state_version=stored.state_version,
         )
@@ -397,6 +402,7 @@ class RuntimeCommandWorker:
         return RuntimeCommandWorkerOutcome(
             command_id=None,
             action="idle",
+            semantic_progress=False,
             status=None,
             state_version=None,
         )
@@ -408,6 +414,7 @@ class RuntimeCommandWorker:
         return RuntimeCommandWorkerOutcome(
             command_id=command_id,
             action="database_busy",
+            semantic_progress=False,
             status=None,
             state_version=None,
         )

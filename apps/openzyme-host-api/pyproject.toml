@@ -41,6 +41,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-q"
 markers = [
+  "architecture_qualification_scenario: closed deterministic V3 architecture qualification scenario",
   "integration: opt-in tests requiring real external integrations",
   "live_llm: opt-in tests that call a real LLM provider",
   "live_tavily: opt-in tests that call the real Tavily API",

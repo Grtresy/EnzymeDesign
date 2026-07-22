@@ -23,10 +23,19 @@ evidence。
 
 ## 当前 active / next
 
-当前没有正在实施、尚未归档的 architecture proposal。
+当前由 OpenSpec change
+[`establish-v3-executable-architecture-qualification`](/openspec/changes/establish-v3-executable-architecture-qualification/)
+执行系统性架构资格收口。它不是新的产品真状态，也不把本目录 deferred proposal 自动晋级为
+已实施合同。deterministic baseline 确认的两个 P0 分别由
+[`bound-public-diagnostic-sanitizer-work`](/openspec/changes/bound-public-diagnostic-sanitizer-work/)
+和
+[`fix-v3-durable-supervisor-semantic-progress`](/openspec/changes/fix-v3-durable-supervisor-semantic-progress/)
+完成实现；在 closure commit、完整 matrix 和 clean admission report 全部闭合前仍处于验证阶段。
 
-编号 AOX live campaign 当前保持暂停。已归档 proposal、deterministic tests 或旧资格 GO 均不
-构成新 attempt admission。
+编号 AOX live campaign（下一编号 r48）当前保持暂停。已归档 proposal、focused tests、
+premerge subset、dirty diagnostic 或历史资格 GO 均不构成新 attempt admission；只有当前 clean
+commit 的 full/zero-P0 architecture admission 可以解除架构阻断，且仍需 operator 另行启动并
+通过全部外部、科学与证据门禁。
 
 ## 已实现并随 OpenSpec 归档
 

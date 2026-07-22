@@ -24,6 +24,7 @@ V3 的核心立场：
 
 架构审计与后续修正追踪：
 
+- [architecture-qualification/README.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/architecture-qualification/README.md)：closed invariant registry、真实 production-composition 场景、deterministic report/pure verifier 与 clean admission 操作合同。
 - [harness-complexity-audit.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/harness-complexity-audit.md)
 - [compatibility-sunset.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/compatibility-sunset.md)
 - [runtime-hpc-reliability-operations.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/runtime-hpc-reliability-operations.md)：persistent SSH、durable operation、command drain 与 mutation scope 的启用、审计和回滚 runbook。
@@ -32,6 +33,7 @@ V3 的核心立场：
 AOX/HMM live cutover：
 
 - [aox-hmm-blank-world-cutover.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-hmm-blank-world-cutover.md)
+- `pin`、`preflight`、`run-live` 均先要求当前 clean commit 的 full architecture qualification report；通过只解除架构阻断，不创建 attempt，也不自动恢复 numbered campaign。
 
 Execution pipeline SDK docs:
 

@@ -32,11 +32,16 @@ from openzyme_core import EngineDocumentRecord
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import verify_quiescence_evidence
 from openzyme_host_api import aox_cutover_live as live
+from openzyme_host_api.aox_architecture_qualification import (
+    build_architecture_qualification_receipt,
+)
 from openzyme_host_api.aox_cutover_cli import build_parser
 from openzyme_host_api.aox_cutover_evidence import AttemptRunContext
 from openzyme_host_api.aox_cutover_evidence import build_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import controlled_operation_digest
-from openzyme_host_api.aox_cutover_evidence import create_blank_world_roots
+from openzyme_host_api.aox_cutover_evidence import (
+    create_blank_world_roots as _create_blank_world_roots,
+)
 from openzyme_host_api.aox_cutover_evidence import safe_micu_ledger_snapshot
 from openzyme_host_api.aox_cutover_evidence import seal_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import verify_attempt_bundle
@@ -725,6 +730,21 @@ def _identity() -> dict[str, str]:
         "image_digest": _digest("image"),
         "sdk_digest": _digest("sdk"),
     }
+
+
+def _architecture_qualification() -> dict[str, str]:
+    return build_architecture_qualification_receipt(
+        report_payload_digest=_digest("qualification-report"),
+        registry_digest=_digest("qualification-registry"),
+        test_manifest_digest=_digest("qualification-manifest"),
+        profile_id="local_single_process_file_sqlite@1",
+        source_commit=_identity()["git_commit"],
+    )
+
+
+def create_blank_world_roots(*args, **kwargs):
+    kwargs.setdefault("architecture_qualification", _architecture_qualification())
+    return _create_blank_world_roots(*args, **kwargs)
 
 
 def test_live_uniprot_raw_response_parser_is_strict_and_digest_bound() -> None:
@@ -2768,6 +2788,8 @@ def test_cli_exposes_real_live_campaign_command(tmp_path: Path) -> None:
             str(tmp_path / "identity.json"),
             "--allowed-prerequisites",
             str(tmp_path / "prerequisites.json"),
+            "--architecture-qualification-report",
+            str(tmp_path / "architecture-qualification.json"),
         ]
     )
 
@@ -4945,6 +4967,8 @@ def test_cli_exposes_chrome_once_mode(tmp_path: Path) -> None:
             str(tmp_path / "identity.json"),
             "--allowed-prerequisites",
             str(tmp_path / "prerequisites.json"),
+            "--architecture-qualification-report",
+            str(tmp_path / "architecture-qualification.json"),
             "--approval-mode",
             "chrome-once",
             "--browser-completion-hold-seconds",

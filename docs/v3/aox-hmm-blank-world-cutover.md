@@ -1,8 +1,8 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: Runtime/HPC reliability refactor and its real-SSH transport-only qualification are landed, but r41-r44 later exposed composition-root authority handoff gaps. The numbered `rxx` campaign is paused again. Local Live cutover remains **NO-GO** until authority-handoff and process-isolation changes pass their non-live gates and a newly authorized campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
+Status: r43-r47 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. The numbered campaign remains paused before r48. Local Live cutover is **NO-GO** until the current clean commit first passes the full executable architecture qualification with zero open P0, and a separately authorized campaign then seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
 
-Historical r14-r44 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, and sandbox Host-call semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md) and the active authority-handoff OpenSpec change.
+Historical r14-r47 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
 This document describes the operator/evidence boundary implemented by `openzyme_host_api.aox_cutover_evidence`. It does not turn the historical S15 fixture into live evidence and does not authorize seeded state, cached scientific outputs, the reference notebook, or copied reference results as attempt inputs.
 
@@ -1275,6 +1275,23 @@ fetched hmmbuild artifact id and digest, not a workspace guess, bind the HMMER
 search. A formal attempt that approximates these calculations or paths is
 ineligible even when its files look plausible.
 
+## Architecture qualification admission
+
+`pin`、`preflight` 与 `run-live` 都要求 operator 显式提供
+`--architecture-qualification-report`。三个入口在读取 live settings、执行 pin runner
+attestation、创建 attempt/campaign root、运行 sandbox probe 或调用 provider、runner、
+Chrome、MICU 之前，使用当前 checkout 的 pure verifier 重新验证该文件。只有绑定当前 clean
+HEAD、`full` selection、当前 registry/test manifest/runner/verifier、全部 invariant satisfied
+且零 open P0 的 `admission` report 才被接受；missing、diagnostic、premerge subset、dirty、
+stale、tampered、未知 profile/schema 或 open-P0 report 一律 fail closed。
+
+验证成功只生成不可变的 `aox_architecture_qualification_receipt@1`，绑定 report payload、
+registry、test-manifest、profile 和 source commit digest。它不创建 attempt、不访问外部系统，
+也不授权任何 scientific input。force/debug/env/legacy/pass-boolean bypass 不存在；
+`allowed_prerequisites` 仍保持下述 exact-nine scientific schema。架构放行只解除一个
+deterministic blocker，不能自动启动 r48 或替代 launch、availability、scientific、Chrome、
+MICU 与 offline evidence gate。
+
 ## Clean-root preflight
 
 Every attempt creates a new attempt root containing initially empty, distinct locations for:
@@ -1287,8 +1304,9 @@ Every attempt creates a new attempt root containing initially empty, distinct lo
 
 The public root proof contains only stable names, counts, identities and cache policy, never Host paths. `provider_cache_mode=bypass`, `evidence_cache_reuse=false` and `sqlite_preexisting=false` are mandatory. Existing attempt roots, symlinks, preloaded scientific files and unknown prerequisite fields are rejected.
 
-`pin` first derives the declarations and `run-live` resolves the same canonical
-launch snapshot before it constructs the campaign runner or any attempt root.
+Architecture qualification verification happens first. `pin` then derives the
+declarations and `run-live` resolves the same canonical launch snapshot before it
+constructs the campaign runner or any attempt root.
 The campaign identity is an exact closed seven-field object:
 
 - `git_commit`;
@@ -1384,15 +1402,17 @@ no-replace publication. They must share one existing real transaction directory
 whose two payload targets and fixed marker target do not yet exist. Host fsyncs
 both payloads first, then publishes the fixed hidden
 `.aox-cutover-pin-commit.json` marker as the single consumer-visible commit
-point and fsyncs the directory again. The marker is an exact closed object that
-binds both basenames and both canonical payload digests. `run-live` refuses the
+point and fsyncs the directory again. The `aox_cutover_pin_commit@2` marker is an
+exact closed object that binds both basenames, both canonical payload digests and
+the architecture qualification receipt. `run-live` refuses the
 pair before launch/root creation when the marker is absent, a symlink, malformed
 or digest-drifted. A crash before the marker may leave orphan payload files, but
 they can never be consumed as a committed declaration pair; the operator uses a
 new transaction directory. Parents must already exist without symlink
 traversal, targets must not exist, and checkout-local targets are rejected so
-the subsequent clean-checkout guard remains valid. The public pin receipt
-contains only commit/config/declaration digests, never an output path,
+the subsequent clean-checkout guard remains valid. The public
+`aox_cutover_pin_receipt@2` contains the same qualification receipt plus only
+commit/config/declaration digests, never an output path,
 credential, NCBI identity value, runner locator or Host artifact path.
 
 The unsigned marker is a transaction-integrity commit point, not producer
@@ -1411,6 +1431,8 @@ uv --project apps/openzyme-host-api run openzyme-aox-cutover pin \
     /tmp/openzyme-aox-pin/<campaign-id>/identity.json \
   --allowed-prerequisites-output \
     /tmp/openzyme-aox-pin/<campaign-id>/allowed-prerequisites.json \
+  --architecture-qualification-report \
+    /tmp/openzyme-v3-admission/<commit>/architecture-qualification-report.json \
   --approval-mode chrome-once \
   --browser-poll-interval-seconds 0.5 \
   --browser-approval-timeout-seconds 300 \
@@ -1440,7 +1462,9 @@ Operator preflight example:
 uv --project apps/openzyme-host-api run openzyme-aox-cutover preflight \
   --campaign-root /tmp/openzyme-aox-cutover/<campaign-id> \
   --attempt-kind positive \
-  --allowed-prerequisites /tmp/aox-allowed-prerequisites.json
+  --allowed-prerequisites /tmp/aox-allowed-prerequisites.json \
+  --architecture-qualification-report \
+    /tmp/openzyme-v3-admission/<commit>/architecture-qualification-report.json
 ```
 
 `local_paths` in this command's stdout are operator-only launch inputs. They must not be copied into workspace/events/report/evidence projections.
@@ -1494,10 +1518,12 @@ and is not implemented by this Goal.
 
 ## Attempt bundle
 
-`aox_blank_world_attempt_bundle@1` is canonical sorted-key UTF-8 JSON wrapped by its SHA-256 payload digest. The payload binds:
+`aox_blank_world_attempt_bundle@2` is canonical sorted-key UTF-8 JSON wrapped by its SHA-256 payload digest. The payload binds:
 
 - git commit, config, workflow selection, scoring contract/implementation, image and SDK;
-- self-consistent clean-root proof and Host launch receipt;
+- self-consistent `aox_blank_world_root_proof@2` and
+  `aox_blank_world_launch_receipt@2`, each closing the same architecture
+  qualification receipt;
 - one continuous MICU ledger before/after transition;
 - provider and toolchain invocation/job/operation receipts with sealed formal artifact ids;
 - bounded known-positive probe receipts and probe-only artifacts;
@@ -1660,6 +1686,8 @@ uv --project apps/openzyme-host-api run openzyme-aox-cutover run-live \
   --identity /tmp/openzyme-aox-pin/<campaign-id>/identity.json \
   --allowed-prerequisites \
     /tmp/openzyme-aox-pin/<campaign-id>/allowed-prerequisites.json \
+  --architecture-qualification-report \
+    /tmp/openzyme-v3-admission/<commit>/architecture-qualification-report.json \
   --approval-mode chrome-once \
   --browser-poll-interval-seconds 0.5 \
   --browser-approval-timeout-seconds 300 \
@@ -1877,6 +1905,9 @@ NO-GO and exit code `2`.
 
 Offline unit/eval success proves implementation behavior only. Local Live cutover becomes GO only after the real public product path also demonstrates:
 
+- a current clean-commit full architecture admission report whose receipt closes
+  identically through pin, root proof, launch receipt, attempt bundle and offline
+  verification;
 - two clean-root positive runs with published reports and passed offline verification;
 - one reached derived AOX-reference fault with exact NCBI→selection→MAFFT
   lineage and sealed negative-state closure;

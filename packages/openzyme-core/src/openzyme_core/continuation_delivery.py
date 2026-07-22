@@ -53,6 +53,7 @@ def _stable_suffix(value: str) -> str:
 class ContinuationDeliveryWorkerOutcome:
     continuation_id: str | None
     action: str
+    semantic_progress: bool
     delivery_state: str | None
     state_version: int | None
 
@@ -168,11 +169,15 @@ class ContinuationDeliveryWorker:
                     limit=1,
                 )
                 if not candidates:
-                    return self._outcome(None, "idle")
+                    return self._outcome(None, "idle", semantic_progress=False)
                 candidate = candidates[0]
         except Exception as exc:
             if is_transient_sqlite_contention(exc):
-                return self._outcome(None, "database_busy")
+                return self._outcome(
+                    None,
+                    "database_busy",
+                    semantic_progress=False,
+                )
             raise
         writer_scope = (
             nullcontext(None)
@@ -210,16 +215,24 @@ class ContinuationDeliveryWorker:
                         updated_at=now_iso,
                     )
         except OptimisticStateConflictError:
-            return self._outcome(None, "claim_raced")
+            return self._outcome(None, "claim_raced", semantic_progress=False)
         except Exception as exc:
             if is_transient_sqlite_contention(exc):
-                return self._outcome(None, "database_busy")
+                return self._outcome(
+                    None,
+                    "database_busy",
+                    semantic_progress=False,
+                )
             raise
         try:
             return self._deliver_claimed(claimed)
         except Exception as exc:
             if is_transient_sqlite_contention(exc):
-                return self._outcome(claimed, "database_busy")
+                return self._outcome(
+                    claimed,
+                    "database_busy",
+                    semantic_progress=False,
+                )
             raise
 
     def _deliver_claimed(
@@ -304,7 +317,7 @@ class ContinuationDeliveryWorker:
                 repositories,
                 signal_notifier=self.signal_notifier,
             ).notify(signal.session_id)
-        return self._outcome(finished, "delivered")
+        return self._outcome(finished, "delivered", semantic_progress=True)
 
     def _load_exact_delivery(
         self,
@@ -388,7 +401,11 @@ class ContinuationDeliveryWorker:
                 repositories,
                 signal_notifier=self.signal_notifier,
             ).notify(signal.session_id)
-        return self._outcome(finished, "recovery_failed")
+        return self._outcome(
+            finished,
+            "recovery_failed",
+            semantic_progress=True,
+        )
 
     @staticmethod
     def _append_delivery_event(
@@ -424,12 +441,15 @@ class ContinuationDeliveryWorker:
     def _outcome(
         continuation: ContinuationState | None,
         action: str,
+        *,
+        semantic_progress: bool,
     ) -> ContinuationDeliveryWorkerOutcome:
         return ContinuationDeliveryWorkerOutcome(
             continuation_id=(
                 None if continuation is None else continuation.continuation_id
             ),
             action=action,
+            semantic_progress=semantic_progress,
             delivery_state=(
                 None if continuation is None else continuation.delivery_state.value
             ),
@@ -530,6 +550,7 @@ def recover_unattached_continuations(
                     ContinuationDeliveryWorkerOutcome(
                         continuation_id=candidate.continuation_id,
                         action="recovery_raced",
+                        semantic_progress=False,
                         delivery_state=None,
                         state_version=None,
                     )
@@ -544,6 +565,7 @@ def recover_unattached_continuations(
                 ContinuationDeliveryWorkerOutcome(
                     continuation_id=failed.continuation_id,
                     action="recovery_failed",
+                    semantic_progress=True,
                     delivery_state=failed.delivery_state.value,
                     state_version=failed.state_version,
                 )

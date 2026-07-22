@@ -22,12 +22,18 @@ from openzyme_research import safe_public_locator
 from openzyme_runtime import LIVE_MICU_TOKEN_HARD_LIMIT
 from openzyme_runtime import summarize_live_micu_token_ledger
 
+from .aox_architecture_qualification import AoxArchitectureQualificationError
+from .aox_architecture_qualification import (
+    normalize_architecture_qualification_receipt,
+)
 from .aox_cutover_runtime_config import AoxRuntimeConfigSchemaError
 from .aox_cutover_runtime_config import normalize_aox_blank_world_runtime_config
 
 
-ATTEMPT_BUNDLE_SCHEMA_ID = "aox_blank_world_attempt_bundle@1"
+ATTEMPT_BUNDLE_SCHEMA_ID = "aox_blank_world_attempt_bundle@2"
 CAMPAIGN_DECISION_SCHEMA_ID = "aox_blank_world_campaign_decision@1"
+BLANK_WORLD_ROOT_PROOF_SCHEMA_ID = "aox_blank_world_root_proof@2"
+AOX_LAUNCH_RECEIPT_SCHEMA_ID = "aox_blank_world_launch_receipt@2"
 SEALED_SOURCE_TREE_SCHEMA_ID = "openzyme_sealed_source_tree@1"
 FORMAL_DELEGATION_REQUEST_SCHEMA_ID = "aox_formal_delegation_request@1"
 TYPED_EMPTY_ARTIFACT_VALIDATION_SCHEMA_ID = (
@@ -464,6 +470,21 @@ _ALLOWED_PREREQUISITE_KEYS = {
     "toolchain_image_digests",
     "workflow_ref",
 }
+_BLANK_WORLD_ROOT_PROOF_KEYS = {
+    "allowed_prerequisite_digest",
+    "allowed_prerequisites",
+    "architecture_qualification",
+    "attempt_id",
+    "attempt_kind",
+    "evidence_cache_reuse",
+    "hpc_workspace_label",
+    "initial_entries",
+    "provider_cache_mode",
+    "root_identity",
+    "root_names",
+    "schema_id",
+    "sqlite_preexisting",
+}
 AOX_TOOLCHAIN_RUNTIME_CONTRACTS: dict[str, dict[str, str]] = {
     "mafft": {
         "toolchain_id": "mafft_7.525.hpc_apptainer_sif:v1",
@@ -571,6 +592,24 @@ class CutoverEvidenceError(ValueError):
         self.code = code
         self.details = dict(details or {})
         super().__init__(f"{code}: {message}")
+
+
+def _normalize_architecture_qualification(
+    receipt: Mapping[str, object],
+    *,
+    expected_source_commit: str,
+) -> dict[str, str]:
+    try:
+        return normalize_architecture_qualification_receipt(
+            receipt,
+            expected_source_commit=expected_source_commit,
+        )
+    except AoxArchitectureQualificationError as exc:
+        raise CutoverEvidenceError(
+            exc.code,
+            "AOX evidence carries invalid architecture qualification",
+            details=exc.details,
+        ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -1582,6 +1621,7 @@ def create_blank_world_roots(
     *,
     attempt_kind: str,
     allowed_prerequisites: Mapping[str, object],
+    architecture_qualification: Mapping[str, object],
     attempt_id: str | None = None,
 ) -> BlankWorldRoots:
     if attempt_kind not in {"positive", "fault"}:
@@ -1598,6 +1638,10 @@ def create_blank_world_roots(
             details={"attempt_id": identifier},
         )
     prerequisites = normalize_aox_cutover_prerequisites(allowed_prerequisites)
+    qualification = _normalize_architecture_qualification(
+        architecture_qualification,
+        expected_source_commit=str(prerequisites["git_commit"]),
+    )
     base = campaign_root.resolve()
     base.mkdir(parents=True, exist_ok=True)
     attempt_root = base / identifier
@@ -1645,7 +1689,8 @@ def create_blank_world_roots(
         }
     )
     proof = {
-        "schema_id": "aox_blank_world_root_proof@1",
+        "schema_id": BLANK_WORLD_ROOT_PROOF_SCHEMA_ID,
+        "architecture_qualification": qualification,
         "attempt_id": identifier,
         "attempt_kind": attempt_kind,
         "root_identity": root_identity,
@@ -2484,6 +2529,7 @@ class AoxCutoverCampaign:
     positive_runner: AttemptRunner
     fault_runner: AttemptRunner
     allowed_prerequisites: Mapping[str, object]
+    architecture_qualification: Mapping[str, object]
     launch_guard: Callable[[], None] | None = None
     _allow_unisolated_non_live_test_runner: bool = dataclass_field(
         default=False,
@@ -2501,6 +2547,7 @@ class AoxCutoverCampaign:
         positive_runner: AttemptRunner,
         fault_runner: AttemptRunner,
         allowed_prerequisites: Mapping[str, object],
+        architecture_qualification: Mapping[str, object],
         launch_guard: Callable[[], None] | None = None,
     ) -> Self:
         """Construct a fixture campaign that intentionally omits OS supervision."""
@@ -2511,6 +2558,7 @@ class AoxCutoverCampaign:
             positive_runner=positive_runner,
             fault_runner=fault_runner,
             allowed_prerequisites=allowed_prerequisites,
+            architecture_qualification=architecture_qualification,
             launch_guard=launch_guard,
         )
         campaign._allow_unisolated_non_live_test_runner = True
@@ -2557,6 +2605,7 @@ class AoxCutoverCampaign:
             self.campaign_root,
             attempt_kind=kind,
             allowed_prerequisites=self.allowed_prerequisites,
+            architecture_qualification=self.architecture_qualification,
         )
         before = safe_micu_ledger_snapshot(self.ledger_path)
         runner = self.positive_runner if kind == "positive" else self.fault_runner
@@ -2572,7 +2621,7 @@ class AoxCutoverCampaign:
             if getattr(exc, "attempt_supervision_fatal", False) is True:
                 raise
             evidence = _campaign_runner_failure_evidence(
-                roots.artifact_root,
+                roots,
                 failure_type=type(exc).__name__,
                 attempt_kind=kind,
             )
@@ -2675,11 +2724,12 @@ def _campaign_driver_failure_decision(
 
 
 def _campaign_runner_failure_evidence(
-    artifact_root: Path,
+    roots: BlankWorldRoots,
     *,
     failure_type: str,
     attempt_kind: str,
 ) -> dict[str, Any]:
+    artifact_root = roots.artifact_root
     relative_path = "formal/campaign-driver-failure.json"
     content = (
         canonical_json_bytes(
@@ -2722,6 +2772,14 @@ def _campaign_runner_failure_evidence(
             "entry_message_count": 0,
             "canonical_api_only": True,
             "participant_roles": [],
+            "launch_receipt": {
+                "architecture_qualification": roots.proof[
+                    "architecture_qualification"
+                ],
+                "hpc_workspace_label": roots.hpc_workspace_label,
+                "root_identity": roots.proof["root_identity"],
+                "schema_id": AOX_LAUNCH_RECEIPT_SCHEMA_ID,
+            },
         },
         "approvals": [],
         "operations": [],
@@ -2921,8 +2979,24 @@ def _validate_clean_world_proof(payload: Mapping[str, Any]) -> None:
         dict(clean_world.get("allowed_prerequisites") or {}),
         identity={key: bundle_identity.get(key) for key in _IDENTITY_FIELDS},
     )
+    architecture_qualification_value = clean_world.get(
+        "architecture_qualification"
+    )
+    if not isinstance(architecture_qualification_value, Mapping):
+        raise CutoverEvidenceError(
+            "aox_architecture_qualification_receipt_invalid",
+            "blank-world proof lacks architecture qualification",
+            details={"identity": "clean_world.architecture_qualification"},
+        )
+    architecture_qualification = _normalize_architecture_qualification(
+        architecture_qualification_value,
+        expected_source_commit=str(bundle_identity.get("git_commit") or ""),
+    )
     if (
-        clean_world.get("schema_id") != "aox_blank_world_root_proof@1"
+        set(clean_world) != _BLANK_WORLD_ROOT_PROOF_KEYS
+        or clean_world.get("schema_id") != BLANK_WORLD_ROOT_PROOF_SCHEMA_ID
+        or clean_world.get("architecture_qualification")
+        != architecture_qualification
         or clean_world.get("attempt_id") != payload.get("attempt_id")
         or clean_world.get("attempt_kind") != payload.get("attempt_kind")
         or clean_world.get("root_names") != expected_root_names
@@ -2942,6 +3016,40 @@ def _validate_clean_world_proof(payload: Mapping[str, Any]) -> None:
             "blank_world_proof_invalid",
             "attempt does not carry a complete self-consistent clean-root proof",
             details={"identity": "clean_world"},
+        )
+
+
+def _validate_architecture_qualification_evidence(
+    payload: Mapping[str, Any],
+) -> None:
+    identity = dict(payload.get("identity") or {})
+    clean_world = dict(payload.get("clean_world") or {})
+    product_path = dict(payload.get("product_path") or {})
+    launch_receipt = dict(product_path.get("launch_receipt") or {})
+    clean_value = clean_world.get("architecture_qualification")
+    launch_value = launch_receipt.get("architecture_qualification")
+    if not isinstance(clean_value, Mapping) or not isinstance(launch_value, Mapping):
+        raise CutoverEvidenceError(
+            "aox_architecture_qualification_receipt_missing",
+            "attempt evidence lacks the launch-bound architecture qualification receipt",
+            details={"identity": "product_path.launch_receipt.architecture_qualification"},
+        )
+    clean_receipt = _normalize_architecture_qualification(
+        clean_value,
+        expected_source_commit=str(identity.get("git_commit") or ""),
+    )
+    launch_qualification = _normalize_architecture_qualification(
+        launch_value,
+        expected_source_commit=str(identity.get("git_commit") or ""),
+    )
+    if (
+        launch_receipt.get("schema_id") != AOX_LAUNCH_RECEIPT_SCHEMA_ID
+        or launch_qualification != clean_receipt
+    ):
+        raise CutoverEvidenceError(
+            "aox_architecture_qualification_receipt_mismatch",
+            "attempt launch receipt does not match its blank-world qualification proof",
+            details={"identity": "product_path.launch_receipt.architecture_qualification"},
         )
 
 
@@ -6152,6 +6260,7 @@ def _validate_attempt_semantics(
     product_path_for_supervision = dict(payload.get("product_path") or {})
     supervision_receipt = product_path_for_supervision.get("attempt_supervision")
     _validate_clean_world_proof(payload)
+    _validate_architecture_qualification_evidence(payload)
     micu = dict(payload.get("micu_ledger") or {})
     _validate_ledger_transition(
         dict(micu.get("before") or {}),
@@ -11042,12 +11151,14 @@ def _write_append_only_bytes(
 
 __all__ = [
     "AoxCutoverCampaign",
+    "AOX_LAUNCH_RECEIPT_SCHEMA_ID",
     "AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID",
     "AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS",
     "ATTEMPT_BUNDLE_SCHEMA_ID",
     "AttemptRunContext",
     "AttemptRunRecord",
     "BlankWorldRoots",
+    "BLANK_WORLD_ROOT_PROOF_SCHEMA_ID",
     "CAMPAIGN_DECISION_SCHEMA_ID",
     "canonical_digest",
     "canonical_json_bytes",

@@ -84,6 +84,7 @@ def test_runtime_command_worker_claims_executes_and_sanitizes_result(tmp_path) -
 
     assert calls == [command.command_id]
     assert outcome.action == "completed"
+    assert outcome.semantic_progress is True
     assert outcome.status == RuntimeCommandStatus.COMPLETED.value
     with provider.read() as unit_of_work:
         stored = unit_of_work.repositories.runtime_commands.get(command.command_id)
@@ -132,6 +133,7 @@ def test_runtime_command_worker_fails_expired_claim_without_scheduler_replay(
 
     assert calls == []
     assert outcome.action == "recovered_without_replay"
+    assert outcome.semantic_progress is True
     with provider.read() as unit_of_work:
         stored = unit_of_work.repositories.runtime_commands.get(command.command_id)
     assert stored is not None
@@ -259,8 +261,10 @@ def test_two_runtime_command_workers_never_execute_one_claim_twice(tmp_path) -> 
 
     assert not thread.is_alive()
     assert raced.action in {"idle", "claim_raced"}
+    assert raced.semantic_progress is False
     assert calls == [command.command_id]
     assert getattr(first_outcome[0], "status") == "completed"
+    assert getattr(first_outcome[0], "semantic_progress") is True
 
 
 def test_runtime_command_database_busy_is_deferred_without_state_relabel(
@@ -303,6 +307,7 @@ def test_runtime_command_database_busy_is_deferred_without_state_relabel(
         blocker.close()
 
     assert busy.action == "database_busy"
+    assert busy.semantic_progress is False
     assert calls == []
     with provider.read() as unit_of_work:
         persisted = unit_of_work.repositories.runtime_commands.get(
@@ -314,4 +319,5 @@ def test_runtime_command_database_busy_is_deferred_without_state_relabel(
 
     progressed = worker.run_once()
     assert progressed.status == "completed"
+    assert progressed.semantic_progress is True
     assert calls == ["command_database_busy"]

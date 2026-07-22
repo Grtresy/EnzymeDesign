@@ -28,7 +28,8 @@ _PRIVATE_LOCATOR_PATTERN = re.compile(
     r"mongodb(?:\+srv)?|mysql|mariadb|amqp|amqps)://[^\s\"'<>]*"
 )
 _CREDENTIAL_URI_PATTERN = re.compile(
-    r"(?i)[a-z][a-z0-9+.-]*://[^\s/@:]*:[^\s/@]*@[^\s\"'<>]*"
+    r"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*://"
+    r"[^\s/@:]*:[^\s/@]*@[^\s\"'<>]*"
 )
 _JSON_ESCAPED_LOCATOR_PATTERN = re.compile(
     r"(?i)(?:https?|storage|s3|gs|gcs|azure|ssh|scp|file|postgres|"

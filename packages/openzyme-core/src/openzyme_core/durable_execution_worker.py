@@ -145,6 +145,7 @@ class ControlledOperationRouteAdapter(Protocol):
 class ControlledOperationExecutionWorkerOutcome:
     execution_id: str | None
     action: str
+    semantic_progress: bool
     lifecycle_state: str | None
     state_version: int | None
     effect_certainty: str | None
@@ -189,6 +190,7 @@ class ControlledOperationExecutionWorker:
             return ControlledOperationExecutionWorkerOutcome(
                 execution_id=None,
                 action="idle",
+                semantic_progress=False,
                 lifecycle_state=None,
                 state_version=None,
                 effect_certainty=None,
@@ -218,6 +220,7 @@ class ControlledOperationExecutionWorker:
             return ControlledOperationExecutionWorkerOutcome(
                 execution_id=execution_id,
                 action="not_claimable",
+                semantic_progress=False,
                 lifecycle_state=None,
                 state_version=None,
                 effect_certainty=None,
@@ -247,6 +250,7 @@ class ControlledOperationExecutionWorker:
             return ControlledOperationExecutionWorkerOutcome(
                 execution_id=execution_id,
                 action="not_claimable",
+                semantic_progress=False,
                 lifecycle_state=None,
                 state_version=None,
                 effect_certainty=None,
@@ -274,6 +278,7 @@ class ControlledOperationExecutionWorker:
         return ControlledOperationExecutionWorkerOutcome(
             execution_id=execution_id,
             action="database_busy",
+            semantic_progress=False,
             lifecycle_state=None,
             state_version=None,
             effect_certainty=None,
@@ -289,7 +294,11 @@ class ControlledOperationExecutionWorker:
             is ControlledOperationExecutionLifecycle.RESULT_READY
         ):
             terminal = self._commit_result_terminal(claimed)
-            return self._outcome(terminal, action="terminalize_result")
+            return self._outcome(
+                claimed,
+                terminal,
+                action="terminalize_result",
+            )
         adapter = self.adapters.get(claimed.route_policy_id)
         if adapter is None or not self._adapter_matches_execution(adapter, claimed):
             if not self._is_proven_pre_dispatch(claimed):
@@ -299,6 +308,7 @@ class ControlledOperationExecutionWorker:
                     observation=self._missing_route_recovery_observation(claimed),
                 )
                 return self._outcome(
+                    claimed,
                     retained,
                     action="route_unavailable_reconcile",
                 )
@@ -316,7 +326,7 @@ class ControlledOperationExecutionWorker:
                     safe_summary="The frozen durable route policy is unavailable.",
                 ),
             )
-            return self._outcome(terminal, action="route_rejected")
+            return self._outcome(claimed, terminal, action="route_rejected")
 
         request = self._load_request(claimed)
         if claimed.lifecycle_state is ControlledOperationExecutionLifecycle.CLAIMED:
@@ -343,7 +353,11 @@ class ControlledOperationExecutionWorker:
                         ),
                     ),
                 )
-                return self._outcome(terminal, action="dispatch_handle_rejected")
+                return self._outcome(
+                    claimed,
+                    terminal,
+                    action="dispatch_handle_rejected",
+                )
             observation, prepared = self._call_adapter_with_heartbeat(
                 action="dispatch",
                 adapter=adapter,
@@ -355,7 +369,7 @@ class ControlledOperationExecutionWorker:
                 phase=ControlledOperationExecutionPhase.DISPATCH,
                 observation=observation,
             )
-            return self._outcome(updated, action="dispatch")
+            return self._outcome(claimed, updated, action="dispatch")
         if claimed.lifecycle_state is ControlledOperationExecutionLifecycle.DISPATCHING:
             # A reclaimed dispatching row crossed an external-call boundary without
             # a committed callback.  It is never safe to call dispatch again.
@@ -370,7 +384,11 @@ class ControlledOperationExecutionWorker:
                 phase=ControlledOperationExecutionPhase.RECONCILE,
                 observation=observation,
             )
-            return self._outcome(updated, action="reconcile_after_dispatch_gap")
+            return self._outcome(
+                claimed,
+                updated,
+                action="reconcile_after_dispatch_gap",
+            )
         if (
             claimed.lifecycle_state
             is ControlledOperationExecutionLifecycle.WAITING_EXTERNAL
@@ -386,7 +404,7 @@ class ControlledOperationExecutionWorker:
                 phase=ControlledOperationExecutionPhase.POLL,
                 observation=observation,
             )
-            return self._outcome(updated, action="poll")
+            return self._outcome(claimed, updated, action="poll")
         if (
             claimed.lifecycle_state
             is ControlledOperationExecutionLifecycle.RECONCILE_REQUIRED
@@ -402,7 +420,7 @@ class ControlledOperationExecutionWorker:
                 phase=ControlledOperationExecutionPhase.RECONCILE,
                 observation=observation,
             )
-            return self._outcome(updated, action="reconcile")
+            return self._outcome(claimed, updated, action="reconcile")
         if (
             claimed.lifecycle_state
             is ControlledOperationExecutionLifecycle.RESULT_STAGING
@@ -418,7 +436,7 @@ class ControlledOperationExecutionWorker:
                 phase=ControlledOperationExecutionPhase.RESULT_STAGING,
                 observation=observation,
             )
-            return self._outcome(updated, action="materialize")
+            return self._outcome(claimed, updated, action="materialize")
         terminal = self._commit_observation(
             captured=claimed,
             phase=ControlledOperationExecutionPhase.TERMINAL,
@@ -433,7 +451,7 @@ class ControlledOperationExecutionWorker:
                 safe_summary="The durable execution state cannot be progressed.",
             ),
         )
-        return self._outcome(terminal, action="state_rejected")
+        return self._outcome(claimed, terminal, action="state_rejected")
 
     @staticmethod
     def _is_proven_pre_dispatch(execution: ControlledOperationExecution) -> bool:
@@ -1216,7 +1234,25 @@ class ControlledOperationExecutionWorker:
         )
 
     @staticmethod
+    def _semantic_fingerprint(
+        execution: ControlledOperationExecution,
+    ) -> tuple[object, ...]:
+        return (
+            execution.lifecycle_state,
+            execution.terminal_outcome,
+            execution.effect_certainty,
+            execution.retry_eligibility,
+            execution.dispatch_generation,
+            execution.backend_handle_ref,
+            execution.result_handle_ref,
+            execution.result_digest,
+            execution.artifact_set_digest,
+        )
+
+    @classmethod
     def _outcome(
+        cls,
+        previous: ControlledOperationExecution,
         execution: ControlledOperationExecution,
         *,
         action: str,
@@ -1224,6 +1260,10 @@ class ControlledOperationExecutionWorker:
         return ControlledOperationExecutionWorkerOutcome(
             execution_id=execution.execution_id,
             action=action,
+            semantic_progress=(
+                cls._semantic_fingerprint(previous)
+                != cls._semantic_fingerprint(execution)
+            ),
             lifecycle_state=execution.lifecycle_state.value,
             state_version=execution.state_version,
             effect_certainty=execution.effect_certainty.value,

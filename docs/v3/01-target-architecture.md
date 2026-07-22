@@ -376,3 +376,12 @@ OpenZyme 主线参考：
 
 - `/home/grtresy/VSCodeRepo/EnzymeDesign/docs/OpenZyme架构设计.md`
 - `/home/grtresy/VSCodeRepo/EnzymeDesign/packages/openzyme-core/src/openzyme_core/`
+
+## 可执行架构资格的依赖方向
+
+稳定合同与当前产品实现是被验证对象；`invariant-registry.json`、production-composition 场景、
+canonical report 和 pure verifier 依次位于其外侧。产品 runtime 不反向读取 qualification report
+来决定 task、agent 或 engine 行为。只有 AOX operator launch boundary 可消费当前 clean commit 的
+full/zero-P0 receipt，而且必须发生在任何 attempt root 或外部 effect 之前。首版只声明 trusted
+Host 的 `local_single_process_file_sqlite@1`，不得外推为 multi-process、multi-Host 或 distributed
+architecture guarantee。

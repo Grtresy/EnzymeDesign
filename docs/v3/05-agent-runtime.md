@@ -101,6 +101,8 @@ durable fetch 的“完全一致”是类型化合同：`run_id` 与带 path/dig
 - continuation-delivery worker claim ready result，并只向 exact attached process epoch 投递一次；
 - startup recovery 检查 stale claim、active durable route、missing attached process 与 result-ready delivery，不把进程重启解释为 external-effect replay 授权。
 
+三类 worker outcome 都显式返回 typed `semantic_progress`，Host 不允许按 action string fallback。controlled-operation 的判断只来自 canonical lifecycle/effect/retry/dispatch/backend/result/terminal facts；lease、fence、version、timestamp、diagnostic/event churn 以及 unchanged poll/reconcile 不构成 semantic progress。idle、claim-raced、not-claimable、fenced commit 与 database-busy 同样为 false，并继续保留为 bounded diagnostic。`processed_count` 只统计 true；仅当一个 bounded tick 的全部 concurrency slots 都提交 semantic progress 时，supervisor 才允许发出一次可能 backlog 的即时 notification。unchanged external state 回到 periodic poll，不形成 self-wakeup loop；该 scheduling fact 不改变 task、agent 或 scientific outcome。
+
 当 durable SDK call 等待 approval 或 external effect 时，sandbox process 可以继续被 outer supervisor 持有，但原 agent bounded turn必须在有界时间内以 suspension 收口：释放 signal claim、session lease、runtime concurrency slot 与 command/request ownership。Suspension 不是 task failure，也不 terminalize execution。result-ready 后，delivery transaction 绑定 execution result digest、delivery generation 与 process identity；投递成功后再排队 agent signal。Host restart 导致 attached process 不存在时，continuation 明确 failed，已完成 execution/result 保留，绝不重发 scientific effect。
 
 五个 authority boundary 必须分开：session lease/signal claim、sandbox process epoch、execution lease/fence、continuation delivery claim/fence、mutation scope generation/writer fence。一个 authority 的 idle、expiry、terminal 或 recovery 不能替代另一个 authority，也不能推断 `task.finish`。
@@ -325,3 +327,11 @@ Workspace projection 中的 `delegation` 不应只表达最近一次 `task.deleg
 - shutdown / failed 状态与可诊断摘要
 
 UI 可以保持 conversation-first，不需要把 agent runtime 暴露成运维控制台；但用户和开发者必须能看出 teammate 是 working、idle、blocked、failed 还是 waiting approval。默认用户 workspace 不展示 raw pending signal count、unread inbox count 或 wakeup reason；这些低层字段只属于 event/debug/diagnostic 视图。等待 approval 时，approval card 与 `workspace.pending_approvals` 是 canonical UI 信号；后端不得把 waiting approval 表述成最终完成消息。
+
+## 9. Runtime qualification contract
+
+注册式 deterministic scenarios 必须覆盖 restart/fencing、simultaneous claim、lost callback
+reconciliation、terminal-known invalid result、operator retirement 与 semantic-progress budgeting。
+worker outcome 只以 typed `semantic_progress` 表达有意义推进；lease/version/timestamp/diagnostic churn
+不能计数或触发即时 self-wakeup。qualification runner 自身不 acquire live session authority、不
+启动 resident teammate、不 resolve approval，也不把 idle/max-steps/report green 写成 task 终态。

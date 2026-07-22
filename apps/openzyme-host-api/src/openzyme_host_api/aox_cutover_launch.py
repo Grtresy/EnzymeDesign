@@ -33,6 +33,12 @@ from openzyme_tools import compile_hpc_tool_request
 from openzyme_tools import get_hpc_tool_contract
 
 from .aox_cutover_evidence import AOX_TOOLCHAIN_RUNTIME_CONTRACTS
+from .aox_architecture_qualification import (
+    normalize_architecture_qualification_receipt,
+)
+from .aox_architecture_qualification import (
+    verify_aox_architecture_qualification_report,
+)
 from .aox_cutover_runtime_config import (
     AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID,
 )
@@ -167,6 +173,7 @@ class AoxCutoverLaunchSnapshot:
     config_digest: str
     identity: dict[str, str]
     allowed_prerequisites: dict[str, object]
+    architecture_qualification: dict[str, str]
     _guard: Callable[[], None] = field(repr=False, compare=False)
 
     def assert_unchanged(self) -> None:
@@ -1237,6 +1244,7 @@ def pin_aox_cutover_launch(
     settings: OpenZymeSettings,
     driver: AoxCutoverDriverConfig,
     ledger_path: Path,
+    architecture_qualification_report: Path,
     repo_root: Path = REPO_ROOT,
     probes: AoxCutoverLaunchProbes = DEFAULT_LAUNCH_PROBES,
     runner_server_factory: Callable[[str | Path | None], _McpHpcServer] = (
@@ -1246,6 +1254,10 @@ def pin_aox_cutover_launch(
     """Bootstrap exact launch declarations from the actual trusted runtime."""
 
     resolved_root = repo_root.resolve()
+    architecture_qualification = verify_aox_architecture_qualification_report(
+        architecture_qualification_report,
+        repo_root=resolved_root,
+    )
     effective_config = build_aox_cutover_effective_config(
         settings,
         driver=driver,
@@ -1298,9 +1310,15 @@ def pin_aox_cutover_launch(
         ledger_path=ledger_path,
         declared_identity=actual_identity,
         declared_prerequisites=prerequisites,
+        architecture_qualification_report=architecture_qualification_report,
         repo_root=resolved_root,
         probes=probes,
     )
+    if snapshot.architecture_qualification != architecture_qualification:
+        raise AoxCutoverLaunchError(
+            "aox_architecture_qualification_receipt_mismatch",
+            "architecture qualification changed during AOX pinning",
+        )
     snapshot.assert_unchanged()
     return snapshot
 
@@ -1322,10 +1340,15 @@ def prepare_aox_cutover_launch(
     ledger_path: Path,
     declared_identity: Mapping[str, object],
     declared_prerequisites: Mapping[str, object],
+    architecture_qualification_report: Path,
     repo_root: Path = REPO_ROOT,
     probes: AoxCutoverLaunchProbes = DEFAULT_LAUNCH_PROBES,
 ) -> AoxCutoverLaunchSnapshot:
     resolved_root = repo_root.resolve()
+    architecture_qualification = verify_aox_architecture_qualification_report(
+        architecture_qualification_report,
+        repo_root=resolved_root,
+    )
     normalized_declared_identity = validate_aox_cutover_identity(declared_identity)
     normalized_prerequisites = validate_aox_cutover_allowed_prerequisites(
         declared_prerequisites,
@@ -1353,6 +1376,10 @@ def prepare_aox_cutover_launch(
             "declared AOX campaign identity differs from the actual launch runtime",
             details={"fields": identity_mismatches},
         )
+    architecture_qualification = normalize_architecture_qualification_receipt(
+        architecture_qualification,
+        expected_source_commit=actual_identity["git_commit"],
+    )
     validate_aox_cutover_allowed_prerequisites(
         normalized_prerequisites,
         identity=actual_identity,
@@ -1376,6 +1403,17 @@ def prepare_aox_cutover_launch(
         )
 
     def assert_unchanged() -> None:
+        current_architecture_qualification = (
+            verify_aox_architecture_qualification_report(
+                architecture_qualification_report,
+                repo_root=resolved_root,
+            )
+        )
+        if current_architecture_qualification != architecture_qualification:
+            raise AoxCutoverLaunchError(
+                "aox_architecture_qualification_receipt_mismatch",
+                "architecture qualification changed after AOX launch preparation",
+            )
         current_config = build_aox_cutover_effective_config(
             settings,
             driver=driver,
@@ -1402,6 +1440,7 @@ def prepare_aox_cutover_launch(
         config_digest=effective_config.digest,
         identity=actual_identity,
         allowed_prerequisites=expected_prerequisites,
+        architecture_qualification=architecture_qualification,
         _guard=assert_unchanged,
     )
 

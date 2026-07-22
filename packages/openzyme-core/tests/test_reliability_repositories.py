@@ -749,6 +749,7 @@ def test_durable_worker_dispatches_once_outside_transaction_and_finalizes_result
 
     dispatched = worker.run_execution_once(execution.execution_id)
     assert dispatched.action == "dispatch"
+    assert dispatched.semantic_progress is True
     assert dispatched.lifecycle_state == "result_ready"
     assert adapter.dispatch_count == 1
     assert adapter.external_transaction_states == [False]
@@ -768,6 +769,7 @@ def test_durable_worker_dispatches_once_outside_transaction_and_finalizes_result
 
     finalized = worker.run_execution_once(execution.execution_id)
     assert finalized.action == "terminalize_result"
+    assert finalized.semantic_progress is True
     assert finalized.lifecycle_state == "terminal"
     assert adapter.dispatch_count == 1
     terminal = repositories.controlled_operation_executions.get(execution.execution_id)
@@ -779,6 +781,41 @@ def test_durable_worker_dispatches_once_outside_transaction_and_finalizes_result
         repositories.controlled_operations.get(operation.operation_id).status
         is ControlledOperationStatus.COMPLETED
     )
+    unavailable = worker.run_execution_once(execution.execution_id)
+    assert unavailable.action == "not_claimable"
+    assert unavailable.semantic_progress is False
+
+
+def test_durable_worker_semantic_progress_excludes_authority_and_diagnostic_churn() -> (
+    None
+):
+    _, _, operation = _durable_repositories()
+    previous = _execution(operation)
+    churned = replace(
+        previous,
+        state_version=previous.state_version + 7,
+        fencing_token=previous.fencing_token + 3,
+        lease_owner="worker:replacement",
+        lease_token="lease:replacement",
+        lease_expires_at="2026-07-21T00:10:00+00:00",
+        error_code="poll_unchanged",
+        safe_error_summary="The external state did not change.",
+        updated_at="2026-07-21T00:00:09+00:00",
+    )
+
+    unchanged = ControlledOperationExecutionWorker._outcome(  # noqa: SLF001
+        previous,
+        churned,
+        action="poll",
+    )
+    backend_identified = ControlledOperationExecutionWorker._outcome(  # noqa: SLF001
+        churned,
+        replace(churned, backend_handle_ref="fixture-run://semantic-progress"),
+        action="reconcile",
+    )
+
+    assert unchanged.semantic_progress is False
+    assert backend_identified.semantic_progress is True
 
 
 def test_durable_result_terminal_never_infers_task_business_terminal() -> None:
@@ -1046,6 +1083,7 @@ def test_durable_worker_keeps_database_contention_out_of_backend_taxonomy(
     contended = worker.run_execution_once(execution.execution_id)
 
     assert contended.action == "database_busy"
+    assert contended.semantic_progress is False
     assert adapter.dispatch_count == 1
     current = repositories.controlled_operation_executions.get(execution.execution_id)
     assert current is not None
@@ -2535,13 +2573,16 @@ def test_continuation_delivery_worker_delivers_exact_result_once() -> None:
     outcome = worker.run_once()
 
     assert outcome.action == "delivered"
+    assert outcome.semantic_progress is True
     assert len(handle.deliveries) == 1
     assert handle.deliveries[0].result_handle_id == result.result_handle_id
     assert handle.deliveries[0].bounded_result_envelope == {
         "status": "completed",
         "records": 2,
     }
-    assert worker.run_once().action == "idle"
+    idle = worker.run_once()
+    assert idle.action == "idle"
+    assert idle.semantic_progress is False
     delivered = repositories.continuation_states.get(ready.continuation_id)
     assert delivered is not None
     assert delivered.delivery_state is ContinuationDeliveryState.DELIVERED
@@ -2573,6 +2614,7 @@ def test_continuation_delivery_missing_process_preserves_result_and_wakes_owner(
     outcome = worker.run_once()
 
     assert outcome.action == "recovery_failed"
+    assert outcome.semantic_progress is True
     failed = repositories.continuation_states.get(ready.continuation_id)
     assert failed is not None
     assert failed.delivery_state is ContinuationDeliveryState.RECOVERY_FAILED
@@ -2590,7 +2632,9 @@ def test_continuation_delivery_missing_process_preserves_result_and_wakes_owner(
     assert len(signals) == 1
     assert signals[0].reason is AgentRuntimeSignalReason.ENGINE_COMPLETED
     assert signals[0].source_ref == ready.continuation_id
-    assert worker.run_once().action == "idle"
+    idle = worker.run_once()
+    assert idle.action == "idle"
+    assert idle.semantic_progress is False
 
 
 def test_startup_recovery_preserves_result_and_wakes_once_when_process_is_gone() -> (
@@ -2624,6 +2668,7 @@ def test_startup_recovery_preserves_result_and_wakes_once_when_process_is_gone()
     assert len(outcomes) == 1
     assert outcomes[0].continuation_id == ready.continuation_id
     assert outcomes[0].action == "recovery_failed"
+    assert outcomes[0].semantic_progress is True
     failed = repositories.continuation_states.get(ready.continuation_id)
     assert failed is not None
     assert failed.delivery_state is ContinuationDeliveryState.RECOVERY_FAILED

@@ -8,6 +8,9 @@ from pathlib import Path
 import pytest
 
 from openzyme_host_api import aox_cutover_launch as launch
+from openzyme_host_api.aox_architecture_qualification import (
+    build_architecture_qualification_receipt,
+)
 from openzyme_pipeline import aox_motif
 from openzyme_runtime import ExecutionSettings
 from openzyme_runtime import HostApiSettings
@@ -26,6 +29,27 @@ from openzyme_tools import render_contract_command
 
 def _digest(label: str) -> str:
     return "sha256:" + hashlib.sha256(label.encode()).hexdigest()
+
+
+def _architecture_qualification() -> dict[str, str]:
+    return build_architecture_qualification_receipt(
+        report_payload_digest=_digest("qualification-report"),
+        registry_digest=_digest("qualification-registry"),
+        test_manifest_digest=_digest("qualification-manifest"),
+        profile_id="local_single_process_file_sqlite@1",
+        source_commit="a" * 40,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _verified_architecture_qualification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        launch,
+        "verify_aox_architecture_qualification_report",
+        lambda path, *, repo_root: _architecture_qualification(),
+    )
 
 
 def _settings(*, ledger_path: Path, hpc_config_path: Path) -> OpenZymeSettings:
@@ -589,6 +613,7 @@ def test_prepare_launch_validates_actual_identity_and_guard_detects_drift(
         ledger_path=ledger,
         declared_identity=identity,
         declared_prerequisites=prerequisites,
+        architecture_qualification_report=tmp_path / "qualification.json",
         repo_root=tmp_path,
         probes=probes,
     )
@@ -669,7 +694,8 @@ def test_prerequisites_require_all_nine_fields_and_identity_alignment(
     assert drift_error.value.code == "aox_launch_prerequisite_identity_mismatch"
 
 
-def test_prerequisites_reject_unexpected_field() -> None:
+@pytest.mark.parametrize("unexpected", ("architecture_qualification", "force"))
+def test_prerequisites_reject_unexpected_field(unexpected: str) -> None:
     identity = {
         "git_commit": "a" * 40,
         "config_digest": _digest("config"),
@@ -692,7 +718,7 @@ def test_prerequisites_reject_unexpected_field() -> None:
         "toolchain_image_digests": {
             key: _digest("toolchain") for key in launch.TOOLCHAIN_IDS
         },
-        "compatibility_fallback": True,
+        unexpected: True,
     }
 
     with pytest.raises(launch.AoxCutoverLaunchError) as error:
@@ -702,7 +728,8 @@ def test_prerequisites_reject_unexpected_field() -> None:
         )
 
     assert error.value.code == "aox_launch_prerequisite_schema_invalid"
-    assert error.value.details["unexpected"] == ["compatibility_fallback"]
+    assert error.value.details["unexpected"] == [unexpected]
+    assert len(launch.ALLOWED_PREREQUISITE_FIELDS) == 9
 
 
 def test_prerequisites_reject_distinct_hmmer_sif_digests() -> None:
@@ -762,6 +789,7 @@ def test_prepare_launch_rejects_declared_config_digest_drift(tmp_path: Path) -> 
             ledger_path=ledger,
             declared_identity=identity,
             declared_prerequisites=prerequisites,
+            architecture_qualification_report=tmp_path / "qualification.json",
             repo_root=tmp_path,
             probes=probes,
         )
@@ -800,6 +828,7 @@ def test_prepare_launch_rejects_sandbox_sdk_identity_drift(tmp_path: Path) -> No
             ledger_path=ledger,
             declared_identity=identity,
             declared_prerequisites=prerequisites,
+            architecture_qualification_report=tmp_path / "qualification.json",
             repo_root=tmp_path,
             probes=drifted,
         )
@@ -990,6 +1019,7 @@ def test_pin_launch_self_validates_generated_identity_and_prerequisites(
         settings=settings,
         driver=driver,
         ledger_path=ledger,
+        architecture_qualification_report=tmp_path / "qualification.json",
         repo_root=tmp_path,
         probes=probes,
         runner_server_factory=lambda _: object(),
@@ -999,3 +1029,4 @@ def test_pin_launch_self_validates_generated_identity_and_prerequisites(
     assert captured["prepare"]["declared_prerequisites"] == expected_prerequisites
     assert snapshot.identity == expected_identity
     assert snapshot.allowed_prerequisites == expected_prerequisites
+    assert snapshot.architecture_qualification == _architecture_qualification()

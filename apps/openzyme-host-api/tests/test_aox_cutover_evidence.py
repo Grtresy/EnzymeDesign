@@ -10,6 +10,9 @@ from pathlib import Path
 
 import pytest
 
+from openzyme_host_api.aox_architecture_qualification import (
+    build_architecture_qualification_receipt,
+)
 from openzyme_host_api.aox_attempt_supervision import DEFAULT_KILL_GRACE_SECONDS
 from openzyme_host_api.aox_attempt_supervision import DEFAULT_TERM_GRACE_SECONDS
 from openzyme_host_api.aox_attempt_supervision import (
@@ -237,6 +240,19 @@ def _identity(
         "image_digest": _digest("image"),
         "sdk_digest": _digest("sdk"),
     }
+
+
+def _architecture_qualification(
+    identity: dict[str, str] | None = None,
+) -> dict[str, str]:
+    pinned = identity or _identity()
+    return build_architecture_qualification_receipt(
+        report_payload_digest=_digest("qualification-report"),
+        registry_digest=_digest("qualification-registry"),
+        test_manifest_digest=_digest("qualification-manifest"),
+        profile_id="local_single_process_file_sqlite@1",
+        source_commit=pinned["git_commit"],
+    )
 
 
 def _delegation_workflow_receipt(
@@ -3438,6 +3454,10 @@ def _valid_evidence(
             },
             "public_api_receipts": _public_api_receipts(),
             "launch_receipt": {
+                "schema_id": cutover_evidence.AOX_LAUNCH_RECEIPT_SCHEMA_ID,
+                "architecture_qualification": clean_world[
+                    "architecture_qualification"
+                ],
                 "root_identity": clean_world["root_identity"],
                 "hpc_workspace_label": clean_world["hpc_workspace_label"],
                 "campaign_attempt_number": 3 if attempt_kind == "fault" else 1,
@@ -4632,6 +4652,7 @@ def _build_bundle(
         attempt_kind=attempt_kind,
         attempt_id=f"{attempt_kind}-one",
         allowed_prerequisites=_allowed_prerequisites(identity),
+        architecture_qualification=_architecture_qualification(identity),
     )
     evidence = _valid_evidence(
         roots.artifact_root,
@@ -4664,6 +4685,56 @@ def _rewrite_envelope(bundle_path: Path, mutate) -> None:
     mutate(envelope)
     bundle_path.chmod(0o600)
     bundle_path.write_bytes(canonical_json_bytes(envelope) + b"\n")
+
+
+@pytest.mark.parametrize(
+    ("tamper", "expected_code"),
+    (
+        ("missing", "aox_architecture_qualification_receipt_missing"),
+        ("mismatch", "aox_architecture_qualification_receipt_mismatch"),
+        (
+            "unknown_version",
+            "aox_architecture_qualification_receipt_version_unsupported",
+        ),
+        ("old_bundle_schema", "bundle_schema_invalid"),
+    ),
+)
+def test_offline_verifier_rejects_qualification_receipt_drift(
+    tmp_path: Path,
+    tamper: str,
+    expected_code: str,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def mutate(envelope: dict[str, object]) -> None:
+        payload = envelope["payload"]
+        launch = payload["product_path"]["launch_receipt"]
+        if tamper == "missing":
+            launch.pop("architecture_qualification")
+        elif tamper == "mismatch":
+            launch["architecture_qualification"] = (
+                build_architecture_qualification_receipt(
+                    report_payload_digest=_digest("different-report"),
+                    registry_digest=_digest("qualification-registry"),
+                    test_manifest_digest=_digest("qualification-manifest"),
+                    profile_id="local_single_process_file_sqlite@1",
+                    source_commit="a" * 40,
+                )
+            )
+        elif tamper == "unknown_version":
+            launch["architecture_qualification"]["schema_id"] = (
+                "aox_architecture_qualification_receipt@999"
+            )
+        else:
+            payload["schema_id"] = "aox_blank_world_attempt_bundle@1"
+        envelope["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, mutate)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(issue.code == expected_code for issue in result.issues)
 
 
 def _rewrite_fault_closure_evidence(
@@ -4917,6 +4988,7 @@ def test_blank_world_preflight_creates_unique_empty_roots_without_public_paths(
         attempt_kind="positive",
         attempt_id="positive-clean",
         allowed_prerequisites=_allowed_prerequisites(),
+        architecture_qualification=_architecture_qualification(),
     )
 
     assert not roots.sqlite_path.exists()
@@ -4942,6 +5014,7 @@ def test_blank_world_preflight_rejects_preloaded_science(tmp_path: Path) -> None
             attempt_kind="positive",
             attempt_id="positive-preloaded",
             allowed_prerequisites=_allowed_prerequisites(),
+            architecture_qualification=_architecture_qualification(),
         )
 
     assert error.value.code == "preloaded_science_detected"
@@ -4957,6 +5030,7 @@ def test_blank_world_preflight_rejects_science_in_allowed_prerequisites(
             attempt_kind="positive",
             attempt_id="positive-prerequisite",
             allowed_prerequisites={"alignment_fasta": ">cached\nMPEPTIDE\n"},
+            architecture_qualification=_architecture_qualification(),
         )
 
     assert error.value.code == "allowed_prerequisite_schema_invalid"
@@ -6761,6 +6835,7 @@ def test_scoring_is_recomputed_not_trusted_from_declared_digest(tmp_path: Path) 
         attempt_kind="positive",
         attempt_id="positive-wrong-score",
         allowed_prerequisites=_allowed_prerequisites(),
+        architecture_qualification=_architecture_qualification(),
     )
     evidence = _valid_evidence(
         roots.artifact_root,
@@ -6824,6 +6899,7 @@ def test_similarity_graph_is_recomputed_from_candidate_and_membership_bytes(
         attempt_kind="positive",
         attempt_id="positive-wrong-graph",
         allowed_prerequisites=_allowed_prerequisites(),
+        architecture_qualification=_architecture_qualification(),
     )
     evidence = _valid_evidence(
         roots.artifact_root,
@@ -6918,6 +6994,7 @@ def test_bundle_rejects_artifact_symlink_even_when_target_stays_in_root(
         attempt_kind="positive",
         attempt_id="positive-symlink",
         allowed_prerequisites=_allowed_prerequisites(),
+        architecture_qualification=_architecture_qualification(),
     )
     evidence = _valid_evidence(
         roots.artifact_root,
@@ -8984,6 +9061,7 @@ def test_campaign_derives_go_only_with_required_chrome_proof(
         positive_runner=positive_runner,
         fault_runner=fault_runner,
         allowed_prerequisites=_allowed_prerequisites(campaign_identity),
+        architecture_qualification=_architecture_qualification(campaign_identity),
     )
 
     records, decision = campaign.run()
@@ -9077,6 +9155,7 @@ def test_campaign_rejects_reused_positive_runtime_receipts(tmp_path: Path) -> No
         positive_runner=positive_runner,
         fault_runner=fault_runner,
         allowed_prerequisites=_allowed_prerequisites(campaign_identity),
+        architecture_qualification=_architecture_qualification(campaign_identity),
     )
 
     records, decision = campaign.run()
@@ -9114,6 +9193,7 @@ def test_campaign_launch_guard_fails_before_attempt_roots_or_runner_call(
         positive_runner=runner,
         fault_runner=runner,
         allowed_prerequisites=_allowed_prerequisites(),
+        architecture_qualification=_architecture_qualification(),
         launch_guard=launch_guard,
     )
 
@@ -9179,6 +9259,7 @@ def test_fault_runner_exception_is_sealed_and_campaign_stays_no_go(
         positive_runner=positive_runner,
         fault_runner=fault_runner,
         allowed_prerequisites=_allowed_prerequisites(campaign_identity),
+        architecture_qualification=_architecture_qualification(campaign_identity),
     )
 
     records, decision = campaign.run()
@@ -9225,6 +9306,7 @@ def test_campaign_runner_failure_is_sealed_as_safe_no_go_evidence(
         positive_runner=failing_runner,
         fault_runner=failing_runner,
         allowed_prerequisites=_allowed_prerequisites(),
+        architecture_qualification=_architecture_qualification(),
     )
 
     records, decision = campaign.run()

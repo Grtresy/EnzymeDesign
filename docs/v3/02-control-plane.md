@@ -322,6 +322,8 @@ claimed --operator release--> pending
 
 五个 authority boundary 独立存在：session lease/signal claim、sandbox process epoch、execution lease/fence、continuation delivery claim/fence、mutation scope generation/writer fence。process identity 不等于 delivery authority，delivery 也不把已释放的 session lease 交还给 process。它们的 acquire、heartbeat、stale recovery 与 terminal 条件不可互相替代；任何一个对象的 terminal 都不能自动 terminalize task。
 
+durable supervision 的进展也是 owner-produced closed fact，而不是 action-name projection。`RuntimeCommandWorkerOutcome`、`ControlledOperationExecutionWorkerOutcome` 与 `ContinuationDeliveryWorkerOutcome` 必须携带 typed `semantic_progress`；Host seam 对缺失/非 boolean 值 fail closed。execution owner 只把 lifecycle、terminal/effect/retry、dispatch generation、backend/result identity 或 result/artifact-set digest 的 canonical 变化算作进展；lease/fence/version/timestamp、event/diagnostic 写入、claim race、not-claimable、database busy 与 unchanged poll/reconcile 都是可观察但不驱动即时继续的 no-progress。supervisor 只有在一个 bounded tick 的全部 slots 都报告 semantic progress 时才可通知一次可能的 backlog，且该事实不授权 effect、task transition 或 scientific decision。
+
 `ControlledOperation.status/result/error` 对 durable owner 只是由唯一 transition service 在同一 transaction 中派生的兼容投影。immutable result handle 若承载 S12 adapter envelope，完整 envelope 只投影到 `adapter_result_envelope`，其中 exact object `bounded_summary` 单独投影到 `result_summary`；不得把外层 envelope 再嵌入 `result_summary`，否则 sandbox SDK 会看到错误的 wire shape。存在但非 object 的 `bounded_summary` 必须使 transition fail closed；没有该字段的 HPC run handle 与 terminal failure envelope 保持 direct summary 投影。provider callback 丢失后的 materialization 只能从同一 execution handle 已封存且实际 digest 复核通过的 request/observation transcript 重建相同 envelope，不得把 artifact count 通用摘要当作 provider result；closed schema、route/config/output identity、`8 MiB` control-document 或完整 canonical result envelope 的 `256 KiB` core 上限任一不满足即 terminal-known failure。inline summary 只是该完整 envelope 的一部分，bulk identities 必须留在 digest-bound artifacts；EBI HMMER 的 exact candidates 由 `provider_parsed/parsed_hits.csv` 承载而不复制进 summary。terminal-known observation 若不能通过 closed result validation，execution 直接以 `recovery_failed` 终结，不能回到 reconcile queue。raw repository save、legacy adapter、approval row、continuation 或 runtime signal 都不得成为第二个 dispatch/reducer owner。恢复边界由 effect certainty 决定：仅 `no_effect` 可做同 phase 有界恢复，`dispatch_in_doubt` 禁止 replay，`effect_known` 只查询 exact handle，`terminal_known` 只恢复 result/materialization。
 
 Mutation scope 的 closure 顺序固定为 close admission/advance fence、显式等待全部 writer/descendant 退休、捕获两次一致的 bounded SQLite/event/external snapshot、签发 receipt、验证后 seal exact generation。runtime idle、空队列、lease expiry、HTTP 返回、timeout、disconnect 或 missing handle 不能推断 writer retirement；receipt/seal 也不表示 task completed。后续合法写入必须进入显式链接的新 generation。
@@ -489,3 +491,12 @@ control plane 事件流由 `durable_event_records` 持久化，不以 Host 进�
 - Graph checkpoint 不作为产品顶层真状态来源。
 - 若有 state 仍需存于 LangGraph，只允许是某 capability engine 的局部运行态。
 - 不新增 `episode`、phase rail 或 supervisor-route 语义。
+
+## 6. Qualification observer boundary
+
+架构资格场景可以通过当前 repository、event、artifact、workspace 和 public projection 读取并闭合
+canonical observations，但不得为了得到 green 直接 seed success、写 task terminal state、制造
+approval/effect 或新增 campaign row。qualification report 与 AOX
+`architecture_qualification` receipt 是 checkout 外 operator evidence，不是 control-plane object；
+control plane 不以其存在推断 session/task 完成。AOX 只在独立 launch admission 边界验证 receipt，
+失败必须先于 root、sandbox、provider、runner、Chrome 与 MICU effect。
