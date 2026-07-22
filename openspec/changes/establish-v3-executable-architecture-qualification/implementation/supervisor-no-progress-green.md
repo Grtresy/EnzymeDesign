@@ -126,3 +126,10 @@ The next authority boundary is therefore not another product P0 repair: it is
 AOX pre-effect admission integration, mainline/docs closure, a real commit, and
 generation of a clean-HEAD full `admission` report. AOX/r48 remains paused until
 that sequence completes.
+
+The product repair and qualification implementation were committed as
+`d653030a573600aa458318e4122c28fa872ee3ed`. The canonical
+`p0-closures.json` binds this commit to
+`fix-v3-durable-supervisor-semantic-progress`, the original red scenario and
+baseline payload digest. A later immutable full report must independently carry
+and revalidate that closed record before admission.

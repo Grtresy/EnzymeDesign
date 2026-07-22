@@ -1,19 +1,20 @@
 # V3 executable architecture qualification pre-admission audit
 
-Status: implementation-complete, pre-closure-commit audit; **not admission authority**.
+Status: implementation-and-P0-closure-complete, pre-admission audit; **not admission authority**.
 
 ## Scorecard
 
 | Dimension | Result |
 | --- | --- |
-| Completeness | 79/86 tasks complete; seven commit/admission-dependent tasks remain |
+| Completeness | 82/86 tasks complete; four clean-admission-dependent tasks remain |
 | Correctness | 14/14 requirements have direct implementation and test evidence |
 | Coherence | design dependency direction, profile boundary and AOX no-live rule followed |
 
-No requirement implementation is missing. The seven remaining checklist items are deliberately
-post-commit: exact P0 closure refs (`7.8`, `7.15`), full post-closure diagnostic (`7.9`), clean
-admission generation/reverification and final AOX/audit checks (`10.6`-`10.9`). They remain
-critical before archive or any statement that r48 may be resumed.
+No requirement implementation is missing. Both P0 closures now carry exact focused change and
+commit references, and the full post-closure diagnostic is green. The four remaining checklist
+items (`10.6`-`10.9`) require a canonical clean commit, full admission generation/reverification,
+and final AOX/audit checks. They remain critical before archive or any statement that r48 may be
+resumed.
 
 ## Requirement evidence map
 
@@ -37,9 +38,11 @@ critical before archive or any statement that r48 may be resumed.
 ## Executed evidence
 
 - Full diagnostic: payload
-  `sha256:49e19c79a83e41faaf0c7009ae4bd92e0865c8f4036567b16ff0ceba59f280a3`;
-  12/12 scenarios and 12/12 invariants satisfied, zero GAP, zero open P0, no real external effect,
-  no AOX live start; only `mode_not_admission` and `source_not_clean` remained.
+  `sha256:daddec8d2100d368de5a91a6ba7ad0579e0e35ace2f258f70dc55710c536fd3d`;
+  12/12 scenarios and 12/12 invariants satisfied, zero GAP, zero open P0, two closed P0 records,
+  no real external effect, no AOX live start; only `mode_not_admission` and `source_not_clean`
+  remained. The closed records bind both focused changes to implementation commit
+  `d653030a573600aa458318e4122c28fa872ee3ed`.
 - Architecture qualification test tree: all tests passed.
 - AOX CLI/launch/evidence/live/supervision focused suite: all tests passed.
 - Owner-focused public diagnostic, durable runtime-command/execution/continuation and Host supervisor
@@ -56,7 +59,7 @@ critical before archive or any statement that r48 may be resumed.
 
 ## Pre-admission assessment
 
-There are no correctness or coherence warnings. The implementation is ready for its closure
-commit sequence, but is not ready to archive and does not authorize AOX/r48. Exact closure commit
-refs, a clean full admission report, independent pure verification and final no-effect AOX gate
-checks remain mandatory.
+There are no correctness or coherence warnings. The implementation and P0 closures are ready for
+their closure-record commit, but the change is not ready to archive and does not authorize AOX/r48.
+A clean full admission report, independent pure verification and final no-effect AOX gate checks
+remain mandatory.

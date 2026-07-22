@@ -74,14 +74,14 @@
 - [x] 7.5 在任何产品修复前冻结每个 confirmed P0 的原始 red scenario、最小复现、effect/state/event 证据与 baseline report digest
 - [x] 7.6 为每个 confirmed P0 创建独立 focused OpenSpec change，并在本清单追加具名的实现、owner-focused regression、原 red scenario 与 closure-ref 子任务；若零 P0，则记录完整零缺口证据
 - [x] 7.7 逐项完成新增的具名 P0 子任务，禁止通过删除/deselect/skip/xfail、简化 fixture、无合同依据放宽 budget 或弱化 invariant 获得 green
-- [ ] 7.8 每关闭一个 P0 后重跑其原始 red scenario 与 owner-focused tests，并在后续 immutable report 中记录 exact change/commit closure refs
-- [ ] 7.9 全部 P0 子任务完成后重跑完整 diagnostic matrix，要求十个 family 全部 satisfied、零 open P0、零 unproven，才允许进入 AOX admission 集成
+- [x] 7.8 每关闭一个 P0 后重跑其原始 red scenario 与 owner-focused tests，并在后续 immutable report 中记录 exact change/commit closure refs
+- [x] 7.9 全部 P0 子任务完成后重跑完整 diagnostic matrix，要求十个 family 全部 satisfied、零 open P0、零 unproven，才允许进入 AOX admission 集成
 - [x] 7.10 `bound-public-diagnostic-sanitizer-work`：实现 fixed-left-boundary credential URI scan，保持完整输入、既有脱敏顺序和稳定 marker
 - [x] 7.11 `bound-public-diagnostic-sanitizer-work`：owner-focused 64 KiB、混合 URI、encoded locator、nested payload 与 idempotence 回归通过
 - [x] 7.12 `bound-public-diagnostic-sanitizer-work`：原冻结场景与 pure verifier 通过，closure report 为 `sha256:ae4d784719af50069c6fbc339758359233de534a44a8426f93f892561ff398fe`
 - [x] 7.13 `fix-v3-durable-supervisor-semantic-progress`：实现三类 durable worker 的 typed semantic-progress outcome 与 canonical execution fingerprint
 - [x] 7.14 `fix-v3-durable-supervisor-semantic-progress`：owner-focused contract/accounting/wakeup/task-authority 回归通过
-- [ ] 7.15 `fix-v3-durable-supervisor-semantic-progress`：原冻结 supervisor 场景与 pure verifier 通过，并记录具名 change/commit closure refs
+- [x] 7.15 `fix-v3-durable-supervisor-semantic-progress`：原冻结 supervisor 场景与 pure verifier 通过，并记录具名 change/commit closure refs
 
 ## 8. AOX qualification admission 与证据 receipt
 

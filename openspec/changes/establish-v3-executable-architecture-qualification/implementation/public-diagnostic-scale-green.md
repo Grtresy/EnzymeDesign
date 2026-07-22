@@ -96,7 +96,10 @@ this file was created.
 - `budget_exceeded=false`, no failure digest, no observed P0 trigger,
   `external_effects_real=false`, `aox_live_started=false`
 
-The same report leaves exactly one open P0:
-`p0.supervisor-progress.semantic-progress`. Therefore the sanitizer P0 is
-focused-green, but the parent qualification change and AOX/r48 remain blocked
-on the supervisor repair and a later full zero-P0 admission cycle.
+At the time this historical focused report was generated, it left exactly one
+open P0: `p0.supervisor-progress.semantic-progress`. Both repairs were later
+committed together as `d653030a573600aa458318e4122c28fa872ee3ed` and the
+canonical `p0-closures.json` now binds this sanitizer P0 to
+`bound-public-diagnostic-sanitizer-work`, its original red scenario and the
+baseline payload digest. This exact ref still requires current full-report
+reverification and does not itself authorize AOX/r48.

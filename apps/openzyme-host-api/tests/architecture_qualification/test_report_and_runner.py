@@ -176,7 +176,10 @@ def test_admission_requires_clean_full_zero_p0(
     report = _build("admission", source=clean)
     assert report.payload["admission_eligible"] is True
     assert report.payload["rejection_reasons"] == []
-    assert report.payload["p0_records"] == []
+    assert len(report.payload["p0_records"]) == 2  # type: ignore[arg-type]
+    assert all(
+        item["status"] == "closed" for item in report.payload["p0_records"]  # type: ignore[union-attr]
+    )
     assert all(
         item["status"] == "satisfied" for item in report.payload["invariants"]  # type: ignore[union-attr]
     )
