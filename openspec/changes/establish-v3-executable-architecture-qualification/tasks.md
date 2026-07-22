@@ -109,7 +109,7 @@
 - [x] 10.3 运行完整 diagnostic qualification、相关 package/app pytest、ruff 与 `uv run python -m openzyme_host_api.evals`
 - [x] 10.4 运行 `./scripts/check-mainline.sh`，确认 mainline subset 绿色但仍被正确标记为 non-admissible
 - [x] 10.5 运行 OpenSpec strict validation 与 implementation-to-artifact verify，逐条审计本 spec 的 14 项 requirement 和所有 scenario 均有直接证据
-- [ ] 10.6 提交全部资格体系、P0 closure、AOX gate 与文档变更后，从 canonical clean HEAD 在 checkout 外生成首个 full `admission` report
-- [ ] 10.7 用当前 checkout 的 pure verifier 独立验证 admission report，确认 exact clean commit、full selection、十个 family satisfied、零 open P0 与所有 digest 一致
-- [ ] 10.8 验证 AOX 在缺失/错误 report 时仍于任何 effect 前 NO-GO，在 exact report 下仅变为可进入独立外部门禁且没有实际启动 r48/live
-- [ ] 10.9 完成 requirement-by-requirement completion audit，确认 machine/admission evidence、GAP/P0 refs、文档、OpenSpec 状态与工作树一致后，才记录“允许另行恢复 AOX live campaign”结论
+- [x] 10.6 提交全部资格体系、P0 closure、AOX gate 与文档变更后，从 canonical clean HEAD 在 checkout 外生成首个 full `admission` report
+- [x] 10.7 用当前 checkout 的 pure verifier 独立验证 admission report，确认 exact clean commit、full selection、十个 family satisfied、零 open P0 与所有 digest 一致
+- [x] 10.8 验证 AOX 在缺失/错误 report 时仍于任何 effect 前 NO-GO，在 exact report 下仅变为可进入独立外部门禁且没有实际启动 r48/live
+- [x] 10.9 完成 requirement-by-requirement completion audit，确认 machine/admission evidence、GAP/P0 refs、文档、OpenSpec 状态与工作树一致后，才记录“允许另行恢复 AOX live campaign”结论
