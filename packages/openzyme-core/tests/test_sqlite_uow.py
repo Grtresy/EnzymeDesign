@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC
 from datetime import datetime
+from datetime import timedelta
 import sqlite3
 from threading import Event
 from threading import Thread
@@ -435,13 +436,17 @@ def test_lease_acquire_timestamps_after_waiting_for_write_lock(tmp_path) -> None
             assert acquire_attempting.wait(timeout=5)
             time.sleep(1.2)
             assert future.done() is False
+            lock_release_floor = datetime.now(tz=UTC).replace(microsecond=0)
             blocker.connection.rollback()
             acquired = future.result(timeout=5)
 
     assert acquired.acquired is True
     lease = acquired.lease
     assert lease is not None
-    assert datetime.fromisoformat(lease.expires_at) > datetime.now(tz=UTC)
+    acquired_at = datetime.fromisoformat(lease.acquired_at)
+    expires_at = datetime.fromisoformat(lease.expires_at)
+    assert acquired_at >= lock_release_floor
+    assert expires_at - acquired_at == timedelta(seconds=1)
 
 
 def _save_session(provider: SQLiteRepositoryProvider, session: Session) -> None:
