@@ -105,7 +105,7 @@ def test_bio_provider_route_policy_config_identities_track_corrective_semantics(
     hmmer = S12_ROUTE_POLICIES["bio.hmmer_search.provider:v1"]
 
     assert uniprot["provider_config_digest"] == "provider_config:uniprot:v3"
-    assert hmmer["provider_config_digest"] == "provider_config:ebi_hmmer:v2"
+    assert hmmer["provider_config_digest"] == "provider_config:ebi_hmmer:v3"
     assert uniprot["runtime_packaging_id"] == "provider_http:v1"
     assert hmmer["runtime_packaging_id"] == "provider_http:v1"
 

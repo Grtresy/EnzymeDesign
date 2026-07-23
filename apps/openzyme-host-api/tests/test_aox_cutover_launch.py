@@ -483,7 +483,7 @@ def test_effective_config_rejects_attempt_timeout_below_long_operation_hierarchy
 
     assert error.value.code == "aox_launch_timeout_hierarchy_invalid"
     assert error.value.details == {
-        "hmmer_poll_timeout_seconds": 1_800.0,
+        "hmmer_poll_timeout_seconds": 3_300.0,
         "sandbox_exec_timeout_seconds": 3_600,
         "sandbox_exec_max_timeout_seconds": 3_600,
         "minimum_timeout_seconds": 7_200.0,

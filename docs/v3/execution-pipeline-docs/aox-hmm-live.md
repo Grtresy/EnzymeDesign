@@ -121,16 +121,20 @@ structured error with `id=null`. The SDK continues to require exact response-id
 equality.
 
 EBI HMMER keeps route policy `bio.hmmer_search.provider:v1` and binds
-`provider_config:ebi_hmmer:v2`. Result `page_size` defaults to and is capped at
-`1000`. Poll requests explicitly carry `page=1&page_size=<configured>`, but the
-terminal payload is consumed only for status and `result.stats.nreported`; any
-hits included there are never result page 1. Materialization starts with a
-separate explicit page 1 at the same width and reads through one stable
-cross-page `page_count`. For a non-truncated result, materialized raw hit count
-must equal terminal `nreported`. A successful empty result is exactly
+`provider_config:ebi_hmmer:v3`. Result `page_size` defaults to and is capped at
+`1000`. EBI/Celery `RETRY` remains nonterminal for the same accepted job for at
+most `3300s`; the adapter never submits a replacement job. Poll requests
+explicitly carry `page=1&page_size=<configured>`, but the terminal payload is
+consumed only for status and `result.stats.nreported`; any hits included there
+are never result page 1. Materialization starts with a separate explicit page 1
+at the same width and reads through one stable cross-page `page_count`. For a
+non-truncated result, materialized raw hit count must equal terminal
+`nreported`. A successful empty result is exactly
 `nreported=0`, provider `page_count=0`, and `hits=[]` on the explicit first
-result request. This does not change `max_hits`, provider order, score filtering,
-or the 11-column parsed schema.
+result request. `FAILURE`/unknown statuses and all result-closure drift fail
+closed; a nonterminal status at the deadline becomes retryable
+`provider_timeout`. This does not change `max_hits`, provider order, score
+filtering, or the 11-column parsed schema.
 
 When the HMMER score filter is non-empty, the complete exact accession artifact
 is passed once to `bio.uniprot_fetch` under `provider_config:uniprot:v3` and
@@ -385,18 +389,20 @@ executor still uses `hpc.workspace`, `hpc.stage_artifact`,
 requires those Host-supervised mechanics.
 
 The current trusted-Host containment has an AOX-specific timeout hierarchy.
-EBI HMMER polling remains bounded at `1800s`; every `sandbox.exec` invocation
-whose source may reach `bio.hmmer_search` MUST request
-`timeout_seconds=3600` under `s09.exec_policy.v2`; the formal live session and
-public request are bounded at no less than `7200s`. Short inspection or
+EBI HMMER polling is bounded at `3300s`; every `sandbox.exec` invocation whose
+source may reach `bio.hmmer_search` MUST request `timeout_seconds=3600` under
+`s09.exec_policy.v2`; the formal live session and public request are bounded at
+no less than `7200s`. Short inspection or
 source-repair commands that cannot reach HMMER may use shorter bounds, but they
 still require an explicitly authored non-empty source tree and receive their
 own source snapshot. This
 fixes a world constraint, not an execution graph: the agent remains free to
 author, inspect and repair source, but an undersized HMM-capable command fails
 before approval/provider dispatch and never authorizes a duplicate operation.
-The `1800s` value bounds polling rather than claiming an aggregate bound over
-all result-page transfer. Any timeout still fails closed without hidden replay.
+The `3300s` value covers the provider's first 30-minute `RETRY` boundary while
+leaving 300 seconds inside the sandbox deadline; it bounds polling rather than
+claiming an aggregate bound over all result-page transfer. Any timeout still
+fails closed without hidden replay.
 
 This is a branch-derived evidence closure, not a unique execution order and not
 permission to omit a reached dependency. The offline verifier derives the

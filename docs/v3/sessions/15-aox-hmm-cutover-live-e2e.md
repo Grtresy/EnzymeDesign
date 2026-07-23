@@ -1146,6 +1146,64 @@ path 返回既有 event 前调用现有 `_commit()` 收口隐式 transaction；o
 可以正常 terminal retirement。后继 numbered campaign 必须在该 correction 的 clean commit 上
 重新生成 full admission、fresh pin 和全新 roots。
 
+## r50 HMMER retry 与 durable probe attestation attempt：永久 NO-GO
+
+r50 使用 clean commit `723336f0aad3f766c130de4c7589060b13cc5a12`，fresh full
+architecture admission payload digest
+`sha256:319271f69a18eef1fd7d22a3efc0df134b1de37cfb8a74412bdd616b8bbf6b0d`、
+registry digest
+`sha256:707e7d9f74978652bb818e86f9c5509127c14ae311d4ffa4e9ad860d6fa296fa`
+与 test-manifest digest
+`sha256:32b5c7a91587cd59a0c0c34dd855b350b10797178d4399810c2cd06dac5457dd`
+通过后，以 config digest
+`sha256:a799a41159688b5bc6df2b060468fc4176f7780a7855721ecc7c1ab40a3a982e`
+启动 fresh positive attempt `positive-e6a31da461e8427abc97f74465593245`。
+
+known-positive probe 的真实 NCBI、UniProt、MAFFT、hmmbuild、CD-HIT 与 HMMalign
+六项 operation 全部完成；其中四个 SSH tool operation 的 runner-owned pending raw result
+均含 same-shell `mcp_hpc_toolchain_runtime_identity@1`。但旧 durable HPC materializer
+重建 immutable operation result 时只保留 run/artifact/fetch refs，遗漏该 runner attestation。
+collector 没有从 toolchain pin 或 artifact metadata 猜测身份，而是正确给出
+`toolchain_image_identity_missing`，因此 probe 的六项 checks 保持 failed；底层真实 operation
+完成不等于 cutover probe attestation 完成。
+
+formal 路径真实取得 PubMed primary evidence，完成 exact-14 NCBI、MAFFT 与 hmmbuild。
+Chrome 通过 canonical approval `appr_c0592ffe765c` 批准同一 operation
+`op_a68d862c1466`，browser approval receipt digest 为
+`sha256:df5f7e57f6756ed93fcb2025e0c85646665eff4421c1b1d445dfb180585b9928`。
+EBI HMMER submit 接受 job `563241d6-b460-4c74-bc92-70a34ab7c18a`；result endpoint
+返回 Celery `{status: RETRY}` 时，旧 adapter 因 nonterminal set 漏掉 `RETRY`，把仍存活的
+同一 job 错判为 non-retryable `provider_invalid_request`。它没有 submit replacement job，
+但 formal path 因该 terminal failure 停止。
+
+r50 attempt bundle digest
+`sha256:07eec83396eeef00a0331431da8c1bf4e30368b1ba998453de680bab73450f64`
+经 network-free offline verifier 复核为 `issues=[]`；sealed decision digest
+`sha256:da164049f628f15dbf66bb9498f7087cabf49c02b4a39309b799f98587db07ca`
+保持永久 **NO-GO**。MICU 从 `71,727,249` 增至
+`72,553,945 / 500,000,000`，remaining `427,446,055`，零 breach/overage。
+r50 root、provider job/effect、probe/formal artifacts、approval、browser receipt、bundle、
+decision 与 pin 永久不可复用。
+
+纠正保持局部且 fail closed：
+
+- EBI HMMER 绑定 `provider_config:ebi_hmmer:v3`，把 `RETRY` 作为原 accepted job 的非终态，
+  只轮询同一 job id；poll deadline 从与 provider 首次 retry 边界重合的 `1800s` 调整为
+  `3300s < sandbox 3600s`，到期仍非终态映射为 retryable `provider_timeout`，
+  `FAILURE`/未知状态继续 terminal failure；
+- durable HPC route 对 terminal raw attestation closed-validate schema/scope/mode、catalog
+  tool id、identifiers 与 digests，只把 exact safe eight fields 投影进 immutable result
+  envelope 并剥离 private SIF path。present-but-invalid identity 以
+  `durable_hpc_toolchain_runtime_identity_invalid` terminal-known fail closed，不进入 reconcile
+  热循环；missing identity 仍不得推断。
+
+correction 后 AOX SOP digest 为
+`sha256:80d7d10f07865866145cbd9633f3129b6e611b929d0037efaa82ef781e46c65f`，
+current workflow selection ref 为
+`workflow:aox-hmm-live@2.0.0#sha256:b8f3424aa591ab59fb89e911df65e5d44300614933fb8d10105028c296ad17f4`。
+下一次 numbered campaign 必须在 correction clean commit 上重新完成 full admission、
+fresh pin 与 fresh roots，不能读取、恢复或 adopt r50 effects。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

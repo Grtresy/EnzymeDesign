@@ -15,6 +15,7 @@ from openzyme_domain import ArtifactKind
 from openzyme_domain import ControlledOperationDispatchRequest
 from openzyme_domain import ControlledOperationExecution
 from openzyme_domain import ControlledOperationExecutionLifecycle
+from openzyme_domain import ControlledOperationExecutionTerminalOutcome
 from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import RetryEligibility
@@ -27,6 +28,18 @@ from openzyme_host_api.durable_routes import (
     HostProviderControlledOperationRouteAdapter,
 )
 from openzyme_host_api.durable_routes import durable_adapter_policy_id
+
+
+_TOOLCHAIN_RUNTIME_IDENTITY = {
+    "schema_id": "mcp_hpc_toolchain_runtime_identity@1",
+    "attestation_scope": "same_ssh_login_shell_pre_exec",
+    "execution_mode": "ssh",
+    "tool_id": "bio_tools.mafft",
+    "adapter_id": "bio_tools.mafft",
+    "command_template_id": "bio_tools_mafft_sif_v1",
+    "runner_contract_digest": "sha256:" + "6" * 64,
+    "image_digest": "sha256:" + "7" * 64,
+}
 
 
 class _FakeRepositories(SimpleNamespace):
@@ -578,6 +591,10 @@ class _FakeReservedRunner:
         self.reserve_count = 0
         self.submit_count = 0
         self.recover_count = 0
+        self.toolchain_runtime_identity: object = {
+            **_TOOLCHAIN_RUNTIME_IDENTITY,
+            "private_sif_path": "/private/tool.sif",
+        }
 
     def reserve_execution(self, identity: dict[str, object]) -> dict[str, str]:
         self.reserve_count += 1
@@ -651,6 +668,7 @@ class _FakeReservedRunner:
                 "status": "completed",
                 "exit_code": 0,
                 "runner_attempt_receipt_digest": "sha256:" + "b" * 64,
+                "toolchain_runtime_identity": self.toolchain_runtime_identity,
             },
             artifacts=(),
             exit_code=0,
@@ -718,7 +736,14 @@ class _FakeHpcExecutionEngine:
             ],
             "selected_backend": "hpc",
             "status": RunStatus.SUCCEEDED.value,
-            "request_metadata": {"catalog_tool_id": "bio_tools.mafft"},
+            "request_metadata": {
+                "catalog_tool_id": "bio_tools.mafft",
+                "tool_contract": {
+                    "tool_id": "bio_tools.mafft",
+                    "adapter_id": "bio_tools.mafft",
+                    "command_template_id": "bio_tools_mafft_sif_v1",
+                },
+            },
             "raw_result": dict(outcome.raw_result),
             "outputs": [
                 {
@@ -918,12 +943,14 @@ def test_hpc_route_reserves_dispatches_and_materializes_without_handle_leak() ->
     assert envelope["kind"] == "hpc_run_handle"
     assert envelope["run_id"].startswith("run_inv_sandbox_adapter_")
     assert envelope["output_artifact_ids"] == ["artifact_hpc_result"]
+    assert envelope["toolchain_runtime_identity"] == _TOOLCHAIN_RUNTIME_IDENTITY
     assert [ref.artifact_id for ref in result.materialized_result.artifact_refs] == [
         "artifact_hpc_result"
     ]
     encoded = json.dumps(envelope, sort_keys=True)
     assert runner.run_id not in encoded
     assert "runner_run_id" not in encoded
+    assert "/private/tool.sif" not in encoded
     ControlledOperationExecutionWorker._validated_result(  # noqa: SLF001
         result.materialized_result
     )
@@ -933,6 +960,33 @@ def test_hpc_route_reserves_dispatches_and_materializes_without_handle_leak() ->
     reconciled = adapter.reconcile(execution, request)
     assert reconciled.kind is DurableRouteObservationKind.RESULT_MATERIALIZED
     assert runner.submit_count == 1
+
+
+def test_hpc_route_terminalizes_malformed_runner_toolchain_identities() -> None:
+    drifted_identities = (
+        {**_TOOLCHAIN_RUNTIME_IDENTITY, "adapter_id": 7},
+        {
+            **_TOOLCHAIN_RUNTIME_IDENTITY,
+            "command_template_id": "bio_tools_other_sif_v1",
+        },
+        {**_TOOLCHAIN_RUNTIME_IDENTITY, "image_digest": "sha256:not-a-digest"},
+    )
+
+    for drifted_identity in drifted_identities:
+        adapter, execution, request, runner = _hpc_route_fixture()
+        runner.toolchain_runtime_identity = drifted_identity
+
+        result = adapter.dispatch(execution, request)
+
+        assert result.kind is DurableRouteObservationKind.TERMINAL_FAILURE
+        assert result.effect_certainty is ExternalEffectCertainty.TERMINAL_KNOWN
+        assert (
+            result.terminal_outcome
+            is ControlledOperationExecutionTerminalOutcome.FAILED
+        )
+        assert result.error_code == "durable_hpc_toolchain_runtime_identity_invalid"
+        assert result.materialized_result is None
+        assert runner.submit_count == 1
 
 
 def test_hpc_route_recovers_lost_terminal_callback_without_redispatch() -> None:

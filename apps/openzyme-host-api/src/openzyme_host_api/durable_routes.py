@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
+import re
 import stat
 from typing import Any
 from typing import NoReturn
@@ -66,6 +67,18 @@ _PROVEN_PRE_EFFECT_PROVIDER_STAGES = frozenset(
 _S12_ADAPTER_ENVELOPE_SCHEMA = "s12.adapter_envelope.v1"
 _PROVIDER_TRANSCRIPT_DOCUMENT_MAX_BYTES = 8 * 1024 * 1024
 _PROVIDER_BOUNDED_SUMMARY_MAX_BYTES = DURABLE_RESULT_ENVELOPE_MAX_BYTES
+_TOOLCHAIN_RUNTIME_IDENTITY_FIELDS = (
+    "schema_id",
+    "attestation_scope",
+    "execution_mode",
+    "tool_id",
+    "adapter_id",
+    "command_template_id",
+    "runner_contract_digest",
+    "image_digest",
+)
+_SAFE_TOOLCHAIN_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$")
+_SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PROVIDER_REQUEST_KEYS = frozenset(
     {
         "approval_requirement",
@@ -103,6 +116,50 @@ _PROVIDER_OBSERVATION_KEYS = frozenset(
 )
 RepositoryScopeFactory = Callable[[], AbstractContextManager[CoreRepositories]]
 EngineRegistryFactory = Callable[[CoreRepositories], Any]
+
+
+class _HpcToolchainRuntimeIdentityDrift(ValueError):
+    """The terminal runner attestation cannot be safely projected."""
+
+
+def _project_hpc_toolchain_runtime_identity(
+    value: Any,
+    *,
+    execution_mode: str,
+    tool_id: str,
+    adapter_id: str | None,
+    command_template_id: str | None,
+) -> dict[str, str] | None:
+    if (
+        execution_mode != "ssh"
+        or not isinstance(value, dict)
+        or adapter_id is None
+        or command_template_id is None
+        or any(
+            not isinstance(value.get(field), str)
+            for field in _TOOLCHAIN_RUNTIME_IDENTITY_FIELDS
+        )
+    ):
+        return None
+    identity = {field: value[field] for field in _TOOLCHAIN_RUNTIME_IDENTITY_FIELDS}
+    if (
+        identity["schema_id"] != "mcp_hpc_toolchain_runtime_identity@1"
+        or identity["attestation_scope"] != "same_ssh_login_shell_pre_exec"
+        or identity["execution_mode"] != execution_mode
+        or identity["tool_id"] != tool_id
+        or identity["adapter_id"] != adapter_id
+        or identity["command_template_id"] != command_template_id
+        or any(
+            _SAFE_TOOLCHAIN_IDENTIFIER.fullmatch(identity[field]) is None
+            for field in ("tool_id", "adapter_id", "command_template_id")
+        )
+        or any(
+            _SHA256_DIGEST.fullmatch(identity[field]) is None
+            for field in ("runner_contract_digest", "image_digest")
+        )
+    ):
+        return None
+    return identity
 
 
 def _durable_host_context(
@@ -1497,6 +1554,14 @@ class HostHpcControlledOperationRouteAdapter:
                 fetch_result=fetch_result,
                 safe_receipt_digest=safe_receipt_digest,
             )
+        except _HpcToolchainRuntimeIdentityDrift:
+            return self._terminal_failure(
+                error_code="durable_hpc_toolchain_runtime_identity_invalid",
+                effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+                backend_handle_ref=execution.backend_handle_ref,
+                safe_receipt_digest=safe_receipt_digest,
+                terminal_outcome=ControlledOperationExecutionTerminalOutcome.FAILED,
+            )
         except (TypeError, ValueError, KeyError):
             return DurableRouteObservation(
                 kind=DurableRouteObservationKind.RESULT_PENDING,
@@ -1627,6 +1692,33 @@ class HostHpcControlledOperationRouteAdapter:
             "summary": run.summary or "HPC placement operation succeeded",
             "warnings": [],
         }
+        raw_runtime_identity = raw_result.get("toolchain_runtime_identity")
+        if raw_runtime_identity is not None:
+            tool_contract = request_metadata.get("tool_contract")
+            expected_adapter_id = (
+                tool_contract.get("adapter_id")
+                if isinstance(tool_contract, dict)
+                and isinstance(tool_contract.get("adapter_id"), str)
+                else None
+            )
+            expected_command_template_id = (
+                tool_contract.get("command_template_id")
+                if isinstance(tool_contract, dict)
+                and isinstance(tool_contract.get("command_template_id"), str)
+                else None
+            )
+            runtime_identity = _project_hpc_toolchain_runtime_identity(
+                raw_runtime_identity,
+                execution_mode=str(run.execution_mode),
+                tool_id=tool_id,
+                adapter_id=expected_adapter_id,
+                command_template_id=expected_command_template_id,
+            )
+            if runtime_identity is None:
+                raise _HpcToolchainRuntimeIdentityDrift(
+                    "Host HPC toolchain runtime identity drift"
+                )
+            envelope["toolchain_runtime_identity"] = runtime_identity
         safe_envelope = sanitize_public_diagnostic_payload(envelope)
         if not isinstance(safe_envelope, dict):
             raise ValueError("Host HPC result projection is invalid")

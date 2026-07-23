@@ -37,8 +37,10 @@ Functions:
 The Host performs provider requests, pagination, quota checks, parsing, and artifact registration. RPC results are bounded summaries: artifact ids, counts, provider/database metadata, digest summaries, transcript manifests, and warnings. `output_dir` must be under `/workspace/output/...`; provider_request, provider_observation, sanitized raw pages, parsed FASTA/metadata, raw HMMER hits JSON, and parsed hits CSV are written there and registered through the artifact boundary. In supervised sandbox mode, `bio.hmmer_search` requires the exact sealed `hmm_artifact_id` plus its `sha256:<64 lowercase hex>` digest; an HPC-produced HMM exposes that pair as `fetch_refs[].registered_artifact_id` and `fetch_refs[].output_digest` after `ws.fetch_outputs(run)`.
 
 `bio.hmmer_search` keeps route policy `bio.hmmer_search.provider:v1` and uses
-`provider_config:ebi_hmmer:v2`. The configured result `page_size` defaults to
-and is capped at `1000`. Poll requests explicitly carry
+`provider_config:ebi_hmmer:v3`. The configured result `page_size` defaults to
+and is capped at `1000`. EBI/Celery `RETRY` is a nonterminal state of the same
+accepted job: the adapter keeps polling that job for at most `3300s` and never
+submits a replacement. Poll requests explicitly carry
 `page=1&page_size=<configured>`; a terminal poll payload is consumed only for
 job status and `result.stats.nreported`, never as result page 1 even when the
 provider includes hits in that body. Result materialization always starts with
@@ -47,8 +49,10 @@ through the stable declared `page_count`. Every result page must report the
 same non-negative page count. For a non-truncated result, the materialized raw
 hit count must equal terminal `nreported`; a successful empty result is valid
 only as `nreported=0`, provider `page_count=0`, and `hits=[]` on the explicit
-first result request. `max_hits`, provider ordering, and the parsed-hit schema
-are unchanged.
+first result request. `FAILURE` and unknown statuses remain terminal
+fail-closed outcomes; a nonterminal status at the deadline becomes retryable
+`provider_timeout`. `max_hits`, provider ordering, and the parsed-hit schema are
+unchanged.
 
 `bio.uniprot_fetch` keeps route policy `bio.uniprot_fetch.provider:v1` and uses
 `provider_config:uniprot:v3` with identity contract

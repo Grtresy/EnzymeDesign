@@ -68,9 +68,12 @@ error preserves that id. If the id itself is oversized/invalid or cannot be
 safely decoded, the error uses `id: null`. The client still requires exact
 response identity and rejects drift.
 
-For EBI HMMER, `provider_config:ebi_hmmer:v2` defaults and caps result
-`page_size` at `1000`. Polling explicitly requests `page=1` with that page size
-but consumes the terminal payload only as status plus `stats.nreported`.
+For EBI HMMER, `provider_config:ebi_hmmer:v3` defaults and caps result
+`page_size` at `1000`. An EBI/Celery `RETRY` status remains nonterminal for the
+same accepted job until success, another terminal status, or the bounded
+`3300s` polling deadline; the adapter never submits a replacement job. Polling
+explicitly requests `page=1` with that page size but consumes the terminal
+payload only as status plus `stats.nreported`.
 Materialization always issues a separate explicit result `page=1` request and
 continues through a stable cross-page `page_count`; terminal-poll hits never
 stand in for result bytes. A non-truncated result must materialize exactly

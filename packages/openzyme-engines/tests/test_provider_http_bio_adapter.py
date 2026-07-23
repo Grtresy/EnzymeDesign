@@ -516,6 +516,93 @@ def test_ebi_hmmer_terminal_poll_is_status_only_and_explicit_pages_are_complete(
     assert rows[50]["accession"] == "P00050"
 
 
+def test_ebi_hmmer_retry_status_keeps_polling_the_same_job(
+    tmp_path: Path,
+) -> None:
+    terminal_body = _hmmer_result_body(
+        _hmmer_hits(0, 1),
+        page_count=1,
+        nreported=1,
+    )
+    responses = iter(
+        [
+            FakeHttpResponse(body='{"id":"job-retrying"}'),
+            FakeHttpResponse(
+                body='{"status":"RETRY","result":null,"page_count":null}'
+            ),
+            FakeHttpResponse(body=terminal_body),
+            FakeHttpResponse(body=terminal_body),
+        ]
+    )
+    requested_urls: list[str] = []
+    sleeps: list[float] = []
+
+    def urlopen(request: Any, timeout: float) -> FakeHttpResponse:
+        del timeout
+        requested_urls.append(request.full_url)
+        return next(responses)
+
+    result = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=urlopen,
+        sleep=sleeps.append,
+    ).hmmer_search(
+        hmm_artifact=_hmm_artifact(tmp_path),
+        database="refprot",
+        params={},
+        retrieved_at="2026-07-23T00:00:00+00:00",
+    )
+
+    assert len(requested_urls) == 4
+    assert requested_urls[0].endswith("/search/hmmsearch")
+    assert all("/result/job-retrying?" in url for url in requested_urls[1:])
+    assert requested_urls[1] == requested_urls[2] == requested_urls[3]
+    assert sleeps == [5.0]
+    assert result.summary["provider_job_id"] == "job-retrying"
+    assert result.summary["reported_hit_count"] == 1
+    assert result.summary["hit_count"] == 1
+
+
+def test_ebi_hmmer_failure_status_remains_terminal_and_fail_closed(
+    tmp_path: Path,
+) -> None:
+    responses = iter(
+        [
+            FakeHttpResponse(body='{"id":"job-failed"}'),
+            FakeHttpResponse(
+                body='{"status":"FAILURE","result":null,"page_count":null}'
+            ),
+        ]
+    )
+    requested_urls: list[str] = []
+    sleeps: list[float] = []
+
+    def urlopen(request: Any, timeout: float) -> FakeHttpResponse:
+        del timeout
+        requested_urls.append(request.full_url)
+        return next(responses)
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        ProviderHttpBioDatabaseAdapter(
+            BioProviderHttpConfig(),
+            urlopen=urlopen,
+            sleep=sleeps.append,
+        ).hmmer_search(
+            hmm_artifact=_hmm_artifact(tmp_path),
+            database="refprot",
+            params={},
+            retrieved_at="2026-07-23T00:00:00+00:00",
+        )
+
+    assert len(requested_urls) == 2
+    assert sleeps == []
+    assert exc_info.value.error_type == "provider_invalid_request"
+    assert exc_info.value.retryable is False
+    assert exc_info.value.details["provider"] == "ebi_hmmer"
+    assert exc_info.value.details["job_id"] == "job-failed"
+    assert exc_info.value.details["job_status"] == "FAILURE"
+
+
 def test_ebi_hmmer_rejects_missing_middle_page_by_terminal_count(
     tmp_path: Path,
 ) -> None:

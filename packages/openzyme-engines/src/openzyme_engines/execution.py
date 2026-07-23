@@ -748,6 +748,16 @@ class BioProviderHttpResponse:
 
 
 _UNIPROT_IDENTITY_CONTRACT_ID = "uniprot_primary_sequence_identity@2"
+_HMMER_NONTERMINAL_JOB_STATUSES = frozenset(
+    {
+        "PENDING",
+        "RUNNING",
+        "STARTED",
+        "SUBMITTED",
+        "QUEUED",
+        "RETRY",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -762,7 +772,7 @@ class BioProviderHttpConfig:
     uniprot_operation_accession_cap: int = 100_000
     uniprot_page_cap_per_query: int = 100
     hmmer_poll_interval_seconds: float = 5.0
-    hmmer_poll_timeout_seconds: float = 1800.0
+    hmmer_poll_timeout_seconds: float = 3300.0
     hmmer_page_size: int = 1000
     hmmer_max_hits: int = 100000
     user_agent: str = "OpenZyme/3 provider adapter"
@@ -3937,7 +3947,7 @@ class ProviderHttpBioDatabaseAdapter:
                 }
             )
             status = str(payload.get("status") or "").upper()
-            if status not in {"PENDING", "RUNNING", "STARTED", "SUBMITTED", "QUEUED"}:
+            if status not in _HMMER_NONTERMINAL_JOB_STATUSES:
                 return payload, requests
             if time.monotonic() >= deadline:
                 raise PipelineSdkFailure(

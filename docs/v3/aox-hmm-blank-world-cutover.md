@@ -1,6 +1,6 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r49 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. r48 and r49 are permanent NO-GO evidence. The executable architecture-qualification gate is implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. Local Live cutover stays **NO-GO** until one successor campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
+Status: r43-r50 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. r48, r49 and r50 are permanent NO-GO evidence. The executable architecture-qualification gate is implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. Local Live cutover stays **NO-GO** until one successor campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
 
 Historical r14-r47 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
@@ -455,14 +455,18 @@ Inactive raw results must contain neither `sequence` nor `entryAudit`; their
 exact DELETED reason or MERGED non-follow annotations must reproduce metadata.
 
 The EBI HMMER route keeps `bio.hmmer_search.provider:v1` while
-`provider_config:ebi_hmmer:v2` defaults and caps result `page_size` at `1000`.
-Polling explicitly binds `page=1&page_size=<configured>` but consumes terminal
-payload only as status and `stats.nreported`. Result bytes always begin at a
-separate explicit page 1 with the same width; every page repeats one stable
-non-negative `page_count`. A non-truncated raw result must equal terminal
-`nreported`, while SUCCESS empty is exactly
+`provider_config:ebi_hmmer:v3` defaults and caps result `page_size` at `1000`.
+EBI/Celery `RETRY` is nonterminal for the same accepted job; polling never
+resubmits and is bounded at `3300s`, after which a still-nonterminal job becomes
+retryable `provider_timeout`. Polling explicitly binds
+`page=1&page_size=<configured>` but consumes terminal payload only as status and
+`stats.nreported`. Result bytes always begin at a separate explicit page 1 with
+the same width; every page repeats one stable non-negative `page_count`. A
+non-truncated raw result must equal terminal `nreported`, while SUCCESS empty is
+exactly
 `nreported=0/page_count=0/hits=[]`. Terminal-poll hits never count as result
-page 1, and `max_hits`, ordering, and parsing remain unchanged.
+page 1; `FAILURE` and unknown statuses remain terminal fail-closed outcomes,
+and `max_hits`, ordering, and parsing remain unchanged.
 
 After a sandbox provider request draft exists, a `PipelineSdkFailure` seals the
 request/observation/error diagnostic trio through the same artifact boundary,
@@ -1545,6 +1549,16 @@ closed attestation:
 - `runner_contract_digest`;
 - the single observed `image_digest`, emitted only when the internal pre/post
   digests are equal.
+
+The terminal runner raw result is not itself the durable operation response.
+The durable route must validate the closed identity again against the operation's
+execution mode and catalog tool id, strip every private/extra field, and preserve
+the exact safe eight-field projection in the immutable result envelope. A
+present but malformed or cross-boundary identity terminates as
+`durable_hpc_toolchain_runtime_identity_invalid`; it is not a recoverable
+artifact-set wait. An absent identity is never inferred from a toolchain pin,
+route, or artifact and remains `toolchain_image_identity_missing` at cutover
+collection.
 
 The Host preserves only this closed public projection across runner adapter,
 engine, controlled operation and evidence collector. The collector and offline
