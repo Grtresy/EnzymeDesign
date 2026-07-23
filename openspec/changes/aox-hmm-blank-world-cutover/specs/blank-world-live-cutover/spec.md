@@ -90,6 +90,13 @@ The collector SHALL reconstruct exactly one durable delegation request for each 
 - **WHEN** a capability invocation owns megabyte-scale documents, outputs, evidence, source, or gaps
 - **THEN** teammate inspection returns only its current-task bounded fact index (20 invocations, eight refs per kind, 64 KiB serialized facts), cross-task filters fail with a typed error, and no owned body bytes enter the agent context
 
+### Requirement: Bounded tool-call fanout closes the provider transcript
+Master and teammate conversation drivers SHALL preserve the top-level limit of three dispatched tool calls per provider response. They SHALL project every returned tool call into the public LLM trace, dispatch only the first three in response order, and convert every excess call into a structured `ToolResult` with `ok=false`, `status=rejected`, `error_code=parallel_tool_call_limit_exceeded`, `effect_certainty=no_effect`, `retry_eligibility=same_phase_safe`, and an LLM-readable retry hint. The harness SHALL persist a failure observation and emit `tool.rejected` plus `tool.completed` without emitting `tool.invoked` or dispatching the rejected call. Before the next provider invocation, the conversation SHALL contain one matching `ToolMessage` for every returned call id, including every rejected overflow call.
+
+#### Scenario: Reject a fourth tool call without leaving an open transcript
+- **WHEN** a master or teammate provider response returns four tool calls
+- **THEN** only the first three calls are dispatched, the fourth creates no business or external effect, all four calls remain visible in the trace, all four receive ordered tool observations before the next provider request, and the provider transcript does not fail because an overflow call lacks output
+
 ### Requirement: Exact scientific callable and artifact-selection map
 The formal executor SHALL use the installed versioned callables `openzyme_pipeline.aox_reference.select_hmm_reference_set`, `select_scoring_reference`, `assemble_scoring_input`, `openzyme_pipeline.aox_hmmer.parse_and_filter_csv`, `openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions`, `openzyme_pipeline.aox_motif.score_aligned_fasta`, and `openzyme_pipeline.aox_similarity.build_similarity_graph` with their canonical serializers. It MUST NOT approximate or locally reimplement a pinned calculation.
 
@@ -263,6 +270,17 @@ A nonzero `remote_execution` command SHALL preserve its classified transport or 
 #### Scenario: Reject Slurm as current cutover identity
 - **WHEN** an AOX tool operation executes through Slurm without a job-internal same-execution SIF attestation
 - **THEN** submit/preflight metadata is not reinterpreted as runtime identity and the operation is non-cutover even though Slurm remains available for general runner workloads
+
+### Requirement: Canonical controlled-operation backend receipt identity
+For every completed controlled operation, the live evidence collector SHALL select exactly one backend-native canonical run identity according to `selected_backend`: an HPC operation MUST expose `run_id`, while a `provider_http` operation MUST expose `provider_request_id`. The collector SHALL normalize that value into the evidence field `backend_run_id`. A completed operation with a missing canonical field, a legacy/generic `backend_run_id` source field, a field belonging to the other backend, multiple candidate identity fields, or an unsupported backend SHALL fail closed instead of inferring or adopting an identity.
+
+#### Scenario: Normalize a current durable HPC result
+- **WHEN** a completed HPC controlled operation carries its durable result envelope with exactly one non-empty `run_id`
+- **THEN** the collector projects that exact value as evidence `backend_run_id`, and downstream probe/toolchain receipts bind the same value
+
+#### Scenario: Reject a noncanonical or ambiguous backend identity
+- **WHEN** a completed operation omits its backend-native identity or exposes a legacy/generic/other-backend identity field
+- **THEN** collection fails with a typed missing, ambiguous, or unsupported backend-identity error before the operation can satisfy probe or formal attestation
 
 ### Requirement: Known-positive and empty-result separation
 The campaign SHALL use `aox_known_positive_probe@2` / `probe_id="independent_globin_provider_hpc_probe"` independently from the formal scientific result. The probe SHALL use NCBI `NP_000509.1` and `NP_000549.1`, UniProt `P68871` and `P69905`, and exactly six isolated controlled operations: the two provider fetches plus MAFFT, hmmbuild, protein CD-HIT at identity `1.0`, and HMMalign consuming the real probe HMM and clustered UniProt FASTA. It SHALL select each provider parsed FASTA through the unique transcript-manifest relative-path suffix, fetch all four HPC run handles including terminal HMMalign, and select every fetched artifact through the unique exact declared-output-path ref rather than positional ID order; output fetches SHALL NOT be counted as additional controlled operations. Fixed runner templates SHALL expose and require their canonical output path sets before runner/HPC dispatch; a missing, extra, duplicate, or custom declared path SHALL return an LLM-readable `bio_tool_output_contract_mismatch` and SHALL NOT be silently rewritten or submitted as a predictably failing HPC job. A real no-hit or no-candidate outcome MAY complete as a trustworthy empty-result report but MUST NOT be described as candidate discovery, and probe data MUST NOT be inserted into formal result artifacts.

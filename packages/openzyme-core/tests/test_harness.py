@@ -3848,6 +3848,21 @@ def _message_content(message: object) -> str:
     return str(getattr(message, "content", "") or "")
 
 
+def _tool_message_call_ids(messages: list[object]) -> list[str]:
+    call_ids: list[str] = []
+    for message in messages:
+        if isinstance(message, dict):
+            if message.get("role") == "tool" and message.get("tool_call_id"):
+                call_ids.append(str(message["tool_call_id"]))
+            continue
+        if type(message).__name__ != "ToolMessage":
+            continue
+        tool_call_id = getattr(message, "tool_call_id", None)
+        if tool_call_id:
+            call_ids.append(str(tool_call_id))
+    return call_ids
+
+
 def test_tool_router_exposes_descriptor_spec_and_dispatches_legacy_handler() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
@@ -4772,6 +4787,161 @@ def test_llm_conversation_driver_translates_tool_calls_to_invocations() -> None:
     assert step.assistant_message is None
     assert step.tool_invocations[0].tool_name == "task.create"
     assert step.tool_invocations[0].arguments["task_id"] == "task_002"
+
+
+def test_master_driver_rejects_tool_call_overflow_and_closes_provider_transcript() -> (
+    None
+):
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    tool_calls = [
+        {
+            "id": f"call_task_{index}",
+            "name": "task.create",
+            "args": {
+                "task_id": f"task_overflow_{index}",
+                "subject": f"Planned task {index}",
+            },
+        }
+        for index in range(1, 5)
+    ]
+    model_factory = FakeModelFactory(
+        [
+            {"content": "", "tool_calls": tool_calls},
+            {"content": "Handled the rejected overflow call.", "tool_calls": []},
+        ]
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="plan four tasks"),
+        driver=LlmConversationDriver(model_factory),
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    assert result.outputs == ("Handled the rejected overflow call.",)
+    assert [item.call_id for item in result.tool_results] == [
+        "call_task_1",
+        "call_task_2",
+        "call_task_3",
+        "call_task_4",
+    ]
+    rejection = result.tool_results[-1]
+    assert rejection.ok is False
+    assert rejection.status == "rejected"
+    assert rejection.error_code == "parallel_tool_call_limit_exceeded"
+    assert rejection.details == {
+        "dispatched": False,
+        "effect_certainty": "no_effect",
+        "max_parallel_tool_calls": 3,
+        "requested_tool_call_count": 4,
+        "retry_eligibility": "same_phase_safe",
+        "tool_call_position": 4,
+    }
+    assert rejection.failure_observation is not None
+    assert rejection.failure_observation["effect_certainty"] == "no_effect"
+    assert rejection.failure_observation["retry_eligibility"] == "same_phase_safe"
+    assert repositories.tasks.get("task_overflow_3") is not None
+    assert repositories.tasks.get("task_overflow_4") is None
+
+    events = list(result.events)
+    assert [
+        event.payload["call_id"]
+        for event in events
+        if event.event_type == "tool.invoked"
+    ] == ["call_task_1", "call_task_2", "call_task_3"]
+    rejected = [event for event in events if event.event_type == "tool.rejected"]
+    assert len(rejected) == 1
+    assert rejected[0].payload["call_id"] == "call_task_4"
+    assert rejected[0].payload["effect_certainty"] == "no_effect"
+
+    invoker = model_factory.invokers["v3_harness_loop"]
+    assert len(invoker.calls) == 2
+    assert _tool_message_call_ids(invoker.calls[1]["messages"]) == [
+        "call_task_1",
+        "call_task_2",
+        "call_task_3",
+        "call_task_4",
+    ]
+    trace_documents = [
+        document
+        for document in repositories.engine_documents.list_by_session(
+            session.session_id
+        )
+        if document.document_kind == "llm_trace_step"
+        and document.payload["tool_calls"]
+    ]
+    assert [
+        item["call_id"] for item in trace_documents[0].payload["tool_calls"]
+    ] == [
+        "call_task_1",
+        "call_task_2",
+        "call_task_3",
+        "call_task_4",
+    ]
+
+
+def test_teammate_driver_rejects_tool_call_overflow_and_closes_provider_transcript() -> (
+    None
+):
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(repositories, session, role="researcher")
+    tool_calls = [
+        {"id": f"call_list_{index}", "name": "task.list", "args": {}}
+        for index in range(1, 5)
+    ]
+    model_factory = FakeModelFactory(
+        [
+            {"content": "", "tool_calls": tool_calls},
+            {"content": "Handled teammate overflow.", "tool_calls": []},
+        ]
+    )
+    driver = TeammateConversationDriver(
+        model_factory=model_factory,
+        role="researcher",
+        agent_id=agent.agent_id,
+        correlation_id="corr_tool_overflow",
+        task_id="task_001",
+        instructions="Inspect the current task board.",
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            sender=agent.agent_id,
+            sender_kind=InboxParticipantKind.AGENT,
+            persist_conversation=False,
+        ),
+        driver=driver,
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    assert result.outputs == ("Handled teammate overflow.",)
+    assert [item.call_id for item in result.tool_results] == [
+        "call_list_1",
+        "call_list_2",
+        "call_list_3",
+        "call_list_4",
+    ]
+    assert result.tool_results[-1].error_code == (
+        "parallel_tool_call_limit_exceeded"
+    )
+    assert result.tool_results[-1].failure_observation is not None
+    assert [
+        event.payload["call_id"]
+        for event in result.events
+        if event.event_type == "tool.invoked"
+    ] == ["call_list_1", "call_list_2", "call_list_3"]
+    invoker = model_factory.invokers["v3_teammate_loop:researcher"]
+    assert len(invoker.calls) == 2
+    assert _tool_message_call_ids(invoker.calls[1]["messages"]) == [
+        "call_list_1",
+        "call_list_2",
+        "call_list_3",
+        "call_list_4",
+    ]
 
 
 def test_master_driver_passes_canonical_tool_specs_to_invoker() -> None:

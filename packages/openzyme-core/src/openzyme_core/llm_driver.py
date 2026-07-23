@@ -57,6 +57,42 @@ def _sanitize_public_args(value: Any, *, key: str = "") -> Any:
     return sanitize_public_tool_args(value, key=key)
 
 
+def _parallel_tool_call_limit_result(
+    invocation: ToolInvocation,
+    *,
+    position: int,
+    requested_count: int,
+    max_parallel_tool_calls: int,
+) -> ToolResult:
+    summary = (
+        "This tool call was not executed because the response exceeded the "
+        f"limit of {max_parallel_tool_calls} tool calls."
+    )
+    return ToolResult(
+        call_id=invocation.call_id,
+        tool_name=invocation.tool_name,
+        ok=False,
+        content=summary,
+        task_id=invocation.task_id,
+        lane_id=invocation.lane_id,
+        status="rejected",
+        summary=summary,
+        error_code="parallel_tool_call_limit_exceeded",
+        hint=(
+            "Retry the intended work using no more than "
+            f"{max_parallel_tool_calls} tool calls in one response."
+        ),
+        details={
+            "dispatched": False,
+            "effect_certainty": "no_effect",
+            "max_parallel_tool_calls": max_parallel_tool_calls,
+            "requested_tool_call_count": requested_count,
+            "retry_eligibility": "same_phase_safe",
+            "tool_call_position": position,
+        },
+    )
+
+
 def _resume_result_summary(tool_results: tuple[ToolResult, ...]) -> str | None:
     del tool_results
     return None
@@ -453,7 +489,7 @@ class LlmConversationDriver:
             selected = tool_calls[: self.max_parallel_tool_calls]
             self._backfill_task_bound_args(selected)
             invocations: list[ToolInvocation] = []
-            for index, tool_call in enumerate(selected):
+            for index, tool_call in enumerate(tool_calls):
                 tool_name = str(tool_call["name"])
                 arguments = dict(tool_call.get("args") or {})
                 task_id, lane_id = self._invocation_refs(tool_name, arguments)
@@ -466,12 +502,26 @@ class LlmConversationDriver:
                         lane_id=lane_id,
                     )
                 )
-            tool_invocations = tuple(invocations)
+            all_invocations = tuple(invocations)
+            tool_invocations = all_invocations[: self.max_parallel_tool_calls]
+            tool_rejections = tuple(
+                _parallel_tool_call_limit_result(
+                    invocation,
+                    position=index,
+                    requested_count=len(all_invocations),
+                    max_parallel_tool_calls=self.max_parallel_tool_calls,
+                )
+                for index, invocation in enumerate(
+                    all_invocations[self.max_parallel_tool_calls :],
+                    start=self.max_parallel_tool_calls + 1,
+                )
+            )
             return HarnessStep(
                 tool_invocations=tool_invocations,
+                tool_rejections=tool_rejections,
                 llm_trace=self._trace_step(
                     response_text=response_text,
-                    tool_invocations=tool_invocations,
+                    tool_invocations=all_invocations,
                     step_context=step_context,
                 ),
             )

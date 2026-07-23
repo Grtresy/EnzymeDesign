@@ -1260,8 +1260,57 @@ runner effect 前真实调用 backend import、版本、Gotoh、binary64 与 num
 
 后续架构审查已把该策略迁移为 explicit fresh authority + complete occurrence universe +
 agent-selected adopted chain + Host-finalized closure，并启用 production
-`aox_blank_world_attempt_bundle@3`；历史 `@2` 与 r48-r51 仍冻结。该后续实现只完成非 live
-资格验证，仍未创建或启动 r52。
+`aox_blank_world_attempt_bundle@3`；历史 `@2` 与 r48-r51 仍冻结。该后续实现先完成非
+live 资格验证并暂停，之后才在 operator 精确批准 authority plan 后启动 r52。
+
+## r52 tool-transcript 与 backend-receipt identity attempt：永久 NO-GO
+
+r52 使用 clean commit `5ccb0d3ba6055cd3d50b0e42437c350ee442a1f0`、fresh full
+admission/pin，并原子消费 exact-three authority plan
+`sha256:c2755edc4a8f08a161618a7291ff8dad40c340c390c527c24c8f956366492bbb`。
+campaign 只启动 positive 1
+`positive-2c12fe69d1a7a4fc77a651b2344ac3f3`，未发生 Chrome handoff，未运行
+positive 2 或 fault，也没有 sealed eligible attempt bundle。
+
+independent probe 的 NCBI、UniProt、MAFFT、hmmbuild、CD-HIT、HMMalign 六项真实
+controlled operation、approval 与 sandbox run 全部 terminal-known。probe source 与
+artifact bytes 已隔离封存，但旧 collector 从 `provider_request_id` 或 legacy
+`backend_run_id` 读取 normalized receipt；当前 durable HPC adapter envelope 只以
+canonical `run_id` 暴露同一 run，因此 probe attestation 正确以
+`controlled_operation_backend_receipt_missing` fail closed。该失败不允许把底层六项
+operation 追认为 `aox_known_positive_probe@2` success。
+
+formal master 的第一次 LLM response 同时请求超过三项 tool call。前三项可见
+`task.create` 均被执行并成功，旧 driver 却只截取前三项 invocation，而把带全部
+function calls 的 assistant message 留在 provider transcript。第二次 LLM call 因未
+dispatch 的 overflow call 缺少匹配 ToolMessage，返回 non-retryable 400；formal 未进入
+scientific attempt admission，没有可采纳 formal operation/effect。
+
+child exit `70` 后，fatal
+`sha256:947b622974006328c701591aa647433d09a371f2329f3fd7da5a584399aeaad2`
+证明 descendants 已退休并禁止下一 attempt，但忠实保留
+`external_outcome=unknown`、`quiescent_observed=false`、
+`sqlite_closure_claimed=false`、`ledger_after_claimed=false` 与
+`artifact_completeness_claimed=false`。driver failure
+`sha256:8e0c9f334212f9a07f1e79da8d3658199c053e28c5eff79d554c2aafe35cdeb4`
+为 `attempt_supervision_fatal`；campaign decision
+`sha256:7284ce153ed150688887ff1315f52ac236e1a5ef18cf7c519085380013befe8b`
+以 `attempt_child_runner_failed` 保持永久 **NO-GO**。MICU 保守累计
+`74,356,412 / 500,000,000`，remaining `425,643,588`，零 overage/breach。
+
+post-r52 correction 不提高三-call上限：master 与 teammate 仍只 dispatch 前三项，
+但 trace 全部 returned calls；每个 overflow 形成持久
+`parallel_tool_call_limit_exceeded/no_effect/same_phase_safe` observation、
+`tool.rejected`/`tool.completed` 与下一 provider payload 中的 matching ToolMessage，
+绝不产生 `tool.invoked` 或 business/external effect。live collector 则按 closed mapping
+只接受 `hpc -> run_id` 或 `provider_http -> provider_request_id`，统一投影 evidence
+`backend_run_id`；completed operation 缺失 canonical 字段、使用 legacy/other-backend
+字段、出现多候选或 backend 未知均 fail closed。
+
+r52 authority、roots、tasks、operations/effects、artifacts、failure evidence 与 decision
+永久不可复用或 adoption。后继必须使用新的 correction clean commit、fresh full
+admission、pin、exact-three authority plan 与 roots，并等待 operator 对该新 plan 的精确
+消费授权。
 
 ## 当前实施状态的表述规则
 

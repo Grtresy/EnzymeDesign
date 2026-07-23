@@ -155,7 +155,16 @@ system-attributed diagnostic，并显式标记 `agent_decision_produced=false`�
 
 所有 `structured`、`tool_calling`、`chat` 与 connectivity smoke 的 provider 调用都必须经过 `openzyme_runtime.LlmInvocationRuntime`。invoker 只负责构造 payload、结构化解析或 tool response 还原；runtime 统一负责 limiter、timeout、retry/backoff、`Retry-After`、错误 taxonomy 与 LLM debug 记录。502/503/504、transport timeout/connection failure 属于 retryable；429 只有 transient 或带 `Retry-After` 时 retryable，usage/quota/invalid/context 类 429 不重试；400/401/403、schema/tool argument/context window 错误不重试。runtime 不拥有 session compaction、restore context rebuild 或 harness/engine 状态机。
 
-tool-calling provider schema 必须经过 `openzyme_runtime.ProviderToolAdapter`。OpenZyme 内部 truth 是 dotted canonical `ToolSpec.tool_name`，例如 `task.create`、`execution.pipeline.start`；adapter 将 canonical `ToolSpec` 投影为 provider-visible tools，并输出 `canonical_to_provider` / `provider_to_canonical` 映射。MICU 的 `task.create -> task_create` 这类 dotted alias 只存在于 adapter 生成的 provider request 与 LLM debug 记录中；provider response 返回后必须先恢复 canonical tool name，再进入 driver、`ToolRouter.dispatch()`、tool invocation、tool result、workspace `agent_traces` 与 `tool.invoked` / `tool.completed` events。非 MICU / 不需要 alias 的 OpenAI-compatible base URL 保持 canonical 名称。
+tool-calling provider schema 必须经过 `openzyme_runtime.ProviderToolAdapter`。OpenZyme 内部 truth 是 dotted canonical `ToolSpec.tool_name`，例如 `task.create`、`execution.pipeline.start`；adapter 将 canonical `ToolSpec` 投影为 provider-visible tools，并输出 `canonical_to_provider` / `provider_to_canonical` 映射。MICU 的 `task.create -> task_create` 这类 dotted alias 只存在于 adapter 生成的 provider request 与 LLM debug 记录中；provider response 返回后必须先恢复 canonical tool name，再进入 driver、`ToolRouter.dispatch()`、tool invocation、tool result、workspace `agent_traces` 与 `tool.invoked` / `tool.rejected` / `tool.completed` events。非 MICU / 不需要 alias 的 OpenAI-compatible base URL 保持 canonical 名称。
+
+master 与 teammate 的单个 provider response 仍只允许顺序 dispatch 前 `3` 个 tool call，但
+driver 不得静默丢弃 overflow。全部 returned calls 都进入同一 public LLM trace；第 `4+`
+项转成 `parallel_tool_call_limit_exceeded` 的结构化 no-effect ToolResult，持久化
+failure observation，并发送 `tool.rejected` / `tool.completed` 而不发送
+`tool.invoked`。下一次 provider request 前，assistant response 中每个 function-call id
+都必须有匹配 ToolMessage，包括未 dispatch 的 overflow，否则 transcript 不闭合并会被
+provider 拒绝。该边界只忠实呈现“未执行且可由 agent 重排”的事实，不提高并发上限、
+不替 agent 选策略，也不授权隐藏 retry。
 
 ### 3.5 Token-Budgeted Harness
 
@@ -205,8 +214,10 @@ positive/probe/fault reuse 禁止。closure 需同时验证 sealed selection、e
 authorization consumption 和 materialization lineage，但 closure 仍不是 task terminal。
 
 AOX 是该通用控制面的首个消费者：新 production collector 只发
-`aox_blank_world_attempt_bundle@3`；历史 `@2` verifier 和 r48-r51 NO-GO evidence
-保持冻结且不得升级或采用。本次实现/资格验证停在下一次编号 live attempt 之前。完整合同见
+`aox_blank_world_attempt_bundle@3`；历史 `@2` verifier 和 r48-r52 NO-GO evidence
+保持冻结且不得升级或采用。r52 已消费其一次性 authority，但只产生 driver/fatal
+diagnostic 与 NO-GO decision，没有 eligible attempt bundle；任何后继 live 必须重新
+commit、full admission、pin、authorize 并取得新 plan 的精确消费授权。完整合同见
 `docs/v3/08-failure-recovery-and-scientific-attempts.md`。
 
 ---
@@ -633,6 +644,7 @@ Live gate 解释：
 - executable architecture qualification 使用真实 `HostApiDependencies + create_app()` composition、file-backed SQLite、当前 workers/gateway/projections 与 controlled adapters，验证注册的不变量；report/receipt 只属于 repository/operator admission，不写 session/task/campaign 产品状态，也不验证 scientific quality 或真实 external availability
 - 首版 profile 仅为 trusted-Host `local_single_process_file_sqlite@1`；不得外推 shared writer、multi-process、multi-Host、distributed 或 signed/adversarial attestation 保证
 - AOX r48、r49 与 r50 均为永久 NO-GO；r50 的六项真实 probe operation 完成但旧 durable HPC materializer 漏投影 runner-attested toolchain identity，formal 路径完成 PubMed/NCBI/MAFFT/hmmbuild 与 Chrome canonical approval后，EBI HMMER job `563241d6-b460-4c74-bc92-70a34ab7c18a` 返回 `RETRY` 又被旧 adapter 错判为 non-retryable invalid request。后继 numbered campaign 只有在 durable identity 与 HMMER v3 两处 correction 提交后的 clean full admission、fresh pin 与 fresh roots 全部完成后才可启动，且仍需全部 launch/live/scientific/evidence gate，不能由 mainline、focused pytest、workflow eval、seeded smoke 或历史 run 替代
+- AOX r51 与 r52 同样是永久 NO-GO。r52 在 commit `5ccb0d3ba6055cd3d50b0e42437c350ee442a1f0` 精确消费 plan `sha256:c2755edc4a8f08a161618a7291ff8dad40c340c390c527c24c8f956366492bbb` 后只到达 positive 1：六项 probe operation 均 terminal-known，但旧 collector 未把 durable HPC `run_id` 规范化为 evidence `backend_run_id`；formal master 的前三项 `task.create` 成功后，旧三-call截断又让未 dispatch 的第 4 项缺少 ToolMessage，下一次 provider call 因 transcript 不闭合失败。没有 Chrome handoff、eligible attempt bundle、positive 2 或 fault；decision `sha256:7284ce153ed150688887ff1315f52ac236e1a5ef18cf7c519085380013befe8b` 只能封存该事实。当前 collector 对 completed operation 严格使用 `hpc -> run_id` / `provider_http -> provider_request_id` 后统一投影，且 master/teammate 对 overflow call 生成 no-effect rejection 和匹配 ToolMessage。r52 state/effects 不得 replay/adopt；后继必须 fresh correction commit/full admission/pin/authority/roots 并重新获得 plan 精确授权
 - 裸 `uv run pytest` 通过 `pytest.ini` 默认排除 `integration`、全部 `live_*`、`seeded_live_smoke` 与 `quality_eval`；真实外部测试必须同时满足环境 gate 与命令行显式 `-m` 选择，已配置凭据本身不能触发默认外部调用
 - `live_e2e` 是外部配置和 live 依赖的必要 gate，但不能单独证明单消息完整报告生产路径已经产品完成
 - live E2E 轮询在 task 已失败、所有 agent 均非 working/active 且没有 pending signal 或 unread inbox 时必须立即以持久 failure evidence 收敛；不得把外部 provider rate limit、缺 artifact 或 fail-closed 终止包装成通过，也不得在业务已静止后空等全局超时

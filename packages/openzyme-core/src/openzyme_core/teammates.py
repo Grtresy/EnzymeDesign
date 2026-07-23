@@ -39,6 +39,7 @@ from .harness import run_agent_harness_loop
 from .agent_identity import display_name_for_agent
 from .agent_identity import handle_for_agent
 from .lane_manager import register_lane_tools
+from .llm_driver import _parallel_tool_call_limit_result
 from .llm_driver import _sanitize_public_args
 from .memory import register_memory_tools
 from .protocol_tools import register_protocol_tools
@@ -1092,9 +1093,7 @@ class TeammateConversationDriver(HarnessDriver):
         tool_calls = _extract_tool_calls(response)
         if tool_calls:
             invocations: list[ToolInvocation] = []
-            for index, tool_call in enumerate(
-                tool_calls[: self.max_parallel_tool_calls]
-            ):
+            for index, tool_call in enumerate(tool_calls):
                 args = dict(tool_call.get("args") or {})
                 if "task_id" not in args and tool_call["name"].startswith(
                     (
@@ -1114,13 +1113,27 @@ class TeammateConversationDriver(HarnessDriver):
                         lane_id=None if "lane_id" not in args else str(args["lane_id"]),
                     )
                 )
-            tool_invocations = tuple(invocations)
+            all_invocations = tuple(invocations)
+            tool_invocations = all_invocations[: self.max_parallel_tool_calls]
+            tool_rejections = tuple(
+                _parallel_tool_call_limit_result(
+                    invocation,
+                    position=index,
+                    requested_count=len(all_invocations),
+                    max_parallel_tool_calls=self.max_parallel_tool_calls,
+                )
+                for index, invocation in enumerate(
+                    all_invocations[self.max_parallel_tool_calls :],
+                    start=self.max_parallel_tool_calls + 1,
+                )
+            )
             return HarnessStep(
                 tool_invocations=tool_invocations,
+                tool_rejections=tool_rejections,
                 llm_trace=self._trace_step(
                     context=context,
                     response_text=response_text,
-                    tool_invocations=tool_invocations,
+                    tool_invocations=all_invocations,
                     initial_prompt=initial_prompt,
                     step_context=step_context,
                 ),

@@ -1037,7 +1037,7 @@ def _operation() -> ControlledOperation:
         stage_refs=tuple(material["stage_refs"]),
         planned_fetch_intent=dict(material["planned_fetch_intent"]),
         approval_requirement={"required": True},
-        adapter_result_envelope={"backend_run_id": "job_001"},
+        adapter_result_envelope={"run_id": "job_001"},
         expected_outputs_summary=dict(material["expected_outputs"]),
         resource_estimate=dict(material["resource_estimate"]),
         result_summary={
@@ -1071,6 +1071,72 @@ def test_live_collector_preserves_exact_control_plane_operation_digest() -> None
     )
     assert record["operation_identity_digest"] == operation.operation_digest
     assert record["backend_run_id"] == "job_001"
+
+
+def test_live_collector_rejects_noncanonical_hpc_backend_identity() -> None:
+    operation = replace(
+        _operation(),
+        adapter_result_envelope={"backend_run_id": "job_legacy"},
+    )
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live.operation_evidence_record(
+            operation,
+            scope="probe",
+            inputs=[
+                {"artifact_id": "art_input", "content_digest": _digest("input")}
+            ],
+            outputs=[
+                {"artifact_id": "art_output", "content_digest": _digest("output")}
+            ],
+        )
+
+    assert error.value.code == "controlled_operation_backend_identity_ambiguous"
+    assert error.value.details["canonical_field"] == "run_id"
+
+
+def test_live_collector_requires_current_hpc_run_id_for_completed_operation() -> None:
+    operation = replace(_operation(), adapter_result_envelope={})
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live.operation_evidence_record(
+            operation,
+            scope="probe",
+            inputs=[
+                {"artifact_id": "art_input", "content_digest": _digest("input")}
+            ],
+            outputs=[
+                {"artifact_id": "art_output", "content_digest": _digest("output")}
+            ],
+        )
+
+    assert error.value.code == "controlled_operation_backend_receipt_missing"
+    assert error.value.details["canonical_field"] == "run_id"
+
+
+def test_live_collector_rejects_mismatched_hpc_backend_identities() -> None:
+    operation = replace(
+        _operation(),
+        adapter_result_envelope={
+            "run_id": "job_current",
+            "backend_run_id": "job_other",
+        },
+    )
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live.operation_evidence_record(
+            operation,
+            scope="probe",
+            inputs=[
+                {"artifact_id": "art_input", "content_digest": _digest("input")}
+            ],
+            outputs=[
+                {"artifact_id": "art_output", "content_digest": _digest("output")}
+            ],
+        )
+
+    assert error.value.code == "controlled_operation_backend_identity_mismatch"
+    assert error.value.details["conflicting_fields"] == ["backend_run_id"]
 
 
 def test_selected_chain_collector_allows_failed_trial_before_adopted_success() -> None:

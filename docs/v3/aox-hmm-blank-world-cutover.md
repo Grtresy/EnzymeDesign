@@ -1,8 +1,8 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r51 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. r48, r49, r50 and r51 are permanent NO-GO evidence. The executable architecture-qualification gate is implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. Local Live cutover stays **NO-GO** until one successor campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
+Status: r43-r52 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. r48 through r52 are permanent NO-GO evidence. The executable architecture-qualification gate is implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. Local Live cutover stays **NO-GO** until one successor campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
 
-Historical r14-r51 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
+Historical r14-r52 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
 This document describes the operator/evidence boundary implemented by `openzyme_host_api.aox_cutover_evidence`. It does not turn the historical S15 fixture into live evidence and does not authorize seeded state, cached scientific outputs, the reference notebook, or copied reference results as attempt inputs.
 
@@ -11,14 +11,14 @@ scientific-attempt control plane. The agent may retain failed/superseded trials
 inside one formal attempt while explicitly selecting a valid adopted chain, but
 the bundle still audits the full occurrence universe and fails closed on unknown
 effect, active process/writer, incomplete disposition, authority/resource breach,
-or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r51
+or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r52
 fact can be upgraded, backfilled, or adopted.
 The current workflow knowledge identity is
 `workflow:aox-hmm-live@2.0.0#sha256:10ae97822702fc231905f6f41368d9462dadd47967f09ab3df5ca1933e6ee20f`;
 the next live launch must still bind that ref to a fresh clean commit,
 qualification report, pin and authority plan.
 
-## 2026-07-23 pre-live implementation checkpoint
+## 2026-07-23 pre-r52 implementation checkpoint
 
 The selected-chain migration is implemented and has stopped before r52.
 `./scripts/check-mainline.sh` completed with `2353 passed, 31 deselected`;
@@ -32,11 +32,64 @@ This checkpoint is implementation-ready, not live-admission evidence. It was
 captured before the implementation landed, so it did not issue a clean-HEAD
 full admission report. A later commit establishes only the candidate source
 identity; it does not retroactively turn this checkpoint into admission
-evidence. No production authority plan or consumption receipt was published,
-no r52 root/session/campaign was created, and no LLM/provider/HPC/Chrome live
-action ran. After landing, the next operator sequence remains clean-HEAD full
-architecture admission, canonical pin, reviewable `authorize`, and only then a
-separately authorized r52 launch.
+evidence. At the time of this checkpoint no production authority plan or
+consumption receipt was published, no r52 root/session/campaign existed, and no
+LLM/provider/HPC/Chrome live action had run. The separately authorized r52
+launch described below happened only after clean-HEAD full architecture
+admission, canonical pin, reviewable `authorize`, and exact plan approval.
+
+## r52 live attempt: permanent NO-GO
+
+r52 ran on clean commit
+`5ccb0d3ba6055cd3d50b0e42437c350ee442a1f0` after atomically consuming the
+one-use authority plan
+`sha256:c2755edc4a8f08a161618a7291ff8dad40c340c390c527c24c8f956366492bbb`.
+The campaign reached only positive 1
+`positive-2c12fe69d1a7a4fc77a651b2344ac3f3`; no Chrome handoff occurred, no
+eligible attempt bundle was sealed, and positive 2 plus the controlled fault
+were never started.
+
+The child terminated with exit `70`. Parent-owned fatal evidence
+`sha256:947b622974006328c701591aa647433d09a371f2329f3fd7da5a584399aeaad2`
+proves descendant retirement and blocks the next attempt, while correctly
+leaving external outcome unknown, `quiescent_observed=false`,
+`sqlite_closure_claimed=false`, `ledger_after_claimed=false`, and
+`artifact_completeness_claimed=false`. Driver failure
+`sha256:8e0c9f334212f9a07f1e79da8d3658199c053e28c5eff79d554c2aafe35cdeb4`
+has kind `attempt_supervision_fatal`; the sealed campaign decision is permanent
+**NO-GO** with digest
+`sha256:7284ce153ed150688887ff1315f52ac236e1a5ef18cf7c519085380013befe8b`
+and blocker `attempt_child_runner_failed`. The conservative MICU lower bound is
+`74,356,412 / 500,000,000`, leaving `425,643,588`, with no overage or hard-limit
+breach.
+
+Two independent defects were observed:
+
+- the independent known-positive probe completed all six real NCBI, UniProt,
+  MAFFT, hmmbuild, CD-HIT and HMMalign controlled operations, but attestation
+  failed with `controlled_operation_backend_receipt_missing`; the old collector
+  inspected `provider_request_id` or legacy `backend_run_id`, whereas current
+  durable HPC result envelopes expose canonical `run_id`;
+- the formal master provider response contained more than the supported three
+  tool calls. The first three visible `task.create` calls all completed, but the
+  driver retained the full assistant response while silently truncating the
+  execution list. The next provider request was rejected because the overflow
+  function call had no matching tool output.
+
+The correction keeps the three-call dispatch limit. Master and teammate drivers
+trace every returned call and turn each overflow call into a persisted
+`parallel_tool_call_limit_exceeded` no-effect rejection with a matching
+ToolMessage before the next provider request. The live collector now accepts
+only the backend-native canonical source field for completed operations:
+`hpc -> run_id` and `provider_http -> provider_request_id`, normalizing it to
+evidence `backend_run_id`; missing, legacy/generic, other-backend, multiple or
+unsupported identities fail closed.
+
+These corrections do not upgrade either partial path into success. r52
+authority, roots, tasks, operations, artifacts and effects are permanently
+non-reusable. A successor campaign requires a new clean correction commit,
+fresh full admission, fresh pin, a newly generated exact-three authority plan,
+fresh roots, and separate exact approval to consume that new plan.
 
 ## Numbered launch-preparation boundary
 
@@ -2072,8 +2125,10 @@ Offline unit/eval success proves implementation behavior only. Local Live cutove
 
 Until those artifacts exist, documentation and UI must state NO-GO. Historical S15 and deterministic fixtures remain `fixture_non_cutover` regardless of local test status.
 
-The current implementation checkpoint has completed only code, OpenSpec,
-documentation and non-live verification for recoverability, attempt selection,
-fresh authority and `@3`. It deliberately stops before `preflight` or
-`run-live`: no new numbered root, provider/MICU call, HPC job, browser campaign
-or attempt evidence has been created by this checkpoint.
+r52 is current live diagnostic evidence, but it sealed no eligible attempt
+bundle and therefore satisfies none of the three GO slots. The post-r52
+correction checkpoint covers code, OpenSpec, documentation and non-live
+verification only. It deliberately stops before any successor `preflight` or
+`run-live`: no successor numbered root, provider/MICU call, HPC job, browser
+campaign or attempt evidence may be created until a fresh exact plan is
+generated and separately approved.

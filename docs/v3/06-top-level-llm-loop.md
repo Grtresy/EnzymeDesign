@@ -79,7 +79,7 @@ After every tool call, master must first read the tool-result envelope fields `o
 
 trace 只保存公开 step metadata：`step_id`、`agent_id`、`actor_kind`、`role`、focus ids、runtime signal ids、`restore_context_digest` 和 `tool_catalog_digest`。`llm_trace_step -> workspace.agent_traces` 必须经过稳定 public projection helper / allowlist：trace entry 只暴露 `trace_id`、`actor_ref`、`actor_kind`、`display_name`、`role`、`call_index`、`created_at`、`response_text`、`tool_calls`、`step_id`、`tool_catalog_digest`、`restore_context_digest`、`projection_schema_version` 与 sanitized `agent_step`；`agent_step` 只暴露 `step_id`、`session_id`、`agent_id`、`actor_kind`、`role`、`call_index`、`task_id`、`lane_id`、`correlation_id`、`signal_id`、`wakeup_reason`、`restore_context_digest`、`tool_catalog_digest`、`created_at`。trace 不保存完整 restore context、完整 prompt / `initial_prompt`、memory summary、完整 tool schema、artifact storage URI、Host path、runner path、SSH/runner config、provider secret、tool result content 或 sandbox host path。
 
-`tool.invoked` / `tool.completed` 保持 diagnostic/runtime event 语义，用 `agent_id`、`actor_kind`、`role`、`call_index`、`step_id`、`tool_catalog_digest` 与 `restore_context_digest` 关联回当前 step，并只带 `side_effect`、`supports_parallel`、`ok` / `status` / `error_code` 等公开诊断字段。Web UI 可以把这些事件追加到 `activity_feed` 并按事件去重，但不能由此新增 Codex thread / turn 顶层状态或默认 workspace 顶层分区。
+`tool.invoked` / `tool.rejected` / `tool.completed` 保持 diagnostic/runtime event 语义，用 `agent_id`、`actor_kind`、`role`、`call_index`、`step_id`、`tool_catalog_digest` 与 `restore_context_digest` 关联回当前 step，并只带 `side_effect`、`supports_parallel`、`ok` / `status` / `error_code` 等公开诊断字段。Web UI 可以把这些事件追加到 `activity_feed` 并按事件去重，但不能由此新增 Codex thread / turn 顶层状态或默认 workspace 顶层分区。
 
 legacy function handler 仍可通过 `registry.register(name, handler)` 注册；进入模型调用前由 router 包装成 `ToolRuntime`。长期方向是把 tool spec、visibility gating 和 dispatch 放入 typed runtime，而不是让 prompt catalog、provider adapter 和真实 dispatch 各自维护一份 truth。
 
@@ -94,6 +94,18 @@ role surface 由同一个 router 判定：master 即使注册了 engine runtimes
 当 session/attempt 启用 generic mutation closure 时，harness turn 是显式 `agent_turn` writer。router 只为真正 mutating 的 producer 注册额外 writer：artifact/research publication 使用 `artifact_publisher`，report draft/publish 使用 `report_publisher`；对应 read tool 不得虚构 writer。所有模型请求进入 `LlmInvocationRuntime` 前注册 `live_token_ledger` writer，完成或失败后显式退休。event/outbox、sandbox process、controlled execution 和 continuation delivery 由各自 composition boundary 注册；不能仅因 tool dispatch 返回就推断这些 child writer 已退休。
 
 `supports_parallel` 只记录为 runtime governance metadata；本阶段顶层 loop 仍不启用真实并行 dispatch。
+
+master 与 teammate 的单个 provider response 最多按返回顺序 dispatch 前 `3` 个
+tool call。该上限不能靠静默截断实现：driver 必须把 provider 返回的全部 call 投影到
+同一个公开 LLM trace，并为每个 overflow call 产生
+`ok=false/status=rejected/error_code=parallel_tool_call_limit_exceeded` 的结构化
+`ToolResult`，明确 `effect_certainty=no_effect` 与
+`retry_eligibility=same_phase_safe`。harness 为其持久化 failure observation，发送
+`tool.rejected` 与 `tool.completed`，但不发送 `tool.invoked`、不进入 router dispatch。
+下一次 provider request 前，每个原始 call id（包括 overflow）都必须有且仅有一个匹配
+的 `ToolMessage`；否则 assistant message 中残留的未闭合 function call 会让 provider
+拒绝整个后续 transcript。这个纠正不提高并发上限，也不授权 harness 代 agent 选择要
+重试的工作。
 
 ## 5. 顶层允许暴露给模型的工具
 
@@ -170,6 +182,7 @@ role surface 由同一个 router 判定：master 即使注册了 engine runtimes
 - mutation-scope tests 必须证明 LLM provider writer、mutating/read-only tool publisher 区分、oversized tool-result artifact publication、event/outbox child writer 与 post-freeze/post-seal拒写
 - live LLM smoke 至少覆盖一次真实 tool call
 - 顶层单回合 tool call 并发上限固定为 `3`
+- master 与 teammate 回归必须证明第 `4+` 个 call 未 dispatch、被记录为 no-effect rejection，且下一次 provider payload 对全部 call id 都有匹配 ToolMessage
 
 ## 10. Qualification 与 workflow eval 的区别
 

@@ -4827,6 +4827,56 @@ def operation_evidence_record(
             details={"operation_id": operation.operation_id},
         )
     result = dict(operation.adapter_result_envelope or {})
+    backend_identity_field = {
+        "hpc": "run_id",
+        "provider_http": "provider_request_id",
+    }.get(operation.selected_backend)
+    if backend_identity_field is None:
+        raise LiveProductPathError(
+            "controlled_operation_backend_identity_unsupported",
+            "controlled operation selected an unsupported backend identity contract",
+            details={
+                "operation_id": operation.operation_id,
+                "selected_backend": operation.selected_backend,
+            },
+        )
+    backend_run_id = str(result.get(backend_identity_field) or "").strip()
+    conflicting_fields = {
+        field: str(result.get(field) or "").strip()
+        for field in ("backend_run_id", "provider_request_id", "run_id")
+        if field != backend_identity_field
+        and str(result.get(field) or "").strip()
+    }
+    if conflicting_fields:
+        identity_mismatch = bool(backend_run_id) and any(
+            value != backend_run_id for value in conflicting_fields.values()
+        )
+        raise LiveProductPathError(
+            (
+                "controlled_operation_backend_identity_mismatch"
+                if identity_mismatch
+                else "controlled_operation_backend_identity_ambiguous"
+            ),
+            (
+                "controlled operation backend receipt exposes conflicting run identities"
+                if identity_mismatch
+                else "controlled operation backend receipt exposes a non-canonical run identity field"
+            ),
+            details={
+                "operation_id": operation.operation_id,
+                "canonical_field": backend_identity_field,
+                "conflicting_fields": sorted(conflicting_fields),
+            },
+        )
+    if operation.status.value == "completed" and not backend_run_id:
+        raise LiveProductPathError(
+            "controlled_operation_backend_receipt_missing",
+            "completed controlled operation lacks its canonical backend run identity",
+            details={
+                "operation_id": operation.operation_id,
+                "canonical_field": backend_identity_field,
+            },
+        )
     record: dict[str, object] = {
         "operation_id": operation.operation_id,
         "session_id": operation.session_id,
@@ -4847,8 +4897,7 @@ def operation_evidence_record(
         "source_snapshot_digest": operation.source_snapshot_digest,
         "route_policy_id": operation.route_policy_id,
         "selected_backend": operation.selected_backend,
-        "backend_run_id": result.get("provider_request_id")
-        or result.get("backend_run_id"),
+        "backend_run_id": backend_run_id or None,
         "inputs": [dict(item) for item in inputs],
         "outputs": [dict(item) for item in outputs],
     }

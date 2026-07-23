@@ -318,6 +318,7 @@ class LlmTraceStep:
 class HarnessStep:
     assistant_message: str | None = None
     tool_invocations: tuple[ToolInvocation, ...] = ()
+    tool_rejections: tuple[ToolResult, ...] = ()
     llm_trace: LlmTraceStep | None = None
     task_updates: tuple[Task, ...] = ()
     approval_requests: tuple[ApprovalRequest, ...] = ()
@@ -1660,6 +1661,49 @@ def _tool_event_metadata(
     return metadata
 
 
+def _record_tool_rejection(
+    context: SessionRuntimeContext,
+    harness_input: HarnessInput,
+    result: ToolResult,
+    *,
+    fallback_source_version: str,
+) -> ToolResult:
+    step_context = context.current_step_context
+    observation = record_failure_observation(
+        context.repositories,
+        session_id=harness_input.session_id,
+        task_id=result.task_id
+        or (None if step_context is None else step_context.task_id),
+        lane_id=result.lane_id
+        or (None if step_context is None else step_context.lane_id),
+        agent_id=context.agent_id or harness_input.agent_id,
+        source_kind="tool_invocation",
+        source_ref=result.call_id,
+        source_version=(
+            fallback_source_version
+            if step_context is None
+            else step_context.step_id
+        ),
+        phase="validation",
+        failure_class=FailureClass.VALIDATION,
+        recoverability=FailureRecoverability.AGENT_CAN_REPLAN,
+        effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+        retry_eligibility=RetryEligibility.SAME_PHASE_SAFE,
+        actor_kind=FailureActorKind.HARNESS,
+        error_code=result.error_code or "tool_call_rejected",
+        safe_summary=result.summary or result.content,
+        safe_hint=result.hint,
+        facts={
+            **(result.details or {}),
+            "dispatched": False,
+            "tool_name": result.tool_name,
+        },
+    )
+    return sanitize_tool_result_diagnostics(
+        replace(result, failure_observation=observation.to_dict())
+    )
+
+
 def run_agent_harness_loop(
     repositories: CoreRepositories,
     harness_input: HarnessInput,
@@ -1974,7 +2018,7 @@ def run_agent_harness_loop(
                 pending_approval_id=pending_approval_id,
             )
 
-        if step.tool_invocations:
+        if step.tool_invocations or step.tool_rejections:
             current_results: list[ToolResult] = []
             for invocation in step.tool_invocations:
                 invocation = replace(
@@ -2160,6 +2204,60 @@ def run_agent_harness_loop(
                         tool_results=tuple(all_tool_results),
                         pending_approval_id=pending_approval_id,
                     )
+            for rejection in step.tool_rejections:
+                rejection = replace(
+                    rejection,
+                    lane_id=_resolve_effective_lane_id(
+                        repositories,
+                        session_id=harness_input.session_id,
+                        task_id=rejection.task_id,
+                        lane_id=rejection.lane_id,
+                    ),
+                )
+                rejection_invocation = ToolInvocation(
+                    call_id=rejection.call_id,
+                    tool_name=rejection.tool_name,
+                    arguments={},
+                    task_id=rejection.task_id,
+                    lane_id=rejection.lane_id,
+                )
+                result = _record_tool_rejection(
+                    context,
+                    harness_input,
+                    rejection,
+                    fallback_source_version=turn_source_ref,
+                )
+                context.emit(
+                    "tool.rejected",
+                    {
+                        "call_id": result.call_id,
+                        "tool_name": result.tool_name,
+                        "task_id": result.task_id,
+                        "lane_id": result.lane_id,
+                        "ok": False,
+                        "status": result.status,
+                        "error_code": result.error_code,
+                        "effect_certainty": "no_effect",
+                        **_tool_event_metadata(context, rejection_invocation),
+                    },
+                )
+                current_results.append(result)
+                all_tool_results.append(result)
+                context.emit(
+                    "tool.completed",
+                    {
+                        "call_id": result.call_id,
+                        "tool_name": result.tool_name,
+                        "task_id": result.task_id,
+                        "lane_id": result.lane_id,
+                        "ok": False,
+                        "status": result.status,
+                        "error_code": result.error_code,
+                        **_tool_event_metadata(context, rejection_invocation),
+                    },
+                )
+                activity_happened = True
+                context.refresh()
             tool_results = tuple(current_results)
             context.refresh()
             continue

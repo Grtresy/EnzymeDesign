@@ -29,6 +29,43 @@ quiescence，但不推导 task 业务终态。
 creation、provider/HPC/browser action 之前；任何新 live evidence 必须在后续独立
 授权下产生。
 
+### 2026-07-23 r52 live diagnostic correction addendum
+
+operator 随后精确批准并消费 authority plan
+`sha256:c2755edc4a8f08a161618a7291ff8dad40c340c390c527c24c8f956366492bbb`，
+r52 在 clean commit `5ccb0d3ba6055cd3d50b0e42437c350ee442a1f0` 上启动。
+campaign 只到达 positive 1，未发生 Chrome handoff，也没有封存任何 eligible attempt
+bundle。parent supervisor 以 `attempt_supervision_fatal` 收口，campaign decision
+`sha256:7284ce153ed150688887ff1315f52ac236e1a5ef18cf7c519085380013befe8b`
+保持永久 NO-GO。
+
+r52 暴露两个彼此独立、均可局部修复的合同缺口。第一，master 第一次 provider
+response 请求了超过三项 tool call；旧 driver 只把前三项转换为 invocation，却把包含
+全部 calls 的 assistant response 留在 transcript。前三个 `task.create` 均成功后，
+下一次 provider call 因第四个 call 没有匹配 `ToolMessage` 返回 non-retryable 400。
+纠正后 master/teammate 仍只按顺序 dispatch 前三项，但 public trace 保留全部请求；
+每个 overflow call 形成持久
+`parallel_tool_call_limit_exceeded/no_effect/same_phase_safe` failure observation、
+`tool.rejected`/`tool.completed` event 与匹配 ToolMessage，绝不 dispatch、改写用户意图
+或放宽并发上限。
+
+第二，positive 1 的 independent probe 实际完成 NCBI、UniProt、MAFFT、hmmbuild、
+CD-HIT 与 HMMalign 六项真实 controlled operation，所有 operation/approval/run 均已
+terminal；旧 collector 却只从 `provider_request_id` 或 legacy `backend_run_id` 读取
+规范化 identity，而当前 durable HPC result 的 canonical 字段是 `run_id`，因此 probe
+attestation 以 `controlled_operation_backend_receipt_missing` fail closed。纠正后
+collector 根据 `selected_backend` 做 closed mapping：
+`hpc -> run_id`、`provider_http -> provider_request_id`，再统一投影为 evidence
+`backend_run_id`；completed operation 缺失 canonical field、携带 legacy/other-backend
+field、出现多候选或 backend 未知均拒绝，不猜测 identity。
+
+该 correction 不追认 probe success，不恢复 formal turn，也不改变 r52 的 unknown
+external outcome、未声明 SQLite/artifact closure 或无 bundle 事实。r52 authority、
+roots、tasks、operations、artifacts 与 effects 永久不可复用；MICU 只保守记录到
+`74,356,412 / 500,000,000`，remaining `425,643,588`，零 overage/breach。任何后继
+campaign 必须使用 correction 后的新 clean commit、重新 full admission、fresh pin、
+fresh exact-three authority plan 与 fresh roots，并再次获得对该新 plan 的精确消费授权。
+
 ## Goals / Non-Goals
 
 **Goals:**
