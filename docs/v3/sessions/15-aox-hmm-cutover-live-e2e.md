@@ -1107,6 +1107,45 @@ route 为 `durable_async_v1`、drain 为 `command_v1`、closure 为 `generic_v1`
 都会改变 pin identity 并 fail closed。旧 `@1` 仅保留 frozen evidence 离线读取兼容，不能再
 启动新的 live attempt。下一次实验必须重新生成 architecture admission、pin 与全新编号 roots。
 
+## r49 durable-event replay transaction attempt：永久 NO-GO
+
+r49 使用 clean commit `d413a51ad8eecc118bf051c54c0ef40c78bb1a25`、fresh full admission
+payload digest `sha256:e4dba3ed9fc702911b07d13208f4c6830fa92b29cfedde6278215b359fc45124`
+与 `aox_blank_world_runtime_config@2` config digest
+`sha256:a799a41159688b5bc6df2b060468fc4176f7780a7855721ecc7c1ab40a3a982e`
+启动 fresh positive attempt `positive-77e54e3df18b4d0e89ddc4b7790bee5a`。它真实穿过可靠性
+preflight，创建 master/executor team，发生 MICU 调用，并通过 canonical approval
+`appr_1aa968c97657` 将首个 NCBI durable operation `op_966d30ce9f19` 推进到 execution
+`exec_bb73137fa448`。
+
+失败发生在 single-process SQLite event replay：runtime drain 在收集 scheduler 已经逐条发布的
+event 后再次幂等 append 同一 event。旧 `DurableEventRepository.append()` 对 exact same-content
+duplicate INSERT 返回既有 row，却没有关闭该失败 INSERT 打开的 standalone 隐式 transaction；
+随后 event-outbox mutation writer 退役执行 `BEGIN IMMEDIATE`，以
+`cannot start a transaction within a transaction` 失败。该失败留下 execution
+`dispatching`、continuation `awaiting_result`、sandbox run `running` 与一个 registered
+event-outbox writer；attempt freeze 因 `mutation_writers_still_active` 失败。child 因而不能签发
+quiescence receipt，parent supervisor 正确拒绝读取/封存普通 attempt bundle，并写出
+`aox_live_attempt_fatal@1`，而不是把不静止的 root 追认为普通科学失败。
+
+r49 fatal digest 为
+`sha256:c9d814158d92be18d8e0eb17333dacc124ade9c10f223a2d426ab0272fb73b45`，
+driver-failure digest 为
+`sha256:8e0c9f334212f9a07f1e79da8d3658199c053e28c5eff79d554c2aafe35cdeb4`，
+sealed decision digest 为
+`sha256:5056abd190a58c046b887f1210947e88c1c925404bbe297876e5728da268f8cf`。
+supervisor 只能封存 MICU verified lower bound
+`71,727,249 / 500,000,000`（remaining `428,272,751`），没有声称 ordinary
+`ledger_after`、SQLite closure、artifact completeness 或 external outcome。r49 root、pin、
+approval、operation/effect、fatal evidence 与 decision 永久不可复用。
+
+局部 correction 不新增 owner、状态或 fallback：same-content durable event replay 在 standalone
+path 返回既有 event 前调用现有 `_commit()` 收口隐式 transaction；owning UoW 内 `_commit()`
+仍保持 no-op，由外层 transaction 统一提交。回归测试要求 replay 后
+`connection.in_transaction == false`，并证明同一 connection 上 event-outbox mutation writer
+可以正常 terminal retirement。后继 numbered campaign 必须在该 correction 的 clean commit 上
+重新生成 full admission、fresh pin 和全新 roots。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

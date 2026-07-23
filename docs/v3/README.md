@@ -33,7 +33,7 @@ V3 的核心立场：
 AOX/HMM live cutover：
 
 - [aox-hmm-blank-world-cutover.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-hmm-blank-world-cutover.md)
-- `pin`、`preflight`、`run-live` 均先要求当前 clean commit 的 full architecture qualification report；qualification 通过本身只解除架构阻断，不创建 attempt，也不自动恢复 numbered campaign。无 attempt 的准备阶段止于 canonical `pin`；CLI `preflight` 会创建 blank-world attempt root，因此必须等到 operator 明确授权 r48。
+- `pin`、`preflight`、`run-live` 均先要求当前 clean commit 的 full architecture qualification report；qualification 通过本身只解除架构阻断，不创建 attempt，也不自动恢复 numbered campaign。无 attempt 的准备阶段止于 canonical `pin`；CLI `preflight` 会创建 blank-world attempt root，因此每个新 numbered campaign 都必须有 operator 授权并使用 fresh roots。
 
 Execution pipeline SDK docs:
 

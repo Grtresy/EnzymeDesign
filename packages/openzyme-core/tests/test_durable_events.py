@@ -9,8 +9,11 @@ from openzyme_core import CommandReceiptRecord
 from openzyme_core import CoreRepositories
 from openzyme_core import DurableEventConflictError
 from openzyme_core import DurableEventRecord
+from openzyme_core import MutationScopeService
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
+from openzyme_domain import MutationScopeKind
+from openzyme_domain import MutationWriterKind
 from openzyme_domain import Session
 from openzyme_domain import SessionStatus
 
@@ -68,8 +71,48 @@ def test_durable_event_identity_is_idempotent_but_conflicting_content_fails() ->
     first = repositories.durable_events.append(_event())
 
     assert repositories.durable_events.append(_event()) == first
+    assert connection.in_transaction is False
     with pytest.raises(DurableEventConflictError):
         repositories.durable_events.append(_event(payload={"task_id": "task_2"}))
+    connection.close()
+
+
+def test_idempotent_event_replay_closes_before_mutation_writer_retirement() -> None:
+    connection, repositories = _repositories()
+    first = repositories.durable_events.append(_event())
+    scope = MutationScopeService(repositories).open_scope(
+        session_id="sess_events",
+        scope_kind=MutationScopeKind.SESSION,
+        scope_ref="durable-event-replay",
+    )
+
+    with MutationScopeService(repositories).writer_turn(
+        session_id="sess_events",
+        owner_kind=MutationWriterKind.EVENT_OUTBOX_PUBLISHER,
+        owner_ref="event-replay:test",
+    ):
+        assert repositories.durable_events.append(_event()) == first
+
+    writers = repositories.mutation_writers.list_all(scope.scope_id)
+    assert len(writers) == 1
+    assert writers[0].state.is_terminal
+    assert connection.in_transaction is False
+    connection.close()
+
+
+def test_idempotent_event_replay_does_not_commit_an_owning_uow() -> None:
+    connection, repositories = _repositories()
+    first = repositories.durable_events.append(_event())
+
+    with pytest.raises(RuntimeError, match="force owner rollback"):
+        with repositories.atomic(prefix="durable_event_replay_owner"):
+            assert repositories.durable_events.append(_event()) == first
+            repositories.durable_events.append(_event(event_id="evt_2"))
+            raise RuntimeError("force owner rollback")
+
+    assert repositories.durable_events.get("evt_2") is None
+    assert repositories.durable_events.latest_cursor("sess_events") == first.cursor
+    assert connection.in_transaction is False
     connection.close()
 
 

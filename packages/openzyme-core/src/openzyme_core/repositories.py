@@ -1457,6 +1457,14 @@ class DurableEventRepository:
                         trace_id,
                     )
             if existing is not None and self._same_content(existing, event):
+                # The failed INSERT opened an implicit SQLite transaction even
+                # though the replay is semantically read-only.  Close that
+                # standalone transaction before returning so a following
+                # repository atomic block (for example mutation-writer
+                # retirement) does not attempt BEGIN inside the stale
+                # transaction.  Inside an owning UoW, _commit intentionally
+                # remains a no-op and the owner closes the transaction.
+                _commit(self.connection)
                 return existing
             raise DurableEventConflictError(
                 "durable event identity was reused with different content"

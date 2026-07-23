@@ -1,7 +1,8 @@
 # V3 可执行架构资格验证
 
-状态：deterministic qualification 与 AOX admission integration 已实现；在当前
-clean commit 生成并独立验证首份 full admission report 前，AOX r48/live 继续暂停。
+状态：deterministic qualification 与 AOX admission integration 已实现；每个 tracked
+correction 都会使前一份 report 失效。r48/r49 已永久 NO-GO，后继 numbered campaign 必须先在
+新的 clean commit 上生成并独立验证 fresh full admission report。
 
 ## Authority boundary
 

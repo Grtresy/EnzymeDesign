@@ -25,6 +25,7 @@ SQLite connection / transaction ownership：
 - 每个 request、background worker、scheduler agent turn 和 sandbox SDK callback 在其实际线程内获得独立、默认 thread-affine connection，并由 scope 关闭；不得把 request thread 的 connection 交给 `asyncio.to_thread`
 - read scope 开启 `query_only`，不抢占 write lock；短 canonical command 使用 `BEGIN IMMEDIATE` Unit of Work，repository 内部 `commit` 在 owning UoW 中被抑制，异常统一 rollback
 - 会跨 LLM/provider/runner/sandbox 的流程使用非长事务 connection scope；repository 写入仍是短提交，不能用一个 write UoW 包住外部等待
+- 同内容 durable event replay 在 standalone connection scope 中必须关闭 duplicate INSERT 打开的 SQLite 隐式事务后再返回既有 event；owning UoW 内仍由外层统一提交。幂等 replay 不得遗留 transaction，使随后的 mutation-writer retirement、freeze 或 quiescence 在嵌套 `BEGIN` 上失败
 - WAL、foreign keys 与有限 `busy_timeout` 是固定连接配置；它们不允许跨线程复用，也不构成 command 幂等、outbox 或 lease fencing 的替代品
 - `020_v3_task_integrity` 将 task dependency 的 INSERT / UPDATE integrity triggers 纳入 current schema；缺少这些 triggers 的旧本地库不是 current-version input，必须按 fresh database 流程重建
 - `021_v3_durable_event_outbox` 将 durable event、command receipt 与 append-only/immutable triggers 纳入 current schema；缺少任一项同样 fail fast

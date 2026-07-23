@@ -332,6 +332,13 @@ During a file-backed runtime turn, every session-lease heartbeat and contention 
 - **WHEN** the lease is no longer active and a sandbox callback attempts a canonical write
 - **THEN** the write is not applied and the public error is non-retryable `runtime_write_fenced`, not a generic or retryable transport error
 
+### Requirement: Idempotent durable-event replay closes its SQLite transaction
+When a standalone repository connection attempts to append an already stored durable event with the exact same canonical content, the system SHALL return the existing event without allocating another cursor and SHALL close the implicit SQLite transaction opened by the failed duplicate INSERT before returning. When the same replay runs inside an owning Unit of Work, the outer owner SHALL retain commit/rollback authority. A same-content replay MUST NOT leave a transaction that prevents mutation-writer retirement, freeze, or quiescence.
+
+#### Scenario: Retire an event writer after same-content replay
+- **WHEN** an event-outbox mutation writer replays an exact existing durable event on a standalone connection and then exits its bounded writer turn
+- **THEN** the existing event is returned, the connection has no standalone transaction left open, and the writer reaches a terminal state without a nested `BEGIN`
+
 ### Requirement: Closed artifact kinds and fixed AOX deliverable contracts
 Artifact registration SHALL accept only the exact nine control-plane kind values `code`, `log`, `sequence`, `structure`, `report`, `research_dossier`, `result`, `cache`, and `other`. The dependency-free SDK and every Host/raw-control registration boundary SHALL reject another value before sealing or external dispatch with non-retryable `artifact_kind_invalid`. `directory` MAY remain an `expected_outputs` shape sentinel but SHALL NOT be stored as an artifact kind.
 

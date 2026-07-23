@@ -1,12 +1,12 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r47 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. The executable architecture-qualification gate is now implemented, but every tracked commit invalidates the preceding receipt until the new clean HEAD passes full admission again. The numbered campaign remains paused before r48. Local Live cutover stays **NO-GO** until a separately authorized campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
+Status: r43-r49 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. r48 and r49 are permanent NO-GO evidence. The executable architecture-qualification gate is implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. Local Live cutover stays **NO-GO** until one successor campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
 
 Historical r14-r47 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
 This document describes the operator/evidence boundary implemented by `openzyme_host_api.aox_cutover_evidence`. It does not turn the historical S15 fixture into live evidence and does not authorize seeded state, cached scientific outputs, the reference notebook, or copied reference results as attempt inputs.
 
-## Pre-r48 launch-preparation boundary
+## Numbered launch-preparation boundary
 
 The no-attempt preparation phase may update local configuration, build and hash
 the Web UI, run non-live verification, produce and purely verify a full
@@ -16,7 +16,7 @@ non-scientific forced-SSH toolchain attestations and publishes declarations
 outside the checkout, but it does not create an attempt root, contact scientific
 providers or MICU, request Chrome approval, or start the numbered campaign.
 
-The next r48 pin and `run-live` must resolve these effective LLM values after the
+Every successor pin and `run-live` must resolve these effective LLM values after the
 live-test foundation overrides have been applied:
 
 - `OPENZYME_LLM_CONTEXT_WINDOW_TOKENS=200000`;
@@ -36,7 +36,7 @@ attempts, and the controlled fault attempt require a separate explicit launch
 authorization. Standalone availability diagnostics can inform readiness but
 cannot satisfy campaign evidence or be adopted into an attempt.
 
-The pre-r48 documentation audit covers this stable contract, the main
+The launch documentation audit covers this stable contract, the main
 architecture document, the AOX execution guide, versioned workflow-pack
 documentation and manifest, Host live-integration instructions, and pytest
 marker semantics. Digest-pinned workflow knowledge is changed only when its
@@ -1325,7 +1325,7 @@ stale、tampered、未知 profile/schema 或 open-P0 report 一律 fail closed�
 registry、test-manifest、profile 和 source commit digest。它不创建 attempt、不访问外部系统，
 也不授权任何 scientific input。force/debug/env/legacy/pass-boolean bypass 不存在；
 `allowed_prerequisites` 仍保持下述 exact-nine scientific schema。架构放行只解除一个
-deterministic blocker，不能自动启动 r48 或替代 launch、availability、scientific、Chrome、
+deterministic blocker，不能自动启动 numbered live campaign 或替代 launch、availability、scientific、Chrome、
 MICU 与 offline evidence gate。
 
 ## Clean-root preflight
@@ -1507,7 +1507,7 @@ Operator preflight example:
 
 This command creates an attempt root. It is the first campaign mutation and
 must not be used as a no-attempt readiness probe or run before the operator has
-explicitly authorized r48.
+explicitly authorized the new numbered campaign.
 
 ```bash
 uv --project apps/openzyme-host-api run openzyme-aox-cutover preflight \

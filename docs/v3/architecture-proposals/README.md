@@ -33,11 +33,11 @@ evidence。
 完成实现。两个 P0 closure、完整 deterministic matrix、clean admission 与独立 pure verification
 已经闭合；change 在同步/归档前仍保持 `active`，但其实现与验证任务已经完成。
 
-编号 AOX live campaign（下一编号 r48）当前保持暂停。已归档 proposal、focused tests、
+编号 AOX live campaign 的 r48/r49 已永久 NO-GO。已归档 proposal、focused tests、
 premerge subset、dirty diagnostic 或历史资格 GO 均不构成新 attempt admission；只有当前 clean
 commit 的 full/zero-P0 architecture admission 可以解除架构阻断，且仍需 operator 另行启动并
-通过全部外部、科学与证据门禁。当前结论仅为“允许另行恢复 AOX live campaign”；资格验证
-本身没有创建 attempt、启动 r48 或调用真实 provider/runner/Chrome/MICU。
+通过全部外部、科学与证据门禁。资格验证本身不创建 attempt，也不调用真实
+provider/runner/Chrome/MICU。
 
 ## 已实现并随 OpenSpec 归档
 
