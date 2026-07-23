@@ -193,6 +193,17 @@ probe 的 task、operation、invocation、artifact 与 bytes 不得进入 formal
 
 `run-live` 在构造 runner/campaign 和创建任何 root 前先从 clean checkout、digest-pinned workflow、`aox_motif_rule_score@1`、实际 sandbox image preflight 与 Pipeline SDK source tree 计算 canonical 七字段 launch identity。`config_digest` 不是任意 operator 标签，而是 safe `aox_blank_world_runtime_config@2` preimage 的 canonical digest；该 preimage 绑定 single-process SQLite/trusted Host、HPC runner-config digest、runner-owned manifest digest 与 exact AOX `tool_id` → adapter/template/runner-contract expectation map、post-budget MICU/research/tracing/test opt-in、driver/Chrome bounds、controlled-operation owner policy、durable route allowlist、command drain、generic mutation closure、bounded shadow observation与现有累计 500M ledger identity，且不暴露 credential、NCBI email 或 Host/runner/ledger path。pin 在 forced-SSH attestation 前、run-live 在 campaign/attempt root 前必须证明全部 AOX provider/HPC route 使用 `durable_async_v1`、drain 为 `command_v1` 且 closure 为 `generic_v1`；旧 `@1` 仅为历史 frozen evidence 离线复核保留。MICU/OpenAI-compatible endpoint 必须显式配置 `context_window_tokens <= 200000`，不能按模型名继承未经 endpoint 证明的百万级 context。每个 attempt root 创建前都重新执行 launch guard，checkout 或 effective config 漂移直接 fail closed；exact-nine prerequisite 顶层字段不因此增加。
 
+r51 之后，identity resolution 还在任何 pin runner、attempt root、MICU/provider/runner
+effect 前执行 `aox_sandbox_scientific_backend_probe@1`。Host 把 exact Pipeline SDK
+复制到临时 preflight tree，规范化为目录 `0755`/文件 `0644` 并重算 source digest，
+随后以 selected immutable image、`--pull=never`、`--network=none`、read-only 和有界
+CPU/memory/pids 启动容器，真实运行 `biopython_trace_guarded_numpy_gotoh@1` 的 import、
+Biopython `1.87`/NumPy `2.4.4`、Gotoh algorithm、binary64 与 numeric score preflight。
+缺包、版本/算法/数值或 closed canonical receipt drift 都是 launch failure；不会运行时安装、
+改用 Host 依赖或选择 alternate backend。该 gate 只证明当前 selected immutable image 对
+当前 calculation 的运行能力，不扩张 exact-seven/exact-nine，也不等于 deferred
+reproducible dependency manifest、SBOM 或供应链 attestation。
+
 blank-world prerequisite 只接受 exact nine：`git_commit`、`config_digest`、`workflow_ref`、`image_digest`、`sdk_digest`、`toolchain_image_digests`、`credential_slots`、`ncbi_identity`、`prompt_accessions`。前五项必须与 launch identity 一致；toolchain map 必须精确包含 MAFFT 7.525、hmmbuild 3.4、hmmalign 3.4 和 CD-HIT 4.8.1 四个 versioned route identity，且两个 HMMER operation 绑定同一 SIF digest；credential slots 只含四个 availability boolean，LLM/NCBI 必须 ready；prompt accession 只含 formal exact-14 与固定 known-positive probe 集合。
 
 fresh SQLite 不继承任何 sandbox image row。campaign 在第一个 session / model / provider 调用前读取 public runtime health，只接受与 campaign identity 完全一致的 canonical image digest 和 Pipeline SDK digest，再把 digest-pinned、cutover-grade image 身份登记进本 attempt；缺失、格式非法、预存 registry row 或任一 digest 漂移均直接 fail closed。该 preflight identity 进入 sealed launch receipt，offline verifier 再对 image/SDK identity 做精确比对。
@@ -1203,6 +1214,49 @@ current workflow selection ref 为
 `workflow:aox-hmm-live@2.0.0#sha256:b8f3424aa591ab59fb89e911df65e5d44300614933fb8d10105028c296ad17f4`。
 下一次 numbered campaign 必须在 correction clean commit 上重新完成 full admission、
 fresh pin 与 fresh roots，不能读取、恢复或 adopt r50 effects。
+
+## r51 sandbox scientific-backend prerequisite attempt：永久 NO-GO
+
+r51 使用 clean correction commit
+`0e818853c0db9fadb9a407baf88e012842e30134`、fresh full admission payload
+`sha256:23fc3a5d41ec02613cdd683a43b86996690321e664c4d54af1863fd2e2dbd3ac`
+和 fresh pin/roots 启动 positive attempt
+`positive-8cde34b81ea747f0ba81c3909c4117c3`。pin 的 sandbox image identity 是
+`sha256:2a3d262421d3e1295171b2a96b53d430e0377e239b3906bf9b1d8bfd4e233eca`；
+该 immutable image 实际创建于 2026-05-03，`dev` alias 的存在只证明 bytes 可解析，
+不证明 AOX similarity capability 已安装。
+
+known-positive probe 的六项真实 provider/HPC operation 与 runner attestation 全部通过，
+证明 r50 durable toolchain identity correction 生效。formal 首个 NCBI operation
+`op_2c96ad951ff4` 由 Chrome canonical approval `appr_0d5e17f8f5ff` 批准并只执行一次；
+随后 exact-14 NCBI、MAFFT、hmmbuild、同一 EBI HMMER job、UniProt、HMMalign 与 CD-HIT
+七项 operation 全部 completed。真实 HMMER score filter 得到 `37,772` accessions；
+UniProt release `2026_02` 以 `378` 个 query/page 完成 exact identity partition：
+`32,176` active + `5,596` inactive（`5,594 DELETED + 2 MERGED`），长度筛选保留
+`2,561` hits，motif scorer 产出 `516` non-reference candidates。
+
+在所有外部 operation 完成后，`aox_similarity.build_similarity_graph()` 才首次触发 exact
+backend import；旧 image 缺少 `Bio`，sandbox 以
+`scientific_prerequisite_missing:similarity_backend_unavailable` /
+`ModuleNotFoundError` 返回 nonzero，attempt 正确映射为 `sandbox_exec_nonzero` 并停止，
+没有发布 report、运行 positive 2 或 fault。attempt bundle
+`sha256:c8f2fccc0ab0d8d5f0e361375423478ba8841fe8f08fde8ffcbc83b34b915d2e`
+经 offline verifier 得到 `issues=[]`，decision
+`sha256:a83811e6b877db1aac661bc02568a8397c9e387a50d6ab1904bd062a0be17f28`
+保持永久 **NO-GO**。MICU 累计为
+`73,565,595 / 500,000,000`，remaining `426,434,405`，零 breach/overage。
+r51 roots、operations/effects、approval、artifacts、bundle、decision 与 pin 永久不可复用。
+
+局部 correction 不放宽 scientific fail-closed。`pin`、`run-live` 和每个 attempt-boundary
+launch guard 现在都以 selected immutable image 和 mode-normalized exact SDK tree 执行
+`aox_sandbox_scientific_backend_probe@1`，在任何 pin runner、attempt root、MICU/provider/
+runner effect 前真实调用 backend import、版本、Gotoh、binary64 与 numeric preflight。
+旧 `sha256:2a3d…` 的受控负向 smoke 稳定返回
+`aox_launch_sandbox_scientific_backend_failed`；已校准
+`sha256:a581e59d462556186f4cb7cd98587d17307159af58135155596ca54e6c6a7eb2`
+的同构无网络只读 smoke 通过。完整可重现 dependency manifest/wheelhouse/SBOM/attestation
+仍属于单独 deferred proposal，本 correction 不实施。完成 correction commit 后暂停，
+不启动 r52，等待 operator 审查“任一小错终止 attempt”的整体策略。
 
 ## 当前实施状态的表述规则
 

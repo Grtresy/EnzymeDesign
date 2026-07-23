@@ -1363,6 +1363,20 @@ Pipeline SDK source tree and the Podman sandbox runtime preflight. It compares
 the derived object with the declaration field for field; a dirty checkout,
 missing/mutable identity, or mismatch stops before root creation.
 
+Identity resolution also runs `aox_sandbox_scientific_backend_probe@1` before
+pin runner attestation, attempt-root creation, or any MICU/provider/runner
+effect. The Host copies the exact Pipeline SDK into a temporary tree,
+normalizes directory/file modes to `0755`/`0644`, recomputes the SDK digest, and
+mounts that tree read-only into the selected immutable image with
+`--pull=never`, no network, and bounded CPU/memory/pids. The probe executes the
+real `biopython_trace_guarded_numpy_gotoh@1` import, exact Biopython `1.87` /
+NumPy `2.4.4` checks, Gotoh configuration, IEEE-754 binary64 check, and frozen
+numeric examples. Missing packages or version/algorithm/numeric/canonical
+receipt drift fails launch without installing a package, using Host imports, or
+selecting another backend. This capability gate does not add an identity or
+prerequisite field and does not claim the deferred reproducible dependency
+manifest, SBOM, or supply-chain attestation has been implemented.
+
 `config_digest` is the canonical JSON digest of the complete safe preimage
 `aox_blank_world_runtime_config@2`. That preimage records the effective
 post-foundation configuration, including:

@@ -4,6 +4,7 @@ from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -160,6 +161,7 @@ def _probes(checkout: list[str] | None = None) -> launch.AoxCutoverLaunchProbes:
             "image_digest": _digest("image"),
             "pipeline_sdk_digest": _digest("sdk"),
         },
+        sandbox_scientific_backend=lambda _identity, _repo_root: None,
         source_tree_digest=lambda _: _digest("sdk"),
     )
 
@@ -916,6 +918,193 @@ def test_prepare_launch_rejects_sandbox_sdk_identity_drift(tmp_path: Path) -> No
         )
 
     assert error.value.code == "aox_launch_sandbox_sdk_mismatch"
+
+
+def _sandbox_backend_probe_payload() -> dict[str, object]:
+    return {
+        "schema_id": launch.AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_SCHEMA_ID,
+        "calculation_id": launch.aox_similarity.CALCULATION_ID,
+        "alignment_backend_id": launch.aox_similarity.ALIGNMENT_BACKEND_ID,
+        "biopython_version": launch.aox_similarity.BIOPYTHON_VERSION,
+        "numpy_version": launch.aox_similarity.NUMPY_VERSION,
+        "algorithm": launch.aox_similarity.ALIGNMENT_BACKEND_ALGORITHM,
+    }
+
+
+def _sandbox_sdk_digest() -> str:
+    return launch.immutable_source_tree_digest(
+        launch.REPO_ROOT / "packages" / "openzyme-pipeline" / "src"
+    )
+
+
+def _canonical_probe_stdout(payload: object) -> str:
+    return (
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        + "\n"
+    )
+
+
+def test_sandbox_scientific_backend_probe_uses_immutable_offline_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_digest = _digest("calibrated-image")
+    observed: dict[str, object] = {}
+
+    def fake_run(
+        command: list[str],
+        *,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+        timeout: int,
+    ) -> subprocess.CompletedProcess[str]:
+        observed.update(
+            {
+                "command": command,
+                "check": check,
+                "capture_output": capture_output,
+                "text": text,
+                "timeout": timeout,
+            }
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=_canonical_probe_stdout(_sandbox_backend_probe_payload()),
+            stderr="",
+        )
+
+    monkeypatch.setattr(launch.subprocess, "run", fake_run)
+
+    launch._probe_aox_sandbox_scientific_backend(
+        {
+            "image_digest": image_digest,
+            "immutable_image_ref": image_digest,
+            "pipeline_sdk_digest": _sandbox_sdk_digest(),
+        },
+        launch.REPO_ROOT,
+    )
+
+    command = observed["command"]
+    assert isinstance(command, list)
+    assert command[0:3] == ["podman", "run", "--rm"]
+    assert "--pull=never" in command
+    assert "--network=none" in command
+    assert image_digest in command
+    assert "localhost/openzyme-pipeline-sandbox:dev" not in command
+    assert observed["timeout"] == 30
+
+
+def test_sandbox_scientific_backend_probe_rejects_missing_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_digest = _digest("stale-image")
+    monkeypatch.setattr(
+        launch.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            1,
+            stdout="",
+            stderr="ModuleNotFoundError: No module named 'Bio'",
+        ),
+    )
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch._probe_aox_sandbox_scientific_backend(
+            {
+                "image_digest": image_digest,
+                "immutable_image_ref": image_digest,
+                "pipeline_sdk_digest": _sandbox_sdk_digest(),
+            },
+            launch.REPO_ROOT,
+        )
+
+    assert error.value.code == "aox_launch_sandbox_scientific_backend_failed"
+    assert error.value.details == {"exit_code": 1}
+    assert "Bio" not in str(error.value.details)
+
+
+def test_sandbox_scientific_backend_probe_rejects_contract_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_digest = _digest("wrong-version-image")
+    payload = _sandbox_backend_probe_payload()
+    payload["biopython_version"] = "1.86"
+    monkeypatch.setattr(
+        launch.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout=_canonical_probe_stdout(payload),
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch._probe_aox_sandbox_scientific_backend(
+            {
+                "image_digest": image_digest,
+                "immutable_image_ref": image_digest,
+                "pipeline_sdk_digest": _sandbox_sdk_digest(),
+            },
+            launch.REPO_ROOT,
+        )
+
+    assert error.value.code == "aox_launch_sandbox_scientific_backend_mismatch"
+    assert error.value.details == {"fields": ["biopython_version"]}
+
+
+def test_prepare_launch_fails_before_use_when_sandbox_backend_probe_fails(
+    tmp_path: Path,
+) -> None:
+    hpc_config = tmp_path / "hpc.toml"
+    hpc_config.write_text("revision=1\n", encoding="utf-8")
+    ledger = tmp_path / "micu.sqlite3"
+    settings = _settings(ledger_path=ledger, hpc_config_path=hpc_config)
+    driver = launch.AoxCutoverDriverConfig()
+    baseline = _probes()
+    _stage_runner_contract_manifest(tmp_path)
+    identity, prerequisites = _declared_inputs(
+        settings,
+        ledger_path=ledger,
+        driver=driver,
+        probes=baseline,
+        repo_root=tmp_path,
+    )
+
+    def reject_backend(
+        _runtime_identity: object,
+        _repo_root: Path,
+    ) -> None:
+        raise launch.AoxCutoverLaunchError(
+            "aox_launch_sandbox_scientific_backend_failed",
+            "missing backend",
+        )
+
+    probes = replace(
+        baseline,
+        sandbox_scientific_backend=reject_backend,
+    )
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch.prepare_aox_cutover_launch(
+            settings=settings,
+            driver=driver,
+            ledger_path=ledger,
+            declared_identity=identity,
+            declared_prerequisites=prerequisites,
+            architecture_qualification_report=tmp_path / "qualification.json",
+            repo_root=tmp_path,
+            probes=probes,
+        )
+
+    assert error.value.code == "aox_launch_sandbox_scientific_backend_failed"
 
 
 def test_clean_checkout_probe_rejects_tracked_or_untracked_entries(

@@ -73,6 +73,12 @@ base-image迁移、wheelhouse、offline `require-hashes`、SBOM/attestation或ca
     `sha256:8c29c383eeb00847bde76cfc46c4e1a112c9f070d897fddaec3c6b4fb4436123`。
     这不是direct full-set NumPy `2.4.6`/`2.4.4` patch A/B，也不是hash-closed reproducible
     build；ordinary `/tmp` receipt只完成当前diagnostic/reviewer gate。
+12. r51 证明 mutable discovery alias 可能仍指向一个可解析、可生成 immutable digest、但缺少
+    当前 scientific dependency 的旧 image。formal 在完成全部真实 provider/HPC operation 后才因
+    `ModuleNotFoundError: Bio` fail closed。当前 Goal 已增加局部
+    `aox_sandbox_scientific_backend_probe@1`，使 selected immutable image 在任何 live effect 前
+    真实通过 exact backend import/version/algorithm/numeric smoke；这解决 capability admission
+    时机，不提供 base/wheel/hash/SBOM/build provenance，因此不完成本提案。
 
 ## Agent-harness principles
 

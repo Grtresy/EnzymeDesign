@@ -10,7 +10,9 @@ import json
 import math
 from pathlib import Path
 import re
+import shutil
 import subprocess
+import tempfile
 from typing import Any
 from typing import Literal
 from typing import Protocol
@@ -24,6 +26,7 @@ from openzyme_engines import PodmanPipelineSandboxRunner
 from openzyme_engines.execution import BioProviderHttpConfig
 from openzyme_pipeline import aox_motif
 from openzyme_pipeline import aox_reference
+from openzyme_pipeline import aox_similarity
 from openzyme_runtime import immutable_source_tree_digest
 from openzyme_runtime import is_micu_provider_url
 from openzyme_runtime import LIVE_MICU_TOKEN_HARD_LIMIT
@@ -53,6 +56,19 @@ from .foundation import resolve_configured_foundation_settings
 
 EFFECTIVE_CONFIG_SCHEMA_ID = AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID
 MICU_SCENARIO = "aox_blank_world_cutover"
+AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_SCHEMA_ID = (
+    "aox_sandbox_scientific_backend_probe@1"
+)
+_AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_FIELDS = frozenset(
+    {
+        "schema_id",
+        "calculation_id",
+        "alignment_backend_id",
+        "biopython_version",
+        "numpy_version",
+        "algorithm",
+    }
+)
 
 IDENTITY_FIELDS = frozenset(
     {
@@ -163,6 +179,7 @@ class AoxCutoverLaunchProbes:
     workflow_ref: Callable[[], str]
     scoring_identity: Callable[[], tuple[str, str]]
     sandbox_runtime_identity: Callable[[], Mapping[str, object]]
+    sandbox_scientific_backend: Callable[[Mapping[str, object], Path], None]
     source_tree_digest: Callable[[Path], str]
 
 
@@ -384,11 +401,172 @@ def _probe_sandbox_runtime_identity() -> Mapping[str, object]:
     return dict(preflight.runtime_identity)
 
 
+def _probe_aox_sandbox_scientific_backend(
+    runtime_identity: Mapping[str, object],
+    repo_root: Path,
+) -> None:
+    """Exercise the exact AOX similarity backend inside the selected image."""
+
+    image_digest = _require_digest(
+        runtime_identity.get("image_digest"),
+        identity="sandbox_runtime_identity.image_digest",
+    )
+    immutable_image_ref = runtime_identity.get("immutable_image_ref")
+    if immutable_image_ref != image_digest:
+        raise AoxCutoverLaunchError(
+            "aox_launch_sandbox_scientific_backend_identity_invalid",
+            "AOX sandbox capability probe requires the selected immutable image identity",
+        )
+    resolved_root = repo_root.resolve()
+    sdk_src = (
+        resolved_root / "packages" / "openzyme-pipeline" / "src"
+    ).resolve()
+    expected_sdk_src = resolved_root / "packages" / "openzyme-pipeline" / "src"
+    if (
+        sdk_src != expected_sdk_src
+        or expected_sdk_src.is_symlink()
+        or not (sdk_src / "openzyme_pipeline").is_dir()
+    ):
+        raise AoxCutoverLaunchError(
+            "aox_launch_sandbox_scientific_backend_sdk_invalid",
+            "AOX sandbox capability probe requires the canonical Pipeline SDK source tree",
+        )
+    expected_sdk_digest = _require_digest(
+        runtime_identity.get("pipeline_sdk_digest"),
+        identity="sandbox_runtime_identity.pipeline_sdk_digest",
+    )
+    probe_script = "\n".join(
+        (
+            "import json",
+            "from openzyme_pipeline import aox_similarity",
+            "backend = aox_similarity._load_alignment_backend()",
+            "aligner = aox_similarity._new_packed_aligner(5, backend)",
+            "payload = {",
+            f"    'schema_id': {AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_SCHEMA_ID!r},",
+            "    'calculation_id': aox_similarity.CALCULATION_ID,",
+            "    'alignment_backend_id': aox_similarity.ALIGNMENT_BACKEND_ID,",
+            "    'biopython_version': backend.bio_version,",
+            "    'numpy_version': backend.numpy_version,",
+            "    'algorithm': str(aligner.algorithm),",
+            "}",
+            "print(json.dumps(payload, sort_keys=True, separators=(',', ':'), allow_nan=False))",
+        )
+    )
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="openzyme-aox-backend-probe-"
+        ) as temporary:
+            runtime_sdk = Path(temporary) / "sdk_src"
+            shutil.copytree(
+                sdk_src,
+                runtime_sdk,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+            )
+            for path in (runtime_sdk, *runtime_sdk.rglob("*")):
+                path.chmod(0o755 if path.is_dir() else 0o644)
+            copied_sdk_digest = _require_digest(
+                immutable_source_tree_digest(runtime_sdk),
+                identity="sandbox_scientific_backend.pipeline_sdk_digest",
+            )
+            if copied_sdk_digest != expected_sdk_digest:
+                raise AoxCutoverLaunchError(
+                    "aox_launch_sandbox_scientific_backend_sdk_mismatch",
+                    "AOX sandbox capability probe SDK copy differs from launch identity",
+                )
+            command = [
+                PodmanPipelineSandboxRunner().podman_binary,
+                "run",
+                "--rm",
+                "--pull=never",
+                "--network=none",
+                "--userns=keep-id",
+                "--security-opt=no-new-privileges",
+                "--cap-drop=all",
+                "--read-only",
+                "--memory=1g",
+                "--cpus=1",
+                "--pids-limit=64",
+                "--tmpfs",
+                "/tmp:rw,noexec,nosuid,nodev,size=64m",
+                "-e",
+                "PYTHONPATH=/openzyme/sdk",
+                "-v",
+                f"{runtime_sdk}:/openzyme/sdk:ro,Z",
+                image_digest,
+                "python",
+                "-c",
+                probe_script,
+            ]
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+    except AoxCutoverLaunchError:
+        raise
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AoxCutoverLaunchError(
+            "aox_launch_sandbox_scientific_backend_unavailable",
+            "AOX sandbox scientific backend probe could not be executed",
+            details={"failure_type": type(exc).__name__},
+        ) from exc
+    if completed.returncode != 0:
+        raise AoxCutoverLaunchError(
+            "aox_launch_sandbox_scientific_backend_failed",
+            "AOX sandbox lacks the exact fail-closed scientific backend",
+            details={"exit_code": completed.returncode},
+        )
+    try:
+        payload = json.loads(completed.stdout)
+        canonical_stdout = (
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            + "\n"
+        )
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise AoxCutoverLaunchError(
+            "aox_launch_sandbox_scientific_backend_invalid",
+            "AOX sandbox scientific backend probe returned malformed evidence",
+        ) from exc
+    if completed.stdout != canonical_stdout or not isinstance(payload, dict) or set(
+        payload
+    ) != (
+        _AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_FIELDS
+    ):
+        raise AoxCutoverLaunchError(
+            "aox_launch_sandbox_scientific_backend_invalid",
+            "AOX sandbox scientific backend probe returned a drifted evidence schema",
+        )
+    expected = {
+        "schema_id": AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_SCHEMA_ID,
+        "calculation_id": aox_similarity.CALCULATION_ID,
+        "alignment_backend_id": aox_similarity.ALIGNMENT_BACKEND_ID,
+        "biopython_version": aox_similarity.BIOPYTHON_VERSION,
+        "numpy_version": aox_similarity.NUMPY_VERSION,
+        "algorithm": aox_similarity.ALIGNMENT_BACKEND_ALGORITHM,
+    }
+    mismatched = _mismatched_fields(expected, payload)
+    if mismatched:
+        raise AoxCutoverLaunchError(
+            "aox_launch_sandbox_scientific_backend_mismatch",
+            "AOX sandbox scientific backend differs from the frozen calculation contract",
+            details={"fields": mismatched},
+        )
+
+
 DEFAULT_LAUNCH_PROBES = AoxCutoverLaunchProbes(
     checkout=_probe_clean_checkout,
     workflow_ref=_probe_workflow_ref,
     scoring_identity=_probe_scoring_identity,
     sandbox_runtime_identity=_probe_sandbox_runtime_identity,
+    sandbox_scientific_backend=_probe_aox_sandbox_scientific_backend,
     source_tree_digest=immutable_source_tree_digest,
 )
 
@@ -970,6 +1148,7 @@ def _resolve_actual_identity(
         identity="sdk_digest",
     )
     sandbox_identity = dict(probes.sandbox_runtime_identity())
+    probes.sandbox_scientific_backend(sandbox_identity, repo_root)
     image_digest = _require_digest(
         sandbox_identity.get("image_digest"),
         identity="sandbox_runtime_identity.image_digest",
@@ -1467,6 +1646,7 @@ def prepare_aox_cutover_launch(
 
 __all__ = [
     "ALLOWED_PREREQUISITE_FIELDS",
+    "AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_SCHEMA_ID",
     "AoxCutoverDriverConfig",
     "AoxCutoverEffectiveConfig",
     "AoxCutoverLaunchError",
