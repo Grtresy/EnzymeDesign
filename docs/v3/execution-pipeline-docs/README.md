@@ -41,6 +41,8 @@ Recommended reading paths:
 - Many ligands or repeated jobs: `batch-patterns.md`
 - Host/runner lifecycle boundary: `runner-opaque-run-id.md`
 - Runtime/HPC ownership and recovery boundary: `../07-runtime-hpc-reliability.md`
+- Failure recovery, selected-chain attempt authority and closure:
+  `../08-failure-recovery-and-scientific-attempts.md`
 
 Stable boundary:
 
@@ -50,6 +52,10 @@ Stable boundary:
 - The Host/runner lifecycle credential is a server-issued opaque `run_id`; raw Slurm job IDs, remote directories, and inline recovery RunSpecs never cross the public runner boundary.
 - A durable SDK call may suspend its exact sandbox process while approval or an external effect is pending. Executor code still observes one request/response call; it must not invent a polling/replay loop, replacement operation, or a new idempotency key to recover transport ambiguity.
 - `ControlledOperationExecution` is the sole external-effect owner. Only a proven pre-effect failure may receive a bounded same-phase recovery; `dispatch_in_doubt` is a fail-closed reconciliation state, not permission to retry.
+- A failed run does not grant permission to hide or replay it. New scientific
+  attempt `@3` keeps the full occurrence universe and allows only explicit
+  same-attempt disposition/adoption/materialization; cross-attempt reuse is
+  forbidden.
 - Runner-owned per-target ControlMaster reuse is transport infrastructure. It does not provide a persistent remote shell, preserve cwd/environment, or let executor code control SSH options.
 
 Examples:

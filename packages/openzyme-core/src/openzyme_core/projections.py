@@ -22,7 +22,9 @@ from .conversation import build_conversation_projection
 from .controlled_operation_projection import project_controlled_operation_summary
 from .controlled_operation_projection import is_controlled_operation_artifact_public
 from .protocols import ProtocolService
+from .failure_repositories import project_failure_observation
 from .runtime_consistency import RuntimeConsistencyService
+from .scientific_attempts import ScientificAttemptService
 from .trace_projection import project_public_llm_trace_step
 
 
@@ -153,6 +155,8 @@ class SessionWorkspaceProjection:
     scientific_evidence: dict[str, Any]
     capabilities: dict[str, list[dict[str, Any]]]
     runtime_state: dict[str, Any]
+    failure_observations: tuple[dict[str, Any], ...]
+    scientific_attempts: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -175,6 +179,8 @@ class SessionWorkspaceProjection:
             "scientific_evidence": self.scientific_evidence,
             "capabilities": self.capabilities,
             "runtime_state": self.runtime_state,
+            "failure_observations": list(self.failure_observations),
+            "scientific_attempts": self.scientific_attempts,
         }
 
 
@@ -251,6 +257,17 @@ class SessionProjectionBuilder:
             .audit_session(session_id)
             .to_dict()
         )
+        failure_observations = tuple(
+            self._sanitize_execution_projection(
+                project_failure_observation(self.repositories, observation)
+            )
+            for observation in self.repositories.failure_observations.list_by_session(
+                session_id
+            )
+        )
+        scientific_attempts = self._sanitize_execution_projection(
+            ScientificAttemptService(self.repositories).project_session(session_id)
+        )
         return SessionWorkspaceProjection(
             session=session.to_dict(),
             conversation=conversation,
@@ -271,11 +288,11 @@ class SessionProjectionBuilder:
             scientific_evidence=scientific_evidence,
             capabilities=capabilities,
             runtime_state=runtime_state,
+            failure_observations=failure_observations,
+            scientific_attempts=scientific_attempts,
         )
 
-    def build_pending_approvals(
-        self, session_id: str
-    ) -> tuple[dict[str, Any], ...]:
+    def build_pending_approvals(self, session_id: str) -> tuple[dict[str, Any], ...]:
         """Build the compact canonical approval-control projection.
 
         Approval coordination must not require projecting the artifact catalog,
@@ -291,9 +308,7 @@ class SessionProjectionBuilder:
             )
         )
 
-    def build_public_activity_feed(
-        self, session_id: str
-    ) -> tuple[dict[str, Any], ...]:
+    def build_public_activity_feed(self, session_id: str) -> tuple[dict[str, Any], ...]:
         return tuple(
             self._sanitize_execution_projection(item.to_dict())
             for item in self.build_activity_feed(session_id)

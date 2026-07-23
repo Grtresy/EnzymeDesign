@@ -31,6 +31,17 @@ class FakeSession:
             )
         if url.startswith("/v3/sessions/") and url.endswith("/workspace"):
             return FakeResponse(200, build_v3_workspace())
+        if url.startswith("/v3/sessions/") and url.endswith(
+            "/scientific-attempts"
+        ):
+            return FakeResponse(
+                200,
+                {
+                    "schema_id": "scientific_attempt_workspace@1",
+                    "authorizations": [],
+                    "attempts": [],
+                },
+            )
         return FakeResponse(200, [])
 
     def post(self, url: str, **kwargs):
@@ -219,6 +230,89 @@ def test_cli_v3_task_update_uses_patch() -> None:
 
     assert exit_code == 0
     assert session.calls[-1] == ("PATCH", "/v3/tasks/task_001", {"status": "in_progress"})
+
+
+def test_cli_scientific_inspect_and_actor_bound_command() -> None:
+    session = FakeSession()
+    stdout = StringIO()
+    assert (
+        run_cli(
+            [
+                "--session-id",
+                "sess_001",
+                "scientific",
+                "inspect",
+            ],
+            session=session,
+            stdout=stdout,
+            stderr=StringIO(),
+        )
+        == 0
+    )
+    assert session.calls[-1] == (
+        "GET",
+        "/v3/sessions/sess_001/scientific-attempts",
+        None,
+    )
+
+    stdout = StringIO()
+    assert (
+        run_cli(
+            [
+                "--session-id",
+                "sess_001",
+                "scientific",
+                "command",
+                "--command",
+                "scientific.attempt.close",
+                "--arguments-json",
+                '{"attempt_id":"attempt_001","selection_id":"selection_001"}',
+                "--idempotency-key",
+                "close-001",
+            ],
+            session=session,
+            stdout=stdout,
+            stderr=StringIO(),
+        )
+        == 0
+    )
+    assert session.calls[-1] == (
+        "POST",
+        "/v3/sessions/sess_001/scientific-attempt-commands",
+        {
+            "command": "scientific.attempt.close",
+            "arguments": {
+                "attempt_id": "attempt_001",
+                "selection_id": "selection_001",
+            },
+        },
+    )
+    assert session.last_headers["Idempotency-Key"] == "close-001"
+
+
+def test_cli_scientific_finalizes_admission_after_agent_writer_retires() -> None:
+    session = FakeSession()
+
+    exit_code = run_cli(
+        [
+            "--session-id",
+            "sess_001",
+            "scientific",
+            "finalize-admission",
+            "--admission-request-id",
+            "attempt_admission_request_001",
+        ],
+        session=session,
+        stdout=StringIO(),
+        stderr=StringIO(),
+    )
+
+    assert exit_code == 0
+    assert session.calls[-1] == (
+        "POST",
+        "/v3/sessions/sess_001/scientific-attempt-admissions/finalize",
+        {"admission_request_id": "attempt_admission_request_001"},
+    )
 
 
 def test_cli_lane_claim_uses_server_owned_actor() -> None:

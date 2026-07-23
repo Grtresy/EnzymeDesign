@@ -20,6 +20,10 @@ from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import ArtifactKind
 from openzyme_domain import EngineInvocation
+from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import FailureActorKind
+from openzyme_domain import FailureClass
+from openzyme_domain import FailureRecoverability
 from openzyme_domain import InboxMessage
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
@@ -28,6 +32,7 @@ from openzyme_domain import MemoryEntry
 from openzyme_domain import MemoryKind
 from openzyme_domain import MemoryScopeKind
 from openzyme_domain import MutationWriterKind
+from openzyme_domain import RetryEligibility
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionRuntimeLease
@@ -44,6 +49,7 @@ from openzyme_runtime import ToolRuntime
 from openzyme_runtime import ToolSpec
 from openzyme_runtime import sanitize_tool_result_diagnostics
 from openzyme_runtime import sanitize_public_diagnostic_text
+from openzyme_runtime import record_failure_observation
 
 from .engines import EngineRegistry
 from .mutation_authority import current_mutation_write_authority
@@ -205,6 +211,7 @@ class SessionRuntimeSnapshot:
     memory: tuple[MemoryEntry, ...]
     agents: tuple[Any, ...]
     active_invocations: tuple[EngineInvocation, ...]
+    failure_observations: tuple[Any, ...]
 
     @classmethod
     def load(
@@ -226,6 +233,9 @@ class SessionRuntimeSnapshot:
             agents=tuple(repositories.agents.list_by_session(session_id)),
             active_invocations=tuple(
                 repositories.invocations.list_active_by_session(session_id)
+            ),
+            failure_observations=tuple(
+                repositories.failure_observations.list_by_session(session_id)
             ),
         )
 
@@ -388,40 +398,96 @@ class ToolRegistry:
     ) -> ToolResult:
         handler = self._handlers.get(invocation.tool_name)
         if handler is None:
-            return ToolResult(
-                call_id=invocation.call_id,
-                tool_name=invocation.tool_name,
-                ok=False,
-                content=f"unknown tool: {invocation.tool_name}",
-                task_id=invocation.task_id,
-                lane_id=invocation.lane_id,
-                status="unknown_tool",
-                summary=f"Tool {invocation.tool_name!r} is not registered.",
-                error_code="unknown_tool",
-                hint="Use one of the tools exposed in the current V3 tool catalog.",
+            return self._attach_legacy_failure(
+                context,
+                invocation,
+                ToolResult(
+                    call_id=invocation.call_id,
+                    tool_name=invocation.tool_name,
+                    ok=False,
+                    content=f"unknown tool: {invocation.tool_name}",
+                    task_id=invocation.task_id,
+                    lane_id=invocation.lane_id,
+                    status="unknown_tool",
+                    summary=f"Tool {invocation.tool_name!r} is not registered.",
+                    error_code="unknown_tool",
+                    hint="Use one of the tools exposed in the current V3 tool catalog.",
+                ),
+                failure_class=FailureClass.VALIDATION,
+                recoverability=FailureRecoverability.AGENT_CAN_RETRY,
+                effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+                retry_eligibility=RetryEligibility.SAME_PHASE_SAFE,
             )
         try:
             result = handler(context, invocation)
-        except (KeyError, TypeError, ValueError) as exc:
+        except Exception as exc:
+            validation = isinstance(exc, (KeyError, TypeError, ValueError))
             safe_error = sanitize_public_diagnostic_text(str(exc)).strip()
             message = (
                 f"Tool {invocation.tool_name} failed: "
                 f"{safe_error or exc.__class__.__name__}"
             )
-            return ToolResult(
-                call_id=invocation.call_id,
-                tool_name=invocation.tool_name,
-                ok=False,
-                content=message,
-                task_id=invocation.task_id,
-                lane_id=invocation.lane_id,
-                status="invalid_tool_arguments",
-                summary=message,
-                error_code="invalid_tool_arguments",
-                hint="Fix the tool arguments or referenced task/lane/session state before retrying.",
-                details={"exception_type": exc.__class__.__name__},
+            return self._attach_legacy_failure(
+                context,
+                invocation,
+                ToolResult(
+                    call_id=invocation.call_id,
+                    tool_name=invocation.tool_name,
+                    ok=False,
+                    content=message,
+                    task_id=invocation.task_id,
+                    lane_id=invocation.lane_id,
+                    status=(
+                        "invalid_tool_arguments" if validation else "tool_runtime_error"
+                    ),
+                    summary=message,
+                    error_code=(
+                        "invalid_tool_arguments" if validation else "tool_runtime_error"
+                    ),
+                    hint=(
+                        "Fix the tool arguments or referenced task/lane/session state before retrying."
+                        if validation
+                        else (
+                            "Inspect the structured failure, then repair, replan, "
+                            "request help, or explicitly block the task."
+                        )
+                    ),
+                    details={
+                        "exception_type": exc.__class__.__name__,
+                        "public_error": safe_error,
+                    },
+                ),
+                failure_class=(
+                    FailureClass.VALIDATION if validation else FailureClass.TOOL
+                ),
+                recoverability=(
+                    FailureRecoverability.AGENT_CAN_RETRY
+                    if validation
+                    else FailureRecoverability.AGENT_CAN_REPLAN
+                ),
+                effect_certainty=(
+                    ExternalEffectCertainty.NO_EFFECT
+                    if validation
+                    else ExternalEffectCertainty.TERMINAL_KNOWN
+                ),
+                retry_eligibility=(
+                    RetryEligibility.SAME_PHASE_SAFE
+                    if validation
+                    else RetryEligibility.TERMINAL
+                ),
+                private_diagnostic=exc,
             )
         if isinstance(result, ToolResult):
+            if not result.ok and result.failure_observation is None:
+                return self._attach_legacy_failure(
+                    context,
+                    invocation,
+                    result,
+                    failure_class=FailureClass.TOOL,
+                    recoverability=FailureRecoverability.AGENT_CAN_REPLAN,
+                    effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+                    retry_eligibility=RetryEligibility.TERMINAL,
+                )
             return sanitize_tool_result_diagnostics(result)
         return ToolResult(
             call_id=invocation.call_id,
@@ -432,6 +498,54 @@ class ToolRegistry:
             lane_id=invocation.lane_id,
             status="ok",
             summary=result,
+        )
+
+    @staticmethod
+    def _attach_legacy_failure(
+        context: "SessionRuntimeContext",
+        invocation: ToolInvocation,
+        result: ToolResult,
+        *,
+        failure_class: FailureClass,
+        recoverability: FailureRecoverability,
+        effect_certainty: ExternalEffectCertainty,
+        retry_eligibility: RetryEligibility,
+        private_diagnostic: object | None = None,
+    ) -> ToolResult:
+        step_context = context.current_step_context
+        observation = record_failure_observation(
+            context.repositories,
+            session_id=context.snapshot.session.session_id,
+            task_id=invocation.task_id
+            or (None if step_context is None else step_context.task_id),
+            lane_id=invocation.lane_id
+            or (None if step_context is None else step_context.lane_id),
+            agent_id=context.agent_id,
+            source_kind="tool_invocation",
+            source_ref=invocation.call_id,
+            source_version=(
+                invocation.call_id if step_context is None else step_context.step_id
+            ),
+            phase=(
+                "validation" if failure_class is FailureClass.VALIDATION else "dispatch"
+            ),
+            failure_class=failure_class,
+            recoverability=recoverability,
+            effect_certainty=effect_certainty,
+            retry_eligibility=retry_eligibility,
+            actor_kind=FailureActorKind.HARNESS,
+            error_code=result.error_code or result.status or "tool_error",
+            safe_summary=result.summary or result.content,
+            safe_hint=result.hint,
+            facts={
+                **(result.details or {}),
+                "tool_name": invocation.tool_name,
+                "legacy_dispatch": True,
+            },
+            private_diagnostic=private_diagnostic,
+        )
+        return sanitize_tool_result_diagnostics(
+            replace(result, failure_observation=observation.to_dict())
         )
 
 
@@ -449,6 +563,7 @@ class SessionRuntimeContext:
     engine_registry: EngineRegistry | None = None
     bio_research_service: Any | None = None
     research_adapter: Any | None = None
+    scientific_workflow_role_validator: Any | None = None
     sandbox_workspace_root: Path | None = None
     artifact_blob_root: Path | None = None
     signal_notifier: Any | None = None
@@ -711,6 +826,22 @@ def _restore_context_public_payload(context: SessionRuntimeContext) -> dict[str,
                 snapshot.active_invocations, key=lambda item: item.invocation_id
             )
         ],
+        "failure_observations": [
+            {
+                "failure_id": observation.failure_id,
+                "source_kind": observation.source_kind,
+                "source_ref": observation.source_ref,
+                "source_version": observation.source_version,
+                "error_code": observation.error_code,
+                "recoverability": observation.recoverability.value,
+                "effect_certainty": observation.effect_certainty.value,
+                "retry_eligibility": observation.retry_eligibility.value,
+            }
+            for observation in sorted(
+                snapshot.failure_observations,
+                key=lambda item: (item.created_at, item.failure_id),
+            )
+        ],
     }
 
 
@@ -899,9 +1030,11 @@ def _register_builtin_tools(
     from .artifact_boundary import register_artifact_boundary_tools
     from .artifact_tools import register_artifact_tools
     from .docs import register_docs_tools
+    from .failure_tools import register_failure_tools
     from .lane_manager import register_lane_tools
     from .memory import register_memory_tools
     from .protocol_tools import register_protocol_tools
+    from .scientific_attempt_tools import register_scientific_attempt_tools
     from .subagents import register_subagent_tools
     from .task_board import register_task_board_tools
     from .world_inspection import register_world_inspection_tools
@@ -909,8 +1042,10 @@ def _register_builtin_tools(
     register_artifact_tools(registry)
     register_artifact_boundary_tools(registry)
     register_task_board_tools(registry)
+    register_failure_tools(registry)
     register_subagent_tools(registry)
     register_protocol_tools(registry)
+    register_scientific_attempt_tools(registry)
     register_lane_tools(registry)
     register_memory_tools(registry)
     register_docs_tools(registry)
@@ -1110,7 +1245,10 @@ def ensure_prompt_budget_before_model_call(
     payload = _decision_payload(decision)
     if decision.should_warn:
         context.emit("llm.context_budget.warning", {"actor_ref": actor_ref, **payload})
-    if decision.action is PromptBudgetAction.AUTO_COMPACT:
+    if decision.action in {
+        PromptBudgetAction.AUTO_COMPACT,
+        PromptBudgetAction.EMERGENCY,
+    }:
         compacted = True
         _compact_before_model_call(
             context,
@@ -1366,6 +1504,107 @@ def _format_runtime_error(exc: Exception) -> str:
     return f"OpenZyme could not complete this turn: {message}"
 
 
+def _record_system_runtime_failure(
+    context: SessionRuntimeContext,
+    harness_input: HarnessInput,
+    exc: Exception,
+    *,
+    source_kind: str,
+    source_ref: str,
+    source_version: str,
+    phase: str,
+    error_code: str,
+    facts: dict[str, Any] | None = None,
+):
+    classification = None
+    try:
+        from openzyme_runtime import classify_llm_provider_error
+
+        classification = classify_llm_provider_error(exc)
+    except Exception:
+        classification = None
+    resolved_error_code = error_code
+    safe_hint = (
+        "Inspect the system diagnostic and explicitly resume the runtime after "
+        "provider or operator recovery."
+    )
+    if classification is not None:
+        category = getattr(classification, "category", None)
+        category_value = getattr(category, "value", category)
+        if category_value and category_value != "unknown_provider_error":
+            resolved_error_code = "provider_unavailable"
+        retryable = bool(getattr(classification, "retryable", False))
+    else:
+        retryable = bool(getattr(exc, "retryable", False))
+    observation = record_failure_observation(
+        context.repositories,
+        session_id=harness_input.session_id,
+        task_id=(
+            context.current_step_context.task_id
+            if context.current_step_context is not None
+            else (
+                None
+                if harness_input.restore_focus is None
+                else harness_input.restore_focus.task_id
+            )
+        ),
+        lane_id=(
+            context.current_step_context.lane_id
+            if context.current_step_context is not None
+            else (
+                None
+                if harness_input.restore_focus is None
+                else harness_input.restore_focus.lane_id
+            )
+        ),
+        agent_id=harness_input.agent_id,
+        source_kind=source_kind,
+        source_ref=source_ref,
+        source_version=source_version,
+        phase=phase,
+        failure_class=(
+            FailureClass.PROVIDER
+            if resolved_error_code == "provider_unavailable"
+            else FailureClass.SYSTEM
+        ),
+        recoverability=(
+            FailureRecoverability.RUNTIME_RETRY
+            if retryable
+            else FailureRecoverability.TERMINAL
+        ),
+        effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+        retry_eligibility=(
+            RetryEligibility.SAME_PHASE_SAFE if retryable else RetryEligibility.TERMINAL
+        ),
+        actor_kind=FailureActorKind.SYSTEM,
+        error_code=resolved_error_code,
+        safe_summary=(
+            "The agent runtime could not produce a decision for this turn. "
+            "The business task status was not changed."
+        ),
+        safe_hint=safe_hint,
+        facts={
+            "agent_decision_produced": False,
+            "exception_type": exc.__class__.__name__,
+            "public_error": sanitize_public_diagnostic_text(str(exc)),
+            **(facts or {}),
+        },
+        private_diagnostic={
+            "exception_type": exc.__class__.__name__,
+            "message": str(exc),
+        },
+    )
+    context.emit(
+        "runtime.system_diagnostic",
+        {
+            "failure": observation.to_dict(),
+            "agent_decision_produced": False,
+            "task_status_changed": False,
+        },
+    )
+    return observation
+
+
 def _persist_llm_trace_step(
     context: SessionRuntimeContext, trace: LlmTraceStep
 ) -> dict[str, Any]:
@@ -1432,6 +1671,7 @@ def run_agent_harness_loop(
     model_factory: Any | None = None,
     bio_research_service: Any | None = None,
     research_adapter: Any | None = None,
+    scientific_workflow_role_validator: Any | None = None,
     sandbox_workspace_root: Path | None = None,
     artifact_blob_root: Path | None = None,
     signal_notifier: Any | None = None,
@@ -1466,6 +1706,7 @@ def run_agent_harness_loop(
         engine_registry=engine_registry,
         bio_research_service=bio_research_service,
         research_adapter=research_adapter,
+        scientific_workflow_role_validator=scientific_workflow_role_validator,
         sandbox_workspace_root=sandbox_workspace_root,
         artifact_blob_root=artifact_blob_root,
         signal_notifier=signal_notifier,
@@ -1517,6 +1758,11 @@ def run_agent_harness_loop(
     tool_results: tuple[ToolResult, ...] = ()
     last_status = HarnessStatus.COMPLETED
     pending_approval_id: str | None = None
+    turn_source_ref = (
+        harness_input.signal_id
+        or harness_input.correlation_id
+        or _new_id("harness_turn")
+    )
 
     for _ in range(harness_input.max_steps):
         try:
@@ -1525,12 +1771,43 @@ def run_agent_harness_loop(
             )
             step = driver.plan(context, harness_input, tool_results)
         except Exception as exc:
-            outputs.append(_format_runtime_error(exc))
+            step_context = context.current_step_context
+            observation = _record_system_runtime_failure(
+                context,
+                harness_input,
+                exc,
+                source_kind=(
+                    "runtime_signal"
+                    if harness_input.signal_id is not None
+                    else "harness_turn"
+                ),
+                source_ref=turn_source_ref,
+                source_version=(
+                    step_context.step_id
+                    if step_context is not None
+                    else turn_source_ref
+                ),
+                phase="planning",
+                error_code="harness_plan_failed",
+                facts={
+                    "call_index": None
+                    if step_context is None
+                    else step_context.call_index
+                },
+            )
+            public_error = str(observation.facts.get("public_error") or "").strip()
+            outputs.append(
+                "OpenZyme system diagnostic "
+                f"{observation.failure_id}: the agent runtime could not produce "
+                "a decision for this turn. The business task remains unchanged."
+                + (f" Error: {public_error}" if public_error else "")
+            )
             context.emit(
                 "harness.failed",
                 {
-                    "error": sanitize_public_diagnostic_text(str(exc)),
-                    "error_type": exc.__class__.__name__,
+                    "failure_id": observation.failure_id,
+                    "error_code": observation.error_code,
+                    "agent_decision_produced": False,
                 },
             )
             _auto_compact_if_needed(
@@ -1730,12 +2007,52 @@ def run_agent_harness_loop(
                     else:
                         result = registry.dispatch(context, invocation)
                 except Exception as exc:
-                    outputs.append(_format_runtime_error(exc))
+                    step_context = context.current_step_context
+                    existing = context.repositories.failure_observations.list_by_source(
+                        session_id=harness_input.session_id,
+                        source_kind="tool_invocation",
+                        source_ref=invocation.call_id,
+                    )
+                    observation = (
+                        existing[-1]
+                        if existing
+                        else _record_system_runtime_failure(
+                            context,
+                            harness_input,
+                            exc,
+                            source_kind="tool_invocation",
+                            source_ref=invocation.call_id,
+                            source_version=(
+                                step_context.step_id
+                                if step_context is not None
+                                else turn_source_ref
+                            ),
+                            phase="dispatch",
+                            error_code="harness_tool_dispatch_failed",
+                            facts={
+                                "tool_name": invocation.tool_name,
+                                "call_id": invocation.call_id,
+                            },
+                        )
+                    )
+                    outputs.append(
+                        "OpenZyme system diagnostic "
+                        f"{observation.failure_id}: tool execution crossed a "
+                        "fail-closed boundary before the agent could choose recovery. "
+                        "The business task remains unchanged."
+                        + (
+                            " Error: "
+                            + str(observation.facts.get("public_error") or "").strip()
+                            if observation.facts.get("public_error")
+                            else ""
+                        )
+                    )
                     context.emit(
                         "harness.failed",
                         {
-                            "error": sanitize_public_diagnostic_text(str(exc)),
-                            "error_type": exc.__class__.__name__,
+                            "failure_id": observation.failure_id,
+                            "error_code": observation.error_code,
+                            "agent_decision_produced": False,
                             "tool_name": invocation.tool_name,
                             "call_id": invocation.call_id,
                         },

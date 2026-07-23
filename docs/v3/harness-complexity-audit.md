@@ -189,6 +189,43 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   追加修正记录：r44 证明 control server 虽拥有 exact process resume，engine callback 仍可能回到创建时捕获的 stale turn scope。`simplify-sandbox-host-authority-handoff` 将 session/process/execution/delivery owner 固化为 immutable `SandboxHostCallContext`，所有 adapter/fetch 只经 typed gateway；删除 reflected callback、双 scope factory 与 optional repository escape hatch。AOX 对 suspension/writer/runtime work 的直接数据库 helper 同时被 bounded read-only runtime barrier 替代，driver 不再复制 runtime ownership 规则。
 
+- [x] Harness 将大小故障统一提升为 turn death，agent 无法修复或明确拒绝。
+
+  证据：旧 `ToolRouter.dispatch()` 让 ordinary runtime exception 穿透到 harness；harness
+  直接返回 `FAILED`，owner agent 没有机会读取 error/effect/retry facts。与此同时，provider/
+  driver 失败只有 Harness 文本，后续 runtime 无 canonical source-bound recovery context。
+
+  Doctrine 风险：Harness 既夺走 agent 的策略自由，又无法区分可修复 local error 与真正必须
+  fail closed 的 unknown effect/authority violation。统一“死掉”不是安全设计，只是缺少
+  failure control plane。
+
+  目标边界：ordinary effect-known failure 返回同一 bounded turn；boundary-fatal failure
+  停止 ownership；两者都形成 immutable safe observation，且都不自动改变 task。agent 可以
+  repair/replan/help/refuse，Host 只在 agent 无法运行时使用 system voice。
+
+  修正记录：`restore-agent-recoverability-and-explicit-refusal` 建立
+  `FailureObservation`、append-only agent-attributed `FailureHypothesis`、ordinary
+  failed-result continuation、exact `recovery_required` wakeup 与 system diagnostic。fencing、
+  authority、integrity、permission/budget、process cancellation 和 `dispatch_in_doubt`
+  保持 fail closed；`blocked` 与 `failed` 仍只能由 agent 通过 `task.finish` 明确选择。
+
+- [x] Exact-occurrence AOX gate 把任何中间试错永久等同于最终 scientific failure。
+
+  证据：历史 `aox_blank_world_attempt_bundle@2` 以 exact occurrence/history poison
+  验收，无法表达同一 formal attempt 中“保留 failed trial，但显式采用后续合法 chain”。
+
+  Doctrine 风险：Harness 把过程策略写死为 first-try success，反向逼 agent 隐藏失败或开新
+  attempt；同时仍缺少 full occurrence completeness、authority consumption 和 closure truth。
+
+  目标边界：保留完整 occurrence universe，由 agent 显式 disposition/adopt；known closed
+  failure 不污染合法 selected chain，unknown effect/process/writer/authority/resource breach
+  仍 fail closed。same-attempt cross-run materialization 可以，cross-attempt reuse 禁止。
+
+  修正记录：generic scientific-attempt authority/selection/materialization/closure 已落地，
+  AOX 新 production bundle 升为 `@3`，历史 `@2` verifier 与 r48-r51 NO-GO evidence 冻结。
+  fresh three-slot authority plan 在任何 root 前一次性消费。本轮只完成 non-live 验证，明确
+  停在下一次编号 live attempt 之前。
+
 ## 4. 后续工作流
 
 每次后续简化时：

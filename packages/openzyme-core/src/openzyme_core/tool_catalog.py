@@ -360,14 +360,21 @@ def sandbox_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                 "type": "object",
                 "properties": {
                     "sandbox_workspace_id": {"type": "string"},
-                    "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "argv": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                    },
                     "cwd": {"type": "string"},
                     "timeout_seconds": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": EXEC_MAX_TIMEOUT_SECONDS,
                     },
-                    "env": {"type": "object", "additionalProperties": {"type": "string"}},
+                    "env": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                    },
                 },
                 "required": ["argv"],
                 "additionalProperties": False,
@@ -413,6 +420,282 @@ def world_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                     "agent_id": {"type": "string"},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 100},
                 },
+                "additionalProperties": False,
+            },
+        ),
+    )
+
+
+def failure_tool_descriptors() -> tuple[ToolDescriptor, ...]:
+    return (
+        ToolDescriptor(
+            tool_name="failure.get",
+            description=(
+                "Inspect one public-safe immutable failure observation and its "
+                "separately attributed agent hypotheses. Host facts, deterministic "
+                "likely causes, and agent interpretations remain distinct."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"failure_id": {"type": "string"}},
+                "required": ["failure_id"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="failure.hypothesis.record",
+            description=(
+                "Append your own bounded hypothesis about one observed failure. "
+                "This does not rewrite Host facts, authorize retry, reconcile an "
+                "unknown effect, or change task status."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "failure_id": {"type": "string"},
+                    "hypothesis": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000,
+                    },
+                    "confidence": {
+                        "type": "string",
+                        "enum": ["low", "medium", "high"],
+                    },
+                    "evidence_refs": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 32,
+                        "uniqueItems": True,
+                    },
+                    "idempotency_key": {"type": "string", "minLength": 1},
+                },
+                "required": [
+                    "failure_id",
+                    "hypothesis",
+                    "confidence",
+                    "idempotency_key",
+                ],
+                "additionalProperties": False,
+            },
+        ),
+    )
+
+
+def scientific_attempt_tool_descriptors() -> tuple[ToolDescriptor, ...]:
+    idempotency = {"type": "string", "minLength": 1}
+    return (
+        ToolDescriptor(
+            tool_name="scientific.attempt.inspect",
+            description=(
+                "Inspect safe durable attempt authorization, complete occurrence "
+                "dispositions, selected chains, materializations, and closures. "
+                "This is factual state; it does not choose a chain."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="attempt.create",
+            description=(
+                "Request one fresh scientific attempt within an existing durable "
+                "authorization envelope. The Host checks count, resources, effect "
+                "classes, provider/HPC target, expiry, and unresolved effects, then "
+                "finalizes the exact attempt scope after this writer turn retires. "
+                "It never silently shrinks the requested plan."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "envelope_id": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "lane_id": {"type": "string"},
+                    "campaign_id": {"type": "string"},
+                    "workflow_id": {"type": "string"},
+                    "scope": {
+                        "type": "string",
+                        "enum": ["formal", "probe", "fault"],
+                    },
+                    "workflow_contract_digest": {"type": "string"},
+                    "requested_effect_classes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "uniqueItems": True,
+                    },
+                    "reserved_micu": {"type": "integer", "minimum": 0},
+                    "reserved_cost_microunits": {
+                        "type": "integer",
+                        "minimum": 0,
+                    },
+                    "reserved_wall_time_seconds": {
+                        "type": "integer",
+                        "minimum": 0,
+                    },
+                    "provider": {"type": ["string", "null"]},
+                    "hpc_target": {"type": ["string", "null"]},
+                    "idempotency_key": idempotency,
+                },
+                "required": [
+                    "envelope_id",
+                    "campaign_id",
+                    "workflow_id",
+                    "scope",
+                    "workflow_contract_digest",
+                    "requested_effect_classes",
+                    "idempotency_key",
+                ],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="scientific.selection.begin",
+            description=(
+                "Start a CAS-protected selection revision over the complete "
+                "Host-derived operation universe. The Host never auto-selects the "
+                "latest or successful occurrence."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "attempt_id": {"type": "string"},
+                    "expected_head_state_version": {
+                        "type": ["integer", "null"],
+                        "minimum": 0,
+                    },
+                    "parent_selection_id": {"type": ["string", "null"]},
+                    "idempotency_key": idempotency,
+                },
+                "required": ["attempt_id", "idempotency_key"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="scientific.operation.disposition",
+            description=(
+                "Explicitly classify one occurrence as adopted, superseded, failed, "
+                "or abandoned. Known failures remain auditable; unknown effects "
+                "cannot be disposed away."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "selection_id": {"type": "string"},
+                    "operation_id": {"type": "string"},
+                    "kind": {
+                        "type": "string",
+                        "enum": ["adopted", "superseded", "failed", "abandoned"],
+                    },
+                    "workflow_role": {"type": ["string", "null"]},
+                    "reason_code": {"type": "string"},
+                    "replacement_operation_id": {"type": ["string", "null"]},
+                    "idempotency_key": idempotency,
+                },
+                "required": [
+                    "selection_id",
+                    "operation_id",
+                    "kind",
+                    "reason_code",
+                    "idempotency_key",
+                ],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="scientific.effect.adopt",
+            description=(
+                "Adopt one same-attempt terminal immutable controlled-operation "
+                "result into an explicit workflow role. Active, cross-scope, "
+                "unauthorized, or dispatch-in-doubt effects are rejected."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "selection_id": {"type": "string"},
+                    "operation_id": {"type": "string"},
+                    "workflow_role": {"type": "string"},
+                    "idempotency_key": idempotency,
+                },
+                "required": [
+                    "selection_id",
+                    "operation_id",
+                    "workflow_role",
+                    "idempotency_key",
+                ],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="scientific.artifact.materialize",
+            description=(
+                "Materialize sealed bytes from an adopted same-attempt result into "
+                "another bound sandbox run through the Host artifact boundary. "
+                "Shared paths or manual copies do not create adoption authority."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "selection_id": {"type": "string"},
+                    "adoption_id": {"type": "string"},
+                    "source_artifact_id": {"type": "string"},
+                    "target_sandbox_run_id": {"type": "string"},
+                    "target": {"type": "string"},
+                    "idempotency_key": idempotency,
+                },
+                "required": [
+                    "selection_id",
+                    "adoption_id",
+                    "source_artifact_id",
+                    "target_sandbox_run_id",
+                    "target",
+                    "idempotency_key",
+                ],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="scientific.selection.seal",
+            description=(
+                "Seal a complete selected chain only after every Host-derived "
+                "occurrence is validly disposed and every adopted role verifies."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "selection_id": {"type": "string"},
+                    "expected_universe_digest": {"type": "string"},
+                    "idempotency_key": idempotency,
+                },
+                "required": [
+                    "selection_id",
+                    "expected_universe_digest",
+                    "idempotency_key",
+                ],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="scientific.attempt.close",
+            description=(
+                "Request Host finalization of the exact sealed selection. The Host "
+                "establishes quiescence only after this agent turn retires; closure "
+                "never completes or fails the task, so use task.finish separately."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "attempt_id": {"type": "string"},
+                    "selection_id": {"type": "string"},
+                    "idempotency_key": idempotency,
+                },
+                "required": [
+                    "attempt_id",
+                    "selection_id",
+                    "idempotency_key",
+                ],
                 "additionalProperties": False,
             },
         ),
@@ -483,6 +766,8 @@ def engine_tool_descriptors(
 
 def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
     return (
+        *failure_tool_descriptors(),
+        *scientific_attempt_tool_descriptors(),
         ToolDescriptor(
             tool_name="task.create",
             description="Create a new task in the current session when the user asks for new work to be tracked.",
@@ -492,7 +777,10 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                     "task_id": {"type": "string"},
                     "subject": {"type": "string"},
                     "description": {"type": "string"},
-                    "priority": {"type": "string", "enum": ["low", "normal", "high", "urgent"]},
+                    "priority": {
+                        "type": "string",
+                        "enum": ["low", "normal", "high", "urgent"],
+                    },
                     "kind": {"type": "string"},
                     "status": {"type": "string", "enum": ["todo", "in_progress"]},
                     "assigned_ref": {"type": ["string", "null"]},
@@ -517,7 +805,10 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                     "subject": {"type": "string"},
                     "description": {"type": "string"},
                     "status": {"type": "string", "enum": ["todo", "in_progress"]},
-                    "priority": {"type": "string", "enum": ["low", "normal", "high", "urgent"]},
+                    "priority": {
+                        "type": "string",
+                        "enum": ["low", "normal", "high", "urgent"],
+                    },
                     "kind": {"type": "string"},
                     "assigned_ref": {"type": ["string", "null"]},
                     "blocked_by": {"type": "array", "items": {"type": "string"}},
@@ -633,9 +924,15 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                 "type": "object",
                 "properties": {
                     "recipient": {"type": "string"},
-                    "recipient_kind": {"type": "string", "enum": ["agent", "harness", "user", "system"]},
+                    "recipient_kind": {
+                        "type": "string",
+                        "enum": ["agent", "harness", "user", "system"],
+                    },
                     "sender": {"type": "string"},
-                    "sender_kind": {"type": "string", "enum": ["agent", "harness", "user", "system"]},
+                    "sender_kind": {
+                        "type": "string",
+                        "enum": ["agent", "harness", "user", "system"],
+                    },
                     "message_type": {"type": "string"},
                     "correlation_id": {"type": "string"},
                     "task_id": {"type": "string"},
@@ -677,7 +974,11 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         ToolDescriptor(
             tool_name="lane.list",
             description="List lanes and their assigned work.",
-            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
         ),
         *world_tool_descriptors(),
         *artifact_tool_descriptors(),
@@ -688,7 +989,10 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "scope_kind": {"type": "string", "enum": ["session", "lane", "task"]},
+                    "scope_kind": {
+                        "type": "string",
+                        "enum": ["session", "lane", "task"],
+                    },
                     "scope_ref": {"type": "string"},
                     "task_id": {"type": "string"},
                     "lane_id": {"type": "string"},
@@ -732,7 +1036,9 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
     )
 
 
-def top_level_tool_descriptors(engine_registry: EngineRegistry | None = None) -> tuple[ToolDescriptor, ...]:
+def top_level_tool_descriptors(
+    engine_registry: EngineRegistry | None = None,
+) -> tuple[ToolDescriptor, ...]:
     del engine_registry
     return builtin_tool_descriptors()
 
@@ -742,7 +1048,9 @@ __all__ = [
     "artifact_tool_descriptors",
     "builtin_tool_descriptors",
     "engine_tool_descriptors",
+    "failure_tool_descriptors",
     "sandbox_tool_descriptors",
+    "scientific_attempt_tool_descriptors",
     "top_level_tool_descriptors",
     "world_tool_descriptors",
 ]

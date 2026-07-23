@@ -1,6 +1,35 @@
-# Deferred: canonical scientific chain adoption and attempt closure
+# Active: canonical scientific chain adoption and attempt closure
 
-Status: proposed, not implemented in the current AOX/HMM blank-world Goal.
+Status: implemented by the active OpenSpec changes
+`add-scientific-attempt-selection-and-closure` and
+`migrate-aox-cutover-to-selected-chain`; pending final verification and archive.
+
+## Implementation resolution
+
+The proposal's governing intent is now production code: fresh attempt
+authorization, complete occurrence universe, immutable/CAS selection revisions,
+four-way dispositions, same-attempt effect adoption, Host-authorized
+materialization, closure intent, quiescence-bound immutable closure, workspace/
+CLI/UI projection, and AOX production bundle `@3`.
+
+Two version details differ from the historical proposal text below:
+
+- the pre-existing historical AOX bundle was already `@2`, so selected-chain
+  production evidence is `aox_blank_world_attempt_bundle@3`;
+- `@2` remains a frozen verifier for r48-r51 and other historical evidence;
+  it is never backfilled, upgraded, or mixed with new selection rows.
+
+The implementation also adds the accepted 1A durable authorization envelope
+and one-use AOX three-slot plan. Known terminal/no-effect trial failures can be
+dispositioned without poisoning the final chain; unknown effect, active
+process/writer, authorization/resource breach and cross-attempt reuse remain
+fail closed. Task business status remains independent of attempt closure.
+
+The remainder of this document is retained as the historical design/threat
+analysis that motivated the implemented contract. Statements saying the feature
+is proposal-only or would use bundle `@2` describe the earlier checkpoint and
+are superseded by this resolution and the stable
+[`08-failure-recovery-and-scientific-attempts.md`](../08-failure-recovery-and-scientific-attempts.md).
 
 ## Decision boundary for the current Goal
 

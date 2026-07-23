@@ -21,6 +21,7 @@ V3 的核心立场：
 6. [05-agent-runtime.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/05-agent-runtime.md)
 7. [06-top-level-llm-loop.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/06-top-level-llm-loop.md)
 8. [07-runtime-hpc-reliability.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/07-runtime-hpc-reliability.md)
+9. [08-failure-recovery-and-scientific-attempts.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/08-failure-recovery-and-scientific-attempts.md)
 
 架构审计与后续修正追踪：
 
@@ -33,6 +34,9 @@ V3 的核心立场：
 AOX/HMM live cutover：
 
 - [aox-hmm-blank-world-cutover.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-hmm-blank-world-cutover.md)
+- 新 production attempt 使用 selected-chain `aox_blank_world_attempt_bundle@3`；
+  历史 `@2` verifier 与 r48-r51 NO-GO evidence 保持冻结。下一次 numbered live attempt
+  必须先获得 exact one-use authority plan；本轮实现停在创建 attempt root 之前。
 - `pin`、`preflight`、`run-live` 均先要求当前 clean commit 的 full architecture qualification report；qualification 通过本身只解除架构阻断，不创建 attempt，也不自动恢复 numbered campaign。无 attempt 的准备阶段止于 canonical `pin`；CLI `preflight` 会创建 blank-world attempt root，因此每个新 numbered campaign 都必须有 operator 授权并使用 fresh roots。
 
 Execution pipeline SDK docs:

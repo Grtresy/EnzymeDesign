@@ -25,9 +25,15 @@ from .aox_browser_observation import build_browser_observation_receipt
 from .aox_browser_observation import load_json_object
 from .aox_browser_observation import load_screenshot_png
 from .aox_browser_observation import publish_browser_observation_receipt
+from .aox_attempt_authority import build_aox_attempt_authority_plan
+from .aox_attempt_authority import consume_aox_attempt_authority_plan
+from .aox_attempt_authority import attempt_authority_consumption_path
+from .aox_attempt_authority import load_aox_attempt_authority_plan
+from .aox_attempt_authority import publish_aox_attempt_authority_plan
 from .aox_cutover_evidence import AttemptRunRecord
 from .aox_cutover_evidence import AoxCutoverCampaign
 from .aox_cutover_evidence import create_blank_world_roots
+from .aox_cutover_evidence import CutoverEvidenceError
 from .aox_cutover_evidence import evaluate_campaign
 from .aox_cutover_evidence import safe_micu_ledger_snapshot
 from .aox_cutover_evidence import seal_campaign_decision
@@ -534,6 +540,50 @@ def _ledger(args: argparse.Namespace) -> int:
     return 0
 
 
+def _authorize(args: argparse.Namespace) -> int:
+    current_qualification = verify_aox_architecture_qualification_report(
+        args.architecture_qualification_report,
+    )
+    identity, prerequisites, pinned_qualification = (
+        _load_pinned_declarations(
+            args.identity,
+            args.allowed_prerequisites,
+        )
+    )
+    qualification = require_matching_architecture_qualification_receipt(
+        pinned_qualification,
+        current_qualification,
+    )
+    target = _pin_output_target(args.output)
+    plan = build_aox_attempt_authority_plan(
+        identity=identity,
+        allowed_prerequisites=prerequisites,
+        architecture_qualification=qualification,
+        expires_at=args.expires_at,
+        max_micu_per_attempt=args.max_micu_per_attempt,
+        max_cost_microunits_per_attempt=(
+            args.max_cost_microunits_per_attempt
+        ),
+        max_wall_time_seconds_per_attempt=(
+            args.max_wall_time_seconds_per_attempt
+        ),
+    )
+    publish_aox_attempt_authority_plan(plan, target)
+    _print(
+        {
+            "schema_id": "aox_attempt_authority_publish_receipt@1",
+            "status": "published_not_consumed",
+            "output_file": target.name,
+            "campaign_id": plan["campaign_id"],
+            "plan_digest": plan["plan_digest"],
+            "attempt_ids": [
+                slot["attempt_id"] for slot in plan["slots"]
+            ],
+        }
+    )
+    return 0
+
+
 def _run_live(args: argparse.Namespace) -> int:
     from openzyme_runtime import OpenZymeSettings
 
@@ -579,6 +629,32 @@ def _run_live(args: argparse.Namespace) -> int:
         pinned_architecture_qualification,
         launch.architecture_qualification,
     )
+    authority_plan = load_aox_attempt_authority_plan(
+        args.attempt_authority_plan,
+        identity=launch.identity,
+        allowed_prerequisites=launch.allowed_prerequisites,
+        architecture_qualification=architecture_qualification,
+    )
+    consumption_target = _pin_output_target(
+        args.attempt_authority_consumption
+    )
+    authority_plan_path = args.attempt_authority_plan.expanduser().resolve(
+        strict=True
+    )
+    expected_consumption_target = attempt_authority_consumption_path(
+        authority_plan_path
+    )
+    if consumption_target != expected_consumption_target:
+        raise CutoverEvidenceError(
+            "attempt_authority_consumption_target_mismatch",
+            "authority consumption must use the one deterministic sibling target",
+            details={"expected_file": expected_consumption_target.name},
+        )
+    consume_aox_attempt_authority_plan(
+        authority_plan,
+        plan_path=authority_plan_path,
+        path=consumption_target,
+    )
     live_runner = LiveAoxAttemptRunner(
         settings=launch.effective_settings,
         ledger_path=ledger_path,
@@ -619,6 +695,7 @@ def _run_live(args: argparse.Namespace) -> int:
         allowed_prerequisites=launch.allowed_prerequisites,
         architecture_qualification=architecture_qualification,
         launch_guard=launch.assert_unchanged,
+        attempt_authority_slots=tuple(authority_plan["slots"]),
     )
     records, decision = campaign.run()
     ledger_projection = (
@@ -752,6 +829,39 @@ def build_parser() -> argparse.ArgumentParser:
     _add_driver_arguments(pin)
     pin.set_defaults(handler=_pin)
 
+    authorize = subparsers.add_parser(
+        "authorize",
+        help=(
+            "publish a reviewable one-use three-slot authority plan without "
+            "creating roots or starting live work"
+        ),
+    )
+    authorize.add_argument("--identity", required=True, type=Path)
+    authorize.add_argument("--allowed-prerequisites", required=True, type=Path)
+    authorize.add_argument(
+        "--architecture-qualification-report",
+        required=True,
+        type=Path,
+    )
+    authorize.add_argument("--output", required=True, type=Path)
+    authorize.add_argument("--expires-at", required=True)
+    authorize.add_argument(
+        "--max-micu-per-attempt",
+        required=True,
+        type=int,
+    )
+    authorize.add_argument(
+        "--max-cost-microunits-per-attempt",
+        required=True,
+        type=int,
+    )
+    authorize.add_argument(
+        "--max-wall-time-seconds-per-attempt",
+        required=True,
+        type=int,
+    )
+    authorize.set_defaults(handler=_authorize)
+
     preflight = subparsers.add_parser(
         "preflight",
         help="create one unique empty attempt root and emit its local launch paths",
@@ -867,6 +977,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="closed blank-world prerequisite JSON",
     )
     run_live.add_argument(
+        "--attempt-authority-plan",
+        required=True,
+        type=Path,
+        help=(
+            "private canonical three-slot plan produced by authorize; it is "
+            "consumed exactly once before any attempt root"
+        ),
+    )
+    run_live.add_argument(
+        "--attempt-authority-consumption",
+        required=True,
+        type=Path,
+        help=(
+            "exact absent append-only sibling '<authority-plan-name>.consumed.json'; "
+            "publishing it consumes the plan before root creation"
+        ),
+    )
+    run_live.add_argument(
         "--ledger-path",
         type=Path,
         help=(
@@ -914,6 +1042,24 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "schema_id": "aox_cutover_launch_failure@1",
+                    "status": "failed",
+                    "failure_code": exc.code,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+        return 2
+    except CutoverEvidenceError as exc:
+        print(
+            json.dumps(
+                {
+                    "schema_id": (
+                        "aox_attempt_authority_failure@1"
+                        if args.command in {"authorize", "run-live"}
+                        else "aox_cutover_evidence_failure@1"
+                    ),
                     "status": "failed",
                     "failure_code": exc.code,
                 },

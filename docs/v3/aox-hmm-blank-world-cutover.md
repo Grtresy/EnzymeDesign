@@ -1,17 +1,51 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r50 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. r48, r49 and r50 are permanent NO-GO evidence. The executable architecture-qualification gate is implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. Local Live cutover stays **NO-GO** until one successor campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
+Status: r43-r51 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. r48, r49, r50 and r51 are permanent NO-GO evidence. The executable architecture-qualification gate is implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. Local Live cutover stays **NO-GO** until one successor campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
 
-Historical r14-r47 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
+Historical r14-r51 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
 This document describes the operator/evidence boundary implemented by `openzyme_host_api.aox_cutover_evidence`. It does not turn the historical S15 fixture into live evidence and does not authorize seeded state, cached scientific outputs, the reference notebook, or copied reference results as attempt inputs.
+
+New production attempts use `aox_blank_world_attempt_bundle@3` and the generic
+scientific-attempt control plane. The agent may retain failed/superseded trials
+inside one formal attempt while explicitly selecting a valid adopted chain, but
+the bundle still audits the full occurrence universe and fails closed on unknown
+effect, active process/writer, incomplete disposition, authority/resource breach,
+or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r51
+fact can be upgraded, backfilled, or adopted.
+The current workflow knowledge identity is
+`workflow:aox-hmm-live@2.0.0#sha256:10ae97822702fc231905f6f41368d9462dadd47967f09ab3df5ca1933e6ee20f`;
+the next live launch must still bind that ref to a fresh clean commit,
+qualification report, pin and authority plan.
+
+## 2026-07-23 pre-live implementation checkpoint
+
+The selected-chain migration is implemented and has stopped before r52.
+`./scripts/check-mainline.sh` completed with `2353 passed, 31 deselected`;
+the Web UI completed all `42` Node tests and its production build. Focused
+recoverability, scientific-attempt, migration, API/CLI, AOX authority,
+supervision, frozen-`@2`, production-`@3`, tamper and live-driver non-live
+regressions pass. `ruff check apps packages`, `git diff --check`, and strict
+validation of all three active supporting OpenSpec changes pass.
+
+This checkpoint is implementation-ready, not live-admission evidence. It was
+captured before the implementation landed, so it did not issue a clean-HEAD
+full admission report. A later commit establishes only the candidate source
+identity; it does not retroactively turn this checkpoint into admission
+evidence. No production authority plan or consumption receipt was published,
+no r52 root/session/campaign was created, and no LLM/provider/HPC/Chrome live
+action ran. After landing, the next operator sequence remains clean-HEAD full
+architecture admission, canonical pin, reviewable `authorize`, and only then a
+separately authorized r52 launch.
 
 ## Numbered launch-preparation boundary
 
 The no-attempt preparation phase may update local configuration, build and hash
 the Web UI, run non-live verification, produce and purely verify a full
 architecture-admission report from the final clean HEAD, inspect the cumulative
-MICU ledger, and run canonical `pin`. `pin` performs four deterministic,
+MICU ledger, run canonical `pin`, and publish a reviewable `authorize` plan.
+`authorize` binds exactly two positive slots plus one fault slot and does not
+create roots or consume the plan. `pin` performs four deterministic,
 non-scientific forced-SSH toolchain attestations and publishes declarations
 outside the checkout, but it does not create an attempt root, contact scientific
 providers or MICU, request Chrome approval, or start the numbered campaign.
@@ -33,7 +67,9 @@ The CLI command named `preflight` is deliberately outside this no-attempt phase:
 it creates the first blank-world attempt root. `preflight`, `run-live`, the
 known-positive provider/model probe, canonical Chrome approval, positive
 attempts, and the controlled fault attempt require a separate explicit launch
-authorization. Standalone availability diagnostics can inform readiness but
+authorization. Production `run-live` additionally consumes the exact authority
+plan into its deterministic absent `.consumed.json` sibling before any root is
+created. Standalone availability diagnostics can inform readiness but
 cannot satisfy campaign evidence or be adopted into an attempt.
 
 The launch documentation audit covers this stable contract, the main
@@ -1597,7 +1633,11 @@ and is not implemented by this Goal.
 
 ## Attempt bundle
 
-`aox_blank_world_attempt_bundle@2` is canonical sorted-key UTF-8 JSON wrapped by its SHA-256 payload digest. The payload binds:
+New production evidence uses `aox_blank_world_attempt_bundle@3`, canonical
+sorted-key UTF-8 JSON wrapped by its SHA-256 payload digest. The historical
+`@2` collector/verifier is retained only for frozen evidence; version dispatch
+is exact, and selected-chain control relabeled as `@2` is rejected. The `@3`
+payload preserves all prior AOX scientific gates and additionally binds:
 
 - git commit, config, workflow selection, scoring contract/implementation, image and SDK;
 - self-consistent `aox_blank_world_root_proof@2` and
@@ -1611,6 +1651,11 @@ and is not implemented by this Goal.
 - published report content artifact, source refs, claim links and final master response;
 - scoring and similarity recomputation inputs/outputs;
 - warnings, enrichment degradations and honest scientific outcome.
+- exact attempt authorization envelope and one-use consumption;
+- the complete Host-derived controlled-operation/run occurrence universe;
+- one explicit `adopted | superseded | failed | abandoned` disposition per occurrence;
+- unique adopted workflow roles, same-attempt effect/result lineage and Host-authorized materializations;
+- sealed selection, exact quiescence receipt and immutable attempt closure.
 
 An eligible positive attempt additionally requires:
 
@@ -1627,6 +1672,12 @@ An eligible positive attempt additionally requires:
 - ledger-observed MICU attempt/token growth;
 - a passed isolated known-positive provider/HPC attestation whose capability
   union with the reached formal branch is complete.
+- authorization count/resources/effects/routes remain within the exact envelope,
+  every covered process/writer is retired, and no effect is
+  `dispatch_in_doubt`;
+- all required AOX roles are selected exactly once from same-attempt controlled
+  operations. Known terminal no-effect/failed trials may remain as non-adopted
+  dispositions, but they are never erased or reused across attempts.
 
 Failure evidence is still sealed when possible, but `cutover_eligible=false` and therefore stops the campaign before a second positive or GO decision.
 
@@ -1635,7 +1686,7 @@ Failure evidence is still sealed when possible, but `cutover_eligible=false` and
 The product collector and offline verifier now declare
 `aox_known_positive_probe@2` with
 `probe_id="independent_globin_provider_hpc_probe"`. This is an implemented
-attestation contract, not proof that a real `@2` campaign attempt has passed.
+attestation contract, not proof that a real production `@3` campaign attempt has passed.
 An AAB-only/MAFFT-only `@1` receipt is insufficient and rejected.
 
 The bounded `@2` probe uses NCBI `NP_000509.1` and `NP_000549.1`, UniProt
@@ -1756,6 +1807,24 @@ uv --project apps/openzyme-host-api run openzyme-aox-cutover decide \
 
 Attempt bundles, driver-failure evidence and the decision use atomic no-replace writes plus file/directory fsync. A campaign driver exception produces append-only safe failure evidence and a precise NO-GO; it never falls through to GO.
 
+No-root authority publication, performed only after the final identity and
+qualification are ready:
+
+```bash
+uv --project apps/openzyme-host-api run openzyme-aox-cutover authorize \
+  --identity /tmp/openzyme-aox-pin/<campaign-id>/identity.json \
+  --allowed-prerequisites /tmp/openzyme-aox-pin/<campaign-id>/allowed-prerequisites.json \
+  --architecture-qualification-report /tmp/openzyme-v3-admission/<commit>/architecture-qualification-report.json \
+  --output /tmp/openzyme-aox-authority/<campaign-id>/attempt-authority.json \
+  --expires-at <timezone-aware-iso8601> \
+  --max-micu-per-attempt <exact-nonnegative-int> \
+  --max-cost-microunits-per-attempt <exact-nonnegative-int> \
+  --max-wall-time-seconds-per-attempt <exact-nonnegative-int>
+```
+
+This command does not launch or number an attempt. Reviewing and publishing a
+plan is distinct from authorizing `run-live` to consume it.
+
 Real campaign entry point:
 
 ```bash
@@ -1770,6 +1839,10 @@ uv --project apps/openzyme-host-api run openzyme-aox-cutover run-live \
     /tmp/openzyme-aox-pin/<campaign-id>/allowed-prerequisites.json \
   --architecture-qualification-report \
     /tmp/openzyme-v3-admission/<commit>/architecture-qualification-report.json \
+  --attempt-authority-plan \
+    /tmp/openzyme-aox-authority/<campaign-id>/attempt-authority.json \
+  --attempt-authority-consumption \
+    /tmp/openzyme-aox-authority/<campaign-id>/attempt-authority.json.consumed.json \
   --approval-mode chrome-once \
   --browser-poll-interval-seconds 0.5 \
   --browser-approval-timeout-seconds 300 \
@@ -1998,3 +2071,9 @@ Offline unit/eval success proves implementation behavior only. Local Live cutove
 - a sealed decision from the real attempt digests and final cumulative MICU usage.
 
 Until those artifacts exist, documentation and UI must state NO-GO. Historical S15 and deterministic fixtures remain `fixture_non_cutover` regardless of local test status.
+
+The current implementation checkpoint has completed only code, OpenSpec,
+documentation and non-live verification for recoverability, attempt selection,
+fresh authority and `@3`. It deliberately stops before `preflight` or
+`run-live`: no new numbered root, provider/MICU call, HPC job, browser campaign
+or attempt evidence has been created by this checkpoint.

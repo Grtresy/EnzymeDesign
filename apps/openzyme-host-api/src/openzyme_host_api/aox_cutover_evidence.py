@@ -30,7 +30,11 @@ from .aox_cutover_runtime_config import AoxRuntimeConfigSchemaError
 from .aox_cutover_runtime_config import normalize_aox_blank_world_runtime_config
 
 
-ATTEMPT_BUNDLE_SCHEMA_ID = "aox_blank_world_attempt_bundle@2"
+ATTEMPT_BUNDLE_SCHEMA_ID_V2 = "aox_blank_world_attempt_bundle@2"
+ATTEMPT_BUNDLE_SCHEMA_ID_V3 = "aox_blank_world_attempt_bundle@3"
+# Backward-compatible public name.  Existing collectors and golden fixtures are
+# deliberately frozen on @2; new production campaigns dispatch to @3 explicitly.
+ATTEMPT_BUNDLE_SCHEMA_ID = ATTEMPT_BUNDLE_SCHEMA_ID_V2
 CAMPAIGN_DECISION_SCHEMA_ID = "aox_blank_world_campaign_decision@1"
 BLANK_WORLD_ROOT_PROOF_SCHEMA_ID = "aox_blank_world_root_proof@2"
 AOX_LAUNCH_RECEIPT_SCHEMA_ID = "aox_blank_world_launch_receipt@2"
@@ -702,6 +706,7 @@ class AttemptRunContext:
     identity: dict[str, str]
     ledger_before: dict[str, Any]
     attempt_number: int
+    attempt_authority: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1872,7 +1877,7 @@ def seal_campaign_decision(
     return actual_digest
 
 
-def verify_attempt_bundle(
+def _verify_attempt_bundle_v2(
     bundle_path: Path,
     *,
     artifact_root: Path,
@@ -2045,6 +2050,68 @@ def verify_attempt_bundle(
         attempt_id=attempt_id,
         attempt_kind=attempt_kind,
         issues=tuple(issues),
+    )
+
+
+def verify_attempt_bundle(
+    bundle_path: Path,
+    *,
+    artifact_root: Path,
+) -> VerificationResult:
+    """Dispatch only exact AOX bundle versions; keep the @2 verifier frozen."""
+
+    try:
+        envelope = _strict_json_loads(bundle_path.read_text(encoding="utf-8"))
+        payload = envelope.get("payload") if isinstance(envelope, dict) else None
+        schema_id = (
+            payload.get("schema_id") if isinstance(payload, dict) else None
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return _verify_attempt_bundle_v2(
+            bundle_path,
+            artifact_root=artifact_root,
+        )
+    if schema_id == ATTEMPT_BUNDLE_SCHEMA_ID_V3:
+        from .aox_selected_chain_evidence import (
+            verify_selected_chain_attempt_bundle,
+        )
+
+        return verify_selected_chain_attempt_bundle(
+            bundle_path,
+            artifact_root=artifact_root,
+        )
+    if (
+        schema_id == ATTEMPT_BUNDLE_SCHEMA_ID_V2
+        and isinstance(payload, dict)
+        and "scientific_attempt_control" in payload
+    ):
+        declared_digest = (
+            envelope.get("bundle_digest")
+            if isinstance(envelope.get("bundle_digest"), str)
+            else None
+        )
+        return VerificationResult(
+            passed=False,
+            bundle_digest=declared_digest,
+            attempt_id=_optional_text(payload.get("attempt_id")),
+            attempt_kind=_optional_text(payload.get("attempt_kind")),
+            issues=(
+                VerificationIssue(
+                    code="bundle_version_crossgrade_forbidden",
+                    identity="bundle.schema_id",
+                    message=(
+                        "@3 selected-chain control cannot be relabeled as a "
+                        "historical @2 bundle"
+                    ),
+                ),
+            ),
+        )
+    # @2 and unknown versions both go through the historical verifier.  The
+    # latter receives the frozen bundle_schema_invalid result rather than a
+    # best-effort parse or implicit upgrade.
+    return _verify_attempt_bundle_v2(
+        bundle_path,
+        artifact_root=artifact_root,
     )
 
 
@@ -2531,6 +2598,7 @@ class AoxCutoverCampaign:
     allowed_prerequisites: Mapping[str, object]
     architecture_qualification: Mapping[str, object]
     launch_guard: Callable[[], None] | None = None
+    attempt_authority_slots: tuple[Mapping[str, object], ...] = ()
     _allow_unisolated_non_live_test_runner: bool = dataclass_field(
         default=False,
         init=False,
@@ -2601,11 +2669,42 @@ class AoxCutoverCampaign:
     ) -> tuple[AttemptRunRecord, bool]:
         if self.launch_guard is not None:
             self.launch_guard()
+        authority: dict[str, Any] | None = None
+        if not self._allow_unisolated_non_live_test_runner:
+            raw_authority = (
+                None
+                if number > len(self.attempt_authority_slots)
+                else self.attempt_authority_slots[number - 1]
+            )
+            if not isinstance(raw_authority, Mapping):
+                raise CutoverEvidenceError(
+                    "authorization_required",
+                    "production AOX attempt requires an exact durable authority slot",
+                    details={"identity": f"campaign.attempt_authority_slots[{number - 1}]"},
+                )
+            authority = dict(raw_authority)
+            if (
+                authority.get("ordinal") != number
+                or authority.get("attempt_kind") != kind
+                or not isinstance(authority.get("attempt_id"), str)
+                or not isinstance(authority.get("envelope_id"), str)
+                or not isinstance(authority.get("authority_request"), dict)
+            ):
+                raise CutoverEvidenceError(
+                    "attempt_authority_slot_identity_invalid",
+                    "production AOX authority slot does not match the next attempt",
+                    details={"identity": f"campaign.attempt_authority_slots[{number - 1}]"},
+                )
         roots = create_blank_world_roots(
             self.campaign_root,
             attempt_kind=kind,
             allowed_prerequisites=self.allowed_prerequisites,
             architecture_qualification=self.architecture_qualification,
+            attempt_id=(
+                None
+                if authority is None
+                else str(authority["attempt_id"])
+            ),
         )
         before = safe_micu_ledger_snapshot(self.ledger_path)
         runner = self.positive_runner if kind == "positive" else self.fault_runner
@@ -2614,6 +2713,7 @@ class AoxCutoverCampaign:
             identity=_normalize_identity(self.identity),
             ledger_before=before,
             attempt_number=number,
+            attempt_authority=authority,
         )
         try:
             evidence = runner(context)
@@ -2636,18 +2736,63 @@ class AoxCutoverCampaign:
                 ),
                 attempt_id=roots.attempt_id,
                 attempt_kind=kind,
+                attempt_authority_id=str(authority["envelope_id"]),
+                attempt_authority_request_digest=str(
+                    authority["request_digest"]
+                ),
             )
         after = safe_micu_ledger_snapshot(self.ledger_path)
-        payload = build_attempt_bundle(
-            attempt_id=roots.attempt_id,
-            attempt_kind=kind,
-            identity=self.identity,
-            clean_world=roots.proof,
-            ledger_before=before,
-            ledger_after=after,
-            artifact_root=roots.artifact_root,
-            evidence=evidence,
-        )
+        if self._allow_unisolated_non_live_test_runner:
+            payload = build_attempt_bundle(
+                attempt_id=roots.attempt_id,
+                attempt_kind=kind,
+                identity=self.identity,
+                clean_world=roots.proof,
+                ledger_before=before,
+                ledger_after=after,
+                artifact_root=roots.artifact_root,
+                evidence=evidence,
+            )
+        else:
+            control = evidence.get("scientific_attempt_control")
+            if not isinstance(control, dict):
+                raise CutoverEvidenceError(
+                    "scientific_attempt_control_missing",
+                    "production AOX runner did not return closed selected-chain evidence",
+                    details={"identity": "scientific_attempt_control"},
+                )
+            authority = control.get("attempt_authority")
+            expected_authority_id = (
+                None
+                if context.attempt_authority is None
+                else context.attempt_authority.get("envelope_id")
+            )
+            if (
+                not isinstance(authority, dict)
+                or authority.get("envelope_id") != expected_authority_id
+                or authority.get("root_ref")
+                != f"attempts/{roots.attempt_id}"
+            ):
+                raise CutoverEvidenceError(
+                    "scientific_attempt_authority_mismatch",
+                    "runner evidence did not consume the exact campaign authority",
+                    details={"identity": "scientific_attempt_control.attempt_authority"},
+                )
+            from .aox_selected_chain_evidence import (
+                build_selected_chain_attempt_bundle,
+            )
+
+            payload = build_selected_chain_attempt_bundle(
+                attempt_id=roots.attempt_id,
+                attempt_kind=kind,
+                identity=self.identity,
+                clean_world=roots.proof,
+                ledger_before=before,
+                ledger_after=after,
+                artifact_root=roots.artifact_root,
+                evidence=evidence,
+                scientific_attempt_control=control,
+            )
         bundle_path = roots.evidence_root / "attempt-bundle.json"
         bundle_digest = seal_attempt_bundle(payload, bundle_path)
         verification = verify_attempt_bundle(
@@ -4637,7 +4782,11 @@ def _public_api_route_is_canonical(method: str, route: str) -> bool:
         return (
             method == "GET"
             and segments[3] in {"workspace", "events", "pending-approvals"}
-        ) or (method == "POST" and segments[3] == "messages")
+        ) or (
+            method == "POST"
+            and segments[3]
+            in {"messages", "scientific-attempt-authorizations"}
+        )
     if len(segments) == 5 and segments[:2] == ["v3", "sessions"]:
         return (
             _ATTEMPT_ID_PATTERN.fullmatch(segments[2]) is not None
@@ -6234,7 +6383,7 @@ def _validate_known_positive_probe(
 def _validate_attempt_semantics(
     payload: Mapping[str, Any], *, artifact_root: Path
 ) -> None:
-    if payload.get("schema_id") != ATTEMPT_BUNDLE_SCHEMA_ID:
+    if payload.get("schema_id") != ATTEMPT_BUNDLE_SCHEMA_ID_V2:
         raise CutoverEvidenceError(
             "bundle_schema_invalid",
             "attempt bundle schema id is not supported",
@@ -6279,6 +6428,7 @@ def _validate_attempt_semantics(
         from .aox_attempt_supervision import (
             derive_live_attempt_supervision_timeout_seconds,
         )
+        from .aox_attempt_supervision import SUPERVISION_SCHEMA_ID_V1
         from .aox_attempt_supervision import supervision_contract_digest
         from .aox_attempt_supervision import validate_attempt_supervision_receipt
 
@@ -6308,6 +6458,7 @@ def _validate_attempt_semantics(
                     timeout_seconds=timeout_seconds,
                     term_grace_seconds=DEFAULT_TERM_GRACE_SECONDS,
                     kill_grace_seconds=DEFAULT_KILL_GRACE_SECONDS,
+                    protocol_schema_id=SUPERVISION_SCHEMA_ID_V1,
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise CutoverEvidenceError(
@@ -11155,6 +11306,8 @@ __all__ = [
     "AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID",
     "AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS",
     "ATTEMPT_BUNDLE_SCHEMA_ID",
+    "ATTEMPT_BUNDLE_SCHEMA_ID_V2",
+    "ATTEMPT_BUNDLE_SCHEMA_ID_V3",
     "AttemptRunContext",
     "AttemptRunRecord",
     "BlankWorldRoots",

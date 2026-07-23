@@ -50,6 +50,7 @@ from .background_runtime import RuntimeSignalNotifier
 from .background_runtime import V3BackgroundRuntimeService
 from .background_runtime import V3DurableWorkCoordinator
 from .background_runtime import V3DurableWorkSupervisor
+from .aox_scientific_contract import validate_aox_scientific_workflow_role
 from .durable_routes import build_host_hpc_route_adapters
 from .durable_routes import build_host_provider_route_adapters
 from .runtime_commands import HostRuntimeCommandExecutor
@@ -76,6 +77,7 @@ from openzyme_core import SandboxHostBinding
 from openzyme_core import SandboxHostCallContext
 from openzyme_core import SandboxProcessHostAuthority
 from openzyme_core import SessionTurnHostAuthority
+from openzyme_core import ScientificAttemptError
 from openzyme_core import LiveProcessRegistry
 from openzyme_core import MutationWriterTurnFactory
 from openzyme_core import MutationScopeService
@@ -174,6 +176,59 @@ class CreateV3LaneRequest(BaseModel):
 
 class ClaimV3LaneRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class GrantScientificAttemptAuthorizationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str = Field(min_length=1, max_length=200)
+    campaign_id: str = Field(min_length=1, max_length=200)
+    workflow_id: str = Field(min_length=1, max_length=200)
+    root_ref: str = Field(min_length=1, max_length=500)
+    grantor_kind: Literal["user", "operator"] = "user"
+    allowed_scopes: list[Literal["formal", "probe", "fault"]] = Field(
+        min_length=1,
+        max_length=3,
+    )
+    allowed_effect_classes: list[str] = Field(min_length=1, max_length=64)
+    allowed_providers: list[str] = Field(default_factory=list, max_length=64)
+    allowed_hpc_targets: list[str] = Field(default_factory=list, max_length=64)
+    max_attempts: int = Field(strict=True, ge=1, le=10_000)
+    max_micu: int = Field(strict=True, ge=0)
+    max_cost_microunits: int = Field(strict=True, ge=0)
+    max_wall_time_seconds: int = Field(strict=True, ge=0)
+    expires_at: str = Field(min_length=1, max_length=100)
+    policy_digest: str | None = Field(default=None, max_length=200)
+
+
+ScientificCommandName = Literal[
+    "attempt.create",
+    "scientific.selection.begin",
+    "scientific.operation.disposition",
+    "scientific.effect.adopt",
+    "scientific.artifact.materialize",
+    "scientific.selection.seal",
+    "scientific.attempt.close",
+]
+
+
+class ScientificAttemptCommandRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command: ScientificCommandName
+    arguments: dict[str, Any]
+
+
+class FinalizeScientificAttemptAdmissionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    admission_request_id: str = Field(min_length=1, max_length=300)
+
+
+class FinalizeScientificAttemptClosureRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    closure_request_id: str = Field(min_length=1, max_length=300)
 
 
 class ApiErrorDetail(BaseModel):
@@ -663,6 +718,13 @@ class HostApiDependencies:
             process_epoch=process_epoch,
         )
 
+    def finalize_pending_v3_scientific_transitions(
+        self,
+        session_id: str,
+    ) -> None:
+        with self.v3_service_scope(mode="connection") as service:
+            service.finalize_pending_scientific_transitions(session_id=session_id)
+
     @contextmanager
     def v3_service_scope(
         self,
@@ -705,6 +767,9 @@ class HostApiDependencies:
             scheduler_limits={}
             if self.foundation.settings is None
             else dict(self.foundation.settings.limits.provider_limits),
+            scientific_workflow_role_validator=(
+                validate_aox_scientific_workflow_role
+            ),
         )
 
     def build_v3_durable_route_adapters(
@@ -904,6 +969,19 @@ def _as_http_error(exc: Exception) -> HTTPException:
         return _http_exception(404, code="resource_not_found", message=str(exc))
     if isinstance(exc, CommandIdempotencyConflictError):
         return _http_exception(409, code="idempotency_conflict", message=str(exc))
+    if isinstance(exc, ScientificAttemptError):
+        status_code = (
+            403
+            if exc.error_code.startswith("authorization_")
+            else 409
+        )
+        return _http_exception(
+            status_code,
+            code=exc.error_code,
+            message=str(exc),
+            hint=exc.hint,
+            details=exc.details,
+        )
     if isinstance(exc, ValueError):
         return _http_exception(400, code="invalid_request", message=str(exc))
     if isinstance(exc, MissingLlmConfigurationError):
@@ -1720,6 +1798,136 @@ def create_app(
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
+    @app.get("/v3/sessions/{session_id}/scientific-attempts")
+    def get_v3_scientific_attempts(
+        session_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            principal = _request_principal(request)
+            with dependencies.v3_service_scope(mode="read") as service:
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=session_id,
+                )
+                return service.scientific_attempt_control().project_session(
+                    session_id
+                )
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.post("/v3/sessions/{session_id}/scientific-attempt-authorizations")
+    def grant_v3_scientific_attempt_authorization(
+        session_id: str,
+        payload: GrantScientificAttemptAuthorizationRequest,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        try:
+            principal = _request_principal(request)
+            if security.shared and not principal.has_role("operator", "admin"):
+                raise HTTPException(
+                    status_code=403,
+                    detail="operator role is required",
+                )
+            with dependencies.v3_service_scope(mode="write") as service:
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=session_id,
+                )
+                return service.grant_scientific_attempt_authorization(
+                    payload.model_dump(mode="json"),
+                    session_id=session_id,
+                    grantor_ref=principal.principal_id,
+                    idempotency_key=idempotency_key,
+                )
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.post("/v3/sessions/{session_id}/scientific-attempt-commands")
+    def execute_v3_scientific_attempt_command(
+        session_id: str,
+        payload: ScientificAttemptCommandRequest,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        try:
+            principal = _request_principal(request)
+            with dependencies.v3_service_scope(mode="write") as service:
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=session_id,
+                )
+                return service.execute_scientific_attempt_command(
+                    payload.command,
+                    dict(payload.arguments),
+                    session_id=session_id,
+                    actor_ref=principal.principal_id,
+                    idempotency_key=idempotency_key,
+                )
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.post("/v3/sessions/{session_id}/scientific-attempt-admissions/finalize")
+    def finalize_v3_scientific_attempt_admission(
+        session_id: str,
+        payload: FinalizeScientificAttemptAdmissionRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            principal = _request_principal(request)
+            if security.shared and not principal.has_role("operator", "admin"):
+                raise HTTPException(
+                    status_code=403,
+                    detail="operator role is required",
+                )
+            with dependencies.v3_service_scope(mode="write") as service:
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=session_id,
+                )
+                return service.finalize_scientific_attempt_admission(
+                    session_id=session_id,
+                    admission_request_id=payload.admission_request_id,
+                )
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.post("/v3/sessions/{session_id}/scientific-attempt-closures/finalize")
+    def finalize_v3_scientific_attempt_closure(
+        session_id: str,
+        payload: FinalizeScientificAttemptClosureRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            principal = _request_principal(request)
+            if security.shared and not principal.has_role("operator", "admin"):
+                raise HTTPException(
+                    status_code=403,
+                    detail="operator role is required",
+                )
+            with dependencies.v3_service_scope(mode="write") as service:
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=session_id,
+                )
+                return service.finalize_scientific_attempt_closure(
+                    session_id=session_id,
+                    closure_request_id=payload.closure_request_id,
+                )
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
     @app.get(
         "/v3/sessions/{session_id}/pending-approvals",
         response_model=V3PendingApprovalsResponse,
@@ -2249,6 +2457,9 @@ def _build_durable_work_supervisor(
                         worker_id=f"{worker_id}:runtime-command",
                         mutation_writer_scope_factory=(
                             dependencies.v3_mutation_writer_scope
+                        ),
+                        post_writer_finalizer=(
+                            dependencies.finalize_pending_v3_scientific_transitions
                         ),
                     )
                 )

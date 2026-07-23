@@ -64,6 +64,28 @@ class _FatalRunner:
         )
 
 
+def _attempt_authority(
+    *,
+    attempt_id: str,
+    attempt_kind: str,
+    ordinal: int = 1,
+) -> dict[str, object]:
+    return {
+        "ordinal": ordinal,
+        "attempt_kind": attempt_kind,
+        "attempt_id": attempt_id,
+        "envelope_id": f"attempt_authority_{ordinal}",
+        "request_digest": canonical_digest(
+            {
+                "attempt_id": attempt_id,
+                "attempt_kind": attempt_kind,
+                "ordinal": ordinal,
+            }
+        ),
+        "authority_request": {},
+    }
+
+
 def _attempt_context(
     tmp_path: Path,
     *,
@@ -112,6 +134,10 @@ def _attempt_context(
         },
         ledger_before={},
         attempt_number=1,
+        attempt_authority=_attempt_authority(
+            attempt_id=attempt_id,
+            attempt_kind=attempt_kind,
+        ),
     )
 
 
@@ -199,6 +225,8 @@ def test_lifecycle_validator_rejects_hash_and_canonical_drift() -> None:
         campaign_id="sha256:" + "a" * 64,
         attempt_id="positive-1",
         attempt_kind="positive",
+        attempt_authority_id="attempt_authority_1",
+        attempt_authority_request_digest="sha256:" + "f" * 64,
         parent_process_nonce="b" * 64,
         process_epoch="c" * 32,
         root_identity="sha256:" + "d" * 64,
@@ -240,6 +268,12 @@ def test_normal_child_result_requires_sqlite_and_process_retirement(
         product_path["attempt_supervision"],
         attempt_id=context.roots.attempt_id,
         attempt_kind=context.roots.attempt_kind,
+        attempt_authority_id=str(
+            context.attempt_authority["envelope_id"]
+        ),
+        attempt_authority_request_digest=str(
+            context.attempt_authority["request_digest"]
+        ),
     )
     assert receipt["sqlite_checkpoint"] == "passed"
     assert receipt["sqlite_integrity"] == "passed"
@@ -309,6 +343,12 @@ def test_supervision_receipt_rejects_unknown_fields(tmp_path: Path) -> None:
             receipt,
             attempt_id=context.roots.attempt_id,
             attempt_kind=context.roots.attempt_kind,
+            attempt_authority_id=str(
+                context.attempt_authority["envelope_id"]
+            ),
+            attempt_authority_request_digest=str(
+                context.attempt_authority["request_digest"]
+            ),
         )
 
     assert error.value.code == "attempt_supervision_receipt_invalid"
@@ -335,6 +375,7 @@ def test_campaign_propagates_supervision_fatal_without_attempt_bundle(
         fault_runner=_FatalRunner("attempt_child_timeout"),
         allowed_prerequisites={},
         architecture_qualification=_architecture_qualification(),
+        attempt_authority_slots=(dict(context.attempt_authority or {}),),
     )
 
     records, decision = campaign.run()
@@ -375,6 +416,7 @@ def test_campaign_requires_supervision_by_default_before_ledger_after(
         fault_runner=_ReturningRunner(create_sqlite=False),
         allowed_prerequisites={},
         architecture_qualification=_architecture_qualification(),
+        attempt_authority_slots=(dict(context.attempt_authority or {}),),
     )
 
     records, decision = campaign.run()

@@ -1,7 +1,7 @@
 # V3 可执行架构资格验证
 
 状态：deterministic qualification 与 AOX admission integration 已实现；每个 tracked
-correction 都会使前一份 report 失效。r48/r49 已永久 NO-GO，后继 numbered campaign 必须先在
+correction 都会使前一份 report 失效。r48-r51 已永久 NO-GO，后继 numbered campaign 必须先在
 新的 clean commit 上生成并独立验证 fresh full admission report。
 
 ## Authority boundary
@@ -108,7 +108,9 @@ pin transaction marker 是 `aox_cutover_pin_commit@2`，public pin receipt 是
 `aox_cutover_pin_receipt@2`，blank-world root proof 是
 `aox_blank_world_root_proof@2`，launch receipt 是
 `aox_blank_world_launch_receipt@2`，attempt bundle 是
-`aox_blank_world_attempt_bundle@2`。它们都绑定同一个 self-digesting
+production `aox_blank_world_attempt_bundle@3`。历史
+`aox_blank_world_attempt_bundle@2` 只由冻结 verifier 读取，不得自动升级。新 bundle 与
+其余 receipts 都绑定同一个 self-digesting
 `architecture_qualification` receipt：report payload、registry、test manifest、supported
 profile 与 source commit。collector/offline verifier 拒绝 missing、changed、mismatched 或
 unknown-version receipt。

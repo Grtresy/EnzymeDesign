@@ -40,7 +40,10 @@ from openzyme_core import TaskMutation
 from openzyme_core import ToolRegistry
 from openzyme_core import AgentRuntimeService
 from openzyme_core import AgentRuntimeScheduler
+from openzyme_core import ArtifactBoundaryService
 from openzyme_core import persist_conversation_message
+from openzyme_core import ScientificAttemptError
+from openzyme_core import ScientificAttemptService
 from openzyme_core import SessionRuntimeLeaseLockedError
 from openzyme_domain import SessionRuntimeLease
 from openzyme_domain import AgentMember
@@ -56,12 +59,17 @@ from openzyme_domain import ControlledOperationExecutionPhase
 from openzyme_domain import ControlledOperationExecutionTerminalOutcome
 from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import FailureActorKind
+from openzyme_domain import FailureClass
+from openzyme_domain import FailureRecoverability
 from openzyme_domain import InboxMessage
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
 from openzyme_domain import MutationWriterKind
 from openzyme_domain import SandboxRunStatus
 from openzyme_domain import RetryEligibility
+from openzyme_domain import ScientificAttemptScope
+from openzyme_domain import ScientificOperationDispositionKind
 from openzyme_domain import RuntimeCommandRecord
 from openzyme_domain import RuntimeCommandStatus
 from openzyme_domain import RuntimeCommandType
@@ -70,6 +78,7 @@ from openzyme_domain import SessionStatus
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 from openzyme_domain.control_plane import utc_now_iso
+from openzyme_runtime import record_failure_observation
 
 
 def _new_id(prefix: str) -> str:
@@ -265,6 +274,7 @@ class V3HostApiService:
     model_factory: Any | None = None
     bio_research_service: Any | None = None
     research_adapter: Any | None = None
+    scientific_workflow_role_validator: Any | None = None
     sandbox_workspace_root: Path | None = None
     artifact_blob_root: Path | None = None
     scheduler_limits: dict[str, int] = field(default_factory=dict)
@@ -557,6 +567,545 @@ class V3HostApiService:
                 .to_dict()
             )
 
+    def scientific_attempt_control(self) -> ScientificAttemptService:
+        return ScientificAttemptService(
+            self.repositories,
+            workflow_role_validator=self.scientific_workflow_role_validator,
+            artifact_boundary=ArtifactBoundaryService(
+                self.repositories,
+                workspace_root=self.sandbox_workspace_root,
+                blob_store_root=self.artifact_blob_root,
+            ),
+        )
+
+    def grant_scientific_attempt_authorization(
+        self,
+        payload: dict[str, Any],
+        *,
+        session_id: str,
+        grantor_ref: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        record = self.scientific_attempt_control().grant_authorization(
+            session_id=session_id,
+            task_id=str(payload["task_id"]),
+            campaign_id=str(payload["campaign_id"]),
+            workflow_id=str(payload["workflow_id"]),
+            root_ref=str(payload["root_ref"]),
+            grantor_kind=str(payload.get("grantor_kind") or "user"),
+            grantor_ref=grantor_ref,
+            allowed_scopes=tuple(
+                ScientificAttemptScope(str(item))
+                for item in payload["allowed_scopes"]
+            ),
+            allowed_effect_classes=tuple(
+                str(item) for item in payload["allowed_effect_classes"]
+            ),
+            allowed_providers=tuple(
+                str(item) for item in payload.get("allowed_providers", ())
+            ),
+            allowed_hpc_targets=tuple(
+                str(item) for item in payload.get("allowed_hpc_targets", ())
+            ),
+            max_attempts=payload["max_attempts"],
+            max_micu=payload["max_micu"],
+            max_cost_microunits=payload["max_cost_microunits"],
+            max_wall_time_seconds=payload["max_wall_time_seconds"],
+            expires_at=str(payload["expires_at"]),
+            idempotency_key=idempotency_key,
+            policy_digest=(
+                None
+                if payload.get("policy_digest") is None
+                else str(payload["policy_digest"])
+            ),
+        )
+        return {
+            "session_id": session_id,
+            "record": record.to_dict(),
+            "scientific_attempts": self.scientific_attempt_control().project_session(
+                session_id
+            ),
+        }
+
+    def execute_scientific_attempt_command(
+        self,
+        command: str,
+        payload: dict[str, Any],
+        *,
+        session_id: str,
+        actor_ref: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        required_fields: dict[str, frozenset[str]] = {
+            "attempt.create": frozenset(
+                {
+                    "envelope_id",
+                    "task_id",
+                    "lane_id",
+                    "campaign_id",
+                    "workflow_id",
+                    "scope",
+                    "workflow_contract_digest",
+                    "requested_effect_classes",
+                    "reserved_micu",
+                    "reserved_cost_microunits",
+                    "reserved_wall_time_seconds",
+                }
+            ),
+            "scientific.selection.begin": frozenset({"attempt_id"}),
+            "scientific.operation.disposition": frozenset(
+                {"selection_id", "operation_id", "kind", "reason_code"}
+            ),
+            "scientific.effect.adopt": frozenset(
+                {"selection_id", "operation_id", "workflow_role"}
+            ),
+            "scientific.artifact.materialize": frozenset(
+                {
+                    "selection_id",
+                    "adoption_id",
+                    "source_artifact_id",
+                    "target_sandbox_run_id",
+                    "target",
+                }
+            ),
+            "scientific.selection.seal": frozenset(
+                {"selection_id", "expected_universe_digest"}
+            ),
+            "scientific.attempt.close": frozenset(
+                {"attempt_id", "selection_id"}
+            ),
+        }
+        optional_fields: dict[str, frozenset[str]] = {
+            "attempt.create": frozenset({"provider", "hpc_target"}),
+            "scientific.selection.begin": frozenset(
+                {"expected_head_state_version", "parent_selection_id"}
+            ),
+            "scientific.operation.disposition": frozenset(
+                {"workflow_role", "replacement_operation_id"}
+            ),
+        }
+        required = required_fields.get(command)
+        if required is None:
+            raise ValueError(f"unsupported scientific command {command!r}")
+        missing = sorted(required - payload.keys())
+        unexpected = sorted(
+            payload.keys() - required - optional_fields.get(command, frozenset())
+        )
+        if missing or unexpected:
+            raise ValueError(
+                "scientific command arguments do not match the closed schema: "
+                f"missing={missing}, unexpected={unexpected}"
+            )
+        control = self.scientific_attempt_control()
+        if command == "attempt.create":
+            record = control.request_attempt_admission(
+                envelope_id=str(payload["envelope_id"]),
+                session_id=session_id,
+                task_id=str(payload["task_id"]),
+                lane_id=str(payload["lane_id"]),
+                campaign_id=str(payload["campaign_id"]),
+                workflow_id=str(payload["workflow_id"]),
+                scope=ScientificAttemptScope(str(payload["scope"])),
+                workflow_contract_digest=str(
+                    payload["workflow_contract_digest"]
+                ),
+                requested_effect_classes=tuple(
+                    str(item) for item in payload["requested_effect_classes"]
+                ),
+                reserved_micu=payload["reserved_micu"],
+                reserved_cost_microunits=payload[
+                    "reserved_cost_microunits"
+                ],
+                reserved_wall_time_seconds=payload[
+                    "reserved_wall_time_seconds"
+                ],
+                provider=(
+                    None
+                    if payload.get("provider") is None
+                    else str(payload["provider"])
+                ),
+                hpc_target=(
+                    None
+                    if payload.get("hpc_target") is None
+                    else str(payload["hpc_target"])
+                ),
+                actor_ref=actor_ref,
+                idempotency_key=idempotency_key,
+            )
+        elif command == "scientific.selection.begin":
+            expected = payload.get("expected_head_state_version")
+            record = control.begin_selection(
+                attempt_id=str(payload["attempt_id"]),
+                actor_ref=actor_ref,
+                idempotency_key=idempotency_key,
+                expected_head_state_version=(
+                    None if expected is None else int(expected)
+                ),
+                parent_selection_id=(
+                    None
+                    if payload.get("parent_selection_id") is None
+                    else str(payload["parent_selection_id"])
+                ),
+            )
+        elif command == "scientific.operation.disposition":
+            record = control.disposition_operation(
+                selection_id=str(payload["selection_id"]),
+                operation_id=str(payload["operation_id"]),
+                kind=ScientificOperationDispositionKind(str(payload["kind"])),
+                reason_code=str(payload["reason_code"]),
+                workflow_role=(
+                    None
+                    if payload.get("workflow_role") is None
+                    else str(payload["workflow_role"])
+                ),
+                replacement_operation_id=(
+                    None
+                    if payload.get("replacement_operation_id") is None
+                    else str(payload["replacement_operation_id"])
+                ),
+                actor_ref=actor_ref,
+                idempotency_key=idempotency_key,
+            )
+        elif command == "scientific.effect.adopt":
+            record = control.adopt_effect(
+                selection_id=str(payload["selection_id"]),
+                operation_id=str(payload["operation_id"]),
+                workflow_role=str(payload["workflow_role"]),
+                actor_ref=actor_ref,
+                idempotency_key=idempotency_key,
+            )
+        elif command == "scientific.artifact.materialize":
+            record = control.materialize_adopted_artifact(
+                selection_id=str(payload["selection_id"]),
+                adoption_id=str(payload["adoption_id"]),
+                source_artifact_id=str(payload["source_artifact_id"]),
+                target_sandbox_run_id=str(payload["target_sandbox_run_id"]),
+                target=str(payload["target"]),
+                actor_ref=actor_ref,
+                idempotency_key=idempotency_key,
+            )
+        elif command == "scientific.selection.seal":
+            record = control.seal_selection(
+                selection_id=str(payload["selection_id"]),
+                actor_ref=actor_ref,
+                idempotency_key=idempotency_key,
+                expected_universe_digest=str(
+                    payload["expected_universe_digest"]
+                ),
+            )
+        elif command == "scientific.attempt.close":
+            record = control.request_attempt_closure(
+                attempt_id=str(payload["attempt_id"]),
+                selection_id=str(payload["selection_id"]),
+                actor_ref=actor_ref,
+                idempotency_key=idempotency_key,
+            )
+        return {
+            "session_id": session_id,
+            "command": command,
+            "record": record.to_dict(),
+            "scientific_attempts": control.project_session(session_id),
+        }
+
+    def finalize_scientific_attempt_admission(
+        self,
+        *,
+        session_id: str,
+        admission_request_id: str,
+    ) -> dict[str, Any]:
+        control = self.scientific_attempt_control()
+        request = self.repositories.scientific_attempt_admission_requests.get(
+            admission_request_id
+        )
+        if request is None or request.session_id != session_id:
+            raise ValueError("admission request does not belong to the session")
+        record = control.finalize_attempt_admission(
+            admission_request_id=admission_request_id
+        )
+        return {
+            "session_id": session_id,
+            "record": record.to_dict(),
+            "scientific_attempts": control.project_session(session_id),
+        }
+
+    def finalize_scientific_attempt_closure(
+        self,
+        *,
+        session_id: str,
+        closure_request_id: str,
+    ) -> dict[str, Any]:
+        control = self.scientific_attempt_control()
+        request = self.repositories.scientific_attempt_closure_requests.get(
+            closure_request_id
+        )
+        attempt = (
+            None
+            if request is None
+            else self.repositories.scientific_attempts.get(request.attempt_id)
+        )
+        if request is None or attempt is None or attempt.session_id != session_id:
+            raise ValueError("closure request does not belong to the session")
+        record = control.finalize_closure_request(
+            closure_request_id=closure_request_id
+        )
+        return {
+            "session_id": session_id,
+            "record": record.to_dict(),
+            "scientific_attempts": control.project_session(session_id),
+        }
+
+    def finalize_pending_scientific_transitions(
+        self,
+        *,
+        session_id: str,
+    ) -> list[dict[str, Any]]:
+        """Finalize agent requests only after their bounded writer has retired."""
+
+        if current_mutation_write_authority() is not None:
+            raise RuntimeError(
+                "scientific transition finalization requires no active writer"
+            )
+        control = self.scientific_attempt_control()
+        finalized: list[tuple[str, str, str, str | None, str | None]] = []
+        failures: list[
+            tuple[
+                str,
+                str,
+                str,
+                str,
+                str,
+                str | None,
+                str | None,
+                ScientificAttemptError,
+            ]
+        ] = []
+
+        # Closure first permits a same-turn request for a subsequent authorized
+        # attempt to roll the newly opened follow-up session scope.
+        for request in (
+            self.repositories.scientific_attempt_closure_requests.list_by_session(
+                session_id
+            )
+        ):
+            if self.repositories.scientific_attempt_closures.get_by_attempt(
+                request.attempt_id
+            ):
+                continue
+            try:
+                closure = control.finalize_closure_request(
+                    closure_request_id=request.closure_request_id
+                )
+            except ScientificAttemptError as exc:
+                if not exc.retryable:
+                    attempt = self.repositories.scientific_attempts.get(
+                        request.attempt_id
+                    )
+                    failures.append(
+                        (
+                            "closure",
+                            request.closure_request_id,
+                            request.request_digest,
+                            request.actor_ref,
+                            request.attempt_id,
+                            None if attempt is None else attempt.task_id,
+                            None if attempt is None else attempt.lane_id,
+                            exc,
+                        )
+                    )
+                continue
+            attempt = self.repositories.scientific_attempts.get(request.attempt_id)
+            finalized.append(
+                (
+                    "scientific.attempt.closed",
+                    closure.closure_id,
+                    request.actor_ref,
+                    None if attempt is None else attempt.task_id,
+                    None if attempt is None else attempt.lane_id,
+                )
+            )
+
+        for request in (
+            self.repositories.scientific_attempt_admission_requests.list_by_session(
+                session_id
+            )
+        ):
+            if self.repositories.scientific_attempts.get_by_admission_request(
+                request.admission_request_id
+            ):
+                continue
+            try:
+                attempt = control.finalize_attempt_admission(
+                    admission_request_id=request.admission_request_id
+                )
+            except ScientificAttemptError as exc:
+                if not exc.retryable:
+                    failures.append(
+                        (
+                            "admission",
+                            request.admission_request_id,
+                            request.request_digest,
+                            request.actor_ref,
+                            request.envelope_id,
+                            request.task_id,
+                            request.lane_id,
+                            exc,
+                        )
+                    )
+                continue
+            finalized.append(
+                (
+                    "scientific.attempt.admitted",
+                    attempt.attempt_id,
+                    request.actor_ref,
+                    attempt.task_id,
+                    attempt.lane_id,
+                )
+            )
+
+        pending_failures = [
+            failure
+            for failure in failures
+            if self.repositories.failure_observations.get_by_source(
+                session_id=session_id,
+                source_kind="scientific_transition",
+                source_ref=failure[1],
+                source_version=failure[2],
+                phase=f"{failure[0]}_finalization",
+                error_code=failure[7].error_code,
+            )
+            is None
+        ]
+        if not finalized and not pending_failures:
+            return []
+        events: list[dict[str, Any]] = []
+        with MutationScopeService(self.repositories).writer_turn(
+            session_id=session_id,
+            owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+            owner_ref="host:scientific-transition-finalizer",
+        ):
+            for event_type, record_id, actor_ref, task_id, lane_id in finalized:
+                events.append(
+                    _event(
+                        event_type,
+                        session_id,
+                        {
+                            "record_id": record_id,
+                            "actor_ref": actor_ref,
+                            "task_id": task_id,
+                            "lane_id": lane_id,
+                        },
+                    )
+                )
+                if actor_ref.startswith("agent:") and (
+                    self.repositories.agents.get(session_id, actor_ref) is not None
+                ):
+                    context = self._build_runtime_context(
+                        session_id,
+                        task_id=task_id,
+                        lane_id=lane_id,
+                    )
+                    AgentRuntimeService(context).enqueue_signal(
+                        session_id=session_id,
+                        agent_id=actor_ref,
+                        task_id=task_id,
+                        lane_id=lane_id,
+                        correlation_id=record_id,
+                        reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+                        source_ref=record_id,
+                    )
+                    events.extend(
+                        event.to_dict() for event in context.event_sink.events
+                    )
+            for (
+                transition_kind,
+                request_id,
+                request_digest,
+                actor_ref,
+                authority_ref,
+                task_id,
+                lane_id,
+                exc,
+            ) in pending_failures:
+                authorization_failure = exc.error_code.startswith(
+                    "authorization_"
+                )
+                agent = (
+                    self.repositories.agents.get(session_id, actor_ref)
+                    if actor_ref.startswith("agent:")
+                    else None
+                )
+                observation = record_failure_observation(
+                    self.repositories,
+                    session_id=session_id,
+                    task_id=task_id,
+                    lane_id=lane_id,
+                    agent_id=None if agent is None else actor_ref,
+                    source_kind="scientific_transition",
+                    source_ref=request_id,
+                    source_version=request_digest,
+                    phase=f"{transition_kind}_finalization",
+                    failure_class=FailureClass.SYSTEM,
+                    recoverability=(
+                        FailureRecoverability.AUTHORIZATION_REQUIRED
+                        if authorization_failure
+                        else FailureRecoverability.AGENT_CAN_REPLAN
+                    ),
+                    effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+                    retry_eligibility=RetryEligibility.TERMINAL,
+                    actor_kind=FailureActorKind.SYSTEM,
+                    error_code=exc.error_code,
+                    safe_summary=str(exc),
+                    safe_hint=exc.hint,
+                    facts={
+                        "transition_kind": transition_kind,
+                        "request_id": request_id,
+                        "authority_ref": authority_ref,
+                        **exc.details,
+                    },
+                    evidence_refs=(
+                        f"scientific_{transition_kind}_request:{request_id}",
+                    ),
+                    private_diagnostic={
+                        "failure_type": type(exc).__name__,
+                        "error_code": exc.error_code,
+                    },
+                )
+                events.append(
+                    _event(
+                        "scientific.transition.failed",
+                        session_id,
+                        {
+                            "failure_id": observation.failure_id,
+                            "transition_kind": transition_kind,
+                            "request_id": request_id,
+                            "error_code": observation.error_code,
+                            "actor_ref": actor_ref,
+                            "task_id": task_id,
+                            "lane_id": lane_id,
+                        },
+                    )
+                )
+                if agent is not None:
+                    context = self._build_runtime_context(
+                        session_id,
+                        task_id=task_id,
+                        lane_id=lane_id,
+                    )
+                    AgentRuntimeService(context).enqueue_signal(
+                        session_id=session_id,
+                        agent_id=actor_ref,
+                        task_id=task_id,
+                        lane_id=lane_id,
+                        correlation_id=observation.failure_id,
+                        reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+                        source_ref=observation.failure_id,
+                    )
+                    events.extend(
+                        event.to_dict() for event in context.event_sink.events
+                    )
+            self.event_store.append(session_id, events)
+        return events
+
     def pending_approvals(self, session_id: str) -> list[dict[str, Any]]:
         """Return only the durable approval-control projection for a session."""
 
@@ -742,6 +1291,9 @@ class V3HostApiService:
             engine_registry=self.engine_registry,
             bio_research_service=self.bio_research_service,
             research_adapter=self.research_adapter,
+            scientific_workflow_role_validator=(
+                self.scientific_workflow_role_validator
+            ),
             sandbox_workspace_root=self.sandbox_workspace_root,
             artifact_blob_root=self.artifact_blob_root,
             signal_notifier=self.signal_notifier,
@@ -781,6 +1333,8 @@ class V3HostApiService:
                 self.event_store.append(session_id, [event])
             return []
         events = [event.to_dict() for event in context.event_sink.events]
+        if current_mutation_write_authority() is None:
+            self.finalize_pending_scientific_transitions(session_id=session_id)
         with self.operation_lock:
             self._touch_session(session_id)
             self._extend_with_trace_events(session_id, events)
@@ -845,6 +1399,8 @@ class V3HostApiService:
             auto_enqueue_ready_tasks=auto_enqueue_ready_tasks,
         )
         events.extend(event.to_dict() for event in context.event_sink.events)
+        if current_mutation_write_authority() is None:
+            self.finalize_pending_scientific_transitions(session_id=session_id)
         return [outcome.to_dict() for outcome in outcomes]
 
     def drain_runtime(

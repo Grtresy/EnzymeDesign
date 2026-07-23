@@ -403,3 +403,15 @@ Host gateway，但所有外部端口默认禁止；只有 registry 显式声明�
 identity-bound local fault process 可用，并必须记录 effect ledger。资格矩阵验证调用 mechanics、
 authority、reconciliation、boundedness 与 evidence closure，不验证真实 provider/HPC availability
 或 scientific quality，也不得根据测试 fixture 给 engine 增加隐藏 fallback。
+
+## 8. Failure 与 selected-result engine contract
+
+Capability engine 的 ordinary validation/local/provider failure 在 effect 已知时必须返回 typed
+failed result，保留 canonical invocation/execution identity，并把控制权交还 agent。engine
+不得因失败自行切 backend、改参数、创建 replacement operation 或新 attempt。external effect
+未知时只可进入 reconciliation-required state。
+
+科学 workflow 可以包含多个 trial run。engine 负责忠实产出每次 occurrence、effect/result 和
+artifact provenance；它不决定哪些 occurrence 被采用。selection/disposition/adoption/
+materialization/closure 属于通用 attempt control plane。相同 attempt 跨 run materialization
+必须经 Host artifact catalog authority；跨 attempt effect reuse 一律拒绝。

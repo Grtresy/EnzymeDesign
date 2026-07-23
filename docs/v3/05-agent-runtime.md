@@ -254,7 +254,7 @@ task dependency 是 runtime 调度前置约束而不是 UI hint。任一 depende
 
 master restore context 还必须包含最新 user message、conversation timeline、pending approvals、teammate protocol threads、task state、approval / execution / artifact / report 变化，以及每个 teammate 的 runtime status。发生 compaction 或长时间 idle 后，identity 必须重新注入，避免 agent 忘记自己是谁、负责什么、应该向谁回复。
 
-restore context 受统一 token budget 管理。每次 master / teammate 模型调用前都必须估算完整 prompt；达到 80% 只记录 warning，达到 85% 写 bounded session/lane compaction 并刷新 restore context，达到 90% 显式 `context_budget_exceeded` 失败并停止 provider call。最新 session-scope `MemoryKind.COMPACTION` 且 `source_range="auto:prompt_budget"` 的记录是 LLM restore prompt 的 recent-conversation cutoff：后续 restore 只加载该 compaction 之后创建的 conversation entries；`auto:harness_run` 不触发这个剪枝。自动 compaction 只做上下文治理，不改变 task、approval、lane、conversation、workspace conversation projection 或 protocol 的 canonical 状态。
+restore context 受统一 token budget 管理。每次 master / teammate 模型调用前都必须估算完整 prompt；达到 80% 记录 warning，达到 85%（包括初始已经达到 90% emergency）先执行一次 bounded session/lane compaction、刷新 restore context 并重算；只有重算后仍达到 90% 才显式 `context_budget_exceeded` 并停止 provider call。最新 session-scope `MemoryKind.COMPACTION` 且 `source_range="auto:prompt_budget"` 的记录是 LLM restore prompt 的 recent-conversation cutoff：后续 restore 只加载该 compaction 之后创建的 conversation entries；`auto:harness_run` 不触发这个剪枝。自动 compaction 只做上下文治理，不改变 task、approval、lane、conversation、workspace conversation projection 或 protocol 的 canonical 状态。
 
 ### 6.1 Agent Step Context
 
@@ -335,3 +335,19 @@ reconciliation、terminal-known invalid result、operator retirement 与 semanti
 worker outcome 只以 typed `semantic_progress` 表达有意义推进；lease/version/timestamp/diagnostic churn
 不能计数或触发即时 self-wakeup。qualification runner 自身不 acquire live session authority、不
 启动 resident teammate、不 resolve approval，也不把 idle/max-steps/report green 写成 task 终态。
+
+## 10. Recovery wakeup 与显式 refusal
+
+ordinary failed tool result 已交付给模型时，runtime 不创建第二份 recovery work；agent 在同一
+step budget 内继续。若 continuation、controlled execution 或 Host finalizer 在原 turn 结束后才
+产生失败，runtime 以 exact source/version 去重排队 `recovery_required`，claim 时从 repository
+重建 failure/effect/result facts。
+
+recovery brief 只给事实与 safety boundary，不编码领域修复 recipe。agent 可 repair/replan、
+reconcile、请求 user/operator/authority 或显式 `task.finish`。signal/turn 失败保持 task
+nonterminal；provider 无法让 agent 发言时，workspace 标记 system diagnostic 与
+`runtime_attention`，不生成伪 agent message。
+
+scientific admission/closure 是两阶段 Host transition：agent 只请求，Host 等 bounded writer
+退休后 finalizes 并重新唤醒 agent。nonretryable finalizer rejection 必须成为 durable
+system-attributed failure observation，不能被 silent `except` 丢弃。

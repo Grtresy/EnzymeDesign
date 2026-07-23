@@ -501,3 +501,22 @@ approval/effect 或新增 campaign row。qualification report 与 AOX
 `architecture_qualification` receipt 是 checkout 外 operator evidence，不是 control-plane object；
 control plane 不以其存在推断 session/task 完成。AOX 只在独立 launch admission 边界验证 receipt，
 失败必须先于 root、sandbox、provider、runner、Chrome 与 MICU effect。
+
+## 7. Failure 与 scientific-attempt objects
+
+新增顶层 canonical objects：
+
+- immutable `FailureObservation` 与 append-only、agent-attributed
+  `FailureHypothesis`；
+- `ScientificAttemptAuthorization`、admission request 与 exact attempt scope；
+- immutable selection revisions/head、operation/run occurrence bindings、
+  dispositions、effect adoptions 与 artifact materializations；
+- closure intent 与 immutable scientific-attempt closure。
+
+它们不属于 graph state。authorization 只授予一组闭合资源/effect boundary；agent 仍选择
+scientific chain。Host 导出的 occurrence universe 必须完整，四种 disposition 不删除事实。
+closure intent 后禁止新增 binding/selection，closure 必须消费 exact quiescence receipt；但
+closed attempt 仍只是一份 task 可引用 evidence，不能机械完成 task。
+
+AOX 新 production evidence 读取这些对象生成 `aox_blank_world_attempt_bundle@3`。历史
+`@2` rows/bundles 不回填、不升级、不跨 attempt adoption。

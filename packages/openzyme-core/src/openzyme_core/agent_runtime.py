@@ -12,13 +12,19 @@ from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import EngineInvocationStatus
+from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import FailureActorKind
+from openzyme_domain import FailureClass
+from openzyme_domain import FailureRecoverability
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
+from openzyme_domain import RetryEligibility
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import classify_llm_provider_error
 from openzyme_runtime import sanitize_public_diagnostic_text
+from openzyme_runtime import record_failure_observation
 
 from .harness import HarnessInput
 from .harness import HarnessStatus
@@ -475,6 +481,9 @@ class AgentRuntimeService:
             model_factory=self.context.model_factory,
             bio_research_service=self.context.bio_research_service,
             research_adapter=self.context.research_adapter,
+            scientific_workflow_role_validator=(
+                self.context.scientific_workflow_role_validator
+            ),
             sandbox_workspace_root=self.context.sandbox_workspace_root,
             artifact_blob_root=self.context.artifact_blob_root,
             signal_notifier=self.context.signal_notifier,
@@ -662,6 +671,71 @@ class AgentRuntimeService:
         emit: bool = True,
     ) -> tuple[AgentRuntimeSignal, bool]:
         public_error = sanitize_public_diagnostic_text(error_message)
+        source_version = f"attempt:{claimed.attempt_count}"
+        existing_observation = (
+            self.context.repositories.failure_observations.get_by_source(
+                session_id=claimed.session_id,
+                source_kind="runtime_signal",
+                source_ref=claimed.signal_id,
+                source_version=source_version,
+                phase="runtime",
+                error_code="runtime_signal_failed",
+            )
+        )
+        if existing_observation is None:
+            task_id = (
+                claimed.task_id
+                if claimed.task_id is not None
+                and self.context.repositories.tasks.get(claimed.task_id) is not None
+                else None
+            )
+            lane_id = (
+                claimed.lane_id
+                if claimed.lane_id is not None
+                and self.context.repositories.lanes.get(claimed.lane_id) is not None
+                else None
+            )
+            record_failure_observation(
+                self.context.repositories,
+                session_id=claimed.session_id,
+                task_id=task_id,
+                lane_id=lane_id,
+                agent_id=claimed.agent_id,
+                source_kind="runtime_signal",
+                source_ref=claimed.signal_id,
+                source_version=source_version,
+                phase="runtime",
+                failure_class=FailureClass.RUNTIME,
+                recoverability=(
+                    FailureRecoverability.RUNTIME_RETRY
+                    if retryable
+                    else FailureRecoverability.TERMINAL
+                ),
+                effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+                retry_eligibility=(
+                    RetryEligibility.SAME_PHASE_SAFE
+                    if retryable
+                    else RetryEligibility.TERMINAL
+                ),
+                actor_kind=FailureActorKind.SYSTEM,
+                error_code="runtime_signal_failed",
+                safe_summary=(
+                    "The runtime signal failed without changing the business task."
+                ),
+                safe_hint=(
+                    "Restore runtime authority and let the agent inspect this "
+                    "failure before choosing recovery or explicit refusal."
+                ),
+                facts={
+                    "signal_id": claimed.signal_id,
+                    "signal_reason": claimed.reason.value,
+                    "attempt_count": claimed.attempt_count,
+                    "retryable": retryable,
+                    "public_error": public_error,
+                    "agent_decision_produced": False,
+                },
+                private_diagnostic={"error_message": error_message},
+            )
         failed = self.context.repositories.runtime_signals.fail(
             claimed.signal_id,
             error_message=public_error,
@@ -868,6 +942,33 @@ class AgentRuntimeService:
         task: Task,
         payload: dict[str, Any] | None,
     ) -> str:
+        if signal.reason is AgentRuntimeSignalReason.RECOVERY_REQUIRED:
+            failures = (
+                []
+                if signal.source_ref is None
+                else self.context.repositories.failure_observations.list_by_source(
+                    session_id=signal.session_id,
+                    source_kind="continuation",
+                    source_ref=signal.source_ref,
+                )
+            )
+            lines = [
+                "A durable runtime failure requires your explicit recovery decision.",
+                "Harness facts: "
+                + json.dumps(
+                    [failure.to_dict() for failure in failures],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                (
+                    "Choose freely among a safe repair/replan, reconciliation, "
+                    "requesting user or operator help, or task.finish(status='blocked'). "
+                    "Use task.finish(status='failed') only when the task itself is "
+                    "genuinely impossible. Do not replay an unknown external effect."
+                ),
+                f"Task {task.task_id}: {task.description or task.subject}",
+            ]
+            return "\n".join(lines)
         if signal.reason is AgentRuntimeSignalReason.APPROVAL_RESOLVED:
             invocation_id = self._execution_invocation_id_for_approval(signal.source_ref)
             failure = self._execution_failure_for_approval(signal.source_ref)

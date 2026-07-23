@@ -2,6 +2,44 @@ from .models import ArtifactKind
 from .models import RunStatus
 from .models import SourceRefKind
 from .models import utc_now_iso
+from .failures import FAILURE_HYPOTHESIS_SCHEMA_VERSION
+from .failures import FAILURE_OBSERVATION_SCHEMA_VERSION
+from .failures import FailureActorKind
+from .failures import FailureClass
+from .failures import FailureHypothesis
+from .failures import FailureHypothesisConfidence
+from .failures import FailureObservation
+from .failures import FailureRecoverability
+from .failures import likely_causes_for_error_code
+from .scientific_attempts import (
+    SCIENTIFIC_ARTIFACT_MATERIALIZATION_SCHEMA_VERSION,
+)
+from .scientific_attempts import (
+    SCIENTIFIC_ATTEMPT_ADMISSION_REQUEST_SCHEMA_VERSION,
+)
+from .scientific_attempts import SCIENTIFIC_ATTEMPT_AUTHORIZATION_SCHEMA_VERSION
+from .scientific_attempts import (
+    SCIENTIFIC_ATTEMPT_CLOSURE_REQUEST_SCHEMA_VERSION,
+)
+from .scientific_attempts import SCIENTIFIC_ATTEMPT_CLOSURE_SCHEMA_VERSION
+from .scientific_attempts import SCIENTIFIC_ATTEMPT_SCHEMA_VERSION
+from .scientific_attempts import SCIENTIFIC_CHAIN_SELECTION_SCHEMA_VERSION
+from .scientific_attempts import SCIENTIFIC_EFFECT_ADOPTION_SCHEMA_VERSION
+from .scientific_attempts import SCIENTIFIC_OPERATION_DISPOSITION_SCHEMA_VERSION
+from .scientific_attempts import ScientificArtifactMaterialization
+from .scientific_attempts import ScientificAttempt
+from .scientific_attempts import ScientificAttemptAdmissionRequest
+from .scientific_attempts import ScientificAttemptAuthorization
+from .scientific_attempts import ScientificAttemptAuthorityStatus
+from .scientific_attempts import ScientificAttemptClosure
+from .scientific_attempts import ScientificAttemptClosureRequest
+from .scientific_attempts import ScientificAttemptScope
+from .scientific_attempts import ScientificAttemptStatus
+from .scientific_attempts import ScientificChainSelection
+from .scientific_attempts import ScientificEffectAdoption
+from .scientific_attempts import ScientificOperationDisposition
+from .scientific_attempts import ScientificOperationDispositionKind
+from .scientific_attempts import ScientificSelectionState
 from .reliability import CONTROLLED_OPERATION_EXECUTION_EVENT_SCHEMA_VERSION
 from .reliability import CONTROLLED_OPERATION_EXECUTION_SCHEMA_VERSION
 from .reliability import CONTROLLED_OPERATION_DISPATCH_REQUEST_SCHEMA_VERSION
@@ -117,6 +155,37 @@ __all__ = [
     "CONTROL_PLANE_ENTITY_NAMES",
     "EngineInvocation",
     "EngineInvocationStatus",
+    "FAILURE_HYPOTHESIS_SCHEMA_VERSION",
+    "FAILURE_OBSERVATION_SCHEMA_VERSION",
+    "FailureActorKind",
+    "FailureClass",
+    "FailureHypothesis",
+    "FailureHypothesisConfidence",
+    "FailureObservation",
+    "FailureRecoverability",
+    "SCIENTIFIC_ARTIFACT_MATERIALIZATION_SCHEMA_VERSION",
+    "SCIENTIFIC_ATTEMPT_ADMISSION_REQUEST_SCHEMA_VERSION",
+    "SCIENTIFIC_ATTEMPT_AUTHORIZATION_SCHEMA_VERSION",
+    "SCIENTIFIC_ATTEMPT_CLOSURE_REQUEST_SCHEMA_VERSION",
+    "SCIENTIFIC_ATTEMPT_CLOSURE_SCHEMA_VERSION",
+    "SCIENTIFIC_ATTEMPT_SCHEMA_VERSION",
+    "SCIENTIFIC_CHAIN_SELECTION_SCHEMA_VERSION",
+    "SCIENTIFIC_EFFECT_ADOPTION_SCHEMA_VERSION",
+    "SCIENTIFIC_OPERATION_DISPOSITION_SCHEMA_VERSION",
+    "ScientificArtifactMaterialization",
+    "ScientificAttempt",
+    "ScientificAttemptAdmissionRequest",
+    "ScientificAttemptAuthorization",
+    "ScientificAttemptAuthorityStatus",
+    "ScientificAttemptClosure",
+    "ScientificAttemptClosureRequest",
+    "ScientificAttemptScope",
+    "ScientificAttemptStatus",
+    "ScientificChainSelection",
+    "ScientificEffectAdoption",
+    "ScientificOperationDisposition",
+    "ScientificOperationDispositionKind",
+    "ScientificSelectionState",
     "FileAuditEntry",
     "InboxMessage",
     "InboxParticipantKind",
@@ -170,4 +239,5 @@ __all__ = [
     "TaskPriority",
     "TaskStatus",
     "utc_now_iso",
+    "likely_causes_for_error_code",
 ]

@@ -1258,6 +1258,11 @@ runner effect 前真实调用 backend import、版本、Gotoh、binary64 与 num
 仍属于单独 deferred proposal，本 correction 不实施。完成 correction commit 后暂停，
 不启动 r52，等待 operator 审查“任一小错终止 attempt”的整体策略。
 
+后续架构审查已把该策略迁移为 explicit fresh authority + complete occurrence universe +
+agent-selected adopted chain + Host-finalized closure，并启用 production
+`aox_blank_world_attempt_bundle@3`；历史 `@2` 与 r48-r51 仍冻结。该后续实现只完成非 live
+资格验证，仍未创建或启动 r52。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

@@ -159,6 +159,7 @@ class AgentRuntimeSignalReason(StrEnum):
     TASK_AVAILABLE = "task_available"
     APPROVAL_RESOLVED = "approval_resolved"
     ENGINE_COMPLETED = "engine_completed"
+    RECOVERY_REQUIRED = "recovery_required"
     MANUAL_RESUME = "manual_resume"
 
 

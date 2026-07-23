@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import sqlite3
 
 import pytest
 
@@ -56,6 +57,7 @@ from openzyme_core import build_teammate_registry
 from openzyme_core import ProtocolService
 from openzyme_core import register_task_board_tools
 from openzyme_core import register_subagent_tools
+from openzyme_core import register_failure_tools
 from openzyme_core import teammate_tool_descriptors
 from openzyme_core import TeammateConversationDriver
 from openzyme_core.agent_identity import create_agent_member
@@ -63,6 +65,7 @@ from openzyme_core.agent_identity import display_name_for_agent
 from openzyme_core.agent_identity import handle_for_agent
 from openzyme_core.harness import build_agent_step_context
 from openzyme_core.harness import budget_tool_results_for_prompt
+from openzyme_core.harness import ContextBudgetExceededError
 from openzyme_core.harness import ensure_prompt_budget_before_model_call
 from openzyme_core.harness import PromptPayload
 from openzyme_core.skills import register_skill_tools
@@ -87,7 +90,9 @@ class RecordingToolInvoker:
         self.responses = list(responses)
         self.calls: list[dict[str, object]] = []
 
-    def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]):
+    def invoke_with_tools(
+        self, *, system_prompt: str, messages: list[object], tools: list[object]
+    ):
         self.calls.append(
             {
                 "system_prompt": system_prompt,
@@ -345,7 +350,69 @@ def test_llm_context_budget_event_sanitizes_tokenizer_diagnostic(monkeypatch) ->
     assert "[redacted-host-path]" in serialized
 
 
-def test_oversized_tool_result_is_artifactized_before_next_llm_prompt(monkeypatch) -> None:
+def test_llm_preflight_fails_only_after_irreducible_emergency_compaction(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("OPENZYME_LLM_CONTEXT_WINDOW_TOKENS", raising=False)
+    monkeypatch.delenv("OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS", raising=False)
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    invoker = RecordingToolInvoker([])
+    factory = BudgetTestModelFactory(
+        invoker,
+        context_window_tokens=30_000,
+    )
+    event_bus = MemoryEventBus()
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=event_bus,
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        model_factory=factory,
+    )
+    context.refresh_restore_context()
+    messages = [{"role": "user", "content": "x" * 160_000}]
+
+    with pytest.raises(ContextBudgetExceededError):
+        ensure_prompt_budget_before_model_call(
+            context,
+            actor_ref="harness",
+            system_prompt="system",
+            messages=messages,
+            tools=[],
+            rebuild_payload=lambda: PromptPayload(
+                system_prompt="system after compaction",
+                messages=messages,
+                tools=[],
+            ),
+        )
+
+    event_types = [event.event_type for event in event_bus.events]
+    warning = next(
+        event.payload
+        for event in event_bus.events
+        if event.event_type == "llm.context_budget.warning"
+    )
+    after = next(
+        event.payload
+        for event in event_bus.events
+        if event.event_type == "llm.context_budget.after_compaction"
+    )
+    assert warning["action"] == "emergency"
+    assert after["action"] == "emergency"
+    assert event_types.index("llm.context_budget.warning") < event_types.index(
+        "llm.context_budget.after_compaction"
+    )
+    assert event_types.index(
+        "llm.context_budget.after_compaction"
+    ) < event_types.index("llm.context_budget.exceeded")
+    assert invoker.calls == []
+
+
+def test_oversized_tool_result_is_artifactized_before_next_llm_prompt(
+    monkeypatch,
+) -> None:
     monkeypatch.delenv("OPENZYME_LLM_CONTEXT_WINDOW_TOKENS", raising=False)
     monkeypatch.delenv("OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS", raising=False)
     repositories = _build_repositories()
@@ -658,7 +725,9 @@ class TerminalTaskFinishDriver:
         del context, harness_input, tool_results
         self.calls += 1
         if self.calls > 1:
-            raise AssertionError("terminal task.finish result must not be fed back into another plan")
+            raise AssertionError(
+                "terminal task.finish result must not be fed back into another plan"
+            )
         return HarnessStep(
             tool_invocations=(
                 ToolInvocation(
@@ -709,7 +778,9 @@ def test_task_finish_completed_updates_task_and_terminates_loop_immediately() ->
     task = repositories.tasks.get("task_001")
     finish_docs = [
         document
-        for document in repositories.engine_documents.list_by_session(session.session_id)
+        for document in repositories.engine_documents.list_by_session(
+            session.session_id
+        )
         if document.document_kind == "task_finish"
     ]
     assert result.status is HarnessStatus.COMPLETED
@@ -803,10 +874,9 @@ def test_master_finishing_delegated_task_does_not_terminate_master_loop() -> Non
     echo_calls: list[str] = []
     registry.register(
         "echo",
-        lambda _context, invocation: echo_calls.append(
-            str(invocation.arguments["text"])
-        )
-        or "echoed",
+        lambda _context, invocation: (
+            echo_calls.append(str(invocation.arguments["text"])) or "echoed"
+        ),
     )
     driver = MasterFinishesDelegatedTaskDriver()
 
@@ -861,10 +931,9 @@ def test_master_finishing_own_task_does_not_terminate_master_loop() -> None:
     echo_calls: list[str] = []
     registry.register(
         "echo",
-        lambda _context, invocation: echo_calls.append(
-            str(invocation.arguments["text"])
-        )
-        or "echoed",
+        lambda _context, invocation: (
+            echo_calls.append(str(invocation.arguments["text"])) or "echoed"
+        ),
     )
     driver = MasterFinishesDelegatedTaskDriver()
 
@@ -1725,14 +1794,23 @@ def test_harness_returns_failed_result_when_driver_provider_is_rate_limited() ->
 
     assert result.status is HarnessStatus.FAILED
     assert "HTTP Error 429" in result.outputs[0]
+    assert "system diagnostic" in result.outputs[0]
     assert "harness.failed" in {event.event_type for event in result.events}
+    failures = repositories.failure_observations.list_by_session(session.session_id)
+    assert len(failures) == 1
+    assert failures[0].error_code == "harness_plan_failed"
+    assert failures[0].actor_kind.value == "system"
+    assert (
+        repositories.tasks.list_by_session(session.session_id)[0].status
+        is TaskStatus.TODO
+    )
     assert not any(
         message.message_type == "assistant_message"
         for message in repositories.inbox.list_by_session(session.session_id)
     )
 
 
-def test_harness_fails_turn_when_tool_provider_raises_runtime_error() -> None:
+def test_harness_returns_tool_provider_error_to_agent_for_recovery() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     registry = ToolRegistry()
@@ -1751,12 +1829,26 @@ def test_harness_fails_turn_when_tool_provider_raises_runtime_error() -> None:
         tool_registry=registry,
     )
 
-    assert result.status is HarnessStatus.FAILED
-    assert result.tool_results == ()
+    assert result.status is HarnessStatus.COMPLETED
+    assert len(result.tool_results) == 1
+    assert result.tool_results[0].ok is False
+    assert result.tool_results[0].error_code == "tool_runtime_error"
+    assert result.tool_results[0].failure_observation is not None
+    assert "Observed tool failure" in result.outputs[0]
     assert "HTTP Error 429" in result.outputs[0]
-    failed_events = [event for event in result.events if event.event_type == "harness.failed"]
-    assert failed_events
-    assert failed_events[-1].payload["tool_name"] == "semantic_scholar.search"
+    failed_events = [
+        event for event in result.events if event.event_type == "harness.failed"
+    ]
+    assert failed_events == []
+    workspace = SessionProjectionBuilder(repositories).build_session_workspace(
+        session.session_id
+    )
+    projected = workspace.to_dict()["failure_observations"]
+    assert (
+        projected[0]["failure_id"]
+        == result.tool_results[0].failure_observation["failure_id"]
+    )
+    assert "private_diagnostic_digest" not in projected[0]
 
 
 def test_harness_failed_event_redacts_embedded_host_path() -> None:
@@ -1785,7 +1877,7 @@ def test_harness_failed_event_redacts_embedded_host_path() -> None:
         },
         sort_keys=True,
     )
-    assert result.status is HarnessStatus.FAILED
+    assert result.status is HarnessStatus.COMPLETED
     assert "/home/operator" not in serialized
     assert "[redacted-host-path]" in serialized
 
@@ -1834,18 +1926,24 @@ def test_tool_registry_wraps_argument_errors_as_standard_envelope() -> None:
 
     result = registry.dispatch(
         context,
-        ToolInvocation(call_id="call_reject_args", tool_name="reject_args", arguments={}),
+        ToolInvocation(
+            call_id="call_reject_args", tool_name="reject_args", arguments={}
+        ),
     )
 
     envelope = result.envelope()
     assert result.ok is False
     assert result.status == "invalid_tool_arguments"
     assert envelope["error_code"] == "invalid_tool_arguments"
-    assert envelope["details"] == {"exception_type": "ValueError"}
+    assert envelope["details"] == {
+        "exception_type": "ValueError",
+        "public_error": "missing task_id",
+    }
+    assert envelope["failure_observation"]["recoverability"] == "agent_can_retry"
     assert "missing task_id" in envelope["summary"]
 
 
-def test_tool_registry_propagates_runtime_handler_exceptions() -> None:
+def test_tool_registry_returns_runtime_handler_exceptions_to_agent() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     registry = ToolRegistry()
@@ -1864,10 +1962,140 @@ def test_tool_registry_propagates_runtime_handler_exceptions() -> None:
         restore_focus=RestoreFocus(),
     )
 
-    with pytest.raises(RuntimeError, match="boom"):
-        registry.dispatch(
-            context,
-            ToolInvocation(call_id="call_explode", tool_name="explode", arguments={}),
+    result = registry.dispatch(
+        context,
+        ToolInvocation(call_id="call_explode", tool_name="explode", arguments={}),
+    )
+
+    assert result.ok is False
+    assert result.error_code == "tool_runtime_error"
+    assert result.failure_observation is not None
+    assert result.failure_observation["recoverability"] == "agent_can_replan"
+    assert result.failure_observation["facts"]["public_error"] == "boom"
+
+    replay = registry.dispatch(
+        context,
+        ToolInvocation(call_id="call_explode", tool_name="explode", arguments={}),
+    )
+    assert replay.failure_observation is not None
+    assert (
+        replay.failure_observation["failure_id"]
+        == result.failure_observation["failure_id"]
+    )
+    assert (
+        len(repositories.failure_observations.list_by_session(session.session_id)) == 1
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+        repositories.tasks.connection.execute(
+            """
+            UPDATE failure_observation_records
+            SET safe_summary = 'rewritten'
+            WHERE failure_id = ?
+            """,
+            (result.failure_observation["failure_id"],),
+        )
+
+
+def test_agent_hypothesis_is_append_only_and_distinct_from_host_failure_facts() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        task_id="task_001",
+    )
+    registry = ToolRegistry()
+
+    def explode(
+        _context: SessionRuntimeContext, _invocation: ToolInvocation
+    ) -> ToolResult:
+        raise RuntimeError("provider route returned a bounded local error")
+
+    registry.register("explode", explode)
+    register_failure_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001"),
+        agent_id=agent.agent_id,
+        actor_kind="agent",
+        actor_role=agent.role,
+    )
+    failure_result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_failure_for_hypothesis",
+            tool_name="explode",
+            arguments={},
+            task_id="task_001",
+        ),
+    )
+    assert failure_result.failure_observation is not None
+    failure_id = failure_result.failure_observation["failure_id"]
+    arguments = {
+        "failure_id": failure_id,
+        "hypothesis": "The selected provider route may be temporarily unavailable.",
+        "confidence": "medium",
+        "evidence_refs": [f"failure:{failure_id}"],
+        "idempotency_key": "hypothesis-provider-route-v1",
+    }
+
+    recorded = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_record_hypothesis",
+            tool_name="failure.hypothesis.record",
+            arguments=arguments,
+            task_id="task_001",
+        ),
+    )
+    replay = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_record_hypothesis_replay",
+            tool_name="failure.hypothesis.record",
+            arguments=arguments,
+            task_id="task_001",
+        ),
+    )
+    inspected = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_inspect_hypothesis",
+            tool_name="failure.get",
+            arguments={"failure_id": failure_id},
+            task_id="task_001",
+        ),
+    )
+
+    assert recorded.ok is True
+    assert replay.ok is True
+    assert recorded.details["hypothesis_id"] == replay.details["hypothesis_id"]
+    assert len(repositories.failure_hypotheses.list_by_failure(failure_id)) == 1
+    assert inspected.details["facts"] == failure_result.failure_observation["facts"]
+    assert inspected.details["agent_hypothesis"] == arguments["hypothesis"]
+    assert inspected.details["agent_hypothesis_confidence"] == "medium"
+    assert inspected.details["agent_hypotheses"][0]["agent_id"] == agent.agent_id
+    assert "idempotency_digest" not in inspected.content
+
+    workspace = SessionProjectionBuilder(repositories).build_session_workspace(
+        session.session_id
+    )
+    projected = workspace.to_dict()["failure_observations"][0]
+    assert projected["agent_hypothesis"] == arguments["hypothesis"]
+    assert projected["facts"] == failure_result.failure_observation["facts"]
+
+    with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+        repositories.tasks.connection.execute(
+            """
+            UPDATE failure_hypothesis_records
+            SET hypothesis = 'rewritten'
+            WHERE hypothesis_id = ?
+            """,
+            (recorded.details["hypothesis_id"],),
         )
 
 
@@ -2277,9 +2505,7 @@ def test_explicit_workflow_selection_propagates_through_delegation_to_teammate()
     ).payload
     assert payload["workflow_refs"] == [workflow_ref]
     assert payload["workflow_manifests"] == [workflow.to_dict()]
-    assert not str(payload["workflow_manifests"][0]["manifest_path"]).startswith(
-        "/"
-    )
+    assert not str(payload["workflow_manifests"][0]["manifest_path"]).startswith("/")
 
     executor = next(
         agent
@@ -2324,9 +2550,7 @@ def test_explicit_workflow_selection_propagates_through_delegation_to_teammate()
 
     assert teammate_result.status is HarnessStatus.COMPLETED
     prompt = str(
-        model_factory.invokers["v3_teammate_loop:executor"].calls[0][
-            "system_prompt"
-        ]
+        model_factory.invokers["v3_teammate_loop:executor"].calls[0]["system_prompt"]
     )
     assert "# Explicitly selected workflow knowledge pack" in prompt
     assert f"content_sha256: {workflow.content_sha256}" in prompt
@@ -2680,16 +2904,12 @@ def test_domain_words_in_user_text_do_not_select_workflow_pack() -> None:
     )
 
     assert result.status is HarnessStatus.COMPLETED
-    prompt = str(
-        model_factory.invokers["v3_harness_loop"].calls[0]["system_prompt"]
-    )
+    prompt = str(model_factory.invokers["v3_harness_loop"].calls[0]["system_prompt"])
     assert "# Explicitly selected workflow knowledge pack" not in prompt
     assert "aox-hmm-live" not in prompt
 
 
-def test_explicit_workflow_focus_presents_version_digest_and_sop_to_master() -> (
-    None
-):
+def test_explicit_workflow_focus_presents_version_digest_and_sop_to_master() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     workflow = next(
@@ -2711,9 +2931,7 @@ def test_explicit_workflow_focus_presents_version_digest_and_sop_to_master() -> 
     )
 
     assert result.status is HarnessStatus.COMPLETED
-    prompt = str(
-        model_factory.invokers["v3_harness_loop"].calls[0]["system_prompt"]
-    )
+    prompt = str(model_factory.invokers["v3_harness_loop"].calls[0]["system_prompt"])
     assert "# Explicitly selected workflow knowledge pack" in prompt
     assert f"workflow_id: {workflow.workflow_id}" in prompt
     assert f"version: {workflow.version}" in prompt
@@ -2721,7 +2939,9 @@ def test_explicit_workflow_focus_presents_version_digest_and_sop_to_master() -> 
     assert "scientific_prerequisite_missing" in prompt
 
 
-def test_delegate_tool_rejects_blocked_task_without_side_effects_then_succeeds_when_ready() -> None:
+def test_delegate_tool_rejects_blocked_task_without_side_effects_then_succeeds_when_ready() -> (
+    None
+):
     repositories = _build_repositories()
     session = _seed_session(repositories)
     task_service = TaskBoardService(repositories)
@@ -2892,7 +3112,9 @@ def test_researcher_web_search_rejects_semantic_subject_as_provider_topic() -> N
     session = _seed_session(repositories)
     provider_calls: list[dict[str, object]] = []
     adapter = TavilyResearchAdapter(
-        search_callable=lambda **kwargs: provider_calls.append(kwargs) or {"results": []},
+        search_callable=lambda **kwargs: (
+            provider_calls.append(kwargs) or {"results": []}
+        ),
     )
     registry = build_teammate_registry(research_adapter=adapter)
     context = SessionRuntimeContext(
@@ -2923,9 +3145,7 @@ def test_researcher_web_search_rejects_semantic_subject_as_provider_topic() -> N
     assert provider_calls == []
 
 
-def test_research_words_do_not_hide_direct_research_tools() -> (
-    None
-):
+def test_research_words_do_not_hide_direct_research_tools() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     agent = _seed_agent(repositories, session, role="researcher")
@@ -3007,7 +3227,9 @@ def test_master_and_teammate_catalogs_expose_artifact_read_tools() -> None:
     }
 
     master_names = {tool.tool_name for tool in top_level_tool_descriptors()}
-    teammate_names = {tool.tool_name for tool in teammate_tool_descriptors(role="reporter")}
+    teammate_names = {
+        tool.tool_name for tool in teammate_tool_descriptors(role="reporter")
+    }
 
     assert expected <= master_names
     assert expected <= teammate_names
@@ -3015,7 +3237,9 @@ def test_master_and_teammate_catalogs_expose_artifact_read_tools() -> None:
 
 def test_master_and_teammate_catalogs_expose_world_inspection_tool() -> None:
     master_descriptor = next(
-        tool for tool in top_level_tool_descriptors() if tool.tool_name == "world.inspect"
+        tool
+        for tool in top_level_tool_descriptors()
+        if tool.tool_name == "world.inspect"
     )
     reporter_names = {
         tool.tool_name for tool in teammate_tool_descriptors(role="reporter")
@@ -3050,7 +3274,10 @@ def test_master_and_teammate_prompts_do_not_request_host_paths() -> None:
         instructions="Inspect artifacts.",
     )._system_prompt(context)
 
-    assert "artifact.list/get/preview/read_text/range/create_text/patch_text/diff_text" in master_prompt
+    assert (
+        "artifact.list/get/preview/read_text/range/create_text/patch_text/diff_text"
+        in master_prompt
+    )
     assert "artifact.create_text" in teammate_prompt
     assert "Never request or use Host local paths" in teammate_prompt
     assert "never request or use Host local paths" in master_prompt
@@ -3145,9 +3372,7 @@ def test_research_teammate_direct_download_persists_workspace_artifact() -> None
     assert invocation.engine_name == "research_tool"
 
 
-def test_research_teammate_rejects_fixture_pubmed_from_required_quorum() -> (
-    None
-):
+def test_research_teammate_rejects_fixture_pubmed_from_required_quorum() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     registry = build_teammate_registry(
@@ -3189,9 +3414,9 @@ def test_research_teammate_rejects_fixture_pubmed_from_required_quorum() -> (
     assert payload["provider"] == "pubmed"
     assert payload["status"] == "failed"
     assert payload["findings"] == []
-    assert payload["raw_ref"]["call_local_literature_quorum"][
-        "cutover_eligible"
-    ] is False
+    assert (
+        payload["raw_ref"]["call_local_literature_quorum"]["cutover_eligible"] is False
+    )
     assert invocation.status is EngineInvocationStatus.FAILED
     assert (
         repositories.research_summaries.get_by_invocation(
@@ -3277,8 +3502,9 @@ def test_research_teammate_web_fetch_rejects_private_url_without_projection() ->
     provider_calls: list[dict[str, object]] = []
     adapter = TavilyResearchAdapter(
         search_callable=lambda **_: {"results": []},
-        extract_callable=lambda **kwargs: provider_calls.append(kwargs)
-        or {"results": []},
+        extract_callable=lambda **kwargs: (
+            provider_calls.append(kwargs) or {"results": []}
+        ),
     )
     registry = build_teammate_registry(research_adapter=adapter)
     context = SessionRuntimeContext(
@@ -3295,9 +3521,7 @@ def test_research_teammate_web_fetch_rejects_private_url_without_projection() ->
         ToolInvocation(
             call_id="call_private_fetch",
             tool_name="web.fetch",
-            arguments={
-                "url": "http://127.0.0.1/private?token=never-project-this"
-            },
+            arguments={"url": "http://127.0.0.1/private?token=never-project-this"},
             task_id="task_001",
         ),
     )
@@ -3427,7 +3651,9 @@ def test_research_teammate_web_fetch_rejects_rcsb_experimental_page() -> None:
     assert "rcsb_pdb.download_structure" in result.hint
 
 
-def test_research_teammate_direct_search_untyped_provider_failure_is_structured() -> None:
+def test_research_teammate_direct_search_untyped_provider_failure_is_structured() -> (
+    None
+):
     repositories = _build_repositories()
     session = _seed_session(repositories)
     registry = build_teammate_registry(
@@ -3762,19 +3988,20 @@ def test_tool_router_rejects_write_before_stale_runtime_side_effect(
     router = registry.to_tool_router(context, descriptors=(descriptor,))
     step_context = build_agent_step_context(context, call_index=1)
 
-    result = router.dispatch(
-        step_context,
-        ToolInvocation(
-            call_id="call_stale_write",
-            tool_name="example.write",
-            arguments={},
-        ),
-    )
+    with pytest.raises(RuntimeWriteFencingError, match="stale runtime lease"):
+        router.dispatch(
+            step_context,
+            ToolInvocation(
+                call_id="call_stale_write",
+                tool_name="example.write",
+                arguments={},
+            ),
+        )
 
     assert dispatched is False
-    assert result.ok is False
-    assert result.status == "runtime_fencing_rejected"
-    assert result.error_code == "runtime_fencing_rejected"
+    failures = repositories.failure_observations.list_by_session(session.session_id)
+    assert len(failures) == 1
+    assert failures[0].error_code == "runtime_fencing_rejected"
 
 
 def test_tool_router_registers_publishers_only_for_mutating_tools() -> None:
@@ -3949,7 +4176,10 @@ def test_tool_registry_register_runtime_coexists_with_legacy_and_typed_wins() ->
 
     assert specs["example.dupe"].description == "Typed duplicate runtime."
     assert specs["example.legacy"].description == "Legacy only."
-    assert router.governance(step_context, "example.dupe").side_effect is ToolSideEffect.READ
+    assert (
+        router.governance(step_context, "example.dupe").side_effect
+        is ToolSideEffect.READ
+    )
     assert legacy.content == "legacy-only"
     assert dupe.content == "typed-dupe"
 
@@ -4145,7 +4375,9 @@ def test_sandbox_exec_catalog_exposes_v2_long_operation_timeout_bound() -> None:
     }
     assert "entire non-empty /workspace/src tree" in sandbox_exec.description
     assert "Every otherwise-valid invocation" in sandbox_exec.description
-    assert "including Python -c, package/signature inspection" in sandbox_exec.description
+    assert (
+        "including Python -c, package/signature inspection" in sandbox_exec.description
+    )
     assert "source_snapshot_empty" in sandbox_exec.description
     assert "not a read-only environment-inspection shortcut" in sandbox_exec.description
 
@@ -4157,7 +4389,10 @@ def test_materialize_catalog_exposes_host_managed_read_only_input_boundary() -> 
         if descriptor.tool_name == "artifacts.materialize"
     )
 
-    assert "/workspace/input mount is Host-managed and read-only" in materialize.description
+    assert (
+        "/workspace/input mount is Host-managed and read-only"
+        in materialize.description
+    )
     assert "materialize creates the requested target and parent directories" in (
         materialize.description
     )
@@ -4681,7 +4916,9 @@ def test_micu_provider_alias_restores_canonical_names_before_harness_dispatch() 
 
     trace_documents = [
         document
-        for document in repositories.engine_documents.list_by_session(session.session_id)
+        for document in repositories.engine_documents.list_by_session(
+            session.session_id
+        )
         if document.document_kind == "llm_trace_step"
     ]
     trace_with_tool = next(
@@ -4712,8 +4949,7 @@ def test_micu_provider_alias_restores_canonical_names_before_harness_dispatch() 
     assert "artifact_list" in provider_tool_names
     assert "task_create" in provider_tool_names
     assert (
-        tool_call_record["request"]["tool_name_aliases"]["task.create"]
-        == "task_create"
+        tool_call_record["request"]["tool_name_aliases"]["task.create"] == "task_create"
     )
     assert tool_call_record["response"]["tool_calls"][0]["name"] == "task.create"
 
@@ -4779,7 +5015,9 @@ def test_harness_loop_persists_master_llm_trace_and_public_tool_args() -> None:
     assert any(event.event_type == "llm.response.created" for event in result.events)
     documents = [
         document
-        for document in repositories.engine_documents.list_by_session(session.session_id)
+        for document in repositories.engine_documents.list_by_session(
+            session.session_id
+        )
         if document.document_kind == "llm_trace_step"
     ]
     assert len(documents) == 1
@@ -4800,7 +5038,9 @@ def test_harness_loop_persists_master_llm_trace_and_public_tool_args() -> None:
     assert payload["agent_step"]["actor_kind"] == "master"
     assert payload["agent_step"]["role"] == "master"
     assert payload["agent_step"]["call_index"] == 1
-    assert payload["agent_step"]["tool_catalog_digest"] == payload["tool_catalog_digest"]
+    assert (
+        payload["agent_step"]["tool_catalog_digest"] == payload["tool_catalog_digest"]
+    )
     assert (
         payload["agent_step"]["restore_context_digest"]
         == payload["restore_context_digest"]
@@ -4827,7 +5067,9 @@ def test_teammate_loop_persists_trace_without_prompt_payload() -> None:
     session = _seed_session(repositories)
     agent = _seed_agent(repositories, session, role="researcher")
     driver = TeammateConversationDriver(
-        model_factory=FakeModelFactory({"content": "I inspected the task.", "tool_calls": []}),
+        model_factory=FakeModelFactory(
+            {"content": "I inspected the task.", "tool_calls": []}
+        ),
         role="researcher",
         agent_id=agent.agent_id,
         correlation_id="corr_001",
@@ -4847,7 +5089,11 @@ def test_teammate_loop_persists_trace_without_prompt_payload() -> None:
     )
 
     assert result.outputs == ("I inspected the task.",)
-    workspace = SessionProjectionBuilder(repositories).build_session_workspace(session.session_id).to_dict()
+    workspace = (
+        SessionProjectionBuilder(repositories)
+        .build_session_workspace(session.session_id)
+        .to_dict()
+    )
     traces = workspace["agent_traces"][agent.agent_id]
     assert traces[0]["actor_kind"] == "teammate"
     assert traces[0]["actor_ref"] == agent.agent_id
@@ -4889,9 +5135,7 @@ def test_executor_prompt_uses_docs_driven_execution_contract() -> None:
     )
 
     prompt = str(
-        model_factory.invokers["v3_teammate_loop:executor"].calls[0][
-            "system_prompt"
-        ]
+        model_factory.invokers["v3_teammate_loop:executor"].calls[0]["system_prompt"]
     )
     assert "when the assigned task asks for fpocket" not in prompt
     assert "runner-backed hpc tool shorthand" not in prompt
@@ -4901,11 +5145,16 @@ def test_executor_prompt_uses_docs_driven_execution_contract() -> None:
     assert "Every otherwise-valid sandbox.exec invocation" in prompt
     assert "that reaches source preflight, including Python -c" in prompt
     assert "requires at least one eligible regular source file" in prompt
-    assert "never use sandbox.exec as a read-only environment-inspection shortcut" in prompt
+    assert (
+        "never use sandbox.exec as a read-only environment-inspection shortcut"
+        in prompt
+    )
     assert "author that inspection source under /workspace/src" in prompt
     assert "Host-supervised SDK from inside that sandbox run" in prompt
     assert "Never call a runner, SSH, Slurm" in prompt
-    assert "Do not treat execution.pipeline.start as the required authoring path" in prompt
+    assert (
+        "Do not treat execution.pipeline.start as the required authoring path" in prompt
+    )
     assert "Never present synthetic output" in prompt
     assert "Do not infer a workflow from task words" in prompt
     assert "AOX" not in prompt
@@ -5166,7 +5415,9 @@ def test_tool_router_dispatch_rejects_provider_alias_names() -> None:
     step_context = build_agent_step_context(
         context,
         call_index=1,
-        tool_specs=router.model_visible_specs(build_agent_step_context(context, call_index=1)),
+        tool_specs=router.model_visible_specs(
+            build_agent_step_context(context, call_index=1)
+        ),
     )
 
     result = router.dispatch(
@@ -5254,7 +5505,9 @@ def test_tool_events_include_step_and_governance_metadata() -> None:
         driver=driver,
     )
 
-    invoked = next(event for event in result.events if event.event_type == "tool.invoked")
+    invoked = next(
+        event for event in result.events if event.event_type == "tool.invoked"
+    )
     completed = next(
         event for event in result.events if event.event_type == "tool.completed"
     )

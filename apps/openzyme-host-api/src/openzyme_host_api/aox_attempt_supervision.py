@@ -26,8 +26,10 @@ from .aox_cutover_evidence import canonical_json_bytes
 from .aox_cutover_evidence import safe_micu_ledger_snapshot
 
 
-SUPERVISION_SCHEMA_ID = "aox_live_attempt_supervision@1"
-SUPERVISION_RECEIPT_SCHEMA_ID = "aox_live_attempt_supervision_receipt@1"
+SUPERVISION_SCHEMA_ID_V1 = "aox_live_attempt_supervision@1"
+SUPERVISION_SCHEMA_ID = "aox_live_attempt_supervision@2"
+SUPERVISION_RECEIPT_SCHEMA_ID_V1 = "aox_live_attempt_supervision_receipt@1"
+SUPERVISION_RECEIPT_SCHEMA_ID = "aox_live_attempt_supervision_receipt@2"
 SUPERVISION_FATAL_SCHEMA_ID = "aox_live_attempt_fatal@1"
 SUPERVISION_RESULT_SCHEMA_ID = "aox_live_attempt_child_result@1"
 MAX_FRAME_BYTES = 64 * 1024
@@ -41,6 +43,8 @@ _FRAME_KEYS = frozenset(
         "campaign_id",
         "attempt_id",
         "attempt_kind",
+        "attempt_authority_id",
+        "attempt_authority_request_digest",
         "parent_process_nonce",
         "child_process_nonce",
         "process_epoch",
@@ -164,6 +168,8 @@ class _ProtocolIdentity:
     campaign_id: str
     attempt_id: str
     attempt_kind: str
+    attempt_authority_id: str
+    attempt_authority_request_digest: str
     parent_process_nonce: str
     process_epoch: str
     root_identity: str
@@ -191,6 +197,10 @@ class LifecycleFrameValidator:
             "campaign_id": self.identity.campaign_id,
             "attempt_id": self.identity.attempt_id,
             "attempt_kind": self.identity.attempt_kind,
+            "attempt_authority_id": self.identity.attempt_authority_id,
+            "attempt_authority_request_digest": (
+                self.identity.attempt_authority_request_digest
+            ),
             "parent_process_nonce": self.identity.parent_process_nonce,
             "process_epoch": self.identity.process_epoch,
         }
@@ -352,6 +362,10 @@ def build_lifecycle_frame(
         "campaign_id": identity.campaign_id,
         "attempt_id": identity.attempt_id,
         "attempt_kind": identity.attempt_kind,
+        "attempt_authority_id": identity.attempt_authority_id,
+        "attempt_authority_request_digest": (
+            identity.attempt_authority_request_digest
+        ),
         "parent_process_nonce": identity.parent_process_nonce,
         "child_process_nonce": child_process_nonce,
         "process_epoch": identity.process_epoch,
@@ -543,6 +557,10 @@ def _child_result_payload(
         "campaign_id": identity.campaign_id,
         "attempt_id": identity.attempt_id,
         "attempt_kind": identity.attempt_kind,
+        "attempt_authority_id": identity.attempt_authority_id,
+        "attempt_authority_request_digest": (
+            identity.attempt_authority_request_digest
+        ),
         "process_epoch": identity.process_epoch,
         "root_identity": str(context.roots.proof.get("root_identity") or ""),
         "evidence": normalized_evidence,
@@ -784,6 +802,10 @@ def _write_fatal_evidence(
         "campaign_id": identity.campaign_id,
         "attempt_id": identity.attempt_id,
         "attempt_kind": identity.attempt_kind,
+        "attempt_authority_id": identity.attempt_authority_id,
+        "attempt_authority_request_digest": (
+            identity.attempt_authority_request_digest
+        ),
         "process_epoch": identity.process_epoch,
         "parent_process_nonce_digest": canonical_digest(
             {"nonce": identity.parent_process_nonce}
@@ -849,6 +871,8 @@ def _validate_child_result(
         "campaign_id",
         "attempt_id",
         "attempt_kind",
+        "attempt_authority_id",
+        "attempt_authority_request_digest",
         "process_epoch",
         "root_identity",
         "evidence",
@@ -862,6 +886,10 @@ def _validate_child_result(
         or payload.get("campaign_id") != identity.campaign_id
         or payload.get("attempt_id") != identity.attempt_id
         or payload.get("attempt_kind") != identity.attempt_kind
+        or payload.get("attempt_authority_id")
+        != identity.attempt_authority_id
+        or payload.get("attempt_authority_request_digest")
+        != identity.attempt_authority_request_digest
         or payload.get("process_epoch") != identity.process_epoch
         or payload.get("root_identity")
         != str(context.roots.proof.get("root_identity") or "")
@@ -877,10 +905,12 @@ def supervision_contract_digest(
     timeout_seconds: float,
     term_grace_seconds: float,
     kill_grace_seconds: float,
+    protocol_schema_id: str = SUPERVISION_SCHEMA_ID,
 ) -> str:
     return canonical_digest(
         {
             **SUPERVISOR_CONTRACT_BASE,
+            "schema_id": protocol_schema_id,
             "timeout_seconds": timeout_seconds,
             "term_grace_seconds": term_grace_seconds,
             "kill_grace_seconds": kill_grace_seconds,
@@ -893,9 +923,11 @@ def validate_attempt_supervision_receipt(
     *,
     attempt_id: str,
     attempt_kind: str,
+    attempt_authority_id: str | None = None,
+    attempt_authority_request_digest: str | None = None,
     expected_contract_digest: str | None = None,
 ) -> dict[str, object]:
-    expected_keys = {
+    legacy_keys = {
         "schema_id",
         "mode",
         "attempt_id",
@@ -918,6 +950,28 @@ def validate_attempt_supervision_receipt(
         "term_grace_seconds",
         "kill_grace_seconds",
     }
+    authority_expected = (
+        attempt_authority_id is not None
+        or attempt_authority_request_digest is not None
+    )
+    if authority_expected and (
+        not attempt_authority_id
+        or _DIGEST_PATTERN.fullmatch(
+            str(attempt_authority_request_digest or "")
+        )
+        is None
+    ):
+        raise CutoverEvidenceError(
+            "attempt_supervision_authority_invalid",
+            "supervision validation requires one exact authority identity",
+            details={"identity": "product_path.attempt_supervision"},
+        )
+    expected_keys = (
+        legacy_keys
+        if not authority_expected
+        else legacy_keys
+        | {"attempt_authority_id", "attempt_authority_request_digest"}
+    )
     if not isinstance(receipt, Mapping):
         raise CutoverEvidenceError(
             "attempt_supervision_receipt_missing",
@@ -930,6 +984,10 @@ def validate_attempt_supervision_receipt(
         "protocol_final_digest",
         "result_digest",
         "supervisor_contract_digest",
+    ) + (
+        ("attempt_authority_request_digest",)
+        if authority_expected
+        else ()
     )
     timeout_seconds = normalized.get("timeout_seconds")
     term_grace_seconds = normalized.get("term_grace_seconds")
@@ -950,10 +1008,25 @@ def validate_attempt_supervision_receipt(
     )
     if (
         set(normalized) != expected_keys
-        or normalized.get("schema_id") != SUPERVISION_RECEIPT_SCHEMA_ID
+        or normalized.get("schema_id")
+        != (
+            SUPERVISION_RECEIPT_SCHEMA_ID
+            if authority_expected
+            else SUPERVISION_RECEIPT_SCHEMA_ID_V1
+        )
         or normalized.get("mode") != "process_isolated_spawn"
         or normalized.get("attempt_id") != attempt_id
         or normalized.get("attempt_kind") != attempt_kind
+        or (
+            authority_expected
+            and normalized.get("attempt_authority_id")
+            != attempt_authority_id
+        )
+        or (
+            authority_expected
+            and normalized.get("attempt_authority_request_digest")
+            != attempt_authority_request_digest
+        )
         or _EPOCH_PATTERN.fullmatch(str(normalized.get("process_epoch") or ""))
         is None
         or any(
@@ -977,6 +1050,11 @@ def validate_attempt_supervision_receipt(
                 timeout_seconds=float(timeout_seconds),
                 term_grace_seconds=float(term_grace_seconds),
                 kill_grace_seconds=float(kill_grace_seconds),
+                protocol_schema_id=(
+                    SUPERVISION_SCHEMA_ID
+                    if authority_expected
+                    else SUPERVISION_SCHEMA_ID_V1
+                ),
             )
         )
         or (
@@ -1028,6 +1106,18 @@ class ProcessIsolatedAttemptRunner:
             raise ValueError("attempt supervision bounds are invalid")
 
     def __call__(self, context: AttemptRunContext) -> dict[str, Any]:
+        authority = context.attempt_authority
+        if (
+            not isinstance(authority, dict)
+            or not isinstance(authority.get("envelope_id"), str)
+            or not isinstance(authority.get("request_digest"), str)
+            or _DIGEST_PATTERN.fullmatch(str(authority["request_digest"]))
+            is None
+        ):
+            raise AttemptSupervisionFatalError(
+                "attempt_authority_missing",
+                fatal_evidence_digest=None,
+            )
         campaign_id = canonical_digest(
             {
                 "identity": dict(context.identity),
@@ -1040,6 +1130,10 @@ class ProcessIsolatedAttemptRunner:
             campaign_id=campaign_id,
             attempt_id=context.roots.attempt_id,
             attempt_kind=context.roots.attempt_kind,
+            attempt_authority_id=str(authority["envelope_id"]),
+            attempt_authority_request_digest=str(
+                authority["request_digest"]
+            ),
             parent_process_nonce=secrets.token_hex(32),
             process_epoch=uuid4().hex,
             root_identity=str(context.roots.proof.get("root_identity") or ""),
@@ -1251,6 +1345,10 @@ class ProcessIsolatedAttemptRunner:
                 "mode": "process_isolated_spawn",
                 "attempt_id": identity.attempt_id,
                 "attempt_kind": identity.attempt_kind,
+                "attempt_authority_id": identity.attempt_authority_id,
+                "attempt_authority_request_digest": (
+                    identity.attempt_authority_request_digest
+                ),
                 "campaign_id": identity.campaign_id,
                 "process_epoch": identity.process_epoch,
                 "protocol_final_sequence": validator.last_sequence,
@@ -1281,6 +1379,10 @@ class ProcessIsolatedAttemptRunner:
                 receipt,
                 attempt_id=identity.attempt_id,
                 attempt_kind=identity.attempt_kind,
+                attempt_authority_id=identity.attempt_authority_id,
+                attempt_authority_request_digest=(
+                    identity.attempt_authority_request_digest
+                ),
             )
             product_path["attempt_supervision"] = receipt
             evidence["product_path"] = product_path

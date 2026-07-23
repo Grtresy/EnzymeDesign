@@ -60,6 +60,7 @@ class SessionRestoreContext:
     inbox: tuple[InboxMessage, ...]
     agents: tuple[AgentMember, ...]
     active_invocations: tuple[EngineInvocation, ...]
+    failure_observations: tuple[Any, ...]
     artifacts: tuple[SessionArtifactRecord, ...]
     report_drafts: tuple[SessionReportDraftRecord, ...]
     reports: tuple[SessionReportRecord, ...]
@@ -82,6 +83,9 @@ class SessionRestoreContext:
             "inbox": [message.to_dict() for message in self.inbox],
             "agents": [agent.to_dict() for agent in self.agents],
             "active_invocations": [invocation.to_dict() for invocation in self.active_invocations],
+            "failure_observations": [
+                observation.to_dict() for observation in self.failure_observations
+            ],
             "artifacts": [project_artifact_for_agent(artifact) for artifact in self.artifacts],
             "report_drafts": [draft.to_dict() for draft in self.report_drafts],
             "reports": [report.to_dict() for report in self.reports],
@@ -342,6 +346,12 @@ class MemoryService:
             inbox=tuple(self.repositories.inbox.list_by_session(session_id)),
             agents=tuple(self.repositories.agents.list_by_session(session_id)),
             active_invocations=tuple(self.repositories.invocations.list_active_by_session(session_id)),
+            failure_observations=tuple(
+                self.repositories.failure_observations.list_by_session(
+                    session_id,
+                    limit=100,
+                )
+            ),
             artifacts=tuple(self.repositories.artifacts.list_by_session(session_id)),
             report_drafts=tuple(self.repositories.report_drafts.list_by_session(session_id)),
             reports=tuple(self.repositories.reports.list_by_session(session_id)),

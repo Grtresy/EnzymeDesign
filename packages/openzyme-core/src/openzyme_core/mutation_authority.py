@@ -151,6 +151,8 @@ _DIRECT_COVERAGE: tuple[tuple[str, MutationResourceCategory], ...] = (
     ("durable_event_records", MutationResourceCategory.EVENT_OUTBOX),
     ("engine_documents", MutationResourceCategory.CANONICAL_SQLITE),
     ("engine_invocations", MutationResourceCategory.CANONICAL_SQLITE),
+    ("failure_observation_records", MutationResourceCategory.CANONICAL_SQLITE),
+    ("failure_hypothesis_records", MutationResourceCategory.CANONICAL_SQLITE),
     ("inbox_messages", MutationResourceCategory.CANONICAL_SQLITE),
     ("lane_lifecycle_events", MutationResourceCategory.EVENT_OUTBOX),
     ("lanes", MutationResourceCategory.CANONICAL_SQLITE),
@@ -182,6 +184,20 @@ _DIRECT_COVERAGE: tuple[tuple[str, MutationResourceCategory], ...] = (
     ("session_research_summaries", MutationResourceCategory.CANONICAL_SQLITE),
     ("session_run_records", MutationResourceCategory.CANONICAL_SQLITE),
     ("session_runtime_leases", MutationResourceCategory.CANONICAL_SQLITE),
+    (
+        "scientific_attempt_authorization_records",
+        MutationResourceCategory.LEDGER,
+    ),
+    (
+        "scientific_attempt_admission_request_records",
+        MutationResourceCategory.CANONICAL_SQLITE,
+    ),
+    (
+        "scientific_attempt_operation_bindings",
+        MutationResourceCategory.CANONICAL_SQLITE,
+    ),
+    ("scientific_attempt_records", MutationResourceCategory.CANONICAL_SQLITE),
+    ("scientific_attempt_run_bindings", MutationResourceCategory.CANONICAL_SQLITE),
     ("sessions", MutationResourceCategory.CANONICAL_SQLITE),
     ("tasks", MutationResourceCategory.CANONICAL_SQLITE),
 )
@@ -200,6 +216,41 @@ HOST_MUTATION_COVERAGE_ENTRIES: Final[tuple[MutationCoverageEntry, ...]] = tuple
         resource_category=MutationResourceCategory.ARTIFACT_PUBLICATION,
         session_binding="sandbox_workspace_id_to_workspace",
     ),
+    MutationCoverageEntry(
+        table_name="scientific_chain_selection_records",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="attempt_id_to_scientific_attempts",
+    ),
+    MutationCoverageEntry(
+        table_name="scientific_selection_head_records",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="attempt_id_to_scientific_attempts",
+    ),
+    MutationCoverageEntry(
+        table_name="scientific_selection_occurrence_records",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="attempt_id_to_scientific_attempts",
+    ),
+    MutationCoverageEntry(
+        table_name="scientific_operation_disposition_records",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="attempt_id_to_scientific_attempts",
+    ),
+    MutationCoverageEntry(
+        table_name="scientific_effect_adoption_records",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="attempt_id_to_scientific_attempts",
+    ),
+    MutationCoverageEntry(
+        table_name="scientific_artifact_materialization_records",
+        resource_category=MutationResourceCategory.ARTIFACT_PUBLICATION,
+        session_binding="attempt_id_to_scientific_attempts",
+    ),
+    MutationCoverageEntry(
+        table_name="scientific_attempt_closure_request_records",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="attempt_id_to_scientific_attempts",
+    ),
 )
 
 # These records are deliberately Host-global rather than session-scoped.  They are
@@ -213,6 +264,10 @@ HOST_MUTATION_GLOBAL_EXCLUSIONS: Final[tuple[dict[str, str], ...]] = (
     {
         "table_name": "sandbox_image_records",
         "reason": "host_global_immutable_image_catalog",
+    },
+    {
+        "table_name": "scientific_attempt_closure_records",
+        "reason": "post_quiescence_immutable_seal_bound_to_exact_receipt",
     },
 )
 

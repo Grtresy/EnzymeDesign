@@ -369,14 +369,16 @@ introspection is still necessary, author that inspection source explicitly
 under `/workspace/src` before executing it. An empty tree fails as
 `source_snapshot_empty` before `SandboxRun` or process creation. A completed
 operation MUST NOT be replayed merely because response selection,
-serialization, or later Python source failed. Under bundle/probe `@1`/`@2`, a
-terminal failed sandbox run makes the attempt ineligible and its effects cannot
-be adopted by a later run: retain checkpoints for failure evidence, start no
-further controlled operation, explicitly fail the task, and use a fresh
-blank-world attempt. `/workspace/work` checkpoints are agent working state, not
-scientific evidence or cross-run adoption authority. Supporting explicit
-same-attempt cross-run adoption remains proposal-only in
-[canonical scientific chain adoption and attempt closure](../architecture-proposals/canonical-scientific-chain-adoption-and-attempt-closure.md).
+serialization, or later Python source failed. Historical bundle/probe
+`@1`/`@2` treated a terminal failed sandbox run as attempt-ineligible and
+remain frozen under that rule. New production bundle `@3` instead preserves
+the full failed run/operation facts and lets the agent explicitly disposition
+them while adopting a terminal known same-attempt result from another run.
+That adoption requires canonical operation/result identity, workflow role,
+artifact-catalog materialization, sealed selection and closure. It never permits
+replay of an already completed operation, `dispatch_in_doubt`, an active writer,
+or cross-attempt/campaign/probe/fault reuse. `/workspace/work` checkpoints alone
+are agent working state and provide no adoption authority.
 
 The formal scientific closure always reaches `bio.ncbi_fetch_proteins`,
 `bio_tools.mafft`, `bio_tools.hmmbuild`, and
@@ -407,19 +409,21 @@ fails closed without hidden replay.
 This is a branch-derived evidence closure, not a unique execution order and not
 permission to omit a reached dependency. The offline verifier derives the
 branch from sealed raw/parsed and calculated artifacts, then requires the exact
-formal operation set for that branch and rejects extra or hidden failed
-operations. The agent may batch, inspect, retry within the bounded policy, or
+adopted formal role set for that branch, plus a complete disposition over every
+controlled occurrence. It rejects hidden/undispositioned operations, but a
+known terminal failed or superseded trial may remain visible outside the
+selected chain. The agent may batch, inspect, retry within the bounded policy, or
 stop at a proven empty prerequisite without asking the harness to invent an
 alternate route.
 
 "Retry within the bounded policy" means provider/runtime attempts that remain
 inside one durable controlled-operation identity. It does not authorize a new
-controlled operation for a scientific method that the formal session already
-reached. The live cutover driver checks this exact-operation budget before
-approval, rejects a duplicate before provider/runner dispatch, and stops
-approving later scientific work after any controlled operation reaches
-`failed` or `recovery_failed`. Local source repair remains allowed when it
-reuses the already completed response and artifact identities.
+controlled operation, changed target or new formal attempt. A replacement
+operation requires an explicit agent decision under the still-active attempt
+authority, and every old/new occurrence must be dispositioned before seal.
+Unknown effect, exhausted authority or resource breach stops later effectful
+work. Local source repair may consume an already completed response only through
+the same-attempt adoption/materialization contract.
 
 ### Pinned SDK calculation and runner projection
 
@@ -836,7 +840,7 @@ differs from the scientific outcome, is ineligible.
 
 The installed collector/verifier contract is `aox_known_positive_probe@2` with
 `probe_id="independent_globin_provider_hpc_probe"`. This states implementation
-availability only: no real `@2` attempt is considered passed until its sealed
+availability only: no real production `@3` attempt is considered passed until its sealed
 attestation survives offline verification in the current campaign. An
 `@1`/AAB-only probe cannot satisfy this pack because one sequence does not prove
 the intended MAFFT/HMM build/alignment and cross-provider chain.

@@ -59,6 +59,21 @@ from openzyme_host_api.aox_cutover_evidence import typed_empty_artifact_validati
 from openzyme_host_api.aox_cutover_evidence import verify_sealed_source_tree_envelope
 from openzyme_host_api.aox_cutover_evidence import verify_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import build_attempt_bundle
+from openzyme_host_api.aox_scientific_contract import (
+    AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST,
+)
+from openzyme_host_api.aox_selected_chain_evidence import (
+    SCIENTIFIC_ATTEMPT_EVIDENCE_SCHEMA_ID,
+)
+from openzyme_host_api.aox_selected_chain_evidence import (
+    build_selected_chain_attempt_bundle,
+)
+from openzyme_core import CoreRepositories
+from openzyme_core import MutationScopeService
+from openzyme_core import apply_sqlite_migrations
+from openzyme_core import connect_sqlite
+from openzyme_domain import MutationScopeKind
+from openzyme_domain import Session
 from openzyme_pipeline import aox_hmmer
 from openzyme_pipeline import aox_motif
 from openzyme_pipeline import aox_reference
@@ -2099,6 +2114,7 @@ def _valid_evidence(
             timeout_seconds=supervision_timeout_seconds,
             term_grace_seconds=DEFAULT_TERM_GRACE_SECONDS,
             kill_grace_seconds=DEFAULT_KILL_GRACE_SECONDS,
+            protocol_schema_id="aox_live_attempt_supervision@1",
         ),
         "timeout_seconds": supervision_timeout_seconds,
         "term_grace_seconds": DEFAULT_TERM_GRACE_SECONDS,
@@ -4695,6 +4711,615 @@ def _rewrite_envelope(bundle_path: Path, mutate) -> None:
     bundle_path.write_bytes(canonical_json_bytes(envelope) + b"\n")
 
 
+def _selected_chain_control(
+    payload: dict[str, object],
+) -> dict[str, object]:
+    attempt_id = str(payload["attempt_id"])
+    session_id = "sess_aox_live"
+    task_id = "task_aox_execution"
+    lane_id = "lane_aox_execution"
+    campaign_id = "campaign_aox_selected_chain"
+    envelope_id = "attempt_authority_aox"
+    admission_request_id = "attempt_admission_request_aox"
+    selection_id = "selection_aox"
+    closure_request_id = "attempt_closure_request_aox"
+    mutation_scope_id = f"mutation_scope_{attempt_id}"
+    provider_digest = canonical_digest({"private_identity": "openai"})
+    hpc_target_digest = canonical_digest(
+        {"private_identity": "hpc:approved"}
+    )
+    request_digest = _digest("aox-attempt-admission")
+    idempotency_key = "aox-attempt-admission"
+    now = "2026-07-23T00:00:00+00:00"
+    product_path = dict(payload["product_path"])
+    receipts = [
+        dict(item) for item in product_path["public_api_receipts"]
+    ]
+    receipts.append(
+        {
+            "sequence": len(receipts) + 1,
+            "method": "POST",
+            "route": (
+                f"/v3/sessions/{session_id}/"
+                "scientific-attempt-authorizations"
+            ),
+            "status_code": 200,
+            "request_digest": _digest("attempt-authority-public-request"),
+            "response_digest": _digest("attempt-authority-public-response"),
+            "response_semantic_digest": _digest(
+                "attempt-authority-public-response-semantic"
+            ),
+        }
+    )
+    launch_receipt = dict(product_path["launch_receipt"])
+    launch_receipt["public_api_receipt_digest"] = canonical_digest(receipts)
+    product_path["launch_receipt"] = launch_receipt
+    product_path["public_api_receipts"] = receipts
+    payload["product_path"] = product_path
+
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+    repositories.sessions.save(
+        Session.create(
+            session_id=session_id,
+            project_id="aox-blank-world-cutover",
+            title="AOX selected-chain evidence",
+            objective="Produce a sealed mutation receipt",
+        )
+    )
+    mutation = MutationScopeService(repositories, now=lambda: now)
+    mutation.open_scope(
+        session_id=session_id,
+        scope_kind=MutationScopeKind.ATTEMPT,
+        scope_ref=attempt_id,
+        scope_id=mutation_scope_id,
+    )
+    mutation.begin_freeze(mutation_scope_id)
+    issued = mutation.issue_quiescence_receipt(mutation_scope_id)
+    mutation.seal_scope(
+        mutation_scope_id,
+        receipt_id=issued.receipt.receipt_id,
+    )
+    quiescence = issued.evidence_envelope()
+    connection.close()
+
+    formal_operations = [
+        dict(item)
+        for item in payload["operations"]
+        if item["scope"] == "formal"
+        and item.get("canonical_ref_kind") == "controlled_operation"
+    ]
+    run_ids = sorted(
+        {
+            str(operation["sandbox_run_id"])
+            for operation in formal_operations
+        }
+    )
+    occurrences: list[dict[str, object]] = []
+    for operation in formal_operations:
+        operation_id = str(operation["operation_id"])
+        succeeded = operation["status"] == "completed"
+        execution_id = f"execution_{operation_id}"
+        result_handle_id = f"result_{operation_id}" if succeeded else None
+        result_digest = _digest(f"result:{operation_id}") if succeeded else None
+        artifact_set_digest = (
+            _digest(f"artifact-set:{operation_id}") if succeeded else None
+        )
+        approval_id = operation.get("approval_id")
+        approval_digest = (
+            _digest(f"approval:{approval_id}")
+            if approval_id is not None
+            else None
+        )
+        occurrence = {
+            "attempt_id": attempt_id,
+            "operation_id": operation_id,
+            "sandbox_run_id": operation["sandbox_run_id"],
+            "logical_operation_key": operation["kind"],
+            "operation_digest": operation["operation_identity_digest"],
+            "backend_category": "aox",
+            "operation_status": operation["status"],
+            "approval_id": approval_id,
+            "approval_state": (
+                "approved" if approval_id is not None else None
+            ),
+            "owner_mode": "durable_async_v1",
+            "execution": {
+                "execution_id": execution_id,
+                "lifecycle_state": "terminal",
+                "terminal_outcome": (
+                    "succeeded" if succeeded else "failed"
+                ),
+                "effect_certainty": (
+                    "terminal_known" if succeeded else "no_effect"
+                ),
+                "retry_eligibility": "terminal",
+                "state_version": 1,
+                "dispatch_generation": 1,
+                "result_handle_ref": result_handle_id,
+                "result_digest": result_digest,
+                "artifact_set_digest": artifact_set_digest,
+                "approval_digest": approval_digest,
+            },
+            "result": (
+                {
+                    "result_handle_id": result_handle_id,
+                    "terminal_outcome": "succeeded",
+                    "result_digest": result_digest,
+                    "artifact_set_digest": artifact_set_digest,
+                    "origin": "host_supervisor",
+                }
+                if succeeded
+                else None
+            ),
+        }
+        occurrences.append(
+            {
+                **occurrence,
+                "occurrence_digest": canonical_digest(occurrence),
+            }
+        )
+    occurrences.sort(key=lambda item: str(item["operation_id"]))
+    universe_identity = {
+        "attempt_id": attempt_id,
+        "session_id": session_id,
+        "task_id": task_id,
+        "lane_id": lane_id,
+        "campaign_id": campaign_id,
+        "workflow_id": "aox_blank_world",
+        "scope": "formal",
+        "run_ids": run_ids,
+        "occurrences": occurrences,
+    }
+    universe_digest = canonical_digest(universe_identity)
+    operation_universe = {
+        "schema_id": "scientific_operation_universe@1",
+        "attempt_id": attempt_id,
+        "run_ids": run_ids,
+        "operation_count": len(occurrences),
+        "operation_universe_digest": universe_digest,
+        "occurrences": occurrences,
+    }
+
+    role_by_operation = {
+        str(operation_id): str(role)
+        for role, operation_id in payload["scientific_checks"]["aox_chain"][
+            "operation_roles"
+        ].items()
+    }
+    dispositions: list[dict[str, object]] = []
+    adoptions: list[dict[str, object]] = []
+    occurrence_by_id = {
+        str(item["operation_id"]): item for item in occurrences
+    }
+    for operation in formal_operations:
+        operation_id = str(operation["operation_id"])
+        succeeded = operation["status"] == "completed"
+        role = role_by_operation.get(operation_id)
+        if succeeded:
+            assert role is not None
+        dispositions.append(
+            {
+                "schema_version": "scientific_operation_disposition@1",
+                "disposition_id": f"disposition_{operation_id}",
+                "selection_id": selection_id,
+                "attempt_id": attempt_id,
+                "operation_id": operation_id,
+                "kind": "adopted" if succeeded else "failed",
+                "workflow_role": role if succeeded else None,
+                "reason_code": (
+                    "selected_aox_chain"
+                    if succeeded
+                    else "known_terminal_failure"
+                ),
+                "replacement_operation_id": None,
+                "actor_ref": "agent:scientist",
+                "idempotency_key": f"disposition:{operation_id}",
+                "request_digest": _digest(f"disposition:{operation_id}"),
+                "created_at": now,
+            }
+        )
+        if not succeeded:
+            continue
+        occurrence = occurrence_by_id[operation_id]
+        execution = occurrence["execution"]
+        result = occurrence["result"]
+        adoptions.append(
+            {
+                "schema_version": "scientific_effect_adoption@1",
+                "adoption_id": f"adoption_{operation_id}",
+                "selection_id": selection_id,
+                "attempt_id": attempt_id,
+                "workflow_role": role,
+                "operation_id": operation_id,
+                "execution_id": execution["execution_id"],
+                "result_handle_id": result["result_handle_id"],
+                "result_digest": result["result_digest"],
+                "artifact_set_digest": result["artifact_set_digest"],
+                "source_sandbox_run_id": occurrence["sandbox_run_id"],
+                "effect_certainty": execution["effect_certainty"],
+                "approval_digest": execution["approval_digest"],
+                "actor_ref": "agent:scientist",
+                "idempotency_key": f"adoption:{operation_id}",
+                "request_digest": _digest(f"adoption:{operation_id}"),
+                "created_at": now,
+            }
+        )
+    disposition_digest = canonical_digest(dispositions)
+    adoption_digest = canonical_digest(adoptions)
+    materializations: list[dict[str, object]] = []
+    materialization_digest = canonical_digest(materializations)
+    authorization = {
+        "schema_version": "scientific_attempt_authorization@1",
+        "envelope_id": envelope_id,
+        "session_id": session_id,
+        "task_id": task_id,
+        "campaign_id": campaign_id,
+        "workflow_id": "aox_blank_world",
+        "root_ref": f"attempts/{attempt_id}",
+        "grantor_kind": "user",
+        "grantor_ref": "user:owner",
+        "allowed_scopes": ["formal"],
+        "allowed_effect_classes": ["provider", "hpc"],
+        "allowed_provider_digests": [provider_digest],
+        "allowed_hpc_target_digests": [hpc_target_digest],
+        "max_attempts": 1,
+        "max_micu": 100,
+        "max_cost_microunits": 10_000,
+        "max_wall_time_seconds": 7_200,
+        "consumed_attempts": 1,
+        "reserved_micu": 10,
+        "reserved_cost_microunits": 1_000,
+        "reserved_wall_time_seconds": 600,
+        "expires_at": "2099-01-01T00:00:00+00:00",
+        "policy_digest": _digest("attempt-authority-policy"),
+        "idempotency_key": "grant-aox-attempt",
+        "request_digest": _digest("grant-aox-attempt"),
+        "status": "exhausted",
+        "state_version": 2,
+        "created_at": now,
+        "updated_at": now,
+    }
+    admission = {
+        "schema_version": "scientific_attempt_admission_request@1",
+        "admission_request_id": admission_request_id,
+        "envelope_id": envelope_id,
+        "session_id": session_id,
+        "task_id": task_id,
+        "lane_id": lane_id,
+        "campaign_id": campaign_id,
+        "workflow_id": "aox_blank_world",
+        "scope": "formal",
+        "workflow_contract_digest": (
+            AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
+        ),
+        "requested_effect_classes": ["provider", "hpc"],
+        "provider_digest": provider_digest,
+        "hpc_target_digest": hpc_target_digest,
+        "reserved_micu": 10,
+        "reserved_cost_microunits": 1_000,
+        "reserved_wall_time_seconds": 600,
+        "actor_ref": "agent:scientist",
+        "idempotency_key": idempotency_key,
+        "request_digest": request_digest,
+        "created_at": now,
+    }
+    attempt = {
+        "schema_version": "scientific_attempt@1",
+        "attempt_id": attempt_id,
+        "admission_request_id": admission_request_id,
+        "envelope_id": envelope_id,
+        "session_id": session_id,
+        "task_id": task_id,
+        "lane_id": lane_id,
+        "campaign_id": campaign_id,
+        "workflow_id": "aox_blank_world",
+        "scope": "formal",
+        "root_ref": f"attempts/{attempt_id}",
+        "mutation_scope_id": mutation_scope_id,
+        "ordinal": 1,
+        "request_digest": request_digest,
+        "idempotency_key": idempotency_key,
+        "workflow_contract_digest": (
+            AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
+        ),
+        "requested_effect_classes": ["provider", "hpc"],
+        "provider_digest": provider_digest,
+        "hpc_target_digest": hpc_target_digest,
+        "reserved_micu": 10,
+        "reserved_cost_microunits": 1_000,
+        "reserved_wall_time_seconds": 600,
+        "status": "closed",
+        "state_version": 1,
+        "created_by": "agent:scientist",
+        "created_at": now,
+        "updated_at": now,
+    }
+    selection = {
+        "schema_version": "scientific_chain_selection@1",
+        "selection_id": selection_id,
+        "attempt_id": attempt_id,
+        "revision": 1,
+        "parent_selection_id": None,
+        "state": "sealed",
+        "operation_universe_digest": universe_digest,
+        "operation_count": len(occurrences),
+        "disposition_digest": disposition_digest,
+        "adoption_digest": adoption_digest,
+        "workflow_contract_digest": (
+            AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
+        ),
+        "actor_ref": "agent:scientist",
+        "idempotency_key": "selection-aox",
+        "request_digest": _digest("selection-aox"),
+        "created_at": now,
+        "sealed_at": now,
+    }
+    closure_request_request_digest = canonical_digest(
+        {
+            "command": "scientific.attempt.close",
+            "attempt_id": attempt_id,
+            "selection_id": selection_id,
+            "actor_ref": "agent:scientist",
+            "idempotency_key": "close-aox",
+        }
+    )
+    closure_request = {
+        "schema_version": "scientific_attempt_closure_request@1",
+        "closure_request_id": closure_request_id,
+        "attempt_id": attempt_id,
+        "selection_id": selection_id,
+        "actor_ref": "agent:scientist",
+        "idempotency_key": "close-aox",
+        "request_digest": closure_request_request_digest,
+        "created_at": now,
+    }
+    authority_consumption_digest = canonical_digest(
+        {
+            "envelope_id": envelope_id,
+            "attempt_id": attempt_id,
+            "ordinal": 1,
+            "consumed_attempts": 1,
+            "reserved_micu": 10,
+            "reserved_cost_microunits": 1_000,
+            "reserved_wall_time_seconds": 600,
+            "state_version": 2,
+        }
+    )
+    receipt = quiescence["receipt"]
+    closure_payload = {
+        "closure_request_id": closure_request_id,
+        "attempt_id": attempt_id,
+        "selection_id": selection_id,
+        "operation_universe_digest": universe_digest,
+        "disposition_digest": disposition_digest,
+        "adoption_digest": adoption_digest,
+        "materialization_digest": materialization_digest,
+        "authority_consumption_digest": authority_consumption_digest,
+        "quiescence_receipt_id": receipt["receipt_id"],
+        "quiescence_receipt_digest": receipt["receipt_digest"],
+    }
+    closure_request_digest = canonical_digest(
+        {
+            "command": "scientific.attempt.close",
+            "attempt_id": attempt_id,
+            "selection_id": selection_id,
+            "closure_request_id": closure_request_id,
+            "quiescence_receipt_id": receipt["receipt_id"],
+            "actor_ref": "agent:scientist",
+            "idempotency_key": "close-aox",
+        }
+    )
+    closure = {
+        "schema_version": "scientific_attempt_closure@1",
+        "closure_id": "attempt_closure_aox",
+        "closure_request_id": closure_request_id,
+        "attempt_id": attempt_id,
+        "selection_id": selection_id,
+        "operation_universe_digest": universe_digest,
+        "disposition_digest": disposition_digest,
+        "adoption_digest": adoption_digest,
+        "materialization_digest": materialization_digest,
+        "authority_consumption_digest": authority_consumption_digest,
+        "quiescence_receipt_id": receipt["receipt_id"],
+        "quiescence_receipt_digest": receipt["receipt_digest"],
+        "closure_digest": canonical_digest(closure_payload),
+        "actor_ref": "agent:scientist",
+        "idempotency_key": "close-aox",
+        "request_digest": closure_request_digest,
+        "created_at": now,
+    }
+    control = {
+        "schema_id": SCIENTIFIC_ATTEMPT_EVIDENCE_SCHEMA_ID,
+        "attempt_authority": authorization,
+        "admission_request": admission,
+        "attempt": attempt,
+        "operation_universe": operation_universe,
+        "selection": selection,
+        "dispositions": dispositions,
+        "adoptions": adoptions,
+        "materializations": materializations,
+        "closure_request": closure_request,
+        "quiescence": quiescence,
+        "closure": closure,
+    }
+    return {
+        **control,
+        "evidence_digest": canonical_digest(control),
+    }
+
+
+def _seal_selected_chain_fixture(
+    payload: dict[str, object],
+    control: dict[str, object],
+    destination: Path,
+) -> None:
+    selected = {
+        **payload,
+        "schema_id": "aox_blank_world_attempt_bundle@3",
+        "scientific_attempt_control": control,
+    }
+    seal_attempt_bundle(selected, destination)
+
+
+def test_selected_chain_v3_verifies_full_closed_occurrence_universe(
+    tmp_path: Path,
+) -> None:
+    payload, _, artifact_root = _build_bundle(tmp_path)
+    control = _selected_chain_control(payload)
+    bundle_path = tmp_path / "selected-chain-v3.json"
+    _seal_selected_chain_fixture(payload, control, bundle_path)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is True, [issue.to_dict() for issue in result.issues]
+    assert result.attempt_id == payload["attempt_id"]
+
+
+def test_selected_chain_v3_builder_requires_and_attaches_canonical_control(
+    tmp_path: Path,
+) -> None:
+    payload, _, artifact_root = _build_bundle(tmp_path)
+    control = _selected_chain_control(payload)
+    identity = {
+        key: value
+        for key, value in payload["identity"].items()
+        if key != "identity_digest"
+    }
+    evidence = {
+        key: payload[key]
+        for key in (
+            "provider_identities",
+            "engine_invocations",
+            "toolchain_identities",
+            "known_positive_probe",
+            "product_path",
+            "approvals",
+            "operations",
+            "tasks",
+            "artifacts",
+            "report",
+            "final_answer",
+            "scientific_checks",
+            "warnings",
+            "degradations",
+            "scientific_outcome",
+            "fault_injection",
+        )
+    }
+
+    selected = build_selected_chain_attempt_bundle(
+        attempt_id=str(payload["attempt_id"]),
+        attempt_kind=str(payload["attempt_kind"]),
+        identity=identity,
+        clean_world=payload["clean_world"],
+        ledger_before=payload["micu_ledger"]["before"],
+        ledger_after=payload["micu_ledger"]["after"],
+        artifact_root=artifact_root,
+        evidence=evidence,
+        scientific_attempt_control=control,
+        sealed_at=str(payload["sealed_at"]),
+    )
+
+    assert selected["schema_id"] == "aox_blank_world_attempt_bundle@3"
+    assert selected["scientific_attempt_control"] == control
+
+
+@pytest.mark.parametrize(
+    ("tamper", "expected_code"),
+    (
+        ("unknown_effect", "scientific_occurrence_not_closed"),
+        ("failed_success", "scientific_failed_disposition_invalid"),
+        ("universe_drop", "scientific_operation_universe_bundle_mismatch"),
+        ("closure_digest", "scientific_closure_digest_mismatch"),
+        (
+            "cross_attempt_materialization",
+            "scientific_materialization_identity_invalid",
+        ),
+    ),
+)
+def test_selected_chain_v3_rejects_control_plane_tamper(
+    tmp_path: Path,
+    tamper: str,
+    expected_code: str,
+) -> None:
+    payload, _, artifact_root = _build_bundle(tmp_path)
+    control = _selected_chain_control(payload)
+    if tamper == "unknown_effect":
+        control["operation_universe"]["occurrences"][0]["execution"][
+            "effect_certainty"
+        ] = "dispatch_in_doubt"
+    elif tamper == "failed_success":
+        control["dispositions"][0]["kind"] = "failed"
+        control["dispositions"][0]["workflow_role"] = None
+    elif tamper == "universe_drop":
+        control["operation_universe"]["occurrences"].pop()
+        control["operation_universe"]["operation_count"] -= 1
+    elif tamper == "closure_digest":
+        control["closure"]["closure_digest"] = _digest("tampered-closure")
+    else:
+        adoption = control["adoptions"][0]
+        artifact = payload["artifacts"][0]
+        control["materializations"].append(
+            {
+                "schema_version": "scientific_artifact_materialization@1",
+                "receipt_id": "materialization_cross_attempt",
+                "selection_id": control["selection"]["selection_id"],
+                "attempt_id": control["attempt"]["attempt_id"],
+                "adoption_id": adoption["adoption_id"],
+                "source_artifact_id": artifact["artifact_id"],
+                "source_artifact_digest": artifact["content_digest"],
+                "source_sandbox_run_id": adoption[
+                    "source_sandbox_run_id"
+                ],
+                "target_sandbox_workspace_id": "foreign_workspace",
+                "target_sandbox_run_id": "foreign_run",
+                "target_path": "/workspace/input/foreign.dat",
+                "boundary_materialization_id": "foreign_materialization",
+                "actor_ref": "agent:scientist",
+                "idempotency_key": "foreign-materialization",
+                "request_digest": _digest("foreign-materialization"),
+                "created_at": "2026-07-23T00:00:00+00:00",
+            }
+        )
+    control["evidence_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in control.items()
+            if key != "evidence_digest"
+        }
+    )
+    bundle_path = tmp_path / f"selected-chain-{tamper}.json"
+    _seal_selected_chain_fixture(payload, control, bundle_path)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert expected_code in {issue.code for issue in result.issues}
+
+
+def test_selected_chain_v3_cannot_be_relabelled_as_historical_v2(
+    tmp_path: Path,
+) -> None:
+    payload, _, artifact_root = _build_bundle(tmp_path)
+    control = _selected_chain_control(payload)
+    crossgraded = {
+        **payload,
+        "schema_id": "aox_blank_world_attempt_bundle@2",
+        "scientific_attempt_control": control,
+    }
+    bundle_path = tmp_path / "selected-chain-crossgrade.json"
+    seal_attempt_bundle(crossgraded, bundle_path)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert {issue.code for issue in result.issues} == {
+        "bundle_version_crossgrade_forbidden"
+    }
+
+
 @pytest.mark.parametrize(
     ("tamper", "expected_code"),
     (
@@ -6859,6 +7484,7 @@ def test_process_supervision_bounds_must_match_effective_config(
             timeout_seconds=receipt["timeout_seconds"],
             term_grace_seconds=receipt["term_grace_seconds"],
             kill_grace_seconds=receipt["kill_grace_seconds"],
+            protocol_schema_id="aox_live_attempt_supervision@1",
         )
 
     with pytest.raises(CutoverEvidenceError) as error:

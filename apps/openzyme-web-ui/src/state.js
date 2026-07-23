@@ -26,6 +26,18 @@ function ensureWorkspace(workspace) {
     cutover: { status: "not_evaluated", eligible: false, blocker_codes: [], warning_codes: [] },
   };
   workspace.capabilities ??= {};
+  workspace.scientific_attempts ??= {
+    schema_id: "scientific_attempt_workspace@1",
+    authorizations: [],
+    attempts: [],
+  };
+  workspace.failure_observations ??= [];
+  workspace.runtime_state ??= {
+    warnings: [],
+    task_attention: [],
+    warning_count: 0,
+    needs_attention_count: 0,
+  };
 }
 
 function fingerprint(value) {

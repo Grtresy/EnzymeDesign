@@ -449,6 +449,25 @@ closure，不能信任 report 中的 pass boolean。它不进入 `/v3` workspace
 AOX 对外命令显式接收 report path，并只把 closed
 `aox_architecture_qualification_receipt@1` 写入 `aox_cutover_pin_commit@2`、
 `aox_cutover_pin_receipt@2`、`aox_blank_world_root_proof@2`、
-`aox_blank_world_launch_receipt@2` 与 `aox_blank_world_attempt_bundle@2`。public/offline consumer 必须
+`aox_blank_world_launch_receipt@2` 与新 production
+`aox_blank_world_attempt_bundle@3`。历史 `@2` bundle 只进入 frozen verifier。public/offline consumer 必须
 拒绝 missing、unknown-version、digest/source mismatch 或 drift；receipt 不暴露 Host path、
 credential、private authority，也不扩张 exact-nine scientific prerequisites。
+
+## 9. Failure 与 scientific-attempt public surface
+
+`workspace.failure_observations` 只投影 safe facts、likely causes、recoverability、effect certainty、
+retry eligibility、evidence refs 和 separately attributed hypotheses；private diagnostic digest
+与原始 exception 不公开。`runtime.system_diagnostic` 明确是 system voice，不能作为
+conversation assistant message。Web UI/CLI 可以显示 error、候选原因和 agent hypothesis，但不能
+把其中任何一项解释为 retry approval 或 task terminal。
+
+Host API 提供 scientific-attempt authorization、command、finalization 和 read projection。
+authority request 使用 strict DTO；actor/grantor 等身份来自受控边界。`attempt.create` 和
+`scientific.attempt.close` 返回 request/intention，最终 admission/closure 由 Host 在原 writer
+退休后执行。workspace 显示 envelope usage、attempts、universe/dispositions、selected chain、
+materializations 和 closure，不投影 provider/HPC private allowlist。
+
+AOX `authorize` 只发布 reviewable one-use three-slot plan，不创建 root。`run-live` 必须在 root
+前将该 exact plan 原子消费到 deterministic sibling；缺失、复制后错误 sibling、identity/
+qualification/resource drift 或重复消费均拒绝。

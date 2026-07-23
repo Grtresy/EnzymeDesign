@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 from dataclasses import replace
+from datetime import UTC
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -20,7 +22,11 @@ import pytest
 
 from openzyme_domain import ArtifactKind
 from openzyme_domain import ControlledOperation
+from openzyme_domain import ControlledOperationExecutionLifecycle
 from openzyme_domain import ControlledOperationStatus
+from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import RetryEligibility
+from openzyme_domain import ScientificAttemptStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionReportDraftRecord
@@ -30,6 +36,7 @@ from openzyme_domain import SessionReportStatus
 from openzyme_core import DurableEventRecord
 from openzyme_core import EngineDocumentRecord
 from openzyme_core import SQLiteRepositoryProvider
+from openzyme_core import scientific_attempt_authorization_identity
 from openzyme_core import verify_quiescence_evidence
 from openzyme_host_api import aox_cutover_live as live
 from openzyme_host_api.aox_architecture_qualification import (
@@ -46,6 +53,9 @@ from openzyme_host_api.aox_cutover_evidence import safe_micu_ledger_snapshot
 from openzyme_host_api.aox_cutover_evidence import seal_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import verify_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import _report_publish_receipt_is_valid
+from openzyme_host_api.aox_scientific_contract import (
+    AOX_SELECTED_CHAIN_WORKFLOW_ID,
+)
 from openzyme_host_api.aox_runtime_observation import (
     KNOWN_POSITIVE_PROBE_CONTROLLED_OPERATIONS,
 )
@@ -136,6 +146,93 @@ class _OperationReadProvider:
 
     def read(self) -> _OperationReadProvider._Scope:
         return self._Scope(self._operations, self._sandbox_runs)
+
+
+class _SelectedChainApprovalProvider:
+    class _Scope:
+        def __init__(self, repositories: object) -> None:
+            self.repositories = repositories
+
+        def __enter__(self) -> _SelectedChainApprovalProvider._Scope:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+    def __init__(
+        self,
+        *,
+        operations: tuple[ControlledOperation, ...],
+        sandbox_runs: tuple[object, ...],
+        attempt: object,
+        authority: object,
+        executions: dict[str, object],
+        operation_attempt_ids: dict[str, str],
+        run_attempt_ids: dict[str, str],
+    ) -> None:
+        runs_by_id = {
+            str(getattr(run, "sandbox_run_id")): run
+            for run in sandbox_runs
+        }
+        self._repositories = SimpleNamespace(
+            controlled_operations=SimpleNamespace(
+                list_by_session=lambda _session_id: operations
+            ),
+            sandbox_runs=SimpleNamespace(
+                get=runs_by_id.get,
+                list_by_session=lambda _session_id: sandbox_runs,
+            ),
+            scientific_attempts=SimpleNamespace(
+                list_by_session=lambda _session_id: (attempt,)
+            ),
+            scientific_attempt_authorizations=SimpleNamespace(
+                get=lambda _envelope_id: authority
+            ),
+            controlled_operation_executions=SimpleNamespace(
+                get_by_operation_id=executions.get
+            ),
+            scientific_attempt_bindings=SimpleNamespace(
+                attempt_for_operation=operation_attempt_ids.get,
+                attempt_for_run=run_attempt_ids.get,
+            ),
+        )
+
+    def read(self) -> _SelectedChainApprovalProvider._Scope:
+        return self._Scope(self._repositories)
+
+
+class _AuthorityGrantProvider:
+    class _Scope:
+        def __init__(self, repositories: object) -> None:
+            self.repositories = repositories
+
+        def __enter__(self) -> _AuthorityGrantProvider._Scope:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+    def __init__(
+        self,
+        *,
+        task: object,
+        lane: object,
+        agent: object,
+        existing: object | None = None,
+    ) -> None:
+        self._repositories = SimpleNamespace(
+            tasks=SimpleNamespace(get=lambda _task_id: task),
+            lanes=SimpleNamespace(get=lambda _lane_id: lane),
+            agents=SimpleNamespace(
+                get=lambda _session_id, _agent_id: agent
+            ),
+            scientific_attempt_authorizations=SimpleNamespace(
+                get=lambda _envelope_id: existing
+            ),
+        )
+
+    def read(self) -> _AuthorityGrantProvider._Scope:
+        return self._Scope(self._repositories)
 
 
 def _disable_cutover_operation_budget(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -732,6 +829,50 @@ def _identity() -> dict[str, str]:
     }
 
 
+def _attempt_authority(
+    roots: cutover_evidence.BlankWorldRoots,
+) -> dict[str, object]:
+    suffix = roots.attempt_id.replace("-", "_")
+    session_id = f"sess_formal_{suffix}"
+    task_id = f"aox_execution_cutover_{suffix}"
+    lane_id = f"lane_aox_execution_{suffix}"
+    scope = "fault" if roots.attempt_kind == "fault" else "formal"
+    identity_digest = cutover_evidence.canonical_digest(_identity())
+    envelope_id, request_digest, request = (
+        scientific_attempt_authorization_identity(
+            session_id=session_id,
+            task_id=task_id,
+            campaign_id="aox_campaign_test",
+            workflow_id=AOX_SELECTED_CHAIN_WORKFLOW_ID,
+            root_ref=f"attempts/{roots.attempt_id}",
+            grantor_kind="operator",
+            grantor_ref="user:local-dev",
+            allowed_scopes=(scope,),
+            allowed_effect_classes=("hpc", "provider"),
+            allowed_providers=(f"aox-provider-routes@{identity_digest}",),
+            allowed_hpc_targets=(f"aox-hpc-routes@{identity_digest}",),
+            max_attempts=1,
+            max_micu=10_000,
+            max_cost_microunits=10_000_000,
+            max_wall_time_seconds=3_600,
+            expires_at="2099-01-01T00:00:00+00:00",
+            idempotency_key=f"{roots.attempt_id}:authority",
+        )
+    )
+    return {
+        "ordinal": 1,
+        "attempt_kind": roots.attempt_kind,
+        "attempt_id": roots.attempt_id,
+        "session_id": session_id,
+        "task_id": task_id,
+        "lane_id": lane_id,
+        "scope": scope,
+        "authority_request": request,
+        "envelope_id": envelope_id,
+        "request_digest": request_digest,
+    }
+
+
 def _architecture_qualification() -> dict[str, str]:
     return build_architecture_qualification_receipt(
         report_payload_digest=_digest("qualification-report"),
@@ -930,6 +1071,257 @@ def test_live_collector_preserves_exact_control_plane_operation_digest() -> None
     )
     assert record["operation_identity_digest"] == operation.operation_digest
     assert record["backend_run_id"] == "job_001"
+
+
+def test_selected_chain_collector_allows_failed_trial_before_adopted_success() -> None:
+    failed_trial = replace(
+        _operation(),
+        operation_id="op_reference_alignment_trial",
+        status=ControlledOperationStatus.FAILED,
+        operation_digest=_digest("reference-alignment-trial"),
+        error_code="known_local_input_failure",
+    )
+    adopted_operations = (
+        replace(
+            _operation(),
+            operation_id="op_ncbi_fetch_adopted",
+            sdk_module="bio",
+            function_name="ncbi_fetch_proteins",
+            operation_digest=_digest("ncbi-fetch-adopted"),
+        ),
+        replace(
+            _operation(),
+            operation_id="op_reference_alignment_adopted",
+            operation_digest=_digest("reference-alignment-adopted"),
+        ),
+        replace(
+            _operation(),
+            operation_id="op_hmm_build_adopted",
+            sdk_module="bio_tools",
+            function_name="hmmbuild",
+            operation_digest=_digest("hmm-build-adopted"),
+        ),
+        replace(
+            _operation(),
+            operation_id="op_hmmer_search_adopted",
+            sdk_module="bio",
+            function_name="hmmer_search",
+            operation_digest=_digest("hmmer-search-adopted"),
+        ),
+    )
+    formal = live.SessionDriveResult(
+        session_id="sess_selected_chain",
+        purpose="formal",
+        state="completed",
+        blocker_code=None,
+        workspace={},
+        workspace_response_binding={},
+        event_receipt={},
+        drain_count=5,
+        approval_ids=(),
+        scientific_attempt_control={
+            "adoptions": [
+                {
+                    "workflow_role": role,
+                    "operation_id": operation.operation_id,
+                }
+                for role, operation in zip(
+                    (
+                        "ncbi_fetch",
+                        "reference_alignment",
+                        "hmm_build",
+                        "hmmer_search",
+                    ),
+                    adopted_operations,
+                    strict=True,
+                )
+            ]
+        },
+    )
+
+    selected = live._selected_completed_formal_operations(
+        formal,
+        operations=(failed_trial, *adopted_operations),
+    )
+
+    assert selected["reference_alignment"].operation_id == (
+        "op_reference_alignment_adopted"
+    )
+    assert failed_trial.operation_id not in {
+        operation.operation_id for operation in selected.values()
+    }
+
+
+def test_selected_chain_approval_allows_known_failure_but_not_unknown_effect(
+    tmp_path: Path,
+) -> None:
+    roots = create_blank_world_roots(
+        tmp_path / "campaign",
+        attempt_kind="positive",
+        allowed_prerequisites=_allowed_prerequisites(),
+    )
+    authority = _attempt_authority(roots)
+    request = authority["authority_request"]
+    assert isinstance(request, dict)
+    current = replace(
+        _operation(),
+        operation_id="op_current_selected_chain",
+        session_id=str(authority["session_id"]),
+        task_id=str(authority["task_id"]),
+        lane_id=str(authority["lane_id"]),
+        sandbox_run_id="run_current_selected_chain",
+        approval_id="approval_current_selected_chain",
+        approval_state="pending",
+        status=ControlledOperationStatus.WAITING_APPROVAL,
+        operation_digest=_digest("current-selected-chain"),
+    )
+    failed = replace(
+        _operation(),
+        operation_id="op_known_failed_trial",
+        session_id=current.session_id,
+        task_id=current.task_id,
+        lane_id=current.lane_id,
+        sandbox_run_id="run_known_failed_trial",
+        approval_id="approval_known_failed_trial",
+        status=ControlledOperationStatus.FAILED,
+        operation_digest=_digest("known-failed-trial"),
+        error_code="known_input_error",
+    )
+    scientific_attempt_id = "scientific_attempt_selected_chain"
+    attempt = SimpleNamespace(
+        attempt_id=scientific_attempt_id,
+        envelope_id=authority["envelope_id"],
+        status=ScientificAttemptStatus.ACTIVE,
+        task_id=authority["task_id"],
+        lane_id=authority["lane_id"],
+        root_ref=f"attempts/{authority['attempt_id']}",
+        campaign_id=request["campaign_id"],
+        workflow_id=AOX_SELECTED_CHAIN_WORKFLOW_ID,
+        workflow_contract_digest=(
+            live.AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
+        ),
+        requested_effect_classes=("hpc", "provider"),
+        provider=request["allowed_providers"][0],
+        hpc_target=request["allowed_hpc_targets"][0],
+        reserved_micu=1_000,
+        reserved_cost_microunits=1_000,
+        reserved_wall_time_seconds=3_600,
+        created_at=datetime.now(UTC).isoformat(),
+    )
+    stored_authority = SimpleNamespace(
+        request_digest=authority["request_digest"],
+        root_ref=attempt.root_ref,
+        consumed_attempts=1,
+        status=SimpleNamespace(value="exhausted"),
+        allowed_providers=tuple(request["allowed_providers"]),
+        allowed_hpc_targets=tuple(request["allowed_hpc_targets"]),
+        expires_at=request["expires_at"],
+        max_micu=request["max_micu"],
+        max_cost_microunits=request["max_cost_microunits"],
+        max_wall_time_seconds=request["max_wall_time_seconds"],
+    )
+    current_execution = SimpleNamespace(
+        lifecycle_state=(
+            ControlledOperationExecutionLifecycle.AWAITING_APPROVAL
+        ),
+        effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+        retry_eligibility=RetryEligibility.SAME_PHASE_SAFE,
+    )
+    known_failed_execution = SimpleNamespace(
+        lifecycle_state=ControlledOperationExecutionLifecycle.TERMINAL,
+        effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+        retry_eligibility=RetryEligibility.TERMINAL,
+    )
+    sandbox_runs = (
+        SimpleNamespace(
+            sandbox_run_id=failed.sandbox_run_id,
+            status=SimpleNamespace(value="failed"),
+            error_code="known_input_error",
+        ),
+        SimpleNamespace(
+            sandbox_run_id=current.sandbox_run_id,
+            status=SimpleNamespace(value="waiting_approval"),
+            error_code=None,
+        ),
+    )
+
+    def provider_for(prior_execution: object) -> object:
+        return _SelectedChainApprovalProvider(
+            operations=(failed, current),
+            sandbox_runs=sandbox_runs,
+            attempt=attempt,
+            authority=stored_authority,
+            executions={
+                failed.operation_id: prior_execution,
+                current.operation_id: current_execution,
+            },
+            operation_attempt_ids={
+                failed.operation_id: scientific_attempt_id,
+                current.operation_id: scientific_attempt_id,
+            },
+            run_attempt_ids={
+                failed.sandbox_run_id: scientific_attempt_id,
+                current.sandbox_run_id: scientific_attempt_id,
+            },
+        )
+
+    live._assert_cutover_operation_budget_before_approval(
+        provider_for(known_failed_execution),  # type: ignore[arg-type]
+        session_id=current.session_id,
+        approval_id=current.approval_id or "",
+        attempt_authority=authority,
+    )
+
+    dispatch_in_doubt = SimpleNamespace(
+        lifecycle_state=(
+            ControlledOperationExecutionLifecycle.RECONCILE_REQUIRED
+        ),
+        effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+        retry_eligibility=RetryEligibility.RECONCILE_REQUIRED,
+    )
+    with pytest.raises(live.LiveProductPathError) as unresolved:
+        live._assert_cutover_operation_budget_before_approval(
+            provider_for(dispatch_in_doubt),  # type: ignore[arg-type]
+            session_id=current.session_id,
+            approval_id=current.approval_id or "",
+            attempt_authority=authority,
+        )
+    assert unresolved.value.code == "scientific_attempt_prior_effect_unresolved"
+
+    unauthorized = replace(
+        current,
+        sdk_module="bio_tools",
+        function_name="blast",
+    )
+    unauthorized_provider = _SelectedChainApprovalProvider(
+        operations=(failed, unauthorized),
+        sandbox_runs=sandbox_runs,
+        attempt=attempt,
+        authority=stored_authority,
+        executions={
+            failed.operation_id: known_failed_execution,
+            unauthorized.operation_id: current_execution,
+        },
+        operation_attempt_ids={
+            failed.operation_id: scientific_attempt_id,
+            unauthorized.operation_id: scientific_attempt_id,
+        },
+        run_attempt_ids={
+            failed.sandbox_run_id: scientific_attempt_id,
+            unauthorized.sandbox_run_id: scientific_attempt_id,
+        },
+    )
+    with pytest.raises(live.LiveProductPathError) as forbidden_method:
+        live._assert_cutover_operation_budget_before_approval(
+            unauthorized_provider,  # type: ignore[arg-type]
+            session_id=unauthorized.session_id,
+            approval_id=unauthorized.approval_id or "",
+            attempt_authority=authority,
+        )
+    assert (
+        forbidden_method.value.code
+        == "scientific_attempt_operation_not_authorized"
+    )
 
 
 def test_cutover_operation_budget_accepts_first_method_approval() -> None:
@@ -1826,6 +2218,7 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
         attempt_kind="positive",
         allowed_prerequisites=_allowed_prerequisites(),
     )
+    authority = _attempt_authority(roots)
 
     prompt = runner._formal_prompt(
         AttemptRunContext(
@@ -1833,17 +2226,22 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
             identity=_identity(),
             ledger_before=safe_micu_ledger_snapshot(ledger_path),
             attempt_number=1,
+            attempt_authority=authority,
         )
     )
 
     assert "campaign already enforces evidence-bearing provider cache bypass" in prompt
     assert "do not pass or invent unsupported cache flags" in prompt
-    execution_task_id = (
+    legacy_execution_task_id = (
         "aox_execution_cutover_"
         + roots.hpc_workspace_label.removeprefix("aox-cutover-")
     )
+    execution_task_id = str(authority["task_id"])
     assert "canonical task ids aox_research_pubmed_evidence" in prompt
     assert execution_task_id in prompt
+    assert legacy_execution_task_id not in prompt
+    assert str(authority["lane_id"]) in prompt
+    assert "call attempt.create with exactly these arguments" in prompt
     assert "aox_final_source_linked_report" in prompt
     assert "reconcile the durable task board and inbox" in prompt
     assert "create only a missing canonical member" in prompt
@@ -1891,7 +2289,7 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     assert "that reaches source preflight, including Python -c" in prompt
     assert "never use it as a read-only environment-inspection shortcut" in prompt
     assert "first author an explicit inspection source under /workspace/src" in prompt
-    assert "any local nonzero run makes the attempt ineligible" in prompt
+    assert "known terminal local failure is recoverable" in prompt
     assert "every normalized final FASTA with kind='sequence', format='fasta'" in prompt
     assert "AOX_ref.hmm with kind='result', format='hmm'" in prompt
     assert "every normalized final CSV with kind='result', format='csv'" in prompt
@@ -1899,9 +2297,16 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     assert "Artifact kind 'model' is invalid" in prompt
     assert "model, alignment, table, or graph belong in format or metadata" in prompt
     assert "zero-record FASTA keeps kind='sequence', format='fasta'" in prompt
-    assert "Current bundle @1 cannot adopt effects across a failed sandbox run" in prompt
+    assert "Intermediate paths may fail and be retried" in prompt
+    assert "disposition every occurrence as adopted, superseded, failed, or abandoned" in prompt
+    assert "scientific.effect.adopt" in prompt
+    assert "scientific.artifact.materialize" in prompt
+    assert "Unknown external effect, dispatch-in-doubt" in prompt
+    assert "known closed no-effect failure does not poison the attempt" in prompt
+    assert "task.finish(status='blocked')" in prompt
+    assert "scientific.attempt.close" in prompt
     assert "Persist each completed controlled-operation response" in prompt
-    assert "start no more controlled operations in that attempt" in prompt
+    assert "Publish each canonical final deliverable path only once" in prompt
     assert "whose source may reach the real EBI HMMER wait" in prompt
     assert "must use timeout_seconds=3600" in prompt
     assert "Short preflight inspection or post-failure diagnostic commands" in prompt
@@ -2065,6 +2470,7 @@ def test_catalog_source_snapshot_directory_is_sealed_as_self_verifying_envelope(
         identity=_identity(),
         ledger_before=safe_micu_ledger_snapshot(ledger_path),
         attempt_number=1,
+        attempt_authority=_attempt_authority(roots),
     )
 
     sealed = live._artifact_bytes(context, artifact)
@@ -2674,6 +3080,7 @@ def test_live_runner_seals_exact_no_go_when_live_opt_in_is_absent(
             identity=_identity(),
             ledger_before=before,
             attempt_number=1,
+            attempt_authority=_attempt_authority(roots),
         )
     )
 
@@ -2699,6 +3106,130 @@ def test_live_runner_seals_exact_no_go_when_live_opt_in_is_absent(
 
     verification = verify_attempt_bundle(bundle_path, artifact_root=roots.artifact_root)
     assert verification.passed, verification.to_dict()
+
+
+def test_live_runner_fails_closed_before_settings_without_attempt_authority(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    roots = create_blank_world_roots(
+        tmp_path / "campaign",
+        attempt_kind="positive",
+        attempt_id="positive-without-authority",
+        allowed_prerequisites=_allowed_prerequisites(),
+    )
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+    )
+
+    assert runner._settings_blocker(
+        AttemptRunContext(
+            roots=roots,
+            identity=_identity(),
+            ledger_before=safe_micu_ledger_snapshot(ledger_path),
+            attempt_number=1,
+        )
+    ) == {
+        "code": "attempt_authority_slot_identity_invalid",
+        "message": (
+            "formal session does not match its exact predeclared authority slot"
+        ),
+    }
+
+
+def test_formal_authority_grant_waits_for_exact_executor_delegation(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    roots = create_blank_world_roots(
+        tmp_path / "campaign",
+        attempt_kind="positive",
+        allowed_prerequisites=_allowed_prerequisites(),
+    )
+    authority = _attempt_authority(roots)
+    session_id = str(authority["session_id"])
+    task = SimpleNamespace(
+        session_id=session_id,
+        lane_id=authority["lane_id"],
+        assigned_ref="agent:executor:test",
+    )
+    lane = SimpleNamespace(session_id=session_id, cwd="/workspace")
+    agent = SimpleNamespace(
+        task_id=authority["task_id"],
+        lane_id=authority["lane_id"],
+        role="executor",
+        status=SimpleNamespace(is_terminal=False),
+    )
+    provider = _AuthorityGrantProvider(
+        task=task,
+        lane=lane,
+        agent=agent,
+    )
+    calls: list[tuple[str, dict[str, object], str]] = []
+
+    class Api:
+        def post_json(
+            self,
+            route: str,
+            payload: dict[str, object],
+            *,
+            idempotency_key: str,
+        ) -> dict[str, object]:
+            calls.append((route, payload, idempotency_key))
+            request = authority["authority_request"]
+            assert isinstance(request, dict)
+            return {
+                "record": {
+                    "envelope_id": authority["envelope_id"],
+                    "request_digest": authority["request_digest"],
+                    "session_id": session_id,
+                    "task_id": authority["task_id"],
+                    "root_ref": request["root_ref"],
+                }
+            }
+
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+    )
+    assert runner._grant_formal_attempt_authority_if_ready(
+        Api(),  # type: ignore[arg-type]
+        provider,  # type: ignore[arg-type]
+        session_id=session_id,
+        authority=authority,
+    )
+    request = authority["authority_request"]
+    assert isinstance(request, dict)
+    assert calls == [
+        (
+            (
+                f"/v3/sessions/{session_id}/"
+                "scientific-attempt-authorizations"
+            ),
+            live.authority_grant_payload(authority),
+            str(request["idempotency_key"]),
+        )
+    ]
+
+    invalid_provider = _AuthorityGrantProvider(
+        task=task,
+        lane=lane,
+        agent=SimpleNamespace(
+            task_id=authority["task_id"],
+            lane_id=authority["lane_id"],
+            role="researcher",
+            status=SimpleNamespace(is_terminal=False),
+        ),
+    )
+    with pytest.raises(live.LiveProductPathError) as invalid:
+        runner._grant_formal_attempt_authority_if_ready(
+            Api(),  # type: ignore[arg-type]
+            invalid_provider,  # type: ignore[arg-type]
+            session_id=session_id,
+            authority=authority,
+        )
+    assert invalid.value.code == "attempt_authority_task_lane_invalid"
 
 
 def test_live_runner_requires_durable_routes_and_generic_closure_before_cutover(
@@ -2730,6 +3261,7 @@ def test_live_runner_requires_durable_routes_and_generic_closure_before_cutover(
         identity=_identity(),
         ledger_before=safe_micu_ledger_snapshot(ledger_path),
         attempt_number=1,
+        attempt_authority=_attempt_authority(roots),
     )
 
     legacy_runner = live.LiveAoxAttemptRunner(
@@ -2790,6 +3322,10 @@ def test_cli_exposes_real_live_campaign_command(tmp_path: Path) -> None:
             str(tmp_path / "prerequisites.json"),
             "--architecture-qualification-report",
             str(tmp_path / "architecture-qualification.json"),
+            "--attempt-authority-plan",
+            str(tmp_path / "attempt-authority-plan.json"),
+            "--attempt-authority-consumption",
+            str(tmp_path / "attempt-authority-plan.json.consumed.json"),
         ]
     )
 
@@ -2798,6 +3334,12 @@ def test_cli_exposes_real_live_campaign_command(tmp_path: Path) -> None:
     assert args.max_drains == 120
     assert args.max_signals_per_drain == 1
     assert args.browser_completion_hold_seconds == 60.0
+    assert args.attempt_authority_plan == (
+        tmp_path / "attempt-authority-plan.json"
+    )
+    assert args.attempt_authority_consumption == (
+        tmp_path / "attempt-authority-plan.json.consumed.json"
+    )
 
 
 def _runner_settings(ledger_path: Path) -> OpenZymeSettings:
@@ -4368,6 +4910,7 @@ def test_chrome_once_gate_is_scoped_to_positive_one(tmp_path: Path) -> None:
                 identity=_identity(),
                 ledger_before=safe_micu_ledger_snapshot(ledger_path),
                 attempt_number=attempt_number,
+                attempt_authority=_attempt_authority(roots),
             )
         )
 
@@ -4967,10 +5510,17 @@ def test_cli_exposes_chrome_once_mode(tmp_path: Path) -> None:
             str(tmp_path / "identity.json"),
             "--allowed-prerequisites",
             str(tmp_path / "prerequisites.json"),
-            "--architecture-qualification-report",
-            str(tmp_path / "architecture-qualification.json"),
-            "--approval-mode",
-            "chrome-once",
+                "--architecture-qualification-report",
+                str(tmp_path / "architecture-qualification.json"),
+                "--attempt-authority-plan",
+                str(tmp_path / "attempt-authority-plan.json"),
+                "--attempt-authority-consumption",
+                str(
+                    tmp_path
+                    / "attempt-authority-plan.json.consumed.json"
+                ),
+                "--approval-mode",
+                "chrome-once",
             "--browser-completion-hold-seconds",
             "0",
             "--browser-approval-timeout-seconds",

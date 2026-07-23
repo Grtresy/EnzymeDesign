@@ -32,7 +32,8 @@ user message
   -> build restore context
   -> build AgentStepContext + typed tool router
   -> preflight prompt budget
-       >= 85% -> bounded compaction -> rebuild restore context
+       >= 85%, including initial emergency -> one bounded compaction -> rebuild
+       rebuilt >= 90% -> fail before provider
        >= 90% after rebuild -> structured context_budget_exceeded failure, no provider call
   -> call top-level master-agent model with router-derived V3 tool catalog
   -> tool calls?
@@ -145,7 +146,7 @@ role surface 由同一个 router 判定：master 即使注册了 engine runtimes
 ## 7. Compaction 规则
 
 - 每次 master / teammate 发起 tool-calling provider 调用前，harness 必须按模型 profile 估算完整待发送 payload：system prompt、messages、tools schema 和待回灌 tool observation。
-- 默认阈值是 context window 的 `80% / 85% / 90%`：达到 80% 记录 `llm.context_budget.warning`；达到 85% 写入 bounded auto compaction 并刷新 restore context；达到 90% 返回结构化 `context_budget_exceeded`，不得调用 provider。
+- 默认阈值是 context window 的 `80% / 85% / 90%`：达到 80% 记录 `llm.context_budget.warning`；达到 85%（包括初始已经达到 90% emergency）先执行一次 bounded auto compaction 并刷新 restore context；只有 rebuilt payload 仍达到 90% 才返回结构化 `context_budget_exceeded`，不得调用 provider。该单次补救不能循环压缩或绕过最终门槛。
 - GLM-5.1 默认 profile 为 `context_window_tokens=200000`、默认输出预留 `65536`、最大输出 `131072`。未知模型必须使用显式 env override，否则使用保守 fallback 并在事件中标记 profile unknown。
 - 第三方 OpenAI-compatible endpoint 不得仅凭 model name 继承另一个 provider 的 context profile。AOX blank-world live effective config 要求显式 `context_window_tokens`，并将当前 campaign ceiling 保守限制为 `200000`；缺失或更大的声明在创建 attempt 前 fail closed。provider tokenizer 不可用时仍可用本地保守估算，但不得重新启用 model-name 的 `1050000` 假设。
 - auto compaction 默认写入 `session` scope；有 focused lane 时同时写入 `lane` scope；`task` scope compaction 仍保留显式 tool 或高价值触发。
@@ -176,3 +177,15 @@ architecture qualification 在 non-live、credential-scrubbed 环境验证顶层
 bounded progress、restart/effect/evidence 不变量，不调用真实 LLM，也不评价回答质量。workflow eval
 验证产品行为样例，seeded/live smoke 验证特定配置或外部路径；三者不能替代 clean full
 qualification admission，qualification 也不能替代 live availability 或 scientific cutover proof。
+
+## 11. Failed-result continuation
+
+每次 tool call 后，top-level 与 teammate driver 都读取 `ok/status/summary/error_code/hint/details`
+及 `failure_observation`。`ok=false` 不自动结束 turn：effect 已知时继续把 observation 回灌模型，
+由 agent 选择修复、替代策略、求助或 refusal；step budget 不因失败自动增加。
+
+`failure.get` 可恢复完整 safe observation，`failure.hypothesis.record` 只追加 agent-attributed
+interpretation。driver/provider 自身失败时不存在可归属的 agent decision，harness 返回
+system diagnostic 并结束本次 runtime turn，但不写 assistant conversation message 或 task
+terminal state。unknown effect/fencing/authority/integrity exception 仍穿透普通 tool-result
+恢复路径并停止当前 ownership。

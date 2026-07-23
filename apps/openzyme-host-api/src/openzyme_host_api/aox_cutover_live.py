@@ -26,6 +26,7 @@ from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import MutationScopeError
 from openzyme_core import MutationScopeService
 from openzyme_core import MutationWriterTurnFactory
+from openzyme_core import ScientificAttemptService
 from openzyme_core import build_conversation_projection
 from openzyme_core import current_mutation_write_authority
 from openzyme_core import sandbox_image_record
@@ -34,9 +35,13 @@ from openzyme_core.sandbox_workspace import DEFAULT_SANDBOX_IMAGE_REF
 from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_domain import ArtifactKind
 from openzyme_domain import ControlledOperation
+from openzyme_domain import ControlledOperationExecutionLifecycle
 from openzyme_domain import ControlledOperationStatus
+from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import MutationScopeKind
 from openzyme_domain import MutationWriterKind
+from openzyme_domain import RetryEligibility
+from openzyme_domain import ScientificAttemptStatus
 from openzyme_domain import SessionArtifactRecord
 from openzyme_pipeline import aox_hmmer
 from openzyme_pipeline import aox_motif
@@ -71,6 +76,16 @@ from .aox_cutover_runtime_config import AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN
 from .aox_cutover_runtime_config import AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
 from .aox_cutover_runtime_config import AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID
 from .aox_cutover_runtime_config import AOX_DURABLE_ROUTE_POLICY_IDS
+from .aox_attempt_authority import attempt_admission_arguments
+from .aox_attempt_authority import authority_grant_payload
+from .aox_scientific_contract import AOX_FORMAL_WORKFLOW_METHODS
+from .aox_scientific_contract import AOX_FORMAL_WORKFLOW_ROLES
+from .aox_scientific_contract import (
+    AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST,
+)
+from .aox_scientific_contract import AOX_SELECTED_CHAIN_WORKFLOW_ID
+from .aox_scientific_contract import AOX_WORKFLOW_METHOD_BY_ROLE
+from .aox_scientific_contract import validate_aox_scientific_workflow_role
 from .aox_runtime_observation import AoxRuntimeObservationError
 from .aox_runtime_observation import AoxRuntimeObservationService
 from .app import HostApiDependencies
@@ -494,6 +509,7 @@ class SessionDriveResult:
     browser_approval_receipt: dict[str, object] | None = None
     browser_observation_receipt: dict[str, object] | None = None
     mutation_scope: dict[str, object] = field(default_factory=dict)
+    scientific_attempt_control: dict[str, object] | None = None
 
     def safe_summary(self) -> dict[str, object]:
         task_items = list(
@@ -529,6 +545,11 @@ class SessionDriveResult:
             "workspace_digest": canonical_digest(self.workspace),
             "event_receipt": dict(self.event_receipt),
             "mutation_scope": dict(self.mutation_scope),
+            "scientific_attempt_control_digest": (
+                None
+                if self.scientific_attempt_control is None
+                else canonical_digest(self.scientific_attempt_control)
+            ),
         }
 
 
@@ -1348,6 +1369,10 @@ class _PublicHostClient:
                 "pending-approvals",
             }
             permitted = permitted or (method == "POST" and segments[3] == "messages")
+            permitted = permitted or (
+                method == "POST"
+                and segments[3] == "scientific-attempt-authorizations"
+            )
         elif len(segments) == 5 and segments[:2] == ["v3", "sessions"]:
             permitted = method == "POST" and segments[3:] == ["runtime", "drain"]
         elif len(segments) == 6 and segments[:2] == ["v3", "sessions"]:
@@ -1569,6 +1594,7 @@ class LiveAoxAttemptRunner:
                 blob_root=context.roots.blob_root,
                 fault_blob_root=None,
                 browser_gate_enabled=False,
+                attempt_authority=None,
             )[0]
             if probe.state != "completed":
                 return _LiveDriveOutcome(
@@ -1587,7 +1613,20 @@ class LiveAoxAttemptRunner:
                     formal=None,
                 )
 
-            formal_session_id = f"sess_formal_{context.roots.attempt_id}"
+            formal_authority = self._require_formal_attempt_authority(
+                context.attempt_authority,
+                session_id=str(
+                    dict(context.attempt_authority or {}).get("session_id")
+                    or ""
+                ),
+                expected_scope=(
+                    "fault"
+                    if context.roots.attempt_kind == "fault"
+                    else "formal"
+                ),
+                outer_attempt_id=context.roots.attempt_id,
+            )
+            formal_session_id = str(formal_authority["session_id"])
             formal, fault = self._run_session(
                 api,
                 provider,
@@ -1603,6 +1642,7 @@ class LiveAoxAttemptRunner:
                 blob_root=context.roots.blob_root,
                 fault_blob_root=context.roots.blob_root,
                 browser_gate_enabled=browser_gate_enabled,
+                attempt_authority=context.attempt_authority,
             )
             if context.roots.attempt_kind == "fault":
                 if fault is not None and formal.state == "failed":
@@ -1748,6 +1788,75 @@ class LiveAoxAttemptRunner:
             request_timeout_seconds=self.timeout_seconds,
         ) as client:
             yield client
+
+    @staticmethod
+    def _require_formal_attempt_authority(
+        raw_authority: Mapping[str, object] | None,
+        *,
+        session_id: str,
+        expected_scope: Literal["formal", "fault"],
+        outer_attempt_id: str | None = None,
+    ) -> dict[str, object]:
+        authority = (
+            {} if raw_authority is None else dict(raw_authority)
+        )
+        request = authority.get("authority_request")
+        attempt_id = str(authority.get("attempt_id") or "")
+        attempt_suffix = attempt_id.replace("-", "_")
+        expected_attempt_kind = (
+            "fault" if expected_scope == "fault" else "positive"
+        )
+        if (
+            not isinstance(request, dict)
+            or (outer_attempt_id is not None and attempt_id != outer_attempt_id)
+            or authority.get("attempt_kind") != expected_attempt_kind
+            or authority.get("session_id") != session_id
+            or session_id != f"sess_formal_{attempt_suffix}"
+            or authority.get("task_id")
+            != f"aox_execution_cutover_{attempt_suffix}"
+            or authority.get("lane_id")
+            != f"lane_aox_execution_{attempt_suffix}"
+            or authority.get("scope") != expected_scope
+            or request.get("session_id") != session_id
+            or request.get("task_id") != authority.get("task_id")
+            or request.get("campaign_id") is None
+            or request.get("workflow_id")
+            != AOX_SELECTED_CHAIN_WORKFLOW_ID
+            or request.get("root_ref") != f"attempts/{attempt_id}"
+            or request.get("allowed_scopes") != [expected_scope]
+            or request.get("max_attempts") != 1
+            or not str(authority.get("lane_id") or "")
+            or not str(authority.get("envelope_id") or "")
+            or not str(authority.get("request_digest") or "")
+        ):
+            raise LiveProductPathError(
+                "attempt_authority_slot_identity_invalid",
+                "formal session does not match its exact predeclared authority slot",
+                details={"session_id": session_id},
+            )
+        return authority
+
+    def _open_pre_attempt_session_scope(
+        self,
+        provider: SQLiteRepositoryProvider,
+        *,
+        session_id: str,
+        outer_attempt_id: str,
+        blob_root: Path,
+    ) -> None:
+        with self._provider_repository_scope(provider) as repositories:
+            self._mutation_scope_service(
+                repositories,
+                blob_root=blob_root,
+            ).open_scope(
+                session_id=session_id,
+                scope_kind=MutationScopeKind.SESSION,
+                scope_ref=f"aox-pre-attempt:{outer_attempt_id}",
+                scope_id=(
+                    "mutation_scope_pre_"
+                    + _safe_id(outer_attempt_id)
+                ),
+            )
 
     @contextmanager
     def _session_mutation_scope(
@@ -2123,6 +2232,7 @@ class LiveAoxAttemptRunner:
         blob_root: Path,
         fault_blob_root: Path | None,
         browser_gate_enabled: bool,
+        attempt_authority: Mapping[str, object] | None = None,
     ) -> tuple[SessionDriveResult, FaultInjectionReceipt | None]:
         api.post_json(
             "/v3/sessions",
@@ -2135,6 +2245,31 @@ class LiveAoxAttemptRunner:
             idempotency_key=f"{session_id}:create",
         )
         mutation_scope: dict[str, object] = {}
+        if purpose == "formal":
+            authority = self._require_formal_attempt_authority(
+                attempt_authority,
+                session_id=session_id,
+                expected_scope="fault" if fault_enabled else "formal",
+            )
+            self._open_pre_attempt_session_scope(
+                provider,
+                session_id=session_id,
+                outer_attempt_id=str(authority["attempt_id"]),
+                blob_root=blob_root,
+            )
+            return self._run_session_scoped(
+                api,
+                provider,
+                session_id=session_id,
+                purpose=purpose,
+                message=message,
+                workflow_refs=workflow_refs,
+                fault_enabled=fault_enabled,
+                fault_blob_root=fault_blob_root,
+                browser_gate_enabled=browser_gate_enabled,
+                mutation_scope=mutation_scope,
+                attempt_authority=authority,
+            )
         with self._session_mutation_scope(
             provider,
             session_id=session_id,
@@ -2155,6 +2290,7 @@ class LiveAoxAttemptRunner:
                 fault_blob_root=fault_blob_root,
                 browser_gate_enabled=browser_gate_enabled,
                 mutation_scope=mutation_scope,
+                attempt_authority=None,
             )
 
     def _run_session_scoped(
@@ -2170,6 +2306,7 @@ class LiveAoxAttemptRunner:
         fault_blob_root: Path | None,
         browser_gate_enabled: bool,
         mutation_scope: dict[str, object],
+        attempt_authority: Mapping[str, object] | None = None,
     ) -> tuple[SessionDriveResult, FaultInjectionReceipt | None]:
         api.post_json(
             f"/v3/sessions/{session_id}/messages",
@@ -2180,6 +2317,8 @@ class LiveAoxAttemptRunner:
         approval_ids: list[str] = []
         browser_approval_receipt: dict[str, object] | None = None
         fault_receipt: FaultInjectionReceipt | None = None
+        authority_granted = False
+        scientific_attempt_control: dict[str, object] | None = None
         last_workspace: dict[str, Any] = {}
         last_workspace_response_binding: dict[str, object] = {}
         for drain_number in range(1, self.max_drains + 1):
@@ -2213,6 +2352,7 @@ class LiveAoxAttemptRunner:
                 fault_enabled=fault_enabled,
                 fault_blob_root=fault_blob_root,
                 fault_receipt=fault_receipt,
+                attempt_authority=attempt_authority,
             )
             last_workspace = coordination.workspace
             last_workspace_response_binding = (
@@ -2221,6 +2361,13 @@ class LiveAoxAttemptRunner:
             approval_ids.extend(coordination.approval_ids)
             browser_approval_receipt = coordination.browser_approval_receipt
             fault_receipt = coordination.fault_receipt
+            if attempt_authority is not None and not authority_granted:
+                authority_granted = self._grant_formal_attempt_authority_if_ready(
+                    api,
+                    provider,
+                    session_id=session_id,
+                    authority=attempt_authority,
+                )
             try:
                 observation = AoxRuntimeObservationService(
                     provider
@@ -2237,6 +2384,16 @@ class LiveAoxAttemptRunner:
             state = observation.state
             blocker = observation.blocker_code
             if state in {"completed", "failed"}:
+                if attempt_authority is not None:
+                    closed = self._closed_formal_attempt_control(
+                        provider,
+                        session_id=session_id,
+                        authority=attempt_authority,
+                    )
+                    if closed is None:
+                        continue
+                    scientific_attempt_control, formal_scope = closed
+                    mutation_scope.update(formal_scope)
                 if fault_receipt is not None:
                     fault_receipt = self._complete_fault_receipt(
                         provider,
@@ -2267,6 +2424,9 @@ class LiveAoxAttemptRunner:
                         approval_ids=tuple(approval_ids),
                         browser_approval_receipt=browser_approval_receipt,
                         mutation_scope=mutation_scope,
+                        scientific_attempt_control=(
+                            scientific_attempt_control
+                        ),
                     ),
                     fault_receipt,
                 )
@@ -2279,6 +2439,14 @@ class LiveAoxAttemptRunner:
             )
             last_workspace_response_binding = api.response_binding(
                 api.last_receipt, semantic_value=last_workspace
+            )
+        if attempt_authority is not None:
+            mutation_scope.update(
+                self._current_formal_mutation_scope_projection(
+                    provider,
+                    session_id=session_id,
+                    authority=attempt_authority,
+                )
             )
         return (
             SessionDriveResult(
@@ -2298,9 +2466,185 @@ class LiveAoxAttemptRunner:
                 approval_ids=tuple(approval_ids),
                 browser_approval_receipt=browser_approval_receipt,
                 mutation_scope=mutation_scope,
+                scientific_attempt_control=scientific_attempt_control,
             ),
             fault_receipt,
         )
+
+    def _grant_formal_attempt_authority_if_ready(
+        self,
+        api: _PublicHostClient,
+        provider: SQLiteRepositoryProvider,
+        *,
+        session_id: str,
+        authority: Mapping[str, object],
+    ) -> bool:
+        task_id = str(authority["task_id"])
+        lane_id = str(authority["lane_id"])
+        with provider.read() as scope:
+            task = scope.repositories.tasks.get(task_id)
+            lane = scope.repositories.lanes.get(lane_id)
+            assigned_ref = (
+                None if task is None else str(task.assigned_ref or "")
+            )
+            agent = (
+                None
+                if not assigned_ref
+                else scope.repositories.agents.get(session_id, assigned_ref)
+            )
+            existing = (
+                scope.repositories.scientific_attempt_authorizations.get(
+                    str(authority["envelope_id"])
+                )
+            )
+        if existing is not None:
+            if (
+                existing.session_id != session_id
+                or existing.task_id != task_id
+                or existing.root_ref
+                != f"attempts/{authority['attempt_id']}"
+                or existing.request_digest
+                != str(authority["request_digest"])
+            ):
+                raise LiveProductPathError(
+                    "attempt_authority_durable_identity_mismatch",
+                    "stored authority differs from the predeclared live slot",
+                    details={"session_id": session_id},
+                )
+            return True
+        if task is None or lane is None:
+            return False
+        if (
+            task.session_id != session_id
+            or task.lane_id != lane_id
+            or lane.session_id != session_id
+            or lane.cwd != "/workspace"
+            or not str(task.assigned_ref or "").startswith("agent:")
+            or agent is None
+            or agent.task_id != task_id
+            or agent.lane_id != lane_id
+            or agent.role != "executor"
+            or agent.status.is_terminal
+        ):
+            raise LiveProductPathError(
+                "attempt_authority_task_lane_invalid",
+                "authority requires the exact delegated execution task and lane",
+                details={"task_id": task_id, "lane_id": lane_id},
+            )
+        request = dict(authority["authority_request"])
+        response = api.post_json(
+            (
+                f"/v3/sessions/{session_id}/"
+                "scientific-attempt-authorizations"
+            ),
+            authority_grant_payload(authority),
+            idempotency_key=str(request["idempotency_key"]),
+        )
+        record = response.get("record")
+        if (
+            not isinstance(record, dict)
+            or record.get("envelope_id") != authority["envelope_id"]
+            or record.get("request_digest") != authority["request_digest"]
+            or record.get("session_id") != session_id
+            or record.get("task_id") != task_id
+            or record.get("root_ref")
+            != f"attempts/{authority['attempt_id']}"
+        ):
+            raise LiveProductPathError(
+                "attempt_authority_grant_receipt_invalid",
+                "Host grant response does not bind the exact reviewed slot",
+                details={"session_id": session_id},
+            )
+        return True
+
+    def _closed_formal_attempt_control(
+        self,
+        provider: SQLiteRepositoryProvider,
+        *,
+        session_id: str,
+        authority: Mapping[str, object],
+    ) -> tuple[dict[str, object], dict[str, object]] | None:
+        envelope_id = str(authority["envelope_id"])
+        with provider.read() as scope:
+            repositories = scope.repositories
+            attempts = tuple(
+                repositories.scientific_attempts.list_by_session(session_id)
+            )
+            matching = [
+                attempt
+                for attempt in attempts
+                if attempt.envelope_id == envelope_id
+            ]
+            if len(attempts) != len(matching) or len(matching) > 1:
+                raise LiveProductPathError(
+                    "scientific_attempt_session_identity_invalid",
+                    "formal session contains an attempt outside its exact authority",
+                    details={
+                        "session_id": session_id,
+                        "attempt_count": len(attempts),
+                        "matching_count": len(matching),
+                    },
+                )
+            if not matching:
+                return None
+            attempt = matching[0]
+            if (
+                attempt.task_id != authority["task_id"]
+                or attempt.lane_id != authority["lane_id"]
+                or attempt.root_ref
+                != f"attempts/{authority['attempt_id']}"
+            ):
+                raise LiveProductPathError(
+                    "scientific_attempt_session_identity_invalid",
+                    "admitted attempt differs from the reviewed task, lane, or root",
+                    details={"session_id": session_id},
+                )
+            if attempt.status is not ScientificAttemptStatus.CLOSED:
+                return None
+            service = ScientificAttemptService(
+                repositories,
+                workflow_role_validator=validate_aox_scientific_workflow_role,
+            )
+            control = service.export_closed_attempt_evidence(
+                attempt.attempt_id
+            )
+            projection = service.mutation_scopes.project_scope(
+                attempt.mutation_scope_id
+            )
+        return control, projection
+
+    def _current_formal_mutation_scope_projection(
+        self,
+        provider: SQLiteRepositoryProvider,
+        *,
+        session_id: str,
+        authority: Mapping[str, object],
+    ) -> dict[str, object]:
+        with provider.read() as scope:
+            repositories = scope.repositories
+            attempts = [
+                attempt
+                for attempt in repositories.scientific_attempts.list_by_session(
+                    session_id
+                )
+                if attempt.envelope_id == str(authority["envelope_id"])
+            ]
+            if attempts:
+                return MutationScopeService(repositories).project_scope(
+                    attempts[0].mutation_scope_id
+                )
+            active = [
+                item
+                for item in repositories.mutation_scopes.list_by_session(
+                    session_id
+                )
+                if not item.state.is_terminal
+            ]
+            if len(active) == 1:
+                return MutationScopeService(repositories).project_scope(
+                    active[0].scope_id
+                )
+        return {}
 
     def _coordinate_runtime_drain(
         self,
@@ -2317,6 +2661,7 @@ class LiveAoxAttemptRunner:
         fault_enabled: bool,
         fault_blob_root: Path | None,
         fault_receipt: FaultInjectionReceipt | None,
+        attempt_authority: Mapping[str, object] | None = None,
     ) -> _DrainCoordinationResult:
         """Admit one bounded runtime command and coordinate its durable approvals."""
 
@@ -2425,6 +2770,7 @@ class LiveAoxAttemptRunner:
                         provider,
                         session_id=session_id,
                         approval_id=approval_id,
+                        attempt_authority=attempt_authority,
                     )
                     if browser_gate_enabled and browser_approval_receipt is None:
                         # Chrome observes the composite public workspace.  Pay
@@ -3347,6 +3693,25 @@ class LiveAoxAttemptRunner:
         self,
         context: AttemptRunContext,
     ) -> dict[str, str] | None:
+        try:
+            self._require_formal_attempt_authority(
+                context.attempt_authority,
+                session_id=(
+                    "sess_formal_"
+                    + context.roots.attempt_id.replace("-", "_")
+                ),
+                expected_scope=(
+                    "fault"
+                    if context.roots.attempt_kind == "fault"
+                    else "formal"
+                ),
+                outer_attempt_id=context.roots.attempt_id,
+            )
+        except LiveProductPathError as exc:
+            return {
+                "code": exc.code,
+                "message": _safe_message(exc),
+            }
         receipt_path = self.browser_observation_receipt_path
         if self._browser_gate_enabled(context):
             if receipt_path is None:
@@ -3645,6 +4010,29 @@ class LiveAoxAttemptRunner:
             "aox_execution_cutover_"
             + context.roots.hpc_workspace_label.removeprefix("aox-cutover-")
         )
+        authority_instruction = ""
+        if context.attempt_authority is not None:
+            authority = dict(context.attempt_authority)
+            execution_task_id = str(authority["task_id"])
+            admission = attempt_admission_arguments(authority)
+            authority_instruction = (
+                " Create the executor lane with the exact lane_id "
+                f"{str(authority['lane_id'])!r} and cwd='/workspace', bind the "
+                f"executor task {str(authority['task_id'])!r} to that lane, and "
+                "delegate it before execution. On the executor's first turn, call "
+                "attempt.create with exactly these arguments and then return without "
+                "starting a sandbox run or controlled operation: "
+                + json.dumps(
+                    admission,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + ". The Host will seal the pre-attempt scope, consume the reviewed "
+                "one-use envelope, open the scientific attempt, and resume the "
+                "executor. After resumption, use scientific.attempt.inspect to obtain "
+                "the admitted attempt_id and current full occurrence universe. "
+            )
         prompt = (
             S15_AOX_HMM_FIXED_PROMPT
             + " The campaign already enforces evidence-bearing provider cache bypass; do not "
@@ -3657,7 +4045,9 @@ class LiveAoxAttemptRunner:
             + ", and aox_final_source_linked_report. On every master wake, reconcile the durable "
             + "task board and inbox against exactly that canonical set: create only a missing "
             + "canonical member, advance any existing member, and never create another, "
-            + "suffixed, or replacement task id. When delegating, bind "
+            + "suffixed, or replacement task id."
+            + authority_instruction
+            + " When delegating, bind "
             + f"workflow_refs=[{workflow_ref!r}] only to the executor task; researcher and reporter "
             + "must omit workflow_refs or pass an empty list. The executor must use the installed "
             + "versioned callables openzyme_pipeline.aox_reference.select_hmm_reference_set, "
@@ -3701,8 +4091,9 @@ class LiveAoxAttemptRunner:
             + "entire non-empty /workspace/src tree; never use "
             + "it as a read-only environment-inspection shortcut. If runtime introspection "
             + "remains necessary, first author an explicit inspection source under "
-            + "/workspace/src and run that file, accepting that any local nonzero run makes the "
-            + "attempt ineligible. Register every normalized final "
+            + "/workspace/src and run that file. A known terminal local failure is "
+            + "recoverable inside this scientific attempt; diagnose it, preserve its "
+            + "occurrence, and choose whether to retry. Register every normalized final "
             + "FASTA with kind='sequence', format='fasta'; AOX_ref.hmm with kind='result', "
             + "format='hmm'; every normalized final CSV with kind='result', format='csv'; and "
             + "both normalized final JSON files with kind='result', format='json'. Artifact kind "
@@ -3711,10 +4102,28 @@ class LiveAoxAttemptRunner:
             + "zero-record FASTA keeps kind='sequence', format='fasta' and additionally uses its "
             + "required typed validation profile. Persist each completed "
             + "controlled-operation response under /workspace/work before downstream parsing. "
-            + "Current bundle @1 cannot adopt effects across a failed sandbox run: after any "
-            + "local nonzero run, preserve checkpoints only as failure evidence, start no more "
-            + "controlled operations in that attempt, explicitly fail the task, and let a fresh "
-            + "attempt retry. sandbox.exec argv is direct argv with no implicit shell parsing: "
+            + "Intermediate paths may fail and be retried. Never hide or delete an occurrence. "
+            + "Use scientific.selection.begin over the full occurrence universe; disposition "
+            + "every occurrence as adopted, superseded, failed, or abandoned. Adopt exactly "
+            + "one successful terminal-known controlled operation for each reached AOX role. "
+            + "A successful effect from an earlier sandbox run in this same attempt may be "
+            + "reused only through scientific.effect.adopt and "
+            + "scientific.artifact.materialize into /workspace/input; raw workspace copying is "
+            + "forbidden. If later work changes the universe, begin a compare-and-swap child "
+            + "selection and repeat the exact same adoption/materialization to carry verified "
+            + "bytes forward; the Host reuses identical bytes without overwrite. Seal only the "
+            + "final complete selection. Unknown external effect, dispatch-in-doubt, an active "
+            + "or reconcile-required prior execution, unretired mutation writer, authority "
+            + "mismatch, or resource-bound breach must stop further approval and remain "
+            + "explicitly blocked. A known closed no-effect failure does not poison the "
+            + "attempt. Publish each canonical final deliverable path only once, after selecting "
+            + "the final chain. For an unavailable harness/operator/user capability, use "
+            + "task.finish(status='blocked') with the exact error and likely cause; use failed "
+            + "only when the scientific task is genuinely impossible. The master must request "
+            + "scientific.attempt.close against the sealed final selection only after the task "
+            + "board, report publication, and final user-facing answer are ready; this close "
+            + "request is the last mutating action of that turn. "
+            + "sandbox.exec argv is direct argv with no implicit shell parsing: "
             + "never put heredoc, redirection, or pipeline syntax inside a Python argv element; "
             + "write scripts with sandbox.file.write or sandbox.file.patch and then invoke the "
             + "script path. Use an explicit ['bash', '-lc', '<command>'] argv only when shell "
@@ -3748,8 +4157,12 @@ class LiveAoxAttemptRunner:
         if context.roots.attempt_kind == "fault":
             prompt += (
                 " If the required execution chain fails, do not publish or claim a successful "
-                "report: explicitly finish the execution task failed, finish reporting blocked "
-                "or cancelled, and bind the final assistant response to the exact observed "
+                "report. Select the exact successful NCBI prefix as adopted, disposition the "
+                "injected failed MAFFT occurrence as failed, seal that full occurrence "
+                "selection, and have the master request scientific.attempt.close after the "
+                "negative-state report/task closure. Explicitly finish the execution task "
+                "failed, finish reporting blocked or cancelled, and bind the final assistant "
+                "response to the exact observed "
                 "structured fields failure_code=artifact_blob_digest_mismatch and "
                 "status=failed."
             )
@@ -3816,6 +4229,14 @@ class LiveAoxAttemptRunner:
         product_path["public_api_receipts"] = public_api_receipts
         product_path["launch_receipt"] = launch_receipt
         evidence["product_path"] = product_path
+        if formal.scientific_attempt_control is None:
+            raise LiveProductPathError(
+                "scientific_attempt_control_missing",
+                "positive evidence lacks the exact closed selected chain",
+            )
+        evidence["scientific_attempt_control"] = dict(
+            formal.scientific_attempt_control
+        )
         return evidence
 
     def _attach_effective_config(
@@ -4105,6 +4526,14 @@ class LiveAoxAttemptRunner:
         product_path["public_api_receipts"] = public_api_receipts
         product_path["launch_receipt"] = launch_receipt
         evidence["product_path"] = product_path
+        if formal.scientific_attempt_control is None:
+            raise LiveProductPathError(
+                "scientific_attempt_control_missing",
+                "fault evidence lacks the exact closed selected chain",
+            )
+        evidence["scientific_attempt_control"] = dict(
+            formal.scientific_attempt_control
+        )
         return evidence
 
     def _inject_before_hpc_approval(
@@ -5084,19 +5513,90 @@ def _single_completed_operation(
     return matches[0]
 
 
+def _selected_completed_formal_operations(
+    formal: SessionDriveResult,
+    *,
+    operations: tuple[ControlledOperation, ...],
+) -> dict[str, ControlledOperation]:
+    control = formal.scientific_attempt_control
+    if not isinstance(control, dict):
+        raise LiveProductPathError(
+            "scientific_attempt_control_missing",
+            "formal AOX evidence requires one closed selected scientific chain",
+        )
+    raw_adoptions = control.get("adoptions")
+    if not isinstance(raw_adoptions, list) or not raw_adoptions:
+        raise LiveProductPathError(
+            "scientific_selected_chain_missing",
+            "closed scientific attempt has no adopted controlled operations",
+        )
+    operation_by_id = {
+        operation.operation_id: operation for operation in operations
+    }
+    expected_method_by_role = {
+        role: AOX_WORKFLOW_METHOD_BY_ROLE[role]
+        for role in AOX_FORMAL_WORKFLOW_ROLES
+    }
+    selected: dict[str, ControlledOperation] = {}
+    selected_ids: set[str] = set()
+    for raw_adoption in raw_adoptions:
+        if not isinstance(raw_adoption, dict):
+            raise LiveProductPathError(
+                "scientific_selected_chain_invalid",
+                "scientific adoption projection contains a non-object item",
+            )
+        role = str(raw_adoption.get("workflow_role") or "")
+        operation_id = str(raw_adoption.get("operation_id") or "")
+        operation = operation_by_id.get(operation_id)
+        if (
+            role not in expected_method_by_role
+            or role in selected
+            or operation_id in selected_ids
+            or operation is None
+            or operation.status is not ControlledOperationStatus.COMPLETED
+            or (
+                operation.sdk_module,
+                operation.function_name,
+            )
+            != expected_method_by_role[role]
+        ):
+            raise LiveProductPathError(
+                "scientific_selected_chain_invalid",
+                "adopted AOX role does not resolve to one completed exact operation",
+                details={
+                    "workflow_role": role,
+                    "operation_id": operation_id,
+                },
+            )
+        selected[role] = operation
+        selected_ids.add(operation_id)
+    required_roles = {
+        "ncbi_fetch",
+        "reference_alignment",
+        "hmm_build",
+        "hmmer_search",
+    }
+    if not required_roles.issubset(selected):
+        raise LiveProductPathError(
+            "scientific_selected_chain_incomplete",
+            "selected AOX chain lacks a required controlled operation role",
+            details={"missing_roles": sorted(required_roles - set(selected))},
+        )
+    return selected
+
+
 def _assert_cutover_operation_budget_before_approval(
     provider: SQLiteRepositoryProvider,
     *,
     session_id: str,
     approval_id: str,
+    attempt_authority: Mapping[str, object] | None = None,
 ) -> None:
-    """Reject an already-ineligible operation history before external execution.
+    """Admit only a safe exact operation under the applicable attempt contract.
 
-    The cutover evidence contract admits one controlled operation for every
-    reached SDK method and does not adopt effects across a failed sandbox run.
-    Checking both histories at approval time prevents a replacement or a later
-    operation in an already-ineligible source lineage from consuming provider
-    or runner resources.
+    Probe runs retain their historical one-occurrence fence. Formal @3 runs use
+    the durable scientific-attempt authority and permit known closed failures;
+    unknown effects, parallel dispatch, and authority drift remain fail-closed.
     """
 
     with provider.read() as scope:
@@ -5120,6 +5620,22 @@ def _assert_cutover_operation_budget_before_approval(
             },
         )
     current = approval_matches[0]
+    if attempt_authority is not None:
+        _assert_selected_chain_operation_approval(
+            provider,
+            session_id=session_id,
+            current=current,
+            operations=operations,
+            sandbox_runs=sandbox_runs,
+            authority=attempt_authority,
+        )
+        _assert_hmmer_sandbox_policy(
+            provider,
+            session_id=session_id,
+            approval_id=approval_id,
+            current=current,
+        )
+        return
     same_method = [
         operation
         for operation in operations
@@ -5169,43 +5685,12 @@ def _assert_cutover_operation_budget_before_approval(
                 ],
             },
         )
-    if current.sdk_module == "bio" and current.function_name == "hmmer_search":
-        with provider.read() as scope:
-            sandbox_run = scope.repositories.sandbox_runs.get(current.sandbox_run_id)
-        raw_policy = (
-            None
-            if sandbox_run is None
-            else getattr(sandbox_run, "resource_policy", None)
-        )
-        policy = {} if not isinstance(raw_policy, dict) else dict(raw_policy)
-        observed_timeout = policy.get("timeout_seconds")
-        observed_policy_version = policy.get("exec_policy_version")
-        if (
-            type(observed_timeout) is not int
-            or observed_timeout != AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
-            or observed_policy_version != EXEC_POLICY_VERSION
-        ):
-            raise LiveProductPathError(
-                "cutover_hmmer_sandbox_timeout_invalid",
-                "AOX HMMER approval requires the sealed HMM-capable sandbox timeout policy",
-                details={
-                    "session_id": session_id,
-                    "approval_id": approval_id,
-                    "operation_id": current.operation_id,
-                    "expected_timeout_seconds": (
-                        AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
-                    ),
-                    "observed_timeout_seconds": (
-                        observed_timeout if type(observed_timeout) is int else None
-                    ),
-                    "expected_exec_policy_version": EXEC_POLICY_VERSION,
-                    "observed_exec_policy_version": (
-                        observed_policy_version
-                        if isinstance(observed_policy_version, str)
-                        else None
-                    ),
-                },
-            )
+    _assert_hmmer_sandbox_policy(
+        provider,
+        session_id=session_id,
+        approval_id=approval_id,
+        current=current,
+    )
     failed = [
         operation
         for operation in operations
@@ -5234,6 +5719,262 @@ def _assert_cutover_operation_budget_before_approval(
                     }
                     for operation in failed
                 ],
+            },
+        )
+
+
+def _assert_selected_chain_operation_approval(
+    provider: SQLiteRepositoryProvider,
+    *,
+    session_id: str,
+    current: ControlledOperation,
+    operations: tuple[ControlledOperation, ...],
+    sandbox_runs: tuple[object, ...],
+    authority: Mapping[str, object],
+) -> None:
+    with provider.read() as scope:
+        repositories = scope.repositories
+        attempts = tuple(
+            repositories.scientific_attempts.list_by_session(session_id)
+        )
+        matching = [
+            attempt
+            for attempt in attempts
+            if attempt.envelope_id == str(authority["envelope_id"])
+        ]
+        stored_authority = (
+            repositories.scientific_attempt_authorizations.get(
+                str(authority["envelope_id"])
+            )
+        )
+        execution_by_operation = {
+            operation.operation_id: (
+                repositories.controlled_operation_executions.get_by_operation_id(
+                    operation.operation_id
+                )
+            )
+            for operation in operations
+        }
+        operation_attempt_by_id = {
+            operation.operation_id: (
+                repositories.scientific_attempt_bindings.attempt_for_operation(
+                    operation.operation_id
+                )
+            )
+            for operation in operations
+        }
+        operation_attempt_id = (
+            operation_attempt_by_id.get(current.operation_id)
+        )
+        run_attempt_id = (
+            repositories.scientific_attempt_bindings.attempt_for_run(
+                current.sandbox_run_id
+            )
+        )
+    if len(attempts) != 1 or len(matching) != 1 or stored_authority is None:
+        raise LiveProductPathError(
+            "scientific_attempt_approval_authority_missing",
+            "formal external approval requires one exact active scientific attempt",
+            details={"session_id": session_id},
+        )
+    attempt = matching[0]
+    request = dict(authority["authority_request"])
+    if (
+        current.sdk_module,
+        current.function_name,
+    ) not in AOX_FORMAL_WORKFLOW_METHODS:
+        raise LiveProductPathError(
+            "scientific_attempt_operation_not_authorized",
+            "formal authority does not permit this controlled SDK method",
+            details={
+                "sdk_method": (
+                    f"{current.sdk_module}.{current.function_name}"
+                ),
+            },
+        )
+    expected_effect = (
+        "provider"
+        if current.backend_category == "provider_http"
+        else "hpc"
+        if current.backend_category in {"hpc", "hpc_runner"}
+        else ""
+    )
+    if (
+        attempt.status is not ScientificAttemptStatus.ACTIVE
+        or attempt.task_id != authority["task_id"]
+        or attempt.lane_id != authority["lane_id"]
+        or attempt.root_ref != f"attempts/{authority['attempt_id']}"
+        or attempt.campaign_id != request.get("campaign_id")
+        or attempt.workflow_id != AOX_SELECTED_CHAIN_WORKFLOW_ID
+        or attempt.workflow_contract_digest
+        != AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
+        or operation_attempt_id != attempt.attempt_id
+        or run_attempt_id != attempt.attempt_id
+        or current.task_id != attempt.task_id
+        or current.lane_id != attempt.lane_id
+        or expected_effect not in attempt.requested_effect_classes
+        or stored_authority.request_digest
+        != str(authority["request_digest"])
+        or stored_authority.root_ref != attempt.root_ref
+        or stored_authority.consumed_attempts != 1
+        or stored_authority.status.value not in {"active", "exhausted"}
+        or attempt.provider is None
+        or attempt.provider not in stored_authority.allowed_providers
+        or attempt.hpc_target is None
+        or attempt.hpc_target not in stored_authority.allowed_hpc_targets
+    ):
+        raise LiveProductPathError(
+            "scientific_attempt_approval_authority_mismatch",
+            "controlled operation differs from its durable attempt authority",
+            details={
+                "session_id": session_id,
+                "operation_id": current.operation_id,
+            },
+        )
+    try:
+        expired = datetime.fromisoformat(stored_authority.expires_at) <= datetime.now(
+            UTC
+        )
+        elapsed_seconds = (
+            datetime.now(UTC)
+            - datetime.fromisoformat(attempt.created_at).astimezone(UTC)
+        ).total_seconds()
+    except ValueError as exc:
+        raise LiveProductPathError(
+            "scientific_attempt_authority_time_invalid",
+            "attempt authority has an invalid time bound",
+        ) from exc
+    if (
+        expired
+        or elapsed_seconds > attempt.reserved_wall_time_seconds
+        or attempt.reserved_micu > stored_authority.max_micu
+        or attempt.reserved_cost_microunits
+        > stored_authority.max_cost_microunits
+        or attempt.reserved_wall_time_seconds
+        > stored_authority.max_wall_time_seconds
+    ):
+        raise LiveProductPathError(
+            "scientific_attempt_resource_authority_exceeded",
+            "attempt time or reserved resource authority has been exceeded",
+            details={"session_id": session_id},
+        )
+    current_execution = execution_by_operation.get(current.operation_id)
+    if (
+        current_execution is None
+        or current_execution.lifecycle_state
+        is not ControlledOperationExecutionLifecycle.AWAITING_APPROVAL
+        or current_execution.effect_certainty
+        is not ExternalEffectCertainty.NO_EFFECT
+        or current_execution.retry_eligibility
+        not in {
+            RetryEligibility.SAME_PHASE_SAFE,
+            RetryEligibility.VERIFY_THEN_RETRY,
+        }
+    ):
+        raise LiveProductPathError(
+            "scientific_attempt_current_effect_state_invalid",
+            "current operation is not at the exact pre-dispatch approval state",
+            details={"operation_id": current.operation_id},
+        )
+    unsafe_prior: list[dict[str, object]] = []
+    for operation in operations:
+        if operation.operation_id == current.operation_id:
+            continue
+        execution = execution_by_operation.get(operation.operation_id)
+        if operation_attempt_by_id.get(operation.operation_id) != attempt.attempt_id:
+            unsafe_prior.append(
+                {
+                    "operation_id": operation.operation_id,
+                    "reason": "attempt_binding_mismatch",
+                }
+            )
+            continue
+        if execution is None:
+            unsafe_prior.append(
+                {
+                    "operation_id": operation.operation_id,
+                    "reason": "execution_missing",
+                }
+            )
+            continue
+        if (
+            not execution.lifecycle_state.is_terminal
+            or execution.lifecycle_state
+            is ControlledOperationExecutionLifecycle.RECONCILE_REQUIRED
+            or execution.effect_certainty
+            is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+            or execution.retry_eligibility
+            is RetryEligibility.RECONCILE_REQUIRED
+        ):
+            unsafe_prior.append(
+                {
+                    "operation_id": operation.operation_id,
+                    "reason": execution.lifecycle_state.value,
+                    "effect_certainty": execution.effect_certainty.value,
+                }
+            )
+    active_other_runs = [
+        str(getattr(run, "sandbox_run_id", "") or "")
+        for run in sandbox_runs
+        if str(getattr(run, "sandbox_run_id", "") or "")
+        != current.sandbox_run_id
+        and getattr(getattr(run, "status", None), "value", None)
+        not in _TERMINAL_SANDBOX_STATUSES
+    ]
+    if unsafe_prior or active_other_runs:
+        raise LiveProductPathError(
+            "scientific_attempt_prior_effect_unresolved",
+            "another operation or sandbox run has unresolved effect authority",
+            details={
+                "operations": unsafe_prior,
+                "sandbox_run_ids": active_other_runs,
+            },
+        )
+
+
+def _assert_hmmer_sandbox_policy(
+    provider: SQLiteRepositoryProvider,
+    *,
+    session_id: str,
+    approval_id: str,
+    current: ControlledOperation,
+) -> None:
+    if current.sdk_module != "bio" or current.function_name != "hmmer_search":
+        return
+    with provider.read() as scope:
+        sandbox_run = scope.repositories.sandbox_runs.get(current.sandbox_run_id)
+    raw_policy = (
+        None
+        if sandbox_run is None
+        else getattr(sandbox_run, "resource_policy", None)
+    )
+    policy = {} if not isinstance(raw_policy, dict) else dict(raw_policy)
+    observed_timeout = policy.get("timeout_seconds")
+    observed_policy_version = policy.get("exec_policy_version")
+    if (
+        type(observed_timeout) is not int
+        or observed_timeout != AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
+        or observed_policy_version != EXEC_POLICY_VERSION
+    ):
+        raise LiveProductPathError(
+            "cutover_hmmer_sandbox_timeout_invalid",
+            "AOX HMMER approval requires the sealed HMM-capable sandbox timeout policy",
+            details={
+                "session_id": session_id,
+                "approval_id": approval_id,
+                "operation_id": current.operation_id,
+                "expected_timeout_seconds": (
+                    AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
+                ),
+                "observed_timeout_seconds": (
+                    observed_timeout if type(observed_timeout) is int else None
+                ),
+                "expected_exec_policy_version": EXEC_POLICY_VERSION,
+                "observed_exec_policy_version": (
+                    observed_policy_version
+                    if isinstance(observed_policy_version, str)
+                    else None
+                ),
             },
         )
 
@@ -6881,40 +7622,10 @@ def _collect_positive_evidence(
         probe_hpc_workspace_id
     }
 
-    operation_by_role = {
-        "ncbi_fetch": _single_completed_operation(
-            operations,
-            sdk_module="bio",
-            function_name="ncbi_fetch_proteins",
-        ),
-        "reference_alignment": _single_completed_operation(
-            operations,
-            sdk_module="bio_tools",
-            function_name="mafft",
-        ),
-        "hmm_build": _single_completed_operation(
-            operations,
-            sdk_module="bio_tools",
-            function_name="hmmbuild",
-        ),
-        "hmmer_search": _single_completed_operation(
-            operations,
-            sdk_module="bio",
-            function_name="hmmer_search",
-        ),
-    }
-    for role, sdk_module, function_name in (
-        ("uniprot_fetch", "bio", "uniprot_fetch"),
-        ("candidate_alignment", "bio_tools", "hmmalign"),
-        ("cdhit", "bio_tools", "cdhit"),
-    ):
-        optional_operation = _optional_completed_operation(
-            operations,
-            sdk_module=sdk_module,
-            function_name=function_name,
-        )
-        if optional_operation is not None:
-            operation_by_role[role] = optional_operation
+    operation_by_role = _selected_completed_formal_operations(
+        formal,
+        operations=operations,
+    )
     copies: dict[str, CatalogArtifactCopy] = {}
     controlled_records: dict[str, dict[str, object]] = {}
     output_copies: dict[str, list[CatalogArtifactCopy]] = {}

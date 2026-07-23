@@ -1456,6 +1456,13 @@ class MutationScopeService:
                 "ON owner.sandbox_workspace_id = resource.sandbox_workspace_id "
                 f"WHERE owner.session_id = ? ORDER BY {order}"
             )
+        elif entry.session_binding == "attempt_id_to_scientific_attempts":
+            sql = (
+                f"SELECT resource.* FROM {table} AS resource "
+                "JOIN scientific_attempt_records AS owner "
+                "ON owner.attempt_id = resource.attempt_id "
+                f"WHERE owner.session_id = ? ORDER BY {order}"
+            )
         else:
             raise MutationScopeError(
                 "mutation_coverage_binding_unsupported",

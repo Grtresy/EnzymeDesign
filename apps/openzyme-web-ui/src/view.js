@@ -14,7 +14,9 @@ const sectionLabels = {
   lanes: "Lanes",
   outputs: "Artifacts & Reports",
   evidence: "Scientific Evidence",
+  attempts: "Scientific Attempts",
   capabilities: "Capabilities",
+  failures: "Failures & Recovery",
   activity: "Activity",
 };
 
@@ -647,6 +649,111 @@ export function renderV3Activity(workspace) {
   `;
 }
 
+export function renderV3ScientificAttempts(workspace) {
+  const projection = workspace.scientific_attempts ?? {};
+  const authorizations = projection.authorizations ?? [];
+  const attempts = projection.attempts ?? [];
+  if (!authorizations.length && !attempts.length) {
+    return `<p class="empty-copy">No scientific attempt authority has been recorded.</p>`;
+  }
+  return `
+    <div class="evidence-layout">
+      <section>
+        <h3>Attempt authority</h3>
+        <ul class="record-list">
+          ${authorizations
+            .map(
+              (authority) => `<li>
+                <strong>${escapeHtml(authority.workflow_id ?? "workflow")} ${renderStatusChip(authority.status ?? "unknown")}</strong>
+                <span>${escapeHtml(authority.envelope_id ?? "envelope")} · campaign ${escapeHtml(authority.campaign_id ?? "none")}</span>
+                <small>attempts ${escapeHtml(authority.attempts?.consumed ?? 0)} / ${escapeHtml(authority.attempts?.max ?? 0)} · remaining ${escapeHtml(authority.attempts?.remaining ?? 0)}</small>
+                <small>MICU ${escapeHtml(authority.resources?.micu?.reserved ?? 0)} / ${escapeHtml(authority.resources?.micu?.max ?? 0)} · expires ${escapeHtml(authority.expires_at ?? "none")}</small>
+              </li>`,
+            )
+            .join("") || `<li><span>No durable authorization envelope.</span></li>`}
+        </ul>
+      </section>
+      <section>
+        <h3>Attempts and selected chains</h3>
+        <ul class="record-list evidence-records">
+          ${attempts
+            .map((attempt) => {
+              const selections = attempt.selections ?? [];
+              const selected = selections.find(
+                (item) => item.selection_id === attempt.selection_head?.selection_id,
+              );
+              const dispositions = selected?.dispositions ?? [];
+              const adoptions = selected?.adoptions ?? [];
+              return `<li>
+                <strong>${escapeHtml(attempt.attempt_id ?? "attempt")} ${renderStatusChip(attempt.status ?? "unknown")}</strong>
+                <span>${escapeHtml(attempt.scope ?? "scope")} · ordinal ${escapeHtml(attempt.ordinal ?? "none")} · selection ${escapeHtml(attempt.selection_head?.selection_id ?? "none")}</span>
+                <small>occurrences ${escapeHtml(selected?.occurrences?.length ?? 0)} · dispositions ${escapeHtml(dispositions.length)} · adopted roles ${escapeHtml(adoptions.map((item) => item.workflow_role).join(", ") || "none")}</small>
+                ${
+                  dispositions.length
+                    ? `<small>Disposition audit: ${escapeHtml(dispositions.map((item) => `${item.operation_id}:${item.kind}`).join(" | "))}</small>`
+                    : ""
+                }
+                <small>closure ${escapeHtml(attempt.closure?.closure_id ?? "not sealed")} · universe ${escapeHtml(digestPrefix(selected?.operation_universe_digest))}</small>
+              </li>`;
+            })
+            .join("") || `<li><span>No attempts consumed from the envelope.</span></li>`}
+        </ul>
+      </section>
+    </div>
+  `;
+}
+
+export function renderV3Failures(workspace) {
+  const failures = workspace.failure_observations ?? [];
+  const attention = workspace.runtime_state?.task_attention ?? [];
+  if (!failures.length && !attention.length) {
+    return `<p class="empty-copy">No structured failure or recovery attention is recorded.</p>`;
+  }
+  return `
+    <div class="evidence-layout">
+      ${
+        attention.length
+          ? `<section><h3>Runtime attention</h3><ul class="record-list">${attention
+              .map(
+                (item) => `<li><strong>${escapeHtml(item.task_id ?? "session")}</strong><span>${escapeHtml((item.reasons ?? []).join(", ") || "attention required")}</span><small>${escapeHtml((item.failure_observation_ids ?? []).join(", ") || "No linked failure id")}</small></li>`,
+              )
+              .join("")}</ul></section>`
+          : ""
+      }
+      <section>
+        <h3>Failure observations</h3>
+        <ul class="record-list">
+          ${failures
+            .slice()
+            .reverse()
+            .map((failure) => {
+              const likelyCauses = failure.likely_causes ?? [];
+              const facts = failure.facts ?? {};
+              const factSummary = Object.entries(facts)
+                .slice(0, 8)
+                .map(([key, value]) => `${key}=${typeof value === "object" ? JSON.stringify(value) : value}`)
+                .join(" · ");
+              return `<li>
+                <strong>${escapeHtml(failure.error_code ?? "runtime_error")} ${renderStatusChip(failure.actor_kind ?? "system")}</strong>
+                <span>${escapeHtml(failure.safe_summary ?? "Failure recorded")}</span>
+                <small>${escapeHtml(failure.failure_id ?? "unknown")} · recoverability ${escapeHtml(failure.recoverability ?? "unknown")} · effect ${escapeHtml(failure.effect_certainty ?? "unknown")} · retry ${escapeHtml(failure.retry_eligibility ?? "unknown")}</small>
+                ${factSummary ? `<small>Harness facts: ${escapeHtml(factSummary)}</small>` : ""}
+                ${likelyCauses.length ? `<small>Likely causes: ${escapeHtml(likelyCauses.join(" | "))}</small>` : ""}
+                ${
+                  failure.agent_hypothesis
+                    ? `<small>Agent hypothesis (${escapeHtml(failure.agent_hypothesis_confidence ?? "unspecified")}): ${escapeHtml(failure.agent_hypothesis)}</small>`
+                    : ""
+                }
+                ${failure.safe_hint ? `<small>Recovery boundary: ${escapeHtml(failure.safe_hint)}</small>` : ""}
+              </li>`;
+            })
+            .join("")}
+        </ul>
+      </section>
+    </div>
+  `;
+}
+
 function renderSessionFacts(workspace) {
   const session = workspace.session ?? {};
   return `
@@ -676,8 +783,12 @@ export function renderInspectorContent(viewState) {
       return renderV3Outputs(workspace, viewState);
     case "evidence":
       return renderV3ScientificEvidence(workspace);
+    case "attempts":
+      return renderV3ScientificAttempts(workspace);
     case "capabilities":
       return renderV3Capabilities(workspace);
+    case "failures":
+      return renderV3Failures(workspace);
     case "activity":
       return renderV3Activity(workspace);
     default:

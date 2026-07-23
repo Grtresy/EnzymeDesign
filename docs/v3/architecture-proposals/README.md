@@ -33,11 +33,26 @@ evidence。
 完成实现。两个 P0 closure、完整 deterministic matrix、clean admission 与独立 pure verification
 已经闭合；change 在同步/归档前仍保持 `active`，但其实现与验证任务已经完成。
 
-编号 AOX live campaign 的 r48/r49 已永久 NO-GO。已归档 proposal、focused tests、
+编号 AOX live campaign 的 r48-r51 已永久 NO-GO。已归档 proposal、focused tests、
 premerge subset、dirty diagnostic 或历史资格 GO 均不构成新 attempt admission；只有当前 clean
 commit 的 full/zero-P0 architecture admission 可以解除架构阻断，且仍需 operator 另行启动并
 通过全部外部、科学与证据门禁。资格验证本身不创建 attempt，也不调用真实
 provider/runner/Chrome/MICU。
+
+本轮另有三个 active changes，均明确停在下一次编号 live attempt 之前：
+
+- [`restore-agent-recoverability-and-explicit-refusal`](/openspec/changes/restore-agent-recoverability-and-explicit-refusal/)：
+  structured failure observation、agent hypothesis、ordinary failed-result continuation、system
+  diagnostic 与显式 refusal；
+- [`add-scientific-attempt-selection-and-closure`](/openspec/changes/add-scientific-attempt-selection-and-closure/)：
+  durable fresh authority、full occurrence universe、selection/disposition/adoption/materialization
+  与 closure；
+- [`migrate-aox-cutover-to-selected-chain`](/openspec/changes/migrate-aox-cutover-to-selected-chain/)：
+  新 production bundle `@3`、冻结历史 `@2`、one-use three-slot authority 和 AOX
+  selected-chain qualification。
+
+[Canonical scientific chain adoption and attempt closure](canonical-scientific-chain-adoption-and-attempt-closure.md)
+由后两项 change 实现，当前保持 `active` 直到 OpenSpec verify/archive；不再属于 deferred。
 
 ## 已实现并随 OpenSpec 归档
 
@@ -99,7 +114,7 @@ umbrella 只统一 ownership 与实施顺序，不把成员 proposal 的验收�
 
 - Process supervision hardening: [live-attempt-supervision-hardening.md](live-attempt-supervision-hardening.md)，保留 different-UID/cgroup、escaped-descendant、external-handle 与 MICU crash reconciliation；不得反向扩张当前 local POSIX change。
 - Operator interrupt retirement: [operator-interrupt-safe-live-attempt-retirement.md](operator-interrupt-safe-live-attempt-retirement.md)，单独定义当前 local POSIX supervisor 在 SIGINT/SIGTERM 下的 bounded process-group retirement、fatal evidence 与原 signal exit 语义；本轮只记录，不实施。
-- Scientific closure/adoption: [artifact-derived-conditional-capability-closure.md](artifact-derived-conditional-capability-closure.md), [canonical-scientific-chain-adoption-and-attempt-closure.md](canonical-scientific-chain-adoption-and-attempt-closure.md), [canonical-research-evidence-adoption-and-invocation-history.md](canonical-research-evidence-adoption-and-invocation-history.md), [versioned-scientific-calculation-capability-projection.md](versioned-scientific-calculation-capability-projection.md).
+- Scientific closure/adoption residuals: [artifact-derived-conditional-capability-closure.md](artifact-derived-conditional-capability-closure.md), [canonical-research-evidence-adoption-and-invocation-history.md](canonical-research-evidence-adoption-and-invocation-history.md), [versioned-scientific-calculation-capability-projection.md](versioned-scientific-calculation-capability-projection.md). Generic chain selection/attempt closure itself is active/implemented above; these adjacent scopes remain deferred.
 - Artifact/query boundaries: [artifact-path-addressing-for-arbitrary-dictionary-keys.md](artifact-path-addressing-for-arbitrary-dictionary-keys.md), [bounded-canonical-artifact-metadata-manifest-references.md](bounded-canonical-artifact-metadata-manifest-references.md), [bounded-capability-facts-query.md](bounded-capability-facts-query.md).
 - Sandbox/runtime mechanics: [bounded-streaming-sandbox-stdio-capture.md](bounded-streaming-sandbox-stdio-capture.md), [reproducible-sandbox-scientific-dependency-manifest-and-build.md](reproducible-sandbox-scientific-dependency-manifest-and-build.md), [host-authoritative-scientific-calculation-placement-and-sandbox-resource-class.md](host-authoritative-scientific-calculation-placement-and-sandbox-resource-class.md).
 - Verification orchestration: [authoritative-tiered-test-execution-and-qualification-deduplication.md](authoritative-tiered-test-execution-and-qualification-deduplication.md)，定义 focused/affected-scope diagnostic、single-execution mainline plan、qualification 去重、resource-audited 并行与 fail-closed receipt；当前门禁不变。

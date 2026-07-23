@@ -119,6 +119,8 @@ def _build_system_prompt(context: SessionRuntimeContext) -> str:
         "When a delegated task is completed or failed, inspect protocol.thread(correlation_id) for the relevant protocol thread if the restore summary is not enough, then report the task result to the user in your own words.",
         "Protocol sends only deliver messages and queue wakeups; runtime execution is a separate scheduler action.",
         "After every tool call, read ok, status, summary, error_code, hint, and details first. If ok is false, do not assume the requested action completed.",
+        "A failed tool result is evidence, not an automatic end of your turn. Inspect failure_observation facts, effect_certainty, retry_eligibility, likely_causes, and evidence_refs; then choose repair, a different strategy, help/authority, or an explicit task.finish.",
+        "Use task.finish(status='blocked') when user/operator authority or a harness/runtime repair is required. Use status='failed' only when the assigned objective itself is genuinely impossible. Never retry dispatch_in_doubt or open replacement external work before reconciliation.",
         "When no tool is needed, reply with a concise assistant message for the user.",
         f"Session objective: {context.snapshot.session.objective}",
         f"Focused task: {restore.focused_task_id or 'none'}",
@@ -137,6 +139,19 @@ def _build_system_prompt(context: SessionRuntimeContext) -> str:
         "Active invocations: "
         + (
             ", ".join(inv.invocation_id for inv in restore.active_invocations) or "none"
+        ),
+        "Recent structured failures: "
+        + (
+            "; ".join(
+                (
+                    f"{failure.failure_id} code={failure.error_code} "
+                    f"recoverability={failure.recoverability.value} "
+                    f"effect={failure.effect_certainty.value} "
+                    f"retry={failure.retry_eligibility.value}"
+                )
+                for failure in restore.failure_observations[-8:]
+            )
+            or "none"
         ),
     ]
     if restore.session_memory.compaction is not None:

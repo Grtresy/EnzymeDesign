@@ -101,6 +101,7 @@ class RuntimeCommandWorker:
     lease_seconds: int = 30
     clock: Callable[[], str] = utc_now_iso
     mutation_writer_scope_factory: MutationWriterScopeFactory | None = None
+    post_writer_finalizer: Callable[[str], None] | None = None
 
     def __post_init__(self) -> None:
         if not self.worker_id or self.worker_id != self.worker_id.strip():
@@ -133,7 +134,10 @@ class RuntimeCommandWorker:
             )
         )
         with writer_scope:
-            return self._run_candidate(candidate, now_iso=now)
+            outcome = self._run_candidate(candidate, now_iso=now)
+        if self.post_writer_finalizer is not None:
+            self.post_writer_finalizer(candidate.session_id)
+        return outcome
 
     def _run_candidate(
         self,

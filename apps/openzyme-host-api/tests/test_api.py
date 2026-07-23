@@ -616,6 +616,133 @@ def test_v3_public_contract_rejects_unknown_and_client_owned_actor_fields(
         assert error["details"]
 
 
+def test_v3_scientific_attempt_authority_and_command_surface(
+    monkeypatch,
+) -> None:
+    client, _ = _build_client(monkeypatch)
+    session_id = "sess_scientific_surface"
+    assert (
+        client.post(
+            "/v3/sessions",
+            json={
+                "session_id": session_id,
+                "project_id": "proj_scientific_surface",
+                "objective": "Expose bounded scientific attempt authority",
+            },
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            "/v3/lanes",
+            headers={"Idempotency-Key": "lane-scientific"},
+            json={
+                "session_id": session_id,
+                "lane_id": "lane_scientific_surface",
+                "name": "formal",
+                "cwd": ".",
+            },
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            "/v3/tasks",
+            headers={"Idempotency-Key": "task-scientific"},
+            json={
+                "session_id": session_id,
+                "task_id": "task_scientific_surface",
+                "subject": "Run selected-chain workflow",
+                "lane_id": "lane_scientific_surface",
+            },
+        ).status_code
+        == 200
+    )
+    authorization = client.post(
+        f"/v3/sessions/{session_id}/scientific-attempt-authorizations",
+        headers={"Idempotency-Key": "authorize-scientific"},
+        json={
+            "task_id": "task_scientific_surface",
+            "campaign_id": "campaign_scientific_surface",
+            "workflow_id": "aox_blank_world",
+            "root_ref": "attempts/aox-scientific-surface",
+            "allowed_scopes": ["formal"],
+            "allowed_effect_classes": ["provider", "hpc"],
+            "allowed_providers": ["openai"],
+            "allowed_hpc_targets": ["hpc:approved"],
+            "max_attempts": 2,
+            "max_micu": 100,
+            "max_cost_microunits": 10000,
+            "max_wall_time_seconds": 7200,
+            "expires_at": "2099-01-01T00:00:00+00:00",
+        },
+    )
+    assert authorization.status_code == 200, authorization.text
+    envelope_id = authorization.json()["record"]["envelope_id"]
+
+    created = client.post(
+        f"/v3/sessions/{session_id}/scientific-attempt-commands",
+        headers={"Idempotency-Key": "attempt-scientific"},
+        json={
+            "command": "attempt.create",
+            "arguments": {
+                "envelope_id": envelope_id,
+                "task_id": "task_scientific_surface",
+                "lane_id": "lane_scientific_surface",
+                "campaign_id": "campaign_scientific_surface",
+                "workflow_id": "aox_blank_world",
+                "scope": "formal",
+                "workflow_contract_digest": "sha256:workflow-contract",
+                "requested_effect_classes": ["provider", "hpc"],
+                "reserved_micu": 10,
+                "reserved_cost_microunits": 1000,
+                "reserved_wall_time_seconds": 600,
+                "provider": "openai",
+                "hpc_target": "hpc:approved",
+            },
+        },
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["record"]["scope"] == "formal"
+    admission_request_id = created.json()["record"]["admission_request_id"]
+    assert created.json()["scientific_attempts"]["attempts"] == []
+
+    finalized = client.post(
+        f"/v3/sessions/{session_id}/scientific-attempt-admissions/finalize",
+        headers={"Idempotency-Key": "finalize-attempt-scientific"},
+        json={"admission_request_id": admission_request_id},
+    )
+    assert finalized.status_code == 200, finalized.text
+    attempt_id = finalized.json()["record"]["attempt_id"]
+    assert finalized.json()["record"]["admission_request_id"] == (
+        admission_request_id
+    )
+
+    inspected = client.get(
+        f"/v3/sessions/{session_id}/scientific-attempts"
+    )
+    workspace = client.get(f"/v3/sessions/{session_id}/workspace")
+    assert inspected.status_code == 200
+    assert inspected.json()["authorizations"][0]["attempts"]["remaining"] == 1
+    assert len(inspected.json()["attempts"]) == 1
+    assert (
+        workspace.json()["scientific_attempts"]["attempts"][0]["attempt_id"]
+        == attempt_id
+    )
+    assert "allowed_providers" not in json.dumps(inspected.json())
+
+    malformed = client.post(
+        f"/v3/sessions/{session_id}/scientific-attempt-commands",
+        headers={"Idempotency-Key": "bad-scientific-command"},
+        json={
+            "command": "scientific.selection.begin",
+            "arguments": {"unexpected": True},
+        },
+    )
+    assert malformed.status_code == 400
+    assert malformed.json()["error"]["code"] == "invalid_request"
+
+
 def test_v3_event_stream_can_use_stable_generic_envelope(monkeypatch) -> None:
     client, _ = _build_client(monkeypatch)
     created = client.post(
@@ -2481,6 +2608,140 @@ def _build_v3_engine_repositories() -> CoreRepositories:
     connection = connect_v3_sqlite(":memory:", check_same_thread=False)
     apply_v3_sqlite_migrations(connection)
     return CoreRepositories.from_connection(connection)
+
+
+def test_scientific_transition_finalizer_reports_nonretryable_host_failure() -> (
+    None
+):
+    repositories = _build_v3_engine_repositories()
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+    )
+    session_id = "sess_scientific_finalizer_failure"
+    lane_id = "lane_scientific_finalizer_failure"
+    task_id = "task_scientific_finalizer_failure"
+    agent_id = "agent:scientific-finalizer"
+    service.create_session(
+        project_id="proj_scientific_finalizer_failure",
+        session_id=session_id,
+        title="Scientific finalizer",
+        objective="Return Host finalization failure to the responsible agent.",
+    )
+    service.create_lane(
+        {
+            "session_id": session_id,
+            "lane_id": lane_id,
+            "name": "formal",
+            "cwd": "/workspace",
+        }
+    )
+    service.create_task(
+        {
+            "session_id": session_id,
+            "task_id": task_id,
+            "subject": "Run one authorized attempt",
+            "lane_id": lane_id,
+            "assigned_ref": agent_id,
+        }
+    )
+    service.claim_lane(lane_id, claimed_ref=agent_id)
+    now = "2026-07-23T00:00:00+00:00"
+    repositories.agents.save(
+        AgentMember(
+            agent_id=agent_id,
+            session_id=session_id,
+            lane_id=lane_id,
+            task_id=task_id,
+            name="scientific-finalizer",
+            role="executor",
+            status=AgentMemberStatus.ACTIVE,
+            parent_agent_id="agent:master",
+            created_at=now,
+            updated_at=now,
+            runtime_state="idle",
+        )
+    )
+    granted = service.grant_scientific_attempt_authorization(
+        {
+            "task_id": task_id,
+            "campaign_id": "campaign_scientific_finalizer",
+            "workflow_id": "aox_blank_world",
+            "root_ref": "attempts/scientific-finalizer",
+            "allowed_scopes": ["formal"],
+            "allowed_effect_classes": ["provider", "hpc"],
+            "allowed_providers": ["provider:test"],
+            "allowed_hpc_targets": ["hpc:test"],
+            "max_attempts": 1,
+            "max_micu": 100,
+            "max_cost_microunits": 1_000,
+            "max_wall_time_seconds": 600,
+            "expires_at": "2099-01-01T00:00:00+00:00",
+        },
+        session_id=session_id,
+        grantor_ref="user:operator",
+        idempotency_key="grant-scientific-finalizer",
+    )
+    envelope_id = granted["record"]["envelope_id"]
+    command = {
+        "envelope_id": envelope_id,
+        "task_id": task_id,
+        "lane_id": lane_id,
+        "campaign_id": "campaign_scientific_finalizer",
+        "workflow_id": "aox_blank_world",
+        "scope": "formal",
+        "workflow_contract_digest": "sha256:workflow-contract",
+        "requested_effect_classes": ["provider", "hpc"],
+        "reserved_micu": 10,
+        "reserved_cost_microunits": 100,
+        "reserved_wall_time_seconds": 60,
+        "provider": "provider:test",
+        "hpc_target": "hpc:test",
+    }
+    service.execute_scientific_attempt_command(
+        "attempt.create",
+        command,
+        session_id=session_id,
+        actor_ref=agent_id,
+        idempotency_key="attempt-request-first",
+    )
+    second = service.execute_scientific_attempt_command(
+        "attempt.create",
+        command,
+        session_id=session_id,
+        actor_ref=agent_id,
+        idempotency_key="attempt-request-second",
+    )
+    second_request_id = second["record"]["admission_request_id"]
+
+    events = service.finalize_pending_scientific_transitions(
+        session_id=session_id
+    )
+
+    assert {event["event_type"] for event in events} >= {
+        "scientific.attempt.admitted",
+        "scientific.transition.failed",
+    }
+    observations = repositories.failure_observations.list_by_source(
+        session_id=session_id,
+        source_kind="scientific_transition",
+        source_ref=second_request_id,
+    )
+    assert len(observations) == 1
+    assert observations[0].error_code == "authorization_exhausted"
+    assert observations[0].recoverability.value == "authorization_required"
+    assert observations[0].actor_kind.value == "system"
+    assert observations[0].agent_id == agent_id
+    assert service.finalize_pending_scientific_transitions(
+        session_id=session_id
+    ) == []
+    assert len(
+        repositories.failure_observations.list_by_source(
+            session_id=session_id,
+            source_kind="scientific_transition",
+            source_ref=second_request_id,
+        )
+    ) == 1
 
 
 def _build_v3_pressure_client(
@@ -5400,7 +5661,9 @@ def test_v3_prompt_budget_compaction_cuts_off_prior_conversation_for_later_drain
 
     assert first_payload["outputs"] == ["round 1 handled"]
     assert "llm.response.created" in first_event_types
-    assert first_warning["action"] == "auto_compact"
+    assert first_warning["action"] == "emergency"
+    assert first_warning["ratio"] >= 0.90
+    assert first_after_compaction["action"] != "emergency"
     assert first_after_compaction["ratio"] < first_warning["ratio"]
 
     invoker = model_factory.invokers["v3_harness_loop"]

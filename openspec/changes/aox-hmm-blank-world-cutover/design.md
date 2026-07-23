@@ -6,6 +6,29 @@
 
 本设计涉及科学 SDK、research adapter、execution engine、Host API/eval、Web UI、workflow pack、campaign tooling 和稳定文档。reference 目录只用于开发期只读复核和最小 golden 的来源审计，绝不进入 live roots。
 
+### 2026-07-23 selected-chain implementation addendum
+
+r48-r51 继续作为冻结的永久 NO-GO 历史证据，旧
+`aox_blank_world_attempt_bundle@2` collector/verifier 只负责离线验证这些历史
+bundle，不得自动升级。后继 production contract 是
+`aox_blank_world_attempt_bundle@3`：Host 保存 formal attempt 内的完整 controlled
+operation universe，agent 对每个 occurrence 显式写入 `adopted`、`superseded`、
+`failed` 或 `abandoned` disposition，并选择唯一 adopted scientific chain。已知且
+闭合的中间失败不再自动毒化 attempt；unknown external effect、未退役 process/writer、
+未闭合 authority、资源越界或不完整 disposition 仍 fail closed。
+
+fresh attempt 由 durable authorization envelope 授权，AOX live campaign 使用
+Host-finalized、one-use 的 exact-three authority plan，分别绑定两个 independent
+positive 与一个 fault attempt。same formal attempt 内允许跨 sandbox run
+adoption/materialization；跨 formal attempt、campaign、positive/probe/fault scope
+复用继续禁止。attempt closure 消费完整 selection、materialization、资源账本与
+quiescence，但不推导 task 业务终态。
+
+本 addendum 只完成 control-plane、bundle/verifier、driver admission、产品投影和
+非 live qualification。它明确停在下一次编号 attempt（r52）的 authorization、root
+creation、provider/HPC/browser action 之前；任何新 live evidence 必须在后续独立
+授权下产生。
+
 ## Goals / Non-Goals
 
 **Goals:**

@@ -9,6 +9,13 @@ import json
 from typing import Any
 from typing import Protocol
 
+from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import FailureActorKind
+from openzyme_domain import FailureClass
+from openzyme_domain import FailureRecoverability
+from openzyme_domain import RetryEligibility
+
+from .failure_observations import record_failure_observation
 from .public_diagnostics import sanitize_public_diagnostic_payload
 from .public_diagnostics import sanitize_public_diagnostic_text
 from .public_diagnostics import safe_public_machine_identifier
@@ -36,6 +43,7 @@ class ToolResult:
     error_code: str | None = None
     hint: str | None = None
     details: dict[str, Any] | None = None
+    failure_observation: dict[str, Any] | None = None
     terminal_action: str | None = None
     terminates_turn: bool = False
 
@@ -48,6 +56,7 @@ class ToolResult:
             "error_code": self.error_code,
             "hint": self.hint,
             "details": details,
+            "failure_observation": self.failure_observation,
             "content": self.content,
             "terminal_action": self.terminal_action,
             "terminates_turn": self.terminates_turn,
@@ -98,6 +107,9 @@ def sanitize_tool_result_diagnostics(result: ToolResult) -> ToolResult:
         else:
             public_content = sanitize_public_diagnostic_text(result.content)
     safe_details = sanitize_public_diagnostic_payload(result.details or {})
+    safe_failure = sanitize_public_diagnostic_payload(
+        result.failure_observation or {}
+    )
     return replace(
         result,
         status=safe_status,
@@ -109,6 +121,11 @@ def sanitize_tool_result_diagnostics(result: ToolResult) -> ToolResult:
         if result.hint is None
         else sanitize_public_diagnostic_text(result.hint),
         details=dict(safe_details) if isinstance(safe_details, dict) else {},
+        failure_observation=(
+            dict(safe_failure) if isinstance(safe_failure, dict) else None
+        )
+        if result.failure_observation is not None
+        else None,
         error_code=safe_error_code,
         terminal_action=safe_terminal_action,
     )
@@ -479,22 +496,36 @@ class ToolRouter:
     ) -> ToolResult:
         runtime = self.runtimes.get(invocation.tool_name)
         if runtime is None:
-            return ToolResult(
-                call_id=invocation.call_id,
-                tool_name=invocation.tool_name,
-                ok=False,
-                content=f"unknown tool: {invocation.tool_name}",
-                task_id=invocation.task_id,
-                lane_id=invocation.lane_id,
-                status="unknown_tool",
-                summary=f"Tool {invocation.tool_name!r} is not registered.",
-                error_code="unknown_tool",
-                hint="Use one of the tools exposed in the current V3 tool catalog.",
+            return self._attach_failure_observation(
+                step_context,
+                invocation,
+                ToolResult(
+                    call_id=invocation.call_id,
+                    tool_name=invocation.tool_name,
+                    ok=False,
+                    content=f"unknown tool: {invocation.tool_name}",
+                    task_id=invocation.task_id,
+                    lane_id=invocation.lane_id,
+                    status="unknown_tool",
+                    summary=f"Tool {invocation.tool_name!r} is not registered.",
+                    error_code="unknown_tool",
+                    hint="Use one of the tools exposed in the current V3 tool catalog.",
+                ),
+                governance=ToolGovernance(side_effect=ToolSideEffect.READ),
             )
         validation_error = self.validate(step_context, invocation)
         if validation_error is not None:
-            return sanitize_tool_result_diagnostics(
-                validation_error.to_tool_result(invocation)
+            return self._attach_failure_observation(
+                step_context,
+                invocation,
+                sanitize_tool_result_diagnostics(
+                    validation_error.to_tool_result(invocation)
+                ),
+                governance=(
+                    runtime.governance(step_context)
+                    if runtime is not None
+                    else ToolGovernance(side_effect=ToolSideEffect.READ)
+                ),
             )
         governance = runtime.governance(step_context)
         if governance.side_effect is not ToolSideEffect.READ:
@@ -508,7 +539,7 @@ class ToolRouter:
                         "Tool execution rejected because the session runtime lease "
                         "is no longer active."
                     )
-                    return ToolResult(
+                    result = ToolResult(
                         call_id=invocation.call_id,
                         tool_name=invocation.tool_name,
                         ok=False,
@@ -523,6 +554,14 @@ class ToolRouter:
                             "reason": sanitize_public_diagnostic_text(str(exc))
                         },
                     )
+                    self._attach_failure_observation(
+                        step_context,
+                        invocation,
+                        result,
+                        governance=governance,
+                        private_diagnostic=exc,
+                    )
+                    raise
         try:
             mutation_scope_factory = getattr(
                 self.dispatch_context,
@@ -539,41 +578,292 @@ class ToolRouter:
                 else nullcontext(None)
             )
             with mutation_scope:
-                return sanitize_tool_result_diagnostics(
+                result = sanitize_tool_result_diagnostics(
                     runtime.dispatch(
                         step_context,
                         invocation,
                         self.dispatch_context,
                     )
                 )
-        except RuntimeError:
-            if governance.side_effect is ToolSideEffect.READ:
+            if result.ok:
+                return result
+            return self._attach_failure_observation(
+                step_context,
+                invocation,
+                result,
+                governance=governance,
+            )
+        except Exception as exc:
+            if self._is_boundary_fatal_exception(exc, governance=governance):
+                self._record_exception_observation(
+                    step_context,
+                    invocation,
+                    governance=governance,
+                    exc=exc,
+                    boundary_fatal=True,
+                )
                 raise
+            if governance.side_effect is ToolSideEffect.READ:
+                return self._ordinary_exception_result(
+                    step_context,
+                    invocation,
+                    governance=governance,
+                    exc=exc,
+                )
             repositories = getattr(self.dispatch_context, "repositories", None)
             assert_fence = getattr(repositories, "assert_runtime_write_fence", None)
-            if not callable(assert_fence):
-                raise
-            try:
-                assert_fence(session_id=step_context.session_id)
-            except RuntimeError as exc:
-                message = (
-                    "Tool execution rejected because the session runtime lease "
-                    "is no longer active."
+            if callable(assert_fence):
+                try:
+                    assert_fence(session_id=step_context.session_id)
+                except RuntimeError:
+                    self._record_exception_observation(
+                        step_context,
+                        invocation,
+                        governance=governance,
+                        exc=exc,
+                        boundary_fatal=True,
+                        error_code="runtime_fencing_rejected",
+                    )
+                    raise
+            return self._ordinary_exception_result(
+                step_context,
+                invocation,
+                governance=governance,
+                exc=exc,
+            )
+
+    @staticmethod
+    def _is_boundary_fatal_exception(
+        exc: Exception,
+        *,
+        governance: ToolGovernance,
+    ) -> bool:
+        if governance.side_effect is ToolSideEffect.APPROVAL or (
+            governance.side_effect is ToolSideEffect.EXTERNAL
+            and governance.approval_required
+        ):
+            return True
+        error_code = str(getattr(exc, "error_code", "")).casefold()
+        class_name = exc.__class__.__name__.casefold()
+        return (
+            "fenc" in error_code
+            or "authority" in error_code
+            or "integrity" in error_code
+            or "fencing" in class_name
+            or class_name.endswith("authorityerror")
+            or class_name.endswith("integrityerror")
+        )
+
+    def _ordinary_exception_result(
+        self,
+        step_context: AgentStepContext,
+        invocation: ToolInvocation,
+        *,
+        governance: ToolGovernance,
+        exc: Exception,
+    ) -> ToolResult:
+        observation = self._record_exception_observation(
+            step_context,
+            invocation,
+            governance=governance,
+            exc=exc,
+            boundary_fatal=False,
+        )
+        message = (
+            f"Tool {invocation.tool_name} failed with a recoverable runtime error. "
+            f"Inspect failure {observation.failure_id}, then repair, choose another "
+            "strategy, request help, or explicitly block the task."
+        )
+        return sanitize_tool_result_diagnostics(
+            ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=False,
+                content=message,
+                task_id=invocation.task_id,
+                lane_id=invocation.lane_id,
+                status="tool_runtime_error",
+                summary=message,
+                error_code="tool_runtime_error",
+                hint=(
+                    "Do not repeat blindly. Use the structured facts and retry "
+                    "eligibility to choose the next action."
+                ),
+                details={
+                    "exception_type": exc.__class__.__name__,
+                    "side_effect": governance.side_effect.value,
+                },
+                failure_observation=observation.to_dict(),
+            )
+        )
+
+    def _record_exception_observation(
+        self,
+        step_context: AgentStepContext,
+        invocation: ToolInvocation,
+        *,
+        governance: ToolGovernance,
+        exc: Exception,
+        boundary_fatal: bool,
+        error_code: str | None = None,
+    ):
+        is_external = (
+            governance.side_effect is ToolSideEffect.EXTERNAL
+            and governance.approval_required
+        )
+        resolved_error_code = (
+            error_code
+            or safe_public_machine_identifier(
+                getattr(exc, "error_code", None),
+                fallback=(
+                    "external_effect_outcome_unknown"
+                    if is_external
+                    else "tool_runtime_error"
+                ),
+            )
+            or "tool_runtime_error"
+        )
+        repositories = getattr(self.dispatch_context, "repositories", None)
+        return record_failure_observation(
+            repositories,
+            session_id=step_context.session_id,
+            task_id=invocation.task_id or step_context.task_id,
+            lane_id=invocation.lane_id or step_context.lane_id,
+            agent_id=step_context.agent_id,
+            source_kind="tool_invocation",
+            source_ref=invocation.call_id,
+            source_version=step_context.step_id,
+            phase="dispatch",
+            failure_class=(
+                FailureClass.CONTROLLED_EFFECT
+                if is_external
+                else (
+                    FailureClass.PROVIDER
+                    if governance.side_effect is ToolSideEffect.EXTERNAL
+                    else FailureClass.TOOL
                 )
-                return ToolResult(
-                    call_id=invocation.call_id,
-                    tool_name=invocation.tool_name,
-                    ok=False,
-                    content=message,
-                    task_id=invocation.task_id,
-                    lane_id=invocation.lane_id,
-                    status="runtime_fencing_rejected",
-                    summary=message,
-                    error_code="runtime_fencing_rejected",
-                    hint="Allow the active runtime owner to resume this work.",
-                    details={"reason": sanitize_public_diagnostic_text(str(exc))},
+            ),
+            recoverability=(
+                FailureRecoverability.RECONCILIATION_REQUIRED
+                if is_external
+                else (
+                    FailureRecoverability.RUNTIME_RETRY
+                    if boundary_fatal
+                    else FailureRecoverability.AGENT_CAN_REPLAN
                 )
-            raise
+            ),
+            effect_certainty=(
+                ExternalEffectCertainty.DISPATCH_IN_DOUBT
+                if is_external
+                else ExternalEffectCertainty.TERMINAL_KNOWN
+            ),
+            retry_eligibility=(
+                RetryEligibility.RECONCILE_REQUIRED
+                if is_external
+                else RetryEligibility.TERMINAL
+            ),
+            actor_kind=FailureActorKind.HARNESS,
+            error_code=resolved_error_code,
+            safe_summary=(
+                "External tool dispatch failed with an outcome that requires "
+                "reconciliation."
+                if is_external
+                else "Tool execution failed at a known local boundary."
+            ),
+            safe_hint=(
+                "Reconcile the exact external operation before retrying or "
+                "creating replacement work."
+                if is_external
+                else "Inspect the failure facts before choosing repair, replan, or refusal."
+            ),
+            facts={
+                "tool_name": invocation.tool_name,
+                "side_effect": governance.side_effect.value,
+                "boundary_fatal": boundary_fatal,
+                "exception_type": exc.__class__.__name__,
+                "public_error": sanitize_public_diagnostic_text(str(exc)),
+            },
+            private_diagnostic={
+                "exception_type": exc.__class__.__name__,
+                "message": str(exc),
+            },
+        )
+
+    def _attach_failure_observation(
+        self,
+        step_context: AgentStepContext,
+        invocation: ToolInvocation,
+        result: ToolResult,
+        *,
+        governance: ToolGovernance,
+        private_diagnostic: object | None = None,
+    ) -> ToolResult:
+        if result.ok or result.failure_observation is not None:
+            return sanitize_tool_result_diagnostics(result)
+        error_code = result.error_code or result.status or "tool_error"
+        validation = error_code in {
+            "invalid_tool_arguments",
+            "unknown_tool",
+            "tool_not_visible",
+        }
+        details = dict(result.details or {})
+        try:
+            effect_certainty = ExternalEffectCertainty(
+                str(details.get("effect_certainty"))
+            )
+        except ValueError:
+            effect_certainty = (
+                ExternalEffectCertainty.NO_EFFECT
+                if validation
+                else ExternalEffectCertainty.TERMINAL_KNOWN
+            )
+        try:
+            retry_eligibility = RetryEligibility(
+                str(details.get("retry_eligibility"))
+            )
+        except ValueError:
+            retry_eligibility = (
+                RetryEligibility.SAME_PHASE_SAFE
+                if validation
+                else RetryEligibility.TERMINAL
+            )
+        observation = record_failure_observation(
+            getattr(self.dispatch_context, "repositories", None),
+            session_id=step_context.session_id,
+            task_id=invocation.task_id or step_context.task_id,
+            lane_id=invocation.lane_id or step_context.lane_id,
+            agent_id=step_context.agent_id,
+            source_kind="tool_invocation",
+            source_ref=invocation.call_id,
+            source_version=step_context.step_id,
+            phase="validation" if validation else "dispatch",
+            failure_class=FailureClass.VALIDATION if validation else FailureClass.TOOL,
+            recoverability=(
+                FailureRecoverability.RECONCILIATION_REQUIRED
+                if effect_certainty
+                is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+                else (
+                    FailureRecoverability.AGENT_CAN_RETRY
+                    if validation
+                    else FailureRecoverability.AGENT_CAN_REPLAN
+                )
+            ),
+            effect_certainty=effect_certainty,
+            retry_eligibility=retry_eligibility,
+            actor_kind=FailureActorKind.HARNESS,
+            error_code=error_code,
+            safe_summary=result.summary or result.content,
+            safe_hint=result.hint,
+            facts={
+                **details,
+                "tool_name": invocation.tool_name,
+                "side_effect": governance.side_effect.value,
+            },
+            private_diagnostic=private_diagnostic,
+        )
+        return sanitize_tool_result_diagnostics(
+            replace(result, failure_observation=observation.to_dict())
+        )
 
 
 class ToolRegistryProtocol:

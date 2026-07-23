@@ -49,6 +49,7 @@ _EVIDENCE_REF_KINDS = {
     "report",
     "run",
     "sandbox_run",
+    "scientific_closure",
 }
 
 
@@ -190,6 +191,18 @@ def _validate_evidence_refs(
             sandbox_run = repositories.sandbox_runs.get(record_id)
             if sandbox_run is None or sandbox_run.session_id != session_id:
                 return f"Evidence ref {ref!r} does not resolve to a sandbox run."
+        elif kind == "scientific_closure":
+            closure = repositories.scientific_attempt_closures.get(record_id)
+            attempt = (
+                None
+                if closure is None
+                else repositories.scientific_attempts.get(closure.attempt_id)
+            )
+            if attempt is None or attempt.session_id != session_id:
+                return (
+                    f"Evidence ref {ref!r} does not resolve to a scientific "
+                    "attempt closure in this session."
+                )
     return None
 
 

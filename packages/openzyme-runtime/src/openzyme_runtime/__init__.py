@@ -157,6 +157,7 @@ from .test_gates import live_llm_skip_reason
 from .test_gates import live_tavily_skip_reason
 from .test_gates import load_current_settings
 from .test_gates import quality_eval_skip_reason
+from .failure_observations import record_failure_observation
 from .tooling import AgentStepContext
 from .tooling import LegacyFunctionToolRuntime
 from .tooling import ToolHandler
@@ -337,6 +338,7 @@ __all__ = [
     "live_tavily_skip_reason",
     "load_artifact_registration_metadata_sidecar",
     "quality_eval_skip_reason",
+    "record_failure_observation",
     "project_artifact_for_agent",
     "project_artifact_list_for_agent",
     "project_artifact_list_item_for_agent",

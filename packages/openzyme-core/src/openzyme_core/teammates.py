@@ -17,6 +17,7 @@ from .bio_research_tools import register_bio_research_tools
 from .bio_research_tools import register_web_research_tools
 from .docs import register_docs_tools
 from .engines import EngineRegistry
+from .failure_tools import register_failure_tools
 from .harness import HarnessDriver
 from .harness import HarnessInput
 from .harness import HarnessResult
@@ -43,6 +44,7 @@ from .memory import register_memory_tools
 from .protocol_tools import register_protocol_tools
 from .protocols import ProtocolService
 from .report_drafts import register_report_draft_tools
+from .scientific_attempt_tools import register_scientific_attempt_tools
 from .sandbox_workspace import register_sandbox_workspace_tools
 from .sandbox_host import SandboxHostBinding
 from .sandbox_host import SandboxMutationWriterScopeFactory
@@ -52,7 +54,9 @@ from .skills import SkillRegistry
 from .skills import render_selected_workflow_context
 from .tool_catalog import artifact_tool_descriptors
 from .tool_catalog import engine_tool_descriptors
+from .tool_catalog import failure_tool_descriptors
 from .tool_catalog import sandbox_tool_descriptors
+from .tool_catalog import scientific_attempt_tool_descriptors
 from .tool_catalog import ToolDescriptor
 from .tool_catalog import world_tool_descriptors
 from .world_inspection import register_world_inspection_tools
@@ -72,6 +76,8 @@ def teammate_tool_descriptors(
     *, role: str, research_adapter: object | None = None
 ) -> tuple[ToolDescriptor, ...]:
     shared = (
+        *failure_tool_descriptors(),
+        *scientific_attempt_tool_descriptors(),
         ToolDescriptor(
             tool_name="task.get",
             description="Fetch one task by id before updating or reasoning about it.",
@@ -641,6 +647,8 @@ def build_teammate_registry(
         signal_notifier=signal_notifier,
     )
     register_protocol_tools(registry)
+    register_failure_tools(registry)
+    register_scientific_attempt_tools(registry)
     register_report_draft_tools(registry)
     return registry
 
@@ -828,6 +836,8 @@ class TeammateConversationDriver(HarnessDriver):
             "For structure-dependent research, distinguish source refs from persisted workspace artifacts; if you decide a real structure file is needed, use provider/download tools to create a catalog artifact instead of treating a fetched web page as one.",
             "Executor contract: inspect the persistent sandbox workspace before changing it and use controlled docs when capability details are needed. Author source with sandbox.file.* and run it with sandbox.exec. Every otherwise-valid sandbox.exec invocation that reaches source preflight, including Python -c, package/signature inspection, and diagnostics, first snapshots the entire /workspace/src tree and therefore requires at least one eligible regular source file; never use sandbox.exec as a read-only environment-inspection shortcut. If runtime introspection is still necessary after reading controlled docs, author that inspection source under /workspace/src before executing it. External provider, tool, or HPC work must go through the Host-supervised SDK from inside that sandbox run. Never call a runner, SSH, Slurm, runner config, or external network directly. Do not treat execution.pipeline.start as the required authoring path.",
             "Execution evidence must come from the real controlled operation and declared artifacts. Never present synthetic output, a local stand-in, or an undeclared fallback as a successful external/scientific result; return the structured failure and preserve evidence when the required route cannot complete.",
+            "A failed tool result does not automatically end your turn. Inspect failure_observation facts, effect_certainty, retry_eligibility, likely_causes, and evidence_refs, then choose a safe repair, replan, request for help/authority, or explicit task.finish.",
+            "Use task.finish(status='blocked') for user/operator/authority or harness recovery needs, and status='failed' only when the assigned objective is genuinely impossible. Never replay dispatch_in_doubt external work.",
             "Do not infer a workflow from task words. Only an explicit structured workflow reference selects versioned workflow knowledge; missing or digest-drifted references must fail closed.",
             f"Assigned task: {self.task_id}",
             f"Correlation thread: {self.correlation_id}",
@@ -1241,9 +1251,7 @@ def run_teammate_loop(
         agent_id=agent_id,
         engine_registry=parent_context.engine_registry,
         sandbox_host_binding=sandbox_host_binding,
-        mutation_writer_scope_factory=(
-            parent_context.mutation_writer_scope_factory
-        ),
+        mutation_writer_scope_factory=(parent_context.mutation_writer_scope_factory),
         bio_research_service=parent_context.bio_research_service,
         research_adapter=parent_context.research_adapter,
     )
@@ -1285,6 +1293,9 @@ def run_teammate_loop(
         model_factory=parent_context.model_factory,
         bio_research_service=parent_context.bio_research_service,
         research_adapter=parent_context.research_adapter,
+        scientific_workflow_role_validator=(
+            parent_context.scientific_workflow_role_validator
+        ),
         sandbox_workspace_root=parent_context.sandbox_workspace_root,
         artifact_blob_root=parent_context.artifact_blob_root,
         signal_notifier=parent_context.signal_notifier,
@@ -1293,9 +1304,7 @@ def run_teammate_loop(
         durable_route_adapter_policy_ids=(
             parent_context.durable_route_adapter_policy_ids
         ),
-        mutation_writer_scope_factory=(
-            parent_context.mutation_writer_scope_factory
-        ),
+        mutation_writer_scope_factory=(parent_context.mutation_writer_scope_factory),
     )
 
 

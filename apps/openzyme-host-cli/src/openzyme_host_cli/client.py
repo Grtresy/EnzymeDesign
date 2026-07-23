@@ -67,12 +67,21 @@ class HostApiClient:
         if self._owns_session:
             self._session.close()
 
-    def _request_json(self, method: str, path: str, *, json_body: dict[str, Any] | None = None) -> Any:
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+    ) -> Any:
         headers: dict[str, str] = {}
         if self._auth_token:
             headers["Authorization"] = f"Bearer {self._auth_token}"
         if method != "GET":
-            headers["Idempotency-Key"] = f"cli-{uuid4().hex}"
+            headers["Idempotency-Key"] = (
+                idempotency_key or f"cli-{uuid4().hex}"
+            )
         if method == "GET":
             response = self._session.get(path, headers=headers)
         elif method == "PATCH":
@@ -103,6 +112,65 @@ class HostApiClient:
 
     def get_v3_runtime_health(self) -> dict[str, Any]:
         return self._request_json("GET", "/v3/runtime/health")
+
+    def get_v3_scientific_attempts(self, session_id: str) -> dict[str, Any]:
+        return self._request_json(
+            "GET",
+            f"/v3/sessions/{session_id}/scientific-attempts",
+        )
+
+    def grant_v3_scientific_attempt_authorization(
+        self,
+        session_id: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            f"/v3/sessions/{session_id}/scientific-attempt-authorizations",
+            json_body=payload,
+            idempotency_key=idempotency_key,
+        )
+
+    def execute_v3_scientific_attempt_command(
+        self,
+        session_id: str,
+        *,
+        command: str,
+        arguments: dict[str, Any],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            f"/v3/sessions/{session_id}/scientific-attempt-commands",
+            json_body={"command": command, "arguments": arguments},
+            idempotency_key=idempotency_key,
+        )
+
+    def finalize_v3_scientific_attempt_closure(
+        self,
+        session_id: str,
+        *,
+        closure_request_id: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            f"/v3/sessions/{session_id}/scientific-attempt-closures/finalize",
+            json_body={"closure_request_id": closure_request_id},
+        )
+
+    def finalize_v3_scientific_attempt_admission(
+        self,
+        session_id: str,
+        *,
+        admission_request_id: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            f"/v3/sessions/{session_id}/scientific-attempt-admissions/finalize",
+            json_body={"admission_request_id": admission_request_id},
+        )
 
     def post_v3_message(
         self,

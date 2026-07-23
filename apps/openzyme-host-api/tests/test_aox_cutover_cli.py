@@ -14,6 +14,15 @@ from openzyme_host_api.aox_architecture_qualification import (
 from openzyme_host_api.aox_architecture_qualification import (
     AoxArchitectureQualificationError,
 )
+from openzyme_host_api.aox_attempt_authority import (
+    attempt_authority_consumption_path,
+)
+from openzyme_host_api.aox_attempt_authority import (
+    build_aox_attempt_authority_plan,
+)
+from openzyme_host_api.aox_attempt_authority import (
+    publish_aox_attempt_authority_plan,
+)
 from openzyme_host_api.aox_cutover_launch import AoxCutoverLaunchError
 from openzyme_runtime import OpenZymeSettings
 
@@ -42,12 +51,26 @@ def _verified_architecture_qualification(
 def _run_live_args(tmp_path: Path):
     identity_path = tmp_path / "identity.json"
     prerequisite_path = tmp_path / "prerequisites.json"
+    authority_plan_path = tmp_path / "attempt-authority.json"
     cli._write_pin_outputs_atomic_no_replace(
         identity_target=identity_path,
         prerequisites_target=prerequisite_path,
         identity={"declared": "identity"},
         prerequisites={"declared": "prerequisites"},
         architecture_qualification=_architecture_qualification(),
+    )
+    authority_plan = build_aox_attempt_authority_plan(
+        identity={"git_commit": "a" * 40},
+        allowed_prerequisites={"git_commit": "a" * 40},
+        architecture_qualification=_architecture_qualification(),
+        expires_at="2099-01-01T00:00:00+00:00",
+        max_micu_per_attempt=1,
+        max_cost_microunits_per_attempt=1,
+        max_wall_time_seconds_per_attempt=1,
+    )
+    publish_aox_attempt_authority_plan(
+        authority_plan,
+        authority_plan_path,
     )
     return cli.build_parser().parse_args(
         [
@@ -60,6 +83,10 @@ def _run_live_args(tmp_path: Path):
             str(prerequisite_path),
             "--architecture-qualification-report",
             str(tmp_path / "architecture-qualification.json"),
+            "--attempt-authority-plan",
+            str(authority_plan_path),
+            "--attempt-authority-consumption",
+            str(attempt_authority_consumption_path(authority_plan_path)),
             "--ledger-path",
             str(tmp_path / "ledger.sqlite3"),
             "--approval-mode",
@@ -343,6 +370,7 @@ def test_run_live_passes_canonical_launch_snapshot_to_runner_and_campaign(
         _architecture_qualification()
     )
     assert captured["campaign"]["launch_guard"] is launch_guard
+    assert len(captured["campaign"]["attempt_authority_slots"]) == 3
     assert captured["campaign"]["positive_runner"].__class__ is FakeSupervisor
     assert captured["campaign"]["positive_runner"] is captured["campaign"][
         "fault_runner"

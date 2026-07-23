@@ -150,3 +150,19 @@ file-backed SQLite、当前 worker/gateway/projection 与 deterministic controll
 该边界落实同一原则：harness 忠实呈现真实约束，agent 在约束内保留策略自由。资格测试验证
 authority、fencing、effect、evidence 与 bounded progress，不把某条固定 AOX workflow 写回通用
 harness。
+
+## 9. Failure recovery 与 attempt doctrine
+
+Harness 的 fail closed 对象是不可违反的真实边界，不是“任何函数返回 false 就杀死 agent”。
+effect 已知的 ordinary failure 必须成为 agent 可读 observation 并允许 bounded turn 继续；
+unknown effect、fencing、authority、integrity、permission、budget 和未退休 process/writer
+才停止对应 ownership。任何 runtime stop 都不等于 task business exit。
+
+Host facts、稳定规则映射出的 likely causes 和 agent 自己的 hypothesis 必须分开归属。
+agent 可以显式拒绝，但 Harness 不替它拒绝：需要外部修复或新 authority 时使用
+`task.finish(blocked)`，objective 本身确知不可能时才使用 `failed`。
+
+允许试错不等于忽略历史。formal scientific attempt 必须保留 full occurrence universe，由
+agent 显式 disposition 并选择 adopted chain；closure 同时要求 selection、effect、
+authorization 和 quiescence 完整。详见
+[08-failure-recovery-and-scientific-attempts.md](08-failure-recovery-and-scientific-attempts.md)。

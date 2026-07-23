@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from typing import Any
 from typing import TextIO
@@ -86,6 +87,82 @@ def _build_parser() -> argparse.ArgumentParser:
     runtime = subparsers.add_parser("runtime", help="Runtime commands")
     runtime_sub = runtime.add_subparsers(dest="runtime_command", required=True)
     runtime_sub.add_parser("health", help="Show public V3 runtime health")
+
+    scientific = subparsers.add_parser(
+        "scientific",
+        help="Scientific attempt authority and selected-chain commands",
+    )
+    scientific_sub = scientific.add_subparsers(
+        dest="scientific_command",
+        required=True,
+    )
+    scientific_inspect = scientific_sub.add_parser(
+        "inspect",
+        help="Inspect safe attempt authority, occurrence, selection, and closure state",
+    )
+    scientific_inspect.add_argument(
+        "--session-id",
+        dest="command_session_id",
+        help="Session ID override",
+    )
+    scientific_authorize = scientific_sub.add_parser(
+        "authorize",
+        help="Grant a durable bounded attempt envelope",
+    )
+    scientific_authorize.add_argument(
+        "--session-id",
+        dest="command_session_id",
+        help="Session ID override",
+    )
+    scientific_authorize.add_argument("--payload-json", required=True)
+    scientific_authorize.add_argument("--idempotency-key", required=True)
+    scientific_execute = scientific_sub.add_parser(
+        "command",
+        help="Execute one actor-bound selected-chain command",
+    )
+    scientific_execute.add_argument(
+        "--session-id",
+        dest="command_session_id",
+        help="Session ID override",
+    )
+    scientific_execute.add_argument(
+        "--command",
+        required=True,
+        choices=(
+            "attempt.create",
+            "scientific.selection.begin",
+            "scientific.operation.disposition",
+            "scientific.effect.adopt",
+            "scientific.artifact.materialize",
+            "scientific.selection.seal",
+            "scientific.attempt.close",
+        ),
+    )
+    scientific_execute.add_argument("--arguments-json", required=True)
+    scientific_execute.add_argument("--idempotency-key", required=True)
+    scientific_finalize_admission = scientific_sub.add_parser(
+        "finalize-admission",
+        help="Host-finalize an admission request after its writer turn retires",
+    )
+    scientific_finalize_admission.add_argument(
+        "--session-id",
+        dest="command_session_id",
+        help="Session ID override",
+    )
+    scientific_finalize_admission.add_argument(
+        "--admission-request-id",
+        required=True,
+    )
+    scientific_finalize = scientific_sub.add_parser(
+        "finalize",
+        help="Host-finalize a closure request after all attempt writers retire",
+    )
+    scientific_finalize.add_argument(
+        "--session-id",
+        dest="command_session_id",
+        help="Session ID override",
+    )
+    scientific_finalize.add_argument("--closure-request-id", required=True)
 
     return parser
 
@@ -225,8 +302,46 @@ def run_cli(
                 + "\n"
             )
             return 0
+        if args.resource == "scientific":
+            session_id = _require_value(
+                getattr(args, "command_session_id", None) or args.session_id,
+                "--session-id",
+            )
+            if args.scientific_command == "inspect":
+                payload = client.get_v3_scientific_attempts(session_id)
+            elif args.scientific_command == "authorize":
+                request_payload = json.loads(args.payload_json)
+                if not isinstance(request_payload, dict):
+                    raise ValueError("--payload-json must decode to an object")
+                payload = client.grant_v3_scientific_attempt_authorization(
+                    session_id,
+                    request_payload,
+                    idempotency_key=args.idempotency_key,
+                )
+            elif args.scientific_command == "command":
+                arguments = json.loads(args.arguments_json)
+                if not isinstance(arguments, dict):
+                    raise ValueError("--arguments-json must decode to an object")
+                payload = client.execute_v3_scientific_attempt_command(
+                    session_id,
+                    command=args.command,
+                    arguments=arguments,
+                    idempotency_key=args.idempotency_key,
+                )
+            elif args.scientific_command == "finalize-admission":
+                payload = client.finalize_v3_scientific_attempt_admission(
+                    session_id,
+                    admission_request_id=args.admission_request_id,
+                )
+            else:
+                payload = client.finalize_v3_scientific_attempt_closure(
+                    session_id,
+                    closure_request_id=args.closure_request_id,
+                )
+            stdout.write(render_json(payload) + "\n")
+            return 0
         raise ValueError(f"unsupported resource: {args.resource}")
-    except (HostApiError, ValueError) as exc:
+    except (HostApiError, json.JSONDecodeError, ValueError) as exc:
         stderr.write(f"{exc}\n")
         return 2
     finally:

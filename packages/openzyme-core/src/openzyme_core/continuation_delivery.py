@@ -17,8 +17,15 @@ from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ContinuationDeliveryState
 from openzyme_domain import ContinuationResumeStrategy
 from openzyme_domain import ContinuationState
+from openzyme_domain import FailureActorKind
+from openzyme_domain import FailureClass
+from openzyme_domain import FailureRecoverability
+from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import ControlledOperationExecutionTerminalOutcome
 from openzyme_domain import MutationWriterKind
+from openzyme_domain import RetryEligibility
 from openzyme_domain import SandboxRunStatus
+from openzyme_runtime import record_failure_observation
 
 from .live_process_registry import AttachedProcessDelivery
 from .live_process_registry import AttachedProcessIdentity
@@ -101,6 +108,60 @@ class ContinuationWakeService:
         existing = self.repositories.runtime_signals.get(signal_id)
         if existing is not None:
             return existing
+        requires_recovery = recovery_failed
+        if not recovery_failed:
+            execution = (
+                self.repositories.controlled_operation_executions.get_by_operation_id(
+                    continuation.operation_id
+                )
+            )
+            if (
+                execution is not None
+                and execution.terminal_outcome is not None
+                and execution.terminal_outcome
+                is not ControlledOperationExecutionTerminalOutcome.SUCCEEDED
+            ):
+                requires_recovery = True
+                record_failure_observation(
+                    self.repositories,
+                    session_id=continuation.session_id,
+                    task_id=continuation.originating_task_id,
+                    lane_id=continuation.originating_lane_id,
+                    agent_id=continuation.originating_agent_id,
+                    source_kind="continuation",
+                    source_ref=continuation.continuation_id,
+                    source_version=(
+                        f"execution:{execution.execution_id}:"
+                        f"{execution.state_version}"
+                    ),
+                    phase="execution_result",
+                    failure_class=FailureClass.CONTROLLED_EFFECT,
+                    recoverability=(
+                        FailureRecoverability.RECONCILIATION_REQUIRED
+                        if execution.effect_certainty
+                        is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+                        else FailureRecoverability.AGENT_CAN_REPLAN
+                    ),
+                    effect_certainty=execution.effect_certainty,
+                    retry_eligibility=execution.retry_eligibility,
+                    actor_kind=FailureActorKind.SYSTEM,
+                    error_code=execution.error_code or "controlled_operation_failed",
+                    safe_summary=(
+                        execution.safe_error_summary
+                        or "The controlled operation reached a terminal failure."
+                    ),
+                    safe_hint=(
+                        "Inspect the exact effect and result facts before choosing "
+                        "repair, reconciliation, replacement, or refusal."
+                    ),
+                    facts={
+                        "continuation_id": continuation.continuation_id,
+                        "operation_id": continuation.operation_id,
+                        "execution_id": execution.execution_id,
+                        "terminal_outcome": execution.terminal_outcome.value,
+                    },
+                    evidence_refs=(continuation.operation_id,),
+                )
         signal = AgentRuntimeSignal(
             signal_id=signal_id,
             session_id=continuation.session_id,
@@ -108,7 +169,11 @@ class ContinuationWakeService:
             task_id=continuation.originating_task_id,
             lane_id=continuation.originating_lane_id,
             correlation_id=continuation.continuation_id,
-            reason=AgentRuntimeSignalReason.ENGINE_COMPLETED,
+            reason=(
+                AgentRuntimeSignalReason.RECOVERY_REQUIRED
+                if requires_recovery
+                else AgentRuntimeSignalReason.ENGINE_COMPLETED
+            ),
             source_ref=continuation.continuation_id,
             status=AgentRuntimeSignalStatus.PENDING,
             created_at=created_at,
@@ -388,6 +453,65 @@ class ContinuationDeliveryWorker:
                     event_type="continuation.delivery.recovery_failed",
                     created_at=completed_at,
                 )
+                execution = (
+                    repositories.controlled_operation_executions.get_by_operation_id(
+                        finished.operation_id
+                    )
+                )
+                effect_certainty = (
+                    ExternalEffectCertainty.DISPATCH_IN_DOUBT
+                    if execution is None
+                    else execution.effect_certainty
+                )
+                retry_eligibility = (
+                    RetryEligibility.RECONCILE_REQUIRED
+                    if execution is None
+                    else execution.retry_eligibility
+                )
+                record_failure_observation(
+                    repositories,
+                    session_id=finished.session_id,
+                    task_id=finished.originating_task_id,
+                    lane_id=finished.originating_lane_id,
+                    agent_id=finished.originating_agent_id,
+                    source_kind="continuation",
+                    source_ref=finished.continuation_id,
+                    source_version=(
+                        f"{finished.delivery_generation}:{finished.state_version}"
+                    ),
+                    phase="delivery",
+                    failure_class=FailureClass.RUNTIME,
+                    recoverability=(
+                        FailureRecoverability.RECONCILIATION_REQUIRED
+                        if effect_certainty
+                        is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+                        else FailureRecoverability.AGENT_CAN_REPLAN
+                    ),
+                    effect_certainty=effect_certainty,
+                    retry_eligibility=retry_eligibility,
+                    actor_kind=FailureActorKind.SYSTEM,
+                    error_code=error_code,
+                    safe_summary=(
+                        "The controlled operation outcome remains durable, but "
+                        "the original attached agent tool call could not resume."
+                    ),
+                    safe_hint=(
+                        "Inspect the durable effect/result and choose adoption, "
+                        "repair, reconciliation, help, or explicit task refusal. "
+                        "Do not replay the external effect implicitly."
+                    ),
+                    facts={
+                        "continuation_id": finished.continuation_id,
+                        "operation_id": finished.operation_id,
+                        "sandbox_run_id": finished.sandbox_run_id,
+                        "delivery_state": finished.delivery_state.value,
+                    },
+                    evidence_refs=(finished.operation_id,),
+                    private_diagnostic={
+                        "error_code": error_code,
+                        "message": error_message,
+                    },
+                )
                 signal = ContinuationWakeService(
                     repositories,
                     signal_notifier=self.signal_notifier,
@@ -536,6 +660,67 @@ def recover_unattached_continuations(
                             failed,
                             event_type="continuation.delivery.recovery_failed",
                             created_at=completed_at,
+                        )
+                        execution = (
+                            repositories.controlled_operation_executions.get_by_operation_id(
+                                failed.operation_id
+                            )
+                        )
+                        effect_certainty = (
+                            ExternalEffectCertainty.DISPATCH_IN_DOUBT
+                            if execution is None
+                            else execution.effect_certainty
+                        )
+                        retry_eligibility = (
+                            RetryEligibility.RECONCILE_REQUIRED
+                            if execution is None
+                            else execution.retry_eligibility
+                        )
+                        record_failure_observation(
+                            repositories,
+                            session_id=failed.session_id,
+                            task_id=failed.originating_task_id,
+                            lane_id=failed.originating_lane_id,
+                            agent_id=failed.originating_agent_id,
+                            source_kind="continuation",
+                            source_ref=failed.continuation_id,
+                            source_version=(
+                                f"{failed.delivery_generation}:"
+                                f"{failed.state_version}"
+                            ),
+                            phase="delivery",
+                            failure_class=FailureClass.RUNTIME,
+                            recoverability=(
+                                FailureRecoverability.RECONCILIATION_REQUIRED
+                                if effect_certainty
+                                is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+                                else FailureRecoverability.AGENT_CAN_REPLAN
+                            ),
+                            effect_certainty=effect_certainty,
+                            retry_eligibility=retry_eligibility,
+                            actor_kind=FailureActorKind.SYSTEM,
+                            error_code=error_code,
+                            safe_summary=(
+                                "The controlled operation outcome remains durable, "
+                                "but the original attached agent tool call could "
+                                "not resume after Host restart."
+                            ),
+                            safe_hint=(
+                                "Inspect the durable effect/result and choose "
+                                "adoption, repair, reconciliation, help, or "
+                                "explicit task refusal."
+                            ),
+                            facts={
+                                "continuation_id": failed.continuation_id,
+                                "operation_id": failed.operation_id,
+                                "sandbox_run_id": failed.sandbox_run_id,
+                                "delivery_state": failed.delivery_state.value,
+                            },
+                            evidence_refs=(failed.operation_id,),
+                            private_diagnostic={
+                                "error_code": error_code,
+                                "message": error_message,
+                            },
                         )
                         signal = ContinuationWakeService(
                             repositories,

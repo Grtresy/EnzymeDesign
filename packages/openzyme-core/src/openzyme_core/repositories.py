@@ -76,6 +76,8 @@ from .mutation_authority import MutationWriteFencingError
 from .mutation_authority import writer_allows_resource
 
 if TYPE_CHECKING:
+    from .failure_repositories import FailureHypothesisRepository
+    from .failure_repositories import FailureObservationRepository
     from .durable_coordination_repositories import ContinuationDeliveryRepository
     from .durable_coordination_repositories import MutationScopeRepository
     from .durable_coordination_repositories import MutationWriterRepository
@@ -91,6 +93,26 @@ if TYPE_CHECKING:
     from .reliability_repositories import (
         ControlledOperationResultArtifactRepository,
     )
+    from .scientific_attempt_repositories import (
+        ScientificArtifactMaterializationRepository,
+    )
+    from .scientific_attempt_repositories import (
+        ScientificAttemptAuthorizationRepository,
+    )
+    from .scientific_attempt_repositories import (
+        ScientificAttemptAdmissionRequestRepository,
+    )
+    from .scientific_attempt_repositories import ScientificAttemptBindingRepository
+    from .scientific_attempt_repositories import (
+        ScientificAttemptClosureRequestRepository,
+    )
+    from .scientific_attempt_repositories import ScientificAttemptClosureRepository
+    from .scientific_attempt_repositories import ScientificAttemptRepository
+    from .scientific_attempt_repositories import ScientificDispositionRepository
+    from .scientific_attempt_repositories import (
+        ScientificEffectAdoptionRepository,
+    )
+    from .scientific_attempt_repositories import ScientificSelectionRepository
 
 
 class OwnershipError(ValueError):
@@ -5884,6 +5906,18 @@ class CoreRepositories:
     mutation_writers: "MutationWriterRepository"
     quiescence_receipts: "QuiescenceReceiptRepository"
     quiescence_snapshots: "QuiescenceSnapshotRepository"
+    failure_observations: "FailureObservationRepository"
+    failure_hypotheses: "FailureHypothesisRepository"
+    scientific_attempt_authorizations: "ScientificAttemptAuthorizationRepository"
+    scientific_attempt_admission_requests: "ScientificAttemptAdmissionRequestRepository"
+    scientific_attempts: "ScientificAttemptRepository"
+    scientific_attempt_bindings: "ScientificAttemptBindingRepository"
+    scientific_selections: "ScientificSelectionRepository"
+    scientific_dispositions: "ScientificDispositionRepository"
+    scientific_effect_adoptions: "ScientificEffectAdoptionRepository"
+    scientific_artifact_materializations: "ScientificArtifactMaterializationRepository"
+    scientific_attempt_closure_requests: "ScientificAttemptClosureRequestRepository"
+    scientific_attempt_closures: "ScientificAttemptClosureRepository"
     file_audit_entries: FileAuditEntryRepository
     command_log_artifacts: CommandLogArtifactRepository
     session_runtime_leases: SessionRuntimeLeaseRepository
@@ -6071,6 +6105,32 @@ class CoreRepositories:
         from .reliability_repositories import (
             ControlledOperationResultArtifactRepository,
         )
+        from .failure_repositories import FailureHypothesisRepository
+        from .failure_repositories import FailureObservationRepository
+        from .scientific_attempt_repositories import (
+            ScientificArtifactMaterializationRepository,
+        )
+        from .scientific_attempt_repositories import (
+            ScientificAttemptAuthorizationRepository,
+        )
+        from .scientific_attempt_repositories import (
+            ScientificAttemptAdmissionRequestRepository,
+        )
+        from .scientific_attempt_repositories import (
+            ScientificAttemptBindingRepository,
+        )
+        from .scientific_attempt_repositories import (
+            ScientificAttemptClosureRequestRepository,
+        )
+        from .scientific_attempt_repositories import (
+            ScientificAttemptClosureRepository,
+        )
+        from .scientific_attempt_repositories import ScientificAttemptRepository
+        from .scientific_attempt_repositories import ScientificDispositionRepository
+        from .scientific_attempt_repositories import (
+            ScientificEffectAdoptionRepository,
+        )
+        from .scientific_attempt_repositories import ScientificSelectionRepository
 
         return cls(
             sessions=SessionRepository(connection),
@@ -6110,6 +6170,26 @@ class CoreRepositories:
             mutation_writers=MutationWriterRepository(connection),
             quiescence_receipts=QuiescenceReceiptRepository(connection),
             quiescence_snapshots=QuiescenceSnapshotRepository(connection),
+            failure_observations=FailureObservationRepository(connection),
+            failure_hypotheses=FailureHypothesisRepository(connection),
+            scientific_attempt_authorizations=(
+                ScientificAttemptAuthorizationRepository(connection)
+            ),
+            scientific_attempt_admission_requests=(
+                ScientificAttemptAdmissionRequestRepository(connection)
+            ),
+            scientific_attempts=ScientificAttemptRepository(connection),
+            scientific_attempt_bindings=ScientificAttemptBindingRepository(connection),
+            scientific_selections=ScientificSelectionRepository(connection),
+            scientific_dispositions=ScientificDispositionRepository(connection),
+            scientific_effect_adoptions=ScientificEffectAdoptionRepository(connection),
+            scientific_artifact_materializations=(
+                ScientificArtifactMaterializationRepository(connection)
+            ),
+            scientific_attempt_closure_requests=(
+                ScientificAttemptClosureRequestRepository(connection)
+            ),
+            scientific_attempt_closures=ScientificAttemptClosureRepository(connection),
             file_audit_entries=FileAuditEntryRepository(connection),
             command_log_artifacts=CommandLogArtifactRepository(connection),
             session_runtime_leases=SessionRuntimeLeaseRepository(connection),

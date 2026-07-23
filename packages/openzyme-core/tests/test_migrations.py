@@ -229,24 +229,21 @@ def test_migration_asset_is_available() -> None:
     adapter_result_origin_sql = get_migration_sql(
         "024_v3_host_owned_adapter_result_origin"
     )
-    sandbox_stdio_metadata_sql = get_migration_sql(
-        "025_v3_sandbox_stdio_metadata"
-    )
+    sandbox_stdio_metadata_sql = get_migration_sql("025_v3_sandbox_stdio_metadata")
     controlled_execution_sql = get_migration_sql(
         "026_v3_controlled_operation_execution"
     )
-    runtime_command_sql = get_migration_sql(
-        "027_v3_runtime_commands_and_continuations"
-    )
-    mutation_quiescence_sql = get_migration_sql(
-        "028_v3_mutation_quiescence"
-    )
+    runtime_command_sql = get_migration_sql("027_v3_runtime_commands_and_continuations")
+    mutation_quiescence_sql = get_migration_sql("028_v3_mutation_quiescence")
     dispatch_request_sql = get_migration_sql(
         "029_v3_controlled_operation_dispatch_requests"
     )
     result_artifact_sql = get_migration_sql(
         "030_v3_controlled_operation_result_artifacts"
     )
+    failure_observation_sql = get_migration_sql("032_v3_failure_observations")
+    scientific_attempt_sql = get_migration_sql("033_v3_scientific_attempt_selection")
+    failure_hypothesis_sql = get_migration_sql("034_v3_failure_hypotheses")
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -263,17 +260,28 @@ def test_migration_asset_is_available() -> None:
     assert "ADD COLUMN claimed_by" in runtime_signal_lease_sql
     assert "agent_members_scoped" in session_scoped_agent_sql
     assert "CREATE TABLE IF NOT EXISTS sandbox_image_records" in sandbox_workspace_sql
-    assert "CREATE TABLE IF NOT EXISTS sandbox_workspace_records" in sandbox_workspace_sql
+    assert (
+        "CREATE TABLE IF NOT EXISTS sandbox_workspace_records" in sandbox_workspace_sql
+    )
     assert "artifact_materialization_records" in artifact_boundary_sql
     assert "artifact_blob_gc_queue" in artifact_boundary_sql
     assert "CREATE TABLE IF NOT EXISTS sandbox_run_records" in sandbox_runtime_sql
-    assert "CREATE TABLE IF NOT EXISTS sandbox_file_audit_entries" in sandbox_runtime_sql
-    assert "CREATE TABLE IF NOT EXISTS sandbox_command_log_artifacts" in sandbox_runtime_sql
-    assert "CREATE TABLE IF NOT EXISTS controlled_operation_records" in sdk_supervisor_sql
+    assert (
+        "CREATE TABLE IF NOT EXISTS sandbox_file_audit_entries" in sandbox_runtime_sql
+    )
+    assert (
+        "CREATE TABLE IF NOT EXISTS sandbox_command_log_artifacts"
+        in sandbox_runtime_sql
+    )
+    assert (
+        "CREATE TABLE IF NOT EXISTS controlled_operation_records" in sdk_supervisor_sql
+    )
     assert "CREATE TABLE IF NOT EXISTS continuation_state_records" in sdk_supervisor_sql
     assert "adapter_approval_envelope_json" in adapter_envelope_sql
     assert "route_policy_id" in adapter_envelope_sql
-    assert "CREATE TABLE IF NOT EXISTS session_runtime_leases" in session_runtime_lease_sql
+    assert (
+        "CREATE TABLE IF NOT EXISTS session_runtime_leases" in session_runtime_lease_sql
+    )
     assert "ADD COLUMN session_lease_token" in session_runtime_lease_sql
     assert "ADD COLUMN nickname" in agent_identity_sql
     assert "ADD COLUMN handle" in agent_identity_sql
@@ -291,19 +299,23 @@ def test_migration_asset_is_available() -> None:
     assert "ADD COLUMN stdout_metadata_json" in sandbox_stdio_metadata_sql
     assert "ADD COLUMN stderr_metadata_json" in sandbox_stdio_metadata_sql
     assert "ADD COLUMN owner_mode" in controlled_execution_sql
-    assert "CREATE TABLE controlled_operation_execution_records" in controlled_execution_sql
-    assert "CREATE TABLE controlled_operation_execution_events" in controlled_execution_sql
-    assert "CREATE TABLE controlled_operation_result_handles" in controlled_execution_sql
+    assert (
+        "CREATE TABLE controlled_operation_execution_records"
+        in controlled_execution_sql
+    )
+    assert (
+        "CREATE TABLE controlled_operation_execution_events" in controlled_execution_sql
+    )
+    assert (
+        "CREATE TABLE controlled_operation_result_handles" in controlled_execution_sql
+    )
     assert "CREATE TABLE runtime_command_records" in runtime_command_sql
     assert "ADD COLUMN resume_strategy" in runtime_command_sql
     assert "ADD COLUMN delivery_fencing_token" in runtime_command_sql
     assert "CREATE TABLE mutation_scope_records" in mutation_quiescence_sql
     assert "CREATE TABLE mutation_writer_records" in mutation_quiescence_sql
     assert "CREATE TABLE quiescence_receipt_records" in mutation_quiescence_sql
-    assert (
-        "CREATE TABLE controlled_operation_dispatch_requests"
-        in dispatch_request_sql
-    )
+    assert "CREATE TABLE controlled_operation_dispatch_requests" in dispatch_request_sql
     assert (
         "controlled_operation_dispatch_requests_immutable_update"
         in dispatch_request_sql
@@ -312,6 +324,13 @@ def test_migration_asset_is_available() -> None:
     assert "controlled_operation_result_artifacts_immutable_update" in (
         result_artifact_sql
     )
+    assert "CREATE TABLE failure_observation_records" in failure_observation_sql
+    assert "failure_observation_records_immutable_update" in failure_observation_sql
+    assert "CREATE TABLE scientific_attempt_records" in scientific_attempt_sql
+    assert "CREATE TABLE scientific_chain_selection_records" in scientific_attempt_sql
+    assert "CREATE TABLE scientific_attempt_closure_records" in scientific_attempt_sql
+    assert "CREATE TABLE failure_hypothesis_records" in failure_hypothesis_sql
+    assert "failure_hypothesis_records_immutable_update" in failure_hypothesis_sql
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -344,6 +363,9 @@ def test_migration_asset_is_available() -> None:
         "029_v3_controlled_operation_dispatch_requests",
         "030_v3_controlled_operation_result_artifacts",
         "031_v3_mutation_authority_and_snapshots",
+        "032_v3_failure_observations",
+        "033_v3_scientific_attempt_selection",
+        "034_v3_failure_hypotheses",
     )
 
 
@@ -403,8 +425,7 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "command_receipt_records",
     }.issubset(table_names)
     task_columns = {
-        row[1]
-        for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
+        row[1] for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
     }
     assert {"lane_id", "failure_summary", "failure_ref"}.issubset(task_columns)
     agent_columns = {
@@ -442,7 +463,9 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
     }.issubset(agent_columns)
     signal_columns = {
         row[1]
-        for row in connection.execute("PRAGMA table_info(agent_runtime_signals)").fetchall()
+        for row in connection.execute(
+            "PRAGMA table_info(agent_runtime_signals)"
+        ).fetchall()
     }
     assert {
         "claimed_by",
@@ -471,7 +494,9 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
     }.issubset(lease_columns)
     operation_columns = {
         row[1]
-        for row in connection.execute("PRAGMA table_info(controlled_operation_records)").fetchall()
+        for row in connection.execute(
+            "PRAGMA table_info(controlled_operation_records)"
+        ).fetchall()
     }
     assert {
         "adapter_envelope_schema_version",
@@ -547,6 +572,8 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "controlled_operation_result_artifacts_immutable_delete",
         "quiescence_receipt_records_immutable_update",
         "quiescence_receipt_records_immutable_delete",
+        "failure_hypothesis_records_immutable_update",
+        "failure_hypothesis_records_immutable_delete",
     }.issubset(trigger_names)
 
 
@@ -772,12 +799,18 @@ def test_sqlite_migrations_upgrade_v25_without_fabricating_durable_authority() -
         0,
         0,
     )
-    assert connection.execute(
-        "SELECT COUNT(*) FROM controlled_operation_execution_records"
-    ).fetchone()[0] == 0
-    assert connection.execute(
-        "SELECT COUNT(*) FROM controlled_operation_result_handles"
-    ).fetchone()[0] == 0
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM controlled_operation_execution_records"
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM controlled_operation_result_handles"
+        ).fetchone()[0]
+        == 0
+    )
     assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 

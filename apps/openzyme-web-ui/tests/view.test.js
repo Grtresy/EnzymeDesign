@@ -6,6 +6,8 @@ import {
   renderMainColumn,
   renderV3Outputs,
   renderV3ScientificEvidence,
+  renderV3ScientificAttempts,
+  renderV3Failures,
 } from "../src/view.js";
 
 function workspace() {
@@ -57,8 +59,97 @@ function workspace() {
     report_drafts: [],
     reports: [],
     capabilities: {},
+    scientific_attempts: {
+      schema_id: "scientific_attempt_workspace@1",
+      authorizations: [],
+      attempts: [],
+    },
+    failure_observations: [],
+    runtime_state: { task_attention: [] },
   };
 }
+
+test("scientific attempt view audits authority, dispositions, and closure", () => {
+  const html = renderV3ScientificAttempts({
+    scientific_attempts: {
+      authorizations: [
+        {
+          envelope_id: "envelope_001",
+          campaign_id: "campaign_aox",
+          workflow_id: "aox_blank_world",
+          status: "active",
+          attempts: { consumed: 1, max: 2, remaining: 1 },
+          resources: { micu: { reserved: 10, max: 100 } },
+          expires_at: "2026-07-30T00:00:00+00:00",
+        },
+      ],
+      attempts: [
+        {
+          attempt_id: "attempt_001",
+          status: "closed",
+          scope: "formal",
+          ordinal: 1,
+          selection_head: { selection_id: "selection_001" },
+          selections: [
+            {
+              selection_id: "selection_001",
+              operation_universe_digest: "sha256:universe",
+              occurrences: [{ operation_id: "op_failed" }, { operation_id: "op_final" }],
+              dispositions: [
+                { operation_id: "op_failed", kind: "failed" },
+                { operation_id: "op_final", kind: "adopted" },
+              ],
+              adoptions: [{ workflow_role: "final" }],
+            },
+          ],
+          closure: { closure_id: "closure_001" },
+        },
+      ],
+    },
+  });
+
+  assert.match(html, /remaining 1/);
+  assert.match(html, /op_failed:failed/);
+  assert.match(html, /adopted roles final/);
+  assert.match(html, /closure_001/);
+  assert.doesNotMatch(html, /allowed_providers/);
+});
+
+test("structured failure view separates facts, likely causes, and agent hypothesis", () => {
+  const html = renderV3Failures({
+    runtime_state: {
+      task_attention: [
+        {
+          task_id: "task_001",
+          reasons: ["system_runtime_failure"],
+          failure_observation_ids: ["failure_001"],
+        },
+      ],
+    },
+    failure_observations: [
+      {
+        failure_id: "failure_001",
+        actor_kind: "system",
+        error_code: "provider_unavailable",
+        safe_summary: "The agent runtime could not produce a decision.",
+        recoverability: "runtime_retry",
+        effect_certainty: "no_effect",
+        retry_eligibility: "same_phase_safe",
+        facts: { agent_decision_produced: false, status_code: 502 },
+        likely_causes: ["The configured provider is temporarily unavailable."],
+        agent_hypothesis: "Quota may be exhausted.",
+        agent_hypothesis_confidence: "low",
+        safe_hint: "Resume after operator recovery.",
+      },
+    ],
+  });
+
+  assert.match(html, /Harness facts/);
+  assert.match(html, /Likely causes/);
+  assert.match(html, /Agent hypothesis \(low\)/);
+  assert.match(html, /failure_001/);
+  assert.doesNotMatch(html, /private_diagnostic_digest/);
+});
 
 test("teammate trace view still renders pending approval card", () => {
   const state = {

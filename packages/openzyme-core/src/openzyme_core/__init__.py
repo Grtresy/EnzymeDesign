@@ -189,6 +189,7 @@ from .mutation_authority import MutationResourceCategory
 from .mutation_authority import MutationWriteAuthority
 from .mutation_authority import MutationWriteFencingError
 from .mutation_authority import bind_mutation_write_authority
+from .mutation_authority import canonical_digest
 from .mutation_authority import current_mutation_write_authority
 from .mutation_authority import suspend_mutation_write_authority
 from .repositories import SandboxImageRecordRepository
@@ -223,6 +224,43 @@ from .reliability_repositories import ImmutableIdentityConflictError
 from .reliability_repositories import OptimisticStateConflictError
 from .reliability_repositories import ReliabilityRepositoryError
 from .reliability_repositories import is_transient_sqlite_contention
+from .failure_repositories import FailureObservationConflictError
+from .failure_repositories import FailureHypothesisConflictError
+from .failure_repositories import FailureHypothesisRepository
+from .failure_repositories import FailureObservationRepository
+from .failure_repositories import project_failure_observation
+from .failure_tools import register_failure_tools
+from .scientific_attempt_repositories import (
+    ScientificArtifactMaterializationRepository,
+)
+from .scientific_attempt_repositories import (
+    ScientificAttemptAuthorizationRepository,
+)
+from .scientific_attempt_repositories import (
+    ScientificAttemptAdmissionRequestRepository,
+)
+from .scientific_attempt_repositories import ScientificAttemptBindingRepository
+from .scientific_attempt_repositories import (
+    ScientificAttemptClosureRequestRepository,
+)
+from .scientific_attempt_repositories import ScientificAttemptClosureRepository
+from .scientific_attempt_repositories import ScientificAttemptIdentityConflictError
+from .scientific_attempt_repositories import ScientificAttemptRepository
+from .scientific_attempt_repositories import ScientificAttemptRepositoryError
+from .scientific_attempt_repositories import ScientificAttemptVersionConflictError
+from .scientific_attempt_repositories import ScientificDispositionRepository
+from .scientific_attempt_repositories import ScientificEffectAdoptionRepository
+from .scientific_attempt_repositories import ScientificOccurrenceSnapshot
+from .scientific_attempt_repositories import ScientificSelectionHead
+from .scientific_attempt_repositories import ScientificSelectionRepository
+from .scientific_attempts import SCIENTIFIC_ATTEMPT_AUTHORIZATION_POLICY_ID
+from .scientific_attempts import ScientificAttemptError
+from .scientific_attempts import ScientificAttemptService
+from .scientific_attempts import ScientificOperationUniverse
+from .scientific_attempts import ScientificWorkflowRoleValidator
+from .scientific_attempts import scientific_attempt_authorization_identity
+from .scientific_attempts import scientific_attempt_authorization_request
+from .scientific_attempt_tools import register_scientific_attempt_tools
 from .result_artifacts import ControlledOperationResultArtifactRef
 from .result_artifacts import controlled_operation_artifact_set_digest
 from .runtime_commands import RUNTIME_COMMAND_OUTCOME_MAX_BYTES
@@ -251,6 +289,8 @@ from .teammates import run_teammate_loop
 from .tool_catalog import ToolDescriptor
 from .tool_catalog import builtin_tool_descriptors
 from .tool_catalog import engine_tool_descriptors
+from .tool_catalog import failure_tool_descriptors
+from .tool_catalog import scientific_attempt_tool_descriptors
 from .tool_catalog import world_tool_descriptors
 from .world_inspection import WorldInspectionService
 from .world_inspection import register_world_inspection_tools
@@ -332,6 +372,10 @@ __all__ = [
     "EngineDocumentRecord",
     "EngineDocumentRepository",
     "EngineRegistry",
+    "FailureObservationConflictError",
+    "FailureHypothesisConflictError",
+    "FailureHypothesisRepository",
+    "FailureObservationRepository",
     "EngineInvocationRepository",
     "DurableEventConflictError",
     "DurableEventRecord",
@@ -391,6 +435,7 @@ __all__ = [
     "QuiescenceSnapshotRepository",
     "QuiescenceIssueResult",
     "build_quiescence_evidence_envelope",
+    "canonical_digest",
     "quiescence_receipt_digest",
     "verify_quiescence_evidence",
     "verify_quiescence_evidence_envelope",
@@ -468,6 +513,29 @@ __all__ = [
     "SessionRuntimeContext",
     "SessionRuntimeSnapshot",
     "SessionWorkspaceProjection",
+    "SCIENTIFIC_ATTEMPT_AUTHORIZATION_POLICY_ID",
+    "ScientificArtifactMaterializationRepository",
+    "ScientificAttemptAdmissionRequestRepository",
+    "ScientificAttemptAuthorizationRepository",
+    "ScientificAttemptBindingRepository",
+    "ScientificAttemptClosureRequestRepository",
+    "ScientificAttemptClosureRepository",
+    "ScientificAttemptError",
+    "ScientificAttemptIdentityConflictError",
+    "ScientificAttemptRepository",
+    "ScientificAttemptRepositoryError",
+    "ScientificAttemptService",
+    "ScientificAttemptVersionConflictError",
+    "ScientificDispositionRepository",
+    "ScientificEffectAdoptionRepository",
+    "ScientificOccurrenceSnapshot",
+    "ScientificOperationUniverse",
+    "ScientificSelectionHead",
+    "ScientificSelectionRepository",
+    "ScientificWorkflowRoleValidator",
+    "scientific_attempt_authorization_identity",
+    "scientific_attempt_authorization_request",
+    "register_scientific_attempt_tools",
     "SQLiteRepositoryProvider",
     "SkillDescriptor",
     "SkillDocument",
@@ -504,6 +572,7 @@ __all__ = [
     "decide_prompt_budget",
     "derive_sandbox_workspace_id",
     "engine_tool_descriptors",
+    "failure_tool_descriptors",
     "estimate_and_decide_prompt_budget",
     "get_migration_sql",
     "load_recent_conversation",
@@ -513,10 +582,12 @@ __all__ = [
     "prompt_budget_config_from_env",
     "project_controlled_operation_execution",
     "project_controlled_operation_summary",
+    "project_failure_observation",
     "recover_unattached_continuations",
     "is_controlled_operation_artifact_public",
     "register_memory_tools",
     "register_docs_tools",
+    "register_failure_tools",
     "register_skill_tools",
     "register_subagent_tools",
     "register_task_board_tools",
@@ -530,4 +601,5 @@ __all__ = [
     "teammate_tool_descriptors",
     "top_level_tool_descriptors",
     "world_tool_descriptors",
+    "scientific_attempt_tool_descriptors",
 ]

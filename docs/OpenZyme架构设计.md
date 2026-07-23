@@ -137,10 +137,21 @@ V3 默认失败策略是显式失败传播，而不是隐藏 fallback。
 要求：
 
 - provider/model/runtime 异常不得被静默吞掉并伪造成成功
-- 工具参数错误返回 LLM 可读的 structured tool error observation
-- 意图不清或前置条件不满足时，应让 task/approval/protocol 表达 blocked/failed/needs clarification
+- ordinary validation/tool/adapter/local-engine 失败在 effect 已知时返回 LLM 可读的
+  structured `FailureObservation`，agent 在剩余 bounded step 内可修复、改道、求助或拒绝
+- fencing、authority、permission、budget、integrity、process cancellation 和
+  `dispatch_in_doubt` 仍停止对应 ownership boundary，不能降级为自由重试
+- 意图不清或前置条件不满足时，应让 task/approval/protocol 表达
+  blocked/failed/needs clarification；需要 user/operator/harness/authority 时用
+  `task.finish(blocked)`，只有 objective 本身确知不可能时才用 `failed`
 - 不得通过隐藏 fallback 重新打开 blocked action、替换用户目标、默认选择可运行工具或合成虚假 plan
 - bounded loop 到达上限可以标记 runtime signal/agent failure，但不能据此推断业务 task 已完成或失败
+
+Failure facts、规则化 likely causes 和 agent hypothesis 是三种不同 authority。
+`FailureObservation` 不可变；agent 只能通过 append-only `FailureHypothesis` 记录自己的解释，
+绑定 canonical agent、confidence 和 evidence refs，不能覆盖 Host facts、赋予 retry authority
+或改变 task status。若 provider/driver 使 agent 根本没有产出 decision，Host 只发布
+system-attributed diagnostic，并显式标记 `agent_decision_produced=false`，不得伪造 agent 消息。
 
 所有 `structured`、`tool_calling`、`chat` 与 connectivity smoke 的 provider 调用都必须经过 `openzyme_runtime.LlmInvocationRuntime`。invoker 只负责构造 payload、结构化解析或 tool response 还原；runtime 统一负责 limiter、timeout、retry/backoff、`Retry-After`、错误 taxonomy 与 LLM debug 记录。502/503/504、transport timeout/connection failure 属于 retryable；429 只有 transient 或带 `Retry-After` 时 retryable，usage/quota/invalid/context 类 429 不重试；400/401/403、schema/tool argument/context window 错误不重试。runtime 不拥有 session compaction、restore context rebuild 或 harness/engine 状态机。
 
@@ -148,7 +159,7 @@ tool-calling provider schema 必须经过 `openzyme_runtime.ProviderToolAdapter`
 
 ### 3.5 Token-Budgeted Harness
 
-V3 master / teammate LLM 调用必须先经过统一 token budget preflight。harness 按模型 profile 估算完整 prompt，包括 system prompt、conversation/messages、tools schema 和 tool observation；达到 80% 记录 warning，达到 85% 自动写 bounded session/lane compaction 并刷新 restore context，达到 90% 显式返回 `context_budget_exceeded`，不得把超限 prompt 交给 provider。prompt-budget compaction 改变的是后续 LLM restore prompt projection，不删除或改写持久 conversation history，也不改变 workspace conversation read model。
+V3 master / teammate LLM 调用必须先经过统一 token budget preflight。harness 按模型 profile 估算完整 prompt，包括 system prompt、conversation/messages、tools schema 和 tool observation；达到 80% 记录 warning，达到 85%（包括已经达到 90% emergency 的输入）先且只先执行一次 bounded session/lane compaction、刷新 restore context 并重算。只有重算后仍达到 90% 才显式返回 `context_budget_exceeded`，不得把超限 prompt 交给 provider。prompt-budget compaction 改变的是后续 LLM restore prompt projection，不删除或改写持久 conversation history，也不改变 workspace conversation read model。
 
 当工具结果本身或加入该结果后的下一轮 prompt 超预算时，完整 tool result 写入 `engine_documents(document_kind="tool_result_full")`，并登记为 `ArtifactKind.RESULT` artifact。LLM 只收到小型 observation，包含 `tool_result_context_over_budget`、`original_tool_ok`、`original_status`、`artifact_id` 和 `read_hint`。这不是业务失败判定，也不自动摘要原始 payload；agent 需要时通过 `artifact.get` 分页读取完整结果。
 
@@ -159,7 +170,7 @@ V3 master / teammate LLM 调用必须先经过统一 token budget preflight。ha
 - fresh empty SQLite：启动时按当前 migration 列表初始化，并写入 `PRAGMA user_version`
 - current-version SQLite：启动时校验关键表存在后复用
 
-旧 schema、未知 schema、非空但未标记 `user_version` 的 SQLite 文件不做隐式迁移、修复、备份或删除；启动路径必须 fail fast，并提示 operator 手动删除旧库或指定新的 `--v3-sqlite-db` 路径。除既有 task-integrity 与 durable-event trigger 外，`026` 至 `031` migrations 已把 canonical controlled-operation execution、runtime command/continuation、dispatch request、immutable result artifact、mutation authority/snapshot 及其约束纳入 current schema 校验。因此升级后的旧本地库也必须按上述 fresh/current-version 规则处理，不能绕过 trigger 校验继续运行。需要长期保留的研究结果、execution 输出与报告应通过 artifact、report 或 export 留存，而不是依赖旧 SQLite runtime 文件跨 schema 版本继续可用。
+旧 schema、未知 schema、非空但未标记 `user_version` 的 SQLite 文件不做隐式修复、备份或删除；启动路径必须 fail fast。`026` 至 `034` migrations 已把 canonical controlled-operation execution、runtime command/continuation、dispatch request、immutable result artifact、mutation authority/snapshot、failure observation/hypothesis 和 scientific attempt authority/selection/closure 纳入 current schema 与升级校验。需要长期保留的研究结果、execution 输出与报告应通过 artifact、report 或 export 留存，而不是依赖旧 SQLite runtime 文件跨 schema 版本继续可用。
 
 Python import shim、CLI alias、`execution.pipeline.*`、Podman runner、runtime/tools/execution 包 seam 与旧 HTTP/runner call shape 的 sunset 证据统一由 `scripts/audit-v3-compat-callers.py` 和 `docs/v3/compatibility-sunset.md` 管理。仓库内零 caller 只证明当前 checkout，不证明外部零 caller；所有 `DEPRECATE` / `RETIRE-BLOCKED` surface 在 external inventory/telemetry/owner evidence 仍为 unknown 时必须保留。已经不存在的 `/v1`/`/v2`、raw runner lifecycle 参数和 legacy workspace activation 标为 `RETIRED` 防回归，不得把归档源码本身误删。
 
@@ -176,6 +187,27 @@ V3 public event log 不是 Host 进程内缓存。`durable_event_records.cursor`
 `ControlledOperationExecution` 是 durable operation 唯一 external-effect owner。worker 只做短 claim/dispatch/poll/materialize slice，外部调用前重新检查 fence，且不持 session lease 或 SQLite transaction跨外部 wall time。恢复只允许在 proven `no_effect` 的同一 phase 内有界进行；direct SSH payload 已写出却丢失响应时进入 `dispatch_in_doubt`，只能 reconcile，不能 replay。
 
 generic mutation closure 先 freeze admission 并推进 fence，再等待每个显式 writer/descendant 退休，获取两次一致的 bounded SQLite/event/artifact/report/live-ledger snapshot，签发 immutable receipt，最后 seal exact generation。runtime idle、空队列、HTTP 返回、timeout 或 missing handle 都不是 writer retirement 证明；seal 也不表示 task completed。完整合同见 `docs/v3/07-runtime-hpc-reliability.md`，迁移和回滚步骤见 `docs/v3/runtime-hpc-reliability-operations.md`。在 deterministic、non-live 与经单独批准的 real-SSH transport-only soak 全部通过前，`rxx` campaign 保持冻结。
+
+### 3.8 Scientific attempt、selected chain 与 fresh authority
+
+formal scientific work 的策略自由由显式 attempt control plane 承载。每个 attempt 先消费
+durable authorization envelope，绑定 grantor、session/task/campaign/workflow/root/scope、
+effect/route allowlist、attempt count、MICU/cost/wall-time、expiry 与 policy digest。
+`attempt.create` 只写 admission request；Host 必须等 agent writer 退休后才在独立短 slice
+中最终校验、消费 envelope 并打开 attempt。
+
+Host 从 exact attempt scope 导出完整 operation/run occurrence universe。agent 使用
+CAS-protected selection revision，把每项显式标为 `adopted`、`superseded`、`failed` 或
+`abandoned`，并选择唯一 workflow role chain。已知失败保留审计但不必污染最终链；未知
+effect、未退休 process/writer、authority/resource breach 或不完整 disposition 仍 fail
+closed。同一 formal attempt 可跨 run adoption/materialization，跨 attempt/campaign/
+positive/probe/fault reuse 禁止。closure 需同时验证 sealed selection、exact quiescence、
+authorization consumption 和 materialization lineage，但 closure 仍不是 task terminal。
+
+AOX 是该通用控制面的首个消费者：新 production collector 只发
+`aox_blank_world_attempt_bundle@3`；历史 `@2` verifier 和 r48-r51 NO-GO evidence
+保持冻结且不得升级或采用。本次实现/资格验证停在下一次编号 live attempt 之前。完整合同见
+`docs/v3/08-failure-recovery-and-scientific-attempts.md`。
 
 ---
 
@@ -427,6 +459,7 @@ Projection 约束：
 - `task_available`
 - `approval_resolved`
 - `engine_completed`
+- `recovery_required`
 - `manual_resume`
 
 Claim 语义：
@@ -438,6 +471,11 @@ Claim 语义：
 - non-retryable 或 exhausted failure 写为 `failed`
 
 provider/model 失败是否 retryable 由 `LlmInvocationRuntime` 的 taxonomy 决定。若 runtime 内部 retry 成功，当前 turn 继续执行；若 runtime retry 耗尽但 signal 仍有剩余 attempt，scheduler/runtime service 将 signal 释放回 `pending` 并记录 `signal.retry_scheduled`；非 retryable 或 signal attempt 耗尽才写为 `failed`。runtime idle、tool result、protocol message 或一次 provider transient failure 均不自动改变业务 task 终态。
+
+普通失败结果已在同一 turn 交给 agent 时不额外制造 recovery wakeup。只有 continuation、
+controlled operation 或 Host finalizer 在原 turn 之后才暴露失败时，才按 exact
+source/version 去重创建 `recovery_required`。claim 后从 repository 重建事实，不能复制旧 prompt
+或规定固定修复策略。
 
 ---
 
@@ -462,7 +500,7 @@ Research 输出应归一化为 evidence、source refs、gaps 和必要的 worksp
 
 文献 provider 使用结构化 `completed | empty | degraded | failed` outcome 和 bounded invocation policy。PubMed 是 AOX/HMM cutover 的 required quorum：至少一个来自真实 PubMed provider、schema-valid PMID、完整 provenance、绑定 NCBI identity digest 且非 fixture 的 citation 才完整，empty/schema drift/provider failure 均 fail closed；Semantic Scholar 与 Tavily 只是 enrichment，429、retry exhaustion、absence 或 empty 必须保留为 `degraded`，不得生成 synthetic hit 或抹除有效 PubMed evidence。configured Host 即使没有 Tavily key 也必须装配 PubMed/Semantic Scholar direct tools，并从 `OPENZYME_NCBI_EMAIL` / `NCBI_EMAIL`、NCBI tool/API key 与 `SEMANTIC_SCHOLAR_API_KEY` 注入各自配置，不能把 bio literature availability 错绑到 Tavily。
 
-AOX researcher 可以在 bounded policy 内迭代多次 PubMed query，harness 不规定固定 query、one-call 或 first-success stop。cutover collector 只接受 researcher 在唯一 `task.finish.evidence_refs` 中显式采用的 exactly one PubMed `artifact:<id>` 作为 primary aggregate receipt；零个或多个 adoption、按 latest/result-count/prose 推断，以及 task/invocation/artifact/source task-lane 不闭合都会 fail closed。`lane_id` 是可选 scope，允许整条链一致为 `None`，但不允许空字符串或部分漂移。report claim 必须引用该 primary artifact 内的 PMID/source。未采用的探索、empty、failed 或 superseded invocation 仍保存在 canonical SQLite；把全量 invocation universe 与 disposition/completeness root 封入离线 bundle 属于单独的 `@2` 架构提案，当前 `@1` 不声称具备该完整性 authority。
+AOX researcher 可以在 bounded policy 内迭代多次 PubMed query，harness 不规定固定 query、one-call 或 first-success stop。researcher 仍需在唯一 `task.finish.evidence_refs` 中显式采用 exactly one primary PubMed artifact，report claim 必须引用其中的 PMID/source。除此之外，`@3` collector 从 scientific-attempt control plane 封存全部 controlled-operation occurrence、disposition、adopted role、materialization、selection、quiescence、closure 和 authorization；未采用的探索、empty、failed 或 superseded operation 不会被删掉，也不会因“曾经失败”自动污染合法最终链。零个/多个 primary、按 latest/result-count/prose 推断、identity/lineage 漂移、unknown effect 或跨 attempt reuse 都 fail closed。
 
 direct provider tool 在任何网络 I/O 前先写 `EngineInvocation(RUNNING)`，然后在 success、empty、degraded、typed failure、untyped failure 或 evidence-seal failure 上终结同一个 invocation；required PubMed `empty` 或 typed `failed` 必须终结为失败，不能因 callable 正常返回而被记为 success。可用于科学/报告的 citation metadata、call-local quorum 与 safe provider transcript 通过 artifact boundary 的 external ingress 复制到 Host 注入的 attempt-scoped content-addressed 只读 Blob root，按实际 bytes 重算 `content_digest/sealed_digest`；单个 search hit 仍是 source ref，不因同时存在 provider evidence artifact 而变成文件资产。source ref 持久化 PMID、provider supplied DOI、title、authors、venue/date、不可逆 NCBI identity digest、retrieval/request/response provenance 与 evidence artifact link。API/workspace 只投影安全 locator、status、identity digest 和 evidence digest，credential、private URL/query、private header、Host path 与受限全文不得进入 error/evidence/public projection。
 
@@ -533,7 +571,7 @@ V3 execution 的目标主路径是 executor-owned persistent sandbox workspace�
 - blank-world live attempt 由 Host composition 注入彼此独立的 SQLite、sandbox workspace、sealed blob/artifact 和 HPC workspace roots；execution pipeline、provider artifactization、HPC fetch 与 source snapshot 必须贯穿同一 attempt-scoped root identity，任何局部共享 `/tmp` fallback 都使该 attempt 不具备 cutover 资格。public proof 仅包含 root digest/空目录证明，不暴露 Host 或远端路径
 - 现行 AOX attempt collector 的单文件 no-replace/seal 不等于 evidence archive 的 transaction，也没有统一证明 final `artifacts/` 实际文件集与 declared inventory exact equality。两阶段 private staging→验证→commit、artifact-root 全闭包、failure atomicity、crash recovery 和 schema migration 的完整方案单独记录在 [transactional attempt evidence collection and root closure](v3/architecture-proposals/transactional-attempt-evidence-collection-and-root-closure.md)，当前 Goal 不实施；在该迁移落地前不得用提案语义补强已封存 bundle 或 GO 结论
 - blank-world campaign 的 fresh SQLite 不继承 sandbox image registry 状态；在首个 session/model/provider 调用前，campaign 必须把 public runtime health 返回的 canonical immutable image / Pipeline SDK digests 与 pinned campaign identity 逐字段比对，完全一致后才在该 attempt 内登记 digest-pinned、cutover-grade image row。预存 row、缺失、格式非法或 digest 漂移必须在产生外部副作用前 fail closed；public preflight identity 同时进入 sealed launch receipt并由 offline verifier 对照 campaign image/SDK identity
-- AOX/HMM `pin`、`preflight` 与 `run-live` 的共同最前置 operator boundary 必须显式接收 architecture qualification report，并在 settings、pin runner、attempt root、sandbox probe、provider/runner/Chrome/MICU 之前用当前 checkout 的 pure verifier 重算。只有当前 clean HEAD 的 full selection、当前 registry/test manifest/runner/verifier、全部 invariant satisfied 且零 open P0 的 admission report 可生成 `aox_architecture_qualification_receipt@1`。receipt 贯穿 `aox_cutover_pin_commit@2`、`aox_cutover_pin_receipt@2`、`aox_blank_world_root_proof@2`、`aox_blank_world_launch_receipt@2` 与 `aox_blank_world_attempt_bundle@2` 并由 offline verifier 闭合；missing、diagnostic/subset、dirty/stale/tampered/unknown-profile/open-P0 或 receipt drift 均 fail closed，不存在 force/debug/env/legacy/pass-boolean bypass。资格报告是 checkout 外 operator admission evidence，不是 control-plane 或 scientific truth；exact-nine prerequisites 不扩张，通过也不创建 attempt、不启动 numbered live campaign。无 attempt 的准备边界止于 canonical `pin`：它只执行 deterministic non-scientific runner attestation 并在 checkout 外提交 declaration pair；CLI `preflight` 会创建 blank-world attempt root，是需要另行 operator 授权的第一次 campaign mutation，不能被当作普通 readiness probe
+- AOX/HMM `pin`、`preflight` 与 `run-live` 的共同最前置 operator boundary 必须显式接收 architecture qualification report，并在 settings、pin runner、attempt root、sandbox probe、provider/runner/Chrome/MICU 之前用当前 checkout 的 pure verifier 重算。只有当前 clean HEAD 的 full selection、当前 registry/test manifest/runner/verifier、全部 invariant satisfied 且零 open P0 的 admission report 可生成 `aox_architecture_qualification_receipt@1`。receipt 贯穿 `aox_cutover_pin_commit@2`、`aox_cutover_pin_receipt@2`、`aox_blank_world_root_proof@2`、`aox_blank_world_launch_receipt@2` 与 production `aox_blank_world_attempt_bundle@3` 并由 offline verifier 闭合；历史 `aox_blank_world_attempt_bundle@2` 只由冻结 verifier 读取，不得升级。missing、diagnostic/subset、dirty/stale/tampered/unknown-profile/open-P0 或 receipt drift 均 fail closed，不存在 force/debug/env/legacy/pass-boolean bypass。资格报告是 checkout 外 operator admission evidence，不是 control-plane 或 scientific truth；exact-nine prerequisites 不扩张，通过也不创建 attempt、不启动 numbered live campaign。无 attempt 的准备边界止于 canonical `pin`：它只执行 deterministic non-scientific runner attestation 并在 checkout 外提交 declaration pair；CLI `preflight` 会创建 blank-world attempt root，是需要另行 operator 授权的第一次 campaign mutation，不能被当作普通 readiness probe
 - AOX/HMM `pin` 是 `run-live` 的 canonical supported operator bootstrap：它在 clean checkout 上使用 production compiler 和受信 Host 的 forced-SSH runner 执行四个 deterministic non-scientific MAFFT/hmmbuild/hmmalign/CD-HIT payload，只从 runner 签发的 same-shell runtime identity 得到 toolchain image digests。writer 将 exact-seven identity 与 exact-nine prerequisites 以 `0600` canonical JSON 发布在 checkout 外同一 existing real transaction directory，三个 reserved targets 初始必须不存在；Host 在两个 payload 落盘后最后发布闭集 `.aox-cutover-pin-commit.json`，用 basename 和 canonical payload digest 形成单一 consumer-visible commit point。marker 前 crash 留下的 orphan payload 不可消费；`run-live` 必须在读取 settings、构造 launch/campaign 或创建 root 前拒绝 marker 缺失、symlink、跨目录、开放/畸形字段或 digest drift。该无签名 marker 只证明 committed pair 完整性/一致性，不证明 producer provenance、目录整体 freshness 或消费时 file mode；真实运行仍依赖 trusted operator、actual launch recomputation 与每个 operation 的 runner-issued identity fail-closed
 - AOX/HMM `run-live` 在构造 runner/campaign 或 attempt root 前必须从 clean checkout、digest-pinned workflow registry、`aox_motif_rule_score@1`、实际 Podman runtime preflight 与 Pipeline SDK tree 重算 canonical 七字段 identity；已提交的 pin declaration 只用于精确比较，不是真值来源。identity 解析还必须以 selected immutable image、复制后统一为目录 `0755`/文件 `0644` 且重算 digest 相等的 exact SDK tree，在 `--pull=never`、无网络、只读、限额容器内执行 `aox_sandbox_scientific_backend_probe@1`：真实导入并运行 `biopython_trace_guarded_numpy_gotoh@1` 的 Biopython `1.87`、NumPy `2.4.4`、Gotoh/IEEE-754/numeric preflight；缺包、版本/算法/数值/schema drift 必须在 pin runner attestation、attempt root、MICU/provider/runner effect 前失败。该有界 capability gate 不扩张 exact-seven/exact-nine，也不冒充 deferred reproducible dependency manifest、SBOM 或供应链 attestation。`config_digest` 必须来自 safe `aox_blank_world_runtime_config@2` preimage，绑定 trusted local Host/single-process SQLite、HPC runner config digest、runner-owned manifest bytes digest 及 exact AOX `tool_id` 到 adapter/template/runner-contract digest 的闭集 expectation map、effective MICU/research/tracing/test opt-in、driver/Chrome bounds、controlled-operation owner policy、durable route allowlist、command drain、generic mutation closure、bounded shadow observation与既有累计 500M ledger identity，但不投影 credential、NCBI email 或私有路径。pin 在 forced-SSH attestation 前、run-live 在 campaign/attempt root 前必须证明全部 AOX provider/HPC route 使用 `durable_async_v1`、drain 为 `command_v1` 且 closure 为 `generic_v1`；旧 `@1` 只允许 frozen evidence 离线复核，不得启动新的 live campaign。100M→500M 只能由 operator 显式执行 exact fixed-policy migration，保留全部历史 usage，caller-selected lower limit 不被抬高，普通 summary/reserve/run-live 不自动迁移。MICU/OpenAI-compatible blank-world live 必须显式声明 `context_window_tokens` 且不大于 `200000`，不得按模型名继承第三方 endpoint 未证实的百万级 context。每个 attempt root 前重新校验 checkout/config drift，exact-nine prerequisite 顶层 schema 不因此扩张
 - blank-world prerequisites 是 exact-nine 闭集：`git_commit`、`config_digest`、`workflow_ref`、`image_digest`、`sdk_digest`、`toolchain_image_digests`、`credential_slots`、`ncbi_identity`、`prompt_accessions`。前五项必须与 launch identity 相等；toolchain map 只含 versioned MAFFT 7.525、hmmbuild/hmmalign 3.4 与 CD-HIT 4.8.1 SIF digest，两个 HMMER operation 必须绑定相同 bytes；credential 只投影 availability boolean，prompt accessions 只允许 formal exact-14 与 fixed probe
