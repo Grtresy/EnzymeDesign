@@ -69,6 +69,8 @@ from .aox_cutover_evidence import typed_empty_artifact_validation_receipt
 from .aox_cutover_runtime_config import AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS
 from .aox_cutover_runtime_config import AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN
 from .aox_cutover_runtime_config import AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
+from .aox_cutover_runtime_config import AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID
+from .aox_cutover_runtime_config import AOX_DURABLE_ROUTE_POLICY_IDS
 from .aox_runtime_observation import AoxRuntimeObservationError
 from .aox_runtime_observation import AoxRuntimeObservationService
 from .app import HostApiDependencies
@@ -98,17 +100,6 @@ DEFAULT_UI_DIST = REPO_ROOT / "apps" / "openzyme-web-ui" / "dist"
 KNOWN_POSITIVE_PROBE_ID = "independent_globin_provider_hpc_probe"
 KNOWN_POSITIVE_PROBE_NCBI_ACCESSIONS = ("NP_000509.1", "NP_000549.1")
 KNOWN_POSITIVE_PROBE_UNIPROT_ACCESSIONS = ("P68871", "P69905")
-_AOX_DURABLE_ROUTE_POLICY_IDS = frozenset(
-    {
-        "bio.ncbi_fetch_proteins.provider:v1",
-        "bio.uniprot_fetch.provider:v1",
-        "bio.hmmer_search.provider:v1",
-        "bio_tools.mafft.hpc:v1",
-        "bio_tools.hmmbuild.hpc:v1",
-        "bio_tools.cdhit.hpc:v1",
-        "bio_tools.hmmalign.hpc:v1",
-    }
-)
 S12_OPERATION_IDENTITY_SCHEMA = "openzyme_controlled_operation_s12@1"
 SANDBOX_CALCULATION_IDENTITY_SCHEMA = "openzyme_sandbox_calculation_receipt@1"
 HMMER_SCORE_FILTERED_ACCESSIONS_PATH = "aox_hmm/hmmer_score_filtered_accessions.csv"
@@ -3414,8 +3405,8 @@ class LiveAoxAttemptRunner:
         owner_policy = reliability.controlled_operation_owner_policy.value
         durable_routes = set(reliability.durable_execution_route_allowlist)
         if owner_policy == "durable_only_v1":
-            durable_routes = set(_AOX_DURABLE_ROUTE_POLICY_IDS)
-        missing_routes = sorted(_AOX_DURABLE_ROUTE_POLICY_IDS - durable_routes)
+            durable_routes = set(AOX_DURABLE_ROUTE_POLICY_IDS)
+        missing_routes = sorted(AOX_DURABLE_ROUTE_POLICY_IDS - durable_routes)
         if missing_routes:
             return {
                 "code": "aox_durable_operation_ownership_required",
@@ -3837,7 +3828,7 @@ class LiveAoxAttemptRunner:
         config = dict(self.effective_config or {})
         config_digest = canonical_digest(config) if config else ""
         valid = (
-            config.get("schema_id") == "aox_blank_world_runtime_config@1"
+            config.get("schema_id") == AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID
             and config_digest == context.identity.get("config_digest")
         )
         if required and not valid:

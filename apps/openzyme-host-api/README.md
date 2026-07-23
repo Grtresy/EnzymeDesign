@@ -99,9 +99,13 @@ For an AOX r48 pin or live launch, the effective live foundation must resolve
 `OPENZYME_LLM_CONTEXT_WINDOW_TOKENS=200000`,
 `OPENZYME_TEST_LIVE_LLM_MAX_TOKENS=8192`,
 `OPENZYME_TEST_LIVE_LLM_TIMEOUT=300`, and
-`OPENZYME_TEST_LIVE_LLM_MAX_RETRIES=1`. The live-test values override the
+`OPENZYME_TEST_LIVE_LLM_MAX_RETRIES=1`. It must also resolve
+`OPENZYME_RELIABILITY_CONTROLLED_OPERATION_OWNER_POLICY=durable_only_v1`,
+`OPENZYME_RELIABILITY_RUNTIME_DRAIN_CONTRACT=command_v1`, and
+`OPENZYME_RELIABILITY_MUTATION_CLOSURE_MODE=generic_v1`. The live-test values override the
 ordinary Host LLM max-token/timeout/retry defaults; the sealed effective config,
 not the base variables in isolation, is the launch authority. Canonical `pin`
+rejects an ineligible reliability projection before forced-SSH attestation and
 does not create an attempt, while `openzyme-aox-cutover preflight` does and must
 not be run before the numbered campaign is explicitly authorized.
 

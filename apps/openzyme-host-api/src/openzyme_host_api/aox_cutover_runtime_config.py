@@ -11,18 +11,32 @@ from openzyme_runtime import is_micu_provider_url
 from openzyme_runtime import LIVE_MICU_TOKEN_HARD_LIMIT
 
 
-AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID = "aox_blank_world_runtime_config@1"
+AOX_BLANK_WORLD_RUNTIME_CONFIG_LEGACY_SCHEMA_ID = (
+    "aox_blank_world_runtime_config@1"
+)
+AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID = "aox_blank_world_runtime_config@2"
 AOX_RUNNER_CONTRACT_EXPECTATIONS_SCHEMA_ID = "aox_runner_contract_expectations@1"
 AOX_BROWSER_OBSERVATION_MODE = "chrome_devtools_mcp_file_handoff"
 AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS = 3_600
 AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS = 2.0 * AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
 AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS = AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS
 AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN = 1
+AOX_DURABLE_ROUTE_POLICY_IDS = frozenset(
+    {
+        "bio.ncbi_fetch_proteins.provider:v1",
+        "bio.uniprot_fetch.provider:v1",
+        "bio.hmmer_search.provider:v1",
+        "bio_tools.mafft.hpc:v1",
+        "bio_tools.hmmbuild.hpc:v1",
+        "bio_tools.cdhit.hpc:v1",
+        "bio_tools.hmmalign.hpc:v1",
+    }
+)
 
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PURPOSE_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 
-_TOP_LEVEL_FIELDS = frozenset(
+_LEGACY_TOP_LEVEL_FIELDS = frozenset(
     {
         "schema_id",
         "host",
@@ -35,6 +49,7 @@ _TOP_LEVEL_FIELDS = frozenset(
         "driver",
     }
 )
+_TOP_LEVEL_FIELDS = _LEGACY_TOP_LEVEL_FIELDS | {"reliability"}
 _HOST_FIELDS = frozenset(
     {
         "deployment_profile",
@@ -115,6 +130,16 @@ _TEST_OPT_IN_FIELDS = frozenset(
         "live_e2e",
         "quality_eval",
         "upload_langsmith",
+    }
+)
+_RELIABILITY_FIELDS = frozenset(
+    {
+        "shadow_observability",
+        "controlled_operation_owner_policy",
+        "durable_execution_route_allowlist",
+        "runtime_drain_contract",
+        "mutation_closure_mode",
+        "shadow_max_observations",
     }
 )
 _DRIVER_FIELDS = frozenset(
@@ -461,18 +486,32 @@ def normalize_aox_blank_world_runtime_config(
     *,
     expected_runner_contracts: Mapping[str, Mapping[str, str]],
 ) -> dict[str, object]:
-    """Validate and canonicalize the closed ``aox_blank_world_runtime_config@1``.
+    """Validate and canonicalize a sealed AOX runtime configuration.
 
     Numeric duration/ratio fields are normalized to finite JSON floats. All objects
     use exact field allowlists; no caller-provided field is silently discarded.
+    Legacy ``@1`` remains readable solely so frozen evidence can be reverified.
+    New launch configuration is always emitted as ``@2`` and binds the reliability
+    ownership/closure settings required before any attempt root is created.
     """
 
-    root = _closed_object(value, fields=_TOP_LEVEL_FIELDS, path="effective_config")
-    schema_id = _string(root["schema_id"], path="effective_config.schema_id")
-    if schema_id != AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID:
+    if not isinstance(value, Mapping):
+        raise AoxRuntimeConfigSchemaError("effective_config", "must be an object")
+    raw_schema_id = value.get("schema_id")
+    if raw_schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID:
+        top_level_fields = _TOP_LEVEL_FIELDS
+    elif raw_schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_LEGACY_SCHEMA_ID:
+        top_level_fields = _LEGACY_TOP_LEVEL_FIELDS
+    else:
         raise AoxRuntimeConfigSchemaError(
             "effective_config.schema_id", "uses an unsupported runtime config schema"
         )
+    root = _closed_object(
+        value,
+        fields=top_level_fields,
+        path="effective_config",
+    )
+    schema_id = _string(root["schema_id"], path="effective_config.schema_id")
 
     host = _closed_object(
         root["host"], fields=_HOST_FIELDS, path="effective_config.host"
@@ -777,6 +816,67 @@ def normalize_aox_blank_world_runtime_config(
             "must explicitly enable live_llm, live_hpc, and live_e2e",
         )
 
+    normalized_reliability: dict[str, object] | None = None
+    if schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID:
+        reliability = _closed_object(
+            root["reliability"],
+            fields=_RELIABILITY_FIELDS,
+            path="effective_config.reliability",
+        )
+        owner_policy = _string(
+            reliability["controlled_operation_owner_policy"],
+            path=(
+                "effective_config.reliability."
+                "controlled_operation_owner_policy"
+            ),
+            allowed=frozenset({"route_allowlist_v1", "durable_only_v1"}),
+        )
+        durable_routes = _string_list(
+            reliability["durable_execution_route_allowlist"],
+            path=(
+                "effective_config.reliability."
+                "durable_execution_route_allowlist"
+            ),
+        )
+        if durable_routes != sorted(durable_routes):
+            raise AoxRuntimeConfigSchemaError(
+                "effective_config.reliability.durable_execution_route_allowlist",
+                "must be sorted",
+            )
+        missing_routes = sorted(AOX_DURABLE_ROUTE_POLICY_IDS - set(durable_routes))
+        if owner_policy != "durable_only_v1" and missing_routes:
+            raise AoxRuntimeConfigSchemaError(
+                "effective_config.reliability.durable_execution_route_allowlist",
+                "must include every AOX provider and HPC route",
+            )
+        runtime_drain_contract = _string(
+            reliability["runtime_drain_contract"],
+            path="effective_config.reliability.runtime_drain_contract",
+            allowed=frozenset({"command_v1"}),
+        )
+        mutation_closure_mode = _string(
+            reliability["mutation_closure_mode"],
+            path="effective_config.reliability.mutation_closure_mode",
+            allowed=frozenset({"generic_v1"}),
+        )
+        normalized_reliability = {
+            "shadow_observability": _string(
+                reliability["shadow_observability"],
+                path="effective_config.reliability.shadow_observability",
+                allowed=frozenset({"disabled", "shadow_v1"}),
+            ),
+            "controlled_operation_owner_policy": owner_policy,
+            "durable_execution_route_allowlist": durable_routes,
+            "runtime_drain_contract": runtime_drain_contract,
+            "mutation_closure_mode": mutation_closure_mode,
+            "shadow_max_observations": _integer(
+                reliability["shadow_max_observations"],
+                path="effective_config.reliability.shadow_max_observations",
+                minimum=1,
+                maximum=4_096,
+            ),
+        }
+
     driver = _closed_object(
         root["driver"], fields=_DRIVER_FIELDS, path="effective_config.driver"
     )
@@ -872,7 +972,7 @@ def normalize_aox_blank_world_runtime_config(
         ),
     }
 
-    return {
+    normalized = {
         "schema_id": schema_id,
         "host": normalized_host,
         "execution": normalized_execution,
@@ -883,11 +983,16 @@ def normalize_aox_blank_world_runtime_config(
         "test_opt_in": normalized_test,
         "driver": normalized_driver,
     }
+    if normalized_reliability is not None:
+        normalized["reliability"] = normalized_reliability
+    return normalized
 
 
 __all__ = [
+    "AOX_BLANK_WORLD_RUNTIME_CONFIG_LEGACY_SCHEMA_ID",
     "AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID",
     "AOX_BROWSER_OBSERVATION_MODE",
+    "AOX_DURABLE_ROUTE_POLICY_IDS",
     "AoxRuntimeConfigSchemaError",
     "normalize_aox_blank_world_runtime_config",
 ]

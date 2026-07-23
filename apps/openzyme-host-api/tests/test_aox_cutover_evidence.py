@@ -121,7 +121,7 @@ def _effective_config(
     ledger_identity_digest: str | None = None,
 ) -> dict[str, object]:
     return {
-        "schema_id": "aox_blank_world_runtime_config@1",
+        "schema_id": "aox_blank_world_runtime_config@2",
         "host": {
             "deployment_profile": "local-dev",
             "storage_profile": "single_process_sqlite",
@@ -189,6 +189,14 @@ def _effective_config(
                 "tavily": False,
             },
             "ncbi_identity_digest": _digest("ncbi-identity"),
+        },
+        "reliability": {
+            "shadow_observability": "disabled",
+            "controlled_operation_owner_policy": "durable_only_v1",
+            "durable_execution_route_allowlist": [],
+            "runtime_drain_contract": "command_v1",
+            "mutation_closure_mode": "generic_v1",
+            "shadow_max_observations": 256,
         },
         "tracing": {
             "enabled": False,
@@ -4769,6 +4777,19 @@ def _rewrite_fault_closure_evidence(
     _attach_public_final_snapshot_fixture(artifact_root, evidence)
 
 
+def test_legacy_runtime_config_remains_readable_for_frozen_evidence() -> None:
+    legacy = _effective_config()
+    legacy["schema_id"] = "aox_blank_world_runtime_config@1"
+    legacy.pop("reliability")
+
+    normalized = cutover_evidence.normalize_aox_blank_world_runtime_config(
+        legacy,
+        expected_runner_contracts=AOX_TOOLCHAIN_RUNTIME_CONTRACTS,
+    )
+
+    assert normalized == legacy
+
+
 @pytest.mark.parametrize(
     ("tamper", "expected_code"),
     (
@@ -4822,6 +4843,14 @@ def test_launch_attestation_tamper_fails_closed(
         ("extra_nested", "effective_config.host"),
         ("invalid_nested_type", "effective_config.limits.global"),
         (
+            "legacy_operation_owner",
+            "effective_config.reliability.controlled_operation_owner_policy",
+        ),
+        (
+            "incomplete_durable_routes",
+            "effective_config.reliability.durable_execution_route_allowlist",
+        ),
+        (
             "invalid_nested_range",
             "effective_config.research.provider_timeout_seconds",
         ),
@@ -4852,6 +4881,15 @@ def test_effective_config_closed_schema_tamper_is_rejected_offline(
             config["host"]["legacy_mode"] = False
         elif tamper == "invalid_nested_type":
             config["limits"]["global"] = True
+        elif tamper == "legacy_operation_owner":
+            config["reliability"]["controlled_operation_owner_policy"] = (
+                "legacy_only_v1"
+            )
+        elif tamper == "incomplete_durable_routes":
+            config["reliability"]["controlled_operation_owner_policy"] = (
+                "route_allowlist_v1"
+            )
+            config["reliability"]["durable_execution_route_allowlist"] = []
         elif tamper == "invalid_nested_range":
             config["research"]["provider_timeout_seconds"] = 0.0
         else:

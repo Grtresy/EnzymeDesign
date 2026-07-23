@@ -191,7 +191,7 @@ probe 的 task、operation、invocation、artifact 与 bytes 不得进入 formal
 
 每次 attempt 建立独立空 SQLite、artifact/blob、sandbox 和 HPC roots，记录 cache bypass 和只读允许 prerequisite，并继续使用既有 MICU 持久 500M 账本；历史 usage 不清零，campaign 初始化也不得重置。旧固定 100M policy 只迁移 policy ceiling，全部历史 attempt/charged token 原样保留，显式 lower limit 不被抬高。`aox_blank_world_attempt_bundle@1` 必须绑定 commit/config/workflow/scoring/image/SDK/provider/toolchain/root/approval/operation/task/artifact/report/final-answer/warning/degradation/outcome 身份。offline verifier 无网络重算 canonical JSON、所有可达 sealed artifact、科学计算、lineage 和 report references。
 
-`run-live` 在构造 runner/campaign 和创建任何 root 前先从 clean checkout、digest-pinned workflow、`aox_motif_rule_score@1`、实际 sandbox image preflight 与 Pipeline SDK source tree 计算 canonical 七字段 launch identity。`config_digest` 不是任意 operator 标签，而是 safe `aox_blank_world_runtime_config@1` preimage 的 canonical digest；该 preimage 绑定 single-process SQLite/trusted Host、HPC runner-config digest、runner-owned manifest digest 与 exact AOX `tool_id` → adapter/template/runner-contract expectation map、post-budget MICU/research/tracing/test opt-in、driver/Chrome bounds、现有累计 500M ledger identity，且不暴露 credential、NCBI email 或 Host/runner/ledger path。MICU/OpenAI-compatible endpoint 必须显式配置 `context_window_tokens <= 200000`，不能按模型名继承未经 endpoint 证明的百万级 context。每个 attempt root 创建前都重新执行 launch guard，checkout 或 effective config 漂移直接 fail closed；exact-nine prerequisite 顶层字段不因此增加。
+`run-live` 在构造 runner/campaign 和创建任何 root 前先从 clean checkout、digest-pinned workflow、`aox_motif_rule_score@1`、实际 sandbox image preflight 与 Pipeline SDK source tree 计算 canonical 七字段 launch identity。`config_digest` 不是任意 operator 标签，而是 safe `aox_blank_world_runtime_config@2` preimage 的 canonical digest；该 preimage 绑定 single-process SQLite/trusted Host、HPC runner-config digest、runner-owned manifest digest 与 exact AOX `tool_id` → adapter/template/runner-contract expectation map、post-budget MICU/research/tracing/test opt-in、driver/Chrome bounds、controlled-operation owner policy、durable route allowlist、command drain、generic mutation closure、bounded shadow observation与现有累计 500M ledger identity，且不暴露 credential、NCBI email 或 Host/runner/ledger path。pin 在 forced-SSH attestation 前、run-live 在 campaign/attempt root 前必须证明全部 AOX provider/HPC route 使用 `durable_async_v1`、drain 为 `command_v1` 且 closure 为 `generic_v1`；旧 `@1` 仅为历史 frozen evidence 离线复核保留。MICU/OpenAI-compatible endpoint 必须显式配置 `context_window_tokens <= 200000`，不能按模型名继承未经 endpoint 证明的百万级 context。每个 attempt root 创建前都重新执行 launch guard，checkout 或 effective config 漂移直接 fail closed；exact-nine prerequisite 顶层字段不因此增加。
 
 blank-world prerequisite 只接受 exact nine：`git_commit`、`config_digest`、`workflow_ref`、`image_digest`、`sdk_digest`、`toolchain_image_digests`、`credential_slots`、`ncbi_identity`、`prompt_accessions`。前五项必须与 launch identity 一致；toolchain map 必须精确包含 MAFFT 7.525、hmmbuild 3.4、hmmalign 3.4 和 CD-HIT 4.8.1 四个 versioned route identity，且两个 HMMER operation 绑定同一 SIF digest；credential slots 只含四个 availability boolean，LLM/NCBI 必须 ready；prompt accession 只含 formal exact-14 与固定 known-positive probe 集合。
 
@@ -1077,6 +1077,35 @@ operator interrupt 绕过当前 supervisor `except Exception` retirement ladder 
 完整 envelope 上限校验；worker 对不能通过 closed validation 的 terminal-known observation 直接
 以 `recovery_failed` 终结，不再重复 claim/reconcile。下一次 live 必须使用该 correction 的 clean
 commit/config pin 与全新 r48 roots。
+
+## r48 launch-precondition attempt：永久 NO-GO
+
+r48 在 clean commit `2b75929855cf45fb4bb13b82ee67b216bc174cf9` 上完成 fresh pin，
+pin receipt 绑定 full architecture admission、config digest
+`sha256:caaccb44ae1d84d94c0b7bda2e5d7ad2461bf68ed0039d27f799296d56267376`
+与 workflow
+`workflow:aox-hmm-live@2.0.0#sha256:55f8b73f05c56805b1ed97db5d964956365d093fb81cec751cb18b3cd1e9a69a`。
+但旧 `aox_blank_world_runtime_config@1` preimage 没有绑定 reliability settings，pin 因而
+没有发现 operator environment 仍解析为 legacy controlled-operation owner 与 legacy mutation
+closure。正式 `run-live` 创建 positive attempt
+`positive-79a33a42e0d645209037171f45060351` 后，attempt 内部 gate 在 session、provider、HPC
+或 MICU 调用前以 `aox_durable_operation_ownership_required` 正确 fail closed。
+
+该 non-eligible bundle 的 network-free verification 为 `issues=[]`，digest
+`sha256:00358d3b82c265ca81ae0aef0bbde2c5f3e2c345f16dbe788be36df6582bf2ac`；
+sealed decision digest
+`sha256:6c18c1309259745c73fc5b6401871bb9b6e48252aa7c4d3d7e3bdbc1a8c45cbb`
+保持永久 **NO-GO**。MICU before/after 均为
+`71,572,868 / 500,000,000`，remaining `428,427,132`，零 breach/overage。
+r48 root、bundle、decision 与 pin 永久不可复用。
+
+局部 correction 将新 live config 升级为
+`aox_blank_world_runtime_config@2`，把 owner policy、durable route allowlist、command drain、
+generic mutation closure 与 bounded shadow observation 纳入 canonical digest。pin 在任何
+forced-SSH attestation 前、run-live 在 campaign/attempt root 前要求全部 AOX provider/HPC
+route 为 `durable_async_v1`、drain 为 `command_v1`、closure 为 `generic_v1`；任一配置漂移
+都会改变 pin identity 并 fail closed。旧 `@1` 仅保留 frozen evidence 离线读取兼容，不能再
+启动新的 live attempt。下一次实验必须重新生成 architecture admission、pin 与全新编号 roots。
 
 ## 当前实施状态的表述规则
 

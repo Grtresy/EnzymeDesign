@@ -13,13 +13,17 @@ from openzyme_host_api.aox_architecture_qualification import (
 )
 from openzyme_pipeline import aox_motif
 from openzyme_runtime import ExecutionSettings
+from openzyme_runtime import ControlledOperationOwnerPolicy
 from openzyme_runtime import HostApiSettings
 from openzyme_runtime import HostCliSettings
 from openzyme_runtime import LiveLlmTestSettings
 from openzyme_runtime import LlmPurposePolicy
 from openzyme_runtime import LlmSettings
+from openzyme_runtime import MutationClosureMode
 from openzyme_runtime import OpenZymeSettings
+from openzyme_runtime import ReliabilityRefactorSettings
 from openzyme_runtime import ResearchSettings
+from openzyme_runtime import RuntimeDrainContract
 from openzyme_runtime import TestSettings as RuntimeTestSettings
 from openzyme_runtime import TracingSettings
 from openzyme_runtime import V3BackgroundRuntimeSettings
@@ -113,6 +117,12 @@ def _settings(*, ledger_path: Path, hpc_config_path: Path) -> OpenZymeSettings:
         execution=ExecutionSettings(
             backend="hpc",
             hpc_runner_config=str(hpc_config_path),
+        ),
+        reliability=ReliabilityRefactorSettings(
+            controlled_operation_owner_policy=(
+                ControlledOperationOwnerPolicy.DURABLE_ONLY_V1
+            ),
+            mutation_closure_mode=MutationClosureMode.GENERIC_V1,
         ),
         test=RuntimeTestSettings(
             enable_live_llm=True,
@@ -311,6 +321,15 @@ def test_effective_config_is_deterministic_and_uses_live_budget(tmp_path: Path) 
     assert first.payload["driver"]["micu_hard_limit_tokens"] == 500_000_000
     assert first.payload["driver"]["max_signals_per_drain"] == 1
     assert first.payload["host"]["storage_profile"] == "single_process_sqlite"
+    assert first.payload["schema_id"] == "aox_blank_world_runtime_config@2"
+    assert first.payload["reliability"] == {
+        "shadow_observability": "disabled",
+        "controlled_operation_owner_policy": "durable_only_v1",
+        "durable_execution_route_allowlist": [],
+        "runtime_drain_contract": "command_v1",
+        "mutation_closure_mode": "generic_v1",
+        "shadow_max_observations": 256,
+    }
     runner_expectations = first.payload["execution"]["aox_runner_contract_expectations"]
     assert runner_expectations["schema_id"] == "aox_runner_contract_expectations@1"
     assert set(runner_expectations["contracts"]) == {
@@ -585,6 +604,69 @@ def test_effective_config_rejects_disabled_live_dependencies_before_roots(
         )
 
     assert error.value.code == expected_code
+    assert not (tmp_path / "campaign").exists()
+
+
+@pytest.mark.parametrize(
+    ("reliability", "expected_identity"),
+    (
+        (
+            ReliabilityRefactorSettings(
+                mutation_closure_mode=MutationClosureMode.GENERIC_V1,
+            ),
+            "effective_config.reliability.controlled_operation_owner_policy",
+        ),
+        (
+            ReliabilityRefactorSettings(
+                controlled_operation_owner_policy=(
+                    ControlledOperationOwnerPolicy.ROUTE_ALLOWLIST_V1
+                ),
+                mutation_closure_mode=MutationClosureMode.GENERIC_V1,
+            ),
+            "effective_config.reliability.durable_execution_route_allowlist",
+        ),
+        (
+            ReliabilityRefactorSettings(
+                controlled_operation_owner_policy=(
+                    ControlledOperationOwnerPolicy.DURABLE_ONLY_V1
+                ),
+                runtime_drain_contract=RuntimeDrainContract.SYNC_V1,
+                mutation_closure_mode=MutationClosureMode.GENERIC_V1,
+            ),
+            "effective_config.reliability.runtime_drain_contract",
+        ),
+        (
+            ReliabilityRefactorSettings(
+                controlled_operation_owner_policy=(
+                    ControlledOperationOwnerPolicy.DURABLE_ONLY_V1
+                ),
+            ),
+            "effective_config.reliability.mutation_closure_mode",
+        ),
+    ),
+)
+def test_effective_config_rejects_ineligible_reliability_before_roots(
+    tmp_path: Path,
+    reliability: ReliabilityRefactorSettings,
+    expected_identity: str,
+) -> None:
+    hpc_config = tmp_path / "hpc.toml"
+    hpc_config.write_text("revision=1\n", encoding="utf-8")
+    ledger = tmp_path / "micu.sqlite3"
+    settings = replace(
+        _settings(ledger_path=ledger, hpc_config_path=hpc_config),
+        reliability=reliability,
+    )
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch.build_aox_cutover_effective_config(
+            settings,
+            driver=launch.AoxCutoverDriverConfig(),
+            ledger_path=ledger,
+        )
+
+    assert error.value.code == "aox_launch_effective_config_schema_invalid"
+    assert error.value.details == {"identity": expected_identity}
     assert not (tmp_path / "campaign").exists()
 
 
@@ -967,6 +1049,44 @@ def test_toolchain_pin_redacts_runner_exception_details() -> None:
     assert error.value.code == "aox_launch_toolchain_pin_execution_failed"
     assert "credential" not in projected
     assert "/private/" not in projected
+
+
+def test_pin_rejects_ineligible_reliability_before_runner_attestation(
+    tmp_path: Path,
+) -> None:
+    hpc_config = tmp_path / "hpc.toml"
+    hpc_config.write_text("revision=1\n", encoding="utf-8")
+    ledger = tmp_path / "micu.sqlite3"
+    settings = replace(
+        _settings(ledger_path=ledger, hpc_config_path=hpc_config),
+        reliability=ReliabilityRefactorSettings(),
+    )
+    _stage_runner_contract_manifest(tmp_path)
+    factory_calls = 0
+
+    def runner_server_factory(_: str | Path | None) -> object:
+        nonlocal factory_calls
+        factory_calls += 1
+        return object()
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch.pin_aox_cutover_launch(
+            settings=settings,
+            driver=launch.AoxCutoverDriverConfig(),
+            ledger_path=ledger,
+            architecture_qualification_report=tmp_path / "qualification.json",
+            repo_root=tmp_path,
+            probes=_probes(),
+            runner_server_factory=runner_server_factory,
+        )
+
+    assert error.value.code == "aox_launch_effective_config_schema_invalid"
+    assert error.value.details == {
+        "identity": (
+            "effective_config.reliability.controlled_operation_owner_policy"
+        )
+    }
+    assert factory_calls == 0
 
 
 def test_pin_launch_self_validates_generated_identity_and_prerequisites(

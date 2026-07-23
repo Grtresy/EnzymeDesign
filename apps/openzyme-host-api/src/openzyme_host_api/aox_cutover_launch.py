@@ -881,6 +881,26 @@ def build_aox_cutover_effective_config(
             "credential_slots": slots,
             "ncbi_identity_digest": _ncbi_identity_digest(effective),
         },
+        "reliability": {
+            "shadow_observability": (
+                effective.reliability.shadow_observability.value
+            ),
+            "controlled_operation_owner_policy": (
+                effective.reliability.controlled_operation_owner_policy.value
+            ),
+            "durable_execution_route_allowlist": list(
+                effective.reliability.durable_execution_route_allowlist
+            ),
+            "runtime_drain_contract": (
+                effective.reliability.runtime_drain_contract.value
+            ),
+            "mutation_closure_mode": (
+                effective.reliability.mutation_closure_mode.value
+            ),
+            "shadow_max_observations": (
+                effective.reliability.shadow_max_observations
+            ),
+        },
         "tracing": {
             "enabled": effective.tracing.enabled,
             "project_name_digest": _canonical_digest(

@@ -1360,7 +1360,7 @@ the derived object with the declaration field for field; a dirty checkout,
 missing/mutable identity, or mismatch stops before root creation.
 
 `config_digest` is the canonical JSON digest of the complete safe preimage
-`aox_blank_world_runtime_config@1`. That preimage records the effective
+`aox_blank_world_runtime_config@2`. That preimage records the effective
 post-foundation configuration, including:
 
 - trusted `local-dev`, single-process SQLite, disabled background runtime and
@@ -1376,15 +1376,23 @@ post-foundation configuration, including:
 - research bounds, credential availability, opaque NCBI identity digest and
   tracing digest;
 - explicit live-test opt-ins;
+- the controlled-operation owner policy, sorted durable route allowlist,
+  command-drain contract, generic mutation-closure mode, and bounded shadow
+  observation configuration;
 - driver approval mode, time/drain/agent bounds, browser observation bounds and,
   for `chrome-once`, the built Web UI dist digest;
 - scenario `aox_blank_world_cutover`, the exact cumulative 500,000,000-token
   MICU limit and the existing ledger identity digest.
 
 The preimage never projects raw credentials, the NCBI email, or Host/runner/
-ledger paths. It is sealed in each launch receipt and recomputed by the offline
-verifier. Before every attempt root is created, the campaign launch guard
-recomputes the checkout and effective configuration; any drift fails closed.
+ledger paths. Pin rejects a configuration before forced-SSH attestation unless
+every AOX provider/HPC route resolves to `durable_async_v1`, runtime drain is
+`command_v1`, and mutation closure is `generic_v1`. It is sealed in each launch
+receipt and recomputed by the offline verifier. Before every attempt root is
+created, the campaign launch guard recomputes the checkout and effective
+configuration; any drift fails closed. Frozen `@1` preimages remain readable
+only for historical offline verification and cannot be emitted or admitted by
+a new live launch.
 
 `allowed_prerequisites` is also an exact closed object, with exactly these nine
 top-level fields and no extras:
@@ -1461,6 +1469,9 @@ launch recomputation and each live operation's runner-issued identity fail
 closed on environment or toolchain drift.
 
 ```bash
+export OPENZYME_RELIABILITY_CONTROLLED_OPERATION_OWNER_POLICY=durable_only_v1
+export OPENZYME_RELIABILITY_RUNTIME_DRAIN_CONTRACT=command_v1
+export OPENZYME_RELIABILITY_MUTATION_CLOSURE_MODE=generic_v1
 install -d -m 700 /tmp/openzyme-aox-pin/<campaign-id>
 uv --project apps/openzyme-host-api run openzyme-aox-cutover pin \
   --identity-output \
@@ -1720,6 +1731,9 @@ Attempt bundles, driver-failure evidence and the decision use atomic no-replace 
 Real campaign entry point:
 
 ```bash
+export OPENZYME_RELIABILITY_CONTROLLED_OPERATION_OWNER_POLICY=durable_only_v1
+export OPENZYME_RELIABILITY_RUNTIME_DRAIN_CONTRACT=command_v1
+export OPENZYME_RELIABILITY_MUTATION_CLOSURE_MODE=generic_v1
 install -d -m 700 /tmp/openzyme-aox-browser-handoff
 uv --project apps/openzyme-host-api run openzyme-aox-cutover run-live \
   --campaign-root /tmp/openzyme-aox-cutover/<campaign-id> \
