@@ -35,8 +35,11 @@ AOX/HMM live cutover：
 
 - [aox-hmm-blank-world-cutover.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-hmm-blank-world-cutover.md)
 - 新 production attempt 使用 selected-chain `aox_blank_world_attempt_bundle@3`；
-  历史 `@2` verifier 与 r48-r51 NO-GO evidence 保持冻结。下一次 numbered live attempt
-  必须先获得 exact one-use authority plan；本轮实现停在创建 attempt root 之前。
+  历史 `@2` verifier 与 r48-r56 NO-GO evidence 保持冻结。r56 后的 target contract
+  将 diagnostic live 与 exact-three formal acceptance 分开：diagnostic 永久
+  `acceptance_eligible=false` 且不能生成/进入 `@3` bundle/reducer；当前独立 diagnostic
+  authority/runner/receipt 尚未实现，现有 `authorize` / `run-live` 仍只代表 formal
+  acceptance，不得用来继续做框架诊断。
 - `pin`、`preflight`、`run-live` 均先要求当前 clean commit 的 full architecture qualification report；qualification 通过本身只解除架构阻断，不创建 attempt，也不自动恢复 numbered campaign。无 attempt 的准备阶段止于 canonical `pin`；CLI `preflight` 会创建 blank-world attempt root，因此每个新 numbered campaign 都必须有 operator 授权并使用 fresh roots。
 
 Execution pipeline SDK docs:

@@ -242,6 +242,11 @@ effect、未退休 process/writer、authority/resource breach 或不完整 dispo
 closed。同一 formal attempt 可跨 run adoption/materialization，跨 attempt/campaign/
 positive/probe/fault reuse 禁止。closure 需同时验证 sealed selection、exact quiescence、
 authorization consumption 和 materialization lineage，但 closure 仍不是 task terminal。
+attempt closure 的 scope transition 还必须在一个短本地 write transaction 中原子提交：
+attempt scope seal、immutable closure 与唯一 post-attempt session scope open 对并发
+runtime barrier 只能呈现前态或后态，不能暴露 committed 零 open scope 中间态；真正
+missing/ambiguous scope 继续 fail closed，不能以 driver blind retry 掩盖 non-atomic
+finalizer。
 
 每个新 attempt 还必须绑定 registry-resolved、digest-closed 的
 `ScientificWorkflowContract`。合同 preimage 同时覆盖 workflow/scope、合法 roles、每个
@@ -261,13 +266,22 @@ reason 与 idempotency key，Host 在同一事务写 adopted disposition 与 eff
 两步 `scientific.effect.adopt` 不再暴露给模型。
 
 AOX 是该通用控制面的首个消费者：新 production collector 只发
-`aox_blank_world_attempt_bundle@3`；历史 `@2` verifier 和 r48-r54 NO-GO evidence
+`aox_blank_world_attempt_bundle@3`；历史 `@2` verifier 和 r48-r56 NO-GO evidence
 保持冻结且不得升级或采用。r54 使用的
 `aox_blank_world_selected_chain@1` 同样只读；新 attempt 只接受 digest 覆盖完整
 role-to-operation mapping 的 `@2`，active `aox_blank_world_runtime_config@3` 把该合同身份
-封入 config pin。r52、r53 与 r54 都没有 eligible positive attempt/campaign closure；任何
+封入 config pin。r52-r56 都没有 eligible positive attempt/campaign closure；任何
 后继 live 必须重新 commit、full admission、pin、authorize 并取得新 plan 的精确消费授权。完整合同见
 `docs/v3/08-failure-recovery-and-scientific-attempts.md`。
+
+从 r56 起，AOX target contract 把 live execution 拆成 schema-disjoint 的两个 run class。
+diagnostic live 只消费独立 one-use 单 positive authority，使用独立 root/consumption/
+decision schema，并永久 `acceptance_eligible=false`；它不得生成 `@3` bundle、不得进入
+GO reducer，也不得把 operation/effect/artifact/report/browser receipt/bytes 交给 formal。
+formal acceptance 保留现有 exact-three `positive, positive, fault` authority 与全部 GO
+门槛。两类 plan 必须分别获得 operator 精确批准，内容 digest 相同也不产生复用权限。
+当前代码尚未实现 diagnostic authority/runner/receipt；因此现有 `authorize` / `run-live`
+仍只代表 formal acceptance，不能把普通失败 campaign 事后重命名为 diagnostic。
 
 ---
 
@@ -735,6 +749,7 @@ Live gate 解释：
 - AOX r48、r49 与 r50 均为永久 NO-GO；r50 的六项真实 probe operation 完成但旧 durable HPC materializer 漏投影 runner-attested toolchain identity，formal 路径完成 PubMed/NCBI/MAFFT/hmmbuild 与 Chrome canonical approval后，EBI HMMER job `563241d6-b460-4c74-bc92-70a34ab7c18a` 返回 `RETRY` 又被旧 adapter 错判为 non-retryable invalid request。后继 numbered campaign 只有在 durable identity 与 HMMER v3 两处 correction 提交后的 clean full admission、fresh pin 与 fresh roots 全部完成后才可启动，且仍需全部 launch/live/scientific/evidence gate，不能由 mainline、focused pytest、workflow eval、seeded smoke 或历史 run 替代
 - AOX r51 与 r52 同样是永久 NO-GO。r52 在 commit `5ccb0d3ba6055cd3d50b0e42437c350ee442a1f0` 精确消费 plan `sha256:c2755edc4a8f08a161618a7291ff8dad40c340c390c527c24c8f956366492bbb` 后只到达 positive 1：六项 probe operation 均 terminal-known，但旧 collector 未把 durable HPC `run_id` 规范化为 evidence `backend_run_id`；formal master 的前三项 `task.create` 成功后，旧三-call截断又让未 dispatch 的第 4 项缺少 ToolMessage，下一次 provider call 因 transcript 不闭合失败。没有 Chrome handoff、eligible attempt bundle、positive 2 或 fault；decision `sha256:7284ce153ed150688887ff1315f52ac236e1a5ef18cf7c519085380013befe8b` 只能封存该事实。当前 collector 对 completed operation 严格使用 `hpc -> run_id` / `provider_http -> provider_request_id` 后统一投影，且 master/teammate 对 overflow call 生成 no-effect rejection 和匹配 ToolMessage。r52 state/effects 不得 replay/adopt；后继必须 fresh correction commit/full admission/pin/authority/roots 并重新获得 plan 精确授权
 - AOX r53 同样是永久 NO-GO。它在 commit `83475a01fb6be91ca8ba5dc39c4c0b09774504e7` 消费 plan `sha256:a0bccbb4b71b2fb60a0a7131eae692d7400831ee7b516ba8143089f0d71aaabf` 后，positive 1 的独立六项 probe 已完成并密封；formal session 尚未产生 controlled operation、approval 或 Chrome handoff，就因旧 selected-chain driver 没有在 open pre-attempt scope 上登记 runtime barrier 所要求的 exact AOX observer writer，以 `mutation_driver_writer_identity_invalid` fail closed。parent fatal 证明进程组退休，但不声明 SQLite/quiescence/artifact closure；positive 2 与 fault 未启动，decision `sha256:d506914841245e9853ef28f7023a942891c6fc2f99244cbe496c899776e3e469` 只能封存 NO-GO。commit `6e5ff65a2f4f9e16f4441857be2d25ca7cf5e7d8` 只修复了完整 session observation；后续非-live 真实 SQLite 审计发现 terminal-command writer settlement 仍直接读取同一 barrier，并会重现相同 identity failure，既有测试桩掩盖了该调用面。当前纠正让两个 formal 消费面共用 bounded observer context，并以真实 SQLite 覆盖其他 root/child writer 可见、observer 退休及 scope 密封；任何绑定 `6e5ff65a2f4f9e16f4441857be2d25ca7cf5e7d8` 的未消费后继计划均已过时且不可跨本次纠正使用。r53 authority/state/effects 不得 replay/adopt，后继仍需 fresh correction commit/full admission/pin/authority/roots 与新计划精确授权
+- AOX r56 是永久 NO-GO。它在 commit `92712310df96925cabe6b88a949a33b00470cf7d` 消费 plan `sha256:a3d6ed88cca88962281eed38e29f14155701ee7be0ddb2810cc67f47b5882627` 后，positive 1 已完成独立 probe、Chrome canonical approval、六项 formal controlled operation、17 deliverables、selection seal 与 scientific-attempt closure；reporter 仍为 todo 且没有 eligible report/`@3` bundle。non-transactional finalizer 先提交 attempt scope sealed，约 144 ms 后才提交 post-attempt scope open，并发 barrier 在零 open scope 窗口以 `mutation_driver_writer_identity_invalid` 终止。fatal `sha256:4e0f23b05f8fc5dbe84b35d0781e5c08926eacd4224aa00ab27e5052917463f9` 与 decision `sha256:826bbaf5bbcd07dccff481c363d0d6bb9b4be7aae1f00a33a22ba2e4b346f87f` 只封存失败；MICU lower bound 为 `86,881,198 / 500,000,000`。r56 全部 authority/root/effect/bytes 不得复用。下一步先实现 atomic rollover 与 diagnostic/formal 双类别并完成新 commit/full admission；不得直接启动 r57
 - 裸 `uv run pytest` 通过 `pytest.ini` 默认排除 `integration`、全部 `live_*`、`seeded_live_smoke` 与 `quality_eval`；真实外部测试必须同时满足环境 gate 与命令行显式 `-m` 选择，已配置凭据本身不能触发默认外部调用
 - `live_e2e` 是外部配置和 live 依赖的必要 gate，但不能单独证明单消息完整报告生产路径已经产品完成
 - live E2E 轮询在 task 已失败、所有 agent 均非 working/active 且没有 pending signal 或 unread inbox 时必须立即以持久 failure evidence 收敛；不得把外部 provider rate limit、缺 artifact 或 fail-closed 终止包装成通过，也不得在业务已静止后空等全局超时

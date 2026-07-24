@@ -1403,6 +1403,45 @@ r55 authority、roots、probe effects、partial evidence 与 pending wakeup 全�
 任何后继 numbered campaign 必须基于新 correction commit 完成 full admission、fresh pin、
 fresh exact-three plan 与 fresh roots，并在消费新 plan 前取得单独精确授权。
 
+## r56 scope rollover / run-class split attempt：永久 NO-GO
+
+r56 在 clean commit `92712310df96925cabe6b88a949a33b00470cf7d` 上消费 plan
+`sha256:a3d6ed88cca88962281eed38e29f14155701ee7be0ddb2810cc67f47b5882627`，
+只启动 positive 1 `positive-77f043cfc659aca80405494ef950588d`。它已跨过 r55 blocker：
+probe exact six、formal PubMed、Chrome approval `appr_d86d2b0b5082`、exact-14 NCBI、
+MAFFT、hmmbuild、EBI HMMER、UniProt、HMMalign、17 个规范化 deliverable，以及
+selected-chain seal / scientific-attempt closure 都真实完成。当前 provider 数据产生了诚实
+empty candidate/CD-HIT FASTA，而没有 discovery claim。
+
+这仍不是 positive result。reporter task 为 `todo`，没有 draft/published report、final
+browser observation、formal completion snapshot 或 eligible `@3` bundle；两个 follow-up
+signal 仍 pending。scientific closure 独立于 report/task business exit，不能替代它们。
+
+失败来自 Host finalizer 的非原子 scope transition：attempt scope 在
+`2026-07-24T16:26:13.955598+00:00` 先提交 sealed，post-attempt session scope 在
+`2026-07-24T16:26:14.099927+00:00` 才提交 open。并发 barrier 在约 144 ms 的零 open
+scope 窗口无法登记 AOX observer writer，以
+`mutation_driver_writer_identity_invalid` fail closed。post scope 和已退休
+`host:scientific-transition-finalizer` writer 随后出现，排除了 scientific/provider/HPC
+failure。正确 forward fix 是一个短 write transaction 原子提交 seal + closure + post-scope
+open，而不是 driver blind retry。
+
+parent fatal
+`sha256:4e0f23b05f8fc5dbe84b35d0781e5c08926eacd4224aa00ab27e5052917463f9`
+与 campaign decision
+`sha256:826bbaf5bbcd07dccff481c363d0d6bb9b4be7aae1f00a33a22ba2e4b346f87f`
+封存永久 **NO-GO**。MICU verified lower bound 为
+`86,881,198 / 500,000,000`，r56 delta `3,116,328`，remaining
+`413,118,802`，零 breach/overage；positive 2/fault 未启动。r56 authority、roots、
+effects、Chrome/closure/partial evidence 与 bytes 全部不可复用。
+
+r56 触发 target contract 正式拆分：diagnostic live 使用独立 one-use 单 positive plan、
+独立 root/consumption/decision schema，固定 `acceptance_eligible=false` 且不得生成
+`@3`/进入 reducer；formal acceptance 仍精确要求 fresh `positive, positive, fault` 三个
+slot，GO 门槛不变。当前独立 diagnostic command/authority/receipt 尚未实现，所以现有
+`authorize`/`run-live` 仍只代表 formal acceptance，不能继续拿它们做框架诊断。atomic
+rollover 与双 run class 实现、测试、commit、full admission/pin 完成前不得启动 r57。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

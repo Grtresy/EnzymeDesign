@@ -120,6 +120,8 @@ The AOX formal driver SHALL project each runtime barrier while exactly one root 
 
 Both the complete semantic session observation and the terminal-runtime-command check for attached mutation writers SHALL use the same bounded observer lifecycle entry. The drain coordinator MUST carry the exact session purpose and attempt authority into that entry and MUST NOT call an AOX runtime-barrier projection directly on a formal path. The observer SHALL retire before the coordinator sleeps, reads approvals again, returns the drain result, starts another drain, or propagates an error.
 
+Host-finalized mutation-scope rollover SHALL be externally atomic. Sealing the admitted attempt scope, committing the immutable scientific-attempt closure, and opening its unique post-attempt session scope MUST occur inside one short local write transaction. A concurrent runtime barrier may observe the pre-transition attempt scope or the post-transition session scope, but MUST NOT observe a committed zero-open-scope intermediate state. The driver MUST NOT hide a non-atomic transition through blind retry or reinterpret a genuinely missing scope as idle.
+
 #### Scenario: Observe the pre-attempt scope without blocking rollover
 - **WHEN** a formal session has one open pre-attempt session scope and the driver projects runtime settlement before the agent requests `attempt.create`
 - **THEN** the driver registers one exact root AOX observer writer, reads the barrier while that writer is active, retires it on return, and leaves no active writer that could prevent the Host from sealing the pre-attempt scope and opening the admitted attempt scope
@@ -131,6 +133,10 @@ Both the complete semantic session observation and the terminal-runtime-command 
 #### Scenario: Settle a terminal runtime command through the same observer
 - **WHEN** a formal runtime command is terminal and the drain coordinator checks whether an attached mutation writer remains
 - **THEN** it creates and retires the same exact bounded AOX observer around that writer-only projection, waits while any other root or child writer remains, and never performs a direct formal barrier read without observer identity
+
+#### Scenario: Close an attempt without an observable scope gap
+- **WHEN** the Host finalizes a sealed selected chain while the cutover driver concurrently performs its post-drain runtime observation
+- **THEN** the closure, attempt-scope seal, and unique post-attempt-scope open commit atomically, so the observer sees exactly one open scope before or after the transition and never fails on a transient zero-scope window
 
 ### Requirement: Exact scientific callable and artifact-selection map
 The formal executor SHALL use the installed versioned callables `openzyme_pipeline.aox_reference.select_hmm_reference_set`, `select_scoring_reference`, `assemble_scoring_input`, `openzyme_pipeline.aox_hmmer.parse_and_filter_csv`, `openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions`, `openzyme_pipeline.aox_motif.score_aligned_fasta`, and `openzyme_pipeline.aox_similarity.build_similarity_graph` with their canonical serializers. It MUST NOT approximate or locally reimplement a pinned calculation.
@@ -428,7 +434,7 @@ Every one of the 17 normalized AOX deliverable paths SHALL retain the exact kind
 - **THEN** offline verification fails and the evidence cannot contribute to GO
 
 ### Requirement: Sealed and offline-verifiable evidence bundle
-Each attempt SHALL generate a canonical evidence payload and digest covering the exact-seven launch identity, effective-config preimage, exact-nine prerequisites, provider and runner-attested toolchain identities, clean-root proof, public driver receipts, approvals, operations, input/output artifact digests, task/report identities, final answer, warnings, degradation, and scientific outcome. An offline verifier SHALL recompute the bundle and all reachable sealed artifact digests without contacting external providers.
+Each formal acceptance attempt SHALL generate a canonical evidence payload and digest covering the exact-seven launch identity, effective-config preimage, exact-nine prerequisites, provider and runner-attested toolchain identities, clean-root proof, public driver receipts, approvals, operations, input/output artifact digests, task/report identities, final answer, warnings, degradation, and scientific outcome. An offline verifier SHALL recompute the bundle and all reachable sealed artifact digests without contacting external providers.
 
 #### Scenario: Verify an untampered attempt
 - **WHEN** the verifier receives a completed attempt bundle and its authorized artifact root
@@ -442,8 +448,34 @@ Each attempt SHALL generate a canonical evidence payload and digest covering the
 - **WHEN** a sandbox provider operation fails after its request draft exists
 - **THEN** its sealed request/observation/error diagnostic artifacts retain the original canonical failure and safe refs without retry or replay, remain outside the fixed 17 normalized deliverables, and cannot make the attempt or provider operation successful
 
+### Requirement: Diagnostic live runs are disjoint from formal acceptance
+AOX live execution SHALL expose two explicit, closed, and non-interchangeable run classes:
+
+1. A **diagnostic live run** executes at most one positive-shaped blank-world path under a distinct one-use diagnostic authority plan, diagnostic campaign/root namespace, and diagnostic decision schema. It MAY exercise real MICU, provider, HPC, approval, sandbox, selected-chain, report, and browser behavior within its exact authority, but every output MUST remain `acceptance_eligible=false`. It MUST NOT emit `aox_blank_world_attempt_bundle@3`, MUST NOT emit or enter `aox_blank_world_campaign_decision@1`, and MUST NOT consume any slot from a formal exact-three authority plan.
+2. A **formal acceptance campaign** is the existing exact-three `positive, positive, fault` campaign. It alone MAY emit `aox_blank_world_attempt_bundle@3` and enter the GO reducer. Its authority, roots, effects, artifacts, reports, browser receipts, bundles, and decision MUST be fresh and disjoint from every diagnostic run.
+
+Diagnostic and acceptance plans SHALL use different schema identifiers and validators. Their consumption receipts SHALL bind the exact plan class and deterministic sibling target before any root, MICU, provider, HPC, or browser action. A launcher, collector, verifier, or reducer MUST reject cross-class plan use, ambiguous mode, diagnostic-root input, diagnostic receipt promotion, and any attempt to adopt or copy diagnostic state or bytes into formal acceptance, even when content digests happen to match.
+
+The existing `run-live` command SHALL remain formal-acceptance-only until a separately named diagnostic command, one-slot authority builder/consumer, append-only diagnostic receipt, and cross-mode negative verification are implemented. Before that implementation is complete, an operator MUST NOT relabel an ordinary failed `run-live` campaign as a diagnostic run or start another numbered acceptance campaign merely to diagnose framework readiness.
+
+#### Scenario: Diagnose without consuming an acceptance slot
+- **WHEN** an operator separately approves and consumes one diagnostic authority plan
+- **THEN** the runner creates one fresh diagnostic root, records all reached real effects and the smallest blocker or completed product-path facts in a diagnostic-only receipt, and leaves every formal exact-three authority plan absent and unconsumed
+
+#### Scenario: Reject promotion of diagnostic evidence
+- **WHEN** a diagnostic run completes the whole positive-shaped product path or produces bytes identical to a later formal attempt
+- **THEN** its receipt remains non-cutover, no `@3` attempt bundle is created from it, the formal collector and campaign reducer reject it, and the later acceptance attempt must independently obtain fresh authority, roots, effects, artifacts, report, browser proof, and closure
+
+#### Scenario: Preserve the unchanged formal GO gate
+- **WHEN** an operator starts a formal acceptance campaign after any number of diagnostic runs
+- **THEN** the campaign still requires two independent positive `@3` bundles followed by one controlled-fault bundle on one exact launch identity, and no diagnostic success or failure satisfies, replaces, or weakens any of those three slots
+
+#### Scenario: Fail closed before the diagnostic command exists
+- **WHEN** the implementation exposes only the existing formal `authorize` and `run-live` commands
+- **THEN** those commands continue to require the exact-three acceptance plan, and the system reports the diagnostic/acceptance split as not yet implemented instead of silently treating a formal plan or campaign as diagnostic
+
 ### Requirement: Three-attempt GO campaign
-Local Live cutover SHALL be GO only after two consecutive independent positive attempts on the same exact-seven launch identity pass, followed by one `derived_required_artifact_blob_byte_flip@2` attempt that fails closed. The fault MUST traverse the real exact-14 NCBI `proteins.fasta` through `aox_hmm_reference_set_selection@1` to derived `AOX_ref21.fasta`, flip one byte before its pending MAFFT consumer, and terminate that consumer with exact `artifact_blob_digest_mismatch`. Positive attempts MUST use different clean roots and MUST each publish a report and pass offline evidence verification. Implementation or non-live test completion MUST NOT be reported as Live completion before all three real bundles and the sealed reducer decision exist.
+Local Live cutover SHALL be GO only after one formal acceptance campaign produces two consecutive independent positive attempts on the same exact-seven launch identity, followed by one `derived_required_artifact_blob_byte_flip@2` attempt that fails closed. The fault MUST traverse the real exact-14 NCBI `proteins.fasta` through `aox_hmm_reference_set_selection@1` to derived `AOX_ref21.fasta`, flip one byte before its pending MAFFT consumer, and terminate that consumer with exact `artifact_blob_digest_mismatch`. Positive attempts MUST use different clean roots and MUST each publish a report and pass offline evidence verification. Diagnostic live runs, implementation completion, and non-live test completion MUST NOT be reported as Live completion before all three fresh formal bundles and the sealed reducer decision exist.
 
 #### Scenario: Campaign reaches GO
 - **WHEN** attempts one and two independently satisfy every positive criterion and attempt three seals `aox_fault_negative_state_closure@1` proving execution failed/blocked/cancelled, reporting did not complete or publish, no ready/published report or draft exists, no alternate target consumer succeeded, no downstream fixed deliverable exists, durable events/conversation/final failure agree, and all fault-attempt MICU usage is attributed to this campaign

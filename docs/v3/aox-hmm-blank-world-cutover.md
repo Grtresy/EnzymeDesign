@@ -1,8 +1,8 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r55 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. r48 through r55 are permanent NO-GO evidence. The executable architecture-qualification gate is implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. Local Live cutover stays **NO-GO** until one successor campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
+Status: r43-r56 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. r48 through r56 are permanent NO-GO evidence. The executable architecture-qualification gate is implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. Local Live cutover stays **NO-GO** until one successor formal acceptance campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity. After r56, diagnostic live execution and formal acceptance are separate target contracts; the diagnostic command/authority/evidence path is not implemented yet, so existing `authorize` and `run-live` remain formal-acceptance-only.
 
-Historical r14-r55 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
+Historical r14-r56 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
 This document describes the operator/evidence boundary implemented by `openzyme_host_api.aox_cutover_evidence`. It does not turn the historical S15 fixture into live evidence and does not authorize seeded state, cached scientific outputs, the reference notebook, or copied reference results as attempt inputs.
 
@@ -11,7 +11,7 @@ scientific-attempt control plane. The agent may retain failed/superseded trials
 inside one formal attempt while explicitly selecting a valid adopted chain, but
 the bundle still audits the full occurrence universe and fails closed on unknown
 effect, active process/writer, incomplete disposition, authority/resource breach,
-or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r55
+or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r56
 fact can be upgraded, backfilled, or adopted.
 The current workflow knowledge identity is
 `workflow:aox-hmm-live@2.0.0#sha256:c98afb0d5706e3826ed4754f523b3b688ee139a616c10ea03ceae4c22c106b14`;
@@ -290,6 +290,74 @@ The consumed authority, root, probe effects, partial child evidence and all
 diagnostic rows remain immutable. A successor requires a new clean commit,
 fresh full admission, pin, exact-three authority plan and roots, plus separate
 precise user approval before plan consumption.
+
+## r56 live attempt: permanent NO-GO
+
+r56 ran on clean commit
+`92712310df96925cabe6b88a949a33b00470cf7d` after consuming exact-three plan
+`sha256:a3d6ed88cca88962281eed38e29f14155701ee7be0ddb2810cc67f47b5882627`
+for campaign `aox_campaign_9e5f5da425f7e209d34b01c5`. Only positive 1
+`positive-77f043cfc659aca80405494ef950588d` started; positive 2 and fault never
+acquired roots.
+
+r56 passed the r55 scheduler blocker. Its isolated known-positive probe
+completed real NCBI, UniProt, MAFFT, hmmbuild, CD-HIT and HMMalign. The formal
+path completed required PubMed evidence, Chrome-approved
+`appr_d86d2b0b5082` for operation `op_32dd1b4ae57d`, and six terminal-known
+controlled operations: exact-14 NCBI, MAFFT, hmmbuild, EBI HMMER, UniProt and
+HMMalign. All 17 normalized AOX deliverables were registered. The current
+provider result truthfully produced empty candidate/CD-HIT FASTA and the
+corresponding no-discovery branch.
+
+The executor also sealed the six-occurrence selected chain and requested
+scientific-attempt closure. Host committed closure digest
+`sha256:0018a0933139739a2c31919ddc1b8ca7bfa3d660fb4ca8cbd69ae62d819714a3`
+and attempt-scope receipt digest
+`sha256:cd8e3d9e02d2d2a6003611a16c21121d4003966dbbaf8bfc5c2701efe293a7eb`.
+This was not a product result: the reporter task was still `todo`, two follow-up
+signals were pending, and there was no report draft, published report, final
+browser observation, completed formal drive result or eligible `@3` bundle.
+
+The framework defect was a committed mutation-scope rollover gap. Scientific
+transition finalization used a non-transactional repository connection: the
+attempt scope committed `sealed` at
+`2026-07-24T16:26:13.955598+00:00`, while its post-attempt session scope did
+not commit `open` until `2026-07-24T16:26:14.099927+00:00`. A concurrent
+post-drain barrier entered that approximately 144 ms zero-open-scope window.
+Its bounded observer could not register a writer and surfaced
+`mutation_driver_writer_identity_invalid`. The post-attempt scope and retired
+`host:scientific-transition-finalizer` writer appearing immediately afterward
+prove this was coordination drift, not provider/HPC or scientific failure.
+The forward fix must make attempt seal, closure and post-attempt-scope open one
+short atomic write transaction; blind barrier retry must not conceal a
+non-atomic transition.
+
+Parent supervision sealed fatal
+`sha256:4e0f23b05f8fc5dbe84b35d0781e5c08926eacd4224aa00ab27e5052917463f9`
+after child exit `70`, proving descendant retirement and blocking later slots
+while declining ledger-after, SQLite-closure, artifact-completeness,
+quiescence and external-outcome claims. Decision
+`sha256:826bbaf5bbcd07dccff481c363d0d6bb9b4be7aae1f00a33a22ba2e4b346f87f`
+is permanent **NO-GO**. The verified MICU lower bound is
+`86,881,198 / 500,000,000`; r56 added `3,116,328`, leaving `413,118,802`,
+with no breach or overage. Its authority, roots, effects, Chrome proof,
+scientific bytes, closure and partial evidence are immutable and non-reusable.
+
+Because r56 exposed another framework defect before the first eligible result,
+the target contract now separates:
+
+- a one-positive **diagnostic live run**, with its own one-use authority,
+  root/consumption/decision schemas and permanent
+  `acceptance_eligible=false`; it may exercise real dependencies but cannot
+  emit an `aox_blank_world_attempt_bundle@3` or enter the GO reducer;
+- the unchanged **formal acceptance campaign**, whose fresh exact-three
+  `positive, positive, fault` plan is the only path to `@3` bundles and GO.
+
+The two classes never share authority, roots, effects, artifacts, reports,
+browser receipts or bytes. This is currently a specified implementation gap:
+there is no diagnostic CLI/authority/receipt yet. Until that path and atomic
+rollover are implemented and qualified on a new commit, existing `authorize`
+and `run-live` remain formal-acceptance-only and no r57 campaign should start.
 
 ## Numbered launch-preparation boundary
 
@@ -2332,12 +2400,15 @@ Offline unit/eval success proves implementation behavior only. Local Live cutove
 
 Until those artifacts exist, documentation and UI must state NO-GO. Historical S15 and deterministic fixtures remain `fixture_non_cutover` regardless of local test status.
 
-r55 is the latest live diagnostic evidence, but it stopped on positive 1 before
-any formal controlled operation, report, bundle or campaign closure, so it
-satisfies none of the three GO slots. The post-r55 correction checkpoint covers
-code, OpenSpec, documentation and non-live verification only. It deliberately stops before any successor
-`preflight` or `run-live`: no successor numbered root, provider/MICU call, HPC
-job, browser campaign or attempt evidence may be created until a fresh full
-admission, pin and exact plan are generated and that plan is separately
-approved. Any unconsumed plan pinned before this correction is stale and is not
-that authority.
+r56 is the latest live diagnostic fact, but it is still a failed formal
+acceptance campaign, not a diagnostic-mode receipt and not one of the three GO
+slots. It reached six formal operations and scientific-attempt closure, then
+failed before report, final browser observation, eligible bundle and campaign
+closure. The post-r56 checkpoint is specification/documentation only: atomic
+scope rollover plus schema-disjoint diagnostic authority/runner/receipt remain
+unimplemented. No successor `preflight`, `run-live`, numbered root,
+provider/MICU call, HPC job, browser campaign or formal attempt may be created
+until those tasks are implemented, verified, committed, fully admitted and
+pinned. A diagnostic run then requires its own separately approved one-slot
+plan; a later formal acceptance requires a different separately approved
+exact-three plan. No r56 or pre-correction plan is either authority.

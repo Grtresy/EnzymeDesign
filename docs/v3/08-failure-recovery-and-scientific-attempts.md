@@ -195,6 +195,12 @@ operation 或新 selection revision。agent writer 退休后，Host：
 4. 验证 selected workflow roles 和 lineage；
 5. 写 immutable closure。
 
+上述 transition 必须是一个短本地 write transaction：attempt scope seal、closure row 与唯一
+post-attempt session scope open 对并发 reader 原子可见。runtime barrier 可以看到 transition
+前的 attempt scope 或 transition 后的 post-attempt scope，但不能看到已提交的零 open scope
+中间态。真正 missing/ambiguous scope 仍 fail closed，driver 不以 blind retry 掩盖
+non-atomic finalizer。
+
 quiescence 只证明“不会再变”，selection 只证明“采用什么”，两者互不替代。closed attempt 是
 agent 可消费的 evidence，不是 `task.finish`；owner 仍需显式决定完成、继续、blocked 或 failed。
 
@@ -211,7 +217,7 @@ agent 可消费的 evidence，不是 `task.finish`；owner 仍需显式决定完
 - unknown-effect、writer/process、cross-attempt reuse 与 tamper rejection。
 
 历史 `aox_blank_world_attempt_bundle@2` verifier 保留为只读历史入口。旧 bundle 不得升级、
-回填 selection、与 `@3` row 混合或被新 campaign 采用。r48-r54 永久保持 NO-GO；
+回填 selection、与 `@3` row 混合或被新 campaign 采用。r48-r56 永久保持 NO-GO；
 对应 authority、root、effect、provider job、artifact、browser evidence 和 scientific
 bytes 均不得复用。r53 的 probe scope 已密封，但 formal pre-attempt scope 因旧 driver
 缺少 exact barrier observer writer 而保持 open；parent fatal 只证明进程退休，不声明
@@ -241,6 +247,34 @@ signatures；active `aox_blank_world_runtime_config@3` 把 exact `@2` identity �
 只提供未来 attempt 的可观察 contract、统一 evaluator、原子 adoption、resolved head 与真实
 runtime receipt，不继续 r54。
 
-当前代码与文档工作明确停在下一次编号 live attempt 之前：非-live qualification 和
-`authorize` 只准备/发布 authority，不创建 attempt root；`preflight`、`run-live`、provider、
-MICU、HPC、Chrome 和任何新 numbered root 都属于下一次独立 operator-authorized 行动。
+r55 在 formal operation 前暴露 max-step handoff 的 scheduler receipt 分类缺口；r56 已跨过
+该缺口，完成 probe、Chrome approval、六项 formal operation、17 deliverables、sealed
+selection 与 scientific-attempt closure，却在 report 形成前撞上新的 scope rollover 缺口。
+r56 attempt scope 的 sealed commit 与 post-attempt scope 的 open commit 相隔约 144 ms；
+并发 AOX barrier 在其中观察到零 open scope，以
+`mutation_driver_writer_identity_invalid` 终止。post scope 与已退休 Host finalizer writer
+随后出现，证明这是 non-transactional transition，而不是科学、provider 或 HPC 失败。
+r56 无 report、final browser observation 或 eligible `@3` bundle；parent fatal 也不声明
+ledger-after/SQLite/artifact/quiescence closure，因此 r56 不能成为 positive slot。
+
+## 8. Diagnostic live 与 formal acceptance 分离
+
+r56 触发后，AOX target contract 将 live execution 分为两个不可互换的类别：
+
+- **diagnostic live run**：单 positive-shaped、独立 one-use authority 与独立
+  root/consumption/decision schema；可在精确权限内走真实 LLM/provider/HPC/approval/browser，
+  但固定 `acceptance_eligible=false`，不生成 `aox_blank_world_attempt_bundle@3`，不进入
+  GO reducer；
+- **formal acceptance campaign**：继续精确消费 `positive, positive, fault` 三个 slot，
+  只有它可生成 `@3` bundle 与 campaign decision，原 GO 门槛不变。
+
+两类 authority validator、consumption receipt、root namespace 与 output schema 必须 closed
+且互斥。diagnostic 的 operation/effect/artifact/report/browser receipt/bytes 即使与 formal
+内容 digest 相同也不得 adoption、copy、upgrade 或参与 reducer。formal attempt 仍需 fresh
+authority、blank roots 与全部真实 effect。
+
+这是当前明确的实现缺口，而不是已上线命令：现有 `authorize` / `run-live` 仍只接受
+exact-three formal plan；独立 diagnostic authority/runner/receipt 与 cross-mode negative
+verification 尚未实现。atomic scope rollover、双类别实现、focused/mainline/full admission、
+新 commit 与 fresh pin 完成前，不得启动 r57 或把普通失败的 `run-live` 事后改称 diagnostic。
+实现后，diagnostic plan 与后续 formal exact-three plan 都必须分别取得 operator 的精确批准。

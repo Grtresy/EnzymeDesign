@@ -260,6 +260,72 @@ fatal `sha256:e4513f9183f1e5b5e47db6902fd03ee03efb80f02bbc8bd2e67a324ce06eff0b`
 correction 必须在新 commit 上完成 full qualification、fresh pin 与 fresh exact-three
 authority；没有对新 plan 的单独精确批准，不得消费或启动后继 live campaign。
 
+### 2026-07-24 r56 scope rollover 与运行类别拆分 addendum
+
+r56 在 clean commit `92712310df96925cabe6b88a949a33b00470cf7d` 上消费 exact-three
+authority plan
+`sha256:a3d6ed88cca88962281eed38e29f14155701ee7be0ddb2810cc67f47b5882627`，
+campaign 为 `aox_campaign_9e5f5da425f7e209d34b01c5`，只启动 positive 1
+`positive-77f043cfc659aca80405494ef950588d`。它已经跨过 r55 的 max-step
+settlement blocker：独立 probe 的 NCBI、UniProt、MAFFT、hmmbuild、CD-HIT、HMMalign
+exact six 全部完成；Chrome Web UI 对 formal approval
+`appr_d86d2b0b5082` / operation `op_32dd1b4ae57d` 完成 same-operation
+approval；formal exact-14 NCBI、MAFFT、hmmbuild、EBI HMMER、UniProt、HMMalign 六项
+controlled operation 全部 terminal-known completed。17 个规范化 AOX deliverable
+均已登记；当前数据诚实地产生 zero-byte candidates/CD-HIT FASTA 与无候选分支，而没有
+伪造 discovery。
+
+executor 随后完成六项 occurrence 的 selection、disposition/adoption、selection seal 与
+scientific-attempt closure。数据库中的 closure digest 为
+`sha256:0018a0933139739a2c31919ddc1b8ca7bfa3d660fb4ca8cbd69ae62d819714a3`，
+quiescence/sealed receipt digest 为
+`sha256:cd8e3d9e02d2d2a6003611a16c21121d4003966dbbaf8bfc5c2701efe293a7eb`。
+但是 reporter task 仍为 `todo`，不存在 draft/published report；两个后续 runtime signal
+仍为 pending，也没有 terminal browser observation、formal `SessionDriveResult`、eligible
+`@3` bundle、positive 2 或 fault。
+
+根因是 Host scientific transition finalizer 仍在 non-transactional
+`connection_scope` 中逐 repository commit。r56 attempt scope 在
+`2026-07-24T16:26:13.955598+00:00` 已提交为 sealed，post-attempt scope 到
+`2026-07-24T16:26:14.099927+00:00` 才提交为 open，因而向并发 reader 暴露约
+`144 ms` 的零 open scope 窗口。第 7 次 drain 后的 AOX barrier observer 恰好进入该
+窗口；`MutationWriterTurnFactory` 无 scope 可绑定，driver 将这个瞬态 rollover
+误报为 `mutation_driver_writer_identity_invalid`。post-attempt scope 随后正常出现且
+`host:scientific-transition-finalizer` writer 全部退休，证明失败来自 framework
+coordination，而不是 scientific/provider/HPC failure。forward-only correction 必须把
+attempt seal、closure 与 post-attempt scope open 放进同一个短本地 write transaction；
+barrier 只能看到 transition 前或后，不能靠 blind retry 隐藏非原子状态。
+
+parent supervision 以 child exit `70` 封存 fatal
+`sha256:4e0f23b05f8fc5dbe84b35d0781e5c08926eacd4224aa00ab27e5052917463f9`，
+证明 descendants retired 与 next-attempt blocked，但明确不声明 ledger-after、
+SQLite closure、artifact completeness、quiescence 或 external outcome。campaign decision
+为永久 **NO-GO**
+`sha256:826bbaf5bbcd07dccff481c363d0d6bb9b4be7aae1f00a33a22ba2e4b346f87f`。
+r56 新增 `3,116,328` charged tokens，MICU verified lower bound 为
+`86,881,198 / 500,000,000`，remaining `413,118,802`，零 breach/overage。全部
+authority、roots、provider/HPC effects、Chrome receipt、scientific bytes、closure 与
+partial evidence 永久 immutable、non-reusable。
+
+r56 又一次在首个 eligible result 形成前暴露新 framework defect，触发 operator
+预先批准的规范修订。新的目标合同不降低正式验收门槛，而是把 live execution 分成两个
+closed run class：
+
+1. **diagnostic live run**：独立 one-use 单 positive authority、独立 diagnostic
+   campaign/root/consumption/decision schema，最多运行一个 positive-shaped path；允许在
+   精确授权内产生真实 MICU/provider/HPC/approval/browser effect，但所有输出固定
+   `acceptance_eligible=false`，不生成 `aox_blank_world_attempt_bundle@3`，也不进入
+   campaign GO reducer；
+2. **formal acceptance campaign**：保留现有 exact-three
+   `positive, positive, fault` authority 与全部 GO 门槛，只接受 fresh formal roots、
+   effects、reports、browser proof、`@3` bundles 与 decision。
+
+两类 plan/consumption/receipt/validator 必须 schema-disjoint；内容 digest 相同也不允许
+diagnostic artifact/effect/bytes 被 formal adoption。现有 `authorize` / `run-live` 在新
+diagnostic command 与 validator 实现前仍只代表 formal acceptance，不能事后重命名为
+diagnostic。实现 atomic rollover 和双运行类别、完成 focused/mainline/full admission
+并形成新 commit 之前，不得启动 r57 或消费另一份 exact-three formal plan。
+
 ## Goals / Non-Goals
 
 **Goals:**
