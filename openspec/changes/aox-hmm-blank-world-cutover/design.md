@@ -167,6 +167,44 @@ root/child writer 时仍阻塞、observer 每次均退休且 pre-attempt scope �
 correction commit 使用；后续 live 仍需 fresh full admission、pin、exact-three plan、
 roots 和对新 plan 的单独精确批准。
 
+### 2026-07-24 r54 scientific selection 与 runtime receipt 诊断 addendum
+
+r54 继续作为冻结的永久 **NO-GO** 历史证据。它已经产生 canonical scientific I/O
+以及六项 terminal formal controlled-operation 成功事实，但这些事实只证明各 operation
+自身发生并完成；它们不等于 scientific attempt 已闭合，更不等于 report 已发布或
+campaign 已成功。r54 的 selected-chain selection 停留在 draft，完整 occurrence
+disposition/adoption、selection seal、attempt close、eligible report 与三-attempt
+campaign reducer 均未形成，因此任何底层 operation success 都不得被追认为 positive
+attempt 或 GO。
+
+直接触发失败的是 agent-facing selection 合同不完整：旧
+`aox_blank_world_selected_chain@1` digest 只覆盖 role 名称/cardinality，没有覆盖 Host
+实际校验的 `role -> (sdk_module, function_name)` 映射；inspection 也没有给出 exact
+operation signature、compatible roles 与完整 readiness gaps。executor 先按旧两步工具
+顺序提交 effect adoption，又猜错 workflow role，随后为补查真实约束耗尽 bounded turn
+steps。这个结果本应只终止 exact signal/turn，并把 task 留给 master 显式 replan。
+
+旧 runtime consistency projection 随后把只含 CAS pointer/version 的
+`ScientificSelectionHead` 错当成带 lifecycle state 的 selection，访问不存在的
+`state`。scheduler 已经 durable 处理一个 signal，异常却在 post-scheduler projection
+阶段冒泡，runtime command worker 又把整次命令统一改写成
+`processed_signal_count=0`。因此旧 receipt 同时丢失真实 scheduler 进度并诱导盲目重放；
+这不是 operation 未执行，也不是 task 业务失败。
+
+修复只面向新合同和新 attempt：`aox_blank_world_selected_chain@1` 的 preimage、digest、
+r54 数据库/bundle/decision/ledger/root 全部保持 immutable/read-only；新 admission 只
+接受 digest 覆盖完整 scope/role/operation-signature 映射的
+`aox_blank_world_selected_chain@2`。新 config pin 使用
+`aox_blank_world_runtime_config@3` 把该 exact contract identity 封入
+`config_digest`，bundle `@3` verifier 拒绝历史 config/contract crossgrade。统一
+readiness evaluator、原子 `scientific.operation.adopt`、resolved selection head、
+两层 runtime receipt 与结构化 step-budget recovery 不迁移或继续 r54。
+
+完成这些 non-live correction 仍不构成 live authority。任何后继 numbered campaign
+必须从 fresh clean commit 开始，完成 full non-live architecture qualification，重新
+生成并审查 pin 与 exact-three authority plan，使用 fresh roots，并在消费该 exact plan
+前取得用户的单独精确批准。
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -277,7 +315,7 @@ hash closure/SBOM/attestation 大架构。
 
 `pin` 是生成 `run-live` declaration pair 的 canonical supported operator bootstrap。它使用 production `compile_hpc_tool_request` 和受信 Host 的 forced-SSH `MCPHpcServer` 执行 deterministic non-scientific MAFFT、CD-HIT、hmmbuild 与 chained hmmalign payload，只从 runner-issued same-shell runtime identity 构造四个 toolchain image digest。writer 把 exact-seven 与 exact-nine payload 以 mode `0600` canonical JSON 落在 checkout 外同一 existing real transaction directory，并要求两个 payload 与 fixed marker 三个 reserved target 初始不存在；两个 payload fsync/no-replace publish 后才最后发布 exact closed `.aox-cutover-pin-commit.json`，用两个 basename 及 canonical payload digest 作为单一 consumer-visible commit point。`run-live` 在 settings/launch/root 之前拒绝 marker 缺失、symlink、跨目录、malformed/open 字段或 digest drift。marker 发布前 crash 可留下 orphan payload，但它们不可消费，operator 必须使用新 transaction directory。该无签名 marker 只证明 pair 的 transaction integrity，不证明 producer provenance、目录整体 freshness 或消费时 file mode。随后 `run-live` 仍重算 actual launch snapshot，pinned pair 只是 exact comparison declaration，真实 toolchain identity 仍由 live operations 的 runner-issued receipts fail-closed。
 
-`config_digest` 是 safe `aox_blank_world_runtime_config@2` preimage 的 canonical JSON digest，而不是任意配置标签。preimage 绑定 effective post-foundation 设置：trusted `local-dev`、single-process SQLite、background runtime disabled、HPC backend 与 runner-config file digest、runner-owned manifest bytes digest 与 exact AOX `tool_id` 到 adapter/template/runner-contract digest 的闭集 expectation map、provider limits、MICU endpoint/model/policy/token/runtime bounds、research bounds/credential availability/opaque NCBI identity、tracing digest、显式 live opt-ins、driver approval/time/drain/agent/browser bounds、`chrome-once` UI dist digest，以及 controlled-operation owner policy、durable route allowlist、command drain、generic mutation closure、bounded shadow observation、scenario、固定累计 500M ceiling 和既有 ledger identity digest。pin 在 forced-SSH attestation 前、run-live 在 campaign/attempt root 前验证每个 AOX provider/HPC route 均为 `durable_async_v1` owner，并要求 `command_v1` 与 `generic_v1`；这些值的任一漂移都会改变 config digest。raw credential、NCBI email、Host/runner/ledger path 不进入 preimage；launch receipt 封存 preimage 与 digest，offline verifier 重算 canonical digest 并核对这些 fail-closed 约束。旧 `@1` 只为 frozen evidence 离线复核保留读取兼容，不再由新 live launch 产生或接纳。runner expectation map 只是 config preimage 的内部闭集字段，不扩展 exact-nine prerequisite 顶层 schema。
+`config_digest` 是 safe `aox_blank_world_runtime_config@3` preimage 的 canonical JSON digest，而不是任意配置标签。preimage 绑定 effective post-foundation 设置：trusted `local-dev`、single-process SQLite、background runtime disabled、HPC backend 与 runner-config file digest、runner-owned manifest bytes digest 与 exact AOX `tool_id` 到 adapter/template/runner-contract digest 的闭集 expectation map、provider limits、MICU endpoint/model/policy/token/runtime bounds、research bounds/credential availability/opaque NCBI identity、tracing digest、显式 live opt-ins、driver approval/time/drain/agent/browser bounds、`chrome-once` UI dist digest，以及 controlled-operation owner policy、durable route allowlist、command drain、generic mutation closure、bounded shadow observation、完整 `aox_blank_world_selected_chain@2` schema/contract/workflow/digest identity、scenario、固定累计 500M ceiling 和既有 ledger identity digest。pin 在 forced-SSH attestation 前、run-live 在 campaign/attempt root 前验证每个 AOX provider/HPC route 均为 `durable_async_v1` owner，并要求 `command_v1` 与 `generic_v1`；这些值的任一漂移都会改变 config digest。raw credential、NCBI email、Host/runner/ledger path 不进入 preimage；launch receipt 封存 preimage 与 digest，offline verifier 重算 canonical digest并拒绝 historical contract/config crossgrade。旧 config `@1/@2` 与 selected-chain `@1` 只为 frozen evidence 离线复核保留读取兼容，不再由新 live launch 产生或接纳。runner expectation map 与 selected-chain identity 都只是 config preimage 的内部闭集字段，不扩展 exact-nine prerequisite 顶层 schema。
 
 MICU/OpenAI-compatible endpoint 的 blank-world live context 必须显式声明且 `context_window_tokens <= 200000`；不能用模型名推导第三方 endpoint 未证明的百万级窗口。`world.inspect(sections=["capabilities"], task_id=..., limit=...)` 同时改为 bounded facts index：teammate 绑定当前 task，master 保留既有 session-wide 权限；页面 newest-first，最多 20 个 invocation、每类 8 个 closed opaque refs、serialized facts 64 KiB，不回填文档、output、evidence 或 source body。当前 rich hydration 的读取成本尚未有界，窄列/lazy/cursor 大调整只记录在独立 proposal。
 

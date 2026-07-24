@@ -8,6 +8,7 @@ import {
   renderV3ScientificEvidence,
   renderV3ScientificAttempts,
   renderV3Failures,
+  renderV3Activity,
 } from "../src/view.js";
 
 function workspace() {
@@ -113,6 +114,69 @@ test("scientific attempt view audits authority, dispositions, and closure", () =
   assert.match(html, /adopted roles final/);
   assert.match(html, /closure_001/);
   assert.doesNotMatch(html, /allowed_providers/);
+});
+
+test("activity renders runtime command scheduler and projection separately", () => {
+  const html = renderV3Activity({
+    activity_feed: [
+      {
+        event_id: "evt_runtime_command",
+        event_type: "runtime.command.finished",
+        created_at: "2026-07-24T00:00:00+00:00",
+        payload: {
+          command_id: "runtime_command_001",
+          status: "failed",
+          bounded_outcome_summary: {
+            schema_version: "runtime_command_outcome@2",
+            core_receipt_formed: true,
+            scheduler_status: "completed",
+            processed_signal_count: 1,
+            suspended: false,
+            projection_status: "failed",
+            projection_error_code: "runtime_projection_failed",
+            projection_failed_stage: "runtime_consistency",
+            replay_safe: false,
+            claim_owner: "never-render-private-worker",
+            host_path: "/home/private/runtime.sqlite3",
+          },
+        },
+      },
+    ],
+  });
+
+  assert.match(html, /data-runtime-command-outcome="runtime_command_outcome@2"/);
+  assert.match(html, /scheduler completed · projection failed/);
+  assert.match(html, /processed 1 · suspended false · replay safe false/);
+  assert.match(html, /projection error runtime_projection_failed · stage runtime_consistency/);
+  assert.doesNotMatch(html, /never-render-private-worker/);
+  assert.doesNotMatch(html, /\/home\/private/);
+});
+
+test("activity keeps historical runtime receipt uncertainty explicit", () => {
+  const html = renderV3Activity({
+    activity_feed: [
+      {
+        event_type: "runtime.command.finished",
+        created_at: "2026-07-20T00:00:00+00:00",
+        payload: {
+          command_id: "runtime_command_historical",
+          status: "failed",
+          bounded_outcome_summary: {
+            schema_version: "runtime_command_outcome@1",
+            processed_signal_count: 0,
+            suspended: false,
+          },
+        },
+      },
+    ],
+  });
+
+  assert.match(html, /historical @1 · processed 0 · suspended false/);
+  assert.match(
+    html,
+    /scheduler, projection, and replay safety were not recorded separately/,
+  );
+  assert.doesNotMatch(html, /replay safe true/);
 });
 
 test("structured failure view separates facts, likely causes, and agent hypothesis", () => {

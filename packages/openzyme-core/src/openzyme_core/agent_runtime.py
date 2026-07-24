@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+from openzyme_domain import AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignal
@@ -64,6 +65,19 @@ class AgentRuntimeOutcome:
             "outputs": list(self.outputs),
             "waiting_approval_id": self.waiting_approval_id,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSignalFailureObservation:
+    """Closed facts used to record one exact runtime-signal failure."""
+
+    error_code: str
+    recoverability: FailureRecoverability
+    effect_certainty: ExternalEffectCertainty
+    retry_eligibility: RetryEligibility
+    safe_summary: str
+    safe_hint: str
+    facts: dict[str, Any]
 
 
 @dataclass(slots=True)
@@ -307,11 +321,28 @@ class AgentRuntimeService:
         if ok:
             completed, signal_write_ok = self._complete_signal(claimed)
         else:
+            budget_observation = (
+                self._budget_exhaustion_observation(
+                    claimed,
+                    max_steps=max_steps,
+                )
+                if result.status is HarnessStatus.MAX_STEPS_EXCEEDED
+                else None
+            )
             completed, signal_write_ok = self._fail_signal(
                 claimed,
-                error_message=summary,
-                retryable=_is_retryable_runtime_error(result.error),
+                error_message=(
+                    AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
+                    if budget_observation is not None
+                    else summary
+                ),
+                retryable=(
+                    False
+                    if budget_observation is not None
+                    else _is_retryable_runtime_error(result.error)
+                ),
                 emit=False,
+                observation=budget_observation,
             )
         if not signal_write_ok:
             ok = False
@@ -481,8 +512,8 @@ class AgentRuntimeService:
             model_factory=self.context.model_factory,
             bio_research_service=self.context.bio_research_service,
             research_adapter=self.context.research_adapter,
-            scientific_workflow_role_validator=(
-                self.context.scientific_workflow_role_validator
+            scientific_workflow_contract_registry=(
+                self.context.scientific_workflow_contract_registry
             ),
             sandbox_workspace_root=self.context.sandbox_workspace_root,
             artifact_blob_root=self.context.artifact_blob_root,
@@ -496,15 +527,39 @@ class AgentRuntimeService:
                 self.context.mutation_writer_scope_factory
             ),
         )
-        ok = result.status is not HarnessStatus.FAILED
+        budget_observation = (
+            self._budget_exhaustion_observation(
+                claimed,
+                max_steps=max_steps,
+            )
+            if result.status is HarnessStatus.MAX_STEPS_EXCEEDED
+            else None
+        )
+        ok = result.status not in {
+            HarnessStatus.FAILED,
+            HarnessStatus.MAX_STEPS_EXCEEDED,
+        }
         if ok:
             completed, signal_write_ok = self._complete_signal(claimed)
         else:
             completed, signal_write_ok = self._fail_signal(
                 claimed,
-                error_message=result.outputs[-1] if result.outputs else result.status.value,
-                retryable=_is_retryable_runtime_error(result.error),
+                error_message=(
+                    AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
+                    if budget_observation is not None
+                    else (
+                        result.outputs[-1]
+                        if result.outputs
+                        else result.status.value
+                    )
+                ),
+                retryable=(
+                    False
+                    if budget_observation is not None
+                    else _is_retryable_runtime_error(result.error)
+                ),
                 emit=False,
+                observation=budget_observation,
             )
         if not signal_write_ok:
             ok = False
@@ -669,8 +724,31 @@ class AgentRuntimeService:
         error_message: str,
         retryable: bool = False,
         emit: bool = True,
+        observation: RuntimeSignalFailureObservation | None = None,
     ) -> tuple[AgentRuntimeSignal, bool]:
         public_error = sanitize_public_diagnostic_text(error_message)
+        canonical_observation = observation or RuntimeSignalFailureObservation(
+            error_code="runtime_signal_failed",
+            recoverability=(
+                FailureRecoverability.RUNTIME_RETRY
+                if retryable
+                else FailureRecoverability.TERMINAL
+            ),
+            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+            retry_eligibility=(
+                RetryEligibility.SAME_PHASE_SAFE
+                if retryable
+                else RetryEligibility.TERMINAL
+            ),
+            safe_summary=(
+                "The runtime signal failed without changing the business task."
+            ),
+            safe_hint=(
+                "Restore runtime authority and let the agent inspect this "
+                "failure before choosing recovery or explicit refusal."
+            ),
+            facts={},
+        )
         source_version = f"attempt:{claimed.attempt_count}"
         existing_observation = (
             self.context.repositories.failure_observations.get_by_source(
@@ -679,7 +757,7 @@ class AgentRuntimeService:
                 source_ref=claimed.signal_id,
                 source_version=source_version,
                 phase="runtime",
-                error_code="runtime_signal_failed",
+                error_code=canonical_observation.error_code,
             )
         )
         if existing_observation is None:
@@ -706,26 +784,13 @@ class AgentRuntimeService:
                 source_version=source_version,
                 phase="runtime",
                 failure_class=FailureClass.RUNTIME,
-                recoverability=(
-                    FailureRecoverability.RUNTIME_RETRY
-                    if retryable
-                    else FailureRecoverability.TERMINAL
-                ),
-                effect_certainty=ExternalEffectCertainty.NO_EFFECT,
-                retry_eligibility=(
-                    RetryEligibility.SAME_PHASE_SAFE
-                    if retryable
-                    else RetryEligibility.TERMINAL
-                ),
+                recoverability=canonical_observation.recoverability,
+                effect_certainty=canonical_observation.effect_certainty,
+                retry_eligibility=canonical_observation.retry_eligibility,
                 actor_kind=FailureActorKind.SYSTEM,
-                error_code="runtime_signal_failed",
-                safe_summary=(
-                    "The runtime signal failed without changing the business task."
-                ),
-                safe_hint=(
-                    "Restore runtime authority and let the agent inspect this "
-                    "failure before choosing recovery or explicit refusal."
-                ),
+                error_code=canonical_observation.error_code,
+                safe_summary=canonical_observation.safe_summary,
+                safe_hint=canonical_observation.safe_hint,
                 facts={
                     "signal_id": claimed.signal_id,
                     "signal_reason": claimed.reason.value,
@@ -733,8 +798,12 @@ class AgentRuntimeService:
                     "retryable": retryable,
                     "public_error": public_error,
                     "agent_decision_produced": False,
+                    **canonical_observation.facts,
                 },
-                private_diagnostic={"error_message": error_message},
+                private_diagnostic={
+                    "error_code": canonical_observation.error_code,
+                    "error_message": error_message,
+                },
             )
         failed = self.context.repositories.runtime_signals.fail(
             claimed.signal_id,
@@ -757,6 +826,146 @@ class AgentRuntimeService:
                 {"signal_id": failed.signal_id, "error_message": failed.error_message},
             )
         return failed, True
+
+    def _budget_exhaustion_observation(
+        self,
+        claimed: AgentRuntimeSignal,
+        *,
+        max_steps: int,
+    ) -> RuntimeSignalFailureObservation:
+        executions = sorted(
+            (
+                execution
+                for execution in (
+                    self.context.repositories.controlled_operation_executions.list_by_session(
+                        claimed.session_id
+                    )
+                )
+                if execution.task_id == claimed.task_id
+            ),
+            key=lambda item: (item.created_at, item.execution_id),
+        )
+        return RuntimeSignalFailureObservation(
+            error_code=AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE,
+            recoverability=FailureRecoverability.AGENT_CAN_REPLAN,
+            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+            retry_eligibility=RetryEligibility.TERMINAL,
+            safe_summary=(
+                "The bounded agent turn exhausted its configured step budget; "
+                "the exact signal ended while the business task stayed unchanged."
+            ),
+            safe_hint=(
+                "Inspect the canonical failure and current scientific selection, "
+                "then choose a new explicit turn or another recovery strategy. "
+                "Do not replay this signal."
+            ),
+            facts={
+                "max_steps": max_steps,
+                "exact_signal_retry_eligible": False,
+                "effect_scope": "runtime_signal_transition",
+                "effect_scope_ref": claimed.signal_id,
+                "controlled_operation_effects_preserved": True,
+                "controlled_operation_execution_count": len(executions),
+                "bounded_controlled_operation_execution_ids": [
+                    execution.execution_id for execution in executions[-8:]
+                ],
+                "controlled_operation_executions_truncated": len(executions) > 8,
+                "scientific_selection_recovery": (
+                    self._scientific_selection_recovery_facts(claimed)
+                ),
+            },
+        )
+
+    def _scientific_selection_recovery_facts(
+        self,
+        claimed: AgentRuntimeSignal,
+    ) -> dict[str, Any]:
+        attempts = sorted(
+            (
+                attempt
+                for attempt in (
+                    self.context.repositories.scientific_attempts.list_by_session(
+                        claimed.session_id
+                    )
+                )
+                if attempt.task_id == claimed.task_id
+            ),
+            key=lambda item: (item.ordinal, item.created_at, item.attempt_id),
+        )
+        base: dict[str, Any] = {
+            "task_id": claimed.task_id,
+            "attempt_count": len(attempts),
+            "bounded_attempt_ids": [
+                attempt.attempt_id for attempt in attempts[-4:]
+            ],
+            "attempts_truncated": len(attempts) > 4,
+        }
+        if not attempts:
+            return {**base, "status": "not_applicable"}
+        active_attempts = [
+            attempt for attempt in attempts if not attempt.status.is_terminal
+        ]
+        attempt = (active_attempts or attempts)[-1]
+        base.update(
+            {
+                "attempt_id": attempt.attempt_id,
+                "attempt_status": attempt.status.value,
+            }
+        )
+        from .scientific_attempt_repositories import (
+            ScientificSelectionIntegrityError,
+        )
+
+        try:
+            resolved_head = (
+                self.context.repositories.scientific_selections.resolve_head(
+                    attempt.attempt_id
+                )
+            )
+        except ScientificSelectionIntegrityError as exc:
+            return {
+                **base,
+                "status": "selection_head_invalid",
+                "error_code": exc.error_code,
+                "integrity_reason": exc.reason_code,
+            }
+        if resolved_head is None:
+            return {**base, "status": "selection_head_missing"}
+        base.update(
+            {
+                "selection_id": resolved_head.head.selection_id,
+                "selection_revision": resolved_head.head.revision,
+                "selection_state": resolved_head.selection.state.value,
+                "head_state_version": resolved_head.head.state_version,
+            }
+        )
+        if self.context.scientific_workflow_contract_registry is None:
+            return {**base, "status": "evaluation_registry_unavailable"}
+
+        from .scientific_attempts import ScientificAttemptError
+        from .scientific_attempts import ScientificAttemptService
+
+        try:
+            evaluation = ScientificAttemptService(
+                self.context.repositories,
+                workflow_contract_registry=(
+                    self.context.scientific_workflow_contract_registry
+                ),
+            ).evaluate_selection(
+                attempt_id=attempt.attempt_id,
+                selection_id=resolved_head.head.selection_id,
+            )
+        except ScientificAttemptError as exc:
+            return {
+                **base,
+                "status": "evaluation_blocked",
+                "error_code": exc.error_code,
+            }
+        return {
+            **base,
+            "status": "evaluated",
+            "evaluation": evaluation.summary(max_ids=8),
+        }
 
     def _fail_ready_gate(
         self,
@@ -1055,6 +1264,18 @@ class AgentRuntimeService:
         task: Task,
         correlation_id: str,
     ) -> None:
+        existing = (
+            self.context.repositories.runtime_signals.find_source_signal(
+                session_id=session_id,
+                agent_id="agent:master",
+                reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+                source_ref=source_signal.signal_id,
+            )
+        )
+        if existing is not None:
+            if not existing.status.is_terminal:
+                self._notify_signal(existing.session_id)
+            return
         if self.context.repositories.agents.get(session_id, "agent:master") is None:
             now = utc_now_iso()
             self.context.repositories.agents.save(

@@ -1,8 +1,8 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r53 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. r48 through r53 are permanent NO-GO evidence. The executable architecture-qualification gate is implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. Local Live cutover stays **NO-GO** until one successor campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
+Status: r43-r54 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. r48 through r54 are permanent NO-GO evidence. The executable architecture-qualification gate is implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. Local Live cutover stays **NO-GO** until one successor campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
 
-Historical r14-r53 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
+Historical r14-r54 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
 This document describes the operator/evidence boundary implemented by `openzyme_host_api.aox_cutover_evidence`. It does not turn the historical S15 fixture into live evidence and does not authorize seeded state, cached scientific outputs, the reference notebook, or copied reference results as attempt inputs.
 
@@ -11,10 +11,10 @@ scientific-attempt control plane. The agent may retain failed/superseded trials
 inside one formal attempt while explicitly selecting a valid adopted chain, but
 the bundle still audits the full occurrence universe and fails closed on unknown
 effect, active process/writer, incomplete disposition, authority/resource breach,
-or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r53
+or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r54
 fact can be upgraded, backfilled, or adopted.
 The current workflow knowledge identity is
-`workflow:aox-hmm-live@2.0.0#sha256:10ae97822702fc231905f6f41368d9462dadd47967f09ab3df5ca1933e6ee20f`;
+`workflow:aox-hmm-live@2.0.0#sha256:c98afb0d5706e3826ed4754f523b3b688ee139a616c10ea03ceae4c22c106b14`;
 the next live launch must still bind that ref to a fresh clean commit,
 qualification report, pin and authority plan.
 
@@ -174,6 +174,53 @@ fresh roots, and separate exact approval to consume that new plan. Every
 unconsumed successor plan pinned to
 `6e5ff65a2f4f9e16f4441857be2d25ca7cf5e7d8` is stale and cannot cross the
 current correction.
+
+## r54 live attempt: permanent NO-GO
+
+r54 is permanent **NO-GO**. Its formal path produced canonical scientific I/O
+and six terminal successful controlled-operation records, but those records
+prove only their own operation effects. The selected-chain selection remained
+draft: complete dispositions/adoptions, selection seal, scientific-attempt
+closure, eligible report publication, the second positive/fault slots, and a
+successful campaign reducer were absent. Operation success therefore cannot be
+promoted to attempt, report, or campaign success.
+
+Two product defects compounded the agent-facing failure. First, historical
+`aox_blank_world_selected_chain@1` bound role names and cardinality but omitted
+the Host validator's exact `role -> (sdk_module, function_name)` mapping from
+its digest. Detailed inspection did not expose each occurrence's signature,
+compatible roles, or complete readiness gaps. The executor first attempted the
+old two-step effect-adoption order, then supplied an incompatible role, and
+spent the remaining bounded steps trying to discover constraints that the
+Harness should have presented as structured facts.
+
+Second, max-step exhaustion should have terminalized only the exact runtime
+signal while leaving the task nonterminal for an explicit master replan. The
+post-scheduler consistency projection instead read
+`ScientificSelectionHead.state`, although the head is only a CAS pointer and
+the lifecycle state belongs to `ScientificChainSelection`. One signal had
+already been durably processed, but the exception escaped the projection
+boundary and the old runtime command worker reported
+`processed_signal_count=0`. That receipt was false about scheduler progress and
+could invite an unsafe replay; it does not mean the controlled operations never
+ran.
+
+The correction is forward-only. The `@1` preimage/digest and all r54
+database/root/authority/effect/artifact/bundle/decision/ledger evidence remain
+immutable and read-only. New admissions bind
+`aox_blank_world_selected_chain@2`, whose digest covers exact scope/role/SDK
+signatures, and active `aox_blank_world_runtime_config@3` includes that exact
+contract identity in `config_digest`. One registry object now drives
+validation, inspection/readiness and bundle verification; adoption is one
+atomic `scientific.operation.adopt` command; resolved heads and the shared
+evaluator drive seal/closure; `runtime_command_outcome@2` preserves core
+scheduler progress separately from projection settlement.
+
+This non-live correction does not authorize r55 or any other successor. Before
+another numbered campaign, the operator must start from a fresh clean commit,
+complete full non-live architecture qualification, generate and review a fresh
+pin and exact-three authority plan, create fresh roots only after admission,
+and obtain separate precise user approval to consume that exact plan.
 
 ## Numbered launch-preparation boundary
 
@@ -1551,7 +1598,7 @@ prerequisite field and does not claim the deferred reproducible dependency
 manifest, SBOM, or supply-chain attestation has been implemented.
 
 `config_digest` is the canonical JSON digest of the complete safe preimage
-`aox_blank_world_runtime_config@2`. That preimage records the effective
+`aox_blank_world_runtime_config@3`. That preimage records the effective
 post-foundation configuration, including:
 
 - trusted `local-dev`, single-process SQLite, disabled background runtime and
@@ -1570,6 +1617,10 @@ post-foundation configuration, including:
 - the controlled-operation owner policy, sorted durable route allowlist,
   command-drain contract, generic mutation-closure mode, and bounded shadow
   observation configuration;
+- the exact active `aox_blank_world_selected_chain@2` schema, contract id,
+  workflow id and workflow-contract digest; the digest therefore closes the
+  same role-to-operation signatures used by admission, inspection and the
+  offline verifier;
 - driver approval mode, time/drain/agent bounds, browser observation bounds and,
   for `chrome-once`, the built Web UI dist digest;
 - scenario `aox_blank_world_cutover`, the exact cumulative 500,000,000-token
@@ -1581,9 +1632,9 @@ every AOX provider/HPC route resolves to `durable_async_v1`, runtime drain is
 `command_v1`, and mutation closure is `generic_v1`. It is sealed in each launch
 receipt and recomputed by the offline verifier. Before every attempt root is
 created, the campaign launch guard recomputes the checkout and effective
-configuration; any drift fails closed. Frozen `@1` preimages remain readable
-only for historical offline verification and cannot be emitted or admitted by
-a new live launch.
+configuration; any drift fails closed. Frozen `@1` and `@2` preimages remain
+readable only for historical offline verification and cannot be emitted or
+admitted by a new live launch.
 
 `allowed_prerequisites` is also an exact closed object, with exactly these nine
 top-level fields and no extras:
@@ -2212,12 +2263,12 @@ Offline unit/eval success proves implementation behavior only. Local Live cutove
 
 Until those artifacts exist, documentation and UI must state NO-GO. Historical S15 and deterministic fixtures remain `fixture_non_cutover` regardless of local test status.
 
-r53 is the latest live diagnostic evidence, but it sealed no eligible attempt
-bundle and therefore satisfies none of the three GO slots. The post-r53
-correction checkpoint covers code, OpenSpec, documentation and focused
-non-live verification only. It deliberately stops before any successor
+r54 is the latest live diagnostic evidence, but its successful operation rows
+did not close selection, attempt, report, or campaign, so it satisfies none of
+the three GO slots. The post-r54 correction checkpoint covers code, OpenSpec,
+documentation and non-live verification only. It deliberately stops before any successor
 `preflight` or `run-live`: no successor numbered root, provider/MICU call, HPC
 job, browser campaign or attempt evidence may be created until a fresh full
 admission, pin and exact plan are generated and that plan is separately
-approved. An unconsumed plan pinned to the superseded `6e5ff65` correction is
-not that authority.
+approved. Any unconsumed plan pinned before this correction is stale and is not
+that authority.

@@ -12,6 +12,7 @@ from .reliability import RetryEligibility
 
 FAILURE_OBSERVATION_SCHEMA_VERSION = "failure_observation@1"
 FAILURE_HYPOTHESIS_SCHEMA_VERSION = "failure_hypothesis@1"
+AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE = "agent_turn_budget_exhausted"
 
 
 class FailureClass(StrEnum):
@@ -151,6 +152,9 @@ _LIKELY_CAUSES_BY_ERROR_CODE: dict[str, tuple[str, ...]] = {
     "runtime_signal_failed": (
         "The bounded agent turn or runtime owner could not complete the claimed signal.",
     ),
+    AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE: (
+        "The bounded agent turn used every configured step without producing an explicit terminal task action.",
+    ),
 }
 
 
@@ -161,6 +165,7 @@ def likely_causes_for_error_code(error_code: str) -> tuple[str, ...]:
 
 
 __all__ = [
+    "AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE",
     "FAILURE_HYPOTHESIS_SCHEMA_VERSION",
     "FAILURE_OBSERVATION_SCHEMA_VERSION",
     "FailureActorKind",

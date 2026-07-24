@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import json
 from typing import Any
 
+from openzyme_domain import AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import MutationWriterKind
@@ -1306,8 +1307,8 @@ def run_teammate_loop(
         model_factory=parent_context.model_factory,
         bio_research_service=parent_context.bio_research_service,
         research_adapter=parent_context.research_adapter,
-        scientific_workflow_role_validator=(
-            parent_context.scientific_workflow_role_validator
+        scientific_workflow_contract_registry=(
+            parent_context.scientific_workflow_contract_registry
         ),
         sandbox_workspace_root=parent_context.sandbox_workspace_root,
         artifact_blob_root=parent_context.artifact_blob_root,
@@ -1440,6 +1441,11 @@ def finalize_teammate_result(
                 payload={
                     "task_id": task_id,
                     "status": result.status.value,
+                    "error_code": AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE,
+                    "recoverability": "agent_can_replan",
+                    "retry_eligibility": "terminal",
+                    "effect_certainty": "no_effect",
+                    "effect_scope": "runtime_signal_transition",
                     "business_status": "unchanged",
                     "task_status": None if task is None else task.status.value,
                     "summary": message,

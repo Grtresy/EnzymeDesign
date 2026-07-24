@@ -639,11 +639,41 @@ export function renderV3Activity(workspace) {
   if (!events.length) {
     return `<p class="empty-copy">No activity yet.</p>`;
   }
+  const renderEvent = (event) => {
+    if (event.event_type !== "runtime.command.finished") {
+      return `<li><strong>${escapeHtml(event.event_type)}</strong><span>${escapeHtml(event.created_at ?? "")}</span></li>`;
+    }
+    const payload = event.payload ?? {};
+    const outcome = payload.bounded_outcome_summary ?? {};
+    const schemaVersion = outcome.schema_version ?? "unavailable";
+    if (schemaVersion === "runtime_command_outcome@2") {
+      return `<li data-runtime-command-outcome="runtime_command_outcome@2">
+        <strong>runtime.command.finished ${renderStatusChip(payload.status ?? "unknown")}</strong>
+        <span>scheduler ${escapeHtml(outcome.scheduler_status ?? "unknown")} · projection ${escapeHtml(outcome.projection_status ?? "unknown")}</span>
+        <small>processed ${escapeHtml(outcome.processed_signal_count ?? "unknown")} · suspended ${escapeHtml(outcome.suspended ?? "unknown")} · replay safe ${escapeHtml(outcome.replay_safe ?? "unknown")}</small>
+        ${
+          outcome.projection_status === "failed"
+            ? `<small>projection error ${escapeHtml(outcome.projection_error_code ?? "runtime_projection_failed")} · stage ${escapeHtml(outcome.projection_failed_stage ?? "unknown")}</small>`
+            : ""
+        }
+        <small>${escapeHtml(payload.command_id ?? "unknown command")} · ${escapeHtml(event.created_at ?? "")}</small>
+      </li>`;
+    }
+    if (schemaVersion === "runtime_command_outcome@1") {
+      return `<li data-runtime-command-outcome="runtime_command_outcome@1">
+        <strong>runtime.command.finished ${renderStatusChip(payload.status ?? "unknown")}</strong>
+        <span>historical @1 · processed ${escapeHtml(outcome.processed_signal_count ?? "unknown")} · suspended ${escapeHtml(outcome.suspended ?? "unknown")}</span>
+        <small>scheduler, projection, and replay safety were not recorded separately.</small>
+        <small>${escapeHtml(payload.command_id ?? "unknown command")} · ${escapeHtml(event.created_at ?? "")}</small>
+      </li>`;
+    }
+    return `<li><strong>runtime.command.finished</strong><span>bounded outcome unavailable · ${escapeHtml(event.created_at ?? "")}</span></li>`;
+  };
   return `
     <ul class="activity-list">
       ${events
         .slice(0, 10)
-        .map((event) => `<li><strong>${escapeHtml(event.event_type)}</strong><span>${escapeHtml(event.created_at ?? "")}</span></li>`)
+        .map(renderEvent)
         .join("")}
     </ul>
   `;

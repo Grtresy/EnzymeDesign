@@ -51,6 +51,12 @@ from .aox_cutover_runtime_config import AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS
 from .aox_cutover_runtime_config import AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
 from .aox_cutover_runtime_config import AoxRuntimeConfigSchemaError
 from .aox_cutover_runtime_config import normalize_aox_blank_world_runtime_config
+from .aox_scientific_contract import AOX_SELECTED_CHAIN_CONTRACT_V2
+from .aox_scientific_contract import (
+    AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST,
+)
+from .aox_scientific_contract import AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_ID
+from .aox_scientific_contract import AOX_SELECTED_CHAIN_WORKFLOW_ID
 from .foundation import resolve_configured_foundation_settings
 
 
@@ -1077,6 +1083,14 @@ def build_aox_cutover_effective_config(
             ),
             "shadow_max_observations": (
                 effective.reliability.shadow_max_observations
+            ),
+        },
+        "scientific_workflow_contract": {
+            "schema_id": AOX_SELECTED_CHAIN_CONTRACT_V2.schema_id,
+            "contract_id": AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_ID,
+            "workflow_id": AOX_SELECTED_CHAIN_WORKFLOW_ID,
+            "workflow_contract_digest": (
+                AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
             ),
         },
         "tracing": {

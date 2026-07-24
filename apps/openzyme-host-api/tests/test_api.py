@@ -103,6 +103,12 @@ from openzyme_engines import ResearchSupervisorAction
 from openzyme_engines import ResearchUnitDraft as EngineResearchUnitDraft
 from openzyme_engines import ResearchUnitPlan as EngineResearchUnitPlan
 from openzyme_engines.execution import ExecutionStartResult
+from openzyme_host_api.aox_scientific_contract import (
+    AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY,
+)
+from openzyme_host_api.aox_scientific_contract import (
+    AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST,
+)
 from openzyme_host_api.v3_service import V3EventStore
 from openzyme_host_api.v3_service import V3HostApiService
 
@@ -692,7 +698,9 @@ def test_v3_scientific_attempt_authority_and_command_surface(
                 "campaign_id": "campaign_scientific_surface",
                 "workflow_id": "aox_blank_world",
                 "scope": "formal",
-                "workflow_contract_digest": "sha256:workflow-contract",
+                "workflow_contract_digest": (
+                    AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
+                ),
                 "requested_effect_classes": ["provider", "hpc"],
                 "reserved_micu": 10,
                 "reserved_cost_microunits": 1000,
@@ -730,6 +738,61 @@ def test_v3_scientific_attempt_authority_and_command_surface(
         == attempt_id
     )
     assert "allowed_providers" not in json.dumps(inspected.json())
+    assert (
+        workspace.json()["scientific_attempts"]["schema_id"]
+        == "scientific_attempt_readiness_summary@1"
+    )
+    assert "occurrences" not in json.dumps(
+        workspace.json()["scientific_attempts"]
+    )
+
+    begun = client.post(
+        f"/v3/sessions/{session_id}/scientific-attempt-commands",
+        headers={"Idempotency-Key": "selection-scientific-surface"},
+        json={
+            "command": "scientific.selection.begin",
+            "arguments": {"attempt_id": attempt_id},
+        },
+    )
+    assert begun.status_code == 200, begun.text
+    selection_id = begun.json()["record"]["selection_id"]
+    detailed = client.get(
+        f"/v3/sessions/{session_id}/scientific-attempts",
+        params={
+            "attempt_id": attempt_id,
+            "selection_id": selection_id,
+            "limit": 1,
+        },
+    )
+    assert detailed.status_code == 200, detailed.text
+    assert detailed.json()["schema_id"] == (
+        "scientific_selection_inspection@1"
+    )
+    assert detailed.json()["head"]["selection_id"] == selection_id
+    assert detailed.json()["contract"]["contract_id"] == (
+        "aox_blank_world_selected_chain@2"
+    )
+    assert detailed.json()["occurrences"] == []
+    detailed_text = json.dumps(detailed.json(), sort_keys=True)
+    for forbidden in (
+        "recommended_actions",
+        "lease_token",
+        "fencing_token",
+        "credentials",
+        "allowed_hpc_targets",
+        "allowed_providers",
+        "root_ref",
+    ):
+        assert forbidden not in detailed_text
+
+    incomplete_filter = client.get(
+        f"/v3/sessions/{session_id}/scientific-attempts",
+        params={"attempt_id": attempt_id},
+    )
+    assert incomplete_filter.status_code == 409
+    assert incomplete_filter.json()["error"]["code"] == (
+        "scientific_inspection_filter_incomplete"
+    )
 
     malformed = client.post(
         f"/v3/sessions/{session_id}/scientific-attempt-commands",
@@ -2617,6 +2680,9 @@ def test_scientific_transition_finalizer_reports_nonretryable_host_failure() -> 
     service = V3HostApiService(
         repositories=repositories,
         event_store=V3EventStore(),
+        scientific_workflow_contract_registry=(
+            AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
+        ),
     )
     session_id = "sess_scientific_finalizer_failure"
     lane_id = "lane_scientific_finalizer_failure"
@@ -2690,7 +2756,9 @@ def test_scientific_transition_finalizer_reports_nonretryable_host_failure() -> 
         "campaign_id": "campaign_scientific_finalizer",
         "workflow_id": "aox_blank_world",
         "scope": "formal",
-        "workflow_contract_digest": "sha256:workflow-contract",
+        "workflow_contract_digest": (
+            AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
+        ),
         "requested_effect_classes": ["provider", "hpc"],
         "reserved_micu": 10,
         "reserved_cost_microunits": 100,

@@ -50,7 +50,9 @@ from .background_runtime import RuntimeSignalNotifier
 from .background_runtime import V3BackgroundRuntimeService
 from .background_runtime import V3DurableWorkCoordinator
 from .background_runtime import V3DurableWorkSupervisor
-from .aox_scientific_contract import validate_aox_scientific_workflow_role
+from .aox_scientific_contract import (
+    AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY,
+)
 from .durable_routes import build_host_hpc_route_adapters
 from .durable_routes import build_host_provider_route_adapters
 from .runtime_commands import HostRuntimeCommandExecutor
@@ -205,7 +207,7 @@ ScientificCommandName = Literal[
     "attempt.create",
     "scientific.selection.begin",
     "scientific.operation.disposition",
-    "scientific.effect.adopt",
+    "scientific.operation.adopt",
     "scientific.artifact.materialize",
     "scientific.selection.seal",
     "scientific.attempt.close",
@@ -767,8 +769,8 @@ class HostApiDependencies:
             scheduler_limits={}
             if self.foundation.settings is None
             else dict(self.foundation.settings.limits.provider_limits),
-            scientific_workflow_role_validator=(
-                validate_aox_scientific_workflow_role
+            scientific_workflow_contract_registry=(
+                AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
             ),
         )
 
@@ -1802,6 +1804,10 @@ def create_app(
     def get_v3_scientific_attempts(
         session_id: str,
         request: Request,
+        attempt_id: str | None = None,
+        selection_id: str | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
         try:
             principal = _request_principal(request)
@@ -1812,8 +1818,28 @@ def create_app(
                     security=security,
                     session_id=session_id,
                 )
-                return service.scientific_attempt_control().project_session(
-                    session_id
+                control = service.scientific_attempt_control()
+                if (
+                    attempt_id is None
+                    and selection_id is None
+                    and cursor is None
+                ):
+                    return control.project_session(
+                        session_id,
+                        limit=limit,
+                    )
+                if attempt_id is None or selection_id is None:
+                    raise ScientificAttemptError(
+                        "scientific_inspection_filter_incomplete",
+                        "detailed scientific inspection requires exact attempt and selection ids",
+                        details={"mutation_applied": False},
+                    )
+                return control.inspect_selection(
+                    session_id=session_id,
+                    attempt_id=attempt_id,
+                    selection_id=selection_id,
+                    limit=limit,
+                    cursor=cursor,
                 )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc

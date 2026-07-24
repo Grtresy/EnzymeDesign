@@ -456,6 +456,11 @@ def test_protocol_thread_tool_reports_failure_observation_details() -> None:
         payload={
             "task_id": "task_001",
             "status": "max_steps_exceeded",
+            "error_code": "agent_turn_budget_exhausted",
+            "recoverability": "agent_can_replan",
+            "retry_eligibility": "terminal",
+            "effect_certainty": "no_effect",
+            "effect_scope": "runtime_signal_transition",
             "summary": "The delegated turn ran out of steps.",
         },
     )
@@ -506,6 +511,11 @@ def test_protocol_thread_tool_reports_failure_observation_details() -> None:
     assert result.details["latest_message_type"] == "delegation_result"
     assert result.details["latest_payload_status"] == "max_steps_exceeded"
     assert result.details["latest_summary"] == "The delegated turn ran out of steps."
+    assert result.details["latest_error_code"] == "agent_turn_budget_exhausted"
+    assert result.details["latest_recoverability"] == "agent_can_replan"
+    assert result.details["latest_retry_eligibility"] == "terminal"
+    assert result.details["latest_effect_certainty"] == "no_effect"
+    assert result.details["latest_effect_scope"] == "runtime_signal_transition"
     assert result.details["task_id"] == "task_001"
     assert result.details["has_failure"] is True
     assert result.details["needs_attention"] is True

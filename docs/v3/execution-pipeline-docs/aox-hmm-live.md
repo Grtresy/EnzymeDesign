@@ -43,6 +43,33 @@ The graph closure binds `cdhit_cluster_membership@1`,
 knowledge-document digest drift is a scientific prerequisite failure, not a
 reason to infer the nearest version.
 
+### Selected-chain control contract
+
+Every new formal, fault, or probe scientific attempt binds
+`aox_blank_world_selected_chain@2` with workflow id `aox_blank_world`. Its
+canonical digest is
+`sha256:ab9898f52fc9fd1f1dc8b6498d368ba68d2e658c1ebc819cb76f73b7737de922`
+and covers each scope's role set plus every role's exact
+`sdk_module + function_name` operation signature. The historical `@1` digest
+is read-only r54 evidence and cannot admit a new attempt.
+
+Before choosing a chain, call `scientific.attempt.inspect` with the exact
+attempt/selection filter and page through the bounded occurrence view. It
+reports each operation signature, effect state, current disposition/adoption,
+allowed and compatible roles, blocker codes, and readiness counts from the
+same evaluator used by seal and closure. These are constraints, not a strategy:
+the agent chooses which occurrence and compatible role to adopt.
+
+For an active `@2` selection, do not write `kind="adopted"` through
+`scientific.operation.disposition` and do not call the historical
+`scientific.effect.adopt` surface. Use one
+`scientific.operation.adopt(selection_id, operation_id, workflow_role,
+reason_code, idempotency_key)` command; the Host atomically writes the adopted
+disposition and effect adoption or writes neither. Classify every non-adopted
+occurrence as `failed`, `superseded`, or `abandoned` as its canonical facts
+permit. `seal_ready=true` means only that current evidence satisfies selection
+invariants; it never instructs the agent to seal or finish the task.
+
 ## Controlled execution boundary
 
 Author Python source inside the executor's persistent sandbox workspace and run

@@ -12,6 +12,9 @@ from openzyme_host_api import aox_cutover_launch as launch
 from openzyme_host_api.aox_architecture_qualification import (
     build_architecture_qualification_receipt,
 )
+from openzyme_host_api.aox_scientific_contract import (
+    AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_V1_DIGEST,
+)
 from openzyme_pipeline import aox_motif
 from openzyme_runtime import ExecutionSettings
 from openzyme_runtime import ControlledOperationOwnerPolicy
@@ -323,7 +326,7 @@ def test_effective_config_is_deterministic_and_uses_live_budget(tmp_path: Path) 
     assert first.payload["driver"]["micu_hard_limit_tokens"] == 500_000_000
     assert first.payload["driver"]["max_signals_per_drain"] == 1
     assert first.payload["host"]["storage_profile"] == "single_process_sqlite"
-    assert first.payload["schema_id"] == "aox_blank_world_runtime_config@2"
+    assert first.payload["schema_id"] == "aox_blank_world_runtime_config@3"
     assert first.payload["reliability"] == {
         "shadow_observability": "disabled",
         "controlled_operation_owner_policy": "durable_only_v1",
@@ -331,6 +334,14 @@ def test_effective_config_is_deterministic_and_uses_live_budget(tmp_path: Path) 
         "runtime_drain_contract": "command_v1",
         "mutation_closure_mode": "generic_v1",
         "shadow_max_observations": 256,
+    }
+    assert first.payload["scientific_workflow_contract"] == {
+        "schema_id": launch.AOX_SELECTED_CHAIN_CONTRACT_V2.schema_id,
+        "contract_id": launch.AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_ID,
+        "workflow_id": launch.AOX_SELECTED_CHAIN_WORKFLOW_ID,
+        "workflow_contract_digest": (
+            launch.AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
+        ),
     }
     runner_expectations = first.payload["execution"]["aox_runner_contract_expectations"]
     assert runner_expectations["schema_id"] == "aox_runner_contract_expectations@1"
@@ -380,6 +391,10 @@ def test_effective_config_rejects_multi_signal_cutover_drain(tmp_path: Path) -> 
         ("unsafe_driver_timeout", "effective_config.driver.timeout_seconds"),
         ("missing_context_window", "effective_config.llm.context_window_tokens"),
         ("unsafe_context_window", "effective_config.llm.context_window_tokens"),
+        (
+            "historical_scientific_contract",
+            "effective_config.scientific_workflow_contract",
+        ),
     ),
 )
 def test_effective_config_closed_schema_rejects_tamper(
@@ -408,6 +423,10 @@ def test_effective_config_closed_schema_rejects_tamper(
         payload["llm"]["context_window_tokens"] = None
     elif tamper == "unsafe_context_window":
         payload["llm"]["context_window_tokens"] = 1_050_000
+    elif tamper == "historical_scientific_contract":
+        payload["scientific_workflow_contract"][
+            "workflow_contract_digest"
+        ] = AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_V1_DIGEST
     elif tamper == "unsafe_driver_timeout":
         payload["driver"]["timeout_seconds"] = 3_599.0
     else:

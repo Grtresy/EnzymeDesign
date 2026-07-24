@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any
 from typing import Callable
 from typing import Protocol
 
-from openzyme_core import RUNTIME_COMMAND_OUTCOME_SCHEMA_VERSION
 from openzyme_core import RuntimeCommandExecutionResult
 from openzyme_domain import RuntimeCommandRecord
 from openzyme_domain import RuntimeCommandStatus
 from openzyme_runtime import llm_debug_context
+
+from .v3_service import V3RuntimeDrainResult
 
 
 class RuntimeDrainService(Protocol):
@@ -22,7 +22,7 @@ class RuntimeDrainService(Protocol):
         max_steps_per_agent: int,
         auto_enqueue_ready_tasks: bool,
         worker_id: str,
-    ) -> object: ...
+    ) -> V3RuntimeDrainResult: ...
 
 
 @dataclass(slots=True)
@@ -49,17 +49,20 @@ class HostRuntimeCommandExecutor:
                     auto_enqueue_ready_tasks=command.auto_enqueue_ready_tasks,
                     worker_id=f"{self.worker_id}:scheduler",
                 )
-        scheduler_status = str(getattr(result, "status", "failed"))
-        processed_signal_count = int(getattr(result, "processed_signal_count", 0))
-        suspended = bool(getattr(result, "suspended", False)) or (
-            scheduler_status == "waiting_approval"
-        )
-        bounded_summary: dict[str, Any] = {
-            "schema_version": RUNTIME_COMMAND_OUTCOME_SCHEMA_VERSION,
-            "scheduler_status": scheduler_status,
-            "processed_signal_count": processed_signal_count,
-            "suspended": suspended,
-        }
+        if not isinstance(result, V3RuntimeDrainResult):
+            raise TypeError("runtime drain service returned an invalid result")
+        core_receipt = result.core_receipt
+        projection_outcome = result.projection_outcome
+        bounded_summary = result.bounded_outcome_summary
+        if projection_outcome.status == "failed":
+            return RuntimeCommandExecutionResult(
+                status=RuntimeCommandStatus.FAILED,
+                bounded_outcome_summary=bounded_summary,
+                error_code=projection_outcome.error_code,
+                safe_error_summary=projection_outcome.safe_summary,
+                safe_retry_hint=result.safe_retry_hint,
+            )
+        scheduler_status = core_receipt.scheduler_status
         if scheduler_status == RuntimeCommandStatus.LOCKED.value:
             return RuntimeCommandExecutionResult(
                 status=RuntimeCommandStatus.LOCKED,
@@ -69,8 +72,9 @@ class HostRuntimeCommandExecutor:
                     "The session runtime lease is held by another valid owner."
                 ),
                 safe_retry_hint=(
-                    "Submit a new drain command after the active session runtime "
-                    "lease has been released."
+                    result.safe_retry_hint
+                    or "Submit a new drain command after the active session "
+                    "runtime lease has been released."
                 ),
             )
         if scheduler_status == "failed":

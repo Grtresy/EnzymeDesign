@@ -119,3 +119,10 @@ Architecture qualification 是 operator admission，不是 scientific input。AO
 `allowed_prerequisites` 保持原 exact-nine closed schema。资格通过只解除 deterministic
 architecture blocker；launch identity、external availability、scientific evidence 与 cutover
 verification 仍须独立通过，campaign 也必须由 operator 另行显式启动。
+
+AOX admission scenario 还执行 selected-chain contract closure：active registry 必须能以
+`for_new_attempt=true` 精确解析 `aox_blank_world_selected_chain@2`，historical `@1`
+必须返回 read-only rejection；new launch config schema 必须是
+`aox_blank_world_runtime_config@3`。该 scenario source 与当前 source commit/test manifest
+共同进入 qualification receipt，因此 contract/config 改动会使旧 report 与 pin 失效。
+这只证明 non-live admission 行为，不创建 attempt 或授权 external effect。

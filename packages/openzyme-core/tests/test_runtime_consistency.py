@@ -1,5 +1,6 @@
 import pytest
 
+from openzyme_domain import AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
 from openzyme_core import CoreRepositories
 from openzyme_core import RuntimeConsistencyService
 from openzyme_core import apply_sqlite_migrations
@@ -11,9 +12,15 @@ from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
+from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import FailureActorKind
+from openzyme_domain import FailureClass
+from openzyme_domain import FailureRecoverability
+from openzyme_domain import RetryEligibility
 from openzyme_domain import Session
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
+from openzyme_runtime import record_failure_observation
 
 
 NOW = "2026-04-16T10:00:00+00:00"
@@ -59,7 +66,7 @@ def _codes(audit) -> set[str]:
     return {warning.code for warning in audit.warnings}
 
 
-def test_signal_and_agent_turn_failures_do_not_mark_business_task_failed() -> None:
+def test_historical_text_only_agent_turn_failure_keeps_task_unchanged() -> None:
     repositories = _repositories()
     repositories.runtime_signals.save(
         AgentRuntimeSignal(
@@ -99,6 +106,109 @@ def test_signal_and_agent_turn_failures_do_not_mark_business_task_failed() -> No
     assert attention["runtime_signal_failed"] is True
     assert attention["agent_turn_failed"] is True
     assert attention["needs_attention"] is True
+
+
+def test_structured_budget_failure_classifies_without_error_text_matching() -> None:
+    repositories = _repositories()
+    repositories.runtime_signals.save(
+        AgentRuntimeSignal(
+            signal_id="sig_structured_budget",
+            session_id="sess_consistency",
+            agent_id=EXECUTOR_AGENT_ID,
+            task_id="task_consistency",
+            reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+            status=AgentRuntimeSignalStatus.FAILED,
+            created_at=NOW,
+            completed_at=NOW,
+            attempt_count=1,
+            error_message="opaque terminal signal",
+        )
+    )
+    observation = record_failure_observation(
+        repositories,
+        session_id="sess_consistency",
+        task_id="task_consistency",
+        agent_id=EXECUTOR_AGENT_ID,
+        source_kind="runtime_signal",
+        source_ref="sig_structured_budget",
+        source_version="attempt:1",
+        phase="runtime",
+        failure_class=FailureClass.RUNTIME,
+        recoverability=FailureRecoverability.AGENT_CAN_REPLAN,
+        effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+        retry_eligibility=RetryEligibility.TERMINAL,
+        actor_kind=FailureActorKind.SYSTEM,
+        error_code=AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE,
+        safe_summary="The bounded agent turn exhausted its step budget.",
+        facts={
+            "effect_scope": "runtime_signal_transition",
+            "effect_scope_ref": "sig_structured_budget",
+        },
+    )
+
+    audit = RuntimeConsistencyService(repositories).audit_session(
+        "sess_consistency"
+    )
+    task = repositories.tasks.get("task_consistency")
+    codes = _codes(audit)
+    attention = audit.to_dict()["task_attention"][0]
+
+    assert task is not None
+    assert task.status is TaskStatus.IN_PROGRESS
+    assert task.failure_summary is None
+    assert AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE in codes
+    assert "agent_turn_failed" not in codes
+    assert observation.failure_id in attention["failure_observation_ids"]
+    assert attention["runtime_signal_failed"] is True
+    assert attention["agent_turn_failed"] is True
+    assert AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE in attention["reasons"]
+
+
+def test_structured_generic_failure_ignores_legacy_max_step_text() -> None:
+    repositories = _repositories()
+    repositories.runtime_signals.save(
+        AgentRuntimeSignal(
+            signal_id="sig_structured_generic",
+            session_id="sess_consistency",
+            agent_id=EXECUTOR_AGENT_ID,
+            task_id="task_consistency",
+            reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+            status=AgentRuntimeSignalStatus.FAILED,
+            created_at=NOW,
+            completed_at=NOW,
+            attempt_count=1,
+            error_message="max_steps_exceeded",
+        )
+    )
+    record_failure_observation(
+        repositories,
+        session_id="sess_consistency",
+        task_id="task_consistency",
+        agent_id=EXECUTOR_AGENT_ID,
+        source_kind="runtime_signal",
+        source_ref="sig_structured_generic",
+        source_version="attempt:1",
+        phase="runtime",
+        failure_class=FailureClass.RUNTIME,
+        recoverability=FailureRecoverability.TERMINAL,
+        effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+        retry_eligibility=RetryEligibility.TERMINAL,
+        actor_kind=FailureActorKind.SYSTEM,
+        error_code="runtime_signal_failed",
+        safe_summary="The runtime signal failed.",
+    )
+
+    audit = RuntimeConsistencyService(repositories).audit_session(
+        "sess_consistency"
+    )
+    codes = _codes(audit)
+    attention = audit.to_dict()["task_attention"][0]
+
+    assert "runtime_signal_failed" in codes
+    assert AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE not in codes
+    assert "agent_turn_failed" not in codes
+    assert attention["runtime_signal_failed"] is True
+    assert attention["agent_turn_failed"] is False
 
 
 def test_running_invocation_with_terminal_agent_produces_attention_only() -> None:

@@ -2642,8 +2642,11 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     assert "model, alignment, table, or graph belong in format or metadata" in prompt
     assert "zero-record FASTA keeps kind='sequence', format='fasta'" in prompt
     assert "Intermediate paths may fail and be retried" in prompt
-    assert "disposition every occurrence as adopted, superseded, failed, or abandoned" in prompt
-    assert "scientific.effect.adopt" in prompt
+    assert "observe each occurrence signature and compatible_roles" in prompt
+    assert "The agent, never the Harness, chooses the operation and role" in prompt
+    assert "adopted disposition directly" in prompt
+    assert "scientific.operation.adopt" in prompt
+    assert "scientific.effect.adopt" not in prompt
     assert "scientific.artifact.materialize" in prompt
     assert "Unknown external effect, dispatch-in-doubt" in prompt
     assert "known closed no-effect failure does not poison the attempt" in prompt

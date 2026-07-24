@@ -4,11 +4,19 @@ from contextlib import contextmanager
 from dataclasses import replace
 import threading
 
+import pytest
+
 from openzyme_core import RuntimeCommandExecutionResult
 from openzyme_core import RuntimeCommandWorker
+from openzyme_core import RuntimeDrainCoreReceipt
+from openzyme_core import RuntimeDrainProjectionOutcome
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import connect_sqlite
 from openzyme_core import project_runtime_command
+from openzyme_core import runtime_command_pre_core_failure_summary
+from openzyme_core.runtime_drain_receipts import (
+    validate_runtime_command_outcome_v2,
+)
 from openzyme_domain import RuntimeCommandRecord
 from openzyme_domain import RuntimeCommandStatus
 from openzyme_domain import RuntimeCommandType
@@ -55,6 +63,84 @@ def _command(*, command_id: str = "command_001") -> RuntimeCommandRecord:
     )
 
 
+def _completed_outcome_summary(
+    *,
+    processed_signal_count: int,
+    suspended: bool,
+) -> dict[str, object]:
+    return RuntimeDrainCoreReceipt(
+        scheduler_status=(
+            "waiting_approval" if suspended else "completed"
+        ),
+        processed_signal_count=processed_signal_count,
+        suspended=suspended,
+    ).bounded_outcome_summary(RuntimeDrainProjectionOutcome.complete())
+
+
+def test_runtime_drain_receipt_preserves_progress_and_bounds_identities() -> None:
+    output_ids = tuple(f"sha256:output-{index}" for index in range(20))
+    event_ids = tuple(f"evt_{index}" for index in range(70))
+    receipt = RuntimeDrainCoreReceipt(
+        scheduler_status="failed",
+        processed_signal_count=1,
+        suspended=False,
+        output_ids=output_ids,
+        event_ids=event_ids,
+    )
+    projection = RuntimeDrainProjectionOutcome.failed(
+        safe_summary="Consistency projection failed.",
+        failed_stage="runtime_consistency",
+    )
+
+    summary = receipt.bounded_outcome_summary(projection)
+
+    assert receipt.to_dict() == {
+        "schema_version": "runtime_drain_core_receipt@1",
+        "scheduler_status": "failed",
+        "processed_signal_count": 1,
+        "suspended": False,
+        "output_count": 20,
+        "output_ids": list(output_ids),
+        "event_count": 70,
+        "event_ids": list(event_ids),
+    }
+    assert projection.to_dict() == {
+        "schema_version": "runtime_drain_projection_outcome@1",
+        "status": "failed",
+        "error_code": "runtime_projection_failed",
+        "safe_summary": "Consistency projection failed.",
+        "failed_stage": "runtime_consistency",
+    }
+    assert summary["schema_version"] == "runtime_command_outcome@2"
+    assert summary["core_receipt_formed"] is True
+    assert summary["processed_signal_count"] == 1
+    assert summary["projection_status"] == "failed"
+    assert summary["projection_error_code"] == "runtime_projection_failed"
+    assert summary["projection_failed_stage"] == "runtime_consistency"
+    assert summary["replay_safe"] is False
+    assert summary["output_count"] == 20
+    assert summary["output_ids"] == list(output_ids[:16])
+    assert summary["output_ids_truncated"] is True
+    assert summary["event_count"] == 70
+    assert summary["event_ids"] == list(event_ids[:64])
+    assert summary["event_ids_truncated"] is True
+    validate_runtime_command_outcome_v2(summary)
+
+
+def test_runtime_command_v2_rejects_replay_safe_after_scheduler_progress() -> None:
+    summary = _completed_outcome_summary(
+        processed_signal_count=1,
+        suspended=False,
+    )
+    summary["replay_safe"] = True
+
+    with pytest.raises(
+        ValueError,
+        match="replay cannot be safe after progress",
+    ):
+        validate_runtime_command_outcome_v2(summary)
+
+
 def test_runtime_command_worker_claims_executes_and_sanitizes_result(tmp_path) -> None:  # type: ignore[no-untyped-def]
     provider = _provider(tmp_path)
     command = _command()
@@ -64,15 +150,19 @@ def test_runtime_command_worker_claims_executes_and_sanitizes_result(tmp_path) -
 
     def execute(claimed: RuntimeCommandRecord) -> RuntimeCommandExecutionResult:
         calls.append(claimed.command_id)
-        return RuntimeCommandExecutionResult(
-            status=RuntimeCommandStatus.COMPLETED,
-            bounded_outcome_summary={
-                "schema_version": "runtime_command_outcome@1",
-                "processed_signal_count": 1,
-                "suspended": True,
+        summary = _completed_outcome_summary(
+            processed_signal_count=1,
+            suspended=True,
+        )
+        summary.update(
+            {
                 "claim_owner": "secret-worker",
                 "host_path": "/tmp/private-result",
-            },
+            }
+        )
+        return RuntimeCommandExecutionResult(
+            status=RuntimeCommandStatus.COMPLETED,
+            bounded_outcome_summary=summary,
         )
 
     outcome = RuntimeCommandWorker(
@@ -95,13 +185,107 @@ def test_runtime_command_worker_claims_executes_and_sanitizes_result(tmp_path) -
     assert stored.status is RuntimeCommandStatus.COMPLETED
     assert stored.state_version == 3
     assert stored.fencing_token == 1
-    assert stored.bounded_outcome_summary == {
-        "schema_version": "runtime_command_outcome@1",
-        "processed_signal_count": 1,
-        "suspended": True,
-    }
+    assert stored.bounded_outcome_summary == _completed_outcome_summary(
+        processed_signal_count=1,
+        suspended=True,
+    )
     assert [event.event_type for event in events] == ["runtime.command.finished"]
     assert "secret-worker" not in str(events[0].payload)
+
+
+def test_runtime_command_worker_pre_core_exception_uses_v2_zero_receipt(
+    tmp_path,  # type: ignore[no-untyped-def]
+) -> None:
+    provider = _provider(tmp_path)
+    command = _command(command_id="command_pre_core_failure")
+    with provider.write() as unit_of_work:
+        unit_of_work.repositories.runtime_commands.add(command)
+
+    def fail_before_receipt(
+        claimed: RuntimeCommandRecord,
+    ) -> RuntimeCommandExecutionResult:
+        del claimed
+        raise RuntimeError("provider failed at /home/private/runtime.sock")
+
+    outcome = RuntimeCommandWorker(
+        repository_scope_factory=lambda: _repository_scope(provider),
+        executor=fail_before_receipt,
+        worker_id="runtime-worker:pre-core-failure",
+        clock=lambda: "2026-07-21T00:00:01+00:00",
+    ).run_once()
+
+    assert outcome.action == "failed"
+    assert outcome.semantic_progress is True
+    with provider.read() as unit_of_work:
+        stored = unit_of_work.repositories.runtime_commands.get(
+            command.command_id
+        )
+    assert stored is not None
+    assert stored.status is RuntimeCommandStatus.FAILED
+    assert stored.error_code == "runtime_command_execution_failed"
+    assert stored.bounded_outcome_summary == (
+        runtime_command_pre_core_failure_summary()
+    )
+    assert stored.safe_error_summary == "provider failed at [redacted-host-path]"
+
+
+def test_runtime_command_worker_never_overwrites_returned_core_receipt(
+    tmp_path,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider(tmp_path)
+    command = _command(command_id="command_post_core_finish_failure")
+    with provider.write() as unit_of_work:
+        unit_of_work.repositories.runtime_commands.add(command)
+    returned_summary = _completed_outcome_summary(
+        processed_signal_count=1,
+        suspended=False,
+    )
+    finish_results: list[RuntimeCommandExecutionResult] = []
+
+    def fail_finish(
+        self: RuntimeCommandWorker,
+        claimed: RuntimeCommandRecord,
+        result: RuntimeCommandExecutionResult,
+        *,
+        action: str | None = None,
+    ) -> None:
+        del self, claimed, action
+        finish_results.append(result)
+        raise RuntimeError("runtime command finish persistence failed")
+
+    monkeypatch.setattr(RuntimeCommandWorker, "_finish", fail_finish)
+    worker = RuntimeCommandWorker(
+        repository_scope_factory=lambda: _repository_scope(provider),
+        executor=lambda claimed: RuntimeCommandExecutionResult(
+            status=RuntimeCommandStatus.COMPLETED,
+            bounded_outcome_summary=returned_summary,
+        ),
+        worker_id="runtime-worker:post-core-failure",
+        clock=lambda: "2026-07-21T00:00:01+00:00",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="runtime command finish persistence failed",
+    ):
+        worker.run_once()
+
+    assert len(finish_results) == 1
+    assert finish_results[0].bounded_outcome_summary == returned_summary
+    assert finish_results[0].bounded_outcome_summary[
+        "processed_signal_count"
+    ] == 1
+    assert finish_results[0].bounded_outcome_summary[
+        "core_receipt_formed"
+    ] is True
+    with provider.read() as unit_of_work:
+        stored = unit_of_work.repositories.runtime_commands.get(
+            command.command_id
+        )
+    assert stored is not None
+    assert stored.status is RuntimeCommandStatus.CLAIMED
+    assert stored.bounded_outcome_summary is None
 
 
 def test_runtime_command_worker_fails_expired_claim_without_scheduler_replay(
@@ -141,12 +325,11 @@ def test_runtime_command_worker_fails_expired_claim_without_scheduler_replay(
     assert stored.fencing_token == 2
     assert stored.state_version == 4
     assert stored.error_code == "runtime_command_claim_expired"
-    assert stored.bounded_outcome_summary == {
-        "schema_version": "runtime_command_outcome@1",
-        "processed_signal_count": 0,
-        "suspended": False,
-        "recovery_required": True,
-    }
+    assert stored.bounded_outcome_summary == (
+        runtime_command_pre_core_failure_summary(
+            recovery_required=True
+        )
+    )
 
 
 def test_runtime_command_repository_renews_without_advancing_state_version(
@@ -216,6 +399,59 @@ def test_runtime_command_projection_recursively_redacts_private_authority() -> N
         assert secret not in serialized
 
 
+def test_runtime_command_projection_preserves_historical_v1_without_v2_invention() -> (
+    None
+):
+    historical_summary = {
+        "schema_version": "runtime_command_outcome@1",
+        "processed_signal_count": 1,
+        "suspended": True,
+        "recovery_required": True,
+    }
+
+    projected = project_runtime_command(
+        replace(
+            _command(command_id="command_historical_v1"),
+            status=RuntimeCommandStatus.FAILED,
+            bounded_outcome_summary=historical_summary,
+            error_code="historical_runtime_failure",
+        )
+    )
+
+    assert projected["bounded_outcome_summary"] == historical_summary
+    assert "scheduler_status" not in projected["bounded_outcome_summary"]
+    assert "projection_status" not in projected["bounded_outcome_summary"]
+    assert "replay_safe" not in projected["bounded_outcome_summary"]
+
+
+def test_runtime_command_projection_rejects_corrupt_v2_without_leaking_private_data() -> (
+    None
+):
+    corrupt = _completed_outcome_summary(
+        processed_signal_count=1,
+        suspended=False,
+    )
+    corrupt.update(
+        {
+            "replay_safe": True,
+            "claim_owner": "private-worker",
+            "host_path": "/home/private/runtime.sqlite3",
+        }
+    )
+
+    projected = project_runtime_command(
+        replace(
+            _command(command_id="command_corrupt_v2"),
+            status=RuntimeCommandStatus.COMPLETED,
+            bounded_outcome_summary=corrupt,
+        )
+    )
+
+    assert projected["bounded_outcome_summary"] is None
+    assert "private-worker" not in str(projected)
+    assert "/home/private/runtime.sqlite3" not in str(projected)
+
+
 def test_two_runtime_command_workers_never_execute_one_claim_twice(tmp_path) -> None:  # type: ignore[no-untyped-def]
     provider = _provider(tmp_path)
     command = _command(command_id="command_two_workers")
@@ -232,11 +468,10 @@ def test_two_runtime_command_workers_never_execute_one_claim_twice(tmp_path) -> 
         assert release.wait(timeout=2)
         return RuntimeCommandExecutionResult(
             status=RuntimeCommandStatus.COMPLETED,
-            bounded_outcome_summary={
-                "schema_version": "runtime_command_outcome@1",
-                "processed_signal_count": 0,
-                "suspended": False,
-            },
+            bounded_outcome_summary=_completed_outcome_summary(
+                processed_signal_count=0,
+                suspended=False,
+            ),
         )
 
     first = RuntimeCommandWorker(
@@ -289,7 +524,10 @@ def test_runtime_command_database_busy_is_deferred_without_state_relabel(
         calls.append(claimed.command_id)
         return RuntimeCommandExecutionResult(
             status=RuntimeCommandStatus.COMPLETED,
-            bounded_outcome_summary={},
+            bounded_outcome_summary=_completed_outcome_summary(
+                processed_signal_count=0,
+                suspended=False,
+            ),
         )
 
     worker = RuntimeCommandWorker(

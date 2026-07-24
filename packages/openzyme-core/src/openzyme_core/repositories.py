@@ -4227,6 +4227,35 @@ class AgentRuntimeSignalRepository:
             return None
         return self._row_to_signal(row)
 
+    def find_source_signal(
+        self,
+        *,
+        session_id: str,
+        agent_id: str,
+        reason: AgentRuntimeSignalReason,
+        source_ref: str | None,
+    ) -> AgentRuntimeSignal | None:
+        """Resolve one source-bound signal regardless of terminal state."""
+
+        if source_ref is None:
+            return None
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM agent_runtime_signals
+            WHERE session_id = ?
+              AND agent_id = ?
+              AND reason = ?
+              AND source_ref = ?
+            ORDER BY created_at, rowid
+            LIMIT 1
+            """,
+            (session_id, agent_id, reason.value, source_ref),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_signal(row)
+
     def _row_to_signal(self, row: sqlite3.Row) -> AgentRuntimeSignal:
         return AgentRuntimeSignal(
             signal_id=row["signal_id"],

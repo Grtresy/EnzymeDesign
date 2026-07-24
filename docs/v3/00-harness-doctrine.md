@@ -166,3 +166,15 @@ agent 可以显式拒绝，但 Harness 不替它拒绝：需要外部修复或�
 agent 显式 disposition 并选择 adopted chain；closure 同时要求 selection、effect、
 authorization 和 quiescence 完整。详见
 [08-failure-recovery-and-scientific-attempts.md](08-failure-recovery-and-scientific-attempts.md)。
+
+Harness 呈现 scientific 约束的正确单位是 attempt-bound、digest-closed contract，而不是
+prompt 提示。role-to-operation signature、scope、cardinality 和 reuse policy 必须由同一个
+registry contract 同时驱动 validation、inspection/readiness 和 verifier。Harness 可以告诉
+agent 某 occurrence 与哪些 roles 兼容，但不能替它选择 occurrence、role、disposition、
+replacement 或 seal；采用动作由 agent 通过原子 `scientific.operation.adopt` 明确表达。
+
+bounded turn 用尽步骤时，exact signal 必须 terminal 且不得原地加 budget/replay；task 与
+agent 仍可在新 turn replan。runtime command 也必须区分已经发生的 scheduler 进度和其后的
+projection 成败：projection error 不能把真实 processed count 改写为零。known terminal
+no-effect occurrence 可留在同一 authorized attempt 并被显式处置；unknown effect、active
+owner、authority/resource breach 与 cross-attempt reuse 仍 fail closed。

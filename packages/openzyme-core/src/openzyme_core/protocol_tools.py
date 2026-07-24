@@ -103,6 +103,11 @@ def _thread_observation_details(thread) -> dict[str, Any]:
     payload_status = None
     latest_summary = None
     task_id = None
+    latest_error_code = None
+    latest_recoverability = None
+    latest_retry_eligibility = None
+    latest_effect_certainty = None
+    latest_effect_scope = None
     has_failure = thread.status.value == "failed"
     for item in (payload, request_payload):
         if not isinstance(item, dict):
@@ -116,6 +121,25 @@ def _thread_observation_details(thread) -> dict[str, Any]:
                     break
         if task_id is None and item.get("task_id") is not None:
             task_id = str(item.get("task_id"))
+        if latest_error_code is None and item.get("error_code") is not None:
+            latest_error_code = str(item.get("error_code"))
+        if (
+            latest_recoverability is None
+            and item.get("recoverability") is not None
+        ):
+            latest_recoverability = str(item.get("recoverability"))
+        if (
+            latest_retry_eligibility is None
+            and item.get("retry_eligibility") is not None
+        ):
+            latest_retry_eligibility = str(item.get("retry_eligibility"))
+        if (
+            latest_effect_certainty is None
+            and item.get("effect_certainty") is not None
+        ):
+            latest_effect_certainty = str(item.get("effect_certainty"))
+        if latest_effect_scope is None and item.get("effect_scope") is not None:
+            latest_effect_scope = str(item.get("effect_scope"))
         status_value = str(item.get("status") or "").lower()
         if (
             status_value in _FAILURE_STATUSES
@@ -130,6 +154,11 @@ def _thread_observation_details(thread) -> dict[str, Any]:
         "latest_message_type": None if candidate is None else candidate.message_type,
         "latest_payload_status": payload_status,
         "latest_summary": latest_summary,
+        "latest_error_code": latest_error_code,
+        "latest_recoverability": latest_recoverability,
+        "latest_retry_eligibility": latest_retry_eligibility,
+        "latest_effect_certainty": latest_effect_certainty,
+        "latest_effect_scope": latest_effect_scope,
         "task_id": task_id,
         "has_failure": has_failure,
         "needs_attention": thread.status.value == "waiting"

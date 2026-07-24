@@ -41,6 +41,21 @@ export class HostApiClient {
     return requestJson(this.baseUrl, "/v3/runtime/health");
   }
 
+  drainV3Runtime(sessionId, payload = {}) {
+    return requestJson(this.baseUrl, `/v3/sessions/${sessionId}/runtime/drain`, {
+      method: "POST",
+      headers: commandHeaders(),
+      body: JSON.stringify(payload),
+    });
+  }
+
+  getV3RuntimeCommand(sessionId, commandId) {
+    return requestJson(
+      this.baseUrl,
+      `/v3/sessions/${sessionId}/runtime/commands/${commandId}`,
+    );
+  }
+
   createV3Session(payload) {
     return requestJson(this.baseUrl, "/v3/sessions", {
       method: "POST",
@@ -106,6 +121,8 @@ export function buildHostPaths(projectId, sessionId) {
   return {
     v3ProjectSessions: `/v3/projects/${projectId}/sessions`,
     v3RuntimeHealth: "/v3/runtime/health",
+    v3RuntimeDrain: `/v3/sessions/${sessionId}/runtime/drain`,
+    v3RuntimeCommand: `/v3/sessions/${sessionId}/runtime/commands/runtime_command_001`,
     v3CreateSession: "/v3/sessions",
     v3Session: `/v3/sessions/${sessionId}`,
     v3Messages: `/v3/sessions/${sessionId}/messages`,

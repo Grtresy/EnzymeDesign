@@ -510,6 +510,42 @@ test("scientific evidence and controlled operation events refresh the canonical 
   assert.equal(next.activity_feed[0].payload.operation_digest, `sha256:${"a".repeat(64)}`);
 });
 
+test("runtime command completion preserves the two-layer receipt in activity", () => {
+  assert.equal(
+    eventRequiresWorkspaceRefresh({
+      event_type: "runtime.command.finished",
+    }),
+    true,
+  );
+  const workspace = buildV3Workspace();
+  const next = reduceWorkspaceWithEvent(workspace, {
+    event_id: "evt_runtime_command",
+    event_type: "runtime.command.finished",
+    created_at: "2026-07-24T00:00:00+00:00",
+    payload: {
+      command_id: "runtime_command_001",
+      status: "failed",
+      bounded_outcome_summary: {
+        schema_version: "runtime_command_outcome@2",
+        scheduler_status: "completed",
+        processed_signal_count: 1,
+        projection_status: "failed",
+        replay_safe: false,
+      },
+    },
+  });
+
+  assert.equal(next.activity_feed[0].event_type, "runtime.command.finished");
+  assert.equal(
+    next.activity_feed[0].payload.bounded_outcome_summary.scheduler_status,
+    "completed",
+  );
+  assert.equal(
+    next.activity_feed[0].payload.bounded_outcome_summary.projection_status,
+    "failed",
+  );
+});
+
 test("duplicate events are ignored without cloning the workspace", () => {
   const workspace = buildV3Workspace();
   const duplicate = {

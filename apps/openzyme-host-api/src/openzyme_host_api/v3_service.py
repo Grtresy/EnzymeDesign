@@ -41,9 +41,13 @@ from openzyme_core import ToolRegistry
 from openzyme_core import AgentRuntimeService
 from openzyme_core import AgentRuntimeScheduler
 from openzyme_core import ArtifactBoundaryService
+from openzyme_core import canonical_digest
 from openzyme_core import persist_conversation_message
+from openzyme_core import RuntimeDrainCoreReceipt
+from openzyme_core import RuntimeDrainProjectionOutcome
 from openzyme_core import ScientificAttemptError
 from openzyme_core import ScientificAttemptService
+from openzyme_core import ScientificWorkflowContractRegistry
 from openzyme_core import SessionRuntimeLeaseLockedError
 from openzyme_domain import SessionRuntimeLease
 from openzyme_domain import AgentMember
@@ -79,6 +83,7 @@ from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import record_failure_observation
+from openzyme_runtime import sanitize_public_diagnostic_text
 
 
 def _new_id(prefix: str) -> str:
@@ -266,6 +271,46 @@ class V3CommandResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class V3RuntimeDrainResult:
+    session_id: str
+    core_receipt: RuntimeDrainCoreReceipt
+    projection_outcome: RuntimeDrainProjectionOutcome
+    outputs: tuple[str, ...]
+    events: list[dict[str, Any]]
+    workspace: dict[str, Any]
+    safe_retry_hint: str | None = None
+
+    @property
+    def status(self) -> str:
+        if self.projection_outcome.status == "failed":
+            return RuntimeCommandStatus.FAILED.value
+        return self.core_receipt.scheduler_status
+
+    @property
+    def processed_signal_count(self) -> int:
+        return self.core_receipt.processed_signal_count
+
+    @property
+    def suspended(self) -> bool:
+        return self.core_receipt.suspended
+
+    @property
+    def bounded_outcome_summary(self) -> dict[str, Any]:
+        return self.core_receipt.bounded_outcome_summary(
+            self.projection_outcome
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "status": self.status,
+            "outputs": list(self.outputs),
+            "events": self.events,
+            "workspace": self.workspace,
+        }
+
+
 @dataclass(slots=True)
 class V3HostApiService:
     repositories: CoreRepositories
@@ -274,7 +319,9 @@ class V3HostApiService:
     model_factory: Any | None = None
     bio_research_service: Any | None = None
     research_adapter: Any | None = None
-    scientific_workflow_role_validator: Any | None = None
+    scientific_workflow_contract_registry: (
+        ScientificWorkflowContractRegistry | None
+    ) = None
     sandbox_workspace_root: Path | None = None
     artifact_blob_root: Path | None = None
     scheduler_limits: dict[str, int] = field(default_factory=dict)
@@ -562,7 +609,12 @@ class V3HostApiService:
     def workspace(self, session_id: str) -> dict[str, Any]:
         with self.operation_lock:
             return (
-                SessionProjectionBuilder(self.repositories)
+                SessionProjectionBuilder(
+                    self.repositories,
+                    scientific_workflow_contract_registry=(
+                        self.scientific_workflow_contract_registry
+                    ),
+                )
                 .build_session_workspace(session_id)
                 .to_dict()
             )
@@ -570,7 +622,9 @@ class V3HostApiService:
     def scientific_attempt_control(self) -> ScientificAttemptService:
         return ScientificAttemptService(
             self.repositories,
-            workflow_role_validator=self.scientific_workflow_role_validator,
+            workflow_contract_registry=(
+                self.scientific_workflow_contract_registry
+            ),
             artifact_boundary=ArtifactBoundaryService(
                 self.repositories,
                 workspace_root=self.sandbox_workspace_root,
@@ -656,8 +710,13 @@ class V3HostApiService:
             "scientific.operation.disposition": frozenset(
                 {"selection_id", "operation_id", "kind", "reason_code"}
             ),
-            "scientific.effect.adopt": frozenset(
-                {"selection_id", "operation_id", "workflow_role"}
+            "scientific.operation.adopt": frozenset(
+                {
+                    "selection_id",
+                    "operation_id",
+                    "workflow_role",
+                    "reason_code",
+                }
             ),
             "scientific.artifact.materialize": frozenset(
                 {
@@ -681,7 +740,7 @@ class V3HostApiService:
                 {"expected_head_state_version", "parent_selection_id"}
             ),
             "scientific.operation.disposition": frozenset(
-                {"workflow_role", "replacement_operation_id"}
+                {"replacement_operation_id"}
             ),
         }
         required = required_fields.get(command)
@@ -753,11 +812,6 @@ class V3HostApiService:
                 operation_id=str(payload["operation_id"]),
                 kind=ScientificOperationDispositionKind(str(payload["kind"])),
                 reason_code=str(payload["reason_code"]),
-                workflow_role=(
-                    None
-                    if payload.get("workflow_role") is None
-                    else str(payload["workflow_role"])
-                ),
                 replacement_operation_id=(
                     None
                     if payload.get("replacement_operation_id") is None
@@ -766,11 +820,12 @@ class V3HostApiService:
                 actor_ref=actor_ref,
                 idempotency_key=idempotency_key,
             )
-        elif command == "scientific.effect.adopt":
-            record = control.adopt_effect(
+        elif command == "scientific.operation.adopt":
+            record = control.adopt_operation(
                 selection_id=str(payload["selection_id"]),
                 operation_id=str(payload["operation_id"]),
                 workflow_role=str(payload["workflow_role"]),
+                reason_code=str(payload["reason_code"]),
                 actor_ref=actor_ref,
                 idempotency_key=idempotency_key,
             )
@@ -1248,7 +1303,12 @@ class V3HostApiService:
     def _extend_with_runtime_consistency_events(
         self, session_id: str, events: list[dict[str, Any]]
     ) -> None:
-        audit = RuntimeConsistencyService(self.repositories).audit_session(session_id)
+        audit = RuntimeConsistencyService(
+            self.repositories,
+            scientific_workflow_contract_registry=(
+                self.scientific_workflow_contract_registry
+            ),
+        ).audit_session(session_id)
         for warning in audit.warnings:
             events.append(
                 _event(
@@ -1291,8 +1351,8 @@ class V3HostApiService:
             engine_registry=self.engine_registry,
             bio_research_service=self.bio_research_service,
             research_adapter=self.research_adapter,
-            scientific_workflow_role_validator=(
-                self.scientific_workflow_role_validator
+            scientific_workflow_contract_registry=(
+                self.scientific_workflow_contract_registry
             ),
             sandbox_workspace_root=self.sandbox_workspace_root,
             artifact_blob_root=self.artifact_blob_root,
@@ -1399,9 +1459,143 @@ class V3HostApiService:
             auto_enqueue_ready_tasks=auto_enqueue_ready_tasks,
         )
         events.extend(event.to_dict() for event in context.event_sink.events)
-        if current_mutation_write_authority() is None:
-            self.finalize_pending_scientific_transitions(session_id=session_id)
         return [outcome.to_dict() for outcome in outcomes]
+
+    def _runtime_drain_core_receipt(
+        self,
+        *,
+        session_id: str,
+        outcomes: list[dict[str, Any]],
+        events: list[dict[str, Any]],
+    ) -> tuple[RuntimeDrainCoreReceipt, tuple[str, ...]]:
+        has_pending_approval = bool(
+            self.repositories.approvals.list_pending_by_session(session_id)
+        )
+        waiting = (
+            has_pending_approval
+            or self._outcomes_include_waiting_approval(outcomes)
+        )
+        if waiting:
+            scheduler_status = HarnessStatus.WAITING_APPROVAL.value
+        elif self._outcomes_include_failure(outcomes):
+            scheduler_status = HarnessStatus.FAILED.value
+        else:
+            scheduler_status = HarnessStatus.COMPLETED.value
+        master_outputs = tuple(
+            output
+            for outcome in outcomes
+            if isinstance(outcome.get("agent"), dict)
+            and outcome["agent"].get("agent_id") == "agent:master"
+            for output in outcome.get("outputs", ())
+            if isinstance(output, str)
+        )
+        response_outputs = () if has_pending_approval else master_outputs
+        output_ids = tuple(
+            canonical_digest(
+                {
+                    "schema_version": "runtime_drain_output_identity@1",
+                    "ordinal": ordinal,
+                    "output": output,
+                }
+            )
+            for ordinal, output in enumerate(response_outputs)
+        )
+        event_ids = tuple(
+            event_id
+            for event in events
+            if isinstance((event_id := event.get("event_id")), str)
+            and event_id
+        )
+        return (
+            RuntimeDrainCoreReceipt(
+                scheduler_status=scheduler_status,
+                processed_signal_count=len(outcomes),
+                suspended=waiting,
+                output_ids=output_ids,
+                event_ids=event_ids,
+            ),
+            response_outputs,
+        )
+
+    def _runtime_drain_projection_failure(
+        self,
+        *,
+        session_id: str,
+        core_receipt: RuntimeDrainCoreReceipt,
+        outputs: tuple[str, ...],
+        events: list[dict[str, Any]],
+        failed_stage: str,
+        error: Exception,
+    ) -> V3RuntimeDrainResult:
+        safe_summary = sanitize_public_diagnostic_text(str(error)).strip()
+        projection = RuntimeDrainProjectionOutcome.failed(
+            safe_summary=(
+                safe_summary[:2_000]
+                or "Runtime projection settlement failed."
+            ),
+            failed_stage=failed_stage,
+        )
+        return V3RuntimeDrainResult(
+            session_id=session_id,
+            core_receipt=core_receipt,
+            projection_outcome=projection,
+            outputs=outputs,
+            events=events,
+            workspace={},
+            safe_retry_hint=(
+                "Do not blindly replay this command. Inspect the current "
+                "canonical session, signal, task, and scientific selection state "
+                "before deciding whether to submit another drain."
+            ),
+        )
+
+    def _settle_runtime_drain_projection(
+        self,
+        *,
+        session_id: str,
+        core_receipt: RuntimeDrainCoreReceipt,
+        outputs: tuple[str, ...],
+        events: list[dict[str, Any]],
+    ) -> V3RuntimeDrainResult:
+        stage = "scientific_transitions"
+        try:
+            with self.operation_lock:
+                if current_mutation_write_authority() is None:
+                    self.finalize_pending_scientific_transitions(
+                        session_id=session_id
+                    )
+                stage = "session_touch"
+                self._touch_session(session_id)
+                stage = "trace_events"
+                self._extend_with_trace_events(session_id, events)
+                stage = "activity_events"
+                self._extend_with_activity_events(session_id, events)
+                stage = "runtime_consistency"
+                self._extend_with_runtime_consistency_events(
+                    session_id,
+                    events,
+                )
+                stage = "event_append"
+                self.event_store.append(session_id, events)
+                stage = "workspace"
+                workspace = self.workspace(session_id)
+        except Exception as exc:
+            return self._runtime_drain_projection_failure(
+                session_id=session_id,
+                core_receipt=core_receipt,
+                outputs=outputs,
+                events=events,
+                failed_stage=stage,
+                error=exc,
+            )
+        return V3RuntimeDrainResult(
+            session_id=session_id,
+            core_receipt=core_receipt,
+            projection_outcome=RuntimeDrainProjectionOutcome.complete(),
+            outputs=outputs,
+            events=events,
+            workspace=workspace,
+        )
 
     def drain_runtime(
         self,
@@ -1411,7 +1605,7 @@ class V3HostApiService:
         max_steps_per_agent: int = 8,
         auto_enqueue_ready_tasks: bool = False,
         worker_id: str = "host-api:runtime-drain",
-    ) -> V3CommandResult:
+    ) -> V3RuntimeDrainResult:
         with self.operation_lock:
             if self.repositories.sessions.get(session_id) is None:
                 raise KeyError(f"session {session_id!r} does not exist")
@@ -1426,59 +1620,65 @@ class V3HostApiService:
                 worker_id=worker_id,
             )
         except SessionRuntimeLeaseLockedError as exc:
-            with self.operation_lock:
-                locked_event = self._runtime_locked_event(session_id, exc)
-                events.append(locked_event)
-                self.event_store.append(session_id, events)
-                workspace = self.workspace(session_id)
-            return V3CommandResult(
+            locked_event = self._runtime_locked_event(session_id, exc)
+            events.append(locked_event)
+            core_receipt = RuntimeDrainCoreReceipt(
+                scheduler_status=RuntimeCommandStatus.LOCKED.value,
+                processed_signal_count=0,
+                suspended=False,
+                event_ids=(str(locked_event["event_id"]),),
+            )
+            settled = self._settle_runtime_drain_projection(
                 session_id=session_id,
-                status="locked",
                 outputs=(),
                 events=events,
-                workspace=workspace,
+                core_receipt=core_receipt,
+            )
+            if settled.projection_outcome.status == "failed":
+                return settled
+            return replace(
+                settled,
                 safe_retry_hint=(
                     "Submit a new drain command after the active session runtime "
                     "lease has been released."
                 ),
             )
-        with self.operation_lock:
-            has_pending_approval = bool(
-                self.repositories.approvals.list_pending_by_session(session_id)
+        try:
+            core_receipt, response_outputs = (
+                self._runtime_drain_core_receipt(
+                    session_id=session_id,
+                    outcomes=outcomes,
+                    events=events,
+                )
             )
-            if has_pending_approval or self._outcomes_include_waiting_approval(
-                outcomes
-            ):
-                response_status = HarnessStatus.WAITING_APPROVAL
-            elif self._outcomes_include_failure(outcomes):
-                response_status = HarnessStatus.FAILED
-            else:
-                response_status = HarnessStatus.COMPLETED
-            master_outputs = tuple(
-                output
-                for outcome in outcomes
-                if isinstance(outcome.get("agent"), dict)
-                and outcome["agent"].get("agent_id") == "agent:master"
-                for output in outcome.get("outputs", ())
+        except Exception as exc:
+            core_receipt = RuntimeDrainCoreReceipt(
+                scheduler_status=HarnessStatus.FAILED.value,
+                processed_signal_count=len(outcomes),
+                suspended=False,
+                event_ids=tuple(
+                    event_id
+                    for event in events
+                    if isinstance(
+                        (event_id := event.get("event_id")),
+                        str,
+                    )
+                    and event_id
+                ),
             )
-            response_outputs = () if has_pending_approval else master_outputs
-            self._touch_session(session_id)
-            self._extend_with_trace_events(session_id, events)
-            self._extend_with_activity_events(session_id, events)
-            self._extend_with_runtime_consistency_events(session_id, events)
-            self.event_store.append(session_id, events)
-            workspace = self.workspace(session_id)
-        return V3CommandResult(
+            return self._runtime_drain_projection_failure(
+                session_id=session_id,
+                core_receipt=core_receipt,
+                outputs=(),
+                events=events,
+                failed_stage="core_receipt_assembly",
+                error=exc,
+            )
+        return self._settle_runtime_drain_projection(
             session_id=session_id,
-            status=response_status.value,
+            core_receipt=core_receipt,
             outputs=response_outputs,
             events=events,
-            workspace=workspace,
-            processed_signal_count=len(outcomes),
-            suspended=(
-                has_pending_approval
-                or self._outcomes_include_waiting_approval(outcomes)
-            ),
         )
 
     def _terminal_teammate_outcomes(

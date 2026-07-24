@@ -251,19 +251,44 @@ from .scientific_attempt_repositories import ScientificAttemptVersionConflictErr
 from .scientific_attempt_repositories import ScientificDispositionRepository
 from .scientific_attempt_repositories import ScientificEffectAdoptionRepository
 from .scientific_attempt_repositories import ScientificOccurrenceSnapshot
+from .scientific_attempt_repositories import ResolvedScientificSelectionHead
 from .scientific_attempt_repositories import ScientificSelectionHead
+from .scientific_attempt_repositories import ScientificSelectionIntegrityError
 from .scientific_attempt_repositories import ScientificSelectionRepository
 from .scientific_attempts import SCIENTIFIC_ATTEMPT_AUTHORIZATION_POLICY_ID
 from .scientific_attempts import ScientificAttemptError
 from .scientific_attempts import ScientificAttemptService
+from .scientific_attempts import ScientificOperationAdoptionResult
 from .scientific_attempts import ScientificOperationUniverse
-from .scientific_attempts import ScientificWorkflowRoleValidator
 from .scientific_attempts import scientific_attempt_authorization_identity
 from .scientific_attempts import scientific_attempt_authorization_request
+from .scientific_selection_evaluation import ScientificSelectionEvaluation
+from .scientific_selection_evaluation import ScientificSelectionEvaluator
+from .scientific_selection_evaluation import ScientificSelectionIssue
+from .scientific_selection_evaluation import (
+    ScientificSelectionOccurrenceEvaluation,
+)
+from .scientific_workflow_contracts import (
+    HistoricalScientificWorkflowContract,
+)
+from .scientific_workflow_contracts import (
+    SCIENTIFIC_EFFECT_ADOPTION_POLICY_ATOMIC,
+)
+from .scientific_workflow_contracts import (
+    SCIENTIFIC_SAME_ATTEMPT_REUSE_POLICY,
+)
+from .scientific_workflow_contracts import ScientificOperationSignature
+from .scientific_workflow_contracts import ScientificWorkflowContract
+from .scientific_workflow_contracts import ScientificWorkflowContractError
+from .scientific_workflow_contracts import ScientificWorkflowContractRecord
+from .scientific_workflow_contracts import ScientificWorkflowContractRegistry
+from .scientific_workflow_contracts import ScientificWorkflowRolePolicy
+from .scientific_workflow_contracts import ScientificWorkflowScopePolicy
 from .scientific_attempt_tools import register_scientific_attempt_tools
 from .result_artifacts import ControlledOperationResultArtifactRef
 from .result_artifacts import controlled_operation_artifact_set_digest
 from .runtime_commands import RUNTIME_COMMAND_OUTCOME_MAX_BYTES
+from .runtime_commands import RUNTIME_COMMAND_OUTCOME_LEGACY_SCHEMA_VERSION
 from .runtime_commands import RUNTIME_COMMAND_OUTCOME_SCHEMA_VERSION
 from .runtime_commands import RuntimeCommandExecutionResult
 from .runtime_commands import RuntimeCommandExecutor
@@ -272,6 +297,9 @@ from .runtime_commands import RuntimeCommandWorkerOutcome
 from .runtime_commands import runtime_command_request_digest
 from .runtime_command_projection import project_runtime_command
 from .runtime_command_projection import sanitize_runtime_command_outcome
+from .runtime_drain_receipts import RuntimeDrainCoreReceipt
+from .runtime_drain_receipts import RuntimeDrainProjectionOutcome
+from .runtime_drain_receipts import runtime_command_pre_core_failure_summary
 from .skills import SkillDescriptor
 from .skills import SkillDocument
 from .skills import SkillRegistry
@@ -458,11 +486,15 @@ __all__ = [
     "RuntimeWriteFencingError",
     "RuntimeCommandRepository",
     "RUNTIME_COMMAND_OUTCOME_MAX_BYTES",
+    "RUNTIME_COMMAND_OUTCOME_LEGACY_SCHEMA_VERSION",
     "RUNTIME_COMMAND_OUTCOME_SCHEMA_VERSION",
+    "RuntimeDrainCoreReceipt",
+    "RuntimeDrainProjectionOutcome",
     "RuntimeCommandExecutionResult",
     "RuntimeCommandExecutor",
     "RuntimeCommandWorker",
     "RuntimeCommandWorkerOutcome",
+    "runtime_command_pre_core_failure_summary",
     "runtime_command_request_digest",
     "project_runtime_command",
     "sanitize_runtime_command_outcome",
@@ -514,6 +546,9 @@ __all__ = [
     "SessionRuntimeSnapshot",
     "SessionWorkspaceProjection",
     "SCIENTIFIC_ATTEMPT_AUTHORIZATION_POLICY_ID",
+    "SCIENTIFIC_EFFECT_ADOPTION_POLICY_ATOMIC",
+    "SCIENTIFIC_SAME_ATTEMPT_REUSE_POLICY",
+    "HistoricalScientificWorkflowContract",
     "ScientificArtifactMaterializationRepository",
     "ScientificAttemptAdmissionRequestRepository",
     "ScientificAttemptAuthorizationRepository",
@@ -529,10 +564,23 @@ __all__ = [
     "ScientificDispositionRepository",
     "ScientificEffectAdoptionRepository",
     "ScientificOccurrenceSnapshot",
+    "ScientificOperationAdoptionResult",
+    "ScientificOperationSignature",
     "ScientificOperationUniverse",
+    "ResolvedScientificSelectionHead",
     "ScientificSelectionHead",
+    "ScientificSelectionIntegrityError",
+    "ScientificSelectionEvaluation",
+    "ScientificSelectionEvaluator",
+    "ScientificSelectionIssue",
+    "ScientificSelectionOccurrenceEvaluation",
     "ScientificSelectionRepository",
-    "ScientificWorkflowRoleValidator",
+    "ScientificWorkflowContract",
+    "ScientificWorkflowContractError",
+    "ScientificWorkflowContractRecord",
+    "ScientificWorkflowContractRegistry",
+    "ScientificWorkflowRolePolicy",
+    "ScientificWorkflowScopePolicy",
     "scientific_attempt_authorization_identity",
     "scientific_attempt_authorization_request",
     "register_scientific_attempt_tools",

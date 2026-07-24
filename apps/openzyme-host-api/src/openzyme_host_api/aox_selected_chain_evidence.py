@@ -6,7 +6,10 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
+from openzyme_core import ScientificWorkflowContract
+from openzyme_core import ScientificWorkflowContractError
 from openzyme_core import verify_quiescence_evidence_envelope
+from openzyme_domain import ScientificAttemptScope
 
 from .aox_cutover_evidence import ATTEMPT_BUNDLE_SCHEMA_ID_V2
 from .aox_cutover_evidence import ATTEMPT_BUNDLE_SCHEMA_ID_V3
@@ -15,19 +18,19 @@ from .aox_cutover_evidence import VerificationIssue
 from .aox_cutover_evidence import VerificationResult
 from .aox_cutover_evidence import _assert_public_safe
 from .aox_cutover_evidence import _strict_json_loads
+from .aox_cutover_evidence import _validate_effective_config_attestation
 from .aox_cutover_evidence import _verify_attempt_bundle_v2
 from .aox_cutover_evidence import build_attempt_bundle
 from .aox_cutover_evidence import canonical_digest
 from .aox_cutover_evidence import canonical_json_bytes
-from .aox_scientific_contract import AOX_FORMAL_WORKFLOW_ROLES
 from .aox_scientific_contract import (
-    AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST,
+    AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY,
 )
 from .aox_scientific_contract import AOX_SELECTED_CHAIN_WORKFLOW_ID
 
 
 SCIENTIFIC_ATTEMPT_EVIDENCE_SCHEMA_ID = "scientific_attempt_evidence@1"
-SCIENTIFIC_OPERATION_UNIVERSE_SCHEMA_ID = "scientific_operation_universe@1"
+SCIENTIFIC_OPERATION_UNIVERSE_SCHEMA_ID = "scientific_operation_universe@2"
 
 _CONTROL_FIELDS = frozenset(
     {
@@ -152,6 +155,8 @@ _OCCURRENCE_FIELDS = frozenset(
         "logical_operation_key",
         "operation_digest",
         "backend_category",
+        "sdk_module",
+        "function_name",
         "operation_status",
         "approval_id",
         "approval_state",
@@ -431,6 +436,19 @@ def verify_selected_chain_attempt_bundle(
     else:
         _verify_selected_chain_control(payload, control=control, issues=issues)
 
+    try:
+        _validate_effective_config_attestation(payload)
+    except CutoverEvidenceError as exc:
+        _issue(
+            issues,
+            exc.code,
+            str(
+                exc.details.get("identity")
+                or "product_path.launch_receipt.effective_config"
+            ),
+            str(exc),
+        )
+
     projected_v2 = {
         key: value
         for key, value in payload.items()
@@ -591,7 +609,7 @@ def _verify_selected_chain_control(
     selection_id = str(selection.get("selection_id") or "")
     envelope_id = str(authorization.get("envelope_id") or "")
 
-    _verify_authority_and_attempt(
+    contract = _verify_authority_and_attempt(
         payload,
         authorization=authorization,
         admission=admission,
@@ -664,7 +682,7 @@ def _verify_selected_chain_control(
         or selection.get("state") != "sealed"
         or not selection.get("sealed_at")
         or selection.get("workflow_contract_digest")
-        != AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
+        != attempt.get("workflow_contract_digest")
         or selection.get("operation_universe_digest")
         != universe.get("operation_universe_digest")
         or selection.get("operation_count") != len(occurrence_by_id)
@@ -697,6 +715,8 @@ def _verify_selected_chain_control(
         occurrence_by_id=occurrence_by_id,
         dispositions=dispositions,
         adoptions=adoptions,
+        contract=contract,
+        attempt_scope=str(attempt.get("scope") or ""),
         issues=issues,
     )
     _verify_materializations(
@@ -737,8 +757,35 @@ def _verify_authority_and_attempt(
     admission: Mapping[str, Any],
     attempt: Mapping[str, Any],
     issues: list[VerificationIssue],
-) -> None:
+) -> ScientificWorkflowContract | None:
     expected_scope = "fault" if payload.get("attempt_kind") == "fault" else "formal"
+    contract: ScientificWorkflowContract | None = None
+    try:
+        resolved = AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY.resolve(
+            workflow_id=str(attempt.get("workflow_id") or ""),
+            workflow_contract_digest=str(
+                attempt.get("workflow_contract_digest") or ""
+            ),
+            for_new_attempt=True,
+        )
+        if not isinstance(resolved, ScientificWorkflowContract):
+            raise ScientificWorkflowContractError(
+                "workflow_contract_historical_read_only",
+                "historical contract is not valid selected-chain evidence",
+            )
+        resolved.scope_policy(ScientificAttemptScope(expected_scope))
+        contract = resolved
+    except (ScientificWorkflowContractError, ValueError) as exc:
+        _issue(
+            issues,
+            "scientific_workflow_contract_invalid",
+            "scientific_attempt_control.attempt.workflow_contract_digest",
+            (
+                exc.error_code
+                if isinstance(exc, ScientificWorkflowContractError)
+                else "workflow_contract_scope_unsupported"
+            ),
+        )
     expected_grant_route = (
         f"/v3/sessions/{attempt.get('session_id')}/"
         "scientific-attempt-authorizations"
@@ -760,8 +807,7 @@ def _verify_authority_and_attempt(
         or authorization.get("root_ref") != attempt.get("root_ref")
         or attempt.get("scope") != expected_scope
         or attempt.get("workflow_id") != AOX_SELECTED_CHAIN_WORKFLOW_ID
-        or attempt.get("workflow_contract_digest")
-        != AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
+        or contract is None
         or attempt.get("status") != "closed"
         or admission.get("admission_request_id")
         != attempt.get("admission_request_id")
@@ -875,6 +921,7 @@ def _verify_authority_and_attempt(
                 f"scientific_attempt_control.attempt_authority.{reserved_name}",
                 "attempt resource reservation exceeds its envelope",
             )
+    return contract
 
 
 def _verify_occurrence_universe(
@@ -1037,6 +1084,8 @@ def _verify_dispositions_and_adoptions(
     occurrence_by_id: Mapping[str, Mapping[str, Any]],
     dispositions: list[dict[str, Any]],
     adoptions: list[dict[str, Any]],
+    contract: ScientificWorkflowContract | None,
+    attempt_scope: str,
     issues: list[VerificationIssue],
 ) -> dict[str, dict[str, Any]]:
     disposition_by_operation = {
@@ -1113,6 +1162,30 @@ def _verify_dispositions_and_adoptions(
                     f"scientific_attempt_control.dispositions.{operation_id}",
                     "adopted disposition lacks its exact successful adoption",
                 )
+            if contract is not None and occurrence is not None:
+                try:
+                    compatible_roles = (
+                        contract.compatible_roles_for_signature(
+                            ScientificAttemptScope(attempt_scope),
+                            sdk_module=occurrence.get("sdk_module"),
+                            function_name=occurrence.get("function_name"),
+                        )
+                    )
+                except (ScientificWorkflowContractError, ValueError):
+                    compatible_roles = ()
+                if disposition.get("workflow_role") not in compatible_roles:
+                    _issue(
+                        issues,
+                        "scientific_workflow_role_operation_kind_invalid",
+                        (
+                            "scientific_attempt_control.dispositions."
+                            f"{operation_id}.workflow_role"
+                        ),
+                        (
+                            "adopted role does not match the digest-bound "
+                            "operation signature"
+                        ),
+                    )
         elif kind == "superseded":
             replacement = str(
                 disposition.get("replacement_operation_id") or ""
@@ -1239,15 +1312,22 @@ def _verify_dispositions_and_adoptions(
                     "scientific_attempt_control.adoptions",
                     "selected chain differs from the controlled AOX role projection",
                 )
-    elif any(
-        role not in AOX_FORMAL_WORKFLOW_ROLES for role in adoption_by_role
-    ):
-        _issue(
-            issues,
-            "scientific_aox_role_unexpected",
-            "scientific_attempt_control.adoptions",
-            "fault selected chain contains roles outside the AOX contract",
-        )
+    elif contract is not None:
+        try:
+            allowed_roles = set(
+                contract.allowed_roles(
+                    ScientificAttemptScope(attempt_scope)
+                )
+            )
+        except (ScientificWorkflowContractError, ValueError):
+            allowed_roles = set()
+        if any(role not in allowed_roles for role in adoption_by_role):
+            _issue(
+                issues,
+                "scientific_aox_role_unexpected",
+                "scientific_attempt_control.adoptions",
+                "fault selected chain contains roles outside the AOX contract",
+            )
     return disposition_by_operation
 
 

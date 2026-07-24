@@ -1,29 +1,61 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 import hashlib
+import json
 from pathlib import Path
 import sqlite3
+from typing import Any
 
 import pytest
+import openzyme_core.agent_runtime as agent_runtime_module
 
+from openzyme_core import AgentRuntimeService
 from openzyme_core import ArtifactBoundaryService
 from openzyme_core import CoreRepositories
 from openzyme_core import ControlledOperationResultArtifactRef
+from openzyme_core import HistoricalScientificWorkflowContract
+from openzyme_core import HarnessResult
+from openzyme_core import HarnessStatus
+from openzyme_core import ImmutableIdentityConflictError
+from openzyme_core import MemoryEventBus
 from openzyme_core import MutationScopeService
+from openzyme_core import RestoreFocus
+from openzyme_core import RuntimeConsistencyService
+from openzyme_core import SessionRuntimeContext
+from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import ScientificAttemptError
+from openzyme_core import ScientificAttemptIdentityConflictError
 from openzyme_core import ScientificAttemptService
+from openzyme_core import ScientificOperationSignature
+from openzyme_core import ScientificSelectionEvaluator
+from openzyme_core import ScientificSelectionIntegrityError
+from openzyme_core import ScientificWorkflowContract
+from openzyme_core import ScientificWorkflowContractRegistry
+from openzyme_core import ScientificWorkflowRolePolicy
+from openzyme_core import ScientificWorkflowScopePolicy
 from openzyme_core import TaskBoardService
 from openzyme_core import TaskFinishCommand
+from openzyme_core import ToolInvocation
+from openzyme_core import ToolRegistry
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import canonical_digest
 from openzyme_core import connect_sqlite
 from openzyme_core import controlled_operation_artifact_set_digest
+from openzyme_core import register_scientific_attempt_tools
+from openzyme_core import scientific_attempt_tool_descriptors
 from openzyme_domain import AgentMember
+from openzyme_domain import AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
 from openzyme_domain import AgentMemberStatus
+from openzyme_domain import AgentRuntimeSignal
+from openzyme_domain import AgentRuntimeSignalReason
+from openzyme_domain import AgentRuntimeSignalStatus
+from openzyme_domain import ApprovalRequest
+from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import ArtifactKind
 from openzyme_domain import ControlledOperation
 from openzyme_domain import ControlledOperationExecution
@@ -47,6 +79,8 @@ from openzyme_domain import SandboxWorkspaceStatus
 from openzyme_domain import ScientificAttemptScope
 from openzyme_domain import ScientificAttemptAdmissionRequest
 from openzyme_domain import ScientificAttemptAuthorization
+from openzyme_domain import ScientificEffectAdoption
+from openzyme_domain import ScientificOperationDisposition
 from openzyme_domain import ScientificOperationDispositionKind
 from openzyme_domain import ScientificSelectionState
 from openzyme_domain import Session
@@ -59,19 +93,58 @@ NOW = "2026-07-23T00:00:00+00:00"
 EXPIRES = (
     datetime.fromisoformat(NOW).astimezone(UTC) + timedelta(days=7)
 ).isoformat()
+TEST_WORKFLOW_CONTRACT = ScientificWorkflowContract(
+    schema_id="scientific_workflow_contract@2",
+    contract_id="test_scientific_selection@2",
+    workflow_id="aox_blank_world",
+    scopes=(
+        ScientificWorkflowScopePolicy(
+            scope=ScientificAttemptScope.FORMAL,
+            roles=(
+                ScientificWorkflowRolePolicy(
+                    role_id="final",
+                    operation_signatures=(
+                        ScientificOperationSignature(
+                            sdk_module="fixture",
+                            function_name="run",
+                        ),
+                    ),
+                    cardinality="exactly_one",
+                ),
+            ),
+        ),
+    ),
+    effect_adoption_policy="explicit_atomic_adoption",
+    same_attempt_reuse_policy="same_attempt_only",
+    projection_schema_version="scientific_workflow_contract_projection@1",
+)
+TEST_WORKFLOW_CONTRACT_REGISTRY = ScientificWorkflowContractRegistry(
+    contracts=(TEST_WORKFLOW_CONTRACT,),
+    historical_contracts=(
+        HistoricalScientificWorkflowContract(
+            schema_id="scientific_workflow_role_contract@1",
+            contract_id="test_scientific_selection@1",
+            workflow_id="aox_blank_world",
+            workflow_contract_digest="sha256:historical-workflow-contract",
+            scope_roles=((ScientificAttemptScope.FORMAL, ("final",)),),
+        ),
+    ),
+)
 
 
-def _role_validator(
-    *,
-    attempt: object,
-    selection: object,
-    workflow_role: str,
-    operation: ControlledOperation,
-    execution: ControlledOperationExecution,
-) -> None:
-    del attempt, selection, operation, execution
-    if workflow_role != "final":
-        raise ValueError("unsupported workflow role")
+class _RepositoryProxy:
+    def __init__(
+        self,
+        delegate: object,
+        **overrides: Any,
+    ) -> None:
+        self._delegate = delegate
+        self._overrides = overrides
+
+    def __getattr__(self, name: str) -> Any:
+        if name in self._overrides:
+            return self._overrides[name]
+        return getattr(self._delegate, name)
 
 
 def _world(
@@ -144,7 +217,7 @@ def _world(
     service = ScientificAttemptService(
         repositories,
         now=lambda: NOW,
-        workflow_role_validator=_role_validator,
+        workflow_contract_registry=TEST_WORKFLOW_CONTRACT_REGISTRY,
     )
     return repositories, service
 
@@ -190,7 +263,7 @@ def _grant_and_create(
         campaign_id="campaign_aox",
         workflow_id="aox_blank_world",
         scope=ScientificAttemptScope.FORMAL,
-        workflow_contract_digest="sha256:workflow-contract",
+        workflow_contract_digest=TEST_WORKFLOW_CONTRACT.digest,
         requested_effect_classes=("provider", "hpc"),
         reserved_micu=10,
         reserved_cost_microunits=1_000,
@@ -216,7 +289,7 @@ def _request_admission(
         campaign_id="campaign_aox",
         workflow_id="aox_blank_world",
         scope=ScientificAttemptScope.FORMAL,
-        workflow_contract_digest="sha256:workflow-contract",
+        workflow_contract_digest=TEST_WORKFLOW_CONTRACT.digest,
         requested_effect_classes=("provider", "hpc"),
         reserved_micu=10,
         reserved_cost_microunits=1_000,
@@ -236,6 +309,11 @@ def _add_occurrence(
     succeeded: bool,
     effect_certainty: ExternalEffectCertainty,
     artifact: SessionArtifactRecord | None = None,
+    sdk_module: str = "fixture",
+    function_name: str = "run",
+    approval_id: str | None = None,
+    approval_state: str | None = None,
+    approval_digest: str | None = None,
 ) -> tuple[ControlledOperation, ControlledOperationExecution]:
     repositories = service.repositories
     run = SandboxRunRecord(
@@ -268,12 +346,16 @@ def _add_occurrence(
         backend_category="fixture",
         selected_backend="fixture",
         route_policy_id="fixture_v1",
+        sdk_module=sdk_module,
+        function_name=function_name,
         owner_mode=ControlledOperationOwnerMode.DURABLE_ASYNC_V1,
         status=(
             ControlledOperationStatus.COMPLETED
             if succeeded
             else ControlledOperationStatus.FAILED
         ),
+        approval_id=approval_id,
+        approval_state=approval_state,
         created_at=NOW,
         updated_at=NOW,
     )
@@ -300,7 +382,7 @@ def _add_occurrence(
         lane_id=operation.lane_id,
         owner_mode=ControlledOperationOwnerMode.DURABLE_ASYNC_V1,
         operation_digest=operation.operation_digest,
-        approval_digest=None,
+        approval_digest=approval_digest,
         route_policy_id="fixture_v1",
         selected_backend="fixture",
         adapter_policy_id="fixture_adapter_v1",
@@ -416,6 +498,899 @@ def _sealed_result_artifact(
     )
 
 
+def _ready_selection(
+    service: ScientificAttemptService,
+    *,
+    suffix: str = "ready",
+) -> tuple[Any, ControlledOperation, Any]:
+    attempt = _grant_and_create(service)
+    operation, _ = _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix=suffix,
+        succeeded=True,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+    )
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key=f"selection-{suffix}",
+    )
+    service.adopt_operation(
+        selection_id=selection.selection_id,
+        operation_id=operation.operation_id,
+        workflow_role="final",
+        reason_code="selected_terminal_result",
+        actor_ref="agent:scientist",
+        idempotency_key=f"adoption-{suffix}",
+    )
+    return attempt, operation, selection
+
+
+def _seed_legacy_split_adoption_facts(
+    service: ScientificAttemptService,
+    *,
+    selection: Any,
+    operation: ControlledOperation,
+    workflow_role: str,
+    reason_code: str,
+    idempotency_key: str,
+    include_disposition: bool = True,
+    include_adoption: bool = True,
+    request_digest: str | None = None,
+    actor_ref: str = "fixture:frozen-split-record",
+    use_canonical_ids: bool = False,
+) -> tuple[
+    ScientificOperationDisposition | None,
+    ScientificEffectAdoption | None,
+]:
+    """Seed frozen split records without reopening the model-visible write path."""
+
+    repositories = service.repositories
+    attempt = repositories.scientific_attempts.get(selection.attempt_id)
+    assert attempt is not None
+    execution = (
+        repositories.controlled_operation_executions.get_by_operation_id(
+            operation.operation_id
+        )
+    )
+    assert execution is not None
+    assert execution.result_handle_ref is not None
+    result = repositories.controlled_operation_results.get(
+        execution.result_handle_ref
+    )
+    assert result is not None
+    digest = request_digest or canonical_digest(
+        {
+            "fixture": "frozen_split_adoption",
+            "selection_id": selection.selection_id,
+            "operation_id": operation.operation_id,
+            "workflow_role": workflow_role,
+            "reason_code": reason_code,
+            "actor_ref": actor_ref,
+            "idempotency_key": idempotency_key,
+        }
+    )
+    identity_suffix = digest.removeprefix("sha256:")[:24]
+    disposition = (
+        ScientificOperationDisposition(
+            disposition_id=(
+                f"disposition_{identity_suffix}"
+                if use_canonical_ids
+                else f"disposition_legacy_{idempotency_key}"
+            ),
+            selection_id=selection.selection_id,
+            attempt_id=selection.attempt_id,
+            operation_id=operation.operation_id,
+            kind=ScientificOperationDispositionKind.ADOPTED,
+            workflow_role=workflow_role,
+            reason_code=reason_code,
+            replacement_operation_id=None,
+            actor_ref=actor_ref,
+            idempotency_key=idempotency_key,
+            request_digest=digest,
+            created_at=NOW,
+        )
+        if include_disposition
+        else None
+    )
+    adoption = (
+        ScientificEffectAdoption(
+            adoption_id=(
+                f"adoption_{identity_suffix}"
+                if use_canonical_ids
+                else f"adoption_legacy_{idempotency_key}"
+            ),
+            selection_id=selection.selection_id,
+            attempt_id=selection.attempt_id,
+            workflow_role=workflow_role,
+            operation_id=operation.operation_id,
+            execution_id=execution.execution_id,
+            result_handle_id=result.result_handle_id,
+            result_digest=result.result_digest,
+            artifact_set_digest=result.artifact_set_digest,
+            source_sandbox_run_id=operation.sandbox_run_id,
+            effect_certainty=execution.effect_certainty.value,
+            approval_digest=execution.approval_digest,
+            actor_ref=actor_ref,
+            idempotency_key=idempotency_key,
+            request_digest=digest,
+            created_at=NOW,
+        )
+        if include_adoption
+        else None
+    )
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+        owner_ref=f"fixture:frozen-split:{idempotency_key}",
+    ):
+        with repositories.atomic(prefix="fixture_frozen_split_adoption"):
+            if disposition is not None:
+                repositories.scientific_dispositions.add(disposition)
+            if adoption is not None:
+                repositories.scientific_effect_adoptions.add(adoption)
+    return disposition, adoption
+
+
+def test_atomic_operation_adoption_commits_both_facts_and_replays_exactly() -> (
+    None
+):
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+    operation, _ = _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix="atomic-valid",
+        succeeded=True,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+    )
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key="selection-atomic-valid",
+    )
+    arguments = {
+        "selection_id": selection.selection_id,
+        "operation_id": operation.operation_id,
+        "workflow_role": "final",
+        "reason_code": "selected_exact_terminal_result",
+        "actor_ref": "agent:scientist",
+        "idempotency_key": "adopt-atomic-valid",
+    }
+
+    first = service.adopt_operation(**arguments)
+    replay = service.adopt_operation(**arguments)
+
+    assert replay == first
+    assert first.disposition.request_digest == first.adoption.request_digest
+    assert first.disposition.idempotency_key == first.adoption.idempotency_key
+    assert first.disposition.created_at == first.adoption.created_at
+    assert first.disposition.kind is ScientificOperationDispositionKind.ADOPTED
+    assert first.disposition.workflow_role == first.adoption.workflow_role == "final"
+    assert first.to_dict() == {
+        "schema_id": "scientific_operation_adoption_result@1",
+        "attempt_id": attempt.attempt_id,
+        "selection_id": selection.selection_id,
+        "operation_id": operation.operation_id,
+        "workflow_role": "final",
+        "reason_code": "selected_exact_terminal_result",
+        "disposition_id": first.disposition.disposition_id,
+        "adoption_id": first.adoption.adoption_id,
+        "request_digest": first.disposition.request_digest,
+        "created_at": first.disposition.created_at,
+    }
+    assert repositories.scientific_dispositions.list_by_selection(
+        selection.selection_id
+    ) == (first.disposition,)
+    assert repositories.scientific_effect_adoptions.list_by_selection(
+        selection.selection_id
+    ) == (first.adoption,)
+
+
+def test_atomic_operation_adoption_tool_returns_both_canonical_identities() -> (
+    None
+):
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+    operation, _ = _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix="atomic-tool",
+        succeeded=True,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+    )
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key="selection-atomic-tool",
+    )
+    registry = ToolRegistry()
+    register_scientific_attempt_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            attempt.session_id,
+        ),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(
+            task_id=attempt.task_id,
+            lane_id=attempt.lane_id,
+        ),
+        agent_id="agent:scientist",
+        actor_kind="teammate",
+        actor_role="scientist",
+        scientific_workflow_contract_registry=(
+            TEST_WORKFLOW_CONTRACT_REGISTRY
+        ),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_atomic_adopt",
+            tool_name="scientific.operation.adopt",
+            arguments={
+                "selection_id": selection.selection_id,
+                "operation_id": operation.operation_id,
+                "workflow_role": "final",
+                "reason_code": "selected_through_model_visible_tool",
+                "idempotency_key": "adopt-atomic-tool",
+            },
+            task_id=attempt.task_id,
+            lane_id=attempt.lane_id,
+        ),
+    )
+
+    assert result.ok is True
+    assert result.status == "scientific_operation_adopted"
+    payload = json.loads(result.content)
+    assert payload["schema_id"] == "scientific_operation_adoption_result@1"
+    assert payload["selection_id"] == selection.selection_id
+    assert payload["operation_id"] == operation.operation_id
+    assert payload["workflow_role"] == "final"
+    assert payload["disposition_id"].startswith("disposition_")
+    assert payload["adoption_id"].startswith("adoption_")
+    assert len(
+        repositories.scientific_dispositions.list_by_selection(
+            selection.selection_id
+        )
+    ) == 1
+    assert len(
+        repositories.scientific_effect_adoptions.list_by_selection(
+            selection.selection_id
+        )
+    ) == 1
+
+
+def test_atomic_operation_adoption_reports_exact_current_head_without_repair() -> (
+    None
+):
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+    operation, _ = _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix="atomic-stale-head",
+        succeeded=True,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+    )
+    first = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key="selection-atomic-stale-head-first",
+    )
+    first_head = repositories.scientific_selections.get_head(
+        attempt.attempt_id
+    )
+    assert first_head is not None
+    current = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key="selection-atomic-stale-head-current",
+        expected_head_state_version=first_head.state_version,
+        parent_selection_id=first.selection_id,
+    )
+
+    with pytest.raises(ScientificAttemptError) as rejected:
+        service.adopt_operation(
+            selection_id=first.selection_id,
+            operation_id=operation.operation_id,
+            workflow_role="final",
+            reason_code="must_not_mutate_stale_selection",
+            actor_ref="agent:scientist",
+            idempotency_key="adopt-atomic-stale-head",
+        )
+
+    assert rejected.value.error_code == "selection_not_current_head"
+    assert rejected.value.details["selection_id"] == first.selection_id
+    assert rejected.value.details["selection_revision"] == 1
+    assert rejected.value.details["current_selection_id"] == (
+        current.selection_id
+    )
+    assert rejected.value.details["current_selection_revision"] == 2
+    assert rejected.value.details["head_state_version"] == 2
+    assert rejected.value.details["retry_boundary"] == (
+        "refresh_exact_selection"
+    )
+    assert rejected.value.details["mutation_applied"] is False
+    assert (
+        repositories.scientific_dispositions.list_by_selection(
+            first.selection_id
+        )
+        == ()
+    )
+    assert (
+        repositories.scientific_effect_adoptions.list_by_selection(
+            first.selection_id
+        )
+        == ()
+    )
+
+
+@pytest.mark.parametrize(
+    ("workflow_role", "sdk_module", "error_code", "compatible_roles"),
+    (
+        ("not_declared", "fixture", "workflow_role_invalid", ["final"]),
+        (
+            "final",
+            "incompatible_fixture",
+            "workflow_role_operation_kind_invalid",
+            [],
+        ),
+    ),
+)
+def test_atomic_operation_adoption_rejects_invalid_role_without_partial_state(
+    workflow_role: str,
+    sdk_module: str,
+    error_code: str,
+    compatible_roles: list[str],
+) -> None:
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+    operation, _ = _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix=f"atomic-invalid-role-{workflow_role}",
+        succeeded=True,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+        sdk_module=sdk_module,
+    )
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key=f"selection-atomic-invalid-role-{workflow_role}",
+    )
+
+    with pytest.raises(ScientificAttemptError) as rejected:
+        service.adopt_operation(
+            selection_id=selection.selection_id,
+            operation_id=operation.operation_id,
+            workflow_role=workflow_role,
+            reason_code="invalid_role_must_not_be_rewritten",
+            actor_ref="agent:scientist",
+            idempotency_key=f"adopt-atomic-invalid-role-{workflow_role}",
+        )
+
+    assert rejected.value.error_code == error_code
+    assert rejected.value.details["head_state_version"] == 1
+    assert rejected.value.details["requested_role"] == workflow_role
+    assert rejected.value.details["allowed_roles"] == ["final"]
+    assert rejected.value.details["compatible_roles"] == compatible_roles
+    assert rejected.value.details["current_disposition"] is None
+    assert rejected.value.details["current_adoption"] is None
+    assert rejected.value.details["mutation_applied"] is False
+    assert "recommended_actions" not in rejected.value.details
+    assert (
+        repositories.scientific_dispositions.list_by_selection(
+            selection.selection_id
+        )
+        == ()
+    )
+    assert (
+        repositories.scientific_effect_adoptions.list_by_selection(
+            selection.selection_id
+        )
+        == ()
+    )
+
+
+def test_atomic_operation_adoption_rejects_unknown_effect_without_partial_state() -> (
+    None
+):
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+    operation, _ = _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix="atomic-unknown-effect",
+        succeeded=False,
+        effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+    )
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key="selection-atomic-unknown-effect",
+    )
+
+    with pytest.raises(ScientificAttemptError) as rejected:
+        service.adopt_operation(
+            selection_id=selection.selection_id,
+            operation_id=operation.operation_id,
+            workflow_role="final",
+            reason_code="must_reconcile_before_adoption",
+            actor_ref="agent:scientist",
+            idempotency_key="adopt-atomic-unknown-effect",
+        )
+
+    assert rejected.value.error_code == "effect_adoption_not_terminal_known"
+    assert rejected.value.details["retry_boundary"] == (
+        "reconcile_external_effect"
+    )
+    assert "selection_unknown_effect" in rejected.value.details["blocker_codes"]
+    assert rejected.value.details["mutation_applied"] is False
+    assert "recommended_actions" not in rejected.value.details
+    assert (
+        repositories.scientific_dispositions.list_by_selection(
+            selection.selection_id
+        )
+        == ()
+    )
+    assert (
+        repositories.scientific_effect_adoptions.list_by_selection(
+            selection.selection_id
+        )
+        == ()
+    )
+
+
+@pytest.mark.parametrize(
+    ("precondition", "error_code"),
+    (
+        ("result_missing", "effect_adoption_result_invalid"),
+        ("artifact_set_invalid", "effect_adoption_result_invalid"),
+        ("approval_invalid", "effect_adoption_approval_invalid"),
+    ),
+)
+def test_atomic_operation_adoption_revalidates_canonical_preconditions_in_transaction(
+    precondition: str,
+    error_code: str,
+) -> None:
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+    if precondition == "approval_invalid":
+        with service.mutation_scopes.writer_turn(
+            session_id=attempt.session_id,
+            owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+            owner_ref="fixture:pending-approval",
+        ):
+            repositories.approvals.save(
+                ApprovalRequest(
+                    approval_id="approval_pending",
+                    session_id=attempt.session_id,
+                    task_id=attempt.task_id,
+                    lane_id=attempt.lane_id,
+                    kind="sdk_controlled_operation",
+                    requested_action="Approve the fixture operation.",
+                    status=ApprovalRequestStatus.PENDING,
+                    request_ref="fixture:pending-operation",
+                    resolution_ref=None,
+                    created_at=NOW,
+                )
+            )
+    operation, _ = _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix=f"atomic-precondition-{precondition}",
+        succeeded=True,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+        approval_id=(
+            "approval_pending"
+            if precondition == "approval_invalid"
+            else None
+        ),
+        approval_state=(
+            "pending" if precondition == "approval_invalid" else None
+        ),
+        approval_digest=None,
+    )
+    if precondition == "result_missing":
+        service.repositories = replace(
+            repositories,
+            controlled_operation_results=_RepositoryProxy(
+                repositories.controlled_operation_results,
+                get=lambda _: None,
+            ),
+        )
+    elif precondition == "artifact_set_invalid":
+
+        def reject_artifact_set(_: Any) -> None:
+            raise ImmutableIdentityConflictError(
+                "injected artifact-set mismatch"
+            )
+
+        service.repositories = replace(
+            repositories,
+            controlled_operation_result_artifacts=_RepositoryProxy(
+                repositories.controlled_operation_result_artifacts,
+                assert_exact=reject_artifact_set,
+            ),
+        )
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key=f"selection-atomic-precondition-{precondition}",
+    )
+
+    with pytest.raises(ScientificAttemptError) as rejected:
+        service.adopt_operation(
+            selection_id=selection.selection_id,
+            operation_id=operation.operation_id,
+            workflow_role="final",
+            reason_code=f"must_validate_{precondition}",
+            actor_ref="agent:scientist",
+            idempotency_key=f"adopt-atomic-precondition-{precondition}",
+        )
+
+    assert rejected.value.error_code == error_code
+    assert rejected.value.details["head_state_version"] == 1
+    assert rejected.value.details["requested_role"] == "final"
+    assert rejected.value.details["mutation_applied"] is False
+    assert (
+        repositories.scientific_dispositions.list_by_selection(
+            selection.selection_id
+        )
+        == ()
+    )
+    assert (
+        repositories.scientific_effect_adoptions.list_by_selection(
+            selection.selection_id
+        )
+        == ()
+    )
+
+
+def test_atomic_operation_adoption_rolls_back_when_second_record_fails() -> None:
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+    operation, _ = _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix="atomic-second-write-failure",
+        succeeded=True,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+    )
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key="selection-atomic-second-write-failure",
+    )
+
+    def reject_adoption(_: ScientificEffectAdoption) -> None:
+        raise ScientificAttemptIdentityConflictError(
+            "injected second-record conflict"
+        )
+
+    service.repositories = replace(
+        repositories,
+        scientific_effect_adoptions=_RepositoryProxy(
+            repositories.scientific_effect_adoptions,
+            add=reject_adoption,
+        ),
+    )
+
+    with pytest.raises(ScientificAttemptError) as rejected:
+        service.adopt_operation(
+            selection_id=selection.selection_id,
+            operation_id=operation.operation_id,
+            workflow_role="final",
+            reason_code="prove_second_write_rollback",
+            actor_ref="agent:scientist",
+            idempotency_key="adopt-atomic-second-write-failure",
+        )
+
+    assert rejected.value.error_code == (
+        "scientific_operation_adoption_integrity_conflict"
+    )
+    assert rejected.value.details["current_disposition"] is None
+    assert rejected.value.details["current_adoption"] is None
+    assert rejected.value.details["mutation_applied"] is False
+    assert (
+        repositories.scientific_dispositions.list_by_selection(
+            selection.selection_id
+        )
+        == ()
+    )
+    assert (
+        repositories.scientific_effect_adoptions.list_by_selection(
+            selection.selection_id
+        )
+        == ()
+    )
+
+
+@pytest.mark.parametrize("replay_state", ("partial", "digest_mismatch"))
+def test_atomic_operation_adoption_rejects_partial_or_mismatched_replay(
+    replay_state: str,
+) -> None:
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+    operation, _ = _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix=f"atomic-replay-{replay_state}",
+        succeeded=True,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+    )
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key=f"selection-atomic-replay-{replay_state}",
+    )
+    actor_ref = "agent:scientist"
+    idempotency_key = f"adopt-atomic-replay-{replay_state}"
+    reason_code = "selected_for_replay_check"
+    request_digest = canonical_digest(
+        {
+            "command": "scientific.operation.adopt",
+            "selection_id": selection.selection_id,
+            "operation_id": operation.operation_id,
+            "workflow_role": "final",
+            "reason_code": reason_code,
+            "actor_ref": actor_ref,
+            "idempotency_key": idempotency_key,
+        }
+    )
+    seeded_digest = (
+        request_digest
+        if replay_state == "partial"
+        else "sha256:" + ("f" * 64)
+    )
+    seeded = _seed_legacy_split_adoption_facts(
+        service,
+        selection=selection,
+        operation=operation,
+        workflow_role="final",
+        reason_code=reason_code,
+        idempotency_key=idempotency_key,
+        include_adoption=replay_state != "partial",
+        request_digest=seeded_digest,
+        actor_ref=actor_ref,
+        use_canonical_ids=True,
+    )
+
+    with pytest.raises(ScientificAttemptError) as rejected:
+        service.adopt_operation(
+            selection_id=selection.selection_id,
+            operation_id=operation.operation_id,
+            workflow_role="final",
+            reason_code=reason_code,
+            actor_ref=actor_ref,
+            idempotency_key=idempotency_key,
+        )
+
+    assert rejected.value.error_code == (
+        "scientific_operation_adoption_integrity_conflict"
+    )
+    assert rejected.value.details["mutation_applied"] is False
+    assert repositories.scientific_dispositions.list_by_selection(
+        selection.selection_id
+    ) == (seeded[0],)
+    expected_adoptions = () if seeded[1] is None else (seeded[1],)
+    assert repositories.scientific_effect_adoptions.list_by_selection(
+        selection.selection_id
+    ) == expected_adoptions
+
+
+def test_new_contract_hides_and_rejects_legacy_adoption_writes() -> None:
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+    operation, _ = _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix="legacy-write-rejected",
+        succeeded=True,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+    )
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key="selection-legacy-write-rejected",
+    )
+
+    with pytest.raises(ScientificAttemptError) as disposition_rejected:
+        service.disposition_operation(
+            selection_id=selection.selection_id,
+            operation_id=operation.operation_id,
+            kind=ScientificOperationDispositionKind.ADOPTED,
+            workflow_role="final",
+            reason_code="legacy_direct_adoption",
+            actor_ref="agent:scientist",
+            idempotency_key="legacy-disposition-rejected",
+        )
+    assert disposition_rejected.value.error_code == (
+        "scientific_atomic_adoption_required"
+    )
+    assert disposition_rejected.value.details["mutation_applied"] is False
+
+    with pytest.raises(ScientificAttemptError) as adoption_rejected:
+        service.adopt_effect(
+            selection_id=selection.selection_id,
+            operation_id=operation.operation_id,
+            workflow_role="final",
+            actor_ref="agent:scientist",
+            idempotency_key="legacy-adoption-rejected",
+        )
+    assert adoption_rejected.value.error_code == (
+        "scientific_legacy_adoption_disabled"
+    )
+    assert adoption_rejected.value.details["mutation_applied"] is False
+
+    descriptors = {
+        descriptor.tool_name: descriptor
+        for descriptor in scientific_attempt_tool_descriptors()
+    }
+    assert "scientific.effect.adopt" not in descriptors
+    assert "scientific.operation.adopt" in descriptors
+    assert descriptors["scientific.operation.adopt"].input_schema["required"] == [
+        "selection_id",
+        "operation_id",
+        "workflow_role",
+        "reason_code",
+        "idempotency_key",
+    ]
+    assert descriptors["scientific.operation.disposition"].input_schema[
+        "properties"
+    ]["kind"]["enum"] == ["superseded", "failed", "abandoned"]
+
+    registry = ToolRegistry()
+    register_scientific_attempt_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            attempt.session_id,
+        ),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(
+            task_id=attempt.task_id,
+            lane_id=attempt.lane_id,
+        ),
+        agent_id="agent:scientist",
+        actor_kind="teammate",
+        actor_role="scientist",
+        scientific_workflow_contract_registry=(
+            TEST_WORKFLOW_CONTRACT_REGISTRY
+        ),
+    )
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.AGENT_TURN,
+        owner_ref="fixture:hidden-legacy-tool",
+    ):
+        hidden = registry.dispatch(
+            context,
+            ToolInvocation(
+                call_id="call_hidden_legacy_adopt",
+                tool_name="scientific.effect.adopt",
+                arguments={
+                    "selection_id": selection.selection_id,
+                    "operation_id": operation.operation_id,
+                    "workflow_role": "final",
+                    "idempotency_key": "hidden-legacy-adopt",
+                },
+                task_id=attempt.task_id,
+                lane_id=attempt.lane_id,
+            ),
+        )
+    assert hidden.ok is False
+    assert hidden.status == "unknown_tool"
+    assert hidden.error_code == "unknown_tool"
+    assert (
+        repositories.scientific_dispositions.list_by_selection(
+            selection.selection_id
+        )
+        == ()
+    )
+    assert (
+        repositories.scientific_effect_adoptions.list_by_selection(
+            selection.selection_id
+        )
+        == ()
+    )
+
+
+def test_historical_split_adoption_records_remain_exactly_readable() -> None:
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+    operation, _ = _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix="historical-split-read",
+        succeeded=True,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+    )
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key="selection-historical-split-read",
+    )
+    disposition, adoption = _seed_legacy_split_adoption_facts(
+        service,
+        selection=selection,
+        operation=operation,
+        workflow_role="final",
+        reason_code="frozen_historical_selection",
+        idempotency_key="historical-split-read",
+    )
+    assert disposition is not None
+    assert adoption is not None
+
+    resolved_head = repositories.scientific_selections.resolve_head(
+        attempt.attempt_id
+    )
+    assert resolved_head is not None
+    historical_attempt = replace(
+        attempt,
+        workflow_contract_digest="sha256:historical-workflow-contract",
+    )
+    historical_selection = replace(
+        selection,
+        workflow_contract_digest="sha256:historical-workflow-contract",
+    )
+    historical_repositories = replace(
+        repositories,
+        scientific_attempts=_RepositoryProxy(
+            repositories.scientific_attempts,
+            get=lambda _: historical_attempt,
+        ),
+        scientific_selections=_RepositoryProxy(
+            repositories.scientific_selections,
+            get=lambda _: historical_selection,
+            resolve_head=lambda _: replace(
+                resolved_head,
+                selection=historical_selection,
+            ),
+        ),
+    )
+    historical_reader = ScientificAttemptService(
+        historical_repositories,
+        workflow_contract_registry=TEST_WORKFLOW_CONTRACT_REGISTRY,
+    )
+
+    page = historical_reader.inspect_selection(
+        session_id=attempt.session_id,
+        task_id=attempt.task_id,
+        attempt_id=attempt.attempt_id,
+        selection_id=selection.selection_id,
+        limit=1,
+    )
+
+    occurrence = page["occurrences"][0]
+    assert occurrence["disposition"] == {
+        "disposition_id": disposition.disposition_id,
+        "kind": "adopted",
+        "workflow_role": "final",
+    }
+    assert occurrence["adoption"] == {
+        "adoption_id": adoption.adoption_id,
+        "workflow_role": "final",
+    }
+    assert page["contract"]["contract_id"] == "test_scientific_selection@1"
+    assert "workflow_contract_historical_read_only" in (
+        page["readiness"]["blocker_codes"]
+    )
+    assert repositories.scientific_dispositions.list_by_selection(
+        selection.selection_id
+    ) == (disposition,)
+    assert repositories.scientific_effect_adoptions.list_by_selection(
+        selection.selection_id
+    ) == (adoption,)
+
+
 def test_authorization_is_atomic_bounded_and_idempotent() -> None:
     repositories, service = _world()
     attempt = _grant_and_create(service, max_attempts=2)
@@ -505,7 +1480,7 @@ def test_authorization_and_admission_reject_boolean_resource_values() -> None:
             campaign_id="campaign_aox",
             workflow_id="aox_blank_world",
             scope=ScientificAttemptScope.FORMAL,
-            workflow_contract_digest="sha256:workflow-contract",
+            workflow_contract_digest=TEST_WORKFLOW_CONTRACT.digest,
             requested_effect_classes=("provider", "hpc"),
             reserved_micu=True,
             reserved_cost_microunits=1_000,
@@ -518,6 +1493,53 @@ def test_authorization_and_admission_reject_boolean_resource_values() -> None:
     assert (
         invalid_admission.value.error_code
         == "authorization_resource_invalid"
+    )
+
+
+@pytest.mark.parametrize(
+    ("workflow_contract_digest", "error_code"),
+    (
+        (
+            "sha256:historical-workflow-contract",
+            "workflow_contract_historical_read_only",
+        ),
+        ("sha256:unknown-workflow-contract", "workflow_contract_digest_unsupported"),
+    ),
+)
+def test_new_admission_requires_an_exact_active_workflow_contract(
+    workflow_contract_digest: str,
+    error_code: str,
+) -> None:
+    repositories, service = _world()
+    authority = _grant(service)
+
+    with pytest.raises(ScientificAttemptError) as rejected:
+        service.request_attempt_admission(
+            envelope_id=authority.envelope_id,
+            session_id="sess_scientific",
+            task_id="task_scientific",
+            lane_id="lane_scientific",
+            campaign_id="campaign_aox",
+            workflow_id="aox_blank_world",
+            scope=ScientificAttemptScope.FORMAL,
+            workflow_contract_digest=workflow_contract_digest,
+            requested_effect_classes=("provider", "hpc"),
+            reserved_micu=10,
+            reserved_cost_microunits=1_000,
+            reserved_wall_time_seconds=600,
+            provider="openai",
+            hpc_target="hpc:approved",
+            actor_ref="agent:scientist",
+            idempotency_key=f"reject-{error_code}",
+        )
+
+    assert rejected.value.error_code == error_code
+    assert rejected.value.details["mutation_applied"] is False
+    assert (
+        repositories.scientific_attempt_admission_requests.list_by_session(
+            "sess_scientific"
+        )
+        == []
     )
 
 
@@ -595,7 +1617,9 @@ def test_concurrent_admission_finalizers_consume_one_envelope_slot(
             worker_service = ScientificAttemptService(
                 CoreRepositories.from_connection(worker_connection),
                 now=lambda: NOW,
-                workflow_role_validator=_role_validator,
+                workflow_contract_registry=(
+                    TEST_WORKFLOW_CONTRACT_REGISTRY
+                ),
             )
             try:
                 attempt = worker_service.finalize_attempt_admission(
@@ -682,23 +1706,22 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
         actor_ref="agent:scientist",
         idempotency_key="dispose-trial",
     )
-    service.disposition_operation(
+    service.adopt_operation(
         selection_id=selection.selection_id,
         operation_id=adopted.operation_id,
-        kind=ScientificOperationDispositionKind.ADOPTED,
         workflow_role="final",
         reason_code="selected_final_chain",
-        actor_ref="agent:scientist",
-        idempotency_key="dispose-final",
-    )
-    service.adopt_effect(
-        selection_id=selection.selection_id,
-        operation_id=adopted.operation_id,
-        workflow_role="final",
         actor_ref="agent:scientist",
         idempotency_key="adopt-final",
     )
     universe = service.operation_universe(attempt.attempt_id)
+    evaluation = service.evaluate_selection(
+        attempt_id=attempt.attempt_id,
+        selection_id=selection.selection_id,
+    )
+    assert evaluation.issues == ()
+    assert evaluation.seal_ready is True
+    assert evaluation.closure_ready is True
     sealed = service.seal_selection(
         selection_id=selection.selection_id,
         actor_ref="agent:scientist",
@@ -821,14 +1844,13 @@ def test_same_attempt_cross_run_adoption_materializes_exact_sealed_bytes(
         actor_ref="agent:scientist",
         idempotency_key="selection-cross-run",
     )
-    service.disposition_operation(
+    adoption_result = service.adopt_operation(
         selection_id=selection.selection_id,
         operation_id=source.operation_id,
-        kind=ScientificOperationDispositionKind.ADOPTED,
         workflow_role="final",
         reason_code="reuse_exact_successful_effect",
         actor_ref="agent:scientist",
-        idempotency_key="dispose-source",
+        idempotency_key="adopt-source",
     )
     service.disposition_operation(
         selection_id=selection.selection_id,
@@ -838,13 +1860,7 @@ def test_same_attempt_cross_run_adoption_materializes_exact_sealed_bytes(
         actor_ref="agent:scientist",
         idempotency_key="dispose-target",
     )
-    adoption = service.adopt_effect(
-        selection_id=selection.selection_id,
-        operation_id=source.operation_id,
-        workflow_role="final",
-        actor_ref="agent:scientist",
-        idempotency_key="adopt-source",
-    )
+    adoption = adoption_result.adoption
     workspace_root = tmp_path / "workspaces"
     service.artifact_boundary = ArtifactBoundaryService(
         repositories,
@@ -887,14 +1903,13 @@ def test_same_attempt_cross_run_adoption_materializes_exact_sealed_bytes(
         expected_head_state_version=head.state_version,
         parent_selection_id=selection.selection_id,
     )
-    service.disposition_operation(
+    next_adoption_result = service.adopt_operation(
         selection_id=next_selection.selection_id,
         operation_id=source.operation_id,
-        kind=ScientificOperationDispositionKind.ADOPTED,
         workflow_role="final",
         reason_code="carry_forward_exact_effect",
         actor_ref="agent:scientist",
-        idempotency_key="dispose-source-final",
+        idempotency_key="adopt-source-final",
     )
     service.disposition_operation(
         selection_id=next_selection.selection_id,
@@ -904,13 +1919,7 @@ def test_same_attempt_cross_run_adoption_materializes_exact_sealed_bytes(
         actor_ref="agent:scientist",
         idempotency_key="dispose-target-final",
     )
-    next_adoption = service.adopt_effect(
-        selection_id=next_selection.selection_id,
-        operation_id=source.operation_id,
-        workflow_role="final",
-        actor_ref="agent:scientist",
-        idempotency_key="adopt-source-final",
-    )
+    next_adoption = next_adoption_result.adoption
     carried = service.materialize_adopted_artifact(
         selection_id=next_selection.selection_id,
         adoption_id=next_adoption.adoption_id,
@@ -965,22 +1974,15 @@ def test_materialization_rejects_target_outside_the_exact_attempt(
         actor_ref="agent:scientist",
         idempotency_key="selection-bounded-source",
     )
-    service.disposition_operation(
+    adoption_result = service.adopt_operation(
         selection_id=selection.selection_id,
         operation_id=source.operation_id,
-        kind=ScientificOperationDispositionKind.ADOPTED,
         workflow_role="final",
         reason_code="bounded_source",
         actor_ref="agent:scientist",
-        idempotency_key="dispose-bounded-source",
-    )
-    adoption = service.adopt_effect(
-        selection_id=selection.selection_id,
-        operation_id=source.operation_id,
-        workflow_role="final",
-        actor_ref="agent:scientist",
         idempotency_key="adopt-bounded-source",
     )
+    adoption = adoption_result.adoption
     foreign_run = SandboxRunRecord(
         sandbox_run_id="run_foreign_attempt",
         session_id=attempt.session_id,
@@ -1023,6 +2025,707 @@ def test_materialization_rejects_target_outside_the_exact_attempt(
     assert forbidden.value.error_code == "materialization_target_cross_attempt"
 
 
+def test_selection_evaluator_reports_all_bounded_gaps_deterministically() -> None:
+    _, service = _world()
+    attempt = _grant_and_create(service)
+    uncertain, _ = _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix="evaluation-uncertain",
+        succeeded=False,
+        effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+    )
+    missing_adoption, _ = _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix="evaluation-adoption",
+        succeeded=True,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+    )
+    missing_disposition, _ = _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix="evaluation-disposition",
+        succeeded=False,
+        effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+    )
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key="selection-evaluation-gaps",
+    )
+    service.disposition_operation(
+        selection_id=selection.selection_id,
+        operation_id=uncertain.operation_id,
+        kind=ScientificOperationDispositionKind.FAILED,
+        reason_code="dispatch_uncertain",
+        actor_ref="agent:scientist",
+        idempotency_key="disposition-evaluation-uncertain",
+    )
+    _seed_legacy_split_adoption_facts(
+        service,
+        selection=selection,
+        operation=missing_adoption,
+        workflow_role="final",
+        reason_code="selected_but_not_adopted",
+        idempotency_key="legacy-evaluation-adoption",
+        include_adoption=False,
+    )
+
+    first = service.evaluate_selection(
+        attempt_id=attempt.attempt_id,
+        selection_id=selection.selection_id,
+    )
+    second = service.evaluate_selection(
+        attempt_id=attempt.attempt_id,
+        selection_id=selection.selection_id,
+    )
+
+    assert first == second
+    assert first.seal_ready is False
+    assert first.closure_ready is False
+    assert [item.operation_id for item in first.occurrences] == sorted(
+        (
+            uncertain.operation_id,
+            missing_adoption.operation_id,
+            missing_disposition.operation_id,
+        )
+    )
+    assert first.blocker_codes[:3] == (
+        "selection_disposition_incomplete",
+        "selection_unknown_effect",
+        "selection_adoption_incomplete",
+    )
+    assert first.gap_counts["selection_disposition_incomplete"] == 1
+    assert first.gap_counts["selection_unknown_effect"] == 1
+    assert first.gap_counts["selection_adoption_incomplete"] == 1
+    summary = first.summary(max_ids=2)
+    assert summary["bounded_operation_ids"][
+        "selection_disposition_incomplete"
+    ] == [missing_disposition.operation_id]
+    assert "recommended_actions" not in summary
+
+    with pytest.raises(ScientificAttemptError) as seal_rejected:
+        service.seal_selection(
+            selection_id=selection.selection_id,
+            actor_ref="agent:scientist",
+            idempotency_key="seal-evaluation-gaps",
+            expected_universe_digest=selection.operation_universe_digest,
+        )
+    assert (
+        seal_rejected.value.error_code
+        == "selection_disposition_incomplete"
+    )
+    assert seal_rejected.value.details["blocker_codes"] == list(
+        first.blocker_codes
+    )
+    assert seal_rejected.value.details["mutation_applied"] is False
+
+    with pytest.raises(ScientificAttemptError) as closure_rejected:
+        service._raise_selection_evaluation(first, for_closure=True)
+    assert closure_rejected.value.error_code == seal_rejected.value.error_code
+    assert closure_rejected.value.details["blocker_codes"] == (
+        seal_rejected.value.details["blocker_codes"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("workflow_role", "sdk_module", "expected_issue", "compatible_roles"),
+    (
+        ("not_declared", "fixture", "workflow_role_invalid", ("final",)),
+        (
+            "final",
+            "incompatible_fixture",
+            "workflow_role_operation_kind_invalid",
+            (),
+        ),
+    ),
+)
+def test_selection_evaluator_projects_invalid_role_and_signature_facts(
+    workflow_role: str,
+    sdk_module: str,
+    expected_issue: str,
+    compatible_roles: tuple[str, ...],
+) -> None:
+    _, service = _world()
+    attempt = _grant_and_create(service)
+    operation, _ = _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix=f"role-{workflow_role}",
+        succeeded=True,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+        sdk_module=sdk_module,
+    )
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key=f"selection-role-{workflow_role}",
+    )
+    _seed_legacy_split_adoption_facts(
+        service,
+        selection=selection,
+        operation=operation,
+        workflow_role=workflow_role,
+        reason_code="exercise_contract_validation",
+        idempotency_key=f"legacy-role-{workflow_role}",
+        include_adoption=False,
+    )
+
+    evaluation = service.evaluate_selection(
+        attempt_id=attempt.attempt_id,
+        selection_id=selection.selection_id,
+    )
+
+    assert expected_issue in evaluation.blocker_codes
+    assert evaluation.occurrences[0].allowed_roles == ("final",)
+    assert evaluation.occurrences[0].compatible_roles == compatible_roles
+    assert expected_issue in evaluation.occurrences[0].issue_codes
+    with pytest.raises(ScientificAttemptError) as rejected:
+        service.adopt_operation(
+            selection_id=selection.selection_id,
+            operation_id=operation.operation_id,
+            workflow_role=workflow_role,
+            reason_code="must_not_repair_invalid_split_fact",
+            actor_ref="agent:scientist",
+            idempotency_key=f"adoption-role-{workflow_role}",
+        )
+    assert rejected.value.error_code == expected_issue
+    assert rejected.value.details["allowed_roles"] == ["final"]
+    assert rejected.value.details["compatible_roles"] == list(compatible_roles)
+    assert rejected.value.details["mutation_applied"] is False
+    assert (
+        service.repositories.scientific_effect_adoptions.list_by_selection(
+            selection.selection_id
+        )
+        == ()
+    )
+
+
+def test_selection_evaluator_detects_unexpected_and_duplicate_facts() -> None:
+    repositories, service = _world()
+    attempt, operation, selection = _ready_selection(
+        service,
+        suffix="duplicate-facts",
+    )
+    dispositions = repositories.scientific_dispositions.list_by_selection(
+        selection.selection_id
+    )
+    adoptions = repositories.scientific_effect_adoptions.list_by_selection(
+        selection.selection_id
+    )
+    resolved_head = repositories.scientific_selections.resolve_head(
+        attempt.attempt_id
+    )
+    assert resolved_head is not None
+    universe = service.operation_universe(attempt.attempt_id)
+
+    duplicate_repositories = replace(
+        repositories,
+        scientific_dispositions=_RepositoryProxy(
+            repositories.scientific_dispositions,
+            list_by_selection=lambda _: (
+                dispositions[0],
+                replace(
+                    dispositions[0],
+                    disposition_id="disposition_duplicate",
+                    idempotency_key="disposition-duplicate",
+                ),
+            ),
+        ),
+        scientific_effect_adoptions=_RepositoryProxy(
+            repositories.scientific_effect_adoptions,
+            list_by_selection=lambda _: (
+                adoptions[0],
+                replace(
+                    adoptions[0],
+                    adoption_id="adoption_duplicate",
+                    idempotency_key="adoption-duplicate",
+                ),
+            ),
+        ),
+    )
+    duplicate_evaluation = ScientificSelectionEvaluator(
+        duplicate_repositories,
+        TEST_WORKFLOW_CONTRACT_REGISTRY,
+    ).evaluate(
+        attempt=attempt,
+        resolved_head=resolved_head,
+        universe=universe,
+    )
+    assert "selection_disposition_incomplete" in (
+        duplicate_evaluation.blocker_codes
+    )
+    assert "selection_adoption_incomplete" in (
+        duplicate_evaluation.blocker_codes
+    )
+
+    unexpected_disposition = replace(
+        dispositions[0],
+        disposition_id="disposition_unexpected",
+        operation_id="operation_outside_universe",
+        idempotency_key="disposition-unexpected",
+    )
+    unexpected_repositories = replace(
+        repositories,
+        scientific_dispositions=_RepositoryProxy(
+            repositories.scientific_dispositions,
+            list_by_selection=lambda _: (unexpected_disposition,),
+        ),
+    )
+    unexpected_evaluation = ScientificSelectionEvaluator(
+        unexpected_repositories,
+        TEST_WORKFLOW_CONTRACT_REGISTRY,
+    ).evaluate(
+        attempt=attempt,
+        resolved_head=resolved_head,
+        universe=universe,
+    )
+    assert "selection_disposition_incomplete" in (
+        unexpected_evaluation.blocker_codes
+    )
+    assert "selection_adoption_unexpected" in (
+        unexpected_evaluation.blocker_codes
+    )
+    assert operation.operation_id in unexpected_evaluation.summary()[
+        "bounded_operation_ids"
+    ]["selection_adoption_unexpected"]
+
+
+def test_selection_evaluator_detects_cross_attempt_and_authority_mismatch() -> None:
+    repositories, service = _world()
+    attempt, operation, selection = _ready_selection(
+        service,
+        suffix="authority-facts",
+    )
+    resolved_head = repositories.scientific_selections.resolve_head(
+        attempt.attempt_id
+    )
+    assert resolved_head is not None
+    universe = service.operation_universe(attempt.attempt_id)
+
+    cross_attempt_repositories = replace(
+        repositories,
+        scientific_attempt_bindings=_RepositoryProxy(
+            repositories.scientific_attempt_bindings,
+            attempt_for_operation=lambda _: "attempt_foreign",
+        ),
+    )
+    cross_attempt = ScientificSelectionEvaluator(
+        cross_attempt_repositories,
+        TEST_WORKFLOW_CONTRACT_REGISTRY,
+    ).evaluate(
+        attempt=attempt,
+        resolved_head=resolved_head,
+        universe=universe,
+    )
+    assert "effect_adoption_cross_attempt" in cross_attempt.blocker_codes
+    assert operation.operation_id in cross_attempt.summary()[
+        "bounded_operation_ids"
+    ]["effect_adoption_cross_attempt"]
+
+    authority = repositories.scientific_attempt_authorizations.get(
+        attempt.envelope_id
+    )
+    assert authority is not None
+    authority_repositories = replace(
+        repositories,
+        scientific_attempt_authorizations=_RepositoryProxy(
+            repositories.scientific_attempt_authorizations,
+            get=lambda _: replace(authority, task_id="task_foreign"),
+        ),
+    )
+    authority_evaluation = ScientificSelectionEvaluator(
+        authority_repositories,
+        TEST_WORKFLOW_CONTRACT_REGISTRY,
+    ).evaluate(
+        attempt=attempt,
+        resolved_head=resolved_head,
+        universe=universe,
+    )
+    assert "selection_attempt_authority_mismatch" in (
+        authority_evaluation.blocker_codes
+    )
+
+
+def test_selection_evaluator_separates_active_writer_from_seal_readiness() -> None:
+    _, service = _world()
+    attempt, _, selection = _ready_selection(
+        service,
+        suffix="active-writer",
+    )
+
+    before = service.evaluate_selection(
+        attempt_id=attempt.attempt_id,
+        selection_id=selection.selection_id,
+    )
+    assert before.seal_ready is True
+    assert before.closure_ready is True
+
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.AGENT_TURN,
+        owner_ref="fixture:evaluate-active-writer",
+    ):
+        during = service.evaluate_selection(
+            attempt_id=attempt.attempt_id,
+            selection_id=selection.selection_id,
+        )
+        assert "selection_active_writers" in during.blocker_codes
+        assert during.seal_ready is True
+        assert during.closure_ready is False
+
+    after = service.evaluate_selection(
+        attempt_id=attempt.attempt_id,
+        selection_id=selection.selection_id,
+    )
+    assert after == before
+
+
+def test_selection_evaluator_detects_universe_and_head_cas_drift() -> None:
+    _, service = _world()
+    attempt = _grant_and_create(service)
+    first = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key="selection-before-universe-drift",
+    )
+    _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix="universe-drift",
+        succeeded=False,
+        effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+    )
+
+    evaluation = service.evaluate_selection(
+        attempt_id=attempt.attempt_id,
+        selection_id=first.selection_id,
+    )
+    assert "selection_universe_changed" in evaluation.blocker_codes
+    with pytest.raises(ScientificAttemptError) as seal_rejected:
+        service.seal_selection(
+            selection_id=first.selection_id,
+            actor_ref="agent:scientist",
+            idempotency_key="seal-after-universe-drift",
+            expected_universe_digest=first.operation_universe_digest,
+        )
+    assert seal_rejected.value.error_code == "selection_universe_changed"
+
+    head = service.repositories.scientific_selections.get_head(
+        attempt.attempt_id
+    )
+    assert head is not None
+    second = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key="selection-after-universe-drift",
+        expected_head_state_version=head.state_version,
+        parent_selection_id=first.selection_id,
+    )
+    with pytest.raises(ScientificAttemptError) as stale:
+        service.evaluate_selection(
+            attempt_id=attempt.attempt_id,
+            selection_id=first.selection_id,
+        )
+    assert stale.value.error_code == "selection_not_current_head"
+    assert stale.value.details["current_selection_id"] == second.selection_id
+    assert stale.value.details["mutation_applied"] is False
+
+
+def test_attempt_closure_reuses_the_exact_selection_evaluation() -> None:
+    repositories, service = _world()
+    attempt, _, selection = _ready_selection(
+        service,
+        suffix="closure-evaluation",
+    )
+    sealed = service.seal_selection(
+        selection_id=selection.selection_id,
+        actor_ref="agent:scientist",
+        idempotency_key="seal-closure-evaluation",
+        expected_universe_digest=selection.operation_universe_digest,
+    )
+    authority = repositories.scientific_attempt_authorizations.get(
+        attempt.envelope_id
+    )
+    assert authority is not None
+    service.repositories = replace(
+        repositories,
+        scientific_attempt_authorizations=_RepositoryProxy(
+            repositories.scientific_attempt_authorizations,
+            get=lambda _: replace(authority, task_id="task_foreign"),
+        ),
+    )
+
+    evaluation = service.evaluate_selection(
+        attempt_id=attempt.attempt_id,
+        selection_id=sealed.selection_id,
+    )
+    assert evaluation.blocker_codes == (
+        "selection_attempt_authority_mismatch",
+    )
+    with pytest.raises(ScientificAttemptError) as rejected:
+        service.request_attempt_closure(
+            attempt_id=attempt.attempt_id,
+            selection_id=sealed.selection_id,
+            actor_ref="agent:scientist",
+            idempotency_key="close-with-authority-drift",
+        )
+    assert rejected.value.error_code == evaluation.blocker_codes[0]
+    assert rejected.value.details["blocker_codes"] == list(
+        evaluation.blocker_codes
+    )
+    assert rejected.value.details["mutation_applied"] is False
+
+
+def test_scientific_selection_inspection_pages_every_occurrence_once() -> None:
+    _, service = _world()
+    attempt = _grant_and_create(service)
+    operations = [
+        _add_occurrence(
+            service,
+            attempt_id=attempt.attempt_id,
+            suffix=f"inspect-page-{index}",
+            succeeded=False,
+            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+        )[0]
+        for index in range(5)
+    ]
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key="selection-inspect-pages",
+    )
+
+    observed: list[str] = []
+    cursor: str | None = None
+    page_count = 0
+    while True:
+        page = service.inspect_selection(
+            session_id=attempt.session_id,
+            task_id=attempt.task_id,
+            attempt_id=attempt.attempt_id,
+            selection_id=selection.selection_id,
+            limit=2,
+            cursor=cursor,
+        )
+        page_count += 1
+        assert page["schema_id"] == "scientific_selection_inspection@1"
+        assert page["head"]["selection_state"] == "draft"
+        assert page["contract"]["contract_id"] == (
+            TEST_WORKFLOW_CONTRACT.contract_id
+        )
+        assert page["readiness"]["seal_ready"] is False
+        assert page["strategy_policy"]["harness_recommends_actions"] is False
+        assert "recommended_actions" not in page
+        assert all(
+            occurrence["allowed_roles"] == ["final"]
+            and occurrence["compatible_roles"] == ["final"]
+            for occurrence in page["occurrences"]
+        )
+        page_ids = [
+            occurrence["operation_id"]
+            for occurrence in page["occurrences"]
+        ]
+        assert page_ids == sorted(page_ids)
+        observed.extend(page_ids)
+        for issue in page["issues"]:
+            assert set(issue["operation_ids"]).issubset(page_ids)
+        cursor = page["page"]["next_cursor"]
+        if cursor is None:
+            break
+
+    assert page_count == 3
+    assert observed == sorted(operation.operation_id for operation in operations)
+    assert len(observed) == len(set(observed))
+
+
+def test_scientific_attempt_inspect_tool_projects_exact_bounded_page() -> None:
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+    operation, _ = _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix="inspect-tool",
+        succeeded=True,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+    )
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key="selection-inspect-tool",
+    )
+    registry = ToolRegistry()
+    register_scientific_attempt_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            attempt.session_id,
+        ),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(
+            task_id=attempt.task_id,
+            lane_id=attempt.lane_id,
+        ),
+        agent_id="agent:scientist",
+        actor_kind="teammate",
+        actor_role="scientist",
+        scientific_workflow_contract_registry=(
+            TEST_WORKFLOW_CONTRACT_REGISTRY
+        ),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_scientific_inspect",
+            tool_name="scientific.attempt.inspect",
+            arguments={
+                "attempt_id": attempt.attempt_id,
+                "selection_id": selection.selection_id,
+                "limit": 1,
+            },
+            task_id=attempt.task_id,
+            lane_id=attempt.lane_id,
+        ),
+    )
+
+    assert result.ok is True
+    payload = json.loads(result.content)
+    assert payload["occurrences"][0]["operation_id"] == operation.operation_id
+    assert payload["occurrences"][0]["compatible_roles"] == ["final"]
+    assert payload["readiness"]["blocker_codes"] == [
+        "selection_disposition_incomplete"
+    ]
+    serialized = json.dumps(payload, sort_keys=True)
+    for forbidden in (
+        "recommended_actions",
+        "lease_token",
+        "fencing_token",
+        "credentials",
+        "root_ref",
+        "allowed_hpc_targets",
+        "allowed_providers",
+    ):
+        assert forbidden not in serialized
+
+
+def test_scientific_selection_inspection_rejects_stale_or_cross_scope_cursor() -> None:
+    _, service = _world()
+    attempt = _grant_and_create(service)
+    for index in range(2):
+        _add_occurrence(
+            service,
+            attempt_id=attempt.attempt_id,
+            suffix=f"inspect-cursor-{index}",
+            succeeded=False,
+            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+        )
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key="selection-inspect-cursor",
+    )
+    first = service.inspect_selection(
+        session_id=attempt.session_id,
+        task_id=attempt.task_id,
+        attempt_id=attempt.attempt_id,
+        selection_id=selection.selection_id,
+        limit=1,
+    )
+    cursor = first["page"]["next_cursor"]
+    assert isinstance(cursor, str)
+
+    with pytest.raises(ScientificAttemptError) as malformed:
+        service.inspect_selection(
+            session_id=attempt.session_id,
+            task_id=attempt.task_id,
+            attempt_id=attempt.attempt_id,
+            selection_id=selection.selection_id,
+            limit=1,
+            cursor=cursor[:-2] + "xx",
+        )
+    assert (
+        malformed.value.error_code
+        == "scientific_inspection_cursor_invalid"
+    )
+    assert malformed.value.details["mutation_applied"] is False
+
+    with pytest.raises(ScientificAttemptError) as wrong_session:
+        service.inspect_selection(
+            session_id="sess_foreign",
+            attempt_id=attempt.attempt_id,
+            selection_id=selection.selection_id,
+            limit=1,
+        )
+    assert (
+        wrong_session.value.error_code
+        == "scientific_inspection_scope_mismatch"
+    )
+    assert "attempt_id" not in wrong_session.value.details
+
+    with pytest.raises(ScientificAttemptError) as wrong_task:
+        service.inspect_selection(
+            session_id=attempt.session_id,
+            task_id="task_foreign",
+            attempt_id=attempt.attempt_id,
+            selection_id=selection.selection_id,
+            limit=1,
+        )
+    assert wrong_task.value.error_code == (
+        "scientific_inspection_scope_mismatch"
+    )
+
+
+def test_scientific_shared_projection_contains_only_bounded_readiness() -> None:
+    _, service = _world()
+    attempt, _, selection = _ready_selection(
+        service,
+        suffix="bounded-shared-projection",
+    )
+
+    shared = service.project_session_readiness_summary(
+        attempt.session_id,
+        task_id=attempt.task_id,
+        limit=1,
+    )
+    session = service.project_session(
+        attempt.session_id,
+        task_id=attempt.task_id,
+        limit=1,
+    )
+    serialized_shared = json.dumps(shared, sort_keys=True)
+    serialized_session = json.dumps(session, sort_keys=True)
+
+    assert shared["attempt_count"] == 1
+    assert shared["attempts"][0]["selection_head"]["selection_id"] == (
+        selection.selection_id
+    )
+    assert shared["attempts"][0]["readiness"]["seal_ready"] is True
+    for forbidden in (
+        "occurrences",
+        "dispositions",
+        "adoptions",
+        "materializations",
+        "root_ref",
+        "hpc_target",
+        "provider",
+        "actor_ref",
+        "idempotency_key",
+        "request_digest",
+        "recommended_actions",
+        "lease_token",
+        "fencing_token",
+        "credentials",
+    ):
+        assert forbidden not in serialized_shared
+    assert "occurrences" not in serialized_session
+    assert "allowed_providers" not in serialized_session
+    assert "allowed_hpc_targets" not in serialized_session
+
+
 def test_missing_disposition_and_unknown_effect_fail_closed() -> None:
     repositories, service = _world()
     attempt = _grant_and_create(service)
@@ -1063,6 +2766,15 @@ def test_missing_disposition_and_unknown_effect_fail_closed() -> None:
             expected_universe_digest=selection.operation_universe_digest,
         )
     assert unknown.value.error_code == "selection_unknown_effect"
+    audit = RuntimeConsistencyService(
+        repositories,
+        scientific_workflow_contract_registry=(
+            TEST_WORKFLOW_CONTRACT_REGISTRY
+        ),
+    ).audit_session(attempt.session_id)
+    assert "selection_unknown_effect" in {
+        warning.code for warning in audit.warnings
+    }
 
     mutation = MutationScopeService(repositories, now=lambda: NOW)
     mutation.begin_freeze(attempt.mutation_scope_id)
@@ -1120,6 +2832,295 @@ def test_selection_head_uses_compare_and_swap() -> None:
         )
     assert conflict.value.error_code == "selection_version_conflict"
     assert second.revision == 2
+
+
+def test_selection_head_resolves_the_canonical_selection_lifecycle() -> None:
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+
+    assert (
+        repositories.scientific_selections.resolve_head(attempt.attempt_id)
+        is None
+    )
+
+    operation, _ = _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix="resolved-head",
+        succeeded=True,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+    )
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key="selection-resolved-head",
+    )
+    draft = repositories.scientific_selections.resolve_head(attempt.attempt_id)
+    assert draft is not None
+    assert draft.head.selection_id == selection.selection_id
+    assert draft.selection == selection
+    assert draft.selection.state is ScientificSelectionState.DRAFT
+
+    service.adopt_operation(
+        selection_id=selection.selection_id,
+        operation_id=operation.operation_id,
+        workflow_role="final",
+        reason_code="canonical_result",
+        actor_ref="agent:scientist",
+        idempotency_key="adopt-resolved-head",
+    )
+    sealed = service.seal_selection(
+        selection_id=selection.selection_id,
+        actor_ref="agent:scientist",
+        idempotency_key="seal-resolved-head",
+        expected_universe_digest=selection.operation_universe_digest,
+    )
+
+    resolved = repositories.scientific_selections.resolve_head(
+        attempt.attempt_id
+    )
+    assert resolved is not None
+    assert resolved.selection == sealed
+    assert resolved.selection.state is ScientificSelectionState.SEALED
+
+
+@pytest.mark.parametrize(
+    ("corruption", "reason_code"),
+    (
+        ("missing_selection", "selection_missing"),
+        ("attempt_mismatch", "attempt_mismatch"),
+        ("revision_mismatch", "revision_mismatch"),
+    ),
+)
+def test_invalid_selection_head_fails_mutation_closed_and_projects_attention(
+    corruption: str,
+    reason_code: str,
+) -> None:
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key="selection-corrupt-head",
+    )
+    connection = repositories.scientific_selections.connection
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    if corruption == "attempt_mismatch":
+        connection.execute(
+            "DROP TRIGGER mutation_guard_scientific_chain_selection_records_update"
+        )
+        connection.execute("DROP TRIGGER scientific_selection_identity_immutable")
+        connection.execute(
+            """
+            UPDATE scientific_chain_selection_records
+            SET attempt_id = 'attempt_corrupt'
+            WHERE selection_id = ?
+            """,
+            (selection.selection_id,),
+        )
+    else:
+        connection.execute(
+            "DROP TRIGGER mutation_guard_scientific_selection_head_records_update"
+        )
+        connection.execute("DROP TRIGGER scientific_selection_head_update_matches")
+        if corruption == "missing_selection":
+            connection.execute(
+                """
+                UPDATE scientific_selection_head_records
+                SET selection_id = 'selection_missing'
+                WHERE attempt_id = ?
+                """,
+                (attempt.attempt_id,),
+            )
+        else:
+            connection.execute(
+                """
+                UPDATE scientific_selection_head_records
+                SET revision = revision + 1
+                WHERE attempt_id = ?
+                """,
+                (attempt.attempt_id,),
+            )
+    connection.commit()
+
+    with pytest.raises(ScientificSelectionIntegrityError) as integrity:
+        repositories.scientific_selections.resolve_head(attempt.attempt_id)
+    assert integrity.value.error_code == "scientific_selection_head_invalid"
+    assert integrity.value.reason_code == reason_code
+
+    with pytest.raises(ScientificAttemptError) as rejected:
+        service.begin_selection(
+            attempt_id=attempt.attempt_id,
+            actor_ref="agent:scientist",
+            idempotency_key=f"selection-after-{corruption}",
+            expected_head_state_version=1,
+            parent_selection_id=selection.selection_id,
+        )
+    assert rejected.value.error_code == "scientific_selection_head_invalid"
+    assert rejected.value.details["integrity_reason"] == reason_code
+    assert rejected.value.details["mutation_applied"] is False
+
+    audit = RuntimeConsistencyService(repositories).audit_session(
+        attempt.session_id
+    )
+    warnings = {
+        warning.code: warning for warning in audit.warnings
+    }
+    assert warnings["scientific_selection_head_invalid"].runtime_status == (
+        reason_code
+    )
+    task = repositories.tasks.get(attempt.task_id)
+    assert task is not None
+    assert not task.status.is_terminal
+
+
+def test_file_backed_runtime_consistency_handles_r54_shaped_draft_head(
+    tmp_path: Path,
+) -> None:
+    connection = connect_sqlite(str(tmp_path / "r54-shaped.sqlite"))
+    repositories, service = _world(connection=connection)
+    attempt = _grant_and_create(service)
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key="selection-r54-shaped",
+    )
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+        owner_ref="fixture:r54-runtime-signal",
+    ):
+        repositories.runtime_signals.save(
+            AgentRuntimeSignal(
+                signal_id="signal_r54_max_steps",
+                session_id=attempt.session_id,
+                agent_id="agent:scientist",
+                task_id=attempt.task_id,
+                reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+                status=AgentRuntimeSignalStatus.FAILED,
+                created_at=NOW,
+                completed_at=NOW,
+                error_message="max_steps_exceeded",
+                last_error="executor exceeded the delegated work step budget.",
+            )
+        )
+
+    audit = RuntimeConsistencyService(repositories).audit_session(
+        attempt.session_id
+    )
+
+    resolved = repositories.scientific_selections.resolve_head(
+        attempt.attempt_id
+    )
+    assert resolved is not None
+    assert resolved.selection.selection_id == selection.selection_id
+    assert resolved.selection.state is ScientificSelectionState.DRAFT
+    codes = {warning.code for warning in audit.warnings}
+    assert "agent_turn_failed" in codes
+    assert "scientific_selection_sealed_unclosed" not in codes
+    assert "scientific_selection_head_invalid" not in codes
+    task = repositories.tasks.get(attempt.task_id)
+    assert task is not None
+    assert not task.status.is_terminal
+
+
+def test_budget_exhaustion_observes_current_selection_without_mutation(
+    monkeypatch,
+) -> None:
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key="selection-budget-recovery",
+    )
+    signal = AgentRuntimeSignal(
+        signal_id="signal_budget_selection",
+        session_id=attempt.session_id,
+        agent_id="agent:scientist",
+        task_id=attempt.task_id,
+        lane_id=attempt.lane_id,
+        reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+        status=AgentRuntimeSignalStatus.PENDING,
+        created_at=NOW,
+    )
+
+    def exhaust_turn(
+        runtime_context: SessionRuntimeContext,
+        **kwargs,
+    ) -> HarnessResult:
+        del kwargs
+        return HarnessResult(
+            session_id=attempt.session_id,
+            status=HarnessStatus.MAX_STEPS_EXCEEDED,
+            snapshot=SessionRuntimeSnapshot.load(
+                runtime_context.repositories,
+                attempt.session_id,
+            ),
+            events=(),
+            outputs=("Selection remains draft.",),
+            tool_results=(),
+        )
+
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "run_teammate_loop",
+        exhaust_turn,
+    )
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            attempt.session_id,
+        ),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        model_factory=object(),
+        scientific_workflow_contract_registry=(
+            TEST_WORKFLOW_CONTRACT_REGISTRY
+        ),
+    )
+
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+        owner_ref="fixture:budget-recovery-runtime",
+    ):
+        repositories.runtime_signals.save(signal)
+        outcome = AgentRuntimeService(context).wake_agent(signal, max_steps=1)
+    failure = repositories.failure_observations.get_by_source(
+        session_id=attempt.session_id,
+        source_kind="runtime_signal",
+        source_ref=signal.signal_id,
+        source_version="attempt:1",
+        phase="runtime",
+        error_code=AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE,
+    )
+    resolved = repositories.scientific_selections.resolve_head(
+        attempt.attempt_id
+    )
+
+    assert outcome.ok is False
+    assert failure is not None
+    recovery = failure.facts["scientific_selection_recovery"]
+    assert recovery["status"] == "evaluated"
+    assert recovery["attempt_id"] == attempt.attempt_id
+    assert recovery["selection_id"] == selection.selection_id
+    assert recovery["selection_state"] == "draft"
+    assert recovery["evaluation"]["attempt_id"] == attempt.attempt_id
+    assert recovery["evaluation"]["selection_id"] == selection.selection_id
+    assert recovery["evaluation"]["seal_ready"] is False
+    assert "selection_adopted_chain_empty" in (
+        recovery["evaluation"]["blocker_codes"]
+    )
+    assert "recommended_actions" not in recovery
+    assert resolved is not None
+    assert resolved.selection.state is ScientificSelectionState.DRAFT
+    task = repositories.tasks.get(attempt.task_id)
+    assert task is not None
+    assert not task.status.is_terminal
 
 
 def test_authority_repository_rejects_in_place_identity_mutation() -> None:

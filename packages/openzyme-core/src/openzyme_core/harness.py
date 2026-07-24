@@ -59,6 +59,7 @@ from .repositories import CoreRepositories
 from .repositories import TaskWriteIntent
 from .sandbox_host import SandboxHostBinding
 from .sandbox_host import SandboxMutationWriterScopeFactory
+from .scientific_workflow_contracts import ScientificWorkflowContractRegistry
 from .conversation import persist_conversation_message
 from .prompt_budget import PromptBudgetAction
 from .prompt_budget import PromptBudgetDecision
@@ -564,7 +565,9 @@ class SessionRuntimeContext:
     engine_registry: EngineRegistry | None = None
     bio_research_service: Any | None = None
     research_adapter: Any | None = None
-    scientific_workflow_role_validator: Any | None = None
+    scientific_workflow_contract_registry: (
+        ScientificWorkflowContractRegistry | None
+    ) = None
     sandbox_workspace_root: Path | None = None
     artifact_blob_root: Path | None = None
     signal_notifier: Any | None = None
@@ -1877,7 +1880,9 @@ def run_agent_harness_loop(
     model_factory: Any | None = None,
     bio_research_service: Any | None = None,
     research_adapter: Any | None = None,
-    scientific_workflow_role_validator: Any | None = None,
+    scientific_workflow_contract_registry: (
+        ScientificWorkflowContractRegistry | None
+    ) = None,
     sandbox_workspace_root: Path | None = None,
     artifact_blob_root: Path | None = None,
     signal_notifier: Any | None = None,
@@ -1912,7 +1917,9 @@ def run_agent_harness_loop(
         engine_registry=engine_registry,
         bio_research_service=bio_research_service,
         research_adapter=research_adapter,
-        scientific_workflow_role_validator=scientific_workflow_role_validator,
+        scientific_workflow_contract_registry=(
+            scientific_workflow_contract_registry
+        ),
         sandbox_workspace_root=sandbox_workspace_root,
         artifact_blob_root=artifact_blob_root,
         signal_notifier=signal_notifier,

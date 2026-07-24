@@ -28,9 +28,14 @@ from .reliability_repositories import is_transient_sqlite_contention
 from .repositories import CoreRepositories
 from .repositories import DurableEventRecord
 from .runtime_command_projection import sanitize_runtime_command_outcome
+from .runtime_drain_receipts import (
+    RUNTIME_COMMAND_OUTCOME_LEGACY_SCHEMA_VERSION,
+)
+from .runtime_drain_receipts import RUNTIME_COMMAND_OUTCOME_SCHEMA_VERSION
+from .runtime_drain_receipts import runtime_command_pre_core_failure_summary
+from .runtime_drain_receipts import validate_runtime_command_outcome_v2
 
 
-RUNTIME_COMMAND_OUTCOME_SCHEMA_VERSION = "runtime_command_outcome@1"
 RUNTIME_COMMAND_OUTCOME_MAX_BYTES = 32 * 1024
 _SAFE_ERROR_CODE = re.compile(r"[a-z][a-z0-9_.-]{0,127}")
 
@@ -174,7 +179,6 @@ class RuntimeCommandWorker:
 
         try:
             result, captured = self._call_executor_with_heartbeat(claimed)
-            return self._finish(captured, self._validated_result(result))
         except OptimisticStateConflictError:
             return RuntimeCommandWorkerOutcome(
                 command_id=claimed.command_id,
@@ -188,11 +192,9 @@ class RuntimeCommandWorker:
                 return self._database_busy_outcome(claimed.command_id)
             failure = RuntimeCommandExecutionResult(
                 status=RuntimeCommandStatus.FAILED,
-                bounded_outcome_summary={
-                    "schema_version": RUNTIME_COMMAND_OUTCOME_SCHEMA_VERSION,
-                    "processed_signal_count": 0,
-                    "suspended": False,
-                },
+                bounded_outcome_summary=(
+                    runtime_command_pre_core_failure_summary()
+                ),
                 error_code="runtime_command_execution_failed",
                 safe_error_summary=sanitize_public_diagnostic_text(str(exc)),
                 safe_retry_hint=(
@@ -210,6 +212,20 @@ class RuntimeCommandWorker:
                     status=RuntimeCommandStatus.CLAIMED.value,
                     state_version=claimed.state_version,
                 )
+        try:
+            return self._finish(captured, self._validated_result(result))
+        except OptimisticStateConflictError:
+            return RuntimeCommandWorkerOutcome(
+                command_id=claimed.command_id,
+                action="claim_fenced",
+                semantic_progress=False,
+                status=RuntimeCommandStatus.CLAIMED.value,
+                state_version=claimed.state_version,
+            )
+        except Exception as exc:
+            if is_transient_sqlite_contention(exc):
+                return self._database_busy_outcome(claimed.command_id)
+            raise
 
     def _finish_recovered_expired_claim(
         self,
@@ -217,12 +233,9 @@ class RuntimeCommandWorker:
     ) -> RuntimeCommandWorkerOutcome:
         result = RuntimeCommandExecutionResult(
             status=RuntimeCommandStatus.FAILED,
-            bounded_outcome_summary={
-                "schema_version": RUNTIME_COMMAND_OUTCOME_SCHEMA_VERSION,
-                "processed_signal_count": 0,
-                "suspended": False,
-                "recovery_required": True,
-            },
+            bounded_outcome_summary=runtime_command_pre_core_failure_summary(
+                recovery_required=True
+            ),
             error_code="runtime_command_claim_expired",
             safe_error_summary=(
                 "The previous command worker expired before recording a bounded "
@@ -367,6 +380,7 @@ class RuntimeCommandWorker:
         sanitized = sanitize_runtime_command_outcome(result.bounded_outcome_summary)
         if not isinstance(sanitized, dict):
             raise ValueError("runtime command outcome summary must be an object")
+        validate_runtime_command_outcome_v2(sanitized)
         encoded = json.dumps(
             sanitized,
             sort_keys=True,
@@ -426,6 +440,7 @@ class RuntimeCommandWorker:
 
 __all__ = [
     "RUNTIME_COMMAND_OUTCOME_MAX_BYTES",
+    "RUNTIME_COMMAND_OUTCOME_LEGACY_SCHEMA_VERSION",
     "RUNTIME_COMMAND_OUTCOME_SCHEMA_VERSION",
     "RuntimeCommandExecutionResult",
     "RuntimeCommandExecutor",

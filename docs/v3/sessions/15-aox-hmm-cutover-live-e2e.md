@@ -191,7 +191,7 @@ probe 的 task、operation、invocation、artifact 与 bytes 不得进入 formal
 
 每次 attempt 建立独立空 SQLite、artifact/blob、sandbox 和 HPC roots，记录 cache bypass 和只读允许 prerequisite，并继续使用既有 MICU 持久 500M 账本；历史 usage 不清零，campaign 初始化也不得重置。旧固定 100M policy 只迁移 policy ceiling，全部历史 attempt/charged token 原样保留，显式 lower limit 不被抬高。`aox_blank_world_attempt_bundle@1` 必须绑定 commit/config/workflow/scoring/image/SDK/provider/toolchain/root/approval/operation/task/artifact/report/final-answer/warning/degradation/outcome 身份。offline verifier 无网络重算 canonical JSON、所有可达 sealed artifact、科学计算、lineage 和 report references。
 
-`run-live` 在构造 runner/campaign 和创建任何 root 前先从 clean checkout、digest-pinned workflow、`aox_motif_rule_score@1`、实际 sandbox image preflight 与 Pipeline SDK source tree 计算 canonical 七字段 launch identity。`config_digest` 不是任意 operator 标签，而是 safe `aox_blank_world_runtime_config@2` preimage 的 canonical digest；该 preimage 绑定 single-process SQLite/trusted Host、HPC runner-config digest、runner-owned manifest digest 与 exact AOX `tool_id` → adapter/template/runner-contract expectation map、post-budget MICU/research/tracing/test opt-in、driver/Chrome bounds、controlled-operation owner policy、durable route allowlist、command drain、generic mutation closure、bounded shadow observation与现有累计 500M ledger identity，且不暴露 credential、NCBI email 或 Host/runner/ledger path。pin 在 forced-SSH attestation 前、run-live 在 campaign/attempt root 前必须证明全部 AOX provider/HPC route 使用 `durable_async_v1`、drain 为 `command_v1` 且 closure 为 `generic_v1`；旧 `@1` 仅为历史 frozen evidence 离线复核保留。MICU/OpenAI-compatible endpoint 必须显式配置 `context_window_tokens <= 200000`，不能按模型名继承未经 endpoint 证明的百万级 context。每个 attempt root 创建前都重新执行 launch guard，checkout 或 effective config 漂移直接 fail closed；exact-nine prerequisite 顶层字段不因此增加。
+`run-live` 在构造 runner/campaign 和创建任何 root 前先从 clean checkout、digest-pinned workflow、`aox_motif_rule_score@1`、实际 sandbox image preflight 与 Pipeline SDK source tree 计算 canonical 七字段 launch identity。`config_digest` 不是任意 operator 标签，而是 safe `aox_blank_world_runtime_config@3` preimage 的 canonical digest；该 preimage 绑定 single-process SQLite/trusted Host、HPC runner-config digest、runner-owned manifest digest 与 exact AOX `tool_id` → adapter/template/runner-contract expectation map、post-budget MICU/research/tracing/test opt-in、driver/Chrome bounds、controlled-operation owner policy、durable route allowlist、command drain、generic mutation closure、bounded shadow observation、完整 `aox_blank_world_selected_chain@2` identity 与现有累计 500M ledger identity，且不暴露 credential、NCBI email 或 Host/runner/ledger path。pin 在 forced-SSH attestation 前、run-live 在 campaign/attempt root 前必须证明全部 AOX provider/HPC route 使用 `durable_async_v1`、drain 为 `command_v1` 且 closure 为 `generic_v1`；旧 config `@1/@2` 与 selected-chain `@1` 仅为 historical frozen evidence 离线复核保留，不能 admission 新 attempt。MICU/OpenAI-compatible endpoint 必须显式配置 `context_window_tokens <= 200000`，不能按模型名继承未经 endpoint 证明的百万级 context。每个 attempt root 创建前都重新执行 launch guard，checkout 或 effective config 漂移直接 fail closed；exact-nine prerequisite 顶层字段不因此增加。
 
 r51 之后，identity resolution 还在任何 pin runner、attempt root、MICU/provider/runner
 effect 前执行 `aox_sandbox_scientific_backend_probe@1`。Host 把 exact Pipeline SDK
@@ -1323,6 +1323,48 @@ r52 authority、roots、tasks、operations/effects、artifacts、failure evidenc
 永久不可复用或 adoption。后继必须使用新的 correction clean commit、fresh full
 admission、pin、exact-three authority plan 与 roots，并等待 operator 对该新 plan 的精确
 消费授权。
+
+## r53 formal barrier observer attempt：永久 NO-GO
+
+r53 消费了绑定 clean commit
+`83475a01fb6be91ca8ba5dc39c4c0b09774504e7` 的一次性 exact-three authority plan，但只
+启动 positive 1。独立 probe 的六项真实 operation 完成并密封；formal session 在任何
+formal controlled operation、approval 或 Chrome handoff 前，第一次 runtime barrier 因缺少
+exact `aox-attempt-driver:*` observer writer 以
+`mutation_driver_writer_identity_invalid` fail closed。parent fatal 证明 descendants
+退休，却不证明 open pre-attempt scope 的 quiescence/SQLite/artifact closure；positive 2 与
+fault 均未启动，因此 r53 保持永久 **NO-GO**。
+
+post-r53 correction 把 full observation 与 terminal-command writer settlement 都路由到同一个
+bounded observer context，并在真实 SQLite 上证明 other writers 仍可见、observer 会退休、
+pre-attempt scope 可随后密封。该 correction 本身没有启动新 attempt；所有绑定旧 correction
+commit 的未消费 plan 均已失效。
+
+## r54 scientific selection / runtime receipt attempt：永久 NO-GO
+
+r54 formal path 已产生 canonical scientific I/O 与六项 terminal successful controlled
+operations，但 selected-chain selection 仍为 draft，完整 dispositions/adoptions、selection
+seal、attempt close、eligible report 与 campaign reducer 均未形成。operation success 只证明
+对应 effect，不等于 positive attempt、published report 或 campaign GO。
+
+旧 `aox_blank_world_selected_chain@1` 没有把 Host validator 的 exact
+role-to-`sdk_module/function_name` mapping 封入 digest，详细 inspect 也未提供 operation
+signature、compatible roles 与 readiness gaps。executor 先使用错误的两步 adoption 顺序，
+再猜错 role，最终耗尽 bounded steps。随后 consistency projection 错读不存在的
+`ScientificSelectionHead.state`；scheduler 已 durable 处理一个 signal，旧 command receipt
+却把 post-scheduler projection exception 统一误报为
+`processed_signal_count=0`。这既不是 task business failure，也不证明此前 operations 未执行。
+
+r54 与 selected-chain `@1` 全部 evidence 永久 immutable/read-only。修复只适用于新 attempt：
+`@2` contract digest 覆盖完整 scope/role/operation signatures；active runtime config `@3`
+把 exact contract identity 封入 pin；inspection 与 seal/closure 共用 deterministic evaluator；
+`scientific.operation.adopt` 原子写 disposition + effect adoption；
+`runtime_command_outcome@2` 分离真实 scheduler core receipt 与 projection settlement；
+max-step 只终止 exact signal，master 可在新 turn 显式 replan。
+
+本轮只完成 non-live correction。任何后继 numbered campaign 都必须使用 fresh clean commit、
+完成 full architecture qualification、重新生成并审查 pin 与 exact-three authority plan、
+使用 fresh roots，并在消费该 exact plan 前获得用户单独精确批准。
 
 ## 当前实施状态的表述规则
 

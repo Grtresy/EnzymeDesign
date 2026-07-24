@@ -7,6 +7,12 @@ from openzyme_domain import RuntimeCommandRecord
 from openzyme_runtime import sanitize_public_diagnostic_payload
 from openzyme_runtime import sanitize_public_diagnostic_text
 
+from .runtime_drain_receipts import (
+    RUNTIME_COMMAND_OUTCOME_LEGACY_SCHEMA_VERSION,
+)
+from .runtime_drain_receipts import RUNTIME_COMMAND_OUTCOME_SCHEMA_VERSION
+from .runtime_drain_receipts import validate_runtime_command_outcome_v2
+
 
 _PRIVATE_RUNTIME_COMMAND_KEYS = frozenset(
     {
@@ -24,6 +30,26 @@ _PRIVATE_RUNTIME_COMMAND_KEYS = frozenset(
         "private_result_locator",
         "raw_diagnostic",
         "raw_log",
+    }
+)
+_RUNTIME_COMMAND_OUTCOME_V2_KEYS = frozenset(
+    {
+        "schema_version",
+        "core_receipt_formed",
+        "scheduler_status",
+        "processed_signal_count",
+        "suspended",
+        "projection_status",
+        "projection_error_code",
+        "projection_failed_stage",
+        "replay_safe",
+        "output_count",
+        "output_ids",
+        "output_ids_truncated",
+        "event_count",
+        "event_ids",
+        "event_ids_truncated",
+        "recovery_required",
     }
 )
 
@@ -57,6 +83,20 @@ def sanitize_runtime_command_outcome(
     )
     if not isinstance(sanitized, dict):
         return None
+    schema_version = sanitized.get("schema_version")
+    if schema_version == RUNTIME_COMMAND_OUTCOME_LEGACY_SCHEMA_VERSION:
+        return sanitized
+    if schema_version == RUNTIME_COMMAND_OUTCOME_SCHEMA_VERSION:
+        bounded = {
+            key: value
+            for key, value in sanitized.items()
+            if key in _RUNTIME_COMMAND_OUTCOME_V2_KEYS
+        }
+        try:
+            validate_runtime_command_outcome_v2(bounded)
+        except ValueError:
+            return None
+        return bounded
     return sanitized
 
 

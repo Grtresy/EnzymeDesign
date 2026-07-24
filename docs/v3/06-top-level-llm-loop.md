@@ -222,3 +222,14 @@ interpretation。driver/provider 自身失败时不存在可归属的 agent deci
 system diagnostic 并结束本次 runtime turn，但不写 assistant conversation message 或 task
 terminal state。unknown effect/fencing/authority/integrity exception 仍穿透普通 tool-result
 恢复路径并停止当前 ownership。
+
+step budget 用尽不授权继续同一 signal。driver 写入结构化
+`agent_turn_budget_exhausted` 后终止 exact occurrence；scheduler 不原地重放、不追加 steps、
+不重开 operation/selection。`agent_can_replan` 只说明 master 可在新的 canonical turn 中读取
+task/protocol/artifact/failure/selection facts 后选择策略，不与 exact-signal terminal 冲突。
+
+scientific selection 的真实约束不应靠模型从错误信息或 SOP 猜。详细
+`scientific.attempt.inspect` 提供 digest-bound contract、operation signature、
+compatible roles 和 readiness gaps；模型显式选择 occurrence/role，并用一次
+`scientific.operation.adopt` 原子表达 disposition + effect adoption。Harness 不因
+compatible role 唯一就自动调用 adoption，也不把 `seal_ready` 当作 seal/task-finish 指令。

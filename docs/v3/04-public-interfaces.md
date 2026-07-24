@@ -52,7 +52,7 @@ AOX blank-world campaign 的 `chrome-once` 是该公共合同的一次可封存�
 - `max_steps_per_agent: int = 8`
 - `auto_enqueue_ready_tasks: bool = false`
 
-POST 只在短 admission transaction 中验证 access、request digest 与幂等键，创建 `RuntimeCommandRecord` 和 outbox，然后始终返回 HTTP `202 Accepted`。response 是闭集 `runtime_command_status@1`：`session_id`、`command_id`、`command_type`、`status`、`status_url`、timestamps、可选 bounded outcome/error/retry fields；不得返回 composite workspace、claim owner、lease/fence、process/socket、Host path 或 private locator。可选 `Prefer: wait=<seconds>` 只接受 `0..2`，短等期间即使命令 terminal，HTTP 仍是 `202`；超时不取消 command。
+POST 只在短 admission transaction 中验证 access、request digest 与幂等键，创建 `RuntimeCommandRecord` 和 outbox，然后始终返回 HTTP `202 Accepted`。response 是闭集 `runtime_command_status@1`：`session_id`、`command_id`、`command_type`、`status`、`status_url`、timestamps、可选 bounded outcome/error/retry fields；不得返回 composite workspace、claim owner、lease/fence、process/socket、Host path 或 private locator。terminal drain outcome 新写入 `runtime_command_outcome@2`：其中 scheduler core receipt 与 projection settlement 是两个独立闭集，公开 summary 同时给出真实 `processed_signal_count`、`suspended`、bounded output/event identities、projection status/error 和 `replay_safe`。若 scheduler 已处理 signal 而后续 consistency/event/workspace projection 失败，command 可以整体 `failed`，但 count 不得清零，且 `replay_safe=false`；只有 core receipt 尚未形成的 boundary failure 才允许零 processed。旧 `@1` outcome 保持只读兼容。可选 `Prefer: wait=<seconds>` 只接受 `0..2`，短等期间即使命令 terminal，HTTP 仍是 `202`；超时不取消 command。
 
 `V3DurableWorkSupervisor` 中的 `RuntimeCommandWorker` 独立 claim command，再调用统一 scheduler acquire session lease、claim `agent:master` 或 teammate signal 并运行 bounded batch。`auto_enqueue_ready_tasks` 默认关闭；只有请求明确为 `true` 时才扫描 ready unassigned tasks。command 在 batch completed/failed、session locked 或 work park 后即 terminal，approval/provider/HPC wall time 不属于 command lifetime。
 
@@ -467,6 +467,22 @@ authority request 使用 strict DTO；actor/grantor 等身份来自受控边界�
 `scientific.attempt.close` 返回 request/intention，最终 admission/closure 由 Host 在原 writer
 退休后执行。workspace 显示 envelope usage、attempts、universe/dispositions、selected chain、
 materializations 和 closure，不投影 provider/HPC private allowlist。
+
+`scientific.attempt.inspect` 的 summary 兼容面保持 bounded；传入 exact attempt/selection
+filter 后，详细页按稳定 occurrence 顺序、bounded limit 与 opaque cursor 返回 resolved
+head/selection/contract identity、operation signature/effect、当前
+disposition/adoption/materialization、allowed/compatible roles、issue codes/counts 与
+readiness summary。它不返回 Host locator、credentials、lease/fence、raw backend handle 或
+recommended action。`world.inspect` 和 composite workspace 只投影 gap counts、bounded ids
+和 blocker codes，不能复制完整 universe。
+
+新 workflow contract 的 model-visible adoption 入口只有
+`scientific.operation.adopt(selection_id, operation_id, workflow_role, reason_code,
+idempotency_key)`。它在一个事务内同时写 adopted disposition 与 matching effect adoption；
+exact replay 返回原 identities，partial/mismatched replay fail closed 且
+`mutation_applied=false`。`scientific.operation.disposition` 只处理
+`failed|superseded|abandoned`；旧 `scientific.effect.adopt` 不再出现在新 catalog，但历史
+split records 仍可只读检查。
 
 AOX `authorize` 只发布 reviewable one-use three-slot plan，不创建 root。`run-live` 必须在 root
 前将该 exact plan 原子消费到 deterministic sibling；缺失、复制后错误 sibling、identity/

@@ -26,7 +26,9 @@ def _actor(context: SessionRuntimeContext) -> str:
 def _service(context: SessionRuntimeContext) -> ScientificAttemptService:
     return ScientificAttemptService(
         context.repositories,
-        workflow_role_validator=context.scientific_workflow_role_validator,
+        workflow_contract_registry=(
+            context.scientific_workflow_contract_registry
+        ),
         artifact_boundary=ArtifactBoundaryService(
             context.repositories,
             workspace_root=context.sandbox_workspace_root,
@@ -106,18 +108,57 @@ def register_scientific_attempt_tools(registry: ToolRegistry) -> None:
         context: SessionRuntimeContext,
         invocation: ToolInvocation,
     ) -> ToolResult:
-        payload = _service(context).project_session(
-            context.snapshot.session.session_id
+        arguments = invocation.arguments
+        attempt_id = arguments.get("attempt_id")
+        selection_id = arguments.get("selection_id")
+        cursor = arguments.get("cursor")
+        task_scope = (
+            context.restore_focus.task_id or invocation.task_id
+            if context.actor_kind == "teammate"
+            else None
         )
-        return _success(
-            invocation,
-            payload=payload,
-            status="scientific_attempts_projected",
-            summary=(
-                f"Projected {len(payload['attempts'])} scientific attempt(s) and "
-                f"{len(payload['authorizations'])} authorization envelope(s)."
-            ),
-        )
+        service = _service(context)
+        try:
+            if attempt_id is None and selection_id is None and cursor is None:
+                payload = service.project_session(
+                    context.snapshot.session.session_id,
+                    task_id=task_scope,
+                    limit=arguments.get("limit", 50),
+                )
+                return _success(
+                    invocation,
+                    payload=payload,
+                    status="scientific_attempts_projected",
+                    summary=(
+                        f"Projected {len(payload['attempts'])} bounded scientific "
+                        "attempt summary item(s)."
+                    ),
+                )
+            if attempt_id is None or selection_id is None:
+                raise ScientificAttemptError(
+                    "scientific_inspection_filter_incomplete",
+                    "detailed scientific inspection requires exact attempt and selection ids",
+                    details={"mutation_applied": False},
+                )
+            payload = service.inspect_selection(
+                session_id=context.snapshot.session.session_id,
+                task_id=task_scope,
+                attempt_id=str(attempt_id),
+                selection_id=str(selection_id),
+                limit=arguments.get("limit", 20),
+                cursor=None if cursor is None else str(cursor),
+            )
+            return _success(
+                invocation,
+                payload=payload,
+                status="scientific_selection_projected",
+                summary=(
+                    f"Projected {payload['page']['returned_count']} exact scientific "
+                    "selection occurrence(s)."
+                ),
+            )
+        except ScientificAttemptError as exc:
+            return _failure(invocation, exc)
 
     def create_handler(
         context: SessionRuntimeContext,
@@ -224,22 +265,26 @@ def register_scientific_attempt_tools(registry: ToolRegistry) -> None:
             summary="Recorded the agent-selected disposition for one occurrence.",
         )
 
-    def adopt_handler(
+    def adopt_operation_handler(
         context: SessionRuntimeContext,
         invocation: ToolInvocation,
     ) -> ToolResult:
         arguments = invocation.arguments
         return _execute(
             invocation,
-            lambda: _service(context).adopt_effect(
+            lambda: _service(context).adopt_operation(
                 selection_id=str(arguments["selection_id"]),
                 operation_id=str(arguments["operation_id"]),
                 workflow_role=str(arguments["workflow_role"]),
+                reason_code=str(arguments["reason_code"]),
                 actor_ref=_actor(context),
                 idempotency_key=str(arguments["idempotency_key"]),
             ),
-            status="scientific_effect_adopted",
-            summary="Adopted one terminal known effect into the selected chain.",
+            status="scientific_operation_adopted",
+            summary=(
+                "Atomically recorded one adopted disposition and matching "
+                "terminal-known effect adoption."
+            ),
         )
 
     def materialize_handler(
@@ -307,7 +352,10 @@ def register_scientific_attempt_tools(registry: ToolRegistry) -> None:
     registry.register("attempt.create", create_handler)
     registry.register("scientific.selection.begin", begin_handler)
     registry.register("scientific.operation.disposition", disposition_handler)
-    registry.register("scientific.effect.adopt", adopt_handler)
+    registry.register(
+        "scientific.operation.adopt",
+        adopt_operation_handler,
+    )
     registry.register("scientific.artifact.materialize", materialize_handler)
     registry.register("scientific.selection.seal", seal_handler)
     registry.register("scientific.attempt.close", close_handler)

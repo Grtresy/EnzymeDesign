@@ -11,6 +11,7 @@ import time
 import pytest
 import openzyme_core.agent_runtime as agent_runtime_module
 
+from openzyme_domain import AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
 from openzyme_core import AgentRuntimeScheduler
 from openzyme_core import AgentRuntimeService
 from openzyme_core import CoreRepositories
@@ -38,8 +39,14 @@ from openzyme_domain import ContinuationResumeStrategy
 from openzyme_domain import ContinuationState
 from openzyme_domain import ContinuationStateStatus
 from openzyme_domain import ControlledOperation
+from openzyme_domain import ControlledOperationExecution
+from openzyme_domain import ControlledOperationExecutionLifecycle
+from openzyme_domain import ControlledOperationExecutionTerminalOutcome
 from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import ControlledOperationStatus
+from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import FailureRecoverability
+from openzyme_domain import RetryEligibility
 from openzyme_domain import SandboxImageCompatibility
 from openzyme_domain import SandboxRunRecord
 from openzyme_domain import SandboxRunStatus
@@ -54,9 +61,11 @@ from openzyme_runtime import LangChainToolCallingInvoker
 class FakeToolCallingInvoker:
     def __init__(self) -> None:
         self.calls = 0
+        self.system_prompts: list[str] = []
 
     def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]) -> object:
-        del system_prompt, messages, tools
+        self.system_prompts.append(system_prompt)
+        del messages, tools
         self.calls += 1
         return {"content": "handled", "tool_calls": []}
 
@@ -1008,6 +1017,43 @@ def test_scheduler_fails_missing_master_inbox_source_before_provider() -> None:
     assert outcomes[0].agent == master
 
 
+def test_master_max_steps_terminates_exact_signal_without_replay() -> None:
+    repositories, context, _ = _build_master_failure_context(
+        reason=AgentRuntimeSignalReason.MANUAL_RESUME
+    )
+    context.model_factory = LoopingModelFactory()
+
+    outcomes = AgentRuntimeScheduler(
+        context,
+        worker_id="test:master-budget",
+    ).run_once_sync(
+        "sess_master_failure",
+        max_signals=1,
+        max_steps_per_agent=1,
+    )
+
+    signal = repositories.runtime_signals.get("sig_master_failure")
+    failure = repositories.failure_observations.get_by_source(
+        session_id="sess_master_failure",
+        source_kind="runtime_signal",
+        source_ref="sig_master_failure",
+        source_version="attempt:1",
+        phase="runtime",
+        error_code=AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE,
+    )
+
+    assert len(outcomes) == 1
+    assert outcomes[0].ok is False
+    assert outcomes[0].teammate_status == "max_steps_exceeded"
+    assert signal is not None
+    assert signal.status is AgentRuntimeSignalStatus.FAILED
+    assert signal.attempt_count == 1
+    assert signal.error_message == AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
+    assert failure is not None
+    assert failure.recoverability is FailureRecoverability.AGENT_CAN_REPLAN
+    assert failure.retry_eligibility is RetryEligibility.TERMINAL
+
+
 def test_teammate_max_steps_does_not_mark_business_task_failed() -> None:
     model_factory = LoopingModelFactory()
     repositories, context = _build_context(model_factory=model_factory)
@@ -1019,15 +1065,294 @@ def test_teammate_max_steps_does_not_mark_business_task_failed() -> None:
 
     task = repositories.tasks.get("task_0")
     signal = repositories.runtime_signals.get("sig_0")
+    failures = repositories.failure_observations.list_by_source(
+        session_id="sess_scheduler",
+        source_kind="runtime_signal",
+        source_ref="sig_0",
+    )
+    messages = repositories.inbox.list_by_session("sess_scheduler")
+    status_update = next(
+        message
+        for message in messages
+        if message.message_type == "status_update"
+    )
+    status_payload = repositories.engine_documents.get(
+        status_update.payload_ref
+    )
+    master_signals = [
+        candidate
+        for candidate in repositories.runtime_signals.list_by_session(
+            "sess_scheduler"
+        )
+        if candidate.agent_id == "agent:master"
+        and candidate.source_ref == "sig_0"
+    ]
     assert len(outcomes) == 1
     assert outcomes[0].ok is False
     assert outcomes[0].teammate_status == "max_steps_exceeded"
     assert signal is not None
     assert signal.status is AgentRuntimeSignalStatus.FAILED
+    assert signal.attempt_count == 1
+    assert signal.error_message == AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
     assert task is not None
     assert task.status is TaskStatus.IN_PROGRESS
     assert task.failure_summary is None
     assert task.failure_ref is None
+    assert len(failures) == 1
+    failure = failures[0]
+    assert failure.error_code == AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
+    assert failure.recoverability is FailureRecoverability.AGENT_CAN_REPLAN
+    assert failure.retry_eligibility is RetryEligibility.TERMINAL
+    assert failure.effect_certainty is ExternalEffectCertainty.NO_EFFECT
+    assert failure.likely_causes
+    assert failure.facts["effect_scope"] == "runtime_signal_transition"
+    assert failure.facts["effect_scope_ref"] == "sig_0"
+    assert failure.facts["max_steps"] == 1
+    assert failure.facts["exact_signal_retry_eligible"] is False
+    assert failure.facts["controlled_operation_effects_preserved"] is True
+    assert failure.facts["scientific_selection_recovery"]["status"] == (
+        "not_applicable"
+    )
+    assert status_payload is not None
+    assert (
+        status_payload.payload["error_code"]
+        == AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
+    )
+    assert status_payload.payload["recoverability"] == "agent_can_replan"
+    assert status_payload.payload["retry_eligibility"] == "terminal"
+    assert status_payload.payload["business_status"] == "unchanged"
+    assert len(master_signals) == 1
+    assert master_signals[0].status is AgentRuntimeSignalStatus.PENDING
+
+    duplicate = AgentRuntimeService(context).enqueue_signal(
+        session_id="sess_scheduler",
+        agent_id="agent:master",
+        task_id="task_0",
+        reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+        source_ref="sig_0",
+    )
+
+    assert duplicate is not None
+    assert duplicate.signal_id == master_signals[0].signal_id
+    assert len(
+        [
+            candidate
+            for candidate in repositories.runtime_signals.list_by_session(
+                "sess_scheduler"
+            )
+            if candidate.agent_id == "agent:master"
+            and candidate.source_ref == "sig_0"
+        ]
+    ) == 1
+
+    replan_model_factory = FakeModelFactory()
+    context.model_factory = replan_model_factory
+    recovery = AgentRuntimeScheduler(
+        context,
+        worker_id="test:explicit-master-replan",
+    ).run_once_sync(
+        "sess_scheduler",
+        max_signals=1,
+        max_steps_per_agent=1,
+        signal_ids={master_signals[0].signal_id},
+    )
+    original_after_replan = repositories.runtime_signals.get("sig_0")
+
+    assert len(recovery) == 1
+    assert recovery[0].ok is True
+    assert recovery[0].signal.signal_id == master_signals[0].signal_id
+    assert original_after_replan is not None
+    assert original_after_replan.status is AgentRuntimeSignalStatus.FAILED
+    assert original_after_replan.attempt_count == 1
+    assert model_factory.invoker.calls == 1
+    assert replan_model_factory.invoker.calls == 1
+    master_prompt = replan_model_factory.invoker.system_prompts[0]
+    assert AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE in master_prompt
+    assert "recoverability=agent_can_replan" in master_prompt
+    assert "effect=no_effect" in master_prompt
+    assert "retry=terminal" in master_prompt
+
+    AgentRuntimeService(context)._enqueue_master_wakeup_after_teammate(
+        session_id="sess_scheduler",
+        source_signal=original_after_replan,
+        task=task,
+        correlation_id="corr_duplicate_after_completion",
+    )
+    assert len(
+        [
+            candidate
+            for candidate in repositories.runtime_signals.list_by_session(
+                "sess_scheduler"
+            )
+            if candidate.agent_id == "agent:master"
+            and candidate.source_ref == "sig_0"
+        ]
+    ) == 1
+
+
+def test_budget_exhaustion_preserves_independent_controlled_effect(
+    monkeypatch,
+) -> None:
+    repositories, context = _build_context(model_factory=FakeModelFactory())
+
+    def effect_then_exhaust(
+        runtime_context: SessionRuntimeContext,
+        **kwargs,
+    ) -> HarnessResult:
+        task_id = str(kwargs["task_id"])
+        task = runtime_context.repositories.tasks.get(task_id)
+        assert task is not None
+        assert task.assigned_ref is not None
+        agent = runtime_context.repositories.agents.get(
+            "sess_scheduler",
+            task.assigned_ref,
+        )
+        assert agent is not None
+        assert agent.member_id is not None
+        workspace_id = "workspace_budget_effect"
+        run_id = "run_budget_effect"
+        operation_id = "operation_budget_effect"
+        execution_id = "execution_budget_effect"
+        runtime_context.repositories.sandbox_workspaces.save(
+            SandboxWorkspaceRecord(
+                sandbox_workspace_id=workspace_id,
+                session_id="sess_scheduler",
+                agent_member_id=agent.member_id,
+                agent_id=agent.agent_id,
+                status=SandboxWorkspaceStatus.READY,
+                image_ref="image:test",
+                image_digest="sha256:image",
+                image_version="test",
+                sandbox_protocol_version="1",
+                image_compatibility=SandboxImageCompatibility.COMPATIBLE,
+                manifest_version="1",
+                focus_task_id=task_id,
+                created_at="2026-04-16T10:01:00+00:00",
+                last_attached_at="2026-04-16T10:01:00+00:00",
+            )
+        )
+        runtime_context.repositories.sandbox_runs.save(
+            SandboxRunRecord(
+                sandbox_run_id=run_id,
+                session_id="sess_scheduler",
+                sandbox_workspace_id=workspace_id,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                argv=("python", "effect.py"),
+                argv_digest="sha256:argv-effect",
+                cwd=".",
+                env_digest="sha256:env-effect",
+                status=SandboxRunStatus.COMPLETED,
+                created_at="2026-04-16T10:01:00+00:00",
+                updated_at="2026-04-16T10:01:01+00:00",
+            )
+        )
+        operation = ControlledOperation(
+            operation_id=operation_id,
+            session_id="sess_scheduler",
+            sandbox_workspace_id=workspace_id,
+            sandbox_run_id=run_id,
+            task_id=task_id,
+            logical_operation_key="fixture.budget_effect",
+            operation_digest="sha256:operation-effect",
+            params_digest="sha256:params-effect",
+            backend_category="fixture",
+            status=ControlledOperationStatus.COMPLETED,
+            owner_mode=ControlledOperationOwnerMode.DURABLE_ASYNC_V1,
+            created_at="2026-04-16T10:01:00+00:00",
+            updated_at="2026-04-16T10:01:01+00:00",
+        )
+        runtime_context.repositories.controlled_operations.save(operation)
+        runtime_context.repositories.controlled_operation_executions.add(
+            ControlledOperationExecution(
+                execution_id=execution_id,
+                operation_id=operation_id,
+                session_id="sess_scheduler",
+                task_id=task_id,
+                owner_mode=ControlledOperationOwnerMode.DURABLE_ASYNC_V1,
+                operation_digest=operation.operation_digest,
+                approval_digest=None,
+                route_policy_id="fixture_v1",
+                selected_backend="fixture",
+                adapter_policy_id="fixture_adapter_v1",
+                input_identity_digest="sha256:inputs-effect",
+                expected_output_contract_digest="sha256:outputs-effect",
+                runtime_identity_digest="sha256:runtime-effect",
+                lifecycle_state=ControlledOperationExecutionLifecycle.TERMINAL,
+                terminal_outcome=(
+                    ControlledOperationExecutionTerminalOutcome.SUCCEEDED
+                ),
+                effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+                retry_eligibility=RetryEligibility.TERMINAL,
+                dispatch_generation=1,
+                state_version=1,
+                fencing_token=1,
+                result_digest="sha256:result-effect",
+                created_at="2026-04-16T10:01:00+00:00",
+                updated_at="2026-04-16T10:01:01+00:00",
+                terminal_at="2026-04-16T10:01:01+00:00",
+            )
+        )
+        return HarnessResult(
+            session_id="sess_scheduler",
+            status=HarnessStatus.MAX_STEPS_EXCEEDED,
+            snapshot=SessionRuntimeSnapshot.load(
+                runtime_context.repositories,
+                "sess_scheduler",
+            ),
+            events=(),
+            outputs=("Controlled effect completed before budget exhaustion.",),
+            tool_results=(),
+        )
+
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "run_teammate_loop",
+        effect_then_exhaust,
+    )
+
+    outcome = AgentRuntimeScheduler(
+        context,
+        worker_id="test:budget-effect",
+    ).run_once_sync(
+        "sess_scheduler",
+        max_signals=1,
+        max_steps_per_agent=1,
+        signal_ids={"sig_0"},
+    )[0]
+
+    execution = repositories.controlled_operation_executions.get(
+        "execution_budget_effect"
+    )
+    operation = repositories.controlled_operations.get(
+        "operation_budget_effect"
+    )
+    signal_failure = repositories.failure_observations.get_by_source(
+        session_id="sess_scheduler",
+        source_kind="runtime_signal",
+        source_ref="sig_0",
+        source_version="attempt:1",
+        phase="runtime",
+        error_code=AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE,
+    )
+
+    assert outcome.ok is False
+    assert execution is not None
+    assert execution.lifecycle_state is ControlledOperationExecutionLifecycle.TERMINAL
+    assert execution.terminal_outcome is (
+        ControlledOperationExecutionTerminalOutcome.SUCCEEDED
+    )
+    assert execution.effect_certainty is ExternalEffectCertainty.TERMINAL_KNOWN
+    assert execution.retry_eligibility is RetryEligibility.TERMINAL
+    assert operation is not None
+    assert operation.status is ControlledOperationStatus.COMPLETED
+    assert signal_failure is not None
+    assert signal_failure.effect_certainty is ExternalEffectCertainty.NO_EFFECT
+    assert signal_failure.facts["effect_scope"] == "runtime_signal_transition"
+    assert signal_failure.facts["controlled_operation_effects_preserved"] is True
+    assert signal_failure.facts[
+        "bounded_controlled_operation_execution_ids"
+    ] == ["execution_budget_effect"]
 
 
 def test_teammate_without_task_finish_records_followup_not_business_completion() -> None:

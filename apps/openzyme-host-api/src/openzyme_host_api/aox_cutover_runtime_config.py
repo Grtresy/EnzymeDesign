@@ -10,11 +10,19 @@ from openzyme_runtime import DEFAULT_PROVIDER_LIMITS
 from openzyme_runtime import is_micu_provider_url
 from openzyme_runtime import LIVE_MICU_TOKEN_HARD_LIMIT
 
+from .aox_scientific_contract import AOX_SELECTED_CHAIN_CONTRACT_V2
+from .aox_scientific_contract import (
+    AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST,
+)
+from .aox_scientific_contract import AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_ID
+from .aox_scientific_contract import AOX_SELECTED_CHAIN_WORKFLOW_ID
+
 
 AOX_BLANK_WORLD_RUNTIME_CONFIG_LEGACY_SCHEMA_ID = (
     "aox_blank_world_runtime_config@1"
 )
-AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID = "aox_blank_world_runtime_config@2"
+AOX_BLANK_WORLD_RUNTIME_CONFIG_V2_SCHEMA_ID = "aox_blank_world_runtime_config@2"
+AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID = "aox_blank_world_runtime_config@3"
 AOX_RUNNER_CONTRACT_EXPECTATIONS_SCHEMA_ID = "aox_runner_contract_expectations@1"
 AOX_BROWSER_OBSERVATION_MODE = "chrome_devtools_mcp_file_handoff"
 AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS = 3_600
@@ -49,7 +57,8 @@ _LEGACY_TOP_LEVEL_FIELDS = frozenset(
         "driver",
     }
 )
-_TOP_LEVEL_FIELDS = _LEGACY_TOP_LEVEL_FIELDS | {"reliability"}
+_V2_TOP_LEVEL_FIELDS = _LEGACY_TOP_LEVEL_FIELDS | {"reliability"}
+_TOP_LEVEL_FIELDS = _V2_TOP_LEVEL_FIELDS | {"scientific_workflow_contract"}
 _HOST_FIELDS = frozenset(
     {
         "deployment_profile",
@@ -140,6 +149,14 @@ _RELIABILITY_FIELDS = frozenset(
         "runtime_drain_contract",
         "mutation_closure_mode",
         "shadow_max_observations",
+    }
+)
+_SCIENTIFIC_WORKFLOW_CONTRACT_FIELDS = frozenset(
+    {
+        "schema_id",
+        "contract_id",
+        "workflow_id",
+        "workflow_contract_digest",
     }
 )
 _DRIVER_FIELDS = frozenset(
@@ -490,9 +507,10 @@ def normalize_aox_blank_world_runtime_config(
 
     Numeric duration/ratio fields are normalized to finite JSON floats. All objects
     use exact field allowlists; no caller-provided field is silently discarded.
-    Legacy ``@1`` remains readable solely so frozen evidence can be reverified.
-    New launch configuration is always emitted as ``@2`` and binds the reliability
-    ownership/closure settings required before any attempt root is created.
+    Historical ``@1`` and ``@2`` remain readable solely so frozen evidence can
+    be reverified. New launch configuration is always emitted as ``@3`` and
+    additionally binds the complete active selected-chain ``@2`` contract
+    identity into the launch config digest before any attempt root is created.
     """
 
     if not isinstance(value, Mapping):
@@ -500,6 +518,8 @@ def normalize_aox_blank_world_runtime_config(
     raw_schema_id = value.get("schema_id")
     if raw_schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID:
         top_level_fields = _TOP_LEVEL_FIELDS
+    elif raw_schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_V2_SCHEMA_ID:
+        top_level_fields = _V2_TOP_LEVEL_FIELDS
     elif raw_schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_LEGACY_SCHEMA_ID:
         top_level_fields = _LEGACY_TOP_LEVEL_FIELDS
     else:
@@ -817,7 +837,10 @@ def normalize_aox_blank_world_runtime_config(
         )
 
     normalized_reliability: dict[str, object] | None = None
-    if schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID:
+    if schema_id in {
+        AOX_BLANK_WORLD_RUNTIME_CONFIG_V2_SCHEMA_ID,
+        AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID,
+    }:
         reliability = _closed_object(
             root["reliability"],
             fields=_RELIABILITY_FIELDS,
@@ -876,6 +899,54 @@ def normalize_aox_blank_world_runtime_config(
                 maximum=4_096,
             ),
         }
+
+    normalized_scientific_workflow_contract: dict[str, str] | None = None
+    if schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID:
+        scientific_workflow_contract = _closed_object(
+            root["scientific_workflow_contract"],
+            fields=_SCIENTIFIC_WORKFLOW_CONTRACT_FIELDS,
+            path="effective_config.scientific_workflow_contract",
+        )
+        normalized_scientific_workflow_contract = {
+            "schema_id": _string(
+                scientific_workflow_contract["schema_id"],
+                path="effective_config.scientific_workflow_contract.schema_id",
+            ),
+            "contract_id": _string(
+                scientific_workflow_contract["contract_id"],
+                path="effective_config.scientific_workflow_contract.contract_id",
+            ),
+            "workflow_id": _string(
+                scientific_workflow_contract["workflow_id"],
+                path="effective_config.scientific_workflow_contract.workflow_id",
+            ),
+            "workflow_contract_digest": _digest(
+                scientific_workflow_contract["workflow_contract_digest"],
+                path=(
+                    "effective_config.scientific_workflow_contract."
+                    "workflow_contract_digest"
+                ),
+            ),
+        }
+        expected_scientific_workflow_contract = {
+            "schema_id": AOX_SELECTED_CHAIN_CONTRACT_V2.schema_id,
+            "contract_id": AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_ID,
+            "workflow_id": AOX_SELECTED_CHAIN_WORKFLOW_ID,
+            "workflow_contract_digest": (
+                AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
+            ),
+        }
+        mismatched_contract_fields = sorted(
+            key
+            for key, expected in expected_scientific_workflow_contract.items()
+            if normalized_scientific_workflow_contract[key] != expected
+        )
+        if mismatched_contract_fields:
+            raise AoxRuntimeConfigSchemaError(
+                "effective_config.scientific_workflow_contract",
+                "must bind the exact active AOX selected-chain contract identity",
+                unexpected=frozenset(mismatched_contract_fields),
+            )
 
     driver = _closed_object(
         root["driver"], fields=_DRIVER_FIELDS, path="effective_config.driver"
@@ -985,12 +1056,17 @@ def normalize_aox_blank_world_runtime_config(
     }
     if normalized_reliability is not None:
         normalized["reliability"] = normalized_reliability
+    if normalized_scientific_workflow_contract is not None:
+        normalized["scientific_workflow_contract"] = (
+            normalized_scientific_workflow_contract
+        )
     return normalized
 
 
 __all__ = [
     "AOX_BLANK_WORLD_RUNTIME_CONFIG_LEGACY_SCHEMA_ID",
     "AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID",
+    "AOX_BLANK_WORLD_RUNTIME_CONFIG_V2_SCHEMA_ID",
     "AOX_BROWSER_OBSERVATION_MODE",
     "AOX_DURABLE_ROUTE_POLICY_IDS",
     "AoxRuntimeConfigSchemaError",

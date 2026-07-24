@@ -251,6 +251,7 @@ export function eventRequiresWorkspaceRefresh(event) {
     "agent.status_updated",
     "agent.message.delivered",
     "background.completed",
+    "runtime.command.finished",
   ]).has(event.event_type);
 }
 
@@ -384,6 +385,7 @@ export function reduceWorkspaceWithEvent(workspace, event) {
     case "agent.wakeup_pending":
     case "agent.runtime_signal.updated":
     case "agent.status_updated":
+    case "runtime.command.finished":
     case "memory.compacted":
     case "research.summary.updated":
     case "research.evidence.recorded":

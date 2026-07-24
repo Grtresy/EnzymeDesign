@@ -67,3 +67,62 @@ def render_v3_runtime_health(health: dict[str, Any]) -> str:
     for name, component in sorted(dict(health.get("components") or {}).items()):
         lines.append(f"{name}: {dict(component).get('status', 'unknown')}")
     return "\n".join(lines)
+
+
+def render_v3_runtime_command(command: dict[str, Any]) -> str:
+    """Render command, scheduler, and projection state as distinct facts."""
+
+    summary = dict(command.get("bounded_outcome_summary") or {})
+    schema_version = str(summary.get("schema_version") or "unavailable")
+    lines = [
+        f"Runtime command {command.get('command_id', 'unknown')}",
+        f"Command status: {command.get('status', 'unknown')}",
+        f"Outcome schema: {schema_version}",
+    ]
+    if schema_version == "runtime_command_outcome@2":
+        lines.extend(
+            (
+                f"Core receipt formed: {summary.get('core_receipt_formed')}",
+                f"Scheduler: {summary.get('scheduler_status', 'unknown')}",
+                (
+                    "Processed signals: "
+                    f"{summary.get('processed_signal_count', 'unknown')}"
+                ),
+                f"Suspended: {summary.get('suspended', 'unknown')}",
+                f"Projection: {summary.get('projection_status', 'unknown')}",
+                (
+                    "Projection error: "
+                    f"{summary.get('projection_error_code') or 'none'}"
+                ),
+                (
+                    "Projection stage: "
+                    f"{summary.get('projection_failed_stage') or 'none'}"
+                ),
+                f"Replay safe: {summary.get('replay_safe', 'unknown')}",
+                (
+                    "Bounded identities: "
+                    f"outputs={summary.get('output_count', 0)} "
+                    f"events={summary.get('event_count', 0)}"
+                ),
+            )
+        )
+    elif schema_version == "runtime_command_outcome@1":
+        lines.extend(
+            (
+                (
+                    "Processed signals: "
+                    f"{summary.get('processed_signal_count', 'unknown')}"
+                ),
+                f"Suspended: {summary.get('suspended', 'unknown')}",
+                "Scheduler: unavailable in historical @1 receipt",
+                "Projection: unavailable in historical @1 receipt",
+                "Replay safe: unknown for historical @1 receipt",
+            )
+        )
+    if command.get("error_code"):
+        lines.append(f"Command error: {command['error_code']}")
+    if command.get("safe_error_summary"):
+        lines.append(f"Summary: {command['safe_error_summary']}")
+    if command.get("safe_retry_hint"):
+        lines.append(f"Retry boundary: {command['safe_retry_hint']}")
+    return "\n".join(lines)

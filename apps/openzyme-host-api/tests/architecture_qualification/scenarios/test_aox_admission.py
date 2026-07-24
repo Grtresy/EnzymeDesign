@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from openzyme_core import ScientificWorkflowContract
+from openzyme_core import ScientificWorkflowContractError
 from openzyme_host_api import aox_architecture_qualification as qualification
 from openzyme_host_api import aox_cutover_cli as cli
 from openzyme_host_api.aox_architecture_qualification import (
@@ -20,6 +22,21 @@ from openzyme_host_api.aox_architecture_qualification import (
 )
 from openzyme_host_api.aox_architecture_qualification import (
     require_matching_architecture_qualification_receipt,
+)
+from openzyme_host_api.aox_cutover_runtime_config import (
+    AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID,
+)
+from openzyme_host_api.aox_scientific_contract import (
+    AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY,
+)
+from openzyme_host_api.aox_scientific_contract import (
+    AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST,
+)
+from openzyme_host_api.aox_scientific_contract import (
+    AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_V1_DIGEST,
+)
+from openzyme_host_api.aox_scientific_contract import (
+    AOX_SELECTED_CHAIN_WORKFLOW_ID,
 )
 from openzyme_host_api.architecture_qualification import canonical_json_bytes
 
@@ -118,6 +135,32 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
         "aox_architecture_qualification_receipt_mismatch"
     )
 
+    active_contract = AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY.resolve(
+        workflow_id=AOX_SELECTED_CHAIN_WORKFLOW_ID,
+        workflow_contract_digest=(
+            AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
+        ),
+        for_new_attempt=True,
+    )
+    assert isinstance(active_contract, ScientificWorkflowContract)
+    assert active_contract.digest == (
+        "sha256:ab9898f52fc9fd1f1dc8b6498d368ba68d2e658c1ebc819cb76f73b7737de922"
+    )
+    assert AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID == (
+        "aox_blank_world_runtime_config@3"
+    )
+    with pytest.raises(ScientificWorkflowContractError) as historical_error:
+        AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY.resolve(
+            workflow_id=AOX_SELECTED_CHAIN_WORKFLOW_ID,
+            workflow_contract_digest=(
+                AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_V1_DIGEST
+            ),
+            for_new_attempt=True,
+        )
+    assert historical_error.value.error_code == (
+        "workflow_contract_historical_read_only"
+    )
+
     observation = {
         "admission_error_code": gate_error.value.code,
         "campaign_root_created": campaign_root.exists(),
@@ -125,7 +168,14 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
         "receipt": receipt,
         "receipt_mismatch_error_code": mismatch_error.value.code,
         "root_call_count": len(root_calls),
+        "runtime_config_schema_id": (
+            AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID
+        ),
         "schema_id": "aox_architecture_qualification_observation@1",
+        "selected_chain_contract_digest": active_contract.digest,
+        "selected_chain_historical_rejection": (
+            historical_error.value.error_code
+        ),
     }
     record_execution_observation_digest(
         "sha256:" + hashlib.sha256(canonical_json_bytes(observation)).hexdigest()

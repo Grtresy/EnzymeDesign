@@ -60,7 +60,19 @@ from openzyme_host_api.aox_cutover_evidence import verify_sealed_source_tree_env
 from openzyme_host_api.aox_cutover_evidence import verify_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import build_attempt_bundle
 from openzyme_host_api.aox_scientific_contract import (
+    AOX_SELECTED_CHAIN_CONTRACT_V2,
+)
+from openzyme_host_api.aox_scientific_contract import (
     AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST,
+)
+from openzyme_host_api.aox_scientific_contract import (
+    AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_ID,
+)
+from openzyme_host_api.aox_scientific_contract import (
+    AOX_SELECTED_CHAIN_WORKFLOW_ID,
+)
+from openzyme_host_api.aox_scientific_contract import (
+    AOX_WORKFLOW_METHOD_BY_ROLE,
 )
 from openzyme_host_api.aox_selected_chain_evidence import (
     SCIENTIFIC_ATTEMPT_EVIDENCE_SCHEMA_ID,
@@ -136,7 +148,7 @@ def _effective_config(
     ledger_identity_digest: str | None = None,
 ) -> dict[str, object]:
     return {
-        "schema_id": "aox_blank_world_runtime_config@2",
+        "schema_id": "aox_blank_world_runtime_config@3",
         "host": {
             "deployment_profile": "local-dev",
             "storage_profile": "single_process_sqlite",
@@ -212,6 +224,14 @@ def _effective_config(
             "runtime_drain_contract": "command_v1",
             "mutation_closure_mode": "generic_v1",
             "shadow_max_observations": 256,
+        },
+        "scientific_workflow_contract": {
+            "schema_id": AOX_SELECTED_CHAIN_CONTRACT_V2.schema_id,
+            "contract_id": AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_ID,
+            "workflow_id": AOX_SELECTED_CHAIN_WORKFLOW_ID,
+            "workflow_contract_digest": (
+                AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
+            ),
         },
         "tracing": {
             "enabled": False,
@@ -4796,9 +4816,23 @@ def _selected_chain_control(
             for operation in formal_operations
         }
     )
+    role_by_operation = {
+        str(operation_id): str(role)
+        for role, operation_id in payload["scientific_checks"]["aox_chain"][
+            "operation_roles"
+        ].items()
+    }
     occurrences: list[dict[str, object]] = []
     for operation in formal_operations:
         operation_id = str(operation["operation_id"])
+        signature_role = role_by_operation.get(
+            operation_id,
+            str(operation["kind"]),
+        )
+        sdk_module, function_name = AOX_WORKFLOW_METHOD_BY_ROLE.get(
+            signature_role,
+            (None, None),
+        )
         succeeded = operation["status"] == "completed"
         execution_id = f"execution_{operation_id}"
         result_handle_id = f"result_{operation_id}" if succeeded else None
@@ -4819,6 +4853,8 @@ def _selected_chain_control(
             "logical_operation_key": operation["kind"],
             "operation_digest": operation["operation_identity_digest"],
             "backend_category": "aox",
+            "sdk_module": sdk_module,
+            "function_name": function_name,
             "operation_status": operation["status"],
             "approval_id": approval_id,
             "approval_state": (
@@ -4874,7 +4910,7 @@ def _selected_chain_control(
     }
     universe_digest = canonical_digest(universe_identity)
     operation_universe = {
-        "schema_id": "scientific_operation_universe@1",
+        "schema_id": "scientific_operation_universe@2",
         "attempt_id": attempt_id,
         "run_ids": run_ids,
         "operation_count": len(occurrences),
@@ -4882,12 +4918,6 @@ def _selected_chain_control(
         "occurrences": occurrences,
     }
 
-    role_by_operation = {
-        str(operation_id): str(role)
-        for role, operation_id in payload["scientific_checks"]["aox_chain"][
-            "operation_roles"
-        ].items()
-    }
     dispositions: list[dict[str, object]] = []
     adoptions: list[dict[str, object]] = []
     occurrence_by_id = {
@@ -5177,6 +5207,50 @@ def test_selected_chain_v3_verifies_full_closed_occurrence_universe(
     assert result.attempt_id == payload["attempt_id"]
 
 
+def test_selected_chain_v3_rejects_historical_runtime_config_crossgrade(
+    tmp_path: Path,
+) -> None:
+    payload, _, artifact_root = _build_bundle(tmp_path)
+    control = _selected_chain_control(payload)
+    bundle_path = tmp_path / "selected-chain-v3.json"
+    _seal_selected_chain_fixture(payload, control, bundle_path)
+
+    def downgrade_runtime_config(envelope: dict[str, object]) -> None:
+        selected = envelope["payload"]
+        launch = selected["product_path"]["launch_receipt"]
+        config = launch["effective_config"]
+        config["schema_id"] = "aox_blank_world_runtime_config@2"
+        config.pop("scientific_workflow_contract")
+        config_digest = canonical_digest(config)
+        launch["effective_config_digest"] = config_digest
+        selected["product_path"]["runtime_config_digest"] = config_digest
+        selected["identity"]["config_digest"] = config_digest
+        selected["identity"]["identity_digest"] = canonical_digest(
+            {
+                key: value
+                for key, value in selected["identity"].items()
+                if key != "identity_digest"
+            }
+        )
+        prerequisites = selected["clean_world"]["allowed_prerequisites"]
+        prerequisites["config_digest"] = config_digest
+        selected["clean_world"]["allowed_prerequisite_digest"] = canonical_digest(
+            prerequisites
+        )
+        envelope["bundle_digest"] = canonical_digest(selected)
+
+    _rewrite_envelope(bundle_path, downgrade_runtime_config)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(
+        issue.code == "effective_config_attestation_invalid"
+        and issue.identity == "product_path.launch_receipt.effective_config"
+        for issue in result.issues
+    )
+
+
 def test_selected_chain_v3_builder_requires_and_attaches_canonical_control(
     tmp_path: Path,
 ) -> None:
@@ -5234,6 +5308,10 @@ def test_selected_chain_v3_builder_requires_and_attaches_canonical_control(
         ("universe_drop", "scientific_operation_universe_bundle_mismatch"),
         ("closure_digest", "scientific_closure_digest_mismatch"),
         (
+            "role_signature",
+            "scientific_workflow_role_operation_kind_invalid",
+        ),
+        (
             "cross_attempt_materialization",
             "scientific_materialization_identity_invalid",
         ),
@@ -5258,6 +5336,10 @@ def test_selected_chain_v3_rejects_control_plane_tamper(
         control["operation_universe"]["operation_count"] -= 1
     elif tamper == "closure_digest":
         control["closure"]["closure_digest"] = _digest("tampered-closure")
+    elif tamper == "role_signature":
+        control["operation_universe"]["occurrences"][0][
+            "function_name"
+        ] = "undeclared_alias"
     else:
         adoption = control["adoptions"][0]
         artifact = payload["artifacts"][0]
@@ -5402,10 +5484,27 @@ def _rewrite_fault_closure_evidence(
     _attach_public_final_snapshot_fixture(artifact_root, evidence)
 
 
-def test_legacy_runtime_config_remains_readable_for_frozen_evidence() -> None:
+@pytest.mark.parametrize(
+    ("schema_id", "removed_sections"),
+    (
+        (
+            "aox_blank_world_runtime_config@1",
+            ("reliability", "scientific_workflow_contract"),
+        ),
+        (
+            "aox_blank_world_runtime_config@2",
+            ("scientific_workflow_contract",),
+        ),
+    ),
+)
+def test_historical_runtime_config_remains_readable_for_frozen_evidence(
+    schema_id: str,
+    removed_sections: tuple[str, ...],
+) -> None:
     legacy = _effective_config()
-    legacy["schema_id"] = "aox_blank_world_runtime_config@1"
-    legacy.pop("reliability")
+    legacy["schema_id"] = schema_id
+    for section in removed_sections:
+        legacy.pop(section)
 
     normalized = cutover_evidence.normalize_aox_blank_world_runtime_config(
         legacy,

@@ -293,7 +293,7 @@ def test_run_live_passes_canonical_launch_snapshot_to_runner_and_campaign(
     effective_settings = SimpleNamespace(name="effective")
     launch_identity = {"git_commit": "a" * 40}
     launch_prerequisites = {"git_commit": "a" * 40}
-    launch_config = {"schema_id": "aox_blank_world_runtime_config@2"}
+    launch_config = {"schema_id": "aox_blank_world_runtime_config@3"}
 
     def launch_guard() -> None:
         return None

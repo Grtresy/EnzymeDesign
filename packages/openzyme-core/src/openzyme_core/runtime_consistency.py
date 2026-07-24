@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from typing import TYPE_CHECKING
 
+from openzyme_domain import AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import EngineInvocationStatus
@@ -12,6 +14,12 @@ from openzyme_domain import ScientificSelectionState
 from openzyme_domain import TaskStatus
 
 from .repositories import CoreRepositories
+from .scientific_attempt_repositories import ScientificSelectionIntegrityError
+
+if TYPE_CHECKING:
+    from .scientific_workflow_contracts import (
+        ScientificWorkflowContractRegistry,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,8 +75,18 @@ class RuntimeStateAudit:
 
 
 class RuntimeConsistencyService:
-    def __init__(self, repositories: CoreRepositories) -> None:
+    def __init__(
+        self,
+        repositories: CoreRepositories,
+        *,
+        scientific_workflow_contract_registry: (
+            ScientificWorkflowContractRegistry | None
+        ) = None,
+    ) -> None:
         self.repositories = repositories
+        self.scientific_workflow_contract_registry = (
+            scientific_workflow_contract_registry
+        )
 
     def audit_session(self, session_id: str) -> RuntimeStateAudit:
         tasks = {
@@ -84,6 +102,18 @@ class RuntimeConsistencyService:
         failure_observations = self.repositories.failure_observations.list_by_session(
             session_id
         )
+        runtime_failures_by_signal_attempt: dict[
+            tuple[str, str], list[Any]
+        ] = {}
+        for failure in failure_observations:
+            if (
+                failure.source_kind == "runtime_signal"
+                and failure.phase == "runtime"
+            ):
+                runtime_failures_by_signal_attempt.setdefault(
+                    (failure.source_ref, failure.source_version),
+                    [],
+                ).append(failure)
         attempts = self.repositories.scientific_attempts.list_by_session(session_id)
         task_attention = {
             task_id: {
@@ -112,6 +142,7 @@ class RuntimeConsistencyService:
                 in {
                     FailureRecoverability.RECONCILIATION_REQUIRED,
                     FailureRecoverability.AUTHORIZATION_REQUIRED,
+                    FailureRecoverability.AGENT_CAN_REPLAN,
                     FailureRecoverability.RUNTIME_RETRY,
                     FailureRecoverability.TERMINAL,
                 }
@@ -173,9 +204,93 @@ class RuntimeConsistencyService:
             closure = self.repositories.scientific_attempt_closures.get_by_attempt(
                 attempt.attempt_id
             )
-            head = self.repositories.scientific_selections.get_head(
-                attempt.attempt_id
-            )
+            try:
+                resolved_head = (
+                    self.repositories.scientific_selections.resolve_head(
+                        attempt.attempt_id
+                    )
+                )
+            except ScientificSelectionIntegrityError as exc:
+                warnings.append(
+                    RuntimeConsistencyWarning(
+                        code=exc.error_code,
+                        layer="scientific_attempt",
+                        severity="warning",
+                        attention="runtime_attention",
+                        task_id=task.task_id,
+                        task_status=task.status.value,
+                        runtime_status=exc.reason_code,
+                        message=(
+                            "Scientific selection head does not resolve to one "
+                            "canonical selection."
+                        ),
+                        recommendation=(
+                            "Inspect canonical selection integrity before any "
+                            "further selection mutation."
+                        ),
+                    )
+                )
+                attention = task_attention[task.task_id]
+                attention["runtime_attention"] = True
+                attention["needs_attention"] = True
+                attention["reasons"].append(exc.error_code)
+                attention["scientific_attempt_ids"].append(attempt.attempt_id)
+                continue
+            if (
+                closure is None
+                and resolved_head is not None
+                and self.scientific_workflow_contract_registry is not None
+            ):
+                from .scientific_attempts import ScientificAttemptService
+
+                evaluation = ScientificAttemptService(
+                    self.repositories,
+                    workflow_contract_registry=(
+                        self.scientific_workflow_contract_registry
+                    ),
+                ).evaluate_selection(
+                    attempt_id=attempt.attempt_id,
+                    selection_id=resolved_head.head.selection_id,
+                )
+                relevant_issues = tuple(
+                    issue
+                    for issue in evaluation.issues
+                    if (
+                        issue.blocks_closure
+                        if resolved_head.selection.state
+                        is ScientificSelectionState.SEALED
+                        else issue.blocks_seal
+                    )
+                )
+                for issue_code in tuple(
+                    dict.fromkeys(
+                        issue.code for issue in relevant_issues
+                    )
+                )[:20]:
+                    warnings.append(
+                        RuntimeConsistencyWarning(
+                            code=issue_code,
+                            layer="scientific_selection",
+                            severity="warning",
+                            attention="runtime_attention",
+                            task_id=task.task_id,
+                            task_status=task.status.value,
+                            runtime_status=(
+                                resolved_head.selection.state.value
+                            ),
+                            message=(
+                                "Scientific selection readiness has a canonical "
+                                "blocking issue."
+                            ),
+                        )
+                    )
+                    attention = task_attention[task.task_id]
+                    attention["runtime_attention"] = True
+                    attention["needs_attention"] = True
+                    attention["reasons"].append(issue_code)
+                    attention["scientific_attempt_ids"].append(
+                        attempt.attempt_id
+                    )
             if closure is not None and not task.status.is_terminal:
                 warnings.append(
                     RuntimeConsistencyWarning(
@@ -205,8 +320,9 @@ class RuntimeConsistencyService:
                 attention["scientific_attempt_ids"].append(attempt.attempt_id)
             elif (
                 closure is None
-                and head is not None
-                and head.state is ScientificSelectionState.SEALED
+                and resolved_head is not None
+                and resolved_head.selection.state
+                is ScientificSelectionState.SEALED
             ):
                 warnings.append(
                     RuntimeConsistencyWarning(
@@ -216,7 +332,7 @@ class RuntimeConsistencyService:
                         attention="runtime_attention",
                         task_id=task.task_id,
                         task_status=task.status.value,
-                        runtime_status=head.state.value,
+                        runtime_status=resolved_head.selection.state.value,
                         message=(
                             "Scientific selection is sealed but the exact attempt "
                             "closure has not been recorded."
@@ -239,13 +355,43 @@ class RuntimeConsistencyService:
             if signal.status is not AgentRuntimeSignalStatus.FAILED:
                 continue
             task = tasks.get(signal.task_id or "")
-            error_text = f"{signal.error_message or ''}\n{signal.last_error or ''}".lower()
-            agent_turn_failed = (
-                "max_steps_exceeded" in error_text
-                or "step budget" in error_text
-                or "max steps" in error_text
+            structured_failures = runtime_failures_by_signal_attempt.get(
+                (signal.signal_id, f"attempt:{signal.attempt_count}"),
+                [],
             )
-            code = "agent_turn_failed" if agent_turn_failed else "runtime_signal_failed"
+            budget_failure = next(
+                (
+                    failure
+                    for failure in structured_failures
+                    if failure.error_code
+                    == AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
+                ),
+                None,
+            )
+            if budget_failure is not None:
+                agent_turn_failed = True
+                code = AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
+            elif structured_failures:
+                agent_turn_failed = False
+                code = "runtime_signal_failed"
+            else:
+                # Frozen signals predate canonical runtime failure observations.
+                # Text matching is read-only compatibility, never a new-write
+                # classification source.
+                error_text = (
+                    f"{signal.error_message or ''}\n"
+                    f"{signal.last_error or ''}"
+                ).lower()
+                agent_turn_failed = (
+                    "max_steps_exceeded" in error_text
+                    or "step budget" in error_text
+                    or "max steps" in error_text
+                )
+                code = (
+                    "agent_turn_failed"
+                    if agent_turn_failed
+                    else "runtime_signal_failed"
+                )
             layer = "agent_turn" if agent_turn_failed else "runtime_signal"
             warnings.append(
                 RuntimeConsistencyWarning(
@@ -259,12 +405,25 @@ class RuntimeConsistencyService:
                     task_status=None if task is None else task.status.value,
                     runtime_status=signal.status.value,
                     message=(
-                        "Runtime signal failed; this does not set the business task "
-                        "status to failed."
+                        "The bounded agent turn exhausted its step budget; the "
+                        "exact signal is terminal while the business task remains "
+                        "unchanged."
+                        if budget_failure is not None
+                        else (
+                            "Runtime signal failed; this does not set the business "
+                            "task status to failed."
+                        )
                     ),
                     recommendation=(
-                        "Inspect the agent turn and decide whether the agent should "
-                        "retry, ask for recovery, or explicitly call task.finish."
+                        "Inspect the canonical failure and current selection facts, "
+                        "then explicitly replan in a new turn; do not replay the "
+                        "terminal signal."
+                        if budget_failure is not None
+                        else (
+                            "Inspect the agent turn and decide whether the agent "
+                            "should retry, ask for recovery, or explicitly call "
+                            "task.finish."
+                        )
                     ),
                 )
             )

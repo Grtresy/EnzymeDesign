@@ -488,13 +488,23 @@ def scientific_attempt_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         ToolDescriptor(
             tool_name="scientific.attempt.inspect",
             description=(
-                "Inspect safe durable attempt authorization, complete occurrence "
-                "dispositions, selected chains, materializations, and closures. "
-                "This is factual state; it does not choose a chain."
+                "Inspect bounded scientific facts. Omit ids for a summary; provide "
+                "attempt_id and selection_id for a stable occurrence page with "
+                "compatible roles, current facts, issues, and readiness. It never "
+                "chooses a scientific action."
             ),
             input_schema={
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "attempt_id": {"type": "string", "minLength": 1},
+                    "selection_id": {"type": "string", "minLength": 1},
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                    },
+                    "cursor": {"type": "string", "minLength": 1},
+                },
                 "additionalProperties": False,
             },
         ),
@@ -576,9 +586,9 @@ def scientific_attempt_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         ToolDescriptor(
             tool_name="scientific.operation.disposition",
             description=(
-                "Explicitly classify one occurrence as adopted, superseded, failed, "
-                "or abandoned. Known failures remain auditable; unknown effects "
-                "cannot be disposed away."
+                "Explicitly classify one occurrence as superseded, failed, or "
+                "abandoned. Use scientific.operation.adopt for an adopted result. "
+                "Known failures remain auditable; unknown effects cannot be hidden."
             ),
             input_schema={
                 "type": "object",
@@ -587,9 +597,8 @@ def scientific_attempt_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                     "operation_id": {"type": "string"},
                     "kind": {
                         "type": "string",
-                        "enum": ["adopted", "superseded", "failed", "abandoned"],
+                        "enum": ["superseded", "failed", "abandoned"],
                     },
-                    "workflow_role": {"type": ["string", "null"]},
                     "reason_code": {"type": "string"},
                     "replacement_operation_id": {"type": ["string", "null"]},
                     "idempotency_key": idempotency,
@@ -605,11 +614,11 @@ def scientific_attempt_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             },
         ),
         ToolDescriptor(
-            tool_name="scientific.effect.adopt",
+            tool_name="scientific.operation.adopt",
             description=(
-                "Adopt one same-attempt terminal immutable controlled-operation "
-                "result into an explicit workflow role. Active, cross-scope, "
-                "unauthorized, or dispatch-in-doubt effects are rejected."
+                "Atomically adopt one same-attempt terminal-known operation "
+                "into a compatible workflow role. You choose the "
+                "operation, role, and reason; the Host creates both canonical facts."
             ),
             input_schema={
                 "type": "object",
@@ -617,12 +626,14 @@ def scientific_attempt_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                     "selection_id": {"type": "string"},
                     "operation_id": {"type": "string"},
                     "workflow_role": {"type": "string"},
+                    "reason_code": {"type": "string"},
                     "idempotency_key": idempotency,
                 },
                 "required": [
                     "selection_id",
                     "operation_id",
                     "workflow_role",
+                    "reason_code",
                     "idempotency_key",
                 ],
                 "additionalProperties": False,

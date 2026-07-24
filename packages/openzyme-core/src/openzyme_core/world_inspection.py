@@ -22,6 +22,7 @@ from .controlled_operation_projection import is_controlled_operation_artifact_pu
 from .harness import SessionRuntimeContext
 from .harness import ToolRegistry
 from .runtime_consistency import RuntimeConsistencyService
+from .scientific_attempts import ScientificAttemptService
 from .task_board import TaskBoardService
 
 
@@ -36,6 +37,7 @@ _DEFAULT_SECTIONS = (
     "operations",
     "approvals",
     "outcomes",
+    "scientific_attempts",
     "diagnostics",
     "affordances",
 )
@@ -441,7 +443,12 @@ class WorldInspectionService:
                 artifact,
             )
         ]
-        runtime_audit = RuntimeConsistencyService(self.context.repositories).audit_session(session_id)
+        runtime_audit = RuntimeConsistencyService(
+            self.context.repositories,
+            scientific_workflow_contract_registry=(
+                self.context.scientific_workflow_contract_registry
+            ),
+        ).audit_session(session_id)
 
         payload: dict[str, Any] = {
             "schema_version": "world.inspection.v1",
@@ -618,6 +625,17 @@ class WorldInspectionService:
                 for invocation in invocations
                 if task_id is None or invocation.task_id == task_id
             ][:limit]
+        if "scientific_attempts" in sections:
+            payload["scientific_attempts"] = ScientificAttemptService(
+                self.context.repositories,
+                workflow_contract_registry=(
+                    self.context.scientific_workflow_contract_registry
+                ),
+            ).project_session_readiness_summary(
+                session_id,
+                task_id=task_id,
+                limit=limit,
+            )
         if "diagnostics" in sections:
             payload["diagnostics"] = runtime_audit.to_dict()
 

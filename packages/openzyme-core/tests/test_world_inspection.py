@@ -310,6 +310,11 @@ def test_world_inspection_exposes_structured_facts_without_recommendations() -> 
     assert payload["operations"]["items"][0]["operation_id"] == "op_world"
     assert payload["operations"]["items"][0]["engine_invocation_status"] == "running"
     assert payload["outcomes"][0]["outcome_status"] == "pending"
+    assert payload["scientific_attempts"]["schema_id"] == (
+        "scientific_attempt_readiness_summary@1"
+    )
+    assert payload["scientific_attempts"]["attempts"] == []
+    assert "occurrences" not in json.dumps(payload["scientific_attempts"])
     assert payload["diagnostics"]["warning_count"] >= 0
     assert any(
         policy["route_policy_id"] == "structure_tools.fpocket.hpc:v1"

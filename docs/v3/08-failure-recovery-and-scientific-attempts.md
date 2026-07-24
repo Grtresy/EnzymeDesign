@@ -55,6 +55,20 @@ delivery recovery failure 或 Host-finalized transition failure，Host 使用 ex
 Harness 不得静默改参数、切 provider/backend、重开 operation、创建新 formal attempt 或把
 known failure 擦除。step budget 用尽只是 non-business runtime outcome。
 
+step-budget exhaustion 使用 canonical `agent_turn_budget_exhausted` observation。exact
+signal/turn 以 `retry_eligibility=terminal` 结束且不会自动 replay；
+`recoverability=agent_can_replan` 属于 task/agent 的下一步决策层，表示 master 可用一个新的
+source-bound wakeup 显式 replan。`effect_certainty=no_effect` 的 scope 是 runtime signal
+transition，不得擦除同 turn 已经持久化的 controlled-operation execution/result。task status、
+failure summary/ref 保持原样。
+
+manual runtime drain 在 scheduler batch 后先形成 immutable
+`RuntimeDrainCoreReceipt`，再独立结算 trace/activity/consistency/event/workspace
+projection。`runtime_command_outcome@2` 同时保存 scheduler 与 projection 两层状态；若
+post-core projection 失败，真实 processed count、suspension 和 output/event identities 仍保留，
+且只要 count 大于零就固定 `replay_safe=false`。只有 core receipt 尚未形成的 boundary
+exception 才能报告 count `0`；旧 `@1` receipt 只读，不回填推导值。
+
 同一个 provider response 中的多个 tool call 作为有序 batch 结算。若某个已 dispatch call
 触发 approval、terminal action、runtime suspension 或 boundary-fatal failure，harness
 停止 dispatch 余下 call，但不能让它们消失：后续 eligible call 记录
@@ -76,6 +90,13 @@ never-dispatched call 的 no-effect observation 则保留原始引用，不为�
 `ScientificAttemptAuthorization` envelope。envelope 固定 grantor、session/task、campaign、
 workflow、root、scope、effect classes、provider/HPC target allowlist、最大 attempt 数、
 MICU/cost/wall-time ceiling、expiry、policy digest 与 idempotency identity。
+
+新 attempt 还必须按 `workflow_id + workflow_contract_digest` 精确解析一个 active
+`ScientificWorkflowContract`。canonical preimage 覆盖 contract/schema id、scope、合法
+workflow roles、每个 role 的 closed `sdk_module + function_name` signatures、cardinality、
+effect/adoption policy 与 same-attempt reuse policy。validator、inspection/readiness 与
+bundle verifier 都消费这个 registry object；unknown digest、近似版本或 historical-only
+contract 不得 fallback 到 prompt、静态 enum 或 Host 私有 callable。
 
 agent 的 `attempt.create` 只写 admission request。它自己的 mutation writer 退休后，
 Host finalizer 才在新的短 authority slice 中原子校验和消费 envelope、打开 attempt scope，
@@ -111,13 +132,32 @@ AOX 使用更窄的 `aox_live_attempt_authority_plan@1`：
 ## 5. Full occurrence universe 与 selected chain
 
 scientific attempt 允许中间路径试错，但不允许隐藏历史。Host 从 exact attempt scope 导出全部
-controlled-operation 和 covered sandbox-run occurrence，计算 digest-bound universe。agent
-显式创建 CAS-protected selection revision，并为每个 occurrence 给出且只给出一个 disposition：
+controlled-operation 和 covered sandbox-run occurrence，计算 digest-bound universe。selection
+head 只保存 current selection 的 CAS pointer/revision；读取 lifecycle 必须用 repository
+`resolve_head()` 联读 canonical `ScientificChainSelection`，不能在 head 上复制或猜测
+`state`。agent 显式创建 CAS-protected selection revision，并为每个 occurrence 给出且只给出
+一个 disposition：
 
 - `adopted`：进入唯一 selected workflow chain；
 - `superseded`：保留事实并指向 replacement/adopted role；
 - `failed`：绑定 terminal known failure；
 - `abandoned`：仅限 no-effect，或已 reconciliation、已退休且不会再活动的 occurrence。
+
+对 active contract，`adopted` 不能通过 generic disposition 单独写入。agent 调用一次
+`scientific.operation.adopt`，显式提供 exact selection/operation/workflow role/reason/
+idempotency key；Host 在同一个 repository transaction 和 mutation-writer turn 中校验 current
+draft head、universe、terminal-known result/approval/effect 与 contract signature，同时写入
+adopted disposition 和 matching `ScientificEffectAdoption`。两条 row 共享 request digest；
+exact replay 返回原 identities，单边或 digest 不一致 replay 是 integrity conflict，整笔不
+修补。历史 split-record adoption 只读保留。
+
+纯读取 `ScientificSelectionEvaluator` 从 resolved head、完整 universe、contract、
+dispositions/adoptions/materializations、executions/results 和 authority/ownership 计算稳定
+issues、bounded gap summary 与 `seal_ready`。seal、closure revalidation、详细
+`scientific.attempt.inspect` 和 workspace summary 都消费同一 evaluation；公开 detail 只分页
+投影 safe operation signatures、allowed/compatible roles 与 blocker codes，不含 Host
+locator、lease/fence、credentials 或 recommended actions。`seal_ready` 不是自动 seal 或 task
+terminal authority。
 
 同一个 formal attempt 内可以跨 sandbox run 采用已完成 operation，并由 Host 通过 artifact
 catalog grant、digest 和 target authority 物化其 bytes。跨 formal attempt、campaign、
@@ -155,7 +195,7 @@ agent 可消费的 evidence，不是 `task.finish`；owner 仍需显式决定完
 - unknown-effect、writer/process、cross-attempt reuse 与 tamper rejection。
 
 历史 `aox_blank_world_attempt_bundle@2` verifier 保留为只读历史入口。旧 bundle 不得升级、
-回填 selection、与 `@3` row 混合或被新 campaign 采用。r48-r53 永久保持 NO-GO；
+回填 selection、与 `@3` row 混合或被新 campaign 采用。r48-r54 永久保持 NO-GO；
 对应 authority、root、effect、provider job、artifact、browser evidence 和 scientific
 bytes 均不得复用。r53 的 probe scope 已密封，但 formal pre-attempt scope 因旧 driver
 缺少 exact barrier observer writer 而保持 open；parent fatal 只证明进程退休，不声明
@@ -167,6 +207,23 @@ writer settlement 仍绕过 observer lifecycle，既有测试桩没有暴露该�
 两个 formal 消费面，并验证其他 root/child writer 仍可见、observer 均退休且 pre-attempt
 scope 可密封。所有绑定旧纠正 commit 的未消费后继计划均已过时；本次工作不启动新的
 numbered live attempt。
+
+r54 已产生 canonical scientific I/O 和六项 terminal formal controlled-operation 成功事实，
+但 selection 仍是 draft，disposition/adoption、seal、attempt close、eligible report 与 campaign
+reducer 都未闭合；operation success 因此不等于 attempt/report/campaign success。旧
+`aox_blank_world_selected_chain@1` digest 没有覆盖 Host 实际执行的
+role-to-operation signature map，inspection 也没有把 compatible roles/readiness gaps 给
+agent；executor 在错误的两步 adoption 顺序与错误 role 后耗尽 step budget。随后 consistency
+projection 错读 `ScientificSelectionHead.state`，又把 scheduler 已处理的一个 signal 错报为
+零进度 runtime command failure。
+
+r54 的数据库、root、contract `@1` preimage/digest、operation/effect、bundle/decision/ledger
+全部 immutable/read-only，绝不原地升级。新 AOX attempt 只接受
+`aox_blank_world_selected_chain@2`，其 digest 覆盖 formal/fault/probe roles 到 closed SDK
+signatures；active `aox_blank_world_runtime_config@3` 把 exact `@2` identity 封入
+`config_digest`，新 `@3` bundle verifier 拒绝历史 config/contract crossgrade。该 correction
+只提供未来 attempt 的可观察 contract、统一 evaluator、原子 adoption、resolved head 与真实
+runtime receipt，不继续 r54。
 
 当前代码与文档工作明确停在下一次编号 live attempt 之前：非-live qualification 和
 `authorize` 只准备/发布 authority，不创建 attempt root；`preflight`、`run-live`、provider、

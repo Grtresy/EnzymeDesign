@@ -312,7 +312,7 @@ master 与 teammate 都可以通过 `artifact.list` / `artifact.get` / `artifact
 - approved execution pipeline 的成功、失败和取消都回到原 executor：Host 只继续 engine invocation、记录 run/artifact/activity 证据并发出唤醒信号，不直接合成用户最终答复。
 - task canonical 终态由 task board 表达；protocol/chat 只承载沟通内容。成功执行由 executor 总结结果后通过 `task.finish(status="completed")` 完成 task，失败执行只在明确不可修复时由 executor 调用 `task.finish(status="failed")` 并提供 `failure_summary` 或 `failure_ref`。阻塞退出必须提供 `blocked_reason` 或 `recovery_hint`。
 - scheduler 只根据 user message、approval、engine completion、inbox、task availability 等信号唤醒 agent；它不根据 sandbox dirty state、可用 backend 或工具探测结果替 executor 选择 plan、切换本地/HPC 后端、自动重写 pipeline，或把 run 结果自动解释成任务终态。
-- 如果 bounded loop 到达 max steps，runtime 可以标记 runtime signal / agent 状态为 failed，但不能据此推断 task 业务终态，也不能把 task 机械写成 failed；master 或 teammate 应通过 protocol thread、task state 与 artifacts 决定下一步。
+- 如果 bounded loop 到达 max steps，runtime 以 `agent_turn_budget_exhausted` 将 exact signal/turn terminalize，`retry_eligibility=terminal` 且不自动 replay/增加 budget；同时记录 `recoverability=agent_can_replan`，保持 task status 与业务 failure fields 不变。signal-local `no_effect` 不能覆盖同 turn 已持久化的 controlled-operation effect。source-bound、去重的 master wakeup 从 canonical failure observation 与当前 scientific selection evaluation 重建 facts，master 在新的 turn 中显式决定下一步。
 - 如果 engine/capability completed 但 teammate 未消费结果，scheduler 应唤醒 owner teammate 或 report teammate 进行收尾；teammate 必须用 outcome 作为 evidence 显式调用 `task.finish`，或发送 follow-up / blocked 语义后再通过 task/protocol/report 变化唤醒 master。
 - shutdown 必须通过 protocol handshake：request -> cleanup / approve -> shutdown status；不得默认直接丢弃未读 inbox 或未发布 report draft。
 - failed teammate 的 task 应回到可诊断状态，由 master 或其他 teammate 接管，workspace projection 必须显示失败原因与关联 thread。
@@ -351,3 +351,10 @@ nonterminal；provider 无法让 agent 发言时，workspace 标记 system diagn
 scientific admission/closure 是两阶段 Host transition：agent 只请求，Host 等 bounded writer
 退休后 finalizes 并重新唤醒 agent。nonretryable finalizer rejection 必须成为 durable
 system-attributed failure observation，不能被 silent `except` 丢弃。
+
+runtime drain 的 scheduler batch 与 read-model settlement 也不能混成一个真假不明的
+返回值。batch 后先形成 typed core receipt；trace/activity/consistency/event/workspace
+projection 再独立结算。post-core projection failure 必须保留 count、suspension、output/event
+identities，并明确 `replay_safe=false`，不能被 worker catch-all 改写成“零 signal
+processed”。runtime consistency 对新 max-step observation 按结构化 error code 分类；旧
+自由文本匹配只用于 frozen historical rows。

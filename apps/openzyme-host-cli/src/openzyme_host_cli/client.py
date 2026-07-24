@@ -113,6 +113,35 @@ class HostApiClient:
     def get_v3_runtime_health(self) -> dict[str, Any]:
         return self._request_json("GET", "/v3/runtime/health")
 
+    def drain_v3_runtime(
+        self,
+        session_id: str,
+        *,
+        max_signals: int,
+        max_steps_per_agent: int,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            f"/v3/sessions/{session_id}/runtime/drain",
+            json_body={
+                "max_signals": max_signals,
+                "max_steps_per_agent": max_steps_per_agent,
+                "auto_enqueue_ready_tasks": False,
+            },
+            idempotency_key=idempotency_key,
+        )
+
+    def get_v3_runtime_command(
+        self,
+        session_id: str,
+        command_id: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "GET",
+            f"/v3/sessions/{session_id}/runtime/commands/{command_id}",
+        )
+
     def get_v3_scientific_attempts(self, session_id: str) -> dict[str, Any]:
         return self._request_json(
             "GET",

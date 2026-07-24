@@ -26,6 +26,7 @@ from .aox_architecture_qualification import AoxArchitectureQualificationError
 from .aox_architecture_qualification import (
     normalize_architecture_qualification_receipt,
 )
+from .aox_cutover_runtime_config import AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID
 from .aox_cutover_runtime_config import AoxRuntimeConfigSchemaError
 from .aox_cutover_runtime_config import normalize_aox_blank_world_runtime_config
 
@@ -3224,6 +3225,18 @@ def _validate_effective_config_attestation(payload: Mapping[str, Any]) -> None:
         raise CutoverEvidenceError(
             "effective_config_attestation_invalid",
             "sealed effective configuration is not in canonical normalized form",
+            details={"identity": "product_path.launch_receipt.effective_config"},
+        )
+    if (
+        payload.get("schema_id") == ATTEMPT_BUNDLE_SCHEMA_ID_V3
+        and config.get("schema_id") != AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID
+    ):
+        raise CutoverEvidenceError(
+            "effective_config_attestation_invalid",
+            (
+                "new selected-chain evidence requires the active runtime "
+                "configuration contract"
+            ),
             details={"identity": "product_path.launch_receipt.effective_config"},
         )
     config_digest = canonical_digest(config)

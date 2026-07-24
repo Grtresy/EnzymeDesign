@@ -12,6 +12,7 @@ from .client import SessionProtocol
 from .config import HostCliConfig
 from .renderers import render_json
 from .renderers import render_v3_command_result
+from .renderers import render_v3_runtime_command
 from .renderers import render_v3_runtime_health
 from .renderers import render_v3_workspace
 
@@ -87,6 +88,28 @@ def _build_parser() -> argparse.ArgumentParser:
     runtime = subparsers.add_parser("runtime", help="Runtime commands")
     runtime_sub = runtime.add_subparsers(dest="runtime_command", required=True)
     runtime_sub.add_parser("health", help="Show public V3 runtime health")
+    runtime_drain = runtime_sub.add_parser(
+        "drain",
+        help="Submit one bounded V3 runtime drain command",
+    )
+    runtime_drain.add_argument(
+        "--session-id",
+        dest="command_session_id",
+        help="Session ID override",
+    )
+    runtime_drain.add_argument("--max-signals", type=int, default=3)
+    runtime_drain.add_argument("--max-steps-per-agent", type=int, default=8)
+    runtime_drain.add_argument("--idempotency-key")
+    runtime_status = runtime_sub.add_parser(
+        "status",
+        help="Show bounded scheduler and projection command state",
+    )
+    runtime_status.add_argument(
+        "--session-id",
+        dest="command_session_id",
+        help="Session ID override",
+    )
+    runtime_status.add_argument("--command-id", required=True)
 
     scientific = subparsers.add_parser(
         "scientific",
@@ -132,7 +155,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "attempt.create",
             "scientific.selection.begin",
             "scientific.operation.disposition",
-            "scientific.effect.adopt",
+            "scientific.operation.adopt",
             "scientific.artifact.materialize",
             "scientific.selection.seal",
             "scientific.attempt.close",
@@ -296,9 +319,36 @@ def run_cli(
             stdout.write(_format_output(config.output_format, payload, render_v3_command_result) + "\n")
             return 0
         if args.resource == "runtime":
-            payload = client.get_v3_runtime_health()
+            if args.runtime_command == "health":
+                payload = client.get_v3_runtime_health()
+                renderer = render_v3_runtime_health
+            else:
+                session_id = _require_value(
+                    getattr(args, "command_session_id", None)
+                    or args.session_id,
+                    "--session-id",
+                )
+                if args.runtime_command == "drain":
+                    if args.max_signals <= 0:
+                        raise ValueError("--max-signals must be positive")
+                    if args.max_steps_per_agent <= 0:
+                        raise ValueError(
+                            "--max-steps-per-agent must be positive"
+                        )
+                    payload = client.drain_v3_runtime(
+                        session_id,
+                        max_signals=args.max_signals,
+                        max_steps_per_agent=args.max_steps_per_agent,
+                        idempotency_key=args.idempotency_key,
+                    )
+                else:
+                    payload = client.get_v3_runtime_command(
+                        session_id,
+                        args.command_id,
+                    )
+                renderer = render_v3_runtime_command
             stdout.write(
-                _format_output(config.output_format, payload, render_v3_runtime_health)
+                _format_output(config.output_format, payload, renderer)
                 + "\n"
             )
             return 0

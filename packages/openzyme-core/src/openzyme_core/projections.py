@@ -25,6 +25,7 @@ from .protocols import ProtocolService
 from .failure_repositories import project_failure_observation
 from .runtime_consistency import RuntimeConsistencyService
 from .scientific_attempts import ScientificAttemptService
+from .scientific_workflow_contracts import ScientificWorkflowContractRegistry
 from .trace_projection import project_public_llm_trace_step
 
 
@@ -187,6 +188,9 @@ class SessionWorkspaceProjection:
 @dataclass(slots=True)
 class SessionProjectionBuilder:
     repositories: CoreRepositories
+    scientific_workflow_contract_registry: (
+        ScientificWorkflowContractRegistry | None
+    ) = None
 
     def build_session_workspace(self, session_id: str) -> SessionWorkspaceProjection:
         session = self.repositories.sessions.get(session_id)
@@ -253,7 +257,12 @@ class SessionProjectionBuilder:
         )
         capabilities = self._build_capabilities_projection(session_id)
         runtime_state = self._sanitize_execution_projection(
-            RuntimeConsistencyService(self.repositories)
+            RuntimeConsistencyService(
+                self.repositories,
+                scientific_workflow_contract_registry=(
+                    self.scientific_workflow_contract_registry
+                ),
+            )
             .audit_session(session_id)
             .to_dict()
         )
@@ -266,7 +275,12 @@ class SessionProjectionBuilder:
             )
         )
         scientific_attempts = self._sanitize_execution_projection(
-            ScientificAttemptService(self.repositories).project_session(session_id)
+            ScientificAttemptService(
+                self.repositories,
+                workflow_contract_registry=(
+                    self.scientific_workflow_contract_registry
+                ),
+            ).project_session_readiness_summary(session_id)
         )
         return SessionWorkspaceProjection(
             session=session.to_dict(),

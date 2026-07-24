@@ -85,7 +85,9 @@ from .aox_scientific_contract import (
 )
 from .aox_scientific_contract import AOX_SELECTED_CHAIN_WORKFLOW_ID
 from .aox_scientific_contract import AOX_WORKFLOW_METHOD_BY_ROLE
-from .aox_scientific_contract import validate_aox_scientific_workflow_role
+from .aox_scientific_contract import (
+    AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY,
+)
 from .aox_runtime_observation import AoxRuntimeObservationError
 from .aox_runtime_observation import AoxSessionRuntimeObservation
 from .aox_runtime_observation import AoxRuntimeObservationService
@@ -2706,7 +2708,9 @@ class LiveAoxAttemptRunner:
                 return None
             service = ScientificAttemptService(
                 repositories,
-                workflow_role_validator=validate_aox_scientific_workflow_role,
+                workflow_contract_registry=(
+                    AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
+                ),
             )
             control = service.export_closed_attempt_evidence(
                 attempt.attempt_id
@@ -4212,11 +4216,14 @@ class LiveAoxAttemptRunner:
             + "required typed validation profile. Persist each completed "
             + "controlled-operation response under /workspace/work before downstream parsing. "
             + "Intermediate paths may fail and be retried. Never hide or delete an occurrence. "
-            + "Use scientific.selection.begin over the full occurrence universe; disposition "
-            + "every occurrence as adopted, superseded, failed, or abandoned. Adopt exactly "
-            + "one successful terminal-known controlled operation for each reached AOX role. "
+            + "Use scientific.selection.begin over the full occurrence universe, then inspect "
+            + "the exact selection page to observe each occurrence signature and compatible_roles. "
+            + "The agent, never the Harness, chooses the operation and role. Classify each "
+            + "non-adopted occurrence as superseded, failed, or abandoned; never submit an "
+            + "adopted disposition directly. Use scientific.operation.adopt once to atomically "
+            + "adopt one successful terminal-known operation for each reached AOX role. "
             + "A successful effect from an earlier sandbox run in this same attempt may be "
-            + "reused only through scientific.effect.adopt and "
+            + "reused only by selecting it through scientific.operation.adopt and then "
             + "scientific.artifact.materialize into /workspace/input; raw workspace copying is "
             + "forbidden. If later work changes the universe, begin a compare-and-swap child "
             + "selection and repeat the exact same adoption/materialization to carry verified "

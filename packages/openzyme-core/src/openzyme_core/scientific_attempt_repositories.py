@@ -51,6 +51,25 @@ class ScientificAttemptVersionConflictError(ScientificAttemptRepositoryError):
     """A compare-and-swap update lost its expected state version."""
 
 
+class ScientificSelectionIntegrityError(ScientificAttemptRepositoryError):
+    """A selection head does not resolve to one canonical selection."""
+
+    error_code = "scientific_selection_head_invalid"
+    _REASONS = frozenset(
+        {
+            "selection_missing",
+            "attempt_mismatch",
+            "revision_mismatch",
+        }
+    )
+
+    def __init__(self, reason_code: str) -> None:
+        if reason_code not in self._REASONS:
+            raise ValueError("unsupported scientific selection integrity reason")
+        super().__init__("scientific selection head is invalid")
+        self.reason_code = reason_code
+
+
 @dataclass(frozen=True, slots=True)
 class ScientificOccurrenceSnapshot:
     selection_id: str
@@ -78,6 +97,12 @@ class ScientificSelectionHead:
     revision: int
     state_version: int
     updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedScientificSelectionHead:
+    head: ScientificSelectionHead
+    selection: ScientificChainSelection
 
 
 @dataclass(slots=True)
@@ -1011,24 +1036,83 @@ class ScientificSelectionRepository:
         ).fetchall()
         return [self._row(row) for row in rows]
 
-    def get_head(self, attempt_id: str) -> ScientificSelectionHead | None:
+    def resolve_head(
+        self,
+        attempt_id: str,
+    ) -> ResolvedScientificSelectionHead | None:
         row = self.connection.execute(
             """
-            SELECT *
-            FROM scientific_selection_head_records
-            WHERE attempt_id = ?
+            SELECT
+                head.attempt_id AS head_attempt_id,
+                head.selection_id AS head_selection_id,
+                head.revision AS head_revision,
+                head.state_version AS head_state_version,
+                head.updated_at AS head_updated_at,
+                selection.selection_id AS selection_selection_id,
+                selection.attempt_id AS selection_attempt_id,
+                selection.revision AS selection_revision,
+                selection.parent_selection_id AS selection_parent_selection_id,
+                selection.state AS selection_state,
+                selection.operation_universe_digest
+                    AS selection_operation_universe_digest,
+                selection.operation_count AS selection_operation_count,
+                selection.disposition_digest AS selection_disposition_digest,
+                selection.adoption_digest AS selection_adoption_digest,
+                selection.workflow_contract_digest
+                    AS selection_workflow_contract_digest,
+                selection.actor_ref AS selection_actor_ref,
+                selection.idempotency_key AS selection_idempotency_key,
+                selection.request_digest AS selection_request_digest,
+                selection.created_at AS selection_created_at,
+                selection.sealed_at AS selection_sealed_at
+            FROM scientific_selection_head_records AS head
+            LEFT JOIN scientific_chain_selection_records AS selection
+              ON selection.selection_id = head.selection_id
+            WHERE head.attempt_id = ?
             """,
             (attempt_id,),
         ).fetchone()
         if row is None:
             return None
-        return ScientificSelectionHead(
-            attempt_id=row["attempt_id"],
-            selection_id=row["selection_id"],
-            revision=int(row["revision"]),
-            state_version=int(row["state_version"]),
-            updated_at=row["updated_at"],
+        if row["selection_selection_id"] is None:
+            raise ScientificSelectionIntegrityError("selection_missing")
+        if row["head_attempt_id"] != row["selection_attempt_id"]:
+            raise ScientificSelectionIntegrityError("attempt_mismatch")
+        if int(row["head_revision"]) != int(row["selection_revision"]):
+            raise ScientificSelectionIntegrityError("revision_mismatch")
+        head = ScientificSelectionHead(
+            attempt_id=row["head_attempt_id"],
+            selection_id=row["head_selection_id"],
+            revision=int(row["head_revision"]),
+            state_version=int(row["head_state_version"]),
+            updated_at=row["head_updated_at"],
         )
+        selection = ScientificChainSelection(
+            selection_id=row["selection_selection_id"],
+            attempt_id=row["selection_attempt_id"],
+            revision=int(row["selection_revision"]),
+            parent_selection_id=row["selection_parent_selection_id"],
+            state=ScientificSelectionState(row["selection_state"]),
+            operation_universe_digest=row[
+                "selection_operation_universe_digest"
+            ],
+            operation_count=int(row["selection_operation_count"]),
+            disposition_digest=row["selection_disposition_digest"],
+            adoption_digest=row["selection_adoption_digest"],
+            workflow_contract_digest=row[
+                "selection_workflow_contract_digest"
+            ],
+            actor_ref=row["selection_actor_ref"],
+            idempotency_key=row["selection_idempotency_key"],
+            request_digest=row["selection_request_digest"],
+            created_at=row["selection_created_at"],
+            sealed_at=row["selection_sealed_at"],
+        )
+        return ResolvedScientificSelectionHead(head=head, selection=selection)
+
+    def get_head(self, attempt_id: str) -> ScientificSelectionHead | None:
+        resolved = self.resolve_head(attempt_id)
+        return None if resolved is None else resolved.head
 
     def list_occurrences(
         self,
@@ -1723,6 +1807,8 @@ __all__ = [
     "ScientificDispositionRepository",
     "ScientificEffectAdoptionRepository",
     "ScientificOccurrenceSnapshot",
+    "ResolvedScientificSelectionHead",
     "ScientificSelectionHead",
+    "ScientificSelectionIntegrityError",
     "ScientificSelectionRepository",
 ]

@@ -42,11 +42,68 @@ class FakeSession:
                     "attempts": [],
                 },
             )
+        if "/runtime/commands/" in url:
+            return FakeResponse(
+                200,
+                {
+                    "schema_version": "runtime_command_status@1",
+                    "session_id": "sess_001",
+                    "command_id": "runtime_command_001",
+                    "command_type": "runtime.drain",
+                    "status": "failed",
+                    "status_url": url,
+                    "accepted_at": "2026-07-24T00:00:00+00:00",
+                    "started_at": "2026-07-24T00:00:01+00:00",
+                    "completed_at": "2026-07-24T00:00:02+00:00",
+                    "bounded_outcome_summary": {
+                        "schema_version": "runtime_command_outcome@2",
+                        "core_receipt_formed": True,
+                        "scheduler_status": "completed",
+                        "processed_signal_count": 1,
+                        "suspended": False,
+                        "projection_status": "failed",
+                        "projection_error_code": "runtime_projection_failed",
+                        "projection_failed_stage": "runtime_consistency",
+                        "replay_safe": False,
+                        "output_count": 0,
+                        "output_ids": [],
+                        "output_ids_truncated": False,
+                        "event_count": 1,
+                        "event_ids": ["evt_001"],
+                        "event_ids_truncated": False,
+                    },
+                    "error_code": "runtime_projection_failed",
+                    "safe_error_summary": "Consistency projection failed.",
+                    "safe_retry_hint": "Inspect canonical state before retry.",
+                },
+            )
         return FakeResponse(200, [])
 
     def post(self, url: str, **kwargs):
         self.last_headers = dict(kwargs.get("headers") or {})
         self.calls.append(("POST", url, kwargs.get("json")))
+        if url.endswith("/runtime/drain"):
+            return FakeResponse(
+                202,
+                {
+                    "schema_version": "runtime_command_status@1",
+                    "session_id": "sess_001",
+                    "command_id": "runtime_command_001",
+                    "command_type": "runtime.drain",
+                    "status": "accepted",
+                    "status_url": (
+                        "/v3/sessions/sess_001/runtime/commands/"
+                        "runtime_command_001"
+                    ),
+                    "accepted_at": "2026-07-24T00:00:00+00:00",
+                    "started_at": None,
+                    "completed_at": None,
+                    "bounded_outcome_summary": None,
+                    "error_code": None,
+                    "safe_error_summary": None,
+                    "safe_retry_hint": None,
+                },
+            )
         return FakeResponse(
             200,
             {
@@ -230,6 +287,133 @@ def test_cli_v3_task_update_uses_patch() -> None:
 
     assert exit_code == 0
     assert session.calls[-1] == ("PATCH", "/v3/tasks/task_001", {"status": "in_progress"})
+
+
+def test_cli_runtime_drain_and_status_render_two_layer_receipt() -> None:
+    session = FakeSession()
+    stdout = StringIO()
+
+    exit_code = run_cli(
+        [
+            "--session-id",
+            "sess_001",
+            "runtime",
+            "drain",
+            "--max-signals",
+            "1",
+            "--max-steps-per-agent",
+            "2",
+            "--idempotency-key",
+            "drain:cli-test",
+        ],
+        session=session,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    assert exit_code == 0
+    assert session.calls[-1] == (
+        "POST",
+        "/v3/sessions/sess_001/runtime/drain",
+        {
+            "max_signals": 1,
+            "max_steps_per_agent": 2,
+            "auto_enqueue_ready_tasks": False,
+        },
+    )
+    assert session.last_headers["Idempotency-Key"] == "drain:cli-test"
+    assert "Command status: accepted" in stdout.getvalue()
+    assert "Outcome schema: unavailable" in stdout.getvalue()
+
+    stdout = StringIO()
+    exit_code = run_cli(
+        [
+            "--session-id",
+            "sess_001",
+            "runtime",
+            "status",
+            "--command-id",
+            "runtime_command_001",
+        ],
+        session=session,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    rendered = stdout.getvalue()
+    assert exit_code == 0
+    assert session.calls[-1] == (
+        "GET",
+        (
+            "/v3/sessions/sess_001/runtime/commands/"
+            "runtime_command_001"
+        ),
+        None,
+    )
+    assert "Command status: failed" in rendered
+    assert "Scheduler: completed" in rendered
+    assert "Processed signals: 1" in rendered
+    assert "Projection: failed" in rendered
+    assert "Projection stage: runtime_consistency" in rendered
+    assert "Replay safe: False" in rendered
+    assert "Projection: unavailable" not in rendered
+
+
+def test_cli_runtime_status_preserves_historical_v1_uncertainty() -> None:
+    session = FakeSession()
+    original_get = session.get
+
+    def historical_get(url: str, **kwargs):
+        if "/runtime/commands/" not in url:
+            return original_get(url, **kwargs)
+        session.last_headers = dict(kwargs.get("headers") or {})
+        session.calls.append(("GET", url, None))
+        return FakeResponse(
+            200,
+            {
+                "schema_version": "runtime_command_status@1",
+                "session_id": "sess_001",
+                "command_id": "runtime_command_historical",
+                "command_type": "runtime.drain",
+                "status": "failed",
+                "status_url": url,
+                "accepted_at": "2026-07-20T00:00:00+00:00",
+                "started_at": "2026-07-20T00:00:01+00:00",
+                "completed_at": "2026-07-20T00:00:02+00:00",
+                "bounded_outcome_summary": {
+                    "schema_version": "runtime_command_outcome@1",
+                    "processed_signal_count": 0,
+                    "suspended": False,
+                },
+                "error_code": "runtime_command_execution_failed",
+                "safe_error_summary": "Historical command failed.",
+                "safe_retry_hint": None,
+            },
+        )
+
+    session.get = historical_get
+    stdout = StringIO()
+
+    exit_code = run_cli(
+        [
+            "--session-id",
+            "sess_001",
+            "runtime",
+            "status",
+            "--command-id",
+            "runtime_command_historical",
+        ],
+        session=session,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    rendered = stdout.getvalue()
+    assert exit_code == 0
+    assert "Outcome schema: runtime_command_outcome@1" in rendered
+    assert "Scheduler: unavailable in historical @1 receipt" in rendered
+    assert "Projection: unavailable in historical @1 receipt" in rendered
+    assert "Replay safe: unknown for historical @1 receipt" in rendered
 
 
 def test_cli_scientific_inspect_and_actor_bound_command() -> None:

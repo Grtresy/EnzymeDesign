@@ -2,6 +2,7 @@ from .models import ArtifactKind
 from .models import RunStatus
 from .models import SourceRefKind
 from .models import utc_now_iso
+from .failures import AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
 from .failures import FAILURE_HYPOTHESIS_SCHEMA_VERSION
 from .failures import FAILURE_OBSERVATION_SCHEMA_VERSION
 from .failures import FailureActorKind
@@ -123,6 +124,7 @@ from .control_plane import TaskPriority
 from .control_plane import TaskStatus
 
 __all__ = [
+    "AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE",
     "AgentMember",
     "AgentMemberStatus",
     "AgentRuntimeSignal",
