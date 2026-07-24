@@ -91,6 +91,12 @@ observer 立即退休，不能跨 runtime drain、admission/closure finalizer、
 dispatch 或 approval wait。缺 scope、多 scope、observer identity 缺失或 retirement
 失败均 fail closed，不能解释成 idle 或 quiescent。
 
+完整 session observation 与 terminal runtime command 的 attached-writer settlement 都会
+读取该 barrier，因此必须走同一个 bounded observer context。drain coordinator 显式传递
+`purpose + attempt_authority`，不得在 formal 路径直接调用 writer-only projection。
+observer 必须早于 sleep、下一次 compact approval read、下一次 drain、return 或 error
+propagation 退休。
+
 AOX 使用更窄的 `aox_live_attempt_authority_plan@1`：
 
 - plan 精确包含 `positive, positive, fault` 三个槽；
@@ -154,6 +160,13 @@ agent 可消费的 evidence，不是 `task.finish`；owner 仍需显式决定完
 bytes 均不得复用。r53 的 probe scope 已密封，但 formal pre-attempt scope 因旧 driver
 缺少 exact barrier observer writer 而保持 open；parent fatal 只证明进程退休，不声明
 SQLite/quiescence/artifact closure，也没有 eligible attempt bundle。
+
+post-r53 的第一次纠正 commit `6e5ff65a2f4f9e16f4441857be2d25ca7cf5e7d8`
+只覆盖完整 session observation；非-live 真实 SQLite 审计随后发现 terminal-command
+writer settlement 仍绕过 observer lifecycle，既有测试桩没有暴露该缺口。当前纠正统一
+两个 formal 消费面，并验证其他 root/child writer 仍可见、observer 均退休且 pre-attempt
+scope 可密封。所有绑定旧纠正 commit 的未消费后继计划均已过时；本次工作不启动新的
+numbered live attempt。
 
 当前代码与文档工作明确停在下一次编号 live attempt 之前：非-live qualification 和
 `authorize` 只准备/发布 authority，不创建 attempt root；`preflight`、`run-live`、provider、

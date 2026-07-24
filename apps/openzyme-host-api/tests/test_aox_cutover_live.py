@@ -26,6 +26,7 @@ from openzyme_domain import ControlledOperationExecutionLifecycle
 from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import RetryEligibility
+from openzyme_domain import MutationWriterKind
 from openzyme_domain import ScientificAttemptStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
@@ -35,6 +36,7 @@ from openzyme_domain import SessionReportRecord
 from openzyme_domain import SessionReportStatus
 from openzyme_core import DurableEventRecord
 from openzyme_core import EngineDocumentRecord
+from openzyme_core import MutationScopeService
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import scientific_attempt_authorization_identity
 from openzyme_core import verify_quiescence_evidence
@@ -2303,6 +2305,119 @@ def test_formal_runtime_observation_binds_and_retires_exact_driver(
     assert sealed["state"] == "sealed"
 
 
+def test_formal_writer_settlement_keeps_other_writers_visible_on_real_sqlite(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+    )
+    provider = SQLiteRepositoryProvider(str(tmp_path / "scope.sqlite3"))
+    session = Session.create(
+        session_id="sess_formal_writer_settlement",
+        project_id="aox-blank-world-cutover",
+        title="formal",
+        objective="observe root and child writers during settlement",
+    )
+    with provider.write() as unit_of_work:
+        unit_of_work.repositories.sessions.save(session)
+    blob_root = tmp_path / "blobs"
+    runner._open_pre_attempt_session_scope(
+        provider,
+        session_id=session.session_id,
+        outer_attempt_id="positive-writer-settlement",
+        blob_root=blob_root,
+    )
+    with runner._provider_repository_scope(provider) as repositories:
+        scope = repositories.mutation_scopes.list_by_session(session.session_id)[0]
+        service = MutationScopeService(repositories)
+        root = service.register_writer(
+            scope_id=scope.scope_id,
+            owner_kind=MutationWriterKind.RUNTIME_COMMAND,
+            owner_ref="runtime-command:terminal-with-child",
+            trusted_root=True,
+        )
+        child = service.register_writer(
+            scope_id=scope.scope_id,
+            owner_kind=MutationWriterKind.SANDBOX_PROCESS,
+            owner_ref="sandbox:attached-process",
+            parent_writer_id=root.writer_id,
+            process_epoch=7,
+        )
+
+    assert runner._has_inflight_mutation_writers(
+        provider,
+        session_id=session.session_id,
+        purpose="formal",
+        attempt_authority={"attempt_id": "positive-writer-settlement"},
+    )
+    with provider.read() as unit_of_work:
+        writers = unit_of_work.repositories.mutation_writers.list_all(
+            scope.scope_id
+        )
+        active_writers = (
+            unit_of_work.repositories.mutation_writers.list_active(
+                scope.scope_id
+            )
+        )
+    observers = [
+        writer
+        for writer in writers
+        if writer.owner_ref
+        == "aox-attempt-driver:positive-writer-settlement:formal"
+    ]
+    assert len(observers) == 1
+    assert observers[0].state.value == "retired"
+    assert {writer.writer_id for writer in active_writers} == {
+        root.writer_id,
+        child.writer_id,
+    }
+
+    with runner._provider_repository_scope(provider) as repositories:
+        service = MutationScopeService(repositories)
+        service.finish_writer_turn(
+            root.writer_id,
+            terminal_proof={"kind": "runtime_command_returned"},
+        )
+        service.finish_writer_turn(
+            child.writer_id,
+            terminal_proof={"kind": "process_exited"},
+            expected_process_epoch=7,
+        )
+    assert not runner._has_inflight_mutation_writers(
+        provider,
+        session_id=session.session_id,
+        purpose="formal",
+        attempt_authority={"attempt_id": "positive-writer-settlement"},
+    )
+    with provider.read() as unit_of_work:
+        writers = unit_of_work.repositories.mutation_writers.list_all(
+            scope.scope_id
+        )
+        active_writers = (
+            unit_of_work.repositories.mutation_writers.list_active(
+                scope.scope_id
+            )
+        )
+    observers = [
+        writer
+        for writer in writers
+        if writer.owner_ref
+        == "aox-attempt-driver:positive-writer-settlement:formal"
+    ]
+    assert len(observers) == 2
+    assert all(writer.state.value == "retired" for writer in observers)
+    assert active_writers == []
+
+    sealed = runner._close_session_mutation_scope(
+        provider,
+        scope_id=scope.scope_id,
+        blob_root=blob_root,
+    )
+    assert sealed["state"] == "sealed"
+
+
 def test_live_fault_scope_fails_without_receipt_when_artifact_bytes_drift(
     tmp_path: Path,
 ) -> None:
@@ -3723,6 +3838,7 @@ def test_runtime_drain_coordinates_three_serial_approvals_while_blocked(
             api,
             object(),  # type: ignore[arg-type]
             session_id="sess_serial",
+            purpose="probe",
             drain_number=1,
             started=time.monotonic(),
             pre_event_cursor=0,
@@ -3809,6 +3925,7 @@ def test_runtime_drain_resolves_approval_exposed_by_waiting_response(
         api,
         object(),  # type: ignore[arg-type]
         session_id="sess_post_response",
+        purpose="probe",
         drain_number=2,
         started=time.monotonic(),
         pre_event_cursor=0,
@@ -3871,6 +3988,7 @@ def test_terminal_runtime_command_waits_for_attached_writer_and_late_approval(
         api,
         object(),  # type: ignore[arg-type]
         session_id="sess_terminal_writer",
+        purpose="probe",
         drain_number=5,
         started=time.monotonic(),
         pre_event_cursor=0,
@@ -3886,6 +4004,91 @@ def test_terminal_runtime_command_waits_for_attached_writer_and_late_approval(
     assert raw_client.resolve_calls == [(approval_id, "approved")]
     assert coordination.approval_ids == (approval_id,)
     assert coordination.workspace == {"pending_approvals": []}
+
+
+def test_formal_terminal_runtime_command_uses_bounded_observer_on_real_sqlite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        live,
+        "_assert_cutover_operation_budget_before_approval",
+        lambda *args, **kwargs: None,
+    )
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    provider = SQLiteRepositoryProvider(str(tmp_path / "scope.sqlite3"))
+    session = Session.create(
+        session_id="sess_post_response",
+        project_id="aox-blank-world-cutover",
+        title="formal",
+        objective="settle one terminal runtime command",
+    )
+    with provider.write() as unit_of_work:
+        unit_of_work.repositories.sessions.save(session)
+    blob_root = tmp_path / "blobs"
+    runner._open_pre_attempt_session_scope(
+        provider,
+        session_id=session.session_id,
+        outer_attempt_id="positive-terminal-observer",
+        blob_root=blob_root,
+    )
+    approval_id = "approval_before_terminal_settlement"
+    raw_client = _DrainReturnsPendingApprovalJsonClient(approval_id)
+    api = live._PublicHostClient(raw_client)
+
+    coordination = runner._coordinate_runtime_drain(
+        api,
+        provider,
+        session_id=session.session_id,
+        purpose="formal",
+        drain_number=6,
+        started=time.monotonic(),
+        pre_event_cursor=0,
+        prior_approval_ids=frozenset(),
+        browser_gate_enabled=False,
+        browser_approval_receipt=None,
+        fault_enabled=False,
+        fault_blob_root=None,
+        fault_receipt=None,
+        attempt_authority={"attempt_id": "positive-terminal-observer"},
+    )
+
+    assert raw_client.resolve_calls == [(approval_id, "approved", True)]
+    assert coordination.approval_ids == (approval_id,)
+    assert coordination.workspace == {"pending_approvals": []}
+    with provider.read() as unit_of_work:
+        scopes = unit_of_work.repositories.mutation_scopes.list_by_session(
+            session.session_id
+        )
+        writers = unit_of_work.repositories.mutation_writers.list_all(
+            scopes[0].scope_id
+        )
+        active_writers = (
+            unit_of_work.repositories.mutation_writers.list_active(
+                scopes[0].scope_id
+            )
+        )
+    assert len(scopes) == 1
+    assert len(writers) == 1
+    assert (
+        writers[0].owner_ref
+        == "aox-attempt-driver:positive-terminal-observer:formal"
+    )
+    assert writers[0].state.value == "retired"
+    assert active_writers == []
+
+    sealed = runner._close_session_mutation_scope(
+        provider,
+        scope_id=scopes[0].scope_id,
+        blob_root=blob_root,
+    )
+    assert sealed["state"] == "sealed"
 
 
 def test_later_drain_auto_approves_after_chrome_receipt(
@@ -3922,6 +4125,7 @@ def test_later_drain_auto_approves_after_chrome_receipt(
         api,
         object(),  # type: ignore[arg-type]
         session_id="sess_post_response",
+        purpose="probe",
         drain_number=3,
         started=time.monotonic(),
         pre_event_cursor=0,
@@ -3996,6 +4200,7 @@ def test_same_inflight_drain_uses_chrome_once_then_auto_approves(
             api,
             object(),  # type: ignore[arg-type]
             session_id="sess_serial",
+            purpose="probe",
             drain_number=drain_number,
             started=time.monotonic(),
             pre_event_cursor=17,
@@ -4040,6 +4245,7 @@ def test_runtime_drain_wraps_background_exception_as_stable_failure(
             api,
             object(),  # type: ignore[arg-type]
             session_id="sess_failed",
+            purpose="probe",
             drain_number=7,
             started=time.monotonic(),
             pre_event_cursor=0,
@@ -4083,6 +4289,7 @@ def test_runtime_drain_failure_wins_over_concurrent_workspace_failure(
             api,
             object(),  # type: ignore[arg-type]
             session_id="sess_concurrent_failure",
+            purpose="probe",
             drain_number=drain_number,
             started=time.monotonic(),
             pre_event_cursor=0,
@@ -4129,6 +4336,7 @@ def test_runtime_drain_primary_error_wins_over_cleanup_failure(
                 api,
                 object(),  # type: ignore[arg-type]
                 session_id="sess_cleanup_precedence",
+                purpose="probe",
                 drain_number=drain_number,
                 started=time.monotonic(),
                 pre_event_cursor=0,
@@ -4195,6 +4403,7 @@ def test_runtime_drain_rejects_approval_delayed_past_old_cleanup_window(
                 api,
                 object(),  # type: ignore[arg-type]
                 session_id="sess_delayed_cleanup",
+                purpose="probe",
                 drain_number=drain_number,
                 started=0.0,
                 pre_event_cursor=0,
@@ -4243,6 +4452,7 @@ def test_runtime_drain_cleanup_read_recovers_and_rejects_later_approval(
                 api,
                 object(),  # type: ignore[arg-type]
                 session_id="sess_delayed_cleanup",
+                purpose="probe",
                 drain_number=drain_number,
                 started=time.monotonic(),
                 pre_event_cursor=0,
@@ -4326,6 +4536,7 @@ def test_runtime_drain_command_failure_wins_over_primary_and_cleanup_failures(
                 api,
                 object(),  # type: ignore[arg-type]
                 session_id="sess_cleanup_precedence",
+                purpose="probe",
                 drain_number=drain_number,
                 started=time.monotonic(),
                 pre_event_cursor=0,
@@ -4399,6 +4610,7 @@ def test_fault_injection_invariant_failure_rejects_pending_without_approval(
                 api,
                 object(),  # type: ignore[arg-type]
                 session_id="sess_serial",
+                purpose="probe",
                 drain_number=8,
                 started=time.monotonic(),
                 pre_event_cursor=0,
@@ -4476,6 +4688,7 @@ def test_fault_path_rejects_approval_after_target_injection(
                 api,
                 object(),  # type: ignore[arg-type]
                 session_id="sess_serial",
+                purpose="probe",
                 drain_number=9,
                 started=time.monotonic(),
                 pre_event_cursor=0,

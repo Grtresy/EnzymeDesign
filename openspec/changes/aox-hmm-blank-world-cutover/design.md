@@ -142,6 +142,31 @@ positive 2 与 fault 未启动；r53 authority、roots、LLM/probe effects 与�
 任何后继 campaign 仍需新的 correction commit、clean full admission、fresh pin、
 fresh exact-three authority plan、fresh roots 和对新 plan 的单独精确批准。
 
+### 2026-07-24 post-r53 barrier call-surface correction addendum
+
+对 `6e5ff65a2f4f9e16f4441857be2d25ca7cf5e7d8` 的非 live 审计证明 6.48
+只闭合了 formal session 的完整语义观察入口，没有闭合 runtime command 已终态后用于
+等待 attached mutation writer 退休的窄检查。后一个分支仍直接调用
+`AoxRuntimeObservationService.has_inflight_mutation_writers()`；它同样会投影 generic
+runtime barrier，却没有在 open pre-attempt scope 上登记 exact AOX observer，因此可在
+真实 SQLite 上再次得到 `mutation_driver_writer_identity_invalid`。既有终态协调测试把
+该方法替换为测试桩，未执行真实 observer identity 合同，所以主线通过不能证明该分支
+已经闭合。
+
+纠正后的 live driver 以一个共享的 bounded observer context 作为所有 formal runtime
+barrier projection 的唯一入口。完整 session observation 与 terminal-command writer
+settlement 都必须显式携带同一 `purpose + attempt_authority`，在 snapshot 前登记 exact
+root `aox-attempt-driver:<outer-attempt-id>:formal` writer，只在投影期间排除它，并在
+返回、等待、下一次 compact approval read、下一次 drain 或异常传播前退休。probe 继续
+由既有 attempt-scoped outer writer 提供 observer identity，不能额外嵌套 formal
+observer。真实 SQLite 回归必须覆盖 terminal command 无其他 writer 时可完成、存在其他
+root/child writer 时仍阻塞、observer 每次均退休且 pre-attempt scope 可随后密封。
+
+该审计没有启动新的 numbered attempt，也不追认 r53。任何绑定
+`6e5ff65a2f4f9e16f4441857be2d25ca7cf5e7d8` 的未消费后继 authority plan 都不能跨本次
+correction commit 使用；后续 live 仍需 fresh full admission、pin、exact-three plan、
+roots 和对新 plan 的单独精确批准。
+
 ## Goals / Non-Goals
 
 **Goals:**

@@ -1859,19 +1859,29 @@ class LiveAoxAttemptRunner:
                 ),
             )
 
-    def _observe_session_runtime(
+    @contextmanager
+    def _runtime_barrier_observer(
         self,
         provider: SQLiteRepositoryProvider,
         *,
         session_id: str,
         purpose: Literal["probe", "formal"],
         attempt_authority: Mapping[str, object] | None,
-    ) -> AoxSessionRuntimeObservation:
-        observer = AoxRuntimeObservationService(provider)
+    ) -> Iterator[None]:
+        if purpose == "probe":
+            if attempt_authority is not None:
+                raise AoxRuntimeObservationError(
+                    "mutation_driver_writer_identity_invalid",
+                    "probe runtime coordination cannot bind formal attempt authority",
+                    details={"session_id": session_id},
+                )
+            yield
+            return
         if attempt_authority is None:
-            return observer.observe_session(
-                session_id=session_id,
-                purpose=purpose,
+            raise AoxRuntimeObservationError(
+                "mutation_driver_writer_identity_invalid",
+                "formal runtime coordination lacks attempt authority",
+                details={"session_id": session_id},
             )
 
         attempt_id = str(attempt_authority.get("attempt_id") or "").strip()
@@ -1905,16 +1915,50 @@ class LiveAoxAttemptRunner:
                         ),
                         details={"session_id": session_id},
                     )
-                return observer.observe_session(
-                    session_id=session_id,
-                    purpose=purpose,
-                )
+                yield
         except MutationScopeError as exc:
             raise AoxRuntimeObservationError(
                 "mutation_driver_writer_identity_invalid",
                 "runtime coordination lacks one exact outer attempt-driver writer",
                 details={"mutation_scope_error_code": exc.code},
             ) from exc
+
+    def _observe_session_runtime(
+        self,
+        provider: SQLiteRepositoryProvider,
+        *,
+        session_id: str,
+        purpose: Literal["probe", "formal"],
+        attempt_authority: Mapping[str, object] | None,
+    ) -> AoxSessionRuntimeObservation:
+        with self._runtime_barrier_observer(
+            provider,
+            session_id=session_id,
+            purpose=purpose,
+            attempt_authority=attempt_authority,
+        ):
+            return AoxRuntimeObservationService(provider).observe_session(
+                session_id=session_id,
+                purpose=purpose,
+            )
+
+    def _has_inflight_mutation_writers(
+        self,
+        provider: SQLiteRepositoryProvider,
+        *,
+        session_id: str,
+        purpose: Literal["probe", "formal"],
+        attempt_authority: Mapping[str, object] | None,
+    ) -> bool:
+        with self._runtime_barrier_observer(
+            provider,
+            session_id=session_id,
+            purpose=purpose,
+            attempt_authority=attempt_authority,
+        ):
+            return AoxRuntimeObservationService(
+                provider
+            ).has_inflight_mutation_writers(session_id=session_id)
 
     @contextmanager
     def _session_mutation_scope(
@@ -2401,6 +2445,7 @@ class LiveAoxAttemptRunner:
                 api,
                 provider,
                 session_id=session_id,
+                purpose=purpose,
                 drain_number=drain_number,
                 started=started,
                 pre_event_cursor=pre_drain_cursor,
@@ -2710,6 +2755,7 @@ class LiveAoxAttemptRunner:
         provider: SQLiteRepositoryProvider,
         *,
         session_id: str,
+        purpose: Literal["probe", "formal"],
         drain_number: int,
         started: float,
         pre_event_cursor: int,
@@ -2905,9 +2951,14 @@ class LiveAoxAttemptRunner:
                     continue
                 if command_status in terminal_statuses:
                     try:
-                        has_inflight_writers = AoxRuntimeObservationService(
-                            provider
-                        ).has_inflight_mutation_writers(session_id=session_id)
+                        has_inflight_writers = (
+                            self._has_inflight_mutation_writers(
+                                provider,
+                                session_id=session_id,
+                                purpose=purpose,
+                                attempt_authority=attempt_authority,
+                            )
+                        )
                     except AoxRuntimeObservationError as exc:
                         raise LiveProductPathError(
                             exc.code,

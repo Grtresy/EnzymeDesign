@@ -238,6 +238,13 @@ writer，也不写 task/campaign 状态。AOX driver 只消费该通用事实；
 deadline 与 evidence reducer 仍属于 AOX policy。重复读取必须保持所有 canonical row version 与
 authority record 不变。
 
+该通用 projection 也不会替 consumer 建立 observer identity。需要排除自身 writer 的 consumer
+必须在每一次 projection 外显式建立 exact bounded observer，并保证其在返回或异常时退休。
+AOX formal 的完整 session observation 与 terminal-command attached-writer settlement 因而
+共用同一个 observer lifecycle 入口；drain coordinator 必须携带 exact purpose 与 attempt
+authority，不能从 command terminal 推断 identity，也不能让窄 boolean 检查直接绕过该入口。
+observer 不得跨 sleep、approval read、下一次 drain 或任何外部调用。
+
 ## 9. Feature gates 与回滚边界
 
 Host gates：

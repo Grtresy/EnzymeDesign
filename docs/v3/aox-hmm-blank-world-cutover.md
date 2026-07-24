@@ -154,11 +154,26 @@ approval wait can proceed, so it cannot block pre-attempt → attempt scope
 rollover. Missing/ambiguous scope, identity drift or retirement failure remains
 fail closed.
 
+The first post-r53 correction at
+`6e5ff65a2f4f9e16f4441857be2d25ca7cf5e7d8` routed complete session
+observation through that lifecycle, but a later non-live call-surface audit
+found that terminal-command attached-writer settlement still called the same
+barrier projection directly. The existing coordination test replaced that
+projection with a stub, so it could not expose the repeated
+`mutation_driver_writer_identity_invalid` failure on real SQLite. The corrected
+driver now routes both formal consumers through one bounded observer context,
+carries exact purpose and attempt authority into drain coordination, and proves
+on real SQLite that other root/child writers remain visible, every observer
+retires, and the pre-attempt scope can subsequently seal.
+
 This correction does not upgrade r53 into an attempt bundle or reusable probe.
 r53 authority, roots, LLM/probe effects and diagnostic state are permanently
 non-reusable. A successor campaign requires a new clean correction commit,
 fresh full admission, fresh pin, a newly generated exact-three authority plan,
-fresh roots, and separate exact approval to consume that new plan.
+fresh roots, and separate exact approval to consume that new plan. Every
+unconsumed successor plan pinned to
+`6e5ff65a2f4f9e16f4441857be2d25ca7cf5e7d8` is stale and cannot cross the
+current correction.
 
 ## Numbered launch-preparation boundary
 
@@ -2011,11 +2026,14 @@ approves cleanup or continues scientific execution. Transient compact reads and
 resolve requests reuse stable idempotency while the original blocker remains
 authoritative. A terminal runtime command is only the bounded scheduler result:
 while the exact attempt mutation scope still has any active writer other than
-its outer driver, the cutover driver keeps polling the compact approval surface
-and does not advance or freeze. Writer retirement is only a quiescence gate, not
-a workflow-success signal. After command/continuation retirement observation,
-the driver performs a later compact approval read and one bounded public
-workspace read as the final semantic snapshot. Command failure remains
+the exact bounded AOX observer, the cutover driver keeps polling the compact
+approval surface and does not advance or freeze. Complete semantic observation
+and this terminal-command writer-only check share the same observer lifecycle;
+the latter cannot call the barrier directly, and the observer retires before
+sleep or the next compact read. Writer retirement is only a quiescence gate,
+not a workflow-success signal. After command/continuation retirement
+observation, the driver performs a later compact approval read and one bounded
+public workspace read as the final semantic snapshot. Command failure remains
 authoritative; public coordination and cleanup failures retain their separate
 taxonomy.
 
@@ -2201,4 +2219,5 @@ non-live verification only. It deliberately stops before any successor
 `preflight` or `run-live`: no successor numbered root, provider/MICU call, HPC
 job, browser campaign or attempt evidence may be created until a fresh full
 admission, pin and exact plan are generated and that plan is separately
-approved.
+approved. An unconsumed plan pinned to the superseded `6e5ff65` correction is
+not that authority.
