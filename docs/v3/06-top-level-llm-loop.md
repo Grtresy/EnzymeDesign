@@ -107,6 +107,26 @@ tool call。该上限不能靠静默截断实现：driver 必须把 provider 返
 拒绝整个后续 transcript。这个纠正不提高并发上限，也不授权 harness 代 agent 选择要
 重试的工作。
 
+一个 provider response 是一个有序 tool-call batch，不能把“前三项 eligible”与
+“第 `4+` 项 overflow”当成两个互不相关的生命周期。harness 在 dispatch 任何 eligible
+call 前，先为全部 overflow 持久化 no-effect failure observation；公开 tool results 和
+events 仍按 provider 原始 call 顺序结算。若前 `3` 项中的某一项创建 pending approval、
+成功执行 `task.finish` / runtime suspension，或因 authority、integrity、
+`dispatch_in_doubt` 等边界失败而提前返回，则其后的 eligible call 必须显式结算为
+`tool_call_batch_interrupted/no_effect/verify_then_retry`，并记录 causal call 与
+interruption reason；原有 overflow 仍保持
+`parallel_tool_call_limit_exceeded/no_effect/same_phase_safe`。已经进入 dispatch 的
+causal call 必须保留自己的精确 failure observation、effect certainty 与 retry
+eligibility，例如 `dispatch_in_doubt/reconcile_required`，不得被降级成 no-effect
+rejection。所有未 dispatch 项只产生 `tool.rejected` / `tool.completed`，绝不产生
+`tool.invoked`。overflow 的预持久化不得提前解析前三项的 task/lane 引用；每个 eligible
+call 仍在自身 dispatch 前读取前序 call 已提交的最新 durable state，因此同批
+`task.create -> lane.bind_task` 是合法顺序依赖。never-dispatched call 的 ToolResult 与
+observation facts 保留返回引用，但 observation 关系字段只绑定当前真实 step context，
+不要求未来 task/lane 已存在，也不把未执行目标伪装成 authority。这套结算只呈现世界
+事实并闭合 transcript，不自动执行、重试或重排任何后续工作；是否在新的 agent turn
+重发，由 agent 读取 durable state 后决定。
+
 ## 5. 顶层允许暴露给模型的工具
 
 首批默认暴露工具集：
@@ -127,13 +147,13 @@ tool call。该上限不能靠静默截断实现：driver 必须把 provider 返
 
 - 顶层模型优先通过 `task.*` 与 `delegation` 相关工具编排内部工作
 - 顶层模型和 teammate 应优先用 `world.inspect` 读取 task、artifact、approval、operation、outcome、runtime warning、tool schema 和 route policy 等结构化事实；该工具不得提供 recommended_actions 或硬编码 workflow template
-- `task.finish` 是推荐的业务任务出口；成功调用后 harness 立即停止当前 master/teammate loop，不再执行同批后续 tool calls，也不把该 tool result 喂回模型继续探索。`task.update` 保留为普通字段编辑和非终态状态迁移。
+- `task.finish` 是推荐的业务任务出口；成功调用后 harness 立即停止当前 master/teammate loop，不再执行同批后续 tool calls，也不把该 tool result 喂回模型继续探索。同批后续 call 仍按上面的 batch settlement 契约获得持久 no-effect disposition。`task.update` 保留为普通字段编辑和非终态状态迁移。
 - 顶层模型和 teammate 需要能力用法说明时，默认通过 `docs.search` / `docs.read` 读取受控文档库，而不是通过 skill 文档把 execution 用法塞入上下文
 - 领域 SOP 不得由 prompt 关键词、task subject 或模型调用 `skill.load` 隐式激活。调用方只能通过结构化 `skill_keys` 传入完整 `workflow:<id>@<semver>#sha256:<manifest-digest>`；message admission 将去重后的选择绑定到 canonical user conversation document，scheduler 仅从 exact user-message signal source 恢复，不能由 drain/operator 或普通 inbox payload 注入。registry 在 provider call 前校验 manifest digest、固定 document version/digest，并在实际 teammate tool/capability surface 上验证 requirements。delegation payload 持久化同一 binding，teammate restore 时再次对照当前 registry，任何缺失或 drift 都 fail closed
 - workflow knowledge pack 只表达版本化知识、所需 capability/tool 与真实约束，不替 master/executor 选择步骤；普通用户文本即使包含 AOX、HMM、research 等词也不得改写 delegation 或隐藏可用工具
 - 顶层模型不应把用户请求直接裸翻译成 capability invocation
 - `deep_research.start` 以及迁移兼容的 execution engine start 调用默认应由 teammate loop 围绕明确的 `task_id` 发生，而不是由 master 直接调用；execution teammate 的稳定 authoring path 是 sandbox-first，不是让 master 或 executor 直接编排 `execution.pipeline.start`
-- 任一 capability tool 或其下游 SDK/supervisor 创建 pending approval 后，当前 loop 必须停止当前 planning batch；不得继续执行同批后续 tool calls，也不得再进入下一轮 LLM planning。agent-level approval 返回 `waiting_approval`；durable SDK operation 则 park exact sandbox process、持久化 continuation，并让当前 bounded turn 在有界时间内释放 signal/session authority
+- 任一 capability tool 或其下游 SDK/supervisor 创建 pending approval 后，当前 loop 必须停止当前 planning batch；不得继续执行同批后续 tool calls，也不得再进入下一轮 LLM planning。同批后续 call 必须先按 batch settlement 契约写入持久 no-effect disposition；agent-level approval 返回 `waiting_approval`，durable SDK operation 则 park exact sandbox process、持久化 continuation，并让当前 bounded turn 在有界时间内释放 signal/session authority
 - reporting 默认不要求 engine start；report teammate 应优先围绕 `report_draft` 推进交付
 
 首批不默认暴露给模型的高风险操作：

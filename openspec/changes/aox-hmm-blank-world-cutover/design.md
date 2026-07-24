@@ -66,6 +66,43 @@ roots、tasks、operations、artifacts 与 effects 永久不可复用；MICU 只
 campaign 必须使用 correction 后的新 clean commit、重新 full admission、fresh pin、
 fresh exact-three authority plan 与 fresh roots，并再次获得对该新 plan 的精确消费授权。
 
+### 2026-07-24 r52 tool-call batch settlement correction addendum
+
+post-r52 review 发现 6.46 的普通连续回合已闭合，但 harness 当时先 dispatch 前三项，
+再处理 overflow rejection。若其中一项先触发 runtime suspension、pending approval、
+successful terminal action 或 boundary-fatal dispatch，harness 会在 rejection loop 前
+返回；public LLM trace 仍保留全部 provider calls，但后续未 dispatch 的调用缺少
+durable disposition。该问题不推翻 r52 原始四项 `task.create` 的直接修复，却违反
+“harness 忠实呈现每个请求的真实处理结果”以及 6.46 对每个 overflow call 的无条件
+结算要求。
+
+纠正后的共享 harness 把单个 provider response 作为有序 tool-call batch。driver 仍
+只把前三项标为 dispatch-eligible，并把后续项标为
+`parallel_tool_call_limit_exceeded/no_effect/same_phase_safe`；harness 在任何 eligible
+dispatch 前先持久化这些确定不会 dispatch 的 overflow observations，但保持公开
+`tool.rejected`/`tool.completed` 与 ToolResult 的原始 call 顺序。若一个 eligible call
+触发 approval、terminal action 或 boundary-fatal failure，所有排在它之后且尚未
+dispatch 的 eligible calls 必须结算为
+`tool_call_batch_interrupted/no_effect/verify_then_retry`，明确指出 causal call 与
+boundary；它们不发送 `tool.invoked`，也不在恢复后自动执行。发生 boundary-fatal
+exception 的已 dispatch call 保留原 FailureObservation 的真实
+`effect_certainty/retry_eligibility`，并取得同 call id 的失败 ToolResult；
+`dispatch_in_doubt` 绝不降格为 `no_effect`。
+
+预持久化 overflow 不得顺带提前解析或验证 eligible call 的 task/lane 引用。前三项仍
+逐项在真正 dispatch 前、基于前序 call 已提交的最新 durable state 解析，因此同一
+response 中合法的 `task.create -> lane.bind_task` 依赖继续成立。never-dispatched
+overflow/interrupted call 的 ToolResult 与 observation facts 保留 provider 返回的引用，
+但 observation 的关系字段只绑定当前真实 step context；不能为了丰富 rejection metadata
+而要求其未来 task/lane 已经存在，或把未执行目标伪装成 durable authority。
+
+这仍不让 harness 选择 agent 的下一策略：`same_phase_safe` overflow 只说明该
+occurrence 未产生 effect，interrupted call 则要求 agent 在新 turn 检查最新 durable
+state 后决定是否重新发起。即使当前 turn 因 approval/terminal/failure 不再调用
+provider，全部 call 也必须具有唯一、持久、顺序可审计的 disposition；只有可能继续
+同一 conversation 时，才进一步要求每个 call id 的 matching ToolMessage 闭合
+provider transcript。
+
 ## Goals / Non-Goals
 
 **Goals:**

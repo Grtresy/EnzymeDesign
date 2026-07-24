@@ -1055,6 +1055,43 @@ def _operation() -> ControlledOperation:
     )
 
 
+def _provider_http_operation(
+    adapter_result_envelope: dict[str, object],
+) -> ControlledOperation:
+    operation = _operation()
+    material = live.controlled_operation_identity_material(operation)
+    material.update(
+        {
+            "placement": "provider",
+            "hpc_workspace_id": None,
+            "stage_refs": [],
+            "selected_backend": "provider_http",
+            "route_policy_id": "bio.ncbi_fetch_proteins.provider:v1",
+            "runtime_packaging_id": "provider_http:v1",
+            "toolchain_id": None,
+            "provider_config_digest": "provider_config:ncbi:v1",
+            "resource_class": "network_io",
+            "resource_estimate": {"network_io": True},
+        }
+    )
+    return replace(
+        operation,
+        operation_digest=controlled_operation_digest(material),
+        backend_category="provider_http",
+        placement="provider",
+        hpc_workspace_id=None,
+        stage_refs=(),
+        selected_backend="provider_http",
+        route_policy_id="bio.ncbi_fetch_proteins.provider:v1",
+        runtime_packaging_id="provider_http:v1",
+        toolchain_id=None,
+        provider_config_digest="provider_config:ncbi:v1",
+        resource_class="network_io",
+        resource_estimate={"network_io": True},
+        adapter_result_envelope=adapter_result_envelope,
+    )
+
+
 def test_live_collector_preserves_exact_control_plane_operation_digest() -> None:
     operation = _operation()
     material = live.controlled_operation_identity_material(operation)
@@ -1137,6 +1174,67 @@ def test_live_collector_rejects_mismatched_hpc_backend_identities() -> None:
 
     assert error.value.code == "controlled_operation_backend_identity_mismatch"
     assert error.value.details["conflicting_fields"] == ["backend_run_id"]
+
+
+def test_live_collector_uses_canonical_provider_http_request_id() -> None:
+    operation = _provider_http_operation(
+        {"provider_request_id": "provider_request_001"}
+    )
+
+    record = live.operation_evidence_record(
+        operation,
+        scope="probe",
+        inputs=[{"artifact_id": "art_input", "content_digest": _digest("input")}],
+        outputs=[
+            {"artifact_id": "art_output", "content_digest": _digest("output")}
+        ],
+    )
+
+    assert record["backend_run_id"] == "provider_request_001"
+
+
+@pytest.mark.parametrize(
+    ("adapter_result_envelope", "expected_code", "conflicting_fields"),
+    [
+        (
+            {"run_id": "legacy_run_001"},
+            "controlled_operation_backend_identity_ambiguous",
+            ["run_id"],
+        ),
+        ({}, "controlled_operation_backend_receipt_missing", None),
+        (
+            {
+                "provider_request_id": "provider_request_001",
+                "run_id": "other_run_001",
+            },
+            "controlled_operation_backend_identity_mismatch",
+            ["run_id"],
+        ),
+    ],
+)
+def test_live_collector_rejects_invalid_provider_http_receipt_identity(
+    adapter_result_envelope: dict[str, object],
+    expected_code: str,
+    conflicting_fields: list[str] | None,
+) -> None:
+    operation = _provider_http_operation(adapter_result_envelope)
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live.operation_evidence_record(
+            operation,
+            scope="probe",
+            inputs=[
+                {"artifact_id": "art_input", "content_digest": _digest("input")}
+            ],
+            outputs=[
+                {"artifact_id": "art_output", "content_digest": _digest("output")}
+            ],
+        )
+
+    assert error.value.code == expected_code
+    assert error.value.details["canonical_field"] == "provider_request_id"
+    if conflicting_fields is not None:
+        assert error.value.details["conflicting_fields"] == conflicting_fields
 
 
 def test_selected_chain_collector_allows_failed_trial_before_adopted_success() -> None:

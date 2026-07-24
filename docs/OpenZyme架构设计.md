@@ -166,6 +166,21 @@ failure observation，并发送 `tool.rejected` / `tool.completed` 而不发送
 provider 拒绝。该边界只忠实呈现“未执行且可由 agent 重排”的事实，不提高并发上限、
 不替 agent 选策略，也不授权隐藏 retry。
 
+整个 provider response 必须作为一个有序 batch 结算。harness 在 dispatch 前预先持久化
+全部 overflow 的 no-effect observation，公开 result/event 仍保持原始 call 顺序；若前三项
+中的某项因 pending approval、`task.finish`、runtime suspension 或 boundary-fatal failure
+提前结束本 turn，其后的 eligible calls 必须记录为
+`tool_call_batch_interrupted/no_effect/verify_then_retry`，第 `4+` 项仍保持
+`parallel_tool_call_limit_exceeded/no_effect/same_phase_safe`。已经 dispatch 的 causal call
+保留其精确 failure observation、effect certainty 与 retry eligibility，包括
+`dispatch_in_doubt/reconcile_required`，不得伪装成未执行。未 dispatch 项只有
+`tool.rejected` / `tool.completed`，没有 `tool.invoked`。overflow 预持久化不得提前解析
+eligible call 的 task/lane 引用；每项只在自身 dispatch 前读取前序 call 已提交的最新
+durable state，以保留同批 `task.create -> lane.bind_task` 等合法顺序依赖。未 dispatch
+项在 ToolResult/observation facts 中保留 provider 返回引用，但 observation 关系字段只
+绑定当前真实 step context，不要求未来对象已存在或把它变成 authority。该结算不执行、
+重试或重排后续工作；agent 在新的 turn 中读取真实 durable state 后自行选择策略。
+
 ### 3.5 Token-Budgeted Harness
 
 V3 master / teammate LLM 调用必须先经过统一 token budget preflight。harness 按模型 profile 估算完整 prompt，包括 system prompt、conversation/messages、tools schema 和 tool observation；达到 80% 记录 warning，达到 85%（包括已经达到 90% emergency 的输入）先且只先执行一次 bounded session/lane compaction、刷新 restore context 并重算。只有重算后仍达到 90% 才显式返回 `context_budget_exceeded`，不得把超限 prompt 交给 provider。prompt-budget compaction 改变的是后续 LLM restore prompt projection，不删除或改写持久 conversation history，也不改变 workspace conversation read model。

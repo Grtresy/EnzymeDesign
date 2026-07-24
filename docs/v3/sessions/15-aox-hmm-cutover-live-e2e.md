@@ -1307,6 +1307,18 @@ post-r52 correction 不提高三-call上限：master 与 teammate 仍只 dispatc
 `backend_run_id`；completed operation 缺失 canonical 字段、使用 legacy/other-backend
 字段、出现多候选或 backend 未知均 fail closed。
 
+2026-07-24 的 post-r52 系统性收口进一步把整个 response 定义为有序 tool-call batch。
+overflow observation 在任何 eligible dispatch 前先 durable persist，公开 result/event
+仍按原 call 顺序投影。若前三项中的 approval、`task.finish`、runtime suspension 或
+boundary-fatal dispatch 提前结束 turn，余下 eligible call 逐项形成
+`tool_call_batch_interrupted/no_effect/verify_then_retry`；第 `4+` 项保留原有
+parallel-limit disposition。已 dispatch 的 causal call 保留精确 observation，包括可能的
+`dispatch_in_doubt/reconcile_required`，绝不被降级成 no-effect。harness 不自动执行、
+重试或重排余项；overflow 预持久化也不提前解析 eligible task/lane 引用，各调用仍在
+自身 dispatch 前读取前序调用提交后的 durable state，以保留合法的同批 create→bind
+依赖。策略继续由 agent 在新 turn 读取 durable state 后决定。该收口只有 focused/mainline
+非 live 证据，不改变 r52 的永久 **NO-GO**，也没有启动后继 live campaign。
+
 r52 authority、roots、tasks、operations/effects、artifacts、failure evidence 与 decision
 永久不可复用或 adoption。后继必须使用新的 correction clean commit、fresh full
 admission、pin、exact-three authority plan 与 roots，并等待 operator 对该新 plan 的精确

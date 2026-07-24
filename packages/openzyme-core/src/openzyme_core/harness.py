@@ -1667,15 +1667,24 @@ def _record_tool_rejection(
     result: ToolResult,
     *,
     fallback_source_version: str,
+    phase: str = "validation",
+    failure_class: FailureClass = FailureClass.VALIDATION,
+    recoverability: FailureRecoverability = FailureRecoverability.AGENT_CAN_REPLAN,
+    retry_eligibility: RetryEligibility = RetryEligibility.SAME_PHASE_SAFE,
 ) -> ToolResult:
     step_context = context.current_step_context
+    details = {
+        **(result.details or {}),
+        "dispatched": False,
+        "effect_certainty": ExternalEffectCertainty.NO_EFFECT.value,
+        "retry_eligibility": retry_eligibility.value,
+    }
+    result = replace(result, details=details)
     observation = record_failure_observation(
         context.repositories,
         session_id=harness_input.session_id,
-        task_id=result.task_id
-        or (None if step_context is None else step_context.task_id),
-        lane_id=result.lane_id
-        or (None if step_context is None else step_context.lane_id),
+        task_id=None if step_context is None else step_context.task_id,
+        lane_id=None if step_context is None else step_context.lane_id,
         agent_id=context.agent_id or harness_input.agent_id,
         source_kind="tool_invocation",
         source_ref=result.call_id,
@@ -1684,24 +1693,177 @@ def _record_tool_rejection(
             if step_context is None
             else step_context.step_id
         ),
-        phase="validation",
-        failure_class=FailureClass.VALIDATION,
-        recoverability=FailureRecoverability.AGENT_CAN_REPLAN,
+        phase=phase,
+        failure_class=failure_class,
+        recoverability=recoverability,
         effect_certainty=ExternalEffectCertainty.NO_EFFECT,
-        retry_eligibility=RetryEligibility.SAME_PHASE_SAFE,
+        retry_eligibility=retry_eligibility,
         actor_kind=FailureActorKind.HARNESS,
         error_code=result.error_code or "tool_call_rejected",
         safe_summary=result.summary or result.content,
         safe_hint=result.hint,
         facts={
-            **(result.details or {}),
-            "dispatched": False,
+            **details,
+            "tool_call_lane_id": result.lane_id,
+            "tool_call_task_id": result.task_id,
             "tool_name": result.tool_name,
         },
     )
     return sanitize_tool_result_diagnostics(
         replace(result, failure_observation=observation.to_dict())
     )
+
+
+def _tool_call_batch_interrupted_result(
+    invocation: ToolInvocation,
+    *,
+    position: int,
+    interrupted_by_call_id: str,
+    interruption_reason: str,
+) -> ToolResult:
+    summary = (
+        "This tool call was not executed because an earlier tool call ended "
+        "or suspended the current tool-call batch."
+    )
+    return ToolResult(
+        call_id=invocation.call_id,
+        tool_name=invocation.tool_name,
+        ok=False,
+        content=summary,
+        task_id=invocation.task_id,
+        lane_id=invocation.lane_id,
+        status="rejected",
+        summary=summary,
+        error_code="tool_call_batch_interrupted",
+        hint=(
+            "Inspect the earlier result and current durable state, then decide "
+            "whether to issue this work in a new agent turn."
+        ),
+        details={
+            "dispatched": False,
+            "effect_certainty": ExternalEffectCertainty.NO_EFFECT.value,
+            "interrupted_by_call_id": interrupted_by_call_id,
+            "interruption_reason": interruption_reason,
+            "retry_eligibility": RetryEligibility.VERIFY_THEN_RETRY.value,
+            "tool_call_position": position,
+        },
+    )
+
+
+def _dispatched_failure_result(
+    invocation: ToolInvocation,
+    observation: Any,
+) -> ToolResult:
+    effect_certainty = observation.effect_certainty.value
+    retry_eligibility = observation.retry_eligibility.value
+    return sanitize_tool_result_diagnostics(
+        ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=False,
+            content=observation.safe_summary,
+            task_id=invocation.task_id,
+            lane_id=invocation.lane_id,
+            status="dispatch_failed",
+            summary=observation.safe_summary,
+            error_code=observation.error_code,
+            hint=observation.safe_hint,
+            details={
+                "boundary_fatal": True,
+                "dispatched": True,
+                "effect_certainty": effect_certainty,
+                "failure_id": observation.failure_id,
+                "retry_eligibility": retry_eligibility,
+            },
+            failure_observation=observation.to_dict(),
+        )
+    )
+
+
+def _emit_tool_completed(
+    context: SessionRuntimeContext,
+    result: ToolResult,
+    invocation: ToolInvocation,
+) -> None:
+    context.emit(
+        "tool.completed",
+        {
+            "call_id": result.call_id,
+            "tool_name": result.tool_name,
+            "task_id": result.task_id or invocation.task_id,
+            "lane_id": result.lane_id or invocation.lane_id,
+            "ok": result.ok,
+            "status": result.status or ("ok" if result.ok else "failed"),
+            "error_code": result.error_code,
+            **_tool_event_metadata(context, invocation),
+        },
+    )
+
+
+def _emit_tool_rejection(
+    context: SessionRuntimeContext,
+    result: ToolResult,
+    invocation: ToolInvocation,
+) -> None:
+    details = dict(result.details or {})
+    context.emit(
+        "tool.rejected",
+        {
+            "call_id": result.call_id,
+            "tool_name": result.tool_name,
+            "task_id": result.task_id,
+            "lane_id": result.lane_id,
+            "ok": False,
+            "status": result.status,
+            "error_code": result.error_code,
+            "effect_certainty": details.get(
+                "effect_certainty",
+                ExternalEffectCertainty.NO_EFFECT.value,
+            ),
+            "retry_eligibility": details.get("retry_eligibility"),
+            **_tool_event_metadata(context, invocation),
+        },
+    )
+    _emit_tool_completed(context, result, invocation)
+
+
+def _settle_undispatched_tool_calls(
+    context: SessionRuntimeContext,
+    harness_input: HarnessInput,
+    *,
+    eligible_calls: tuple[tuple[int, ToolInvocation], ...],
+    prepared_overflow_calls: tuple[tuple[ToolResult, ToolInvocation], ...],
+    interrupted_by_call_id: str | None,
+    interruption_reason: str | None,
+    fallback_source_version: str,
+) -> tuple[ToolResult, ...]:
+    settled: list[ToolResult] = []
+    if eligible_calls:
+        if interrupted_by_call_id is None or interruption_reason is None:
+            raise ValueError(
+                "interrupted eligible tool calls require a causal call and boundary"
+            )
+        for position, invocation in eligible_calls:
+            result = _record_tool_rejection(
+                context,
+                harness_input,
+                _tool_call_batch_interrupted_result(
+                    invocation,
+                    position=position,
+                    interrupted_by_call_id=interrupted_by_call_id,
+                    interruption_reason=interruption_reason,
+                ),
+                fallback_source_version=fallback_source_version,
+                phase="dispatch",
+                failure_class=FailureClass.HARNESS,
+                retry_eligibility=RetryEligibility.VERIFY_THEN_RETRY,
+            )
+            _emit_tool_rejection(context, result, invocation)
+            settled.append(result)
+    for result, invocation in prepared_overflow_calls:
+        _emit_tool_rejection(context, result, invocation)
+        settled.append(result)
+    return tuple(settled)
 
 
 def run_agent_harness_loop(
@@ -2019,15 +2181,38 @@ def run_agent_harness_loop(
             )
 
         if step.tool_invocations or step.tool_rejections:
+            raw_invocations = tuple(step.tool_invocations)
+            prepared_overflow_calls: list[tuple[ToolResult, ToolInvocation]] = []
+            for rejection in step.tool_rejections:
+                rejection_invocation = ToolInvocation(
+                    call_id=rejection.call_id,
+                    tool_name=rejection.tool_name,
+                    arguments={},
+                    task_id=rejection.task_id,
+                    lane_id=rejection.lane_id,
+                )
+                prepared_overflow_calls.append(
+                    (
+                        _record_tool_rejection(
+                            context,
+                            harness_input,
+                            rejection,
+                            fallback_source_version=turn_source_ref,
+                        ),
+                        rejection_invocation,
+                    )
+                )
+
             current_results: list[ToolResult] = []
-            for invocation in step.tool_invocations:
+            for index, raw_invocation in enumerate(raw_invocations):
+                position = index + 1
                 invocation = replace(
-                    invocation,
+                    raw_invocation,
                     lane_id=_resolve_effective_lane_id(
                         repositories,
                         session_id=harness_input.session_id,
-                        task_id=invocation.task_id,
-                        lane_id=invocation.lane_id,
+                        task_id=raw_invocation.task_id,
+                        lane_id=raw_invocation.lane_id,
                     ),
                 )
                 context.emit(
@@ -2079,6 +2264,35 @@ def run_agent_harness_loop(
                             },
                         )
                     )
+                    failure_result = _dispatched_failure_result(
+                        invocation,
+                        observation,
+                    )
+                    current_results.append(failure_result)
+                    _emit_tool_completed(context, failure_result, invocation)
+                    current_results.extend(
+                        _settle_undispatched_tool_calls(
+                            context,
+                            harness_input,
+                            eligible_calls=tuple(
+                                (
+                                    remaining_position,
+                                    raw_invocations[remaining_position - 1],
+                                )
+                                for remaining_position in range(
+                                    position + 1,
+                                    len(raw_invocations) + 1,
+                                )
+                            ),
+                            prepared_overflow_calls=tuple(
+                                prepared_overflow_calls
+                            ),
+                            interrupted_by_call_id=invocation.call_id,
+                            interruption_reason="boundary_fatal_dispatch",
+                            fallback_source_version=turn_source_ref,
+                        )
+                    )
+                    all_tool_results.extend(current_results)
                     outputs.append(
                         "OpenZyme system diagnostic "
                         f"{observation.failure_id}: tool execution crossed a "
@@ -2101,6 +2315,7 @@ def run_agent_harness_loop(
                             "call_id": invocation.call_id,
                         },
                     )
+                    activity_happened = True
                     _auto_compact_if_needed(
                         context,
                         activity_happened=True,
@@ -2119,20 +2334,7 @@ def run_agent_harness_loop(
                         error=exc,
                     )
                 current_results.append(result)
-                all_tool_results.append(result)
-                context.emit(
-                    "tool.completed",
-                    {
-                        "call_id": result.call_id,
-                        "tool_name": result.tool_name,
-                        "task_id": result.task_id or invocation.task_id,
-                        "lane_id": result.lane_id or invocation.lane_id,
-                        "ok": result.ok,
-                        "status": result.status or ("ok" if result.ok else "failed"),
-                        "error_code": result.error_code,
-                        **_tool_event_metadata(context, invocation),
-                    },
-                )
+                _emit_tool_completed(context, result, invocation)
                 activity_happened = True
                 context.refresh()
                 if result.ok and result.terminates_turn:
@@ -2146,6 +2348,31 @@ def run_agent_harness_loop(
                             or ("ok" if result.ok else "failed"),
                         },
                     )
+                    current_results.extend(
+                        _settle_undispatched_tool_calls(
+                            context,
+                            harness_input,
+                            eligible_calls=tuple(
+                                (
+                                    remaining_position,
+                                    raw_invocations[remaining_position - 1],
+                                )
+                                for remaining_position in range(
+                                    position + 1,
+                                    len(raw_invocations) + 1,
+                                )
+                            ),
+                            prepared_overflow_calls=tuple(
+                                prepared_overflow_calls
+                            ),
+                            interrupted_by_call_id=result.call_id,
+                            interruption_reason=(
+                                result.terminal_action or "terminal_action"
+                            ),
+                            fallback_source_version=turn_source_ref,
+                        )
+                    )
+                    all_tool_results.extend(current_results)
                     _auto_compact_if_needed(
                         context,
                         activity_happened=activity_happened,
@@ -2188,6 +2415,29 @@ def run_agent_harness_loop(
                     )
                 pending_approval_id = _pending_approval_id(context.snapshot)
                 if pending_approval_id is not None:
+                    current_results.extend(
+                        _settle_undispatched_tool_calls(
+                            context,
+                            harness_input,
+                            eligible_calls=tuple(
+                                (
+                                    remaining_position,
+                                    raw_invocations[remaining_position - 1],
+                                )
+                                for remaining_position in range(
+                                    position + 1,
+                                    len(raw_invocations) + 1,
+                                )
+                            ),
+                            prepared_overflow_calls=tuple(
+                                prepared_overflow_calls
+                            ),
+                            interrupted_by_call_id=result.call_id,
+                            interruption_reason="pending_approval",
+                            fallback_source_version=turn_source_ref,
+                        )
+                    )
+                    all_tool_results.extend(current_results)
                     _auto_compact_if_needed(
                         context,
                         activity_happened=activity_happened,
@@ -2204,60 +2454,20 @@ def run_agent_harness_loop(
                         tool_results=tuple(all_tool_results),
                         pending_approval_id=pending_approval_id,
                     )
-            for rejection in step.tool_rejections:
-                rejection = replace(
-                    rejection,
-                    lane_id=_resolve_effective_lane_id(
-                        repositories,
-                        session_id=harness_input.session_id,
-                        task_id=rejection.task_id,
-                        lane_id=rejection.lane_id,
-                    ),
-                )
-                rejection_invocation = ToolInvocation(
-                    call_id=rejection.call_id,
-                    tool_name=rejection.tool_name,
-                    arguments={},
-                    task_id=rejection.task_id,
-                    lane_id=rejection.lane_id,
-                )
-                result = _record_tool_rejection(
+            current_results.extend(
+                _settle_undispatched_tool_calls(
                     context,
                     harness_input,
-                    rejection,
+                    eligible_calls=(),
+                    prepared_overflow_calls=tuple(prepared_overflow_calls),
+                    interrupted_by_call_id=None,
+                    interruption_reason=None,
                     fallback_source_version=turn_source_ref,
                 )
-                context.emit(
-                    "tool.rejected",
-                    {
-                        "call_id": result.call_id,
-                        "tool_name": result.tool_name,
-                        "task_id": result.task_id,
-                        "lane_id": result.lane_id,
-                        "ok": False,
-                        "status": result.status,
-                        "error_code": result.error_code,
-                        "effect_certainty": "no_effect",
-                        **_tool_event_metadata(context, rejection_invocation),
-                    },
-                )
-                current_results.append(result)
-                all_tool_results.append(result)
-                context.emit(
-                    "tool.completed",
-                    {
-                        "call_id": result.call_id,
-                        "tool_name": result.tool_name,
-                        "task_id": result.task_id,
-                        "lane_id": result.lane_id,
-                        "ok": False,
-                        "status": result.status,
-                        "error_code": result.error_code,
-                        **_tool_event_metadata(context, rejection_invocation),
-                    },
-                )
+            )
+            all_tool_results.extend(current_results)
+            if prepared_overflow_calls:
                 activity_happened = True
-                context.refresh()
             tool_results = tuple(current_results)
             context.refresh()
             continue

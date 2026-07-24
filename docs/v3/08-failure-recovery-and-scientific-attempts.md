@@ -55,6 +55,21 @@ delivery recovery failure 或 Host-finalized transition failure，Host 使用 ex
 Harness 不得静默改参数、切 provider/backend、重开 operation、创建新 formal attempt 或把
 known failure 擦除。step budget 用尽只是 non-business runtime outcome。
 
+同一个 provider response 中的多个 tool call 作为有序 batch 结算。若某个已 dispatch call
+触发 approval、terminal action、runtime suspension 或 boundary-fatal failure，harness
+停止 dispatch 余下 call，但不能让它们消失：后续 eligible call 记录
+`tool_call_batch_interrupted/no_effect/verify_then_retry`，overflow call 记录
+`parallel_tool_call_limit_exceeded/no_effect/same_phase_safe`。causal call 若已跨过外部
+dispatch boundary，则保留原始 effect certainty 和 retry eligibility；
+`dispatch_in_doubt/reconcile_required` 绝不能被后续批次收尾覆盖成 `no_effect`。这些
+disposition 是事实与恢复边界，不是 retry authority；agent 必须在新 turn 中先检查
+durable state，再决定是否重发、改道、reconcile 或请求帮助。
+
+批次结算也不能把 pre-batch snapshot 当成所有调用的验证真相。eligible call 的 task/lane
+引用在各自 dispatch 前依次解析，使前序 create/bind 的 durable effect 对后续调用可见；
+never-dispatched call 的 no-effect observation 则保留原始引用，不为获得 metadata 而
+提前验证未来对象。
+
 ## 4. Fresh scientific-attempt authority
 
 每个 formal scientific attempt 必须先有 durable

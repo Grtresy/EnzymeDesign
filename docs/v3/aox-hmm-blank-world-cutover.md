@@ -85,6 +85,21 @@ only the backend-native canonical source field for completed operations:
 evidence `backend_run_id`; missing, legacy/generic, other-backend, multiple or
 unsupported identities fail closed.
 
+The post-r52 closure treats every provider response as one ordered batch, not as
+an eligible prefix plus an unrelated overflow suffix. Overflow observations are
+persisted before eligible dispatch begins, while public results and events retain
+provider order. If approval, `task.finish`, runtime suspension or a
+boundary-fatal dispatch ends the turn, each later eligible call receives
+`tool_call_batch_interrupted/no_effect/verify_then_retry`; overflow calls retain
+`parallel_tool_call_limit_exceeded/no_effect/same_phase_safe`. A causal call that
+already crossed dispatch preserves its exact failure observation and may remain
+`dispatch_in_doubt/reconcile_required`. The harness does not execute, retry or
+reorder any of these later calls; the agent decides what to do in a fresh turn
+after inspecting durable state. Overflow pre-persistence does not pre-resolve
+eligible task/lane references: each eligible call resolves immediately before
+its own dispatch against state committed by earlier calls, preserving valid
+in-batch dependencies such as `task.create -> lane.bind_task`.
+
 These corrections do not upgrade either partial path into success. r52
 authority, roots, tasks, operations, artifacts and effects are permanently
 non-reusable. A successor campaign requires a new clean correction commit,

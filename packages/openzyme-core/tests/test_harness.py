@@ -68,6 +68,7 @@ from openzyme_core.harness import budget_tool_results_for_prompt
 from openzyme_core.harness import ContextBudgetExceededError
 from openzyme_core.harness import ensure_prompt_budget_before_model_call
 from openzyme_core.harness import PromptPayload
+from openzyme_core.llm_driver import _parallel_tool_call_limit_result
 from openzyme_core.skills import register_skill_tools
 from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_research import DeterministicBioResearchService
@@ -788,18 +789,37 @@ def test_task_finish_completed_updates_task_and_terminates_loop_immediately() ->
     assert calls == []
     assert task is not None
     assert task.status is TaskStatus.COMPLETED
-    assert len(result.tool_results) == 1
+    assert len(result.tool_results) == 2
     assert result.tool_results[0].tool_name == "task.finish"
     assert result.tool_results[0].terminal_action == "task.finish"
     assert result.tool_results[0].terminates_turn is True
     assert result.tool_results[0].envelope()["terminates_turn"] is True
+    interrupted = result.tool_results[1]
+    assert interrupted.call_id == "call_after_finish"
+    assert interrupted.error_code == "tool_call_batch_interrupted"
+    assert interrupted.details == {
+        "dispatched": False,
+        "effect_certainty": "no_effect",
+        "interrupted_by_call_id": "call_finish",
+        "interruption_reason": "task.finish",
+        "retry_eligibility": "verify_then_retry",
+        "tool_call_position": 2,
+    }
+    assert interrupted.failure_observation is not None
     assert finish_docs
     assert finish_docs[0].payload["summary"] == "Primary task is complete."
-    assert {event.event_type for event in result.events} >= {
+    events = list(result.events)
+    assert {event.event_type for event in events} >= {
         "task.updated",
         "task.finished",
         "harness.terminal_action",
+        "tool.rejected",
     }
+    assert [
+        event.payload["call_id"]
+        for event in events
+        if event.event_type == "tool.invoked"
+    ] == ["call_finish"]
 
 
 class MasterFinishesDelegatedTaskDriver:
@@ -1147,8 +1167,20 @@ def test_harness_returns_waiting_approval_when_tool_creates_pending_approval() -
     assert result.snapshot.pending_approvals[0].approval_id == "appr_tool_001"
     assert result.outputs == ()
     assert [tool_result.call_id for tool_result in result.tool_results] == [
-        "call_approval"
+        "call_approval",
+        "call_after_approval",
     ]
+    interrupted = result.tool_results[1]
+    assert interrupted.error_code == "tool_call_batch_interrupted"
+    assert interrupted.details == {
+        "dispatched": False,
+        "effect_certainty": "no_effect",
+        "interrupted_by_call_id": "call_approval",
+        "interruption_reason": "pending_approval",
+        "retry_eligibility": "verify_then_retry",
+        "tool_call_position": 2,
+    }
+    assert interrupted.failure_observation is not None
     assert calls == ["approval_tool"]
     assert driver.calls == 1
 
@@ -1250,10 +1282,23 @@ def test_runtime_suspension_releases_harness_without_terminalizing_task() -> Non
     assert task.status is TaskStatus.TODO
     assert calls == ["suspending_tool"]
     assert driver.calls == 1
-    assert len(result.tool_results) == 1
+    assert len(result.tool_results) == 2
     assert result.tool_results[0].terminal_action == "runtime_suspended"
+    interrupted = result.tool_results[1]
+    assert interrupted.call_id == "call_after_suspend"
+    assert interrupted.error_code == "tool_call_batch_interrupted"
+    assert interrupted.details == {
+        "dispatched": False,
+        "effect_certainty": "no_effect",
+        "interrupted_by_call_id": "call_suspend",
+        "interruption_reason": "runtime_suspended",
+        "retry_eligibility": "verify_then_retry",
+        "tool_call_position": 2,
+    }
+    assert interrupted.failure_observation is not None
     assert {event.event_type for event in result.events} >= {
         "tool.completed",
+        "tool.rejected",
         "harness.terminal_action",
     }
     assert "task.finished" not in {event.event_type for event in result.events}
@@ -1650,11 +1695,6 @@ class BuiltinTaskLaneToolDriver:
                             "description": "Created through default harness registry.",
                         },
                     ),
-                )
-            )
-        if len(tool_results) == 2:
-            return HarnessStep(
-                tool_invocations=(
                     ToolInvocation(
                         call_id="call_bind_task",
                         tool_name="lane.bind_task",
@@ -1665,6 +1705,7 @@ class BuiltinTaskLaneToolDriver:
                     ),
                 )
             )
+        assert len(tool_results) == 3
         return HarnessStep(assistant_message="builtin tools ready")
 
 
@@ -4787,6 +4828,405 @@ def test_llm_conversation_driver_translates_tool_calls_to_invocations() -> None:
     assert step.assistant_message is None
     assert step.tool_invocations[0].tool_name == "task.create"
     assert step.tool_invocations[0].arguments["task_id"] == "task_002"
+
+
+def _overflow_tool_result(invocation: ToolInvocation) -> ToolResult:
+    return _parallel_tool_call_limit_result(
+        invocation,
+        position=4,
+        requested_count=4,
+        max_parallel_tool_calls=3,
+    )
+
+
+class ApprovalOverflowBatchDriver:
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input, tool_results
+        invocations = tuple(
+            ToolInvocation(
+                call_id=f"call_approval_batch_{index}",
+                tool_name=(
+                    "approval_tool" if index == 1 else "after_approval_tool"
+                ),
+                arguments={},
+                task_id=(
+                    "task_001"
+                    if index < 4
+                    else "task_created_only_if_overflow_were_dispatched"
+                ),
+            )
+            for index in range(1, 5)
+        )
+        return HarnessStep(
+            tool_invocations=invocations[:3],
+            tool_rejections=(_overflow_tool_result(invocations[3]),),
+        )
+
+
+def test_master_batch_settles_later_and_overflow_calls_before_approval_return() -> (
+    None
+):
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+    calls: list[str] = []
+
+    def approval_tool(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> str:
+        calls.append(invocation.call_id)
+        assert len(
+            context.repositories.failure_observations.list_by_source(
+                session_id=session.session_id,
+                source_kind="tool_invocation",
+                source_ref="call_approval_batch_4",
+            )
+        ) == 1
+        context.repositories.approvals.save(
+            ApprovalRequest(
+                approval_id="appr_batch_001",
+                session_id=session.session_id,
+                task_id=invocation.task_id,
+                lane_id=invocation.lane_id,
+                kind="tool_gate",
+                requested_action="Approve the interrupted batch.",
+                status=ApprovalRequestStatus.PENDING,
+                request_ref=None,
+                resolution_ref=None,
+                created_at="2026-04-17T09:05:00+00:00",
+            )
+        )
+        return "pending approval"
+
+    registry.register("approval_tool", approval_tool)
+    registry.register(
+        "after_approval_tool",
+        lambda _context, invocation: calls.append(invocation.call_id) or "late",
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            agent_id="agent:master",
+            actor_kind="master",
+            actor_role="master",
+        ),
+        driver=ApprovalOverflowBatchDriver(),
+        tool_registry=registry,
+    )
+
+    assert result.status is HarnessStatus.WAITING_APPROVAL
+    assert result.pending_approval_id == "appr_batch_001"
+    assert calls == ["call_approval_batch_1"]
+    assert [item.call_id for item in result.tool_results] == [
+        "call_approval_batch_1",
+        "call_approval_batch_2",
+        "call_approval_batch_3",
+        "call_approval_batch_4",
+    ]
+    assert [item.error_code for item in result.tool_results] == [
+        None,
+        "tool_call_batch_interrupted",
+        "tool_call_batch_interrupted",
+        "parallel_tool_call_limit_exceeded",
+    ]
+    assert [
+        item.details["retry_eligibility"] for item in result.tool_results[1:]
+    ] == [
+        "verify_then_retry",
+        "verify_then_retry",
+        "same_phase_safe",
+    ]
+    assert all(
+        item.failure_observation is not None for item in result.tool_results[1:]
+    )
+    assert result.tool_results[3].task_id == (
+        "task_created_only_if_overflow_were_dispatched"
+    )
+    assert result.tool_results[3].failure_observation["task_id"] is None
+    assert result.tool_results[3].failure_observation["facts"][
+        "tool_call_task_id"
+    ] == "task_created_only_if_overflow_were_dispatched"
+    events = list(result.events)
+    assert [
+        event.payload["call_id"]
+        for event in events
+        if event.event_type == "tool.invoked"
+    ] == ["call_approval_batch_1"]
+    assert [
+        event.payload["call_id"]
+        for event in events
+        if event.event_type == "tool.rejected"
+    ] == [
+        "call_approval_batch_2",
+        "call_approval_batch_3",
+        "call_approval_batch_4",
+    ]
+    assert [
+        event.payload["call_id"]
+        for event in events
+        if event.event_type == "tool.completed"
+    ] == [
+        "call_approval_batch_1",
+        "call_approval_batch_2",
+        "call_approval_batch_3",
+        "call_approval_batch_4",
+    ]
+
+
+def test_teammate_batch_settles_later_and_overflow_calls_after_task_finish() -> (
+    None
+):
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+    task = repositories.tasks.get("task_001")
+    assert task is not None
+    repositories.tasks.save(
+        Task(
+            task_id=task.task_id,
+            session_id=task.session_id,
+            subject=task.subject,
+            description=task.description,
+            status=TaskStatus.IN_PROGRESS,
+            priority=task.priority,
+            kind="research",
+            assigned_ref=agent.agent_id,
+            created_at=task.created_at,
+            updated_at=task.updated_at,
+            lane_id=task.lane_id,
+            blocked_by=task.blocked_by,
+        )
+    )
+    tool_calls = [
+        {
+            "id": "call_finish_batch_1",
+            "name": "task.finish",
+            "args": {
+                "task_id": "task_001",
+                "status": "completed",
+                "summary": "Research is complete.",
+            },
+        },
+        *[
+            {
+                "id": f"call_finish_batch_{index}",
+                "name": "task.list",
+                "args": {},
+            }
+            for index in range(2, 5)
+        ],
+    ]
+    model_factory = FakeModelFactory(
+        [{"content": "", "tool_calls": tool_calls}]
+    )
+    driver = TeammateConversationDriver(
+        model_factory=model_factory,
+        role="researcher",
+        agent_id=agent.agent_id,
+        correlation_id="corr_terminal_overflow",
+        task_id="task_001",
+        instructions="Finish the assigned research task.",
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            sender=agent.agent_id,
+            sender_kind=InboxParticipantKind.AGENT,
+            restore_focus=RestoreFocus(task_id="task_001"),
+            persist_conversation=False,
+            agent_id=agent.agent_id,
+            actor_kind="teammate",
+            actor_role="researcher",
+        ),
+        driver=driver,
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    assert [item.call_id for item in result.tool_results] == [
+        "call_finish_batch_1",
+        "call_finish_batch_2",
+        "call_finish_batch_3",
+        "call_finish_batch_4",
+    ]
+    assert result.tool_results[0].terminal_action == "task.finish"
+    assert result.tool_results[0].terminates_turn is True
+    assert [item.error_code for item in result.tool_results[1:]] == [
+        "tool_call_batch_interrupted",
+        "tool_call_batch_interrupted",
+        "parallel_tool_call_limit_exceeded",
+    ]
+    assert [
+        event.payload["call_id"]
+        for event in result.events
+        if event.event_type == "tool.invoked"
+    ] == ["call_finish_batch_1"]
+    assert [
+        event.payload["call_id"]
+        for event in result.events
+        if event.event_type == "tool.rejected"
+    ] == [
+        "call_finish_batch_2",
+        "call_finish_batch_3",
+        "call_finish_batch_4",
+    ]
+    invoker = model_factory.invokers["v3_teammate_loop:researcher"]
+    assert len(invoker.calls) == 1
+
+
+class BoundaryFatalExternalRuntime:
+    tool_name = "external.boundary"
+
+    def spec(self, step_context: object) -> ToolSpec:
+        del step_context
+        return ToolSpec(
+            tool_name=self.tool_name,
+            description="Cross a controlled external boundary.",
+            input_schema={"type": "object", "properties": {}},
+        )
+
+    def is_visible(self, step_context: object) -> bool:
+        del step_context
+        return True
+
+    def governance(self, step_context: object) -> ToolGovernance:
+        del step_context
+        return ToolGovernance(
+            side_effect=ToolSideEffect.EXTERNAL,
+            approval_required=True,
+        )
+
+    def validate(
+        self,
+        step_context: object,
+        invocation: ToolInvocation,
+    ) -> None:
+        del step_context, invocation
+        return None
+
+    def dispatch(
+        self,
+        step_context: object,
+        invocation: ToolInvocation,
+        runtime_context: object,
+    ) -> ToolResult:
+        del step_context, invocation, runtime_context
+        raise RuntimeError("external dispatch outcome is uncertain")
+
+
+class BoundaryFatalOverflowBatchDriver:
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del harness_input, tool_results
+        router = context.tool_registry.to_tool_router(context)
+        pre_step = build_agent_step_context(context, call_index=1)
+        specs = router.model_visible_specs(pre_step)
+        context.current_tool_router = router
+        context.current_step_context = build_agent_step_context(
+            context,
+            call_index=1,
+            tool_specs=specs,
+        )
+        invocations = tuple(
+            ToolInvocation(
+                call_id=f"call_boundary_batch_{index}",
+                tool_name="external.boundary",
+                arguments={},
+                task_id="task_001",
+            )
+            for index in range(1, 5)
+        )
+        return HarnessStep(
+            tool_invocations=invocations[:3],
+            tool_rejections=(_overflow_tool_result(invocations[3]),),
+        )
+
+
+def test_batch_preserves_dispatch_in_doubt_and_settles_never_dispatched_calls() -> (
+    None
+):
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+    registry.register_runtime(BoundaryFatalExternalRuntime())
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            agent_id="agent:master",
+            actor_kind="master",
+            actor_role="master",
+        ),
+        driver=BoundaryFatalOverflowBatchDriver(),
+        tool_registry=registry,
+    )
+
+    assert result.status is HarnessStatus.FAILED
+    assert isinstance(result.error, RuntimeError)
+    assert [item.call_id for item in result.tool_results] == [
+        "call_boundary_batch_1",
+        "call_boundary_batch_2",
+        "call_boundary_batch_3",
+        "call_boundary_batch_4",
+    ]
+    failed = result.tool_results[0]
+    assert failed.error_code == "external_effect_outcome_unknown"
+    assert failed.details["dispatched"] is True
+    assert failed.details["effect_certainty"] == "dispatch_in_doubt"
+    assert failed.details["retry_eligibility"] == "reconcile_required"
+    assert failed.failure_observation is not None
+    assert [item.error_code for item in result.tool_results[1:]] == [
+        "tool_call_batch_interrupted",
+        "tool_call_batch_interrupted",
+        "parallel_tool_call_limit_exceeded",
+    ]
+    assert all(
+        item.details["effect_certainty"] == "no_effect"
+        for item in result.tool_results[1:]
+    )
+    events = list(result.events)
+    assert [
+        event.payload["call_id"]
+        for event in events
+        if event.event_type == "tool.invoked"
+    ] == ["call_boundary_batch_1"]
+    assert [
+        event.payload["call_id"]
+        for event in events
+        if event.event_type == "tool.rejected"
+    ] == [
+        "call_boundary_batch_2",
+        "call_boundary_batch_3",
+        "call_boundary_batch_4",
+    ]
+    assert [
+        event.payload["call_id"]
+        for event in events
+        if event.event_type == "tool.completed"
+    ] == [
+        "call_boundary_batch_1",
+        "call_boundary_batch_2",
+        "call_boundary_batch_3",
+        "call_boundary_batch_4",
+    ]
 
 
 def test_master_driver_rejects_tool_call_overflow_and_closes_provider_transcript() -> (
