@@ -59,6 +59,30 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   追加修正记录：public `/runtime/drain` 已从同步 scheduler 调用改为严格 durable command admission。POST 原子创建 command/outbox、始终返回 `202`，独立 `RuntimeCommandWorker` 后续获取 session lease 并执行 bounded batch；GET 返回闭集脱敏状态。HTTP request、command 和 session lease 均不拥有 approval/provider/HPC wall time。
 
+- [x] Host 在 scheduler 释放 runtime authority 后重扫 mutable repository，并重建
+  max-step handoff 与 scheduler success/failure。
+
+  证据：r55 的 teammate signal、exact budget observation、nonterminal task 与 pending master
+  wakeup 已 durable 闭合，但 Host 的 dict/object-identity 分类仍把 `outcome.ok=false` 展平成
+  `runtime_scheduler_batch_failed`；此前局部修补又要求 Host 联读 signal、task、failure、
+  agent 与 wakeup 当前行。
+
+  Doctrine 风险：Core 已完成的 occurrence settlement 会被 Host 的第二套 read-model
+  interpreter 重新定义；后续 task/successor 状态变化还能反向改写旧 command receipt，
+  scheduler/runtime 也可能借 task business status 推断策略结论。
+
+  目标边界：Core 在 exact session runtime authority 内产生 immutable typed settlement；
+  scheduler 只消费 batch barrier，Host 只聚合闭集 disposition。task business exit、
+  signal terminal state、scheduler batch settlement 与 projection settlement保持正交。
+
+  修正记录：新增 `AgentRuntimeOutcomeSettlement`，在 teammate finalization 的短 transaction
+  中绑定 source occurrence、task/agent/lane/correlation snapshot、failure observation 与唯一
+  pending master successor；任一 master/teammate max-step 在当前 claim wave 后结束 bounded
+  batch。Host core receipt 直接消费 typed outcome，删除 `id(outcome)`、typed-to-dict
+  interpreter、repository rescan 与 task-status 反向映射。file-backed SQLite 的两条真实
+  `RuntimeCommandWorker` command 已证明默认 `max_signals=3` 的第一条只形成 handoff，第二条
+  才 claim successor，且显式 failed task 不会把 completed signal 重分类。
+
 - [x] Host API 在 teammate 终态结果后触发 service-level master response turn，而不是排队 master wakeup。
 
   证据：历史实现中的 service helper 会在 teammate outcomes 后启动另一次 top-level master loop。

@@ -9,6 +9,7 @@ r54 已证明当前 scientific selection 的真实约束虽然存在于 Host val
 - 增加显式原子 adoption 命令：agent 仍须选择 exact operation、workflow role 与理由，Host 在一个事务中校验并写入 adopted disposition 和 effect adoption，失败时不得留下半完成选择。
 - 修改 runtime command outcome：scheduler 已产生的 durable 进度不得被后续 consistency/event/workspace projection failure 抹成零；command 必须分别暴露 bounded scheduler facts 与 projection outcome，并禁止不安全重放。
 - 修改 step-budget recovery：一次 bounded turn/signal 可以终止，但 task 保持非终态，failure observation 必须表达 agent 可重新规划且同一 signal 不会被静默重放。
+- 将 step-budget handoff 的结算真相下沉到 Core typed outcome：source signal、failure observation、task/agent snapshot 与 successor wakeup 在 session runtime authority 内闭合；任一 max-step outcome 构成当前 bounded batch barrier，Host 不得在 lease 释放后通过可变 repository 状态重建或改写这项结算。
 - **BREAKING（仅限新 scientific attempts）**：新增完整覆盖角色到 operation signature 映射的 workflow contract 版本；旧 contract 与 r54 evidence 保持冻结、只读、永久 NO-GO，不被原地升级。
 - 对齐 active AOX cutover 中仍残留的“任一 terminal failure 强制 fresh attempt”旧规则与 selected-chain 合同：known terminal/no-effect occurrence 可显式处置，unknown effect、活动 writer/continuation、authority/resource breach 仍 fail closed。
 

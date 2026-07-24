@@ -227,12 +227,19 @@ step budget 用尽不授权继续同一 signal。driver 写入结构化
 `agent_turn_budget_exhausted` 后终止 exact occurrence；scheduler 不原地重放、不追加 steps、
 不重开 operation/selection。`agent_can_replan` 只说明 master 可在新的 canonical turn 中读取
 task/protocol/artifact/failure/selection facts 后选择策略，不与 exact-signal terminal 冲突。
+Core 用 typed `AgentRuntimeOutcomeSettlement` 固化该 occurrence；closed handoff 绑定
+source/task/agent/lane/correlation、exact failure observation 与 pending master successor，
+而不是让 Host 在 turn 结束后从可变 read model 猜测。
 
 core receipt 中的 scheduler `completed` 是 batch-settlement 事实，不是 agent/task success。
 teammate occurrence 只有在 failed signal、exact canonical budget observation、nonterminal
-task 与 unique source-bound non-cancelled master wakeup 全部闭合时才可完成这个 handoff；
+task 与 unique source-bound pending master wakeup 全部闭合时才可完成这个 handoff；
 original signal 仍 failed，master wakeup 仍是独立 turn。master 自身耗尽或任何闭包缺失不能
-通过制造 self-wakeup 改成 completed。
+通过制造 self-wakeup 改成 completed。任何 master/teammate max-step 同时结束当前 bounded
+batch：已 claim wave 完成后不再 claim 新 signal，所以 successor 即使在
+`max_signals > 1` 的 command 内创建，也只能由下一次 scheduler authority 推进。Host 只聚合
+typed disposition；一次显式 `task.finish(status="failed")` 不会把正常 completed signal
+反向改成 scheduler failure。
 
 scientific selection 的真实约束不应靠模型从错误信息或 SOP 猜。详细
 `scientific.attempt.inspect` 提供 digest-bound contract、operation signature、

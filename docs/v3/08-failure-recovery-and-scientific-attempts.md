@@ -62,18 +62,28 @@ source-bound wakeup 显式 replan。`effect_certainty=no_effect` 的 scope 是 r
 transition，不得擦除同 turn 已经持久化的 controlled-operation execution/result。task status、
 failure summary/ref 保持原样。
 
-receipt assembly 必须验证这条交接的 canonical closure。teammate signal、同 attempt
-observation、nonterminal task 与 exactly one source-bound non-cancelled master wakeup 全部
-一致时，scheduler batch 可以记为 completed settlement，但 exact signal 仍是 failed；
-新的 wakeup 才是可 claim 的 recovery work。任一要素缺失/歧义、普通 runtime failure 或
+Core 必须在同一个短 transaction/session runtime authority 中形成 typed
+`AgentRuntimeOutcomeSettlement`，而不是让 receipt assembly 在 lease 释放后重建交接。
+settlement 绑定 exact teammate occurrence、同 attempt observation、task/agent/lane/correlation
+snapshot 与 exactly one source-bound pending master wakeup。全部一致时 scheduler batch
+可以记为 completed handoff，但 exact signal 仍是 failed，新的 wakeup 才是可 claim 的
+recovery work；任一要素缺失/歧义、cancelled/duplicate successor、普通 runtime failure 或
 master 自身 max-step 仍然是 scheduler failure，不能靠重标状态绕过。
+
+任一 master 或 teammate max-step outcome 都是当前 bounded batch barrier。scheduler 允许
+已经 claim 的 wave 完成，然后停止新 claim；即使 `max_signals > 1`，该 occurrence 新建的
+successor 也必须等下一条 command/background tick。后续 task 或 successor 状态变化不会
+反向改写 immutable settlement。task business exit 与 scheduler settlement 正交：例如 agent
+显式 `task.finish(status="failed")` 后 signal 正常 completed，scheduler batch仍可 completed。
 
 manual runtime drain 在 scheduler batch 后先形成 immutable
 `RuntimeDrainCoreReceipt`，再独立结算 trace/activity/consistency/event/workspace
 projection。`runtime_command_outcome@2` 同时保存 scheduler 与 projection 两层状态；若
 post-core projection 失败，真实 processed count、suspension 和 output/event identities 仍保留，
 且只要 count 大于零就固定 `replay_safe=false`。只有 core receipt 尚未形成的 boundary
-exception 才能报告 count `0`；旧 `@1` receipt 只读，不回填推导值。
+exception 才能报告 count `0`；旧 `@1` receipt 只读，不回填推导值。Host core receipt
+直接聚合 Core typed settlement，不做 typed-to-dict-to-classifier 往返，不依赖对象 identity，
+也不重扫 mutable signal/task/failure/agent/wakeup repository。
 
 同一个 provider response 中的多个 tool call 作为有序 batch 结算。若某个已 dispatch call
 触发 approval、terminal action、runtime suspension 或 boundary-fatal failure，harness

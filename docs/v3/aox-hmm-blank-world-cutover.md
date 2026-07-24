@@ -267,15 +267,23 @@ cumulative MICU ledger moved from `81,229,927` to
 there was no overage or hard-limit breach.
 
 The forward-only correction keeps the original signal failed and never replays
-it. A teammate max-step outcome counts as completed scheduler settlement only
-when the canonical failed signal, exact attempt-version budget observation,
-nonterminal task, and exactly one source-bound non-cancelled master wakeup all
-agree. Missing/duplicate/cancelled wakeup, observation or identity drift,
-ordinary runtime failure, terminal business state, and master max-step remain
-scheduler failures. Because AOX fixes `max_signals=1`, the new wakeup cannot be
-consumed by the same command: after the receipt returns, the driver still
-inspects durable controlled-operation, task and sandbox terminal state before
-it may issue another drain.
+it. Core now forms an immutable typed settlement under the exact runtime
+authority, binding the failed source occurrence, attempt-version budget
+observation, nonterminal task/agent/lane/correlation snapshot, and exactly one
+source-bound pending master wakeup. Missing/duplicate/cancelled successor,
+observation or identity drift, ordinary runtime failure, and master max-step
+remain scheduler failures. Host consumes that settlement directly and no
+longer re-reads mutable task/signal/failure/wakeup rows or maps a later business
+task status back into scheduler failure.
+
+Every master or teammate max-step is also a generic bounded-batch barrier:
+after the current claim wave settles, no further signal is claimed by that
+command. The source-created master wakeup therefore cannot be consumed in the
+same command even when the product default is `max_signals=3`. AOX still fixes
+`max_signals=1` as a campaign identity and deterministic observation
+constraint, not as the sole runtime-correctness mechanism. After the receipt
+returns, the driver still inspects durable controlled-operation, task and
+sandbox terminal state before it may issue another drain.
 
 This correction does not continue r55 or make its pending wakeup reusable.
 The consumed authority, root, probe effects, partial child evidence and all

@@ -187,6 +187,14 @@ RuntimeDrainProjectionOutcome
 
 `HostRuntimeCommandExecutor` 接收 typed drain result，而不是依赖任意对象 `getattr` 丢失语义。只有 scheduler 尚未产生 core receipt 的 boundary exception 才允许 worker 使用 `processed_signal_count=0`。worker catch-all 保留为最后防线，但不能覆盖一个已经形成的 partial/core receipt。
 
+每个 `AgentRuntimeOutcome` 还必须携带 Core-owned typed settlement。普通完成、等待 approval、
+普通失败与 closed budget-replan handoff 使用闭集 disposition；settlement 绑定 source signal
+occurrence 的 session/task/lane/agent/correlation/attempt snapshot。budget handoff 额外绑定 exact
+failure observation 与 exact successor master signal。Host 只能聚合这个 typed settlement，
+不得在 scheduler 释放 session lease 后重新读取 mutable task/signal/failure/wakeup rows 来猜测
+同一 outcome 是否已经结算。task 的显式 `failed`/`blocked` 等业务出口仍是 agent 决策，不得
+反向把一个成功完成的 signal/batch 改写成 scheduler failure。
+
 **替代方案：在 consistency projection 外包一层 broad `except` 并继续 success。** 拒绝。它会隐藏真实完整性故障。
 
 **替代方案：所有 post-processing failure 都按零进度失败。** 拒绝。它与 durable scheduler rows 矛盾，并可能诱导重复 drain。
@@ -214,6 +222,20 @@ exact signal 继续保持 failed/terminal，新的 master wakeup 是独立 turn�
 projection identity drift、普通 runtime failure，或 master 自身 max-step 均继续令
 scheduler layer `failed`。这个 completed 只表示 batch settlement，不表示 signal、task、
 scientific attempt、report 或 campaign 成功。
+
+teammate finalization 在持有 session runtime lease、runtime write fence 与短 transaction 时形成
+上述 typed settlement；settlement 一旦返回就是该 bounded occurrence 的 immutable snapshot。
+任何 max-step outcome——无论 handoff 是否闭合、发生在 master 还是 teammate——都会结束当前
+claim wave 之后的 scheduler batch。已经在该 wave 中 claim 的独立 signal 可以完成，但 scheduler
+不得再从 repository claim 本次 finalization 新建的 successor；它只能由下一条 runtime command
+或下一次 background tick 获得新的 session authority 后 claim。这样 `max_signals > 1` 不会把
+“创建 successor”和“执行 successor”折叠到同一 command。
+
+Host receipt 聚合只接受 Core settlement 的闭集 schema/disposition。closed
+`budget_replan_handoff` 可以把 `ok=false` 的 exact occurrence 解释为 completed batch
+settlement；任何缺失、unknown 或普通 failed settlement 继续 fail closed。Host 不检查当前 task
+是否后来 terminal，也不接受 `id(outcome)`、自由文本、可变 wakeup status 或 repository rescan
+作为结算 authority。
 
 `RuntimeConsistencyService` 不再依赖错误字符串识别 max steps；它优先使用 failure observation error code，旧 signal 文本匹配只作为 frozen compatibility。
 
@@ -254,7 +276,7 @@ active change 增加 r54 诊断 addendum，记录：
 4. 增加 selection evaluator、bounded inspection/readiness projection、结构化 errors，并让 seal/closure 切换到同一 evaluator。
 5. 增加原子 adoption command，移除旧两步 adopted path 的 model visibility，完成 transaction/idempotency/rollback tests。
 6. 增加 runtime drain core receipt、projection outcome 和 `runtime_command_outcome@2`，更新 API/CLI/UI projection与旧 `@1` reader tests。
-7. 修正 max-step failure classification和 recovery brief，增加 scheduler/protocol/runtime consistency tests。
+7. 修正 max-step failure classification和 recovery brief；增加 Core typed settlement、max-step batch barrier 与 Host-only aggregation，并用 scheduler/protocol/runtime consistency/真实 command worker tests 闭合。
 8. 同步 `docs/OpenZyme架构设计.md`、`docs/v3/00-harness-doctrine.md`、`04-public-interfaces.md`、`05-agent-runtime.md`、`06-top-level-llm-loop.md`、`08-failure-recovery-and-scientific-attempts.md` 及 AOX runbook。
 9. 运行 focused tests、file-backed Host integration、ruff、`git diff --check`、`./scripts/check-mainline.sh`、V3 eval、Web UI tests/build 和 OpenSpec strict validation。
 10. 停在 non-live verified/ready 状态。任何 live authorization/consumption/root/effect 都需要目标之外的用户新批准。

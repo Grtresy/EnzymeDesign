@@ -12,6 +12,7 @@ import pytest
 import openzyme_core.agent_runtime as agent_runtime_module
 
 from openzyme_domain import AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
+from openzyme_core import AgentRuntimeSettlementDisposition
 from openzyme_core import AgentRuntimeScheduler
 from openzyme_core import AgentRuntimeService
 from openzyme_core import CoreRepositories
@@ -220,6 +221,10 @@ class LoopingModelFactory:
     def create_tool_calling_invoker(self, *, purpose: str) -> LoopingToolCallingInvoker:
         del purpose
         return self.invoker
+
+
+async def _invoke_without_executor(func, /, *args, **kwargs):
+    return func(*args, **kwargs)
 
 
 class FakeProviderStatusError(Exception):
@@ -1188,6 +1193,143 @@ def test_teammate_max_steps_does_not_mark_business_task_failed() -> None:
             and candidate.source_ref == "sig_0"
         ]
     ) == 1
+
+
+def test_teammate_max_steps_forms_handoff_and_stops_the_current_batch(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(asyncio, "to_thread", _invoke_without_executor)
+    repositories, context = _build_context(model_factory=LoopingModelFactory())
+
+    outcomes = AgentRuntimeScheduler(
+        context,
+        worker_id="test:budget-batch-barrier",
+        max_session_concurrency=1,
+    ).run_once_sync(
+        "sess_scheduler",
+        max_signals=3,
+        max_steps_per_agent=1,
+    )
+
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.signal.signal_id == "sig_0"
+    assert outcome.settlement is not None
+    assert outcome.settlement.disposition is (
+        AgentRuntimeSettlementDisposition.BUDGET_REPLAN_HANDOFF
+    )
+    assert outcome.settlement.batch_barrier is True
+    assert outcome.settlement.failure_observation_id is not None
+    assert outcome.settlement.successor_signal_id is not None
+
+    untouched = [
+        repositories.runtime_signals.get(signal_id)
+        for signal_id in ("sig_1", "sig_2")
+    ]
+    assert all(signal is not None for signal in untouched)
+    assert all(
+        signal.status is AgentRuntimeSignalStatus.PENDING
+        and signal.attempt_count == 0
+        for signal in untouched
+        if signal is not None
+    )
+    successor = repositories.runtime_signals.get(
+        outcome.settlement.successor_signal_id
+    )
+    assert successor is not None
+    assert successor.agent_id == "agent:master"
+    assert successor.status is AgentRuntimeSignalStatus.PENDING
+    assert successor.attempt_count == 0
+
+
+@pytest.mark.parametrize(
+    ("candidate_statuses", "expected_successor_count"),
+    (
+        ((AgentRuntimeSignalStatus.CANCELLED,), 1),
+        (
+            (
+                AgentRuntimeSignalStatus.PENDING,
+                AgentRuntimeSignalStatus.PENDING,
+            ),
+            2,
+        ),
+    ),
+    ids=("cancelled-successor", "duplicate-successors"),
+)
+def test_incomplete_budget_handoff_still_stops_the_current_batch(
+    monkeypatch,
+    candidate_statuses: tuple[AgentRuntimeSignalStatus, ...],
+    expected_successor_count: int,
+) -> None:
+    monkeypatch.setattr(asyncio, "to_thread", _invoke_without_executor)
+    repositories, context = _build_context(model_factory=LoopingModelFactory())
+    repositories.agents.save(
+        AgentMember(
+            agent_id="agent:master",
+            session_id="sess_scheduler",
+            lane_id=None,
+            task_id=None,
+            name="OpenZyme",
+            role="master",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at="2026-04-16T09:59:00+00:00",
+            updated_at="2026-04-16T09:59:00+00:00",
+            runtime_state="idle",
+            idle_since="2026-04-16T09:59:00+00:00",
+        )
+    )
+    for index, status in enumerate(candidate_statuses):
+        repositories.runtime_signals.save(
+            AgentRuntimeSignal(
+                signal_id=f"sig_preexisting_master_{index}",
+                session_id="sess_scheduler",
+                agent_id="agent:master",
+                task_id="task_0",
+                reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+                source_ref="sig_0",
+                status=status,
+                created_at=f"2026-04-16T10:01:0{index}+00:00",
+                completed_at=(
+                    "2026-04-16T10:01:09+00:00"
+                    if status.is_terminal
+                    else None
+                ),
+            )
+        )
+
+    outcomes = AgentRuntimeScheduler(
+        context,
+        worker_id="test:incomplete-budget-batch-barrier",
+        max_session_concurrency=1,
+    ).run_once_sync(
+        "sess_scheduler",
+        max_signals=3,
+        max_steps_per_agent=1,
+    )
+
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.signal.signal_id == "sig_0"
+    assert outcome.settlement is not None
+    assert outcome.settlement.disposition is (
+        AgentRuntimeSettlementDisposition.SIGNAL_FAILED
+    )
+    assert outcome.settlement.batch_barrier is True
+    candidates = [
+        signal
+        for signal in repositories.runtime_signals.list_by_session(
+            "sess_scheduler"
+        )
+        if signal.agent_id == "agent:master" and signal.source_ref == "sig_0"
+    ]
+    assert len(candidates) == expected_successor_count
+    assert all(signal.attempt_count == 0 for signal in candidates)
+    for signal_id in ("sig_1", "sig_2"):
+        untouched = repositories.runtime_signals.get(signal_id)
+        assert untouched is not None
+        assert untouched.status is AgentRuntimeSignalStatus.PENDING
+        assert untouched.attempt_count == 0
 
 
 def test_budget_exhaustion_preserves_independent_controlled_effect(

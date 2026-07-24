@@ -37,6 +37,11 @@ from .durable_execution_worker import DurableRouteObservation
 from .durable_execution_worker import DurableRouteObservationKind
 from .agent_runtime import AgentRuntimeOutcome
 from .agent_runtime import AgentRuntimeService
+from .agent_runtime_settlements import (
+    AGENT_RUNTIME_OUTCOME_SETTLEMENT_SCHEMA_VERSION,
+)
+from .agent_runtime_settlements import AgentRuntimeOutcomeSettlement
+from .agent_runtime_settlements import AgentRuntimeSettlementDisposition
 from .agent_scheduler import AgentRuntimeScheduler
 from .agent_scheduler import SessionRuntimeLeaseLockedError
 from .harness import AgentStepContext
@@ -338,8 +343,11 @@ __all__ = [
     "AgentStepContext",
     "ActivityFeedItem",
     "AgentRuntimeOutcome",
+    "AgentRuntimeOutcomeSettlement",
+    "AgentRuntimeSettlementDisposition",
     "AgentRuntimeScheduler",
     "AgentRuntimeService",
+    "AGENT_RUNTIME_OUTCOME_SETTLEMENT_SCHEMA_VERSION",
     "SessionRuntimeLeaseLockedError",
     "AgentMemberRepository",
     "AgentRuntimeSignalRepository",

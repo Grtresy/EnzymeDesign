@@ -469,13 +469,19 @@ Every campaign attempt SHALL run its canonical loopback HTTP Host inside one fre
 A teammate step-budget exhaustion is not by itself one of those business terminal
 failures. If the exact teammate signal is terminal failed with canonical
 `agent_turn_budget_exhausted`, its task remains nonterminal with unchanged business
-failure fields, and exactly one source-bound non-cancelled master wakeup is durable,
-the scheduler batch SHALL be treated as a completed handoff while the original
-signal remains unreplayed. With `max_signals=1`, that master wakeup MUST remain a
-separate turn: the driver SHALL first perform the same durable operation/task/sandbox
-observation, then MAY issue one later drain. Missing or ambiguous closure, a
-cancelled/duplicate wakeup, an explicit task/operation/sandbox failure, or master
-max-step remains a failed command and stops the attempt.
+failure fields, and exactly one source-bound pending master wakeup is durable,
+Core SHALL form one immutable typed handoff settlement under the exact session
+runtime authority while the original signal remains unreplayed. Any master or
+teammate max-step outcome SHALL end the bounded scheduler batch after the current
+claim wave; a source-created successor MUST remain a separate turn even when the
+runtime command permits `max_signals > 1`. Missing or ambiguous closure, a
+cancelled/duplicate wakeup, identity drift, ordinary runtime failure, or master
+max-step remains a failed scheduler command. An explicit task/operation/sandbox
+failure independently stops the AOX attempt after the drain returns, even when its
+signal and scheduler settlement completed normally. AOX SHALL retain
+`max_signals=1` as a pinned campaign/observation identity rather than relying on it
+as the only same-command successor barrier. The driver SHALL first perform the same
+durable operation/task/sandbox observation, then MAY issue one later drain.
 
 Once coordination fails, the driver MUST preserve that original blocker, MUST reject every unresolved approval that is already visible or becomes visible before the existing attempt deadline solely to release the worker, and MUST NOT approve cleanup or continue scientific execution. Transient compact-control/resolve failures MUST retain only safe secondary diagnostics and MUST be retried with the same idempotency key until drain retirement or that deadline. After a successful drain worker reaches terminal, the coordinator MUST complete at least one compact pending-approval GET known to have begun after that response before concluding that no new `waiting_approval` exists, then bind the returned composite workspace. A drain-thread exception MUST retain the stable command-failure taxonomy; only approval coordination or cleanup exceptions MAY become coordination failures. Client-request completion or timeout MUST NOT be treated as server-handler completion: the loopback boundary SHALL track every server-side mutation lifetime, initiate server shutdown, and wait through server retirement until all mutations become idle before leaving the Host context. Mutation handlers MUST NOT return while a detached writer can still change attempt state.
 
@@ -513,7 +519,7 @@ The sealed `aox_browser_approval_receipt@2` SHALL record mode/channel/Host proce
 
 #### Scenario: Continue through a closed budget-replan handoff
 - **WHEN** the one teammate signal claimed by a drain exhausts its step budget, the exact signal/observation/task facts close, and one source-bound master wakeup remains queued without a controlled-operation, task, or sandbox terminal failure
-- **THEN** the original signal remains failed and unreplayed, the scheduler batch settles, the driver performs its post-drain durable observation, and only a later drain may claim the independent master replan turn
+- **THEN** Core emits the immutable typed handoff, the original signal remains failed and unreplayed, the current scheduler batch stops after its claim wave, the driver performs its post-drain durable observation, and only a later drain may claim the independent master replan turn
 
 #### Scenario: Fail closed on an incomplete budget handoff
 - **WHEN** the budget observation or unique source-bound master wakeup is missing, mismatched, duplicated, cancelled, or belongs to the master signal itself

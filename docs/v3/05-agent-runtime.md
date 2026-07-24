@@ -313,7 +313,9 @@ master 与 teammate 都可以通过 `artifact.list` / `artifact.get` / `artifact
 - task canonical 终态由 task board 表达；protocol/chat 只承载沟通内容。成功执行由 executor 总结结果后通过 `task.finish(status="completed")` 完成 task，失败执行只在明确不可修复时由 executor 调用 `task.finish(status="failed")` 并提供 `failure_summary` 或 `failure_ref`。阻塞退出必须提供 `blocked_reason` 或 `recovery_hint`。
 - scheduler 只根据 user message、approval、engine completion、inbox、task availability 等信号唤醒 agent；它不根据 sandbox dirty state、可用 backend 或工具探测结果替 executor 选择 plan、切换本地/HPC 后端、自动重写 pipeline，或把 run 结果自动解释成任务终态。
 - 如果 bounded loop 到达 max steps，runtime 以 `agent_turn_budget_exhausted` 将 exact signal/turn terminalize，`retry_eligibility=terminal` 且不自动 replay/增加 budget；同时记录 `recoverability=agent_can_replan`，保持 task status 与业务 failure fields 不变。signal-local `no_effect` 不能覆盖同 turn 已持久化的 controlled-operation effect。source-bound、去重的 master wakeup 从 canonical failure observation 与当前 scientific selection evaluation 重建 facts，master 在新的 turn 中显式决定下一步。
-- runtime receipt 不得把上述 occurrence failure 与 scheduler batch crash 混为一谈。只有 canonical exact failed signal、同 attempt budget observation、非终态 task 与 exactly one source-bound non-cancelled master wakeup 全部一致时，该 teammate outcome 才构成 completed scheduler handoff；原 signal 不变，后继 wakeup 仍需另一 canonical turn。缺失/重复/取消 wakeup、identity drift、普通 runtime failure 或 master max-step 继续令 batch failed。
+- `AgentRuntimeOutcome` 必须携带 Core-owned immutable typed `AgentRuntimeOutcomeSettlement`。普通 completed/failed、waiting approval 与 budget-replan handoff 是闭集 disposition；handoff 在同一个短 transaction 和 session runtime authority 内绑定 source occurrence、task/agent/lane/correlation snapshot、exact failure observation 与唯一 pending master successor。缺失/重复/取消 successor 或 identity drift 只能得到普通 failed settlement，Host 不得在 lease 释放后重建一个“更成功”的版本。
+- 任一 master/teammate max-step settlement 都设置 bounded batch barrier。当前已 claim wave 可以结束，但 scheduler 随即停止新 claim；本轮新建 successor 即使面对 `max_signals > 1` 也只能由下一条 runtime command 或 background tick 推进。
+- runtime receipt 不得把上述 occurrence failure 与 scheduler batch crash 混为一谈。只有 canonical exact failed signal、同 attempt budget observation、非终态 task 与 exactly one source-bound pending master wakeup 全部一致时，该 teammate outcome 才构成 completed scheduler handoff；原 signal 不变，后继 wakeup 仍需另一 canonical turn。缺失/重复/取消 wakeup、identity drift、普通 runtime failure 或 master max-step 继续令 batch failed。Host core receipt 只聚合 typed settlement，不按 `id(outcome)`、当前 repository state 或 task business status 再分类；显式 failed task 与 completed signal 可以同时成立。
 - 如果 engine/capability completed 但 teammate 未消费结果，scheduler 应唤醒 owner teammate 或 report teammate 进行收尾；teammate 必须用 outcome 作为 evidence 显式调用 `task.finish`，或发送 follow-up / blocked 语义后再通过 task/protocol/report 变化唤醒 master。
 - shutdown 必须通过 protocol handshake：request -> cleanup / approve -> shutdown status；不得默认直接丢弃未读 inbox 或未发布 report draft。
 - failed teammate 的 task 应回到可诊断状态，由 master 或其他 teammate 接管，workspace projection 必须显示失败原因与关联 thread。
@@ -357,5 +359,6 @@ runtime drain 的 scheduler batch 与 read-model settlement 也不能混成一�
 返回值。batch 后先形成 typed core receipt；trace/activity/consistency/event/workspace
 projection 再独立结算。post-core projection failure 必须保留 count、suspension、output/event
 identities，并明确 `replay_safe=false`，不能被 worker catch-all 改写成“零 signal
-processed”。runtime consistency 对新 max-step observation 按结构化 error code 分类；旧
-自由文本匹配只用于 frozen historical rows。
+processed”。core receipt 直接消费 `AgentRuntimeOutcomeSettlement`，不经过内部
+typed-to-dict-to-classifier 往返，也不重扫 mutable repository。runtime consistency 对新
+max-step observation 按结构化 error code 分类；旧自由文本匹配只用于 frozen historical rows。

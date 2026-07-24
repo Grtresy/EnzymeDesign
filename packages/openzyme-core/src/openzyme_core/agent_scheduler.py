@@ -253,9 +253,20 @@ class AgentRuntimeScheduler:
                     signals.append(signal)
                 if not signals:
                     break
-                outcomes.extend(
-                    await asyncio.gather(*(run_signal(signal) for signal in signals))
+                wave_outcomes = await asyncio.gather(
+                    *(run_signal(signal) for signal in signals)
                 )
+                outcomes.extend(wave_outcomes)
+                if any(
+                    outcome.settlement is not None
+                    and outcome.settlement.batch_barrier
+                    for outcome in wave_outcomes
+                ):
+                    # A step-budget terminal occurrence ends this bounded batch.
+                    # A successor created by that occurrence requires a fresh
+                    # scheduler/session-authority turn and cannot be claimed by
+                    # the next loop iteration of this command.
+                    break
             return tuple(outcomes)
         finally:
             try:

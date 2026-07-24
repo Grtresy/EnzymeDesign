@@ -56,6 +56,11 @@
 - [x] 6.5 增加 scheduler/protocol/consistency 回归，证明同一 signal 不重放、不隐式加 budget、不重开 operation，master 可在新 turn 显式 replan。
 - [x] 6.6 增加 controlled-operation effect preservation 回归，证明 signal-local `no_effect` 不擦除或重解释同一 exhausted turn 已产生的独立 durable scientific effects。
 - [x] 6.7 闭合 post-r55 receipt 分类：只有 canonical failed teammate signal、exact budget observation、nonterminal task 与 unique source-bound master wakeup 全部成立时才把 scheduler batch 记为 completed settlement；缺 wakeup 与 master max-step 保持 failed，并增加真实 SQLite 回归。
+- [x] 6.8 在 `openzyme-core` 增加闭集 typed `AgentRuntimeOutcomeSettlement`，让每个 outcome 显式表达 signal completed/failed、waiting approval 或 budget-replan handoff；handoff 绑定 exact source occurrence、task/agent/lane/correlation snapshot、failure observation 与 successor signal。
+- [x] 6.9 让任一 master/teammate max-step outcome 成为 bounded batch barrier：当前 claim wave 完成后停止继续 claim，确保即使 `max_signals > 1`，本轮新建的 successor 也只能由下一条 command/background tick 推进。
+- [x] 6.10 将 Host core receipt 聚合改为只消费 Core typed settlement，删除 `id(outcome)`、repository rescan 与 task business status 到 scheduler failure 的反向映射。
+- [x] 6.11 增加 Core/Host 负向矩阵，覆盖 missing/duplicate/cancelled/mismatched successor、task/lane/agent/correlation drift、ordinary failure、master exhaustion、显式 business failure 与 typed settlement serialization。
+- [x] 6.12 增加 file-backed SQLite 的真实 `RuntimeCommandWorker` 两命令回归，证明第一条默认 `max_signals=3` command 停在 closed handoff、第二条才 claim successor，原 signal/settlement 不被后续 task 变化改写。
 
 ## 7. AOX 规格、配置与稳定文档同步
 
@@ -73,3 +78,4 @@
 - [x] 8.4 运行 Web UI `npm test` 与 `npm run build`，确认 runtime/selection 状态消费兼容。
 - [x] 8.5 运行 `./scripts/check-mainline.sh` 并按 slice scope 解释或修复任何失败。
 - [x] 8.6 审计最终 diff、OpenSpec checkbox、历史 r54 evidence 与 live authority 状态，确认未运行 provider/HPC/Chrome/numbered campaign、未迁移 r54、未消费或创建 live authority。
+- [x] 8.7 对 typed settlement/batch barrier 增量重新运行 focused pytest、ruff、V3 eval、Web UI、`git diff --check`、两个 active OpenSpec strict validation 与 `./scripts/check-mainline.sh`，并再次确认没有 live authority/effect。

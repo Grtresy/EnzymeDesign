@@ -16,6 +16,7 @@ from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import FailureActorKind
 from openzyme_domain import FailureClass
+from openzyme_domain import FailureObservation
 from openzyme_domain import FailureRecoverability
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
@@ -32,6 +33,8 @@ from .harness import HarnessStatus
 from .harness import RestoreFocus
 from .harness import SessionRuntimeContext
 from .harness import run_agent_harness_loop
+from .agent_runtime_settlements import AgentRuntimeOutcomeSettlement
+from .agent_runtime_settlements import AgentRuntimeSettlementDisposition
 from .llm_driver import LlmConversationDriver
 from .task_board import TaskBoardService
 from .teammate_roster import teammate_role_for_task_kind
@@ -53,8 +56,68 @@ class AgentRuntimeOutcome:
     teammate_status: str | None = None
     outputs: tuple[str, ...] = ()
     waiting_approval_id: str | None = None
+    settlement: AgentRuntimeOutcomeSettlement | None = None
+
+    def __post_init__(self) -> None:
+        settlement = self.settlement
+        if settlement is None:
+            disposition = (
+                AgentRuntimeSettlementDisposition.WAITING_APPROVAL
+                if self.waiting_approval_id is not None
+                else (
+                    AgentRuntimeSettlementDisposition.SIGNAL_COMPLETED
+                    if self.ok
+                    else AgentRuntimeSettlementDisposition.SIGNAL_FAILED
+                )
+            )
+            settlement = AgentRuntimeOutcomeSettlement.from_signal_outcome(
+                signal=self.signal,
+                task=self.task,
+                disposition=disposition,
+                batch_barrier=(
+                    self.teammate_status
+                    == HarnessStatus.MAX_STEPS_EXCEEDED.value
+                ),
+            )
+            object.__setattr__(self, "settlement", settlement)
+        if (
+            settlement.source_signal_id != self.signal.signal_id
+            or settlement.source_signal_status is not self.signal.status
+            or settlement.source_attempt_count != self.signal.attempt_count
+            or settlement.session_id != self.signal.session_id
+            or settlement.agent_id != self.signal.agent_id
+            or settlement.task_id != self.signal.task_id
+            or settlement.lane_id != self.signal.lane_id
+            or settlement.source_correlation_id
+            != self.signal.correlation_id
+        ):
+            raise ValueError(
+                "runtime outcome settlement does not match its source signal"
+            )
+        if (
+            self.teammate_status
+            == HarnessStatus.MAX_STEPS_EXCEEDED.value
+            and not settlement.batch_barrier
+        ):
+            raise ValueError(
+                "max-step runtime outcome must terminate the scheduler batch"
+            )
+        if (
+            settlement.disposition
+            is AgentRuntimeSettlementDisposition.BUDGET_REPLAN_HANDOFF
+            and (
+                self.ok
+                or self.waiting_approval_id is not None
+                or self.teammate_status
+                != HarnessStatus.MAX_STEPS_EXCEEDED.value
+            )
+        ):
+            raise ValueError(
+                "budget-replan handoff does not match the runtime outcome"
+            )
 
     def to_dict(self) -> dict[str, Any]:
+        assert self.settlement is not None
         return {
             "signal": self.signal.to_dict(),
             "task": None if self.task is None else self.task.to_dict(),
@@ -64,6 +127,7 @@ class AgentRuntimeOutcome:
             "teammate_status": self.teammate_status,
             "outputs": list(self.outputs),
             "waiting_approval_id": self.waiting_approval_id,
+            "settlement": self.settlement.to_dict(),
         }
 
 
@@ -94,6 +158,7 @@ class AgentRuntimeService:
         lane_id: str | None = None,
         correlation_id: str | None = None,
         source_ref: str | None = None,
+        notify: bool = True,
     ) -> AgentRuntimeSignal | None:
         agent = self.context.repositories.agents.get(session_id, agent_id)
         if agent is None:
@@ -105,7 +170,8 @@ class AgentRuntimeService:
             source_ref=source_ref,
         )
         if existing is not None:
-            self._notify_signal(existing.session_id)
+            if notify:
+                self._notify_signal(existing.session_id)
             return existing
         signal = AgentRuntimeSignal(
             signal_id=_new_id("sig"),
@@ -132,7 +198,8 @@ class AgentRuntimeService:
                 "source_ref": signal.source_ref,
             },
         )
-        self._notify_signal(signal.session_id)
+        if notify:
+            self._notify_signal(signal.session_id)
         return signal
 
     def _notify_signal(self, session_id: str) -> None:
@@ -212,7 +279,10 @@ class AgentRuntimeService:
         )
         agent = self.context.repositories.agents.get(signal.session_id, signal.agent_id)
         if agent is None:
-            failed, _ = self._fail_signal(claimed, error_message="agent not found")
+            failed, _, _ = self._fail_signal(
+                claimed,
+                error_message="agent not found",
+            )
             return AgentRuntimeOutcome(signal=failed, task=None, agent=None, ok=False, summary="agent not found")
         if agent.agent_id == "agent:master" or agent.role == "master":
             return self._wake_master(claimed, agent, max_steps=max_steps)
@@ -221,7 +291,10 @@ class AgentRuntimeService:
         task = self._resolve_task(signal, agent, payload)
         if task is None:
             summary = "Focused task required for wakeup."
-            failed, _ = self._fail_signal(claimed, error_message=summary)
+            failed, _, _ = self._fail_signal(
+                claimed,
+                error_message=summary,
+            )
             agent = self._update_agent(
                 agent,
                 status=AgentMemberStatus.IDLE,
@@ -318,82 +391,137 @@ class AgentRuntimeService:
         else:
             ok = False
 
-        if ok:
-            completed, signal_write_ok = self._complete_signal(claimed)
-        else:
-            budget_observation = (
-                self._budget_exhaustion_observation(
-                    claimed,
-                    max_steps=max_steps,
-                )
-                if result.status is HarnessStatus.MAX_STEPS_EXCEEDED
-                else None
-            )
-            completed, signal_write_ok = self._fail_signal(
+        budget_observation = (
+            self._budget_exhaustion_observation(
                 claimed,
-                error_message=(
-                    AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
-                    if budget_observation is not None
-                    else summary
+                max_steps=max_steps,
+            )
+            if result.status is HarnessStatus.MAX_STEPS_EXCEEDED
+            else None
+        )
+        failure_observation: FailureObservation | None = None
+        successor: AgentRuntimeSignal | None = None
+        settlement: AgentRuntimeOutcomeSettlement | None = None
+        acknowledged_message_ids = set(consumed_message_ids)
+        with self.context.repositories.atomic(
+            prefix="agent_runtime_outcome_settlement"
+        ):
+            if ok:
+                completed, signal_write_ok = self._complete_signal(claimed)
+            else:
+                (
+                    completed,
+                    signal_write_ok,
+                    failure_observation,
+                ) = self._fail_signal(
+                    claimed,
+                    error_message=(
+                        AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
+                        if budget_observation is not None
+                        else summary
+                    ),
+                    retryable=(
+                        False
+                        if budget_observation is not None
+                        else _is_retryable_runtime_error(result.error)
+                    ),
+                    emit=False,
+                    observation=budget_observation,
+                )
+            if not signal_write_ok:
+                ok = False
+                summary = (
+                    "session runtime lease fencing rejected; "
+                    "signal write was not applied"
+                )
+            event_type = (
+                "signal.completed"
+                if ok and signal_write_ok
+                else (
+                    "signal.retry_scheduled"
+                    if signal_write_ok
+                    and completed.status is AgentRuntimeSignalStatus.PENDING
+                    else "signal.failed"
+                )
+            )
+            if signal_write_ok:
+                self.context.emit(
+                    event_type,
+                    {
+                        "signal_id": completed.signal_id,
+                        "agent_id": completed.agent_id,
+                        "status": completed.status.value,
+                        "error_message": completed.error_message,
+                    },
+                )
+            for message_id in consumed_message_ids:
+                self.context.repositories.inbox.set_status(
+                    message_id,
+                    InboxStatus.ACKNOWLEDGED,
+                )
+            for pending_signal in (
+                self.context.repositories.runtime_signals.list_pending_by_session(
+                    agent.session_id
+                )
+            ):
+                if pending_signal.source_ref in acknowledged_message_ids:
+                    self.context.repositories.runtime_signals.complete(
+                        pending_signal.signal_id
+                    )
+            effective_final_status = (
+                AgentMemberStatus.IDLE
+                if not ok
+                and completed.status is AgentRuntimeSignalStatus.PENDING
+                else final_status
+            )
+            agent = self._update_agent(
+                self.context.repositories.agents.get(
+                    agent.session_id,
+                    agent.agent_id,
+                )
+                or agent,
+                status=effective_final_status,
+                runtime_state=effective_final_status.value,
+                last_active_at=utc_now_iso(),
+                idle_since=(
+                    utc_now_iso()
+                    if effective_final_status is AgentMemberStatus.IDLE
+                    else None
                 ),
-                retryable=(
-                    False
-                    if budget_observation is not None
-                    else _is_retryable_runtime_error(result.error)
-                ),
-                emit=False,
-                observation=budget_observation,
             )
-        if not signal_write_ok:
-            ok = False
-            summary = "session runtime lease fencing rejected; signal write was not applied"
-        event_type = (
-            "signal.completed"
-            if ok and signal_write_ok
-            else (
-                "signal.retry_scheduled"
-                if signal_write_ok and completed.status is AgentRuntimeSignalStatus.PENDING
-                else "signal.failed"
-            )
-        )
-        if signal_write_ok:
-            self.context.emit(
-                event_type,
-                {
-                    "signal_id": completed.signal_id,
-                    "agent_id": completed.agent_id,
-                    "status": completed.status.value,
-                    "error_message": completed.error_message,
-                },
-            )
-        for message_id in consumed_message_ids:
-            self.context.repositories.inbox.set_status(message_id, InboxStatus.ACKNOWLEDGED)
-        for pending_signal in self.context.repositories.runtime_signals.list_pending_by_session(agent.session_id):
-            if pending_signal.source_ref in set(consumed_message_ids):
-                self.context.repositories.runtime_signals.complete(pending_signal.signal_id)
-        effective_final_status = (
-            AgentMemberStatus.IDLE
-            if not ok and completed.status is AgentRuntimeSignalStatus.PENDING
-            else final_status
-        )
-        agent = self._update_agent(
-            self.context.repositories.agents.get(agent.session_id, agent.agent_id) or agent,
-            status=effective_final_status,
-            runtime_state=effective_final_status.value,
-            last_active_at=utc_now_iso(),
-            idle_since=utc_now_iso()
-            if effective_final_status is AgentMemberStatus.IDLE
-            else None,
-        )
-        if effective_final_status is AgentMemberStatus.IDLE:
-            self.context.emit("agent.idle", {"agent_id": agent.agent_id, "signal_id": signal.signal_id, "task_id": task.task_id})
-        if result.pending_approval_id is None:
-            self._enqueue_master_wakeup_after_teammate(
-                session_id=agent.session_id,
-                source_signal=signal,
-                task=task,
-                correlation_id=correlation_id,
-            )
+            task = self.context.repositories.tasks.get(task.task_id) or task
+            if effective_final_status is AgentMemberStatus.IDLE:
+                self.context.emit(
+                    "agent.idle",
+                    {
+                        "agent_id": agent.agent_id,
+                        "signal_id": signal.signal_id,
+                        "task_id": task.task_id,
+                    },
+                )
+            if result.pending_approval_id is None:
+                successor = self._enqueue_master_wakeup_after_teammate(
+                    session_id=agent.session_id,
+                    source_signal=completed,
+                    task=task,
+                    correlation_id=correlation_id,
+                    notify=False,
+                )
+            if (
+                budget_observation is not None
+                and signal_write_ok
+                and failure_observation is not None
+                and successor is not None
+            ):
+                settlement = self._form_budget_replan_handoff_settlement(
+                    source_signal=completed,
+                    task=task,
+                    agent=agent,
+                    failure=failure_observation,
+                    successor=successor,
+                )
+        if successor is not None and not successor.status.is_terminal:
+            self._notify_signal(successor.session_id)
         return AgentRuntimeOutcome(
             signal=completed,
             task=task,
@@ -403,7 +531,60 @@ class AgentRuntimeService:
             teammate_status=result.status.value,
             outputs=tuple(result.outputs),
             waiting_approval_id=result.pending_approval_id,
+            settlement=settlement,
         )
+
+    def _form_budget_replan_handoff_settlement(
+        self,
+        *,
+        source_signal: AgentRuntimeSignal,
+        task: Task,
+        agent: AgentMember,
+        failure: FailureObservation,
+        successor: AgentRuntimeSignal,
+    ) -> AgentRuntimeOutcomeSettlement | None:
+        matching_successors = [
+            candidate
+            for candidate in (
+                self.context.repositories.runtime_signals.list_by_session(
+                    source_signal.session_id
+                )
+            )
+            if candidate.agent_id == "agent:master"
+            and candidate.reason is AgentRuntimeSignalReason.MANUAL_RESUME
+            and candidate.source_ref == source_signal.signal_id
+        ]
+        if (
+            len(matching_successors) != 1
+            or matching_successors[0].signal_id != successor.signal_id
+        ):
+            self.context.emit(
+                "runtime.budget_handoff_incomplete",
+                {
+                    "signal_id": source_signal.signal_id,
+                    "error_code": "budget_replan_successor_not_unique",
+                    "successor_count": len(matching_successors),
+                },
+            )
+            return None
+        try:
+            return AgentRuntimeOutcomeSettlement.budget_replan_handoff(
+                source_signal=source_signal,
+                task=task,
+                agent=agent,
+                failure=failure,
+                successor=successor,
+            )
+        except ValueError:
+            self.context.emit(
+                "runtime.budget_handoff_incomplete",
+                {
+                    "signal_id": source_signal.signal_id,
+                    "error_code": "budget_replan_identity_not_closed",
+                    "successor_count": 1,
+                },
+            )
+            return None
 
     def _pending_approval_is_durable_continuation_owned(
         self,
@@ -542,7 +723,7 @@ class AgentRuntimeService:
         if ok:
             completed, signal_write_ok = self._complete_signal(claimed)
         else:
-            completed, signal_write_ok = self._fail_signal(
+            completed, signal_write_ok, _ = self._fail_signal(
                 claimed,
                 error_message=(
                     AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
@@ -725,7 +906,7 @@ class AgentRuntimeService:
         retryable: bool = False,
         emit: bool = True,
         observation: RuntimeSignalFailureObservation | None = None,
-    ) -> tuple[AgentRuntimeSignal, bool]:
+    ) -> tuple[AgentRuntimeSignal, bool, FailureObservation]:
         public_error = sanitize_public_diagnostic_text(error_message)
         canonical_observation = observation or RuntimeSignalFailureObservation(
             error_code="runtime_signal_failed",
@@ -773,7 +954,7 @@ class AgentRuntimeService:
                 and self.context.repositories.lanes.get(claimed.lane_id) is not None
                 else None
             )
-            record_failure_observation(
+            failure_observation = record_failure_observation(
                 self.context.repositories,
                 session_id=claimed.session_id,
                 task_id=task_id,
@@ -805,6 +986,8 @@ class AgentRuntimeService:
                     "error_message": error_message,
                 },
             )
+        else:
+            failure_observation = existing_observation
         failed = self.context.repositories.runtime_signals.fail(
             claimed.signal_id,
             error_message=public_error,
@@ -814,7 +997,7 @@ class AgentRuntimeService:
         if failed is None:
             current = self.context.repositories.runtime_signals.get(claimed.signal_id) or claimed
             self._emit_signal_fencing_rejected(current, attempted_status="failed")
-            return current, False
+            return current, False, failure_observation
         if emit:
             event_type = (
                 "signal.retry_scheduled"
@@ -825,7 +1008,7 @@ class AgentRuntimeService:
                 event_type,
                 {"signal_id": failed.signal_id, "error_message": failed.error_message},
             )
-        return failed, True
+        return failed, True, failure_observation
 
     def _budget_exhaustion_observation(
         self,
@@ -976,7 +1159,10 @@ class AgentRuntimeService:
         summary: str,
         teammate_status: str,
     ) -> AgentRuntimeOutcome:
-        failed, _ = self._fail_signal(claimed, error_message=summary)
+        failed, _, _ = self._fail_signal(
+            claimed,
+            error_message=summary,
+        )
         updated_agent = self._update_agent(
             agent,
             status=AgentMemberStatus.IDLE,
@@ -1263,7 +1449,8 @@ class AgentRuntimeService:
         source_signal: AgentRuntimeSignal,
         task: Task,
         correlation_id: str,
-    ) -> None:
+        notify: bool = True,
+    ) -> AgentRuntimeSignal | None:
         existing = (
             self.context.repositories.runtime_signals.find_source_signal(
                 session_id=session_id,
@@ -1273,9 +1460,9 @@ class AgentRuntimeService:
             )
         )
         if existing is not None:
-            if not existing.status.is_terminal:
+            if notify and not existing.status.is_terminal:
                 self._notify_signal(existing.session_id)
-            return
+            return existing
         if self.context.repositories.agents.get(session_id, "agent:master") is None:
             now = utc_now_iso()
             self.context.repositories.agents.save(
@@ -1294,7 +1481,7 @@ class AgentRuntimeService:
                     idle_since=now,
                 )
             )
-        self.enqueue_signal(
+        return self.enqueue_signal(
             session_id=session_id,
             agent_id="agent:master",
             task_id=task.task_id,
@@ -1302,6 +1489,7 @@ class AgentRuntimeService:
             correlation_id=correlation_id,
             reason=AgentRuntimeSignalReason.MANUAL_RESUME,
             source_ref=source_signal.signal_id,
+            notify=notify,
         )
 
     def _execution_invocation_id_for_approval(self, approval_id: str | None) -> str | None:

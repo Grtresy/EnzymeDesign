@@ -44,6 +44,14 @@ The runtime drain implementation SHALL form an immutable internal core receipt i
 - **WHEN** an unexpected projection exception occurs after a core receipt exists
 - **THEN** the Host exposes a sanitized typed failure while retaining progress facts rather than silently returning successful projection status
 
+#### Scenario: Aggregate Core-owned settlement facts
+- **WHEN** the scheduler returns typed outcome settlements and releases its session runtime lease
+- **THEN** core receipt assembly consumes those immutable settlements without rescanning mutable task, signal, failure, agent, or wakeup repositories
+
+#### Scenario: Keep business exit separate from scheduler settlement
+- **WHEN** an agent explicitly finishes a task as completed, blocked, failed, or cancelled and its source signal settles successfully
+- **THEN** the scheduler layer reports the bounded signal/batch settlement independently from that business task status
+
 ### Requirement: Step-budget exhaustion is recoverable runtime attention
 When a bounded agent turn exhausts its configured step budget without an explicit terminal task action, the exact turn and source signal SHALL terminate without automatic replay, while the business task remains nonterminal. The canonical failure observation MUST use a stable budget-exhaustion code, identify that the agent can replan, and keep exact-signal retry eligibility separate from task/agent recoverability.
 
@@ -60,12 +68,24 @@ When a bounded agent turn exhausts its configured step budget without an explici
 - **THEN** one source-bound deduplicated master wakeup can inspect the failure and current scientific selection evaluation before the master chooses resume, redelegation, help, blocked, failed, or another strategy
 
 #### Scenario: Settle a closed teammate budget handoff
-- **WHEN** a teammate max-step outcome has one canonical terminal signal, the exact structured budget observation, a nonterminal business task, and exactly one source-bound non-cancelled master wakeup
+- **WHEN** a teammate max-step outcome has one canonical terminal signal, the exact structured budget observation, a nonterminal business task, and exactly one source-bound pending master wakeup
 - **THEN** the signal remains failed and unreplayed while the scheduler batch may report completed settlement, so a later bounded command can claim only the new master turn
+
+#### Scenario: Form one typed budget handoff snapshot
+- **WHEN** the runtime terminalizes a teammate max-step occurrence and durably creates its exact observation and successor wakeup
+- **THEN** Core forms one immutable typed settlement under the same session runtime authority, binding the source occurrence, task/agent/lane/correlation snapshot, failure identity, successor identity, and batch-barrier disposition
+
+#### Scenario: Stop the batch before claiming the successor
+- **WHEN** any claimed agent occurrence exhausts its step budget while `max_signals` still permits more work
+- **THEN** the scheduler finishes already claimed work in the current wave, stops that bounded batch, and does not claim a successor signal created by the exhausted occurrence until a later command or background tick
+
+#### Scenario: Preserve the handoff result after later progress
+- **WHEN** a later authorized turn claims or completes the successor and may change the business task
+- **THEN** that later state does not retroactively change the immutable settlement of the source occurrence or force Host receipt reclassification
 
 #### Scenario: Keep an incomplete budget handoff failed
 - **WHEN** the budget observation, nonterminal task boundary, or unique source-bound master wakeup is missing, mismatched, duplicated, or cancelled
-- **THEN** the scheduler batch remains failed and MUST NOT relabel the signal occurrence as settled
+- **THEN** the scheduler batch remains failed and MUST NOT relabel the signal occurrence as settled, while max-step still ends the current batch before any candidate successor is claimed
 
 #### Scenario: Do not invent a successor for master exhaustion
 - **WHEN** the master signal itself exhausts max steps

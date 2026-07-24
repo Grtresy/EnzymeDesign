@@ -38,8 +38,10 @@ from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import TaskBoardService
 from openzyme_core import TaskMutation
 from openzyme_core import ToolRegistry
+from openzyme_core import AgentRuntimeOutcome
 from openzyme_core import AgentRuntimeService
 from openzyme_core import AgentRuntimeScheduler
+from openzyme_core import AgentRuntimeSettlementDisposition
 from openzyme_core import ArtifactBoundaryService
 from openzyme_core import canonical_digest
 from openzyme_core import persist_conversation_message
@@ -49,12 +51,10 @@ from openzyme_core import ScientificAttemptError
 from openzyme_core import ScientificAttemptService
 from openzyme_core import ScientificWorkflowContractRegistry
 from openzyme_core import SessionRuntimeLeaseLockedError
-from openzyme_domain import AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
 from openzyme_domain import SessionRuntimeLease
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignalReason
-from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import ControlledOperationStatus
@@ -1449,7 +1449,7 @@ class V3HostApiService:
         max_steps_per_agent: int = 8,
         auto_enqueue_ready_tasks: bool = False,
         worker_id: str = "host-api:runtime-drain",
-    ) -> list[dict[str, Any]]:
+    ) -> list[AgentRuntimeOutcome]:
         context = self._build_runtime_context(session_id)
         scheduler = self._build_scheduler(
             context, worker_id=worker_id, runtime_mode="manual_drain"
@@ -1461,13 +1461,13 @@ class V3HostApiService:
             auto_enqueue_ready_tasks=auto_enqueue_ready_tasks,
         )
         events.extend(event.to_dict() for event in context.event_sink.events)
-        return [outcome.to_dict() for outcome in outcomes]
+        return list(outcomes)
 
     def _runtime_drain_core_receipt(
         self,
         *,
         session_id: str,
-        outcomes: list[dict[str, Any]],
+        outcomes: list[AgentRuntimeOutcome],
         events: list[dict[str, Any]],
     ) -> tuple[RuntimeDrainCoreReceipt, tuple[str, ...]]:
         has_pending_approval = bool(
@@ -1486,10 +1486,9 @@ class V3HostApiService:
         master_outputs = tuple(
             output
             for outcome in outcomes
-            if isinstance(outcome.get("agent"), dict)
-            and outcome["agent"].get("agent_id") == "agent:master"
-            for output in outcome.get("outputs", ())
-            if isinstance(output, str)
+            if outcome.agent is not None
+            and outcome.agent.agent_id == "agent:master"
+            for output in outcome.outputs
         )
         response_outputs = () if has_pending_approval else master_outputs
         output_ids = tuple(
@@ -1683,186 +1682,52 @@ class V3HostApiService:
             events=events,
         )
 
-    def _terminal_teammate_outcomes(
-        self, outcomes: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        terminal: list[dict[str, Any]] = []
-        for outcome in outcomes:
-            if outcome.get("waiting_approval_id"):
-                continue
-            task = outcome.get("task")
-            task_status = (
-                "" if not isinstance(task, dict) else str(task.get("status") or "")
-            )
-            task_id = None if not isinstance(task, dict) else task.get("task_id")
-            current_task = (
-                None if task_id is None else self.repositories.tasks.get(str(task_id))
-            )
-            if current_task is not None:
-                task_status = current_task.status.value
-            teammate_status = str(outcome.get("teammate_status") or "")
-            if task_status in {
-                TaskStatus.COMPLETED.value,
-                TaskStatus.FAILED.value,
-                TaskStatus.CANCELLED.value,
-            } or teammate_status in {
-                HarnessStatus.COMPLETED.value,
-                HarnessStatus.FAILED.value,
-                HarnessStatus.MAX_STEPS_EXCEEDED.value,
-            }:
-                terminal.append(outcome)
-        return terminal
-
+    @staticmethod
     def _outcomes_include_scheduler_failure(
-        self,
-        outcomes: list[dict[str, Any]],
+        outcomes: list[AgentRuntimeOutcome],
     ) -> bool:
-        closed_budget_handoffs = {
-            id(outcome)
-            for outcome in outcomes
-            if self._outcome_has_closed_budget_replan_handoff(outcome)
-        }
         for outcome in outcomes:
-            if (
-                outcome.get("ok") is False
-                and id(outcome) not in closed_budget_handoffs
+            if not isinstance(outcome, AgentRuntimeOutcome):
+                return True
+            settlement = outcome.settlement
+            if settlement is None:
+                return True
+            disposition = settlement.disposition
+            if disposition is (
+                AgentRuntimeSettlementDisposition.BUDGET_REPLAN_HANDOFF
+            ):
+                if (
+                    outcome.ok
+                    or not settlement.batch_barrier
+                ):
+                    return True
+                continue
+            if disposition is (
+                AgentRuntimeSettlementDisposition.SIGNAL_FAILED
             ):
                 return True
-        for outcome in self._terminal_teammate_outcomes(outcomes):
-            task = outcome.get("task")
-            task_status = (
-                "" if not isinstance(task, dict) else str(task.get("status") or "")
-            )
-            if (
-                outcome.get("ok") is False
-                and id(outcome) not in closed_budget_handoffs
-            ) or task_status == TaskStatus.FAILED.value:
-                return True
-            task_id = None if not isinstance(task, dict) else task.get("task_id")
-            current_task = (
-                None if task_id is None else self.repositories.tasks.get(str(task_id))
-            )
-            if current_task is not None and current_task.status is TaskStatus.FAILED:
-                return True
+            if disposition is (
+                AgentRuntimeSettlementDisposition.WAITING_APPROVAL
+            ):
+                if (
+                    not outcome.ok
+                    or not outcome.waiting_approval_id
+                ):
+                    return True
+                continue
+            if disposition is (
+                AgentRuntimeSettlementDisposition.SIGNAL_COMPLETED
+            ):
+                if not outcome.ok:
+                    return True
+                continue
+            return True
         return False
 
-    def _outcome_has_closed_budget_replan_handoff(
-        self,
-        outcome: dict[str, Any],
-    ) -> bool:
-        """Recognize a terminal signal plus its independent master replan turn.
-
-        A max-step signal remains failed and is never replayed.  Once its
-        canonical failure observation and one source-bound master wakeup are
-        durable, however, the scheduler batch itself has settled that outcome.
-        This distinction lets a later bounded command claim the new wakeup
-        without presenting the original signal as a scheduler crash.
-        """
-
-        if (
-            outcome.get("ok") is not False
-            or outcome.get("teammate_status")
-            != HarnessStatus.MAX_STEPS_EXCEEDED.value
-            or outcome.get("waiting_approval_id") is not None
-        ):
-            return False
-        signal_projection = outcome.get("signal")
-        task_projection = outcome.get("task")
-        agent_projection = outcome.get("agent")
-        if (
-            not isinstance(signal_projection, dict)
-            or not isinstance(task_projection, dict)
-            or not isinstance(agent_projection, dict)
-        ):
-            return False
-        signal_id = signal_projection.get("signal_id")
-        if not isinstance(signal_id, str) or not signal_id:
-            return False
-        signal = self.repositories.runtime_signals.get(signal_id)
-        if (
-            signal is None
-            or signal.agent_id == "agent:master"
-            or signal.status is not AgentRuntimeSignalStatus.FAILED
-            or signal.error_message
-            != AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
-            or signal.attempt_count <= 0
-            or signal.task_id is None
-            or signal_projection.get("session_id") != signal.session_id
-            or signal_projection.get("agent_id") != signal.agent_id
-            or signal_projection.get("task_id") != signal.task_id
-            or signal_projection.get("status")
-            != AgentRuntimeSignalStatus.FAILED.value
-            or signal_projection.get("error_message")
-            != AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
-            or signal_projection.get("attempt_count") != signal.attempt_count
-            or task_projection.get("task_id") != signal.task_id
-            or agent_projection.get("agent_id") != signal.agent_id
-        ):
-            return False
-        task = self.repositories.tasks.get(signal.task_id)
-        if (
-            task is None
-            or task.session_id != signal.session_id
-            or task.status.is_terminal
-        ):
-            return False
-        failure = self.repositories.failure_observations.get_by_source(
-            session_id=signal.session_id,
-            source_kind="runtime_signal",
-            source_ref=signal.signal_id,
-            source_version=f"attempt:{signal.attempt_count}",
-            phase="runtime",
-            error_code=AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE,
-        )
-        if (
-            failure is None
-            or failure.task_id != signal.task_id
-            or failure.lane_id != signal.lane_id
-            or failure.agent_id != signal.agent_id
-            or failure.failure_class is not FailureClass.RUNTIME
-            or failure.recoverability
-            is not FailureRecoverability.AGENT_CAN_REPLAN
-            or failure.effect_certainty is not ExternalEffectCertainty.NO_EFFECT
-            or failure.retry_eligibility is not RetryEligibility.TERMINAL
-            or failure.actor_kind is not FailureActorKind.SYSTEM
-            or failure.facts.get("signal_id") != signal.signal_id
-            or failure.facts.get("effect_scope")
-            != "runtime_signal_transition"
-            or failure.facts.get("effect_scope_ref") != signal.signal_id
-            or failure.facts.get("exact_signal_retry_eligible") is not False
-            or failure.facts.get("controlled_operation_effects_preserved")
-            is not True
-            or type(failure.facts.get("max_steps")) is not int
-            or int(failure.facts["max_steps"]) <= 0
-        ):
-            return False
-        wakeups = [
-            candidate
-            for candidate in self.repositories.runtime_signals.list_by_session(
-                signal.session_id
-            )
-            if candidate.agent_id == "agent:master"
-            and candidate.reason is AgentRuntimeSignalReason.MANUAL_RESUME
-            and candidate.source_ref == signal.signal_id
-        ]
-        if len(wakeups) != 1:
-            return False
-        wakeup = wakeups[0]
-        return bool(
-            wakeup.status is not AgentRuntimeSignalStatus.CANCELLED
-            and wakeup.task_id == signal.task_id
-            and wakeup.lane_id == signal.lane_id
-            and (
-                wakeup.correlation_id == signal.correlation_id
-                if signal.correlation_id is not None
-                else bool(wakeup.correlation_id)
-            )
-        )
-
     def _outcomes_include_waiting_approval(
-        self, outcomes: list[dict[str, Any]]
+        self, outcomes: list[AgentRuntimeOutcome]
     ) -> bool:
-        return any(outcome.get("waiting_approval_id") for outcome in outcomes)
+        return any(outcome.waiting_approval_id for outcome in outcomes)
 
     def post_message(
         self,

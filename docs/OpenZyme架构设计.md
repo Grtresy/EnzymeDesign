@@ -540,19 +540,37 @@ transition，不能擦除该 turn 内已经持久化的 controlled-operation eff
 failure fields 保持不变。source-bound master wakeup 去重，并从 canonical failure observation
 和当前 selection evaluation 构造 bounded recovery facts。
 
+Core 为每个 `AgentRuntimeOutcome` 生成 immutable typed
+`AgentRuntimeOutcomeSettlement`。闭集 disposition 只有 signal completed、signal failed、
+waiting approval 和 budget-replan handoff；budget handoff 在同一个短 repository
+transaction/session runtime authority 内绑定 exact source occurrence、task/agent/lane/correlation
+snapshot、failure observation 与唯一 pending master successor。若 successor 缺失、重复、
+cancelled 或任一 identity 漂移，Core 不生成 handoff disposition，结果保持普通 signal
+failure。后续 task 或 successor 状态变化不得反向改写这个 occurrence snapshot。
+
+任一 master 或 teammate max-step outcome 都是当前 bounded batch 的 barrier。已经 claim 的
+同一 wave 可以完成收尾，但 scheduler 随后必须停止 claim；即使 command 的
+`max_signals > 1`，本次 finalization 新建的 successor 也只能由下一条 command 或下一次
+background tick 推进。这个规则是 runtime correctness，不依赖 AOX 等调用方把
+`max_signals` 固定为 `1`。
+
 manual runtime drain 在 scheduler batch 结束时先形成 immutable core receipt，再结算
 trace/activity/consistency/event/workspace projection。公开 `runtime_command_outcome@2`
 分别表达 scheduler 与 projection outcome；即使 post-scheduler projection 失败，也必须保留
 真实 `processed_signal_count`、suspension/output/event identities，并在已经处理 signal 时令
 `replay_safe=false`。只有 core receipt 尚未形成的 boundary failure 才能报告零 processed；
-旧 `@1` outcome 只读兼容，不回填新字段。
+旧 `@1` outcome 只读兼容，不回填新字段。Host core-receipt assembly 直接消费 Core typed
+settlement；不得先序列化再解释、按对象 identity 分类、重扫 mutable signal/task/failure/agent
+repository，或把 task business status 反向映射成 scheduler failure。
 
 scheduler layer 的 `completed` 表示 bounded batch 已完成结算，不表示每个 signal、task
 或业务目标成功。teammate max-step 只有在 exact failed signal、同 attempt 的 canonical
 `agent_turn_budget_exhausted` observation、非终态 task 与 exactly one source-bound
-non-cancelled master wakeup 全部一致时，才可作为 completed handoff；原 signal 仍保持
+pending master wakeup 全部一致时，才可作为 completed handoff；原 signal 仍保持
 failed/terminal，后继是独立 master turn。任何闭包缺失、普通 failure 或 master max-step
-继续令 scheduler layer failed。
+继续令 scheduler layer failed。反过来，agent 显式把 business task finish 为
+`failed`，但本次 signal 正常 completed 时，scheduler settlement 仍可 completed；两者是
+正交事实。
 
 普通失败结果已在同一 turn 交给 agent 时不额外制造 recovery wakeup。只有 continuation、
 controlled operation 或 Host finalizer 在原 turn 之后才暴露失败时，才按 exact

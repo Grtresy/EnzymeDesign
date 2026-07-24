@@ -228,19 +228,28 @@ attempt-fatal，child exit `70`，positive 2/fault 未启动。这个事实不�
 ledger-after、SQLite closure、artifact completeness、business terminal state 或
 external outcome。
 
-forward-only correction 不把 exact signal 改成 completed，也不重放或加 budget。core
-receipt 在形成 scheduler layer 时，只对以下完整闭包视为“batch 已结算”：
+forward-only correction 不把 exact signal 改成 completed，也不重放或加 budget。Core
+在 exact session runtime authority 内形成 immutable typed settlement，只对以下完整闭包
+使用 budget-replan handoff disposition：
 
 1. outcome 是 teammate `max_steps_exceeded`，canonical signal 为 exact failed occurrence；
 2. 同 attempt version 存在结构化 budget observation，scope 只限 signal transition；
 3. business task 仍非终态；
-4. exactly one source-bound、non-cancelled master wakeup 与 task/lane/correlation identity
+4. exactly one source-bound、pending master wakeup 与 task/lane/correlation identity
    一致。
 
 全部成立时 scheduler layer 可为 `completed`，含义只是 bounded batch 已把 recovery
 attention 交给一个新的 canonical turn。缺失/重复/取消 wakeup、observation/task/identity
-drift、普通 runtime failure、master 自身 max-step 或任何 business terminal failure
-仍为 `failed`。AOX 固定 `max_signals=1`，所以 driver 仍必须先做 post-drain durable
+drift、普通 runtime failure或 master 自身 max-step 仍为 `failed`。task business status
+与 scheduler settlement 正交：后续或同一正常 completed signal 中的显式 business failure
+不会反向改写 occurrence receipt。
+
+任一 master/teammate max-step typed settlement 同时设置 batch barrier。当前 claim wave
+完成后 scheduler 停止新 claim，本轮新建的 master successor 即使在产品默认
+`max_signals=3` 下也只能由下一条 command/tick 推进。Host core receipt 只消费 typed
+disposition，删除 object-identity 分类、mutable repository rescan 与 task-status 反向映射。
+AOX 固定 `max_signals=1` 仍是 campaign identity 与逐 signal durable observation 约束，但
+不再承担通用 runtime correctness。driver 仍必须先做 post-drain durable
 operation/task/sandbox observation，确认没有 terminal failure 后，才可由后续 command
 claim 该 master wakeup。
 

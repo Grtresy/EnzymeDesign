@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import contextmanager
 from dataclasses import replace
 import threading
@@ -8,12 +9,13 @@ import time
 from fastapi.testclient import TestClient
 import pytest
 
-from openzyme_core import SQLiteRepositoryProvider
+from openzyme_core import AgentRuntimeOutcome
 from openzyme_core import AgentRuntimeService
 from openzyme_core import MutationScopeService
 from openzyme_core import RuntimeDrainCoreReceipt
 from openzyme_core import RuntimeDrainProjectionOutcome
 from openzyme_core import RuntimeCommandWorker
+from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import project_runtime_command
 from openzyme_core.agent_identity import create_agent_member
 from openzyme_domain import AgentRuntimeSignal
@@ -39,8 +41,11 @@ from openzyme_runtime import RuntimeDrainContract
 def _dependencies(
     *,
     repository_provider: SQLiteRepositoryProvider | None = None,
+    model_factory: object | None = None,
 ) -> HostApiDependencies:
     foundation = build_local_eval_foundation()
+    if model_factory is not None:
+        foundation = replace(foundation, model_factory=model_factory)
     return HostApiDependencies(
         foundation=replace(
             foundation,
@@ -129,6 +134,62 @@ class _LoopingModelFactory:
         return self.invoker
 
 
+class _FailingTaskToolCallingInvoker:
+    def __init__(self, *, task_id: str) -> None:
+        self.task_id = task_id
+        self.calls = 0
+
+    def invoke_with_tools(
+        self,
+        *,
+        system_prompt: str,
+        messages: list[object],
+        tools: list[object],
+    ) -> object:
+        del system_prompt, messages, tools
+        self.calls += 1
+        if self.calls > 1:
+            return {
+                "content": (
+                    "The business task was explicitly closed as failed."
+                ),
+                "tool_calls": [],
+            }
+        return {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": f"call_fail_task_{self.calls}",
+                    "name": "task.finish",
+                    "args": {
+                        "task_id": self.task_id,
+                        "status": "failed",
+                        "summary": "Master explicitly closed the business task.",
+                        "failure_summary": (
+                            "The bounded objective is not achievable."
+                        ),
+                    },
+                }
+            ],
+        }
+
+
+class _BudgetThenFailModelFactory:
+    def __init__(self, *, task_id: str) -> None:
+        self.teammate_invoker = _LoopingToolCallingInvoker()
+        self.master_invoker = _FailingTaskToolCallingInvoker(task_id=task_id)
+
+    def create_tool_calling_invoker(self, *, purpose: str) -> object:
+        if purpose.startswith("v3_teammate_loop:"):
+            return self.teammate_invoker
+        assert purpose == "v3_harness_loop"
+        return self.master_invoker
+
+
+async def _invoke_without_executor(func, /, *args, **kwargs):
+    return func(*args, **kwargs)
+
+
 def _seed_teammate_budget_signal(
     service: V3HostApiService,
     *,
@@ -195,6 +256,88 @@ def _wait_for_terminal(
         if time.monotonic() >= deadline:
             raise AssertionError(f"runtime command remained {payload['status']!r}")
         time.sleep(0.02)
+
+
+def _completed_outcome_with_failed_business_task() -> AgentRuntimeOutcome:
+    task = replace(
+        Task.create(
+            task_id="task_explicitly_failed",
+            session_id="sess_scheduler_settlement",
+            subject="Explicit business failure",
+            description="Keep scheduler and business state independent.",
+            status=TaskStatus.IN_PROGRESS,
+        ),
+        status=TaskStatus.FAILED,
+        failure_summary="The objective is not achievable.",
+    )
+    signal = AgentRuntimeSignal(
+        signal_id="signal_completed_for_failed_task",
+        session_id=task.session_id,
+        agent_id="agent:master",
+        task_id=task.task_id,
+        reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+        status=AgentRuntimeSignalStatus.COMPLETED,
+        created_at="2026-07-24T10:00:00+00:00",
+        attempt_count=1,
+        completed_at="2026-07-24T10:00:01+00:00",
+    )
+    return AgentRuntimeOutcome(
+        signal=signal,
+        task=task,
+        agent=None,
+        ok=True,
+        summary="The signal completed after an explicit task.finish.",
+        teammate_status="completed",
+    )
+
+
+def test_host_scheduler_settlement_ignores_explicit_business_task_failure() -> None:
+    outcome = _completed_outcome_with_failed_business_task()
+
+    assert (
+        V3HostApiService._outcomes_include_scheduler_failure([outcome])
+        is False
+    )
+    assert outcome.settlement is not None
+    assert outcome.settlement.task_status is TaskStatus.FAILED
+
+
+def test_host_scheduler_settlement_rejects_untyped_outcome_payload() -> None:
+    outcome = _completed_outcome_with_failed_business_task()
+
+    assert (
+        V3HostApiService._outcomes_include_scheduler_failure(  # type: ignore[list-item]
+            [outcome.to_dict()]
+        )
+        is True
+    )
+
+
+def test_host_scheduler_settlement_keeps_ordinary_signal_failure_failed() -> None:
+    signal = AgentRuntimeSignal(
+        signal_id="signal_ordinary_failure",
+        session_id="sess_scheduler_settlement",
+        agent_id="agent:master",
+        reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+        status=AgentRuntimeSignalStatus.FAILED,
+        created_at="2026-07-24T10:00:00+00:00",
+        attempt_count=1,
+        completed_at="2026-07-24T10:00:01+00:00",
+        error_message="ordinary_runtime_failure",
+    )
+    outcome = AgentRuntimeOutcome(
+        signal=signal,
+        task=None,
+        agent=None,
+        ok=False,
+        summary="An ordinary runtime failure remains a scheduler failure.",
+        teammate_status="runtime_exception",
+    )
+
+    assert (
+        V3HostApiService._outcomes_include_scheduler_failure([outcome])
+        is True
+    )
 
 
 def test_r55_shaped_runtime_drain_settles_closed_teammate_budget_replan_handoff(
@@ -273,6 +416,132 @@ def test_r55_shaped_runtime_drain_settles_closed_teammate_budget_replan_handoff(
     assert result.bounded_outcome_summary["replay_safe"] is False
     assert execution_result.status.value == "completed"
     assert execution_result.error_code is None
+
+
+def test_file_backed_worker_consumes_budget_successor_only_on_next_command(
+    monkeypatch,  # type: ignore[no-untyped-def]
+    tmp_path,  # type: ignore[no-untyped-def]
+) -> None:
+    monkeypatch.setattr(asyncio, "to_thread", _invoke_without_executor)
+    session_id = "sess_two_command_budget_handoff"
+    task_id = f"task_{session_id}"
+    provider = SQLiteRepositoryProvider(
+        str(tmp_path / "two-command-budget-handoff.sqlite3"),
+        check_same_thread=False,
+    )
+    dependencies = _dependencies(
+        repository_provider=provider,
+        model_factory=_BudgetThenFailModelFactory(task_id=task_id),
+    )
+    with dependencies.v3_service_scope(mode="write") as service:
+        seeded_task_id, source_signal_id = _seed_teammate_budget_signal(
+            service,
+            session_id=session_id,
+        )
+        assert seeded_task_id == task_id
+        first_command, created = service.admit_runtime_command(
+            session_id=session_id,
+            idempotency_key="drain:first-budget-turn",
+            max_signals=3,
+            max_steps_per_agent=1,
+            auto_enqueue_ready_tasks=False,
+        )
+    assert created is True
+
+    worker = RuntimeCommandWorker(
+        repository_scope_factory=lambda: dependencies.v3_repository_scope(
+            mode="connection"
+        ),
+        executor=HostRuntimeCommandExecutor(
+            service_scope=lambda: dependencies.v3_service_scope(
+                mode="connection"
+            ),
+            worker_id="test:two-command-budget-handoff",
+        ),
+        worker_id="test:two-command-budget-handoff",
+        mutation_writer_scope_factory=dependencies.v3_mutation_writer_scope,
+        post_writer_finalizer=(
+            dependencies.finalize_pending_v3_scientific_transitions
+        ),
+    )
+
+    first_outcome = worker.run_once()
+    assert first_outcome.status == "completed"
+    with dependencies.v3_repository_scope(mode="read") as repositories:
+        source_after_first = repositories.runtime_signals.get(source_signal_id)
+        task_after_first = repositories.tasks.get(task_id)
+        successors = [
+            signal
+            for signal in repositories.runtime_signals.list_by_session(
+                session_id
+            )
+            if signal.agent_id == "agent:master"
+            and signal.source_ref == source_signal_id
+        ]
+        first_stored = repositories.runtime_commands.get(
+            first_command.command_id
+        )
+    assert source_after_first is not None
+    assert source_after_first.status is AgentRuntimeSignalStatus.FAILED
+    assert source_after_first.attempt_count == 1
+    assert task_after_first is not None
+    assert task_after_first.status is TaskStatus.IN_PROGRESS
+    assert len(successors) == 1
+    successor = successors[0]
+    assert successor.status is AgentRuntimeSignalStatus.PENDING
+    assert successor.attempt_count == 0
+    assert first_stored is not None
+    assert first_stored.status.value == "completed"
+    first_summary = dict(first_stored.bounded_outcome_summary or {})
+    assert first_summary["scheduler_status"] == "completed"
+    assert first_summary["processed_signal_count"] == 1
+
+    with dependencies.v3_service_scope(mode="write") as service:
+        second_command, created = service.admit_runtime_command(
+            session_id=session_id,
+            idempotency_key="drain:second-master-replan",
+            max_signals=3,
+            max_steps_per_agent=2,
+            auto_enqueue_ready_tasks=False,
+        )
+    assert created is True
+
+    second_outcome = worker.run_once()
+    assert second_outcome.status == "completed"
+    with dependencies.v3_repository_scope(mode="read") as repositories:
+        source_after_second = repositories.runtime_signals.get(
+            source_signal_id
+        )
+        successor_after_second = repositories.runtime_signals.get(
+            successor.signal_id
+        )
+        task_after_second = repositories.tasks.get(task_id)
+        first_after_second = repositories.runtime_commands.get(
+            first_command.command_id
+        )
+        second_stored = repositories.runtime_commands.get(
+            second_command.command_id
+        )
+    assert source_after_second is not None
+    assert source_after_second.status is AgentRuntimeSignalStatus.FAILED
+    assert source_after_second.attempt_count == 1
+    assert successor_after_second is not None
+    assert successor_after_second.status is AgentRuntimeSignalStatus.COMPLETED
+    assert successor_after_second.attempt_count == 1
+    assert task_after_second is not None
+    assert task_after_second.status is TaskStatus.FAILED
+    assert first_after_second is not None
+    assert first_after_second.status.value == "completed"
+    assert first_after_second.bounded_outcome_summary == first_summary
+    assert second_stored is not None
+    assert second_stored.status.value == "completed"
+    assert second_stored.bounded_outcome_summary is not None
+    assert second_stored.bounded_outcome_summary["scheduler_status"] == (
+        "completed"
+    )
+    assert second_stored.bounded_outcome_summary[
+        "processed_signal_count"
+    ] == 1
 
 
 def test_runtime_drain_fails_when_budget_replan_wakeup_is_missing(
@@ -376,7 +645,9 @@ def test_runtime_drain_preserves_core_receipt_across_projection_failures(
             events,
             **kwargs,
         ):
-            del self, kwargs
+            del kwargs
+            agent = self.repositories.agents.get(session_id, "agent:master")
+            assert agent is not None
             events.append(
                 {
                     "event_id": f"evt_scheduler_{failed_stage}",
@@ -386,13 +657,26 @@ def test_runtime_drain_preserves_core_receipt_across_projection_failures(
                     "payload": {"status": "completed"},
                 }
             )
+            signal = AgentRuntimeSignal(
+                signal_id=f"signal_projection_{failed_stage}",
+                session_id=session_id,
+                agent_id="agent:master",
+                reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+                status=AgentRuntimeSignalStatus.COMPLETED,
+                created_at="2026-07-24T00:00:00+00:00",
+                attempt_count=1,
+                completed_at="2026-07-24T00:00:01+00:00",
+            )
             return [
-                {
-                    "agent": {"agent_id": "agent:master"},
-                    "ok": True,
-                    "outputs": ["scheduler output"],
-                    "teammate_status": "completed",
-                }
+                AgentRuntimeOutcome(
+                    signal=signal,
+                    task=None,
+                    agent=agent,
+                    ok=True,
+                    summary="Synthetic completed scheduler outcome.",
+                    outputs=("scheduler output",),
+                    teammate_status="completed",
+                )
             ]
 
         monkeypatch.setattr(
@@ -501,14 +785,17 @@ def test_file_backed_runtime_command_reports_durable_progress_after_projection_f
                 },
             }
         )
+        agent = self.repositories.agents.get(session_id, "agent:master")
+        assert agent is not None
         return [
-            {
-                "signal": completed.to_dict(),
-                "agent": {"agent_id": "agent:master"},
-                "ok": True,
-                "outputs": [],
-                "teammate_status": "completed",
-            }
+            AgentRuntimeOutcome(
+                signal=completed,
+                task=None,
+                agent=agent,
+                ok=True,
+                summary="Synthetic completed scheduler outcome.",
+                teammate_status="completed",
+            )
         ]
 
     def fail_consistency_projection(*args, **kwargs):  # type: ignore[no-untyped-def]

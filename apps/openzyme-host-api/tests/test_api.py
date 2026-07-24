@@ -5453,7 +5453,9 @@ def test_hpc_operation_failed_after_approval_returns_to_executor_for_diagnostic(
 
     drained = service.drain_runtime(session_id="sess_hpc_diag")
 
-    assert drained.status == "failed"
+    assert drained.status == "completed"
+    assert drained.core_receipt.scheduler_status == "completed"
+    assert drained.core_receipt.processed_signal_count == 2
     assert model_factory.invoker.calls == 1
     assert model_factory.master_calls == 1
     assert drained.outputs == (
@@ -5467,6 +5469,12 @@ def test_hpc_operation_failed_after_approval_returns_to_executor_for_diagnostic(
     assert task.failure_ref == "engine:inv_hpc_diag"
     assert task.failure_summary is not None
     assert "INPUT_OR_ENTRYPOINT_MISSING" in task.failure_summary
+    assert {
+        signal.status.value
+        for signal in repositories.runtime_signals.list_by_session(
+            "sess_hpc_diag"
+        )
+    } == {"completed"}
     assistant_messages = [
         message
         for message in repositories.inbox.list_by_session("sess_hpc_diag")
