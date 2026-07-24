@@ -103,6 +103,45 @@ provider，全部 call 也必须具有唯一、持久、顺序可审计的 dispo
 同一 conversation 时，才进一步要求每个 call id 的 matching ToolMessage 闭合
 provider transcript。
 
+### 2026-07-24 r53 formal barrier observer correction addendum
+
+operator 在 clean commit `83475a01fb6be91ca8ba5dc39c4c0b09774504e7`
+上批准并消费 authority plan
+`sha256:a0bccbb4b71b2fb60a0a7131eae692d7400831ee7b516ba8143089f0d71aaabf`。
+r53 只启动 positive 1
+`positive-1c69b5acac4bffc18f20abeace792f14`。独立 probe 的 NCBI、UniProt、
+MAFFT、hmmbuild、CD-HIT 与 HMMalign 六项真实 operation 全部完成，probe mutation
+scope 以 receipt digest
+`sha256:e436d57b8d4b71611202dd0feac3e90c6ea69391d77424ef80e1ac3868be4e20`
+密封。随后 formal session 已提交 entry message 并完成纯协调 turn，但尚未产生 formal
+controlled operation、approval 或 Chrome handoff，就在第一次 runtime barrier 以
+`mutation_driver_writer_identity_invalid` fail closed。
+
+根因是 selected-chain formal 路径需要由 Host 在 agent writer 退休后，把 pre-attempt
+session scope 原子密封并 rollover 为 scientific attempt scope，因此它不能像 probe
+那样跨整个 session drive 长期持有 outer writer；旧 driver 却继续要求 barrier 观察到
+一个活动的 `aox-attempt-driver:*` root writer，又没有在 snapshot 边界短暂登记它。
+r53 数据库因此保留一个 open pre-attempt scope；所有已登记 writer 和 session lease
+已退休/释放，且没有 formal external controlled effect，但该状态不具备 quiescence、
+SQLite closure、artifact completeness 或 attempt-bundle 资格。
+
+parent fatal evidence
+`sha256:5bd1ce75253cda54e6cd25092731b5f1c7bc5aae1b839e16e4055ea01c3de947`
+证明 child process group 退休并永久阻断该 authority 的后续槽位；campaign decision
+`sha256:d506914841245e9853ef28f7023a942891c6fc2f99244cbe496c899776e3e469`
+保持 `attempt_child_runner_failed` NO-GO。MICU 仅能保守记录到
+`75,434,226 / 500,000,000`，remaining `424,565,774`，零 breach/overage。
+positive 2 与 fault 未启动；r53 authority、roots、LLM/probe effects 与诊断状态均不得
+复用或采用。
+
+纠正后的 formal driver 只在每次 barrier projection 的有界同步窗口登记一个 exact root
+`aox-attempt-driver:<outer-attempt-id>:formal` writer；projection 完成或失败后立即退休，
+不跨 runtime drain、admission/closure finalizer、provider/HPC dispatch 或 approval
+等待。barrier 只排除这个 exact observer，其他 root/child writer 继续阻止 ready。
+这样既保留真实 writer 可见性，也不会阻塞 pre-attempt → attempt scope rollover。
+任何后继 campaign 仍需新的 correction commit、clean full admission、fresh pin、
+fresh exact-three authority plan、fresh roots 和对新 plan 的单独精确批准。
+
 ## Goals / Non-Goals
 
 **Goals:**

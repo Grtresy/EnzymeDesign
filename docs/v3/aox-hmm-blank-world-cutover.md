@@ -1,8 +1,8 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r52 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. r48 through r52 are permanent NO-GO evidence. The executable architecture-qualification gate is implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. Local Live cutover stays **NO-GO** until one successor campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
+Status: r43-r53 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. r48 through r53 are permanent NO-GO evidence. The executable architecture-qualification gate is implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. Local Live cutover stays **NO-GO** until one successor campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
 
-Historical r14-r52 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
+Historical r14-r53 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
 This document describes the operator/evidence boundary implemented by `openzyme_host_api.aox_cutover_evidence`. It does not turn the historical S15 fixture into live evidence and does not authorize seeded state, cached scientific outputs, the reference notebook, or copied reference results as attempt inputs.
 
@@ -11,7 +11,7 @@ scientific-attempt control plane. The agent may retain failed/superseded trials
 inside one formal attempt while explicitly selecting a valid adopted chain, but
 the bundle still audits the full occurrence universe and fails closed on unknown
 effect, active process/writer, incomplete disposition, authority/resource breach,
-or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r52
+or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r53
 fact can be upgraded, backfilled, or adopted.
 The current workflow knowledge identity is
 `workflow:aox-hmm-live@2.0.0#sha256:10ae97822702fc231905f6f41368d9462dadd47967f09ab3df5ca1933e6ee20f`;
@@ -102,6 +102,60 @@ in-batch dependencies such as `task.create -> lane.bind_task`.
 
 These corrections do not upgrade either partial path into success. r52
 authority, roots, tasks, operations, artifacts and effects are permanently
+non-reusable. A successor campaign requires a new clean correction commit,
+fresh full admission, fresh pin, a newly generated exact-three authority plan,
+fresh roots, and separate exact approval to consume that new plan.
+
+## r53 live attempt: permanent NO-GO
+
+r53 ran on clean commit
+`83475a01fb6be91ca8ba5dc39c4c0b09774504e7` after atomically consuming the
+one-use authority plan
+`sha256:a0bccbb4b71b2fb60a0a7131eae692d7400831ee7b516ba8143089f0d71aaabf`
+for campaign `aox_campaign_fffd68d4fe4eec06608e0841`. It reached only
+positive 1 `positive-1c69b5acac4bffc18f20abeace792f14`; positive 2 and the
+controlled fault were never started.
+
+The independent probe completed the exact six real NCBI, UniProt, MAFFT,
+hmmbuild, CD-HIT and HMMalign controlled operations. Its mutation scope sealed
+with receipt digest
+`sha256:e436d57b8d4b71611202dd0feac3e90c6ea69391d77424ef80e1ac3868be4e20`
+and remained isolated from formal data. The formal session then created its
+pre-attempt scope, committed the entry message, and completed bounded
+coordination turns. Before any formal controlled operation, approval or Chrome
+handoff, the first runtime barrier failed with
+`mutation_driver_writer_identity_invalid`.
+
+The selected-chain formal path intentionally cannot hold the probe-style outer
+writer across the whole session drive: the Host must first observe every agent
+writer retired, seal the pre-attempt session scope, and atomically open the
+scientific attempt scope. The old driver did not replace that long-lived writer
+with a bounded observer writer at barrier time. The formal database therefore
+ended with one open pre-attempt scope and no active writer. All registered
+writers and session leases were terminal/released, and no formal controlled
+external effect existed, but the child could not claim quiescence, SQLite
+closure, artifact completeness, ledger-after or an eligible attempt bundle.
+
+Parent-owned fatal evidence
+`sha256:5bd1ce75253cda54e6cd25092731b5f1c7bc5aae1b839e16e4055ea01c3de947`
+proves descendant retirement and blocks every remaining slot of the consumed
+authority. The sealed campaign decision is permanent **NO-GO** with digest
+`sha256:d506914841245e9853ef28f7023a942891c6fc2f99244cbe496c899776e3e469`
+and blocker `attempt_child_runner_failed`. The conservative MICU lower bound is
+`75,434,226 / 500,000,000`, leaving `424,565,774`, with no overage or hard-limit
+breach.
+
+The correction binds one root
+`aox-attempt-driver:<outer-attempt-id>:formal` writer only for each formal
+barrier snapshot. The barrier reads while that exact writer is active, excludes
+only it, and continues to count every other root/child writer. The observer is
+retired before a drain, admission/closure finalizer, external dispatch or
+approval wait can proceed, so it cannot block pre-attempt → attempt scope
+rollover. Missing/ambiguous scope, identity drift or retirement failure remains
+fail closed.
+
+This correction does not upgrade r53 into an attempt bundle or reusable probe.
+r53 authority, roots, LLM/probe effects and diagnostic state are permanently
 non-reusable. A successor campaign requires a new clean correction commit,
 fresh full admission, fresh pin, a newly generated exact-three authority plan,
 fresh roots, and separate exact approval to consume that new plan.
@@ -2140,10 +2194,11 @@ Offline unit/eval success proves implementation behavior only. Local Live cutove
 
 Until those artifacts exist, documentation and UI must state NO-GO. Historical S15 and deterministic fixtures remain `fixture_non_cutover` regardless of local test status.
 
-r52 is current live diagnostic evidence, but it sealed no eligible attempt
-bundle and therefore satisfies none of the three GO slots. The post-r52
-correction checkpoint covers code, OpenSpec, documentation and non-live
-verification only. It deliberately stops before any successor `preflight` or
-`run-live`: no successor numbered root, provider/MICU call, HPC job, browser
-campaign or attempt evidence may be created until a fresh exact plan is
-generated and separately approved.
+r53 is the latest live diagnostic evidence, but it sealed no eligible attempt
+bundle and therefore satisfies none of the three GO slots. The post-r53
+correction checkpoint covers code, OpenSpec, documentation and focused
+non-live verification only. It deliberately stops before any successor
+`preflight` or `run-live`: no successor numbered root, provider/MICU call, HPC
+job, browser campaign or attempt evidence may be created until a fresh full
+admission, pin and exact plan are generated and that plan is separately
+approved.

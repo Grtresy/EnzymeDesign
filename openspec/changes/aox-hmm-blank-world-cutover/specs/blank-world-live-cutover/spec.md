@@ -115,6 +115,17 @@ Before any next provider invocation for the same conversation, the conversation 
 - **WHEN** one eligible call creates a task and a later eligible call in the same provider response binds that new task to a lane
 - **THEN** the later call resolves its references only after the create result is durable and dispatches normally, while overflow pre-persistence does not reject the batch against stale pre-response state
 
+### Requirement: Formal runtime observation preserves scientific-attempt scope rollover
+The AOX formal driver SHALL project each runtime barrier while exactly one root `attempt_driver` writer whose owner ref starts with `aox-attempt-driver:` is active on the session's exact open mutation scope. That writer SHALL exist only for the bounded barrier snapshot and SHALL retire before the Host finalizes an admission or closure transition. It MUST NOT span a runtime drain, provider/HPC dispatch, approval wait, or the pre-attempt-session-to-attempt scope rollover. The barrier SHALL exclude only that exact observer writer; every other active root or child writer MUST remain a blocker. A missing/ambiguous open scope, missing exact observer identity, or failed observer retirement SHALL fail closed and MUST NOT be interpreted as runtime idle.
+
+#### Scenario: Observe the pre-attempt scope without blocking rollover
+- **WHEN** a formal session has one open pre-attempt session scope and the driver projects runtime settlement before the agent requests `attempt.create`
+- **THEN** the driver registers one exact root AOX observer writer, reads the barrier while that writer is active, retires it on return, and leaves no active writer that could prevent the Host from sealing the pre-attempt scope and opening the admitted attempt scope
+
+#### Scenario: Keep another writer visible to the barrier
+- **WHEN** a sandbox process, runtime command, continuation, event publisher, or another writer remains active during the same formal barrier snapshot
+- **THEN** only the exact AOX observer writer is excluded, the other writer keeps the barrier non-ready, and the driver neither rolls the scope nor reports quiescence
+
 ### Requirement: Exact scientific callable and artifact-selection map
 The formal executor SHALL use the installed versioned callables `openzyme_pipeline.aox_reference.select_hmm_reference_set`, `select_scoring_reference`, `assemble_scoring_input`, `openzyme_pipeline.aox_hmmer.parse_and_filter_csv`, `openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions`, `openzyme_pipeline.aox_motif.score_aligned_fasta`, and `openzyme_pipeline.aox_similarity.build_similarity_graph` with their canonical serializers. It MUST NOT approximate or locally reimplement a pinned calculation.
 

@@ -82,6 +82,15 @@ Host finalizer 才在新的短 authority slice 中原子校验和消费 envelope
 再唤醒原 agent。这样不会让同一 writer 既申请又自批 authority。非 retryable finalizer
 拒绝必须生成 system-attributed failure observation 并返回 responsible agent；不得静默吞掉。
 
+AOX formal runtime barrier 不能用一个跨 session drive 的长期 outer writer 包住上述
+rollover，否则 pre-attempt scope 永远无法证明 writer 已退休。campaign driver 在每次
+barrier snapshot 前，必须只在当前唯一 open scope 上登记一个 root
+`aox-attempt-driver:<outer-attempt-id>:formal` observer writer；barrier 读取期间只排除
+这个 exact writer，并继续统计所有其他 root/child writer。snapshot 返回或失败后
+observer 立即退休，不能跨 runtime drain、admission/closure finalizer、provider/HPC
+dispatch 或 approval wait。缺 scope、多 scope、observer identity 缺失或 retirement
+失败均 fail closed，不能解释成 idle 或 quiescent。
+
 AOX 使用更窄的 `aox_live_attempt_authority_plan@1`：
 
 - plan 精确包含 `positive, positive, fault` 三个槽；
@@ -140,9 +149,11 @@ agent 可消费的 evidence，不是 `task.finish`；owner 仍需显式决定完
 - unknown-effect、writer/process、cross-attempt reuse 与 tamper rejection。
 
 历史 `aox_blank_world_attempt_bundle@2` verifier 保留为只读历史入口。旧 bundle 不得升级、
-回填 selection、与 `@3` row 混合或被新 campaign 采用。r48、r49、r50、r51 永久保持
-NO-GO；对应 root、effect、provider job、artifact、browser evidence 和 scientific bytes
-均不得复用。
+回填 selection、与 `@3` row 混合或被新 campaign 采用。r48-r53 永久保持 NO-GO；
+对应 authority、root、effect、provider job、artifact、browser evidence 和 scientific
+bytes 均不得复用。r53 的 probe scope 已密封，但 formal pre-attempt scope 因旧 driver
+缺少 exact barrier observer writer 而保持 open；parent fatal 只证明进程退休，不声明
+SQLite/quiescence/artifact closure，也没有 eligible attempt bundle。
 
 当前代码与文档工作明确停在下一次编号 live attempt 之前：非-live qualification 和
 `authorize` 只准备/发布 authority，不创建 attempt root；`preflight`、`run-live`、provider、

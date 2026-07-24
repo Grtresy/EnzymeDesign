@@ -87,6 +87,7 @@ from .aox_scientific_contract import AOX_SELECTED_CHAIN_WORKFLOW_ID
 from .aox_scientific_contract import AOX_WORKFLOW_METHOD_BY_ROLE
 from .aox_scientific_contract import validate_aox_scientific_workflow_role
 from .aox_runtime_observation import AoxRuntimeObservationError
+from .aox_runtime_observation import AoxSessionRuntimeObservation
 from .aox_runtime_observation import AoxRuntimeObservationService
 from .app import HostApiDependencies
 from .app import create_app
@@ -1858,6 +1859,63 @@ class LiveAoxAttemptRunner:
                 ),
             )
 
+    def _observe_session_runtime(
+        self,
+        provider: SQLiteRepositoryProvider,
+        *,
+        session_id: str,
+        purpose: Literal["probe", "formal"],
+        attempt_authority: Mapping[str, object] | None,
+    ) -> AoxSessionRuntimeObservation:
+        observer = AoxRuntimeObservationService(provider)
+        if attempt_authority is None:
+            return observer.observe_session(
+                session_id=session_id,
+                purpose=purpose,
+            )
+
+        attempt_id = str(attempt_authority.get("attempt_id") or "").strip()
+        if not attempt_id:
+            raise AoxRuntimeObservationError(
+                "mutation_driver_writer_identity_invalid",
+                "runtime coordination lacks one exact outer attempt-driver writer",
+                details={"session_id": session_id},
+            )
+        writer_factory = MutationWriterTurnFactory(
+            repository_scope_factory=lambda: self._provider_repository_scope(
+                provider
+            )
+        )
+        try:
+            # A formal scientific attempt rolls its pre-attempt session scope
+            # into an attempt scope only after every writer retires.  Bind the
+            # exact AOX observer writer solely for this barrier snapshot so it
+            # cannot block that Host-owned rollover.
+            with writer_factory.open(
+                session_id=session_id,
+                owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+                owner_ref=f"aox-attempt-driver:{attempt_id}:{purpose}",
+            ) as writer_authority:
+                if writer_authority is None:
+                    raise AoxRuntimeObservationError(
+                        "mutation_driver_writer_identity_invalid",
+                        (
+                            "runtime coordination lacks one exact outer "
+                            "attempt-driver writer"
+                        ),
+                        details={"session_id": session_id},
+                    )
+                return observer.observe_session(
+                    session_id=session_id,
+                    purpose=purpose,
+                )
+        except MutationScopeError as exc:
+            raise AoxRuntimeObservationError(
+                "mutation_driver_writer_identity_invalid",
+                "runtime coordination lacks one exact outer attempt-driver writer",
+                details={"mutation_scope_error_code": exc.code},
+            ) from exc
+
     @contextmanager
     def _session_mutation_scope(
         self,
@@ -2369,11 +2427,11 @@ class LiveAoxAttemptRunner:
                     authority=attempt_authority,
                 )
             try:
-                observation = AoxRuntimeObservationService(
-                    provider
-                ).observe_session(
+                observation = self._observe_session_runtime(
+                    provider,
                     session_id=session_id,
                     purpose=purpose,
+                    attempt_authority=attempt_authority,
                 )
             except AoxRuntimeObservationError as exc:
                 raise LiveProductPathError(

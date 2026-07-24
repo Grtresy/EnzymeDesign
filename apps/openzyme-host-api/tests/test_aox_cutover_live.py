@@ -2238,6 +2238,71 @@ def test_live_session_mutation_scope_seals_real_private_snapshot(
     assert str(ledger_path) not in repr(ledger_snapshot)
 
 
+def test_formal_runtime_observation_binds_and_retires_exact_driver(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+    )
+    provider = SQLiteRepositoryProvider(str(tmp_path / "scope.sqlite3"))
+    session = Session.create(
+        session_id="sess_formal_positive_observer",
+        project_id="aox-blank-world-cutover",
+        title="formal",
+        objective="observe a dynamic scientific-attempt scope",
+    )
+    with provider.write() as unit_of_work:
+        unit_of_work.repositories.sessions.save(session)
+    blob_root = tmp_path / "blobs"
+    runner._open_pre_attempt_session_scope(
+        provider,
+        session_id=session.session_id,
+        outer_attempt_id="positive-observer",
+        blob_root=blob_root,
+    )
+
+    observation = runner._observe_session_runtime(
+        provider,
+        session_id=session.session_id,
+        purpose="formal",
+        attempt_authority={"attempt_id": "positive-observer"},
+    )
+
+    assert observation.state == "incomplete"
+    assert observation.barrier.ready
+    assert observation.barrier.observer_writer_id is not None
+    with provider.read() as unit_of_work:
+        scopes = unit_of_work.repositories.mutation_scopes.list_by_session(
+            session.session_id
+        )
+        writers = unit_of_work.repositories.mutation_writers.list_all(
+            scopes[0].scope_id
+        )
+        active_writers = unit_of_work.repositories.mutation_writers.list_active(
+            scopes[0].scope_id
+        )
+    assert len(scopes) == 1
+    assert len(writers) == 1
+    assert writers[0].writer_id == observation.barrier.observer_writer_id
+    assert writers[0].owner_kind.value == "attempt_driver"
+    assert (
+        writers[0].owner_ref
+        == "aox-attempt-driver:positive-observer:formal"
+    )
+    assert writers[0].parent_writer_id is None
+    assert writers[0].state.value == "retired"
+    assert active_writers == []
+
+    sealed = runner._close_session_mutation_scope(
+        provider,
+        scope_id=scopes[0].scope_id,
+        blob_root=blob_root,
+    )
+    assert sealed["state"] == "sealed"
+
+
 def test_live_fault_scope_fails_without_receipt_when_artifact_bytes_drift(
     tmp_path: Path,
 ) -> None:

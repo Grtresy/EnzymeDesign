@@ -220,6 +220,14 @@ effect/route allowlist、attempt count、MICU/cost/wall-time、expiry 与 policy
 `attempt.create` 只写 admission request；Host 必须等 agent writer 退休后才在独立短 slice
 中最终校验、消费 envelope 并打开 attempt。
 
+formal scientific attempt 的 runtime barrier observer 也必须服从 rollover：AOX driver
+只在一次 barrier snapshot 内，于当前唯一 open scope 上登记 exact root
+`aox-attempt-driver:*` writer，snapshot 结束即退休。它不得跨 runtime drain、
+admission/closure finalizer、外部 dispatch 或 approval wait；barrier 只排除这个 exact
+observer，其他 active writer 仍阻止 ready。长期 outer writer 会阻塞
+pre-attempt-session → attempt scope rollover，缺失 observer 则必须 fail closed，二者都
+不能用 runtime idle 推断替代。
+
 Host 从 exact attempt scope 导出完整 operation/run occurrence universe。agent 使用
 CAS-protected selection revision，把每项显式标为 `adopted`、`superseded`、`failed` 或
 `abandoned`，并选择唯一 workflow role chain。已知失败保留审计但不必污染最终链；未知
@@ -229,10 +237,10 @@ positive/probe/fault reuse 禁止。closure 需同时验证 sealed selection、e
 authorization consumption 和 materialization lineage，但 closure 仍不是 task terminal。
 
 AOX 是该通用控制面的首个消费者：新 production collector 只发
-`aox_blank_world_attempt_bundle@3`；历史 `@2` verifier 和 r48-r52 NO-GO evidence
-保持冻结且不得升级或采用。r52 已消费其一次性 authority，但只产生 driver/fatal
-diagnostic 与 NO-GO decision，没有 eligible attempt bundle；任何后继 live 必须重新
-commit、full admission、pin、authorize 并取得新 plan 的精确消费授权。完整合同见
+`aox_blank_world_attempt_bundle@3`；历史 `@2` verifier 和 r48-r53 NO-GO evidence
+保持冻结且不得升级或采用。r52 与 r53 均已消费各自的一次性 authority，但只产生
+driver/fatal diagnostic 与 NO-GO decision，没有 eligible attempt bundle；任何后继
+live 必须重新 commit、full admission、pin、authorize 并取得新 plan 的精确消费授权。完整合同见
 `docs/v3/08-failure-recovery-and-scientific-attempts.md`。
 
 ---
@@ -660,6 +668,7 @@ Live gate 解释：
 - 首版 profile 仅为 trusted-Host `local_single_process_file_sqlite@1`；不得外推 shared writer、multi-process、multi-Host、distributed 或 signed/adversarial attestation 保证
 - AOX r48、r49 与 r50 均为永久 NO-GO；r50 的六项真实 probe operation 完成但旧 durable HPC materializer 漏投影 runner-attested toolchain identity，formal 路径完成 PubMed/NCBI/MAFFT/hmmbuild 与 Chrome canonical approval后，EBI HMMER job `563241d6-b460-4c74-bc92-70a34ab7c18a` 返回 `RETRY` 又被旧 adapter 错判为 non-retryable invalid request。后继 numbered campaign 只有在 durable identity 与 HMMER v3 两处 correction 提交后的 clean full admission、fresh pin 与 fresh roots 全部完成后才可启动，且仍需全部 launch/live/scientific/evidence gate，不能由 mainline、focused pytest、workflow eval、seeded smoke 或历史 run 替代
 - AOX r51 与 r52 同样是永久 NO-GO。r52 在 commit `5ccb0d3ba6055cd3d50b0e42437c350ee442a1f0` 精确消费 plan `sha256:c2755edc4a8f08a161618a7291ff8dad40c340c390c527c24c8f956366492bbb` 后只到达 positive 1：六项 probe operation 均 terminal-known，但旧 collector 未把 durable HPC `run_id` 规范化为 evidence `backend_run_id`；formal master 的前三项 `task.create` 成功后，旧三-call截断又让未 dispatch 的第 4 项缺少 ToolMessage，下一次 provider call 因 transcript 不闭合失败。没有 Chrome handoff、eligible attempt bundle、positive 2 或 fault；decision `sha256:7284ce153ed150688887ff1315f52ac236e1a5ef18cf7c519085380013befe8b` 只能封存该事实。当前 collector 对 completed operation 严格使用 `hpc -> run_id` / `provider_http -> provider_request_id` 后统一投影，且 master/teammate 对 overflow call 生成 no-effect rejection 和匹配 ToolMessage。r52 state/effects 不得 replay/adopt；后继必须 fresh correction commit/full admission/pin/authority/roots 并重新获得 plan 精确授权
+- AOX r53 同样是永久 NO-GO。它在 commit `83475a01fb6be91ca8ba5dc39c4c0b09774504e7` 消费 plan `sha256:a0bccbb4b71b2fb60a0a7131eae692d7400831ee7b516ba8143089f0d71aaabf` 后，positive 1 的独立六项 probe 已完成并密封；formal session 尚未产生 controlled operation、approval 或 Chrome handoff，就因旧 selected-chain driver 没有在 open pre-attempt scope 上登记 runtime barrier 所要求的 exact AOX observer writer，以 `mutation_driver_writer_identity_invalid` fail closed。parent fatal 证明进程组退休，但不声明 SQLite/quiescence/artifact closure；positive 2 与 fault 未启动，decision `sha256:d506914841245e9853ef28f7023a942891c6fc2f99244cbe496c899776e3e469` 只能封存 NO-GO。当前 driver 只在每次 formal barrier snapshot 内登记并退休 exact observer，使 Host-finalized scope rollover 不被长期 writer 阻塞；r53 authority/state/effects 不得 replay/adopt，后继仍需 fresh correction commit/full admission/pin/authority/roots 与新计划精确授权
 - 裸 `uv run pytest` 通过 `pytest.ini` 默认排除 `integration`、全部 `live_*`、`seeded_live_smoke` 与 `quality_eval`；真实外部测试必须同时满足环境 gate 与命令行显式 `-m` 选择，已配置凭据本身不能触发默认外部调用
 - `live_e2e` 是外部配置和 live 依赖的必要 gate，但不能单独证明单消息完整报告生产路径已经产品完成
 - live E2E 轮询在 task 已失败、所有 agent 均非 working/active 且没有 pending signal 或 unread inbox 时必须立即以持久 failure evidence 收敛；不得把外部 provider rate limit、缺 artifact 或 fail-closed 终止包装成通过，也不得在业务已静止后空等全局超时
