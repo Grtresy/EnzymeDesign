@@ -9,11 +9,13 @@ from fastapi.testclient import TestClient
 import pytest
 
 from openzyme_core import SQLiteRepositoryProvider
+from openzyme_core import AgentRuntimeService
 from openzyme_core import MutationScopeService
 from openzyme_core import RuntimeDrainCoreReceipt
 from openzyme_core import RuntimeDrainProjectionOutcome
 from openzyme_core import RuntimeCommandWorker
 from openzyme_core import project_runtime_command
+from openzyme_core.agent_identity import create_agent_member
 from openzyme_domain import AgentRuntimeSignal
 from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import AgentRuntimeSignalStatus
@@ -21,6 +23,8 @@ from openzyme_domain import Session
 from openzyme_domain import MutationScopeKind
 from openzyme_domain import MutationWriterKind
 from openzyme_domain import SessionRuntimeLeaseMode
+from openzyme_domain import Task
+from openzyme_domain import TaskStatus
 from openzyme_host_api import HostApiDependencies
 from openzyme_host_api import build_local_eval_foundation
 from openzyme_host_api import create_app
@@ -87,6 +91,91 @@ def _drain_result(
     )
 
 
+class _LoopingToolCallingInvoker:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def invoke_with_tools(
+        self,
+        *,
+        system_prompt: str,
+        messages: list[object],
+        tools: list[object],
+    ) -> object:
+        del system_prompt, messages, tools
+        self.calls += 1
+        return {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": f"call_budget_task_list_{self.calls}",
+                    "name": "task.list",
+                    "args": {},
+                }
+            ],
+        }
+
+
+class _LoopingModelFactory:
+    def __init__(self) -> None:
+        self.invoker = _LoopingToolCallingInvoker()
+
+    def create_tool_calling_invoker(
+        self,
+        *,
+        purpose: str,
+    ) -> _LoopingToolCallingInvoker:
+        del purpose
+        return self.invoker
+
+
+def _seed_teammate_budget_signal(
+    service: V3HostApiService,
+    *,
+    session_id: str,
+) -> tuple[str, str]:
+    service.create_session(
+        project_id="proj_runtime_commands",
+        session_id=session_id,
+        title="Budget handoff",
+        objective="Replan from a new source-bound master turn.",
+    )
+    task_id = f"task_{session_id}"
+    task = Task.create(
+        task_id=task_id,
+        session_id=session_id,
+        subject="Use one bounded turn",
+        description="Exhaust the turn and preserve the business task.",
+        status=TaskStatus.IN_PROGRESS,
+    )
+    service.repositories.tasks.save(task)
+    agent = create_agent_member(
+        service.repositories,
+        session_id=session_id,
+        role="executor",
+        task_id=task_id,
+    )
+    service.repositories.tasks.save(
+        replace(
+            task,
+            assigned_ref=agent.agent_id,
+        )
+    )
+    signal_id = f"signal_{session_id}"
+    service.repositories.runtime_signals.save(
+        AgentRuntimeSignal(
+            signal_id=signal_id,
+            session_id=session_id,
+            agent_id=agent.agent_id,
+            task_id=task_id,
+            reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+            status=AgentRuntimeSignalStatus.PENDING,
+            created_at="2026-07-24T12:00:00+00:00",
+        )
+    )
+    return task_id, signal_id
+
+
 def _wait_for_terminal(
     client: TestClient,
     *,
@@ -106,6 +195,154 @@ def _wait_for_terminal(
         if time.monotonic() >= deadline:
             raise AssertionError(f"runtime command remained {payload['status']!r}")
         time.sleep(0.02)
+
+
+def test_r55_shaped_runtime_drain_settles_closed_teammate_budget_replan_handoff(
+    tmp_path,  # type: ignore[no-untyped-def]
+) -> None:
+    provider = SQLiteRepositoryProvider(
+        str(tmp_path / "closed-budget-replan.sqlite3"),
+        check_same_thread=False,
+    )
+    with provider.connection_scope() as scope:
+        service = V3HostApiService(
+            repositories=scope.repositories,
+            event_store=V3EventStore(scope.repositories),
+            model_factory=_LoopingModelFactory(),
+        )
+        task_id, signal_id = _seed_teammate_budget_signal(
+            service,
+            session_id="sess_closed_budget_replan",
+        )
+        command, created = service.admit_runtime_command(
+            session_id="sess_closed_budget_replan",
+            idempotency_key="drain:r55-shaped-budget-replan",
+            max_signals=1,
+            max_steps_per_agent=16,
+            auto_enqueue_ready_tasks=False,
+        )
+        assert created is True
+
+        result = service.drain_runtime(
+            session_id="sess_closed_budget_replan",
+            max_signals=1,
+            max_steps_per_agent=16,
+        )
+
+        signal = scope.repositories.runtime_signals.get(signal_id)
+        task = scope.repositories.tasks.get(task_id)
+        failures = scope.repositories.failure_observations.list_by_source(
+            session_id="sess_closed_budget_replan",
+            source_kind="runtime_signal",
+            source_ref=signal_id,
+        )
+        wakeups = [
+            candidate
+            for candidate in scope.repositories.runtime_signals.list_by_session(
+                "sess_closed_budget_replan"
+            )
+            if candidate.agent_id == "agent:master"
+            and candidate.source_ref == signal_id
+        ]
+
+    class CapturedDrainService:
+        def drain_runtime(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            return result
+
+    @contextmanager
+    def captured_service_scope():  # type: ignore[no-untyped-def]
+        yield CapturedDrainService()
+
+    execution_result = HostRuntimeCommandExecutor(
+        service_scope=captured_service_scope,
+        worker_id="test:r55-runtime-command",
+    )(command)
+
+    assert signal is not None
+    assert signal.status is AgentRuntimeSignalStatus.FAILED
+    assert task is not None
+    assert task.status is TaskStatus.IN_PROGRESS
+    assert len(failures) == 1
+    assert failures[0].facts["max_steps"] == 16
+    assert len(wakeups) == 1
+    assert wakeups[0].status is AgentRuntimeSignalStatus.PENDING
+    assert result.core_receipt.scheduler_status == "completed"
+    assert result.core_receipt.processed_signal_count == 1
+    assert result.projection_outcome.status == "complete"
+    assert result.bounded_outcome_summary["replay_safe"] is False
+    assert execution_result.status.value == "completed"
+    assert execution_result.error_code is None
+
+
+def test_runtime_drain_fails_when_budget_replan_wakeup_is_missing(
+    monkeypatch,  # type: ignore[no-untyped-def]
+    tmp_path,  # type: ignore[no-untyped-def]
+) -> None:
+    provider = SQLiteRepositoryProvider(
+        str(tmp_path / "missing-budget-replan.sqlite3"),
+        check_same_thread=False,
+    )
+    monkeypatch.setattr(
+        AgentRuntimeService,
+        "_enqueue_master_wakeup_after_teammate",
+        lambda *args, **kwargs: None,
+    )
+    with provider.connection_scope() as scope:
+        service = V3HostApiService(
+            repositories=scope.repositories,
+            event_store=V3EventStore(scope.repositories),
+            model_factory=_LoopingModelFactory(),
+        )
+        _seed_teammate_budget_signal(
+            service,
+            session_id="sess_missing_budget_replan",
+        )
+
+        result = service.drain_runtime(
+            session_id="sess_missing_budget_replan",
+            max_signals=1,
+            max_steps_per_agent=1,
+        )
+
+    assert result.core_receipt.scheduler_status == "failed"
+    assert result.core_receipt.processed_signal_count == 1
+    assert result.projection_outcome.status == "complete"
+
+
+def test_runtime_drain_keeps_master_budget_exhaustion_failed(
+    tmp_path,  # type: ignore[no-untyped-def]
+) -> None:
+    provider = SQLiteRepositoryProvider(
+        str(tmp_path / "master-budget-exhaustion.sqlite3"),
+        check_same_thread=False,
+    )
+    with provider.connection_scope() as scope:
+        service = V3HostApiService(
+            repositories=scope.repositories,
+            event_store=V3EventStore(scope.repositories),
+            model_factory=_LoopingModelFactory(),
+        )
+        service.create_session(
+            project_id="proj_runtime_commands",
+            session_id="sess_master_budget_exhaustion",
+            title="Master budget",
+            objective="Do not invent a successor turn for master.",
+        )
+        service.post_message(
+            session_id="sess_master_budget_exhaustion",
+            message="Inspect the current task board.",
+        )
+
+        result = service.drain_runtime(
+            session_id="sess_master_budget_exhaustion",
+            max_signals=1,
+            max_steps_per_agent=1,
+        )
+
+    assert result.core_receipt.scheduler_status == "failed"
+    assert result.core_receipt.processed_signal_count == 1
+    assert result.projection_outcome.status == "complete"
 
 
 @pytest.mark.parametrize(

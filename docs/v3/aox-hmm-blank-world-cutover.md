@@ -1,8 +1,8 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r54 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. r48 through r54 are permanent NO-GO evidence. The executable architecture-qualification gate is implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. Local Live cutover stays **NO-GO** until one successor campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
+Status: r43-r55 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. r48 through r55 are permanent NO-GO evidence. The executable architecture-qualification gate is implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. Local Live cutover stays **NO-GO** until one successor campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity.
 
-Historical r14-r54 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
+Historical r14-r55 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
 This document describes the operator/evidence boundary implemented by `openzyme_host_api.aox_cutover_evidence`. It does not turn the historical S15 fixture into live evidence and does not authorize seeded state, cached scientific outputs, the reference notebook, or copied reference results as attempt inputs.
 
@@ -11,7 +11,7 @@ scientific-attempt control plane. The agent may retain failed/superseded trials
 inside one formal attempt while explicitly selecting a valid adopted chain, but
 the bundle still audits the full occurrence universe and fails closed on unknown
 effect, active process/writer, incomplete disposition, authority/resource breach,
-or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r54
+or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r55
 fact can be upgraded, backfilled, or adopted.
 The current workflow knowledge identity is
 `workflow:aox-hmm-live@2.0.0#sha256:c98afb0d5706e3826ed4754f523b3b688ee139a616c10ea03ceae4c22c106b14`;
@@ -221,6 +221,67 @@ another numbered campaign, the operator must start from a fresh clean commit,
 complete full non-live architecture qualification, generate and review a fresh
 pin and exact-three authority plan, create fresh roots only after admission,
 and obtain separate precise user approval to consume that exact plan.
+
+## r55 live attempt: permanent NO-GO
+
+r55 ran on clean commit
+`88d0d2f0cfe681cd9eb423dbf8d6c01179bbce0b` after consuming exact-three plan
+`sha256:997d7f5c43a0b8bbecc10df5ed66d155cd494bf1adaf0aeb2496ab166bd6adce`
+for campaign `aox_campaign_7fc6403d92130d14f3b1170e`. Only positive 1
+`positive-6304b259d55318e1d877ab69c43b2670` started. Positive 2 and the controlled
+fault never acquired roots or ran.
+
+The independent probe completed its exact six real NCBI, UniProt, MAFFT,
+hmmbuild, CD-HIT and HMMalign checks. In the formal session, the researcher
+completed the required PubMed evidence and the executor performed bounded
+inspection plus a no-effect local sandbox command, but no formal controlled
+operation, provider/HPC effect, approval, or Chrome handoff occurred.
+
+The executor then exhausted the pinned 16-step turn. Signal
+`sig_60109e5f37d4` became terminal failed with canonical
+`agent_turn_budget_exhausted`; its observation recorded
+`recoverability=agent_can_replan`, signal-local `no_effect`, and exact-signal
+`retry_eligibility=terminal`. The execution task remained `in_progress` with
+empty business failure fields, and exactly one source-bound master wakeup
+`sig_1caa82176c1e` was durable and pending.
+
+The remaining defect was receipt classification. Command
+`runtime_command_974d42e9be42` truthfully retained
+`processed_signal_count=1`, `projection_status=complete`, and
+`replay_safe=false`, but `_outcomes_include_failure()` flattened the closed
+handoff's `outcome.ok=false` into scheduler `failed` and
+`runtime_scheduler_batch_failed`. The cutover coordinator therefore stopped
+with `runtime_drain_command_failed`; it did not claim the pending master
+wakeup.
+
+Parent supervision sealed fatal digest
+`sha256:e4513f9183f1e5b5e47db6902fd03ee03efb80f02bbc8bd2e67a324ce06eff0b`
+and proved descendant retirement after child exit `70`. As required for a
+supervision fatal, it left `external_outcome=unknown` and made no
+ledger-after, SQLite-closure, artifact-completeness, quiescence, or business
+terminal claim. Campaign decision
+`sha256:cf95804d4d33937abada9902254fce3c9603398e9007843c1213e9633b26be07`
+is permanent **NO-GO** with blocker `attempt_child_runner_failed`. The
+cumulative MICU ledger moved from `81,229,927` to
+`83,764,870 / 500,000,000`, a delta of `2,534,943`, leaving `416,235,130`;
+there was no overage or hard-limit breach.
+
+The forward-only correction keeps the original signal failed and never replays
+it. A teammate max-step outcome counts as completed scheduler settlement only
+when the canonical failed signal, exact attempt-version budget observation,
+nonterminal task, and exactly one source-bound non-cancelled master wakeup all
+agree. Missing/duplicate/cancelled wakeup, observation or identity drift,
+ordinary runtime failure, terminal business state, and master max-step remain
+scheduler failures. Because AOX fixes `max_signals=1`, the new wakeup cannot be
+consumed by the same command: after the receipt returns, the driver still
+inspects durable controlled-operation, task and sandbox terminal state before
+it may issue another drain.
+
+This correction does not continue r55 or make its pending wakeup reusable.
+The consumed authority, root, probe effects, partial child evidence and all
+diagnostic rows remain immutable. A successor requires a new clean commit,
+fresh full admission, pin, exact-three authority plan and roots, plus separate
+precise user approval before plan consumption.
 
 ## Numbered launch-preparation boundary
 
@@ -2263,10 +2324,10 @@ Offline unit/eval success proves implementation behavior only. Local Live cutove
 
 Until those artifacts exist, documentation and UI must state NO-GO. Historical S15 and deterministic fixtures remain `fixture_non_cutover` regardless of local test status.
 
-r54 is the latest live diagnostic evidence, but its successful operation rows
-did not close selection, attempt, report, or campaign, so it satisfies none of
-the three GO slots. The post-r54 correction checkpoint covers code, OpenSpec,
-documentation and non-live verification only. It deliberately stops before any successor
+r55 is the latest live diagnostic evidence, but it stopped on positive 1 before
+any formal controlled operation, report, bundle or campaign closure, so it
+satisfies none of the three GO slots. The post-r55 correction checkpoint covers
+code, OpenSpec, documentation and non-live verification only. It deliberately stops before any successor
 `preflight` or `run-live`: no successor numbered root, provider/MICU call, HPC
 job, browser campaign or attempt evidence may be created until a fresh full
 admission, pin and exact plan are generated and that plan is separately

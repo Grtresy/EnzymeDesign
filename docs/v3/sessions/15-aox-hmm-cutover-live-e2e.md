@@ -1366,6 +1366,43 @@ max-step 只终止 exact signal，master 可在新 turn 显式 replan。
 完成 full architecture qualification、重新生成并审查 pin 与 exact-three authority plan、
 使用 fresh roots，并在消费该 exact plan 前获得用户单独精确批准。
 
+## r55 max-step scheduler settlement attempt：永久 NO-GO
+
+r55 在 clean commit
+`88d0d2f0cfe681cd9eb423dbf8d6c01179bbce0b` 上消费一次性 exact-three plan
+`sha256:997d7f5c43a0b8bbecc10df5ed66d155cd494bf1adaf0aeb2496ab166bd6adce`，
+只启动 positive 1。独立 probe 的六项真实 operation 全部完成，formal researcher 也完成
+PubMed evidence；formal executor 尚未创建 controlled operation/provider/HPC effect 或
+Chrome handoff。
+
+executor signal `sig_60109e5f37d4` 在 16 steps 后正确以
+`agent_turn_budget_exhausted` terminal failed；canonical observation 是
+`agent_can_replan/no_effect/terminal`，execution task 仍为 `in_progress` 且业务 failure
+fields 为空，source-bound master wakeup `sig_1caa82176c1e` 唯一且 pending。旧 receipt
+classification 却把这个已经闭合的 handoff 当成 scheduler crash：
+`runtime_command_974d42e9be42` 虽保存
+`processed_signal_count=1`、`projection_status=complete`、`replay_safe=false`，仍以
+`runtime_scheduler_batch_failed` 终止，cutover driver 随即 fail closed。
+
+child exit `70` 后，parent fatal
+`sha256:e4513f9183f1e5b5e47db6902fd03ee03efb80f02bbc8bd2e67a324ce06eff0b`
+只证明 descendants retired，不声明 ledger-after、SQLite/quiescence/artifact/business
+closure；campaign decision
+`sha256:cf95804d4d33937abada9902254fce3c9603398e9007843c1213e9633b26be07`
+保持永久 **NO-GO**。MICU 累计为 `83,764,870 / 500,000,000`，本轮 delta
+`2,534,943`，remaining `416,235,130`，零 breach/overage；positive 2/fault 未启动。
+
+post-r55 correction 只在 exact failed teammate signal、同 attempt canonical budget
+observation、nonterminal task 与 unique source-bound non-cancelled master wakeup 全闭合时，
+把 scheduler layer 记为 completed settlement。原 signal 仍 failed、不 replay；master
+wakeup 是新 turn。缺 wakeup/identity closure、普通 failure、business terminal failure
+或 master max-step 仍令 command failed。AOX 的 `max_signals=1` 保证 driver 在任何后继
+drain 前先检查 durable operation/task/sandbox terminal state。
+
+r55 authority、roots、probe effects、partial evidence 与 pending wakeup 全部不可继续或复用。
+任何后继 numbered campaign 必须基于新 correction commit 完成 full admission、fresh pin、
+fresh exact-three plan 与 fresh roots，并在消费新 plan 前取得单独精确授权。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

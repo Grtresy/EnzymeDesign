@@ -59,6 +59,18 @@ When a bounded agent turn exhausts its configured step budget without an explici
 - **WHEN** a teammate max-step outcome becomes durable
 - **THEN** one source-bound deduplicated master wakeup can inspect the failure and current scientific selection evaluation before the master chooses resume, redelegation, help, blocked, failed, or another strategy
 
+#### Scenario: Settle a closed teammate budget handoff
+- **WHEN** a teammate max-step outcome has one canonical terminal signal, the exact structured budget observation, a nonterminal business task, and exactly one source-bound non-cancelled master wakeup
+- **THEN** the signal remains failed and unreplayed while the scheduler batch may report completed settlement, so a later bounded command can claim only the new master turn
+
+#### Scenario: Keep an incomplete budget handoff failed
+- **WHEN** the budget observation, nonterminal task boundary, or unique source-bound master wakeup is missing, mismatched, duplicated, or cancelled
+- **THEN** the scheduler batch remains failed and MUST NOT relabel the signal occurrence as settled
+
+#### Scenario: Do not invent a successor for master exhaustion
+- **WHEN** the master signal itself exhausts max steps
+- **THEN** that signal and scheduler batch remain failed unless another independently authorized canonical signal already exists; the runtime does not manufacture a self-wakeup
+
 #### Scenario: Preserve controlled effects from the exhausted turn
 - **WHEN** the exhausted turn already produced controlled-operation effects
 - **THEN** the signal failure's no-effect classification does not erase, downgrade, replay, or reinterpret those operations' independent effect certainty and durable results

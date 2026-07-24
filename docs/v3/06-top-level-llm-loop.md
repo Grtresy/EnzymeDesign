@@ -228,6 +228,12 @@ step budget 用尽不授权继续同一 signal。driver 写入结构化
 不重开 operation/selection。`agent_can_replan` 只说明 master 可在新的 canonical turn 中读取
 task/protocol/artifact/failure/selection facts 后选择策略，不与 exact-signal terminal 冲突。
 
+core receipt 中的 scheduler `completed` 是 batch-settlement 事实，不是 agent/task success。
+teammate occurrence 只有在 failed signal、exact canonical budget observation、nonterminal
+task 与 unique source-bound non-cancelled master wakeup 全部闭合时才可完成这个 handoff；
+original signal 仍 failed，master wakeup 仍是独立 turn。master 自身耗尽或任何闭包缺失不能
+通过制造 self-wakeup 改成 completed。
+
 scientific selection 的真实约束不应靠模型从错误信息或 SOP 猜。详细
 `scientific.attempt.inspect` 提供 digest-bound contract、operation signature、
 compatible roles 和 readiness gaps；模型显式选择 occurrence/role，并用一次

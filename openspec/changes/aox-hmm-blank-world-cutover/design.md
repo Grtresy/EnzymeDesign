@@ -205,6 +205,52 @@ readiness evaluator、原子 `scientific.operation.adopt`、resolved selection h
 生成并审查 pin 与 exact-three authority plan，使用 fresh roots，并在消费该 exact plan
 前取得用户的单独精确批准。
 
+### 2026-07-24 r55 max-step scheduler settlement 诊断 addendum
+
+r55 在 clean commit `88d0d2f0cfe681cd9eb423dbf8d6c01179bbce0b` 上消费了
+exact-three authority plan
+`sha256:997d7f5c43a0b8bbecc10df5ed66d155cd494bf1adaf0aeb2496ab166bd6adce`，
+但只启动 positive 1
+`positive-6304b259d55318e1d877ab69c43b2670`。独立 probe 的 NCBI、UniProt、
+MAFFT、hmmbuild、CD-HIT、HMMalign exact six 全部完成；formal researcher 完成真实
+PubMed evidence。formal executor 尚未创建 controlled operation 或 Chrome handoff，
+其 `sig_60109e5f37d4` 在第 16 step 以
+`agent_turn_budget_exhausted` terminal failed。canonical observation 已正确记录
+`agent_can_replan/no_effect/terminal`，execution task 保持 `in_progress` 且业务 failure
+fields 为空，source-bound master wakeup `sig_1caa82176c1e` 已唯一排队为 pending。
+
+旧 core receipt 仍从 `outcome.ok=false` 直接推导 scheduler failed，因此
+`runtime_command_974d42e9be42` 虽然保存
+`processed_signal_count=1`、`projection_status=complete`、`replay_safe=false`，却以
+`runtime_scheduler_batch_failed` 终止。cutover driver 把该 command failure 当作
+attempt-fatal，child exit `70`，positive 2/fault 未启动。这个事实不允许继续 r55：
+其一次性 plan 已消费，parent fatal 只证明 descendants retired，并显式不声明
+ledger-after、SQLite closure、artifact completeness、business terminal state 或
+external outcome。
+
+forward-only correction 不把 exact signal 改成 completed，也不重放或加 budget。core
+receipt 在形成 scheduler layer 时，只对以下完整闭包视为“batch 已结算”：
+
+1. outcome 是 teammate `max_steps_exceeded`，canonical signal 为 exact failed occurrence；
+2. 同 attempt version 存在结构化 budget observation，scope 只限 signal transition；
+3. business task 仍非终态；
+4. exactly one source-bound、non-cancelled master wakeup 与 task/lane/correlation identity
+   一致。
+
+全部成立时 scheduler layer 可为 `completed`，含义只是 bounded batch 已把 recovery
+attention 交给一个新的 canonical turn。缺失/重复/取消 wakeup、observation/task/identity
+drift、普通 runtime failure、master 自身 max-step 或任何 business terminal failure
+仍为 `failed`。AOX 固定 `max_signals=1`，所以 driver 仍必须先做 post-drain durable
+operation/task/sandbox observation，确认没有 terminal failure 后，才可由后续 command
+claim 该 master wakeup。
+
+r55 decision
+`sha256:cf95804d4d33937abada9902254fce3c9603398e9007843c1213e9633b26be07`、
+fatal `sha256:e4513f9183f1e5b5e47db6902fd03ee03efb80f02bbc8bd2e67a324ce06eff0b`
+及全部 roots/effects/partial evidence 保持永久 NO-GO、immutable、non-reusable。该
+correction 必须在新 commit 上完成 full qualification、fresh pin 与 fresh exact-three
+authority；没有对新 plan 的单独精确批准，不得消费或启动后继 live campaign。
+
 ## Goals / Non-Goals
 
 **Goals:**

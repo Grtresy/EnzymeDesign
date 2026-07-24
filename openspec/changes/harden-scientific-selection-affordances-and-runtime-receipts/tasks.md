@@ -55,6 +55,7 @@
 - [x] 6.4 将 runtime consistency 的新 max-step 分类切换到结构化 error code，只为 frozen historical signals 保留只读文本匹配兼容。
 - [x] 6.5 增加 scheduler/protocol/consistency 回归，证明同一 signal 不重放、不隐式加 budget、不重开 operation，master 可在新 turn 显式 replan。
 - [x] 6.6 增加 controlled-operation effect preservation 回归，证明 signal-local `no_effect` 不擦除或重解释同一 exhausted turn 已产生的独立 durable scientific effects。
+- [x] 6.7 闭合 post-r55 receipt 分类：只有 canonical failed teammate signal、exact budget observation、nonterminal task 与 unique source-bound master wakeup 全部成立时才把 scheduler batch 记为 completed settlement；缺 wakeup 与 master max-step 保持 failed，并增加真实 SQLite 回归。
 
 ## 7. AOX 规格、配置与稳定文档同步
 

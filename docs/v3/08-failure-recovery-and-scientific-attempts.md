@@ -62,6 +62,12 @@ source-bound wakeup 显式 replan。`effect_certainty=no_effect` 的 scope 是 r
 transition，不得擦除同 turn 已经持久化的 controlled-operation execution/result。task status、
 failure summary/ref 保持原样。
 
+receipt assembly 必须验证这条交接的 canonical closure。teammate signal、同 attempt
+observation、nonterminal task 与 exactly one source-bound non-cancelled master wakeup 全部
+一致时，scheduler batch 可以记为 completed settlement，但 exact signal 仍是 failed；
+新的 wakeup 才是可 claim 的 recovery work。任一要素缺失/歧义、普通 runtime failure 或
+master 自身 max-step 仍然是 scheduler failure，不能靠重标状态绕过。
+
 manual runtime drain 在 scheduler batch 后先形成 immutable
 `RuntimeDrainCoreReceipt`，再独立结算 trace/activity/consistency/event/workspace
 projection。`runtime_command_outcome@2` 同时保存 scheduler 与 projection 两层状态；若

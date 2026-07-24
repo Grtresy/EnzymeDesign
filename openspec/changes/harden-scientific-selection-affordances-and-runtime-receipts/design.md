@@ -205,6 +205,16 @@ teammate bounded loop 达到 max steps 且没有 terminal task action 时：
 
 agent member 可以保留 runtime-failed attention，后续由 master 显式 resume/redelegate；Harness 不自动增加 budget、重开 selection、选择 role 或创建 fresh attempt。
 
+core receipt 还必须区分“signal occurrence failed”与“scheduler batch 没有完成结算”。
+如果且仅如果 teammate max-step outcome 同时闭合到 canonical failed signal、同 attempt
+version 的结构化 `agent_turn_budget_exhausted` observation、非终态 business task，以及
+exactly one source-bound master wakeup，则该 outcome 已由 scheduler 完成有界结算：
+exact signal 继续保持 failed/terminal，新的 master wakeup 是独立 turn，而 core receipt
+的 scheduler layer 可为 `completed`。缺 observation、缺失或重复/取消 wakeup、task 已终态、
+projection identity drift、普通 runtime failure，或 master 自身 max-step 均继续令
+scheduler layer `failed`。这个 completed 只表示 batch settlement，不表示 signal、task、
+scientific attempt、report 或 campaign 成功。
+
 `RuntimeConsistencyService` 不再依赖错误字符串识别 max steps；它优先使用 failure observation error code，旧 signal 文本匹配只作为 frozen compatibility。
 
 ### 8. Active AOX contract 与历史 evidence 明确分层

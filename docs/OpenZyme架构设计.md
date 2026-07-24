@@ -547,6 +547,13 @@ trace/activity/consistency/event/workspace projection。公开 `runtime_command_
 `replay_safe=false`。只有 core receipt 尚未形成的 boundary failure 才能报告零 processed；
 旧 `@1` outcome 只读兼容，不回填新字段。
 
+scheduler layer 的 `completed` 表示 bounded batch 已完成结算，不表示每个 signal、task
+或业务目标成功。teammate max-step 只有在 exact failed signal、同 attempt 的 canonical
+`agent_turn_budget_exhausted` observation、非终态 task 与 exactly one source-bound
+non-cancelled master wakeup 全部一致时，才可作为 completed handoff；原 signal 仍保持
+failed/terminal，后继是独立 master turn。任何闭包缺失、普通 failure 或 master max-step
+继续令 scheduler layer failed。
+
 普通失败结果已在同一 turn 交给 agent 时不额外制造 recovery wakeup。只有 continuation、
 controlled operation 或 Host finalizer 在原 turn 之后才暴露失败时，才按 exact
 source/version 去重创建 `recovery_required`。claim 后从 repository 重建事实，不能复制旧 prompt
