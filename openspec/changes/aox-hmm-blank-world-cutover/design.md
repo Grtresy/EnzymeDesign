@@ -696,6 +696,58 @@ r38 fresh attempt `positive-f53ef36dcdf04817baebfdaeed1bbf59` 首次穿过此前
 
 本轮还确认 controlled-operation `resource_estimate` 当前由 sandbox SDK 自报，Core 只验证它是 mapping；SDK 默认 query cap 常量可能与 Host 注入并收紧的 provider config 漂移，因此 approval 中的 estimate 不是 authority。让 sandbox只声明需求、Host按 route policy + injected config重算canonical estimate/actual limits并绑定approval/config identity，需要跨 SDK/Core/engine/schema迁移，单独记录在 `docs/v3/architecture-proposals/host-authoritative-controlled-operation-resource-estimate-and-limit-snapshot.md`，本 Goal不实现。
 
+### 2026-07-25 r58 diagnostic final-response/closure addendum
+
+r58 used clean commit `d00ada97f8eb13af35f9c83247cd51e14138f428` and consumed the
+separate diagnostic plan
+`sha256:691cf17bd8548fa3bfd4e338cb61ce608bb97c4cde17f0e66483b84ff65397e3`.
+Its root was `aox-diagnostic-335c68cf214a01b34876f97b`. Run-class isolation
+again held: diagnostic eligibility stayed false and no formal campaign slot was
+authorized or started.
+
+The independent probe and the formal NCBI/MAFFT/HMMBUILD/EBI-HMMER/UniProt/
+HMMALIGN/CD-HIT path all completed. The formal result contained 516 candidates,
+78 CD-HIT representatives, 13,778 similarity edges, all 17 normalized outputs,
+a sealed selection, one published source-linked report, and explicit completed
+exits for all three canonical tasks. Browser approval was observed. This is the
+first meaningful end-to-end scientific result/report in the diagnostic series,
+but it is not acceptance evidence.
+
+The remaining blocker was a harness lifecycle contradiction. After report
+publication, the master inspected world/thread state and returned an
+assistant-only final answer. That text could be persisted, but no new wakeup
+remained on which the same master could explicitly call
+`scientific.attempt.close`. Conversely, the post-r57 terminal-action rule ended
+the turn immediately after a successful close, while provider-response text
+attached to a tool-call response was previously retained only in the LLM trace
+and never became the canonical assistant conversation message. The active
+attempt therefore had neither closure request nor closure; the child exhausted
+120 formal drains after seven approvals with
+`formal_runtime_drain_exhausted`. Diagnostic decision
+`sha256:8c877189130838b29030200d9c592e8e096cd028cd60a5c5bc38dd424c718a57`
+is permanent **NO-GO**. MICU moved by `2,119,558` to
+`96,363,097 / 500,000,000`, leaving `403,636,903`, with no breach or overage.
+All r58 authority, root, state, effects, artifacts, browser receipts, report and
+decision remain immutable and non-reusable. Because a meaningful result/report
+formed before this framework blocker, the user's conditional trigger for
+another diagnostic/formal specification split did not fire.
+
+The forward contract keeps closure agent-authored. Host does not auto-close,
+infer a selection, synthesize an answer, or choose strategy. The AOX formal
+lifecycle policy is bumped to
+`aox_cutover_formal_tool_precondition@2`. When the exact close readiness facts
+hold for one active attempt, an assistant-only master response is returned to
+the same bounded model loop as a structured no-effect rejection and is not
+written to conversation truth. The model must instead include its complete
+user-facing answer as response text in the same provider response that calls
+`scientific.attempt.close`. The invocation carries this private companion text;
+the close handler rejects an empty companion before any closure effect. Only a
+successful terminal close result marks the companion for persistence, after
+which harness writes it exactly once, settles later calls as no-effect, and
+retires the turn. Failed/rejected close attempts persist neither answer nor
+closure request. The response-policy seam is Host-composed and inherited by
+master runtime; unmatched sessions retain ordinary assistant behavior.
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

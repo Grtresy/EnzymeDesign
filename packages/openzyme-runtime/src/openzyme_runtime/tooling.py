@@ -28,6 +28,7 @@ class ToolInvocation:
     arguments: dict[str, Any]
     task_id: str | None = None
     lane_id: str | None = None
+    assistant_response_text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +47,7 @@ class ToolResult:
     failure_observation: dict[str, Any] | None = None
     terminal_action: str | None = None
     terminates_turn: bool = False
+    persists_assistant_response: bool = False
 
     def envelope(self) -> dict[str, Any]:
         details = dict(self.details or {})
@@ -60,6 +62,7 @@ class ToolResult:
             "content": self.content,
             "terminal_action": self.terminal_action,
             "terminates_turn": self.terminates_turn,
+            "persists_assistant_response": self.persists_assistant_response,
         }
         try:
             envelope["payload"] = json.loads(self.content)

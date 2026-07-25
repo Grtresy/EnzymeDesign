@@ -2684,6 +2684,20 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
         "rejects scientific.attempt.close until the exact task business exits"
         in prompt
     )
+    assert (
+        "include the complete final user-facing answer as response text in the "
+        "same model response that calls scientific.attempt.close"
+        in prompt
+    )
+    assert (
+        "assistant-only final response at close-ready state is rejected without "
+        "persistence or effect"
+        in prompt
+    )
+    assert (
+        "successful close persists that companion answer exactly once"
+        in prompt
+    )
     assert f"workflow_refs=[{_identity()['workflow_ref']!r}] only to the executor" in prompt
     assert "researcher and reporter must omit workflow_refs" in prompt
     assert "openzyme_pipeline.aox_reference.select_hmm_reference_set" in prompt

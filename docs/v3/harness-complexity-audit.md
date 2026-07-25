@@ -265,6 +265,14 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
   real SQLite repository-backed task/report/close/finalizer regression 覆盖，普通 session
   仍保持原 task semantics。
 
+  r58 追加修正记录：terminal close 与 conversation truth 仍有一处 co-terminal 缝隙。
+  close-ready master 的 assistant-only response 现在通过 composition-injected
+  `assistant_response_precondition` 在持久化前 no-effect 退回；agent 必须在同一 provider
+  response 中提供自己的完整终答与 explicit `scientific.attempt.close`。close handler 在
+  effect 前拒绝 empty companion，successful terminal result 才允许 harness 将 exact text
+  持久化一次并退休 turn。该 seam 不自动 close、不推断 selection、不生成答案，普通
+  session 没有配置时保持原行为。
+
 ## 4. 后续工作流
 
 每次后续简化时：

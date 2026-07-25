@@ -11,6 +11,7 @@ from openzyme_core import TaskBoardService
 from openzyme_core import TaskFinishCommand
 from openzyme_core import ToolRegistry
 from openzyme_core import apply_sqlite_migrations
+from openzyme_core import build_conversation_projection
 from openzyme_core import connect_sqlite
 from openzyme_core import controlled_operation_artifact_set_digest
 from openzyme_core import run_agent_harness_loop
@@ -61,6 +62,7 @@ from openzyme_runtime import ToolInvocation
 
 SESSION_ID = "sess_formal_policy"
 EXECUTION_TASK_ID = "aox_execution_cutover_policy"
+FINAL_RESPONSE = "AOX formal workflow completed with a source-linked report."
 
 
 def _record(**values: object) -> SimpleNamespace:
@@ -180,6 +182,7 @@ def _close_invocation() -> ToolInvocation:
             "actor_ref": "agent:master",
             "idempotency_key": "close:001",
         },
+        assistant_response_text=FINAL_RESPONSE,
     )
 
 
@@ -449,6 +452,52 @@ def test_cutover_policy_allows_ready_positive_close() -> None:
     assert result is None
 
 
+def test_cutover_policy_requires_final_response_on_ready_close() -> None:
+    tasks = _tasks()
+    reports = (
+        _record(
+            report_id="report_001",
+            task_id=AOX_REPORT_TASK_ID,
+            status=_status("ready"),
+        ),
+    )
+    drafts = (
+        _record(
+            draft_id="draft_001",
+            task_id=AOX_REPORT_TASK_ID,
+            status=_status("published"),
+            published_report_id="report_001",
+            content_ref="doc_report_001",
+        ),
+    )
+    invocation = ToolInvocation(
+        call_id="call_close_without_response",
+        tool_name="scientific.attempt.close",
+        arguments={
+            "attempt_id": "attempt_001",
+            "selection_id": "selection_001",
+            "idempotency_key": "close:without-response",
+        },
+    )
+
+    result = _positive_policy()(
+        _context(
+            _repositories(
+                tasks=tasks,
+                reports=reports,
+                drafts=drafts,
+            )
+        ),
+        _step(),  # type: ignore[arg-type]
+        invocation,
+    )
+
+    assert result is not None
+    assert result.error_code == "aox_cutover_final_response_missing"
+    assert result.details["assistant_response_present"] is False
+    assert result.details["effect_certainty"] == "no_effect"
+
+
 def test_cutover_policy_allows_closed_fault_without_success_report() -> None:
     policy = AoxCutoverFormalToolPrecondition(
         session_id=SESSION_ID,
@@ -618,6 +667,7 @@ class _CloseThenMutationDriver:
                     },
                     task_id=EXECUTION_TASK_ID,
                     lane_id="lane_execution",
+                    assistant_response_text=FINAL_RESPONSE,
                 ),
                 ToolInvocation(
                     call_id="call_mutation_after_close",
@@ -982,6 +1032,24 @@ def test_repository_backed_positive_close_retires_turn_before_later_mutation() -
             )
 
     report_subject = repositories.tasks.get(AOX_REPORT_TASK_ID).subject
+    lifecycle_policy = AoxCutoverFormalToolPrecondition(
+        session_id=SESSION_ID,
+        execution_task_id=EXECUTION_TASK_ID,
+        attempt_kind="positive",
+    )
+    response_rejection = lifecycle_policy.check_assistant_response(
+        _context(repositories),
+        _step(),  # type: ignore[arg-type]
+        "Premature assistant-only final response.",
+    )
+    assert response_rejection is not None
+    assert (
+        response_rejection.error_code
+        == "aox_cutover_close_required_before_final_response"
+    )
+    assert response_rejection.details["attempt_id"] == attempt.attempt_id
+    assert response_rejection.details["selection_id"] == selection.selection_id
+
     driver = _CloseThenMutationDriver(
         attempt_id=attempt.attempt_id,
         selection_id=selection.selection_id,
@@ -1005,10 +1073,9 @@ def test_repository_backed_positive_close_retires_turn_before_later_mutation() -
             scientific_workflow_contract_registry=(
                 AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
             ),
-            tool_dispatch_precondition=AoxCutoverFormalToolPrecondition(
-                session_id=SESSION_ID,
-                execution_task_id=EXECUTION_TASK_ID,
-                attempt_kind="positive",
+            tool_dispatch_precondition=lifecycle_policy,
+            assistant_response_precondition=(
+                lifecycle_policy.check_assistant_response
             ),
         )
         request = repositories.scientific_attempt_closure_requests.get_by_attempt(
@@ -1027,6 +1094,8 @@ def test_repository_backed_positive_close_retires_turn_before_later_mutation() -
     assert close_result.ok is True
     assert close_result.terminal_action == "scientific.attempt.close"
     assert close_result.terminates_turn is True
+    assert close_result.persists_assistant_response is True
+    assert result.outputs == (FINAL_RESPONSE,)
     assert interrupted.call_id == "call_mutation_after_close"
     assert interrupted.error_code == "tool_call_batch_interrupted"
     assert interrupted.details == {
@@ -1043,6 +1112,12 @@ def test_repository_backed_positive_close_retires_turn_before_later_mutation() -
         for event in result.events
         if event.event_type == "tool.invoked"
     ] == ["call_repository_close"]
+    conversation = build_conversation_projection(repositories, SESSION_ID)
+    assistant_entries = [
+        entry for entry in conversation if entry.role == "assistant"
+    ]
+    assert len(assistant_entries) == 1
+    assert assistant_entries[0].content == FINAL_RESPONSE
     closure = scientific.finalize_closure_request(
         closure_request_id=request.closure_request_id
     )

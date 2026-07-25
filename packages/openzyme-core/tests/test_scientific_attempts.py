@@ -2109,6 +2109,37 @@ def test_successful_scientific_attempt_close_is_a_terminal_turn_action() -> None
         scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
     )
 
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.AGENT_TURN,
+        owner_ref="agent-turn:missing-close-response",
+    ):
+        missing_response = registry.dispatch(
+            context,
+            ToolInvocation(
+                call_id="call_terminal_close_missing_response",
+                tool_name="scientific.attempt.close",
+                arguments={
+                    "attempt_id": attempt.attempt_id,
+                    "selection_id": selection.selection_id,
+                    "idempotency_key": "close-terminal-close-tool",
+                },
+                task_id=attempt.task_id,
+                lane_id=attempt.lane_id,
+            ),
+        )
+    assert missing_response.ok is False
+    assert (
+        missing_response.error_code
+        == "attempt_close_assistant_response_missing"
+    )
+    assert (
+        repositories.scientific_attempt_closure_requests.get_by_attempt(
+            attempt.attempt_id
+        )
+        is None
+    )
+
     result = registry.dispatch(
         context,
         ToolInvocation(
@@ -2121,6 +2152,7 @@ def test_successful_scientific_attempt_close_is_a_terminal_turn_action() -> None
             },
             task_id=attempt.task_id,
             lane_id=attempt.lane_id,
+            assistant_response_text="The scientific attempt is complete.",
         ),
     )
 
@@ -2128,7 +2160,9 @@ def test_successful_scientific_attempt_close_is_a_terminal_turn_action() -> None
     assert result.status == "scientific_attempt_closure_requested"
     assert result.terminal_action == "scientific.attempt.close"
     assert result.terminates_turn is True
+    assert result.persists_assistant_response is True
     assert result.envelope()["terminates_turn"] is True
+    assert result.envelope()["persists_assistant_response"] is True
     assert (
         repositories.scientific_attempt_closure_requests.get_by_attempt(
             attempt.attempt_id

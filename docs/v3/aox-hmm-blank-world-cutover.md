@@ -1,8 +1,8 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r57 exposed cross-layer architecture-verification and workflow-binding gaps after earlier runtime/HPC and authority-handoff work. r48 through r57 are permanent NO-GO evidence. The executable architecture-qualification gate and diagnostic/formal run-class split are implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. r57 proved the diagnostic isolation boundary and real provider/HPC reachability, then failed on a graph-input identity error plus prompt-only task/closure constraints. The forward SOP binding and session-scoped tool precondition are implemented below. Local Live cutover stays **NO-GO**: implementation completion does not authorize another diagnostic or formal run, and one later separately approved formal acceptance campaign must still seal two real positive attempts plus one controlled fault attempt on one commit/config identity. Existing `authorize` and `run-live` remain formal-acceptance-only; diagnostic uses separately approved `authorize-diagnostic` and `run-diagnostic-live`.
+Status: r43-r58 exposed cross-layer architecture-verification, workflow-binding and final-response lifecycle gaps after earlier runtime/HPC and authority-handoff work. r48 through r58 are permanent NO-GO evidence. The executable architecture-qualification gate and diagnostic/formal run-class split are implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. r58 produced a meaningful scientific result, sealed selection, published report and all three task exits, then proved that assistant-message persistence and explicit attempt closure were not co-terminal. The forward session-scoped lifecycle precondition and companion-response settlement are implemented below. Local Live cutover stays **NO-GO**: implementation completion does not authorize another diagnostic or formal run, and one later separately approved formal acceptance campaign must still seal two real positive attempts plus one controlled fault attempt on one commit/config identity. Existing `authorize` and `run-live` remain formal-acceptance-only; diagnostic uses separately approved `authorize-diagnostic` and `run-diagnostic-live`.
 
-Historical r14-r57 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
+Historical r14-r58 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
 This document describes the operator/evidence boundary implemented by `openzyme_host_api.aox_cutover_evidence`. It does not turn the historical S15 fixture into live evidence and does not authorize seeded state, cached scientific outputs, the reference notebook, or copied reference results as attempt inputs.
 
@@ -11,7 +11,7 @@ scientific-attempt control plane. The agent may retain failed/superseded trials
 inside one formal attempt while explicitly selecting a valid adopted chain, but
 the bundle still audits the full occurrence universe and fails closed on unknown
 effect, active process/writer, incomplete disposition, authority/resource breach,
-or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r57
+or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r58
 fact can be upgraded, backfilled, or adopted.
 The current workflow knowledge identity is
 `workflow:aox-hmm-live@2.0.0#sha256:9000c479adc1127474ca340920bcf2dcc7337808bf8341c98a1f152d66b34f87`;
@@ -452,6 +452,46 @@ pending signal is immutable and non-reusable. Because real probe/formal
 operation results existed before the blocker, r57 does not trigger another
 diagnostic/formal contract split; it also did not reach the fully settled
 diagnostic receipt required by 8.3a.
+
+## r58 diagnostic attempt: permanent NO-GO
+
+r58 ran on clean commit `d00ada97f8eb13af35f9c83247cd51e14138f428` after consuming
+diagnostic plan
+`sha256:691cf17bd8548fa3bfd4e338cb61ce608bb97c4cde17f0e66483b84ff65397e3`.
+Its root was `aox-diagnostic-335c68cf214a01b34876f97b`. The diagnostic/formal
+schema boundary remained intact and no formal slot was approved or started.
+
+The exact probe and formal NCBI/MAFFT/HMMBUILD/EBI-HMMER/UniProt/HMMALIGN/
+CD-HIT chain completed. Formal evidence included 516 candidates, 78
+representatives, 13,778 similarity edges, all 17 normalized outputs, a sealed
+selection, one published source-linked report and completed exits for all three
+canonical owner-assigned tasks. Browser approval was observed. These are
+meaningful diagnostic scientific/product facts, but never formal acceptance.
+
+After report completion the master called only observation tools, then emitted
+an assistant-only final response. The message path could persist that answer
+but supplied no subsequent wakeup for an explicit close. The tool path could
+record close intent and retire the turn, but previously left same-response text
+only in the LLM trace. No closure request or closure was therefore created;
+the active attempt remained open and the child exhausted 120 drains after
+seven approvals with `formal_runtime_drain_exhausted`. Diagnostic decision
+`sha256:8c877189130838b29030200d9c592e8e096cd028cd60a5c5bc38dd424c718a57`
+is permanent **NO-GO**. MICU cumulative usage is
+`96,363,097 / 500,000,000`, remaining `403,636,903`, with r58 delta
+`2,119,558` and no breach/overage. Every r58 authority, root, state, effect,
+artifact, browser receipt, report and decision is immutable and non-reusable.
+
+The forward policy is `aox_cutover_formal_tool_precondition@2`. Once exact
+task/report close readiness holds for the one active formal attempt, an
+assistant-only response is rejected before conversation persistence and
+returned to the same bounded master loop as no-effect feedback. The master
+must include its complete final answer in the same provider response as
+`scientific.attempt.close`; an empty companion fails before closure effect.
+Only a successful close result authorizes harness to persist that exact text
+once, interrupt later calls and retire the turn. Host still does not auto-close,
+infer selection/outcome, synthesize an answer or alter ordinary session
+behavior. Because r58 had already formed a meaningful result/report, it did
+not trigger a second diagnostic/formal specification split.
 
 ## Numbered launch-preparation boundary
 
@@ -2531,17 +2571,15 @@ Offline unit/eval success proves implementation behavior only. Local Live cutove
 
 Until those artifacts exist, documentation and UI must state NO-GO. Historical S15 and deterministic fixtures remain `fixture_non_cutover` regardless of local test status.
 
-r57 is the latest live fact. It is a failed diagnostic-mode attempt, not a
+r58 is the latest live fact. It is a failed diagnostic-mode attempt, not a
 fully settled diagnostic receipt and never one of the three GO slots. It
-completed the exact-six probe and exact-seven formal operations, then failed
-on the full-candidate/representative graph-input binding and prompt-only
-task/closure enforcement before a report, selected-chain closure or settled
-diagnostic evidence payload could form. The forward SOP binding and
-session-scoped Router precondition do not authorize a successor
+formed the scientific result, sealed selection, published report and exact
+three task exits, but the master emitted an assistant-only final response
+without an explicit closure request and the runtime exhausted its drain bound.
+The forward co-terminal response/close contract does not authorize a successor
 `preflight`, `run-diagnostic-live`, `run-live`, numbered root, provider/MICU
 call, HPC job, browser campaign or formal attempt. Another diagnostic would
 need a new separately approved one-slot plan; formal acceptance requires a
 different separately approved exact-three plan after a fresh clean full
-admission. The post-r57 terminal-action/evidence/owner-receipt correction is
-non-live implementation evidence only. No r57 or pre-correction plan is
-authority.
+admission. The post-r58 lifecycle correction is non-live implementation
+evidence only. No r58 or pre-correction plan is authority.

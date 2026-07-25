@@ -156,15 +156,21 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `payload`: parsed JSON payload when `content` is JSON
 - `terminal_action`: explicit terminal action name such as `task.finish` or a successful `scientific.attempt.close`, otherwise `null`
 - `terminates_turn`: whether the harness must stop the current master/teammate loop immediately after this result
+- `persists_assistant_response`: whether this successful terminal result requires the harness to persist the non-empty companion response text carried by the same provider response
 
 `ok=true` must not mean "no downstream work remains"; it only means that the specific tool completed its promised action. `ok=false` means the model must not assume the requested action happened.
 
 `terminates_turn=true` 只允许由显式 terminal tool 设置。`task.finish` 是业务 task 出口；成功的
 `scientific.attempt.close` 是独立的 scientific lifecycle turn barrier，只写 immutable
-closure request 并等待 requester writer 退休后的 Host finalization。二者都使同批后续 call
-获得 interrupted/no-effect settlement 且不再进入下一 model step；失败的 close 保持
-non-terminal。普通 tool success、capability success、engine invocation terminal state 或
-protocol message 都不能自动设置该标记，也不能自动把业务 task 写为 completed / failed。
+closure request 并等待 requester writer 退休后的 Host finalization。close invocation
+还必须携带同一 provider response 的非空 user-facing text；缺失时 handler 在 closure effect
+前失败。只有 successful close result 才设置
+`persists_assistant_response=true`，harness 随即把原始 companion text 恰好一次写入
+assistant conversation truth，再退休 turn。二者都使同批后续 call 获得
+interrupted/no-effect settlement 且不再进入下一 model step；失败的 close 保持
+non-terminal，并且不得持久化 companion response。普通 tool success、capability success、
+engine invocation terminal state 或 protocol message 都不能自动设置这些标记，也不能自动
+把业务 task 写为 completed / failed。
 
 当工具本身已经执行完成，但完整 result 或下一轮 prompt 会超过 token budget 时，harness 返回 context-budget observation，而不是把完整 result 塞回模型：
 
@@ -472,7 +478,10 @@ authority request 使用 strict DTO；actor/grantor 等身份来自受控边界�
 `scientific.attempt.close` 返回 request/intention，最终 admission/closure 由 Host 在原 writer
 连同该 provider batch 的未 dispatch call settlement 全部退休后执行。successful close
 ToolResult 标记 `terminal_action="scientific.attempt.close"` 与 `terminates_turn=true`；
-closure request 本身不是 final `scientific_closure` evidence，也不写 task terminal。
+同时仅在 success 时标记 `persists_assistant_response=true`。ToolInvocation 内部携带同一
+provider response 的 companion assistant text；该字段不进入 tool args/public trace，也不
+授权 handler 生成或改写答案。closure request 本身不是 final `scientific_closure`
+evidence，也不写 task terminal。
 workspace 显示 envelope usage、attempts、universe/dispositions、selected chain、
 materializations 和 closure，不投影 provider/HPC private allowlist。
 

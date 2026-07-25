@@ -26,6 +26,8 @@ from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 from openzyme_core import CoreRepositories
+from openzyme_core import AssistantResponseRejection
+from openzyme_core import build_conversation_projection
 from openzyme_core import DeepResearchTaskPlanner
 from openzyme_core import HarnessInput
 from openzyme_core import HarnessResult
@@ -2623,6 +2625,13 @@ def test_teammate_loop_inherits_tool_dispatch_precondition(
     ) -> ToolResult | None:
         return None
 
+    def response_precondition(
+        _context: SessionRuntimeContext,
+        _step_context: object,
+        _assistant_response: str,
+    ) -> None:
+        return None
+
     captured: dict[str, object] = {}
 
     def capture_harness_call(
@@ -2659,6 +2668,7 @@ def test_teammate_loop_inherits_tool_dispatch_precondition(
         restore_focus=RestoreFocus(task_id="task_001"),
         model_factory=model_factory,
         tool_dispatch_precondition=precondition,
+        assistant_response_precondition=response_precondition,
     )
 
     result = run_teammate_loop(
@@ -2674,6 +2684,10 @@ def test_teammate_loop_inherits_tool_dispatch_precondition(
 
     assert result.status is HarnessStatus.COMPLETED
     assert captured["tool_dispatch_precondition"] is precondition
+    assert (
+        captured["assistant_response_precondition"]
+        is response_precondition
+    )
 
 
 @pytest.mark.parametrize(
@@ -4037,6 +4051,8 @@ def _message_role(message: object) -> str | None:
         return "user"
     if message_type == "AIMessage":
         return "assistant"
+    if message_type == "SystemMessage":
+        return "system"
     if message_type == "ToolMessage":
         return "tool"
     return None
@@ -4802,6 +4818,75 @@ def test_llm_conversation_driver_does_not_duplicate_current_user_message_in_harn
     assert user_messages == ["你是什么模型"]
 
 
+def test_llm_conversation_driver_retries_rejected_assistant_response_without_persisting() -> (
+    None
+):
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    calls = 0
+
+    def precondition(
+        _context: SessionRuntimeContext,
+        _step_context: object,
+        _assistant_response: str,
+    ) -> AssistantResponseRejection | None:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            return None
+        return AssistantResponseRejection(
+            error_code="final_action_required",
+            summary="The final response requires one explicit terminal action.",
+            hint="Issue the terminal action with the final response.",
+            details={
+                "effect_certainty": "no_effect",
+                "response_persisted": False,
+            },
+        )
+
+    model_factory = FakeModelFactory(
+        [
+            {"content": "premature answer", "tool_calls": []},
+            {"content": "accepted answer", "tool_calls": []},
+        ]
+    )
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            message="finish",
+            max_steps=2,
+        ),
+        driver=LlmConversationDriver(model_factory),
+        assistant_response_precondition=precondition,
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    assert result.outputs == ("accepted answer",)
+    conversation = build_conversation_projection(
+        repositories,
+        session.session_id,
+    )
+    assert [
+        entry.content for entry in conversation if entry.role == "assistant"
+    ] == ["accepted answer"]
+    rejection_events = [
+        event
+        for event in result.events
+        if event.event_type == "assistant.response.rejected"
+    ]
+    assert len(rejection_events) == 1
+    assert rejection_events[0].payload["response_persisted"] is False
+    second_call_messages = model_factory.invokers[
+        "v3_harness_loop"
+    ].calls[1]["messages"]
+    assert any(
+        "final_action_required" in _message_content(message)
+        for message in second_call_messages
+        if _message_role(message) == "system"
+    )
+
+
 def test_llm_conversation_driver_sends_tool_result_envelope_to_model() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
@@ -5033,6 +5118,51 @@ def test_llm_conversation_driver_translates_tool_calls_to_invocations() -> None:
     assert step.assistant_message is None
     assert step.tool_invocations[0].tool_name == "task.create"
     assert step.tool_invocations[0].arguments["task_id"] == "task_002"
+    assert step.tool_invocations[0].assistant_response_text is None
+
+
+def test_llm_conversation_driver_attaches_companion_response_to_tool_calls() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        active_skill_keys=(),
+        skill_registry=SkillRegistry(),
+    )
+    context.refresh_restore_context()
+    driver = LlmConversationDriver(
+        FakeModelFactory(
+            {
+                "content": "Final user-facing result.",
+                "tool_calls": [
+                    {
+                        "id": "call_terminal",
+                        "name": "task.create",
+                        "args": {
+                            "task_id": "task_002",
+                            "subject": "Plan",
+                            "description": "Plan next step",
+                        },
+                    },
+                ],
+            }
+        )
+    )
+
+    step = driver.plan(
+        context,
+        HarnessInput(session_id=session.session_id, message="finish"),
+        (),
+    )
+
+    assert (
+        step.tool_invocations[0].assistant_response_text
+        == "Final user-facing result."
+    )
 
 
 def _overflow_tool_result(invocation: ToolInvocation) -> ToolResult:

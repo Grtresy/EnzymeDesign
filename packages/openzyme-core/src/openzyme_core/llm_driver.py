@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -9,6 +10,7 @@ from openzyme_runtime import ToolSpec
 from openzyme_domain import MutationWriterKind
 
 from .engines import EngineRegistry
+from .harness import AssistantResponseRejection
 from .harness import HarnessInput
 from .harness import HarnessStep
 from .harness import LlmTraceStep
@@ -280,6 +282,23 @@ def _tool_messages(tool_results: tuple[ToolResult, ...]) -> list[Any]:
     return messages
 
 
+def _assistant_response_rejection_message(
+    rejection: AssistantResponseRejection,
+) -> Any:
+    content = json.dumps(
+        {
+            "assistant_response_rejected": True,
+            **rejection.to_dict(),
+        },
+        sort_keys=True,
+    )
+    try:
+        from langchain_core.messages import SystemMessage
+    except ImportError:
+        return {"role": "system", "content": content}
+    return SystemMessage(content=content)
+
+
 def _assistant_tool_call_messages_for_results(
     messages: list[Any], tool_results: tuple[ToolResult, ...]
 ) -> list[Any]:
@@ -309,6 +328,9 @@ class LlmConversationDriver:
     engine_registry: EngineRegistry | None = None
     max_parallel_tool_calls: int = 3
     _messages: list[Any] = field(default_factory=list)
+    _assistant_response_rejections: list[AssistantResponseRejection] = field(
+        default_factory=list
+    )
     _initialized: bool = False
     _call_index: int = 0
 
@@ -436,6 +458,10 @@ class LlmConversationDriver:
 
         def rebuild_payload() -> PromptPayload:
             rebuilt_messages = _build_seed_messages(context, harness_input)
+            rebuilt_messages.extend(
+                _assistant_response_rejection_message(rejection)
+                for rejection in self._assistant_response_rejections[-3:]
+            )
             if tool_results:
                 rebuilt_messages.extend(
                     _assistant_tool_call_messages_for_results(
@@ -500,6 +526,7 @@ class LlmConversationDriver:
                         arguments=arguments,
                         task_id=task_id,
                         lane_id=lane_id,
+                        assistant_response_text=response_text or None,
                     )
                 )
             all_invocations = tuple(invocations)
@@ -534,6 +561,25 @@ class LlmConversationDriver:
             )
         if not assistant_message:
             assistant_message = "No user-facing response was generated."
+        precondition = context.assistant_response_precondition
+        if precondition is not None:
+            rejection = precondition(
+                context,
+                step_context,
+                assistant_message,
+            )
+            if rejection is not None:
+                self._assistant_response_rejections.append(rejection)
+                self._messages.append(
+                    _assistant_response_rejection_message(rejection)
+                )
+                return HarnessStep(
+                    assistant_response_rejection=rejection,
+                    llm_trace=self._trace_step(
+                        response_text=assistant_message,
+                        step_context=step_context,
+                    ),
+                )
         return HarnessStep(
             assistant_message=assistant_message,
             llm_trace=self._trace_step(

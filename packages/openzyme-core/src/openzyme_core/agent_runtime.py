@@ -707,6 +707,9 @@ class AgentRuntimeService:
             tool_dispatch_precondition=(
                 self.context.tool_dispatch_precondition
             ),
+            assistant_response_precondition=(
+                self.context.assistant_response_precondition
+            ),
             mutation_writer_scope_factory=(
                 self.context.mutation_writer_scope_factory
             ),

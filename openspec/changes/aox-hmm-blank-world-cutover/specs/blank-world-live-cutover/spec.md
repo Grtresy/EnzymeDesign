@@ -95,8 +95,16 @@ The collector SHALL reconstruct exactly one durable delegation request for each 
 - **THEN** the Router precondition rejects the request without closing the attempt and reports the observed task/report mismatch; it permits retry only after the agent reconciles durable state, and it never chooses an operation, task outcome, scientific branch, or replacement plan for the agent
 
 #### Scenario: Retire the requesting turn after successful closure intent
-- **WHEN** `scientific.attempt.close` passes its runtime preconditions and records the immutable closure request while later tool calls remain in the same provider response
-- **THEN** the close result is a successful terminal action, the harness retires the requesting turn without another model step, and every later call is settled as `tool_call_batch_interrupted` with `effect_certainty=no_effect` and `retry_eligibility=verify_then_retry`; Host finalization remains post-turn and does not complete a business task
+- **WHEN** `scientific.attempt.close` carries a non-empty companion final response, passes its runtime preconditions, and records the immutable closure request while later tool calls remain in the same provider response
+- **THEN** the close result is a successful terminal action, the harness persists that exact companion text once as the final assistant conversation message, retires the requesting turn without another model step, and settles every later call as `tool_call_batch_interrupted` with `effect_certainty=no_effect` and `retry_eligibility=verify_then_retry`; Host finalization remains post-turn and does not complete a business task
+
+#### Scenario: Reject a close-ready assistant-only response
+- **WHEN** the authority-bound AOX formal master emits an assistant-only response after the exact task exits and positive/fault report state satisfy the close precondition, while the one active attempt still has no closure request
+- **THEN** the response precondition records a structured `aox_cutover_close_required_before_final_response` rejection, does not persist the proposed assistant message, reports `effect_certainty=no_effect` and `retry_eligibility=same_phase_safe`, and gives the same agent another bounded decision opportunity without creating or choosing a closure request
+
+#### Scenario: Require one co-terminal final response
+- **WHEN** the master calls `scientific.attempt.close` without non-empty response text in that same provider response, or the close handler returns a failure
+- **THEN** no closure request and no assistant conversation message are created; only a successful close intent may authorize exact-once persistence of its companion response, and ordinary non-AOX assistant responses remain unchanged
 
 #### Scenario: Expose canonical task-finish evidence references
 - **WHEN** an agent prepares or submits `task.finish.evidence_refs`

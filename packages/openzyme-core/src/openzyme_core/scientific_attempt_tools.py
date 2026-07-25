@@ -45,6 +45,7 @@ def _success(
     summary: str,
     terminal_action: str | None = None,
     terminates_turn: bool = False,
+    persists_assistant_response: bool = False,
 ) -> ToolResult:
     return ToolResult(
         call_id=invocation.call_id,
@@ -58,6 +59,7 @@ def _success(
         details=payload,
         terminal_action=terminal_action,
         terminates_turn=terminates_turn,
+        persists_assistant_response=persists_assistant_response,
     )
 
 
@@ -95,6 +97,7 @@ def _execute(
     summary: str,
     terminal_action: str | None = None,
     terminates_turn: bool = False,
+    persists_assistant_response: bool = False,
 ) -> ToolResult:
     try:
         record = callback()
@@ -108,6 +111,7 @@ def _execute(
         summary=summary,
         terminal_action=terminal_action,
         terminates_turn=terminates_turn,
+        persists_assistant_response=persists_assistant_response,
     )
 
 
@@ -341,14 +345,38 @@ def register_scientific_attempt_tools(registry: ToolRegistry) -> None:
         invocation: ToolInvocation,
     ) -> ToolResult:
         arguments = invocation.arguments
-        return _execute(
-            invocation,
-            lambda: _service(context).request_attempt_closure(
+
+        def request_closure() -> object:
+            if (
+                invocation.assistant_response_text is None
+                or not invocation.assistant_response_text.strip()
+            ):
+                raise ScientificAttemptError(
+                    "attempt_close_assistant_response_missing",
+                    (
+                        "Scientific attempt closure requires a non-empty final "
+                        "assistant response in the same model response."
+                    ),
+                    hint=(
+                        "Return the user-facing final answer as response text and "
+                        "call scientific.attempt.close in that same response."
+                    ),
+                    details={
+                        "assistant_response_present": False,
+                        "effect_certainty": "no_effect",
+                    },
+                    retryable=True,
+                )
+            return _service(context).request_attempt_closure(
                 attempt_id=str(arguments["attempt_id"]),
                 selection_id=str(arguments["selection_id"]),
                 actor_ref=_actor(context),
                 idempotency_key=str(arguments["idempotency_key"]),
-            ),
+            )
+
+        return _execute(
+            invocation,
+            request_closure,
             status="scientific_attempt_closure_requested",
             summary=(
                 "Recorded closure intent; the Host finalizer must establish exact "
@@ -356,6 +384,7 @@ def register_scientific_attempt_tools(registry: ToolRegistry) -> None:
             ),
             terminal_action="scientific.attempt.close",
             terminates_turn=True,
+            persists_assistant_response=True,
         )
 
     registry.register("scientific.attempt.inspect", inspect_handler)

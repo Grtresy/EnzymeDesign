@@ -315,19 +315,32 @@ fence 通过后、mutation writer scope 和真实 handler 之前调用它；返�
 session。master wake 与 delegated teammate turn 必须继承同一注入实例，避免
 通过角色切换绕过约束。
 
-AOX blank-world cutover 使用该 seam 只呈现 authority 已固定的局部事实：
+Host composition 还可以注入独立的 `assistant_response_precondition`。它只在
+top-level model 未返回 tool call、准备写入 assistant conversation truth 前运行；返回
+结构化 rejection 时，proposed text 只保留在 LLM trace，不写 conversation/inbox，
+harness 把 no-effect feedback 交回同一个 bounded driver 重新决策。该 seam 不得自动
+执行 tool、合成 closure、增加 turn budget 或替 agent 选择策略；未配置时普通 V3
+assistant response 语义完全不变。
+
+AOX blank-world cutover 使用
+`aox_cutover_formal_tool_precondition@2` 的 tool/response 两个入口只呈现 authority
+已固定的局部事实：
 formal session 只能创建 exact research/execution/report task id，且
 `scientific.attempt.close` 只有在 exact task identity、显式 business exit 与
 positive/fault 对应 report state 闭合后才放行。每项 business exit 必须恰有一个
 status-matching finish receipt，且 `finished_by` 等于 task 的 canonical `assigned_ref`；
 generic master recovery finish 仍可写产品状态，但不能满足 AOX formal eligibility。
-probe 与普通 V3 session 不受影响；guard 不选择 operation、query、执行顺序或科学分支。
+一旦这些 close facts 已闭合，assistant-only response 会以 no-effect 退回，master 必须在
+同一 provider response 中同时给出完整终答和 explicit close call。probe 与普通 V3
+session 不受影响；guard 不选择 operation、selection、query、执行顺序或科学分支。
 
 successful `scientific.attempt.close` 是通用 terminal turn action，不是 AOX-specific
-prompt rule。它持久化 closure intent 后，harness 立即结算同批后续 calls 为
+prompt rule。close handler 先要求同一 invocation 带有非空 companion assistant text；
+缺失时不写 closure request。它持久化 closure intent 后，harness 恰好一次持久化该
+companion text，立即结算同批后续 calls 为
 `tool_call_batch_interrupted/no_effect/verify_then_retry`，不再调用模型；外层
 `AGENT_TURN` writer 连同 settlement 退休后，Host 才能推进 final closure。close rejection
-保持 non-terminal，scientific closure 不完成 task。
+保持 non-terminal且不持久化终答，scientific closure 不完成 task。
 
 `supports_parallel` 目前只作为治理 metadata 暴露和记录；runtime 仍按现有 bounded loop 串行 dispatch，不启用真实并行 tool execution。
 

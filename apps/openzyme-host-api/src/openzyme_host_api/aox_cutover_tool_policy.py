@@ -4,13 +4,14 @@ from dataclasses import dataclass
 import json
 from typing import Any, Literal
 
+from openzyme_core import AssistantResponseRejection
 from openzyme_runtime import AgentStepContext
 from openzyme_runtime import ToolInvocation
 from openzyme_runtime import ToolResult
 
 
 AOX_CUTOVER_TOOL_PRECONDITION_ID = (
-    "aox_cutover_formal_tool_precondition@1"
+    "aox_cutover_formal_tool_precondition@2"
 )
 AOX_RESEARCH_TASK_ID = "aox_research_pubmed_evidence"
 AOX_REPORT_TASK_ID = "aox_final_source_linked_report"
@@ -72,9 +73,10 @@ class AoxCutoverFormalToolPrecondition:
     """Fail-closed runtime guard for one authority-bound formal session.
 
     This guard does not choose task strategy or scientific operations. It
-    presents two already-pinned cutover constraints at the mutation boundary:
-    the exact three-task topology, and the business/report state required
-    before the agent may request scientific-attempt closure.
+    presents already-pinned cutover constraints at the mutation/conversation
+    boundary: the exact three-task topology, the business/report state required
+    before closure, and the requirement that a close-ready master submit its
+    final response together with the explicit scientific-attempt close call.
     """
 
     session_id: str
@@ -127,6 +129,83 @@ class AoxCutoverFormalToolPrecondition:
                 invocation,
             )
         return None
+
+    def check_assistant_response(
+        self,
+        context: Any,
+        step_context: AgentStepContext,
+        assistant_response: str,
+    ) -> AssistantResponseRejection | None:
+        if (
+            step_context.session_id != self.session_id
+            or step_context.actor_kind != "master"
+        ):
+            return None
+        repositories = context.repositories
+        active_attempts = [
+            attempt
+            for attempt in repositories.scientific_attempts.list_by_session(
+                self.session_id
+            )
+            if _status_value(attempt) == "active"
+            and repositories.scientific_attempt_closure_requests.get_by_attempt(
+                str(getattr(attempt, "attempt_id", ""))
+            )
+            is None
+        ]
+        if len(active_attempts) != 1:
+            return None
+        attempt = active_attempts[0]
+        if str(getattr(attempt, "task_id", "")) != self.execution_task_id:
+            return None
+
+        readiness_probe = ToolInvocation(
+            call_id="aox_cutover_assistant_response_readiness",
+            tool_name="scientific.attempt.close",
+            arguments={},
+            task_id=self.execution_task_id,
+            assistant_response_text=assistant_response,
+        )
+        if (
+            self._check_attempt_close(
+                context,
+                step_context,
+                readiness_probe,
+            )
+            is not None
+        ):
+            return None
+
+        attempt_id = str(getattr(attempt, "attempt_id", ""))
+        resolved_head = repositories.scientific_selections.resolve_head(
+            attempt_id
+        )
+        selection_id = (
+            None
+            if resolved_head is None
+            else resolved_head.head.selection_id
+        )
+        return AssistantResponseRejection(
+            error_code="aox_cutover_close_required_before_final_response",
+            summary=(
+                "The AOX cutover final response was not persisted because the "
+                "canonical task and report exits are ready but the active "
+                "scientific attempt has not received an explicit closure request."
+            ),
+            hint=(
+                "In one model response, include the complete user-facing final "
+                "answer as response text and call scientific.attempt.close for "
+                "the active attempt and exact sealed selection."
+            ),
+            details={
+                "policy_id": AOX_CUTOVER_TOOL_PRECONDITION_ID,
+                "assistant_response_persisted": False,
+                "effect_certainty": "no_effect",
+                "retry_eligibility": "same_phase_safe",
+                "attempt_id": attempt_id,
+                "selection_id": selection_id,
+            },
+        )
 
     def _check_task_create(
         self,
@@ -346,6 +425,25 @@ class AoxCutoverFormalToolPrecondition:
                 summary=summary,
                 hint=hint,
                 details=details,
+            )
+        if (
+            invocation.assistant_response_text is None
+            or not invocation.assistant_response_text.strip()
+        ):
+            return _rejection(
+                invocation,
+                code="aox_cutover_final_response_missing",
+                summary=(
+                    "AOX cutover attempt closure was rejected because the same "
+                    "model response did not include a non-empty final user-facing "
+                    "answer."
+                ),
+                hint=(
+                    "Include the complete final answer as response text and call "
+                    "scientific.attempt.close in that same response; do not emit "
+                    "the answer in an earlier assistant-only turn."
+                ),
+                details={"assistant_response_present": False},
             )
         return None
 

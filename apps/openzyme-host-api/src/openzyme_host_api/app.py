@@ -627,6 +627,7 @@ class HostApiDependencies:
     v3_bio_adapter: Any | None = None
     v3_allow_bio_fixture_adapter: bool = False
     v3_tool_dispatch_precondition: Callable[..., Any] | None = None
+    v3_assistant_response_precondition: Callable[..., Any] | None = None
     v3_sandbox_workspace_root: Path | None = None
     v3_artifact_blob_root: Path | None = None
     _owned_v3_temp_directory: tempfile.TemporaryDirectory[str] | None = field(
@@ -764,6 +765,9 @@ class HostApiDependencies:
                 for route_policy_id, adapter in durable_route_adapters.items()
             },
             tool_dispatch_precondition=self.v3_tool_dispatch_precondition,
+            assistant_response_precondition=(
+                self.v3_assistant_response_precondition
+            ),
             runtime_repository_scope_factory=self.v3_repository_scope,
             engine_registry_factory=self.build_v3_engine_registry,
             mutation_writer_scope_factory=self.v3_mutation_writer_scope,

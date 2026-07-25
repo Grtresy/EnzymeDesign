@@ -45,6 +45,8 @@ from .agent_runtime_settlements import AgentRuntimeSettlementDisposition
 from .agent_scheduler import AgentRuntimeScheduler
 from .agent_scheduler import SessionRuntimeLeaseLockedError
 from .harness import AgentStepContext
+from .harness import AssistantResponsePrecondition
+from .harness import AssistantResponseRejection
 from .harness import HarnessDriver
 from .harness import HarnessEvent
 from .harness import HarnessInput
@@ -341,6 +343,8 @@ from .llm_driver import LlmConversationDriver
 
 __all__ = [
     "AgentStepContext",
+    "AssistantResponsePrecondition",
+    "AssistantResponseRejection",
     "ActivityFeedItem",
     "AgentRuntimeOutcome",
     "AgentRuntimeOutcomeSettlement",

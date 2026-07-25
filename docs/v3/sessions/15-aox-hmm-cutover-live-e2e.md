@@ -1490,6 +1490,32 @@ fatal
 authority、root、effect、partial bytes 与 pending signals 均不可复用；8.3a 的 fully
 settled diagnostic receipt 仍未完成，forward correction 也不授权下一轮 live。
 
+## r58 diagnostic final-response / closure attempt：永久 NO-GO
+
+r58 基于 clean commit `d00ada97f8eb13af35f9c83247cd51e14138f428`，消费 diagnostic
+plan `sha256:691cf17bd8548fa3bfd4e338cb61ce608bb97c4cde17f0e66483b84ff65397e3`，
+使用 root `aox-diagnostic-335c68cf214a01b34876f97b`。run-class 隔离继续有效，
+formal campaign 未获批准也未启动。
+
+该轮 probe 与 formal exact provider/HPC 链全部完成，形成 516 candidates、78
+representatives、13,778 edges、17 outputs、sealed selection、published report 与
+exact-three owner-authored completed task exits；Chrome approval 已观察。这是 meaningful
+diagnostic result/report，但不具 acceptance eligibility。master 最后只做
+`world.inspect` / `protocol.thread` 后发出 assistant-only final response，没有显式
+`scientific.attempt.close`。active attempt 无 closure request，child 在七次 approval、
+120 drains 后以 `formal_runtime_drain_exhausted` 结束。decision
+`sha256:8c877189130838b29030200d9c592e8e096cd028cd60a5c5bc38dd424c718a57`
+永久 **NO-GO**；MICU `96,363,097 / 500,000,000`、remaining `403,636,903`、
+r58 delta `2,119,558`，零 breach/overage。全部 r58 authority/root/effect/artifact/
+browser/report/state 不得复用。
+
+forward `aox_cutover_formal_tool_precondition@2` 在 close-ready state 拒绝并不持久化
+assistant-only response，只返回 no-effect feedback；master 必须在同一 provider response
+中同时提供完整终答与 explicit close。empty companion 在 effect 前失败，successful close
+才把 exact companion answer 持久化一次并退休 turn。Host 不自动 close、不推断 selection、
+不合成答案。r58 已先形成有效结果，因此没有触发再次拆分 diagnostic/formal 规范的条件；
+任何后继仍需 fresh commit/full admission/pin/plan 与精确授权。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

@@ -1492,16 +1492,18 @@ class LiveAoxAttemptRunner:
             token_scenario_override="aox_blank_world_cutover",
         )
         formal_authority = dict(context.attempt_authority or {})
+        formal_lifecycle_precondition = AoxCutoverFormalToolPrecondition(
+            session_id=str(formal_authority["session_id"]),
+            execution_task_id=str(formal_authority["task_id"]),
+            attempt_kind=context.roots.attempt_kind,
+        )
         dependencies = HostApiDependencies(
             foundation=foundation,
             v3_repository_provider=provider,
             v3_background_runtime_enabled=False,
-            v3_tool_dispatch_precondition=(
-                AoxCutoverFormalToolPrecondition(
-                    session_id=str(formal_authority["session_id"]),
-                    execution_task_id=str(formal_authority["task_id"]),
-                    attempt_kind=context.roots.attempt_kind,
-                )
+            v3_tool_dispatch_precondition=formal_lifecycle_precondition,
+            v3_assistant_response_precondition=(
+                formal_lifecycle_precondition.check_assistant_response
             ),
             v3_sandbox_workspace_root=context.roots.sandbox_root,
             v3_artifact_blob_root=context.roots.blob_root,
@@ -4338,8 +4340,12 @@ class LiveAoxAttemptRunner:
             + "task.finish(status='blocked') with the exact error and likely cause; use failed "
             + "only when the scientific task is genuinely impossible. The master must request "
             + "scientific.attempt.close against the sealed final selection only after the task "
-            + "board, report publication, and final user-facing answer are ready; this close "
-            + "request is the last mutating action of that turn. "
+            + "board, report publication, and final user-facing answer are ready. The master "
+            + "must include the complete final user-facing answer as response text in the same "
+            + "model response that calls scientific.attempt.close; an assistant-only final "
+            + "response at close-ready state is rejected without persistence or effect. A "
+            + "successful close persists that companion answer exactly once and retires the "
+            + "turn, so the close request is the last mutating action of that turn. "
             + "sandbox.exec argv is direct argv with no implicit shell parsing: "
             + "never put heredoc, redirection, or pipeline syntax inside a Python argv element; "
             + "write scripts with sandbox.file.write or sandbox.file.patch and then invoke the "

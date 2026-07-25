@@ -1042,6 +1042,13 @@ def test_master_runtime_inherits_tool_dispatch_precondition(
     ) -> None:
         return None
 
+    def response_precondition(
+        _context: SessionRuntimeContext,
+        _step_context: object,
+        _assistant_response: str,
+    ) -> None:
+        return None
+
     captured: dict[str, object] = {}
 
     def capture_harness_call(
@@ -1079,6 +1086,7 @@ def test_master_runtime_inherits_tool_dispatch_precondition(
         restore_focus=RestoreFocus(),
         model_factory=FakeModelFactory(),
         tool_dispatch_precondition=precondition,
+        assistant_response_precondition=response_precondition,
     )
 
     outcomes = AgentRuntimeScheduler(
@@ -1089,6 +1097,10 @@ def test_master_runtime_inherits_tool_dispatch_precondition(
     assert len(outcomes) == 1
     assert outcomes[0].ok is True
     assert captured["tool_dispatch_precondition"] is precondition
+    assert (
+        captured["assistant_response_precondition"]
+        is response_precondition
+    )
 
 
 def test_scheduler_fails_missing_master_inbox_source_before_provider() -> None:

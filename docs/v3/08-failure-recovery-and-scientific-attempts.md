@@ -241,7 +241,7 @@ agent 可消费的 evidence，不是 `task.finish`；owner 仍需显式决定完
 - unknown-effect、writer/process、cross-attempt reuse 与 tamper rejection。
 
 历史 `aox_blank_world_attempt_bundle@2` verifier 保留为只读历史入口。旧 bundle 不得升级、
-回填 selection、与 `@3` row 混合或被新 campaign 采用。r48-r57 永久保持 NO-GO；
+回填 selection、与 `@3` row 混合或被新 campaign 采用。r48-r58 永久保持 NO-GO；
 对应 authority、root、effect、provider job、artifact、browser evidence 和 scientific
 bytes 均不得复用。r53 的 probe scope 已密封，但 formal pre-attempt scope 因旧 driver
 缺少 exact barrier observer writer 而保持 open；parent fatal 只证明进程退休，不声明
@@ -342,3 +342,32 @@ forward correction 不把 report/task 状态并入 scientific-attempt 真状态�
 同时把 authority 已固定的真实验收约束从脆弱 prompt 变成低摩擦结构化事实。
 generic V3 的 master recovery finish authority 不变，但 master 代写 researcher/executor/
 reporter exit 不满足 AOX formal readiness，也不能进入 positive/fault collector receipt。
+
+## 10. r58 后的 co-terminal final response
+
+r58 在 clean commit `d00ada97f8eb13af35f9c83247cd51e14138f428` 消费 diagnostic
+plan `sha256:691cf17bd8548fa3bfd4e338cb61ce608bb97c4cde17f0e66483b84ff65397e3`。
+probe 与 formal exact operations、516 candidates、78 representatives、13,778 edges、
+17 outputs、sealed selection、published report 和三个 owner-authored completed task exits
+均已形成；但 master 在最后一次 inspect 后发出 assistant-only final response，没有调用
+`scientific.attempt.close`。active attempt 保持 open，120 次 drain 后以
+`formal_runtime_drain_exhausted` 结束。decision
+`sha256:8c877189130838b29030200d9c592e8e096cd028cd60a5c5bc38dd424c718a57`
+永久 NO-GO，r58 状态/effect/bytes 不得复用。
+
+根因不是 closure authority 缺失，而是两个原合同不相容：assistant-only response 可以成为
+conversation truth，但之后没有新 signal 让 master close；tool-call response 中即使已有
+最终文本，successful close 又会立即退休 turn，而旧 harness 只把该文本写入 LLM trace。
+当前 `aox_cutover_formal_tool_precondition@2` 通过两个显式入口闭合它：
+
+- close-ready assistant-only response 在 conversation write 前得到结构化 no-effect rejection，
+  proposed text 不持久化，agent 获得同一 bounded turn 内的新决策机会；
+- master 必须在同一 provider response 中提供完整终答和 explicit
+  `scientific.attempt.close`；empty companion 在 closure effect 前失败；
+- successful close result 才设置 companion-persistence 标记，harness 持久化原文本恰好一次、
+  结算同批后续 call 并退休 turn；Host finalizer 仍只在 writer 退休后推进。
+
+该 guard 不自动关闭 attempt、不推断 selection、不合成答案、不改变 task/report 真状态，
+也不影响普通 session。r58 已产生 meaningful result/report，因此没有触发“首个有效结果前
+再次遇到 framework defect”时才执行的规范再拆分条件；formal exact-three acceptance 仍需
+fresh commit/full admission/pin 与独立精确授权。

@@ -316,8 +316,33 @@ class LlmTraceStep:
 
 
 @dataclass(frozen=True, slots=True)
+class AssistantResponseRejection:
+    error_code: str
+    summary: str
+    hint: str
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.error_code.strip():
+            raise ValueError("assistant response rejection error_code must be non-empty")
+        if not self.summary.strip():
+            raise ValueError("assistant response rejection summary must be non-empty")
+        if not self.hint.strip():
+            raise ValueError("assistant response rejection hint must be non-empty")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "error_code": self.error_code,
+            "summary": self.summary,
+            "hint": self.hint,
+            "details": dict(self.details),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class HarnessStep:
     assistant_message: str | None = None
+    assistant_response_rejection: AssistantResponseRejection | None = None
     tool_invocations: tuple[ToolInvocation, ...] = ()
     tool_rejections: tuple[ToolResult, ...] = ()
     llm_trace: LlmTraceStep | None = None
@@ -327,6 +352,22 @@ class HarnessStep:
     engine_invocations: tuple[EngineInvocation, ...] = ()
     session_status: SessionStatus | None = None
     next_focus: RestoreFocus | None = None
+
+    def __post_init__(self) -> None:
+        if self.assistant_response_rejection is not None and (
+            self.assistant_message is not None
+            or self.tool_invocations
+            or self.tool_rejections
+            or self.task_updates
+            or self.approval_requests
+            or self.memory_entries
+            or self.engine_invocations
+            or self.session_status is not None
+            or self.next_focus is not None
+        ):
+            raise ValueError(
+                "a rejected assistant response step may contain only its LLM trace"
+            )
 
 
 class HarnessDriver(Protocol):
@@ -342,6 +383,10 @@ ToolHandler = Callable[["SessionRuntimeContext", ToolInvocation], ToolResult | s
 ToolDispatchPrecondition = Callable[
     ["SessionRuntimeContext", AgentStepContext, ToolInvocation],
     ToolResult | None,
+]
+AssistantResponsePrecondition = Callable[
+    ["SessionRuntimeContext", AgentStepContext, str],
+    AssistantResponseRejection | None,
 ]
 
 
@@ -579,6 +624,7 @@ class SessionRuntimeContext:
     reliability_settings: Any | None = None
     durable_route_adapter_policy_ids: dict[str, str] = field(default_factory=dict)
     tool_dispatch_precondition: ToolDispatchPrecondition | None = None
+    assistant_response_precondition: AssistantResponsePrecondition | None = None
     mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None
     sandbox_host_binding_factory: (
         Callable[
@@ -951,6 +997,32 @@ def _persist_message(
         created_at=created_at,
     )
     repositories.inbox.save(message)
+    return message
+
+
+def _persist_outbound_assistant_message(
+    context: SessionRuntimeContext,
+    harness_input: HarnessInput,
+    content: str,
+) -> InboxMessage:
+    message = _persist_message(
+        context.repositories,
+        session_id=harness_input.session_id,
+        sender="harness",
+        sender_kind=InboxParticipantKind.HARNESS,
+        recipient=harness_input.sender,
+        recipient_kind=harness_input.sender_kind,
+        message_type="assistant_message",
+        content=content if harness_input.persist_conversation else None,
+    )
+    context.emit(
+        "message.sent",
+        {
+            "message_id": message.message_id,
+            "recipient": message.recipient,
+            "recipient_kind": message.recipient_kind.value,
+        },
+    )
     return message
 
 
@@ -1895,6 +1967,7 @@ def run_agent_harness_loop(
     reliability_settings: Any | None = None,
     durable_route_adapter_policy_ids: dict[str, str] | None = None,
     tool_dispatch_precondition: ToolDispatchPrecondition | None = None,
+    assistant_response_precondition: AssistantResponsePrecondition | None = None,
     mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None,
     sandbox_host_binding_factory: (
         Callable[
@@ -1933,6 +2006,7 @@ def run_agent_harness_loop(
         reliability_settings=reliability_settings,
         durable_route_adapter_policy_ids=dict(durable_route_adapter_policy_ids or {}),
         tool_dispatch_precondition=tool_dispatch_precondition,
+        assistant_response_precondition=assistant_response_precondition,
         mutation_writer_scope_factory=mutation_writer_scope_factory,
         sandbox_host_binding_factory=sandbox_host_binding_factory,
         agent_id=harness_input.agent_id,
@@ -2128,28 +2202,36 @@ def run_agent_harness_loop(
             )
             activity_happened = True
 
-        if step.assistant_message is not None:
-            message = _persist_message(
-                repositories,
-                session_id=harness_input.session_id,
-                sender="harness",
-                sender_kind=InboxParticipantKind.HARNESS,
-                recipient=harness_input.sender,
-                recipient_kind=harness_input.sender_kind,
-                message_type="assistant_message",
-                content=step.assistant_message
-                if harness_input.persist_conversation
-                else None,
-            )
-            outputs.append(step.assistant_message)
+        if step.assistant_response_rejection is not None:
+            rejection = step.assistant_response_rejection
             context.emit(
-                "message.sent",
+                "assistant.response.rejected",
                 {
-                    "message_id": message.message_id,
-                    "recipient": message.recipient,
-                    "recipient_kind": message.recipient_kind.value,
+                    **rejection.to_dict(),
+                    "response_persisted": False,
+                    "step_id": (
+                        None
+                        if context.current_step_context is None
+                        else context.current_step_context.step_id
+                    ),
+                    "call_index": (
+                        None
+                        if context.current_step_context is None
+                        else context.current_step_context.call_index
+                    ),
                 },
             )
+            activity_happened = True
+            context.refresh()
+            continue
+
+        if step.assistant_message is not None:
+            _persist_outbound_assistant_message(
+                context,
+                harness_input,
+                step.assistant_message,
+            )
+            outputs.append(step.assistant_message)
             activity_happened = True
 
         for approval in step.approval_requests:
@@ -2352,6 +2434,25 @@ def run_agent_harness_loop(
                 activity_happened = True
                 context.refresh()
                 if result.ok and result.terminates_turn:
+                    assistant_response_persisted = False
+                    if result.persists_assistant_response:
+                        assistant_response = invocation.assistant_response_text
+                        if (
+                            assistant_response is None
+                            or not assistant_response.strip()
+                        ):
+                            raise RuntimeError(
+                                "terminal tool requested assistant response "
+                                "persistence without a non-empty companion response"
+                            )
+                        _persist_outbound_assistant_message(
+                            context,
+                            harness_input,
+                            assistant_response,
+                        )
+                        outputs.append(assistant_response)
+                        assistant_response_persisted = True
+                        activity_happened = True
                     context.emit(
                         "harness.terminal_action",
                         {
@@ -2360,6 +2461,9 @@ def run_agent_harness_loop(
                             "terminal_action": result.terminal_action,
                             "status": result.status
                             or ("ok" if result.ok else "failed"),
+                            "assistant_response_persisted": (
+                                assistant_response_persisted
+                            ),
                         },
                     )
                     current_results.extend(
