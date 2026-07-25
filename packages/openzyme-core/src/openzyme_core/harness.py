@@ -339,6 +339,10 @@ class HarnessDriver(Protocol):
 
 
 ToolHandler = Callable[["SessionRuntimeContext", ToolInvocation], ToolResult | str]
+ToolDispatchPrecondition = Callable[
+    ["SessionRuntimeContext", AgentStepContext, ToolInvocation],
+    ToolResult | None,
+]
 
 
 @dataclass(slots=True)
@@ -574,6 +578,7 @@ class SessionRuntimeContext:
     reliability_shadow_observer: Any | None = None
     reliability_settings: Any | None = None
     durable_route_adapter_policy_ids: dict[str, str] = field(default_factory=dict)
+    tool_dispatch_precondition: ToolDispatchPrecondition | None = None
     mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None
     sandbox_host_binding_factory: (
         Callable[
@@ -1889,6 +1894,7 @@ def run_agent_harness_loop(
     reliability_shadow_observer: Any | None = None,
     reliability_settings: Any | None = None,
     durable_route_adapter_policy_ids: dict[str, str] | None = None,
+    tool_dispatch_precondition: ToolDispatchPrecondition | None = None,
     mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None,
     sandbox_host_binding_factory: (
         Callable[
@@ -1926,6 +1932,7 @@ def run_agent_harness_loop(
         reliability_shadow_observer=reliability_shadow_observer,
         reliability_settings=reliability_settings,
         durable_route_adapter_policy_ids=dict(durable_route_adapter_policy_ids or {}),
+        tool_dispatch_precondition=tool_dispatch_precondition,
         mutation_writer_scope_factory=mutation_writer_scope_factory,
         sandbox_host_binding_factory=sandbox_host_binding_factory,
         agent_id=harness_input.agent_id,

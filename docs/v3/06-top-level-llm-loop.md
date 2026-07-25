@@ -89,6 +89,15 @@ runtime governance 也是 router contract 的一部分。每个 `ToolRuntime` �
 
 模型返回 tool call 后，harness 不再以 driver 私有 descriptor map 作为最终 tool availability truth。`ToolRouter` 负责判断 tool 是否注册、当前 step 是否可见，以及 `required` / `enum` schema 是否满足；不可见工具返回 `ok=false/status=tool_not_visible` 的标准 tool result，未注册工具继续返回 `unknown_tool`。`task.delegate` 的缺参友好提示保留在 router validation 返回的 tool result envelope 中。master 与 teammate driver 都走同一 router validation/dispatch 路径。
 
+在少数由外部 authority 已经固定闭集的 session，Host 可把同一个
+`tool_dispatch_precondition` 注入 master 与 teammate runtime。它在 handler
+之前把违反闭集的 mutating call 转成 LLM 可读的 no-effect validation
+observation，agent 可在同 phase 修正；它不是 workflow planner，也不能从错误
+中猜测替代参数。当前 AOX formal session 用它阻止 suffixed/replacement task，
+并阻止在三项 task business exit 与 report/fault negative state 形成前请求
+scientific-attempt closure。未匹配 session（包括独立 probe）保持标准 tool
+语义。
+
 role surface 由同一个 router 判定：master 即使注册了 engine runtimes，也不会直接看见 `deep_research.start` 或 `execution.pipeline.start`；researcher 可见 deep research runtime tools；executor 可见 execution compatibility runtime tools 与 sandbox-first 工具。provider adapter 只能消费 router 输出的 `ToolSpec`，不能绕回 engine descriptor 或 teammate descriptor 拼 schema。MICU 的 `task.create -> task_create` alias 只属于 provider request / LLM debug 层；workspace trace、tool invocation、tool result 和 runtime events 必须只出现 canonical dotted name。
 
 当 session/attempt 启用 generic mutation closure 时，harness turn 是显式 `agent_turn` writer。router 只为真正 mutating 的 producer 注册额外 writer：artifact/research publication 使用 `artifact_publisher`，report draft/publish 使用 `report_publisher`；对应 read tool 不得虚构 writer。所有模型请求进入 `LlmInvocationRuntime` 前注册 `live_token_ledger` writer，完成或失败后显式退休。event/outbox、sandbox process、controlled execution 和 continuation delivery 由各自 composition boundary 注册；不能仅因 tool dispatch 返回就推断这些 child writer 已退休。

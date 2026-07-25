@@ -1,8 +1,8 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r56 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. r48 through r56 are permanent NO-GO evidence. The executable architecture-qualification gate is implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. The post-r56 atomic closure rollover, crash-safe transition delivery, and schema-disjoint diagnostic command/authority/evidence path are implemented and covered by real file-backed SQLite concurrency/fault/cross-mode regressions. Local Live cutover stays **NO-GO**: implementation completion does not authorize a diagnostic run or r57, and one later separately approved formal acceptance campaign must still seal two real positive attempts plus one controlled fault attempt on one commit/config identity. Existing `authorize` and `run-live` remain formal-acceptance-only; diagnostic uses separately approved `authorize-diagnostic` and `run-diagnostic-live`.
+Status: r43-r57 exposed cross-layer architecture-verification and workflow-binding gaps after earlier runtime/HPC and authority-handoff work. r48 through r57 are permanent NO-GO evidence. The executable architecture-qualification gate and diagnostic/formal run-class split are implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. r57 proved the diagnostic isolation boundary and real provider/HPC reachability, then failed on a graph-input identity error plus prompt-only task/closure constraints. The forward SOP binding and session-scoped tool precondition are implemented below. Local Live cutover stays **NO-GO**: implementation completion does not authorize another diagnostic or formal run, and one later separately approved formal acceptance campaign must still seal two real positive attempts plus one controlled fault attempt on one commit/config identity. Existing `authorize` and `run-live` remain formal-acceptance-only; diagnostic uses separately approved `authorize-diagnostic` and `run-diagnostic-live`.
 
-Historical r14-r56 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
+Historical r14-r57 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
 This document describes the operator/evidence boundary implemented by `openzyme_host_api.aox_cutover_evidence`. It does not turn the historical S15 fixture into live evidence and does not authorize seeded state, cached scientific outputs, the reference notebook, or copied reference results as attempt inputs.
 
@@ -11,10 +11,10 @@ scientific-attempt control plane. The agent may retain failed/superseded trials
 inside one formal attempt while explicitly selecting a valid adopted chain, but
 the bundle still audits the full occurrence universe and fails closed on unknown
 effect, active process/writer, incomplete disposition, authority/resource breach,
-or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r56
+or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r57
 fact can be upgraded, backfilled, or adopted.
 The current workflow knowledge identity is
-`workflow:aox-hmm-live@2.0.0#sha256:c98afb0d5706e3826ed4754f523b3b688ee139a616c10ea03ceae4c22c106b14`;
+`workflow:aox-hmm-live@2.0.0#sha256:9000c479adc1127474ca340920bcf2dcc7337808bf8341c98a1f152d66b34f87`;
 the next live launch must still bind that ref to a fresh clean commit,
 qualification report, pin and authority plan.
 
@@ -373,6 +373,70 @@ reducer. Cross-class plan, stripped mode, root/ancestor marker, receipt and
 equal-digest reuse all fail before root/effect. This implementation does not
 authorize a real diagnostic run or r57; either still requires separate
 operator approval after all non-live gates and a fresh clean admission.
+
+## r57 diagnostic attempt: permanent NO-GO
+
+r57 ran on clean commit
+`059b69f2c49f136a42554caa06bc029610d77a7e` after consuming the separate
+diagnostic plan
+`sha256:f084d934feceb31322d1d1c6789018c897315cbf27b4afb825c0398f541590b8`.
+Its diagnostic id was `aox_diagnostic_8679ff6b73191fbf3ee6d799` and its only
+attempt was `diagnostic-positive-859bdeaccc13bde99bceb56a1e632179`.
+Run-class isolation held: every eligibility field remained false, no formal
+`aox_blank_world_attempt_bundle@3` or reducer input was produced, and no
+diagnostic byte/effect can become a later formal input.
+
+The independent probe completed the exact real NCBI, UniProt, MAFFT, hmmbuild,
+CD-HIT and HMMalign six. The formal path then completed terminal-known NCBI,
+MAFFT, hmmbuild, EBI HMMER, UniProt, HMMalign and CD-HIT operations. Its
+operation results and 13 normalized deliverables are valid diagnostic facts,
+but not a positive result.
+
+The executor passed representative-only
+`aox_hmm/AOX_candidates_cdhit85.fasta` to
+`build_similarity_graph()` together with the full one-row-per-member
+`aox_hmm/AOX_candidates_cdhit85.clusters.csv`. The pinned calculation
+correctly rejected their unequal identifier sets as
+`scientific_prerequisite_missing:candidate_membership_set_mismatch`. The
+forward workflow contract now states that the graph's first input is always
+the full post-motif, pre-CD-HIT `aox_hmm/AOX_candidates.fasta`; the
+representative FASTA remains a required CD-HIT deliverable but is never a
+graph input. No calculation formula, dependency pin, motif threshold or
+acceptance criterion changed.
+
+The corrected SOP digest is
+`sha256:54173f4b32f19e547fad83bfbb70cef008cc54c1cdea4d899c30c634d3e2f4ea`;
+the workflow selection is now
+`workflow:aox-hmm-live@2.0.0#sha256:9000c479adc1127474ca340920bcf2dcc7337808bf8341c98a1f152d66b34f87`.
+Every earlier workflow ref is stale for a successor authority or attempt.
+
+r57 also showed that the exact-three task topology and close-last rule cannot
+remain prompt-only. The master created a fourth suffixed reporting task, asked
+to close while execution remained `in_progress`, the canonical report task
+remained `todo`, and no draft/report existed, then exhausted its 16-step turn.
+The formal runtime command failed and left two pending signals. The corrected
+Host injects `aox_cutover_formal_tool_precondition@1` only into the one
+authority-bound formal session. Before a real handler runs, it rejects
+noncanonical/mistyped task creation and rejects `scientific.attempt.close`
+until the exact research/execution/report identities, one matching explicit
+`task.finish` per task, and the appropriate positive or fault report state
+are closed. Every rejection is an LLM-readable no-effect, same-phase-safe
+validation observation. The guard does not pick scientific operations,
+queries, task outcomes or retries, and it does not affect the independent
+probe or ordinary V3 sessions.
+
+Parent fatal
+`sha256:500f7e6b183906e7d849eeaed00af3e67a2c3512d4cebdd34e7a31a560acabae`
+records child exit `70` and descendant retirement without claiming a settled
+ledger-after, SQLite/artifact completeness or quiescence. Diagnostic decision
+`sha256:6cf0216335fdad7d08e7a11ac72c7f7f868e0c523819979514f1aa4521c16614`
+is permanent **NO-GO**. The MICU verified lower bound is
+`94,243,539 / 500,000,000`, leaving `405,756,461`, with no breach or
+overage. Every r57 authority, root, external effect, partial deliverable and
+pending signal is immutable and non-reusable. Because real probe/formal
+operation results existed before the blocker, r57 does not trigger another
+diagnostic/formal contract split; it also did not reach the fully settled
+diagnostic receipt required by 8.3a.
 
 ## Numbered launch-preparation boundary
 
@@ -2452,17 +2516,15 @@ Offline unit/eval success proves implementation behavior only. Local Live cutove
 
 Until those artifacts exist, documentation and UI must state NO-GO. Historical S15 and deterministic fixtures remain `fixture_non_cutover` regardless of local test status.
 
-r56 is the latest live diagnostic fact, but it is still a failed formal
-acceptance campaign, not a diagnostic-mode receipt and not one of the three GO
-slots. It reached six formal operations and scientific-attempt closure, then
-failed before report, final browser observation, eligible bundle and campaign
-closure. The post-r56 atomic scope rollover and crash-safe transition delivery
-are implemented with real file-backed concurrency/fault coverage; the
-schema-disjoint diagnostic authority/runner/receipt and qualification scenario
-are also implemented with file-backed/cross-mode negative coverage. No
-successor `preflight`, `run-diagnostic-live`, `run-live`, numbered root,
-provider/MICU call, HPC job, browser campaign or formal attempt is authorized
-by that implementation work. A real diagnostic run requires its own separately
-approved one-slot plan; a later formal acceptance requires a different
-separately approved exact-three plan after a fresh clean full admission. No r56
-or pre-correction plan is either authority.
+r57 is the latest live fact. It is a failed diagnostic-mode attempt, not a
+fully settled diagnostic receipt and never one of the three GO slots. It
+completed the exact-six probe and exact-seven formal operations, then failed
+on the full-candidate/representative graph-input binding and prompt-only
+task/closure enforcement before a report, selected-chain closure or settled
+diagnostic evidence payload could form. The forward SOP binding and
+session-scoped Router precondition do not authorize a successor
+`preflight`, `run-diagnostic-live`, `run-live`, numbered root, provider/MICU
+call, HPC job, browser campaign or formal attempt. Another diagnostic would
+need a new separately approved one-slot plan; formal acceptance requires a
+different separately approved exact-three plan after a fresh clean full
+admission. No r57 or pre-correction plan is authority.

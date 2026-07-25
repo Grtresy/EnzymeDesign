@@ -250,6 +250,12 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
   fresh three-slot authority plan 在任何 root 前一次性消费。本轮只完成 non-live 验证，明确
   停在下一次编号 live attempt 之前。
 
+  追加修正记录：r57 证明 prompt-only 的 exact task set / close-last 约束仍可被同一 agent
+  turn 违反。Router 现提供 composition-injected `tool_dispatch_precondition`：它只把
+  authority 已固定的 session-local mutation 闭集作为 no-effect validation 呈现给 agent，
+  不运行 handler、不生成默认 task/report、也不选择科学 operation、task 终态或 retry。
+  AOX consumer 仅匹配其 authority-bound formal session；probe 与普通 V3 session 保持原语义。
+
 ## 4. 后续工作流
 
 每次后续简化时：

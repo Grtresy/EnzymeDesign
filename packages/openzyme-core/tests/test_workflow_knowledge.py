@@ -88,7 +88,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
 
     assert manifest.selection_ref == (
         "workflow:aox-hmm-live@2.0.0#"
-        "sha256:c98afb0d5706e3826ed4754f523b3b688ee139a616c10ea03ceae4c22c106b14"
+        "sha256:9000c479adc1127474ca340920bcf2dcc7337808bf8341c98a1f152d66b34f87"
     )
     pack = registry.resolve(manifest.selection_ref)
     documents = {document.doc_id: document for document in pack.documents}
@@ -96,7 +96,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         doc_id: document.content_sha256 for doc_id, document in documents.items()
     } == {
         "aox-hmm-live": (
-            "sha256:ff6fe0300af468d0a3e15fdee1025b5e58c89d78e2a95a44398cdcfcbb300657"
+            "sha256:54173f4b32f19e547fad83bfbb70cef008cc54c1cdea4d899c30c634d3e2f4ea"
         ),
         "aox-motif-rule-score-v1": (
             "sha256:9c6f1f62a77dcade8e8b24c4e23af391e3b308a96bbac43783b8dbf4f7c2d376"
@@ -144,6 +144,9 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         "`aox_candidate_graph_nodes@1`",
         "`aox_candidate_graph_edges@1`",
         "`aox_candidate_similarity_graph_manifest@1`",
+        "full post-motif,\npre-clustering candidate set",
+        "representative-only `aox_hmm/AOX_candidates_cdhit85.fasta`",
+        "`candidate_membership_set_mismatch`",
         '`scientific_outcome.status="empty"`',
         "Scientific fail-closed matrix",
         "workflow graph",

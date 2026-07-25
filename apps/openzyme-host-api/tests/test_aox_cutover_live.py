@@ -2082,6 +2082,7 @@ def test_live_runner_registers_sandbox_identity_before_first_session(
         identity=identity,
         ledger_before=safe_micu_ledger_snapshot(ledger_path),
         attempt_number=1,
+        attempt_authority=_attempt_authority(roots),
     )
     health = _ready_health(
         image_digest=identity["image_digest"],
@@ -2591,6 +2592,11 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     assert "create only a missing canonical member" in prompt
     assert "advance any existing member" in prompt
     assert "never create another, suffixed, or replacement task id" in prompt
+    assert "runtime rejects a noncanonical task id without effect" in prompt
+    assert (
+        "rejects scientific.attempt.close until the exact task business exits"
+        in prompt
+    )
     assert f"workflow_refs=[{_identity()['workflow_ref']!r}] only to the executor" in prompt
     assert "researcher and reporter must omit workflow_refs" in prompt
     assert "openzyme_pipeline.aox_reference.select_hmm_reference_set" in prompt
@@ -2668,6 +2674,9 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
         "build_similarity_graph(candidate_fasta, cdhit_membership_csv, ...)"
         in prompt
     )
+    assert "exact full pre-CD-HIT AOX_candidates.fasta" in prompt
+    assert "full one-row-per-member AOX_candidates_cdhit85.clusters.csv" in prompt
+    assert "AOX_candidates_cdhit85.fasta is never a graph input" in prompt
     assert "Every primary payload accessor named by that table returns Python str" in prompt
     assert "metadata() returns a dict" in prompt
     assert "Encode payload text exactly once with UTF-8" in prompt
@@ -3753,6 +3762,7 @@ def test_live_runner_preserves_transport_blocker_when_receipt_chain_failed(
         identity=_identity(),
         ledger_before=safe_micu_ledger_snapshot(ledger_path),
         attempt_number=1,
+        attempt_authority=_attempt_authority(roots),
     )
 
     class TransportFailingClient:

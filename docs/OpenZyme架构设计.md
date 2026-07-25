@@ -157,6 +157,16 @@ system-attributed diagnostic，并显式标记 `agent_decision_produced=false`�
 
 tool-calling provider schema 必须经过 `openzyme_runtime.ProviderToolAdapter`。OpenZyme 内部 truth 是 dotted canonical `ToolSpec.tool_name`，例如 `task.create`、`execution.pipeline.start`；adapter 将 canonical `ToolSpec` 投影为 provider-visible tools，并输出 `canonical_to_provider` / `provider_to_canonical` 映射。MICU 的 `task.create -> task_create` 这类 dotted alias 只存在于 adapter 生成的 provider request 与 LLM debug 记录中；provider response 返回后必须先恢复 canonical tool name，再进入 driver、`ToolRouter.dispatch()`、tool invocation、tool result、workspace `agent_traces` 与 `tool.invoked` / `tool.rejected` / `tool.completed` events。非 MICU / 不需要 alias 的 OpenAI-compatible base URL 保持 canonical 名称。
 
+当外部 authority 已为一个明确 session 固定 closed mutation facts 时，Host composition
+可注入同一个 `tool_dispatch_precondition` 给 master 与 delegated teammate。Router 在
+schema/visibility 和 write fence 通过后、真实 handler/mutation scope 之前调用；仅
+`None` 表示放行，failed ToolResult 必须标记 `precondition_rejected=true`、
+`no_effect` 与 `same_phase_safe`，作为 validation observation 返回 agent。它不能返回
+success、替换 handler、猜测 fallback 或扩散到未匹配 session。AOX formal cutover 只用
+该 seam 呈现 authority-bound exact task set 与 attempt-close business/report readiness；
+operation、query、task outcome、重试和科学分支仍由 agent 决定，独立 probe/普通 V3
+session 不受影响。
+
 master 与 teammate 的单个 provider response 仍只允许顺序 dispatch 前 `3` 个 tool call，但
 driver 不得静默丢弃 overflow。全部 returned calls 都进入同一 public LLM trace；第 `4+`
 项转成 `parallel_tool_call_limit_exceeded` 的结构化 no-effect ToolResult，持久化
@@ -272,7 +282,7 @@ reason 与 idempotency key，Host 在同一事务写 adopted disposition 与 eff
 两步 `scientific.effect.adopt` 不再暴露给模型。
 
 AOX 是该通用控制面的首个消费者：新 production collector 只发
-`aox_blank_world_attempt_bundle@3`；历史 `@2` verifier 和 r48-r56 NO-GO evidence
+`aox_blank_world_attempt_bundle@3`；历史 `@2` verifier 和 r48-r57 NO-GO evidence
 保持冻结且不得升级或采用。r54 使用的
 `aox_blank_world_selected_chain@1` 同样只读；新 attempt 只接受 digest 覆盖完整
 role-to-operation mapping 的 `@2`，active `aox_blank_world_runtime_config@3` 把该合同身份
@@ -769,6 +779,7 @@ Live gate 解释：
 - AOX r51 与 r52 同样是永久 NO-GO。r52 在 commit `5ccb0d3ba6055cd3d50b0e42437c350ee442a1f0` 精确消费 plan `sha256:c2755edc4a8f08a161618a7291ff8dad40c340c390c527c24c8f956366492bbb` 后只到达 positive 1：六项 probe operation 均 terminal-known，但旧 collector 未把 durable HPC `run_id` 规范化为 evidence `backend_run_id`；formal master 的前三项 `task.create` 成功后，旧三-call截断又让未 dispatch 的第 4 项缺少 ToolMessage，下一次 provider call 因 transcript 不闭合失败。没有 Chrome handoff、eligible attempt bundle、positive 2 或 fault；decision `sha256:7284ce153ed150688887ff1315f52ac236e1a5ef18cf7c519085380013befe8b` 只能封存该事实。当前 collector 对 completed operation 严格使用 `hpc -> run_id` / `provider_http -> provider_request_id` 后统一投影，且 master/teammate 对 overflow call 生成 no-effect rejection 和匹配 ToolMessage。r52 state/effects 不得 replay/adopt；后继必须 fresh correction commit/full admission/pin/authority/roots 并重新获得 plan 精确授权
 - AOX r53 同样是永久 NO-GO。它在 commit `83475a01fb6be91ca8ba5dc39c4c0b09774504e7` 消费 plan `sha256:a0bccbb4b71b2fb60a0a7131eae692d7400831ee7b516ba8143089f0d71aaabf` 后，positive 1 的独立六项 probe 已完成并密封；formal session 尚未产生 controlled operation、approval 或 Chrome handoff，就因旧 selected-chain driver 没有在 open pre-attempt scope 上登记 runtime barrier 所要求的 exact AOX observer writer，以 `mutation_driver_writer_identity_invalid` fail closed。parent fatal 证明进程组退休，但不声明 SQLite/quiescence/artifact closure；positive 2 与 fault 未启动，decision `sha256:d506914841245e9853ef28f7023a942891c6fc2f99244cbe496c899776e3e469` 只能封存 NO-GO。commit `6e5ff65a2f4f9e16f4441857be2d25ca7cf5e7d8` 只修复了完整 session observation；后续非-live 真实 SQLite 审计发现 terminal-command writer settlement 仍直接读取同一 barrier，并会重现相同 identity failure，既有测试桩掩盖了该调用面。当前纠正让两个 formal 消费面共用 bounded observer context，并以真实 SQLite 覆盖其他 root/child writer 可见、observer 退休及 scope 密封；任何绑定 `6e5ff65a2f4f9e16f4441857be2d25ca7cf5e7d8` 的未消费后继计划均已过时且不可跨本次纠正使用。r53 authority/state/effects 不得 replay/adopt，后继仍需 fresh correction commit/full admission/pin/authority/roots 与新计划精确授权
 - AOX r56 是永久 NO-GO。它在 commit `92712310df96925cabe6b88a949a33b00470cf7d` 消费 plan `sha256:a3d6ed88cca88962281eed38e29f14155701ee7be0ddb2810cc67f47b5882627` 后，positive 1 已完成独立 probe、Chrome canonical approval、六项 formal controlled operation、17 deliverables、selection seal 与 scientific-attempt closure；reporter 仍为 todo 且没有 eligible report/`@3` bundle。non-transactional finalizer 先提交 attempt scope sealed，约 144 ms 后才提交 post-attempt scope open，并发 barrier 在零 open scope 窗口以 `mutation_driver_writer_identity_invalid` 终止。fatal `sha256:4e0f23b05f8fc5dbe84b35d0781e5c08926eacd4224aa00ab27e5052917463f9` 与 decision `sha256:826bbaf5bbcd07dccff481c363d0d6bb9b4be7aae1f00a33a22ba2e4b346f87f` 只封存失败；MICU lower bound 为 `86,881,198 / 500,000,000`。r56 全部 authority/root/effect/bytes 不得复用。下一步先实现 atomic rollover 与 diagnostic/formal 双类别并完成新 commit/full admission；不得直接启动 r57
+- AOX r57 是永久 diagnostic NO-GO。它在 clean commit `059b69f2c49f136a42554caa06bc029610d77a7e` 消费独立 plan `sha256:f084d934feceb31322d1d1c6789018c897315cbf27b4afb825c0398f541590b8` 后，diagnostic/formal schema 隔离正确生效，probe exact six 与 formal exact seven controlled operations 全部 terminal completed；executor 随后把 representative-only `AOX_candidates_cdhit85.fasta` 与 full membership 绑定，pinned similarity 正确以 `candidate_membership_set_mismatch` fail closed。master 又创建第四个 suffixed report task，在 canonical execution/report 未业务终结且零 report 时请求 attempt close 并耗尽 16 steps。forward correction 只明确 full pre-CD-HIT `AOX_candidates.fasta` graph identity，并通过 formal-session-only `aox_cutover_formal_tool_precondition@1` 在 handler 前 no-effect 拒绝 noncanonical task 与 premature close；不改科学计算/阈值，不约束 probe/普通 session 策略。fatal `sha256:500f7e6b183906e7d849eeaed00af3e67a2c3512d4cebdd34e7a31a560acabae`、decision `sha256:6cf0216335fdad7d08e7a11ac72c7f7f868e0c523819979514f1aa4521c16614` 与 MICU lower bound `94,243,539 / 500,000,000` 只封存失败；r57 全部 authority/root/effect/bytes/pending state 不得复用，8.3a 仍未完成，任何后继 live 仍需 fresh commit/full admission/pin/plan 与精确授权
 - 裸 `uv run pytest` 通过 `pytest.ini` 默认排除 `integration`、全部 `live_*`、`seeded_live_smoke` 与 `quality_eval`；真实外部测试必须同时满足环境 gate 与命令行显式 `-m` 选择，已配置凭据本身不能触发默认外部调用
 - `live_e2e` 是外部配置和 live 依赖的必要 gate，但不能单独证明单消息完整报告生产路径已经产品完成
 - live E2E 轮询在 task 已失败、所有 agent 均非 working/active 且没有 pending signal 或 unread inbox 时必须立即以持久 failure evidence 收敛；不得把外部 provider rate limit、缺 artifact 或 fail-closed 终止包装成通过，也不得在业务已静止后空等全局超时

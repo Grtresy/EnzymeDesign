@@ -1454,6 +1454,42 @@ reuse 均在 non-live 回归/qualification scenario 中拒绝。这些实现事�
 authority；全部非-live gate、commit、full admission/pin 和独立 operator 批准完成前，
 不得执行 diagnostic live 或启动 r57。
 
+## r57 diagnostic graph-binding / task-set attempt：永久 NO-GO
+
+r57 基于 clean commit `059b69f2c49f136a42554caa06bc029610d77a7e`，消费独立
+diagnostic plan
+`sha256:f084d934feceb31322d1d1c6789018c897315cbf27b4afb825c0398f541590b8`，
+运行 `diagnostic-positive-859bdeaccc13bde99bceb56a1e632179`。diagnostic/formal
+schema 隔离有效：该轮固定 `acceptance_eligible=false`，没有 formal `@3` bundle、
+reducer input 或 GO slot。
+
+独立 probe 的 NCBI、UniProt、MAFFT、hmmbuild、CD-HIT、HMMalign exact six 与
+formal NCBI、MAFFT、hmmbuild、EBI HMMER、UniProt、HMMalign、CD-HIT exact seven
+全部 terminal completed。executor 随后错误地把 representative-only
+`AOX_candidates_cdhit85.fasta` 与 full
+`AOX_candidates_cdhit85.clusters.csv` 传给 similarity calculation；正确的
+`candidate_membership_set_mismatch` fail-closed 后，nodes/edges/graph manifest 与
+execution summary 未形成。forward SOP/prompt 明确 graph 第一输入只能是 full pre-CD-HIT
+`AOX_candidates.fasta`，不修改计算公式、阈值或依赖 pin。
+
+master 同时在 canonical 三项 task 外创建 suffixed report task，并在 execution
+`in_progress`、canonical report `todo`、零 draft/report 时请求 attempt close，最后以
+`agent_turn_budget_exhausted` 结束。forward runtime 增加仅匹配 authority-bound formal
+session 的 `aox_cutover_formal_tool_precondition@1`：真实 handler 前拒绝 noncanonical /
+wrong-kind task create；只有 exact task identity、每项 matching `task.finish` 与
+positive/fault 对应 report state 闭合后才允许 `scientific.attempt.close`。拒绝固定为
+`no_effect` / `same_phase_safe` validation，不替 agent 选择 operation、task outcome 或
+策略，也不影响 probe/普通 V3 session。
+
+fatal
+`sha256:500f7e6b183906e7d849eeaed00af3e67a2c3512d4cebdd34e7a31a560acabae`
+与 diagnostic decision
+`sha256:6cf0216335fdad7d08e7a11ac72c7f7f868e0c523819979514f1aa4521c16614`
+只封存永久 **NO-GO**。MICU verified lower bound 为
+`94,243,539 / 500,000,000`，remaining `405,756,461`，零 breach/overage。r57
+authority、root、effect、partial bytes 与 pending signals 均不可复用；8.3a 的 fully
+settled diagnostic receipt 仍未完成，forward correction 也不授权下一轮 live。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

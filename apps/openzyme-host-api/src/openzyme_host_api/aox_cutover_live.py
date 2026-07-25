@@ -95,6 +95,9 @@ from .aox_scientific_contract import (
 from .aox_runtime_observation import AoxRuntimeObservationError
 from .aox_runtime_observation import AoxSessionRuntimeObservation
 from .aox_runtime_observation import AoxRuntimeObservationService
+from .aox_cutover_tool_policy import AOX_REPORT_TASK_ID
+from .aox_cutover_tool_policy import AOX_RESEARCH_TASK_ID
+from .aox_cutover_tool_policy import AoxCutoverFormalToolPrecondition
 from .app import HostApiDependencies
 from .app import create_app
 from .evals import S15_AOX_HMM_FIXED_DELIVERABLES
@@ -1488,10 +1491,18 @@ class LiveAoxAttemptRunner:
             settings=self.settings,
             token_scenario_override="aox_blank_world_cutover",
         )
+        formal_authority = dict(context.attempt_authority or {})
         dependencies = HostApiDependencies(
             foundation=foundation,
             v3_repository_provider=provider,
             v3_background_runtime_enabled=False,
+            v3_tool_dispatch_precondition=(
+                AoxCutoverFormalToolPrecondition(
+                    session_id=str(formal_authority["session_id"]),
+                    execution_task_id=str(formal_authority["task_id"]),
+                    attempt_kind=context.roots.attempt_kind,
+                )
+            ),
             v3_sandbox_workspace_root=context.roots.sandbox_root,
             v3_artifact_blob_root=context.roots.blob_root,
         )
@@ -4233,12 +4244,18 @@ class LiveAoxAttemptRunner:
             + f"workspace label {context.roots.hpc_workspace_label!r}. Do not read any prior "
             + "session, historical AOX output, notebook output, fixture, or golden expected result. "
             + "The entry message authorizes exactly one workflow binding. Use exactly the "
-            + "canonical task ids aox_research_pubmed_evidence, "
+            + "canonical task ids "
+            + AOX_RESEARCH_TASK_ID
+            + ", "
             + execution_task_id
-            + ", and aox_final_source_linked_report. On every master wake, reconcile the durable "
+            + ", and "
+            + AOX_REPORT_TASK_ID
+            + ". On every master wake, reconcile the durable "
             + "task board and inbox against exactly that canonical set: create only a missing "
             + "canonical member, advance any existing member, and never create another, "
-            + "suffixed, or replacement task id."
+            + "suffixed, or replacement task id. The runtime rejects a noncanonical task id "
+            + "without effect and rejects scientific.attempt.close until the exact task "
+            + "business exits and positive/fault report state are ready."
             + authority_instruction
             + " When delegating, bind "
             + f"workflow_refs=[{workflow_ref!r}] only to the executor task; researcher and reporter "
@@ -4255,7 +4272,11 @@ class LiveAoxAttemptRunner:
             + "expected_*_digest. In particular, call join_score_filtered_accessions("
             + "score_filtered_csv, uniprot_fasta, uniprot_metadata_json, ...) and "
             + "build_similarity_graph(candidate_fasta, cdhit_membership_csv, ...) using bytes "
-            + "in that positional order; do not guess keyword aliases or serialize result "
+            + "in that positional order. Here candidate_fasta is the exact full pre-CD-HIT "
+            + "AOX_candidates.fasta and cdhit_membership_csv is the full one-row-per-member "
+            + "AOX_candidates_cdhit85.clusters.csv; the clustered representative FASTA "
+            + "AOX_candidates_cdhit85.fasta is never a graph input. Do not guess keyword "
+            + "aliases or serialize result "
             + "internals by hand. Every primary payload accessor named by that table returns "
             + "Python str, while metadata() returns a dict. Encode payload text exactly once "
             + "with UTF-8 before a bytes-only helper such as Path.write_bytes; never pass str "

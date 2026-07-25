@@ -562,8 +562,8 @@ aox_motif.score_aligned_fasta(
 # -> result.to_csv() -> str, result.metadata() -> dict[str, object]
 
 aox_similarity.build_similarity_graph(
-    candidate_fasta,
-    cdhit_membership_csv,
+    candidate_fasta,       # exact full pre-CD-HIT AOX_candidates.fasta bytes
+    cdhit_membership_csv,  # full one-row-per-member clusters.csv bytes
     *,
     threshold_ppm,
     empty_result_reason,
@@ -576,6 +576,16 @@ aox_similarity.build_similarity_graph(
 # -> result.nodes_csv() -> str, result.edges_csv() -> str
 # -> result.manifest_json() -> str
 ```
+
+For the graph call, `candidate_fasta` is always the full post-motif,
+pre-clustering candidate set written as `aox_hmm/AOX_candidates.fasta`.
+`cdhit_membership_csv` is the complete one-row-per-member
+`aox_hmm/AOX_candidates_cdhit85.clusters.csv` emitted for that same input set.
+The representative-only `aox_hmm/AOX_candidates_cdhit85.fasta` is a required
+CD-HIT deliverable, but it is never a graph input. Passing representatives
+against full membership correctly fails with
+`candidate_membership_set_mismatch`; it does not authorize graph construction
+over a reduced set.
 
 Use `empty_result_reason=None` for a non-empty graph and the reached stable
 reason for an empty graph. Do not guess alternative keyword names, pass provider

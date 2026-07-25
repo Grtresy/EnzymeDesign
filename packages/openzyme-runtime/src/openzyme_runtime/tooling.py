@@ -563,6 +563,31 @@ class ToolRouter:
                     )
                     raise
         try:
+            precondition = getattr(
+                self.dispatch_context,
+                "tool_dispatch_precondition",
+                None,
+            )
+            if callable(precondition):
+                precondition_result = precondition(
+                    self.dispatch_context,
+                    step_context,
+                    invocation,
+                )
+                if precondition_result is not None:
+                    if precondition_result.ok:
+                        raise ValueError(
+                            "tool dispatch precondition may return only a "
+                            "failed ToolResult or None"
+                        )
+                    return self._attach_failure_observation(
+                        step_context,
+                        invocation,
+                        sanitize_tool_result_diagnostics(
+                            precondition_result
+                        ),
+                        governance=governance,
+                    )
             mutation_scope_factory = getattr(
                 self.dispatch_context,
                 "tool_mutation_writer_scope",
@@ -801,12 +826,12 @@ class ToolRouter:
         if result.ok or result.failure_observation is not None:
             return sanitize_tool_result_diagnostics(result)
         error_code = result.error_code or result.status or "tool_error"
+        details = dict(result.details or {})
         validation = error_code in {
             "invalid_tool_arguments",
             "unknown_tool",
             "tool_not_visible",
-        }
-        details = dict(result.details or {})
+        } or details.get("precondition_rejected") is True
         try:
             effect_certainty = ExternalEffectCertainty(
                 str(details.get("effect_certainty"))

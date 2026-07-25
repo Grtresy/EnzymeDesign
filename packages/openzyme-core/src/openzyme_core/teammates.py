@@ -1318,6 +1318,9 @@ def run_teammate_loop(
         durable_route_adapter_policy_ids=(
             parent_context.durable_route_adapter_policy_ids
         ),
+        tool_dispatch_precondition=(
+            parent_context.tool_dispatch_precondition
+        ),
         mutation_writer_scope_factory=(parent_context.mutation_writer_scope_factory),
     )
 

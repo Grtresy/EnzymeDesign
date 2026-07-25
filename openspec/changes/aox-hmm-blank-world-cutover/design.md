@@ -390,6 +390,61 @@ diagnostic execution。architecture qualification 新增
 non-live green 不消费任何 live authority，不执行 diagnostic，不启动 r57；真实 diagnostic
 与后继 formal exact-three campaign 仍分别受 authority plan 和 operator approval gate。
 
+### 2026-07-25 r57 diagnostic binding / settlement addendum
+
+r57 在 clean commit `059b69f2c49f136a42554caa06bc029610d77a7e` 上消费独立
+diagnostic plan
+`sha256:f084d934feceb31322d1d1c6789018c897315cbf27b4afb825c0398f541590b8`，
+diagnostic id 为 `aox_diagnostic_8679ff6b73191fbf3ee6d799`，唯一 attempt 为
+`diagnostic-positive-859bdeaccc13bde99bceb56a1e632179`。run-class 边界按设计工作：
+所有诊断输出固定 non-acceptance，没有生成 formal `@3` bundle、positive slot 或 reducer
+输入。独立 probe 的 NCBI、UniProt、MAFFT、hmmbuild、CD-HIT、HMMalign exact six
+全部 terminal completed；formal 的 NCBI、MAFFT、hmmbuild、EBI HMMER、UniProt、
+HMMalign、CD-HIT exact seven 也全部 terminal-known completed，证明当前 provider/HPC
+主能力并非本轮 blocker。
+
+executor 在外部 effect 全部闭合后，把 representative-only
+`AOX_candidates_cdhit85.fasta` 作为
+`build_similarity_graph()` 第一输入，却同时传入描述 full candidate set 的
+`AOX_candidates_cdhit85.clusters.csv`。pinned calculation 正确以
+`scientific_prerequisite_missing:candidate_membership_set_mismatch` fail closed；
+13 个规范化 deliverable 已形成，但 nodes/edges/graph manifest 与 execution summary
+没有生成。这里不修改 calculation 或阈值：forward correction 只把第一输入的 artifact
+identity 明确为 full pre-CD-HIT `AOX_candidates.fasta`，并明确 representative FASTA
+永远不是 graph input。
+
+同一 diagnostic 又证明“exact task set / close last”只写在 prompt 中不构成可靠 runtime
+constraint。master 在已有 canonical research/execution/report task 外创建了一个 suffixed
+report task，在 execution 仍 `in_progress`、canonical report 仍 `todo`、没有
+draft/report 时请求 `scientific.attempt.close`，随后 16-step turn 以
+`agent_turn_budget_exhausted` 结束；runtime command
+`runtime_command_3f25ee1a1338` 因而 failed。corrected Host composition 现在只给该
+authority-bound formal session 注入
+`aox_cutover_formal_tool_precondition@1`：Router 在真实 handler 前拒绝缺失/额外/错误 kind
+的 task create，并在 exact task identity、每项唯一 matching `task.finish`、positive 的
+ready-report/published-draft 或 fault 的负向 report state 未闭合时拒绝 attempt close。
+拒绝是结构化 `precondition_rejected=true`、`no_effect`、
+`same_phase_safe` validation；它不选择 operation、task outcome 或替代 plan，probe 与普通
+V3 session 不受影响。
+
+该 binding 更新把 AOX SOP pin 改为
+`sha256:54173f4b32f19e547fad83bfbb70cef008cc54c1cdea4d899c30c634d3e2f4ea`，
+workflow ref 改为
+`workflow:aox-hmm-live@2.0.0#sha256:9000c479adc1127474ca340920bcf2dcc7337808bf8341c98a1f152d66b34f87`；
+任何旧 workflow ref 都不能用于后继 authority 或 attempt。
+
+r57 parent fatal
+`sha256:500f7e6b183906e7d849eeaed00af3e67a2c3512d4cebdd34e7a31a560acabae`
+证明 child exit `70` 与 descendants retired，但不声明 ledger-after、SQLite/artifact
+completeness 或 quiescence。diagnostic decision
+`sha256:6cf0216335fdad7d08e7a11ac72c7f7f868e0c523819979514f1aa4521c16614`
+永久 **NO-GO**；MICU verified lower bound 为
+`94,243,539 / 500,000,000`，remaining `405,756,461`，零 breach/overage。全部 r57
+authority、root、effect、bytes、partial deliverables 与 pending signals 永久
+immutable、non-reusable。因为本轮已形成真实 probe/formal operation results，且直接
+blocker 是 workflow data binding 而非“首个有效结果前的新 framework defect”，它不再次
+触发或放宽 diagnostic/formal 规范；8.3a 仍未完成 fully settled diagnostic receipt。
+
 ## Goals / Non-Goals
 
 **Goals:**

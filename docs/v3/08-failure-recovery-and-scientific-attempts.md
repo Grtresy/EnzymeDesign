@@ -230,7 +230,7 @@ agent 可消费的 evidence，不是 `task.finish`；owner 仍需显式决定完
 - unknown-effect、writer/process、cross-attempt reuse 与 tamper rejection。
 
 历史 `aox_blank_world_attempt_bundle@2` verifier 保留为只读历史入口。旧 bundle 不得升级、
-回填 selection、与 `@3` row 混合或被新 campaign 采用。r48-r56 永久保持 NO-GO；
+回填 selection、与 `@3` row 混合或被新 campaign 采用。r48-r57 永久保持 NO-GO；
 对应 authority、root、effect、provider job、artifact、browser evidence 和 scientific
 bytes 均不得复用。r53 的 probe scope 已密封，但 formal pre-attempt scope 因旧 driver
 缺少 exact barrier observer writer 而保持 open；parent fatal 只证明进程退休，不声明
@@ -302,3 +302,29 @@ collector 与 verifier 已有 cross-mode negative 回归；即使删除 diagnost
 零真实外部 effect。实现和非 live gate 通过不授权真实 diagnostic 或 r57；diagnostic plan
 与后续 formal exact-three plan 仍必须分别取得 operator 精确批准，普通失败的 `run-live`
 也永远不能事后改称 diagnostic。
+
+## 9. r57 后的 formal tool precondition
+
+r57 是第一轮真实 diagnostic-mode attempt。其 run-class 隔离正确，但在 exact-six probe
+和 exact-seven formal operation 完成后，executor 将 representative-only candidate FASTA
+与 full CD-HIT membership 绑定，得到正确的
+`candidate_membership_set_mismatch`。同时 master 在 canonical 三项 task 之外创建 suffixed
+report task，并在 execution/report 未业务终结、零 report 时请求 attempt close，随后耗尽
+turn budget。该轮没有 fully settled diagnostic receipt，永久 NO-GO 且不可复用。
+
+forward correction 不把 report/task 状态并入 scientific-attempt 真状态，也不让 Host 推断
+业务终态。Host 仅为 authority-bound AOX formal session 注入
+`aox_cutover_formal_tool_precondition@1`，在 Router 的真实 handler 前验证：
+
+- `task.create` 的显式 id 与 kind 必须属于 exact research/execution/report 闭集；
+- `scientific.attempt.close` 必须由 master 请求，task set/role/kind 必须 exact，每项 task
+  必须已有唯一 matching `task.finish`；
+- positive 必须已有 canonical reporting task 绑定的唯一 ready report 与 published draft；
+  fault 必须是 research completed、execution/report negative exit，且不存在
+  ready/published success report state。
+
+不满足时返回 `precondition_rejected=true`、`effect_certainty=no_effect`、
+`retry_eligibility=same_phase_safe` 的 validation observation，attempt 保持 open，agent
+自行修正或选择失败出口。guard 不生成 task/report、不完成 task、不选择 selection/operation
+或 retry，也不应用于 probe/其他 session。这样保持“scientific closure 不推断业务终态”，
+同时把 authority 已固定的真实验收约束从脆弱 prompt 变成低摩擦结构化事实。

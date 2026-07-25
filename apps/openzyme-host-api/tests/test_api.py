@@ -1268,6 +1268,41 @@ def test_v3_execution_engine_uses_configured_blank_world_roots(
     assert context.artifact_blob_root == blob_root
 
 
+def test_v3_runtime_context_preserves_tool_dispatch_precondition(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    bootstrap_client, foundation = _build_client(monkeypatch)
+    del bootstrap_client
+    provider = SQLiteRepositoryProvider(str(tmp_path / "dispatch-policy.sqlite3"))
+
+    def precondition(
+        _context: object,
+        _step_context: object,
+        _invocation: object,
+    ) -> None:
+        return None
+
+    dependencies = HostApiDependencies(
+        foundation=foundation,
+        v3_repository_provider=provider,
+        v3_tool_dispatch_precondition=precondition,
+    )
+    with provider.connection_scope() as owner:
+        session = Session.create(
+            "sess_dispatch_policy",
+            "proj_001",
+            "Dispatch policy",
+            "Preserve the Host-injected runtime precondition.",
+        )
+        owner.repositories.sessions.save(session)
+        service = dependencies._build_v3_service(owner.repositories)
+        context = service._build_runtime_context(session.session_id)
+
+    assert service.tool_dispatch_precondition is precondition
+    assert context.tool_dispatch_precondition is precondition
+
+
 def test_v3_timed_out_callback_cannot_apply_late_business_effect(
     monkeypatch,
     tmp_path: Path,

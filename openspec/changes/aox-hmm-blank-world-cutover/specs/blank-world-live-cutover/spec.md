@@ -86,6 +86,14 @@ The collector SHALL reconstruct exactly one durable delegation request for each 
 - **WHEN** researcher/reporter inherit the AOX workflow, executor omits or changes it, a delegation request is missing/ambiguous, or its manifest snapshot/digest drifts
 - **THEN** collection or offline verification fails and the attempt is not cutover eligible
 
+#### Scenario: Reject a noncanonical formal task mutation before effect
+- **WHEN** the authority-bound formal session calls `task.create` without an explicit canonical id, with a suffixed/replacement id, or with a canonical id carrying the wrong research/execution/reporting kind
+- **THEN** the Router precondition returns an LLM-readable validation result with `precondition_rejected=true`, `effect_certainty=no_effect`, and `retry_eligibility=same_phase_safe`; it does not dispatch the task handler, while probe and unrelated sessions retain ordinary task semantics
+
+#### Scenario: Reject premature scientific-attempt closure
+- **WHEN** a formal master requests `scientific.attempt.close` before the board is exactly the authority-bound research/execution/report task set, before each task has one matching explicit business exit, before a positive has one linked ready report and published draft, or while a fault has any ready/published success report state
+- **THEN** the Router precondition rejects the request without closing the attempt and reports the observed task/report mismatch; it permits retry only after the agent reconciles durable state, and it never chooses an operation, task outcome, scientific branch, or replacement plan for the agent
+
 #### Scenario: Keep capability inspection bounded
 - **WHEN** a capability invocation owns megabyte-scale documents, outputs, evidence, source, or gaps
 - **THEN** teammate inspection returns only its current-task bounded fact index (20 invocations, eight refs per kind, 64 KiB serialized facts), cross-task filters fail with a typed error, and no owned body bytes enter the agent context
@@ -140,6 +148,13 @@ Host-finalized mutation-scope rollover SHALL be externally atomic. Sealing the a
 
 ### Requirement: Exact scientific callable and artifact-selection map
 The formal executor SHALL use the installed versioned callables `openzyme_pipeline.aox_reference.select_hmm_reference_set`, `select_scoring_reference`, `assemble_scoring_input`, `openzyme_pipeline.aox_hmmer.parse_and_filter_csv`, `openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions`, `openzyme_pipeline.aox_motif.score_aligned_fasta`, and `openzyme_pipeline.aox_similarity.build_similarity_graph` with their canonical serializers. It MUST NOT approximate or locally reimplement a pinned calculation.
+
+For `build_similarity_graph`, the first input SHALL be the exact full post-motif,
+pre-CD-HIT `aox_hmm/AOX_candidates.fasta` bytes and the second input SHALL be
+the complete one-row-per-member
+`aox_hmm/AOX_candidates_cdhit85.clusters.csv` bytes for that same set. The
+representative-only `aox_hmm/AOX_candidates_cdhit85.fasta` SHALL remain a
+required deliverable but MUST NOT be used as the graph candidate input.
 
 The pinned agent-facing signature table SHALL disclose the exact Python return type of every canonical result accessor. For the current SDK, primary FASTA/CSV/JSON accessors and `metadata_json()` return `str`, while `metadata()` returns `dict[str, object]`. Executor source SHALL encode canonical payload text exactly once as UTF-8 before a bytes-only boundary and SHALL NOT pass `str` to `Path.write_bytes`, hand-reimplement a serializer, or guess a coercion after annotation drift. Missing or drifted type facts SHALL fail closed as a workflow/SDK mismatch without prescribing source layout, batching, or operation order.
 
