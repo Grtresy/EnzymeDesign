@@ -126,6 +126,12 @@ class BudgetTestModelFactory:
         return self.invoker
 
 
+# Keep this fixture inside the auto-compaction band after current public tool
+# schemas are counted, with enough margin to avoid testing an accidental
+# one-token emergency-boundary crossing.
+_AUTO_COMPACTION_MESSAGE_CHARS = 298_000
+
+
 class PrivateTokenizerDiagnosticFactory(BudgetTestModelFactory):
     def count_prompt_tokens(
         self,
@@ -302,7 +308,7 @@ def test_llm_preflight_auto_compacts_before_provider_call(monkeypatch) -> None:
         repositories,
         HarnessInput(
             session_id=session.session_id,
-            message="x" * 300_000,
+            message="x" * _AUTO_COMPACTION_MESSAGE_CHARS,
             max_steps=1,
         ),
         driver=LlmConversationDriver(factory),
@@ -337,7 +343,7 @@ def test_llm_context_budget_event_sanitizes_tokenizer_diagnostic(monkeypatch) ->
         repositories,
         HarnessInput(
             session_id=session.session_id,
-            message="x" * 300_000,
+            message="x" * _AUTO_COMPACTION_MESSAGE_CHARS,
             max_steps=1,
         ),
         driver=LlmConversationDriver(factory),
@@ -4568,6 +4574,52 @@ def test_builtin_tool_catalog_exposes_top_level_mutating_tools() -> None:
         "docs.search",
         "docs.read",
     } <= tool_names
+
+
+def test_task_finish_catalog_exposes_canonical_evidence_reference_contract() -> None:
+    expected = {
+        "type": "array",
+        "items": {
+            "type": "string",
+            "pattern": (
+                "^(artifact|document|invocation|message|protocol|report|run|"
+                "sandbox_run|scientific_closure):.+$"
+            ),
+            "description": (
+                "Use '<kind>:<id>'; kinds are exactly the pattern alternatives. "
+                "Examples: 'artifact:<id>', 'report:<id>', "
+                "'scientific_closure:<id>'. Bare ids are invalid."
+            ),
+        },
+    }
+    task_finish_descriptors = (
+        next(
+            descriptor
+            for descriptor in builtin_tool_descriptors()
+            if descriptor.tool_name == "task.finish"
+        ),
+        next(
+            descriptor
+            for descriptor in teammate_tool_descriptors(role="executor")
+            if descriptor.tool_name == "task.finish"
+        ),
+    )
+
+    for task_finish in task_finish_descriptors:
+        evidence_refs = task_finish.input_schema["properties"]["evidence_refs"]
+        assert evidence_refs == expected
+
+
+def test_scientific_close_catalog_exposes_terminal_turn_boundary() -> None:
+    close = next(
+        descriptor
+        for descriptor in builtin_tool_descriptors()
+        if descriptor.tool_name == "scientific.attempt.close"
+    )
+
+    assert "Success ends this turn" in close.description
+    assert "later same-response calls are not dispatched" in close.description
+    assert "Rejection is non-terminal" in close.description
 
 
 def test_sandbox_exec_catalog_exposes_v2_long_operation_timeout_bound() -> None:

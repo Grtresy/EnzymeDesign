@@ -120,7 +120,7 @@ tool call。该上限不能靠静默截断实现：driver 必须把 provider 返
 “第 `4+` 项 overflow”当成两个互不相关的生命周期。harness 在 dispatch 任何 eligible
 call 前，先为全部 overflow 持久化 no-effect failure observation；公开 tool results 和
 events 仍按 provider 原始 call 顺序结算。若前 `3` 项中的某一项创建 pending approval、
-成功执行 `task.finish` / runtime suspension，或因 authority、integrity、
+成功执行 `task.finish` / `scientific.attempt.close` / runtime suspension，或因 authority、integrity、
 `dispatch_in_doubt` 等边界失败而提前返回，则其后的 eligible call 必须显式结算为
 `tool_call_batch_interrupted/no_effect/verify_then_retry`，并记录 causal call 与
 interruption reason；原有 overflow 仍保持
@@ -156,7 +156,8 @@ observation facts 保留返回引用，但 observation 关系字段只绑定当�
 
 - 顶层模型优先通过 `task.*` 与 `delegation` 相关工具编排内部工作
 - 顶层模型和 teammate 应优先用 `world.inspect` 读取 task、artifact、approval、operation、outcome、runtime warning、tool schema 和 route policy 等结构化事实；该工具不得提供 recommended_actions 或硬编码 workflow template
-- `task.finish` 是推荐的业务任务出口；成功调用后 harness 立即停止当前 master/teammate loop，不再执行同批后续 tool calls，也不把该 tool result 喂回模型继续探索。同批后续 call 仍按上面的 batch settlement 契约获得持久 no-effect disposition。`task.update` 保留为普通字段编辑和非终态状态迁移。
+- `task.finish` 是推荐的业务任务出口；成功调用后 harness 立即停止当前 master/teammate loop，不再执行同批后续 tool calls，也不把该 tool result 喂回模型继续探索。同批后续 call 仍按上面的 batch settlement 契约获得持久 no-effect disposition。可选 `evidence_refs` 必须使用 schema 显式给出的 closed `<kind>:<id>` wire contract；agent 选择 evidence，repository 解析当前 session ref，runtime 不猜 kind 或补 prefix。`task.update` 保留为普通字段编辑和非终态状态迁移。
+- successful `scientific.attempt.close` 使用同一 terminal-action/batch-settlement 机制，但只记录 closure intent：它不写 task terminal，也不代表 final closure。失败的 close 保持 non-terminal；成功后只有在 requesting `AGENT_TURN` writer 与其 interrupted-call settlement 全部退休后，Host finalizer 才可建立 quiescence 与 immutable closure。
 - 顶层模型和 teammate 需要能力用法说明时，默认通过 `docs.search` / `docs.read` 读取受控文档库，而不是通过 skill 文档把 execution 用法塞入上下文
 - 领域 SOP 不得由 prompt 关键词、task subject 或模型调用 `skill.load` 隐式激活。调用方只能通过结构化 `skill_keys` 传入完整 `workflow:<id>@<semver>#sha256:<manifest-digest>`；message admission 将去重后的选择绑定到 canonical user conversation document，scheduler 仅从 exact user-message signal source 恢复，不能由 drain/operator 或普通 inbox payload 注入。registry 在 provider call 前校验 manifest digest、固定 document version/digest，并在实际 teammate tool/capability surface 上验证 requirements。delegation payload 持久化同一 binding，teammate restore 时再次对照当前 registry，任何缺失或 drift 都 fail closed
 - workflow knowledge pack 只表达版本化知识、所需 capability/tool 与真实约束，不替 master/executor 选择步骤；普通用户文本即使包含 AOX、HMM、research 等词也不得改写 delegation 或隐藏可用工具

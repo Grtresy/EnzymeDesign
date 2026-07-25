@@ -6886,14 +6886,16 @@ def _task_receipts(
             )
         finish = finish_matches[0]
         payload = dict(getattr(finish, "payload", None) or {})
-        if (
-            payload.get("status") != "completed"
-            or not str(payload.get("finished_by") or "").strip()
-        ):
+        finished_by = str(payload.get("finished_by") or "").strip()
+        if payload.get("status") != "completed" or finished_by != assigned_ref:
             raise LiveProductPathError(
                 "formal_task_finish_invalid",
-                "task.finish payload does not attest the completed business exit",
-                details={"task_id": task_id},
+                "task.finish payload is not an owner-authored completed business exit",
+                details={
+                    "task_id": task_id,
+                    "expected_finished_by": assigned_ref,
+                    "observed_finished_by": finished_by,
+                },
             )
         role_ids[role] = task_id
         receipts.append(
@@ -9296,13 +9298,16 @@ def _fault_task_receipts(
             )
         finish = matches[0]
         finish_payload = dict(getattr(finish, "payload", None) or {})
-        if finish_payload.get("status") != status or not str(
-            finish_payload.get("finished_by") or ""
-        ):
+        finished_by = str(finish_payload.get("finished_by") or "").strip()
+        if finish_payload.get("status") != status or finished_by != assigned_ref:
             raise LiveProductPathError(
                 "fault_task_business_exit_invalid",
-                "fault task state does not match its durable task.finish receipt",
-                details={"task_id": task_id},
+                "fault task state does not match its owner-authored task.finish receipt",
+                details={
+                    "task_id": task_id,
+                    "expected_finished_by": assigned_ref,
+                    "observed_finished_by": finished_by,
+                },
             )
         if task_id == consumer_task_id and (
             role != "executor" or status not in {"failed", "blocked", "cancelled"}

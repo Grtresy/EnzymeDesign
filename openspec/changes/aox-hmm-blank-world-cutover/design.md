@@ -445,6 +445,40 @@ immutable、non-reusable。因为本轮已形成真实 probe/formal operation re
 blocker 是 workflow data binding 而非“首个有效结果前的新 framework defect”，它不再次
 触发或放宽 diagnostic/formal 规范；8.3a 仍未完成 fully settled diagnostic receipt。
 
+### 2026-07-25 post-r57 closure-protocol correction addendum
+
+对 `73bd045baf309a885caeaffaecde72cfb9baaa22` 的 non-live 审计确认
+`aox_cutover_formal_tool_precondition@1` 已把 exact task set 与 close readiness 从
+prompt 提升为 session-scoped runtime constraint，但仍有三个相邻合同需要闭合。
+
+第一，readiness guard 只能决定 `scientific.attempt.close` 是否可以 dispatch，不能证明
+它是 requesting turn 的最后 mutation。科学 closure 的既有语义要求 Host 在 requester
+writer 退休后才 finalization；因此 successful close 本身必须是 harness terminal action。
+同一 provider batch 中排在其后的 call 必须按既有 batch settlement 得到
+`tool_call_batch_interrupted/no_effect/verify_then_retry`，不能 dispatch，也不能把 close
+结果再次喂给模型继续 mutation。该 turn barrier 是通用 scientific-attempt 生命周期事实，
+不只属于 AOX；它不完成 task、不选择 scientific outcome，也不把 closure request 冒充
+final closure。
+
+第二，r57 的最后一步还证明 `task.finish.evidence_refs` 的 canonical
+`<kind>:<id>` wire format 不能只藏在 handler validation error 中。tool schema 与
+LLM-readable error details 必须同时暴露 exact format、closed known kinds 与示例；合法值
+仍由 repository 在当前 session 内解析。runtime 不按 id prefix 猜 kind、不自动添加前缀、
+不把 closure request 当 final `scientific_closure`，也不替 agent 选择应采用的 evidence。
+
+第三，AOX formal contract 的“每个 assigned teammate 显式 business exit”必须与
+precondition 和 collector 一致。generic V3 仍可保留 master 的恢复性
+`task.finish` authority，但 AOX formal close/readiness 与最终 receipt 只接受每项 canonical
+task 恰好一个、status 匹配且 `finished_by == assigned_ref` 的 finish document；master
+代替 researcher/executor/reporter 写终态不能满足 cutover eligibility。
+
+实现必须补真实 repository-backed regression：三项 canonical task、owner finish receipt
+与 positive report/draft 全部闭合后，master 的 close request 成功并立即终止 turn；同批
+后续 mutation 被持久结算为 no-effect，Host finalizer 只能在 requester 退休后推进。另需
+覆盖 malformed evidence ref 的结构化提示、master-proxy finish 拒绝、ordinary session
+不受 AOX policy 影响。该 correction 只运行 non-live tests/evals，不创建 preflight/root、
+不消费 diagnostic/formal authority，也不授权 successor live attempt。
+
 ## Goals / Non-Goals
 
 **Goals:**

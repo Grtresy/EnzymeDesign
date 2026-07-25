@@ -2076,6 +2076,67 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
     )
 
 
+def test_successful_scientific_attempt_close_is_a_terminal_turn_action() -> None:
+    repositories, service = _world()
+    attempt, _, selection = _ready_selection(
+        service,
+        suffix="terminal-close-tool",
+    )
+    universe = service.operation_universe(attempt.attempt_id)
+    service.seal_selection(
+        selection_id=selection.selection_id,
+        actor_ref="agent:scientist",
+        idempotency_key="seal-terminal-close-tool",
+        expected_universe_digest=universe.universe_digest,
+    )
+    registry = ToolRegistry()
+    register_scientific_attempt_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            attempt.session_id,
+        ),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(
+            task_id=attempt.task_id,
+            lane_id=attempt.lane_id,
+        ),
+        agent_id="agent:scientist",
+        actor_kind="teammate",
+        actor_role="scientist",
+        scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_terminal_close",
+            tool_name="scientific.attempt.close",
+            arguments={
+                "attempt_id": attempt.attempt_id,
+                "selection_id": selection.selection_id,
+                "idempotency_key": "close-terminal-close-tool",
+            },
+            task_id=attempt.task_id,
+            lane_id=attempt.lane_id,
+        ),
+    )
+
+    assert result.ok is True
+    assert result.status == "scientific_attempt_closure_requested"
+    assert result.terminal_action == "scientific.attempt.close"
+    assert result.terminates_turn is True
+    assert result.envelope()["terminates_turn"] is True
+    assert (
+        repositories.scientific_attempt_closure_requests.get_by_attempt(
+            attempt.attempt_id
+        )
+        is not None
+    )
+
+
 def test_same_attempt_cross_run_adoption_materializes_exact_sealed_bytes(
     tmp_path: Path,
 ) -> None:

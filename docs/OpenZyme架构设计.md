@@ -164,8 +164,10 @@ schema/visibility 和 write fence 通过后、真实 handler/mutation scope 之�
 `no_effect` 与 `same_phase_safe`，作为 validation observation 返回 agent。它不能返回
 success、替换 handler、猜测 fallback 或扩散到未匹配 session。AOX formal cutover 只用
 该 seam 呈现 authority-bound exact task set 与 attempt-close business/report readiness；
-operation、query、task outcome、重试和科学分支仍由 agent 决定，独立 probe/普通 V3
-session 不受影响。
+其中每项 canonical task 还必须有唯一、status 匹配且
+`finished_by == assigned_ref` 的 owner-authored `task.finish` receipt。generic V3 中 master
+保留恢复性 task authority，但 master 代写不能满足 AOX cutover eligibility。operation、
+query、task outcome、重试和科学分支仍由 agent 决定，独立 probe/普通 V3 session 不受影响。
 
 master 与 teammate 的单个 provider response 仍只允许顺序 dispatch 前 `3` 个 tool call，但
 driver 不得静默丢弃 overflow。全部 returned calls 都进入同一 public LLM trace；第 `4+`
@@ -178,8 +180,8 @@ provider 拒绝。该边界只忠实呈现“未执行且可由 agent 重排”�
 
 整个 provider response 必须作为一个有序 batch 结算。harness 在 dispatch 前预先持久化
 全部 overflow 的 no-effect observation，公开 result/event 仍保持原始 call 顺序；若前三项
-中的某项因 pending approval、`task.finish`、runtime suspension 或 boundary-fatal failure
-提前结束本 turn，其后的 eligible calls 必须记录为
+中的某项因 pending approval、`task.finish`、成功的 `scientific.attempt.close`、runtime
+suspension 或 boundary-fatal failure 提前结束本 turn，其后的 eligible calls 必须记录为
 `tool_call_batch_interrupted/no_effect/verify_then_retry`，第 `4+` 项仍保持
 `parallel_tool_call_limit_exceeded/no_effect/same_phase_safe`。已经 dispatch 的 causal call
 保留其精确 failure observation、effect certainty 与 retry eligibility，包括
@@ -190,6 +192,13 @@ durable state，以保留同批 `task.create -> lane.bind_task` 等合法顺序�
 项在 ToolResult/observation facts 中保留 provider 返回引用，但 observation 关系字段只
 绑定当前真实 step context，不要求未来对象已存在或把它变成 authority。该结算不执行、
 重试或重排后续工作；agent 在新的 turn 中读取真实 durable state 后自行选择策略。
+
+成功的 `scientific.attempt.close` 是通用 scientific lifecycle terminal action：它只持久化
+immutable closure request，立即结束 requesting turn，不把结果再次送入模型，也不 dispatch
+同批后续 call；失败的 close 保持 non-terminal，使 agent 可根据结构化 blocker 修正。
+requesting `AGENT_TURN` writer 及其 batch settlement 全部退休后，Host 才能 finalization、
+建立 quiescence receipt 与 final closure。这个 turn barrier 不完成 task，也不把 closure
+request 冒充 `scientific_closure` evidence。
 
 ### 3.5 Token-Budgeted Harness
 
@@ -532,7 +541,7 @@ Projection 约束：
 - 排队 runtime wakeup signal
 - 发出 `agent.spawned` / `agent.delegated` 等事件
 
-`task.create`、`task.update`、Host `POST /v3/tasks` / `PATCH /v3/tasks/{task_id}` 与 repository 默认 edit intent 都不能写入或跨越 business-exit status；除 agent-level / legacy pending approval block 这类已文档化机械迁移外，`blocked`、`completed`、`failed`、`cancelled` 必须走唯一业务出口命令 `task.finish`，不得通过 raw `TaskRepository.save()` 绕过。durable SDK attached continuation 的 park 只暂停 agent/runtime，task 保持 `in_progress`，待 exact continuation delivery 的 `ENGINE_COMPLETED` owner wake 继续。blocked task 保持 blocked 时仍可做描述修正、lane unbind 等非状态编辑，但不能直接再次 finish；必须先通过显式 resume/reopen 迁移回 `in_progress`。completed / failed / cancelled task 连非状态 edit 也 fail closed。`task.finish` 只可改变 status、updated_at 与 failure fields，并在同一个 SQLite transaction 中写 `task_finish` document、task row 与 durable event；commit 后 SSE 才可见，任一写入失败必须整体回滚。测试需要构造历史终态时必须显式使用 fixture seed intent，不能让产品写路径获得同等豁免。
+`task.create`、`task.update`、Host `POST /v3/tasks` / `PATCH /v3/tasks/{task_id}` 与 repository 默认 edit intent 都不能写入或跨越 business-exit status；除 agent-level / legacy pending approval block 这类已文档化机械迁移外，`blocked`、`completed`、`failed`、`cancelled` 必须走唯一业务出口命令 `task.finish`，不得通过 raw `TaskRepository.save()` 绕过。durable SDK attached continuation 的 park 只暂停 agent/runtime，task 保持 `in_progress`，待 exact continuation delivery 的 `ENGINE_COMPLETED` owner wake 继续。blocked task 保持 blocked 时仍可做描述修正、lane unbind 等非状态编辑，但不能直接再次 finish；必须先通过显式 resume/reopen 迁移回 `in_progress`。completed / failed / cancelled task 连非状态 edit 也 fail closed。`task.finish` 只可改变 status、updated_at 与 failure fields，并在同一个 SQLite transaction 中写 `task_finish` document、task row 与 durable event；commit 后 SSE 才可见，任一写入失败必须整体回滚。可选 `evidence_refs` 的公开 wire contract 是闭集 `<kind>:<id>`；tool schema 与 invalid-result details 必须共享 supported kinds、格式和示例，repository 仍逐项解析当前 session identity。runtime 不按 opaque id 猜 kind、不补 prefix，也不把尚未 finalization 的 closure request 替换成 `scientific_closure:<closure_id>`。测试需要构造历史终态时必须显式使用 fixture seed intent，不能让产品写路径获得同等豁免。
 
 业务 task 终态必须由 agent 通过 `task.finish` 或已文档化机械迁移显式写入；runtime idle、max steps、tool result 或 protocol message 本身不自动表示 task completed。允许的机械迁移只包括 task claim、agent-level / legacy pending approval block 与 approval resume 等已命名 command；durable SDK approval/continuation 不改变 task status。机械迁移使用显式 mechanical intent，必须真实改变 status，且除 status / updated_at 以及 claim 所需 assigned_ref 外不得夹带 task 字段修改。`task.finish` 授权只比较 canonical `agent_id`，role 字符串不能代表 task owner。
 

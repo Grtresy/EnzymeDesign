@@ -2,10 +2,59 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from openzyme_core import CoreRepositories
+from openzyme_core import HarnessInput
+from openzyme_core import HarnessStatus
+from openzyme_core import HarnessStep
+from openzyme_core import ScientificAttemptService
+from openzyme_core import TaskBoardService
+from openzyme_core import TaskFinishCommand
+from openzyme_core import ToolRegistry
+from openzyme_core import apply_sqlite_migrations
+from openzyme_core import connect_sqlite
+from openzyme_core import controlled_operation_artifact_set_digest
+from openzyme_core import run_agent_harness_loop
+from openzyme_domain import AgentMember
+from openzyme_domain import AgentMemberStatus
+from openzyme_domain import ControlledOperation
+from openzyme_domain import ControlledOperationExecution
+from openzyme_domain import ControlledOperationExecutionLifecycle
+from openzyme_domain import ControlledOperationExecutionTerminalOutcome
+from openzyme_domain import ControlledOperationOwnerMode
+from openzyme_domain import ControlledOperationResultHandle
+from openzyme_domain import ControlledOperationStatus
+from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import Lane
+from openzyme_domain import LaneStatus
+from openzyme_domain import MutationWriterKind
+from openzyme_domain import RetryEligibility
+from openzyme_domain import SandboxImageCompatibility
+from openzyme_domain import SandboxRunRecord
+from openzyme_domain import SandboxRunStatus
+from openzyme_domain import SandboxWorkspaceRecord
+from openzyme_domain import SandboxWorkspaceStatus
+from openzyme_domain import ScientificAttemptScope
+from openzyme_domain import Session
+from openzyme_domain import SessionReportDraftRecord
+from openzyme_domain import SessionReportDraftStatus
+from openzyme_domain import SessionReportRecord
+from openzyme_domain import SessionReportStatus
+from openzyme_domain import SessionStatus
+from openzyme_domain import Task
+from openzyme_domain import TaskStatus
 from openzyme_host_api.aox_cutover_tool_policy import AOX_REPORT_TASK_ID
 from openzyme_host_api.aox_cutover_tool_policy import AOX_RESEARCH_TASK_ID
 from openzyme_host_api.aox_cutover_tool_policy import (
     AoxCutoverFormalToolPrecondition,
+)
+from openzyme_host_api.aox_scientific_contract import (
+    AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY,
+)
+from openzyme_host_api.aox_scientific_contract import (
+    AOX_SELECTED_CHAIN_CONTRACT_V2,
+)
+from openzyme_host_api.aox_scientific_contract import (
+    AOX_SELECTED_CHAIN_WORKFLOW_ID,
 )
 from openzyme_runtime import ToolInvocation
 
@@ -315,6 +364,43 @@ def test_cutover_policy_rejects_mismatched_task_finish_receipt() -> None:
     )
 
 
+def test_cutover_policy_rejects_master_proxy_task_finish_receipt() -> None:
+    tasks = _tasks()
+    documents = list(_finish_documents(tasks))
+    documents[1] = _record(
+        document_kind="task_finish",
+        payload={
+            "task_id": EXECUTION_TASK_ID,
+            "status": "completed",
+            "finished_by": "agent:master",
+        },
+    )
+
+    result = _positive_policy()(
+        _context(
+            _repositories(
+                tasks=tasks,
+                documents=tuple(documents),
+            )
+        ),
+        _step(),  # type: ignore[arg-type]
+        _close_invocation(),
+    )
+
+    assert result is not None
+    assert result.error_code == "aox_cutover_task_finish_receipts_not_ready"
+    assert result.details["finish_issues"] == [
+        {
+            "task_id": EXECUTION_TASK_ID,
+            "task_status": "completed",
+            "finish_receipt_count": 1,
+            "finish_statuses": ["completed"],
+            "expected_finished_by": "agent_executor",
+            "observed_finished_by": ["agent:master"],
+        }
+    ]
+
+
 def test_cutover_policy_requires_exact_positive_report_link() -> None:
     tasks = _tasks()
 
@@ -435,3 +521,530 @@ def test_cutover_policy_does_not_affect_probe_or_other_sessions() -> None:
     )
 
     assert result is None
+
+
+class _OrdinaryTaskCreateDriver:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def plan(
+        self,
+        context: object,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input
+        self.calls += 1
+        if not tool_results:
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id="call_ordinary_task_create",
+                        tool_name="task.create",
+                        arguments={
+                            "subject": "Ordinary unpinned task",
+                            "description": "Outside the AOX formal session.",
+                        },
+                    ),
+                )
+            )
+        return HarnessStep(assistant_message="ordinary task created")
+
+
+def test_repository_backed_policy_leaves_ordinary_session_task_creation_unchanged() -> (
+    None
+):
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+    session = Session.create(
+        session_id="sess_ordinary_policy",
+        project_id="proj_ordinary_policy",
+        title="Ordinary session",
+        objective="Keep ordinary task semantics outside AOX formal authority",
+    )
+    repositories.sessions.save(session)
+    driver = _OrdinaryTaskCreateDriver()
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=2,
+            agent_id="agent:master",
+            actor_kind="master",
+            actor_role="master",
+        ),
+        driver=driver,
+        tool_registry=ToolRegistry(),
+        tool_dispatch_precondition=_positive_policy(),
+    )
+
+    tasks = repositories.tasks.list_by_session(session.session_id)
+    assert result.status is HarnessStatus.COMPLETED
+    assert result.tool_results[0].ok is True
+    assert driver.calls == 2
+    assert len(tasks) == 1
+    assert tasks[0].subject == "Ordinary unpinned task"
+
+
+class _CloseThenMutationDriver:
+    def __init__(self, *, attempt_id: str, selection_id: str) -> None:
+        self.attempt_id = attempt_id
+        self.selection_id = selection_id
+        self.calls = 0
+
+    def plan(
+        self,
+        context: object,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input, tool_results
+        self.calls += 1
+        if self.calls > 1:
+            raise AssertionError(
+                "successful scientific.attempt.close must retire the turn"
+            )
+        return HarnessStep(
+            tool_invocations=(
+                ToolInvocation(
+                    call_id="call_repository_close",
+                    tool_name="scientific.attempt.close",
+                    arguments={
+                        "attempt_id": self.attempt_id,
+                        "selection_id": self.selection_id,
+                        "idempotency_key": "close:repository-backed",
+                    },
+                    task_id=EXECUTION_TASK_ID,
+                    lane_id="lane_execution",
+                ),
+                ToolInvocation(
+                    call_id="call_mutation_after_close",
+                    tool_name="task.update",
+                    arguments={
+                        "task_id": AOX_REPORT_TASK_ID,
+                        "subject": "MUTATED AFTER CLOSE",
+                    },
+                    task_id=AOX_REPORT_TASK_ID,
+                ),
+            )
+        )
+
+
+def test_repository_backed_positive_close_retires_turn_before_later_mutation() -> None:
+    now = "2026-07-25T00:00:00+00:00"
+    repositories = CoreRepositories.from_connection(connect_sqlite(":memory:"))
+    apply_sqlite_migrations(repositories.tasks.connection)
+    session = Session(
+        session_id=SESSION_ID,
+        project_id="proj_formal_policy",
+        title="Repository-backed AOX close barrier",
+        objective="Prove task, report, close, and turn settlement as one path",
+        status=SessionStatus.ACTIVE,
+        created_at=now,
+        updated_at=now,
+    )
+    lane = Lane(
+        lane_id="lane_execution",
+        session_id=SESSION_ID,
+        name="execution",
+        status=LaneStatus.CLAIMED,
+        cwd="/workspace",
+        branch_name=None,
+        claimed_ref="agent_executor",
+        created_at=now,
+        updated_at=now,
+    )
+    agents = (
+        AgentMember(
+            agent_id="agent:master",
+            session_id=SESSION_ID,
+            lane_id=None,
+            task_id=None,
+            name="Master",
+            role="master",
+            status=AgentMemberStatus.ACTIVE,
+            parent_agent_id=None,
+            created_at=now,
+            updated_at=now,
+            member_id="member_master",
+        ),
+        AgentMember(
+            agent_id="agent_researcher",
+            session_id=SESSION_ID,
+            lane_id=None,
+            task_id=AOX_RESEARCH_TASK_ID,
+            name="Researcher",
+            role="researcher",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id="agent:master",
+            created_at=now,
+            updated_at=now,
+            member_id="member_researcher",
+        ),
+        AgentMember(
+            agent_id="agent_executor",
+            session_id=SESSION_ID,
+            lane_id=lane.lane_id,
+            task_id=EXECUTION_TASK_ID,
+            name="Executor",
+            role="executor",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id="agent:master",
+            created_at=now,
+            updated_at=now,
+            member_id="member_executor",
+        ),
+        AgentMember(
+            agent_id="agent_reporter",
+            session_id=SESSION_ID,
+            lane_id=None,
+            task_id=AOX_REPORT_TASK_ID,
+            name="Reporter",
+            role="reporter",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id="agent:master",
+            created_at=now,
+            updated_at=now,
+            member_id="member_reporter",
+        ),
+    )
+    tasks = (
+        Task.create(
+            task_id=AOX_RESEARCH_TASK_ID,
+            session_id=SESSION_ID,
+            subject="Collect PubMed evidence",
+            description="Canonical research task.",
+            kind="research",
+            status=TaskStatus.IN_PROGRESS,
+            assigned_ref="agent_researcher",
+        ),
+        Task.create(
+            task_id=EXECUTION_TASK_ID,
+            session_id=SESSION_ID,
+            subject="Execute AOX workflow",
+            description="Authority-bound execution task.",
+            kind="execution",
+            status=TaskStatus.IN_PROGRESS,
+            assigned_ref="agent_executor",
+            lane_id=lane.lane_id,
+        ),
+        Task.create(
+            task_id=AOX_REPORT_TASK_ID,
+            session_id=SESSION_ID,
+            subject="Publish source-linked report",
+            description="Canonical reporting task.",
+            kind="reporting",
+            status=TaskStatus.IN_PROGRESS,
+            assigned_ref="agent_reporter",
+        ),
+    )
+    repositories.sessions.save(session)
+    repositories.lanes.save(lane)
+    for task in tasks:
+        repositories.tasks.seed_fixture(task)
+    for agent in agents:
+        repositories.agents.save(agent)
+    repositories.sandbox_workspaces.save(
+        SandboxWorkspaceRecord(
+            sandbox_workspace_id="workspace_execution",
+            session_id=SESSION_ID,
+            agent_member_id="member_executor",
+            agent_id="agent_executor",
+            status=SandboxWorkspaceStatus.ATTACHED,
+            image_ref="image:aox-test",
+            image_digest="sha256:image",
+            image_version="1",
+            sandbox_protocol_version="1",
+            image_compatibility=SandboxImageCompatibility.COMPATIBLE,
+            manifest_version="sandbox_workspace_manifest@1",
+            focus_task_id=EXECUTION_TASK_ID,
+            focus_lane_id=lane.lane_id,
+            created_at=now,
+            last_attached_at=now,
+        )
+    )
+
+    scientific = ScientificAttemptService(
+        repositories,
+        now=lambda: now,
+        workflow_contract_registry=(AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY),
+    )
+    authority = scientific.grant_authorization(
+        session_id=SESSION_ID,
+        task_id=EXECUTION_TASK_ID,
+        campaign_id="campaign_repository_barrier",
+        workflow_id=AOX_SELECTED_CHAIN_WORKFLOW_ID,
+        root_ref="attempts/repository-barrier",
+        grantor_kind="user",
+        grantor_ref="user:owner",
+        allowed_scopes=(ScientificAttemptScope.FORMAL,),
+        allowed_effect_classes=("provider",),
+        max_attempts=1,
+        max_micu=100,
+        max_cost_microunits=1_000,
+        max_wall_time_seconds=600,
+        expires_at="2026-08-01T00:00:00+00:00",
+        idempotency_key="grant:repository-backed",
+    )
+    attempt = scientific.create_attempt(
+        envelope_id=authority.envelope_id,
+        session_id=SESSION_ID,
+        task_id=EXECUTION_TASK_ID,
+        lane_id=lane.lane_id,
+        campaign_id="campaign_repository_barrier",
+        workflow_id=AOX_SELECTED_CHAIN_WORKFLOW_ID,
+        scope=ScientificAttemptScope.FORMAL,
+        workflow_contract_digest=AOX_SELECTED_CHAIN_CONTRACT_V2.digest,
+        requested_effect_classes=("provider",),
+        reserved_micu=1,
+        reserved_cost_microunits=10,
+        reserved_wall_time_seconds=30,
+        actor_ref="agent_executor",
+        idempotency_key="attempt:repository-backed",
+    )
+
+    run = SandboxRunRecord(
+        sandbox_run_id="run_repository_barrier",
+        session_id=SESSION_ID,
+        sandbox_workspace_id="workspace_execution",
+        agent_id="agent_executor",
+        task_id=EXECUTION_TASK_ID,
+        lane_id=lane.lane_id,
+        argv=("python", "aox.py"),
+        argv_digest="sha256:argv",
+        cwd="/workspace",
+        env_digest="sha256:env",
+        status=SandboxRunStatus.COMPLETED,
+        exit_code=0,
+        created_at=now,
+        updated_at=now,
+        ended_at=now,
+    )
+    operation = ControlledOperation(
+        operation_id="operation_repository_barrier",
+        session_id=SESSION_ID,
+        sandbox_workspace_id="workspace_execution",
+        sandbox_run_id=run.sandbox_run_id,
+        task_id=EXECUTION_TASK_ID,
+        lane_id=lane.lane_id,
+        logical_operation_key="aox.ncbi_fetch",
+        operation_digest="sha256:operation",
+        params_digest="sha256:params",
+        backend_category="fixture",
+        selected_backend="fixture",
+        route_policy_id="fixture_v1",
+        sdk_module="bio",
+        function_name="ncbi_fetch_proteins",
+        owner_mode=ControlledOperationOwnerMode.DURABLE_ASYNC_V1,
+        status=ControlledOperationStatus.COMPLETED,
+        created_at=now,
+        updated_at=now,
+    )
+    artifact_set_digest = controlled_operation_artifact_set_digest(())
+    execution = ControlledOperationExecution(
+        execution_id="execution_repository_barrier",
+        operation_id=operation.operation_id,
+        session_id=SESSION_ID,
+        task_id=EXECUTION_TASK_ID,
+        lane_id=lane.lane_id,
+        owner_mode=ControlledOperationOwnerMode.DURABLE_ASYNC_V1,
+        operation_digest=operation.operation_digest,
+        approval_digest=None,
+        route_policy_id="fixture_v1",
+        selected_backend="fixture",
+        adapter_policy_id="fixture_adapter_v1",
+        input_identity_digest="sha256:input",
+        expected_output_contract_digest="sha256:output",
+        runtime_identity_digest="sha256:runtime",
+        lifecycle_state=ControlledOperationExecutionLifecycle.TERMINAL,
+        terminal_outcome=(ControlledOperationExecutionTerminalOutcome.SUCCEEDED),
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+        retry_eligibility=RetryEligibility.TERMINAL,
+        dispatch_generation=1,
+        state_version=1,
+        fencing_token=1,
+        result_handle_ref="result_repository_barrier",
+        result_digest="sha256:result",
+        artifact_set_digest=artifact_set_digest,
+        created_at=now,
+        updated_at=now,
+        terminal_at=now,
+    )
+    result_handle = ControlledOperationResultHandle(
+        result_handle_id="result_repository_barrier",
+        execution_id=execution.execution_id,
+        operation_id=operation.operation_id,
+        session_id=SESSION_ID,
+        dispatch_generation=1,
+        terminal_outcome=ControlledOperationExecutionTerminalOutcome.SUCCEEDED,
+        bounded_result_envelope={"status": "ok"},
+        result_digest="sha256:result",
+        artifact_set_digest=artifact_set_digest,
+        origin="host_supervisor",
+        created_at=now,
+    )
+    with scientific.mutation_scopes.writer_turn(
+        session_id=SESSION_ID,
+        owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+        owner_ref="fixture:repository-barrier",
+    ):
+        repositories.sandbox_runs.save(run)
+        repositories.controlled_operations.save(operation)
+        repositories.controlled_operation_executions.add(execution)
+        repositories.controlled_operation_results.save_once(result_handle)
+        repositories.controlled_operation_result_artifacts.promote(
+            result_handle,
+            (),
+        )
+    scientific.bind_run(
+        attempt_id=attempt.attempt_id,
+        sandbox_run_id=run.sandbox_run_id,
+        actor_ref="agent_executor",
+    )
+    scientific.bind_operation(
+        attempt_id=attempt.attempt_id,
+        operation_id=operation.operation_id,
+        actor_ref="agent_executor",
+    )
+    selection = scientific.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent_executor",
+        idempotency_key="selection:repository-backed",
+    )
+    scientific.adopt_operation(
+        selection_id=selection.selection_id,
+        operation_id=operation.operation_id,
+        workflow_role="ncbi_fetch",
+        reason_code="selected_repository_backed_result",
+        actor_ref="agent_executor",
+        idempotency_key="adopt:repository-backed",
+    )
+    universe = scientific.operation_universe(attempt.attempt_id)
+    scientific.seal_selection(
+        selection_id=selection.selection_id,
+        actor_ref="agent_executor",
+        idempotency_key="seal:repository-backed",
+        expected_universe_digest=universe.universe_digest,
+    )
+
+    with scientific.mutation_scopes.writer_turn(
+        session_id=SESSION_ID,
+        owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+        owner_ref="fixture:repository-backed-business-exits",
+    ):
+        repositories.reports.save(
+            SessionReportRecord(
+                report_id="report_repository_barrier",
+                session_id=SESSION_ID,
+                task_id=AOX_REPORT_TASK_ID,
+                lane_id=None,
+                invocation_id=None,
+                run_id=None,
+                artifact_id=None,
+                status=SessionReportStatus.READY,
+                title="AOX report",
+                summary="Source-linked final report.",
+                stage_summary="Research, execution, and reporting complete.",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        repositories.report_drafts.save(
+            SessionReportDraftRecord(
+                draft_id="draft_repository_barrier",
+                session_id=SESSION_ID,
+                task_id=AOX_REPORT_TASK_ID,
+                owner_agent_id="agent_reporter",
+                status=SessionReportDraftStatus.PUBLISHED,
+                title="AOX report draft",
+                summary="Published source-linked draft.",
+                content_ref="document:report_repository_barrier",
+                published_report_id="report_repository_barrier",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        board = TaskBoardService(repositories)
+        for task_id, finished_by in (
+            (AOX_RESEARCH_TASK_ID, "agent_researcher"),
+            (EXECUTION_TASK_ID, "agent_executor"),
+            (AOX_REPORT_TASK_ID, "agent_reporter"),
+        ):
+            board.finish_task(
+                task_id,
+                TaskFinishCommand(
+                    status=TaskStatus.COMPLETED,
+                    finished_by=finished_by,
+                    summary=f"{task_id} completed by its assigned owner.",
+                ),
+            )
+
+    report_subject = repositories.tasks.get(AOX_REPORT_TASK_ID).subject
+    driver = _CloseThenMutationDriver(
+        attempt_id=attempt.attempt_id,
+        selection_id=selection.selection_id,
+    )
+    with scientific.mutation_scopes.writer_turn(
+        session_id=SESSION_ID,
+        owner_kind=MutationWriterKind.AGENT_TURN,
+        owner_ref="agent-turn:repository-backed-master",
+    ):
+        result = run_agent_harness_loop(
+            repositories,
+            HarnessInput(
+                session_id=SESSION_ID,
+                max_steps=3,
+                agent_id="agent:master",
+                actor_kind="master",
+                actor_role="master",
+            ),
+            driver=driver,
+            tool_registry=ToolRegistry(),
+            scientific_workflow_contract_registry=(
+                AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
+            ),
+            tool_dispatch_precondition=AoxCutoverFormalToolPrecondition(
+                session_id=SESSION_ID,
+                execution_task_id=EXECUTION_TASK_ID,
+                attempt_kind="positive",
+            ),
+        )
+        request = repositories.scientific_attempt_closure_requests.get_by_attempt(
+            attempt.attempt_id
+        )
+        assert request is not None
+        assert (
+            repositories.scientific_attempt_closures.get_by_attempt(attempt.attempt_id)
+            is None
+        )
+
+    assert result.status is HarnessStatus.COMPLETED
+    assert driver.calls == 1
+    assert len(result.tool_results) == 2
+    close_result, interrupted = result.tool_results
+    assert close_result.ok is True
+    assert close_result.terminal_action == "scientific.attempt.close"
+    assert close_result.terminates_turn is True
+    assert interrupted.call_id == "call_mutation_after_close"
+    assert interrupted.error_code == "tool_call_batch_interrupted"
+    assert interrupted.details == {
+        "dispatched": False,
+        "effect_certainty": "no_effect",
+        "interrupted_by_call_id": "call_repository_close",
+        "interruption_reason": "scientific.attempt.close",
+        "retry_eligibility": "verify_then_retry",
+        "tool_call_position": 2,
+    }
+    assert repositories.tasks.get(AOX_REPORT_TASK_ID).subject == report_subject
+    assert [
+        event.payload["call_id"]
+        for event in result.events
+        if event.event_type == "tool.invoked"
+    ] == ["call_repository_close"]
+    closure = scientific.finalize_closure_request(
+        closure_request_id=request.closure_request_id
+    )
+    assert closure.attempt_id == attempt.attempt_id
+    assert closure.actor_ref == "agent:master"

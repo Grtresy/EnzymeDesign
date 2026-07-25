@@ -67,7 +67,7 @@ POST 只在短 admission transaction 中验证 access、request digest 与幂等
 - `POST /v3/lanes/{lane_id}/keep`
 - `POST /v3/lanes/{lane_id}/remove`
 
-task secondary endpoints 是非出口 CRUD：`POST /v3/tasks` 和 `PATCH /v3/tasks/{task_id}` 必须拒绝把 status 设为 `blocked` / `completed` / `failed` / `cancelled`。已经 blocked 的 task 在请求不携带 status 时仍可修正描述等 metadata；completed / failed / cancelled task edit fail closed。除已文档化 approval block 机械迁移外，业务出口只有 agent-facing `task.finish` command；它只能改变 status / updated_at / failure fields，并在同一 UoW 原子写入 finish document、task row 与 durable event，commit 后 SSE 才可见。已经处于任一 business-exit status 的 task 必须先显式 resume/reopen，不能直接再次 finish。operator 若未来需要 reopen/repair，必须设计独立、可审计的 command，不能把 generic PATCH 或 repository save 当作隐藏后门。task dependency mutation 还必须保持 same-session DAG；service cycle error 与 SQLite INSERT / UPDATE triggers 是同一 contract 的两层防线。
+task secondary endpoints 是非出口 CRUD：`POST /v3/tasks` 和 `PATCH /v3/tasks/{task_id}` 必须拒绝把 status 设为 `blocked` / `completed` / `failed` / `cancelled`。已经 blocked 的 task 在请求不携带 status 时仍可修正描述等 metadata；completed / failed / cancelled task edit fail closed。除已文档化 approval block 机械迁移外，业务出口只有 agent-facing `task.finish` command；它只能改变 status / updated_at / failure fields，并在同一 UoW 原子写入 finish document、task row 与 durable event，commit 后 SSE 才可见。可选 `evidence_refs` 只接受 model-visible 的 `<kind>:<id>` string；tool schema 与 invalid-result `details` 必须共同列出 closed supported kinds、exact format 和示例，而 repository 对每项执行当前 session identity 解析。bare id、未知 kind、跨 session ref 或尚未 finalization 的 closure request 都不能被 runtime 猜测、补 prefix 或替换。已经处于任一 business-exit status 的 task 必须先显式 resume/reopen，不能直接再次 finish。operator 若未来需要 reopen/repair，必须设计独立、可审计的 command，不能把 generic PATCH 或 repository save 当作隐藏后门。task dependency mutation 还必须保持 same-session DAG；service cycle error 与 SQLite INSERT / UPDATE triggers 是同一 contract 的两层防线。
 
 所有 `/v3` mutation endpoint 接受 `Idempotency-Key` header；runtime-drain admission 在所有 deployment profile 都强制要求。其他 mutation 在 `local-dev` 可省略，在 `shared` 强制要求。提供时，Host 以 command type、resource scope 与 canonical request JSON 计算 digest：相同 key/digest 返回首次完成响应且不重复写入，key 相同但 digest 不同返回 `409`。`POST /v3/sessions/{session_id}/messages` 只做本地 conversation admission 与 signal enqueue，因此使用短 write UoW；真正 provider work 由后台 signal worker或显式 command worker获得 bounded session authority 后发生，不属于 HTTP request。
 
@@ -154,12 +154,17 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `details`: structured diagnostic metadata
 - `content`: legacy content string
 - `payload`: parsed JSON payload when `content` is JSON
-- `terminal_action`: explicit terminal action name such as `task.finish`, or `null`
+- `terminal_action`: explicit terminal action name such as `task.finish` or a successful `scientific.attempt.close`, otherwise `null`
 - `terminates_turn`: whether the harness must stop the current master/teammate loop immediately after this result
 
 `ok=true` must not mean "no downstream work remains"; it only means that the specific tool completed its promised action. `ok=false` means the model must not assume the requested action happened.
 
-`terminates_turn=true` 只允许由显式 terminal tool 设置。当前推荐出口是 `task.finish`；普通 tool success、capability success、engine invocation terminal state 或 protocol message 都不能自动设置该标记，也不能自动把业务 task 写为 completed / failed。
+`terminates_turn=true` 只允许由显式 terminal tool 设置。`task.finish` 是业务 task 出口；成功的
+`scientific.attempt.close` 是独立的 scientific lifecycle turn barrier，只写 immutable
+closure request 并等待 requester writer 退休后的 Host finalization。二者都使同批后续 call
+获得 interrupted/no-effect settlement 且不再进入下一 model step；失败的 close 保持
+non-terminal。普通 tool success、capability success、engine invocation terminal state 或
+protocol message 都不能自动设置该标记，也不能自动把业务 task 写为 completed / failed。
 
 当工具本身已经执行完成，但完整 result 或下一轮 prompt 会超过 token budget 时，harness 返回 context-budget observation，而不是把完整 result 塞回模型：
 
@@ -465,7 +470,10 @@ conversation assistant message。Web UI/CLI 可以显示 error、候选原因和
 Host API 提供 scientific-attempt authorization、command、finalization 和 read projection。
 authority request 使用 strict DTO；actor/grantor 等身份来自受控边界。`attempt.create` 和
 `scientific.attempt.close` 返回 request/intention，最终 admission/closure 由 Host 在原 writer
-退休后执行。workspace 显示 envelope usage、attempts、universe/dispositions、selected chain、
+连同该 provider batch 的未 dispatch call settlement 全部退休后执行。successful close
+ToolResult 标记 `terminal_action="scientific.attempt.close"` 与 `terminates_turn=true`；
+closure request 本身不是 final `scientific_closure` evidence，也不写 task terminal。
+workspace 显示 envelope usage、attempts、universe/dispositions、selected chain、
 materializations 和 closure，不投影 provider/HPC private allowlist。
 
 `scientific.attempt.inspect` 的 summary 兼容面保持 bounded；传入 exact attempt/selection

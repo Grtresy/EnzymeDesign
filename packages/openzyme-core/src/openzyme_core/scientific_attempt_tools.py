@@ -43,6 +43,8 @@ def _success(
     payload: dict[str, Any],
     status: str,
     summary: str,
+    terminal_action: str | None = None,
+    terminates_turn: bool = False,
 ) -> ToolResult:
     return ToolResult(
         call_id=invocation.call_id,
@@ -54,6 +56,8 @@ def _success(
         status=status,
         summary=summary,
         details=payload,
+        terminal_action=terminal_action,
+        terminates_turn=terminates_turn,
     )
 
 
@@ -89,6 +93,8 @@ def _execute(
     *,
     status: str,
     summary: str,
+    terminal_action: str | None = None,
+    terminates_turn: bool = False,
 ) -> ToolResult:
     try:
         record = callback()
@@ -100,6 +106,8 @@ def _execute(
         payload=payload,
         status=status,
         summary=summary,
+        terminal_action=terminal_action,
+        terminates_turn=terminates_turn,
     )
 
 
@@ -346,6 +354,8 @@ def register_scientific_attempt_tools(registry: ToolRegistry) -> None:
                 "Recorded closure intent; the Host finalizer must establish exact "
                 "post-turn quiescence without changing business task status."
             ),
+            terminal_action="scientific.attempt.close",
+            terminates_turn=True,
         )
 
     registry.register("scientific.attempt.inspect", inspect_handler)

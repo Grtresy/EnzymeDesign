@@ -1178,6 +1178,93 @@ def test_live_collector_rejects_mismatched_hpc_backend_identities() -> None:
     assert error.value.details["conflicting_fields"] == ["backend_run_id"]
 
 
+def test_live_positive_task_receipts_require_owner_authorship() -> None:
+    task_specs = (
+        ("task_research", "researcher", "research"),
+        ("task_execution", "executor", "execution"),
+        ("task_report", "reporter", "reporting"),
+    )
+    tasks = tuple(
+        SimpleNamespace(
+            task_id=task_id,
+            assigned_ref=f"agent_{role}",
+            status=SimpleNamespace(value="completed"),
+            kind=kind,
+            lane_id=f"lane_{role}",
+        )
+        for task_id, role, kind in task_specs
+    )
+    agents = tuple(
+        SimpleNamespace(agent_id=f"agent_{role}", role=role)
+        for _, role, _ in task_specs
+    )
+    documents = tuple(
+        SimpleNamespace(
+            document_id=f"finish_{task_id}",
+            document_kind="task_finish",
+            payload={
+                "task_id": task_id,
+                "status": "completed",
+                "finished_by": (
+                    "agent:master" if role == "executor" else f"agent_{role}"
+                ),
+                "evidence_refs": [],
+            },
+        )
+        for task_id, role, _ in task_specs
+    )
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live._task_receipts(
+            tasks=tasks,
+            agents=agents,
+            documents=documents,
+        )
+
+    assert error.value.code == "formal_task_finish_invalid"
+    assert error.value.details == {
+        "task_id": "task_execution",
+        "expected_finished_by": "agent_executor",
+        "observed_finished_by": "agent:master",
+    }
+
+
+def test_live_fault_task_receipts_require_owner_authorship() -> None:
+    task = SimpleNamespace(
+        task_id="task_execution",
+        assigned_ref="agent_executor",
+        status=SimpleNamespace(value="failed"),
+        kind="execution",
+        lane_id="lane_executor",
+    )
+    agent = SimpleNamespace(agent_id="agent_executor", role="executor")
+    finish = SimpleNamespace(
+        document_id="finish_task_execution",
+        document_kind="task_finish",
+        payload={
+            "task_id": "task_execution",
+            "status": "failed",
+            "finished_by": "agent:master",
+            "evidence_refs": [],
+        },
+    )
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live._fault_task_receipts(
+            tasks=(task,),
+            agents=(agent,),
+            documents=(finish,),
+            consumer_task_id="task_execution",
+        )
+
+    assert error.value.code == "fault_task_business_exit_invalid"
+    assert error.value.details == {
+        "task_id": "task_execution",
+        "expected_finished_by": "agent_executor",
+        "observed_finished_by": "agent:master",
+    }
+
+
 def test_live_collector_uses_canonical_provider_http_request_id() -> None:
     operation = _provider_http_operation(
         {"provider_request_id": "provider_request_001"}

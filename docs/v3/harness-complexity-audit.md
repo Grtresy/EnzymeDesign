@@ -256,6 +256,15 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
   不运行 handler、不生成默认 task/report、也不选择科学 operation、task 终态或 retry。
   AOX consumer 仅匹配其 authority-bound formal session；probe 与普通 V3 session 保持原语义。
 
+  post-r57 追加修正记录：precondition 只判断 close 是否可 dispatch，不能替代 turn
+  lifecycle。successful `scientific.attempt.close` 现复用通用 terminal action 与 ordered
+  batch settlement，持久化 closure intent 后立即退休 requesting turn；同批后续 mutation
+  不 dispatch，Host 只在外层 writer 连同 no-effect settlement 退休后 finalization。AOX
+  readiness/collector 还要求每个 finish receipt 都是 `finished_by == assigned_ref`；
+  generic master recovery authority 未被删除，但不再能冒充 cutover owner exit。该边界由
+  real SQLite repository-backed task/report/close/finalizer regression 覆盖，普通 session
+  仍保持原 task semantics。
+
 ## 4. 后续工作流
 
 每次后续简化时：

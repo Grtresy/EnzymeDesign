@@ -94,6 +94,18 @@ The collector SHALL reconstruct exactly one durable delegation request for each 
 - **WHEN** a formal master requests `scientific.attempt.close` before the board is exactly the authority-bound research/execution/report task set, before each task has one matching explicit business exit, before a positive has one linked ready report and published draft, or while a fault has any ready/published success report state
 - **THEN** the Router precondition rejects the request without closing the attempt and reports the observed task/report mismatch; it permits retry only after the agent reconciles durable state, and it never chooses an operation, task outcome, scientific branch, or replacement plan for the agent
 
+#### Scenario: Retire the requesting turn after successful closure intent
+- **WHEN** `scientific.attempt.close` passes its runtime preconditions and records the immutable closure request while later tool calls remain in the same provider response
+- **THEN** the close result is a successful terminal action, the harness retires the requesting turn without another model step, and every later call is settled as `tool_call_batch_interrupted` with `effect_certainty=no_effect` and `retry_eligibility=verify_then_retry`; Host finalization remains post-turn and does not complete a business task
+
+#### Scenario: Expose canonical task-finish evidence references
+- **WHEN** an agent prepares or submits `task.finish.evidence_refs`
+- **THEN** the tool schema and every invalid-reference result expose the exact `<kind>:<id>` format and closed supported kinds, session repositories still resolve every supplied reference, and the runtime neither guesses a kind from an opaque id nor adds a prefix or substitutes a closure request for a finalized scientific closure
+
+#### Scenario: Require owner-authored formal task exits
+- **WHEN** an AOX formal close or final evidence collection evaluates the canonical researcher, executor, and reporter tasks
+- **THEN** each task has exactly one status-matching `task.finish` receipt whose `finished_by` equals that task's canonical `assigned_ref`; a master-authored proxy finish may remain valid generic V3 state but cannot satisfy AOX formal readiness or cutover evidence
+
 #### Scenario: Keep capability inspection bounded
 - **WHEN** a capability invocation owns megabyte-scale documents, outputs, evidence, source, or gaps
 - **THEN** teammate inspection returns only its current-task bounded fact index (20 invocations, eight refs per kind, 64 KiB serialized facts), cross-task filters fail with a typed error, and no owned body bytes enter the agent context

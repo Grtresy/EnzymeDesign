@@ -681,6 +681,76 @@ def test_task_finish_requires_failed_and_blocked_details() -> None:
     assert task.status is TaskStatus.IN_PROGRESS
 
 
+def test_task_finish_rejects_bare_evidence_id_with_canonical_contract() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = TaskBoardService(repositories)
+    agent = _seed_agent(repositories, session, role="executor")
+    service.create_task(
+        session_id=session.session_id,
+        task_id="task_finish_evidence",
+        subject="Finish with evidence",
+        description="Validate the public evidence reference contract.",
+        status=TaskStatus.IN_PROGRESS,
+        assigned_ref=agent.agent_id,
+    )
+    registry = ToolRegistry()
+    register_task_board_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_finish_evidence"),
+        agent_id=agent.agent_id,
+        actor_kind="teammate",
+        actor_role="executor",
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_finish_with_bare_evidence",
+            tool_name="task.finish",
+            arguments={
+                "task_id": "task_finish_evidence",
+                "status": "completed",
+                "summary": "Evidence is available.",
+                "evidence_refs": ["artifact_123"],
+            },
+            task_id="task_finish_evidence",
+        ),
+    )
+
+    assert result.ok is False
+    assert result.error_code == "invalid_task_finish_evidence_refs"
+    assert result.details == {
+        "task_id": "task_finish_evidence",
+        "evidence_refs": ["artifact_123"],
+        "expected_format": "<kind>:<id>",
+        "supported_kinds": [
+            "artifact",
+            "document",
+            "invocation",
+            "message",
+            "protocol",
+            "report",
+            "run",
+            "sandbox_run",
+            "scientific_closure",
+        ],
+        "examples": [
+            "artifact:<artifact_id>",
+            "report:<report_id>",
+            "scientific_closure:<closure_id>",
+        ],
+    }
+    assert result.hint is None
+    task = repositories.tasks.get("task_finish_evidence")
+    assert task is not None
+    assert task.status is TaskStatus.IN_PROGRESS
+
+
 @pytest.mark.parametrize("status_value", ("completed", "failed", "blocked", "cancelled"))
 def test_task_update_rejects_business_exit_statuses(status_value: str) -> None:
     repositories = _build_repositories()

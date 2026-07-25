@@ -425,6 +425,21 @@ validation observation. The guard does not pick scientific operations,
 queries, task outcomes or retries, and it does not affect the independent
 probe or ordinary V3 sessions.
 
+The post-r57 non-live closure-protocol correction closes the remaining adjacent
+seams. Every canonical formal task now needs exactly one status-matching
+`task.finish` receipt whose `finished_by` equals that task's `assigned_ref`;
+a generic master proxy finish can remain valid V3 recovery state but is not
+cutover evidence. `task.finish.evidence_refs` exposes the closed
+`<kind>:<id>` contract in both tool schema and structured validation, and only
+a finalized `scientific_closure:<closure_id>` is closure evidence. A successful
+`scientific.attempt.close` records intent as a terminal turn action, settles
+later calls in the same provider batch as
+`tool_call_batch_interrupted/no_effect/verify_then_retry`, and permits Host
+finalization only after the requesting writer retires. Repository-backed
+non-live regression covers the exact-three task board, owner receipts, linked
+ready report/published draft, close barrier, no-effect later mutation, and
+post-turn finalizer; ordinary sessions retain normal task creation semantics.
+
 Parent fatal
 `sha256:500f7e6b183906e7d849eeaed00af3e67a2c3512d4cebdd34e7a31a560acabae`
 records child exit `70` and descendant retirement without claiming a settled
@@ -2527,4 +2542,6 @@ session-scoped Router precondition do not authorize a successor
 call, HPC job, browser campaign or formal attempt. Another diagnostic would
 need a new separately approved one-slot plan; formal acceptance requires a
 different separately approved exact-three plan after a fresh clean full
-admission. No r57 or pre-correction plan is authority.
+admission. The post-r57 terminal-action/evidence/owner-receipt correction is
+non-live implementation evidence only. No r57 or pre-correction plan is
+authority.

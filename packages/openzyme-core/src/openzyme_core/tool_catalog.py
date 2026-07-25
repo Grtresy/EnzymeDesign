@@ -9,6 +9,7 @@ from openzyme_runtime import ToolRuntime
 
 from .engines import EngineRegistry
 from .sandbox_runtime import EXEC_MAX_TIMEOUT_SECONDS
+from .task_evidence import task_finish_evidence_refs_schema
 from .teammate_roster import TEAMMATE_ROLE_NAMES
 
 
@@ -691,9 +692,10 @@ def scientific_attempt_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         ToolDescriptor(
             tool_name="scientific.attempt.close",
             description=(
-                "Request Host finalization of the exact sealed selection. The Host "
-                "establishes quiescence only after this agent turn retires; closure "
-                "never completes or fails the task, so use task.finish separately."
+                "Request Host finalization of the exact sealed selection without "
+                "changing task status. Success ends this turn: later same-response "
+                "calls are not dispatched and no next model step runs. Rejection is "
+                "non-terminal; Host finalizes only after the writer retires."
             ),
             input_schema={
                 "type": "object",
@@ -845,7 +847,7 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                         "enum": ["completed", "blocked", "failed", "cancelled"],
                     },
                     "summary": {"type": "string"},
-                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    "evidence_refs": task_finish_evidence_refs_schema(),
                     "failure_summary": {"type": ["string", "null"]},
                     "failure_ref": {"type": ["string", "null"]},
                     "blocked_reason": {"type": ["string", "null"]},

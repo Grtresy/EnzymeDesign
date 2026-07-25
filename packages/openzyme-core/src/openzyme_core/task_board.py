@@ -21,6 +21,9 @@ from .agent_identity import resolve_agent_reference
 from .repositories import CoreRepositories
 from .repositories import EngineDocumentRecord
 from .repositories import TaskWriteIntent
+from .task_evidence import TASK_FINISH_EVIDENCE_REF_FORMAT
+from .task_evidence import TASK_FINISH_EVIDENCE_REF_KINDS
+from .task_evidence import task_finish_evidence_contract_details
 
 _UNSET = object()
 _PRIORITY_ORDER = {
@@ -39,17 +42,6 @@ _TASK_FINISH_STATUSES = {
 _TASK_TOOL_MUTATION_STATUSES = {
     TaskStatus.TODO,
     TaskStatus.IN_PROGRESS,
-}
-_EVIDENCE_REF_KINDS = {
-    "artifact",
-    "document",
-    "invocation",
-    "message",
-    "protocol",
-    "report",
-    "run",
-    "sandbox_run",
-    "scientific_closure",
 }
 
 
@@ -149,13 +141,16 @@ def _validate_evidence_refs(
         kind, sep, record_id = ref.partition(":")
         if not sep or not kind or not record_id:
             return (
-                f"Evidence ref {ref!r} must use '<kind>:<id>' format. "
-                f"Known kinds: {', '.join(sorted(_EVIDENCE_REF_KINDS))}."
+                f"Evidence ref {ref!r} must use "
+                f"{TASK_FINISH_EVIDENCE_REF_FORMAT!r} format. "
+                "Known kinds: "
+                f"{', '.join(TASK_FINISH_EVIDENCE_REF_KINDS)}."
             )
-        if kind not in _EVIDENCE_REF_KINDS:
+        if kind not in TASK_FINISH_EVIDENCE_REF_KINDS:
             return (
                 f"Evidence ref {ref!r} uses unknown kind {kind!r}. "
-                f"Known kinds: {', '.join(sorted(_EVIDENCE_REF_KINDS))}."
+                "Known kinds: "
+                f"{', '.join(TASK_FINISH_EVIDENCE_REF_KINDS)}."
             )
         if kind == "artifact":
             artifact = repositories.artifacts.get(record_id)
@@ -933,7 +928,10 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
                 invocation,
                 status="invalid_task_finish_evidence_refs",
                 summary=evidence_error,
-                details={"task_id": task_id},
+                details={
+                    "task_id": task_id,
+                    **task_finish_evidence_contract_details(),
+                },
             )
         evidence_validation_error = _validate_evidence_refs(
             context.repositories,
@@ -945,7 +943,11 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
                 invocation,
                 status="invalid_task_finish_evidence_refs",
                 summary=evidence_validation_error,
-                details={"task_id": task_id, "evidence_refs": list(evidence_refs)},
+                details={
+                    "task_id": task_id,
+                    "evidence_refs": list(evidence_refs),
+                    **task_finish_evidence_contract_details(),
+                },
             )
         finish_outcome = service.finish_task(
             task.task_id,

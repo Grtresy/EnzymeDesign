@@ -86,7 +86,8 @@ exception 才能报告 count `0`；旧 `@1` receipt 只读，不回填推导值�
 也不重扫 mutable signal/task/failure/agent/wakeup repository。
 
 同一个 provider response 中的多个 tool call 作为有序 batch 结算。若某个已 dispatch call
-触发 approval、terminal action、runtime suspension 或 boundary-fatal failure，harness
+触发 approval、成功的 `task.finish` / `scientific.attempt.close` terminal action、runtime
+suspension 或 boundary-fatal failure，harness
 停止 dispatch 余下 call，但不能让它们消失：后续 eligible call 记录
 `tool_call_batch_interrupted/no_effect/verify_then_retry`，overflow call 记录
 `parallel_tool_call_limit_exceeded/no_effect/same_phase_safe`。causal call 若已跨过外部
@@ -197,6 +198,13 @@ operation 或新 selection revision。agent writer 退休后，Host：
 4. 验证 selected workflow roles 和 lineage；
 5. 写 immutable closure。
 
+成功写入 intent 的 close result 必须携带
+`terminal_action="scientific.attempt.close"` 与 `terminates_turn=true`。harness 不把该
+result 再喂给模型；同批后续 call 全部以
+`tool_call_batch_interrupted/no_effect/verify_then_retry` 持久结算而不 dispatch。该
+settlement 仍属于 requesting `AGENT_TURN` writer；writer 退出前 final closure 必须不存在。
+close validation/readiness 失败则保持 non-terminal，允许 agent 读取 blocker 后修正。
+
 上述 transition 必须是一个短本地 write transaction：attempt scope seal、closure row 与唯一
 post-attempt session scope open 对并发 reader 原子可见。runtime barrier 可以看到 transition
 前的 attempt scope 或 transition 后的 post-attempt scope，但不能看到已提交的零 open scope
@@ -216,6 +224,9 @@ scope gap，也没有 closure commit 后 agent 永久失联的第二条 crash se
 
 quiescence 只证明“不会再变”，selection 只证明“采用什么”，两者互不替代。closed attempt 是
 agent 可消费的 evidence，不是 `task.finish`；owner 仍需显式决定完成、继续、blocked 或 failed。
+只有 final closure id 才能形成 `scientific_closure:<closure_id>` evidence ref；closure request
+不能被 runtime 替换成该证据。`task.finish.evidence_refs` 的 schema 与 invalid-result details
+共同暴露 closed `<kind>:<id>` format，repository 仍负责当前 session 解析。
 
 ## 7. AOX evidence migration
 
@@ -318,7 +329,8 @@ forward correction 不把 report/task 状态并入 scientific-attempt 真状态�
 
 - `task.create` 的显式 id 与 kind 必须属于 exact research/execution/report 闭集；
 - `scientific.attempt.close` 必须由 master 请求，task set/role/kind 必须 exact，每项 task
-  必须已有唯一 matching `task.finish`；
+  必须已有唯一 matching `task.finish`，且 receipt 的 `finished_by` 必须等于该 task 的
+  canonical `assigned_ref`；
 - positive 必须已有 canonical reporting task 绑定的唯一 ready report 与 published draft；
   fault 必须是 research completed、execution/report negative exit，且不存在
   ready/published success report state。
@@ -328,3 +340,5 @@ forward correction 不把 report/task 状态并入 scientific-attempt 真状态�
 自行修正或选择失败出口。guard 不生成 task/report、不完成 task、不选择 selection/operation
 或 retry，也不应用于 probe/其他 session。这样保持“scientific closure 不推断业务终态”，
 同时把 authority 已固定的真实验收约束从脆弱 prompt 变成低摩擦结构化事实。
+generic V3 的 master recovery finish authority 不变，但 master 代写 researcher/executor/
+reporter exit 不满足 AOX formal readiness，也不能进入 positive/fault collector receipt。

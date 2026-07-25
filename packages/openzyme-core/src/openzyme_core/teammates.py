@@ -52,6 +52,7 @@ from .sandbox_host import SandboxHostBinding
 from .sandbox_host import SandboxMutationWriterScopeFactory
 from .sandbox_runtime import register_sandbox_runtime_tools
 from .task_board import register_task_board_tools
+from .task_evidence import task_finish_evidence_refs_schema
 from .skills import SkillRegistry
 from .skills import render_selected_workflow_context
 from .tool_catalog import artifact_tool_descriptors
@@ -147,7 +148,7 @@ def teammate_tool_descriptors(
                         "enum": ["completed", "blocked", "failed", "cancelled"],
                     },
                     "summary": {"type": "string"},
-                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    "evidence_refs": task_finish_evidence_refs_schema(),
                     "failure_summary": {"type": ["string", "null"]},
                     "failure_ref": {"type": ["string", "null"]},
                     "blocked_reason": {"type": ["string", "null"]},

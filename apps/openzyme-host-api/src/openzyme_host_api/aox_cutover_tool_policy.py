@@ -311,6 +311,7 @@ class AoxCutoverFormalToolPrecondition:
 
         finish_issues = self._task_finish_issues(
             repositories,
+            tasks_by_id=tasks_by_id,
             observed_statuses=observed_statuses,
         )
         if finish_issues:
@@ -377,6 +378,7 @@ class AoxCutoverFormalToolPrecondition:
         self,
         repositories: Any,
         *,
+        tasks_by_id: dict[str, object],
         observed_statuses: dict[str, str],
     ) -> list[dict[str, object]]:
         finish_payloads: dict[str, list[dict[str, object]]] = {}
@@ -392,10 +394,16 @@ class AoxCutoverFormalToolPrecondition:
         issues: list[dict[str, object]] = []
         for task_id, status in observed_statuses.items():
             matches = finish_payloads.get(task_id, [])
+            expected_finished_by = str(
+                getattr(tasks_by_id[task_id], "assigned_ref", "") or ""
+            )
+            observed_finished_by = [
+                str(payload.get("finished_by") or "").strip() for payload in matches
+            ]
             if (
                 len(matches) != 1
                 or matches[0].get("status") != status
-                or not str(matches[0].get("finished_by") or "").strip()
+                or observed_finished_by[0] != expected_finished_by
             ):
                 issues.append(
                     {
@@ -406,6 +414,8 @@ class AoxCutoverFormalToolPrecondition:
                             str(payload.get("status") or "")
                             for payload in matches
                         ],
+                        "expected_finished_by": expected_finished_by,
+                        "observed_finished_by": observed_finished_by,
                     }
                 )
         return issues

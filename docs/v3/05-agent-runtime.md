@@ -168,6 +168,11 @@ request-response protocol 统一使用 correlation id 追踪 pending、approved�
 
 teammate 完成、阻塞、失败或取消当前 task stage 时必须通过 `task.finish` 显式写入 task 业务出口，并在同一 correlation thread 上写 `delegation_result` 或普通 follow-up response。`task.update`、HarnessStep task update 与 Host task CRUD 保留为普通 task 字段编辑和 `todo` / `in_progress` 等非出口状态迁移；tool/service/repository 三层都必须拒绝把普通 update 用作 completed / failed / blocked / cancelled 业务出口。blocked task 保持 blocked 时允许非状态 edit，但不能再次 finish，必须先显式 resume/reopen；completed / failed / cancelled task edit fail closed。finish intent 只允许 status / updated_at / failure fields 变化，并在单个 transaction 内写 finish document 与 task row，commit 后才发送 task mutation / finished events；rollback 不得泄漏 document、terminal status 或 event。runtime 不根据 teammate loop 的 `idle`、`failed` 或 `max_steps_exceeded` 推断业务 task 已完成或失败。teammate terminal outcome 只更新 canonical state / protocol，并排队 `agent:master` wakeup；master 由 scheduler claim signal 后读取 restore context 和 `protocol.thread(correlation_id)`，再决定是否回复用户、追问 teammate、更新 task 或请求用户澄清。approval resolve 只负责写入 approval 与对应恢复状态：agent-level approval 可以排队必要 wakeup；durable SDK controlled-operation approval 只开放 execution claim，由独立 execution/continuation workers 推进，不能直接 drain teammate 或触发 master response turn。
 
+`task.finish.evidence_refs` 使用闭集 `<kind>:<id>` wire contract。tool schema 与每个
+invalid-result `details` 共享 exact format、supported kinds 与示例；repository 再解析当前
+session identity。runtime 不从 opaque id 猜 kind、不自动补 prefix，也不把 closure request
+替换成 final `scientific_closure`。
+
 ### Failed Delegation Follow-up Flow
 
 失败委托的后续处理由 master 主动判断，不由 `task.delegate`、protocol tool 或 runtime 自动追问：
@@ -313,8 +318,16 @@ session。master wake 与 delegated teammate turn 必须继承同一注入实例
 AOX blank-world cutover 使用该 seam 只呈现 authority 已固定的局部事实：
 formal session 只能创建 exact research/execution/report task id，且
 `scientific.attempt.close` 只有在 exact task identity、显式 business exit 与
-positive/fault 对应 report state 闭合后才放行。probe 与普通 V3 session 不受
-影响；guard 不选择 operation、query、执行顺序或科学分支。
+positive/fault 对应 report state 闭合后才放行。每项 business exit 必须恰有一个
+status-matching finish receipt，且 `finished_by` 等于 task 的 canonical `assigned_ref`；
+generic master recovery finish 仍可写产品状态，但不能满足 AOX formal eligibility。
+probe 与普通 V3 session 不受影响；guard 不选择 operation、query、执行顺序或科学分支。
+
+successful `scientific.attempt.close` 是通用 terminal turn action，不是 AOX-specific
+prompt rule。它持久化 closure intent 后，harness 立即结算同批后续 calls 为
+`tool_call_batch_interrupted/no_effect/verify_then_retry`，不再调用模型；外层
+`AGENT_TURN` writer 连同 settlement 退休后，Host 才能推进 final closure。close rejection
+保持 non-terminal，scientific closure 不完成 task。
 
 `supports_parallel` 目前只作为治理 metadata 暴露和记录；runtime 仍按现有 bounded loop 串行 dispatch，不启用真实并行 tool execution。
 
