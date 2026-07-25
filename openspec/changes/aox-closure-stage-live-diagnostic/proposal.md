@@ -45,4 +45,7 @@ closure-stage diagnostic authority, reconstruction, runner, evidence/verifier, a
 It also updates the main architecture and relevant `docs/v3/` operator/scientific-attempt
 contracts. No public V3 product endpoint or formal cutover acceptance schema is relaxed;
 the live run consumes the configured MICU ledger and therefore requires the same explicit
-operator authority and clean committed configuration boundary as existing live modes.
+operator authority and clean committed configuration boundary as existing live modes. The
+pre-existing path-and-config-pinned cumulative ledger may remain at the numbered-run
+ignored checkout location; it is not a fresh diagnostic output and cannot be relocated
+without breaking runtime parity.

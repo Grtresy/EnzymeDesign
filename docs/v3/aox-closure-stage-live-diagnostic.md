@@ -119,6 +119,15 @@ append-only output. Its existing real parent and the exact output path must be
 outside the checkout, the frozen source, the fresh target root, the MICU
 ledger, and both authority files.
 
+The cumulative MICU ledger is different from those fresh outputs. It must
+already exist and its canonical path, path-derived identity and effective
+configuration digest must reproduce the clean-commit pin. Therefore the
+diagnostic deliberately reuses the numbered-run configured ledger, including
+an ignored `.openzyme/` path inside the checkout when that is the pinned
+location. It may not be moved merely to satisfy output placement, and it still
+must not alias the frozen source, fresh target, authority files or browser
+receipt.
+
 After inspecting the plan, invoke its exact fresh target and deterministic
 unused sibling consumption path:
 

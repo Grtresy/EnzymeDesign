@@ -473,6 +473,8 @@ def _validate_runtime_parity(
 
 def _validate_micu_binding(
     micu: Mapping[str, object],
+    *,
+    effective_config_digest: object,
 ) -> dict[str, Any]:
     binding = dict(micu)
     if (
@@ -499,10 +501,19 @@ def _validate_micu_binding(
         identity="micu.ledger_path",
         directory=False,
     )
-    if str(ledger_path) != binding.get("ledger_path"):
+    if (
+        str(ledger_path) != binding.get("ledger_path")
+        or binding.get("ledger_identity")
+        != canonical_digest({"ledger_path": str(ledger_path)})
+        or binding.get("effective_config_digest")
+        != effective_config_digest
+    ):
         raise CutoverEvidenceError(
-            "closure_stage_micu_ledger_path_invalid",
-            "closure-stage MICU ledger path must be canonical",
+            "closure_stage_micu_binding_identity_invalid",
+            (
+                "closure-stage MICU ledger and effective configuration "
+                "must reproduce their pinned identities"
+            ),
         )
     return binding
 
@@ -706,16 +717,14 @@ def build_aox_closure_stage_authority_plan(
         architecture_qualification_digest=qualification_digest,
     )
     parity = _validate_runtime_parity(runtime_parity)
-    micu_binding = _validate_micu_binding(micu)
+    micu_binding = _validate_micu_binding(
+        micu,
+        effective_config_digest=identity.get("config_digest"),
+    )
     _assert_mutable_path_disjoint_from_source(
         Path(str(micu_binding["ledger_path"])),
         source=source,
         code="closure_stage_micu_ledger_source_overlap",
-        label="MICU ledger",
-    )
-    _assert_mutable_path_outside_checkout(
-        Path(str(micu_binding["ledger_path"])),
-        code="closure_stage_micu_ledger_inside_checkout",
         label="MICU ledger",
     )
     resources = _validate_resources(
@@ -895,16 +904,14 @@ def validate_aox_closure_stage_authority_plan(
         architecture_qualification_digest=qualification_digest,
     )
     expected_parity = _validate_runtime_parity(runtime_parity)
-    expected_micu = _validate_micu_binding(micu)
+    expected_micu = _validate_micu_binding(
+        micu,
+        effective_config_digest=identity.get("config_digest"),
+    )
     _assert_mutable_path_disjoint_from_source(
         Path(str(expected_micu["ledger_path"])),
         source=validated_source,
         code="closure_stage_micu_ledger_source_overlap",
-        label="MICU ledger",
-    )
-    _assert_mutable_path_outside_checkout(
-        Path(str(expected_micu["ledger_path"])),
-        code="closure_stage_micu_ledger_inside_checkout",
         label="MICU ledger",
     )
     expected_browser_target = _canonical_browser_observation_target(
@@ -947,16 +954,14 @@ def validate_aox_closure_stage_authority_plan(
         architecture_qualification_digest=qualification_digest,
     )
     _validate_runtime_parity(observed_parity)
-    validated_observed_micu = _validate_micu_binding(observed_micu)
+    validated_observed_micu = _validate_micu_binding(
+        observed_micu,
+        effective_config_digest=identity.get("config_digest"),
+    )
     _assert_mutable_path_disjoint_from_source(
         Path(str(validated_observed_micu["ledger_path"])),
         source=validated_source,
         code="closure_stage_micu_ledger_source_overlap",
-        label="MICU ledger",
-    )
-    _assert_mutable_path_outside_checkout(
-        Path(str(validated_observed_micu["ledger_path"])),
-        code="closure_stage_micu_ledger_inside_checkout",
         label="MICU ledger",
     )
     expected_digests = {

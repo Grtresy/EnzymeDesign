@@ -48,6 +48,10 @@ and process epoch.
 - **WHEN** the MICU ledger, authority output, consumption output, or browser-observation target aliases the frozen source, the isolated target, another bound output, or an unbound browser path
 - **THEN** authorization or launch fails before authority consumption and no source or target byte is mutated
 
+#### Scenario: Reuse only the configured cumulative ledger
+- **WHEN** the clean-commit configuration pins a pre-existing cumulative MICU ledger, including an ignored path inside the checkout used by numbered runs
+- **THEN** closure-stage authorization requires that exact canonical path, path-derived ledger identity, and effective configuration digest while continuing to require every fresh target, authority, consumption, and browser output outside the checkout
+
 #### Scenario: Reject expired or stale authority
 - **WHEN** the plan is expired or any bound source, commit, configuration, workflow, SOP, architecture-qualification, UI, model, or ledger identity has drifted
 - **THEN** validation fails before consumption can authorize live execution

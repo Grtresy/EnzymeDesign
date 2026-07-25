@@ -524,6 +524,9 @@ plan/receipt/root 或相同 digest reuse 均在 effect/root 前拒绝。
 也不创建 `aox-diagnostic-*` 或 `rNN-*` root；plan 绑定 source inventory/cursor 614、
 fresh `aox-closure-stage-*` root/process、当前 clean commit/config/workflow/SOP/
 qualification/UI、r59-equivalent MICU/driver/supervision limits 与 ledger identity。
+ledger 必须是 config pin 已绑定且预先存在的累计 ledger；它可沿用 numbered run 在
+ignored `.openzyme/` 下的既有路径，不受 fresh output 的 checkout 外置规则约束，但
+source/target/output alias 仍然 fail-closed。
 `chrome-once` 还要求 authorize 与 run 使用同一个 plan-bound、fresh append-only 外部
 browser receipt；它不得位于 checkout、冻结 source、fresh target root 或其他 mutable
 output 上，从而不绕过 process-isolated attempt-root access gate。

@@ -82,6 +82,7 @@
 - [x] 9.6 Accept the user's already-passed mainline result and do not rerun `./scripts/check-mainline.sh`.
 - [x] 9.7 Audit the complete diff against the OpenSpec requirements, verify no unrelated dirty files are included, and update all implementation checkboxes supported by evidence.
 - [x] 9.8 Stage the coherent pre-live slice, run staged diff checks, create one detailed Chinese Conventional Commit, and verify the worktree is clean.
+- [x] 9.9 Correct the pre-live ledger placement gate discovered by the real authority command so the exact pre-existing config-pinned numbered-run ledger is reused while fresh outputs remain outside the checkout; add identity tests, revalidate, and commit before publishing authority.
 
 ## 10. One Authorized Non-Numbered MICU Live Diagnostic
 

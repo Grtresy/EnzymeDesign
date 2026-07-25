@@ -277,6 +277,15 @@ over-authority evidence fails closed.
 Provider/HPC effect counts must remain unchanged; only model usage is expected
 to increase.
 
+The ledger is pre-existing shared accounting state, not a fresh closure-stage
+output. Its canonical path, path-derived ledger identity, and effective config
+digest must reproduce the clean-commit pin. If the numbered-run configuration
+places that ignored ledger under `.openzyme/` in the checkout, closure-stage
+parity requires that exact location; the outside-checkout rule remains strict
+for new target, authority, consumption, and browser-observation outputs.
+Regardless of location, the ledger cannot alias the frozen source, isolated
+target, or another bound output.
+
 ### 8. Define closure-specific success evidence
 
 A completed diagnostic requires all of the following:

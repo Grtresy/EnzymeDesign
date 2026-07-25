@@ -325,7 +325,11 @@ Chrome completion observation；科学 operation universe 在启动前密封，f
 不得新增 session/scientific artifact。一次性 authority 同时绑定当前 clean commit/config、
 workflow contract、既有 AOX execution SOP、独立 closure-stage SOP 摘要，以及位于
 source/target/checkout 之外的 fresh append-only Chrome 回执路径；该外部路径避免 parent
-观察与 attempt-root access gate 冲突。parity verifier 从冻结 supervision result 重算完整
+观察与 attempt-root access gate 冲突。既有累计 MICU ledger 不是 fresh diagnostic
+output：它必须预先存在、路径和 identity 都与 clean-commit config pin 完全一致，并可继续
+沿用 numbered run 已配置的 checkout 内 ignored `.openzyme/` 位置；只有 fresh target、
+authority/consumption 和 browser output 必须位于 checkout 外，ledger 仍不得与 source、
+target 或其他绑定输出别名。parity verifier 从冻结 supervision result 重算完整
 `effective_config` 摘要，要求当前 launch 与 r59 同 digest，并显式固定
 `chrome-once`、`7200/120/1/16` 及浏览器 `0.5/300/60/180` 秒边界；MICU 逐行归因还要
 重放 ledger delta 且总 charge 不超过同一 `20000000` authority。其 source/

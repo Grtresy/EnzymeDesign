@@ -160,8 +160,10 @@ def _fixture(
         "model": "gpt-5.5",
         "token_scenario": "aox_closure_stage_diagnostic",
         "ledger_path": str(ledger_path.resolve()),
-        "ledger_identity": _digest("8"),
-        "effective_config_digest": _digest("9"),
+        "ledger_identity": canonical_digest(
+            {"ledger_path": str(ledger_path.resolve())}
+        ),
+        "effective_config_digest": identity["config_digest"],
     }
     target_parent = tmp_path / "closure-stage-targets"
     target_parent.mkdir()
@@ -563,7 +565,7 @@ def test_closure_stage_authority_rejects_mutable_source_paths(
     assert not forbidden_output.exists()
 
 
-def test_closure_stage_mutable_outputs_stay_outside_checkout(
+def test_closure_stage_outputs_stay_outside_checkout_but_pinned_ledger_may_live_inside(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -596,10 +598,9 @@ def test_closure_stage_mutable_outputs_stay_outside_checkout(
             {"ledger_path": str(ledger.resolve())}
         ),
     }
-    with pytest.raises(CutoverEvidenceError) as ledger_error:
-        _build({**values, "micu": micu})
-    assert ledger_error.value.code == (
-        "closure_stage_micu_ledger_inside_checkout"
+    pinned_ledger_plan = _build({**values, "micu": micu})
+    assert pinned_ledger_plan["micu"]["ledger_path"] == str(
+        ledger.resolve()
     )
 
     target_parent = checkout / "targets"
@@ -616,4 +617,28 @@ def test_closure_stage_mutable_outputs_stay_outside_checkout(
         )
     assert authority_output.value.code == (
         "closure_stage_authority_output_inside_checkout"
+    )
+
+
+def test_closure_stage_micu_binding_reproduces_path_and_config_identity(
+    tmp_path: Path,
+) -> None:
+    values = _fixture(tmp_path)
+    micu = dict(values["micu"])
+    micu["ledger_identity"] = _digest("0")
+
+    with pytest.raises(CutoverEvidenceError) as ledger_identity:
+        _build({**values, "micu": micu})
+
+    assert ledger_identity.value.code == (
+        "closure_stage_micu_binding_identity_invalid"
+    )
+
+    micu = dict(values["micu"])
+    micu["effective_config_digest"] = _digest("0")
+    with pytest.raises(CutoverEvidenceError) as config_identity:
+        _build({**values, "micu": micu})
+
+    assert config_identity.value.code == (
+        "closure_stage_micu_binding_identity_invalid"
     )
