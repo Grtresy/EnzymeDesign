@@ -408,12 +408,16 @@ current session policy 是 `aox_cutover_formal_tool_precondition@3`。它不增�
 task completion 或 attempt closure，只在以下 durable facts 同时成立时拒绝错误终态：
 
 - attempt 是 positive，canonical execution task 仍由当前 teammate owner 操作；
-- active attempt 的 current scientific selection 已 sealed；
+- active attempt 的 current scientific selection 已 sealed，且同一个 canonical
+  selection evaluator 当前仍投影 `closure_request_ready=true`；
 - executor 请求 `blocked|failed|cancelled` 业务出口。
 
 拒绝码为 `aox_cutover_positive_execution_exit_mismatch`，effect 是 `no_effect`，
 retry 是 `same_phase_safe`，并明确 `required_status=completed`、closure actor 是 master。
 owner 仍须自己提交 completed result/evidence，reporter 仍须自己发布，master 仍须自己在
-co-terminal response 中请求 closure。selection seal 前的真实 authority/provider/HPC/runtime
-blocker、fault attempt 和普通 V3 session 继续使用 generic task semantics；guard 不选择
-科学路线或结果。
+co-terminal response 中请求 closure。sealed state 本身不证明 successful handoff；seal 后
+operation universe、authority、workflow contract、process/continuation、disposition、
+adoption、materialization 或 evidence 漂移会让 `closure_request_ready=false`，此时
+`blocked|failed|cancelled` 继续使用 generic task semantics，agent 可修复或建立 child
+selection。fault attempt 和普通 V3 session 同样不受该 guard 影响；guard 不选择科学路线
+或结果。

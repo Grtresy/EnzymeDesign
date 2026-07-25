@@ -83,14 +83,18 @@ own `scientific.attempt.close` call is rejected: closure is master-only, and
 responsibility and closure remains the resident master's responsibility.
 
 The formal Router enforces this only after the assigned positive executor's
-current selection is sealed. Before that seal, a genuine unavailable
-authority/provider/HPC/runtime capability still uses ordinary explicit task
-failure/blocker semantics. Fault attempts retain their required negative exits;
-there is no hidden completion, reopen, retry, or inferred scientific outcome.
+sealed current selection evaluates `closure_request_ready=true` through the
+same canonical evaluator used by the close path. Sealed state alone is not
+readiness. A pre-seal blocker, or post-seal universe, authority, workflow,
+process, continuation, disposition, adoption, materialization, or evidence
+drift, still uses ordinary explicit task failure/blocker semantics. Fault
+attempts retain their required negative exits; there is no hidden completion,
+reopen, retry, or inferred scientific outcome.
 
 Inspection separates the two closure phases. `closure_request_ready=true`
-means the sealed selection satisfies the selection-side condition for the
-master to persist agent-authored closure intent in the current turn.
+means the canonical evaluator proves that the sealed current selection still
+satisfies the selection-side condition for the master to persist agent-authored
+closure intent in the current turn.
 `closure_finalization_ready=false` can simply mean the requesting turn remains
 an active mutation writer. The legacy `closure_ready` field describes that
 later `host_finalization_after_request` phase; `selection_active_writers` does

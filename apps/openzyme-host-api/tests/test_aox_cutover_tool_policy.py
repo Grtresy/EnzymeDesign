@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 from openzyme_core import CoreRepositories
@@ -34,6 +35,7 @@ from openzyme_domain import SandboxRunRecord
 from openzyme_domain import SandboxRunStatus
 from openzyme_domain import SandboxWorkspaceRecord
 from openzyme_domain import SandboxWorkspaceStatus
+from openzyme_domain import ScientificAttemptAuthorityStatus
 from openzyme_domain import ScientificAttemptScope
 from openzyme_domain import Session
 from openzyme_domain import SessionReportDraftRecord
@@ -135,6 +137,9 @@ def _repositories(
     resolved_head: SimpleNamespace | None = None,
 ) -> SimpleNamespace:
     by_id = {task.task_id: task for task in tasks}
+    attempts_by_id = {
+        attempt.attempt_id: attempt for attempt in attempts
+    }
     finish_documents = (
         _finish_documents(tasks) if documents is None else documents
     )
@@ -156,6 +161,7 @@ def _repositories(
             list_by_session=lambda _session_id: drafts,
         ),
         scientific_attempts=_record(
+            get=attempts_by_id.get,
             list_by_session=lambda _session_id: attempts,
         ),
         scientific_selections=_record(
@@ -164,8 +170,17 @@ def _repositories(
     )
 
 
-def _context(repositories: SimpleNamespace) -> SimpleNamespace:
-    return _record(repositories=repositories)
+def _context(
+    repositories: object,
+    *,
+    scientific_workflow_contract_registry: object | None = None,
+) -> SimpleNamespace:
+    return _record(
+        repositories=repositories,
+        scientific_workflow_contract_registry=(
+            scientific_workflow_contract_registry
+        ),
+    )
 
 
 def _step(
@@ -306,7 +321,7 @@ def test_cutover_policy_rejects_close_from_teammate() -> None:
     assert result.error_code == "aox_cutover_close_actor_violation"
 
 
-def test_cutover_policy_preserves_sealed_positive_executor_handoff() -> None:
+def test_cutover_policy_does_not_infer_handoff_from_sealed_state_alone() -> None:
     tasks = _tasks(execution_status="in_progress")
     attempts = (
         _record(
@@ -358,16 +373,7 @@ def test_cutover_policy_preserves_sealed_positive_executor_handoff() -> None:
             task_id=EXECUTION_TASK_ID,
         ),
     )
-    assert blocked_result is not None
-    assert (
-        blocked_result.error_code
-        == "aox_cutover_positive_execution_exit_mismatch"
-    )
-    assert blocked_result.details["attempt_id"] == "attempt_001"
-    assert blocked_result.details["selection_id"] == "selection_001"
-    assert blocked_result.details["requested_status"] == "blocked"
-    assert blocked_result.details["required_status"] == "completed"
-    assert blocked_result.details["effect_certainty"] == "no_effect"
+    assert blocked_result is None
 
     completed_result = _positive_policy()(
         _context(repositories),
@@ -417,6 +423,33 @@ def test_cutover_policy_leaves_preselection_execution_blockers_generic() -> None
                 "task_id": EXECUTION_TASK_ID,
                 "status": "blocked",
                 "blocked_reason": "Operator authority is genuinely missing.",
+            },
+            task_id=EXECUTION_TASK_ID,
+        ),
+    )
+
+    assert result is None
+
+
+def test_cutover_policy_leaves_fault_execution_exits_generic() -> None:
+    policy = AoxCutoverFormalToolPrecondition(
+        session_id=SESSION_ID,
+        execution_task_id=EXECUTION_TASK_ID,
+        attempt_kind="fault",
+    )
+    result = policy(
+        _context(_repositories(tasks=_tasks(execution_status="in_progress"))),
+        _step(
+            actor_kind="teammate",
+            agent_id="agent_executor",
+        ),  # type: ignore[arg-type]
+        ToolInvocation(
+            call_id="call_fault_blocked",
+            tool_name="task.finish",
+            arguments={
+                "task_id": EXECUTION_TASK_ID,
+                "status": "blocked",
+                "blocked_reason": "The injected required-artifact fault fired.",
             },
             task_id=EXECUTION_TASK_ID,
         ),
@@ -1137,6 +1170,226 @@ def test_repository_backed_positive_close_retires_turn_before_later_mutation() -
         expected_universe_digest=universe.universe_digest,
     )
 
+    lifecycle_policy = AoxCutoverFormalToolPrecondition(
+        session_id=SESSION_ID,
+        execution_task_id=EXECUTION_TASK_ID,
+        attempt_kind="positive",
+    )
+    executor_step = _step(
+        actor_kind="teammate",
+        agent_id="agent_executor",
+    )
+    blocked_invocation = ToolInvocation(
+        call_id="call_repository_blocked_after_seal",
+        tool_name="task.finish",
+        arguments={
+            "task_id": EXECUTION_TASK_ID,
+            "status": "blocked",
+            "blocked_reason": (
+                "Only the master may close the scientific attempt."
+            ),
+        },
+        task_id=EXECUTION_TASK_ID,
+    )
+    with scientific.mutation_scopes.writer_turn(
+        session_id=SESSION_ID,
+        owner_kind=MutationWriterKind.AGENT_TURN,
+        owner_ref="agent-turn:repository-backed-executor",
+    ):
+        ready_evaluation = scientific.evaluate_selection(
+            attempt_id=attempt.attempt_id,
+            selection_id=selection.selection_id,
+        )
+        ready_results = []
+        for requested_status in ("blocked", "failed", "cancelled"):
+            ready_results.append(
+                lifecycle_policy(
+                    _context(
+                        repositories,
+                        scientific_workflow_contract_registry=(
+                            AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
+                        ),
+                    ),
+                    executor_step,  # type: ignore[arg-type]
+                    ToolInvocation(
+                        call_id=(
+                            "call_repository_"
+                            f"{requested_status}_after_seal"
+                        ),
+                        tool_name="task.finish",
+                        arguments={
+                            "task_id": EXECUTION_TASK_ID,
+                            "status": requested_status,
+                        },
+                        task_id=EXECUTION_TASK_ID,
+                    ),
+                )
+            )
+    assert ready_evaluation.closure_request_ready is True
+    assert ready_evaluation.closure_finalization_ready is False
+    assert "selection_active_writers" in ready_evaluation.blocker_codes
+    assert all(result is not None for result in ready_results)
+    for requested_status, ready_result in zip(
+        ("blocked", "failed", "cancelled"),
+        ready_results,
+        strict=True,
+    ):
+        assert ready_result is not None
+        assert (
+            ready_result.error_code
+            == "aox_cutover_positive_execution_exit_mismatch"
+        )
+        assert ready_result.details["selection_id"] == (
+            selection.selection_id
+        )
+        assert ready_result.details["requested_status"] == requested_status
+        assert ready_result.details["closure_request_ready"] is True
+        assert ready_result.details["closure_finalization_ready"] is False
+        assert "selection_active_writers" in (
+            ready_result.details["selection_blocker_codes"]
+        )
+        assert ready_result.details["effect_certainty"] == "no_effect"
+
+    authority_connection = connect_sqlite(":memory:")
+    repositories.tasks.connection.backup(authority_connection)
+    authority_repositories = CoreRepositories.from_connection(
+        authority_connection
+    )
+    authority_scientific = ScientificAttemptService(
+        authority_repositories,
+        now=lambda: now,
+        workflow_contract_registry=(
+            AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
+        ),
+    )
+    authority_record = (
+        authority_repositories.scientific_attempt_authorizations.get(
+            attempt.envelope_id
+        )
+    )
+    assert authority_record is not None
+    with authority_scientific.mutation_scopes.writer_turn(
+        session_id=SESSION_ID,
+        owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+        owner_ref="fixture:repository-authority-drift",
+    ):
+        authority_repositories.scientific_attempt_authorizations.replace_consumption(
+            replace(
+                authority_record,
+                status=ScientificAttemptAuthorityStatus.REVOKED,
+                state_version=authority_record.state_version + 1,
+                updated_at="2026-07-25T00:00:01+00:00",
+            ),
+            expected_state_version=authority_record.state_version,
+        )
+    authority_evaluation = authority_scientific.evaluate_selection(
+        attempt_id=attempt.attempt_id,
+        selection_id=selection.selection_id,
+    )
+    assert authority_evaluation.selection_state == "sealed"
+    assert authority_evaluation.closure_request_ready is False
+    assert "selection_attempt_authority_invalid" in (
+        authority_evaluation.blocker_codes
+    )
+    assert (
+        lifecycle_policy(
+            _context(
+                authority_repositories,
+                scientific_workflow_contract_registry=(
+                    AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
+                ),
+            ),
+            executor_step,  # type: ignore[arg-type]
+            blocked_invocation,
+        )
+        is None
+    )
+
+    universe_connection = connect_sqlite(":memory:")
+    repositories.tasks.connection.backup(universe_connection)
+    universe_repositories = CoreRepositories.from_connection(
+        universe_connection
+    )
+    universe_scientific = ScientificAttemptService(
+        universe_repositories,
+        now=lambda: now,
+        workflow_contract_registry=(
+            AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
+        ),
+    )
+    drift_run = SandboxRunRecord(
+        sandbox_run_id="run_repository_universe_drift",
+        session_id=SESSION_ID,
+        sandbox_workspace_id="workspace_execution",
+        agent_id="agent_executor",
+        task_id=EXECUTION_TASK_ID,
+        lane_id=lane.lane_id,
+        argv=("python", "late.py"),
+        argv_digest="sha256:late-argv",
+        cwd="/workspace",
+        env_digest="sha256:late-env",
+        status=SandboxRunStatus.FAILED,
+        exit_code=1,
+        created_at=now,
+        updated_at=now,
+        ended_at=now,
+    )
+    drift_operation = ControlledOperation(
+        operation_id="operation_repository_universe_drift",
+        session_id=SESSION_ID,
+        sandbox_workspace_id="workspace_execution",
+        sandbox_run_id=drift_run.sandbox_run_id,
+        task_id=EXECUTION_TASK_ID,
+        lane_id=lane.lane_id,
+        logical_operation_key="aox.late_operation",
+        operation_digest="sha256:late-operation",
+        params_digest="sha256:late-params",
+        backend_category="fixture",
+        selected_backend="fixture",
+        route_policy_id="fixture_v1",
+        sdk_module="bio",
+        function_name="ncbi_fetch_proteins",
+        owner_mode=ControlledOperationOwnerMode.DURABLE_ASYNC_V1,
+        status=ControlledOperationStatus.FAILED,
+        created_at=now,
+        updated_at=now,
+    )
+    with universe_scientific.mutation_scopes.writer_turn(
+        session_id=SESSION_ID,
+        owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+        owner_ref="fixture:repository-universe-drift",
+    ):
+        universe_repositories.sandbox_runs.save(drift_run)
+        universe_repositories.controlled_operations.save(drift_operation)
+    universe_scientific.bind_operation(
+        attempt_id=attempt.attempt_id,
+        operation_id=drift_operation.operation_id,
+        actor_ref="agent_executor",
+    )
+    universe_evaluation = universe_scientific.evaluate_selection(
+        attempt_id=attempt.attempt_id,
+        selection_id=selection.selection_id,
+    )
+    assert universe_evaluation.selection_state == "sealed"
+    assert universe_evaluation.closure_request_ready is False
+    assert "selection_universe_changed" in universe_evaluation.blocker_codes
+    assert "selection_disposition_incomplete" in (
+        universe_evaluation.blocker_codes
+    )
+    assert (
+        lifecycle_policy(
+            _context(
+                universe_repositories,
+                scientific_workflow_contract_registry=(
+                    AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
+                ),
+            ),
+            executor_step,  # type: ignore[arg-type]
+            blocked_invocation,
+        )
+        is None
+    )
+
     with scientific.mutation_scopes.writer_turn(
         session_id=SESSION_ID,
         owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
@@ -1190,11 +1443,6 @@ def test_repository_backed_positive_close_retires_turn_before_later_mutation() -
             )
 
     report_subject = repositories.tasks.get(AOX_REPORT_TASK_ID).subject
-    lifecycle_policy = AoxCutoverFormalToolPrecondition(
-        session_id=SESSION_ID,
-        execution_task_id=EXECUTION_TASK_ID,
-        attempt_kind="positive",
-    )
     response_rejection = lifecycle_policy.check_assistant_response(
         _context(repositories),
         _step(),  # type: ignore[arg-type]

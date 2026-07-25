@@ -5,6 +5,8 @@ import json
 from typing import Any, Literal
 
 from openzyme_core import AssistantResponseRejection
+from openzyme_core import ScientificAttemptError
+from openzyme_core import ScientificAttemptService
 from openzyme_core import is_published_report_link
 from openzyme_core import is_published_report_status
 from openzyme_runtime import AgentStepContext
@@ -78,9 +80,10 @@ class AoxCutoverFormalToolPrecondition:
     This guard does not choose task strategy or scientific operations. It
     presents already-pinned cutover constraints at the mutation/conversation
     boundary: the exact three-task topology, the business/report state required
-    before closure, the completed execution handoff proved by a sealed positive
-    selection, and the requirement that a close-ready master submit its final
-    response together with the explicit scientific-attempt close call.
+    before closure, the completed execution handoff proved by a canonically
+    closure-request-ready positive selection, and the requirement that a
+    close-ready master submit its final response together with the explicit
+    scientific-attempt close call.
     """
 
     session_id: str
@@ -223,13 +226,14 @@ class AoxCutoverFormalToolPrecondition:
         step_context: AgentStepContext,
         invocation: ToolInvocation,
     ) -> ToolResult | None:
-        """Reject a false negative exit after positive execution is sealed.
+        """Reject a false negative exit after positive execution is ready.
 
         This is intentionally narrower than generic task lifecycle policy. A
-        positive executor remains free to report a genuine blocker before its
-        selected chain is sealed. Once that owner-authored selection is the
-        sealed current head, however, the durable scientific execution handoff
-        is successful; master-only closure is a later lifecycle responsibility.
+        positive executor remains free to report a genuine blocker whenever its
+        current selected chain is not canonically closure-request-ready. Once
+        that same evaluator proves the current sealed selection ready, however,
+        the durable scientific execution handoff is successful; master-only
+        closure is a later lifecycle responsibility.
         """
 
         if self.attempt_kind != "positive":
@@ -277,19 +281,34 @@ class AoxCutoverFormalToolPrecondition:
             return None
         selection = getattr(resolved_head, "selection", None)
         raw_selection_state = getattr(selection, "state", "")
-        selection_state = str(
-            getattr(raw_selection_state, "value", raw_selection_state)
-        )
-        if selection_state != "sealed":
+        if (
+            str(getattr(raw_selection_state, "value", raw_selection_state))
+            != "sealed"
+        ):
             return None
-        selection_id = str(getattr(selection, "selection_id", ""))
+        try:
+            evaluation = ScientificAttemptService(
+                repositories,
+                workflow_contract_registry=getattr(
+                    context,
+                    "scientific_workflow_contract_registry",
+                    None,
+                ),
+            ).evaluate_selection(attempt_id=attempt_id)
+        except ScientificAttemptError:
+            # A policy guard may prevent an exit only when canonical readiness
+            # is positively proved. Missing/drifted evaluation facts remain a
+            # genuine blocker under the ordinary task lifecycle.
+            return None
+        if not evaluation.closure_request_ready:
+            return None
         return _rejection(
             invocation,
             code="aox_cutover_positive_execution_exit_mismatch",
             summary=(
                 "AOX cutover rejected a non-completed positive execution exit "
-                "because the executor's current scientific selection is already "
-                "sealed."
+                "because the executor's current scientific selection is "
+                "canonically ready for a closure request."
             ),
             hint=(
                 "Treat a teammate scientific.attempt.close actor rejection as "
@@ -300,8 +319,21 @@ class AoxCutoverFormalToolPrecondition:
             ),
             details={
                 "attempt_id": attempt_id,
-                "selection_id": selection_id,
-                "selection_state": selection_state,
+                "selection_id": evaluation.selection_id,
+                "selection_state": evaluation.selection_state,
+                "closure_request_ready": (
+                    evaluation.closure_request_ready
+                ),
+                "closure_finalization_ready": (
+                    evaluation.closure_finalization_ready
+                ),
+                "selection_blocker_codes": list(
+                    evaluation.blocker_codes
+                ),
+                "operation_universe_digest": (
+                    evaluation.operation_universe_digest
+                ),
+                "operation_count": evaluation.operation_count,
                 "task_id": self.execution_task_id,
                 "requested_status": requested_status,
                 "required_status": "completed",

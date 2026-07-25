@@ -1540,11 +1540,14 @@ inspection 的 `selection_active_writers` / legacy `closure_ready=false` 解读�
 forward inspection 分开 `closure_request_ready` 与 `closure_finalization_ready`；
 legacy `closure_ready` 明确只描述 `host_finalization_after_request`。
 `aox_cutover_formal_tool_precondition@3` 只在 assigned positive executor 的 current
-selection 已 sealed 后 no-effect 拒绝 `blocked|failed|cancelled`，要求 owner 显式
-completed handoff，并把 report/closure 留给 reporter/master。它不自动完成 task、close
-attempt、选择科学结果或 retry；pre-seal 真实 blocker、fault 与普通 session 不受影响。
+selection 已 sealed 且 canonical evaluator 当前投影
+`closure_request_ready=true` 后 no-effect 拒绝 `blocked|failed|cancelled`，要求 owner
+显式 completed handoff，并把 report/closure 留给 reporter/master。sealed state 本身不是
+readiness；pre-seal blocker 或 seal 后 universe/authority/workflow/process/continuation/
+evidence 漂移、fault 与普通 session 都保留 generic 终态语义。它不自动完成 task、close
+attempt、选择科学结果或 retry。
 SOP/workflow ref 已 repin 为
-`workflow:aox-hmm-live@2.0.0#sha256:4ab19e8c7d88429e6019b070a81f7335984aa534ed6d05be200d8a275f8ee339`。
+`workflow:aox-hmm-live@2.0.0#sha256:a34878a922536f429acb7ebef52e303610df184fcc16acf4dce894704321b313`。
 
 fatal `sha256:cf555a381ac9a5c5e38e36d33e83ce78c887c35528096112cbbbd9939a95e01e`
 与 decision

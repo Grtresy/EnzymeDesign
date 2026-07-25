@@ -14,7 +14,7 @@ effect, active process/writer, incomplete disposition, authority/resource breach
 or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r59
 fact can be upgraded, backfilled, or adopted.
 The current workflow knowledge identity is
-`workflow:aox-hmm-live@2.0.0#sha256:4ab19e8c7d88429e6019b070a81f7335984aa534ed6d05be200d8a275f8ee339`;
+`workflow:aox-hmm-live@2.0.0#sha256:a34878a922536f429acb7ebef52e303610df184fcc16acf4dce894704321b313`;
 the next live launch must still bind that ref to a fresh clean commit,
 qualification report, pin and authority plan.
 
@@ -532,18 +532,19 @@ from `closure_finalization_ready`; legacy `closure_ready` is explicitly
 active writer, so that fact can block Host finalization while leaving
 agent-authored closure intent requestable. Current policy
 `aox_cutover_formal_tool_precondition@3` also rejects an assigned positive
-executor's `blocked|failed|cancelled` exit after its current selection is
-sealed, using
+executor's `blocked|failed|cancelled` exit only when its sealed current
+selection is canonically `closure_request_ready`, using
 `aox_cutover_positive_execution_exit_mismatch/no_effect/same_phase_safe`;
 owner-authored `completed` remains required. This is a lifecycle constraint,
 not automatic task completion, closure, scientific selection or retry.
-Pre-seal genuine blockers, fault attempts and ordinary sessions retain generic
-task semantics.
+Sealed state alone is not readiness: pre-seal blockers and post-seal universe,
+authority, workflow, process, continuation or evidence drift retain generic
+task semantics, as do fault attempts and ordinary sessions.
 
 The repinned SOP digest is
-`sha256:1c6c30e2241c20e405a35f6d62ff48f42dbd765cf91207f877bfc18fe052b6a0`
+`sha256:2aff245ff633a33f1533e3d076ace08908ee7dcfbbf57b7d0207f576c2d8fa4e`
 and the current workflow selection is
-`workflow:aox-hmm-live@2.0.0#sha256:4ab19e8c7d88429e6019b070a81f7335984aa534ed6d05be200d8a275f8ee339`.
+`workflow:aox-hmm-live@2.0.0#sha256:a34878a922536f429acb7ebef52e303610df184fcc16acf4dce894704321b313`.
 Every earlier workflow ref is stale for successor admission, pin or authority.
 
 Fatal

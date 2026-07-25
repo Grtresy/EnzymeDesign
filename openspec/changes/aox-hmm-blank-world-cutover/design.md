@@ -833,6 +833,37 @@ authority/root/state/effect/artifact/report/browser bytes 不得复用；后继 
 仍需 correction 后 fresh clean commit、full admission、pin、exact-three plan、fresh
 roots 与对该 exact plan 的单独批准。
 
+### 2026-07-26 post-r59 canonical-readiness qualification
+
+对未提交 `@3` policy 的逐路径审查发现，“current selection 已 sealed”只是 handoff 的
+必要条件，不是充分条件。selection seal 固定当时的 universe/evidence snapshot，但不会
+冻结 attempt 后续的 operation binding，也不会使 authority、workflow contract、process、
+continuation、disposition、adoption、materialization 或 result closure 永久有效。若这些
+事实在 seal 后漂移，单看 `state=sealed` 拒绝 executor 的
+`blocked|failed|cancelled`，会把真实 blocker 强迫改写成 `completed`，再次制造不可恢复的
+业务终态。
+
+forward guard 因此不复制 readiness 条件，也不把 seal 当作成功证明。它通过当前
+`SessionRuntimeContext` 的 repositories 与 scientific workflow contract registry 调用
+同一个 `ScientificAttemptService.evaluate_selection()`，并且只在 current evaluation 的
+`closure_request_ready=true` 时拒绝 positive executor 的 non-completed exit。该字段仍按
+request-time evidence boundary 忽略预期 active requesting writer；它并不忽略 universe、
+authority、workflow、process、continuation 或 evidence gap。evaluation 不可得或返回
+non-ready 都不能证明 successful handoff，task exit 因而保留 generic 显式语义，由 agent
+选择修复、建立 child selection 或诚实终止。
+
+回归必须使用真实 SQLite repositories 构造 ready sealed selection，并证明 active writer
+只影响 finalization、不影响 request readiness；随后分别让 authority 失效以及在 seal 后
+绑定新的 operation universe，证明 selection 虽仍 sealed，policy 也不会强迫 completed。
+fault attempt、pre-selection 与 ordinary session 继续不受该 positive-only guard 影响。
+该 qualification 只同步 non-live code/tests/OpenSpec/稳定文档和新的 SOP/workflow digest，
+不采用 r59 state，不创建 live root，也不授予下一 numbered action。
+qualified SOP digest 为
+`sha256:2aff245ff633a33f1533e3d076ace08908ee7dcfbbf57b7d0207f576c2d8fa4e`，
+current workflow ref 为
+`workflow:aox-hmm-live@2.0.0#sha256:a34878a922536f429acb7ebef52e303610df184fcc16acf4dce894704321b313`；
+r59 correction 初稿固定的旧 ref 对任何后继 admission/pin/authority 均 stale。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

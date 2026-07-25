@@ -2757,10 +2757,15 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     assert "scientific.artifact.materialize" in prompt
     assert "Unknown external effect, dispatch-in-doubt" in prompt
     assert "known closed no-effect failure does not poison the attempt" in prompt
-    assert "closure_request_ready means the sealed selection" in prompt
+    assert (
+        "closure_request_ready means the canonical evaluator proves the sealed "
+        "current selection"
+    ) in prompt
     assert "closure_finalization_ready and the legacy closure_ready field" in prompt
     assert "selection_active_writers therefore does not require the master to wait" in prompt
     assert "task.finish(status='blocked')" in prompt
+    assert "sealed state alone is not readiness" in prompt
+    assert "post-seal universe, authority, workflow" in prompt
     assert "actor rejection is the intended no-effect handoff" in prompt
     assert "executor must finish its canonical task completed" in prompt
     assert "rejects a blocked/failed/cancelled positive execution exit" in prompt

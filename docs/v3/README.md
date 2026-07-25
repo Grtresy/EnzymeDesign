@@ -42,7 +42,7 @@ AOX/HMM live cutover：
   `run-diagnostic-live`、单槽 authority、diagnostic root/consumption/decision 与 cross-mode
   negative gate 也已实现。diagnostic 永久 `acceptance_eligible=false`，不能生成/进入
   `@3` bundle/reducer；现有 `authorize` / `run-live` 仍只代表 formal acceptance。
-- `pin`、`preflight`、`run-live` 与 `run-diagnostic-live` 均先要求当前 clean commit 的 full architecture qualification report；qualification 通过本身只解除架构阻断，不创建 attempt，也不自动恢复 numbered campaign。无 attempt 的准备阶段止于 canonical `pin`；CLI `preflight` 会创建 blank-world attempt root，因此每个新 diagnostic 或 formal campaign 都必须另获 operator 授权并使用 fresh roots。r59 已永久 formal NO-GO；forward `@3` policy 将 sealed positive execution handoff 与 master closure 分开，并将 closure-request readiness 与 writer-gated Host finalization 分开。该实现及非-live gate 不授权下一轮 diagnostic 或 formal live。
+- `pin`、`preflight`、`run-live` 与 `run-diagnostic-live` 均先要求当前 clean commit 的 full architecture qualification report；qualification 通过本身只解除架构阻断，不创建 attempt，也不自动恢复 numbered campaign。无 attempt 的准备阶段止于 canonical `pin`；CLI `preflight` 会创建 blank-world attempt root，因此每个新 diagnostic 或 formal campaign 都必须另获 operator 授权并使用 fresh roots。r59 已永久 formal NO-GO；forward `@3` policy 将 canonically `closure_request_ready` 的 positive execution handoff 与 master closure 分开，并将 closure-request readiness 与 writer-gated Host finalization 分开，绝不从 sealed state 单独推断成功。该实现及非-live gate 不授权下一轮 diagnostic 或 formal live。
 
 Execution pipeline SDK docs:
 
