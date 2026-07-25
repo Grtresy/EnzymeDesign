@@ -12,6 +12,9 @@ from openzyme_host_api.aox_architecture_qualification import (
     build_architecture_qualification_receipt,
 )
 from openzyme_host_api import aox_attempt_supervision as supervision
+from openzyme_host_api.aox_attempt_authority import (
+    build_aox_attempt_authority_plan,
+)
 from openzyme_host_api.aox_attempt_supervision import AttemptRootAccessError
 from openzyme_host_api.aox_attempt_supervision import AttemptRootAccessGate
 from openzyme_host_api.aox_attempt_supervision import AttemptSupervisionFatalError
@@ -161,6 +164,24 @@ def _architecture_qualification() -> dict[str, str]:
         profile_id="local_single_process_file_sqlite@1",
         source_commit=_campaign_identity()["git_commit"],
     )
+
+
+def _formal_authority_slot() -> dict[str, object]:
+    plan = build_aox_attempt_authority_plan(
+        identity=_campaign_identity(),
+        allowed_prerequisites={},
+        architecture_qualification=_architecture_qualification(),
+        issued_at="2026-07-23T00:00:00+00:00",
+        expires_at="2099-01-01T00:00:00+00:00",
+        max_micu_per_attempt=10_000,
+        max_cost_microunits_per_attempt=20_000,
+        max_wall_time_seconds_per_attempt=3_600,
+    )
+    slots = plan["slots"]
+    assert isinstance(slots, list)
+    slot = slots[0]
+    assert isinstance(slot, dict)
+    return dict(slot)
 
 
 def _supervisor(
@@ -358,7 +379,11 @@ def test_campaign_propagates_supervision_fatal_without_attempt_bundle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    context = _attempt_context(tmp_path)
+    authority = _formal_authority_slot()
+    context = _attempt_context(
+        tmp_path,
+        attempt_id=str(authority["attempt_id"]),
+    )
     monkeypatch.setattr(
         "openzyme_host_api.aox_cutover_evidence.create_blank_world_roots",
         lambda *args, **kwargs: context.roots,
@@ -375,7 +400,7 @@ def test_campaign_propagates_supervision_fatal_without_attempt_bundle(
         fault_runner=_FatalRunner("attempt_child_timeout"),
         allowed_prerequisites={},
         architecture_qualification=_architecture_qualification(),
-        attempt_authority_slots=(dict(context.attempt_authority or {}),),
+        attempt_authority_slots=(authority,),
     )
 
     records, decision = campaign.run()
@@ -391,7 +416,11 @@ def test_campaign_requires_supervision_by_default_before_ledger_after(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    context = _attempt_context(tmp_path)
+    authority = _formal_authority_slot()
+    context = _attempt_context(
+        tmp_path,
+        attempt_id=str(authority["attempt_id"]),
+    )
     snapshots = 0
 
     def snapshot(path: Path) -> dict[str, object]:
@@ -416,7 +445,7 @@ def test_campaign_requires_supervision_by_default_before_ledger_after(
         fault_runner=_ReturningRunner(create_sqlite=False),
         allowed_prerequisites={},
         architecture_qualification=_architecture_qualification(),
-        attempt_authority_slots=(dict(context.attempt_authority or {}),),
+        attempt_authority_slots=(authority,),
     )
 
     records, decision = campaign.run()

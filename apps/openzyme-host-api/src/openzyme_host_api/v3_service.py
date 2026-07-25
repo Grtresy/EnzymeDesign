@@ -102,6 +102,37 @@ def _event(event_type: str, session_id: str, payload: dict[str, Any]) -> dict[st
     }
 
 
+def _scientific_transition_event(
+    *,
+    event_type: str,
+    session_id: str,
+    record_id: str,
+    actor_ref: str,
+    task_id: str | None,
+    lane_id: str | None,
+    created_at: str,
+) -> dict[str, Any]:
+    identity_digest = canonical_digest(
+        {
+            "event_type": event_type,
+            "session_id": session_id,
+            "record_id": record_id,
+        }
+    ).removeprefix("sha256:")
+    return {
+        "event_id": f"evt_scientific_transition_{identity_digest[:24]}",
+        "session_id": session_id,
+        "event_type": event_type,
+        "created_at": created_at,
+        "payload": {
+            "record_id": record_id,
+            "actor_ref": actor_ref,
+            "task_id": task_id,
+            "lane_id": lane_id,
+        },
+    }
+
+
 def _event_fingerprint(event: dict[str, Any]) -> tuple[str, str, str]:
     return (
         str(event["event_type"]),
@@ -870,19 +901,17 @@ class V3HostApiService:
         session_id: str,
         admission_request_id: str,
     ) -> dict[str, Any]:
-        control = self.scientific_attempt_control()
-        request = self.repositories.scientific_attempt_admission_requests.get(
-            admission_request_id
-        )
-        if request is None or request.session_id != session_id:
-            raise ValueError("admission request does not belong to the session")
-        record = control.finalize_attempt_admission(
-            admission_request_id=admission_request_id
+        record, _ = self._finalize_scientific_transition_with_delivery(
+            transition_kind="admission",
+            session_id=session_id,
+            request_id=admission_request_id,
         )
         return {
             "session_id": session_id,
             "record": record.to_dict(),
-            "scientific_attempts": control.project_session(session_id),
+            "scientific_attempts": (
+                self.scientific_attempt_control().project_session(session_id)
+            ),
         }
 
     def finalize_scientific_attempt_closure(
@@ -891,25 +920,186 @@ class V3HostApiService:
         session_id: str,
         closure_request_id: str,
     ) -> dict[str, Any]:
-        control = self.scientific_attempt_control()
-        request = self.repositories.scientific_attempt_closure_requests.get(
-            closure_request_id
-        )
-        attempt = (
-            None
-            if request is None
-            else self.repositories.scientific_attempts.get(request.attempt_id)
-        )
-        if request is None or attempt is None or attempt.session_id != session_id:
-            raise ValueError("closure request does not belong to the session")
-        record = control.finalize_closure_request(
-            closure_request_id=closure_request_id
+        record, _ = self._finalize_scientific_transition_with_delivery(
+            transition_kind="closure",
+            session_id=session_id,
+            request_id=closure_request_id,
         )
         return {
             "session_id": session_id,
             "record": record.to_dict(),
-            "scientific_attempts": control.project_session(session_id),
+            "scientific_attempts": (
+                self.scientific_attempt_control().project_session(session_id)
+            ),
         }
+
+    def _finalize_scientific_transition_with_delivery(
+        self,
+        *,
+        transition_kind: str,
+        session_id: str,
+        request_id: str,
+    ) -> tuple[Any, list[dict[str, Any]]]:
+        """Commit one transition, its event, and its durable wakeup together."""
+
+        if transition_kind not in {"admission", "closure"}:
+            raise ValueError("unsupported scientific transition kind")
+        if current_mutation_write_authority() is not None:
+            raise RuntimeError(
+                "scientific transition finalization requires no active writer"
+            )
+
+        signal = None
+        with self.repositories.atomic(
+            prefix=f"scientific_transition_{transition_kind}"
+        ):
+            control = self.scientific_attempt_control()
+            if transition_kind == "admission":
+                request = (
+                    self.repositories.scientific_attempt_admission_requests.get(
+                        request_id
+                    )
+                )
+                if request is None or request.session_id != session_id:
+                    raise ValueError(
+                        "admission request does not belong to the session"
+                    )
+                record = control.finalize_attempt_admission(
+                    admission_request_id=request_id
+                )
+                attempt = record
+                event_type = "scientific.attempt.admitted"
+            else:
+                request = (
+                    self.repositories.scientific_attempt_closure_requests.get(
+                        request_id
+                    )
+                )
+                attempt = (
+                    None
+                    if request is None
+                    else self.repositories.scientific_attempts.get(
+                        request.attempt_id
+                    )
+                )
+                if (
+                    request is None
+                    or attempt is None
+                    or attempt.session_id != session_id
+                ):
+                    raise ValueError(
+                        "closure request does not belong to the session"
+                    )
+                record = control.finalize_closure_request(
+                    closure_request_id=request_id
+                )
+                event_type = "scientific.attempt.closed"
+
+            transition_record_id = (
+                record.attempt_id
+                if transition_kind == "admission"
+                else record.closure_id
+            )
+            expected_event = _scientific_transition_event(
+                event_type=event_type,
+                session_id=session_id,
+                record_id=transition_record_id,
+                actor_ref=request.actor_ref,
+                task_id=attempt.task_id,
+                lane_id=attempt.lane_id,
+                created_at=record.created_at,
+            )
+            deterministic_event = self.repositories.durable_events.get(
+                str(expected_event["event_id"])
+            )
+            transition_events = (
+                self.repositories.durable_events.list_scientific_transition_events(
+                    session_id=session_id,
+                    event_type=event_type,
+                    record_id=transition_record_id,
+                )
+            )
+            if len(transition_events) > 1:
+                raise RuntimeError(
+                    "scientific transition has ambiguous durable events"
+                )
+            existing_event = (
+                deterministic_event
+                if deterministic_event is not None
+                else (transition_events[0] if transition_events else None)
+            )
+            if existing_event is not None and (
+                existing_event.session_id != session_id
+                or existing_event.event_type != event_type
+                or existing_event.payload != expected_event["payload"]
+                or existing_event.schema_version != "openzyme.v3.event.v1"
+                or existing_event.visibility != "public"
+                or (
+                    deterministic_event is not None
+                    and existing_event.created_at != record.created_at
+                )
+            ):
+                raise RuntimeError(
+                    "scientific transition event identity conflicts with durable state"
+                )
+
+            agent = (
+                self.repositories.agents.get(session_id, request.actor_ref)
+                if request.actor_ref.startswith("agent:")
+                else None
+            )
+            existing_signal = (
+                None
+                if agent is None
+                else self.repositories.runtime_signals.find_source_signal(
+                    session_id=session_id,
+                    agent_id=request.actor_ref,
+                    reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+                    source_ref=transition_record_id,
+                )
+            )
+            signal = existing_signal
+            events: list[dict[str, Any]] = []
+            if existing_event is None or (
+                agent is not None and existing_signal is None
+            ):
+                with MutationScopeService(self.repositories).writer_turn(
+                    session_id=session_id,
+                    owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+                    owner_ref="host:scientific-transition-finalizer",
+                ):
+                    if existing_event is None:
+                        events.append(expected_event)
+                    if agent is not None and existing_signal is None:
+                        context = self._build_runtime_context(
+                            session_id,
+                            task_id=attempt.task_id,
+                            lane_id=attempt.lane_id,
+                        )
+                        signal = AgentRuntimeService(context).enqueue_signal(
+                            session_id=session_id,
+                            agent_id=request.actor_ref,
+                            task_id=attempt.task_id,
+                            lane_id=attempt.lane_id,
+                            correlation_id=transition_record_id,
+                            reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+                            source_ref=transition_record_id,
+                            notify=False,
+                        )
+                        events.extend(
+                            event.to_dict() for event in context.event_sink.events
+                        )
+                    if events:
+                        self.event_store.append(session_id, events)
+
+        if (
+            signal is not None
+            and not signal.status.is_terminal
+            and self.signal_notifier is not None
+            and hasattr(self.signal_notifier, "notify")
+        ):
+            self.signal_notifier.notify(session_id)
+        return record, events
 
     def finalize_pending_scientific_transitions(
         self,
@@ -922,8 +1112,7 @@ class V3HostApiService:
             raise RuntimeError(
                 "scientific transition finalization requires no active writer"
             )
-        control = self.scientific_attempt_control()
-        finalized: list[tuple[str, str, str, str | None, str | None]] = []
+        events: list[dict[str, Any]] = []
         failures: list[
             tuple[
                 str,
@@ -944,13 +1133,13 @@ class V3HostApiService:
                 session_id
             )
         ):
-            if self.repositories.scientific_attempt_closures.get_by_attempt(
-                request.attempt_id
-            ):
-                continue
             try:
-                closure = control.finalize_closure_request(
-                    closure_request_id=request.closure_request_id
+                _, transition_events = (
+                    self._finalize_scientific_transition_with_delivery(
+                        transition_kind="closure",
+                        session_id=session_id,
+                        request_id=request.closure_request_id,
+                    )
                 )
             except ScientificAttemptError as exc:
                 if not exc.retryable:
@@ -970,29 +1159,20 @@ class V3HostApiService:
                         )
                     )
                 continue
-            attempt = self.repositories.scientific_attempts.get(request.attempt_id)
-            finalized.append(
-                (
-                    "scientific.attempt.closed",
-                    closure.closure_id,
-                    request.actor_ref,
-                    None if attempt is None else attempt.task_id,
-                    None if attempt is None else attempt.lane_id,
-                )
-            )
+            events.extend(transition_events)
 
         for request in (
             self.repositories.scientific_attempt_admission_requests.list_by_session(
                 session_id
             )
         ):
-            if self.repositories.scientific_attempts.get_by_admission_request(
-                request.admission_request_id
-            ):
-                continue
             try:
-                attempt = control.finalize_attempt_admission(
-                    admission_request_id=request.admission_request_id
+                _, transition_events = (
+                    self._finalize_scientific_transition_with_delivery(
+                        transition_kind="admission",
+                        session_id=session_id,
+                        request_id=request.admission_request_id,
+                    )
                 )
             except ScientificAttemptError as exc:
                 if not exc.retryable:
@@ -1009,15 +1189,7 @@ class V3HostApiService:
                         )
                     )
                 continue
-            finalized.append(
-                (
-                    "scientific.attempt.admitted",
-                    attempt.attempt_id,
-                    request.actor_ref,
-                    attempt.task_id,
-                    attempt.lane_id,
-                )
-            )
+            events.extend(transition_events)
 
         pending_failures = [
             failure
@@ -1032,47 +1204,14 @@ class V3HostApiService:
             )
             is None
         ]
-        if not finalized and not pending_failures:
-            return []
-        events: list[dict[str, Any]] = []
+        if not pending_failures:
+            return events
+        failure_events: list[dict[str, Any]] = []
         with MutationScopeService(self.repositories).writer_turn(
             session_id=session_id,
             owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
             owner_ref="host:scientific-transition-finalizer",
         ):
-            for event_type, record_id, actor_ref, task_id, lane_id in finalized:
-                events.append(
-                    _event(
-                        event_type,
-                        session_id,
-                        {
-                            "record_id": record_id,
-                            "actor_ref": actor_ref,
-                            "task_id": task_id,
-                            "lane_id": lane_id,
-                        },
-                    )
-                )
-                if actor_ref.startswith("agent:") and (
-                    self.repositories.agents.get(session_id, actor_ref) is not None
-                ):
-                    context = self._build_runtime_context(
-                        session_id,
-                        task_id=task_id,
-                        lane_id=lane_id,
-                    )
-                    AgentRuntimeService(context).enqueue_signal(
-                        session_id=session_id,
-                        agent_id=actor_ref,
-                        task_id=task_id,
-                        lane_id=lane_id,
-                        correlation_id=record_id,
-                        reason=AgentRuntimeSignalReason.MANUAL_RESUME,
-                        source_ref=record_id,
-                    )
-                    events.extend(
-                        event.to_dict() for event in context.event_sink.events
-                    )
             for (
                 transition_kind,
                 request_id,
@@ -1127,7 +1266,7 @@ class V3HostApiService:
                         "error_code": exc.error_code,
                     },
                 )
-                events.append(
+                failure_events.append(
                     _event(
                         "scientific.transition.failed",
                         session_id,
@@ -1157,10 +1296,11 @@ class V3HostApiService:
                         reason=AgentRuntimeSignalReason.MANUAL_RESUME,
                         source_ref=observation.failure_id,
                     )
-                    events.extend(
+                    failure_events.extend(
                         event.to_dict() for event in context.event_sink.events
                     )
-            self.event_store.append(session_id, events)
+            self.event_store.append(session_id, failure_events)
+        events.extend(failure_events)
         return events
 
     def pending_approvals(self, session_id: str) -> list[dict[str, Any]]:

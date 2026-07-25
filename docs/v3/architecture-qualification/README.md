@@ -50,7 +50,10 @@ adversarial verifier、signed CI provenance 或真实 provider/HPC/Chrome availa
 registry 闭合十个 family：wire contract、authority composition、identity semantics、
 reconciliation、bounded terminal convergence、restart/fencing、supervisor progress、
 operator retirement、boundary scale 与 evidence projection；AOX admission/receipt
-场景归入 evidence projection。每个场景都有 finite step、tick、state/event、effect 与
+及 schema-disjoint run-class closure 场景归入 evidence projection。后者在零外部 effect
+下以真实 file-backed SQLite 证明 diagnostic one-slot plan/consumption/root/decision 不能
+被 formal publisher/consumer/root/verifier/reducer 接纳，即使伪造相同 plan digest。
+每个场景都有 finite step、tick、state/event、effect 与
 wall-clock budget。skip、xfail、missing collection、timeout、budget exhaustion 或证据不完整
 只能得到 `violated|unproven`，不能得到 pass。
 
@@ -99,7 +102,7 @@ verifier 才是 authority。
 
 ## AOX admission and evidence binding
 
-AOX `pin`、`preflight`、`run-live` 必须显式接收
+AOX `pin`、`preflight`、`run-live` 与 `run-diagnostic-live` 必须显式接收
 `--architecture-qualification-report`。验证先于 live settings、pin runner attestation、
 attempt-root、sandbox runtime probe 以及任何 provider/runner/Chrome/MICU 调用。不存在
 force、debug、environment、legacy 或 pass-boolean bypass。
@@ -114,6 +117,14 @@ production `aox_blank_world_attempt_bundle@3`。历史
 `architecture_qualification` receipt：report payload、registry、test manifest、supported
 profile 与 source commit。collector/offline verifier 拒绝 missing、changed、mismatched 或
 unknown-version receipt。
+
+正式 `authorize` / `run-live` 继续独占 exact-three formal acceptance；独立
+`authorize-diagnostic` / `run-diagnostic-live` 使用单槽
+`aox_diagnostic_attempt_authority_plan@1`、diagnostic-only consumption/root proof 和
+`aox_blank_world_diagnostic_decision@1`。两类 plan 都先以当前 qualification 与 committed
+declarations 验证并消费 deterministic sibling，随后才能构造 live launch/root。diagnostic
+decision 永久 `acceptance_eligible=false`，不能生成 `@3` 或进入 reducer。该 non-live
+qualification scenario 证明结构边界，不批准真实 diagnostic 或 formal campaign。
 
 Architecture qualification 是 operator admission，不是 scientific input。AOX
 `allowed_prerequisites` 保持原 exact-nine closed schema。资格通过只解除 deterministic

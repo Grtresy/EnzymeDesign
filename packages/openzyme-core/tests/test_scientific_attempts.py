@@ -9,6 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
+from threading import Event
 from typing import Any
 
 import pytest
@@ -525,6 +526,28 @@ def _ready_selection(
         idempotency_key=f"adoption-{suffix}",
     )
     return attempt, operation, selection
+
+
+def _ready_closure_request(
+    service: ScientificAttemptService,
+    *,
+    suffix: str = "ready-close",
+) -> tuple[Any, Any]:
+    attempt, _, selection = _ready_selection(service, suffix=suffix)
+    universe = service.operation_universe(attempt.attempt_id)
+    service.seal_selection(
+        selection_id=selection.selection_id,
+        actor_ref="agent:scientist",
+        idempotency_key=f"seal-{suffix}",
+        expected_universe_digest=universe.universe_digest,
+    )
+    request = service.request_attempt_closure(
+        attempt_id=attempt.attempt_id,
+        selection_id=selection.selection_id,
+        actor_ref="agent:scientist",
+        idempotency_key=f"close-{suffix}",
+    )
+    return attempt, request
 
 
 def _seed_legacy_split_adoption_facts(
@@ -1664,6 +1687,245 @@ def test_concurrent_admission_finalizers_consume_one_envelope_slot(
         assert consumed.status.value == "exhausted"
     finally:
         verification_connection.close()
+
+
+def test_file_backed_closure_rollover_is_atomic_to_concurrent_reader(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "scientific-closure-rollover.sqlite3"
+    setup_connection = connect_sqlite(
+        str(database_path),
+        busy_timeout_ms=15_000,
+        enable_wal=True,
+    )
+    _, setup_service = _world(connection=setup_connection)
+    attempt, request = _ready_closure_request(
+        setup_service,
+        suffix="atomic-reader",
+    )
+    setup_connection.close()
+
+    reader_connection = connect_sqlite(
+        str(database_path),
+        busy_timeout_ms=15_000,
+        enable_wal=True,
+    )
+    closure_inserted = Event()
+    allow_rollover = Event()
+
+    def finalize() -> str:
+        worker_connection = connect_sqlite(
+            str(database_path),
+            busy_timeout_ms=15_000,
+            enable_wal=True,
+        )
+        try:
+            worker_repositories = CoreRepositories.from_connection(
+                worker_connection
+            )
+            closure_repository = (
+                worker_repositories.scientific_attempt_closures
+            )
+
+            def add_then_pause(record: Any) -> Any:
+                stored = closure_repository.add(record)
+                closure_inserted.set()
+                if not allow_rollover.wait(timeout=10):
+                    raise AssertionError(
+                        "timed out waiting to finish atomic scope rollover"
+                    )
+                return stored
+
+            worker_repositories.scientific_attempt_closures = _RepositoryProxy(
+                closure_repository,
+                add=add_then_pause,
+            )
+            worker_service = ScientificAttemptService(
+                worker_repositories,
+                now=lambda: NOW,
+                workflow_contract_registry=TEST_WORKFLOW_CONTRACT_REGISTRY,
+            )
+            closure = worker_service.finalize_closure_request(
+                closure_request_id=request.closure_request_id
+            )
+            return closure.closure_id
+        finally:
+            worker_connection.close()
+
+    def active_scope_rows() -> list[tuple[str, str]]:
+        rows = reader_connection.execute(
+            """
+            SELECT scope_id, state
+            FROM mutation_scope_records
+            WHERE session_id = ?
+              AND state IN ('open', 'freezing', 'quiescent')
+            ORDER BY scope_id
+            """,
+            (attempt.session_id,),
+        ).fetchall()
+        return [(str(row["scope_id"]), str(row["state"])) for row in rows]
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(finalize)
+        assert closure_inserted.wait(timeout=10)
+        try:
+            # The writer has sealed the attempt and inserted the closure in its
+            # uncommitted transaction.  A concurrent WAL reader must still see
+            # the one previously committed open attempt scope.
+            assert active_scope_rows() == [
+                (attempt.mutation_scope_id, MutationScopeState.OPEN.value)
+            ]
+        finally:
+            allow_rollover.set()
+        closure_id = future.result(timeout=15)
+
+    assert closure_id.startswith("attempt_closure_")
+    assert active_scope_rows() == [
+        (
+            f"mutation_scope_post_{attempt.attempt_id}",
+            MutationScopeState.OPEN.value,
+        )
+    ]
+    reader_connection.close()
+
+
+def test_concurrent_closure_finalizers_create_one_post_attempt_scope(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "scientific-closure-finalizer-race.sqlite3"
+    setup_connection = connect_sqlite(
+        str(database_path),
+        busy_timeout_ms=15_000,
+        enable_wal=True,
+    )
+    _, setup_service = _world(connection=setup_connection)
+    attempt, request = _ready_closure_request(
+        setup_service,
+        suffix="atomic-finalizers",
+    )
+    setup_connection.close()
+
+    def finalize() -> str:
+        worker_connection = connect_sqlite(
+            str(database_path),
+            busy_timeout_ms=15_000,
+            enable_wal=True,
+        )
+        try:
+            worker_service = ScientificAttemptService(
+                CoreRepositories.from_connection(worker_connection),
+                now=lambda: NOW,
+                workflow_contract_registry=TEST_WORKFLOW_CONTRACT_REGISTRY,
+            )
+            return worker_service.finalize_closure_request(
+                closure_request_id=request.closure_request_id
+            ).closure_id
+        finally:
+            worker_connection.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        closure_ids = list(executor.map(lambda _: finalize(), range(2)))
+
+    assert len(set(closure_ids)) == 1
+    verification_connection = connect_sqlite(
+        str(database_path),
+        enable_wal=True,
+    )
+    try:
+        rows = verification_connection.execute(
+            """
+            SELECT scope_id, scope_kind, scope_ref, state
+            FROM mutation_scope_records
+            WHERE parent_scope_id = ?
+            ORDER BY scope_id
+            """,
+            (attempt.mutation_scope_id,),
+        ).fetchall()
+        assert [
+            (
+                str(row["scope_id"]),
+                str(row["scope_kind"]),
+                str(row["scope_ref"]),
+                str(row["state"]),
+            )
+            for row in rows
+        ] == [
+            (
+                f"mutation_scope_post_{attempt.attempt_id}",
+                MutationScopeKind.SESSION.value,
+                f"post-scientific-attempt:{attempt.attempt_id}",
+                MutationScopeState.OPEN.value,
+            )
+        ]
+    finally:
+        verification_connection.close()
+
+
+def test_closure_rollover_failure_rolls_back_and_replays_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repositories, service = _world()
+    attempt, request = _ready_closure_request(
+        service,
+        suffix="atomic-rollback",
+    )
+
+    def fail_post_scope(
+        _service: ScientificAttemptService,
+        _attempt: Any,
+    ) -> None:
+        raise RuntimeError("injected post-scope creation failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            ScientificAttemptService,
+            "_ensure_post_closure_scope",
+            fail_post_scope,
+        )
+        with pytest.raises(
+            RuntimeError,
+            match="injected post-scope creation failure",
+        ):
+            service.finalize_closure_request(
+                closure_request_id=request.closure_request_id
+            )
+
+    assert (
+        repositories.scientific_attempt_closures.get_by_attempt(
+            attempt.attempt_id
+        )
+        is None
+    )
+    rolled_back_scope = repositories.mutation_scopes.get(
+        attempt.mutation_scope_id
+    )
+    assert rolled_back_scope is not None
+    assert rolled_back_scope.state is MutationScopeState.OPEN
+    assert [
+        scope
+        for scope in repositories.mutation_scopes.list_by_session(
+            attempt.session_id
+        )
+        if scope.parent_scope_id == attempt.mutation_scope_id
+    ] == []
+
+    closure = service.finalize_closure_request(
+        closure_request_id=request.closure_request_id
+    )
+    assert closure.attempt_id == attempt.attempt_id
+    assert (
+        repositories.mutation_scopes.get(attempt.mutation_scope_id).state
+        is MutationScopeState.SEALED
+    )
+    post_scopes = [
+        scope
+        for scope in repositories.mutation_scopes.list_by_session(
+            attempt.session_id
+        )
+        if scope.parent_scope_id == attempt.mutation_scope_id
+    ]
+    assert len(post_scopes) == 1
+    assert post_scopes[0].state is MutationScopeState.OPEN
 
 
 def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> None:

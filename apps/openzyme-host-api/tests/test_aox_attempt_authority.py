@@ -32,6 +32,7 @@ from openzyme_host_api.aox_attempt_authority import (
 from openzyme_host_api.aox_attempt_authority import (
     validate_aox_attempt_authority_plan,
 )
+from openzyme_host_api.aox_live_run_class import AoxLiveRunClass
 from openzyme_host_api.aox_cutover_evidence import canonical_digest
 from openzyme_host_api.aox_cutover_evidence import CutoverEvidenceError
 from openzyme_host_api.aox_scientific_contract import (
@@ -233,8 +234,11 @@ def test_private_authority_file_has_one_deterministic_consumption_target(
     )
     assert receipt == {
         "schema_id": AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID,
+        "run_class": AoxLiveRunClass.FORMAL_ACCEPTANCE.value,
+        "plan_schema_id": AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID,
         "plan_digest": plan["plan_digest"],
         "campaign_id": plan["campaign_id"],
+        "consumption_file": consumption_path.name,
         "consumed_at": receipt["consumed_at"],
     }
     assert stat.S_IMODE(consumption_path.stat().st_mode) == 0o400

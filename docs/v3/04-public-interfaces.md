@@ -484,6 +484,15 @@ exact replay 返回原 identities，partial/mismatched replay fail closed 且
 `failed|superseded|abandoned`；旧 `scientific.effect.adopt` 不再出现在新 catalog，但历史
 split records 仍可只读检查。
 
-AOX `authorize` 只发布 reviewable one-use three-slot plan，不创建 root。`run-live` 必须在 root
-前将该 exact plan 原子消费到 deterministic sibling；缺失、复制后错误 sibling、identity/
-qualification/resource drift 或重复消费均拒绝。
+AOX `authorize` 只发布 reviewable one-use exact-three formal plan，不创建 root；
+`run-live` 仍是唯一正式 acceptance command。独立 `authorize-diagnostic` 只发布
+`aox_diagnostic_attempt_authority_plan@1` 的单 positive-shaped slot，
+`run-diagnostic-live` 只接受该 schema 和 deterministic
+`<plan>.diagnostic-consumed.json`。两类 launcher 都在 live launch construction、root、
+MICU/provider/HPC/browser action 前 no-replace 消费各自 plan；consumption receipt 显式绑定
+run class、plan schema/digest 和 sibling filename。diagnostic root 使用
+`aox-diagnostic-*` namespace 与 append-only
+`aox_blank_world_diagnostic_decision@1`，所有 eligibility 字段固定 false；该 command
+不生成 `aox_blank_world_attempt_bundle@3`，也不调用 campaign reducer。missing/ambiguous
+run class、复制后错误 sibling、identity/qualification/resource drift、重复消费、跨类
+plan/receipt/root 或相同 digest reuse 均在 effect/root 前拒绝。

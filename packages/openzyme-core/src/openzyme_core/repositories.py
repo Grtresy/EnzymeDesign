@@ -1521,6 +1521,27 @@ class DurableEventRepository:
         ).fetchone()
         return None if row is None else self._row_to_event(row)
 
+    def list_scientific_transition_events(
+        self,
+        *,
+        session_id: str,
+        event_type: str,
+        record_id: str,
+    ) -> list[DurableEventRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM durable_event_records
+            WHERE session_id = ?
+              AND event_type = ?
+              AND visibility = 'public'
+              AND json_extract(payload_json, '$.record_id') = ?
+            ORDER BY cursor
+            """,
+            (session_id, event_type, record_id),
+        ).fetchall()
+        return [self._row_to_event(row) for row in rows]
+
     def list_by_session(
         self,
         session_id: str,

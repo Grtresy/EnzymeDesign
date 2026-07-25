@@ -59,6 +59,23 @@ from openzyme_host_api.aox_cutover_evidence import typed_empty_artifact_validati
 from openzyme_host_api.aox_cutover_evidence import verify_sealed_source_tree_envelope
 from openzyme_host_api.aox_cutover_evidence import verify_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import build_attempt_bundle
+from openzyme_host_api.aox_diagnostic_authority import (
+    build_aox_diagnostic_authority_plan,
+)
+from openzyme_host_api.aox_diagnostic_authority import (
+    consume_aox_diagnostic_authority_plan,
+)
+from openzyme_host_api.aox_diagnostic_authority import (
+    diagnostic_authority_consumption_path,
+)
+from openzyme_host_api.aox_diagnostic_authority import (
+    publish_aox_diagnostic_authority_plan,
+)
+from openzyme_host_api.aox_diagnostic_run import (
+    AOX_DIAGNOSTIC_DECISION_FILENAME,
+)
+from openzyme_host_api.aox_diagnostic_run import AoxDiagnosticRun
+from openzyme_host_api.aox_live_run_class import AoxLiveRunClass
 from openzyme_host_api.aox_scientific_contract import (
     AOX_SELECTED_CHAIN_CONTRACT_V2,
 )
@@ -9737,6 +9754,81 @@ def test_product_receipt_bytes_are_parsed_and_bound_offline(tmp_path: Path) -> N
     result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
 
     assert any(issue.code == "product_receipt_mismatch" for issue in result.issues)
+
+
+def test_diagnostic_shared_execution_uses_fresh_file_sqlite_without_bundle(
+    tmp_path: Path,
+) -> None:
+    identity = _identity()
+    prerequisites = _allowed_prerequisites(identity)
+    qualification = _architecture_qualification(identity)
+    plan = build_aox_diagnostic_authority_plan(
+        identity=identity,
+        allowed_prerequisites=prerequisites,
+        architecture_qualification=qualification,
+        issued_at="2026-07-23T00:00:00+00:00",
+        expires_at="2099-01-01T00:00:00+00:00",
+        max_micu=10_000,
+        max_cost_microunits=20_000,
+        max_wall_time_seconds=3_600,
+    )
+    plan_path = tmp_path / "diagnostic-authority.json"
+    publish_aox_diagnostic_authority_plan(plan, plan_path)
+    consumption = consume_aox_diagnostic_authority_plan(
+        plan,
+        plan_path=plan_path,
+        path=diagnostic_authority_consumption_path(plan_path),
+    )
+    diagnostic_root = tmp_path / str(plan["root_namespace"])
+
+    def runner(context):
+        connection = connect_sqlite(str(context.roots.sqlite_path))
+        try:
+            apply_sqlite_migrations(connection)
+        finally:
+            connection.close()
+        return {
+            "run_class": AoxLiveRunClass.DIAGNOSTIC.value,
+            "acceptance_eligible": False,
+            "diagnostic_observation": {
+                "product_path_completed": True,
+            },
+            "scientific_outcome": {
+                "status": "completed",
+                "cutover_eligible": False,
+            },
+            "report": {
+                "status": "published",
+                "cutover_eligible": False,
+            },
+            "approvals": [],
+            "operations": [],
+            "artifacts": [],
+        }
+
+    diagnostic = AoxDiagnosticRun.for_non_live_test(
+        diagnostic_root=diagnostic_root,
+        identity=identity,
+        ledger_path=tmp_path / "diagnostic-ledger.sqlite3",
+        runner=runner,
+        allowed_prerequisites=prerequisites,
+        architecture_qualification=qualification,
+        authority_plan=plan,
+        authority_consumption=consumption,
+        authority_plan_path=plan_path,
+    )
+
+    decision = diagnostic.run()
+
+    slot = plan["slot"]
+    assert isinstance(slot, dict)
+    attempt_root = diagnostic_root / str(slot["attempt_id"])
+    assert (attempt_root / "control-plane.sqlite3").is_file()
+    assert decision["acceptance_eligible"] is False
+    assert decision["status"] == "completed_product_path"
+    assert (diagnostic_root / AOX_DIAGNOSTIC_DECISION_FILENAME).is_file()
+    assert not tuple(diagnostic_root.rglob("attempt-bundle.json"))
+    assert not tuple(diagnostic_root.rglob("campaign-decision.json"))
 
 
 @pytest.mark.parametrize(

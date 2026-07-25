@@ -1,6 +1,6 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r56 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. r48 through r56 are permanent NO-GO evidence. The executable architecture-qualification gate is implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. Local Live cutover stays **NO-GO** until one successor formal acceptance campaign seals two real positive attempts plus one controlled fault attempt on one commit/config identity. After r56, diagnostic live execution and formal acceptance are separate target contracts; the diagnostic command/authority/evidence path is not implemented yet, so existing `authorize` and `run-live` remain formal-acceptance-only.
+Status: r43-r56 exposed cross-layer architecture-verification gaps after earlier runtime/HPC and authority-handoff work. r48 through r56 are permanent NO-GO evidence. The executable architecture-qualification gate is implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. The post-r56 atomic closure rollover, crash-safe transition delivery, and schema-disjoint diagnostic command/authority/evidence path are implemented and covered by real file-backed SQLite concurrency/fault/cross-mode regressions. Local Live cutover stays **NO-GO**: implementation completion does not authorize a diagnostic run or r57, and one later separately approved formal acceptance campaign must still seal two real positive attempts plus one controlled fault attempt on one commit/config identity. Existing `authorize` and `run-live` remain formal-acceptance-only; diagnostic uses separately approved `authorize-diagnostic` and `run-diagnostic-live`.
 
 Historical r14-r56 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
@@ -328,9 +328,16 @@ Its bounded observer could not register a writer and surfaced
 `mutation_driver_writer_identity_invalid`. The post-attempt scope and retired
 `host:scientific-transition-finalizer` writer appearing immediately afterward
 prove this was coordination drift, not provider/HPC or scientific failure.
-The forward fix must make attempt seal, closure and post-attempt-scope open one
-short atomic write transaction; blind barrier retry must not conceal a
-non-atomic transition.
+The forward implementation now makes attempt seal, closure and
+post-attempt-scope open one Core-owned short atomic write transaction. Host
+settlement also commits the deterministic transition event and source-bound
+wakeup with that transition, and pending scans repair an older committed
+transition whose delivery is absent. Real file-backed WAL regressions pause
+after the uncommitted closure insert, prove a concurrent reader still sees the
+old open attempt scope, then prove the committed state exposes only the unique
+open post-attempt scope; concurrent finalizers and injected rollback are also
+covered. Blind barrier retry remains forbidden, and this forward correction
+does not alter or rehabilitate r56 evidence.
 
 Parent supervision sealed fatal
 `sha256:4e0f23b05f8fc5dbe84b35d0781e5c08926eacd4224aa00ab27e5052917463f9`
@@ -354,10 +361,18 @@ the target contract now separates:
   `positive, positive, fault` plan is the only path to `@3` bundles and GO.
 
 The two classes never share authority, roots, effects, artifacts, reports,
-browser receipts or bytes. This is currently a specified implementation gap:
-there is no diagnostic CLI/authority/receipt yet. Until that path and atomic
-rollover are implemented and qualified on a new commit, existing `authorize`
-and `run-live` remain formal-acceptance-only and no r57 campaign should start.
+browser receipts or bytes. Atomic rollover and the run-class split are now
+implemented and non-live qualified. `authorize-diagnostic` publishes one
+`aox_diagnostic_attempt_authority_plan@1` slot; `run-diagnostic-live` consumes
+only its distinct deterministic sibling, creates a plan-bound
+`aox-diagnostic-*` root and seals only
+`aox_blank_world_diagnostic_decision@1`. Formal `authorize` / `run-live`
+remain exact-three-only. Both collectors reuse the same typed single-attempt
+execution core, but only formal collection can build `@3` or call the GO
+reducer. Cross-class plan, stripped mode, root/ancestor marker, receipt and
+equal-digest reuse all fail before root/effect. This implementation does not
+authorize a real diagnostic run or r57; either still requires separate
+operator approval after all non-live gates and a fresh clean admission.
 
 ## Numbered launch-preparation boundary
 
@@ -385,12 +400,15 @@ insufficient. The effective-config compiler remains authoritative and must seal
 the resolved values; a hand-written declaration is not accepted.
 
 The CLI command named `preflight` is deliberately outside this no-attempt phase:
-it creates the first blank-world attempt root. `preflight`, `run-live`, the
+it creates the first blank-world attempt root. `preflight`, `run-live`,
+`run-diagnostic-live`, the
 known-positive provider/model probe, canonical Chrome approval, positive
 attempts, and the controlled fault attempt require a separate explicit launch
 authorization. Production `run-live` additionally consumes the exact authority
-plan into its deterministic absent `.consumed.json` sibling before any root is
-created. Standalone availability diagnostics can inform readiness but
+plan into its deterministic absent `.consumed.json` sibling before live launch
+construction or root creation. `run-diagnostic-live` does the same only for its
+single-slot plan and distinct `.diagnostic-consumed.json` sibling. Standalone
+availability diagnostics can inform readiness but
 cannot satisfy campaign evidence or be adopted into an attempt.
 
 The launch documentation audit covers this stable contract, the main
@@ -1674,8 +1692,8 @@ ineligible even when its files look plausible.
 
 ## Architecture qualification admission
 
-`pin`、`preflight` 与 `run-live` 都要求 operator 显式提供
-`--architecture-qualification-report`。三个入口在读取 live settings、执行 pin runner
+`pin`、`preflight`、`run-live` 与 `run-diagnostic-live` 都要求 operator 显式提供
+`--architecture-qualification-report`。这些入口在读取 live settings、执行 pin runner
 attestation、创建 attempt/campaign root、运行 sandbox probe 或调用 provider、runner、
 Chrome、MICU 之前，使用当前 checkout 的 pure verifier 重新验证该文件。只有绑定当前 clean
 HEAD、`full` selection、当前 registry/test manifest/runner/verifier、全部 invariant satisfied
@@ -1702,8 +1720,8 @@ Every attempt creates a new attempt root containing initially empty, distinct lo
 The public root proof contains only stable names, counts, identities and cache policy, never Host paths. `provider_cache_mode=bypass`, `evidence_cache_reuse=false` and `sqlite_preexisting=false` are mandatory. Existing attempt roots, symlinks, preloaded scientific files and unknown prerequisite fields are rejected.
 
 Architecture qualification verification happens first. `pin` then derives the
-declarations and `run-live` resolves the same canonical launch snapshot before it
-constructs the campaign runner or any attempt root.
+declarations；`run-live` 或 `run-diagnostic-live` 先验证并消费对应 run-class plan，再解析同一
+canonical launch snapshot，最后才构造 supervisor/collector 或 attempt root。
 The campaign identity is an exact closed seven-field object:
 
 - `git_commit`;
@@ -2150,6 +2168,40 @@ uv --project apps/openzyme-host-api run openzyme-aox-cutover authorize \
 This command does not launch or number an attempt. Reviewing and publishing a
 plan is distinct from authorizing `run-live` to consume it.
 
+Diagnostic publication and execution are separately named and separately
+approved. The following is the implemented contract shape, not authorization
+to execute a live diagnostic:
+
+```bash
+uv --project apps/openzyme-host-api run openzyme-aox-cutover authorize-diagnostic \
+  --identity /tmp/openzyme-aox-pin/<diagnostic-id>/identity.json \
+  --allowed-prerequisites /tmp/openzyme-aox-pin/<diagnostic-id>/allowed-prerequisites.json \
+  --architecture-qualification-report /tmp/openzyme-v3-admission/<commit>/architecture-qualification-report.json \
+  --output /tmp/openzyme-aox-authority/<diagnostic-id>/diagnostic-authority.json \
+  --expires-at <timezone-aware-iso8601> \
+  --max-micu-per-attempt <exact-nonnegative-int> \
+  --max-cost-microunits-per-attempt <exact-nonnegative-int> \
+  --max-wall-time-seconds-per-attempt <exact-nonnegative-int>
+
+uv --project apps/openzyme-host-api run openzyme-aox-cutover run-diagnostic-live \
+  --diagnostic-root /tmp/openzyme-aox-diagnostic/<plan-reported-aox-diagnostic-root-namespace> \
+  --identity /tmp/openzyme-aox-pin/<diagnostic-id>/identity.json \
+  --allowed-prerequisites /tmp/openzyme-aox-pin/<diagnostic-id>/allowed-prerequisites.json \
+  --architecture-qualification-report /tmp/openzyme-v3-admission/<commit>/architecture-qualification-report.json \
+  --diagnostic-authority-plan /tmp/openzyme-aox-authority/<diagnostic-id>/diagnostic-authority.json \
+  --diagnostic-authority-consumption \
+    /tmp/openzyme-aox-authority/<diagnostic-id>/diagnostic-authority.json.diagnostic-consumed.json \
+  --approval-mode chrome-once \
+  --browser-observation-receipt \
+    /tmp/openzyme-aox-browser-handoff/<diagnostic-id>.json
+```
+
+The runner consumes the one-slot plan before live launch construction and root
+creation. It may settle one positive-shaped product path, but it always writes
+`acceptance_eligible=false` and only an append-only diagnostic decision. Its
+authority, root, SQLite, effects, artifacts, report, browser receipt and bytes
+cannot be passed to the formal commands or reducer.
+
 Real campaign entry point:
 
 ```bash
@@ -2404,11 +2456,13 @@ r56 is the latest live diagnostic fact, but it is still a failed formal
 acceptance campaign, not a diagnostic-mode receipt and not one of the three GO
 slots. It reached six formal operations and scientific-attempt closure, then
 failed before report, final browser observation, eligible bundle and campaign
-closure. The post-r56 checkpoint is specification/documentation only: atomic
-scope rollover plus schema-disjoint diagnostic authority/runner/receipt remain
-unimplemented. No successor `preflight`, `run-live`, numbered root,
-provider/MICU call, HPC job, browser campaign or formal attempt may be created
-until those tasks are implemented, verified, committed, fully admitted and
-pinned. A diagnostic run then requires its own separately approved one-slot
-plan; a later formal acceptance requires a different separately approved
-exact-three plan. No r56 or pre-correction plan is either authority.
+closure. The post-r56 atomic scope rollover and crash-safe transition delivery
+are implemented with real file-backed concurrency/fault coverage; the
+schema-disjoint diagnostic authority/runner/receipt and qualification scenario
+are also implemented with file-backed/cross-mode negative coverage. No
+successor `preflight`, `run-diagnostic-live`, `run-live`, numbered root,
+provider/MICU call, HPC job, browser campaign or formal attempt is authorized
+by that implementation work. A real diagnostic run requires its own separately
+approved one-slot plan; a later formal acceptance requires a different
+separately approved exact-three plan after a fresh clean full admission. No r56
+or pre-correction plan is either authority.

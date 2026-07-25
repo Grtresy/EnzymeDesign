@@ -23,7 +23,17 @@ from openzyme_host_api.aox_attempt_authority import (
 from openzyme_host_api.aox_attempt_authority import (
     publish_aox_attempt_authority_plan,
 )
+from openzyme_host_api.aox_diagnostic_authority import (
+    build_aox_diagnostic_authority_plan,
+)
+from openzyme_host_api.aox_diagnostic_authority import (
+    diagnostic_authority_consumption_path,
+)
+from openzyme_host_api.aox_diagnostic_authority import (
+    publish_aox_diagnostic_authority_plan,
+)
 from openzyme_host_api.aox_cutover_launch import AoxCutoverLaunchError
+from openzyme_host_api.aox_live_run_class import AoxLiveRunClass
 from openzyme_runtime import OpenZymeSettings
 
 
@@ -60,8 +70,8 @@ def _run_live_args(tmp_path: Path):
         architecture_qualification=_architecture_qualification(),
     )
     authority_plan = build_aox_attempt_authority_plan(
-        identity={"git_commit": "a" * 40},
-        allowed_prerequisites={"git_commit": "a" * 40},
+        identity={"declared": "identity"},
+        allowed_prerequisites={"declared": "prerequisites"},
         architecture_qualification=_architecture_qualification(),
         expires_at="2099-01-01T00:00:00+00:00",
         max_micu_per_attempt=1,
@@ -89,6 +99,57 @@ def _run_live_args(tmp_path: Path):
             str(attempt_authority_consumption_path(authority_plan_path)),
             "--ledger-path",
             str(tmp_path / "ledger.sqlite3"),
+            "--approval-mode",
+            "chrome-once",
+            "--browser-completion-hold-seconds",
+            "0",
+        ]
+    )
+
+
+def _run_diagnostic_live_args(tmp_path: Path):
+    identity_path = tmp_path / "diagnostic-identity.json"
+    prerequisite_path = tmp_path / "diagnostic-prerequisites.json"
+    authority_plan_path = tmp_path / "diagnostic-authority.json"
+    identity = {"git_commit": "a" * 40}
+    prerequisites = {"git_commit": "a" * 40}
+    cli._write_pin_outputs_atomic_no_replace(
+        identity_target=identity_path,
+        prerequisites_target=prerequisite_path,
+        identity=identity,
+        prerequisites=prerequisites,
+        architecture_qualification=_architecture_qualification(),
+    )
+    authority_plan = build_aox_diagnostic_authority_plan(
+        identity=identity,
+        allowed_prerequisites=prerequisites,
+        architecture_qualification=_architecture_qualification(),
+        expires_at="2099-01-01T00:00:00+00:00",
+        max_micu=1,
+        max_cost_microunits=1,
+        max_wall_time_seconds=1,
+    )
+    publish_aox_diagnostic_authority_plan(
+        authority_plan,
+        authority_plan_path,
+    )
+    return cli.build_parser().parse_args(
+        [
+            "run-diagnostic-live",
+            "--diagnostic-root",
+            str(tmp_path / str(authority_plan["root_namespace"])),
+            "--identity",
+            str(identity_path),
+            "--allowed-prerequisites",
+            str(prerequisite_path),
+            "--architecture-qualification-report",
+            str(tmp_path / "architecture-qualification.json"),
+            "--diagnostic-authority-plan",
+            str(authority_plan_path),
+            "--diagnostic-authority-consumption",
+            str(diagnostic_authority_consumption_path(authority_plan_path)),
+            "--ledger-path",
+            str(tmp_path / "diagnostic-ledger.sqlite3"),
             "--approval-mode",
             "chrome-once",
             "--browser-completion-hold-seconds",
@@ -281,6 +342,7 @@ def test_run_live_fails_launch_validation_before_campaign_root_creation(
 
     assert error.value.code == "aox_launch_worktree_dirty"
     assert not args.campaign_root.exists()
+    assert args.attempt_authority_consumption.is_file()
 
 
 def test_run_live_passes_canonical_launch_snapshot_to_runner_and_campaign(
@@ -291,8 +353,8 @@ def test_run_live_passes_canonical_launch_snapshot_to_runner_and_campaign(
     args = _run_live_args(tmp_path)
     raw_settings = SimpleNamespace(name="raw")
     effective_settings = SimpleNamespace(name="effective")
-    launch_identity = {"git_commit": "a" * 40}
-    launch_prerequisites = {"git_commit": "a" * 40}
+    launch_identity = {"declared": "identity"}
+    launch_prerequisites = {"declared": "prerequisites"}
     launch_config = {"schema_id": "aox_blank_world_runtime_config@3"}
 
     def launch_guard() -> None:
@@ -382,6 +444,103 @@ def test_run_live_passes_canonical_launch_snapshot_to_runner_and_campaign(
         "status": "not_claimed",
         "reason": "attempt_supervision_fatal",
     }
+
+
+def test_diagnostic_commands_are_explicit_and_not_formal_mode_flags(
+    tmp_path: Path,
+) -> None:
+    diagnostic = _run_diagnostic_live_args(tmp_path)
+
+    assert diagnostic.command == "run-diagnostic-live"
+    assert diagnostic.handler is cli._run_diagnostic_live
+    assert not hasattr(diagnostic, "attempt_authority_plan")
+    assert diagnostic.diagnostic_authority_plan.name == (
+        "diagnostic-authority.json"
+    )
+    assert diagnostic.diagnostic_root.name.startswith("aox-diagnostic-")
+
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "run-live",
+                "--diagnostic",
+                "--campaign-root",
+                str(tmp_path / "formal"),
+            ]
+        )
+
+
+def test_run_diagnostic_live_consumes_only_diagnostic_plan_before_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = _run_diagnostic_live_args(tmp_path)
+    launch = SimpleNamespace(
+        effective_settings=SimpleNamespace(name="effective"),
+        effective_config={"schema_id": "aox_blank_world_runtime_config@3"},
+        identity={"git_commit": "a" * 40},
+        allowed_prerequisites={"git_commit": "a" * 40},
+        architecture_qualification=_architecture_qualification(),
+        assert_unchanged=lambda: None,
+    )
+    captured: dict[str, object] = {}
+    fake_runner = object()
+
+    monkeypatch.setattr(
+        cli,
+        "_prepare_live_execution",
+        lambda parsed, **kwargs: (
+            launch,
+            _architecture_qualification(),
+            parsed.ledger_path,
+        ),
+    )
+
+    def build_runner(parsed, **kwargs):
+        captured["runner_args"] = parsed
+        captured["runner_kwargs"] = kwargs
+        return fake_runner
+
+    class FakeDiagnosticRun:
+        def __init__(self, **kwargs: object) -> None:
+            captured["diagnostic"] = kwargs
+
+        def run(self) -> dict[str, object]:
+            return {
+                "schema_id": "aox_blank_world_diagnostic_decision@1",
+                "status": "completed_product_path",
+                "acceptance_eligible": False,
+            }
+
+    monkeypatch.setattr(cli, "_build_supervised_live_runner", build_runner)
+    monkeypatch.setattr(cli, "AoxDiagnosticRun", FakeDiagnosticRun)
+    monkeypatch.setattr(
+        cli,
+        "safe_micu_ledger_snapshot",
+        lambda path: {"ledger": path.name},
+    )
+
+    result = cli._run_diagnostic_live(args)
+
+    assert result == 0
+    assert captured["runner_kwargs"]["run_class"] is (
+        AoxLiveRunClass.DIAGNOSTIC
+    )
+    diagnostic = captured["diagnostic"]
+    assert diagnostic["runner"] is fake_runner
+    assert diagnostic["diagnostic_root"] == args.diagnostic_root
+    assert diagnostic["authority_plan"]["run_class"] == (
+        AoxLiveRunClass.DIAGNOSTIC.value
+    )
+    assert diagnostic["authority_consumption"]["run_class"] == (
+        AoxLiveRunClass.DIAGNOSTIC.value
+    )
+    assert args.diagnostic_authority_consumption.is_file()
+    assert not args.diagnostic_root.exists()
+    output = json.loads(capsys.readouterr().out)
+    assert output["decision"]["acceptance_eligible"] is False
 
 
 def test_pin_uses_same_driver_bounds_and_writes_safe_no_replace_json(

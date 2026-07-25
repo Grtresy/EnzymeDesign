@@ -1424,7 +1424,12 @@ scope 窗口无法登记 AOX observer writer，以
 `mutation_driver_writer_identity_invalid` fail closed。post scope 和已退休
 `host:scientific-transition-finalizer` writer 随后出现，排除了 scientific/provider/HPC
 failure。正确 forward fix 是一个短 write transaction 原子提交 seal + closure + post-scope
-open，而不是 driver blind retry。
+open，而不是 driver blind retry。该 forward fix 现已由 Core
+`finalize_closure_request()` 自身持有事务，并由 Host shared settlement 把 deterministic
+transition event 与 source-bound wakeup 纳入同一次提交；pending scan 还能补齐旧的
+transition-exists/delivery-missing 崩溃状态。真实 file-backed WAL 回归覆盖事务中点 reader、
+两个并发 finalizer、post-scope fault rollback/replay，以及真正 missing/ambiguous barrier
+状态继续 fail closed；这些非-live 事实不追认 r56。
 
 parent fatal
 `sha256:4e0f23b05f8fc5dbe84b35d0781e5c08926eacd4224aa00ab27e5052917463f9`
@@ -1438,9 +1443,16 @@ effects、Chrome/closure/partial evidence 与 bytes 全部不可复用。
 r56 触发 target contract 正式拆分：diagnostic live 使用独立 one-use 单 positive plan、
 独立 root/consumption/decision schema，固定 `acceptance_eligible=false` 且不得生成
 `@3`/进入 reducer；formal acceptance 仍精确要求 fresh `positive, positive, fault` 三个
-slot，GO 门槛不变。当前独立 diagnostic command/authority/receipt 尚未实现，所以现有
-`authorize`/`run-live` 仍只代表 formal acceptance，不能继续拿它们做框架诊断。atomic
-rollover 与双 run class 实现、测试、commit、full admission/pin 完成前不得启动 r57。
+slot，GO 门槛不变。atomic rollover 已实现并通过 focused 非-live 回归；当前独立
+`authorize-diagnostic` / `run-diagnostic-live`、单槽
+`aox_diagnostic_attempt_authority_plan@1`、独立 consumption/root marker/proof 与
+append-only `aox_blank_world_diagnostic_decision@1` 也已实现；现有
+`authorize`/`run-live` 仍只代表 exact-three formal acceptance。共享 runner core
+不共享 collector：diagnostic 所有 eligibility 字段固定 false，无法生成/进入
+`@3`/reducer；cross-mode plan、receipt、root ancestry、stripped mode 与 equal-digest
+reuse 均在 non-live 回归/qualification scenario 中拒绝。这些实现事实不提供 live
+authority；全部非-live gate、commit、full admission/pin 和独立 operator 批准完成前，
+不得执行 diagnostic live 或启动 r57。
 
 ## 当前实施状态的表述规则
 

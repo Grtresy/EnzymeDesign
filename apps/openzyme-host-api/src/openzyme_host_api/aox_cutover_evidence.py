@@ -29,6 +29,11 @@ from .aox_architecture_qualification import (
 from .aox_cutover_runtime_config import AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID
 from .aox_cutover_runtime_config import AoxRuntimeConfigSchemaError
 from .aox_cutover_runtime_config import normalize_aox_blank_world_runtime_config
+from .aox_live_run_class import AoxLiveRunClass
+from .aox_live_run_class import authority_root_ref
+from .aox_live_run_class import authority_run_class
+from .aox_live_run_class import DIAGNOSTIC_RUN_POLICY
+from .aox_live_run_class import policy_for_run_class
 
 
 ATTEMPT_BUNDLE_SCHEMA_ID_V2 = "aox_blank_world_attempt_bundle@2"
@@ -37,6 +42,9 @@ ATTEMPT_BUNDLE_SCHEMA_ID_V3 = "aox_blank_world_attempt_bundle@3"
 # deliberately frozen on @2; new production campaigns dispatch to @3 explicitly.
 ATTEMPT_BUNDLE_SCHEMA_ID = ATTEMPT_BUNDLE_SCHEMA_ID_V2
 CAMPAIGN_DECISION_SCHEMA_ID = "aox_blank_world_campaign_decision@1"
+DIAGNOSTIC_ROOT_MARKER_SCHEMA_ID = "aox_diagnostic_root_marker@1"
+DIAGNOSTIC_ROOT_MARKER_FILENAME = ".aox-diagnostic-root.json"
+DIAGNOSTIC_ROOT_PROOF_SCHEMA_ID = "aox_diagnostic_root_proof@1"
 BLANK_WORLD_ROOT_PROOF_SCHEMA_ID = "aox_blank_world_root_proof@2"
 AOX_LAUNCH_RECEIPT_SCHEMA_ID = "aox_blank_world_launch_receipt@2"
 SEALED_SOURCE_TREE_SCHEMA_ID = "openzyme_sealed_source_tree@1"
@@ -718,6 +726,14 @@ class AttemptRunRecord:
     artifact_root: Path
     bundle_digest: str
     verification: VerificationResult
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptExecution:
+    roots: BlankWorldRoots
+    ledger_before: dict[str, Any]
+    ledger_after: dict[str, Any]
+    evidence: dict[str, Any]
 
 
 class AttemptRunner(Protocol):
@@ -1622,6 +1638,83 @@ def normalize_aox_cutover_prerequisites(
     return prerequisites
 
 
+def assert_formal_campaign_root(campaign_root: Path) -> None:
+    requested = campaign_root.expanduser()
+    lineage = (requested, *requested.parents)
+    marker_found = any(
+        (candidate / DIAGNOSTIC_ROOT_MARKER_FILENAME).exists()
+        or (candidate / DIAGNOSTIC_ROOT_MARKER_FILENAME).is_symlink()
+        for candidate in lineage
+    )
+    if (
+        requested.is_symlink()
+        or requested.name.startswith(
+            DIAGNOSTIC_RUN_POLICY.root_namespace_prefix or ""
+        )
+        or marker_found
+    ):
+        raise CutoverEvidenceError(
+            "formal_campaign_diagnostic_root_forbidden",
+            "formal acceptance rejects every diagnostic root namespace",
+        )
+
+
+def initialize_diagnostic_root(
+    diagnostic_root: Path,
+    *,
+    root_namespace: str,
+    plan_digest: str,
+    diagnostic_id: str,
+) -> dict[str, Any]:
+    requested = diagnostic_root.expanduser()
+    parent = requested.parent
+    parent_in_diagnostic_namespace = any(
+        (candidate / DIAGNOSTIC_ROOT_MARKER_FILENAME).exists()
+        or (candidate / DIAGNOSTIC_ROOT_MARKER_FILENAME).is_symlink()
+        for candidate in (parent, *parent.parents)
+    )
+    if (
+        requested.name != root_namespace
+        or not root_namespace.startswith(
+            DIAGNOSTIC_RUN_POLICY.root_namespace_prefix or ""
+        )
+        or requested.exists()
+        or requested.is_symlink()
+        or not parent.is_dir()
+        or parent.is_symlink()
+        or parent_in_diagnostic_namespace
+    ):
+        raise CutoverEvidenceError(
+            "diagnostic_root_target_invalid",
+            "diagnostic root must be its exact fresh plan-bound namespace",
+            details={"expected_name": root_namespace},
+        )
+    try:
+        requested.mkdir(mode=0o700)
+    except FileExistsError as exc:
+        raise CutoverEvidenceError(
+            "diagnostic_root_target_invalid",
+            "diagnostic root must remain absent until authority consumption",
+            details={"expected_name": root_namespace},
+        ) from exc
+    marker_payload = {
+        "schema_id": DIAGNOSTIC_ROOT_MARKER_SCHEMA_ID,
+        "run_class": AoxLiveRunClass.DIAGNOSTIC.value,
+        "acceptance_eligible": False,
+        "diagnostic_id": diagnostic_id,
+        "root_namespace": root_namespace,
+        "plan_digest": plan_digest,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    _write_append_only_bytes(
+        requested / DIAGNOSTIC_ROOT_MARKER_FILENAME,
+        canonical_json_bytes(marker_payload) + b"\n",
+        error_code="diagnostic_root_marker_append_only",
+        error_message="diagnostic root marker already exists",
+    )
+    return marker_payload
+
+
 def create_blank_world_roots(
     campaign_root: Path,
     *,
@@ -1629,7 +1722,16 @@ def create_blank_world_roots(
     allowed_prerequisites: Mapping[str, object],
     architecture_qualification: Mapping[str, object],
     attempt_id: str | None = None,
+    run_class: AoxLiveRunClass = AoxLiveRunClass.FORMAL_ACCEPTANCE,
+    diagnostic_id: str | None = None,
 ) -> BlankWorldRoots:
+    try:
+        normalized_run_class = AoxLiveRunClass(run_class)
+    except ValueError as exc:
+        raise CutoverEvidenceError(
+            "aox_live_run_class_invalid",
+            "blank-world roots require one explicit supported run class",
+        ) from exc
     if attempt_kind not in {"positive", "fault"}:
         raise CutoverEvidenceError(
             "attempt_kind_invalid",
@@ -1643,6 +1745,22 @@ def create_blank_world_roots(
             "attempt id must be a short path-safe identifier",
             details={"attempt_id": identifier},
         )
+    if normalized_run_class is AoxLiveRunClass.FORMAL_ACCEPTANCE:
+        assert_formal_campaign_root(campaign_root)
+        if DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(identifier):
+            raise CutoverEvidenceError(
+                "formal_campaign_diagnostic_attempt_forbidden",
+                "formal acceptance rejects diagnostic attempt identities",
+            )
+    elif (
+        attempt_kind != "positive"
+        or DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(identifier)
+        is None
+    ):
+        raise CutoverEvidenceError(
+            "diagnostic_attempt_identity_invalid",
+            "diagnostic execution permits exactly one diagnostic positive identity",
+        )
     prerequisites = normalize_aox_cutover_prerequisites(allowed_prerequisites)
     qualification = _normalize_architecture_qualification(
         architecture_qualification,
@@ -1650,6 +1768,30 @@ def create_blank_world_roots(
     )
     base = campaign_root.resolve()
     base.mkdir(parents=True, exist_ok=True)
+    if normalized_run_class is AoxLiveRunClass.DIAGNOSTIC:
+        marker_path = base / DIAGNOSTIC_ROOT_MARKER_FILENAME
+        try:
+            marker_content = marker_path.read_bytes()
+            marker = json.loads(marker_content)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise CutoverEvidenceError(
+                "diagnostic_root_marker_invalid",
+                "diagnostic root lacks its canonical append-only marker",
+            ) from exc
+        if (
+            not isinstance(marker, dict)
+            or marker_content != canonical_json_bytes(marker) + b"\n"
+            or marker.get("schema_id") != DIAGNOSTIC_ROOT_MARKER_SCHEMA_ID
+            or marker.get("run_class") != AoxLiveRunClass.DIAGNOSTIC.value
+            or marker.get("acceptance_eligible") is not False
+            or marker.get("root_namespace") != base.name
+            or marker.get("diagnostic_id") != diagnostic_id
+            or base.name != str(diagnostic_id).replace("_", "-")
+        ):
+            raise CutoverEvidenceError(
+                "diagnostic_root_marker_invalid",
+                "diagnostic root marker does not bind the diagnostic run class",
+            )
     attempt_root = base / identifier
     if attempt_root.exists():
         preloaded = _preloaded_science(attempt_root)
@@ -1683,19 +1825,28 @@ def create_blank_world_roots(
         path.mkdir(mode=0o700)
         roots[root_kind] = path
     sqlite_path = attempt_root / "control-plane.sqlite3"
-    hpc_workspace_label = f"aox-cutover-{uuid4().hex}"
+    hpc_workspace_label = (
+        "aox-cutover-"
+        if normalized_run_class is AoxLiveRunClass.FORMAL_ACCEPTANCE
+        else "aox-diagnostic-"
+    ) + uuid4().hex
     prerequisite_digest = canonical_digest(prerequisites)
     root_identity = canonical_digest(
         {
             "attempt_id": identifier,
             "attempt_kind": attempt_kind,
+            "run_class": normalized_run_class.value,
             "nonce": uuid4().hex,
             "root_names": root_names,
             "hpc_workspace_label": hpc_workspace_label,
         }
     )
     proof = {
-        "schema_id": BLANK_WORLD_ROOT_PROOF_SCHEMA_ID,
+        "schema_id": (
+            BLANK_WORLD_ROOT_PROOF_SCHEMA_ID
+            if normalized_run_class is AoxLiveRunClass.FORMAL_ACCEPTANCE
+            else DIAGNOSTIC_ROOT_PROOF_SCHEMA_ID
+        ),
         "architecture_qualification": qualification,
         "attempt_id": identifier,
         "attempt_kind": attempt_kind,
@@ -1712,6 +1863,14 @@ def create_blank_world_roots(
         "allowed_prerequisite_digest": prerequisite_digest,
         "allowed_prerequisites": prerequisites,
     }
+    if normalized_run_class is AoxLiveRunClass.DIAGNOSTIC:
+        proof.update(
+            {
+                "run_class": AoxLiveRunClass.DIAGNOSTIC.value,
+                "acceptance_eligible": False,
+                "diagnostic_root_marker_digest": canonical_digest(marker),
+            }
+        )
     validate_blank_world_roots(
         attempt_root=attempt_root,
         sqlite_path=sqlite_path,
@@ -2589,6 +2748,184 @@ def _append_independence_blockers(
             return
 
 
+def execute_aox_attempt(
+    *,
+    campaign_root: Path,
+    identity: Mapping[str, object],
+    ledger_path: Path,
+    runner: AttemptRunner,
+    allowed_prerequisites: Mapping[str, object],
+    architecture_qualification: Mapping[str, object],
+    number: int,
+    kind: str,
+    authority: Mapping[str, object] | None,
+    run_class: AoxLiveRunClass,
+    launch_guard: Callable[[], None] | None = None,
+    allow_unisolated_non_live_test_runner: bool = False,
+) -> AttemptExecution:
+    """Execute one attempt; run-class collectors own all evidence schemas."""
+
+    normalized_run_class = AoxLiveRunClass(run_class)
+    if launch_guard is not None:
+        launch_guard()
+    normalized_authority: dict[str, Any] | None = None
+    if allow_unisolated_non_live_test_runner:
+        normalized_authority = (
+            dict(authority) if isinstance(authority, Mapping) else None
+        )
+    else:
+        if not isinstance(authority, Mapping):
+            raise CutoverEvidenceError(
+                "authorization_required",
+                "production AOX attempt requires an exact durable authority slot",
+                details={"identity": f"attempt_authority_slots[{number - 1}]"},
+            )
+        normalized_authority = dict(authority)
+        try:
+            observed_run_class = authority_run_class(
+                normalized_authority
+            )
+        except ValueError as exc:
+            raise CutoverEvidenceError(
+                "attempt_authority_run_class_invalid",
+                "AOX authority carries an ambiguous run class",
+            ) from exc
+        policy = policy_for_run_class(normalized_run_class)
+        attempt_id = str(normalized_authority.get("attempt_id") or "")
+        (
+            expected_session_id,
+            expected_task_id,
+            expected_lane_id,
+            expected_root_ref,
+        ) = policy.identities(attempt_id)
+        request = normalized_authority.get("authority_request")
+        request_campaign_id = (
+            None
+            if not isinstance(request, dict)
+            else request.get("campaign_id")
+        )
+        if (
+            observed_run_class is not normalized_run_class
+            or normalized_authority.get("ordinal") != number
+            or normalized_authority.get("attempt_kind") != kind
+            or policy.attempt_id_pattern.fullmatch(attempt_id) is None
+            or normalized_authority.get("session_id")
+            != expected_session_id
+            or normalized_authority.get("task_id") != expected_task_id
+            or normalized_authority.get("lane_id") != expected_lane_id
+            or normalized_authority.get("scope")
+            != ("fault" if kind == "fault" else "formal")
+            or not isinstance(
+                normalized_authority.get("envelope_id"),
+                str,
+            )
+            or not isinstance(request, dict)
+            or request.get("session_id") != expected_session_id
+            or request.get("task_id") != expected_task_id
+            or request.get("root_ref") != expected_root_ref
+            or not isinstance(request_campaign_id, str)
+            or policy.campaign_id_pattern.fullmatch(request_campaign_id)
+            is None
+        ):
+            raise CutoverEvidenceError(
+                "attempt_authority_slot_identity_invalid",
+                "production authority slot does not match the run class",
+                details={"identity": f"attempt_authority_slots[{number - 1}]"},
+            )
+    roots = create_blank_world_roots(
+        campaign_root,
+        attempt_kind=kind,
+        allowed_prerequisites=allowed_prerequisites,
+        architecture_qualification=architecture_qualification,
+        attempt_id=(
+            None
+            if normalized_authority is None
+            else str(normalized_authority["attempt_id"])
+        ),
+        run_class=normalized_run_class,
+        diagnostic_id=(
+            None
+            if normalized_run_class
+            is AoxLiveRunClass.FORMAL_ACCEPTANCE
+            or normalized_authority is None
+            else str(
+                dict(
+                    normalized_authority["authority_request"]
+                ).get("campaign_id")
+                or ""
+            )
+        ),
+    )
+    before = safe_micu_ledger_snapshot(ledger_path)
+    context = AttemptRunContext(
+        roots=roots,
+        identity=_normalize_identity(identity),
+        ledger_before=before,
+        attempt_number=number,
+        attempt_authority=normalized_authority,
+    )
+    try:
+        evidence = runner(context)
+    except Exception as exc:
+        if getattr(exc, "attempt_supervision_fatal", False) is True:
+            raise
+        evidence = _campaign_runner_failure_evidence(
+            roots,
+            failure_type=type(exc).__name__,
+            attempt_kind=kind,
+        )
+    if not allow_unisolated_non_live_test_runner:
+        from .aox_attempt_supervision import (
+            validate_attempt_supervision_receipt,
+        )
+
+        assert normalized_authority is not None
+        validate_attempt_supervision_receipt(
+            dict(evidence.get("product_path") or {}).get(
+                "attempt_supervision"
+            ),
+            attempt_id=roots.attempt_id,
+            attempt_kind=kind,
+            attempt_authority_id=str(
+                normalized_authority["envelope_id"]
+            ),
+            attempt_authority_request_digest=str(
+                normalized_authority["request_digest"]
+            ),
+        )
+    after = safe_micu_ledger_snapshot(ledger_path)
+    if not allow_unisolated_non_live_test_runner:
+        control = evidence.get("scientific_attempt_control")
+        if not isinstance(control, dict):
+            raise CutoverEvidenceError(
+                "scientific_attempt_control_missing",
+                "production AOX runner did not return closed selected-chain evidence",
+                details={"identity": "scientific_attempt_control"},
+            )
+        assert normalized_authority is not None
+        control_authority = control.get("attempt_authority")
+        if (
+            not isinstance(control_authority, dict)
+            or control_authority.get("envelope_id")
+            != normalized_authority["envelope_id"]
+            or control_authority.get("root_ref")
+            != authority_root_ref(normalized_authority)
+        ):
+            raise CutoverEvidenceError(
+                "scientific_attempt_authority_mismatch",
+                "runner evidence did not consume the exact run-class authority",
+                details={
+                    "identity": "scientific_attempt_control.attempt_authority"
+                },
+            )
+    return AttemptExecution(
+        roots=roots,
+        ledger_before=before,
+        ledger_after=after,
+        evidence=dict(evidence),
+    )
+
+
 @dataclass(slots=True)
 class AoxCutoverCampaign:
     campaign_root: Path
@@ -2634,6 +2971,7 @@ class AoxCutoverCampaign:
         return campaign
 
     def run(self) -> tuple[tuple[AttemptRunRecord, ...], dict[str, Any]]:
+        assert_formal_campaign_root(self.campaign_root)
         records: list[AttemptRunRecord] = []
         try:
             for number, kind in enumerate(("positive", "positive", "fault"), start=1):
@@ -2668,117 +3006,44 @@ class AoxCutoverCampaign:
         number: int,
         kind: str,
     ) -> tuple[AttemptRunRecord, bool]:
-        if self.launch_guard is not None:
-            self.launch_guard()
-        authority: dict[str, Any] | None = None
-        if not self._allow_unisolated_non_live_test_runner:
-            raw_authority = (
-                None
-                if number > len(self.attempt_authority_slots)
-                else self.attempt_authority_slots[number - 1]
-            )
-            if not isinstance(raw_authority, Mapping):
-                raise CutoverEvidenceError(
-                    "authorization_required",
-                    "production AOX attempt requires an exact durable authority slot",
-                    details={"identity": f"campaign.attempt_authority_slots[{number - 1}]"},
-                )
-            authority = dict(raw_authority)
-            if (
-                authority.get("ordinal") != number
-                or authority.get("attempt_kind") != kind
-                or not isinstance(authority.get("attempt_id"), str)
-                or not isinstance(authority.get("envelope_id"), str)
-                or not isinstance(authority.get("authority_request"), dict)
-            ):
-                raise CutoverEvidenceError(
-                    "attempt_authority_slot_identity_invalid",
-                    "production AOX authority slot does not match the next attempt",
-                    details={"identity": f"campaign.attempt_authority_slots[{number - 1}]"},
-                )
-        roots = create_blank_world_roots(
-            self.campaign_root,
-            attempt_kind=kind,
+        runner = self.positive_runner if kind == "positive" else self.fault_runner
+        raw_authority = (
+            None
+            if number > len(self.attempt_authority_slots)
+            else self.attempt_authority_slots[number - 1]
+        )
+        execution = execute_aox_attempt(
+            campaign_root=self.campaign_root,
+            identity=self.identity,
+            ledger_path=self.ledger_path,
+            runner=runner,
             allowed_prerequisites=self.allowed_prerequisites,
             architecture_qualification=self.architecture_qualification,
-            attempt_id=(
-                None
-                if authority is None
-                else str(authority["attempt_id"])
+            number=number,
+            kind=kind,
+            authority=raw_authority,
+            run_class=AoxLiveRunClass.FORMAL_ACCEPTANCE,
+            launch_guard=self.launch_guard,
+            allow_unisolated_non_live_test_runner=(
+                self._allow_unisolated_non_live_test_runner
             ),
         )
-        before = safe_micu_ledger_snapshot(self.ledger_path)
-        runner = self.positive_runner if kind == "positive" else self.fault_runner
-        context = AttemptRunContext(
-            roots=roots,
-            identity=_normalize_identity(self.identity),
-            ledger_before=before,
-            attempt_number=number,
-            attempt_authority=authority,
-        )
-        try:
-            evidence = runner(context)
-        except Exception as exc:
-            if getattr(exc, "attempt_supervision_fatal", False) is True:
-                raise
-            evidence = _campaign_runner_failure_evidence(
-                roots,
-                failure_type=type(exc).__name__,
-                attempt_kind=kind,
-            )
-        if not self._allow_unisolated_non_live_test_runner:
-            from .aox_attempt_supervision import (
-                validate_attempt_supervision_receipt,
-            )
-
-            validate_attempt_supervision_receipt(
-                dict(evidence.get("product_path") or {}).get(
-                    "attempt_supervision"
-                ),
-                attempt_id=roots.attempt_id,
-                attempt_kind=kind,
-                attempt_authority_id=str(authority["envelope_id"]),
-                attempt_authority_request_digest=str(
-                    authority["request_digest"]
-                ),
-            )
-        after = safe_micu_ledger_snapshot(self.ledger_path)
+        roots = execution.roots
+        evidence = execution.evidence
         if self._allow_unisolated_non_live_test_runner:
             payload = build_attempt_bundle(
                 attempt_id=roots.attempt_id,
                 attempt_kind=kind,
                 identity=self.identity,
                 clean_world=roots.proof,
-                ledger_before=before,
-                ledger_after=after,
+                ledger_before=execution.ledger_before,
+                ledger_after=execution.ledger_after,
                 artifact_root=roots.artifact_root,
                 evidence=evidence,
             )
         else:
             control = evidence.get("scientific_attempt_control")
-            if not isinstance(control, dict):
-                raise CutoverEvidenceError(
-                    "scientific_attempt_control_missing",
-                    "production AOX runner did not return closed selected-chain evidence",
-                    details={"identity": "scientific_attempt_control"},
-                )
-            authority = control.get("attempt_authority")
-            expected_authority_id = (
-                None
-                if context.attempt_authority is None
-                else context.attempt_authority.get("envelope_id")
-            )
-            if (
-                not isinstance(authority, dict)
-                or authority.get("envelope_id") != expected_authority_id
-                or authority.get("root_ref")
-                != f"attempts/{roots.attempt_id}"
-            ):
-                raise CutoverEvidenceError(
-                    "scientific_attempt_authority_mismatch",
-                    "runner evidence did not consume the exact campaign authority",
-                    details={"identity": "scientific_attempt_control.attempt_authority"},
-                )
+            assert isinstance(control, dict)
             from .aox_selected_chain_evidence import (
                 build_selected_chain_attempt_bundle,
             )
@@ -2788,8 +3053,8 @@ class AoxCutoverCampaign:
                 attempt_kind=kind,
                 identity=self.identity,
                 clean_world=roots.proof,
-                ledger_before=before,
-                ledger_after=after,
+                ledger_before=execution.ledger_before,
+                ledger_after=execution.ledger_after,
                 artifact_root=roots.artifact_root,
                 evidence=evidence,
                 scientific_attempt_control=control,

@@ -326,6 +326,70 @@ diagnostic command 与 validator 实现前仍只代表 formal acceptance，不�
 diagnostic。实现 atomic rollover 和双运行类别、完成 focused/mainline/full admission
 并形成新 commit 之前，不得启动 r57 或消费另一份 exact-three formal plan。
 
+### 2026-07-25 post-r56 atomic transition implementation addendum
+
+forward-only atomic correction 复用现有 `CoreRepositories.atomic()` /
+`BEGIN IMMEDIATE` ownership，不引入第二套 transaction manager。
+`ScientificAttemptService.finalize_closure_request()` 自身拥有一个短 write transaction，
+并在事务内重新读取 immutable closure request、attempt、selection、operation universe、
+quiescence 与 authority；attempt scope freeze/seal、closure insert 和 deterministic
+post-attempt session scope open 因而只有一个 commit point。已有 post child 必须唯一并
+匹配 exact id/kind/ref/parent；真正 missing、ambiguous 或 unrelated active scope 继续
+fail closed。两个并发 finalizer 串行 replay 同一 closure，不会创建第二个 child。
+
+Host admission/closure endpoint 与 pending scanner 现在共用一条 transition delivery
+settlement。Core transition、deterministic public transition event 与 source-bound
+`MANUAL_RESUME` signal 在同一个外围 transaction 内提交，进程内 notifier 只在 commit
+后触发。pending scanner 不再因为 attempt/closure 已存在就跳过；它按 record/event/source
+identity 补齐旧崩溃留下的 delivery 缺口，但不重开 terminal signal。这样关闭了
+“closure 已提交、event/signal 尚未提交”造成 agent 永久失联的相邻 crash seam。
+
+非 live 回归使用真实 file-backed SQLite/WAL 和确定性 barrier：writer 在同一未提交事务中
+完成 closure insert 后暂停，并发 reader 仍只看到旧 open attempt scope；commit 后 reader
+只看到唯一 open post scope。另有两个 concurrent finalizer、post-scope fault
+rollback/replay、missing/ambiguous barrier fail-closed 与 Host delivery fault/recovery
+覆盖。该 correction 不修改或采用 r56 的 authority、closure、event、signal、artifact 或
+bytes，也不授权 r57；diagnostic/formal run-class 实现仍由 6.55 单独闭合。
+
+### 2026-07-25 post-r56 schema-disjoint run-class implementation addendum
+
+6.55 以 `AoxLiveRunClass` / `AoxLiveRunPolicy` 明确区分
+`formal_acceptance` 与 `diagnostic`，并把 root、ledger、process supervision、live runner
+和 scientific-control settlement 收敛到同一个单-attempt execution core。run class
+不是一个可选 CLI flag：正式入口仍是 `authorize` / `run-live`，只接受现有 exact-three
+`positive, positive, fault` plan；诊断入口独立命名为 `authorize-diagnostic` /
+`run-diagnostic-live`，只接受
+`aox_diagnostic_attempt_authority_plan@1` 的一个 positive-shaped slot。
+
+两类 plan、publisher、validator、deterministic consumption sibling 与 receipt schema
+完全不同。formal consumption 升级为
+`aox_live_attempt_authority_consumption@2`，显式绑定
+`run_class=formal_acceptance`、plan schema/digest 与 sibling filename；diagnostic 使用
+`aox_diagnostic_attempt_authority_consumption@1` 和
+`<plan>.diagnostic-consumed.json`。launcher 先用 committed declarations 与当前
+qualification 验证 plan/target并 no-replace 消费，随后才构造 live launch、supervisor
+或 root。复制 plan、错误 sibling、重复消费、跨类 schema、移除 diagnostic run-class、
+切换 slot identity 或伪造相同 digest 均在 root/effect 前 fail closed。
+
+diagnostic root basename 必须精确等于 plan 的 `aox-diagnostic-*` namespace，并先封存
+`aox_diagnostic_root_marker@1`；attempt proof 使用
+`aox_diagnostic_root_proof@1`。formal collector 拒绝自身或任一 ancestor 带 diagnostic
+marker 的 root，故不能把 diagnostic root 的子目录伪装为 fresh formal campaign。
+diagnostic runner 对返回 evidence 中所有嵌套
+`acceptance_eligible|cutover_eligible` 强制为 false，同时另行记录
+`product_path_completed` 这一诊断事实。诊断 collector 只封存 append-only
+`aox_blank_world_diagnostic_decision@1` 的 blocker/count/digest closure，不调用
+selected-chain `aox_blank_world_attempt_bundle@3` builder，也不调用 campaign reducer；
+formal verifier 对 diagnostic decision 明确失败。
+
+focused regressions 覆盖 closed schema、private canonical one-use file、wrong sibling、
+cross publisher/consumer/receipt、equal-digest、stripped-mode、root/ancestor、append-only、
+formal verifier/reducer rejection、nested eligibility projection和真实 file-backed SQLite
+diagnostic execution。architecture qualification 新增
+`evidence-projection.aox-run-class-disjoint-closure`，零真实 external effect。该实现与
+non-live green 不消费任何 live authority，不执行 diagnostic，不启动 r57；真实 diagnostic
+与后继 formal exact-three campaign 仍分别受 authority plan 和 operator approval gate。
+
 ## Goals / Non-Goals
 
 **Goals:**

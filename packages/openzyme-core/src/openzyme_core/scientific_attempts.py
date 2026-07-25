@@ -2046,7 +2046,7 @@ class ScientificAttemptService:
         *,
         closure_request_id: str,
     ) -> ScientificAttemptClosure:
-        """Host-only post-writer finalizer for one immutable agent request."""
+        """Atomically seal, close, and roll one immutable agent request."""
 
         if current_mutation_write_authority() is not None:
             raise ScientificAttemptError(
@@ -2055,6 +2055,18 @@ class ScientificAttemptService:
                 hint="Return from the bounded agent turn, then run the Host finalizer.",
                 retryable=True,
             )
+        with self.repositories.atomic(prefix="scientific_attempt_close"):
+            return self._finalize_closure_request_in_transaction(
+                closure_request_id=closure_request_id
+            )
+
+    def _finalize_closure_request_in_transaction(
+        self,
+        *,
+        closure_request_id: str,
+    ) -> ScientificAttemptClosure:
+        """Finalize one closure while the caller owns the short write transaction."""
+
         request = self.repositories.scientific_attempt_closure_requests.get(
             closure_request_id
         )
@@ -2822,6 +2834,30 @@ class ScientificAttemptService:
             if scope.parent_scope_id == attempt.mutation_scope_id
         ]
         if children:
+            if len(children) != 1:
+                raise ScientificAttemptError(
+                    "attempt_post_closure_scope_ambiguous",
+                    "attempt closure has more than one follow-up mutation scope",
+                    details={
+                        "scope_ids": sorted(scope.scope_id for scope in children)
+                    },
+                )
+            child = children[0]
+            expected_scope_id = f"mutation_scope_post_{attempt.attempt_id}"
+            expected_scope_ref = (
+                f"post-scientific-attempt:{attempt.attempt_id}"
+            )
+            if (
+                child.scope_id != expected_scope_id
+                or child.session_id != attempt.session_id
+                or child.scope_kind is not MutationScopeKind.SESSION
+                or child.scope_ref != expected_scope_ref
+            ):
+                raise ScientificAttemptError(
+                    "attempt_post_closure_scope_identity_invalid",
+                    "attempt closure follow-up mutation scope has drifted identity",
+                    details={"scope_id": child.scope_id},
+                )
             return
         active = [
             scope

@@ -103,6 +103,64 @@ def test_aox_observer_rejects_open_scope_without_exact_driver(tmp_path: Path) ->
     connection.close()
 
 
+def test_aox_observer_rejects_missing_open_scope(tmp_path: Path) -> None:
+    connection, _, provider = _file_backed_repositories(tmp_path)
+
+    with pytest.raises(AoxRuntimeObservationError) as error:
+        AoxRuntimeObservationService(provider).project_barrier(
+            session_id=SESSION_ID
+        )
+
+    assert error.value.code == "mutation_scope_coordination_invalid"
+    connection.close()
+
+
+def test_aox_observer_rejects_ambiguous_open_scopes(tmp_path: Path) -> None:
+    connection, repositories, provider = _file_backed_repositories(tmp_path)
+    mutation_scope = MutationScopeService(repositories).open_scope(
+        session_id=SESSION_ID,
+        scope_kind=MutationScopeKind.ATTEMPT,
+        scope_ref="aox-attempt:attempt_ambiguous:formal",
+    )
+    # Corrupt the persisted invariant deliberately to prove the read boundary
+    # still fails closed if an older or externally damaged database contains
+    # more than one active scope.
+    connection.execute("DROP INDEX idx_mutation_scopes_one_active_per_session")
+    connection.execute(
+        """
+        INSERT INTO mutation_scope_records (
+            scope_id, schema_version, scope_kind, scope_ref, parent_scope_id,
+            state, generation, mutation_fencing_token, state_version, policy_id,
+            writer_coverage_manifest_digest, opened_at, freeze_requested_at,
+            quiescent_at, sealed_at, failed_at, safe_error_summary, session_id,
+            sealed_receipt_digest
+        )
+        SELECT
+            ?, schema_version, scope_kind, ?, parent_scope_id,
+            state, generation, mutation_fencing_token, state_version, policy_id,
+            writer_coverage_manifest_digest, opened_at, freeze_requested_at,
+            quiescent_at, sealed_at, failed_at, safe_error_summary, session_id,
+            sealed_receipt_digest
+        FROM mutation_scope_records
+        WHERE scope_id = ?
+        """,
+        (
+            "mutation_scope_ambiguous_second",
+            "aox-attempt:attempt_ambiguous_second:formal",
+            mutation_scope.scope_id,
+        ),
+    )
+    connection.commit()
+
+    with pytest.raises(AoxRuntimeObservationError) as error:
+        AoxRuntimeObservationService(provider).project_barrier(
+            session_id=SESSION_ID
+        )
+
+    assert error.value.code == "mutation_scope_coordination_invalid"
+    connection.close()
+
+
 def test_campaign_driver_does_not_reintroduce_direct_runtime_database_helpers() -> None:
     source = Path(aox_cutover_live.__file__).read_text(encoding="utf-8")
 

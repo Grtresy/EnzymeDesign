@@ -353,7 +353,10 @@ nonterminal；provider 无法让 agent 发言时，workspace 标记 system diagn
 
 scientific admission/closure 是两阶段 Host transition：agent 只请求，Host 等 bounded writer
 退休后 finalizes 并重新唤醒 agent。nonretryable finalizer rejection 必须成为 durable
-system-attributed failure observation，不能被 silent `except` 丢弃。
+system-attributed failure observation，不能被 silent `except` 丢弃。成功 transition 的
+canonical state、deterministic durable event 与 source-bound wakeup 在一个本地事务内提交，
+进程内 notifier 只在 commit 后触发；pending finalizer 必须重访已存在的 attempt/closure，
+幂等补齐旧崩溃造成的 event/signal 缺口，而不是因为业务 row 已存在就跳过 delivery。
 
 runtime drain 的 scheduler batch 与 read-model settlement 也不能混成一个真假不明的
 返回值。batch 后先形成 typed core receipt；trace/activity/consistency/event/workspace

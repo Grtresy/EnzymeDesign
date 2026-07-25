@@ -141,7 +141,9 @@ AOX 使用更窄的 `aox_live_attempt_authority_plan@1`：
   qualification、`max_attempts=1`、effect/route/resource/expiry policy；
 - `run-live` 只能把 plan 消费到 deterministic sibling
   `<plan-name>.consumed.json`，并且必须在创建任何 attempt root 前通过 atomic no-replace
-  完成一次性消费；
+  完成一次性消费；current receipt 是
+  `aox_live_attempt_authority_consumption@2`，显式绑定
+  `run_class=formal_acceptance`、formal plan schema/digest 与 sibling filename；
 - 复制 plan 文件不能获得新的 campaign authority；当前信任边界要求 operator 保护原 plan
   与其 deterministic consumption sibling，并以 durable in-attempt envelope 证明每槽消费。
 
@@ -199,7 +201,18 @@ operation 或新 selection revision。agent writer 退休后，Host：
 post-attempt session scope open 对并发 reader 原子可见。runtime barrier 可以看到 transition
 前的 attempt scope 或 transition 后的 post-attempt scope，但不能看到已提交的零 open scope
 中间态。真正 missing/ambiguous scope 仍 fail closed，driver 不以 blind retry 掩盖
-non-atomic finalizer。
+non-atomic finalizer。实现上由 `ScientificAttemptService.finalize_closure_request()` 自身
+打开 Core transaction 并在事务内重新读取 immutable request/attempt/selection/quiescence；
+因此 direct Host endpoint、pending finalizer 与任意后续 Core caller 都不能绕开 rollover
+原子性。规范 post scope 使用 deterministic id/ref，已有 child 必须唯一且身份完全一致；
+并发 finalizer 只能 replay 同一 closure。
+
+Host 的两个 scientific transition 调用面共用一条 delivery settlement：canonical
+transition、deterministic public event、以及对原 agent 的 source-bound
+`MANUAL_RESUME` signal 在包含 Core transition 的同一 write transaction 内提交，notifier
+只在 commit 后触发。pending scan 必须处理“transition 已存在但 event/signal 缺失”的旧崩溃
+状态，并以 record/event/source identity 补齐一次；terminal signal 不重开。这样既没有
+scope gap，也没有 closure commit 后 agent 永久失联的第二条 crash seam。
 
 quiescence 只证明“不会再变”，selection 只证明“采用什么”，两者互不替代。closed attempt 是
 agent 可消费的 evidence，不是 `task.finish`；owner 仍需显式决定完成、继续、blocked 或 failed。
@@ -273,8 +286,19 @@ r56 触发后，AOX target contract 将 live execution 分为两个不可互换�
 内容 digest 相同也不得 adoption、copy、upgrade 或参与 reducer。formal attempt 仍需 fresh
 authority、blank roots 与全部真实 effect。
 
-这是当前明确的实现缺口，而不是已上线命令：现有 `authorize` / `run-live` 仍只接受
-exact-three formal plan；独立 diagnostic authority/runner/receipt 与 cross-mode negative
-verification 尚未实现。atomic scope rollover、双类别实现、focused/mainline/full admission、
-新 commit 与 fresh pin 完成前，不得启动 r57 或把普通失败的 `run-live` 事后改称 diagnostic。
-实现后，diagnostic plan 与后续 formal exact-three plan 都必须分别取得 operator 的精确批准。
+该拆分现已作为显式命令和闭集 schema 落地。`authorize-diagnostic` 生成
+`aox_diagnostic_attempt_authority_plan@1` 的唯一单槽；`run-diagnostic-live` 只消费
+`aox_diagnostic_attempt_authority_consumption@1`，创建 plan-bound
+`aox-diagnostic-*` root marker / `aox_diagnostic_root_proof@1`，并只封存 append-only
+`aox_blank_world_diagnostic_decision@1`。`AoxLiveRunClass` 驱动共享的单-attempt
+execution core，正式与诊断 runner 不复制 product path；collector 边界则完全分离：
+formal 独占 selected-chain `@3` builder/reducer，diagnostic 对所有嵌套
+`acceptance_eligible|cutover_eligible` 强制 false，只投影 completed/blocker、计数与 digest。
+
+两类 closed validator、publisher、consumer、slot identity、root namespace/ancestor marker、
+collector 与 verifier 已有 cross-mode negative 回归；即使删除 diagnostic run-class 字段或
+把 plan digest 伪造成与 formal 相同，也会在 root/effect 前失败。architecture qualification
+增加 `evidence-projection.aox-run-class-disjoint-closure`，使用 file-backed SQLite 且记录
+零真实外部 effect。实现和非 live gate 通过不授权真实 diagnostic 或 r57；diagnostic plan
+与后续 formal exact-three plan 仍必须分别取得 operator 精确批准，普通失败的 `run-live`
+也永远不能事后改称 diagnostic。

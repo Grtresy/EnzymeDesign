@@ -2673,9 +2673,9 @@ def _build_v3_engine_repositories() -> CoreRepositories:
     return CoreRepositories.from_connection(connection)
 
 
-def test_scientific_transition_finalizer_reports_nonretryable_host_failure() -> (
-    None
-):
+def test_scientific_transition_finalizer_reports_nonretryable_host_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     repositories = _build_v3_engine_repositories()
     service = V3HostApiService(
         repositories=repositories,
@@ -2766,13 +2766,14 @@ def test_scientific_transition_finalizer_reports_nonretryable_host_failure() -> 
         "provider": "provider:test",
         "hpc_target": "hpc:test",
     }
-    service.execute_scientific_attempt_command(
+    first = service.execute_scientific_attempt_command(
         "attempt.create",
         command,
         session_id=session_id,
         actor_ref=agent_id,
         idempotency_key="attempt-request-first",
     )
+    first_request_id = first["record"]["admission_request_id"]
     second = service.execute_scientific_attempt_command(
         "attempt.create",
         command,
@@ -2781,6 +2782,44 @@ def test_scientific_transition_finalizer_reports_nonretryable_host_failure() -> 
         idempotency_key="attempt-request-second",
     )
     second_request_id = second["record"]["admission_request_id"]
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            V3EventStore,
+            "append",
+            lambda _store, _session_id, _events: (_ for _ in ()).throw(
+                RuntimeError("injected transition event failure")
+            ),
+        )
+        with pytest.raises(
+            RuntimeError,
+            match="injected transition event failure",
+        ):
+            service.finalize_pending_scientific_transitions(
+                session_id=session_id
+            )
+
+    assert repositories.scientific_attempts.list_by_session(session_id) == []
+    assert [
+        event
+        for event in service.event_store.list(session_id)
+        if event["event_type"].startswith("scientific.attempt.")
+    ] == []
+    assert repositories.runtime_signals.list_by_session(session_id) == []
+
+    # Simulate an older Host/crash boundary where Core committed the transition
+    # but no durable event or wakeup was written.  Pending finalization must
+    # reconcile delivery instead of skipping the already-admitted request.
+    service.scientific_attempt_control().finalize_attempt_admission(
+        admission_request_id=first_request_id
+    )
+    assert repositories.scientific_attempts.list_by_session(session_id)
+    assert [
+        event
+        for event in service.event_store.list(session_id)
+        if event["event_type"].startswith("scientific.attempt.")
+    ] == []
+    assert repositories.runtime_signals.list_by_session(session_id) == []
 
     events = service.finalize_pending_scientific_transitions(
         session_id=session_id
@@ -2800,9 +2839,30 @@ def test_scientific_transition_finalizer_reports_nonretryable_host_failure() -> 
     assert observations[0].recoverability.value == "authorization_required"
     assert observations[0].actor_kind.value == "system"
     assert observations[0].agent_id == agent_id
+    admitted_event = next(
+        event
+        for event in events
+        if event["event_type"] == "scientific.attempt.admitted"
+    )
+    admitted_id = str(admitted_event["payload"]["record_id"])
+    transition_signals = [
+        signal
+        for signal in repositories.runtime_signals.list_by_session(session_id)
+        if signal.source_ref == admitted_id
+    ]
+    assert len(transition_signals) == 1
     assert service.finalize_pending_scientific_transitions(
         session_id=session_id
     ) == []
+    assert len(
+        [
+            signal
+            for signal in repositories.runtime_signals.list_by_session(
+                session_id
+            )
+            if signal.source_ref == admitted_id
+        ]
+    ) == 1
     assert len(
         repositories.failure_observations.list_by_source(
             session_id=session_id,

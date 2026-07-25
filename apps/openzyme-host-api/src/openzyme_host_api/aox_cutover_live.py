@@ -78,6 +78,10 @@ from .aox_cutover_runtime_config import AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID
 from .aox_cutover_runtime_config import AOX_DURABLE_ROUTE_POLICY_IDS
 from .aox_attempt_authority import attempt_admission_arguments
 from .aox_attempt_authority import authority_grant_payload
+from .aox_live_run_class import AoxLiveRunClass
+from .aox_live_run_class import authority_root_ref
+from .aox_live_run_class import authority_run_class
+from .aox_live_run_class import policy_for_run_class
 from .aox_scientific_contract import AOX_FORMAL_WORKFLOW_METHODS
 from .aox_scientific_contract import AOX_FORMAL_WORKFLOW_ROLES
 from .aox_scientific_contract import (
@@ -1397,6 +1401,7 @@ class _PublicHostClient:
 class LiveAoxAttemptRunner:
     settings: OpenZymeSettings = field(repr=False)
     ledger_path: Path = field(repr=False)
+    run_class: AoxLiveRunClass = AoxLiveRunClass.FORMAL_ACCEPTANCE
     effective_config: Mapping[str, object] | None = None
     approval_mode: Literal["auto", "chrome-once"] = "auto"
     timeout_seconds: float = AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS
@@ -1411,6 +1416,13 @@ class LiveAoxAttemptRunner:
     browser_observation_receipt_path: Path | None = None
 
     def __post_init__(self) -> None:
+        try:
+            self.run_class = AoxLiveRunClass(self.run_class)
+        except ValueError as exc:
+            raise LiveProductPathError(
+                "aox_live_run_class_invalid",
+                "live AOX runner requires one explicit supported run class",
+            ) from exc
         if (
             self.timeout_seconds <= 0
             or self.max_drains <= 0
@@ -1459,13 +1471,15 @@ class LiveAoxAttemptRunner:
     def __call__(self, context: AttemptRunContext) -> dict[str, Any]:
         preflight_blocker = self._settings_blocker(context)
         if preflight_blocker is not None:
-            return self._failure_evidence(
-                context,
-                blocker=preflight_blocker,
-                api_receipts=(),
-                health={},
-                probe=None,
-                formal=None,
+            return self._project_run_class_evidence(
+                self._failure_evidence(
+                    context,
+                    blocker=preflight_blocker,
+                    api_receipts=(),
+                    health={},
+                    probe=None,
+                    formal=None,
+                )
             )
 
         micu_record_ids_before = _micu_record_ids(self.ledger_path)
@@ -1514,14 +1528,16 @@ class LiveAoxAttemptRunner:
         if outcome.kind == "positive":
             if outcome.probe is None or outcome.formal is None:
                 raise AssertionError("positive live outcome lacks probe/formal state")
-            return self._positive_evidence(
-                context,
-                provider=provider,
-                api_receipts=outcome.api_receipts,
-                health=outcome.health,
-                probe=outcome.probe,
-                formal=outcome.formal,
-                micu_record_ids_before=micu_record_ids_before,
+            return self._project_run_class_evidence(
+                self._positive_evidence(
+                    context,
+                    provider=provider,
+                    api_receipts=outcome.api_receipts,
+                    health=outcome.health,
+                    probe=outcome.probe,
+                    formal=outcome.formal,
+                    micu_record_ids_before=micu_record_ids_before,
+                )
             )
         if outcome.kind == "fault":
             if (
@@ -1530,29 +1546,77 @@ class LiveAoxAttemptRunner:
                 or outcome.fault is None
             ):
                 raise AssertionError("fault live outcome lacks terminal state")
-            return self._fault_evidence(
+            return self._project_run_class_evidence(
+                self._fault_evidence(
+                    context,
+                    provider=provider,
+                    api_receipts=outcome.api_receipts,
+                    health=outcome.health,
+                    probe=outcome.probe,
+                    formal=outcome.formal,
+                    fault=outcome.fault,
+                    micu_record_ids_before=micu_record_ids_before,
+                )
+            )
+        return self._project_run_class_evidence(
+            self._failure_evidence(
                 context,
+                blocker=outcome.blocker
+                or {
+                    "code": "live_product_path_failed",
+                    "message": "live product path failed without a structured blocker",
+                },
                 provider=provider,
                 api_receipts=outcome.api_receipts,
                 health=outcome.health,
                 probe=outcome.probe,
                 formal=outcome.formal,
-                fault=outcome.fault,
-                micu_record_ids_before=micu_record_ids_before,
             )
-        return self._failure_evidence(
-            context,
-            blocker=outcome.blocker
-            or {
-                "code": "live_product_path_failed",
-                "message": "live product path failed without a structured blocker",
-            },
-            provider=provider,
-            api_receipts=outcome.api_receipts,
-            health=outcome.health,
-            probe=outcome.probe,
-            formal=outcome.formal,
         )
+
+    def _project_run_class_evidence(
+        self,
+        evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self.run_class is AoxLiveRunClass.FORMAL_ACCEPTANCE:
+            return evidence
+        original_outcome = dict(evidence.get("scientific_outcome") or {})
+        original_report = dict(evidence.get("report") or {})
+        product_path_completed = (
+            original_outcome.get("cutover_eligible") is True
+            and original_report.get("cutover_eligible") is True
+        )
+
+        def force_non_acceptance(value: object) -> object:
+            if isinstance(value, dict):
+                return {
+                    key: (
+                        False
+                        if key in {"acceptance_eligible", "cutover_eligible"}
+                        else force_non_acceptance(item)
+                    )
+                    for key, item in value.items()
+                }
+            if isinstance(value, list):
+                return [force_non_acceptance(item) for item in value]
+            if isinstance(value, tuple):
+                return [force_non_acceptance(item) for item in value]
+            return value
+
+        projected = force_non_acceptance(evidence)
+        assert isinstance(projected, dict)
+        projected.update(
+            {
+                "run_class": AoxLiveRunClass.DIAGNOSTIC.value,
+                "acceptance_eligible": False,
+                "diagnostic_observation": {
+                    "product_path_completed": product_path_completed,
+                    "observed_scientific_status": original_outcome.get("status"),
+                    "observed_report_status": original_report.get("status"),
+                },
+            }
+        )
+        return projected
 
     def _drive_live_attempt(
         self,
@@ -1616,7 +1680,7 @@ class LiveAoxAttemptRunner:
                     formal=None,
                 )
 
-            formal_authority = self._require_formal_attempt_authority(
+            formal_authority = self._require_selected_chain_attempt_authority(
                 context.attempt_authority,
                 session_id=str(
                     dict(context.attempt_authority or {}).get("session_id")
@@ -1792,8 +1856,8 @@ class LiveAoxAttemptRunner:
         ) as client:
             yield client
 
-    @staticmethod
-    def _require_formal_attempt_authority(
+    def _require_selected_chain_attempt_authority(
+        self,
         raw_authority: Mapping[str, object] | None,
         *,
         session_id: str,
@@ -1805,27 +1869,36 @@ class LiveAoxAttemptRunner:
         )
         request = authority.get("authority_request")
         attempt_id = str(authority.get("attempt_id") or "")
-        attempt_suffix = attempt_id.replace("-", "_")
+        policy = policy_for_run_class(self.run_class)
+        (
+            expected_session_id,
+            expected_task_id,
+            expected_lane_id,
+            expected_root_ref,
+        ) = policy.identities(attempt_id)
+        try:
+            observed_run_class = authority_run_class(authority)
+        except ValueError:
+            observed_run_class = None
         expected_attempt_kind = (
             "fault" if expected_scope == "fault" else "positive"
         )
         if (
             not isinstance(request, dict)
+            or observed_run_class is not self.run_class
             or (outer_attempt_id is not None and attempt_id != outer_attempt_id)
             or authority.get("attempt_kind") != expected_attempt_kind
             or authority.get("session_id") != session_id
-            or session_id != f"sess_formal_{attempt_suffix}"
-            or authority.get("task_id")
-            != f"aox_execution_cutover_{attempt_suffix}"
-            or authority.get("lane_id")
-            != f"lane_aox_execution_{attempt_suffix}"
+            or session_id != expected_session_id
+            or authority.get("task_id") != expected_task_id
+            or authority.get("lane_id") != expected_lane_id
             or authority.get("scope") != expected_scope
             or request.get("session_id") != session_id
             or request.get("task_id") != authority.get("task_id")
             or request.get("campaign_id") is None
             or request.get("workflow_id")
             != AOX_SELECTED_CHAIN_WORKFLOW_ID
-            or request.get("root_ref") != f"attempts/{attempt_id}"
+            or request.get("root_ref") != expected_root_ref
             or request.get("allowed_scopes") != [expected_scope]
             or request.get("max_attempts") != 1
             or not str(authority.get("lane_id") or "")
@@ -1834,7 +1907,16 @@ class LiveAoxAttemptRunner:
         ):
             raise LiveProductPathError(
                 "attempt_authority_slot_identity_invalid",
-                "formal session does not match its exact predeclared authority slot",
+                (
+                    "formal session does not match its exact predeclared "
+                    "authority slot"
+                    if self.run_class
+                    is AoxLiveRunClass.FORMAL_ACCEPTANCE
+                    else (
+                        "diagnostic session does not match its exact "
+                        "predeclared authority slot"
+                    )
+                ),
                 details={"session_id": session_id},
             )
         return authority
@@ -2350,7 +2432,7 @@ class LiveAoxAttemptRunner:
         )
         mutation_scope: dict[str, object] = {}
         if purpose == "formal":
-            authority = self._require_formal_attempt_authority(
+            authority = self._require_selected_chain_attempt_authority(
                 attempt_authority,
                 session_id=session_id,
                 expected_scope="fault" if fault_enabled else "formal",
@@ -2606,8 +2688,7 @@ class LiveAoxAttemptRunner:
             if (
                 existing.session_id != session_id
                 or existing.task_id != task_id
-                or existing.root_ref
-                != f"attempts/{authority['attempt_id']}"
+                or existing.root_ref != authority_root_ref(authority)
                 or existing.request_digest
                 != str(authority["request_digest"])
             ):
@@ -2652,8 +2733,7 @@ class LiveAoxAttemptRunner:
             or record.get("request_digest") != authority["request_digest"]
             or record.get("session_id") != session_id
             or record.get("task_id") != task_id
-            or record.get("root_ref")
-            != f"attempts/{authority['attempt_id']}"
+            or record.get("root_ref") != authority_root_ref(authority)
         ):
             raise LiveProductPathError(
                 "attempt_authority_grant_receipt_invalid",
@@ -2696,8 +2776,7 @@ class LiveAoxAttemptRunner:
             if (
                 attempt.task_id != authority["task_id"]
                 or attempt.lane_id != authority["lane_id"]
-                or attempt.root_ref
-                != f"attempts/{authority['attempt_id']}"
+                or attempt.root_ref != authority_root_ref(authority)
             ):
                 raise LiveProductPathError(
                     "scientific_attempt_session_identity_invalid",
@@ -3807,12 +3886,13 @@ class LiveAoxAttemptRunner:
         context: AttemptRunContext,
     ) -> dict[str, str] | None:
         try:
-            self._require_formal_attempt_authority(
+            policy = policy_for_run_class(self.run_class)
+            expected_session_id = policy.identities(
+                context.roots.attempt_id
+            )[0]
+            self._require_selected_chain_attempt_authority(
                 context.attempt_authority,
-                session_id=(
-                    "sess_formal_"
-                    + context.roots.attempt_id.replace("-", "_")
-                ),
+                session_id=expected_session_id,
                 expected_scope=(
                     "fault"
                     if context.roots.attempt_kind == "fault"
@@ -5968,7 +6048,7 @@ def _assert_selected_chain_operation_approval(
         attempt.status is not ScientificAttemptStatus.ACTIVE
         or attempt.task_id != authority["task_id"]
         or attempt.lane_id != authority["lane_id"]
-        or attempt.root_ref != f"attempts/{authority['attempt_id']}"
+        or attempt.root_ref != authority_root_ref(authority)
         or attempt.campaign_id != request.get("campaign_id")
         or attempt.workflow_id != AOX_SELECTED_CHAIN_WORKFLOW_ID
         or attempt.workflow_contract_digest
