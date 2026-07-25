@@ -14,6 +14,9 @@ from openzyme_domain import SCIENTIFIC_ATTEMPT_AUTHORIZATION_SCHEMA_VERSION
 from openzyme_domain import (
     SCIENTIFIC_ATTEMPT_CLOSURE_REQUEST_SCHEMA_VERSION,
 )
+from openzyme_domain import (
+    SCIENTIFIC_ATTEMPT_CLOSURE_RESPONSE_SCHEMA_VERSION,
+)
 from openzyme_domain import SCIENTIFIC_ATTEMPT_CLOSURE_SCHEMA_VERSION
 from openzyme_domain import SCIENTIFIC_ATTEMPT_SCHEMA_VERSION
 from openzyme_domain import SCIENTIFIC_CHAIN_SELECTION_SCHEMA_VERSION
@@ -26,6 +29,7 @@ from openzyme_domain import ScientificAttemptAuthorization
 from openzyme_domain import ScientificAttemptAuthorityStatus
 from openzyme_domain import ScientificAttemptClosure
 from openzyme_domain import ScientificAttemptClosureRequest
+from openzyme_domain import ScientificAttemptClosureResponse
 from openzyme_domain import ScientificAttemptScope
 from openzyme_domain import ScientificAttemptStatus
 from openzyme_domain import ScientificChainSelection
@@ -1667,6 +1671,101 @@ class ScientificAttemptClosureRequestRepository:
             actor_ref=row["actor_ref"],
             idempotency_key=row["idempotency_key"],
             request_digest=row["request_digest"],
+            created_at=row["created_at"],
+        )
+
+
+@dataclass(slots=True)
+class ScientificAttemptClosureResponseRepository:
+    connection: sqlite3.Connection
+
+    def add(
+        self,
+        record: ScientificAttemptClosureResponse,
+    ) -> ScientificAttemptClosureResponse:
+        try:
+            self.connection.execute(
+                """
+                INSERT INTO scientific_attempt_closure_response_records (
+                    closure_response_id,
+                    schema_version,
+                    closure_request_id,
+                    attempt_id,
+                    message_id,
+                    document_id,
+                    recipient,
+                    recipient_kind,
+                    response_digest,
+                    binding_digest,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.closure_response_id,
+                    SCIENTIFIC_ATTEMPT_CLOSURE_RESPONSE_SCHEMA_VERSION,
+                    record.closure_request_id,
+                    record.attempt_id,
+                    record.message_id,
+                    record.document_id,
+                    record.recipient,
+                    record.recipient_kind,
+                    record.response_digest,
+                    record.binding_digest,
+                    record.created_at,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            existing = self.get_by_closure_request(record.closure_request_id)
+            if existing == record:
+                _commit(self.connection)
+                return existing
+            _commit(self.connection)
+            raise ScientificAttemptIdentityConflictError(
+                "scientific attempt closure response already has different facts"
+            ) from exc
+        _commit(self.connection)
+        return record
+
+    def get_by_closure_request(
+        self,
+        closure_request_id: str,
+    ) -> ScientificAttemptClosureResponse | None:
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM scientific_attempt_closure_response_records
+            WHERE closure_request_id = ?
+            """,
+            (closure_request_id,),
+        ).fetchone()
+        return None if row is None else self._row(row)
+
+    def get_by_attempt(
+        self,
+        attempt_id: str,
+    ) -> ScientificAttemptClosureResponse | None:
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM scientific_attempt_closure_response_records
+            WHERE attempt_id = ?
+            """,
+            (attempt_id,),
+        ).fetchone()
+        return None if row is None else self._row(row)
+
+    @staticmethod
+    def _row(row: sqlite3.Row) -> ScientificAttemptClosureResponse:
+        return ScientificAttemptClosureResponse(
+            closure_response_id=row["closure_response_id"],
+            closure_request_id=row["closure_request_id"],
+            attempt_id=row["attempt_id"],
+            message_id=row["message_id"],
+            document_id=row["document_id"],
+            recipient=row["recipient"],
+            recipient_kind=row["recipient_kind"],
+            response_digest=row["response_digest"],
+            binding_digest=row["binding_digest"],
             created_at=row["created_at"],
         )
 

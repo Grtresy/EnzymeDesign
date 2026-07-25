@@ -625,6 +625,11 @@ class SessionRuntimeContext:
     durable_route_adapter_policy_ids: dict[str, str] = field(default_factory=dict)
     tool_dispatch_precondition: ToolDispatchPrecondition | None = None
     assistant_response_precondition: AssistantResponsePrecondition | None = None
+    assistant_response_recipient: str = "user"
+    assistant_response_recipient_kind: InboxParticipantKind = (
+        InboxParticipantKind.USER
+    )
+    persist_conversation: bool = True
     mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None
     sandbox_host_binding_factory: (
         Callable[
@@ -642,6 +647,22 @@ class SessionRuntimeContext:
     wakeup_reason: str | None = None
     current_step_context: AgentStepContext | None = None
     current_tool_router: ToolRouter | None = None
+
+    def persist_outbound_assistant_message(
+        self,
+        *,
+        content: str,
+        message_id: str | None = None,
+        document_id: str | None = None,
+        created_at: str | None = None,
+    ) -> InboxMessage:
+        return _persist_outbound_assistant_message(
+            self,
+            content,
+            message_id=message_id,
+            document_id=document_id,
+            created_at=created_at,
+        )
 
     @contextmanager
     def mutation_writer_scope(
@@ -970,21 +991,25 @@ def _persist_message(
     payload_ref: str | None = None,
     correlation_id: str | None = None,
     content: str | None = None,
+    message_id: str | None = None,
+    document_id: str | None = None,
+    created_at: str | None = None,
 ) -> InboxMessage:
-    message_id = _new_id("msg")
-    created_at = utc_now_iso()
+    resolved_message_id = message_id or _new_id("msg")
+    resolved_created_at = created_at or utc_now_iso()
     if content is not None and payload_ref is None:
         role = "assistant" if message_type == "assistant_message" else "user"
         payload_ref = persist_conversation_message(
             repositories,
             session_id=session_id,
-            message_id=message_id,
+            message_id=resolved_message_id,
             role=role,
             content=content,
-            created_at=created_at,
+            created_at=resolved_created_at,
+            document_id=document_id,
         )
     message = InboxMessage(
-        message_id=message_id,
+        message_id=resolved_message_id,
         session_id=session_id,
         sender=sender,
         sender_kind=sender_kind,
@@ -994,7 +1019,7 @@ def _persist_message(
         correlation_id=correlation_id,
         payload_ref=payload_ref,
         status=InboxStatus.DELIVERED,
-        created_at=created_at,
+        created_at=resolved_created_at,
     )
     repositories.inbox.save(message)
     return message
@@ -1002,18 +1027,24 @@ def _persist_message(
 
 def _persist_outbound_assistant_message(
     context: SessionRuntimeContext,
-    harness_input: HarnessInput,
     content: str,
+    *,
+    message_id: str | None = None,
+    document_id: str | None = None,
+    created_at: str | None = None,
 ) -> InboxMessage:
     message = _persist_message(
         context.repositories,
-        session_id=harness_input.session_id,
+        session_id=context.snapshot.session.session_id,
         sender="harness",
         sender_kind=InboxParticipantKind.HARNESS,
-        recipient=harness_input.sender,
-        recipient_kind=harness_input.sender_kind,
+        recipient=context.assistant_response_recipient,
+        recipient_kind=context.assistant_response_recipient_kind,
         message_type="assistant_message",
-        content=content if harness_input.persist_conversation else None,
+        content=content if context.persist_conversation else None,
+        message_id=message_id,
+        document_id=document_id,
+        created_at=created_at,
     )
     context.emit(
         "message.sent",
@@ -2007,6 +2038,9 @@ def run_agent_harness_loop(
         durable_route_adapter_policy_ids=dict(durable_route_adapter_policy_ids or {}),
         tool_dispatch_precondition=tool_dispatch_precondition,
         assistant_response_precondition=assistant_response_precondition,
+        assistant_response_recipient=harness_input.sender,
+        assistant_response_recipient_kind=harness_input.sender_kind,
+        persist_conversation=harness_input.persist_conversation,
         mutation_writer_scope_factory=mutation_writer_scope_factory,
         sandbox_host_binding_factory=sandbox_host_binding_factory,
         agent_id=harness_input.agent_id,
@@ -2228,7 +2262,6 @@ def run_agent_harness_loop(
         if step.assistant_message is not None:
             _persist_outbound_assistant_message(
                 context,
-                harness_input,
                 step.assistant_message,
             )
             outputs.append(step.assistant_message)
@@ -2445,11 +2478,6 @@ def run_agent_harness_loop(
                                 "terminal tool requested assistant response "
                                 "persistence without a non-empty companion response"
                             )
-                        _persist_outbound_assistant_message(
-                            context,
-                            harness_input,
-                            assistant_response,
-                        )
                         outputs.append(assistant_response)
                         assistant_response_persisted = True
                         activity_happened = True

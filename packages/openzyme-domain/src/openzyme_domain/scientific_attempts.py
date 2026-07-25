@@ -25,6 +25,9 @@ SCIENTIFIC_ARTIFACT_MATERIALIZATION_SCHEMA_VERSION = (
 SCIENTIFIC_ATTEMPT_CLOSURE_REQUEST_SCHEMA_VERSION = (
     "scientific_attempt_closure_request@1"
 )
+SCIENTIFIC_ATTEMPT_CLOSURE_RESPONSE_SCHEMA_VERSION = (
+    "scientific_attempt_closure_response@1"
+)
 SCIENTIFIC_ATTEMPT_CLOSURE_SCHEMA_VERSION = "scientific_attempt_closure@1"
 
 
@@ -566,6 +569,44 @@ class ScientificAttemptClosureRequest:
             actor_ref=self.actor_ref,
             idempotency_key=self.idempotency_key,
             request_digest=self.request_digest,
+            created_at=self.created_at,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize_record(self, schema_version=self.SCHEMA_VERSION)
+
+
+@dataclass(frozen=True, slots=True)
+class ScientificAttemptClosureResponse:
+    """Immutable binding from one closure intent to its canonical final answer."""
+
+    SCHEMA_VERSION: ClassVar[str] = (
+        SCIENTIFIC_ATTEMPT_CLOSURE_RESPONSE_SCHEMA_VERSION
+    )
+
+    closure_response_id: str
+    closure_request_id: str
+    attempt_id: str
+    message_id: str
+    document_id: str
+    recipient: str
+    recipient_kind: str
+    response_digest: str
+    binding_digest: str
+    created_at: str
+
+    def __post_init__(self) -> None:
+        _require_nonempty(
+            type(self).__name__,
+            closure_response_id=self.closure_response_id,
+            closure_request_id=self.closure_request_id,
+            attempt_id=self.attempt_id,
+            message_id=self.message_id,
+            document_id=self.document_id,
+            recipient=self.recipient,
+            recipient_kind=self.recipient_kind,
+            response_digest=self.response_digest,
+            binding_digest=self.binding_digest,
             created_at=self.created_at,
         )
 

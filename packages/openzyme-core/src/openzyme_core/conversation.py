@@ -41,25 +41,32 @@ def persist_conversation_message(
     content: str,
     created_at: str,
     skill_keys: tuple[str, ...] | None = None,
+    document_id: str | None = None,
 ) -> str:
-    document_id = _new_message_document_id()
-    repositories.engine_documents.save(
-        EngineDocumentRecord(
-            document_id=document_id,
-            session_id=session_id,
-            invocation_id=None,
-            document_kind="conversation_message",
-            payload={
-                "message_id": message_id,
-                "role": role,
-                "content": content,
-                **({} if skill_keys is None else {"skill_keys": list(skill_keys)}),
-            },
-            created_at=created_at,
-            updated_at=created_at,
-        )
+    resolved_document_id = document_id or _new_message_document_id()
+    record = EngineDocumentRecord(
+        document_id=resolved_document_id,
+        session_id=session_id,
+        invocation_id=None,
+        document_kind="conversation_message",
+        payload={
+            "message_id": message_id,
+            "role": role,
+            "content": content,
+            **({} if skill_keys is None else {"skill_keys": list(skill_keys)}),
+        },
+        created_at=created_at,
+        updated_at=created_at,
     )
-    return document_id
+    existing = repositories.engine_documents.get(resolved_document_id)
+    if existing is not None:
+        if existing != record:
+            raise ValueError(
+                "conversation message document identity already has different facts"
+            )
+        return resolved_document_id
+    repositories.engine_documents.save(record)
+    return resolved_document_id
 
 
 def build_conversation_projection(repositories: CoreRepositories, session_id: str) -> tuple[ConversationEntry, ...]:

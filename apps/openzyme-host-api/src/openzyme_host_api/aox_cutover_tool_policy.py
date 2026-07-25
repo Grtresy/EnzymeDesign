@@ -5,6 +5,8 @@ import json
 from typing import Any, Literal
 
 from openzyme_core import AssistantResponseRejection
+from openzyme_core import is_published_report_link
+from openzyme_core import is_published_report_status
 from openzyme_runtime import AgentStepContext
 from openzyme_runtime import ToolInvocation
 from openzyme_runtime import ToolResult
@@ -530,7 +532,7 @@ class AoxCutoverFormalToolPrecondition:
             success_reports = [
                 str(getattr(report, "report_id", ""))
                 for report in reports
-                if _status_value(report) in {"ready", "published"}
+                if is_published_report_status(report)
             ]
             success_drafts = [
                 str(getattr(draft, "draft_id", ""))
@@ -556,22 +558,20 @@ class AoxCutoverFormalToolPrecondition:
                 },
             )
 
-        ready_reports = [
-            report for report in reports if _status_value(report) == "ready"
+        published_reports = [
+            report for report in reports if is_published_report_status(report)
         ]
         published_drafts = [
             draft for draft in drafts if _status_value(draft) == "published"
         ]
         linked = False
-        if len(ready_reports) == 1 and len(published_drafts) == 1:
-            report = ready_reports[0]
+        if len(published_reports) == 1 and len(published_drafts) == 1:
+            report = published_reports[0]
             draft = published_drafts[0]
-            linked = bool(
-                getattr(report, "task_id", None) == AOX_REPORT_TASK_ID
-                and getattr(draft, "task_id", None) == AOX_REPORT_TASK_ID
-                and getattr(draft, "published_report_id", None)
-                == getattr(report, "report_id", None)
-                and getattr(draft, "content_ref", None)
+            linked = is_published_report_link(
+                report,
+                draft,
+                task_id=AOX_REPORT_TASK_ID,
             )
         if linked:
             return None
@@ -579,18 +579,18 @@ class AoxCutoverFormalToolPrecondition:
             "aox_cutover_positive_report_not_ready",
             (
                 "AOX cutover positive closure was rejected because the exact "
-                "ready report and published durable draft are not linked to "
+                "ready/published report and published durable draft are not linked to "
                 "the canonical reporting task."
             ),
             (
                 "Complete the canonical reporting task only after publishing "
-                "one non-empty draft to exactly one ready report, then retry "
+                "one non-empty draft to exactly one ready/published report, then retry "
                 "scientific.attempt.close as the final mutation."
             ),
             {
-                "ready_report_ids": [
+                "published_report_ids": [
                     str(getattr(report, "report_id", ""))
-                    for report in ready_reports
+                    for report in published_reports
                 ],
                 "published_draft_ids": [
                     str(getattr(draft, "draft_id", ""))

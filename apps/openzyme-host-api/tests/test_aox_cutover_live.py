@@ -3388,8 +3388,13 @@ def test_public_driver_route_surface_rejects_debug_shortcut() -> None:
     assert [receipt.route for receipt in client.receipts] == ["/v3/runtime/health"]
 
 
-def test_live_report_collector_binds_ready_report_draft_document_and_events(
+@pytest.mark.parametrize(
+    "report_status",
+    (SessionReportStatus.READY, SessionReportStatus.PUBLISHED),
+)
+def test_live_report_collector_binds_successful_report_draft_document_and_events(
     tmp_path: Path,
+    report_status: SessionReportStatus,
 ) -> None:
     roots = create_blank_world_roots(
         tmp_path / "campaign",
@@ -3410,7 +3415,7 @@ def test_live_report_collector_binds_ready_report_draft_document_and_events(
         invocation_id=None,
         run_id=None,
         artifact_id=None,
-        status=SessionReportStatus.READY,
+        status=report_status,
         title="AOX report",
         summary="summary",
         stage_summary="stage",
@@ -3499,6 +3504,7 @@ def test_live_report_collector_binds_ready_report_draft_document_and_events(
     )
 
     assert _report_publish_receipt_is_valid(receipt)
+    assert receipt["status"] == report_status.value
     assert receipt["content_document_digest"] != receipt["content_digest"]
     assert receipt["publish_events"] == publish_events
     assert artifact["provenance"]["content_ref"] == "doc_report_aox"

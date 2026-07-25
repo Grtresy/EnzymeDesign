@@ -22,6 +22,8 @@ import zlib
 
 import httpx
 from openzyme_core import CoreRepositories
+from openzyme_core import is_published_report_link
+from openzyme_core import is_published_report_status
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import MutationScopeError
 from openzyme_core import MutationScopeService
@@ -7304,34 +7306,32 @@ def _published_report_receipt(
     pubmed_provider: Mapping[str, object],
     scientific_artifacts: list[CatalogArtifactCopy],
 ) -> tuple[dict[str, object], dict[str, object], list[dict[str, object]]]:
-    ready_reports = [
+    published_reports = [
         report
         for report in reports
-        if getattr(getattr(report, "status", None), "value", None) == "ready"
+        if is_published_report_status(report)
     ]
     published_drafts = [
         draft
         for draft in drafts
         if getattr(getattr(draft, "status", None), "value", None) == "published"
     ]
-    if len(ready_reports) != 1 or len(published_drafts) != 1:
+    if len(published_reports) != 1 or len(published_drafts) != 1:
         raise LiveProductPathError(
             "published_report_receipt_ambiguous",
-            "formal product path requires exactly one ready report and published draft",
+            "formal product path requires exactly one ready/published report and published draft",
         )
-    report = ready_reports[0]
+    report = published_reports[0]
     draft = published_drafts[0]
     if (
-        getattr(draft, "published_report_id", None)
-        != getattr(report, "report_id", None)
-        or not getattr(draft, "content_ref", None)
+        not is_published_report_link(report, draft)
         or getattr(report, "artifact_id", None) is not None
         or getattr(report, "invocation_id", None) is not None
         or getattr(report, "run_id", None) is not None
     ):
         raise LiveProductPathError(
             "published_report_receipt_invalid",
-            "ready report is not the exact product published from its durable draft",
+            "report is not the exact product published from its durable draft",
         )
     document_matches = [
         document
@@ -7434,7 +7434,7 @@ def _published_report_receipt(
         "session_id": str(getattr(report, "session_id")),
         "task_id": getattr(report, "task_id", None),
         "lane_id": getattr(report, "lane_id", None),
-        "status": "ready",
+        "status": str(getattr(getattr(report, "status", None), "value", "")),
         "invocation_id": None,
         "run_id": None,
         "product_artifact_id": None,

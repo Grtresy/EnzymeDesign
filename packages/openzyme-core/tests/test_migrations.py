@@ -244,6 +244,9 @@ def test_migration_asset_is_available() -> None:
     failure_observation_sql = get_migration_sql("032_v3_failure_observations")
     scientific_attempt_sql = get_migration_sql("033_v3_scientific_attempt_selection")
     failure_hypothesis_sql = get_migration_sql("034_v3_failure_hypotheses")
+    closure_response_sql = get_migration_sql(
+        "035_v3_scientific_attempt_closure_response"
+    )
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -331,6 +334,27 @@ def test_migration_asset_is_available() -> None:
     assert "CREATE TABLE scientific_attempt_closure_records" in scientific_attempt_sql
     assert "CREATE TABLE failure_hypothesis_records" in failure_hypothesis_sql
     assert "failure_hypothesis_records_immutable_update" in failure_hypothesis_sql
+    assert (
+        "CREATE TABLE scientific_attempt_closure_response_records"
+        in closure_response_sql
+    )
+    assert "scientific_attempt_closure_response_matches" in closure_response_sql
+    assert (
+        "scientific_attempt_closure_response_records_immutable_update"
+        in closure_response_sql
+    )
+    assert (
+        "mutation_guard_scientific_attempt_closure_response_records_insert"
+        in closure_response_sql
+    )
+    assert (
+        "mutation_guard_scientific_attempt_closure_response_records_update"
+        in closure_response_sql
+    )
+    assert (
+        "mutation_guard_scientific_attempt_closure_response_records_delete"
+        in closure_response_sql
+    )
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -366,6 +390,7 @@ def test_migration_asset_is_available() -> None:
         "032_v3_failure_observations",
         "033_v3_scientific_attempt_selection",
         "034_v3_failure_hypotheses",
+        "035_v3_scientific_attempt_closure_response",
     )
 
 
@@ -417,6 +442,7 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "controlled_operation_result_handles",
         "controlled_operation_dispatch_requests",
         "controlled_operation_result_artifacts",
+        "scientific_attempt_closure_response_records",
         "runtime_command_records",
         "mutation_scope_records",
         "mutation_writer_records",

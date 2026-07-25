@@ -367,12 +367,97 @@ def register_scientific_attempt_tools(registry: ToolRegistry) -> None:
                     },
                     retryable=True,
                 )
-            return _service(context).request_attempt_closure(
-                attempt_id=str(arguments["attempt_id"]),
-                selection_id=str(arguments["selection_id"]),
-                actor_ref=_actor(context),
-                idempotency_key=str(arguments["idempotency_key"]),
-            )
+            if not context.persist_conversation:
+                raise ScientificAttemptError(
+                    "attempt_close_conversation_persistence_disabled",
+                    (
+                        "Scientific attempt closure requires canonical "
+                        "conversation persistence for its final response."
+                    ),
+                    details={"effect_certainty": "no_effect"},
+                    retryable=True,
+                )
+            service = _service(context)
+            response_text = invocation.assistant_response_text
+            assert response_text is not None
+            with context.repositories.atomic(
+                prefix="scientific_attempt_close_response"
+            ):
+                existing = (
+                    context.repositories.scientific_attempt_closure_requests
+                    .get_by_attempt(str(arguments["attempt_id"]))
+                )
+                if existing is not None:
+                    stored_response = (
+                        context.repositories.scientific_attempt_closure_responses
+                        .get_by_closure_request(existing.closure_request_id)
+                    )
+                    if stored_response is None:
+                        raise ScientificAttemptError(
+                            "attempt_closure_response_missing",
+                            (
+                                "Existing scientific attempt closure intent "
+                                "predates or violates the co-terminal response "
+                                "contract."
+                            ),
+                            hint="Do not backfill or replace the immutable request.",
+                        )
+                    prepared = service.prepare_closure_response(
+                        request=existing,
+                        recipient=context.assistant_response_recipient,
+                        recipient_kind=(
+                            context.assistant_response_recipient_kind.value
+                        ),
+                        assistant_response_text=response_text,
+                    )
+                    if prepared != stored_response:
+                        raise ScientificAttemptError(
+                            "attempt_closure_response_conflict",
+                            (
+                                "Closure idempotency identity was replayed with "
+                                "different final-response facts."
+                            ),
+                        )
+                    service.require_closure_response(existing)
+                    return existing
+
+                def persist_response(request: object) -> None:
+                    prepared = service.prepare_closure_response(
+                        request=request,  # type: ignore[arg-type]
+                        recipient=context.assistant_response_recipient,
+                        recipient_kind=(
+                            context.assistant_response_recipient_kind.value
+                        ),
+                        assistant_response_text=response_text,
+                    )
+                    message = context.persist_outbound_assistant_message(
+                        content=response_text,
+                        message_id=prepared.message_id,
+                        document_id=prepared.document_id,
+                        created_at=prepared.created_at,
+                    )
+                    if message.payload_ref != prepared.document_id:
+                        raise ScientificAttemptError(
+                            "attempt_closure_response_persistence_mismatch",
+                            (
+                                "Canonical assistant message did not retain "
+                                "its bound document."
+                            ),
+                        )
+                    (
+                        context.repositories.scientific_attempt_closure_responses
+                        .add(prepared)
+                    )
+
+                request = service.request_attempt_closure(
+                    attempt_id=str(arguments["attempt_id"]),
+                    selection_id=str(arguments["selection_id"]),
+                    actor_ref=_actor(context),
+                    idempotency_key=str(arguments["idempotency_key"]),
+                    persist_closure_response=persist_response,
+                )
+                service.require_closure_response(request)
+                return request
 
         return _execute(
             invocation,

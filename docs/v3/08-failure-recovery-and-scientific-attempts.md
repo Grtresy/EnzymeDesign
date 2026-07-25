@@ -331,7 +331,8 @@ forward correction 不把 report/task 状态并入 scientific-attempt 真状态�
 - `scientific.attempt.close` 必须由 master 请求，task set/role/kind 必须 exact，每项 task
   必须已有唯一 matching `task.finish`，且 receipt 的 `finished_by` 必须等于该 task 的
   canonical `assigned_ref`；
-- positive 必须已有 canonical reporting task 绑定的唯一 ready report 与 published draft；
+- positive 必须已有 canonical reporting task 绑定的唯一 ready/published report 与
+  published draft；
   fault 必须是 research completed、execution/report negative exit，且不存在
   ready/published success report state。
 
@@ -364,10 +365,17 @@ conversation truth，但之后没有新 signal 让 master close；tool-call resp
   proposed text 不持久化，agent 获得同一 bounded turn 内的新决策机会；
 - master 必须在同一 provider response 中提供完整终答和 explicit
   `scientific.attempt.close`；empty companion 在 closure effect 前失败；
-- successful close result 才设置 companion-persistence 标记，harness 持久化原文本恰好一次、
+- successful close 在同一 Core transaction 写 closure request、deterministic conversation
+  document/message 与 immutable response binding，随后设置 companion-persistence 标记、
   结算同批后续 call 并退休 turn；Host finalizer 仍只在 writer 退休后推进。
 
 该 guard 不自动关闭 attempt、不推断 selection、不合成答案、不改变 task/report 真状态，
 也不影响普通 session。r58 已产生 meaningful result/report，因此没有触发“首个有效结果前
 再次遇到 framework defect”时才执行的规范再拆分条件；formal exact-three acceptance 仍需
 fresh commit/full admission/pin 与独立精确授权。
+
+post-r58 审计进一步要求 report publication 由一个共享派生谓词判断：
+`report.status in {ready,published}`、`draft.status=published`、同 session/task、精确
+`published_report_id` 与非空 content ref 必须同时成立；policy/projection/collector/
+offline verifier 不得各自缩窄。closure response transaction 中任一步失败整体回滚，同事实
+replay 不新增消息，不同 response 重用相同 closure identity 必须 fail closed。

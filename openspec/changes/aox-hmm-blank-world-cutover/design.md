@@ -748,6 +748,30 @@ retires the turn. Failed/rejected close attempts persist neither answer nor
 closure request. The response-policy seam is Host-composed and inherited by
 master runtime; unmatched sessions retain ordinary assistant behavior.
 
+### 2026-07-25 post-r58 durable closure-response correction
+
+The r58 correction originally fixed the model-turn contradiction but still left
+two cross-layer gaps. Its positive precondition and live collector independently
+required `report.status=ready`, although the public report contract and r58's
+durable state permit `published`; and the closure request was committed before
+the harness wrote the companion conversation message.
+
+The forward contract derives one successful publication predicate from existing
+report/draft truth: the report is `ready` or `published`, the draft is
+`published`, both identities and task/session match, and the draft links one
+non-empty content document to that report. Policy, projection, live collection,
+and offline verification consume this predicate while preserving the actual
+report enum.
+
+The co-terminal response remains agent-authored. The close tool now uses the
+existing Core SQLite atomic boundary to commit the closure request, deterministic
+conversation document/message, and immutable
+`scientific_attempt_closure_response@1` binding together under the requesting
+writer. A replay verifies and returns the same binding; a changed response or an
+older unbound pending request fails closed. Host finalization verifies any
+present binding against the canonical conversation bytes before closure. This
+adds no new top-level product owner and does not authorize live continuation.
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

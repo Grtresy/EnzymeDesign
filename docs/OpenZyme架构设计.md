@@ -193,9 +193,14 @@ durable state，以保留同批 `task.create -> lane.bind_task` 等合法顺序�
 绑定当前真实 step context，不要求未来对象已存在或把它变成 authority。该结算不执行、
 重试或重排后续工作；agent 在新的 turn 中读取真实 durable state 后自行选择策略。
 
-成功的 `scientific.attempt.close` 是通用 scientific lifecycle terminal action：它只持久化
-immutable closure request，立即结束 requesting turn，不把结果再次送入模型，也不 dispatch
-同批后续 call；失败的 close 保持 non-terminal，使 agent 可根据结构化 blocker 修正。
+成功的 `scientific.attempt.close` 是通用 scientific lifecycle terminal action：它在一个
+Core SQLite atomic transaction 内持久化 immutable closure request、确定性 conversation
+document/message 与 immutable response binding，随后立即结束 requesting turn，不把结果
+再次送入模型，也不 dispatch 同批后续 call；失败的 close 回滚全部 co-terminal records 并
+保持 non-terminal，使 agent 可根据结构化 blocker 修正。report publication eligibility
+统一从现有真状态派生：`ready` 或 `published` report 必须与同 session/task 的
+`published` draft、精确 `published_report_id` 和非空 content ref 闭合；消费者不得各自
+缩窄枚举或静默归一化实际状态。
 requesting `AGENT_TURN` writer 及其 batch settlement 全部退休后，Host 才能 finalization、
 建立 quiescence receipt 与 final closure。这个 turn barrier 不完成 task，也不把 closure
 request 冒充 `scientific_closure` evidence。

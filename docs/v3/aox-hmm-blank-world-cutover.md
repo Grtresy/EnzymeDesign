@@ -487,11 +487,18 @@ assistant-only response is rejected before conversation persistence and
 returned to the same bounded master loop as no-effect feedback. The master
 must include its complete final answer in the same provider response as
 `scientific.attempt.close`; an empty companion fails before closure effect.
-Only a successful close result authorizes harness to persist that exact text
-once, interrupt later calls and retire the turn. Host still does not auto-close,
-infer selection/outcome, synthesize an answer or alter ordinary session
-behavior. Because r58 had already formed a meaningful result/report, it did
-not trigger a second diagnostic/formal specification split.
+Only a successful close transaction may return that exact text, interrupt later
+calls and retire the turn. The transaction commits the closure request,
+deterministic conversation document/message and immutable
+`scientific_attempt_closure_response@1` binding together; same-fact replay
+returns the existing message and changed-response reuse fails closed. One shared
+publication predicate accepts an exact linked `ready` or `published` report plus
+its published non-empty draft across policy, projection, collector and verifier,
+while preserving the real enum. Host still does not auto-close, infer
+selection/outcome, synthesize an answer or alter ordinary session behavior.
+Because r58 had already formed a meaningful result/report, it did not trigger a
+second diagnostic/formal specification split. This correction does not authorize
+r59 or any formal campaign action.
 
 ## Numbered launch-preparation boundary
 

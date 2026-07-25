@@ -165,8 +165,9 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 closure request 并等待 requester writer 退休后的 Host finalization。close invocation
 还必须携带同一 provider response 的非空 user-facing text；缺失时 handler 在 closure effect
 前失败。只有 successful close result 才设置
-`persists_assistant_response=true`，harness 随即把原始 companion text 恰好一次写入
-assistant conversation truth，再退休 turn。二者都使同批后续 call 获得
+`persists_assistant_response=true` 只在 closure request、确定性 conversation
+document/message 与 immutable closure-response binding 已于同一事务提交后返回；harness
+只投影该已提交终答并退休 turn，不执行第二次写入。二者都使同批后续 call 获得
 interrupted/no-effect settlement 且不再进入下一 model step；失败的 close 保持
 non-terminal，并且不得持久化 companion response。普通 tool success、capability success、
 engine invocation terminal state 或 protocol message 都不能自动设置这些标记，也不能自动
@@ -478,9 +479,10 @@ authority request 使用 strict DTO；actor/grantor 等身份来自受控边界�
 `scientific.attempt.close` 返回 request/intention，最终 admission/closure 由 Host 在原 writer
 连同该 provider batch 的未 dispatch call settlement 全部退休后执行。successful close
 ToolResult 标记 `terminal_action="scientific.attempt.close"` 与 `terminates_turn=true`；
-同时仅在 success 时标记 `persists_assistant_response=true`。ToolInvocation 内部携带同一
-provider response 的 companion assistant text；该字段不进入 tool args/public trace，也不
-授权 handler 生成或改写答案。closure request 本身不是 final `scientific_closure`
+同时仅在 request/message/document/response-binding 原子提交成功时标记
+`persists_assistant_response=true`。ToolInvocation 内部携带同一 provider response 的
+companion assistant text；该字段不进入 tool args/public trace，也不授权 handler 生成或
+改写答案。closure request 本身不是 final `scientific_closure`
 evidence，也不写 task terminal。
 workspace 显示 envelope usage、attempts、universe/dispositions、selected chain、
 materializations 和 closure，不投影 provider/HPC private allowlist。

@@ -269,9 +269,12 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
   close-ready master 的 assistant-only response 现在通过 composition-injected
   `assistant_response_precondition` 在持久化前 no-effect 退回；agent 必须在同一 provider
   response 中提供自己的完整终答与 explicit `scientific.attempt.close`。close handler 在
-  effect 前拒绝 empty companion，successful terminal result 才允许 harness 将 exact text
-  持久化一次并退休 turn。该 seam 不自动 close、不推断 selection、不生成答案，普通
-  session 没有配置时保持原行为。
+  effect 前拒绝 empty companion；successful terminal result 只在 closure request、
+  deterministic conversation document/message 与 immutable response binding 已由现有 Core
+  atomic/UoW 一次提交后返回，harness 不执行第二次写入。该 seam 不自动 close、不推断
+  selection、不生成答案，普通 session 没有配置时保持原行为。共享 report-publication
+  predicate 同时接受 exact-linked `ready` 与 `published` report，避免 policy/projection/
+  collector/verifier 对同一 domain enum 产生不同真值。
 
 ## 4. 后续工作流
 

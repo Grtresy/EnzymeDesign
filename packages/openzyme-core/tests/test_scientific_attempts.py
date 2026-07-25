@@ -32,6 +32,7 @@ from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import ScientificAttemptError
 from openzyme_core import ScientificAttemptIdentityConflictError
 from openzyme_core import ScientificAttemptService
+from openzyme_core import build_conversation_projection
 from openzyme_core import ScientificOperationSignature
 from openzyme_core import ScientificSelectionEvaluator
 from openzyme_core import ScientificSelectionIntegrityError
@@ -2076,7 +2077,9 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
     )
 
 
-def test_successful_scientific_attempt_close_is_a_terminal_turn_action() -> None:
+def test_successful_scientific_attempt_close_is_a_terminal_turn_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     repositories, service = _world()
     attempt, _, selection = _ready_selection(
         service,
@@ -2140,21 +2143,76 @@ def test_successful_scientific_attempt_close_is_a_terminal_turn_action() -> None
         is None
     )
 
-    result = registry.dispatch(
-        context,
-        ToolInvocation(
-            call_id="call_terminal_close",
-            tool_name="scientific.attempt.close",
-            arguments={
-                "attempt_id": attempt.attempt_id,
-                "selection_id": selection.selection_id,
-                "idempotency_key": "close-terminal-close-tool",
-            },
-            task_id=attempt.task_id,
-            lane_id=attempt.lane_id,
-            assistant_response_text="The scientific attempt is complete.",
-        ),
+    def fail_response_persistence(
+        _context: SessionRuntimeContext,
+        *,
+        content: str,
+        message_id: str | None = None,
+        document_id: str | None = None,
+        created_at: str | None = None,
+    ) -> object:
+        del content, message_id, document_id, created_at
+        raise ScientificAttemptError(
+            "injected_closure_response_failure",
+            "injected closure response persistence failure",
+        )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            SessionRuntimeContext,
+            "persist_outbound_assistant_message",
+            fail_response_persistence,
+        )
+        with service.mutation_scopes.writer_turn(
+            session_id=attempt.session_id,
+            owner_kind=MutationWriterKind.AGENT_TURN,
+            owner_ref="agent-turn:close-response-rollback",
+        ):
+            rolled_back = registry.dispatch(
+                context,
+                ToolInvocation(
+                    call_id="call_terminal_close_rollback",
+                    tool_name="scientific.attempt.close",
+                    arguments={
+                        "attempt_id": attempt.attempt_id,
+                        "selection_id": selection.selection_id,
+                        "idempotency_key": "close-terminal-close-tool",
+                    },
+                    task_id=attempt.task_id,
+                    lane_id=attempt.lane_id,
+                    assistant_response_text="The scientific attempt is complete.",
+                ),
+            )
+    assert rolled_back.ok is False
+    assert rolled_back.error_code == "injected_closure_response_failure"
+    assert (
+        repositories.scientific_attempt_closure_requests.get_by_attempt(
+            attempt.attempt_id
+        )
+        is None
     )
+    assert build_conversation_projection(repositories, attempt.session_id) == ()
+
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.AGENT_TURN,
+        owner_ref="agent-turn:close-response-success",
+    ):
+        result = registry.dispatch(
+            context,
+            ToolInvocation(
+                call_id="call_terminal_close",
+                tool_name="scientific.attempt.close",
+                arguments={
+                    "attempt_id": attempt.attempt_id,
+                    "selection_id": selection.selection_id,
+                    "idempotency_key": "close-terminal-close-tool",
+                },
+                task_id=attempt.task_id,
+                lane_id=attempt.lane_id,
+                assistant_response_text="The scientific attempt is complete.",
+            ),
+        )
 
     assert result.ok is True
     assert result.status == "scientific_attempt_closure_requested"
@@ -2169,6 +2227,74 @@ def test_successful_scientific_attempt_close_is_a_terminal_turn_action() -> None
         )
         is not None
     )
+    request = repositories.scientific_attempt_closure_requests.get_by_attempt(
+        attempt.attempt_id
+    )
+    assert request is not None
+    response = (
+        repositories.scientific_attempt_closure_responses
+        .get_by_closure_request(request.closure_request_id)
+    )
+    assert response is not None
+    assert service.require_closure_response(request) == response
+    conversation = build_conversation_projection(
+        repositories,
+        attempt.session_id,
+    )
+    assert [entry.content for entry in conversation] == [
+        "The scientific attempt is complete."
+    ]
+
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.AGENT_TURN,
+        owner_ref="agent-turn:close-response-replay",
+    ):
+        replay = registry.dispatch(
+            context,
+            ToolInvocation(
+                call_id="call_terminal_close_replay",
+                tool_name="scientific.attempt.close",
+                arguments={
+                    "attempt_id": attempt.attempt_id,
+                    "selection_id": selection.selection_id,
+                    "idempotency_key": "close-terminal-close-tool",
+                },
+                task_id=attempt.task_id,
+                lane_id=attempt.lane_id,
+                assistant_response_text="The scientific attempt is complete.",
+            ),
+        )
+    assert replay.ok is True
+    assert len(
+        build_conversation_projection(repositories, attempt.session_id)
+    ) == 1
+
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.AGENT_TURN,
+        owner_ref="agent-turn:close-response-conflict",
+    ):
+        conflict = registry.dispatch(
+            context,
+            ToolInvocation(
+                call_id="call_terminal_close_conflict",
+                tool_name="scientific.attempt.close",
+                arguments={
+                    "attempt_id": attempt.attempt_id,
+                    "selection_id": selection.selection_id,
+                    "idempotency_key": "close-terminal-close-tool",
+                },
+                task_id=attempt.task_id,
+                lane_id=attempt.lane_id,
+                assistant_response_text="A different final response.",
+            ),
+        )
+    assert conflict.ok is False
+    assert conflict.error_code == "attempt_closure_response_conflict"
+    assert len(
+        build_conversation_projection(repositories, attempt.session_id)
+    ) == 1
 
 
 def test_same_attempt_cross_run_adoption_materializes_exact_sealed_bytes(

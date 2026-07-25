@@ -250,6 +250,9 @@ from .scientific_attempt_repositories import ScientificAttemptBindingRepository
 from .scientific_attempt_repositories import (
     ScientificAttemptClosureRequestRepository,
 )
+from .scientific_attempt_repositories import (
+    ScientificAttemptClosureResponseRepository,
+)
 from .scientific_attempt_repositories import ScientificAttemptClosureRepository
 from .scientific_attempt_repositories import ScientificAttemptIdentityConflictError
 from .scientific_attempt_repositories import ScientificAttemptRepository
@@ -269,6 +272,8 @@ from .scientific_attempts import ScientificOperationAdoptionResult
 from .scientific_attempts import ScientificOperationUniverse
 from .scientific_attempts import scientific_attempt_authorization_identity
 from .scientific_attempts import scientific_attempt_authorization_request
+from .report_publication import is_published_report_link
+from .report_publication import is_published_report_status
 from .scientific_selection_evaluation import ScientificSelectionEvaluation
 from .scientific_selection_evaluation import ScientificSelectionEvaluator
 from .scientific_selection_evaluation import ScientificSelectionIssue
@@ -566,6 +571,7 @@ __all__ = [
     "ScientificAttemptAuthorizationRepository",
     "ScientificAttemptBindingRepository",
     "ScientificAttemptClosureRequestRepository",
+    "ScientificAttemptClosureResponseRepository",
     "ScientificAttemptClosureRepository",
     "ScientificAttemptError",
     "ScientificAttemptIdentityConflictError",
@@ -639,6 +645,8 @@ __all__ = [
     "model_context_profile_from_env_or_factory",
     "normalize_immutable_image_id",
     "persist_conversation_message",
+    "is_published_report_link",
+    "is_published_report_status",
     "prompt_budget_config_from_env",
     "project_controlled_operation_execution",
     "project_controlled_operation_summary",

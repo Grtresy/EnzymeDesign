@@ -336,8 +336,9 @@ session 不受影响；guard 不选择 operation、selection、query、执行顺
 
 successful `scientific.attempt.close` 是通用 terminal turn action，不是 AOX-specific
 prompt rule。close handler 先要求同一 invocation 带有非空 companion assistant text；
-缺失时不写 closure request。它持久化 closure intent 后，harness 恰好一次持久化该
-companion text，立即结算同批后续 calls 为
+缺失时不写 closure request。它在同一 Core atomic transaction 内持久化 closure intent、
+deterministic conversation document/message 与 immutable response binding 后，harness
+只返回已提交文本并立即结算同批后续 calls 为
 `tool_call_batch_interrupted/no_effect/verify_then_retry`，不再调用模型；外层
 `AGENT_TURN` writer 连同 settlement 退休后，Host 才能推进 final closure。close rejection
 保持 non-terminal且不持久化终答，scientific closure 不完成 task。

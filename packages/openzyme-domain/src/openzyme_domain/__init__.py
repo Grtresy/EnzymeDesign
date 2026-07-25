@@ -22,6 +22,9 @@ from .scientific_attempts import SCIENTIFIC_ATTEMPT_AUTHORIZATION_SCHEMA_VERSION
 from .scientific_attempts import (
     SCIENTIFIC_ATTEMPT_CLOSURE_REQUEST_SCHEMA_VERSION,
 )
+from .scientific_attempts import (
+    SCIENTIFIC_ATTEMPT_CLOSURE_RESPONSE_SCHEMA_VERSION,
+)
 from .scientific_attempts import SCIENTIFIC_ATTEMPT_CLOSURE_SCHEMA_VERSION
 from .scientific_attempts import SCIENTIFIC_ATTEMPT_SCHEMA_VERSION
 from .scientific_attempts import SCIENTIFIC_CHAIN_SELECTION_SCHEMA_VERSION
@@ -34,6 +37,7 @@ from .scientific_attempts import ScientificAttemptAuthorization
 from .scientific_attempts import ScientificAttemptAuthorityStatus
 from .scientific_attempts import ScientificAttemptClosure
 from .scientific_attempts import ScientificAttemptClosureRequest
+from .scientific_attempts import ScientificAttemptClosureResponse
 from .scientific_attempts import ScientificAttemptScope
 from .scientific_attempts import ScientificAttemptStatus
 from .scientific_attempts import ScientificChainSelection
@@ -169,6 +173,7 @@ __all__ = [
     "SCIENTIFIC_ATTEMPT_ADMISSION_REQUEST_SCHEMA_VERSION",
     "SCIENTIFIC_ATTEMPT_AUTHORIZATION_SCHEMA_VERSION",
     "SCIENTIFIC_ATTEMPT_CLOSURE_REQUEST_SCHEMA_VERSION",
+    "SCIENTIFIC_ATTEMPT_CLOSURE_RESPONSE_SCHEMA_VERSION",
     "SCIENTIFIC_ATTEMPT_CLOSURE_SCHEMA_VERSION",
     "SCIENTIFIC_ATTEMPT_SCHEMA_VERSION",
     "SCIENTIFIC_CHAIN_SELECTION_SCHEMA_VERSION",
@@ -181,6 +186,7 @@ __all__ = [
     "ScientificAttemptAuthorityStatus",
     "ScientificAttemptClosure",
     "ScientificAttemptClosureRequest",
+    "ScientificAttemptClosureResponse",
     "ScientificAttemptScope",
     "ScientificAttemptStatus",
     "ScientificChainSelection",

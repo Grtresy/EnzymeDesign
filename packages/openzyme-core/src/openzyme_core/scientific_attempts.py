@@ -26,6 +26,7 @@ from openzyme_domain import ScientificAttemptAuthorization
 from openzyme_domain import ScientificAttemptAuthorityStatus
 from openzyme_domain import ScientificAttemptClosure
 from openzyme_domain import ScientificAttemptClosureRequest
+from openzyme_domain import ScientificAttemptClosureResponse
 from openzyme_domain import ScientificAttemptScope
 from openzyme_domain import ScientificAttemptStatus
 from openzyme_domain import ScientificChainSelection
@@ -66,6 +67,30 @@ EMPTY_DISPOSITION_DIGEST = canonical_digest([])
 EMPTY_ADOPTION_DIGEST = canonical_digest([])
 SCIENTIFIC_SELECTION_INSPECTION_MAX_LIMIT = 50
 SCIENTIFIC_SELECTION_INSPECTION_DEFAULT_LIMIT = 20
+
+
+def _closure_response_binding_digest(
+    *,
+    closure_request_id: str,
+    attempt_id: str,
+    message_id: str,
+    document_id: str,
+    recipient: str,
+    recipient_kind: str,
+    response_digest: str,
+) -> str:
+    return canonical_digest(
+        {
+            "schema_version": ScientificAttemptClosureResponse.SCHEMA_VERSION,
+            "closure_request_id": closure_request_id,
+            "attempt_id": attempt_id,
+            "message_id": message_id,
+            "document_id": document_id,
+            "recipient": recipient,
+            "recipient_kind": recipient_kind,
+            "response_digest": response_digest,
+        }
+    )
 
 
 class ScientificAttemptError(RuntimeError):
@@ -1962,6 +1987,9 @@ class ScientificAttemptService:
         selection_id: str,
         actor_ref: str,
         idempotency_key: str,
+        persist_closure_response: (
+            Callable[[ScientificAttemptClosureRequest], None] | None
+        ) = None,
     ) -> ScientificAttemptClosureRequest:
         """Persist agent closure intent while its writer still has authority.
 
@@ -2037,9 +2065,128 @@ class ScientificAttemptService:
             owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
             owner_ref=f"attempt.close.request:{record.closure_request_id}",
         ):
-            return self.repositories.scientific_attempt_closure_requests.add(
+            stored = self.repositories.scientific_attempt_closure_requests.add(
                 record
             )
+            if persist_closure_response is not None:
+                persist_closure_response(stored)
+            return stored
+
+    def prepare_closure_response(
+        self,
+        *,
+        request: ScientificAttemptClosureRequest,
+        recipient: str,
+        recipient_kind: str,
+        assistant_response_text: str,
+    ) -> ScientificAttemptClosureResponse:
+        response_text = str(assistant_response_text)
+        self._require_text(
+            "assistant_response_text",
+            response_text,
+        )
+        response_digest = canonical_digest(
+            {"assistant_response_text": response_text}
+        )
+        identity_digest = canonical_digest(
+            {
+                "closure_request_id": request.closure_request_id,
+                "attempt_id": request.attempt_id,
+                "recipient": recipient,
+                "recipient_kind": recipient_kind,
+                "response_digest": response_digest,
+            }
+        ).removeprefix("sha256:")
+        message_id = f"msg_close_{identity_digest[:24]}"
+        document_id = f"msgdoc_close_{identity_digest[:24]}"
+        binding_digest = _closure_response_binding_digest(
+            closure_request_id=request.closure_request_id,
+            attempt_id=request.attempt_id,
+            message_id=message_id,
+            document_id=document_id,
+            recipient=recipient,
+            recipient_kind=recipient_kind,
+            response_digest=response_digest,
+        )
+        return ScientificAttemptClosureResponse(
+            closure_response_id=f"attempt_closure_response_{identity_digest[:24]}",
+            closure_request_id=request.closure_request_id,
+            attempt_id=request.attempt_id,
+            message_id=message_id,
+            document_id=document_id,
+            recipient=self._require_text("recipient", recipient),
+            recipient_kind=self._require_text(
+                "recipient_kind",
+                recipient_kind,
+            ),
+            response_digest=response_digest,
+            binding_digest=binding_digest,
+            created_at=request.created_at,
+        )
+
+    def require_closure_response(
+        self,
+        request: ScientificAttemptClosureRequest,
+    ) -> ScientificAttemptClosureResponse:
+        response = (
+            self.repositories.scientific_attempt_closure_responses
+            .get_by_closure_request(request.closure_request_id)
+        )
+        if response is None:
+            raise ScientificAttemptError(
+                "attempt_closure_response_missing",
+                "scientific attempt closure request has no durable final response",
+                hint=(
+                    "Do not backfill the request; issue a fresh closure intent "
+                    "under the current co-terminal response contract."
+                ),
+            )
+        attempt = self._require_attempt(request.attempt_id)
+        messages = [
+            message
+            for message in self.repositories.inbox.list_by_session(
+                attempt.session_id
+            )
+            if message.message_id == response.message_id
+        ]
+        document = self.repositories.engine_documents.get(response.document_id)
+        content = (
+            ""
+            if document is None
+            else str(dict(document.payload).get("content") or "")
+        )
+        expected_binding_digest = _closure_response_binding_digest(
+            closure_request_id=request.closure_request_id,
+            attempt_id=request.attempt_id,
+            message_id=response.message_id,
+            document_id=response.document_id,
+            recipient=response.recipient,
+            recipient_kind=response.recipient_kind,
+            response_digest=response.response_digest,
+        )
+        if (
+            response.attempt_id != request.attempt_id
+            or len(messages) != 1
+            or messages[0].sender != "harness"
+            or messages[0].recipient != response.recipient
+            or messages[0].recipient_kind.value != response.recipient_kind
+            or messages[0].message_type != "assistant_message"
+            or messages[0].payload_ref != response.document_id
+            or document is None
+            or document.session_id != attempt.session_id
+            or document.document_kind != "conversation_message"
+            or dict(document.payload).get("message_id") != response.message_id
+            or dict(document.payload).get("role") != "assistant"
+            or not content.strip()
+            or canonical_digest({"assistant_response_text": content})
+            != response.response_digest
+            or expected_binding_digest != response.binding_digest
+        ):
+            raise ScientificAttemptError(
+                "attempt_closure_response_invalid",
+                "scientific attempt closure response binding is incomplete or inconsistent",
+            )
+        return response
 
     def finalize_closure_request(
         self,
@@ -2075,6 +2222,12 @@ class ScientificAttemptService:
                 "attempt_closure_request_missing",
                 "scientific attempt closure request does not exist",
             )
+        response = (
+            self.repositories.scientific_attempt_closure_responses
+            .get_by_closure_request(request.closure_request_id)
+        )
+        if response is not None:
+            self.require_closure_response(request)
         attempt = self._require_attempt(request.attempt_id)
         existing = self.repositories.scientific_attempt_closures.get_by_attempt(
             attempt.attempt_id

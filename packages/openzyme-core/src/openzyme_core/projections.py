@@ -16,6 +16,7 @@ from .artifact_projection import PRIVATE_ARTIFACT_KEYS
 from .artifact_projection import project_artifact_list_item_for_agent
 from .artifact_projection import sanitize_private_artifact_fields
 from .repositories import CoreRepositories
+from .report_publication import is_published_report_link
 from .task_board import TaskBoardService
 from .lane_manager import LaneManager
 from .conversation import build_conversation_projection
@@ -803,16 +804,18 @@ class SessionProjectionBuilder:
                 and bool(str(content_document.payload.get("markdown") or "").strip())
             )
             if draft.get("status") == "published" and report_id and content_available:
-                published_drafts_by_report_id[report_id] = {
-                    "draft_id": draft.get("draft_id"),
-                    "content_ref": content_ref,
-                }
+                published_drafts_by_report_id[report_id] = dict(draft)
         report_summaries = [
             {
                 **report,
                 "published": (
-                    report.get("status") in {"ready", "published"}
-                    and report.get("report_id") in published_drafts_by_report_id
+                    report.get("report_id") in published_drafts_by_report_id
+                    and is_published_report_link(
+                        report,
+                        published_drafts_by_report_id[
+                            str(report.get("report_id") or "")
+                        ],
+                    )
                 ),
                 "artifact_registered": report.get("artifact_id") in artifact_by_id,
                 "published_draft_id": dict(
@@ -824,8 +827,13 @@ class SessionProjectionBuilder:
                 "content_document_bound": report.get("report_id")
                 in published_drafts_by_report_id,
                 "cutover_eligible": (
-                    report.get("status") in {"ready", "published"}
-                    and report.get("report_id") in published_drafts_by_report_id
+                    report.get("report_id") in published_drafts_by_report_id
+                    and is_published_report_link(
+                        report,
+                        published_drafts_by_report_id[
+                            str(report.get("report_id") or "")
+                        ],
+                    )
                 ),
             }
             for report in reports

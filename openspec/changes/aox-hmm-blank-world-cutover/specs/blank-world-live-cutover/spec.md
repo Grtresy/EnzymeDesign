@@ -106,6 +106,14 @@ The collector SHALL reconstruct exactly one durable delegation request for each 
 - **WHEN** the master calls `scientific.attempt.close` without non-empty response text in that same provider response, or the close handler returns a failure
 - **THEN** no closure request and no assistant conversation message are created; only a successful close intent may authorize exact-once persistence of its companion response, and ordinary non-AOX assistant responses remain unchanged
 
+#### Scenario: Accept the canonical successful report publication states
+- **WHEN** the canonical reporting task has exactly one non-empty published draft linked to exactly one report whose domain status is `ready` or `published`
+- **THEN** the shared report-publication predicate treats the link as one successful publication in policy, workspace projection, live collection, and offline verification; no consumer may independently narrow the accepted report state or normalize away the persisted enum
+
+#### Scenario: Commit closure intent and its final response atomically
+- **WHEN** a successful `scientific.attempt.close` records its immutable intent and co-terminal response
+- **THEN** one SQLite transaction persists the closure request, deterministic conversation document, deterministic assistant inbox message, and immutable response binding, while any failure rolls all four records back; same-fact replay returns the existing binding without another message and different-response reuse fails closed
+
 #### Scenario: Expose canonical task-finish evidence references
 - **WHEN** an agent prepares or submits `task.finish.evidence_refs`
 - **THEN** the tool schema and every invalid-reference result expose the exact `<kind>:<id>` format and closed supported kinds, session repositories still resolve every supplied reference, and the runtime neither guesses a kind from an opaque id nor adds a prefix or substitutes a closure request for a finalized scientific closure

@@ -452,6 +452,36 @@ def test_cutover_policy_allows_ready_positive_close() -> None:
     assert result is None
 
 
+def test_cutover_policy_allows_r58_published_positive_close() -> None:
+    tasks = _tasks()
+    reports = (
+        _record(
+            report_id="report_r58",
+            session_id=SESSION_ID,
+            task_id=AOX_REPORT_TASK_ID,
+            status=_status("published"),
+        ),
+    )
+    drafts = (
+        _record(
+            draft_id="draft_r58",
+            session_id=SESSION_ID,
+            task_id=AOX_REPORT_TASK_ID,
+            status=_status("published"),
+            published_report_id="report_r58",
+            content_ref="doc_report_r58",
+        ),
+    )
+
+    result = _positive_policy()(
+        _context(_repositories(tasks=tasks, reports=reports, drafts=drafts)),
+        _step(),  # type: ignore[arg-type]
+        _close_invocation(),
+    )
+
+    assert result is None
+
+
 def test_cutover_policy_requires_final_response_on_ready_close() -> None:
     tasks = _tasks()
     reports = (
@@ -993,7 +1023,7 @@ def test_repository_backed_positive_close_retires_turn_before_later_mutation() -
                 invocation_id=None,
                 run_id=None,
                 artifact_id=None,
-                status=SessionReportStatus.READY,
+                status=SessionReportStatus.PUBLISHED,
                 title="AOX report",
                 summary="Source-linked final report.",
                 stage_summary="Research, execution, and reporting complete.",

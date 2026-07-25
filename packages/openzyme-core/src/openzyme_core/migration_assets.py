@@ -39,6 +39,7 @@ MIGRATION_IDS: tuple[str, ...] = (
     "032_v3_failure_observations",
     "033_v3_scientific_attempt_selection",
     "034_v3_failure_hypotheses",
+    "035_v3_scientific_attempt_closure_response",
 )
 CURRENT_SQLITE_SCHEMA_VERSION = len(MIGRATION_IDS)
 MINIMUM_AUTOMATIC_UPGRADE_VERSION = 25
@@ -78,6 +79,7 @@ _REQUIRED_CURRENT_SCHEMA_TABLES: frozenset[str] = frozenset(
         "scientific_effect_adoption_records",
         "scientific_artifact_materialization_records",
         "scientific_attempt_closure_request_records",
+        "scientific_attempt_closure_response_records",
         "scientific_attempt_closure_records",
         "durable_event_records",
         "command_receipt_records",
@@ -126,6 +128,9 @@ _REQUIRED_CURRENT_SCHEMA_TRIGGERS: frozenset[str] = frozenset(
         "scientific_artifact_materialization_records_immutable_delete",
         "scientific_attempt_closure_request_records_immutable_update",
         "scientific_attempt_closure_request_records_immutable_delete",
+        "scientific_attempt_closure_response_matches",
+        "scientific_attempt_closure_response_records_immutable_update",
+        "scientific_attempt_closure_response_records_immutable_delete",
         "scientific_attempt_run_after_closure_request_forbidden",
         "scientific_attempt_operation_after_closure_request_forbidden",
         "scientific_selection_after_closure_request_forbidden",
@@ -137,6 +142,9 @@ _REQUIRED_CURRENT_SCHEMA_TRIGGERS: frozenset[str] = frozenset(
         "mutation_guard_session_artifact_records_insert",
         "mutation_guard_session_report_records_insert",
         "mutation_guard_scientific_attempt_admission_request_records_insert",
+        "mutation_guard_scientific_attempt_closure_response_records_insert",
+        "mutation_guard_scientific_attempt_closure_response_records_update",
+        "mutation_guard_scientific_attempt_closure_response_records_delete",
     }
 )
 

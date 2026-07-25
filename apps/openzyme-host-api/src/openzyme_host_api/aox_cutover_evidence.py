@@ -2312,6 +2312,9 @@ def inject_artifact_byte_flip(
 
 
 def _report_publish_receipt_is_valid(report: Mapping[str, Any]) -> bool:
+    from openzyme_core import is_published_report_link
+    from openzyme_core import is_published_report_status
+
     report_id = str(report.get("report_id") or "")
     session_id = str(report.get("session_id") or "")
     task_id = str(report.get("task_id") or "")
@@ -2319,6 +2322,7 @@ def _report_publish_receipt_is_valid(report: Mapping[str, Any]) -> bool:
     draft_id = str(report.get("draft_id") or "")
     content_ref = str(report.get("content_ref") or "")
     content_digest = str(report.get("content_digest") or "")
+    report_status = str(report.get("status") or "")
     product_report = report.get("product_report_record")
     published_draft = report.get("published_draft_record")
     content_document = report.get("content_document_record")
@@ -2379,7 +2383,7 @@ def _report_publish_receipt_is_valid(report: Mapping[str, Any]) -> bool:
         and bool(session_id)
         and bool(task_id)
         and bool(lane_id)
-        and report.get("status") == "ready"
+        and is_published_report_status(report_status)
         and report.get("invocation_id") in {None, ""}
         and report.get("run_id") in {None, ""}
         and report.get("product_artifact_id") in {None, ""}
@@ -2402,6 +2406,11 @@ def _report_publish_receipt_is_valid(report: Mapping[str, Any]) -> bool:
         and bool(str(report.get("content_artifact_id") or ""))
         and report.get("publication_action") == "report.publish"
         and report.get("cutover_eligible") is True
+        and is_published_report_link(
+            product_report,
+            published_draft,
+            task_id=task_id,
+        )
         and product_report.get("report_id") == report_id
         and product_report.get("session_id") == session_id
         and product_report.get("task_id") == task_id
@@ -2409,7 +2418,7 @@ def _report_publish_receipt_is_valid(report: Mapping[str, Any]) -> bool:
         and product_report.get("invocation_id") in {None, ""}
         and product_report.get("run_id") in {None, ""}
         and product_report.get("artifact_id") in {None, ""}
-        and product_report.get("status") == "ready"
+        and product_report.get("status") == report_status
         and bool(str(product_report.get("created_at") or ""))
         and bool(str(product_report.get("updated_at") or ""))
         and published_draft.get("draft_id") == draft_id

@@ -251,6 +251,11 @@ HOST_MUTATION_COVERAGE_ENTRIES: Final[tuple[MutationCoverageEntry, ...]] = tuple
         resource_category=MutationResourceCategory.CANONICAL_SQLITE,
         session_binding="attempt_id_to_scientific_attempts",
     ),
+    MutationCoverageEntry(
+        table_name="scientific_attempt_closure_response_records",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="attempt_id_to_scientific_attempts",
+    ),
 )
 
 # These records are deliberately Host-global rather than session-scoped.  They are
