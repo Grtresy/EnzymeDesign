@@ -35,14 +35,14 @@ AOX/HMM live cutover：
 
 - [aox-hmm-blank-world-cutover.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-hmm-blank-world-cutover.md)
 - 新 production attempt 使用 selected-chain `aox_blank_world_attempt_bundle@3`；
-  历史 `@2` verifier 与 r48-r58 NO-GO evidence 保持冻结。r56 后的 target contract
+  历史 `@2` verifier 与 r48-r59 NO-GO evidence 保持冻结。r56 后的 target contract
   将 diagnostic live 与 exact-three formal acceptance 分开。post-r56 atomic closure
   rollover 与 crash-safe transition delivery 已实现并通过真实 file-backed SQLite
   concurrency/fault 回归；schema-disjoint 的 `authorize-diagnostic` /
   `run-diagnostic-live`、单槽 authority、diagnostic root/consumption/decision 与 cross-mode
   negative gate 也已实现。diagnostic 永久 `acceptance_eligible=false`，不能生成/进入
   `@3` bundle/reducer；现有 `authorize` / `run-live` 仍只代表 formal acceptance。
-- `pin`、`preflight`、`run-live` 与 `run-diagnostic-live` 均先要求当前 clean commit 的 full architecture qualification report；qualification 通过本身只解除架构阻断，不创建 attempt，也不自动恢复 numbered campaign。无 attempt 的准备阶段止于 canonical `pin`；CLI `preflight` 会创建 blank-world attempt root，因此每个新 diagnostic 或 formal campaign 都必须另获 operator 授权并使用 fresh roots。r58 已永久诊断 NO-GO；其 forward close-ready response guard 与 same-response close/final-answer settlement 实现及非-live gate 不授权下一轮 diagnostic 或 formal live。
+- `pin`、`preflight`、`run-live` 与 `run-diagnostic-live` 均先要求当前 clean commit 的 full architecture qualification report；qualification 通过本身只解除架构阻断，不创建 attempt，也不自动恢复 numbered campaign。无 attempt 的准备阶段止于 canonical `pin`；CLI `preflight` 会创建 blank-world attempt root，因此每个新 diagnostic 或 formal campaign 都必须另获 operator 授权并使用 fresh roots。r59 已永久 formal NO-GO；forward `@3` policy 将 sealed positive execution handoff 与 master closure 分开，并将 closure-request readiness 与 writer-gated Host finalization 分开。该实现及非-live gate 不授权下一轮 diagnostic 或 formal live。
 
 Execution pipeline SDK docs:
 

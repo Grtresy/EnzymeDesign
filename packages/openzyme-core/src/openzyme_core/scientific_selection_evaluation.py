@@ -149,7 +149,37 @@ class ScientificSelectionEvaluation:
 
     @property
     def closure_ready(self) -> bool:
-        return not any(issue.blocks_closure for issue in self.issues)
+        """Return legacy Host-finalization readiness.
+
+        The field predates the request/finalization split and remains in the
+        projection for compatibility. It now includes the sealed-state
+        precondition so a draft selection cannot look closure-ready.
+        """
+
+        return (
+            self.selection_state == ScientificSelectionState.SEALED.value
+            and not any(issue.blocks_closure for issue in self.issues)
+        )
+
+    @property
+    def closure_request_ready(self) -> bool:
+        """Return whether the sealed selection can support closure intent.
+
+        A requesting agent turn is itself an active mutation writer. Closure
+        intent is therefore validated against the same evidence boundary as
+        selection sealing; writer retirement is a Host-finalization concern.
+        """
+
+        return (
+            self.selection_state == ScientificSelectionState.SEALED.value
+            and self.seal_ready
+        )
+
+    @property
+    def closure_finalization_ready(self) -> bool:
+        """Return whether the selection side is ready for Host finalization."""
+
+        return self.closure_ready
 
     @property
     def blocker_codes(self) -> tuple[str, ...]:
@@ -187,6 +217,9 @@ class ScientificSelectionEvaluation:
             "blocker_codes": list(self.blocker_codes),
             "seal_ready": self.seal_ready,
             "closure_ready": self.closure_ready,
+            "closure_ready_phase": "host_finalization_after_request",
+            "closure_request_ready": self.closure_request_ready,
+            "closure_finalization_ready": self.closure_finalization_ready,
         }
 
 

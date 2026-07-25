@@ -260,3 +260,8 @@ scientific selection 的真实约束不应靠模型从错误信息或 SOP 猜。
 compatible roles 和 readiness gaps；模型显式选择 occurrence/role，并用一次
 `scientific.operation.adopt` 原子表达 disposition + effect adoption。Harness 不因
 compatible role 唯一就自动调用 adoption，也不把 `seal_ready` 当作 seal/task-finish 指令。
+inspection 将 closure intent 与 finalization 分开：
+`closure_request_ready=true` 表示 sealed selection 已满足当前 turn 持久化 agent-authored
+intent 的 selection-side 条件；`closure_finalization_ready=false` 可以只说明 requesting
+turn writer 尚未退休。legacy `closure_ready` 仍指后一个 Host 阶段，不能被模型解释为
+“等待另一个 master wake 才能 call close”。

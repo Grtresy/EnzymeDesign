@@ -176,7 +176,11 @@ issues、bounded gap summary 与 `seal_ready`。seal、closure revalidation、�
 `scientific.attempt.inspect` 和 workspace summary 都消费同一 evaluation；公开 detail 只分页
 投影 safe operation signatures、allowed/compatible roles 与 blocker codes，不含 Host
 locator、lease/fence、credentials 或 recommended actions。`seal_ready` 不是自动 seal 或 task
-terminal authority。
+terminal authority。readiness 同时区分 `closure_request_ready` 与
+`closure_finalization_ready`：前者要求 current selection 已 sealed 且满足 request-time
+selection evidence，后者还要求 active writers 已退休。legacy `closure_ready` 保留为
+`host_finalization_after_request` 阶段的兼容字段；请求 closure 的 agent turn 本身是 expected
+writer，不能因为 `selection_active_writers` 而等待另一个 turn 才表达 intent。
 
 同一个 formal attempt 内可以跨 sandbox run 采用已完成 operation，并由 Host 通过 artifact
 catalog grant、digest 和 target authority 物化其 bytes。跨 formal attempt、campaign、
@@ -241,7 +245,7 @@ agent 可消费的 evidence，不是 `task.finish`；owner 仍需显式决定完
 - unknown-effect、writer/process、cross-attempt reuse 与 tamper rejection。
 
 历史 `aox_blank_world_attempt_bundle@2` verifier 保留为只读历史入口。旧 bundle 不得升级、
-回填 selection、与 `@3` row 混合或被新 campaign 采用。r48-r58 永久保持 NO-GO；
+回填 selection、与 `@3` row 混合或被新 campaign 采用。r48-r59 永久保持 NO-GO；
 对应 authority、root、effect、provider job、artifact、browser evidence 和 scientific
 bytes 均不得复用。r53 的 probe scope 已密封，但 formal pre-attempt scope 因旧 driver
 缺少 exact barrier observer writer 而保持 open；parent fatal 只证明进程退休，不声明
@@ -359,7 +363,7 @@ probe 与 formal exact operations、516 candidates、78 representatives、13,778
 根因不是 closure authority 缺失，而是两个原合同不相容：assistant-only response 可以成为
 conversation truth，但之后没有新 signal 让 master close；tool-call response 中即使已有
 最终文本，successful close 又会立即退休 turn，而旧 harness 只把该文本写入 LLM trace。
-当前 `aox_cutover_formal_tool_precondition@2` 通过两个显式入口闭合它：
+r58 correction 当时的 `aox_cutover_formal_tool_precondition@2` 通过两个显式入口闭合它：
 
 - close-ready assistant-only response 在 conversation write 前得到结构化 no-effect rejection，
   proposed text 不持久化，agent 获得同一 bounded turn 内的新决策机会；
@@ -379,3 +383,37 @@ post-r58 审计进一步要求 report publication 由一个共享派生谓词判
 `published_report_id` 与非空 content ref 必须同时成立；policy/projection/collector/
 offline verifier 不得各自缩窄。closure response transaction 中任一步失败整体回滚，同事实
 replay 不新增消息，不同 response 重用相同 closure identity 必须 fail closed。
+
+## 11. r59 后的 positive execution handoff
+
+r59 在 clean commit `431e2c558c13ebd1f99dcc9e3eae6758630a843d` 消费 formal
+exact-three plan
+`sha256:168aa86c433b3c3b90aab4c665453a56cb796f99056f7d04567bc8f453b8e7de`，
+只到达 positive 1。probe exact six 与 formal NCBI/MAFFT/hmmbuild/EBI-HMMER/UniProt/
+HMMalign exact six 全部 terminal-known success；formal result 是诚实 healthy empty：
+37,772 个 score-filter accession、2,561 个 length target、0 motif candidate，
+`no_candidates_after_motif_filter`。executor 已 sealed current selection，reporter 已发布
+source-linked report。
+
+executor 随后调用 master-only `scientific.attempt.close`，正确收到
+`aox_cutover_close_actor_violation/no_effect/same_phase_safe`，却把预期 handoff 误写成
+owner-authored `task.finish(blocked)`。master 不能把已终态 task 改回 completed，也没有
+reopen/resume 合同；随后又把 `selection_active_writers` / `closure_ready=false` 当成不能在
+当前 turn 请求 intent，最终零 closure request、120 drains exhausted。decision
+`sha256:8b05ef13dfaf79f9a15a647fbbafa446e7ef75656b16db77a7b32baa8b4c6ccc`
+永久 NO-GO；MICU verified lower bound 为 `100,114,267 / 500,000,000`，全部 r59
+authority/root/state/effect/bytes 不可复用。
+
+current session policy 是 `aox_cutover_formal_tool_precondition@3`。它不增加自动
+task completion 或 attempt closure，只在以下 durable facts 同时成立时拒绝错误终态：
+
+- attempt 是 positive，canonical execution task 仍由当前 teammate owner 操作；
+- active attempt 的 current scientific selection 已 sealed；
+- executor 请求 `blocked|failed|cancelled` 业务出口。
+
+拒绝码为 `aox_cutover_positive_execution_exit_mismatch`，effect 是 `no_effect`，
+retry 是 `same_phase_safe`，并明确 `required_status=completed`、closure actor 是 master。
+owner 仍须自己提交 completed result/evidence，reporter 仍须自己发布，master 仍须自己在
+co-terminal response 中请求 closure。selection seal 前的真实 authority/provider/HPC/runtime
+blocker、fault attempt 和普通 V3 session 继续使用 generic task semantics；guard 不选择
+科学路线或结果。

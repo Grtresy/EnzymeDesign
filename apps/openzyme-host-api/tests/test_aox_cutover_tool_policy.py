@@ -131,6 +131,8 @@ def _repositories(
     reports: tuple[SimpleNamespace, ...] = (),
     drafts: tuple[SimpleNamespace, ...] = (),
     documents: tuple[SimpleNamespace, ...] | None = None,
+    attempts: tuple[SimpleNamespace, ...] = (),
+    resolved_head: SimpleNamespace | None = None,
 ) -> SimpleNamespace:
     by_id = {task.task_id: task for task in tasks}
     finish_documents = (
@@ -153,6 +155,12 @@ def _repositories(
         report_drafts=_record(
             list_by_session=lambda _session_id: drafts,
         ),
+        scientific_attempts=_record(
+            list_by_session=lambda _session_id: attempts,
+        ),
+        scientific_selections=_record(
+            resolve_head=lambda _attempt_id: resolved_head,
+        ),
     )
 
 
@@ -164,11 +172,12 @@ def _step(
     *,
     session_id: str = SESSION_ID,
     actor_kind: str = "master",
+    agent_id: str = "agent:master",
 ) -> SimpleNamespace:
     return _record(
         session_id=session_id,
         actor_kind=actor_kind,
-        agent_id="agent:master",
+        agent_id=agent_id,
     )
 
 
@@ -295,6 +304,125 @@ def test_cutover_policy_rejects_close_from_teammate() -> None:
 
     assert result is not None
     assert result.error_code == "aox_cutover_close_actor_violation"
+
+
+def test_cutover_policy_preserves_sealed_positive_executor_handoff() -> None:
+    tasks = _tasks(execution_status="in_progress")
+    attempts = (
+        _record(
+            attempt_id="attempt_001",
+            task_id=EXECUTION_TASK_ID,
+            status=_status("active"),
+        ),
+    )
+    resolved_head = _record(
+        selection=_record(
+            selection_id="selection_001",
+            state=_status("sealed"),
+        ),
+    )
+    repositories = _repositories(
+        tasks=tasks,
+        attempts=attempts,
+        resolved_head=resolved_head,
+    )
+    teammate_step = _step(
+        actor_kind="teammate",
+        agent_id="agent_executor",
+    )
+
+    close_result = _positive_policy()(
+        _context(repositories),
+        teammate_step,  # type: ignore[arg-type]
+        _close_invocation(),
+    )
+    assert close_result is not None
+    assert close_result.error_code == "aox_cutover_close_actor_violation"
+    assert "must not make a sealed positive execution task blocked" in (
+        close_result.hint or ""
+    )
+
+    blocked_result = _positive_policy()(
+        _context(repositories),
+        teammate_step,  # type: ignore[arg-type]
+        ToolInvocation(
+            call_id="call_blocked_after_seal",
+            tool_name="task.finish",
+            arguments={
+                "task_id": EXECUTION_TASK_ID,
+                "status": "blocked",
+                "blocked_reason": (
+                    "Only the master may close the scientific attempt."
+                ),
+            },
+            task_id=EXECUTION_TASK_ID,
+        ),
+    )
+    assert blocked_result is not None
+    assert (
+        blocked_result.error_code
+        == "aox_cutover_positive_execution_exit_mismatch"
+    )
+    assert blocked_result.details["attempt_id"] == "attempt_001"
+    assert blocked_result.details["selection_id"] == "selection_001"
+    assert blocked_result.details["requested_status"] == "blocked"
+    assert blocked_result.details["required_status"] == "completed"
+    assert blocked_result.details["effect_certainty"] == "no_effect"
+
+    completed_result = _positive_policy()(
+        _context(repositories),
+        teammate_step,  # type: ignore[arg-type]
+        ToolInvocation(
+            call_id="call_completed_after_seal",
+            tool_name="task.finish",
+            arguments={
+                "task_id": EXECUTION_TASK_ID,
+                "status": "completed",
+                "summary": "Sealed the positive scientific selection.",
+            },
+            task_id=EXECUTION_TASK_ID,
+        ),
+    )
+    assert completed_result is None
+
+
+def test_cutover_policy_leaves_preselection_execution_blockers_generic() -> None:
+    tasks = _tasks(execution_status="in_progress")
+    repositories = _repositories(
+        tasks=tasks,
+        attempts=(
+            _record(
+                attempt_id="attempt_001",
+                task_id=EXECUTION_TASK_ID,
+                status=_status("active"),
+            ),
+        ),
+        resolved_head=_record(
+            selection=_record(
+                selection_id="selection_001",
+                state=_status("draft"),
+            ),
+        ),
+    )
+    result = _positive_policy()(
+        _context(repositories),
+        _step(
+            actor_kind="teammate",
+            agent_id="agent_executor",
+        ),  # type: ignore[arg-type]
+        ToolInvocation(
+            call_id="call_real_blocker_before_seal",
+            tool_name="task.finish",
+            arguments={
+                "task_id": EXECUTION_TASK_ID,
+                "status": "blocked",
+                "blocked_reason": "Operator authority is genuinely missing.",
+            },
+            task_id=EXECUTION_TASK_ID,
+        ),
+    )
+
+    assert result is None
 
 
 def test_cutover_policy_rejects_extra_task_and_wrong_assignment() -> None:

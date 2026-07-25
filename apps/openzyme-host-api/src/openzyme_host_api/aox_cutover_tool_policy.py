@@ -13,7 +13,7 @@ from openzyme_runtime import ToolResult
 
 
 AOX_CUTOVER_TOOL_PRECONDITION_ID = (
-    "aox_cutover_formal_tool_precondition@2"
+    "aox_cutover_formal_tool_precondition@3"
 )
 AOX_RESEARCH_TASK_ID = "aox_research_pubmed_evidence"
 AOX_REPORT_TASK_ID = "aox_final_source_linked_report"
@@ -24,6 +24,7 @@ _TASK_CONTRACTS = {
 }
 _FAULT_EXECUTION_EXITS = frozenset({"failed", "blocked", "cancelled"})
 _FAULT_REPORT_EXITS = frozenset({"failed", "blocked", "cancelled"})
+_NONCOMPLETED_TASK_EXITS = frozenset({"failed", "blocked", "cancelled"})
 
 
 def _status_value(record: object) -> str:
@@ -77,8 +78,9 @@ class AoxCutoverFormalToolPrecondition:
     This guard does not choose task strategy or scientific operations. It
     presents already-pinned cutover constraints at the mutation/conversation
     boundary: the exact three-task topology, the business/report state required
-    before closure, and the requirement that a close-ready master submit its
-    final response together with the explicit scientific-attempt close call.
+    before closure, the completed execution handoff proved by a sealed positive
+    selection, and the requirement that a close-ready master submit its final
+    response together with the explicit scientific-attempt close call.
     """
 
     session_id: str
@@ -124,6 +126,12 @@ class AoxCutoverFormalToolPrecondition:
             return None
         if invocation.tool_name == "task.create":
             return self._check_task_create(context, invocation)
+        if invocation.tool_name == "task.finish":
+            return self._check_task_finish(
+                context,
+                step_context,
+                invocation,
+            )
         if invocation.tool_name == "scientific.attempt.close":
             return self._check_attempt_close(
                 context,
@@ -209,6 +217,99 @@ class AoxCutoverFormalToolPrecondition:
             },
         )
 
+    def _check_task_finish(
+        self,
+        context: Any,
+        step_context: AgentStepContext,
+        invocation: ToolInvocation,
+    ) -> ToolResult | None:
+        """Reject a false negative exit after positive execution is sealed.
+
+        This is intentionally narrower than generic task lifecycle policy. A
+        positive executor remains free to report a genuine blocker before its
+        selected chain is sealed. Once that owner-authored selection is the
+        sealed current head, however, the durable scientific execution handoff
+        is successful; master-only closure is a later lifecycle responsibility.
+        """
+
+        if self.attempt_kind != "positive":
+            return None
+        requested_task_id = str(
+            invocation.arguments.get("task_id")
+            or invocation.task_id
+            or ""
+        )
+        requested_status = str(
+            invocation.arguments.get("status") or ""
+        )
+        if (
+            requested_task_id != self.execution_task_id
+            or requested_status not in _NONCOMPLETED_TASK_EXITS
+            or step_context.actor_kind != "teammate"
+        ):
+            return None
+
+        repositories = context.repositories
+        task = repositories.tasks.get(self.execution_task_id)
+        if (
+            task is None
+            or str(getattr(task, "assigned_ref", "") or "")
+            != step_context.agent_id
+        ):
+            return None
+        active_attempts = [
+            attempt
+            for attempt in repositories.scientific_attempts.list_by_session(
+                self.session_id
+            )
+            if _status_value(attempt) == "active"
+            and str(getattr(attempt, "task_id", ""))
+            == self.execution_task_id
+        ]
+        if len(active_attempts) != 1:
+            return None
+        attempt = active_attempts[0]
+        attempt_id = str(getattr(attempt, "attempt_id", ""))
+        resolved_head = repositories.scientific_selections.resolve_head(
+            attempt_id
+        )
+        if resolved_head is None:
+            return None
+        selection = getattr(resolved_head, "selection", None)
+        raw_selection_state = getattr(selection, "state", "")
+        selection_state = str(
+            getattr(raw_selection_state, "value", raw_selection_state)
+        )
+        if selection_state != "sealed":
+            return None
+        selection_id = str(getattr(selection, "selection_id", ""))
+        return _rejection(
+            invocation,
+            code="aox_cutover_positive_execution_exit_mismatch",
+            summary=(
+                "AOX cutover rejected a non-completed positive execution exit "
+                "because the executor's current scientific selection is already "
+                "sealed."
+            ),
+            hint=(
+                "Treat a teammate scientific.attempt.close actor rejection as "
+                "the intended no-effect handoff, not as an unavailable "
+                "capability. Finish this execution task completed with the "
+                "actual result evidence; the reporter publishes and the resident "
+                "master requests closure."
+            ),
+            details={
+                "attempt_id": attempt_id,
+                "selection_id": selection_id,
+                "selection_state": selection_state,
+                "task_id": self.execution_task_id,
+                "requested_status": requested_status,
+                "required_status": "completed",
+                "closure_actor_kind": "master",
+                "close_actor_rejection_effect_certainty": "no_effect",
+            },
+        )
+
     def _check_task_create(
         self,
         context: Any,
@@ -288,8 +389,11 @@ class AoxCutoverFormalToolPrecondition:
                     "resident master after teammate business exits settle."
                 ),
                 hint=(
-                    "Return the result to the master; the master must reconcile "
-                    "the exact task board and report state before closing."
+                    "Return the result to the master. This no-effect actor "
+                    "boundary is the intended handoff and must not make a "
+                    "sealed positive execution task blocked; finish that task "
+                    "completed, then let the master reconcile the exact task "
+                    "board and report state before closing."
                 ),
                 details={
                     "actor_kind": step_context.actor_kind,

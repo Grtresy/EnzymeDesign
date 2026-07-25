@@ -323,13 +323,18 @@ harness 把 no-effect feedback 交回同一个 bounded driver 重新决策。该
 assistant response 语义完全不变。
 
 AOX blank-world cutover 使用
-`aox_cutover_formal_tool_precondition@2` 的 tool/response 两个入口只呈现 authority
+`aox_cutover_formal_tool_precondition@3` 的 tool/response 两个入口只呈现 authority
 已固定的局部事实：
 formal session 只能创建 exact research/execution/report task id，且
 `scientific.attempt.close` 只有在 exact task identity、显式 business exit 与
 positive/fault 对应 report state 闭合后才放行。每项 business exit 必须恰有一个
 status-matching finish receipt，且 `finished_by` 等于 task 的 canonical `assigned_ref`；
 generic master recovery finish 仍可写产品状态，但不能满足 AOX formal eligibility。
+positive executor 的 current selection 一旦 sealed，其 execution handoff 已由 durable
+science truth 证明；该 assigned executor 再请求 `blocked|failed|cancelled` 会被
+`aox_cutover_positive_execution_exit_mismatch/no_effect/same_phase_safe` 拒绝，owner
+必须显式完成 task，并把 report/closure 留给 reporter/master。selection seal 前的真实
+blocker、fault attempt 与普通 session 不受这一窄 guard 影响。
 一旦这些 close facts 已闭合，assistant-only response 会以 no-effect 退回，master 必须在
 同一 provider response 中同时给出完整终答和 explicit close call。probe 与普通 V3
 session 不受影响；guard 不选择 operation、selection、query、执行顺序或科学分支。

@@ -122,6 +122,14 @@ The collector SHALL reconstruct exactly one durable delegation request for each 
 - **WHEN** an AOX formal close or final evidence collection evaluates the canonical researcher, executor, and reporter tasks
 - **THEN** each task has exactly one status-matching `task.finish` receipt whose `finished_by` equals that task's canonical `assigned_ref`; a master-authored proxy finish may remain valid generic V3 state but cannot satisfy AOX formal readiness or cutover evidence
 
+#### Scenario: Preserve a sealed positive execution handoff
+- **WHEN** the assigned positive executor has sealed the current scientific selection and then requests `task.finish` with `blocked`, `failed`, or `cancelled`, including after its own `scientific.attempt.close` was correctly rejected at the master-only actor boundary
+- **THEN** the session-scoped formal precondition rejects that false negative task exit with `effect_certainty=no_effect` and `retry_eligibility=same_phase_safe`, exposes `completed` as the required execution exit plus master as the closure actor, permits the owner-authored completed exit, and leaves genuine pre-seal blocker/failure exits under ordinary task semantics
+
+#### Scenario: Separate closure intent from writer-gated finalization
+- **WHEN** a sealed current selection is otherwise complete and the requesting master turn is the only reason inspection reports `selection_active_writers`
+- **THEN** inspection reports `closure_request_ready=true` and `closure_finalization_ready=false`, retains the legacy `closure_ready` field as Host-finalization readiness, permits the master to persist agent-authored closure intent in that turn, and requires Host finalization to wait until the requesting writer retires
+
 #### Scenario: Keep capability inspection bounded
 - **WHEN** a capability invocation owns megabyte-scale documents, outputs, evidence, source, or gaps
 - **THEN** teammate inspection returns only its current-task bounded fact index (20 invocations, eight refs per kind, 64 KiB serialized facts), cross-task filters fail with a typed error, and no owned body bytes enter the agent context

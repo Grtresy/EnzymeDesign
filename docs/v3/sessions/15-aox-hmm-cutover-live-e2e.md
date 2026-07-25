@@ -1509,12 +1509,51 @@ diagnostic result/report，但不具 acceptance eligibility。master 最后只�
 r58 delta `2,119,558`，零 breach/overage。全部 r58 authority/root/effect/artifact/
 browser/report/state 不得复用。
 
-forward `aox_cutover_formal_tool_precondition@2` 在 close-ready state 拒绝并不持久化
+r58 当时的 forward `aox_cutover_formal_tool_precondition@2` 在 close-ready state
+拒绝并不持久化
 assistant-only response，只返回 no-effect feedback；master 必须在同一 provider response
 中同时提供完整终答与 explicit close。empty companion 在 effect 前失败，successful close
 才把 exact companion answer 持久化一次并退休 turn。Host 不自动 close、不推断 selection、
 不合成答案。r58 已先形成有效结果，因此没有触发再次拆分 diagnostic/formal 规范的条件；
 任何后继仍需 fresh commit/full admission/pin/plan 与精确授权。
+
+## r59 formal positive-exit handoff attempt：永久 NO-GO
+
+r59 基于 clean commit `431e2c558c13ebd1f99dcc9e3eae6758630a843d`，消费 formal
+exact-three plan
+`sha256:168aa86c433b3c3b90aab4c665453a56cb796f99056f7d04567bc8f453b8e7de`，
+只运行 positive 1 `positive-c3c2c4cc13a367fb54eec84505a61742`。probe exact six 与
+formal NCBI/MAFFT/hmmbuild/EBI HMMER/UniProt/HMMalign exact six 全部
+terminal-known；Chrome 对同一 formal operation 完成 approval/resume。formal result 为
+valid healthy empty：37,772 个 score-filter accession、2,561 个 length target、0 motif
+candidate，reason `no_candidates_after_motif_filter`。executor sealed selection
+`selection_090ab4b6c30e4839d60dd664`，reporter published
+`report_1ba5b65a4582`。
+
+executor 自己请求 master-only `scientific.attempt.close`，Router 正确返回
+`aox_cutover_close_actor_violation/no_effect/same_phase_safe`；它却把预期 handoff 当成
+capability unavailable，并将 canonical positive execution task owner-finish 为
+`blocked`。master 随后无法用 generic task semantics 重开或改写该 terminal state，又把
+inspection 的 `selection_active_writers` / legacy `closure_ready=false` 解读成当前 turn
+不能请求 closure intent。attempt 无 closure request，120 drains exhausted。
+
+forward inspection 分开 `closure_request_ready` 与 `closure_finalization_ready`；
+legacy `closure_ready` 明确只描述 `host_finalization_after_request`。
+`aox_cutover_formal_tool_precondition@3` 只在 assigned positive executor 的 current
+selection 已 sealed 后 no-effect 拒绝 `blocked|failed|cancelled`，要求 owner 显式
+completed handoff，并把 report/closure 留给 reporter/master。它不自动完成 task、close
+attempt、选择科学结果或 retry；pre-seal 真实 blocker、fault 与普通 session 不受影响。
+SOP/workflow ref 已 repin 为
+`workflow:aox-hmm-live@2.0.0#sha256:4ab19e8c7d88429e6019b070a81f7335984aa534ed6d05be200d8a275f8ee339`。
+
+fatal `sha256:cf555a381ac9a5c5e38e36d33e83ce78c887c35528096112cbbbd9939a95e01e`
+与 decision
+`sha256:8b05ef13dfaf79f9a15a647fbbafa446e7ef75656b16db77a7b32baa8b4c6ccc`
+永久 **NO-GO**；MICU verified lower bound `100,114,267 / 500,000,000`，
+remaining `399,885,733`，零 breach/overage。r59 plan 已整体消费，positive 2/fault
+不能续跑；全部 authority/root/state/effect/artifact/browser/report bytes 不得复用。
+后继 formal campaign 必须 fresh commit/full admission/pin/exact-three plan/roots，并对
+新 plan 重新取得精确授权。
 
 ## 当前实施状态的表述规则
 

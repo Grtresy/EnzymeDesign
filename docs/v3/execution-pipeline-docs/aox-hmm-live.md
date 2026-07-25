@@ -70,6 +70,32 @@ occurrence as `failed`, `superseded`, or `abandoned` as its canonical facts
 permit. `seal_ready=true` means only that current evidence satisfies selection
 invariants; it never instructs the agent to seal or finish the task.
 
+### Positive execution and closure handoff
+
+For a positive attempt, sealing the current complete selection proves that the
+executor's scientific execution stage succeeded, including a valid
+artifact-derived healthy-empty branch. The executor must then finish its
+canonical execution task `completed` with the actual result/evidence. It must
+not convert that stage to `blocked`, `failed`, or `cancelled` merely because its
+own `scientific.attempt.close` call is rejected: closure is master-only, and
+`aox_cutover_close_actor_violation` is the intended
+`no_effect/same_phase_safe` handoff. Report publication remains the reporter's
+responsibility and closure remains the resident master's responsibility.
+
+The formal Router enforces this only after the assigned positive executor's
+current selection is sealed. Before that seal, a genuine unavailable
+authority/provider/HPC/runtime capability still uses ordinary explicit task
+failure/blocker semantics. Fault attempts retain their required negative exits;
+there is no hidden completion, reopen, retry, or inferred scientific outcome.
+
+Inspection separates the two closure phases. `closure_request_ready=true`
+means the sealed selection satisfies the selection-side condition for the
+master to persist agent-authored closure intent in the current turn.
+`closure_finalization_ready=false` can simply mean the requesting turn remains
+an active mutation writer. The legacy `closure_ready` field describes that
+later `host_finalization_after_request` phase; `selection_active_writers` does
+not require waiting for another master wake before issuing the close request.
+
 ## Controlled execution boundary
 
 Author Python source inside the executor's persistent sandbox workspace and run

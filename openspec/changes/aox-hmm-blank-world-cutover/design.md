@@ -772,6 +772,67 @@ older unbound pending request fails closed. Host finalization verifies any
 present binding against the canonical conversation bytes before closure. This
 adds no new top-level product owner and does not authorize live continuation.
 
+### 2026-07-26 r59 positive-exit handoff correction
+
+r59 在 clean commit `431e2c558c13ebd1f99dcc9e3eae6758630a843d`
+上消费 formal exact-three plan
+`sha256:168aa86c433b3c3b90aab4c665453a56cb796f99056f7d04567bc8f453b8e7de`，
+但只启动 positive 1
+`positive-c3c2c4cc13a367fb54eec84505a61742`。独立 probe exact six 与
+formal NCBI/MAFFT/hmmbuild/EBI-HMMER/UniProt/HMMalign exact six 均为
+terminal-known success；Chrome 对 canonical approval 完成 same-operation resume。
+formal HMMER score-filter 得到 37,772 个 accession，UniProt/length join 得到 2,561
+个 target，motif filter 诚实得到 0 candidate，execution summary 固定原因为
+`no_candidates_after_motif_filter`。executor 封存了 current selection
+`selection_090ab4b6c30e4839d60dd664`，reporter 发布 source-linked report
+`report_1ba5b65a4582`；healthy empty 是有效科学结果，不是 discovery。
+
+生命周期随后被错误终态化。executor 尝试 master-only
+`scientific.attempt.close`，Router 正确以
+`aox_cutover_close_actor_violation/no_effect/same_phase_safe` 拒绝；executor 却把这个
+预期 handoff 误解释为 harness capability unavailable，并将 canonical positive execution
+task 以 owner-authored `blocked` 终结。master 随后尝试改写为 `completed`，generic task
+board 正确以 `task_already_terminal` 拒绝；没有 reopen/resume 合同。master 又把
+inspection 中的 `selection_active_writers` / `closure_ready=false` 误读为当前 turn
+不能请求 closure，因而只形成非持久的 assistant response。active attempt 最终没有
+closure request，120 formal drains 耗尽。
+
+该 inspection 投影混淆了两个不同阶段。`request_attempt_closure()` 必须在 requesting
+agent writer 仍有 authority 时持久化 intent，并按 selection-seal evidence boundary
+忽略该预期 writer；Host finalizer 才在 turn 退休后要求 writer quiescence。forward
+projection 因此保留 legacy `closure_ready` 作为
+`host_finalization_after_request` readiness，同时新增
+`closure_request_ready` 与 `closure_finalization_ready`。sealed selection 在只有 active
+requesting writer 时应投影前者 true、后者 false；这只是结构化事实，不替 agent 生成
+closure intent。
+
+session policy 升为 `aox_cutover_formal_tool_precondition@3`。它仍允许 positive executor
+在 selection seal 前对真实 authority/provider/HPC/runtime blocker 使用普通
+`blocked|failed|cancelled` 语义；一旦该 assigned executor 的 current positive
+selection 已 sealed，这些 non-completed exit 会以
+`aox_cutover_positive_execution_exit_mismatch/no_effect/same_phase_safe` 被拒绝，并明确
+要求 owner-authored `completed` handoff 与 resident master closure。该 guard 不自动完成
+task、不自动关闭 attempt、不选择 scientific outcome，也不改变 fault 或 ordinary V3
+session。
+
+该 handoff 事实进入 pinned SOP 后，document digest 更新为
+`sha256:1c6c30e2241c20e405a35f6d62ff48f42dbd765cf91207f877bfc18fe052b6a0`，
+workflow ref 更新为
+`workflow:aox-hmm-live@2.0.0#sha256:4ab19e8c7d88429e6019b070a81f7335984aa534ed6d05be200d8a275f8ee339`；
+此前 workflow ref 对后继 admission/pin/authority 全部 stale。
+
+r59 child/process group、全部 controlled operation/continuation/writer/lease 已退役，
+但 attempt 仍 active、execution task 已 blocked、closure request 不存在，因此不可继续
+或修补原 state。fatal
+`sha256:cf555a381ac9a5c5e38e36d33e83ce78c887c35528096112cbbbd9939a95e01e`
+与 decision
+`sha256:8b05ef13dfaf79f9a15a647fbbafa446e7ef75656b16db77a7b32baa8b4c6ccc`
+保持永久 **NO-GO**。MICU verified lower bound 为
+`100,114,267 / 500,000,000`，remaining `399,885,733`，零 breach/overage。全部 r59
+authority/root/state/effect/artifact/report/browser bytes 不得复用；后继 formal campaign
+仍需 correction 后 fresh clean commit、full admission、pin、exact-three plan、fresh
+roots 与对该 exact plan 的单独批准。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

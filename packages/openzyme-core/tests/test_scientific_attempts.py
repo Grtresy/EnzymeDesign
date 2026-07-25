@@ -1984,7 +1984,9 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
     )
     assert evaluation.issues == ()
     assert evaluation.seal_ready is True
-    assert evaluation.closure_ready is True
+    assert evaluation.closure_ready is False
+    assert evaluation.closure_request_ready is False
+    assert evaluation.closure_finalization_ready is False
     sealed = service.seal_selection(
         selection_id=selection.selection_id,
         actor_ref="agent:scientist",
@@ -2567,6 +2569,8 @@ def test_selection_evaluator_reports_all_bounded_gaps_deterministically() -> Non
     assert first == second
     assert first.seal_ready is False
     assert first.closure_ready is False
+    assert first.closure_request_ready is False
+    assert first.closure_finalization_ready is False
     assert [item.operation_id for item in first.occurrences] == sorted(
         (
             uncertain.operation_id,
@@ -2837,6 +2841,13 @@ def test_selection_evaluator_separates_active_writer_from_seal_readiness() -> No
         service,
         suffix="active-writer",
     )
+    universe = service.operation_universe(attempt.attempt_id)
+    service.seal_selection(
+        selection_id=selection.selection_id,
+        actor_ref="agent:scientist",
+        idempotency_key="seal-active-writer",
+        expected_universe_digest=universe.universe_digest,
+    )
 
     before = service.evaluate_selection(
         attempt_id=attempt.attempt_id,
@@ -2844,6 +2855,8 @@ def test_selection_evaluator_separates_active_writer_from_seal_readiness() -> No
     )
     assert before.seal_ready is True
     assert before.closure_ready is True
+    assert before.closure_request_ready is True
+    assert before.closure_finalization_ready is True
 
     with service.mutation_scopes.writer_turn(
         session_id=attempt.session_id,
@@ -2857,6 +2870,11 @@ def test_selection_evaluator_separates_active_writer_from_seal_readiness() -> No
         assert "selection_active_writers" in during.blocker_codes
         assert during.seal_ready is True
         assert during.closure_ready is False
+        assert during.closure_request_ready is True
+        assert during.closure_finalization_ready is False
+        assert during.summary()["closure_ready_phase"] == (
+            "host_finalization_after_request"
+        )
 
     after = service.evaluate_selection(
         attempt_id=attempt.attempt_id,
@@ -3186,7 +3204,13 @@ def test_scientific_shared_projection_contains_only_bounded_readiness() -> None:
     assert shared["attempts"][0]["selection_head"]["selection_id"] == (
         selection.selection_id
     )
-    assert shared["attempts"][0]["readiness"]["seal_ready"] is True
+    readiness = shared["attempts"][0]["readiness"]
+    assert readiness["seal_ready"] is True
+    assert readiness["closure_request_ready"] is False
+    assert readiness["closure_finalization_ready"] is False
+    assert readiness["closure_ready_phase"] == (
+        "host_finalization_after_request"
+    )
     for forbidden in (
         "occurrences",
         "dispositions",

@@ -88,7 +88,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
 
     assert manifest.selection_ref == (
         "workflow:aox-hmm-live@2.0.0#"
-        "sha256:9000c479adc1127474ca340920bcf2dcc7337808bf8341c98a1f152d66b34f87"
+        "sha256:4ab19e8c7d88429e6019b070a81f7335984aa534ed6d05be200d8a275f8ee339"
     )
     pack = registry.resolve(manifest.selection_ref)
     documents = {document.doc_id: document for document in pack.documents}
@@ -96,7 +96,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         doc_id: document.content_sha256 for doc_id, document in documents.items()
     } == {
         "aox-hmm-live": (
-            "sha256:54173f4b32f19e547fad83bfbb70cef008cc54c1cdea4d899c30c634d3e2f4ea"
+            "sha256:1c6c30e2241c20e405a35f6d62ff48f42dbd765cf91207f877bfc18fe052b6a0"
         ),
         "aox-motif-rule-score-v1": (
             "sha256:9c6f1f62a77dcade8e8b24c4e23af391e3b308a96bbac43783b8dbf4f7c2d376"
@@ -205,6 +205,11 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         "`/workspace/work` checkpoints",
         '`validation_profile="fasta_zero_records@1"`',
         "exact zero-byte regular file",
+        "`aox_cutover_close_actor_violation`",
+        "`no_effect/same_phase_safe` handoff",
+        "`closure_request_ready=true`",
+        "`closure_finalization_ready=false`",
+        "`host_finalization_after_request`",
     ):
         assert required_identity in sop
 

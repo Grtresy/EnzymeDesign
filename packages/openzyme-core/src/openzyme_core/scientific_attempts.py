@@ -1136,6 +1136,9 @@ class ScientificAttemptService:
                     "blocker_codes": ["selection_head_missing"],
                     "seal_ready": False,
                     "closure_ready": False,
+                    "closure_ready_phase": "host_finalization_after_request",
+                    "closure_request_ready": False,
+                    "closure_finalization_ready": False,
                 }
             else:
                 evaluation = self._selection_evaluator().evaluate(
