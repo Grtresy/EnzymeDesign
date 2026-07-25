@@ -267,3 +267,13 @@ agent-authored intent 的 selection-side 条件；sealed state 单独不构成 r
 `closure_finalization_ready=false` 可以只说明 requesting turn writer 尚未退休。legacy
 `closure_ready` 仍指后一个 Host 阶段，不能被模型解释为“等待另一个 master wake 才能
 call close”。
+
+closure-stage isolated live diagnostic 用这一相同 loop 从一个 fresh executor signal
+开始，不发送新的 user/master entry message，也不直接调用 runner/provider/HPC。source
+selection/operation universe 已 sealed；composition-injected tool precondition 在 dispatch
+前拒绝所有新 science/sandbox/artifact mutation，但保留普通 task/protocol/report/close
+策略空间。executor 对 master-only close 的 no-effect rejection 只能作为 handoff 事实；
+canonical `closure_request_ready=true` 时其负 terminal exit 会被拒绝，`completed` 仍须
+由 executor 显式选择。reporter/master 后续由 durable signal、bounded drain 与各自
+writer 推进；runtime idle、drain terminal 或 source healthy-empty 都不自动生成完成、
+报告、closure 或终答。

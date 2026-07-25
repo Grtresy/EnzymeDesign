@@ -257,6 +257,14 @@ task dependency 是 runtime 调度前置约束而不是 UI hint。任一 depende
 - `sandbox.exec` 的 canonical `SandboxRun.compatibility` 记录实际 execution backend、配置 image ref、resolved immutable image id/digest、Pipeline SDK source-tree digest、sandbox protocol/manifest/exec-policy version 与组合 `runtime_identity_digest`；adapter continuation 只能从对应 run 继承这组身份，不能由 restore context、workspace projection 或 mutable tag 重建
 - memory summary 与压缩后的 continuity notes
 
+r59 closure-stage 隔离诊断不导入 source restore prompt、LLM trace、assistant message、
+runtime signal、lease 或 writer。它从 qualified cursor 614 机械生成一条 task-scoped
+continuity memory，并只排队一个 fresh executor signal。随后完全走普通 restore-context
+构造和 scheduler claim：executor 仍必须自己调用 `task.finish(completed)`，reporter 仍需
+自己 draft/publish/finish，master 仍需在同一 provider response 中给出终答并调用 close。
+重建器不得代替这些 agent 行为，也不得把 source 的错误 terminal state 或后续 master/
+reporter facts 写进 fresh control plane。
+
 master restore context 还必须包含最新 user message、conversation timeline、pending approvals、teammate protocol threads、task state、approval / execution / artifact / report 变化，以及每个 teammate 的 runtime status。发生 compaction 或长时间 idle 后，identity 必须重新注入，避免 agent 忘记自己是谁、负责什么、应该向谁回复。
 
 restore context 受统一 token budget 管理。每次 master / teammate 模型调用前都必须估算完整 prompt；达到 80% 记录 warning，达到 85%（包括初始已经达到 90% emergency）先执行一次 bounded session/lane compaction、刷新 restore context 并重算；只有重算后仍达到 90% 才显式 `context_budget_exceeded` 并停止 provider call。最新 session-scope `MemoryKind.COMPACTION` 且 `source_range="auto:prompt_budget"` 的记录是 LLM restore prompt 的 recent-conversation cutoff：后续 restore 只加载该 compaction 之后创建的 conversation entries；`auto:harness_run` 不触发这个剪枝。自动 compaction 只做上下文治理，不改变 task、approval、lane、conversation、workspace conversation projection 或 protocol 的 canonical 状态。

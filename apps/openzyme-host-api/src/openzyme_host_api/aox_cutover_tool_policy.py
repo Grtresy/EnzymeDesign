@@ -20,18 +20,297 @@ AOX_CUTOVER_TOOL_PRECONDITION_ID = (
 AOX_RESEARCH_TASK_ID = "aox_research_pubmed_evidence"
 AOX_REPORT_TASK_ID = "aox_final_source_linked_report"
 
-_TASK_CONTRACTS = {
-    AOX_RESEARCH_TASK_ID: ("research", "researcher"),
-    AOX_REPORT_TASK_ID: ("reporting", "reporter"),
-}
 _FAULT_EXECUTION_EXITS = frozenset({"failed", "blocked", "cancelled"})
 _FAULT_REPORT_EXITS = frozenset({"failed", "blocked", "cancelled"})
 _NONCOMPLETED_TASK_EXITS = frozenset({"failed", "blocked", "cancelled"})
+_CLOSURE_STAGE_ALLOWED_TOOLS = frozenset(
+    {
+        "artifact.diff_text",
+        "artifact.get",
+        "artifact.list",
+        "artifact.preview",
+        "artifact.range",
+        "artifact.read_text",
+        "deep_research.dossier",
+        "deep_research.status",
+        "docs.read",
+        "docs.search",
+        "execution.pipeline.status",
+        "failure.get",
+        "failure.hypothesis.record",
+        "lane.bind_task",
+        "lane.create",
+        "lane.list",
+        "memory.compact",
+        "protocol.send",
+        "protocol.thread",
+        "report.publish",
+        "report_draft.get",
+        "report_draft.update",
+        "sandbox.file.list",
+        "sandbox.file.read",
+        "sandbox.workspace.status",
+        "scientific.attempt.close",
+        "scientific.attempt.inspect",
+        "skill.load",
+        "task.create",
+        "task.delegate",
+        "task.finish",
+        "task.get",
+        "task.list",
+        "task.next",
+        "task.update",
+        "world.inspect",
+    }
+)
 
 
 def _status_value(record: object) -> str:
     status = getattr(record, "status", None)
     return str(getattr(status, "value", status) or "")
+
+
+def evaluate_aox_source_linked_report(
+    repositories: Any,
+    *,
+    session_id: str,
+    research_task_id: str,
+    report_task_id: str,
+    reporter_evidence_refs: tuple[str, ...],
+    require_diagnostic_source_copy: bool = False,
+) -> dict[str, object]:
+    """Resolve the durable report -> task finish -> PubMed evidence chain.
+
+    Report prose remains agent-authored. This evaluator constrains only the
+    product facts that make ``source-linked`` auditable without parsing prose:
+    one published report/draft/content triple, one canonical PubMed artifact
+    adopted by the research task, and reporter finish refs that bind both.
+    """
+
+    blocker_codes: list[str] = []
+    published_reports = [
+        report
+        for report in repositories.reports.list_by_session(session_id)
+        if is_published_report_status(report)
+    ]
+    published_drafts = [
+        draft
+        for draft in repositories.report_drafts.list_by_session(session_id)
+        if _status_value(draft) == "published"
+    ]
+    report = published_reports[0] if len(published_reports) == 1 else None
+    draft = published_drafts[0] if len(published_drafts) == 1 else None
+    if report is None:
+        blocker_codes.append("published_report_cardinality_invalid")
+    if draft is None:
+        blocker_codes.append("published_draft_cardinality_invalid")
+
+    if not (
+        report is not None
+        and draft is not None
+        and is_published_report_link(
+            report,
+            draft,
+            task_id=report_task_id,
+        )
+    ):
+        blocker_codes.append("published_report_link_invalid")
+    content_ref = (
+        ""
+        if draft is None
+        else str(getattr(draft, "content_ref", "") or "")
+    )
+    content_document = (
+        None
+        if not content_ref
+        else repositories.engine_documents.get(content_ref)
+    )
+    content_payload = (
+        {}
+        if content_document is None
+        else dict(getattr(content_document, "payload", None) or {})
+    )
+    if (
+        content_document is None
+        or getattr(content_document, "document_kind", None)
+        != "report_draft_content"
+        or getattr(content_document, "session_id", session_id)
+        != session_id
+        or not str(content_payload.get("markdown") or "").strip()
+    ):
+        blocker_codes.append("published_report_content_invalid")
+    if (
+        report is not None
+        and getattr(report, "artifact_id", None) is not None
+    ):
+        blocker_codes.append("published_report_artifact_invalid")
+
+    research_finish_documents = []
+    for document in repositories.engine_documents.list_by_session(
+        session_id
+    ):
+        if getattr(document, "document_kind", None) != "task_finish":
+            continue
+        payload = dict(getattr(document, "payload", None) or {})
+        if (
+            payload.get("task_id") == research_task_id
+            and payload.get("status") == "completed"
+        ):
+            research_finish_documents.append(document)
+    research_finish = (
+        research_finish_documents[0]
+        if len(research_finish_documents) == 1
+        else None
+    )
+    if research_finish is None:
+        blocker_codes.append("research_finish_cardinality_invalid")
+    research_evidence_refs = tuple(
+        str(item)
+        for item in (
+            []
+            if research_finish is None
+            else dict(
+                getattr(research_finish, "payload", None) or {}
+            ).get("evidence_refs")
+            or []
+        )
+    )
+    primary_artifact_refs = tuple(
+        item
+        for item in research_evidence_refs
+        if item.startswith("artifact:") and len(item) > len("artifact:")
+    )
+    primary_artifact_ref = (
+        primary_artifact_refs[0]
+        if len(primary_artifact_refs) == 1
+        else ""
+    )
+    if (
+        len(primary_artifact_refs) != 1
+        or len(research_evidence_refs) != 1
+    ):
+        blocker_codes.append("primary_pubmed_receipt_invalid")
+    primary_artifact_id = primary_artifact_ref.removeprefix(
+        "artifact:"
+    )
+    primary_artifact = (
+        None
+        if not primary_artifact_id
+        else repositories.artifacts.get(primary_artifact_id)
+    )
+    metadata = (
+        {}
+        if primary_artifact is None
+        else dict(getattr(primary_artifact, "metadata", None) or {})
+    )
+    primary_artifact_digest = str(
+        metadata.get("content_digest")
+        or metadata.get("sealed_digest")
+        or ""
+    )
+    source_copy = metadata.get("diagnostic_source_copy")
+    source_copy_valid = (
+        isinstance(source_copy, dict)
+        and source_copy.get("source_artifact_id")
+        == primary_artifact_id
+        and str(
+            source_copy.get("source_manifest_digest") or ""
+        ).startswith("sha256:")
+        and source_copy.get("formal_adoption_eligible") is False
+        and source_copy.get("new_effect") is False
+    )
+    if (
+        primary_artifact is None
+        or getattr(primary_artifact, "session_id", None) != session_id
+        or getattr(primary_artifact, "task_id", None)
+        != research_task_id
+        or metadata.get("provider") != "pubmed"
+        or metadata.get("cutover_eligible") is not True
+        or not primary_artifact_digest.startswith("sha256:")
+        or len(primary_artifact_digest) != 71
+        or any(
+            character not in "0123456789abcdef"
+            for character in primary_artifact_digest[7:]
+        )
+        or (
+            require_diagnostic_source_copy
+            and not source_copy_valid
+        )
+    ):
+        blocker_codes.append("primary_pubmed_artifact_invalid")
+
+    source_refs = [
+        source_ref
+        for source_ref in repositories.research_source_refs.list_by_session(
+            session_id
+        )
+        if getattr(source_ref, "evidence_artifact_id", None)
+        == primary_artifact_id
+    ]
+    if (
+        not source_refs
+        or any(
+            getattr(source_ref, "provider", None) != "pubmed"
+            or not str(
+                getattr(source_ref, "pmid", "") or ""
+            ).isdigit()
+            or getattr(source_ref, "task_id", None) != research_task_id
+            or not str(
+                getattr(source_ref, "source_ref_id", "") or ""
+            ).strip()
+            for source_ref in source_refs
+        )
+    ):
+        blocker_codes.append("primary_pubmed_source_refs_invalid")
+    source_ref_ids = tuple(
+        sorted(
+            str(getattr(source_ref, "source_ref_id"))
+            for source_ref in source_refs
+        )
+    )
+
+    report_id = (
+        ""
+        if report is None
+        else str(getattr(report, "report_id", "") or "")
+    )
+    report_ref = f"report:{report_id}" if report_id else ""
+    required_evidence_refs = tuple(
+        item
+        for item in (report_ref, primary_artifact_ref)
+        if item
+    )
+    missing_evidence_refs = tuple(
+        item
+        for item in required_evidence_refs
+        if item not in reporter_evidence_refs
+    )
+    if (
+        len(required_evidence_refs) != 2
+        or missing_evidence_refs
+    ):
+        blocker_codes.append("report_finish_source_refs_missing")
+
+    unique_blockers = tuple(dict.fromkeys(blocker_codes))
+    return {
+        "ready": not unique_blockers,
+        "blocker_codes": unique_blockers,
+        "report_id": report_id or None,
+        "draft_id": (
+            None
+            if draft is None
+            else str(getattr(draft, "draft_id", "") or "") or None
+        ),
+        "content_ref": content_ref or None,
+        "primary_artifact_id": primary_artifact_id or None,
+        "primary_artifact_digest": (
+            primary_artifact_digest or None
+        ),
+        "source_ref_ids": source_ref_ids,
+        "required_evidence_refs": required_evidence_refs,
+        "observed_evidence_refs": reporter_evidence_refs,
+        "missing_evidence_refs": missing_evidence_refs,
+    }
 
 
 def _rejection(
@@ -89,18 +368,31 @@ class AoxCutoverFormalToolPrecondition:
     session_id: str
     execution_task_id: str
     attempt_kind: Literal["positive", "fault"]
+    research_task_id: str = AOX_RESEARCH_TASK_ID
+    report_task_id: str = AOX_REPORT_TASK_ID
+    sealed_operation_universe: bool = False
 
     def __post_init__(self) -> None:
         if not self.session_id.strip():
             raise ValueError("formal cutover session_id must be non-empty")
-        if not self.execution_task_id.strip():
-            raise ValueError(
-                "formal cutover execution_task_id must be non-empty"
+        if not all(
+            task_id.strip()
+            for task_id in (
+                self.research_task_id,
+                self.execution_task_id,
+                self.report_task_id,
             )
-        if self.execution_task_id in {
-            AOX_RESEARCH_TASK_ID,
-            AOX_REPORT_TASK_ID,
-        }:
+        ):
+            raise ValueError(
+                "formal cutover task ids must be non-empty"
+            )
+        if len(
+            {
+                self.research_task_id,
+                self.execution_task_id,
+                self.report_task_id,
+            }
+        ) != 3:
             raise ValueError(
                 "formal cutover execution task id must be role-distinct"
             )
@@ -114,9 +406,9 @@ class AoxCutoverFormalToolPrecondition:
         self,
     ) -> dict[str, tuple[str, str]]:
         return {
-            AOX_RESEARCH_TASK_ID: _TASK_CONTRACTS[AOX_RESEARCH_TASK_ID],
+            self.research_task_id: ("research", "researcher"),
             self.execution_task_id: ("execution", "executor"),
-            AOX_REPORT_TASK_ID: _TASK_CONTRACTS[AOX_REPORT_TASK_ID],
+            self.report_task_id: ("reporting", "reporter"),
         }
 
     def __call__(
@@ -127,6 +419,29 @@ class AoxCutoverFormalToolPrecondition:
     ) -> ToolResult | None:
         if step_context.session_id != self.session_id:
             return None
+        if (
+            self.sealed_operation_universe
+            and invocation.tool_name not in _CLOSURE_STAGE_ALLOWED_TOOLS
+        ):
+            return _rejection(
+                invocation,
+                code="aox_closure_stage_operation_universe_sealed",
+                summary=(
+                    "The closure-stage diagnostic rejected a new scientific "
+                    "or sandbox mutation because the restored operation "
+                    "universe is sealed."
+                ),
+                hint=(
+                    "Use the existing sealed artifacts and selection. Complete "
+                    "the execution handoff, publish the report, and let the "
+                    "resident master request closure without starting new "
+                    "science."
+                ),
+                details={
+                    "tool_name": invocation.tool_name,
+                    "operation_universe_sealed": True,
+                },
+            )
         if invocation.tool_name == "task.create":
             return self._check_task_create(context, invocation)
         if invocation.tool_name == "task.finish":
@@ -236,8 +551,6 @@ class AoxCutoverFormalToolPrecondition:
         closure is a later lifecycle responsibility.
         """
 
-        if self.attempt_kind != "positive":
-            return None
         requested_task_id = str(
             invocation.arguments.get("task_id")
             or invocation.task_id
@@ -246,6 +559,88 @@ class AoxCutoverFormalToolPrecondition:
         requested_status = str(
             invocation.arguments.get("status") or ""
         )
+        if (
+            self.sealed_operation_universe
+            and self.attempt_kind == "positive"
+            and requested_task_id == self.report_task_id
+            and requested_status == "completed"
+        ):
+            report_task = context.repositories.tasks.get(
+                self.report_task_id
+            )
+            assigned_ref = str(
+                getattr(report_task, "assigned_ref", "") or ""
+            )
+            if (
+                step_context.actor_kind != "teammate"
+                or not assigned_ref
+                or assigned_ref != step_context.agent_id
+            ):
+                return _rejection(
+                    invocation,
+                    code="aox_closure_stage_report_finish_actor_invalid",
+                    summary=(
+                        "The closure-stage reporting task may be completed only "
+                        "by its assigned reporter."
+                    ),
+                    hint=(
+                        "Let the assigned reporter publish the source-linked "
+                        "report and issue its own task.finish receipt."
+                    ),
+                    details={
+                        "task_id": self.report_task_id,
+                        "expected_finished_by": assigned_ref or None,
+                        "observed_finished_by": step_context.agent_id,
+                    },
+                )
+            evaluation = evaluate_aox_source_linked_report(
+                context.repositories,
+                session_id=self.session_id,
+                research_task_id=self.research_task_id,
+                report_task_id=self.report_task_id,
+                reporter_evidence_refs=tuple(
+                    str(item)
+                    for item in (
+                        invocation.arguments.get("evidence_refs") or []
+                    )
+                ),
+                require_diagnostic_source_copy=True,
+            )
+            if evaluation["ready"] is not True:
+                return _rejection(
+                    invocation,
+                    code=(
+                        "aox_closure_stage_report_source_link_invalid"
+                    ),
+                    summary=(
+                        "The closure-stage reporter cannot finish because the "
+                        "published report is not durably linked to the canonical "
+                        "PubMed source artifact."
+                    ),
+                    hint=(
+                        "Publish one non-empty report draft, then finish with "
+                        "both exact refs from required_evidence_refs. These refs "
+                        "bind the published report and restored PubMed source "
+                        "without creating new science."
+                    ),
+                    details={
+                        "task_id": self.report_task_id,
+                        "blocker_codes": list(
+                            evaluation["blocker_codes"]
+                        ),
+                        "required_evidence_refs": list(
+                            evaluation["required_evidence_refs"]
+                        ),
+                        "observed_evidence_refs": list(
+                            evaluation["observed_evidence_refs"]
+                        ),
+                        "missing_evidence_refs": list(
+                            evaluation["missing_evidence_refs"]
+                        ),
+                    },
+                )
+        if self.attempt_kind != "positive":
+            return None
         if (
             requested_task_id != self.execution_task_id
             or requested_status not in _NONCOMPLETED_TASK_EXITS
@@ -564,6 +959,80 @@ class AoxCutoverFormalToolPrecondition:
                 hint=hint,
                 details=details,
             )
+        if self.sealed_operation_universe and self.attempt_kind == "positive":
+            reporter_finish_documents = []
+            for document in repositories.engine_documents.list_by_session(
+                self.session_id
+            ):
+                if (
+                    getattr(document, "document_kind", None)
+                    != "task_finish"
+                ):
+                    continue
+                payload = dict(
+                    getattr(document, "payload", None) or {}
+                )
+                if (
+                    payload.get("task_id") == self.report_task_id
+                    and payload.get("status") == "completed"
+                ):
+                    reporter_finish_documents.append(document)
+            reporter_evidence_refs = (
+                ()
+                if len(reporter_finish_documents) != 1
+                else tuple(
+                    str(item)
+                    for item in (
+                        dict(
+                            getattr(
+                                reporter_finish_documents[0],
+                                "payload",
+                                None,
+                            )
+                            or {}
+                        ).get("evidence_refs")
+                        or []
+                    )
+                )
+            )
+            source_link = evaluate_aox_source_linked_report(
+                repositories,
+                session_id=self.session_id,
+                research_task_id=self.research_task_id,
+                report_task_id=self.report_task_id,
+                reporter_evidence_refs=reporter_evidence_refs,
+                require_diagnostic_source_copy=True,
+            )
+            if source_link["ready"] is not True:
+                return _rejection(
+                    invocation,
+                    code=(
+                        "aox_closure_stage_report_source_link_not_ready"
+                    ),
+                    summary=(
+                        "Closure was rejected because the reporting exit does "
+                        "not prove the durable report-to-PubMed source chain."
+                    ),
+                    hint=(
+                        "The assigned reporter must publish one non-empty report "
+                        "and finish with both the report and canonical PubMed "
+                        "artifact refs before the resident master retries close."
+                    ),
+                    details={
+                        "blocker_codes": list(
+                            source_link["blocker_codes"]
+                        ),
+                        "required_evidence_refs": list(
+                            source_link["required_evidence_refs"]
+                        ),
+                        "observed_evidence_refs": list(
+                            source_link["observed_evidence_refs"]
+                        ),
+                        "missing_evidence_refs": list(
+                            source_link["missing_evidence_refs"]
+                        ),
+                    },
+                )
         if (
             invocation.assistant_response_text is None
             or not invocation.assistant_response_text.strip()
@@ -597,10 +1066,10 @@ class AoxCutoverFormalToolPrecondition:
                 "tasks all explicitly completed."
             )
         if (
-            observed_statuses[AOX_RESEARCH_TASK_ID] == "completed"
+            observed_statuses[self.research_task_id] == "completed"
             and observed_statuses[self.execution_task_id]
             in _FAULT_EXECUTION_EXITS
-            and observed_statuses[AOX_REPORT_TASK_ID]
+            and observed_statuses[self.report_task_id]
             in _FAULT_REPORT_EXITS
         ):
             return None
@@ -707,7 +1176,7 @@ class AoxCutoverFormalToolPrecondition:
             linked = is_published_report_link(
                 report,
                 draft,
-                task_id=AOX_REPORT_TASK_ID,
+                task_id=self.report_task_id,
             )
         if linked:
             return None
@@ -732,7 +1201,7 @@ class AoxCutoverFormalToolPrecondition:
                     str(getattr(draft, "draft_id", ""))
                     for draft in published_drafts
                 ],
-                "report_task_id": AOX_REPORT_TASK_ID,
+                "report_task_id": self.report_task_id,
                 "report_link_ready": linked,
             },
         )
@@ -743,4 +1212,5 @@ __all__ = [
     "AOX_REPORT_TASK_ID",
     "AOX_RESEARCH_TASK_ID",
     "AoxCutoverFormalToolPrecondition",
+    "evaluate_aox_source_linked_report",
 ]

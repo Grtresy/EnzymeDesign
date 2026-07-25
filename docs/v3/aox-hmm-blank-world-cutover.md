@@ -559,6 +559,16 @@ and bytes are immutable and non-reusable. A successor requires a fresh clean
 commit, full admission, pin, exact-three plan, roots and separate approval of
 that exact plan.
 
+The separately specified
+[closure-stage isolated live diagnostic](aox-closure-stage-live-diagnostic.md)
+does not amend that verdict or reuse r59 authority. It may qualify the frozen
+source read-only and construct an equivalent cursor-614 projection only in a
+fresh non-`rNN` `aox-closure-stage-*` root. Its one-use authority, MICU
+attribution and source/reconstruction/parity/live/decision schemas are
+disjoint from both full-path diagnostic and formal acceptance; every result is
+permanently `acceptance_eligible=false` and cannot enter an `@3` bundle or the
+campaign reducer.
+
 ## Numbered launch-preparation boundary
 
 The no-attempt preparation phase may update local configuration, build and hash
@@ -586,13 +596,16 @@ the resolved values; a hand-written declaration is not accepted.
 
 The CLI command named `preflight` is deliberately outside this no-attempt phase:
 it creates the first blank-world attempt root. `preflight`, `run-live`,
-`run-diagnostic-live`, the
+`run-diagnostic-live`, `run-closure-stage-diagnostic-live`, the
 known-positive provider/model probe, canonical Chrome approval, positive
 attempts, and the controlled fault attempt require a separate explicit launch
 authorization. Production `run-live` additionally consumes the exact authority
 plan into its deterministic absent `.consumed.json` sibling before live launch
 construction or root creation. `run-diagnostic-live` does the same only for its
-single-slot plan and distinct `.diagnostic-consumed.json` sibling. Standalone
+single-slot plan and distinct `.diagnostic-consumed.json` sibling. The
+closure-stage command consumes only its schema-disjoint
+`.closure-stage-consumed.json` plan, reconstructs into a non-numbered fresh
+root, and remains permanently ineligible for formal adoption. Standalone
 availability diagnostics can inform readiness but
 cannot satisfy campaign evidence or be adopted into an attempt.
 

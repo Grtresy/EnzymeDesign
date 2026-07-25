@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
+
 from openzyme_core import CoreRepositories
 from openzyme_core import HarnessInput
 from openzyme_core import HarnessStatus
@@ -133,6 +135,8 @@ def _repositories(
     reports: tuple[SimpleNamespace, ...] = (),
     drafts: tuple[SimpleNamespace, ...] = (),
     documents: tuple[SimpleNamespace, ...] | None = None,
+    artifacts: tuple[SimpleNamespace, ...] = (),
+    source_refs: tuple[SimpleNamespace, ...] = (),
     attempts: tuple[SimpleNamespace, ...] = (),
     resolved_head: SimpleNamespace | None = None,
 ) -> SimpleNamespace:
@@ -143,6 +147,14 @@ def _repositories(
     finish_documents = (
         _finish_documents(tasks) if documents is None else documents
     )
+    documents_by_id = {
+        str(document.document_id): document
+        for document in finish_documents
+        if getattr(document, "document_id", None) is not None
+    }
+    artifacts_by_id = {
+        str(artifact.artifact_id): artifact for artifact in artifacts
+    }
     return _record(
         tasks=_record(
             get=by_id.get,
@@ -153,6 +165,13 @@ def _repositories(
         ),
         engine_documents=_record(
             list_by_session=lambda _session_id: finish_documents,
+            get=documents_by_id.get,
+        ),
+        artifacts=_record(
+            get=artifacts_by_id.get,
+        ),
+        research_source_refs=_record(
+            list_by_session=lambda _session_id: source_refs,
         ),
         reports=_record(
             list_by_session=lambda _session_id: reports,
@@ -215,6 +234,332 @@ def _positive_policy() -> AoxCutoverFormalToolPrecondition:
         session_id=SESSION_ID,
         execution_task_id=EXECUTION_TASK_ID,
         attempt_kind="positive",
+    )
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    (
+        "artifact.create_text",
+        "artifact.patch_text",
+        "artifacts.materialize",
+        "artifacts.register",
+        "artifacts.snapshot_code",
+        "attempt.create",
+        "deep_research.resume",
+        "deep_research.start",
+        "execution.pipeline.start",
+        "interpro.query",
+        "pubmed.search",
+        "rcsb_pdb.download_structure",
+        "rcsb_pdb.search",
+        "sandbox.exec",
+        "sandbox.file.delete",
+        "sandbox.file.patch",
+        "sandbox.file.write",
+        "scientific.artifact.materialize",
+        "scientific.effect.adopt",
+        "scientific.operation.adopt",
+        "scientific.operation.disposition",
+        "scientific.selection.begin",
+        "scientific.selection.seal",
+        "semantic_scholar.search",
+        "uniprot.download_fasta",
+        "uniprot.lookup",
+        "web.fetch",
+        "web.search",
+        "future.external.effect",
+    ),
+)
+def test_closure_stage_policy_seals_external_operation_universe(
+    tool_name: str,
+) -> None:
+    policy = AoxCutoverFormalToolPrecondition(
+        session_id=SESSION_ID,
+        execution_task_id=EXECUTION_TASK_ID,
+        attempt_kind="positive",
+        sealed_operation_universe=True,
+    )
+    invocation = ToolInvocation(
+        call_id="call_closure_stage_sealed",
+        tool_name=tool_name,
+        arguments={},
+    )
+
+    result = policy(
+        _context(_repositories(tasks=())),
+        _step(),  # type: ignore[arg-type]
+        invocation,
+    )
+
+    assert result is not None
+    assert result.ok is False
+    assert result.error_code == (
+        "aox_closure_stage_operation_universe_sealed"
+    )
+    assert result.details == {
+        "policy_id": "aox_cutover_formal_tool_precondition@3",
+        "precondition_rejected": True,
+        "dispatched": False,
+        "effect_certainty": "no_effect",
+        "retry_eligibility": "same_phase_safe",
+        "tool_name": tool_name,
+        "operation_universe_sealed": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    (
+        "artifact.list",
+        "deep_research.status",
+        "execution.pipeline.status",
+        "protocol.send",
+        "report.publish",
+        "report_draft.update",
+        "scientific.attempt.close",
+        "task.finish",
+        "world.inspect",
+    ),
+)
+def test_closure_stage_policy_keeps_declared_handoff_tools_available(
+    tool_name: str,
+) -> None:
+    policy = AoxCutoverFormalToolPrecondition(
+        session_id=SESSION_ID,
+        execution_task_id=EXECUTION_TASK_ID,
+        attempt_kind="positive",
+        sealed_operation_universe=True,
+    )
+    invocation = ToolInvocation(
+        call_id="call_closure_stage_allowed",
+        tool_name=tool_name,
+        arguments={},
+    )
+
+    result = policy(
+        _context(_repositories(tasks=())),
+        _step(),  # type: ignore[arg-type]
+        invocation,
+    )
+    assert result is None or result.error_code != (
+        "aox_closure_stage_operation_universe_sealed"
+    )
+
+
+def test_closure_stage_report_finish_requires_durable_pubmed_source_link() -> None:
+    tasks = _tasks(report_status="in_progress")
+    primary_artifact_id = "art_primary_pubmed"
+    report_id = "report_closure_stage"
+    content_ref = "doc_report_content"
+    documents = (
+        _record(
+            document_id="finish_research",
+            document_kind="task_finish",
+            payload={
+                "task_id": AOX_RESEARCH_TASK_ID,
+                "status": "completed",
+                "finished_by": "agent_researcher",
+                "evidence_refs": [
+                    f"artifact:{primary_artifact_id}"
+                ],
+            },
+        ),
+        _record(
+            document_id=content_ref,
+            document_kind="report_draft_content",
+            payload={"markdown": "# AOX/HMM diagnostic\n\nSource-linked."},
+        ),
+    )
+    repositories = _repositories(
+        tasks=tasks,
+        reports=(
+            _record(
+                report_id=report_id,
+                session_id=SESSION_ID,
+                task_id=AOX_REPORT_TASK_ID,
+                status=_status("ready"),
+            ),
+        ),
+        drafts=(
+            _record(
+                draft_id="draft_closure_stage",
+                session_id=SESSION_ID,
+                task_id=AOX_REPORT_TASK_ID,
+                status=_status("published"),
+                content_ref=content_ref,
+                published_report_id=report_id,
+            ),
+        ),
+        documents=documents,
+        artifacts=(
+            _record(
+                artifact_id=primary_artifact_id,
+                session_id=SESSION_ID,
+                task_id=AOX_RESEARCH_TASK_ID,
+                metadata={
+                    "provider": "pubmed",
+                    "cutover_eligible": True,
+                    "content_digest": "sha256:" + "a" * 64,
+                    "diagnostic_source_copy": {
+                        "source_artifact_id": primary_artifact_id,
+                        "source_manifest_digest": (
+                            "sha256:" + "b" * 64
+                        ),
+                        "formal_adoption_eligible": False,
+                        "new_effect": False,
+                    },
+                },
+            ),
+        ),
+        source_refs=(
+            _record(
+                source_ref_id="source_ref_pubmed_001",
+                evidence_artifact_id=primary_artifact_id,
+                provider="pubmed",
+                pmid="42278471",
+                task_id=AOX_RESEARCH_TASK_ID,
+            ),
+        ),
+    )
+    policy = AoxCutoverFormalToolPrecondition(
+        session_id=SESSION_ID,
+        execution_task_id=EXECUTION_TASK_ID,
+        attempt_kind="positive",
+        sealed_operation_universe=True,
+    )
+
+    missing_source = policy(
+        _context(repositories),
+        _step(
+            actor_kind="teammate",
+            agent_id="agent_reporter",
+        ),  # type: ignore[arg-type]
+        ToolInvocation(
+            call_id="call_report_finish_missing_source",
+            tool_name="task.finish",
+            arguments={
+                "task_id": AOX_REPORT_TASK_ID,
+                "status": "completed",
+                "summary": "Published the report.",
+                "evidence_refs": [f"report:{report_id}"],
+            },
+        ),
+    )
+
+    assert missing_source is not None
+    assert missing_source.error_code == (
+        "aox_closure_stage_report_source_link_invalid"
+    )
+    assert missing_source.details["missing_evidence_refs"] == [
+        f"artifact:{primary_artifact_id}"
+    ]
+
+    linked = policy(
+        _context(repositories),
+        _step(
+            actor_kind="teammate",
+            agent_id="agent_reporter",
+        ),  # type: ignore[arg-type]
+        ToolInvocation(
+            call_id="call_report_finish_linked",
+            tool_name="task.finish",
+            arguments={
+                "task_id": AOX_REPORT_TASK_ID,
+                "status": "completed",
+                "summary": "Published the source-linked report.",
+                "evidence_refs": [
+                    f"report:{report_id}",
+                    f"artifact:{primary_artifact_id}",
+                ],
+            },
+        ),
+    )
+
+    assert linked is None
+
+    completed_documents = (
+        documents[0],
+        _record(
+            document_id="finish_execution",
+            document_kind="task_finish",
+            payload={
+                "task_id": EXECUTION_TASK_ID,
+                "status": "completed",
+                "finished_by": "agent_executor",
+                "evidence_refs": ["artifact:art_execution_result"],
+            },
+        ),
+        _record(
+            document_id="finish_reporter",
+            document_kind="task_finish",
+            payload={
+                "task_id": AOX_REPORT_TASK_ID,
+                "status": "completed",
+                "finished_by": "agent_reporter",
+                "evidence_refs": [
+                    f"report:{report_id}",
+                    f"artifact:{primary_artifact_id}",
+                ],
+            },
+        ),
+        documents[1],
+    )
+    completed_repositories = _repositories(
+        tasks=_tasks(),
+        reports=repositories.reports.list_by_session(SESSION_ID),
+        drafts=repositories.report_drafts.list_by_session(SESSION_ID),
+        documents=completed_documents,
+        artifacts=(
+            repositories.artifacts.get(primary_artifact_id),
+        ),
+        source_refs=repositories.research_source_refs.list_by_session(
+            SESSION_ID
+        ),
+    )
+
+    assert (
+        policy(
+            _context(completed_repositories),
+            _step(),  # type: ignore[arg-type]
+            _close_invocation(),
+        )
+        is None
+    )
+
+    reporter_without_source = _record(
+        document_id=completed_documents[2].document_id,
+        document_kind=completed_documents[2].document_kind,
+        payload={
+            **completed_documents[2].payload,
+            "evidence_refs": [f"report:{report_id}"],
+        },
+    )
+    unlinked_repositories = _repositories(
+        tasks=_tasks(),
+        reports=repositories.reports.list_by_session(SESSION_ID),
+        drafts=repositories.report_drafts.list_by_session(SESSION_ID),
+        documents=(
+            completed_documents[0],
+            completed_documents[1],
+            reporter_without_source,
+            completed_documents[3],
+        ),
+        artifacts=(
+            repositories.artifacts.get(primary_artifact_id),
+        ),
+        source_refs=repositories.research_source_refs.list_by_session(
+            SESSION_ID
+        ),
+    )
+    close_rejected = policy(
+        _context(unlinked_repositories),
+        _step(),  # type: ignore[arg-type]
+        _close_invocation(),
+    )
+    assert close_rejected is not None
+    assert close_rejected.error_code == (
+        "aox_closure_stage_report_source_link_not_ready"
     )
 
 

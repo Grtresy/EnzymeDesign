@@ -276,6 +276,14 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
   predicate 同时接受 exact-linked `ready` 与 `published` report，避免 policy/projection/
   collector/verifier 对同一 domain enum 产生不同真值。
 
+  r59 追加诊断边界：为单独验证上述 handoff，而不重放科学 effect 或修改历史证据，
+  closure-stage runner 只读限定 cursor 614、在 fresh current-schema root 中机械恢复
+  source operation/selection/evidence facts，并只注入一个 continuity memory 和 executor
+  signal。之后仍由 production scheduler、tool/response policy、writer/lease/fencing、
+  reporter/master 与 process supervisor 推进。sealed operation universe 只呈现“不能新增
+  science”的真实约束，不替 agent 自动 finish/report/close；所有结果永久
+  `acceptance_eligible=false`，不能进入 formal bundle/reducer。
+
 ## 4. 后续工作流
 
 每次后续简化时：

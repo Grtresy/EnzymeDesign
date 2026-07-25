@@ -308,6 +308,32 @@ role-to-operation mapping 的 `@2`，active `aox_blank_world_runtime_config@3` �
 diagnostic live 只消费独立 one-use 单 positive authority，使用独立 root/consumption/
 decision schema，并永久 `acceptance_eligible=false`；它不得生成 `@3` bundle、不得进入
 GO reducer，也不得把 operation/effect/artifact/report/browser receipt/bytes 交给 formal。
+
+r59 收尾验证另有第三种、schema-disjoint 的
+`closure_stage_diagnostic`。它先以 `mode=ro&immutable=1` 限定冻结 r59 source 和
+cursor 614 cut，在 fresh current-schema、非 `rNN` root 中机械重建等价 logical fork：
+research 已完成，execution `in_progress`，sealed selection 已满足 canonical
+`closure_request_ready`，但不导入 cursor 615 之后的 task terminal、assistant
+message、report、closure、signal、lease、writer 或 continuation；目标只合成一条事实型
+continuity memory 和一个 executor wakeup。源 authority/root/SQLite/effect/artifact/
+report/browser/evidence bytes 全程只读并在 child 退休后复核。
+
+该 fork 继续走 production MICU model factory、scheduler/drain、tool/response policy、
+writer/lease/fencing、process supervision、append-only ledger、Host API、Web UI 和
+Chrome completion observation；科学 operation universe 在启动前密封，fresh reporter
+只通过 production `report_draft_content` engine document + draft/report 链发布报告，
+不得新增 session/scientific artifact。一次性 authority 同时绑定当前 clean commit/config、
+workflow contract、既有 AOX execution SOP、独立 closure-stage SOP 摘要，以及位于
+source/target/checkout 之外的 fresh append-only Chrome 回执路径；该外部路径避免 parent
+观察与 attempt-root access gate 冲突。parity verifier 从冻结 supervision result 重算完整
+`effective_config` 摘要，要求当前 launch 与 r59 同 digest，并显式固定
+`chrome-once`、`7200/120/1/16` 及浏览器 `0.5/300/60/180` 秒边界；MICU 逐行归因还要
+重放 ledger delta 且总 charge 不超过同一 `20000000` authority。其 source/
+reconstruction/parity/live/decision schemas 全部固定
+`acceptance_eligible=false`，既不能转成 full-path diagnostic，也不能产生 formal
+`aox_blank_world_attempt_bundle@3`、进入 exact-three reducer、promotion 或 numbered
+continuation。它只回答 executor → reporter → master closure 的 forward 修复是否在真实
+MICU 下收敛，不改写 r59 的永久 formal NO-GO。
 formal acceptance 保留现有 exact-three `positive, positive, fault` authority 与全部 GO
 门槛。两类 plan 必须分别获得 operator 精确批准，内容 digest 相同也不产生复用权限。
 当前实现以 `AoxLiveRunClass` 和共享的单-attempt execution core 固化该边界：
@@ -796,6 +822,7 @@ Live gate 解释：
 - AOX r57 是永久 diagnostic NO-GO。它在 clean commit `059b69f2c49f136a42554caa06bc029610d77a7e` 消费独立 plan `sha256:f084d934feceb31322d1d1c6789018c897315cbf27b4afb825c0398f541590b8` 后，diagnostic/formal schema 隔离正确生效，probe exact six 与 formal exact seven controlled operations 全部 terminal completed；executor 随后把 representative-only `AOX_candidates_cdhit85.fasta` 与 full membership 绑定，pinned similarity 正确以 `candidate_membership_set_mismatch` fail closed。master 又创建第四个 suffixed report task，在 canonical execution/report 未业务终结且零 report 时请求 attempt close 并耗尽 16 steps。forward correction 只明确 full pre-CD-HIT `AOX_candidates.fasta` graph identity，并通过 formal-session-only `aox_cutover_formal_tool_precondition@1` 在 handler 前 no-effect 拒绝 noncanonical task 与 premature close；不改科学计算/阈值，不约束 probe/普通 session 策略。fatal `sha256:500f7e6b183906e7d849eeaed00af3e67a2c3512d4cebdd34e7a31a560acabae`、decision `sha256:6cf0216335fdad7d08e7a11ac72c7f7f868e0c523819979514f1aa4521c16614` 与 MICU lower bound `94,243,539 / 500,000,000` 只封存失败；r57 全部 authority/root/effect/bytes/pending state 不得复用，8.3a 仍未完成，任何后继 live 仍需 fresh commit/full admission/pin/plan 与精确授权
 - AOX r58 是永久 diagnostic NO-GO。它在 clean commit `d00ada97f8eb13af35f9c83247cd51e14138f428` 消费 plan `sha256:691cf17bd8548fa3bfd4e338cb61ce608bb97c4cde17f0e66483b84ff65397e3` 后，probe/formal exact chain、516 candidates、78 representatives、13,778 edges、17 outputs、sealed selection、published report 与 exact-three owner-authored completed task exits均已形成；master 最后却发出 assistant-only final response，active attempt 没有 closure request，120 drains 后以 `formal_runtime_drain_exhausted` 终止。decision `sha256:8c877189130838b29030200d9c592e8e096cd028cd60a5c5bc38dd424c718a57` 与 MICU `96,363,097 / 500,000,000` 只封存失败，formal campaign 未启动。forward `aox_cutover_formal_tool_precondition@2` 在 close-ready state 拒绝且不持久化 assistant-only response，要求 master 在同一 provider response 中提供完整终答和 explicit close；empty companion 在 effect 前失败，successful close 才持久化 exact answer 一次、结算后续 calls 并退休 turn。它不自动 close、推断 selection 或合成答案，普通 session 不受影响。r58 已先形成 meaningful result/report，故未触发再次拆分规范；其 authority/root/effect/artifact/browser/report/state 永久不可复用，任何后继 live 仍需 fresh commit/full admission/pin/plan 与精确授权
 - AOX r59 是永久 formal NO-GO。它在 clean commit `431e2c558c13ebd1f99dcc9e3eae6758630a843d` 消费 exact-three plan `sha256:168aa86c433b3c3b90aab4c665453a56cb796f99056f7d04567bc8f453b8e7de` 后只到达 positive 1；probe/formal 各 exact six operation、Chrome approval、37,772 score-filter accession、2,561 length target、0-candidate healthy-empty result、sealed selection 与 published report均已形成。executor 的 teammate close 被正确以 master-only/no-effect 拒绝后，却将 execution task 错误终结为 blocked；master 无 reopen 语义，又把 `selection_active_writers` / legacy `closure_ready=false` 误解为不能在当前 turn 持久化 intent，最终零 closure request、120 drains exhausted。decision `sha256:8b05ef13dfaf79f9a15a647fbbafa446e7ef75656b16db77a7b32baa8b4c6ccc` 与 MICU lower bound `100,114,267 / 500,000,000` 只封存失败。forward inspection 区分 `closure_request_ready` 与 `closure_finalization_ready`，legacy `closure_ready` 明确只指 Host post-request finalization；`aox_cutover_formal_tool_precondition@3` 复用 canonical selection evaluator，仅在 assigned positive executor 的 sealed current selection 同时满足 `closure_request_ready=true` 时 no-effect 拒绝 `blocked|failed|cancelled`，要求 owner 显式 completed 并把 report/closure 留给 reporter/master。sealed state 本身不是成功证明；seal 后 universe、authority、workflow、process、continuation 或 evidence 漂移时仍保留 generic blocker/failure 出口。它不自动完成 task、关闭 attempt 或选择科学策略，non-ready selection、fault 与普通 V3 session 不受影响。r59 全部 authority/root/state/effect/artifact/report/browser bytes 不得复用；后继仍需 fresh commit/full admission/pin/exact-three plan/roots 与对该 plan 的单独精确批准
+- r59 closure-stage isolated live diagnostic 不属于 `rNN` successor，也不改判上述 NO-GO。它只读限定原 source 并在 fresh root 恢复 cursor 614 等价投影，以 production MICU/runtime/supervision/browser 边界单测 executor → reporter → master closure；source operation universe 不扩张，source-linked report 通过 reporter `task.finish` 同时绑定 published report ref 与 research 已采用的 canonical PubMed artifact ref，而不是解析或规定报告文字；结果永久 `acceptance_eligible=false`，没有 formal bundle、reducer、promotion、push 或 numbered follow-on。其 operator contract 见 `docs/v3/aox-closure-stage-live-diagnostic.md`
 - 裸 `uv run pytest` 通过 `pytest.ini` 默认排除 `integration`、全部 `live_*`、`seeded_live_smoke` 与 `quality_eval`；真实外部测试必须同时满足环境 gate 与命令行显式 `-m` 选择，已配置凭据本身不能触发默认外部调用
 - `live_e2e` 是外部配置和 live 依赖的必要 gate，但不能单独证明单消息完整报告生产路径已经产品完成
 - live E2E 轮询在 task 已失败、所有 agent 均非 working/active 且没有 pending signal 或 unread inbox 时必须立即以持久 failure evidence 收敛；不得把外部 provider rate limit、缺 artifact 或 fail-closed 终止包装成通过，也不得在业务已静止后空等全局超时

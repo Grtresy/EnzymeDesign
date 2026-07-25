@@ -515,3 +515,20 @@ run class、plan schema/digest 和 sibling filename。diagnostic root 使用
 不生成 `aox_blank_world_attempt_bundle@3`，也不调用 campaign reducer。missing/ambiguous
 run class、复制后错误 sibling、identity/qualification/resource drift、重复消费、跨类
 plan/receipt/root 或相同 digest reuse 均在 effect/root 前拒绝。
+
+独立的 r59 收尾隔离诊断使用
+`authorize-closure-stage-diagnostic` /
+`run-closure-stage-diagnostic-live`，只接受
+`aox_closure_stage_diagnostic_authority_plan@1` 与 deterministic
+`.closure-stage-consumed.json` sibling。它不复用 `authorize-diagnostic` authority，
+也不创建 `aox-diagnostic-*` 或 `rNN-*` root；plan 绑定 source inventory/cursor 614、
+fresh `aox-closure-stage-*` root/process、当前 clean commit/config/workflow/SOP/
+qualification/UI、r59-equivalent MICU/driver/supervision limits 与 ledger identity。
+`chrome-once` 还要求 authorize 与 run 使用同一个 plan-bound、fresh append-only 外部
+browser receipt；它不得位于 checkout、冻结 source、fresh target root 或其他 mutable
+output 上，从而不绕过 process-isolated attempt-root access gate。
+运行结果只有 closed closure-stage source/reconstruction/parity/live/decision schemas，
+全部 `acceptance_eligible=false`，CLI 不暴露 promotion、formal adoption、campaign
+reducer、push、retry 或 next-numbered-run 参数。Host `/v3` API 本身不新增恢复 endpoint；
+该 trusted-operator CLI 只组合既有 public session/runtime/workspace/events 与正常 tool
+contract。

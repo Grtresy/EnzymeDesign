@@ -32,6 +32,7 @@ from .aox_cutover_runtime_config import normalize_aox_blank_world_runtime_config
 from .aox_live_run_class import AoxLiveRunClass
 from .aox_live_run_class import authority_root_ref
 from .aox_live_run_class import authority_run_class
+from .aox_live_run_class import CLOSURE_STAGE_DIAGNOSTIC_RUN_POLICY
 from .aox_live_run_class import DIAGNOSTIC_RUN_POLICY
 from .aox_live_run_class import policy_for_run_class
 
@@ -1747,12 +1748,17 @@ def create_blank_world_roots(
         )
     if normalized_run_class is AoxLiveRunClass.FORMAL_ACCEPTANCE:
         assert_formal_campaign_root(campaign_root)
-        if DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(identifier):
+        if (
+            DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(identifier)
+            or CLOSURE_STAGE_DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(
+                identifier
+            )
+        ):
             raise CutoverEvidenceError(
                 "formal_campaign_diagnostic_attempt_forbidden",
                 "formal acceptance rejects diagnostic attempt identities",
             )
-    elif (
+    elif normalized_run_class is AoxLiveRunClass.DIAGNOSTIC and (
         attempt_kind != "positive"
         or DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(identifier)
         is None
@@ -1760,6 +1766,14 @@ def create_blank_world_roots(
         raise CutoverEvidenceError(
             "diagnostic_attempt_identity_invalid",
             "diagnostic execution permits exactly one diagnostic positive identity",
+        )
+    elif normalized_run_class is AoxLiveRunClass.CLOSURE_STAGE_DIAGNOSTIC:
+        raise CutoverEvidenceError(
+            "closure_stage_blank_world_forbidden",
+            (
+                "closure-stage diagnostics require an independently verified "
+                "reconstructed root, never a blank-world attempt"
+            ),
         )
     prerequisites = normalize_aox_cutover_prerequisites(allowed_prerequisites)
     qualification = _normalize_architecture_qualification(

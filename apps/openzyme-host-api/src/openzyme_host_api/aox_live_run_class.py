@@ -9,6 +9,7 @@ import re
 class AoxLiveRunClass(StrEnum):
     FORMAL_ACCEPTANCE = "formal_acceptance"
     DIAGNOSTIC = "diagnostic"
+    CLOSURE_STAGE_DIAGNOSTIC = "closure_stage_diagnostic"
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +58,17 @@ DIAGNOSTIC_RUN_POLICY = AoxLiveRunPolicy(
     root_namespace_prefix="aox-diagnostic-",
 )
 
+CLOSURE_STAGE_DIAGNOSTIC_RUN_POLICY = AoxLiveRunPolicy(
+    run_class=AoxLiveRunClass.CLOSURE_STAGE_DIAGNOSTIC,
+    attempt_id_pattern=re.compile(r"^closure-stage-[a-f0-9]{32}$"),
+    campaign_id_pattern=re.compile(r"^aox_closure_stage_[a-f0-9]{24}$"),
+    session_prefix="sess_closure_stage_",
+    task_prefix="aox_execution_closure_stage_",
+    lane_prefix="lane_aox_closure_stage_",
+    root_ref_prefix="closure-stage-attempts",
+    root_namespace_prefix="aox-closure-stage-",
+)
+
 
 def policy_for_run_class(
     run_class: AoxLiveRunClass | str,
@@ -64,7 +76,11 @@ def policy_for_run_class(
     normalized = AoxLiveRunClass(run_class)
     if normalized is AoxLiveRunClass.FORMAL_ACCEPTANCE:
         return FORMAL_ACCEPTANCE_RUN_POLICY
-    return DIAGNOSTIC_RUN_POLICY
+    if normalized is AoxLiveRunClass.DIAGNOSTIC:
+        return DIAGNOSTIC_RUN_POLICY
+    if normalized is AoxLiveRunClass.CLOSURE_STAGE_DIAGNOSTIC:
+        return CLOSURE_STAGE_DIAGNOSTIC_RUN_POLICY
+    raise ValueError(f"unsupported AOX live run class: {normalized!s}")
 
 
 def authority_run_class(authority: object) -> AoxLiveRunClass:
@@ -85,6 +101,7 @@ def authority_root_ref(authority: Mapping[str, object]) -> str:
 __all__ = [
     "AoxLiveRunClass",
     "AoxLiveRunPolicy",
+    "CLOSURE_STAGE_DIAGNOSTIC_RUN_POLICY",
     "DIAGNOSTIC_RUN_POLICY",
     "FORMAL_ACCEPTANCE_RUN_POLICY",
     "authority_root_ref",

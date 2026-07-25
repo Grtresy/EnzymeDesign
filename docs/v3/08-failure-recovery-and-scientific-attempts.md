@@ -287,7 +287,7 @@ ledger-after/SQLite/artifact/quiescence closure，因此 r56 不能成为 positi
 
 ## 8. Diagnostic live 与 formal acceptance 分离
 
-r56 触发后，AOX target contract 将 live execution 分为两个不可互换的类别：
+r56 触发后，AOX target contract 先将 live execution 分为两个不可互换的类别：
 
 - **diagnostic live run**：单 positive-shaped、独立 one-use authority 与独立
   root/consumption/decision schema；可在精确权限内走真实 LLM/provider/HPC/approval/browser，
@@ -309,6 +309,14 @@ authority、blank roots 与全部真实 effect。
 execution core，正式与诊断 runner 不复制 product path；collector 边界则完全分离：
 formal 独占 selected-chain `@3` builder/reducer，diagnostic 对所有嵌套
 `acceptance_eligible|cutover_eligible` 强制 false，只投影 completed/blocker、计数与 digest。
+
+r59 之后增加的 `closure_stage_diagnostic` 是第三个 schema-disjoint 类别，而不是上述
+full-path diagnostic 的参数模式。它只能以只读 immutable source qualifier 限定 r59
+cursor 614 cut，在 fresh current-schema、非 `rNN` root 重建 execution handoff 前的等价
+状态；不重跑、采用或物化 source scientific effect。其 authority/consumption/source/
+reconstruction/parity/live/decision schema、MICU scenario 与 root namespace 都与前两类
+互斥，并永久 `acceptance_eligible=false`。该类别没有 formal collector、bundle、reducer、
+promotion 或 numbered continuation。
 
 两类 closed validator、publisher、consumer、slot identity、root namespace/ancestor marker、
 collector 与 verifier 已有 cross-mode negative 回归；即使删除 diagnostic run-class 字段或
@@ -421,3 +429,37 @@ adoption、materialization 或 evidence 漂移会让 `closure_request_ready=fals
 `blocked|failed|cancelled` 继续使用 generic task semantics，agent 可修复或建立 child
 selection。fault attempt 和普通 V3 session 同样不受该 guard 影响；guard 不选择科学路线
 或结果。
+
+## 12. r59 closure-stage logical fork
+
+为了只验证上述 forward handoff，而不重放约 906 MB 的科学路径或修改历史证据，
+closure-stage diagnostic 在 live 前执行两次独立事实核验：
+
+1. source qualifier 以 `mode=ro&immutable=1` 读取冻结 SQLite，要求 source process 已退休、
+   WAL 不存在或长度为零、主库及完整 allowlist inventory 摘要不变，并证明 cursor 607/
+   610/613/614 与首个错误 cursor 615 的身份、顺序和 payload；
+2. reconstruction verifier 从 source 与 fresh target 重新计算表级 row-set、identity、
+   byte-map、cut projection 和 canonical evaluator 摘要，拒绝未声明字段/row/byte、
+   cursor 615 后状态、active lease/writer/continuation 或 readiness 差异。
+
+fresh target 保留 terminal-known operation/result、occurrence/adoption/disposition/selection
+图和 digest-equal source artifact copy，但把 copied bytes 标记为
+`diagnostic_source_copy`，不登记为新 effect、materialization 或 formal adoption。
+research task 由机械 bootstrap 明确完成；execution task 为 `in_progress`，report 未运行，
+attempt active；只新增一条 factual continuity memory 与一个 executor signal。随后由正常
+production MICU runtime 自主推进 executor completion、reporter publication/completion 和
+master-owned co-terminal response + closure。
+
+operation universe 在 child 启动前密封；任何 provider/HPC/sandbox/approval/selection/
+adoption/materialization 写操作在 dispatch 前以 `no_effect` 拒绝。terminal verifier 要求
+科学 effect counters 与 session/scientific artifact 集合不变；fresh report 严格沿用
+`report_draft_content` engine document + draft/report 链，且 signal、lease、writer、
+continuation、process descendant 全部退休。`source-linked` 不靠报告文字匹配：
+reporter 的 owner-authored `task.finish` 必须同时绑定 exact published report ref 和
+research finish 已采用的 canonical PubMed artifact ref，pre-close 与 terminal verifier
+复算这条 durable graph。runtime parity 还从冻结 supervision result
+重算 r59 的完整 effective-config digest，要求当前 launch 与其完全一致，并逐项固定
+`chrome-once`、`7200/120/1/16`、浏览器 `0.5/300/60/180` 秒边界；诊断 MICU rows 必须
+精确重放 ledger delta，且本次总 charge 不超过同一 `20000000` authority。无论成功或有限失败，source 还要再次
+hash；诊断 decision 永不改变 r59 的 formal NO-GO。完整 operator contract 见
+`aox-closure-stage-live-diagnostic.md`。

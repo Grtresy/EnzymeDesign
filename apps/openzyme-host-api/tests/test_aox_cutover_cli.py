@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from openzyme_host_api import aox_closure_stage_live as closure_live
 from openzyme_host_api import aox_cutover_cli as cli
 from openzyme_host_api.aox_architecture_qualification import (
     build_architecture_qualification_receipt,
@@ -33,6 +34,7 @@ from openzyme_host_api.aox_diagnostic_authority import (
     publish_aox_diagnostic_authority_plan,
 )
 from openzyme_host_api.aox_cutover_launch import AoxCutoverLaunchError
+from openzyme_host_api.aox_cutover_evidence import CutoverEvidenceError
 from openzyme_host_api.aox_live_run_class import AoxLiveRunClass
 from openzyme_runtime import OpenZymeSettings
 
@@ -188,6 +190,89 @@ def _pin_args(tmp_path: Path):
             "1",
             "--max-steps-per-agent",
             "17",
+        ]
+    )
+
+
+def _closure_stage_source_args(tmp_path: Path) -> list[str]:
+    return [
+        "--source-campaign-root",
+        str(tmp_path / "r59-source"),
+        "--source-attempt-id",
+        "positive-" + "a" * 32,
+        "--source-campaign-id",
+        "aox_campaign_" + "b" * 24,
+        "--source-session-id",
+        "sess_formal_positive_" + "a" * 32,
+        "--source-execution-task-id",
+        "aox_execution_cutover_positive_" + "a" * 32,
+        "--source-executor-agent-id",
+        "agent:executor:source",
+        "--source-selection-id",
+        "selection_" + "c" * 24,
+        "--source-operation-universe-digest",
+        "sha256:" + "d" * 64,
+        "--source-authority-plan",
+        str(tmp_path / "source-authority.json"),
+        "--source-authority-consumption",
+        str(tmp_path / "source-authority.consumed.json"),
+    ]
+
+
+def _authorize_closure_stage_args(tmp_path: Path):
+    return cli.build_parser().parse_args(
+        [
+            "authorize-closure-stage-diagnostic",
+            "--target-parent",
+            str(tmp_path / "targets"),
+            "--identity",
+            str(tmp_path / "identity.json"),
+            "--allowed-prerequisites",
+            str(tmp_path / "prerequisites.json"),
+            "--architecture-qualification-report",
+            str(tmp_path / "qualification.json"),
+            "--output",
+            str(tmp_path / "closure-stage-authority.json"),
+            "--expires-at",
+            "2099-01-01T00:00:00+00:00",
+            "--max-micu",
+            "20000000",
+            "--max-cost-microunits",
+            "0",
+            "--max-wall-time-seconds",
+            "10800",
+            "--ledger-path",
+            str(tmp_path / "ledger.sqlite3"),
+            *_closure_stage_source_args(tmp_path),
+        ]
+    )
+
+
+def _run_closure_stage_args(tmp_path: Path):
+    return cli.build_parser().parse_args(
+        [
+            "run-closure-stage-diagnostic-live",
+            "--diagnostic-root",
+            str(tmp_path / ("aox-closure-stage-" + "e" * 24)),
+            "--identity",
+            str(tmp_path / "identity.json"),
+            "--allowed-prerequisites",
+            str(tmp_path / "prerequisites.json"),
+            "--architecture-qualification-report",
+            str(tmp_path / "qualification.json"),
+            "--closure-stage-authority-plan",
+            str(tmp_path / "closure-stage-authority.json"),
+            "--closure-stage-authority-consumption",
+            str(
+                tmp_path
+                / (
+                    "closure-stage-authority.json"
+                    ".closure-stage-consumed.json"
+                )
+            ),
+            "--ledger-path",
+            str(tmp_path / "ledger.sqlite3"),
+            *_closure_stage_source_args(tmp_path),
         ]
     )
 
@@ -469,6 +554,487 @@ def test_diagnostic_commands_are_explicit_and_not_formal_mode_flags(
                 str(tmp_path / "formal"),
             ]
         )
+
+
+def test_closure_stage_commands_are_explicit_non_formal_boundaries(
+    tmp_path: Path,
+) -> None:
+    authorize = _authorize_closure_stage_args(tmp_path)
+    run = _run_closure_stage_args(tmp_path)
+
+    assert authorize.command == "authorize-closure-stage-diagnostic"
+    assert authorize.handler is cli._authorize_closure_stage_diagnostic
+    assert run.command == "run-closure-stage-diagnostic-live"
+    assert run.handler is cli._run_closure_stage_diagnostic_live
+    assert not hasattr(authorize, "attempt_authority_plan")
+    assert not hasattr(run, "campaign_root")
+    assert not hasattr(run, "promote")
+    assert run.max_signals_per_drain == 1
+    assert run.max_steps_per_agent == 16
+
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "run-live",
+                "--closure-stage",
+                "--campaign-root",
+                str(tmp_path / "formal"),
+            ]
+        )
+
+
+def test_closure_stage_resource_parity_is_exact() -> None:
+    parity = {
+        "source": {
+            "max_micu": 20_000_000,
+            "max_cost_microunits": 0,
+            "max_wall_time_seconds": 10_800,
+        }
+    }
+
+    cli._require_closure_stage_resource_parity(
+        parity=parity,
+        max_micu=20_000_000,
+        max_cost_microunits=0,
+        max_wall_time_seconds=10_800,
+    )
+    with pytest.raises(CutoverEvidenceError) as error:
+        cli._require_closure_stage_resource_parity(
+            parity=parity,
+            max_micu=20_000_001,
+            max_cost_microunits=0,
+            max_wall_time_seconds=10_800,
+        )
+
+    assert getattr(error.value, "code", None) == (
+        "closure_stage_resource_parity_mismatch"
+    )
+
+
+def test_closure_stage_browser_receipt_is_plan_bound(
+    tmp_path: Path,
+) -> None:
+    args = _run_closure_stage_args(tmp_path)
+    browser_parent = tmp_path / "browser-observations"
+    browser_parent.mkdir()
+    expected = browser_parent / "closure-stage-observation.json"
+    plan = {"browser_observation_receipt": str(expected)}
+
+    args.approval_mode = "chrome-once"
+    args.browser_observation_receipt = expected
+    browser_target = cli._pin_closure_stage_browser_target(args)
+    cli._require_closure_stage_browser_target(
+        browser_target=browser_target,
+        authority_plan=plan,
+    )
+
+    other_parent = tmp_path / "other-browser-observations"
+    other_parent.mkdir()
+    args.browser_observation_receipt = other_parent / "receipt.json"
+    mismatched_target = cli._pin_closure_stage_browser_target(args)
+    with pytest.raises(CutoverEvidenceError) as mismatch:
+        cli._require_closure_stage_browser_target(
+            browser_target=mismatched_target,
+            authority_plan=plan,
+        )
+
+    assert mismatch.value.code == "closure_stage_browser_target_mismatch"
+
+    args.approval_mode = "auto"
+    args.browser_observation_receipt = expected
+    with pytest.raises(CutoverEvidenceError) as unexpected:
+        cli._pin_closure_stage_browser_target(args)
+    assert unexpected.value.code == "closure_stage_browser_target_unexpected"
+
+
+def test_closure_stage_authorize_only_publishes_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = _authorize_closure_stage_args(tmp_path)
+    args.target_parent.mkdir()
+    args.ledger_path.write_bytes(b"ledger")
+    browser_parent = tmp_path / "browser-observations"
+    browser_parent.mkdir()
+    args.approval_mode = "chrome-once"
+    args.browser_observation_receipt = (
+        browser_parent / "closure-stage-observation.json"
+    )
+    launch = SimpleNamespace(
+        identity={"git_commit": "a" * 40},
+        allowed_prerequisites={"provider_cache_mode": "source_copy_read_only"},
+        effective_config={"schema_id": "runtime"},
+        assert_unchanged=lambda: None,
+    )
+    plan = {
+        "diagnostic_id": "aox_closure_stage_" + "a" * 24,
+        "target_root": str(
+            args.target_parent / ("aox-closure-stage-" + "a" * 24)
+        ),
+        "process_epoch": "closure-stage-process-" + "b" * 32,
+        "plan_digest": "sha256:" + "c" * 64,
+    }
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli,
+        "_load_live_declarations",
+        lambda parsed: (
+            launch.identity,
+            launch.allowed_prerequisites,
+            _architecture_qualification(),
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_closure_stage_source_inventory",
+        lambda parsed: {"source": "frozen"},
+    )
+    monkeypatch.setattr(
+        cli,
+        "_prepare_live_execution",
+        lambda parsed, **kwargs: (
+            launch,
+            _architecture_qualification(),
+            parsed.ledger_path,
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_closure_stage_runtime_bindings",
+        lambda **kwargs: (
+            {"contract": "bound"},
+            {"runtime": "bound"},
+            {"micu": "bound"},
+            {
+                "source": {
+                    "max_micu": 20_000_000,
+                    "max_cost_microunits": 0,
+                    "max_wall_time_seconds": 10_800,
+                },
+                "receipt_digest": "sha256:" + "d" * 64,
+            },
+        ),
+    )
+    def build_plan(**kwargs: object) -> dict[str, object]:
+        captured["build_kwargs"] = kwargs
+        return plan
+
+    monkeypatch.setattr(
+        cli,
+        "build_aox_closure_stage_authority_plan",
+        build_plan,
+    )
+
+    def publish(payload: object, path: Path) -> None:
+        captured["payload"] = payload
+        captured["path"] = path
+        path.write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        cli,
+        "publish_aox_closure_stage_authority_plan",
+        publish,
+    )
+    monkeypatch.setattr(
+        cli,
+        "consume_aox_closure_stage_authority_plan",
+        lambda *positional, **keywords: (_ for _ in ()).throw(
+            AssertionError((positional, keywords))
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "reconstruct_aox_closure_stage",
+        lambda *positional, **keywords: (_ for _ in ()).throw(
+            AssertionError((positional, keywords))
+        ),
+    )
+
+    assert cli._authorize_closure_stage_diagnostic(args) == 0
+
+    assert captured["payload"] is plan
+    assert captured["path"] == args.output
+    assert captured["build_kwargs"]["browser_observation_receipt"] == (
+        args.browser_observation_receipt.resolve()
+    )
+    assert not args.browser_observation_receipt.exists()
+    assert args.output.is_file()
+    assert not Path(str(plan["target_root"])).exists()
+    output = json.loads(capsys.readouterr().out)
+    assert output["acceptance_eligible"] is False
+    assert output["status"] == "published_not_consumed"
+
+
+def test_closure_stage_run_fails_clean_launch_before_consumption_or_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _run_closure_stage_args(tmp_path)
+    monkeypatch.setattr(
+        cli,
+        "_load_live_declarations",
+        lambda parsed: (
+            {"git_commit": "a" * 40},
+            {"provider_cache_mode": "source_copy_read_only"},
+            _architecture_qualification(),
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_closure_stage_source_inventory",
+        lambda parsed: {"source": "frozen"},
+    )
+
+    def reject_launch(*positional: object, **keywords: object) -> object:
+        del positional, keywords
+        raise AoxCutoverLaunchError(
+            "aox_launch_worktree_dirty",
+            "dirty checkout",
+        )
+
+    monkeypatch.setattr(cli, "_prepare_live_execution", reject_launch)
+    monkeypatch.setattr(
+        cli,
+        "consume_aox_closure_stage_authority_plan",
+        lambda *positional, **keywords: (_ for _ in ()).throw(
+            AssertionError((positional, keywords))
+        ),
+    )
+
+    with pytest.raises(AoxCutoverLaunchError) as error:
+        cli._run_closure_stage_diagnostic_live(args)
+
+    assert error.value.code == "aox_launch_worktree_dirty"
+    assert not args.closure_stage_authority_consumption.exists()
+    assert not args.diagnostic_root.exists()
+
+
+@pytest.mark.parametrize(
+    ("decision_status", "expected_exit"),
+    (("completed", 0), ("failed", 2)),
+)
+def test_closure_stage_run_consumes_once_and_returns_only_sealed_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    decision_status: str,
+    expected_exit: int,
+) -> None:
+    args = _run_closure_stage_args(tmp_path)
+    args.closure_stage_authority_plan.write_text(
+        json.dumps({"process_epoch": "closure-process-" + "a" * 32}),
+        encoding="utf-8",
+    )
+    args.ledger_path.write_bytes(b"ledger")
+    source_inventory = {"source": "frozen-r59"}
+    qualification = _architecture_qualification()
+    launch_checks: list[str] = []
+    launch = SimpleNamespace(
+        effective_settings=SimpleNamespace(name="effective"),
+        effective_config={"schema_id": "runtime"},
+        identity={"git_commit": "a" * 40},
+        allowed_prerequisites={
+            "provider_cache_mode": "source_copy_read_only"
+        },
+        assert_unchanged=lambda: launch_checks.append("checked"),
+    )
+    parity = {
+        "source": {
+            "max_micu": 20_000_000,
+            "max_cost_microunits": 0,
+            "max_wall_time_seconds": 10_800,
+        },
+        "receipt_digest": "sha256:" + "b" * 64,
+    }
+    plan = {
+        "diagnostic_id": "aox_closure_stage_" + "c" * 24,
+        "target_root": str(args.diagnostic_root.resolve()),
+        "browser_observation_receipt": None,
+        "resources": {
+            "max_micu": 20_000_000,
+            "max_cost_microunits": 0,
+            "max_wall_time_seconds": 10_800,
+        },
+        "plan_digest": "sha256:" + "d" * 64,
+    }
+    calls: list[str] = []
+    monkeypatch.setattr(
+        cli,
+        "_load_live_declarations",
+        lambda parsed: (
+            launch.identity,
+            launch.allowed_prerequisites,
+            qualification,
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_closure_stage_source_inventory",
+        lambda parsed: source_inventory,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_prepare_live_execution",
+        lambda parsed, **kwargs: (
+            launch,
+            qualification,
+            parsed.ledger_path,
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_closure_stage_runtime_bindings",
+        lambda **kwargs: (
+            {"contracts": "bound"},
+            {"runtime": "bound"},
+            {"micu": "bound"},
+            parity,
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "load_aox_closure_stage_authority_plan",
+        lambda *positional, **keywords: plan,
+    )
+
+    def consume(
+        authority_plan: object,
+        *,
+        plan_path: Path,
+        path: Path,
+    ) -> dict[str, object]:
+        assert authority_plan is plan
+        assert plan_path == args.closure_stage_authority_plan.resolve()
+        assert path == args.closure_stage_authority_consumption.resolve()
+        calls.append("consume")
+        path.write_text("{}\n", encoding="utf-8")
+        return {"consumption": "one-use"}
+
+    monkeypatch.setattr(
+        cli,
+        "consume_aox_closure_stage_authority_plan",
+        consume,
+    )
+
+    source_manifest = {
+        "manifest_digest": "sha256:" + "e" * 64
+    }
+
+    def qualify(**kwargs: object) -> dict[str, object]:
+        assert kwargs["source_inventory"] is source_inventory
+        calls.append("qualify")
+        return source_manifest
+
+    monkeypatch.setattr(
+        cli,
+        "qualify_aox_closure_stage_source",
+        qualify,
+    )
+
+    def verify_source(manifest: object) -> object:
+        assert manifest is source_manifest
+        calls.append("verify-source")
+        return manifest
+
+    monkeypatch.setattr(
+        cli,
+        "independently_verify_aox_closure_stage_source_manifest",
+        verify_source,
+    )
+
+    def reconstruct(**kwargs: object) -> SimpleNamespace:
+        assert kwargs["plan"] is plan
+        calls.append("reconstruct")
+        evidence_root = args.diagnostic_root / "evidence"
+        evidence_root.mkdir(parents=True)
+        return SimpleNamespace(
+            roots=SimpleNamespace(evidence_root=evidence_root),
+            receipt={"receipt_digest": "sha256:" + "f" * 64},
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "reconstruct_aox_closure_stage",
+        reconstruct,
+    )
+    monkeypatch.setattr(
+        cli,
+        "independently_verify_aox_closure_stage_reconstruction",
+        lambda *positional, **keywords: calls.append(
+            "verify-reconstruction"
+        ),
+    )
+
+    def seal(_payload: object, path: Path, **_kwargs: object) -> None:
+        calls.append(f"seal:{path.name}")
+        path.write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        cli,
+        "seal_aox_closure_stage_source_manifest",
+        seal,
+    )
+    monkeypatch.setattr(
+        cli,
+        "seal_aox_closure_stage_reconstruction_receipt",
+        seal,
+    )
+    monkeypatch.setattr(
+        closure_live,
+        "seal_aox_closure_stage_runtime_parity",
+        seal,
+    )
+    runner = object()
+    monkeypatch.setattr(
+        cli,
+        "_build_supervised_closure_stage_runner",
+        lambda *positional, **keywords: (
+            calls.append("build-runner") or runner
+        ),
+    )
+
+    class FakeDiagnostic:
+        def __init__(self, **kwargs: object) -> None:
+            assert kwargs["runner"] is runner
+            calls.append("construct-diagnostic")
+
+        def run(self) -> dict[str, object]:
+            calls.append("run-once")
+            return {
+                "status": decision_status,
+                "acceptance_eligible": False,
+                "formal_adoption": False,
+            }
+
+    monkeypatch.setattr(
+        closure_live,
+        "AoxClosureStageDiagnosticRun",
+        FakeDiagnostic,
+    )
+    monkeypatch.setattr(
+        cli,
+        "safe_micu_ledger_snapshot",
+        lambda _path: {"status": "settled"},
+    )
+
+    assert cli._run_closure_stage_diagnostic_live(args) == expected_exit
+
+    assert calls.count("consume") == 1
+    assert calls.count("run-once") == 1
+    assert calls.count("verify-source") == 2
+    assert calls.index("consume") < calls.index("qualify")
+    assert calls.index("qualify") < calls.index("reconstruct")
+    assert calls.index("reconstruct") < calls.index("build-runner")
+    assert calls.index("build-runner") < calls.index("run-once")
+    assert len(launch_checks) == 2
+    assert args.closure_stage_authority_consumption.is_file()
+    assert args.diagnostic_root.is_dir()
+    output = json.loads(capsys.readouterr().out)
+    assert output["decision"]["acceptance_eligible"] is False
+    assert output["decision"]["formal_adoption"] is False
+    assert "GO" not in output["decision"]
 
 
 def test_run_diagnostic_live_consumes_only_diagnostic_plan_before_root(

@@ -2508,12 +2508,14 @@ class LiveAoxAttemptRunner:
         browser_gate_enabled: bool,
         mutation_scope: dict[str, object],
         attempt_authority: Mapping[str, object] | None = None,
+        post_entry_message: bool = True,
     ) -> tuple[SessionDriveResult, FaultInjectionReceipt | None]:
-        api.post_json(
-            f"/v3/sessions/{session_id}/messages",
-            {"message": message, "skill_keys": list(workflow_refs)},
-            idempotency_key=f"{session_id}:entry-message",
-        )
+        if post_entry_message:
+            api.post_json(
+                f"/v3/sessions/{session_id}/messages",
+                {"message": message, "skill_keys": list(workflow_refs)},
+                idempotency_key=f"{session_id}:entry-message",
+            )
         started = time.monotonic()
         approval_ids: list[str] = []
         browser_approval_receipt: dict[str, object] | None = None

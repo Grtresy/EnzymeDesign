@@ -51,8 +51,9 @@ registry 闭合十个 family：wire contract、authority composition、identity 
 reconciliation、bounded terminal convergence、restart/fencing、supervisor progress、
 operator retirement、boundary scale 与 evidence projection；AOX admission/receipt
 及 schema-disjoint run-class closure 场景归入 evidence projection。后者在零外部 effect
-下以真实 file-backed SQLite 证明 diagnostic one-slot plan/consumption/root/decision 不能
-被 formal publisher/consumer/root/verifier/reducer 接纳，即使伪造相同 plan digest。
+下以真实 file-backed SQLite 证明 full-path diagnostic one-slot
+plan/consumption/root/decision 与非 `rNN` closure-stage diagnostic 都不能被 formal
+publisher/consumer/blank-world root/verifier/reducer 接纳，即使伪造相同 plan digest。
 每个场景都有 finite step、tick、state/event、effect 与
 wall-clock budget。skip、xfail、missing collection、timeout、budget exhaustion 或证据不完整
 只能得到 `violated|unproven`，不能得到 pass。
@@ -102,7 +103,8 @@ verifier 才是 authority。
 
 ## AOX admission and evidence binding
 
-AOX `pin`、`preflight`、`run-live` 与 `run-diagnostic-live` 必须显式接收
+AOX `pin`、`preflight`、`run-live`、`run-diagnostic-live`、
+`authorize-closure-stage-diagnostic` 与 `run-closure-stage-diagnostic-live` 必须显式接收
 `--architecture-qualification-report`。验证先于 live settings、pin runner attestation、
 attempt-root、sandbox runtime probe 以及任何 provider/runner/Chrome/MICU 调用。不存在
 force、debug、environment、legacy 或 pass-boolean bypass。
@@ -125,6 +127,13 @@ unknown-version receipt。
 declarations 验证并消费 deterministic sibling，随后才能构造 live launch/root。diagnostic
 decision 永久 `acceptance_eligible=false`，不能生成 `@3` 或进入 reducer。该 non-live
 qualification scenario 证明结构边界，不批准真实 diagnostic 或 formal campaign。
+
+closure-stage flow 另用
+`aox_closure_stage_diagnostic_authority_plan@1`、deterministic
+`.closure-stage-consumed.json`、reconstructed-root/source/parity/live/decision closed
+schemas；blank-world root factory 对该 run class 必须 fail closed。它也永久
+`acceptance_eligible=false`，不能与 full-path diagnostic 互换，且 qualification 通过同样
+不构成真实 MICU 启动授权。
 
 Architecture qualification 是 operator admission，不是 scientific input。AOX
 `allowed_prerequisites` 保持原 exact-nine closed schema。资格通过只解除 deterministic
