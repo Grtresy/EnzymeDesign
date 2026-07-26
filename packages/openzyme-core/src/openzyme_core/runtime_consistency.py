@@ -15,6 +15,10 @@ from openzyme_domain import TaskStatus
 
 from .repositories import CoreRepositories
 from .scientific_attempt_repositories import ScientificSelectionIntegrityError
+from .scientific_attempt_lifecycle import (
+    ScientificAttemptLifecycleIntegrityError,
+)
+from .scientific_attempt_lifecycle import ScientificAttemptLifecycleResolver
 
 if TYPE_CHECKING:
     from .scientific_workflow_contracts import (
@@ -115,6 +119,9 @@ class RuntimeConsistencyService:
                     [],
                 ).append(failure)
         attempts = self.repositories.scientific_attempts.list_by_session(session_id)
+        attempt_lifecycles = ScientificAttemptLifecycleResolver(
+            self.repositories
+        )
         task_attention = {
             task_id: {
                 "task_id": task_id,
@@ -184,6 +191,39 @@ class RuntimeConsistencyService:
 
         for attempt in attempts:
             task = tasks.get(attempt.task_id)
+            try:
+                lifecycle = attempt_lifecycles.resolve(attempt)
+            except ScientificAttemptLifecycleIntegrityError as exc:
+                warnings.append(
+                    RuntimeConsistencyWarning(
+                        code=exc.error_code,
+                        layer="scientific_attempt",
+                        severity="warning",
+                        attention="runtime_attention",
+                        task_id=attempt.task_id,
+                        task_status=(
+                            None if task is None else task.status.value
+                        ),
+                        runtime_status=exc.reason_code,
+                        message=(
+                            "Scientific attempt lifecycle records are "
+                            "inconsistent."
+                        ),
+                        recommendation=(
+                            "Repair canonical attempt, request, and closure "
+                            "identity before any recovery or mutation."
+                        ),
+                    )
+                )
+                if task is not None:
+                    attention = task_attention[task.task_id]
+                    attention["runtime_attention"] = True
+                    attention["needs_attention"] = True
+                    attention["reasons"].append(exc.error_code)
+                    attention["scientific_attempt_ids"].append(
+                        attempt.attempt_id
+                    )
+                continue
             if task is None:
                 warnings.append(
                     RuntimeConsistencyWarning(
@@ -192,7 +232,7 @@ class RuntimeConsistencyService:
                         severity="warning",
                         attention="needs_attention",
                         task_id=attempt.task_id,
-                        runtime_status=attempt.status.value,
+                        runtime_status=lifecycle.effective_status.value,
                         message="Scientific attempt references a missing business task.",
                         recommendation=(
                             "Repair the control-plane identity before selecting or "
@@ -201,9 +241,6 @@ class RuntimeConsistencyService:
                     )
                 )
                 continue
-            closure = self.repositories.scientific_attempt_closures.get_by_attempt(
-                attempt.attempt_id
-            )
             try:
                 resolved_head = (
                     self.repositories.scientific_selections.resolve_head(
@@ -237,7 +274,7 @@ class RuntimeConsistencyService:
                 attention["scientific_attempt_ids"].append(attempt.attempt_id)
                 continue
             if (
-                closure is None
+                not lifecycle.is_closed
                 and resolved_head is not None
                 and self.scientific_workflow_contract_registry is not None
             ):
@@ -291,7 +328,7 @@ class RuntimeConsistencyService:
                     attention["scientific_attempt_ids"].append(
                         attempt.attempt_id
                     )
-            if closure is not None and not task.status.is_terminal:
+            if lifecycle.is_closed and not task.status.is_terminal:
                 warnings.append(
                     RuntimeConsistencyWarning(
                         code="scientific_attempt_outcome_unconsumed",
@@ -319,7 +356,7 @@ class RuntimeConsistencyService:
                 )
                 attention["scientific_attempt_ids"].append(attempt.attempt_id)
             elif (
-                closure is None
+                not lifecycle.is_closed
                 and resolved_head is not None
                 and resolved_head.selection.state
                 is ScientificSelectionState.SEALED

@@ -278,6 +278,23 @@ event 与 source-bound runtime wakeup 放入包含 Core transition 的同一事�
 进程内 notifier。pending finalizer 不再跳过已存在 attempt/closure，而是按 event/source
 identity 幂等补齐旧崩溃留下的缺失 delivery，已完成 signal 不会被重新排队。
 
+`ScientificAttempt.status` 是 admission 时写入且保持 append-only 的
+`record_status`，不是 closure 之后的唯一 lifecycle 真相。Core 统一通过
+`ResolvedScientificAttemptLifecycle` 联读 attempt、immutable closure request 与
+immutable closure，派生 `open | closure_requested | closed | blocked`：request 一旦存在
+就立即撤销 scientific mutation affordance；exact closure 一旦存在，即使 base row 仍为
+`active`，effective lifecycle 也必须是 `closed`。为保持现有 `@1` read contract，
+request-only projection 可以继续显示 `status=active`，但必须同时显示
+`record_status=active`、`effective_status=closing`、`lifecycle_phase=closure_requested`
+和 `accepts_scientific_mutation=false`。identity/selection/status 互相矛盾的 record graph
+统一以 `scientific_attempt_lifecycle_invalid` fail closed。
+
+selection inspection、session readiness、workspace/world projection、agent recovery、
+runtime consistency、closed-evidence export、mutation/approval gate 与 AOX terminal
+consumer 都消费这一派生 lifecycle；业务路径不得再用裸 `attempt.status` 作 closure
+判断。AOX 在第一次 post-closure observation 看到 exact closure 时立即导出 closed
+control 并返回，不能等待 base row 改写，也不能把 replay-safe 空 drain 当作收尾进展。
+
 每个新 attempt 还必须绑定 registry-resolved、digest-closed 的
 `ScientificWorkflowContract`。合同 preimage 同时覆盖 workflow/scope、合法 roles、每个
 role 的 closed `sdk_module + function_name` signatures、cardinality、adoption 与
@@ -338,6 +355,20 @@ reconstruction/parity/live/decision schemas 全部固定
 `aox_blank_world_attempt_bundle@3`、进入 exact-three reducer、promotion 或 numbered
 continuation。它只回答 executor → reporter → master closure 的 forward 修复是否在真实
 MICU 下收敛，不改写 r59 的永久 formal NO-GO。
+
+首次消费的非 `rNN` closure-stage plan
+`sha256:81cc5ba229775fee8bdc327a14f00efe0a8e15c01ccf567749b5cc0e2457a7e4`
+已成为永久 diagnostic failure evidence：executor、reporter 与 master task 均完成，
+report `report_ec02d118b9a5` 已发布，immutable closure
+`attempt_closure_b8683b040385bfe1fc16b3bc` 也已写入并产生 cursor `276` 的
+`scientific.attempt.closed`；但 base attempt row
+`attempt_ffd9d5a7e86c9b86f4d8a189` 仍按设计保持 `status=active`。旧 AOX terminal
+consumer 错把该 snapshot 当成最终真相，于 6 次有语义进展后继续执行 114 次零
+signal/零 event/零 output drain，最终以 `formal_runtime_drain_exhausted` 有限失败。
+该 consumed plan、root、decision 与 fatal 不得重试、重标或改写；只有完成上述统一
+lifecycle 修复、非 live 验证和 clean commit 后，才能发布全新一次性 plan 到不存在的
+fresh target。
+
 formal acceptance 保留现有 exact-three `positive, positive, fault` authority 与全部 GO
 门槛。两类 plan 必须分别获得 operator 精确批准，内容 digest 相同也不产生复用权限。
 当前实现以 `AoxLiveRunClass` 和共享的单-attempt execution core 固化该边界：

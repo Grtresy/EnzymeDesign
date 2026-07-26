@@ -268,6 +268,16 @@ agent-authored intent 的 selection-side 条件；sealed state 单独不构成 r
 `closure_ready` 仍指后一个 Host 阶段，不能被模型解释为“等待另一个 master wake 才能
 call close”。
 
+attempt 的 append-only base row 只提供 `record_status`；top-level loop、readiness 与
+terminal observation 统一消费 Core 派生 lifecycle。request-only 的现有 `@1`
+`status=active` wire 值可以保留，但 `effective_status=closing`、
+`lifecycle_phase=closure_requested` 与
+`accepts_scientific_mutation=false` 才是决策事实。immutable closure 一旦存在，
+effective lifecycle 立即为 `closed`，即使 base row 仍是 `active`；第一次 post-closure
+observation 必须返回 exact closed evidence，不得继续等待 row mutation。空的
+replay-safe runtime drain 只能证明本次没有可处理 signal/event/output，不是 semantic
+progress，也不能替代 terminal convergence。
+
 closure-stage isolated live diagnostic 用这一相同 loop 从一个 fresh executor signal
 开始，不发送新的 user/master entry message，也不直接调用 runner/provider/HPC。source
 selection/operation universe 已 sealed；composition-injected tool precondition 在 dispatch

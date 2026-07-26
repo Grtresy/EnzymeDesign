@@ -98,6 +98,19 @@ class ScientificAttemptStatus(StrEnum):
         return self in {self.CLOSED, self.BLOCKED}
 
 
+class ScientificAttemptLifecyclePhase(StrEnum):
+    """Derived lifecycle phase; never persisted as attempt-row truth."""
+
+    OPEN = "open"
+    CLOSURE_REQUESTED = "closure_requested"
+    CLOSED = "closed"
+    BLOCKED = "blocked"
+
+    @property
+    def accepts_scientific_mutation(self) -> bool:
+        return self is self.OPEN
+
+
 class ScientificSelectionState(StrEnum):
     DRAFT = "draft"
     SEALED = "sealed"
@@ -677,6 +690,7 @@ __all__ = [
     "ScientificAttemptAuthorityStatus",
     "ScientificAttemptClosureRequest",
     "ScientificAttemptClosure",
+    "ScientificAttemptLifecyclePhase",
     "ScientificAttemptScope",
     "ScientificAttemptStatus",
     "ScientificChainSelection",

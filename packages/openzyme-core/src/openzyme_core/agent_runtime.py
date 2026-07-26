@@ -36,6 +36,10 @@ from .harness import run_agent_harness_loop
 from .agent_runtime_settlements import AgentRuntimeOutcomeSettlement
 from .agent_runtime_settlements import AgentRuntimeSettlementDisposition
 from .llm_driver import LlmConversationDriver
+from .scientific_attempt_lifecycle import (
+    ScientificAttemptLifecycleIntegrityError,
+)
+from .scientific_attempt_lifecycle import ScientificAttemptLifecycleResolver
 from .task_board import TaskBoardService
 from .teammate_roster import teammate_role_for_task_kind
 from .teammates import finalize_teammate_result
@@ -1091,16 +1095,41 @@ class AgentRuntimeService:
         }
         if not attempts:
             return {**base, "status": "not_applicable"}
-        active_attempts = [
-            attempt for attempt in attempts if not attempt.status.is_terminal
+        resolver = ScientificAttemptLifecycleResolver(self.context.repositories)
+        try:
+            lifecycles = [resolver.resolve(attempt) for attempt in attempts]
+        except ScientificAttemptLifecycleIntegrityError as exc:
+            return {
+                **base,
+                "status": "attempt_lifecycle_invalid",
+                "error_code": exc.error_code,
+                "integrity_reason": exc.reason_code,
+                "attempt_id": exc.details["attempt_id"],
+            }
+        mutable_lifecycles = [
+            lifecycle
+            for lifecycle in lifecycles
+            if lifecycle.accepts_scientific_mutation
         ]
-        attempt = (active_attempts or attempts)[-1]
+        lifecycle = (mutable_lifecycles or lifecycles)[-1]
+        attempt = lifecycle.attempt
         base.update(
             {
                 "attempt_id": attempt.attempt_id,
-                "attempt_status": attempt.status.value,
+                "attempt_status": lifecycle.effective_status.value,
+                "attempt_record_status": lifecycle.record_status.value,
+                "attempt_lifecycle_phase": lifecycle.phase.value,
+                "closure_request_id": lifecycle.closure_request_id,
+                "closure_id": lifecycle.closure_id,
+                "accepts_scientific_mutation": (
+                    lifecycle.accepts_scientific_mutation
+                ),
             }
         )
+        if lifecycle.is_closed:
+            return {**base, "status": "closed"}
+        if not lifecycle.accepts_scientific_mutation:
+            return {**base, "status": lifecycle.phase.value}
         from .scientific_attempt_repositories import (
             ScientificSelectionIntegrityError,
         )

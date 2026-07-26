@@ -38,6 +38,7 @@ from .scientific_attempts import ScientificAttemptAuthorityStatus
 from .scientific_attempts import ScientificAttemptClosure
 from .scientific_attempts import ScientificAttemptClosureRequest
 from .scientific_attempts import ScientificAttemptClosureResponse
+from .scientific_attempts import ScientificAttemptLifecyclePhase
 from .scientific_attempts import ScientificAttemptScope
 from .scientific_attempts import ScientificAttemptStatus
 from .scientific_attempts import ScientificChainSelection
@@ -187,6 +188,7 @@ __all__ = [
     "ScientificAttemptClosure",
     "ScientificAttemptClosureRequest",
     "ScientificAttemptClosureResponse",
+    "ScientificAttemptLifecyclePhase",
     "ScientificAttemptScope",
     "ScientificAttemptStatus",
     "ScientificChainSelection",

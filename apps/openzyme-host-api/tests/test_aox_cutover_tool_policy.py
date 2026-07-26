@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,7 @@ from openzyme_core import HarnessInput
 from openzyme_core import HarnessStatus
 from openzyme_core import HarnessStep
 from openzyme_core import ScientificAttemptService
+from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import TaskBoardService
 from openzyme_core import TaskFinishCommand
 from openzyme_core import ToolRegistry
@@ -61,6 +63,7 @@ from openzyme_host_api.aox_scientific_contract import (
 from openzyme_host_api.aox_scientific_contract import (
     AOX_SELECTED_CHAIN_WORKFLOW_ID,
 )
+from openzyme_host_api.aox_cutover_live import LiveAoxAttemptRunner
 from openzyme_runtime import ToolInvocation
 
 
@@ -1218,7 +1221,9 @@ class _CloseThenMutationDriver:
         )
 
 
-def test_repository_backed_positive_close_retires_turn_before_later_mutation() -> None:
+def test_repository_backed_positive_close_retires_turn_and_host_observes_closure(
+    tmp_path: Path,
+) -> None:
     now = "2026-07-25T00:00:00+00:00"
     repositories = CoreRepositories.from_connection(connect_sqlite(":memory:"))
     apply_sqlite_migrations(repositories.tasks.connection)
@@ -1874,3 +1879,31 @@ def test_repository_backed_positive_close_retires_turn_before_later_mutation() -
     )
     assert closure.attempt_id == attempt.attempt_id
     assert closure.actor_ref == "agent:master"
+    persisted_attempt = repositories.scientific_attempts.get(
+        attempt.attempt_id
+    )
+    assert persisted_attempt is not None
+    assert persisted_attempt.status.value == "active"
+
+    database_path = tmp_path / "host-closed-attempt.sqlite3"
+    file_connection = connect_sqlite(str(database_path))
+    repositories.tasks.connection.backup(file_connection)
+    file_connection.close()
+    provider = SQLiteRepositoryProvider(str(database_path))
+    closed = LiveAoxAttemptRunner._closed_formal_attempt_control(
+        SimpleNamespace(),
+        provider,
+        session_id=SESSION_ID,
+        authority={
+            "attempt_id": "repository-barrier",
+            "envelope_id": authority.envelope_id,
+            "task_id": EXECUTION_TASK_ID,
+            "lane_id": lane.lane_id,
+        },
+    )
+
+    assert closed is not None
+    control, scope_projection = closed
+    assert control["attempt"]["status"] == "closed"
+    assert control["closure"]["closure_id"] == closure.closure_id
+    assert scope_projection["state"] == "sealed"

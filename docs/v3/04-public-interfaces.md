@@ -487,6 +487,16 @@ evidence，也不写 task terminal。
 workspace 显示 envelope usage、attempts、universe/dispositions、selected chain、
 materializations 和 closure，不投影 provider/HPC private allowlist。
 
+scientific attempt read surfaces 把 append-only base value 明确投影为
+`record_status`，并从 exact attempt/request/closure graph 派生
+`effective_status`、`lifecycle_phase`、`closure_requested`、
+`closure_request_id`、`closure_id` 与 `accepts_scientific_mutation`。现有 `@1`
+request-only wire 可以保留 `status=active`，但 effective status 必须是 `closing`；
+immutable closure 存在时 `status/effective_status` 必须为 `closed`，即使
+`record_status=active`。public consumer 不得自行从 record status 推断 lifecycle；
+矛盾 graph 统一返回 `scientific_attempt_lifecycle_invalid` 及有界安全 identity，不暴露
+repository row、Host path、authority private field 或原始 exception。
+
 `scientific.attempt.inspect` 的 summary 兼容面保持 bounded；传入 exact attempt/selection
 filter 后，详细页按稳定 occurrence 顺序、bounded limit 与 opaque cursor 返回 resolved
 head/selection/contract identity、operation signature/effect、当前

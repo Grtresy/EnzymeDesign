@@ -733,9 +733,23 @@ def test_v3_scientific_attempt_authority_and_command_surface(
     assert inspected.status_code == 200
     assert inspected.json()["authorizations"][0]["attempts"]["remaining"] == 1
     assert len(inspected.json()["attempts"]) == 1
+    assert inspected.json()["attempts"][0]["status"] == "active"
+    assert inspected.json()["attempts"][0]["record_status"] == "active"
+    assert inspected.json()["attempts"][0]["effective_status"] == "active"
+    assert inspected.json()["attempts"][0]["lifecycle_phase"] == "open"
+    assert (
+        inspected.json()["attempts"][0]["accepts_scientific_mutation"]
+        is True
+    )
     assert (
         workspace.json()["scientific_attempts"]["attempts"][0]["attempt_id"]
         == attempt_id
+    )
+    assert (
+        workspace.json()["scientific_attempts"]["attempts"][0][
+            "lifecycle_phase"
+        ]
+        == "open"
     )
     assert "allowed_providers" not in json.dumps(inspected.json())
     assert (
@@ -768,6 +782,11 @@ def test_v3_scientific_attempt_authority_and_command_surface(
     assert detailed.json()["schema_id"] == (
         "scientific_selection_inspection@1"
     )
+    assert detailed.json()["attempt"]["status"] == "active"
+    assert detailed.json()["attempt"]["record_status"] == "active"
+    assert detailed.json()["attempt"]["effective_status"] == "active"
+    assert detailed.json()["attempt"]["lifecycle_phase"] == "open"
+    assert detailed.json()["attempt"]["accepts_scientific_mutation"] is True
     assert detailed.json()["head"]["selection_id"] == selection_id
     assert detailed.json()["contract"]["contract_id"] == (
         "aox_blank_world_selected_chain@2"

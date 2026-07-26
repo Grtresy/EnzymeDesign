@@ -27,10 +27,14 @@ from openzyme_core import MemoryEventBus
 from openzyme_core import MutationScopeService
 from openzyme_core import RestoreFocus
 from openzyme_core import RuntimeConsistencyService
+from openzyme_core import ResolvedScientificAttemptLifecycle
+from openzyme_core import SessionProjectionBuilder
 from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import ScientificAttemptError
 from openzyme_core import ScientificAttemptIdentityConflictError
+from openzyme_core import ScientificAttemptLifecycleIntegrityError
+from openzyme_core import ScientificAttemptLifecycleResolver
 from openzyme_core import ScientificAttemptService
 from openzyme_core import build_conversation_projection
 from openzyme_core import ScientificOperationSignature
@@ -44,11 +48,13 @@ from openzyme_core import TaskBoardService
 from openzyme_core import TaskFinishCommand
 from openzyme_core import ToolInvocation
 from openzyme_core import ToolRegistry
+from openzyme_core import WorldInspectionService
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import canonical_digest
 from openzyme_core import connect_sqlite
 from openzyme_core import controlled_operation_artifact_set_digest
 from openzyme_core import register_scientific_attempt_tools
+from openzyme_core import resolve_scientific_attempt_lifecycle
 from openzyme_core import scientific_attempt_tool_descriptors
 from openzyme_domain import AgentMember
 from openzyme_domain import AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
@@ -79,6 +85,10 @@ from openzyme_domain import SandboxRunStatus
 from openzyme_domain import SandboxWorkspaceRecord
 from openzyme_domain import SandboxWorkspaceStatus
 from openzyme_domain import ScientificAttemptScope
+from openzyme_domain import ScientificAttemptClosure
+from openzyme_domain import ScientificAttemptClosureRequest
+from openzyme_domain import ScientificAttemptLifecyclePhase
+from openzyme_domain import ScientificAttemptStatus
 from openzyme_domain import ScientificAttemptAdmissionRequest
 from openzyme_domain import ScientificAttemptAuthorization
 from openzyme_domain import ScientificEffectAdoption
@@ -549,6 +559,329 @@ def _ready_closure_request(
         idempotency_key=f"close-{suffix}",
     )
     return attempt, request
+
+
+def _close_existing_attempt(
+    service: ScientificAttemptService,
+    *,
+    attempt: Any,
+    suffix: str,
+) -> Any:
+    operation, _ = _add_occurrence(
+        service,
+        attempt_id=attempt.attempt_id,
+        suffix=suffix,
+        succeeded=True,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+    )
+    selection = service.begin_selection(
+        attempt_id=attempt.attempt_id,
+        actor_ref="agent:scientist",
+        idempotency_key=f"selection-{suffix}",
+    )
+    service.adopt_operation(
+        selection_id=selection.selection_id,
+        operation_id=operation.operation_id,
+        workflow_role="final",
+        reason_code="selected_terminal_result",
+        actor_ref="agent:scientist",
+        idempotency_key=f"adoption-{suffix}",
+    )
+    universe = service.operation_universe(attempt.attempt_id)
+    service.seal_selection(
+        selection_id=selection.selection_id,
+        actor_ref="agent:scientist",
+        idempotency_key=f"seal-{suffix}",
+        expected_universe_digest=universe.universe_digest,
+    )
+    request = service.request_attempt_closure(
+        attempt_id=attempt.attempt_id,
+        selection_id=selection.selection_id,
+        actor_ref="agent:scientist",
+        idempotency_key=f"close-{suffix}",
+    )
+    return service.finalize_closure_request(
+        closure_request_id=request.closure_request_id
+    )
+
+
+def _scientific_recovery_facts(
+    repositories: CoreRepositories,
+) -> dict[str, Any]:
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            "sess_scientific",
+        ),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(
+            task_id="task_scientific",
+            lane_id="lane_scientific",
+        ),
+        agent_id="agent:scientist",
+        actor_kind="teammate",
+        actor_role="scientist",
+        scientific_workflow_contract_registry=(
+            TEST_WORKFLOW_CONTRACT_REGISTRY
+        ),
+    )
+    signal = AgentRuntimeSignal(
+        signal_id="signal_scientific_recovery",
+        session_id="sess_scientific",
+        agent_id="agent:scientist",
+        task_id="task_scientific",
+        lane_id="lane_scientific",
+        reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+        status=AgentRuntimeSignalStatus.CLAIMED,
+        created_at=NOW,
+    )
+    return AgentRuntimeService(context)._scientific_selection_recovery_facts(
+        signal
+    )
+
+
+def _lifecycle_request(
+    *,
+    attempt_id: str,
+    selection_id: str = "selection_lifecycle",
+) -> ScientificAttemptClosureRequest:
+    return ScientificAttemptClosureRequest(
+        closure_request_id=f"closure_request_{attempt_id}",
+        attempt_id=attempt_id,
+        selection_id=selection_id,
+        actor_ref="agent:scientist",
+        idempotency_key=f"request-{attempt_id}",
+        request_digest=f"sha256:request-{attempt_id}",
+        created_at=NOW,
+    )
+
+
+def _lifecycle_closure(
+    *,
+    request: ScientificAttemptClosureRequest,
+    attempt_id: str | None = None,
+    selection_id: str | None = None,
+) -> ScientificAttemptClosure:
+    resolved_attempt_id = attempt_id or request.attempt_id
+    return ScientificAttemptClosure(
+        closure_id=f"closure_{resolved_attempt_id}",
+        closure_request_id=request.closure_request_id,
+        attempt_id=resolved_attempt_id,
+        selection_id=selection_id or request.selection_id,
+        operation_universe_digest="sha256:universe",
+        disposition_digest="sha256:disposition",
+        adoption_digest="sha256:adoption",
+        materialization_digest="sha256:materialization",
+        authority_consumption_digest="sha256:authority",
+        quiescence_receipt_id="quiescence_lifecycle",
+        quiescence_receipt_digest="sha256:quiescence",
+        closure_digest="sha256:closure",
+        actor_ref="agent:scientist",
+        idempotency_key=f"closure-{resolved_attempt_id}",
+        request_digest=f"sha256:closure-{resolved_attempt_id}",
+        created_at=NOW,
+    )
+
+
+def test_scientific_attempt_lifecycle_resolves_open_requested_closed_and_blocked() -> None:
+    _, service = _world()
+    attempt = _grant_and_create(service)
+    open_lifecycle = resolve_scientific_attempt_lifecycle(
+        attempt=attempt,
+        closure_request=None,
+        closure=None,
+    )
+    assert isinstance(open_lifecycle, ResolvedScientificAttemptLifecycle)
+    assert open_lifecycle.phase is ScientificAttemptLifecyclePhase.OPEN
+    assert open_lifecycle.record_status is ScientificAttemptStatus.ACTIVE
+    assert open_lifecycle.effective_status is ScientificAttemptStatus.ACTIVE
+    assert open_lifecycle.projected_status is ScientificAttemptStatus.ACTIVE
+    assert open_lifecycle.accepts_scientific_mutation is True
+
+    request = _lifecycle_request(attempt_id=attempt.attempt_id)
+    requested = resolve_scientific_attempt_lifecycle(
+        attempt=attempt,
+        closure_request=request,
+        closure=None,
+    )
+    assert requested.phase is ScientificAttemptLifecyclePhase.CLOSURE_REQUESTED
+    assert requested.record_status is ScientificAttemptStatus.ACTIVE
+    assert requested.effective_status is ScientificAttemptStatus.CLOSING
+    assert requested.projected_status is ScientificAttemptStatus.ACTIVE
+    assert requested.closure_request_id == request.closure_request_id
+    assert requested.accepts_scientific_mutation is False
+
+    closure = _lifecycle_closure(request=request)
+    closed = resolve_scientific_attempt_lifecycle(
+        attempt=attempt,
+        closure_request=request,
+        closure=closure,
+    )
+    assert closed.phase is ScientificAttemptLifecyclePhase.CLOSED
+    assert closed.record_status is ScientificAttemptStatus.ACTIVE
+    assert closed.effective_status is ScientificAttemptStatus.CLOSED
+    assert closed.projected_status is ScientificAttemptStatus.CLOSED
+    assert closed.closure_id == closure.closure_id
+    assert closed.is_closed is True
+    assert closed.accepts_scientific_mutation is False
+
+    blocked = resolve_scientific_attempt_lifecycle(
+        attempt=replace(attempt, status=ScientificAttemptStatus.BLOCKED),
+        closure_request=None,
+        closure=None,
+    )
+    assert blocked.phase is ScientificAttemptLifecyclePhase.BLOCKED
+    assert blocked.effective_status is ScientificAttemptStatus.BLOCKED
+    assert blocked.is_closed is False
+    assert blocked.accepts_scientific_mutation is False
+
+
+@pytest.mark.parametrize(
+    ("attempt_status", "request_mode", "closure_mode", "reason_code"),
+    [
+        (
+            ScientificAttemptStatus.ACTIVE,
+            "missing",
+            "exact",
+            "closure_request_missing",
+        ),
+        (
+            ScientificAttemptStatus.ACTIVE,
+            "other_attempt",
+            "none",
+            "closure_request_attempt_mismatch",
+        ),
+        (
+            ScientificAttemptStatus.ACTIVE,
+            "exact",
+            "other_selection",
+            "closure_selection_mismatch",
+        ),
+        (
+            ScientificAttemptStatus.CLOSED,
+            "missing",
+            "none",
+            "terminal_record_evidence_missing",
+        ),
+        (
+            ScientificAttemptStatus.BLOCKED,
+            "exact",
+            "exact",
+            "closure_record_status_conflict",
+        ),
+    ],
+)
+def test_scientific_attempt_lifecycle_rejects_contradictory_records(
+    attempt_status: ScientificAttemptStatus,
+    request_mode: str,
+    closure_mode: str,
+    reason_code: str,
+) -> None:
+    _, service = _world()
+    attempt = replace(
+        _grant_and_create(service),
+        status=attempt_status,
+    )
+    exact_request = _lifecycle_request(attempt_id=attempt.attempt_id)
+    request = (
+        None
+        if request_mode == "missing"
+        else replace(exact_request, attempt_id="attempt_other")
+        if request_mode == "other_attempt"
+        else exact_request
+    )
+    closure = (
+        None
+        if closure_mode == "none"
+        else _lifecycle_closure(
+            request=exact_request,
+            selection_id=(
+                "selection_other"
+                if closure_mode == "other_selection"
+                else exact_request.selection_id
+            ),
+        )
+    )
+    with pytest.raises(ScientificAttemptLifecycleIntegrityError) as invalid:
+        resolve_scientific_attempt_lifecycle(
+            attempt=attempt,
+            closure_request=request,
+            closure=closure,
+        )
+    assert invalid.value.error_code == "scientific_attempt_lifecycle_invalid"
+    assert invalid.value.reason_code == reason_code
+    assert invalid.value.details["attempt_id"] == attempt.attempt_id
+    assert invalid.value.details["mutation_applied"] is False
+
+
+def test_malformed_lifecycle_fails_projection_recovery_mutation_and_audit() -> (
+    None
+):
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+    mismatched_request = replace(
+        _lifecycle_request(attempt_id=attempt.attempt_id),
+        attempt_id="attempt_other",
+    )
+    projected_repositories = _RepositoryProxy(
+        repositories,
+        scientific_attempt_closure_requests=_RepositoryProxy(
+            repositories.scientific_attempt_closure_requests,
+            get_by_attempt=lambda _attempt_id: mismatched_request,
+        ),
+    )
+    invalid_service = ScientificAttemptService(
+        projected_repositories,
+        now=lambda: NOW,
+        workflow_contract_registry=TEST_WORKFLOW_CONTRACT_REGISTRY,
+    )
+
+    with pytest.raises(ScientificAttemptError) as projection_error:
+        invalid_service.project_session_readiness_summary(
+            attempt.session_id,
+            task_id=attempt.task_id,
+        )
+    assert projection_error.value.error_code == (
+        "scientific_attempt_lifecycle_invalid"
+    )
+    assert projection_error.value.details["integrity_reason"] == (
+        "closure_request_attempt_mismatch"
+    )
+
+    with pytest.raises(ScientificAttemptError) as mutation_error:
+        invalid_service.bind_run(
+            attempt_id=attempt.attempt_id,
+            sandbox_run_id="run_never_bound",
+            actor_ref="agent:scientist",
+        )
+    assert mutation_error.value.error_code == (
+        "scientific_attempt_lifecycle_invalid"
+    )
+    assert mutation_error.value.details["mutation_applied"] is False
+
+    recovery = _scientific_recovery_facts(projected_repositories)
+    assert recovery["status"] == "attempt_lifecycle_invalid"
+    assert recovery["error_code"] == "scientific_attempt_lifecycle_invalid"
+    assert recovery["integrity_reason"] == (
+        "closure_request_attempt_mismatch"
+    )
+
+    audit = RuntimeConsistencyService(
+        projected_repositories,
+        scientific_workflow_contract_registry=(
+            TEST_WORKFLOW_CONTRACT_REGISTRY
+        ),
+    ).audit_session(attempt.session_id)
+    lifecycle_warning = next(
+        item
+        for item in audit.warnings
+        if item.code == "scientific_attempt_lifecycle_invalid"
+    )
+    assert lifecycle_warning.runtime_status == (
+        "closure_request_attempt_mismatch"
+    )
 
 
 def _seed_legacy_split_adoption_facts(
@@ -1790,6 +2123,144 @@ def test_file_backed_closure_rollover_is_atomic_to_concurrent_reader(
     reader_connection.close()
 
 
+def test_file_backed_closure_keeps_snapshot_active_and_resolves_closed(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "scientific-derived-lifecycle.sqlite3"
+    setup_connection = connect_sqlite(
+        str(database_path),
+        busy_timeout_ms=15_000,
+        enable_wal=True,
+    )
+    repositories, service = _world(connection=setup_connection)
+    attempt, request = _ready_closure_request(
+        service,
+        suffix="derived-lifecycle",
+    )
+    closure = service.finalize_closure_request(
+        closure_request_id=request.closure_request_id
+    )
+    stored = repositories.scientific_attempts.get(attempt.attempt_id)
+    assert stored is not None
+    assert stored.status is ScientificAttemptStatus.ACTIVE
+    setup_connection.close()
+
+    verification_connection = connect_sqlite(
+        str(database_path),
+        busy_timeout_ms=15_000,
+        enable_wal=True,
+    )
+    try:
+        verification_repositories = CoreRepositories.from_connection(
+            verification_connection
+        )
+        persisted = verification_repositories.scientific_attempts.get(
+            attempt.attempt_id
+        )
+        assert persisted is not None
+        lifecycle = ScientificAttemptLifecycleResolver(
+            verification_repositories
+        ).resolve(persisted)
+        assert lifecycle.record_status is ScientificAttemptStatus.ACTIVE
+        assert lifecycle.phase is ScientificAttemptLifecyclePhase.CLOSED
+        assert lifecycle.effective_status is ScientificAttemptStatus.CLOSED
+        assert lifecycle.closure_id == closure.closure_id
+        assert lifecycle.accepts_scientific_mutation is False
+    finally:
+        verification_connection.close()
+
+
+def test_agent_recovery_prefers_newer_open_attempt_over_closed_history() -> None:
+    repositories, service = _world()
+    closed_attempt = _grant_and_create(
+        service,
+        attempt_key="attempt-closed",
+    )
+    _close_existing_attempt(
+        service,
+        attempt=closed_attempt,
+        suffix="recovery-closed",
+    )
+    open_attempt = _grant_and_create(
+        service,
+        attempt_key="attempt-open",
+    )
+
+    facts = _scientific_recovery_facts(repositories)
+
+    assert facts["attempt_count"] == 2
+    assert facts["attempt_id"] == open_attempt.attempt_id
+    assert facts["attempt_status"] == "active"
+    assert facts["attempt_lifecycle_phase"] == "open"
+    assert facts["accepts_scientific_mutation"] is True
+    assert facts["status"] == "selection_head_missing"
+
+
+def test_agent_recovery_reports_latest_closure_when_all_attempts_closed() -> None:
+    repositories, service = _world()
+    first = _grant_and_create(
+        service,
+        attempt_key="attempt-closed-1",
+    )
+    _close_existing_attempt(
+        service,
+        attempt=first,
+        suffix="recovery-all-closed-1",
+    )
+    second = _grant_and_create(
+        service,
+        attempt_key="attempt-closed-2",
+    )
+    second_closure = _close_existing_attempt(
+        service,
+        attempt=second,
+        suffix="recovery-all-closed-2",
+    )
+
+    facts = _scientific_recovery_facts(repositories)
+
+    assert facts["attempt_count"] == 2
+    assert facts["attempt_id"] == second.attempt_id
+    assert facts["attempt_record_status"] == "active"
+    assert facts["attempt_status"] == "closed"
+    assert facts["attempt_lifecycle_phase"] == "closed"
+    assert facts["closure_id"] == second_closure.closure_id
+    assert facts["accepts_scientific_mutation"] is False
+    assert facts["status"] == "closed"
+
+
+def test_runtime_consistency_missing_task_uses_effective_closed_status() -> None:
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+    _close_existing_attempt(
+        service,
+        attempt=attempt,
+        suffix="consistency-closed",
+    )
+    hidden_tasks = _RepositoryProxy(
+        repositories.tasks,
+        list_by_session=lambda _session_id: [],
+    )
+    projected_repositories = _RepositoryProxy(
+        repositories,
+        tasks=hidden_tasks,
+    )
+
+    audit = RuntimeConsistencyService(
+        projected_repositories,
+        scientific_workflow_contract_registry=(
+            TEST_WORKFLOW_CONTRACT_REGISTRY
+        ),
+    ).audit_session("sess_scientific")
+
+    warning = next(
+        item
+        for item in audit.warnings
+        if item.code == "scientific_attempt_missing_task"
+    )
+    assert warning.runtime_status == "closed"
+
+
 def test_concurrent_closure_finalizers_create_one_post_attempt_scope(
     tmp_path: Path,
 ) -> None:
@@ -2007,6 +2478,50 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
         actor_ref="agent:scientist",
         idempotency_key="close-attempt",
     )
+    assert service.request_attempt_closure(
+        attempt_id=attempt.attempt_id,
+        selection_id=selection.selection_id,
+        actor_ref="agent:scientist",
+        idempotency_key="close-attempt",
+    ) == request
+    requested_inspection = service.inspect_selection(
+        session_id=attempt.session_id,
+        attempt_id=attempt.attempt_id,
+        selection_id=selection.selection_id,
+    )
+    assert {
+        key: requested_inspection["attempt"][key]
+        for key in (
+            "status",
+            "record_status",
+            "effective_status",
+            "lifecycle_phase",
+            "closure_requested",
+            "closure_request_id",
+            "closure_id",
+            "accepts_scientific_mutation",
+        )
+    } == {
+        "status": "active",
+        "record_status": "active",
+        "effective_status": "closing",
+        "lifecycle_phase": "closure_requested",
+        "closure_requested": True,
+        "closure_request_id": request.closure_request_id,
+        "closure_id": None,
+        "accepts_scientific_mutation": False,
+    }
+    requested_readiness = service.project_session_readiness_summary(
+        attempt.session_id,
+        task_id=attempt.task_id,
+    )["attempts"][0]
+    assert requested_readiness["status"] == "active"
+    assert requested_readiness["effective_status"] == "closing"
+    assert requested_readiness["lifecycle_phase"] == "closure_requested"
+    assert requested_readiness["closure_requested"] is True
+    assert requested_readiness["closure_request_id"] == request.closure_request_id
+    assert requested_readiness["closure_id"] is None
+    assert requested_readiness["accepts_scientific_mutation"] is False
     with pytest.raises(ScientificAttemptError) as revised_after_close:
         service.begin_selection(
             attempt_id=attempt.attempt_id,
@@ -2028,6 +2543,19 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
         rebound_after_close.value.error_code
         == "attempt_closure_already_requested"
     )
+    with pytest.raises(ScientificAttemptError) as disposition_after_close:
+        service.disposition_operation(
+            selection_id=selection.selection_id,
+            operation_id=failed.operation_id,
+            kind=ScientificOperationDispositionKind.FAILED,
+            reason_code="late_mutation_forbidden",
+            actor_ref="agent:scientist",
+            idempotency_key="late-disposition-after-close-request",
+        )
+    assert (
+        disposition_after_close.value.error_code
+        == "attempt_closure_already_requested"
+    )
     task_before = repositories.tasks.get(attempt.task_id)
     closure = service.finalize_closure_request(
         closure_request_id=request.closure_request_id,
@@ -2036,8 +2564,79 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
     assert closure.closure_request_id == request.closure_request_id
     assert repositories.tasks.get(attempt.task_id) == task_before
     assert task_before is not None and task_before.status is TaskStatus.TODO
+    persisted_attempt = repositories.scientific_attempts.get(attempt.attempt_id)
+    assert persisted_attempt is not None
+    assert persisted_attempt.status is ScientificAttemptStatus.ACTIVE
+    closed_inspection = service.inspect_selection(
+        session_id=attempt.session_id,
+        attempt_id=attempt.attempt_id,
+        selection_id=selection.selection_id,
+    )
+    assert closed_inspection["attempt"]["status"] == "closed"
+    assert closed_inspection["attempt"]["record_status"] == "active"
+    assert closed_inspection["attempt"]["effective_status"] == "closed"
+    assert closed_inspection["attempt"]["lifecycle_phase"] == "closed"
+    assert closed_inspection["attempt"]["closure_id"] == closure.closure_id
+    assert (
+        closed_inspection["attempt"]["accepts_scientific_mutation"] is False
+    )
+    closed_readiness = service.project_session_readiness_summary(
+        attempt.session_id,
+        task_id=attempt.task_id,
+    )["attempts"][0]
+    assert closed_readiness["status"] == "closed"
+    assert closed_readiness["record_status"] == "active"
+    assert closed_readiness["effective_status"] == "closed"
+    assert closed_readiness["lifecycle_phase"] == "closed"
+    assert closed_readiness["closure_id"] == closure.closure_id
+    assert closed_readiness["accepts_scientific_mutation"] is False
+    with pytest.raises(ScientificAttemptError) as late_binding:
+        service.bind_run(
+            attempt_id=attempt.attempt_id,
+            sandbox_run_id="run_trial",
+            actor_ref="agent:scientist",
+        )
+    assert late_binding.value.error_code == "attempt_already_closed"
     projected = service.project_session(attempt.session_id)
     assert projected["attempts"][0]["status"] == "closed"
+    assert projected["attempts"][0]["record_status"] == "active"
+    assert projected["attempts"][0]["lifecycle_phase"] == "closed"
+    workspace = SessionProjectionBuilder(
+        repositories,
+        scientific_workflow_contract_registry=(
+            TEST_WORKFLOW_CONTRACT_REGISTRY
+        ),
+    ).build_session_workspace(attempt.session_id).to_dict()
+    assert workspace["scientific_attempts"]["attempts"][0]["status"] == (
+        "closed"
+    )
+    inspection_context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            attempt.session_id,
+        ),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(
+            task_id=attempt.task_id,
+            lane_id=attempt.lane_id,
+        ),
+        agent_id="agent:scientist",
+        actor_kind="teammate",
+        actor_role="scientist",
+        scientific_workflow_contract_registry=(
+            TEST_WORKFLOW_CONTRACT_REGISTRY
+        ),
+    )
+    world = WorldInspectionService(inspection_context).inspect(
+        sections=("scientific_attempts",),
+        task_id=attempt.task_id,
+    )
+    assert world["scientific_attempts"]["attempts"][0]["status"] == "closed"
+    assert world["scientific_attempts"]["attempts"][0]["closure_id"] == (
+        closure.closure_id
+    )
     evidence = service.export_closed_attempt_evidence(attempt.attempt_id)
     assert evidence["schema_id"] == "scientific_attempt_evidence@1"
     assert evidence["attempt"]["status"] == "closed"

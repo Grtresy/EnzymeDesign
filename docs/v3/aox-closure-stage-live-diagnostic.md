@@ -68,6 +68,57 @@ and close tools remain normal, while any new provider/HPC/sandbox operation,
 approval, selection/adoption, artifact creation or materialization is rejected
 before dispatch with `no_effect`.
 
+## First consumed diagnostic and fresh-plan repair boundary
+
+The first one-use closure-stage plan was consumed at
+`2026-07-25T22:29:02.031304+00:00` with digest
+`sha256:81cc5ba229775fee8bdc327a14f00efe0a8e15c01ccf567749b5cc0e2457a7e4`.
+Its immutable evidence root is
+`/tmp/openzyme-aox-closure-stage-c614-8414c2f-01.8KeiMQ`, target
+`aox-closure-stage-c8e7d13ad9f74158fcafaf17`, and diagnostic attempt
+`closure-stage-c9288ba295758087f85618038b2fa4ad`.
+
+The product work itself converged: all three tasks completed, draft
+`draft_fb37749a90e8` was linked to published report
+`report_ec02d118b9a5`, and master created exact closure request
+`attempt_closure_request_fee858b08b2af25ebbc34bd4`, co-terminal response
+`attempt_closure_response_b0c0b9c5758dcc35049ee6df`, and immutable closure
+`attempt_closure_b8683b040385bfe1fc16b3bc` for selection
+`selection_2cbf63aa9a7bbef97eeb70d1`. Durable event cursor `276` is
+`scientific.attempt.closed`. As designed, append-only base attempt
+`attempt_ffd9d5a7e86c9b86f4d8a189` remained `status=active`.
+
+The old terminal consumer nevertheless waited for that base snapshot to become
+closed. Commands 1 through 6 processed six signals, 131 events and three
+outputs; commands 7 through 120 were 114 replay-safe zero-signal,
+zero-event, zero-output drains. The supervisor then sealed finite
+`formal_runtime_drain_exhausted` evidence. Eighteen real `gpt-5.5` MICU rows
+account for exactly `645196` input, `4334` output and `649530` charged tokens,
+with no authority breach or overage. No formal bundle or campaign-reducer
+input was created.
+
+The source database and inventory stayed byte-identical before and after:
+
+- database:
+  `sha256:18a6e7a39fcc2df7e9a1dbe661ebd3bee90e2367f42fd1bb4872f2dfd813226e`;
+- inventory:
+  `sha256:9cc10388ba7e4e9a46e68013b02cc34727bfddac04ab8ea11def7e7132fc6cd5`.
+
+The permanent decision digest is
+`sha256:c055028511d19bf07f16a6a5b741a07972684704309a0602d659ed739d2353c7`;
+the fatal digest is
+`sha256:6b39f7c758e9df6d1fbc7e4ad1bca364c9844c4aeb4c9f85fabdcf3b43e580e6`.
+Both remain `acceptance_eligible=false`.
+
+The repair makes immutable closure authoritative through Core's derived
+lifecycle. A terminal observer returns exact closed evidence on its first
+post-closure observation even while the base record is active; request-only
+state already rejects scientific mutation, and malformed identity graphs fail
+closed. The consumed plan, target and evidence above must never be retried,
+relabeled or rewritten. A successor is allowed only from a validated clean
+repair commit, a previously nonexistent fresh target and a newly published,
+separately reviewed one-use authority plan with the same fixed runtime details.
+
 ## Two-command authority flow
 
 First generate current clean-commit architecture qualification and AOX pin

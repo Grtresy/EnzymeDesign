@@ -49,6 +49,11 @@ from .scientific_attempt_repositories import (
 from .scientific_attempt_repositories import ResolvedScientificSelectionHead
 from .scientific_attempt_repositories import ScientificOccurrenceSnapshot
 from .scientific_attempt_repositories import ScientificSelectionIntegrityError
+from .scientific_attempt_lifecycle import ResolvedScientificAttemptLifecycle
+from .scientific_attempt_lifecycle import (
+    ScientificAttemptLifecycleIntegrityError,
+)
+from .scientific_attempt_lifecycle import ScientificAttemptLifecycleResolver
 from .scientific_selection_evaluation import ScientificSelectionEvaluation
 from .scientific_selection_evaluation import ScientificSelectionEvaluator
 from .scientific_workflow_contracts import (
@@ -271,6 +276,10 @@ class ScientificAttemptService:
             now=self.now,
             id_factory=self.id_factory,
         )
+
+    @property
+    def attempt_lifecycles(self) -> ScientificAttemptLifecycleResolver:
+        return ScientificAttemptLifecycleResolver(self.repositories)
 
     def grant_authorization(
         self,
@@ -675,10 +684,7 @@ class ScientificAttemptService:
                     task_id=admission.task_id,
                     campaign_id=admission.campaign_id,
                 )
-                if self.repositories.scientific_attempt_closures.get_by_attempt(
-                    item.attempt_id
-                )
-                is None
+                if not self._resolve_attempt_lifecycle(item).is_closed
             ]
             if unclosed:
                 raise ScientificAttemptError(
@@ -767,8 +773,7 @@ class ScientificAttemptService:
         sandbox_run_id: str,
         actor_ref: str,
     ) -> None:
-        attempt = self._require_active_attempt(attempt_id)
-        self._require_closure_not_requested(attempt_id)
+        attempt = self._require_mutation_admissible_attempt(attempt_id)
         with self.mutation_scopes.writer_turn(
             session_id=attempt.session_id,
             owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
@@ -789,8 +794,7 @@ class ScientificAttemptService:
         operation_id: str,
         actor_ref: str,
     ) -> None:
-        attempt = self._require_active_attempt(attempt_id)
-        self._require_closure_not_requested(attempt_id)
+        attempt = self._require_mutation_admissible_attempt(attempt_id)
         operation = self.repositories.controlled_operations.get(operation_id)
         if operation is None:
             raise ScientificAttemptError(
@@ -1023,6 +1027,7 @@ class ScientificAttemptService:
         )
         issue_limit = min(max(effective_limit * 4, 20), 200)
         contract = self._resolve_readable_workflow_contract(attempt)
+        lifecycle = self._resolve_attempt_lifecycle(attempt)
         return {
             "schema_id": "scientific_selection_inspection@1",
             "mode": "facts_only",
@@ -1038,7 +1043,16 @@ class ScientificAttemptService:
                 "campaign_id": attempt.campaign_id,
                 "workflow_id": attempt.workflow_id,
                 "scope": attempt.scope.value,
-                "status": attempt.status.value,
+                "status": lifecycle.projected_status.value,
+                "record_status": lifecycle.record_status.value,
+                "effective_status": lifecycle.effective_status.value,
+                "lifecycle_phase": lifecycle.phase.value,
+                "closure_requested": lifecycle.closure_requested,
+                "closure_request_id": lifecycle.closure_request_id,
+                "closure_id": lifecycle.closure_id,
+                "accepts_scientific_mutation": (
+                    lifecycle.accepts_scientific_mutation
+                ),
             },
             "head": {
                 "selection_id": resolved_head.head.selection_id,
@@ -1117,14 +1131,7 @@ class ScientificAttemptService:
         ]
         projected: list[dict[str, Any]] = []
         for attempt in attempts[:effective_limit]:
-            closure = self.repositories.scientific_attempt_closures.get_by_attempt(
-                attempt.attempt_id
-            )
-            closure_request = (
-                self.repositories.scientific_attempt_closure_requests.get_by_attempt(
-                    attempt.attempt_id
-                )
-            )
+            lifecycle = self._resolve_attempt_lifecycle(attempt)
             resolved_head = self._resolve_selection_head(attempt.attempt_id)
             if resolved_head is None:
                 head = None
@@ -1165,20 +1172,21 @@ class ScientificAttemptService:
                     "campaign_id": attempt.campaign_id,
                     "workflow_id": attempt.workflow_id,
                     "scope": attempt.scope.value,
-                    "status": (
-                        ScientificAttemptStatus.CLOSED.value
-                        if closure is not None
-                        else attempt.status.value
+                    "status": lifecycle.projected_status.value,
+                    "record_status": lifecycle.record_status.value,
+                    "effective_status": lifecycle.effective_status.value,
+                    "lifecycle_phase": lifecycle.phase.value,
+                    "accepts_scientific_mutation": (
+                        lifecycle.accepts_scientific_mutation
                     ),
                     "workflow_contract_digest": (
                         attempt.workflow_contract_digest
                     ),
                     "selection_head": head,
                     "readiness": readiness,
-                    "closure_requested": closure_request is not None,
-                    "closure_id": (
-                        None if closure is None else closure.closure_id
-                    ),
+                    "closure_requested": lifecycle.closure_requested,
+                    "closure_request_id": lifecycle.closure_request_id,
+                    "closure_id": lifecycle.closure_id,
                 }
             )
         return {
@@ -1220,11 +1228,6 @@ class ScientificAttemptService:
             self._require_replay_digest(existing.request_digest, request_digest)
             return existing
         self._require_closure_not_requested(attempt_id)
-        if self.repositories.scientific_attempt_closures.get_by_attempt(attempt_id):
-            raise ScientificAttemptError(
-                "attempt_already_closed",
-                "closed scientific attempt cannot create another selection revision",
-            )
         with self.repositories.atomic(prefix="scientific_selection_begin"):
             resolved_head = self._resolve_selection_head(attempt_id)
             head = None if resolved_head is None else resolved_head.head
@@ -1918,6 +1921,9 @@ class ScientificAttemptService:
                 "selection_not_draft",
                 "invalidated scientific selection cannot be sealed",
             )
+        attempt = self._require_mutation_admissible_attempt(
+            selection.attempt_id
+        )
         request_digest = canonical_digest(
             {
                 "command": "scientific.selection.seal",
@@ -2241,6 +2247,16 @@ class ScientificAttemptService:
                     "attempt_closure_request_conflict",
                     "attempt was closed from a different immutable request",
                 )
+            lifecycle = self._resolve_attempt_lifecycle(attempt)
+            if lifecycle.closure != existing:
+                raise ScientificAttemptError(
+                    "scientific_attempt_lifecycle_invalid",
+                    "scientific attempt closure does not resolve canonically",
+                    details={
+                        "attempt_id": attempt.attempt_id,
+                        "mutation_applied": False,
+                    },
+                )
             self._ensure_post_closure_scope(attempt)
             return existing
         self._assert_attempt_quiescent(attempt)
@@ -2345,6 +2361,16 @@ class ScientificAttemptService:
         )
         if existing is not None:
             self._require_replay_digest(existing.request_digest, request_digest)
+            lifecycle = self._resolve_attempt_lifecycle(attempt)
+            if lifecycle.closure != existing:
+                raise ScientificAttemptError(
+                    "scientific_attempt_lifecycle_invalid",
+                    "scientific attempt closure does not resolve canonically",
+                    details={
+                        "attempt_id": attempt.attempt_id,
+                        "mutation_applied": False,
+                    },
+                )
             return existing
         closure_request = self.repositories.scientific_attempt_closure_requests.get(
             closure_request_id
@@ -2623,6 +2649,7 @@ class ScientificAttemptService:
         """Export the exact closed control-plane evidence without private targets."""
 
         attempt = self._require_attempt(attempt_id)
+        lifecycle = self._resolve_attempt_lifecycle(attempt)
         authority = self.repositories.scientific_attempt_authorizations.get(
             attempt.envelope_id
         )
@@ -2631,19 +2658,14 @@ class ScientificAttemptService:
                 attempt.admission_request_id
             )
         )
-        closure = self.repositories.scientific_attempt_closures.get_by_attempt(
-            attempt_id
-        )
-        closure_request = (
-            self.repositories.scientific_attempt_closure_requests.get_by_attempt(
-                attempt_id
-            )
-        )
+        closure = lifecycle.closure
+        closure_request = lifecycle.closure_request
         resolved_head = self._resolve_selection_head(attempt_id)
         selection = None if resolved_head is None else resolved_head.selection
         if (
             authority is None
             or admission is None
+            or not lifecycle.is_closed
             or closure is None
             or closure_request is None
             or selection is None
@@ -2706,7 +2728,7 @@ class ScientificAttemptService:
         # The immutable closure row is the business truth for closure.  The
         # base attempt row remains append-only, so evidence must project the
         # derived terminal state just like the workspace projection does.
-        attempt_payload["status"] = ScientificAttemptStatus.CLOSED.value
+        attempt_payload["status"] = lifecycle.projected_status.value
         attempt_payload["provider_digest"] = self._private_identity_digest(
             attempt.provider
         )
@@ -3502,7 +3524,9 @@ class ScientificAttemptService:
                 "selection_missing",
                 "scientific selection does not exist",
             )
-        attempt = self._require_active_attempt(selection.attempt_id)
+        attempt = self._require_mutation_admissible_attempt(
+            selection.attempt_id
+        )
         self._resolve_mutable_workflow_contract(attempt)
         resolved_head = self._resolve_selection_head(selection.attempt_id)
         if (
@@ -3777,30 +3801,92 @@ class ScientificAttemptService:
             )
         return attempt
 
+    def resolve_attempt_lifecycle(
+        self,
+        attempt_id: str,
+    ) -> ResolvedScientificAttemptLifecycle:
+        """Resolve one attempt lifecycle and sanitize private integrity errors."""
+
+        return self._resolve_attempt_lifecycle(self._require_attempt(attempt_id))
+
+    def _resolve_attempt_lifecycle(
+        self,
+        attempt: ScientificAttempt,
+    ) -> ResolvedScientificAttemptLifecycle:
+        try:
+            return self.attempt_lifecycles.resolve(attempt)
+        except ScientificAttemptLifecycleIntegrityError as exc:
+            raise ScientificAttemptError(
+                exc.error_code,
+                "scientific attempt lifecycle evidence is inconsistent",
+                details=exc.details,
+            ) from exc
+
     def _require_active_attempt(self, attempt_id: str) -> ScientificAttempt:
+        """Require an active record while allowing exact closure-request replay."""
+
         attempt = self._require_attempt(attempt_id)
-        if self.repositories.scientific_attempt_closures.get_by_attempt(attempt_id):
+        lifecycle = self._resolve_attempt_lifecycle(attempt)
+        if lifecycle.is_closed:
             raise ScientificAttemptError(
                 "attempt_already_closed",
                 "scientific attempt already has an immutable closure",
             )
-        if attempt.status is not ScientificAttemptStatus.ACTIVE:
+        if lifecycle.record_status is not ScientificAttemptStatus.ACTIVE:
             raise ScientificAttemptError(
                 "attempt_not_active",
                 "scientific attempt does not accept further mutation",
-                details={"status": attempt.status.value},
+                details={
+                    "status": lifecycle.projected_status.value,
+                    "lifecycle_phase": lifecycle.phase.value,
+                },
             )
         return attempt
 
-    def _require_closure_not_requested(self, attempt_id: str) -> None:
-        request = self.repositories.scientific_attempt_closure_requests.get_by_attempt(
-            attempt_id
-        )
-        if request is not None:
+    def _require_mutation_admissible_attempt(
+        self,
+        attempt_id: str,
+    ) -> ScientificAttempt:
+        attempt = self._require_attempt(attempt_id)
+        lifecycle = self._resolve_attempt_lifecycle(attempt)
+        if lifecycle.accepts_scientific_mutation:
+            return attempt
+        if lifecycle.is_closed:
+            raise ScientificAttemptError(
+                "attempt_already_closed",
+                "scientific attempt already has an immutable closure",
+            )
+        if lifecycle.closure_requested:
             raise ScientificAttemptError(
                 "attempt_closure_already_requested",
                 "no new scientific occurrence or selection revision is allowed after closure intent",
-                details={"closure_request_id": request.closure_request_id},
+                details={
+                    "closure_request_id": lifecycle.closure_request_id,
+                },
+            )
+        raise ScientificAttemptError(
+            "attempt_not_active",
+            "scientific attempt does not accept further mutation",
+            details={
+                "status": lifecycle.projected_status.value,
+                "lifecycle_phase": lifecycle.phase.value,
+            },
+        )
+
+    def _require_closure_not_requested(self, attempt_id: str) -> None:
+        lifecycle = self.resolve_attempt_lifecycle(attempt_id)
+        if lifecycle.is_closed:
+            raise ScientificAttemptError(
+                "attempt_already_closed",
+                "scientific attempt already has an immutable closure",
+            )
+        if lifecycle.closure_requested:
+            raise ScientificAttemptError(
+                "attempt_closure_already_requested",
+                "no new scientific occurrence or selection revision is allowed after closure intent",
+                details={
+                    "closure_request_id": lifecycle.closure_request_id,
+                },
             )
 
     @staticmethod

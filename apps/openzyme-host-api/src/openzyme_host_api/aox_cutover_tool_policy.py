@@ -470,20 +470,47 @@ class AoxCutoverFormalToolPrecondition:
         ):
             return None
         repositories = context.repositories
-        active_attempts = [
-            attempt
-            for attempt in repositories.scientific_attempts.list_by_session(
-                self.session_id
-            )
-            if _status_value(attempt) == "active"
-            and repositories.scientific_attempt_closure_requests.get_by_attempt(
-                str(getattr(attempt, "attempt_id", ""))
-            )
-            is None
-        ]
-        if len(active_attempts) != 1:
+        scientific_attempts = ScientificAttemptService(
+            repositories,
+            workflow_contract_registry=getattr(
+                context,
+                "scientific_workflow_contract_registry",
+                None,
+            ),
+        )
+        open_attempts = []
+        for attempt in repositories.scientific_attempts.list_by_session(
+            self.session_id
+        ):
+            try:
+                lifecycle = scientific_attempts.resolve_attempt_lifecycle(
+                    attempt.attempt_id
+                )
+            except ScientificAttemptError as exc:
+                return AssistantResponseRejection(
+                    error_code=exc.error_code,
+                    summary=(
+                        "The AOX cutover final response was not persisted "
+                        "because canonical scientific-attempt lifecycle "
+                        "evidence is inconsistent."
+                    ),
+                    hint=(
+                        "Inspect and repair the canonical attempt, closure "
+                        "request, and closure identities before continuing."
+                    ),
+                    details={
+                        "policy_id": AOX_CUTOVER_TOOL_PRECONDITION_ID,
+                        "assistant_response_persisted": False,
+                        "effect_certainty": "no_effect",
+                        "retry_eligibility": "terminal",
+                        "attempt_id": attempt.attempt_id,
+                    },
+                )
+            if lifecycle.accepts_scientific_mutation:
+                open_attempts.append(attempt)
+        if len(open_attempts) != 1:
             return None
-        attempt = active_attempts[0]
+        attempt = open_attempts[0]
         if str(getattr(attempt, "task_id", "")) != self.execution_task_id:
             return None
 

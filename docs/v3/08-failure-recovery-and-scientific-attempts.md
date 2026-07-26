@@ -202,6 +202,23 @@ operation 或新 selection revision。agent writer 退休后，Host：
 4. 验证 selected workflow roles 和 lineage；
 5. 写 immutable closure。
 
+base `ScientificAttempt.status` 是 admission snapshot（对读模型显式称为
+`record_status`），finalizer 不更新它。Core 的唯一 lifecycle resolver 联读三个
+canonical immutable record，派生：
+
+- `open`：没有 request/closure，且 record active；允许 scientific mutation；
+- `closure_requested`：有 exact request、尚无 closure；effective status 为 `closing`，
+  不再允许 mutation；
+- `closed`：request 与 exact closure 的 attempt/request/selection identity 全部一致；
+  effective status 为 `closed`，不受 base row 仍为 `active` 影响；
+- `blocked`：没有 terminal evidence 且 record blocked；不允许 mutation。
+
+request/closure 缺失、跨 attempt、request identity、selection identity 或 record-status
+冲突统一返回 `scientific_attempt_lifecycle_invalid`。inspection/readiness、
+workspace/world projection、agent recovery、runtime consistency、mutation admission、
+AOX approval/terminal observation 与 evidence export 必须使用同一 resolved object；
+任何一个业务消费者都不能从裸 `attempt.status` 自行推导 closure。
+
 成功写入 intent 的 close result 必须携带
 `terminal_action="scientific.attempt.close"` 与 `terminates_turn=true`。harness 不把该
 result 再喂给模型；同批后续 call 全部以
@@ -463,3 +480,19 @@ research finish 已采用的 canonical PubMed artifact ref，pre-close 与 termi
 精确重放 ledger delta，且本次总 charge 不超过同一 `20000000` authority。无论成功或有限失败，source 还要再次
 hash；诊断 decision 永不改变 r59 的 formal NO-GO。完整 operator contract 见
 `aox-closure-stage-live-diagnostic.md`。
+
+首次实际消费的 closure-stage authority plan
+`sha256:81cc5ba229775fee8bdc327a14f00efe0a8e15c01ccf567749b5cc0e2457a7e4`
+已永久结束为 `formal_runtime_drain_exhausted`。fresh target 中三个 task、published
+report、co-terminal response 和 immutable closure 均已形成，closed event 位于 cursor
+`276`；base attempt row 仍按 append-only 合同为 `active`。旧 Host observer 因读取裸
+row 共执行 120 个 runtime command：前 6 个推进 6 条 signal、131 个 event 和 3 个
+output，后 114 个全部为零 signal/零 event/零 output。18 个 MICU attempt 精确产生
+`645196` input、`4334` output、charged `649530`，没有 overage；r59 source database 与
+inventory 的 before/after digest 分别保持
+`sha256:18a6e7a39fcc2df7e9a1dbe661ebd3bee90e2367f42fd1bb4872f2dfd813226e`
+和
+`sha256:9cc10388ba7e4e9a46e68013b02cc34727bfddac04ab8ea11def7e7132fc6cd5`。
+该 consumed plan、failed decision 与 fatal 都不可重试或改写；后继 diagnostic 只能在
+统一 lifecycle 修复通过非 live 验证并提交后，针对全新不存在的非 `rNN` target 发布并
+消费一个新 plan。

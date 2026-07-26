@@ -38,6 +38,7 @@ from openzyme_core import DurableEventRecord
 from openzyme_core import EngineDocumentRecord
 from openzyme_core import MutationScopeService
 from openzyme_core import SQLiteRepositoryProvider
+from openzyme_core import ScientificAttemptError
 from openzyme_core import scientific_attempt_authorization_identity
 from openzyme_core import verify_quiescence_evidence
 from openzyme_host_api import aox_cutover_live as live
@@ -171,6 +172,8 @@ class _SelectedChainApprovalProvider:
         executions: dict[str, object],
         operation_attempt_ids: dict[str, str],
         run_attempt_ids: dict[str, str],
+        closure_request: object | None = None,
+        closure: object | None = None,
     ) -> None:
         runs_by_id = {
             str(getattr(run, "sandbox_run_id")): run
@@ -185,10 +188,21 @@ class _SelectedChainApprovalProvider:
                 list_by_session=lambda _session_id: sandbox_runs,
             ),
             scientific_attempts=SimpleNamespace(
-                list_by_session=lambda _session_id: (attempt,)
+                list_by_session=lambda _session_id: (attempt,),
+                get=lambda attempt_id: (
+                    attempt
+                    if attempt_id == getattr(attempt, "attempt_id")
+                    else None
+                ),
             ),
             scientific_attempt_authorizations=SimpleNamespace(
                 get=lambda _envelope_id: authority
+            ),
+            scientific_attempt_closure_requests=SimpleNamespace(
+                get_by_attempt=lambda _attempt_id: closure_request
+            ),
+            scientific_attempt_closures=SimpleNamespace(
+                get_by_attempt=lambda _attempt_id: closure
             ),
             controlled_operation_executions=SimpleNamespace(
                 get_by_operation_id=executions.get
@@ -1525,6 +1539,41 @@ def test_selected_chain_approval_allows_known_failure_but_not_unknown_effect(
         attempt_authority=authority,
     )
 
+    closure_requested_provider = _SelectedChainApprovalProvider(
+        operations=(failed, current),
+        sandbox_runs=sandbox_runs,
+        attempt=attempt,
+        authority=stored_authority,
+        executions={
+            failed.operation_id: known_failed_execution,
+            current.operation_id: current_execution,
+        },
+        operation_attempt_ids={
+            failed.operation_id: scientific_attempt_id,
+            current.operation_id: scientific_attempt_id,
+        },
+        run_attempt_ids={
+            failed.sandbox_run_id: scientific_attempt_id,
+            current.sandbox_run_id: scientific_attempt_id,
+        },
+        closure_request=SimpleNamespace(
+            closure_request_id="closure_request_before_late_approval",
+            attempt_id=scientific_attempt_id,
+            selection_id="selection_before_late_approval",
+        ),
+    )
+    with pytest.raises(live.LiveProductPathError) as late_approval:
+        live._assert_cutover_operation_budget_before_approval(
+            closure_requested_provider,  # type: ignore[arg-type]
+            session_id=current.session_id,
+            approval_id=current.approval_id or "",
+            attempt_authority=authority,
+        )
+    assert (
+        late_approval.value.code
+        == "scientific_attempt_approval_authority_mismatch"
+    )
+
     dispatch_in_doubt = SimpleNamespace(
         lifecycle_state=(
             ControlledOperationExecutionLifecycle.RECONCILE_REQUIRED
@@ -1575,6 +1624,140 @@ def test_selected_chain_approval_allows_known_failure_but_not_unknown_effect(
         forbidden_method.value.code
         == "scientific_attempt_operation_not_authorized"
     )
+
+
+def test_closed_formal_attempt_rejects_lifecycle_mismatch_immediately() -> None:
+    slot_id = f"positive-{'a' * 32}"
+    attempt_id = "scientific_attempt_lifecycle_mismatch"
+    authority = {
+        "attempt_id": slot_id,
+        "envelope_id": "attempt_authority_lifecycle_mismatch",
+        "task_id": "task_lifecycle_mismatch",
+        "lane_id": "lane_lifecycle_mismatch",
+    }
+    attempt = SimpleNamespace(
+        attempt_id=attempt_id,
+        envelope_id=authority["envelope_id"],
+        task_id=authority["task_id"],
+        lane_id=authority["lane_id"],
+        root_ref=f"attempts/{slot_id}",
+        status=ScientificAttemptStatus.ACTIVE,
+    )
+    request = SimpleNamespace(
+        closure_request_id="closure_request_lifecycle_mismatch",
+        attempt_id=attempt_id,
+        selection_id="selection_expected",
+    )
+    closure = SimpleNamespace(
+        closure_id="closure_lifecycle_mismatch",
+        closure_request_id=request.closure_request_id,
+        attempt_id=attempt_id,
+        selection_id="selection_other",
+    )
+    provider = _SelectedChainApprovalProvider(
+        operations=(),
+        sandbox_runs=(),
+        attempt=attempt,
+        authority=SimpleNamespace(),
+        executions={},
+        operation_attempt_ids={},
+        run_attempt_ids={},
+        closure_request=request,
+        closure=closure,
+    )
+
+    with pytest.raises(live.LiveProductPathError) as invalid:
+        live.LiveAoxAttemptRunner._closed_formal_attempt_control(
+            SimpleNamespace(),
+            provider,  # type: ignore[arg-type]
+            session_id="sess_lifecycle_mismatch",
+            authority=authority,
+        )
+
+    assert invalid.value.code == "scientific_attempt_lifecycle_invalid"
+    assert invalid.value.details == {
+        "attempt_id": attempt_id,
+        "closure_id": closure.closure_id,
+        "closure_request_id": request.closure_request_id,
+        "integrity_reason": "closure_selection_mismatch",
+        "mutation_applied": False,
+    }
+
+
+def test_closed_formal_attempt_sanitizes_evidence_integrity_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slot_id = f"positive-{'b' * 32}"
+    attempt_id = "scientific_attempt_evidence_invalid"
+    authority = {
+        "attempt_id": slot_id,
+        "envelope_id": "attempt_authority_evidence_invalid",
+        "task_id": "task_evidence_invalid",
+        "lane_id": "lane_evidence_invalid",
+    }
+    attempt = SimpleNamespace(
+        attempt_id=attempt_id,
+        envelope_id=authority["envelope_id"],
+        task_id=authority["task_id"],
+        lane_id=authority["lane_id"],
+        root_ref=f"attempts/{slot_id}",
+        status=ScientificAttemptStatus.ACTIVE,
+    )
+    request = SimpleNamespace(
+        closure_request_id="closure_request_evidence_invalid",
+        attempt_id=attempt_id,
+        selection_id="selection_evidence_invalid",
+    )
+    closure = SimpleNamespace(
+        closure_id="closure_evidence_invalid",
+        closure_request_id=request.closure_request_id,
+        attempt_id=attempt_id,
+        selection_id=request.selection_id,
+    )
+    provider = _SelectedChainApprovalProvider(
+        operations=(),
+        sandbox_runs=(),
+        attempt=attempt,
+        authority=SimpleNamespace(),
+        executions={},
+        operation_attempt_ids={},
+        run_attempt_ids={},
+        closure_request=request,
+        closure=closure,
+    )
+
+    def reject_evidence(
+        _service: object,
+        _attempt_id: str,
+    ) -> dict[str, object]:
+        raise ScientificAttemptError(
+            "attempt_evidence_quiescence_missing",
+            "missing exact receipt",
+            details={
+                "closure_id": closure.closure_id,
+                "private_host_path": "/private/should-not-project",
+            },
+        )
+
+    monkeypatch.setattr(
+        live.ScientificAttemptService,
+        "export_closed_attempt_evidence",
+        reject_evidence,
+    )
+
+    with pytest.raises(live.LiveProductPathError) as invalid:
+        live.LiveAoxAttemptRunner._closed_formal_attempt_control(
+            SimpleNamespace(),
+            provider,  # type: ignore[arg-type]
+            session_id="sess_evidence_invalid",
+            authority=authority,
+        )
+
+    assert invalid.value.code == "attempt_evidence_quiescence_missing"
+    assert invalid.value.details == {
+        "attempt_id": attempt_id,
+        "closure_id": closure.closure_id,
+    }
 
 
 def test_cutover_operation_budget_accepts_first_method_approval() -> None:
@@ -2391,6 +2574,120 @@ def test_formal_runtime_observation_binds_and_retires_exact_driver(
         blob_root=blob_root,
     )
     assert sealed["state"] == "sealed"
+
+
+def test_formal_session_returns_on_first_post_closure_observation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        max_drains=120,
+    )
+    provider = SQLiteRepositoryProvider(str(tmp_path / "terminal.sqlite3"))
+    calls = {
+        "coordinate": 0,
+        "observe": 0,
+        "closed": 0,
+    }
+
+    def coordinate(
+        _self: live.LiveAoxAttemptRunner,
+        *_args: object,
+        **_kwargs: object,
+    ) -> live._DrainCoordinationResult:
+        calls["coordinate"] += 1
+        if calls["coordinate"] > 1:
+            raise AssertionError("post-closure empty drain was issued")
+        return live._DrainCoordinationResult(
+            workspace={"task_board": {"items": []}},
+            workspace_response_binding={
+                "response_digest": _digest("workspace")
+            },
+            approval_ids=(),
+            browser_approval_receipt=None,
+            fault_receipt=None,
+        )
+
+    def observe(
+        _self: live.LiveAoxAttemptRunner,
+        *_args: object,
+        **_kwargs: object,
+    ) -> object:
+        calls["observe"] += 1
+        return SimpleNamespace(state="completed", blocker_code=None)
+
+    def closed(
+        _self: live.LiveAoxAttemptRunner,
+        *_args: object,
+        **_kwargs: object,
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        calls["closed"] += 1
+        return (
+            {
+                "attempt": {"status": "closed"},
+                "closure": {"closure_id": "closure_terminal"},
+            },
+            {"scope_id": "scope_attempt", "state": "sealed"},
+        )
+
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_coordinate_runtime_drain",
+        coordinate,
+    )
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_grant_formal_attempt_authority_if_ready",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_observe_session_runtime",
+        observe,
+    )
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_closed_formal_attempt_control",
+        closed,
+    )
+    api = SimpleNamespace(
+        get_event_records=lambda *_args, **_kwargs: (),
+        get_events=lambda *_args, **_kwargs: {
+            "schema_id": "event_receipt@1",
+            "events": [],
+        },
+    )
+
+    result, fault = runner._run_session_scoped(
+        api,  # type: ignore[arg-type]
+        provider,
+        session_id="sess_closure_terminal",
+        purpose="formal",
+        message="unused",
+        workflow_refs=(),
+        fault_enabled=False,
+        fault_blob_root=None,
+        browser_gate_enabled=False,
+        mutation_scope={},
+        attempt_authority={
+            "attempt_id": "closure-stage-terminal",
+            "task_id": "task_terminal",
+            "lane_id": "lane_terminal",
+            "envelope_id": "attempt_authority_terminal",
+        },
+        post_entry_message=False,
+    )
+
+    assert fault is None
+    assert result.state == "completed"
+    assert result.drain_count == 1
+    assert result.scientific_attempt_control is not None
+    assert result.scientific_attempt_control["attempt"]["status"] == "closed"
+    assert result.mutation_scope["state"] == "sealed"
+    assert calls == {"coordinate": 1, "observe": 1, "closed": 1}
 
 
 def test_formal_writer_settlement_keeps_other_writers_visible_on_real_sqlite(

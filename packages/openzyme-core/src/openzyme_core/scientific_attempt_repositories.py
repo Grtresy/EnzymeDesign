@@ -620,35 +620,6 @@ class ScientificAttemptRepository:
         ).fetchall()
         return [self._row(row) for row in rows]
 
-    def replace_status(
-        self,
-        record: ScientificAttempt,
-        *,
-        expected_state_version: int,
-    ) -> ScientificAttempt:
-        if record.state_version != expected_state_version + 1:
-            raise ValueError("attempt state_version must increase exactly once")
-        cursor = self.connection.execute(
-            """
-            UPDATE scientific_attempt_records
-            SET status = ?, state_version = ?, updated_at = ?
-            WHERE attempt_id = ? AND state_version = ?
-            """,
-            (
-                record.status.value,
-                record.state_version,
-                record.updated_at,
-                record.attempt_id,
-                expected_state_version,
-            ),
-        )
-        if cursor.rowcount != 1:
-            raise ScientificAttemptVersionConflictError(
-                "scientific attempt version changed"
-            )
-        _commit(self.connection)
-        return record
-
     @staticmethod
     def _values(record: ScientificAttempt) -> tuple[object, ...]:
         return (

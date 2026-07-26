@@ -86,6 +86,21 @@
 
 ## 10. One Authorized Non-Numbered MICU Live Diagnostic
 
+> Permanent evidence note (2026-07-26): the first one-use plan
+> `sha256:81cc5ba229775fee8bdc327a14f00efe0a8e15c01ccf567749b5cc0e2457a7e4`
+> was consumed and produced a finite failed decision
+> `sha256:c055028511d19bf07f16a6a5b741a07972684704309a0602d659ed739d2353c7`
+> plus fatal
+> `sha256:6b39f7c758e9df6d1fbc7e4ad1bca364c9844c4aeb4c9f85fabdcf3b43e580e6`.
+> It reached immutable closure but the old terminal consumer then performed
+> 114 empty drains because the append-only attempt row remained active.
+> The source database/inventory digests were unchanged and the result remains
+> permanently `acceptance_eligible=false`. The unchecked acceptance-shaped
+> items below are intentionally not rewritten as success or reused as retry
+> authority. The resolver repair and any one fresh follow-up diagnostic are
+> tracked by
+> `openspec/changes/unify-scientific-attempt-lifecycle-projection/tasks.md`.
+
 - [ ] 10.1 Re-resolve the complete frozen r59 source inventory and record pre-live hashes without modifying authority, root, state, effects, artifacts, report, browser bytes, or evidence.
 - [ ] 10.2 Verify the committed HEAD, current config/workflow/SOP/qualification/UI identities, MICU model/provider, ledger capacity, source retirement, zero pending WAL bytes, exact cursor-614 cut, and a nonexistent non-`rNN` target.
 - [ ] 10.3 Publish one reviewable closure-stage authority plan with bounded expiry/resources, inspect its closed payload/digest, and confirm authorization alone created no target or live effect.

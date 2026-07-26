@@ -28,6 +28,7 @@ from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import MutationScopeError
 from openzyme_core import MutationScopeService
 from openzyme_core import MutationWriterTurnFactory
+from openzyme_core import ScientificAttemptError
 from openzyme_core import ScientificAttemptService
 from openzyme_core import build_conversation_projection
 from openzyme_core import current_mutation_write_authority
@@ -43,7 +44,6 @@ from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import MutationScopeKind
 from openzyme_domain import MutationWriterKind
 from openzyme_domain import RetryEligibility
-from openzyme_domain import ScientificAttemptStatus
 from openzyme_domain import SessionArtifactRecord
 from openzyme_pipeline import aox_hmmer
 from openzyme_pipeline import aox_motif
@@ -400,6 +400,39 @@ class LiveProductPathError(RuntimeError):
         self.code = code
         self.details = dict(details or {})
         super().__init__(f"{code}: {message}")
+
+
+_SCIENTIFIC_ATTEMPT_SAFE_FAILURE_KEYS = frozenset(
+    {
+        "attempt_id",
+        "closure_id",
+        "closure_request_id",
+        "integrity_reason",
+        "mutation_applied",
+        "selection_id",
+    }
+)
+
+
+def _scientific_attempt_live_error(
+    exc: ScientificAttemptError,
+    *,
+    attempt_id: str,
+) -> LiveProductPathError:
+    details: dict[str, object] = {"attempt_id": attempt_id}
+    details.update(
+        {
+            key: value
+            for key, value in exc.details.items()
+            if key in _SCIENTIFIC_ATTEMPT_SAFE_FAILURE_KEYS
+            and isinstance(value, (bool, int, str))
+        }
+    )
+    return LiveProductPathError(
+        exc.error_code,
+        "formal scientific attempt evidence is inconsistent",
+        details=details,
+    )
 
 
 _SEALED_FAILURE_DETAIL_KEYS = frozenset(
@@ -2800,17 +2833,26 @@ class LiveAoxAttemptRunner:
                     "admitted attempt differs from the reviewed task, lane, or root",
                     details={"session_id": session_id},
                 )
-            if attempt.status is not ScientificAttemptStatus.CLOSED:
-                return None
             service = ScientificAttemptService(
                 repositories,
                 workflow_contract_registry=(
                     AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
                 ),
             )
-            control = service.export_closed_attempt_evidence(
-                attempt.attempt_id
-            )
+            try:
+                lifecycle = service.resolve_attempt_lifecycle(
+                    attempt.attempt_id
+                )
+                if not lifecycle.is_closed:
+                    return None
+                control = service.export_closed_attempt_evidence(
+                    attempt.attempt_id
+                )
+            except ScientificAttemptError as exc:
+                raise _scientific_attempt_live_error(
+                    exc,
+                    attempt_id=attempt.attempt_id,
+                ) from exc
             projection = service.mutation_scopes.project_scope(
                 attempt.mutation_scope_id
             )
@@ -6064,6 +6106,21 @@ def _assert_selected_chain_operation_approval(
                 current.sandbox_run_id
             )
         )
+        attempt_lifecycle = None
+        if len(matching) == 1:
+            attempt = matching[0]
+            try:
+                attempt_lifecycle = ScientificAttemptService(
+                    repositories,
+                    workflow_contract_registry=(
+                        AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
+                    ),
+                ).resolve_attempt_lifecycle(attempt.attempt_id)
+            except ScientificAttemptError as exc:
+                raise _scientific_attempt_live_error(
+                    exc,
+                    attempt_id=attempt.attempt_id,
+                ) from exc
     if len(attempts) != 1 or len(matching) != 1 or stored_authority is None:
         raise LiveProductPathError(
             "scientific_attempt_approval_authority_missing",
@@ -6071,6 +6128,7 @@ def _assert_selected_chain_operation_approval(
             details={"session_id": session_id},
         )
     attempt = matching[0]
+    assert attempt_lifecycle is not None
     request = dict(authority["authority_request"])
     if (
         current.sdk_module,
@@ -6093,7 +6151,7 @@ def _assert_selected_chain_operation_approval(
         else ""
     )
     if (
-        attempt.status is not ScientificAttemptStatus.ACTIVE
+        not attempt_lifecycle.accepts_scientific_mutation
         or attempt.task_id != authority["task_id"]
         or attempt.lane_id != authority["lane_id"]
         or attempt.root_ref != authority_root_ref(authority)

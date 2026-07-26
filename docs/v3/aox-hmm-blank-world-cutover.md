@@ -569,6 +569,32 @@ disjoint from both full-path diagnostic and formal acceptance; every result is
 permanently `acceptance_eligible=false` and cannot enter an `@3` bundle or the
 campaign reducer.
 
+### First closure-stage diagnostic: permanent diagnostic failure
+
+The first non-`rNN` closure-stage plan
+`sha256:81cc5ba229775fee8bdc327a14f00efe0a8e15c01ccf567749b5cc0e2457a7e4`
+was consumed exactly once. The fresh executor, reporter and master completed
+their tasks; report `report_ec02d118b9a5`, co-terminal response and immutable
+closure `attempt_closure_b8683b040385bfe1fc16b3bc` were durable, with
+`scientific.attempt.closed` at cursor `276`. The append-only base attempt
+remained `status=active`, and the old terminal observer incorrectly treated
+that snapshot as authoritative. After six semantic drains it issued 114
+additional zero-signal/zero-event/zero-output drains and sealed
+`formal_runtime_drain_exhausted`.
+
+That decision
+`sha256:c055028511d19bf07f16a6a5b741a07972684704309a0602d659ed739d2353c7`
+and fatal
+`sha256:6b39f7c758e9df6d1fbc7e4ad1bca364c9844c4aeb4c9f85fabdcf3b43e580e6`
+are permanent diagnostic failure evidence, not a partial success to promote.
+The repair centralizes lifecycle derivation over attempt, closure request and
+closure: exact closure is terminal on first observation even if the base row is
+active; request-only state rejects mutation; contradictory graphs fail closed.
+The consumed authority and target cannot be retried. Any single follow-up
+diagnostic requires a clean validated repair commit, a fresh non-`rNN` target
+and a separately published one-use plan with otherwise identical production
+MICU/runtime/browser/supervision/ledger bounds.
+
 ## Numbered launch-preparation boundary
 
 The no-attempt preparation phase may update local configuration, build and hash

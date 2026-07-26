@@ -194,7 +194,9 @@ def test_repository_backed_r59_cut_reconstructs_into_fresh_isolated_root(
         "model": "gpt-5.5",
         "token_scenario": "aox_closure_stage_diagnostic",
         "ledger_path": str(ledger_path.resolve()),
-        "ledger_identity": _digest("d"),
+        "ledger_identity": canonical_digest(
+            {"ledger_path": str(ledger_path.resolve())}
+        ),
         "effective_config_digest": identity["config_digest"],
     }
     plan = build_aox_closure_stage_authority_plan(

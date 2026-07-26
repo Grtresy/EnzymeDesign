@@ -265,6 +265,12 @@ from .scientific_attempt_repositories import ResolvedScientificSelectionHead
 from .scientific_attempt_repositories import ScientificSelectionHead
 from .scientific_attempt_repositories import ScientificSelectionIntegrityError
 from .scientific_attempt_repositories import ScientificSelectionRepository
+from .scientific_attempt_lifecycle import ResolvedScientificAttemptLifecycle
+from .scientific_attempt_lifecycle import (
+    ScientificAttemptLifecycleIntegrityError,
+)
+from .scientific_attempt_lifecycle import ScientificAttemptLifecycleResolver
+from .scientific_attempt_lifecycle import resolve_scientific_attempt_lifecycle
 from .scientific_attempts import SCIENTIFIC_ATTEMPT_AUTHORIZATION_POLICY_ID
 from .scientific_attempts import ScientificAttemptError
 from .scientific_attempts import ScientificAttemptService
@@ -575,6 +581,8 @@ __all__ = [
     "ScientificAttemptClosureRepository",
     "ScientificAttemptError",
     "ScientificAttemptIdentityConflictError",
+    "ScientificAttemptLifecycleIntegrityError",
+    "ScientificAttemptLifecycleResolver",
     "ScientificAttemptRepository",
     "ScientificAttemptRepositoryError",
     "ScientificAttemptService",
@@ -582,6 +590,7 @@ __all__ = [
     "ScientificDispositionRepository",
     "ScientificEffectAdoptionRepository",
     "ScientificOccurrenceSnapshot",
+    "ResolvedScientificAttemptLifecycle",
     "ScientificOperationAdoptionResult",
     "ScientificOperationSignature",
     "ScientificOperationUniverse",
@@ -601,6 +610,7 @@ __all__ = [
     "ScientificWorkflowScopePolicy",
     "scientific_attempt_authorization_identity",
     "scientific_attempt_authorization_request",
+    "resolve_scientific_attempt_lifecycle",
     "register_scientific_attempt_tools",
     "SQLiteRepositoryProvider",
     "SkillDescriptor",
