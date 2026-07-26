@@ -50,18 +50,18 @@
 ## 7. Fresh Non-rNN Closure-Stage Diagnostic
 
 - [x] 7.1 Independently audit the first consumed closure-stage failure and record its exact terminal closure, 114 empty drains, fatal decision, MICU attribution, and unchanged r59 source hashes.
-- [ ] 7.2 Verify the committed clean HEAD, pinned config/workflow/SOP/qualification/UI/model/ledger identities, r59 retirement and cursor-614 cut, and a nonexistent fresh non-`rNN` target.
-- [ ] 7.3 Publish and inspect one new reviewable closure-stage authority plan with the same production MICU/runtime/browser/supervision/ledger/resource configuration and no target-side effect.
-- [ ] 7.4 Consume the deterministic one-use receipt and execute exactly one real MICU closure-stage diagnostic; never reuse the prior plan or retry under the consumed plan.
-- [ ] 7.5 Monitor bounded semantic progress through the supervisor without opening the live root before descendant retirement.
-- [ ] 7.6 Seal either the complete diagnostic result or finite fatal evidence, source post-hashes, MICU ledger transition, and permanent `acceptance_eligible=false` decision.
+- [x] 7.2 Verify the committed clean HEAD, pinned config/workflow/SOP/qualification/UI/model/ledger identities, r59 retirement and cursor-614 cut, and a nonexistent fresh non-`rNN` target.
+- [x] 7.3 Publish and inspect one new reviewable closure-stage authority plan with the same production MICU/runtime/browser/supervision/ledger/resource configuration and no target-side effect.
+- [x] 7.4 Consume the deterministic one-use receipt and execute exactly one real MICU closure-stage diagnostic; never reuse the prior plan or retry under the consumed plan.
+- [x] 7.5 Monitor bounded semantic progress through the supervisor without opening the live root before descendant retirement.
+- [x] 7.6 Seal either the complete diagnostic result or finite fatal evidence, source post-hashes, MICU ledger transition, and permanent `acceptance_eligible=false` decision.
 
 ## 8. Offline Diagnostic Audit and Handoff
 
-- [ ] 8.1 Independently validate authority consumption, source/reconstruction/parity receipts, lifecycle frames, process retirement, browser evidence, result/fatal schema, and decision.
-- [ ] 8.2 Inspect the fresh SQLite and durable events to prove executor completion, reporter publication/completion, master-owned co-terminal close, Host finalization, and first-observation terminal convergence.
-- [ ] 8.3 Reconcile MICU rows and baseline/terminal operation, effect, and artifact sets to prove no new external science or source-copy adoption.
-- [ ] 8.4 Rehash the original r59 and first closure-stage source inventories and prove both remained unchanged.
-- [ ] 8.5 Prove no formal bundle, exact-three input, campaign reducer decision, GO/NO-GO, numbered run, push, or PR was created.
-- [ ] 8.6 Record an evidence-backed Chinese outcome analysis and update the relevant diagnostic task/result documentation without overstating acceptance.
-- [ ] 8.7 Commit any repository evidence/documentation closure as a separate local post-live commit, if produced, and leave the worktree clean without pushing.
+- [x] 8.1 Independently validate authority consumption, source/reconstruction/parity receipts, lifecycle frames, process retirement, browser evidence, result/fatal schema, and decision.
+- [x] 8.2 Inspect the fresh SQLite and durable events to establish the actual terminal state: execution/research completed, reporter remained absent, and no report, closure, Host finalization, or first-observation lifecycle branch was reached.
+- [x] 8.3 Reconcile MICU rows and baseline/terminal operation, effect, and artifact sets to prove no new external science or source-copy adoption.
+- [x] 8.4 Rehash the original r59 and first closure-stage source inventories and prove both remained unchanged.
+- [x] 8.5 Prove no formal bundle, exact-three input, campaign reducer decision, GO/NO-GO, numbered run, push, or PR was created.
+- [x] 8.6 Record an evidence-backed Chinese outcome analysis and update the relevant diagnostic task/result documentation without overstating acceptance.
+- [x] 8.7 Commit any repository evidence/documentation closure as a separate local post-live commit, if produced, and leave the worktree clean without pushing.

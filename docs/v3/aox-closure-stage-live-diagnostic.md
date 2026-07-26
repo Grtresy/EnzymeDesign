@@ -119,6 +119,71 @@ relabeled or rewritten. A successor is allowed only from a validated clean
 repair commit, a previously nonexistent fresh target and a newly published,
 separately reviewed one-use authority plan with the same fixed runtime details.
 
+## Repair-commit successor diagnostic
+
+The first successor after the lifecycle repair was prepared from clean commit
+`c3c560dd6ede54958398fb3e55d5cd62cc956ad1`. Its full architecture-admission
+payload digest was
+`sha256:7f11fedfe496dd0c5519ab946523e71f387dd8f1eb748d8d35d326fbecc2a813`.
+The non-`rNN` preparation root is
+`/tmp/openzyme-aox-closure-stage-lifecycle-c3c560d-01.hKkjoT`; authority plan
+`sha256:47ebfa37d653fa51c61eb304b3df620033d57f99aee6a3fcc88ae2e396b861ab`
+was consumed exactly once at `2026-07-26T03:54:36.815526+00:00`. It bound
+target `aox-closure-stage-cb8997f9906ad83b31822ab1`, diagnostic attempt
+`closure-stage-b5aab91c214c9b201f1c0a6d0284e3ce`, unchanged effective config
+`sha256:4a234d47b942aa0dfec15b9071f40d393d721bfcf541442d4ef3ec062f5f2e6c`
+and runtime-parity receipt
+`sha256:5d61440132ab44469d3c8bb4473f2fd47c83d78866a9fe85a3b092ffd5f106f6`.
+All model, driver, browser, supervision, ledger and resource bounds matched the
+first diagnostic.
+
+This successor failed before the lifecycle boundary under test. The restored
+research task and fresh execution task completed, but master supplied the
+digest-pinned workflow ref to `task.delegate` without that ref being in its
+current explicit focus. The harness rejected call
+`call_9eWt0wQ4nVXpVAsy9ju51DDP` as
+`workflow_ref_not_authorized`, recorded it as
+`agent_can_replan` / `terminal_known`, made no delegation side effect, and gave
+the bounded recovery hint to omit `workflow_refs`. The fourth master call
+correctly described that next action in response text but emitted no tool call.
+Consequently the report task remained unassigned `todo/ready`: there was no
+reporter member, report draft, published report, closure request, co-terminal
+response, or immutable closure.
+
+All 120 runtime commands completed. Three commands processed one signal each
+and produced 51 events plus one assistant output; the remaining 117 commands
+were replay-safe zero-signal drains. The finite result was again
+`formal_runtime_drain_exhausted`, but its cause is distinct from the first
+diagnostic's post-closure truth split. The permanent decision digest is
+`sha256:eb70608e595d64c785227e4c05b46334a3996d853177341f2da729d4bf9c1abc`;
+the fatal digest is
+`sha256:27ae166969295685ed56418e6b8abc404c7e3fff88884f5e85c1fe944b7723be`.
+The supervisor proved descendant retirement and blocked reuse of the consumed
+plan.
+
+Six actual, non-estimated `gpt-5.5` MICU rows used `571429` input, `1289`
+output and `572718` charged tokens, with no overage or hard-limit breach. The
+cumulative ledger advanced from `100763797` to `101336515`. Offline SQLite
+audit returned `quick_check=ok` and zero foreign-key violations; all 120
+runtime leases were released, all 924 mutation writers were retired, and all
+six imported continuations remained completed. Protected reconstructed counts
+for operations, executions, dispatches, result handles, result artifacts,
+session artifacts, research state, sandboxes and materializations remained
+equal to their reconstruction baseline.
+
+The r59 source database and inventory remained exactly
+`sha256:18a6e7a39fcc2df7e9a1dbe661ebd3bee90e2367f42fd1bb4872f2dfd813226e`
+and
+`sha256:9cc10388ba7e4e9a46e68013b02cc34727bfddac04ab8ea11def7e7132fc6cd5`.
+No browser completion receipt, live result, formal bundle, exact-three reducer
+input, GO/NO-GO, numbered run, push or PR was created. This attempt therefore
+neither proves nor falsifies live first-observation lifecycle convergence: it
+never created closure. It is permanent evidence for a separate model-turn
+recovery failure. Fixing that failure must not add hidden delegation,
+auto-enqueue, intent rewriting or retry; it requires a separately specified
+agent-operability/recovery contract and a fresh authority if another live
+diagnostic is ever approved. This consumed plan and target are not retryable.
+
 ## Two-command authority flow
 
 First generate current clean-commit architecture qualification and AOX pin

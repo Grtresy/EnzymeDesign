@@ -595,6 +595,33 @@ diagnostic requires a clean validated repair commit, a fresh non-`rNN` target
 and a separately published one-use plan with otherwise identical production
 MICU/runtime/browser/supervision/ledger bounds.
 
+### Repair-commit closure-stage successor: pre-closure strategy failure
+
+Clean repair commit `c3c560dd6ede54958398fb3e55d5cd62cc956ad1`
+subsequently consumed one fresh non-`rNN` authority plan
+`sha256:47ebfa37d653fa51c61eb304b3df620033d57f99aee6a3fcc88ae2e396b861ab`.
+The restored research and execution tasks completed, but master attempted to
+delegate the ready report task with a workflow ref outside its explicit focus.
+`task.delegate` returned no-effect `workflow_ref_not_authorized` with a safe
+hint to omit the binding. Master described that recovery in its next response
+but emitted no tool call, so no reporter signal, report or closure existed.
+Three of 120 commands processed signals; the remaining 117 were empty and the
+attempt sealed distinct `formal_runtime_drain_exhausted` evidence.
+
+Decision
+`sha256:eb70608e595d64c785227e4c05b46334a3996d853177341f2da729d4bf9c1abc`
+and fatal
+`sha256:27ae166969295685ed56418e6b8abc404c7e3fff88884f5e85c1fe944b7723be`
+are permanent, non-acceptance evidence. Six `gpt-5.5` calls charged `572718`
+tokens without overage. The r59 source and the first diagnostic remained
+immutable; no browser completion receipt, live result, bundle, reducer input
+or numbered verdict was produced. Because this successor never reached
+closure, it does not test the repaired post-closure observer. It instead
+isolates a separate model-turn recovery problem; the harness must not conceal
+that problem with automatic delegation, intent rewriting, auto-enqueue or a
+retry under the consumed plan. Exact artifacts and the full audit are recorded
+in the linked closure-stage diagnostic document.
+
 ## Numbered launch-preparation boundary
 
 The no-attempt preparation phase may update local configuration, build and hash
