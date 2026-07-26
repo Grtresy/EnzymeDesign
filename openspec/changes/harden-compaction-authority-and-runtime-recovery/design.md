@@ -15,6 +15,16 @@ tool call. Core accepted that prose as the turn result, completed the runtime
 signal, and left no successor wakeup. The AOX driver then issued 117
 replay-safe, zero-signal drain commands before its generic bound expired.
 
+The one authorized successor after the forward repair proved that this path
+now reaches reporter publication and immutable scientific-attempt closure.
+It then exposed a separate coordination seam: the final runtime command became
+terminal just before the exact attempt mutation scope entered its committed
+`freezing` phase. A short observer cannot register while admission is closed,
+so the old driver converted the expected
+`mutation_writer_admission_closed` window into
+`mutation_driver_writer_identity_invalid` instead of waiting for the
+post-attempt scope inside the same command bound.
+
 The repair crosses Core memory projection, the model loop, formal AOX policy,
 and the live driver. It must preserve these existing constraints:
 
@@ -39,6 +49,8 @@ and the live driver. It must preserve these existing constraints:
   task is ready and still lacks a durable reporter handoff.
 - Stop an AOX live drive after a small bounded confirmation of a canonical
   no-wakeup stall and emit a typed, evidence-rich failure.
+- Coordinate an exact formal closure-scope rollover inside the current terminal
+  command without masking actual writer identity or scope corruption.
 
 **Non-Goals:**
 
@@ -49,6 +61,8 @@ and the live driver. It must preserve these existing constraints:
 - Change the public message/runtime-drain API, scheduler ready-task semantics,
   task terminal semantics, or database schema.
 - Treat a single transient empty drain as proof of a stall.
+- Admit a second runtime command, reopen writer admission, or retry a model/tool
+  action merely because the closure rollover is in progress.
 - Modify or reuse r59 or any previously consumed live authority/evidence root.
 
 ## Decisions
@@ -143,6 +157,30 @@ visibility and coordination races can briefly produce one empty command.
 Alternative considered: retain only the high `max_drains` guard. Rejected
 because repeated identical no-op commands add no evidence and obscure the
 actual failure.
+
+### 5. Treat exact closure rollover as coordination, not identity corruption
+
+`MutationWriterTurnFactory` correctly rejects a new observer while an attempt
+scope is `freezing` or `quiescent`. The live driver now recognizes that error
+only when all persisted facts agree: the command is formal, the authority
+envelope resolves one attempt, the exact attempt scope is
+`freezing|quiescent|sealed`, there is no open scope, and no competing
+nonterminal scope exists. It then polls the barrier inside the already
+admitted command's existing deadline. Once the post-attempt scope opens, the
+ordinary short observer is registered and retired normally.
+
+The driver does not change scope state, issue another drain, or invent a writer.
+Parent-scope mismatch, missing/ambiguous attempt identity, any open scope, or
+competing nonterminal scope retains the original fail-closed error. If the
+exact rollover never converges, the finite outcome is
+`scientific_attempt_scope_rollover_stalled` with only bounded scope identity
+and state.
+
+Alternative considered: retry every `mutation_writer_admission_closed`.
+Rejected because that code also covers ambiguous scope cardinality and would
+hide corruption. Alternative considered: remove the observer during closure.
+Rejected because attached root/child writers must remain visible until the
+normal barrier can be formed.
 
 ## Risks / Trade-offs
 

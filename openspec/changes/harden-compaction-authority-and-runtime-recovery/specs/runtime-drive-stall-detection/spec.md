@@ -50,3 +50,25 @@ auto-enqueue, create successor signals, or redefine task terminal state.
 #### Scenario: Ready task exists without a wake source
 - **WHEN** a ready task remains but no agent signal or other eligible wake source exists
 - **THEN** the driver reports the stall and does not auto-enqueue the task
+
+### Requirement: Formal scope rollover is coordinated inside the current command
+After a terminal formal runtime command, the AOX driver SHALL distinguish the
+exact scientific-attempt closure rollover window from an invalid observer
+identity. It SHALL wait only inside the already admitted command's bounded
+coordination deadline and SHALL NOT issue a successor drain as a retry.
+
+#### Scenario: Exact attempt scope is closing
+- **WHEN** observer admission returns `mutation_writer_admission_closed`, the same authority envelope resolves exactly one attempt scope, that scope is `freezing`, `quiescent`, or transiently `sealed`, and the session has no open scope
+- **THEN** the coordinator waits for the post-attempt scope inside the current command deadline and retries only the read barrier
+
+#### Scenario: Post-attempt scope becomes available
+- **WHEN** the exact post-attempt scope opens before the current command deadline
+- **THEN** the coordinator binds the normal short observer, completes attached-writer settlement, and returns without admitting another runtime command
+
+#### Scenario: Rollover does not converge
+- **WHEN** the exact rollover state persists through the current command deadline
+- **THEN** the coordinator raises `scientific_attempt_scope_rollover_stalled` with bounded scope identity and state
+
+#### Scenario: Observer identity is actually invalid
+- **WHEN** the error is a parent-scope mismatch, an absent or ambiguous authority/attempt, or any session contains an open or competing nonterminal scope inconsistent with the exact rollover
+- **THEN** the coordinator preserves the original fail-closed observer error and does not classify it as rollover progress

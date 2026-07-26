@@ -31,6 +31,10 @@ distinguish an actionable wakeup from a replay-safe semantic stall.
 - Make the AOX live driver fail promptly on repeated replay-safe zero-signal
   commands with an unchanged canonical progress fingerprint and no eligible
   wake source.
+- Treat only the exact formal scientific-attempt scope rollover as a bounded
+  wait inside the current terminal command; actual observer identity or scope
+  ambiguity still fails closed, and a stalled rollover receives a typed
+  terminal blocker.
 - Preserve fail-closed delegation, explicit scheduler drain, task-terminal,
   one-use authority, immutable source evidence, and non-adoption semantics.
 

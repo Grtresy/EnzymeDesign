@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -16,7 +16,7 @@ import sqlite3
 import sys
 import threading
 import time
-from typing import Any, Iterator, Literal
+from typing import Any, Iterator, Literal, TypeVar
 from urllib.parse import quote
 import zlib
 
@@ -45,6 +45,7 @@ from openzyme_domain import ControlledOperationExecutionLifecycle
 from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import MutationScopeKind
+from openzyme_domain import MutationScopeState
 from openzyme_domain import MutationWriterKind
 from openzyme_domain import RetryEligibility
 from openzyme_domain import SessionArtifactRecord
@@ -119,6 +120,7 @@ BROWSER_OBSERVATION_MODE = "chrome_devtools_mcp_file_handoff"
 BROWSER_SEALED_PAGE_URL = (
     "loopback://same-process/ui/?project_id=aox-blank-world-cutover"
 )
+_RuntimeBarrierResult = TypeVar("_RuntimeBarrierResult")
 _MAX_BROWSER_SCREENSHOT_BASE64_CHARS = 64 * 1024 * 1024
 _MAX_BROWSER_SCREENSHOT_DECODED_BYTES = 64 * 1024 * 1024
 _MAX_MUTATION_LEDGER_SNAPSHOT_ROWS = 50_000
@@ -2163,17 +2165,21 @@ class LiveAoxAttemptRunner:
         session_id: str,
         purpose: Literal["probe", "formal"],
         attempt_authority: Mapping[str, object] | None,
+        rollover_deadline: float | None = None,
     ) -> AoxSessionRuntimeObservation:
-        with self._runtime_barrier_observer(
+        return self._bounded_runtime_barrier_read(
             provider,
             session_id=session_id,
             purpose=purpose,
             attempt_authority=attempt_authority,
-        ):
-            return AoxRuntimeObservationService(provider).observe_session(
+            rollover_deadline=rollover_deadline,
+            read=lambda: AoxRuntimeObservationService(
+                provider
+            ).observe_session(
                 session_id=session_id,
                 purpose=purpose,
-            )
+            ),
+        )
 
     def _has_inflight_mutation_writers(
         self,
@@ -2182,16 +2188,69 @@ class LiveAoxAttemptRunner:
         session_id: str,
         purpose: Literal["probe", "formal"],
         attempt_authority: Mapping[str, object] | None,
+        rollover_deadline: float | None = None,
     ) -> bool:
-        with self._runtime_barrier_observer(
+        return self._bounded_runtime_barrier_read(
             provider,
             session_id=session_id,
             purpose=purpose,
             attempt_authority=attempt_authority,
-        ):
-            return AoxRuntimeObservationService(
+            rollover_deadline=rollover_deadline,
+            read=lambda: AoxRuntimeObservationService(
                 provider
-            ).has_inflight_mutation_writers(session_id=session_id)
+            ).has_inflight_mutation_writers(session_id=session_id),
+        )
+
+    def _bounded_runtime_barrier_read(
+        self,
+        provider: SQLiteRepositoryProvider,
+        *,
+        session_id: str,
+        purpose: Literal["probe", "formal"],
+        attempt_authority: Mapping[str, object] | None,
+        rollover_deadline: float | None,
+        read: Callable[[], _RuntimeBarrierResult],
+    ) -> _RuntimeBarrierResult:
+        while True:
+            try:
+                with self._runtime_barrier_observer(
+                    provider,
+                    session_id=session_id,
+                    purpose=purpose,
+                    attempt_authority=attempt_authority,
+                ):
+                    return read()
+            except AoxRuntimeObservationError as exc:
+                rollover_projection = (
+                    None
+                    if rollover_deadline is None
+                    else self._formal_scope_rollover_projection(
+                        provider,
+                        session_id=session_id,
+                        purpose=purpose,
+                        attempt_authority=attempt_authority,
+                        observation_error=exc,
+                    )
+                )
+                if rollover_projection is None:
+                    raise
+                remaining = rollover_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AoxRuntimeObservationError(
+                        "scientific_attempt_scope_rollover_stalled",
+                        (
+                            "formal scientific-attempt scope rollover did not "
+                            "restore one exact open observer scope within the "
+                            "runtime command bound"
+                        ),
+                        details={
+                            "session_id": session_id,
+                            **rollover_projection,
+                        },
+                    ) from exc
+                time.sleep(
+                    min(self.browser_poll_interval_seconds, remaining)
+                )
 
     def _runtime_wake_state(
         self,
@@ -2834,6 +2893,7 @@ class LiveAoxAttemptRunner:
                     session_id=session_id,
                     purpose=purpose,
                     attempt_authority=attempt_authority,
+                    rollover_deadline=started + self.timeout_seconds,
                 )
             except AoxRuntimeObservationError as exc:
                 raise LiveProductPathError(
@@ -2913,6 +2973,7 @@ class LiveAoxAttemptRunner:
                     session_id=session_id,
                     purpose=purpose,
                     attempt_authority=attempt_authority,
+                    rollover_deadline=started + self.timeout_seconds,
                 )
             except AoxRuntimeObservationError as exc:
                 raise LiveProductPathError(
@@ -3207,6 +3268,87 @@ class LiveAoxAttemptRunner:
                 )
         return {}
 
+    def _formal_scope_rollover_projection(
+        self,
+        provider: SQLiteRepositoryProvider,
+        *,
+        session_id: str,
+        purpose: Literal["probe", "formal"],
+        attempt_authority: Mapping[str, object] | None,
+        observation_error: AoxRuntimeObservationError,
+    ) -> dict[str, object] | None:
+        """Recognize only the exact bounded formal closure rollover window."""
+
+        if (
+            purpose != "formal"
+            or attempt_authority is None
+            or observation_error.code
+            != "mutation_driver_writer_identity_invalid"
+            or observation_error.details.get("mutation_scope_error_code")
+            != "mutation_writer_admission_closed"
+        ):
+            return None
+        envelope_id = str(attempt_authority.get("envelope_id") or "").strip()
+        if not envelope_id:
+            return None
+        with provider.read() as scope:
+            repositories = scope.repositories
+            attempts = tuple(
+                repositories.scientific_attempts.list_by_session(session_id)
+            )
+            if len(attempts) != 1 or attempts[0].envelope_id != envelope_id:
+                return None
+            attempt_scope = repositories.mutation_scopes.get(
+                attempts[0].mutation_scope_id
+            )
+            scopes = tuple(
+                repositories.mutation_scopes.list_by_session(session_id)
+            )
+            matching_scopes = tuple(
+                item
+                for item in scopes
+                if attempt_scope is not None
+                and item.scope_id == attempt_scope.scope_id
+            )
+            if (
+                attempt_scope is None
+                or len(matching_scopes) != 1
+                or attempt_scope.scope_kind is not MutationScopeKind.ATTEMPT
+                or attempt_scope.state
+                not in {
+                    MutationScopeState.FREEZING,
+                    MutationScopeState.QUIESCENT,
+                    MutationScopeState.SEALED,
+                }
+                or any(
+                    item.state is MutationScopeState.OPEN for item in scopes
+                )
+            ):
+                return None
+            active_scopes = tuple(
+                item for item in scopes if not item.state.is_terminal
+            )
+            if (
+                attempt_scope.state
+                in {
+                    MutationScopeState.FREEZING,
+                    MutationScopeState.QUIESCENT,
+                }
+                and (
+                    len(active_scopes) != 1
+                    or active_scopes[0].scope_id != attempt_scope.scope_id
+                )
+            ) or (
+                attempt_scope.state is MutationScopeState.SEALED
+                and active_scopes
+            ):
+                return None
+            return {
+                "scope_id": attempt_scope.scope_id,
+                "scope_kind": attempt_scope.scope_kind.value,
+                "state": attempt_scope.state.value,
+            }
+
     def _coordinate_runtime_drain(
         self,
         api: _PublicHostClient,
@@ -3416,6 +3558,7 @@ class LiveAoxAttemptRunner:
                                 session_id=session_id,
                                 purpose=purpose,
                                 attempt_authority=attempt_authority,
+                                rollover_deadline=deadline,
                             )
                         )
                     except AoxRuntimeObservationError as exc:

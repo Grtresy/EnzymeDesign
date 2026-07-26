@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC
 from datetime import datetime
@@ -26,6 +27,8 @@ from openzyme_domain import ControlledOperationExecutionLifecycle
 from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import RetryEligibility
+from openzyme_domain import MutationScopeKind
+from openzyme_domain import MutationScopeState
 from openzyme_domain import MutationWriterKind
 from openzyme_domain import ScientificAttemptStatus
 from openzyme_domain import Session
@@ -4995,6 +4998,304 @@ def test_formal_terminal_runtime_command_uses_bounded_observer_on_real_sqlite(
         blob_root=blob_root,
     )
     assert sealed["state"] == "sealed"
+
+
+def _formal_rollover_provider(
+    *,
+    envelope_id: str,
+) -> tuple[object, SimpleNamespace]:
+    attempt_scope = SimpleNamespace(
+        scope_id="mutation_scope_attempt_rollover",
+        scope_kind=MutationScopeKind.ATTEMPT,
+        state=MutationScopeState.FREEZING,
+    )
+    attempt = SimpleNamespace(
+        envelope_id=envelope_id,
+        mutation_scope_id=attempt_scope.scope_id,
+    )
+    repositories = SimpleNamespace(
+        scientific_attempts=SimpleNamespace(
+            list_by_session=lambda _session_id: (attempt,)
+        ),
+        mutation_scopes=SimpleNamespace(
+            get=lambda scope_id: (
+                attempt_scope if scope_id == attempt_scope.scope_id else None
+            ),
+            list_by_session=lambda _session_id: (attempt_scope,),
+        ),
+    )
+    provider = SimpleNamespace(
+        read=lambda: _SelectedChainApprovalProvider._Scope(repositories)
+    )
+    return provider, attempt_scope
+
+
+def test_formal_terminal_command_waits_through_exact_scope_rollover(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    session_id = "sess_serial"
+    envelope_id = "attempt_authority_rollover"
+    provider, attempt_scope = _formal_rollover_provider(
+        envelope_id=envelope_id
+    )
+    raw_client = _SerialApprovalJsonClient(())
+    api = live._PublicHostClient(raw_client)
+    observer_checks = 0
+
+    @contextmanager
+    def observe_writers(*_args: object, **_kwargs: object):
+        nonlocal observer_checks
+        observer_checks += 1
+        if observer_checks == 1:
+            raise live.AoxRuntimeObservationError(
+                "mutation_driver_writer_identity_invalid",
+                "runtime coordination lacks one exact outer attempt-driver writer",
+                details={
+                    "mutation_scope_error_code": (
+                        "mutation_writer_admission_closed"
+                    )
+                },
+            )
+        attempt_scope.state = MutationScopeState.OPEN
+        yield
+
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_runtime_barrier_observer",
+        observe_writers,
+    )
+    monkeypatch.setattr(
+        live.AoxRuntimeObservationService,
+        "has_inflight_mutation_writers",
+        lambda *_args, **_kwargs: False,
+    )
+
+    coordination = runner._coordinate_runtime_drain(
+        api,
+        provider,  # type: ignore[arg-type]
+        session_id=session_id,
+        purpose="formal",
+        drain_number=1,
+        started=time.monotonic(),
+        pre_event_cursor=0,
+        prior_approval_ids=frozenset(),
+        browser_gate_enabled=False,
+        browser_approval_receipt=None,
+        fault_enabled=False,
+        fault_blob_root=None,
+        fault_receipt=None,
+        attempt_authority={
+            "attempt_id": "closure-stage-rollover",
+            "envelope_id": envelope_id,
+        },
+    )
+
+    assert observer_checks == 2
+    assert len(raw_client.drain_payloads) == 1
+    assert coordination.command_status == "completed"
+    assert coordination.workspace == {"pending_approvals": []}
+
+
+def test_full_formal_observation_uses_the_same_scope_rollover_wait(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    envelope_id = "attempt_authority_full_observation_rollover"
+    provider, attempt_scope = _formal_rollover_provider(
+        envelope_id=envelope_id
+    )
+    observer_checks = 0
+    expected = SimpleNamespace(state="completed", blocker_code=None)
+
+    @contextmanager
+    def observe_writers(*_args: object, **_kwargs: object):
+        nonlocal observer_checks
+        observer_checks += 1
+        if observer_checks == 1:
+            raise live.AoxRuntimeObservationError(
+                "mutation_driver_writer_identity_invalid",
+                "runtime coordination lacks one exact outer attempt-driver writer",
+                details={
+                    "mutation_scope_error_code": (
+                        "mutation_writer_admission_closed"
+                    )
+                },
+            )
+        attempt_scope.state = MutationScopeState.OPEN
+        yield
+
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_runtime_barrier_observer",
+        observe_writers,
+    )
+    monkeypatch.setattr(
+        live.AoxRuntimeObservationService,
+        "observe_session",
+        lambda *_args, **_kwargs: expected,
+    )
+
+    observation = runner._observe_session_runtime(
+        provider,  # type: ignore[arg-type]
+        session_id="sess_formal_rollover",
+        purpose="formal",
+        attempt_authority={
+            "attempt_id": "closure-stage-full-observation",
+            "envelope_id": envelope_id,
+        },
+        rollover_deadline=time.monotonic() + 1.0,
+    )
+
+    assert observation is expected
+    assert observer_checks == 2
+
+
+def test_formal_terminal_command_does_not_mask_other_observer_identity_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    raw_client = _SerialApprovalJsonClient(())
+    api = live._PublicHostClient(raw_client)
+
+    @contextmanager
+    def reject_observer(*_args: object, **_kwargs: object):
+        raise live.AoxRuntimeObservationError(
+            "mutation_driver_writer_identity_invalid",
+            "runtime coordination lacks one exact outer attempt-driver writer",
+            details={
+                "mutation_scope_error_code": (
+                    "mutation_writer_parent_scope_mismatch"
+                )
+            },
+        )
+        yield
+
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_runtime_barrier_observer",
+        reject_observer,
+    )
+
+    with pytest.raises(live.LiveProductPathError) as captured:
+        runner._coordinate_runtime_drain(
+            api,
+            object(),  # type: ignore[arg-type]
+            session_id="sess_serial",
+            purpose="formal",
+            drain_number=1,
+            started=time.monotonic(),
+            pre_event_cursor=0,
+            prior_approval_ids=frozenset(),
+            browser_gate_enabled=False,
+            browser_approval_receipt=None,
+            fault_enabled=False,
+            fault_blob_root=None,
+            fault_receipt=None,
+            attempt_authority={
+                "attempt_id": "closure-stage-parent-mismatch",
+                "envelope_id": "attempt_authority_parent_mismatch",
+            },
+        )
+
+    assert captured.value.code == "mutation_driver_writer_identity_invalid"
+    assert captured.value.details == {
+        "mutation_scope_error_code": "mutation_writer_parent_scope_mismatch"
+    }
+
+
+def test_formal_scope_rollover_wait_remains_bounded_and_typed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=0.02,
+        browser_poll_interval_seconds=0.001,
+    )
+    raw_client = _SerialApprovalJsonClient(())
+    api = live._PublicHostClient(raw_client)
+
+    @contextmanager
+    def reject_observer(*_args: object, **_kwargs: object):
+        raise live.AoxRuntimeObservationError(
+            "mutation_driver_writer_identity_invalid",
+            "runtime coordination lacks one exact outer attempt-driver writer",
+            details={
+                "mutation_scope_error_code": (
+                    "mutation_writer_admission_closed"
+                )
+            },
+        )
+        yield
+
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_runtime_barrier_observer",
+        reject_observer,
+    )
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_formal_scope_rollover_projection",
+        lambda *_args, **_kwargs: {
+            "scope_id": "mutation_scope_attempt_stalled",
+            "scope_kind": "attempt",
+            "state": "freezing",
+        },
+    )
+
+    with pytest.raises(live.LiveProductPathError) as captured:
+        runner._coordinate_runtime_drain(
+            api,
+            object(),  # type: ignore[arg-type]
+            session_id="sess_serial",
+            purpose="formal",
+            drain_number=1,
+            started=time.monotonic(),
+            pre_event_cursor=0,
+            prior_approval_ids=frozenset(),
+            browser_gate_enabled=False,
+            browser_approval_receipt=None,
+            fault_enabled=False,
+            fault_blob_root=None,
+            fault_receipt=None,
+            attempt_authority={
+                "attempt_id": "closure-stage-stalled",
+                "envelope_id": "attempt_authority_stalled",
+            },
+        )
+
+    assert captured.value.code == "scientific_attempt_scope_rollover_stalled"
+    assert captured.value.details == {
+        "session_id": "sess_serial",
+        "scope_id": "mutation_scope_attempt_stalled",
+        "scope_kind": "attempt",
+        "state": "freezing",
+    }
+    assert len(raw_client.drain_payloads) == 1
 
 
 def test_later_drain_auto_approves_after_chrome_receipt(

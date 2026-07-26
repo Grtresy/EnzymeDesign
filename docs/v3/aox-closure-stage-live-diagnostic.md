@@ -226,6 +226,91 @@ fresh one-use plan, exact frozen MICU/runtime/browser/supervision/ledger
 parity, and one separately approved consumption. Neither consumed predecessor
 may be retried.
 
+## Recovery-repair successor and post-closure observer finding
+
+The repair was committed as
+`4bf4c4244fae68beff8e5d47717e83824ff2367e`. A full architecture admission
+then passed with payload digest
+`sha256:63a6187fc9dcb7e05f703bd4cde24e4dc60b178b2aaaa5cb1ecc3a6b7770d914`.
+The fresh preparation root is
+`/tmp/openzyme-aox-closure-stage-recovery-4bf4c42-01.iWDXj2`. Its one-use
+authority plan
+`sha256:7394c5200582b114a72fa08b0711dc993f4c7164dd66c1fb20dd1cf837060ae2`
+was consumed exactly once at `2026-07-26T06:18:19.250612+00:00`, binding
+target `aox-closure-stage-6d700edf1e873f25a5bc40c9` and attempt
+`closure-stage-9d4dc49534e1e7443f1d5f5fe4146eaa`. Runtime parity remained exact:
+effective config
+`sha256:4a234d47b942aa0dfec15b9071f40d393d721bfcf541442d4ef3ec062f5f2e6c`
+and parity receipt
+`sha256:0b882203b80a6d34fc34bade112ee5f00ff6d72c76baa9bc6a3afa8ba02afe61`.
+There was exactly one real invocation and no retry or authority reuse.
+
+The forward repair reached its intended product state. The master delegated
+exact report task `aox_report_closure_stage_4aa5eef9635b` with
+`workflow_refs=[]`; reporter `agent:reporter:8748e9478cf7` published
+`report_16937278db9c` through draft `draft_711cd0837a01` and explicitly
+completed the task. Research, execution and report tasks all became
+`completed`. The master then returned a non-empty user answer and
+`scientific.attempt.close` in one provider response, producing closure request
+`attempt_closure_request_77e3d2ac363b0b568a9023ad`, co-terminal response
+`attempt_closure_response_8f145b77ed03c399d60adf3d`, immutable closure
+`attempt_closure_a2f78d1fd2199e239696b99e`, and final durable cursor `263`
+`scientific.attempt.closed`. Five runtime commands each processed exactly one
+signal; there were no empty drains. The challenged loopback Web UI visibly
+showed the reporter, published report, three completed tasks and final answer.
+
+The diagnostic nevertheless failed after closure with
+`mutation_driver_writer_identity_invalid`. The immutable decision is
+`/tmp/openzyme-aox-closure-stage-recovery-4bf4c42-01.iWDXj2/targets/aox-closure-stage-6d700edf1e873f25a5bc40c9/closure-stage-diagnostic-decision.json`
+with digest
+`sha256:470df988b817867c5fb80b859fd60c414d99a873e66a839283beb13fe1bef237`.
+The process-supervision fatal is under the same target's `failures/` directory,
+with digest
+`sha256:a3c4a24fcb6e9342dc11faa48bdb393481c0c9e1f4a1b9559c83b4fada0e8123`.
+The child exited `70`; supervision proved descendant retirement and blocked
+another attempt. No final browser completion receipt or live-result envelope
+was created because the driver exited before issuing the completion challenge.
+
+SQLite timing identifies a post-product driver race, not a recurrence of the
+workflow-authority defect. The fifth command became completed at
+`2026-07-26T06:20:52.471276+00:00` and its runtime-command writer retired at
+`06:20:52.501522`. The exact attempt scope committed `freezing` at
+`06:20:52.642768`, became quiescent at `06:20:53.331775`, and sealed at
+`06:20:53.540808`; closure and the open post-attempt scope followed at
+`06:20:53.573680` and `06:20:53.574446`. During that bounded
+admission-closed window the terminal-command coordinator attempted to register
+its short observer. `MutationWriterTurnFactory` correctly returned
+`mutation_writer_admission_closed`, but the old driver incorrectly mapped every
+such registration failure to observer identity invalid. There is no failed
+observer row: all five leases, all earlier observers and all other mutation
+writers retired, and the only post-scope writers are the valid Host finalizer
+and its event publishers.
+
+The post-live correction recognizes only this exact rollover tuple: formal
+purpose, the same authority envelope resolving one attempt, its exact attempt
+scope in `freezing|quiescent|sealed`, zero open scope, no competing nonterminal
+scope, and underlying error `mutation_writer_admission_closed`. It waits for
+the post-attempt scope only inside the already admitted terminal command's
+original deadline, then forms and retires the ordinary short observer. It does
+not issue a new drain, mutate scope state, reopen admission, or retry a model
+or tool. Parent-scope mismatch, missing/ambiguous authority or attempt, any
+open scope, and competing scope still fail immediately. A genuinely stuck
+transition ends as `scientific_attempt_scope_rollover_stalled`.
+
+The run added exactly 13 actual, non-estimated `gpt-5.5` ledger rows:
+`1159495` input, `2849` output and `1162344` charged tokens. Cumulative charge
+advanced from `101336515` to `102498859`; there was no reservation overage or
+hard-limit breach. Offline SQLite returned `quick_check=ok` and zero foreign
+key violations. The r59 source database and inventory remained byte-identical
+at
+`sha256:18a6e7a39fcc2df7e9a1dbe661ebd3bee90e2367f42fd1bb4872f2dfd813226e`
+and
+`sha256:9cc10388ba7e4e9a46e68013b02cc34727bfddac04ab8ea11def7e7132fc6cd5`.
+No formal bundle, reducer, GO/NO-GO, numbered run, push or PR was produced.
+The consumed plan, target, MICU rows and evidence are permanently
+non-retryable. The bounded rollover correction is focused non-live evidence
+only and does not authorize a second live diagnostic.
+
 ## Two-command authority flow
 
 First generate current clean-commit architecture qualification and AOX pin

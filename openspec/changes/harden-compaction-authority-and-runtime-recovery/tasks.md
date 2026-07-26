@@ -20,15 +20,16 @@
 - [x] 4.1 Add driver regressions for two confirmed empty replay-safe drains, transient single empties, canonical progress, and every eligible wake-source exclusion
 - [x] 4.2 Carry validated runtime command outcomes through coordination and compute a timestamp/lease/event-independent canonical progress fingerprint
 - [x] 4.3 Raise `formal_agent_recovery_unresolved` or `formal_runtime_stalled_no_wakeup` after bounded confirmation without changing runtime-drain or auto-enqueue semantics
+- [x] 4.4 Classify only the exact formal attempt-scope rollover window as a bounded same-command barrier wait, preserve all other observer identity failures, and emit typed `scientific_attempt_scope_rollover_stalled` on deadline
 
 ## 5. Documentation and verification
 
 - [x] 5.1 Synchronize `docs/OpenZyme架构设计.md`, relevant `docs/v3/` runtime/failure documents, and AOX diagnostic/operator guidance with the implemented contracts
 - [x] 5.2 Run focused Core/Host pytest regressions, focused Ruff, OpenSpec strict validation, and `git diff --check` without rerunning `check-mainline`
-- [ ] 5.3 Audit the final diff and create one local pre-live repair commit
+- [x] 5.3 Audit the final diff and create one local pre-live repair commit
 
 ## 6. Fresh non-r closure-stage diagnostic
 
-- [ ] 6.1 Derive and publish one fresh non-`rNN` one-use authority from the same r59 cursor-614 semantic cut point with the previous diagnostic's real MICU/runtime/browser/supervision/ledger/resource details
-- [ ] 6.2 Consume that authority exactly once, audit command/model/tool/task/report/closure evidence offline, and do not retry or reuse authority
-- [ ] 6.3 Record the diagnostic result and immutable evidence paths/digests, validate the documentation diff, and create the final local evidence commit
+- [x] 6.1 Derive and publish one fresh non-`rNN` one-use authority from the same r59 cursor-614 semantic cut point with the previous diagnostic's real MICU/runtime/browser/supervision/ledger/resource details
+- [x] 6.2 Consume that authority exactly once, audit command/model/tool/task/report/closure evidence offline, and do not retry or reuse authority
+- [x] 6.3 Record the diagnostic result and immutable evidence paths/digests, validate the documentation diff, and create the final local evidence commit

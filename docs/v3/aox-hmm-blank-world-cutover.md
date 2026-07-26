@@ -1,6 +1,6 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r59 exposed cross-layer architecture-verification, workflow-binding and lifecycle handoff gaps after earlier runtime/HPC and authority work. r48 through r59 are permanent NO-GO evidence. The executable architecture-qualification gate and diagnostic/formal run-class split are implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. r59 produced a valid healthy-empty scientific result, sealed selection and published report, then proved that a master-only closure handoff could be misclassified as a blocked positive execution exit and that inspection conflated closure-request readiness with post-turn finalization readiness. The forward session-scoped lifecycle precondition and split readiness projection are implemented below. Local Live cutover stays **NO-GO**: implementation completion does not authorize another diagnostic or formal run, and one later separately approved formal acceptance campaign must still seal two real positive attempts plus one controlled fault attempt on one commit/config identity. Existing `authorize` and `run-live` remain formal-acceptance-only; diagnostic uses separately approved `authorize-diagnostic` and `run-diagnostic-live`.
+Status: r43-r59 exposed cross-layer architecture-verification, workflow-binding and lifecycle handoff gaps after earlier runtime/HPC and authority work. r48 through r59 are permanent NO-GO evidence. The executable architecture-qualification gate and diagnostic/formal run-class split are implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. r59 produced a valid healthy-empty scientific result, sealed selection and published report, then proved that a master-only closure handoff could be misclassified as a blocked positive execution exit and that inspection conflated closure-request readiness with post-turn finalization readiness. Later non-`rNN` closure-stage diagnostics remain permanent non-acceptance evidence: the latest one proved executor → reporter → master closure, then exposed a terminal-command observer collision with the normal attempt-scope freezing window. The forward session-scoped lifecycle precondition, split readiness projection and bounded same-command rollover coordination are implemented below. Local Live cutover stays **NO-GO**: implementation completion does not authorize another diagnostic or formal run, and one later separately approved formal acceptance campaign must still seal two real positive attempts plus one controlled fault attempt on one commit/config identity. Existing `authorize` and `run-live` remain formal-acceptance-only; diagnostic uses separately approved `authorize-diagnostic` and `run-diagnostic-live`.
 
 Historical r14-r59 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
@@ -634,8 +634,42 @@ driver also validates v2 command outcomes and stops after two identical
 zero-signal/no-wakeup semantic observations with
 `formal_agent_recovery_unresolved` or
 `formal_runtime_stalled_no_wakeup`, instead of collecting dozens of identical
-drains. These corrections are non-live evidence until committed and separately
-authorized under a fresh non-`rNN` one-use plan.
+drains.
+
+### Recovery-repair successor: closure reached, observer rollover failed
+
+Clean repair commit `4bf4c4244fae68beff8e5d47717e83824ff2367e`
+subsequently consumed fresh non-`rNN` plan
+`sha256:7394c5200582b114a72fa08b0711dc993f4c7164dd66c1fb20dd1cf837060ae2`
+exactly once. The repaired path converged: master delegated reporter with
+`workflow_refs=[]`, report `report_16937278db9c` was published, all three
+canonical tasks completed, and the same master response persisted the user
+answer plus `scientific.attempt.close`. Closure
+`attempt_closure_a2f78d1fd2199e239696b99e`, its co-terminal response and
+cursor `263` closed event all formed. Five commands each processed one signal;
+there were no empty drains.
+
+The old terminal-command coordinator then tried to register its short observer
+after the command was terminal but while the exact attempt scope was
+`freezing` and post-attempt scope was not yet open. It converted the expected
+`mutation_writer_admission_closed` into
+`mutation_driver_writer_identity_invalid`. Decision
+`sha256:470df988b817867c5fb80b859fd60c414d99a873e66a839283beb13fe1bef237`
+and fatal
+`sha256:a3c4a24fcb6e9342dc11faa48bdb393481c0c9e1f4a1b9559c83b4fada0e8123`
+are permanent non-acceptance evidence. Thirteen actual `gpt-5.5` calls charged
+`1162344` tokens with no overage; source digests remained unchanged.
+
+The post-live correction waits only when the same formal authority resolves
+one exact attempt scope in `freezing|quiescent|sealed`, no open or competing
+nonterminal scope exists, and the underlying error is precisely writer
+admission closed. Waiting remains inside the current command deadline and
+never admits a new drain or retries agent/tool work; deadline exhaustion is
+`scientific_attempt_scope_rollover_stalled`. Parent mismatch, missing or
+ambiguous identity, and inconsistent scope cardinality still fail immediately.
+This last correction has focused non-live coverage only. The consumed plan,
+target and evidence cannot be retried, and no new live authority follows from
+the code change.
 
 ## Numbered launch-preparation boundary
 
@@ -2718,14 +2752,13 @@ Offline unit/eval success proves implementation behavior only. Local Live cutove
 
 Until those artifacts exist, documentation and UI must state NO-GO. Historical S15 and deterministic fixtures remain `fixture_non_cutover` regardless of local test status.
 
-r59 is the latest live fact. It is a failed formal campaign whose exact-three
-plan is consumed and whose later slots cannot be reused. Positive 1 formed a
-valid healthy-empty result, sealed selection and published report, but its
-executor converted the master-only closure handoff into a terminal blocked
-task, no closure request formed, and the runtime exhausted its drain bound.
-The forward positive-exit/readiness correction does not authorize a successor
-`preflight`, `run-diagnostic-live`, `run-live`, numbered root, provider/MICU
-call, HPC job, browser campaign or formal attempt. Formal acceptance requires
-a different separately approved exact-three plan after a fresh clean full
-admission and pin. The post-r59 lifecycle correction is non-live implementation
-evidence only. No r59 or pre-correction plan is authority.
+r59 remains the latest numbered/formal live fact. It is a failed campaign whose
+exact-three plan is consumed and whose later slots cannot be reused. The later
+non-`rNN` closure-stage runs do not revise that verdict: all are permanently
+`acceptance_eligible=false`, and the latest consumed plan ended at the
+post-closure observer rollover seam described above. The forward corrections
+do not authorize `preflight`, another closure-stage run,
+`run-diagnostic-live`, `run-live`, a numbered root, provider/MICU call, HPC
+job, browser campaign or formal attempt. Formal acceptance requires a
+different separately approved exact-three plan after a fresh clean full
+admission and pin. No r59 or consumed diagnostic plan is authority.

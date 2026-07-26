@@ -155,6 +155,17 @@ dispatch 或 approval wait。缺 scope、多 scope、observer identity 缺失或
 observer 必须早于 sleep、下一次 compact approval read、下一次 drain、return 或 error
 propagation 退休。
 
+terminal runtime command 可以先于 closure finalizer 完成。此时 exact attempt scope
+可能已提交 `freezing|quiescent`，writer admission 按设计关闭，而 post-attempt scope
+尚未 open。`MutationWriterTurnFactory` 的
+`mutation_writer_admission_closed` 在这里不是 observer identity 损坏。driver 仅当
+formal authority envelope 精确解析到唯一 attempt、该 exact attempt scope 为
+`freezing|quiescent|sealed`、session 为 zero open 且没有 competing nonterminal scope
+时，在当前 command 原 deadline 内等待 rollover 后重新形成短 observer barrier。它不
+admit 新 drain、不重开 scope、不重试 agent/tool；超时 typed fail
+`scientific_attempt_scope_rollover_stalled`。parent mismatch、缺失/多重 attempt、
+任意 open/竞争 scope 仍立即保留原 fail-closed error。
+
 AOX 使用更窄的 `aox_live_attempt_authority_plan@1`：
 
 - plan 精确包含 `positive, positive, fault` 三个槽；
@@ -246,15 +257,19 @@ result 再喂给模型；同批后续 call 全部以
 settlement 仍属于 requesting `AGENT_TURN` writer；writer 退出前 final closure 必须不存在。
 close validation/readiness 失败则保持 non-terminal，允许 agent 读取 blocker 后修正。
 
-上述 transition 必须是一个短本地 write transaction：attempt scope seal、closure row 与唯一
-post-attempt session scope open 对并发 reader 原子可见。runtime barrier 可以看到 transition
-前的 attempt scope 或 transition 后的 post-attempt scope，但不能看到已提交的零 open scope
-中间态。真正 missing/ambiguous scope 仍 fail closed，driver 不以 blind retry 掩盖
-non-atomic finalizer。实现上由 `ScientificAttemptService.finalize_closure_request()` 自身
-打开 Core transaction 并在事务内重新读取 immutable request/attempt/selection/quiescence；
-因此 direct Host endpoint、pending finalizer 与任意后续 Core caller 都不能绕开 rollover
-原子性。规范 post scope 使用 deterministic id/ref，已有 child 必须唯一且身份完全一致；
-并发 finalizer 只能 replay 同一 closure。
+上述 final transition 必须是一个短本地 write transaction：attempt scope seal、closure row
+与唯一 post-attempt session scope open 对并发 reader 原子可见。此前 generic quiescence
+会先提交 attempt scope 的 `freezing`，关闭新 writer admission 并等待已登记 writer 退休；
+这段状态是显式 bounded coordination，不是“缺 scope”。runtime barrier 可以看到 open
+attempt scope、admission-closed `freezing|quiescent` scope，或 final transaction 后的
+open post-attempt scope；它不能把中间两种状态伪装成 ready，也不能把它们当成永久 identity
+损坏。真正 missing/ambiguous scope 仍 fail closed，driver 只在当前 terminal command
+deadline 内识别 exact rollover，不以新 drain 或 blind retry 掩盖 non-atomic finalizer。
+实现上由 `ScientificAttemptService.finalize_closure_request()` 自身打开 Core transaction
+并在事务内重新读取 immutable request/attempt/selection/quiescence；因此 direct Host
+endpoint、pending finalizer 与任意后续 Core caller 都不能绕开 final rollover 原子性。
+规范 post scope 使用 deterministic id/ref，已有 child 必须唯一且身份完全一致；并发
+finalizer 只能 replay 同一 closure。
 
 Host 的两个 scientific transition 调用面共用一条 delivery settlement：canonical
 transition、deterministic public event、以及对原 agent 的 source-bound
@@ -546,3 +561,31 @@ failed-result 必须产生 durable settlement 或 typed unresolved；AOX `@4` �
 fail-fast，保留 120-drain bound 给其他真实未收敛状态。下一次 closure-stage live 若获单独
 批准，仍必须从本修复的 clean commit 发布 fresh non-`rNN` target/plan，并且最多消费一次；
 上述两个 target、authority、MICU/evidence 与 r59 source 都不可复用。
+
+该批准已在 clean repair commit
+`4bf4c4244fae68beff8e5d47717e83824ff2367e` 上恰好消费一次。fresh plan
+`sha256:7394c5200582b114a72fa08b0711dc993f4c7164dd66c1fb20dd1cf837060ae2`
+恢复同一 cursor-614 cut，并复现
+`sha256:4a234d47b942aa0dfec15b9071f40d393d721bfcf541442d4ef3ec062f5f2e6c`
+effective config。旧缺口已通过真实 MICU product path：master 以
+`workflow_refs=[]` 委派 reporter，report `report_16937278db9c` published，三个 canonical
+task 全部 completed；master 同一 response 产生终答与 close，co-terminal response、
+closure `attempt_closure_a2f78d1fd2199e239696b99e` 和 cursor `263`
+`scientific.attempt.closed` 均形成。5 个 runtime command 各处理 1 条 signal，没有
+zero-signal drain。
+
+该 diagnostic 最终仍永久 failed，但暴露的是后置 driver seam。最后 command 于
+`06:20:52.471276Z` completed，command writer 于 `06:20:52.501522Z` retired；
+attempt scope 于 `06:20:52.642768Z` 进入 freezing，随后 quiescent/sealed，closure 与
+post scope 分别于 `06:20:53.573680Z` /
+`06:20:53.574446Z` 可见。旧 coordinator 在 admission-closed window 申请 observer，
+把 `mutation_writer_admission_closed` 错归为
+`mutation_driver_writer_identity_invalid`。decision
+`sha256:470df988b817867c5fb80b859fd60c414d99a873e66a839283beb13fe1bef237`
+和 fatal
+`sha256:a3c4a24fcb6e9342dc11faa48bdb393481c0c9e1f4a1b9559c83b4fada0e8123`
+只封存该事实。13 个 actual `gpt-5.5` MICU rows 精确新增 `1159495` input、
+`2849` output、charged `1162344`，无 overage/breach；r59 source database/inventory
+digest 仍不变。post-live bounded rollover correction 只通过非 live regression 验证，
+没有第二次 live、formal bundle、reducer、GO/NO-GO、push 或 PR；本次 plan、target 与
+证据不可重试或复用。
