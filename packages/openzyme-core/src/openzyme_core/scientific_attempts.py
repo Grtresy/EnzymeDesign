@@ -54,6 +54,8 @@ from .scientific_attempt_lifecycle import (
     ScientificAttemptLifecycleIntegrityError,
 )
 from .scientific_attempt_lifecycle import ScientificAttemptLifecycleResolver
+from .scientific_attempt_rollover import scientific_attempt_post_scope_id
+from .scientific_attempt_rollover import scientific_attempt_post_scope_ref
 from .scientific_selection_evaluation import ScientificSelectionEvaluation
 from .scientific_selection_evaluation import ScientificSelectionEvaluator
 from .scientific_workflow_contracts import (
@@ -3021,9 +3023,11 @@ class ScientificAttemptService:
                     },
                 )
             child = children[0]
-            expected_scope_id = f"mutation_scope_post_{attempt.attempt_id}"
-            expected_scope_ref = (
-                f"post-scientific-attempt:{attempt.attempt_id}"
+            expected_scope_id = scientific_attempt_post_scope_id(
+                attempt.attempt_id
+            )
+            expected_scope_ref = scientific_attempt_post_scope_ref(
+                attempt.attempt_id
             )
             if (
                 child.scope_id != expected_scope_id
@@ -3056,9 +3060,9 @@ class ScientificAttemptService:
         self.mutation_scopes.open_scope(
             session_id=attempt.session_id,
             scope_kind=MutationScopeKind.SESSION,
-            scope_ref=f"post-scientific-attempt:{attempt.attempt_id}",
+            scope_ref=scientific_attempt_post_scope_ref(attempt.attempt_id),
             parent_scope_id=attempt.mutation_scope_id,
-            scope_id=f"mutation_scope_post_{attempt.attempt_id}",
+            scope_id=scientific_attempt_post_scope_id(attempt.attempt_id),
         )
 
     def _resolve_operation_adoption_replay(

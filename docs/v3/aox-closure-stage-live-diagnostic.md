@@ -311,6 +311,73 @@ The consumed plan, target, MICU rows and evidence are permanently
 non-retryable. The bounded rollover correction is focused non-live evidence
 only and does not authorize a second live diagnostic.
 
+## Classification-after-commit successor and terminal-signal finding
+
+A later repair commit
+`4122df0749c78f4ae011b6d804bf76cc3a9f8c1f` was admitted and exercised under a
+new, separately reviewed one-use plan
+`sha256:d062f81d803256e7ccca7ef63cba8fc0420022e5b731e65f1eced9d9e17b4cd5`.
+It was consumed exactly once at `2026-07-26T07:05:34.407939+00:00`. The fresh
+preparation root is
+`/tmp/openzyme-aox-closure-stage-rollover-4122df0-01.OnCkFK`, target
+`aox-closure-stage-c2246ed00453d4a031ae5bfc`, and diagnostic attempt
+`closure-stage-0c83c00c02258e9f766bb0f213044e9c`. Effective config remained
+`sha256:4a234d47b942aa0dfec15b9071f40d393d721bfcf541442d4ef3ec062f5f2e6c`.
+There was one live invocation, no retry and no authority reuse.
+
+The real product path again converged through the user-facing close. All three
+tasks completed; reporter `agent:reporter:fe9474dccf3c` published
+`report_71ffe6a0e718`; master created closure request
+`attempt_closure_request_149617166649b78f2320b5ba`, co-terminal response
+`attempt_closure_response_67b0ae6ad2b9391c4ac18c2d`, and immutable closure
+`attempt_closure_d1e450291c10454855e07248` for selection
+`selection_d55ed1118956cf9896f615ca`.
+
+This attempt exposed a narrower ordering than the previous pending-rollover
+test. The last runtime command completed at
+`2026-07-26T07:08:16.801844+00:00`; the attempt scope then became freezing at
+`07:08:16.853472`, quiescent at `07:08:16.930602`, and sealed at
+`07:08:17.039405`. Closure committed at `07:08:17.379767`, and the exact open
+post-attempt scope committed at `07:08:17.399815`. Observer admission had
+already failed correctly while there was no open scope, but exception
+classification ran after the post scope was visible. The AOX-local classifier
+accepted only the pending topology, rejected the now-active deterministic child
+and returned `mutation_driver_writer_identity_invalid`. Thus the failure was
+not an invalid writer or missing scope; it was a classification-after-commit
+gap.
+
+The same closure transaction queued source-bound master signal
+`sig_c318716ba42c` at `07:08:17.500476`. Because the driver had already failed,
+that signal remained pending even though the exact response was already
+delivered and the attempt task was terminal. A later ordinary model wake would
+be redundant and could duplicate user-facing output. The durable terminal
+seam therefore needs two coupled corrections:
+
+1. session writer admission selects, checks cardinality and registers inside
+   one SQLite write transaction and returns a typed reason;
+2. one Core rollover projector accepts both the exact pending topology and the
+   exact committed post-scope topology, so classification can immediately
+   re-form the short observer inside the original deadline;
+3. runtime mechanically settles an exact closure notification after verifying
+   signal, actor, task/lane, lifecycle and co-terminal response bindings,
+   without another model or tool turn.
+
+Offline state was otherwise clean: all five session leases were released and
+all 207 mutation writers retired. Fourteen actual `gpt-5.5` MICU rows added
+`1195537` input, `3233` output and `1198770` charged tokens, advancing the
+cumulative ledger to `103697629`, with no estimate, overage or hard-limit
+breach. The r59 source database and inventory remained byte-identical.
+
+The permanent failed decision digest is
+`sha256:7077a5ffe17f903cf93132d4b9384280228c1e562dd45b8de7bacdb5fe0c00e3`;
+the fatal digest is
+`sha256:ed96bdd37285d3c1f56c12a515086bc5e9d25688bfff36ef9127ccb44a75e09b`.
+The child exited `70`, descendant retirement was proven, and no live-result
+envelope, formal bundle, reducer, GO/NO-GO, push or PR was created. This plan,
+target, browser output and MICU rows are permanently non-retryable. The current
+atomic-admission, Core-projector and mechanical-settlement repair is non-live
+evidence until a new clean commit receives a fresh one-use authority.
+
 ## Two-command authority flow
 
 First generate current clean-commit architecture qualification and AOX pin
@@ -430,6 +497,9 @@ database:
   `scientific.attempt.close` in the same provider response;
 - one closure request, co-terminal response binding and finalized closure
   agree on the exact selection;
+- the source-bound closure notification is claimed and mechanically settled
+  through its existing runtime fence, without another model/tool turn or a
+  duplicate assistant response;
 - all signals, session leases, mutation writers, continuations and child
   processes retire;
 - controlled-operation, dispatch, sandbox/materialization and scientific

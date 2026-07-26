@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from dataclasses import replace
 from datetime import UTC
 from datetime import datetime
+from enum import StrEnum
 import base64
 import re
 import sqlite3
@@ -60,14 +61,29 @@ _SAFE_BLOCKER_CODE = re.compile(r"^[a-z][a-z0-9_]{0,95}$")
 class MutationScopeError(RuntimeError):
     retryable = False
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.details = {
             "boundary": "host_mutation_quiescence",
             "disposition": "fail_closed",
             "blocker_code": code,
+            **({} if details is None else dict(details)),
         }
+
+
+class MutationWriterAdmissionReason(StrEnum):
+    """Closed reasons for session-level writer admission refusal."""
+
+    ZERO_OPEN_SCOPE = "zero_open_scope"
+    SCOPE_CLOSED_DURING_REGISTRATION = "scope_closed_during_registration"
+    AMBIGUOUS_OPEN_SCOPES = "ambiguous_open_scopes"
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +100,12 @@ class QuiescenceIssueResult:
 
 
 MutationRepositoryScopeFactory = Callable[[], AbstractContextManager[CoreRepositories]]
+
+
+@dataclass(frozen=True, slots=True)
+class MutationWriterAdmission:
+    writer: MutationWriter
+    authority: MutationWriteAuthority
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,40 +129,16 @@ class MutationWriterTurnFactory:
         with suspend_mutation_write_authority():
             with self.repository_scope_factory() as repositories:
                 service = MutationScopeService(repositories)
-                scopes = repositories.mutation_scopes.list_by_session(session_id)
-                if not scopes:
-                    pass
-                else:
-                    open_scopes = [
-                        scope
-                        for scope in scopes
-                        if scope.state is MutationScopeState.OPEN
-                    ]
-                    if len(open_scopes) != 1:
-                        raise MutationScopeError(
-                            "mutation_writer_admission_closed",
-                            "session mutation authority is frozen, sealed, or ambiguous",
-                        )
-                    scope = open_scopes[0]
-                    parent_writer_id = None
-                    trusted_root = True
-                    if parent_authority is not None:
-                        if parent_authority.scope_id != scope.scope_id:
-                            raise MutationScopeError(
-                                "mutation_writer_parent_scope_mismatch",
-                                "nested writer crossed its parent mutation scope",
-                            )
-                        parent_writer_id = parent_authority.writer_id
-                        trusted_root = False
-                    writer = service.register_writer(
-                        scope_id=scope.scope_id,
-                        owner_kind=owner_kind,
-                        owner_ref=owner_ref,
-                        parent_writer_id=parent_writer_id,
-                        process_epoch=process_epoch,
-                        trusted_root=trusted_root,
-                    )
-                    authority = service.authority_for_writer(writer.writer_id)
+                admission = service.register_session_writer(
+                    session_id=session_id,
+                    owner_kind=owner_kind,
+                    owner_ref=owner_ref,
+                    process_epoch=process_epoch,
+                    parent_authority=parent_authority,
+                )
+                if admission is not None:
+                    writer = admission.writer
+                    authority = admission.authority
         if writer is None or authority is None:
             yield None
             return
@@ -499,38 +497,18 @@ class MutationScopeService:
         """Register, bind, and retire a writer on the caller-owned connection."""
 
         parent_authority = current_mutation_write_authority()
-        scopes = self.repositories.mutation_scopes.list_by_session(session_id)
-        if not scopes:
-            yield None
-            return
-        open_scopes = [
-            scope for scope in scopes if scope.state is MutationScopeState.OPEN
-        ]
-        if len(open_scopes) != 1:
-            raise MutationScopeError(
-                "mutation_writer_admission_closed",
-                "session mutation authority is frozen, sealed, or ambiguous",
-            )
-        scope = open_scopes[0]
-        parent_writer_id = None
-        trusted_root = True
-        if parent_authority is not None:
-            if parent_authority.scope_id != scope.scope_id:
-                raise MutationScopeError(
-                    "mutation_writer_parent_scope_mismatch",
-                    "nested writer crossed its parent mutation scope",
-                )
-            parent_writer_id = parent_authority.writer_id
-            trusted_root = False
-        writer = self.register_writer(
-            scope_id=scope.scope_id,
+        admission = self.register_session_writer(
+            session_id=session_id,
             owner_kind=owner_kind,
             owner_ref=owner_ref,
-            parent_writer_id=parent_writer_id,
             process_epoch=process_epoch,
-            trusted_root=trusted_root,
+            parent_authority=parent_authority,
         )
-        authority = self.authority_for_writer(writer.writer_id)
+        if admission is None:
+            yield None
+            return
+        writer = admission.writer
+        authority = admission.authority
         try:
             with bind_mutation_write_authority(authority):
                 with self.repositories.mutation_write_authority(authority):
@@ -549,6 +527,70 @@ class MutationScopeService:
                     "owner_kind": owner_kind.value,
                 },
                 expected_process_epoch=process_epoch,
+            )
+
+    def register_session_writer(
+        self,
+        *,
+        session_id: str,
+        owner_kind: MutationWriterKind,
+        owner_ref: str,
+        process_epoch: int | None = None,
+        parent_authority: MutationWriteAuthority | None = None,
+    ) -> MutationWriterAdmission | None:
+        """Select and register the current session writer in one transaction."""
+
+        with self.repositories.atomic(prefix="mutation_session_writer_admit"):
+            scopes = self.repositories.mutation_scopes.list_by_session(session_id)
+            if not scopes:
+                return None
+            open_scopes = [
+                scope for scope in scopes if scope.state is MutationScopeState.OPEN
+            ]
+            if not open_scopes:
+                raise MutationScopeError(
+                    "mutation_writer_admission_closed",
+                    "session mutation authority is frozen or sealed",
+                    details={
+                        "mutation_writer_admission_reason": (
+                            MutationWriterAdmissionReason.ZERO_OPEN_SCOPE.value
+                        ),
+                        "open_scope_count": 0,
+                    },
+                )
+            if len(open_scopes) != 1:
+                raise MutationScopeError(
+                    "mutation_writer_admission_ambiguous",
+                    "session mutation authority has ambiguous open scopes",
+                    details={
+                        "mutation_writer_admission_reason": (
+                            MutationWriterAdmissionReason.AMBIGUOUS_OPEN_SCOPES.value
+                        ),
+                        "open_scope_count": len(open_scopes),
+                    },
+                )
+            scope = open_scopes[0]
+            parent_writer_id = None
+            trusted_root = True
+            if parent_authority is not None:
+                if parent_authority.scope_id != scope.scope_id:
+                    raise MutationScopeError(
+                        "mutation_writer_parent_scope_mismatch",
+                        "nested writer crossed its parent mutation scope",
+                    )
+                parent_writer_id = parent_authority.writer_id
+                trusted_root = False
+            writer = self.register_writer(
+                scope_id=scope.scope_id,
+                owner_kind=owner_kind,
+                owner_ref=owner_ref,
+                parent_writer_id=parent_writer_id,
+                process_epoch=process_epoch,
+                trusted_root=trusted_root,
+            )
+            return MutationWriterAdmission(
+                writer=writer,
+                authority=self.authority_for_writer(writer.writer_id),
             )
 
     def open_scope(
@@ -694,6 +736,14 @@ class MutationScopeService:
                 raise MutationScopeError(
                     "mutation_writer_admission_closed",
                     "mutation writer admission is closed for this scope",
+                    details={
+                        "mutation_writer_admission_reason": (
+                            MutationWriterAdmissionReason
+                            .SCOPE_CLOSED_DURING_REGISTRATION.value
+                        ),
+                        "open_scope_count": 0,
+                        "scope_state": scope.state.value,
+                    },
                 )
             if parent_writer_id is None and not trusted_root:
                 raise MutationScopeError(
@@ -1499,6 +1549,8 @@ class MutationScopeService:
 __all__ = [
     "MutationScopeError",
     "MutationScopeService",
+    "MutationWriterAdmission",
+    "MutationWriterAdmissionReason",
     "MutationWriterTurnFactory",
     "QuiescenceIssueResult",
     "build_quiescence_evidence_envelope",

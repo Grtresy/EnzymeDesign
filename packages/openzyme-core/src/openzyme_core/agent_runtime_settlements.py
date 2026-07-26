@@ -29,6 +29,9 @@ class AgentRuntimeSettlementDisposition(StrEnum):
     SIGNAL_FAILED = "signal_failed"
     WAITING_APPROVAL = "waiting_approval"
     BUDGET_REPLAN_HANDOFF = "budget_replan_handoff"
+    SCIENTIFIC_CLOSURE_NOTIFICATION_SETTLED = (
+        "scientific_closure_notification_settled"
+    )
 
 
 def _require_identity(field_name: str, value: str) -> None:
@@ -124,6 +127,8 @@ class AgentRuntimeOutcomeSettlement:
             in {
                 AgentRuntimeSettlementDisposition.SIGNAL_COMPLETED,
                 AgentRuntimeSettlementDisposition.WAITING_APPROVAL,
+                AgentRuntimeSettlementDisposition
+                .SCIENTIFIC_CLOSURE_NOTIFICATION_SETTLED,
             }
             and self.source_signal_status
             is not AgentRuntimeSignalStatus.COMPLETED
@@ -310,6 +315,22 @@ class AgentRuntimeOutcomeSettlement:
             successor_task_id=successor.task_id,
             successor_lane_id=successor.lane_id,
             successor_correlation_id=successor.correlation_id,
+        )
+
+    @classmethod
+    def scientific_closure_notification(
+        cls,
+        *,
+        signal: AgentRuntimeSignal,
+        task: Task,
+    ) -> AgentRuntimeOutcomeSettlement:
+        return cls.from_signal_outcome(
+            signal=signal,
+            task=task,
+            disposition=(
+                AgentRuntimeSettlementDisposition
+                .SCIENTIFIC_CLOSURE_NOTIFICATION_SETTLED
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:

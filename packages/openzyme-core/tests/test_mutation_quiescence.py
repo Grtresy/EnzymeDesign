@@ -5,6 +5,7 @@ from copy import deepcopy
 from dataclasses import replace
 import sqlite3
 from threading import Barrier
+from threading import Event
 
 import pytest
 
@@ -14,6 +15,7 @@ from openzyme_core import MutationResourceCategory
 from openzyme_core import MutationScopeError
 from openzyme_core import MutationScopeService
 from openzyme_core import MutationWriteFencingError
+from openzyme_core import MutationWriterAdmissionReason
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
@@ -395,6 +397,156 @@ def test_registration_freeze_race_has_one_serialized_order(tmp_path) -> None:
     assert stored_scope is not None
     assert stored_scope.state is MutationScopeState.FREEZING
     assert len(active) == (1 if "registered" in outcomes else 0)
+
+
+def test_session_writer_admission_reasons_and_no_scope_compatibility() -> None:
+    _, repositories, session = _repositories()
+    service = _service(repositories)
+
+    assert (
+        service.register_session_writer(
+            session_id=session.session_id,
+            owner_kind=MutationWriterKind.RUNTIME_COMMAND,
+            owner_ref="untracked-command",
+        )
+        is None
+    )
+
+    scope = service.open_scope(
+        session_id=session.session_id,
+        scope_kind=MutationScopeKind.SESSION,
+        scope_ref=session.session_id,
+    )
+    service.begin_freeze(scope.scope_id)
+
+    with pytest.raises(MutationScopeError) as session_error:
+        service.register_session_writer(
+            session_id=session.session_id,
+            owner_kind=MutationWriterKind.RUNTIME_COMMAND,
+            owner_ref="late-command",
+        )
+    assert session_error.value.code == "mutation_writer_admission_closed"
+    assert session_error.value.details["mutation_writer_admission_reason"] == (
+        MutationWriterAdmissionReason.ZERO_OPEN_SCOPE.value
+    )
+    assert session_error.value.details["open_scope_count"] == 0
+
+    with pytest.raises(MutationScopeError) as scope_error:
+        service.register_writer(
+            scope_id=scope.scope_id,
+            owner_kind=MutationWriterKind.RUNTIME_COMMAND,
+            owner_ref="late-scope-command",
+            trusted_root=True,
+        )
+    assert scope_error.value.details["mutation_writer_admission_reason"] == (
+        MutationWriterAdmissionReason.SCOPE_CLOSED_DURING_REGISTRATION.value
+    )
+    assert scope_error.value.details["scope_state"] == "freezing"
+
+
+def test_session_writer_admission_rejects_ambiguous_open_scopes() -> None:
+    connection, repositories, session = _repositories()
+    service = _service(repositories)
+    first = service.open_scope(
+        session_id=session.session_id,
+        scope_kind=MutationScopeKind.SESSION,
+        scope_ref=session.session_id,
+    )
+    connection.execute("DROP INDEX idx_mutation_scopes_one_active_per_session")
+    connection.commit()
+    repositories.mutation_scopes.add(
+        replace(
+            first,
+            scope_id="mutation_scope_corrupt_competitor",
+            scope_ref="corrupt-competing-session-scope",
+            generation=2,
+        )
+    )
+
+    with pytest.raises(MutationScopeError) as caught:
+        service.register_session_writer(
+            session_id=session.session_id,
+            owner_kind=MutationWriterKind.RUNTIME_COMMAND,
+            owner_ref="ambiguous-command",
+        )
+    assert caught.value.code == "mutation_writer_admission_ambiguous"
+    assert caught.value.details["mutation_writer_admission_reason"] == (
+        MutationWriterAdmissionReason.AMBIGUOUS_OPEN_SCOPES.value
+    )
+    assert caught.value.details["open_scope_count"] == 2
+    assert repositories.mutation_writers.list_active(first.scope_id) == []
+
+
+def test_file_backed_session_admission_observes_freeze_commit_atomically(
+    tmp_path,
+) -> None:
+    provider = SQLiteRepositoryProvider(
+        str(tmp_path / "session-admission-freeze.sqlite3"),
+        check_same_thread=False,
+        busy_timeout_ms=10_000,
+    )
+    with provider.connection_scope() as owner:
+        session = Session.create(
+            session_id="sess_session_admission_freeze",
+            project_id="proj_session_admission_freeze",
+            title="Atomic session admission",
+            objective="Freeze wins before writer selection commits",
+        )
+        owner.repositories.sessions.save(session)
+        scope = MutationScopeService(owner.repositories).open_scope(
+            session_id=session.session_id,
+            scope_kind=MutationScopeKind.ATTEMPT,
+            scope_ref="attempt:atomic-session-admission",
+        )
+
+    freeze_commit_reached = Event()
+    release_freeze_commit = Event()
+    registration_started = Event()
+
+    def freeze() -> None:
+        with provider.connection_scope() as owner:
+            blocked = False
+
+            def trace(statement: str) -> None:
+                nonlocal blocked
+                if statement.strip().upper() == "COMMIT" and not blocked:
+                    blocked = True
+                    freeze_commit_reached.set()
+                    assert release_freeze_commit.wait(timeout=5)
+
+            owner.connection.set_trace_callback(trace)
+            MutationScopeService(owner.repositories).begin_freeze(scope.scope_id)
+
+    def register() -> MutationScopeError:
+        with provider.connection_scope() as owner:
+            registration_started.set()
+            with pytest.raises(MutationScopeError) as caught:
+                MutationScopeService(owner.repositories).register_session_writer(
+                    session_id=session.session_id,
+                    owner_kind=MutationWriterKind.RUNTIME_COMMAND,
+                    owner_ref="observer-after-freeze",
+                )
+            return caught.value
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        freeze_future = executor.submit(freeze)
+        assert freeze_commit_reached.wait(timeout=5)
+        register_future = executor.submit(register)
+        assert registration_started.wait(timeout=5)
+        release_freeze_commit.set()
+        freeze_future.result()
+        registration_error = register_future.result()
+
+    assert registration_error.code == "mutation_writer_admission_closed"
+    assert registration_error.details["mutation_writer_admission_reason"] == (
+        MutationWriterAdmissionReason.ZERO_OPEN_SCOPE.value
+    )
+    with provider.read() as reader:
+        stored_scope = reader.repositories.mutation_scopes.get(scope.scope_id)
+        active = reader.repositories.mutation_writers.list_active(scope.scope_id)
+    assert stored_scope is not None
+    assert stored_scope.state is MutationScopeState.FREEZING
+    assert active == []
 
 
 def test_unknown_policy_coverage_and_detached_writer_fail_before_authority() -> None:

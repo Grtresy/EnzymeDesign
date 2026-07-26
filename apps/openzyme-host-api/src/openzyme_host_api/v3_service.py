@@ -1865,6 +1865,13 @@ class V3HostApiService:
                 if not outcome.ok:
                     return True
                 continue
+            if disposition is (
+                AgentRuntimeSettlementDisposition
+                .SCIENTIFIC_CLOSURE_NOTIFICATION_SETTLED
+            ):
+                if not outcome.ok:
+                    return True
+                continue
             return True
         return False
 

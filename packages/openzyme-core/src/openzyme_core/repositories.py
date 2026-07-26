@@ -5989,6 +5989,12 @@ class CoreRepositories:
     research_source_refs: ResearchSourceRefRepository
     research_gaps: ResearchGapRepository
 
+    @property
+    def in_managed_transaction(self) -> bool:
+        """Whether this repository connection already owns a Host transaction."""
+
+        return _managed_transaction_depth(self.tasks.connection) > 0
+
     def assert_runtime_write_fence(
         self,
         *,

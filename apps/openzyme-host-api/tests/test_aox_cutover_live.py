@@ -30,6 +30,7 @@ from openzyme_domain import RetryEligibility
 from openzyme_domain import MutationScopeKind
 from openzyme_domain import MutationScopeState
 from openzyme_domain import MutationWriterKind
+from openzyme_domain import ScientificAttemptScope
 from openzyme_domain import ScientificAttemptStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
@@ -5000,34 +5001,130 @@ def test_formal_terminal_runtime_command_uses_bounded_observer_on_real_sqlite(
     assert sealed["state"] == "sealed"
 
 
+class _FormalRolloverState:
+    def __init__(self, *, session_id: str, envelope_id: str) -> None:
+        self.session_id = session_id
+        self.envelope_id = envelope_id
+        self.attempt_id = "attempt_terminal_rollover"
+        self.phase = "pending"
+        self.post_scope_parent_id = f"mutation_scope_{self.attempt_id}"
+
+    def open_post_scope(self, *, parent_scope_id: str | None = None) -> None:
+        self.phase = "post"
+        if parent_scope_id is not None:
+            self.post_scope_parent_id = parent_scope_id
+
+    def repositories(self) -> object:
+        attempt_scope = SimpleNamespace(
+            scope_id=f"mutation_scope_{self.attempt_id}",
+            session_id=self.session_id,
+            scope_kind=MutationScopeKind.ATTEMPT,
+            scope_ref=self.attempt_id,
+            parent_scope_id=None,
+            state=(
+                MutationScopeState.SEALED
+                if self.phase == "post"
+                else MutationScopeState.FREEZING
+            ),
+        )
+        attempt = SimpleNamespace(
+            attempt_id=self.attempt_id,
+            admission_request_id="admission_terminal_rollover",
+            envelope_id=self.envelope_id,
+            session_id=self.session_id,
+            task_id="task_terminal_rollover",
+            lane_id="lane_terminal_rollover",
+            campaign_id="campaign_terminal_rollover",
+            workflow_id=AOX_SELECTED_CHAIN_WORKFLOW_ID,
+            scope=ScientificAttemptScope.FORMAL,
+            root_ref="attempts/terminal-rollover",
+            mutation_scope_id=attempt_scope.scope_id,
+            status=(
+                ScientificAttemptStatus.CLOSED
+                if self.phase == "post"
+                else ScientificAttemptStatus.ACTIVE
+            ),
+        )
+        request = SimpleNamespace(
+            closure_request_id="closure_request_terminal_rollover",
+            attempt_id=self.attempt_id,
+            selection_id="selection_terminal_rollover",
+        )
+        closure = (
+            None
+            if self.phase != "post"
+            else SimpleNamespace(
+                closure_id="closure_terminal_rollover",
+                closure_request_id=request.closure_request_id,
+                attempt_id=self.attempt_id,
+                selection_id=request.selection_id,
+            )
+        )
+        scopes: tuple[object, ...] = (attempt_scope,)
+        if self.phase == "post":
+            scopes = (
+                attempt_scope,
+                SimpleNamespace(
+                    scope_id=f"mutation_scope_post_{self.attempt_id}",
+                    session_id=self.session_id,
+                    scope_kind=MutationScopeKind.SESSION,
+                    scope_ref=(
+                        f"post-scientific-attempt:{self.attempt_id}"
+                    ),
+                    parent_scope_id=self.post_scope_parent_id,
+                    state=MutationScopeState.OPEN,
+                ),
+            )
+        return SimpleNamespace(
+            scientific_attempts=SimpleNamespace(
+                list_by_session=lambda _session_id: (attempt,)
+            ),
+            scientific_attempt_closure_requests=SimpleNamespace(
+                get_by_attempt=lambda _attempt_id: request
+            ),
+            scientific_attempt_closures=SimpleNamespace(
+                get_by_attempt=lambda _attempt_id: closure
+            ),
+            mutation_scopes=SimpleNamespace(
+                list_by_session=lambda _session_id: scopes,
+            ),
+        )
+
+
 def _formal_rollover_provider(
     *,
+    session_id: str,
     envelope_id: str,
-) -> tuple[object, SimpleNamespace]:
-    attempt_scope = SimpleNamespace(
-        scope_id="mutation_scope_attempt_rollover",
-        scope_kind=MutationScopeKind.ATTEMPT,
-        state=MutationScopeState.FREEZING,
-    )
-    attempt = SimpleNamespace(
+) -> tuple[object, _FormalRolloverState]:
+    state = _FormalRolloverState(
+        session_id=session_id,
         envelope_id=envelope_id,
-        mutation_scope_id=attempt_scope.scope_id,
-    )
-    repositories = SimpleNamespace(
-        scientific_attempts=SimpleNamespace(
-            list_by_session=lambda _session_id: (attempt,)
-        ),
-        mutation_scopes=SimpleNamespace(
-            get=lambda scope_id: (
-                attempt_scope if scope_id == attempt_scope.scope_id else None
-            ),
-            list_by_session=lambda _session_id: (attempt_scope,),
-        ),
     )
     provider = SimpleNamespace(
-        read=lambda: _SelectedChainApprovalProvider._Scope(repositories)
+        read=lambda: _SelectedChainApprovalProvider._Scope(
+            state.repositories()
+        )
     )
-    return provider, attempt_scope
+    return provider, state
+
+
+def _formal_rollover_authority(
+    *,
+    envelope_id: str,
+    outer_attempt_id: str,
+) -> dict[str, object]:
+    return {
+        "attempt_id": outer_attempt_id,
+        "envelope_id": envelope_id,
+        "task_id": "task_terminal_rollover",
+        "lane_id": "lane_terminal_rollover",
+        "scope": ScientificAttemptScope.FORMAL.value,
+        "authority_request": {
+            "campaign_id": "campaign_terminal_rollover",
+            "workflow_id": AOX_SELECTED_CHAIN_WORKFLOW_ID,
+            "root_ref": "attempts/terminal-rollover",
+        },
+    }
 
 
 def test_formal_terminal_command_waits_through_exact_scope_rollover(
@@ -5043,7 +5140,8 @@ def test_formal_terminal_command_waits_through_exact_scope_rollover(
     )
     session_id = "sess_serial"
     envelope_id = "attempt_authority_rollover"
-    provider, attempt_scope = _formal_rollover_provider(
+    provider, rollover = _formal_rollover_provider(
+        session_id=session_id,
         envelope_id=envelope_id
     )
     raw_client = _SerialApprovalJsonClient(())
@@ -5055,16 +5153,17 @@ def test_formal_terminal_command_waits_through_exact_scope_rollover(
         nonlocal observer_checks
         observer_checks += 1
         if observer_checks == 1:
+            rollover.open_post_scope()
             raise live.AoxRuntimeObservationError(
                 "mutation_driver_writer_identity_invalid",
                 "runtime coordination lacks one exact outer attempt-driver writer",
                 details={
                     "mutation_scope_error_code": (
                         "mutation_writer_admission_closed"
-                    )
+                    ),
+                    "mutation_writer_admission_reason": "zero_open_scope",
                 },
             )
-        attempt_scope.state = MutationScopeState.OPEN
         yield
 
     monkeypatch.setattr(
@@ -5092,10 +5191,10 @@ def test_formal_terminal_command_waits_through_exact_scope_rollover(
         fault_enabled=False,
         fault_blob_root=None,
         fault_receipt=None,
-        attempt_authority={
-            "attempt_id": "closure-stage-rollover",
-            "envelope_id": envelope_id,
-        },
+        attempt_authority=_formal_rollover_authority(
+            envelope_id=envelope_id,
+            outer_attempt_id="closure-stage-rollover",
+        ),
     )
 
     assert observer_checks == 2
@@ -5116,7 +5215,8 @@ def test_full_formal_observation_uses_the_same_scope_rollover_wait(
         browser_poll_interval_seconds=0.001,
     )
     envelope_id = "attempt_authority_full_observation_rollover"
-    provider, attempt_scope = _formal_rollover_provider(
+    provider, rollover = _formal_rollover_provider(
+        session_id="sess_formal_rollover",
         envelope_id=envelope_id
     )
     observer_checks = 0
@@ -5133,10 +5233,10 @@ def test_full_formal_observation_uses_the_same_scope_rollover_wait(
                 details={
                     "mutation_scope_error_code": (
                         "mutation_writer_admission_closed"
-                    )
+                    ),
+                    "mutation_writer_admission_reason": "zero_open_scope",
                 },
             )
-        attempt_scope.state = MutationScopeState.OPEN
         yield
 
     monkeypatch.setattr(
@@ -5149,15 +5249,20 @@ def test_full_formal_observation_uses_the_same_scope_rollover_wait(
         "observe_session",
         lambda *_args, **_kwargs: expected,
     )
+    monkeypatch.setattr(
+        live.time,
+        "sleep",
+        lambda _seconds: rollover.open_post_scope(),
+    )
 
     observation = runner._observe_session_runtime(
         provider,  # type: ignore[arg-type]
         session_id="sess_formal_rollover",
         purpose="formal",
-        attempt_authority={
-            "attempt_id": "closure-stage-full-observation",
-            "envelope_id": envelope_id,
-        },
+        attempt_authority=_formal_rollover_authority(
+            envelope_id=envelope_id,
+            outer_attempt_id="closure-stage-full-observation",
+        ),
         rollover_deadline=time.monotonic() + 1.0,
     )
 
@@ -5225,6 +5330,197 @@ def test_formal_terminal_command_does_not_mask_other_observer_identity_errors(
     }
 
 
+def test_formal_rollover_never_retries_ambiguous_original_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+
+    @contextmanager
+    def reject_ambiguous(*_args: object, **_kwargs: object):
+        raise live.AoxRuntimeObservationError(
+            "mutation_driver_writer_identity_invalid",
+            "runtime coordination lacks one exact outer attempt-driver writer",
+            details={
+                "mutation_scope_error_code": (
+                    "mutation_writer_admission_ambiguous"
+                ),
+                "mutation_writer_admission_reason": (
+                    "ambiguous_open_scopes"
+                ),
+                "open_scope_count": 2,
+            },
+        )
+        yield
+
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_runtime_barrier_observer",
+        reject_ambiguous,
+    )
+
+    with pytest.raises(live.AoxRuntimeObservationError) as captured:
+        runner._observe_session_runtime(
+            object(),  # type: ignore[arg-type]
+            session_id="sess_ambiguous_rollover",
+            purpose="formal",
+            attempt_authority=_formal_rollover_authority(
+                envelope_id="attempt_authority_ambiguous",
+                outer_attempt_id="closure-stage-ambiguous",
+            ),
+            rollover_deadline=time.monotonic() + 1.0,
+        )
+
+    assert captured.value.code == "mutation_driver_writer_identity_invalid"
+    assert captured.value.details["mutation_writer_admission_reason"] == (
+        "ambiguous_open_scopes"
+    )
+    assert captured.value.details["open_scope_count"] == 2
+
+
+def test_formal_rollover_invalid_post_parent_fails_typed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    provider, rollover = _formal_rollover_provider(
+        session_id="sess_invalid_post_parent",
+        envelope_id="attempt_authority_invalid_post_parent",
+    )
+    rollover.open_post_scope(parent_scope_id="mutation_scope_wrong_parent")
+
+    @contextmanager
+    def reject_observer(*_args: object, **_kwargs: object):
+        raise live.AoxRuntimeObservationError(
+            "mutation_driver_writer_identity_invalid",
+            "runtime coordination lacks one exact outer attempt-driver writer",
+            details={
+                "mutation_scope_error_code": (
+                    "mutation_writer_admission_closed"
+                ),
+                "mutation_writer_admission_reason": "zero_open_scope",
+            },
+        )
+        yield
+
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_runtime_barrier_observer",
+        reject_observer,
+    )
+
+    with pytest.raises(live.AoxRuntimeObservationError) as captured:
+        runner._observe_session_runtime(
+            provider,  # type: ignore[arg-type]
+            session_id="sess_invalid_post_parent",
+            purpose="formal",
+            attempt_authority=_formal_rollover_authority(
+                envelope_id="attempt_authority_invalid_post_parent",
+                outer_attempt_id="closure-stage-invalid-post-parent",
+            ),
+            rollover_deadline=time.monotonic() + 1.0,
+        )
+
+    assert captured.value.code == (
+        "scientific_attempt_scope_rollover_invalid"
+    )
+    assert captured.value.details == {
+        "scope_rollover_reason": "post_scope_identity_invalid",
+        "scope_state": "sealed",
+        "open_scope_count": 1,
+    }
+
+
+def test_runtime_barrier_observer_preserves_atomic_admission_reason(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+    )
+    provider = SQLiteRepositoryProvider(str(tmp_path / "observer.sqlite3"))
+    session = Session.create(
+        session_id="sess_observer_admission_reason",
+        project_id="aox-blank-world-cutover",
+        title="observer admission reason",
+        objective="Preserve the atomic refusal classification",
+    )
+    with provider.write() as unit_of_work:
+        unit_of_work.repositories.sessions.save(session)
+        scope = MutationScopeService(
+            unit_of_work.repositories
+        ).open_scope(
+            session_id=session.session_id,
+            scope_kind=MutationScopeKind.SESSION,
+            scope_ref=session.session_id,
+        )
+        MutationScopeService(
+            unit_of_work.repositories
+        ).begin_freeze(scope.scope_id)
+
+    with pytest.raises(live.AoxRuntimeObservationError) as captured:
+        with runner._runtime_barrier_observer(
+            provider,
+            session_id=session.session_id,
+            purpose="formal",
+            attempt_authority={"attempt_id": "closure-stage-observer-reason"},
+        ):
+            pass
+
+    assert captured.value.details == {
+        "mutation_scope_error_code": "mutation_writer_admission_closed",
+        "mutation_writer_admission_reason": "zero_open_scope",
+        "open_scope_count": 0,
+    }
+
+
+def test_sealed_rollover_details_are_bounded_and_allowlisted() -> None:
+    projected = live._sealed_failure_details(
+        {
+            "mutation_scope_error_code": "mutation_writer_admission_closed",
+            "mutation_writer_admission_reason": "zero_open_scope",
+            "scope_rollover_phase": "rollover_pending",
+            "scope_rollover_reason": "post_scope_identity_invalid",
+            "scope_state": "sealed",
+            "open_scope_count": 1,
+            "scope_id": "/private/mutation_scope_secret",
+            "authority_token": "secret",
+        }
+    )
+
+    assert projected == {
+        "mutation_scope_error_code": "mutation_writer_admission_closed",
+        "mutation_writer_admission_reason": "zero_open_scope",
+        "open_scope_count": "1",
+        "scope_rollover_phase": "rollover_pending",
+        "scope_rollover_reason": "post_scope_identity_invalid",
+        "scope_state": "sealed",
+    }
+    assert live._sealed_failure_details(
+        {
+            "open_scope_count": True,
+        }
+    ) == {}
+    assert live._sealed_failure_details(
+        {
+            "open_scope_count": live._MAX_SEALED_OPEN_SCOPE_COUNT + 1,
+        }
+    ) == {}
+
+
 def test_formal_scope_rollover_wait_remains_bounded_and_typed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5238,6 +5534,10 @@ def test_formal_scope_rollover_wait_remains_bounded_and_typed(
     )
     raw_client = _SerialApprovalJsonClient(())
     api = live._PublicHostClient(raw_client)
+    provider, _rollover = _formal_rollover_provider(
+        session_id="sess_serial",
+        envelope_id="attempt_authority_stalled",
+    )
 
     @contextmanager
     def reject_observer(*_args: object, **_kwargs: object):
@@ -5245,11 +5545,12 @@ def test_formal_scope_rollover_wait_remains_bounded_and_typed(
             "mutation_driver_writer_identity_invalid",
             "runtime coordination lacks one exact outer attempt-driver writer",
             details={
-                "mutation_scope_error_code": (
-                    "mutation_writer_admission_closed"
-                )
-            },
-        )
+                    "mutation_scope_error_code": (
+                        "mutation_writer_admission_closed"
+                    ),
+                    "mutation_writer_admission_reason": "zero_open_scope",
+                },
+            )
         yield
 
     monkeypatch.setattr(
@@ -5257,20 +5558,10 @@ def test_formal_scope_rollover_wait_remains_bounded_and_typed(
         "_runtime_barrier_observer",
         reject_observer,
     )
-    monkeypatch.setattr(
-        live.LiveAoxAttemptRunner,
-        "_formal_scope_rollover_projection",
-        lambda *_args, **_kwargs: {
-            "scope_id": "mutation_scope_attempt_stalled",
-            "scope_kind": "attempt",
-            "state": "freezing",
-        },
-    )
-
     with pytest.raises(live.LiveProductPathError) as captured:
         runner._coordinate_runtime_drain(
             api,
-            object(),  # type: ignore[arg-type]
+            provider,  # type: ignore[arg-type]
             session_id="sess_serial",
             purpose="formal",
             drain_number=1,
@@ -5282,18 +5573,18 @@ def test_formal_scope_rollover_wait_remains_bounded_and_typed(
             fault_enabled=False,
             fault_blob_root=None,
             fault_receipt=None,
-            attempt_authority={
-                "attempt_id": "closure-stage-stalled",
-                "envelope_id": "attempt_authority_stalled",
-            },
+            attempt_authority=_formal_rollover_authority(
+                envelope_id="attempt_authority_stalled",
+                outer_attempt_id="closure-stage-stalled",
+            ),
         )
 
     assert captured.value.code == "scientific_attempt_scope_rollover_stalled"
     assert captured.value.details == {
         "session_id": "sess_serial",
-        "scope_id": "mutation_scope_attempt_stalled",
-        "scope_kind": "attempt",
-        "state": "freezing",
+        "scope_rollover_phase": "rollover_pending",
+        "scope_state": "freezing",
+        "open_scope_count": 0,
     }
     assert len(raw_client.drain_payloads) == 1
 

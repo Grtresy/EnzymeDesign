@@ -271,12 +271,37 @@ endpoint、pending finalizer 与任意后续 Core caller 都不能绕开 final r
 规范 post scope 使用 deterministic id/ref，已有 child 必须唯一且身份完全一致；并发
 finalizer 只能 replay 同一 closure。
 
+任何 session-scoped observer admission 都先在一个 atomic writer-admission transaction
+中完成 scope cardinality、parent、registration 与 authority。Core rollover projector
+随后消费完整 authority envelope，而不是 AOX 自己重建部分状态；它的合法投影只有：
+
+- `rollover_pending`：exact lifecycle 为 `closure_requested`，attempt scope 为
+  `freezing|quiescent|sealed`，open scope 为零且没有 child/competitor；
+- `post_closure_scope_open`：exact lifecycle 为 `closed`，attempt scope 已 `sealed`，
+  且恰有一个 deterministic id/ref/parent 的 open `session` child。
+
+original admission 必须是 typed `zero_open_scope` 或
+`scope_closed_during_registration` 才可进入该 projector；
+`ambiguous_open_scopes`、binding drift、错误 parent/kind/ref、lifecycle/scope mismatch
+立即 fail closed。这样 observer 抛出 admission error 后即使 finalizer 已提交，classifier
+读取 committed 后态也能在原 deadline 内重建一次短 barrier，而不是把正确 post scope
+误报成 identity failure。
+
 Host 的两个 scientific transition 调用面共用一条 delivery settlement：canonical
 transition、deterministic public event、以及对原 agent 的 source-bound
 `MANUAL_RESUME` signal 在包含 Core transition 的同一 write transaction 内提交，notifier
 只在 commit 后触发。pending scan 必须处理“transition 已存在但 event/signal 缺失”的旧崩溃
 状态，并以 record/event/source identity 补齐一次；terminal signal 不重开。这样既没有
 scope gap，也没有 closure commit 后 agent 永久失联的第二条 crash seam。
+
+closure notification 被 claim 后先走 Core mechanical settlement verifier。只有 signal
+kind/source/correlation、requesting actor、session/task/lane、attempt/request/selection/
+closure、derived `closed` lifecycle，以及 co-terminal response 的 message/document/
+recipient/digest 全部一致，且 attempt task 已显式 terminal，runtime 才通过原 claim
+lease/fence 完成 signal 并发出 typed settled event。该路径不调用 provider，不追加第二条
+assistant response，也不创建 closure/response/report/signal。普通 resume、admission 或
+attempt notification，以及 closure 已存在但 task 非终态的情形仍由 agent 策略处理；
+closure-like binding/response 缺失则在 model 前 fail closed。
 
 quiescence 只证明“不会再变”，selection 只证明“采用什么”，两者互不替代。closed attempt 是
 agent 可消费的 evidence，不是 `task.finish`；owner 仍需显式决定完成、继续、blocked 或 failed。
@@ -589,3 +614,36 @@ post scope 分别于 `06:20:53.573680Z` /
 digest 仍不变。post-live bounded rollover correction 只通过非 live regression 验证，
 没有第二次 live、formal bundle、reducer、GO/NO-GO、push 或 PR；本次 plan、target 与
 证据不可重试或复用。
+
+下一份 correction commit
+`4122df0749c78f4ae011b6d804bf76cc3a9f8c1f` 的 one-use plan
+`sha256:d062f81d803256e7ccca7ef63cba8fc0420022e5b731e65f1eced9d9e17b4cd5`
+在 fresh root
+`/tmp/openzyme-aox-closure-stage-rollover-4122df0-01.OnCkFK` 恰好消费一次，target 为
+`aox-closure-stage-c2246ed00453d4a031ae5bfc`，diagnostic attempt 为
+`closure-stage-0c83c00c02258e9f766bb0f213044e9c`。三个 task completed，report
+`report_71ffe6a0e718` published；request
+`attempt_closure_request_149617166649b78f2320b5ba`、co-terminal response
+`attempt_closure_response_67b0ae6ad2b9391c4ac18c2d` 和 closure
+`attempt_closure_d1e450291c10454855e07248` 均一致。
+
+最后 runtime command 于 `07:08:16.801844Z` 完成；attempt scope 于
+`07:08:16.853472Z` freezing、`07:08:16.930602Z` quiescent、
+`07:08:17.039405Z` sealed；closure 与 open post scope 分别于
+`07:08:17.379767Z/17.399815Z` 可见。observer 的 admission error 在前态形成，但旧
+AOX-local classifier 到后态才读取，因拒绝已有 active post child，再次返回
+`mutation_driver_writer_identity_invalid`。Host 又于 `07:08:17.500476Z` 原子排队 exact
+closure signal `sig_c318716ba42c`；driver 先失败使它保持 pending。这不是未 closure 或
+scope identity 损坏，而是 classification-after-commit 与 redundant terminal wake 两个
+收尾 seam。
+
+该 run 的 14 个 actual `gpt-5.5` rows 精确新增 `1195537` input、`3233` output、
+charged `1198770`，累计 charge 到 `103697629`，无 estimated row、overage 或 hard-limit
+breach；207 个 mutation writer 全部 retired，5 个 session lease 全部 released，r59
+source digest 仍不变。decision
+`sha256:7077a5ffe17f903cf93132d4b9384280228c1e562dd45b8de7bacdb5fe0c00e3`
+与 fatal
+`sha256:ed96bdd37285d3c1f56c12a515086bc5e9d25688bfff36ef9127ccb44a75e09b`
+永久 `acceptance_eligible=false`。本次 Core projector/atomic admission/mechanical
+settlement correction 只获得非 live 回归证明；它不复用该 plan/target，不生成 formal
+bundle、reducer、GO/NO-GO、push 或 PR。

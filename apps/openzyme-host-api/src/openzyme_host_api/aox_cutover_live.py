@@ -27,8 +27,14 @@ from openzyme_core import is_published_report_status
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import MutationScopeError
 from openzyme_core import MutationScopeService
+from openzyme_core import MutationWriterAdmissionReason
 from openzyme_core import MutationWriterTurnFactory
 from openzyme_core import ScientificAttemptError
+from openzyme_core import ScientificAttemptScopeRolloverEnvelope
+from openzyme_core import ScientificAttemptScopeRolloverIntegrityError
+from openzyme_core import ScientificAttemptScopeRolloverPhase
+from openzyme_core import ScientificAttemptScopeRolloverProjection
+from openzyme_core import ScientificAttemptScopeRolloverProjector
 from openzyme_core import ScientificAttemptService
 from openzyme_core import build_conversation_projection
 from openzyme_core import current_mutation_write_authority
@@ -45,9 +51,9 @@ from openzyme_domain import ControlledOperationExecutionLifecycle
 from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import MutationScopeKind
-from openzyme_domain import MutationScopeState
 from openzyme_domain import MutationWriterKind
 from openzyme_domain import RetryEligibility
+from openzyme_domain import ScientificAttemptScope
 from openzyme_domain import SessionArtifactRecord
 from openzyme_pipeline import aox_hmmer
 from openzyme_pipeline import aox_motif
@@ -446,19 +452,35 @@ _SEALED_FAILURE_DETAIL_KEYS = frozenset(
         "command_status",
         "coordination_failure_type",
         "failure_type",
+        "mutation_scope_error_code",
+        "mutation_writer_admission_reason",
+        "open_scope_count",
+        "scope_rollover_phase",
+        "scope_rollover_reason",
+        "scope_state",
     }
 )
+_MAX_SEALED_OPEN_SCOPE_COUNT = 2_147_483_647
 
 
 def _sealed_failure_details(
     details: Mapping[str, object] | None,
 ) -> dict[str, str]:
-    """Project only bounded machine identifiers into sealed failure evidence."""
+    """Project only bounded machine values into sealed failure evidence."""
 
     projected: dict[str, str] = {}
     for key in sorted(_SEALED_FAILURE_DETAIL_KEYS):
+        raw_value = None if details is None else details.get(key)
+        if key == "open_scope_count":
+            if (
+                isinstance(raw_value, int)
+                and not isinstance(raw_value, bool)
+                and 0 <= raw_value <= _MAX_SEALED_OPEN_SCOPE_COUNT
+            ):
+                projected[key] = str(raw_value)
+            continue
         value = safe_public_machine_identifier(
-            None if details is None else details.get(key),
+            raw_value,
             fallback=None,
         )
         if value is not None:
@@ -2152,10 +2174,22 @@ class LiveAoxAttemptRunner:
                     )
                 yield
         except MutationScopeError as exc:
+            safe_details = {
+                key: value
+                for key in (
+                    "mutation_writer_admission_reason",
+                    "open_scope_count",
+                    "scope_state",
+                )
+                if (value := exc.details.get(key)) is not None
+            }
             raise AoxRuntimeObservationError(
                 "mutation_driver_writer_identity_invalid",
                 "runtime coordination lacks one exact outer attempt-driver writer",
-                details={"mutation_scope_error_code": exc.code},
+                details={
+                    "mutation_scope_error_code": exc.code,
+                    **safe_details,
+                },
             ) from exc
 
     def _observe_session_runtime(
@@ -2245,9 +2279,15 @@ class LiveAoxAttemptRunner:
                         ),
                         details={
                             "session_id": session_id,
-                            **rollover_projection,
+                            **rollover_projection.safe_details(),
                         },
                     ) from exc
+                if (
+                    rollover_projection.phase
+                    is ScientificAttemptScopeRolloverPhase
+                    .POST_CLOSURE_SCOPE_OPEN
+                ):
+                    continue
                 time.sleep(
                     min(self.browser_poll_interval_seconds, remaining)
                 )
@@ -3276,9 +3316,16 @@ class LiveAoxAttemptRunner:
         purpose: Literal["probe", "formal"],
         attempt_authority: Mapping[str, object] | None,
         observation_error: AoxRuntimeObservationError,
-    ) -> dict[str, object] | None:
+    ) -> ScientificAttemptScopeRolloverProjection | None:
         """Recognize only the exact bounded formal closure rollover window."""
 
+        allowed_admission_reasons = {
+            MutationWriterAdmissionReason.ZERO_OPEN_SCOPE.value,
+            (
+                MutationWriterAdmissionReason
+                .SCOPE_CLOSED_DURING_REGISTRATION.value
+            ),
+        }
         if (
             purpose != "formal"
             or attempt_authority is None
@@ -3286,68 +3333,69 @@ class LiveAoxAttemptRunner:
             != "mutation_driver_writer_identity_invalid"
             or observation_error.details.get("mutation_scope_error_code")
             != "mutation_writer_admission_closed"
+            or observation_error.details.get(
+                "mutation_writer_admission_reason"
+            )
+            not in allowed_admission_reasons
         ):
             return None
         envelope_id = str(attempt_authority.get("envelope_id") or "").strip()
-        if not envelope_id:
+        task_id = str(attempt_authority.get("task_id") or "").strip()
+        lane_id = str(attempt_authority.get("lane_id") or "").strip()
+        raw_request = attempt_authority.get("authority_request")
+        if not isinstance(raw_request, Mapping):
+            return None
+        campaign_id = str(raw_request.get("campaign_id") or "").strip()
+        workflow_id = str(raw_request.get("workflow_id") or "").strip()
+        root_ref = str(raw_request.get("root_ref") or "").strip()
+        try:
+            scientific_scope = ScientificAttemptScope(
+                str(attempt_authority.get("scope") or "")
+            )
+        except ValueError:
+            return None
+        if not all(
+            (
+                envelope_id,
+                task_id,
+                lane_id,
+                campaign_id,
+                workflow_id,
+                root_ref,
+            )
+        ):
             return None
         with provider.read() as scope:
-            repositories = scope.repositories
-            attempts = tuple(
-                repositories.scientific_attempts.list_by_session(session_id)
-            )
-            if len(attempts) != 1 or attempts[0].envelope_id != envelope_id:
-                return None
-            attempt_scope = repositories.mutation_scopes.get(
-                attempts[0].mutation_scope_id
-            )
-            scopes = tuple(
-                repositories.mutation_scopes.list_by_session(session_id)
-            )
-            matching_scopes = tuple(
-                item
-                for item in scopes
-                if attempt_scope is not None
-                and item.scope_id == attempt_scope.scope_id
-            )
-            if (
-                attempt_scope is None
-                or len(matching_scopes) != 1
-                or attempt_scope.scope_kind is not MutationScopeKind.ATTEMPT
-                or attempt_scope.state
-                not in {
-                    MutationScopeState.FREEZING,
-                    MutationScopeState.QUIESCENT,
-                    MutationScopeState.SEALED,
-                }
-                or any(
-                    item.state is MutationScopeState.OPEN for item in scopes
+            try:
+                return ScientificAttemptScopeRolloverProjector(
+                    scope.repositories
+                ).project(
+                    ScientificAttemptScopeRolloverEnvelope(
+                        session_id=session_id,
+                        envelope_id=envelope_id,
+                        task_id=task_id,
+                        lane_id=lane_id,
+                        campaign_id=campaign_id,
+                        workflow_id=workflow_id,
+                        scope=scientific_scope,
+                        root_ref=root_ref,
+                    )
                 )
-            ):
-                return None
-            active_scopes = tuple(
-                item for item in scopes if not item.state.is_terminal
-            )
-            if (
-                attempt_scope.state
-                in {
-                    MutationScopeState.FREEZING,
-                    MutationScopeState.QUIESCENT,
-                }
-                and (
-                    len(active_scopes) != 1
-                    or active_scopes[0].scope_id != attempt_scope.scope_id
-                )
-            ) or (
-                attempt_scope.state is MutationScopeState.SEALED
-                and active_scopes
-            ):
-                return None
-            return {
-                "scope_id": attempt_scope.scope_id,
-                "scope_kind": attempt_scope.scope_kind.value,
-                "state": attempt_scope.state.value,
-            }
+            except ScientificAttemptScopeRolloverIntegrityError as exc:
+                raise AoxRuntimeObservationError(
+                    exc.error_code,
+                    "formal scientific-attempt scope rollover is invalid",
+                    details={
+                        key: value
+                        for key, value in exc.details.items()
+                        if key
+                        in {
+                            "open_scope_count",
+                            "scope_rollover_reason",
+                            "scope_state",
+                        }
+                    },
+                ) from exc
 
     def _coordinate_runtime_drain(
         self,

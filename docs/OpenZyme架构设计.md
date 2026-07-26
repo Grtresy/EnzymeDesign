@@ -276,13 +276,26 @@ runtime-barrier projection。observer 必须在返回、异常、sleep、下一�
 read 或下一次 drain 前退休，不能因为窄检查只返回 boolean 就绕过 identity 与 rollover
 约束。
 
+session-scoped writer admission 必须在一个 `BEGIN IMMEDIATE`/owning atomic
+transaction 中完成 scope 列表、唯一 open-scope cardinality、parent authority 校验、
+writer row 注册与 write authority 形成。scope selection 与 registration 之间不得留下
+freeze/finalizer 可插入的 TOCTOU 窗口。没有任何 mutation scope 的旧 session 保持
+untracked compatibility；已有 scope 但零 open、注册时 scope 已关闭或出现多重 open
+scope，则分别返回 typed `zero_open_scope`、
+`scope_closed_during_registration`、`ambiguous_open_scopes`，且 ambiguous 永不进入
+rollover retry。
+
 terminal command 与 closure finalizer 可以在同一时段收敛：command 已 terminal 后，
 exact attempt scope 可能已提交为 `freezing|quiescent`，因此 writer admission 正常关闭，
 而 post-attempt scope 尚未对 reader 可见。driver 只在
-`mutation_writer_admission_closed + exact formal authority + exact attempt scope +
-zero open/zero competing nonterminal scope` 同时成立时，把它解释为当前 command 内的
-rollover coordination；在原 command deadline 内等待 post scope 后重新形成短 barrier，
-不发下一次 drain、不重开 scope、不重试 agent/tool。deadline 到期返回
+`mutation_writer_admission_closed + allowed typed admission reason + exact formal
+authority` 同时成立时调用 Core 的 monotonic rollover projector。projector 严格绑定
+session/envelope/task/lane/campaign/workflow/scope/root：它只接受
+`closure_requested + freezing|quiescent|sealed + zero open/zero competitor` 的 pending
+前态，或 `closed + sealed attempt + deterministic open session child` 的 committed 后态。
+pending 在原 command deadline 内等待；若 observer 异常形成后 finalizer 已提交 post
+scope，则后态直接重建一次短 barrier。两者都不发下一次 drain、不重开 scope、不重试
+agent/tool。deadline 到期返回
 `scientific_attempt_scope_rollover_stalled`。parent-scope mismatch、缺失/多重 attempt、
 任意 open/竞争 scope 仍保留原 observer identity failure。
 
@@ -304,6 +317,14 @@ finalizer。当前该事务由 Core 的 `ScientificAttemptService.finalize_closu
 event 与 source-bound runtime wakeup 放入包含 Core transition 的同一事务；commit 后才触发
 进程内 notifier。pending finalizer 不再跳过已存在 attempt/closure，而是按 event/source
 identity 幂等补齐旧崩溃留下的缺失 delivery，已完成 signal 不会被重新排队。
+
+closure wakeup 本身不再无条件启动第二个模型 turn。claimed `MANUAL_RESUME` 只有在
+source/correlation、actor、session/task/lane、attempt/request/selection/closure、resolved
+closed lifecycle，以及 co-terminal assistant message/document/recipient/response digest
+全部精确一致，且 attempt task 已显式 business-terminal 时，才通过既有 signal
+lease/fence 机械完成并发出 typed settlement event；它不新增 assistant response、closure、
+report 或 signal。普通 resume、admission/attempt wake 与非终态 task 仍保留 model-driven
+路径；closure-like source 的任一 binding 漂移在 provider 前 fail closed。
 
 `ScientificAttempt.status` 是 admission 时写入且保持 append-only 的
 `record_status`，不是 closure 之后的唯一 lifecycle 真相。Core 统一通过
@@ -409,6 +430,27 @@ committed freezing window，被旧 driver 错报为
 `sha256:a3c4a24fcb6e9342dc11faa48bdb393481c0c9e1f4a1b9559c83b4fada0e8123`
 永久 non-acceptance。上述 bounded same-command rollover coordination 是该真实证据后的
 非 live correction；它不授权复用 plan 或再跑一次 live。
+
+随后 clean commit `4122df0749c78f4ae011b6d804bf76cc3a9f8c1f` 的 fresh
+non-`rNN` plan
+`sha256:d062f81d803256e7ccca7ef63cba8fc0420022e5b731e65f1eced9d9e17b4cd5`
+也只消费一次。product path 再次完成三个 task、published report
+`report_71ffe6a0e718`、co-terminal response
+`attempt_closure_response_67b0ae6ad2b9391c4ac18c2d` 与 immutable closure
+`attempt_closure_d1e450291c10454855e07248`。最后 command 于
+`07:08:16.801844Z` 完成；attempt scope 随后依次于
+`07:08:16.853472Z/16.930602Z/17.039405Z` 进入
+freezing/quiescent/sealed，closure 与 exact post scope 于
+`07:08:17.379767Z/17.399815Z` 可见。observer admission 在 finalizer 前态正确看到零 open
+scope，但旧 AOX-local classifier 读取时后态已提交，因只接受 pending 前态而再次误报
+`mutation_driver_writer_identity_invalid`；closure transition 同时留下唯一 pending
+source-bound signal `sig_c318716ba42c`。这证明 classification 也必须接受同一 Core
+projector 的 committed 后态，且 terminal notification 应机械 settlement，不能再调用模型
+复制已交付回答。decision
+`sha256:7077a5ffe17f903cf93132d4b9384280228c1e562dd45b8de7bacdb5fe0c00e3`
+与 fatal
+`sha256:ed96bdd37285d3c1f56c12a515086bc5e9d25688bfff36ef9127ccb44a75e09b`
+仍是永久 non-acceptance；该 plan、target、MICU 与证据不可复用。
 
 formal acceptance 保留现有 exact-three `positive, positive, fault` authority 与全部 GO
 门槛。两类 plan 必须分别获得 operator 精确批准，内容 digest 相同也不产生复用权限。

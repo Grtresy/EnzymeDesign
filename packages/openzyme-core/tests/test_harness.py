@@ -4782,6 +4782,40 @@ def test_tool_router_registers_publishers_only_for_mutating_tools() -> None:
     ]
 
 
+def test_owning_transaction_preserves_untracked_session_writer_compatibility() -> (
+    None
+):
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    external_scope_calls: list[dict[str, object]] = []
+
+    @contextmanager
+    def external_writer_scope(**kwargs):  # type: ignore[no-untyped-def]
+        external_scope_calls.append(dict(kwargs))
+        raise AssertionError("owning transaction must not reacquire its SQLite lock")
+        yield None
+
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        mutation_writer_scope_factory=external_writer_scope,
+    )
+
+    assert repositories.in_managed_transaction is False
+    with repositories.atomic(prefix="no_scope_nested_writer_compatibility"):
+        assert repositories.in_managed_transaction is True
+        with context.mutation_writer_scope(
+            owner_kind=MutationWriterKind.EVENT_OUTBOX_PUBLISHER,
+            owner_ref="event:legacy-session",
+        ) as authority:
+            assert authority is None
+    assert repositories.in_managed_transaction is False
+    assert external_scope_calls == []
+
+
 def test_tool_registry_register_runtime_coexists_with_legacy_and_typed_wins() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)

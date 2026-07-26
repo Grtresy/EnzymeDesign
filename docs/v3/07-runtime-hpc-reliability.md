@@ -197,6 +197,18 @@ operation、continuation delivery、runner/provider callback、artifact/report p
 event/outbox publisher 与 live-token ledger writer。异步 child 必须绑定 active parent；只有
 composition root、attempt driver 等明确 trusted root 可以无 parent 注册。
 
+session writer 的 scope 选择不是 registration 前的提示性 read。Host 必须在同一个
+owning atomic transaction 中读取该 session 的 scopes、证明 open scope cardinality
+exactly one、校验 parent、写入 writer 并形成 authority；因此 freeze 与 registration
+只有完整的先后顺序，不存在先读 open、后向已冻结 scope 注册的 TOCTOU。零 scope 仅保留
+旧 session 的 untracked compatibility；零 open、registration 时已关闭与多重 open 分别
+产生 typed admission reason，且多重 open 是 integrity failure，不能作为 rollover 等待。
+
+若 caller 已在同一 repository connection 上持有 Host 管理事务，而且事务内 snapshot
+证明 session 没有任何 mutation-scope 历史，nested publisher 保留本地 untracked
+compatibility，不得通过外部 scope factory 再开一个 SQLite writer connection 去竞争
+caller 自己持有的 write lock。该路径不签发 authority；一旦存在 scope 历史即不适用。
+
 Closure 顺序固定：
 
 ```text

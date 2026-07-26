@@ -41,6 +41,10 @@ from .scientific_attempt_lifecycle import (
     ScientificAttemptLifecycleIntegrityError,
 )
 from .scientific_attempt_lifecycle import ScientificAttemptLifecycleResolver
+from .scientific_closure_notification import (
+    ScientificClosureNotificationSettlementError,
+)
+from .scientific_closure_notification import ScientificClosureNotificationVerifier
 from .task_board import TaskBoardService
 from .teammate_roster import teammate_role_for_task_kind
 from .teammates import finalize_teammate_result
@@ -289,6 +293,12 @@ class AgentRuntimeService:
                 error_message="agent not found",
             )
             return AgentRuntimeOutcome(signal=failed, task=None, agent=None, ok=False, summary="agent not found")
+        closure_notification = self._settle_scientific_closure_notification(
+            claimed,
+            agent,
+        )
+        if closure_notification is not None:
+            return closure_notification
         if agent.agent_id == "agent:master" or agent.role == "master":
             return self._wake_master(claimed, agent, max_steps=max_steps)
 
@@ -831,6 +841,140 @@ class AgentRuntimeService:
             teammate_status=result.status.value,
             outputs=tuple(result.outputs),
             waiting_approval_id=result.pending_approval_id,
+        )
+
+    def _settle_scientific_closure_notification(
+        self,
+        claimed: AgentRuntimeSignal,
+        agent: AgentMember,
+    ) -> AgentRuntimeOutcome | None:
+        try:
+            proof = ScientificClosureNotificationVerifier(
+                self.context.repositories
+            ).verify(claimed)
+        except ScientificClosureNotificationSettlementError as exc:
+            failed, signal_write_ok, _ = self._fail_signal(
+                claimed,
+                error_message=exc.error_code,
+                retryable=False,
+                emit=False,
+            )
+            agent = self._update_agent(
+                agent,
+                status=AgentMemberStatus.IDLE,
+                correlation_id=claimed.correlation_id,
+                wakeup_reason=claimed.reason.value,
+                runtime_state="idle",
+                last_active_at=utc_now_iso(),
+                idle_since=utc_now_iso(),
+            )
+            if signal_write_ok:
+                self.context.emit(
+                    "scientific.closure_notification.rejected",
+                    {
+                        "signal_id": failed.signal_id,
+                        "agent_id": failed.agent_id,
+                        "error_code": exc.error_code,
+                        "reason": exc.reason.value,
+                    },
+                )
+            return AgentRuntimeOutcome(
+                signal=failed,
+                task=(
+                    None
+                    if failed.task_id is None
+                    else self.context.repositories.tasks.get(failed.task_id)
+                ),
+                agent=agent,
+                ok=False,
+                summary=(
+                    "scientific closure notification failed exact binding "
+                    "verification"
+                    if signal_write_ok
+                    else (
+                        "session runtime lease fencing rejected; scientific "
+                        "closure notification write was not applied"
+                    )
+                ),
+                teammate_status=(
+                    "scientific_closure_notification_invalid"
+                    if signal_write_ok
+                    else "scientific_closure_notification_write_rejected"
+                ),
+            )
+        if proof is None:
+            return None
+        with self.context.repositories.atomic(
+            prefix="scientific_closure_notification_settle"
+        ):
+            completed, signal_write_ok = self._complete_signal(claimed)
+            if signal_write_ok:
+                self.context.emit(
+                    "signal.completed",
+                    {
+                        "signal_id": completed.signal_id,
+                        "agent_id": completed.agent_id,
+                        "status": completed.status.value,
+                        "error_message": completed.error_message,
+                    },
+                )
+                self.context.emit(
+                    "scientific.closure_notification.settled",
+                    {
+                        "signal_id": completed.signal_id,
+                        "agent_id": completed.agent_id,
+                        "task_id": completed.task_id,
+                        "settlement": "no_model",
+                    },
+                )
+            agent = self._update_agent(
+                agent,
+                status=AgentMemberStatus.IDLE,
+                task_id=completed.task_id,
+                lane_id=completed.lane_id,
+                correlation_id=completed.correlation_id,
+                wakeup_reason=completed.reason.value,
+                runtime_state="idle",
+                last_active_at=utc_now_iso(),
+                idle_since=utc_now_iso(),
+            )
+            if signal_write_ok:
+                self.context.emit(
+                    "agent.idle",
+                    {
+                        "agent_id": agent.agent_id,
+                        "signal_id": completed.signal_id,
+                        "task_id": completed.task_id,
+                    },
+                )
+        settlement = (
+            AgentRuntimeOutcomeSettlement.scientific_closure_notification(
+                signal=completed,
+                task=proof.task,
+            )
+            if signal_write_ok
+            else None
+        )
+        return AgentRuntimeOutcome(
+            signal=completed,
+            task=proof.task,
+            agent=agent,
+            ok=signal_write_ok,
+            summary=(
+                "immutable scientific closure notification settled without "
+                "a model turn"
+                if signal_write_ok
+                else (
+                    "session runtime lease fencing rejected; scientific "
+                    "closure notification write was not applied"
+                )
+            ),
+            teammate_status=(
+                "scientific_closure_notification_settled"
+                if signal_write_ok
+                else "scientific_closure_notification_write_rejected"
+            ),
+            settlement=settlement,
         )
 
     def _task_not_ready_outcome(

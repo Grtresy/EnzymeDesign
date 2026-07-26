@@ -737,19 +737,28 @@ class SessionRuntimeContext:
         owner_ref: str,
         process_epoch: int | None = None,
     ) -> Iterator[object | None]:
+        session_id = self.snapshot.session.session_id
         parent_authority = current_mutation_write_authority()
         if parent_authority is not None:
             scope = MutationScopeService(self.repositories).writer_turn(
-                session_id=self.snapshot.session.session_id,
+                session_id=session_id,
                 owner_kind=owner_kind,
                 owner_ref=owner_ref,
                 process_epoch=process_epoch,
             )
+        elif (
+            self.repositories.in_managed_transaction
+            and not self.repositories.mutation_scopes.list_by_session(session_id)
+        ):
+            # The owning BEGIN IMMEDIATE establishes a stable no-scope snapshot.
+            # Opening the external factory here would ask a second SQLite
+            # connection to acquire the write lock already held by this one.
+            scope = nullcontext(None)
         elif self.mutation_writer_scope_factory is None:
             scope = nullcontext(None)
         else:
             scope = self.mutation_writer_scope_factory(
-                session_id=self.snapshot.session.session_id,
+                session_id=session_id,
                 owner_kind=owner_kind,
                 owner_ref=owner_ref,
                 process_epoch=process_epoch,

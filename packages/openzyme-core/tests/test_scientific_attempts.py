@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC
 from datetime import datetime
@@ -16,6 +18,7 @@ import pytest
 import openzyme_core.agent_runtime as agent_runtime_module
 
 from openzyme_core import AgentRuntimeService
+from openzyme_core import AgentRuntimeSettlementDisposition
 from openzyme_core import ArtifactBoundaryService
 from openzyme_core import CoreRepositories
 from openzyme_core import ControlledOperationResultArtifactRef
@@ -25,6 +28,7 @@ from openzyme_core import HarnessStatus
 from openzyme_core import ImmutableIdentityConflictError
 from openzyme_core import MemoryEventBus
 from openzyme_core import MutationScopeService
+from openzyme_core import MutationWriterTurnFactory
 from openzyme_core import RestoreFocus
 from openzyme_core import RuntimeConsistencyService
 from openzyme_core import ResolvedScientificAttemptLifecycle
@@ -35,7 +39,16 @@ from openzyme_core import ScientificAttemptError
 from openzyme_core import ScientificAttemptIdentityConflictError
 from openzyme_core import ScientificAttemptLifecycleIntegrityError
 from openzyme_core import ScientificAttemptLifecycleResolver
+from openzyme_core import ScientificAttemptScopeRolloverEnvelope
+from openzyme_core import ScientificAttemptScopeRolloverIntegrityError
+from openzyme_core import ScientificAttemptScopeRolloverPhase
+from openzyme_core import ScientificAttemptScopeRolloverProjector
+from openzyme_core import ScientificAttemptScopeRolloverReason
 from openzyme_core import ScientificAttemptService
+from openzyme_core import ScientificClosureNotificationReason
+from openzyme_core import ScientificClosureNotificationSettlementError
+from openzyme_core import ScientificClosureNotificationVerifier
+from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import build_conversation_projection
 from openzyme_core import ScientificOperationSignature
 from openzyme_core import ScientificSelectionEvaluator
@@ -73,6 +86,7 @@ from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import ControlledOperationResultHandle
 from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import InboxParticipantKind
 from openzyme_domain import Lane
 from openzyme_domain import LaneStatus
 from openzyme_domain import MutationScopeKind
@@ -559,6 +573,67 @@ def _ready_closure_request(
         idempotency_key=f"close-{suffix}",
     )
     return attempt, request
+
+
+def _rollover_envelope(
+    attempt: Any,
+    **changes: Any,
+) -> ScientificAttemptScopeRolloverEnvelope:
+    values = {
+        "session_id": attempt.session_id,
+        "envelope_id": attempt.envelope_id,
+        "task_id": attempt.task_id,
+        "lane_id": attempt.lane_id,
+        "campaign_id": attempt.campaign_id,
+        "workflow_id": attempt.workflow_id,
+        "scope": attempt.scope,
+        "root_ref": attempt.root_ref,
+        **changes,
+    }
+    return ScientificAttemptScopeRolloverEnvelope(**values)
+
+
+def _persist_closure_response(
+    *,
+    repositories: CoreRepositories,
+    service: ScientificAttemptService,
+    request: ScientificAttemptClosureRequest,
+    content: str,
+) -> object:
+    response = service.prepare_closure_response(
+        request=request,
+        recipient="user:owner",
+        recipient_kind=InboxParticipantKind.USER.value,
+        assistant_response_text=content,
+    )
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            "sess_scientific",
+        ),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(
+            task_id="task_scientific",
+            lane_id="lane_scientific",
+        ),
+        assistant_response_recipient="user:owner",
+        assistant_response_recipient_kind=InboxParticipantKind.USER,
+    )
+    with service.mutation_scopes.writer_turn(
+        session_id="sess_scientific",
+        owner_kind=MutationWriterKind.AGENT_TURN,
+        owner_ref=f"fixture:closure-response:{request.closure_request_id}",
+    ):
+        context.persist_outbound_assistant_message(
+            content=content,
+            message_id=response.message_id,
+            document_id=response.document_id,
+            created_at=response.created_at,
+        )
+        repositories.scientific_attempt_closure_responses.add(response)
+    return response
 
 
 def _close_existing_attempt(
@@ -2331,6 +2406,653 @@ def test_concurrent_closure_finalizers_create_one_post_attempt_scope(
         ]
     finally:
         verification_connection.close()
+
+
+def test_terminal_scope_rollover_projection_is_monotonic() -> None:
+    repositories, service = _world()
+    attempt, request = _ready_closure_request(
+        service,
+        suffix="terminal-rollover-projection",
+    )
+    service.mutation_scopes.begin_freeze(attempt.mutation_scope_id)
+    projector = ScientificAttemptScopeRolloverProjector(repositories)
+
+    pending = projector.project(_rollover_envelope(attempt))
+    assert pending.phase is ScientificAttemptScopeRolloverPhase.ROLLOVER_PENDING
+    assert pending.attempt_scope_state is MutationScopeState.FREEZING
+    assert pending.post_scope_id is None
+    assert pending.safe_details() == {
+        "scope_rollover_phase": "rollover_pending",
+        "scope_state": "freezing",
+        "open_scope_count": 0,
+    }
+
+    closure = service.finalize_closure_request(
+        closure_request_id=request.closure_request_id
+    )
+    assert closure.attempt_id == attempt.attempt_id
+    post_open = projector.project(_rollover_envelope(attempt))
+    assert (
+        post_open.phase
+        is ScientificAttemptScopeRolloverPhase.POST_CLOSURE_SCOPE_OPEN
+    )
+    assert post_open.attempt_scope_state is MutationScopeState.SEALED
+    assert post_open.post_scope_id == f"mutation_scope_post_{attempt.attempt_id}"
+    assert post_open.open_scope_count == 1
+
+    stored_attempt_scope = repositories.mutation_scopes.get(
+        attempt.mutation_scope_id
+    )
+    assert stored_attempt_scope is not None
+    assert stored_attempt_scope.state is MutationScopeState.SEALED
+
+
+def test_file_backed_finalization_and_first_observer_serialize_into_post_scope(
+    tmp_path: Path,
+) -> None:
+    provider = SQLiteRepositoryProvider(
+        str(tmp_path / "terminal-rollover-observer.sqlite3"),
+        check_same_thread=False,
+        busy_timeout_ms=10_000,
+    )
+    with provider.connection_scope() as owner:
+        _, service = _world(connection=owner.connection)
+        attempt, request = _ready_closure_request(
+            service,
+            suffix="file-backed-terminal-rollover",
+        )
+
+    finalizer_commit_reached = Event()
+    release_finalizer_commit = Event()
+    observer_started = Event()
+
+    @contextmanager
+    def repository_scope() -> Iterator[CoreRepositories]:
+        with provider.connection_scope() as owner:
+            yield owner.repositories
+
+    def finalize() -> str:
+        with provider.connection_scope() as owner:
+            blocked = False
+
+            def trace(statement: str) -> None:
+                nonlocal blocked
+                if statement.strip().upper() == "COMMIT" and not blocked:
+                    blocked = True
+                    finalizer_commit_reached.set()
+                    assert release_finalizer_commit.wait(timeout=5)
+
+            owner.connection.set_trace_callback(trace)
+            worker_service = ScientificAttemptService(
+                owner.repositories,
+                now=lambda: NOW,
+                workflow_contract_registry=TEST_WORKFLOW_CONTRACT_REGISTRY,
+            )
+            return worker_service.finalize_closure_request(
+                closure_request_id=request.closure_request_id
+            ).closure_id
+
+    def observe() -> str:
+        observer_started.set()
+        factory = MutationWriterTurnFactory(
+            repository_scope_factory=repository_scope
+        )
+        with factory.open(
+            session_id=attempt.session_id,
+            owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+            owner_ref="observer:first-post-closure-barrier",
+        ) as authority:
+            assert authority is not None
+            return authority.scope_id
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        finalizer_future = executor.submit(finalize)
+        assert finalizer_commit_reached.wait(timeout=5)
+        observer_future = executor.submit(observe)
+        assert observer_started.wait(timeout=5)
+        assert observer_future.done() is False
+        release_finalizer_commit.set()
+        closure_id = finalizer_future.result()
+        observer_scope_id = observer_future.result()
+
+    with provider.read() as reader:
+        repositories = reader.repositories
+        closure = repositories.scientific_attempt_closures.get(closure_id)
+        scopes = repositories.mutation_scopes.list_by_session(
+            attempt.session_id
+        )
+        attempt_scope = repositories.mutation_scopes.get(
+            attempt.mutation_scope_id
+        )
+        post_scope = next(
+            scope
+            for scope in scopes
+            if scope.parent_scope_id == attempt.mutation_scope_id
+        )
+        projection = ScientificAttemptScopeRolloverProjector(
+            repositories
+        ).project(_rollover_envelope(attempt))
+        observer_writers = repositories.mutation_writers.list_all(
+            post_scope.scope_id
+        )
+        active_writers = [
+            writer
+            for scope in scopes
+            for writer in repositories.mutation_writers.list_active(
+                scope.scope_id
+            )
+        ]
+
+    assert closure is not None
+    assert attempt_scope is not None
+    assert attempt_scope.state is MutationScopeState.SEALED
+    assert observer_scope_id == post_scope.scope_id
+    assert post_scope.scope_id == f"mutation_scope_post_{attempt.attempt_id}"
+    assert post_scope.state is MutationScopeState.OPEN
+    assert (
+        projection.phase
+        is ScientificAttemptScopeRolloverPhase.POST_CLOSURE_SCOPE_OPEN
+    )
+    assert len(observer_writers) == 1
+    assert observer_writers[0].state.is_terminal
+    assert active_writers == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("scope_id", "mutation_scope_post_wrong"),
+        ("scope_ref", "post-scientific-attempt:wrong"),
+        ("scope_kind", MutationScopeKind.ATTEMPT),
+        ("parent_scope_id", None),
+    ],
+)
+def test_terminal_scope_rollover_rejects_drifted_post_scope_identity(
+    field: str,
+    value: object,
+) -> None:
+    repositories, service = _world()
+    attempt, request = _ready_closure_request(
+        service,
+        suffix=f"rollover-wrong-{field}",
+    )
+    service.finalize_closure_request(
+        closure_request_id=request.closure_request_id
+    )
+    scopes = repositories.mutation_scopes.list_by_session(attempt.session_id)
+    attempt_scope = next(
+        scope for scope in scopes if scope.scope_id == attempt.mutation_scope_id
+    )
+    post_scope = next(
+        scope
+        for scope in scopes
+        if scope.parent_scope_id == attempt.mutation_scope_id
+    )
+    projected_scopes = _RepositoryProxy(
+        repositories.mutation_scopes,
+        list_by_session=lambda _session_id: [
+            attempt_scope,
+            replace(post_scope, **{field: value}),
+        ],
+    )
+    projected_repositories = _RepositoryProxy(
+        repositories,
+        mutation_scopes=projected_scopes,
+    )
+
+    with pytest.raises(
+        ScientificAttemptScopeRolloverIntegrityError
+    ) as caught:
+        ScientificAttemptScopeRolloverProjector(
+            projected_repositories
+        ).project(_rollover_envelope(attempt))
+    assert (
+        caught.value.reason
+        is ScientificAttemptScopeRolloverReason.POST_SCOPE_IDENTITY_INVALID
+    )
+
+
+def test_terminal_scope_rollover_rejects_binding_and_topology_ambiguity() -> None:
+    repositories, service = _world()
+    attempt, request = _ready_closure_request(
+        service,
+        suffix="rollover-ambiguous",
+    )
+    service.finalize_closure_request(
+        closure_request_id=request.closure_request_id
+    )
+    projector = ScientificAttemptScopeRolloverProjector(repositories)
+
+    with pytest.raises(
+        ScientificAttemptScopeRolloverIntegrityError
+    ) as binding_error:
+        projector.project(
+            _rollover_envelope(attempt, root_ref="attempts/wrong-root")
+        )
+    assert (
+        binding_error.value.reason
+        is ScientificAttemptScopeRolloverReason.ATTEMPT_BINDING_INVALID
+    )
+
+    scopes = repositories.mutation_scopes.list_by_session(attempt.session_id)
+    post_scope = next(
+        scope
+        for scope in scopes
+        if scope.parent_scope_id == attempt.mutation_scope_id
+    )
+    projected_scopes = _RepositoryProxy(
+        repositories.mutation_scopes,
+        list_by_session=lambda _session_id: [
+            *scopes,
+            replace(
+                post_scope,
+                scope_id="mutation_scope_post_competitor",
+                scope_ref="post-scientific-attempt:competitor",
+            ),
+        ],
+    )
+    projected_repositories = _RepositoryProxy(
+        repositories,
+        mutation_scopes=projected_scopes,
+    )
+    with pytest.raises(
+        ScientificAttemptScopeRolloverIntegrityError
+    ) as topology_error:
+        ScientificAttemptScopeRolloverProjector(
+            projected_repositories
+        ).project(_rollover_envelope(attempt))
+    assert (
+        topology_error.value.reason
+        is ScientificAttemptScopeRolloverReason.SCOPE_TOPOLOGY_AMBIGUOUS
+    )
+    assert topology_error.value.details["open_scope_count"] == 2
+
+
+def test_terminal_scope_rollover_rejects_lifecycle_scope_mismatch() -> None:
+    repositories, service = _world()
+    attempt, request = _ready_closure_request(
+        service,
+        suffix="rollover-lifecycle-mismatch",
+    )
+    service.finalize_closure_request(
+        closure_request_id=request.closure_request_id
+    )
+    scopes = repositories.mutation_scopes.list_by_session(attempt.session_id)
+    attempt_scope = next(
+        scope for scope in scopes if scope.scope_id == attempt.mutation_scope_id
+    )
+    post_scope = next(
+        scope
+        for scope in scopes
+        if scope.parent_scope_id == attempt.mutation_scope_id
+    )
+    projected_scopes = _RepositoryProxy(
+        repositories.mutation_scopes,
+        list_by_session=lambda _session_id: [
+            replace(attempt_scope, state=MutationScopeState.FREEZING),
+            post_scope,
+        ],
+    )
+    projected_repositories = _RepositoryProxy(
+        repositories,
+        mutation_scopes=projected_scopes,
+    )
+
+    with pytest.raises(
+        ScientificAttemptScopeRolloverIntegrityError
+    ) as caught:
+        ScientificAttemptScopeRolloverProjector(
+            projected_repositories
+        ).project(_rollover_envelope(attempt))
+    assert (
+        caught.value.reason
+        is ScientificAttemptScopeRolloverReason.LIFECYCLE_SCOPE_MISMATCH
+    )
+
+
+def test_exact_closure_notification_settles_without_model_or_duplicate_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repositories, service = _world()
+    attempt, request = _ready_closure_request(
+        service,
+        suffix="closure-notification-settlement",
+    )
+    response = _persist_closure_response(
+        repositories=repositories,
+        service=service,
+        request=request,
+        content="The exact scientific attempt is complete.",
+    )
+    closure = service.finalize_closure_request(
+        closure_request_id=request.closure_request_id
+    )
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.AGENT_TURN,
+        owner_ref="fixture:terminal-task-before-notification",
+    ):
+        finished = TaskBoardService(repositories).finish_task(
+            attempt.task_id,
+            TaskFinishCommand(
+                status=TaskStatus.COMPLETED,
+                finished_by=request.actor_ref,
+                summary="Scientific attempt and report are complete.",
+                evidence_refs=(f"scientific_closure:{closure.closure_id}",),
+            ),
+        )
+    assert finished.task.status is TaskStatus.COMPLETED
+
+    def unexpected_model_path(*_args: Any, **_kwargs: Any) -> HarnessResult:
+        raise AssertionError("closure notification must not invoke a model loop")
+
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "run_agent_harness_loop",
+        unexpected_model_path,
+    )
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "run_teammate_loop",
+        unexpected_model_path,
+    )
+    event_bus = MemoryEventBus()
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=event_bus,
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            attempt.session_id,
+        ),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        model_factory=object(),
+        scientific_workflow_contract_registry=(
+            TEST_WORKFLOW_CONTRACT_REGISTRY
+        ),
+    )
+    runtime = AgentRuntimeService(context)
+    conversation_before = build_conversation_projection(
+        repositories,
+        attempt.session_id,
+    )
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.RUNTIME_COMMAND,
+        owner_ref="fixture:closure-notification-drain",
+    ):
+        signal = runtime.enqueue_signal(
+            session_id=attempt.session_id,
+            agent_id=request.actor_ref,
+            task_id=attempt.task_id,
+            lane_id=attempt.lane_id,
+            correlation_id=closure.closure_id,
+            reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+            source_ref=closure.closure_id,
+            notify=False,
+        )
+        assert signal is not None
+        outcome = runtime.wake_agent(signal, max_steps=1)
+
+    assert outcome.ok is True
+    assert outcome.signal.status is AgentRuntimeSignalStatus.COMPLETED
+    assert outcome.teammate_status == (
+        "scientific_closure_notification_settled"
+    )
+    assert outcome.settlement is not None
+    assert outcome.settlement.disposition is (
+        AgentRuntimeSettlementDisposition
+        .SCIENTIFIC_CLOSURE_NOTIFICATION_SETTLED
+    )
+    assert build_conversation_projection(
+        repositories,
+        attempt.session_id,
+    ) == conversation_before
+    assert (
+        repositories.scientific_attempt_closures.get(closure.closure_id)
+        == closure
+    )
+    assert (
+        repositories.scientific_attempt_closure_responses
+        .get_by_closure_request(request.closure_request_id)
+        == response
+    )
+    assert repositories.runtime_signals.list_pending_by_session(
+        attempt.session_id
+    ) == []
+    assert any(
+        event.event_type == "scientific.closure_notification.settled"
+        for event in event_bus.events
+    )
+
+
+@pytest.mark.parametrize(
+    "source_ref",
+    ["operator:resume", None, "scientific_attempt"],
+)
+def test_non_closure_manual_resume_keeps_master_model_path(
+    monkeypatch: pytest.MonkeyPatch,
+    source_ref: str | None,
+) -> None:
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.AGENT_TURN,
+        owner_ref="fixture:add-master-for-manual-resume",
+    ):
+        repositories.agents.save(
+            AgentMember(
+                agent_id="agent:master",
+                session_id=attempt.session_id,
+                lane_id=None,
+                task_id=None,
+                name="OpenZyme",
+                role="master",
+                status=AgentMemberStatus.IDLE,
+                parent_agent_id=None,
+                created_at=NOW,
+                updated_at=NOW,
+                runtime_state="idle",
+                idle_since=NOW,
+            )
+        )
+    calls: list[str] = []
+
+    def run_master(*_args: Any, **_kwargs: Any) -> HarnessResult:
+        calls.append("model")
+        return HarnessResult(
+            session_id=attempt.session_id,
+            status=HarnessStatus.COMPLETED,
+            snapshot=SessionRuntimeSnapshot.load(
+                repositories,
+                attempt.session_id,
+            ),
+            events=(),
+            outputs=("Master handled the resume.",),
+            tool_results=(),
+        )
+
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "run_agent_harness_loop",
+        run_master,
+    )
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            attempt.session_id,
+        ),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        model_factory=object(),
+    )
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.RUNTIME_COMMAND,
+        owner_ref="fixture:ordinary-master-resume",
+    ):
+        signal = AgentRuntimeService(context).enqueue_signal(
+            session_id=attempt.session_id,
+            agent_id="agent:master",
+            task_id=attempt.task_id,
+            lane_id=attempt.lane_id,
+            correlation_id="corr_ordinary_resume",
+            reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+            source_ref=(
+                attempt.attempt_id
+                if source_ref == "scientific_attempt"
+                else source_ref
+            ),
+            notify=False,
+        )
+        assert signal is not None
+        outcome = AgentRuntimeService(context).wake_agent(signal, max_steps=1)
+
+    assert calls == ["model"]
+    assert outcome.ok is True
+    assert outcome.signal.status is AgentRuntimeSignalStatus.COMPLETED
+    assert outcome.settlement is not None
+    assert outcome.settlement.disposition is (
+        AgentRuntimeSettlementDisposition.SIGNAL_COMPLETED
+    )
+
+
+def test_closure_notification_binding_drift_fails_closed_before_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repositories, service = _world()
+    attempt, request = _ready_closure_request(
+        service,
+        suffix="closure-notification-drift",
+    )
+    _persist_closure_response(
+        repositories=repositories,
+        service=service,
+        request=request,
+        content="Closure response is already durable.",
+    )
+    closure = service.finalize_closure_request(
+        closure_request_id=request.closure_request_id
+    )
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.AGENT_TURN,
+        owner_ref="fixture:terminal-task-before-drift",
+    ):
+        TaskBoardService(repositories).finish_task(
+            attempt.task_id,
+            TaskFinishCommand(
+                status=TaskStatus.COMPLETED,
+                finished_by=request.actor_ref,
+                summary="Terminal before delivery.",
+                evidence_refs=(f"scientific_closure:{closure.closure_id}",),
+            ),
+        )
+
+    def unexpected_model_path(*_args: Any, **_kwargs: Any) -> HarnessResult:
+        raise AssertionError("invalid closure binding must fail before model")
+
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "run_agent_harness_loop",
+        unexpected_model_path,
+    )
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "run_teammate_loop",
+        unexpected_model_path,
+    )
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            attempt.session_id,
+        ),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        model_factory=object(),
+    )
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.RUNTIME_COMMAND,
+        owner_ref="fixture:invalid-closure-notification",
+    ):
+        signal = AgentRuntimeService(context).enqueue_signal(
+            session_id=attempt.session_id,
+            agent_id=request.actor_ref,
+            task_id=attempt.task_id,
+            lane_id=attempt.lane_id,
+            correlation_id="wrong-closure-correlation",
+            reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+            source_ref=closure.closure_id,
+            notify=False,
+        )
+        assert signal is not None
+        outcome = AgentRuntimeService(context).wake_agent(signal, max_steps=1)
+
+    assert outcome.ok is False
+    assert outcome.signal.status is AgentRuntimeSignalStatus.FAILED
+    assert outcome.signal.error_message == (
+        "scientific_closure_notification_invalid"
+    )
+    assert outcome.teammate_status == (
+        "scientific_closure_notification_invalid"
+    )
+
+
+def test_closure_notification_verifier_rejects_missing_source_and_response() -> (
+    None
+):
+    repositories, service = _world()
+    attempt, request = _ready_closure_request(
+        service,
+        suffix="closure-notification-response-invalid",
+    )
+    closure = service.finalize_closure_request(
+        closure_request_id=request.closure_request_id
+    )
+    claimed = AgentRuntimeSignal(
+        signal_id="signal_closure_response_invalid",
+        session_id=attempt.session_id,
+        agent_id=request.actor_ref,
+        task_id=attempt.task_id,
+        lane_id=attempt.lane_id,
+        correlation_id=closure.closure_id,
+        reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+        source_ref=closure.closure_id,
+        status=AgentRuntimeSignalStatus.CLAIMED,
+        created_at=NOW,
+        claimed_at=NOW,
+        claimed_by="runtime:test",
+        attempt_count=1,
+    )
+    with pytest.raises(
+        ScientificClosureNotificationSettlementError
+    ) as response_error:
+        ScientificClosureNotificationVerifier(repositories).verify(claimed)
+    assert (
+        response_error.value.reason
+        is ScientificClosureNotificationReason.RESPONSE_INVALID
+    )
+
+    with pytest.raises(
+        ScientificClosureNotificationSettlementError
+    ) as source_error:
+        ScientificClosureNotificationVerifier(repositories).verify(
+            replace(
+                claimed,
+                source_ref="attempt_closure_missing",
+                correlation_id="attempt_closure_missing",
+            )
+        )
+    assert (
+        source_error.value.reason
+        is ScientificClosureNotificationReason.SOURCE_MISSING
+    )
 
 
 def test_closure_rollover_failure_rolls_back_and_replays_cleanly(

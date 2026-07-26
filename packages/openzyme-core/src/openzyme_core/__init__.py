@@ -89,6 +89,8 @@ from .memory import SessionRestoreContext
 from .memory import register_memory_tools
 from .mutation_quiescence import MutationScopeError
 from .mutation_quiescence import MutationScopeService
+from .mutation_quiescence import MutationWriterAdmission
+from .mutation_quiescence import MutationWriterAdmissionReason
 from .mutation_quiescence import MutationWriterTurnFactory
 from .mutation_quiescence import QuiescenceIssueResult
 from .mutation_quiescence import build_quiescence_evidence_envelope
@@ -271,6 +273,22 @@ from .scientific_attempt_lifecycle import (
 )
 from .scientific_attempt_lifecycle import ScientificAttemptLifecycleResolver
 from .scientific_attempt_lifecycle import resolve_scientific_attempt_lifecycle
+from .scientific_attempt_rollover import ScientificAttemptScopeRolloverEnvelope
+from .scientific_attempt_rollover import (
+    ScientificAttemptScopeRolloverIntegrityError,
+)
+from .scientific_attempt_rollover import ScientificAttemptScopeRolloverPhase
+from .scientific_attempt_rollover import ScientificAttemptScopeRolloverProjection
+from .scientific_attempt_rollover import ScientificAttemptScopeRolloverProjector
+from .scientific_attempt_rollover import ScientificAttemptScopeRolloverReason
+from .scientific_attempt_rollover import scientific_attempt_post_scope_id
+from .scientific_attempt_rollover import scientific_attempt_post_scope_ref
+from .scientific_closure_notification import ScientificClosureNotificationProof
+from .scientific_closure_notification import ScientificClosureNotificationReason
+from .scientific_closure_notification import (
+    ScientificClosureNotificationSettlementError,
+)
+from .scientific_closure_notification import ScientificClosureNotificationVerifier
 from .scientific_attempts import SCIENTIFIC_ATTEMPT_AUTHORIZATION_POLICY_ID
 from .scientific_attempts import ScientificAttemptError
 from .scientific_attempts import ScientificAttemptService
@@ -465,6 +483,8 @@ __all__ = [
     "MutationScopeRepository",
     "MutationScopeError",
     "MutationScopeService",
+    "MutationWriterAdmission",
+    "MutationWriterAdmissionReason",
     "MutationWriterTurnFactory",
     "MutationWriterRepository",
     "MutationResourceCategory",
@@ -583,6 +603,16 @@ __all__ = [
     "ScientificAttemptIdentityConflictError",
     "ScientificAttemptLifecycleIntegrityError",
     "ScientificAttemptLifecycleResolver",
+    "ScientificAttemptScopeRolloverEnvelope",
+    "ScientificAttemptScopeRolloverIntegrityError",
+    "ScientificAttemptScopeRolloverPhase",
+    "ScientificAttemptScopeRolloverProjection",
+    "ScientificAttemptScopeRolloverProjector",
+    "ScientificAttemptScopeRolloverReason",
+    "ScientificClosureNotificationProof",
+    "ScientificClosureNotificationReason",
+    "ScientificClosureNotificationSettlementError",
+    "ScientificClosureNotificationVerifier",
     "ScientificAttemptRepository",
     "ScientificAttemptRepositoryError",
     "ScientificAttemptService",
@@ -611,6 +641,8 @@ __all__ = [
     "scientific_attempt_authorization_identity",
     "scientific_attempt_authorization_request",
     "resolve_scientific_attempt_lifecycle",
+    "scientific_attempt_post_scope_id",
+    "scientific_attempt_post_scope_ref",
     "register_scientific_attempt_tools",
     "SQLiteRepositoryProvider",
     "SkillDescriptor",

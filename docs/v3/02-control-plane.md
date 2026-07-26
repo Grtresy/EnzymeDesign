@@ -329,6 +329,19 @@ durable supervision 的进展也是 owner-produced closed fact，而不是 actio
 
 Mutation scope 的 closure 顺序固定为 close admission/advance fence、显式等待全部 writer/descendant 退休、捕获两次一致的 bounded SQLite/event/external snapshot、签发 receipt、验证后 seal exact generation。runtime idle、空队列、lease expiry、HTTP 返回、timeout、disconnect 或 missing handle 不能推断 writer retirement；receipt/seal 也不表示 task completed。后续合法写入必须进入显式链接的新 generation。
 
+`MutationWriter` 的 session admission 必须把 scope 列表、唯一 open scope 证明、parent
+authority 校验、writer registration 与 authority issuance 放在同一个 SQLite write
+transaction 中。公开失败只携带 bounded typed reason 与 open-scope count：
+`zero_open_scope`、`scope_closed_during_registration` 或
+`ambiguous_open_scopes`；它不暴露 scope id、writer ancestry、authority token 或私有路径。
+若同一 repository connection 已持有 Host 管理的 `BEGIN IMMEDIATE`，且该事务内
+snapshot 证明 session 从未有过 mutation scope，nested writer turn 必须在本连接保留
+untracked compatibility，不能再通过外部 factory 打开第二个 writer connection 并等待
+自己持有的 SQLite write lock。该兼容分支不创建 authority；只要存在任何 scope 历史，
+仍走正式 admission/fence 路径。
+consumer 只能对前两种 closed-admission reason 进一步验证特定 lifecycle rollover，
+ambiguous 永远 fail closed。
+
 ### 2.8 EngineInvocation
 
 用途：

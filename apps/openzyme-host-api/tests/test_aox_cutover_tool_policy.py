@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import openzyme_core.agent_runtime as agent_runtime_module
 
 from openzyme_core import CoreRepositories
 from openzyme_core import HarnessInput
@@ -22,6 +24,7 @@ from openzyme_core import controlled_operation_artifact_set_digest
 from openzyme_core import run_agent_harness_loop
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
+from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ControlledOperation
 from openzyme_domain import ControlledOperationExecution
 from openzyme_domain import ControlledOperationExecutionLifecycle
@@ -64,6 +67,8 @@ from openzyme_host_api.aox_scientific_contract import (
     AOX_SELECTED_CHAIN_WORKFLOW_ID,
 )
 from openzyme_host_api.aox_cutover_live import LiveAoxAttemptRunner
+from openzyme_host_api.v3_service import V3EventStore
+from openzyme_host_api.v3_service import V3HostApiService
 from openzyme_runtime import ToolInvocation
 
 
@@ -1265,6 +1270,7 @@ class _CloseThenMutationDriver:
 
 def test_repository_backed_positive_close_retires_turn_and_host_observes_closure(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     now = "2026-07-25T00:00:00+00:00"
     repositories = CoreRepositories.from_connection(connect_sqlite(":memory:"))
@@ -1916,11 +1922,91 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
     ]
     assert len(assistant_entries) == 1
     assert assistant_entries[0].content == FINAL_RESPONSE
-    closure = scientific.finalize_closure_request(
-        closure_request_id=request.closure_request_id
+    host_service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(repositories),
+        model_factory=object(),
+        scientific_workflow_contract_registry=(
+            AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
+        ),
+        mutation_writer_scope_factory=lambda **arguments: (
+            scientific.mutation_scopes.writer_turn(**arguments)
+        ),
     )
+    finalized = host_service.finalize_scientific_attempt_closure(
+        session_id=SESSION_ID,
+        closure_request_id=request.closure_request_id,
+    )
+    closure = repositories.scientific_attempt_closures.get(
+        finalized["record"]["closure_id"]
+    )
+    assert closure is not None
     assert closure.attempt_id == attempt.attempt_id
     assert closure.actor_ref == "agent:master"
+    closure_signals = [
+        signal
+        for signal in repositories.runtime_signals.list_by_session(SESSION_ID)
+        if signal.source_ref == closure.closure_id
+    ]
+    assert len(closure_signals) == 1
+    assert closure_signals[0].status is AgentRuntimeSignalStatus.PENDING
+
+    def unexpected_model_path(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError(
+            "terminal closure notification must settle without a model"
+        )
+
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "run_agent_harness_loop",
+        unexpected_model_path,
+    )
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "run_teammate_loop",
+        unexpected_model_path,
+    )
+
+    async def invoke_without_executor(
+        function: object,
+        /,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        return function(*args, **kwargs)  # type: ignore[operator]
+
+    monkeypatch.setattr(asyncio, "to_thread", invoke_without_executor)
+    with scientific.mutation_scopes.writer_turn(
+        session_id=SESSION_ID,
+        owner_kind=MutationWriterKind.RUNTIME_COMMAND,
+        owner_ref="runtime-command:scientific-terminal-settlement",
+    ):
+        drained = host_service.drain_runtime(
+            session_id=SESSION_ID,
+            max_signals=1,
+            max_steps_per_agent=1,
+            auto_enqueue_ready_tasks=False,
+            worker_id="test:scientific-terminal-settlement",
+        )
+    settled_signal = repositories.runtime_signals.get(
+        closure_signals[0].signal_id
+    )
+    assert drained.status == "completed"
+    assert drained.processed_signal_count == 1
+    assert settled_signal is not None
+    assert settled_signal.status is AgentRuntimeSignalStatus.COMPLETED
+    assert repositories.runtime_signals.list_pending_by_session(SESSION_ID) == []
+    assert repositories.session_runtime_leases.get_active(SESSION_ID) is None
+    assert build_conversation_projection(repositories, SESSION_ID) == conversation
+    assert any(
+        event["event_type"] == "scientific.closure_notification.settled"
+        for event in drained.events
+    )
+    assert (
+        repositories.scientific_attempt_closure_responses
+        .get_by_closure_request(request.closure_request_id)
+        is not None
+    )
     persisted_attempt = repositories.scientific_attempts.get(
         attempt.attempt_id
     )
@@ -1932,6 +2018,14 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
     repositories.tasks.connection.backup(file_connection)
     file_connection.close()
     provider = SQLiteRepositoryProvider(str(database_path))
+    observer_runner = object.__new__(LiveAoxAttemptRunner)
+    with observer_runner._runtime_barrier_observer(
+        provider,
+        session_id=SESSION_ID,
+        purpose="formal",
+        attempt_authority={"attempt_id": attempt.attempt_id},
+    ):
+        pass
     closed = LiveAoxAttemptRunner._closed_formal_attempt_control(
         SimpleNamespace(),
         provider,
@@ -1949,3 +2043,12 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
     assert control["attempt"]["status"] == "closed"
     assert control["closure"]["closure_id"] == closure.closure_id
     assert scope_projection["state"] == "sealed"
+    with provider.read() as reader:
+        scopes = reader.repositories.mutation_scopes.list_by_session(SESSION_ID)
+        assert [
+            writer
+            for scope in scopes
+            for writer in reader.repositories.mutation_writers.list_active(
+                scope.scope_id
+            )
+        ] == []
