@@ -184,7 +184,8 @@ def test_repository_backed_r59_cut_reconstructs_into_fresh_isolated_root(
         "driver_limits_digest": _digest("7"),
         "writer_policy_digest": _digest("8"),
         "tool_response_policy_digest": _digest("9"),
-        "supervision_contract_digest": _digest("a"),
+        "source_supervision_contract_digest": _digest("a"),
+        "target_supervision_contract_digest": _digest("d"),
         "public_observation_contract_digest": _digest("b"),
     }
     micu = {

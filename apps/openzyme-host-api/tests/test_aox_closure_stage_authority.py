@@ -150,7 +150,8 @@ def _fixture(
         "driver_limits_digest": _digest("2"),
         "writer_policy_digest": _digest("3"),
         "tool_response_policy_digest": _digest("4"),
-        "supervision_contract_digest": _digest("5"),
+        "source_supervision_contract_digest": _digest("5"),
+        "target_supervision_contract_digest": _digest("7"),
         "public_observation_contract_digest": _digest("6"),
     }
     micu = {

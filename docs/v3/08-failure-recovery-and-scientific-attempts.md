@@ -287,6 +287,18 @@ original admission 必须是 typed `zero_open_scope` 或
 读取 committed 后态也能在原 deadline 内重建一次短 barrier，而不是把正确 post scope
 误报成 identity failure。
 
+process-isolated attempt supervision 与该产品投影是两个独立证明。current
+`aox_live_attempt_supervision@3` 不再把“全局 nonterminal scope 数为零”命名成
+quiescence；child 在 result 落盘后投影 bounded mutation-authority rows，要求 active
+writer 为零并同步 SQLite/root，随后发出 `local_state_settled`。writer-free 的合法 open
+post scope 会进入 snapshot/count，但不会阻止本地 settlement。parent 必须等 exact
+process group 为空后 read-only 重算相同 snapshot digest，之后才读取 child result 并签发
+`aox_live_attempt_supervision_receipt@3`。terminal scientific evidence 只有同时具备
+上述 process receipt 与 Core `post_closure_scope_open` projection 才可接受：前者不能证明
+scope id/ref/parent/kind/lifecycle，后者也不能证明 child/descendant 已退休。历史
+supervision/receipt `@1/@2` 只能由显式 offline path 原样验证，current bundle 不做
+lossy down-projection。
+
 Host 的两个 scientific transition 调用面共用一条 delivery settlement：canonical
 transition、deterministic public event、以及对原 agent 的 source-bound
 `MANUAL_RESUME` signal 在包含 Core transition 的同一 write transaction 内提交，notifier

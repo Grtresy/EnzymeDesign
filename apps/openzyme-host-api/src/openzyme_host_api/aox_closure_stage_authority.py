@@ -33,7 +33,7 @@ AOX_CLOSURE_STAGE_SOURCE_INVENTORY_SCHEMA_ID = (
     "aox_closure_stage_source_inventory@1"
 )
 AOX_CLOSURE_STAGE_RUNTIME_PARITY_DECLARATION_SCHEMA_ID = (
-    "aox_closure_stage_runtime_parity_declaration@1"
+    "aox_closure_stage_runtime_parity_declaration@2"
 )
 AOX_CLOSURE_STAGE_MICU_BINDING_SCHEMA_ID = (
     "aox_closure_stage_micu_binding@1"
@@ -116,7 +116,8 @@ _PARITY_FIELDS = frozenset(
         "driver_limits_digest",
         "writer_policy_digest",
         "tool_response_policy_digest",
-        "supervision_contract_digest",
+        "source_supervision_contract_digest",
+        "target_supervision_contract_digest",
         "public_observation_contract_digest",
     }
 )

@@ -8,6 +8,13 @@ import subprocess
 import sys
 import time
 
+from openzyme_core import CoreRepositories
+from openzyme_core import MutationScopeService
+from openzyme_core import apply_sqlite_migrations
+from openzyme_core import connect_sqlite
+from openzyme_domain import MutationScopeKind
+from openzyme_domain import MutationWriterKind
+from openzyme_domain import Session
 from openzyme_host_api.aox_cutover_evidence import AttemptRunContext
 
 
@@ -28,6 +35,64 @@ class ReturningRunner:
         return {
             "product_path": {
                 "runner_process_id": os.getpid(),
+            },
+            "scientific_outcome": {
+                "status": "incomplete",
+                "cutover_eligible": False,
+            },
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalRolloverRunner:
+    active_writer: bool = False
+
+    def __call__(self, context: AttemptRunContext) -> dict[str, object]:
+        connection = connect_sqlite(
+            str(context.roots.sqlite_path),
+            enable_wal=True,
+        )
+        try:
+            apply_sqlite_migrations(connection)
+            repositories = CoreRepositories.from_connection(connection)
+            session = Session.create(
+                session_id="sess_supervised_rollover",
+                project_id="proj_supervised_rollover",
+                title="Supervised rollover",
+                objective="Prove writer-free post-closure scope settlement",
+            )
+            repositories.sessions.save(session)
+            service = MutationScopeService(repositories)
+            pre_attempt = service.open_scope(
+                session_id=session.session_id,
+                scope_kind=MutationScopeKind.SESSION,
+                scope_ref="pre-attempt",
+            )
+            service.begin_freeze(pre_attempt.scope_id)
+            issued = service.issue_quiescence_receipt(pre_attempt.scope_id)
+            service.seal_scope(
+                pre_attempt.scope_id,
+                receipt_id=issued.receipt.receipt_id,
+            )
+            post_attempt = service.open_scope(
+                session_id=session.session_id,
+                scope_kind=MutationScopeKind.SESSION,
+                scope_ref="post-attempt",
+                parent_scope_id=pre_attempt.scope_id,
+            )
+            if self.active_writer:
+                service.register_writer(
+                    scope_id=post_attempt.scope_id,
+                    owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+                    owner_ref="still-active",
+                    trusted_root=True,
+                )
+        finally:
+            connection.close()
+        return {
+            "product_path": {
+                "runner_process_id": os.getpid(),
+                "terminal_rollover_created": True,
             },
             "scientific_outcome": {
                 "status": "incomplete",
@@ -94,5 +159,6 @@ __all__ = [
     "FailingRunner",
     "IgnoringTermRunner",
     "ReturningRunner",
+    "TerminalRolloverRunner",
     "TruncatedRunner",
 ]

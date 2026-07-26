@@ -16,11 +16,14 @@ from .aox_cutover_evidence import ATTEMPT_BUNDLE_SCHEMA_ID_V3
 from .aox_cutover_evidence import CutoverEvidenceError
 from .aox_cutover_evidence import VerificationIssue
 from .aox_cutover_evidence import VerificationResult
+from .aox_cutover_evidence import _assemble_attempt_bundle_payload
 from .aox_cutover_evidence import _assert_public_safe
 from .aox_cutover_evidence import _strict_json_loads
+from .aox_cutover_evidence import _validate_attempt_semantics
 from .aox_cutover_evidence import _validate_effective_config_attestation
-from .aox_cutover_evidence import _verify_attempt_bundle_v2
-from .aox_cutover_evidence import build_attempt_bundle
+from .aox_cutover_evidence import (
+    _verify_attempt_bundle_v2_with_current_supervision,
+)
 from .aox_cutover_evidence import canonical_digest
 from .aox_cutover_evidence import canonical_json_bytes
 from .aox_scientific_contract import (
@@ -316,10 +319,9 @@ def build_selected_chain_attempt_bundle(
     scientific_attempt_control: Mapping[str, object],
     sealed_at: str | None = None,
 ) -> dict[str, Any]:
-    """Build @3 only after the frozen @2 scientific verifier accepts the payload."""
+    """Build @3 while retaining and validating the exact current receipt."""
 
-    legacy_evidence = _project_authorized_supervision_to_v1(evidence)
-    payload = build_attempt_bundle(
+    payload = _assemble_attempt_bundle_payload(
         attempt_id=attempt_id,
         attempt_kind=attempt_kind,
         identity=identity,
@@ -327,16 +329,15 @@ def build_selected_chain_attempt_bundle(
         ledger_before=ledger_before,
         ledger_after=ledger_after,
         artifact_root=artifact_root,
-        evidence=legacy_evidence,
+        evidence=evidence,
         sealed_at=sealed_at,
     )
-    original_product_path = dict(evidence.get("product_path") or {})
-    if isinstance(original_product_path.get("attempt_supervision"), dict):
-        product_path = dict(payload.get("product_path") or {})
-        product_path["attempt_supervision"] = dict(
-            original_product_path["attempt_supervision"]
-        )
-        payload["product_path"] = product_path
+    _validate_attempt_semantics(
+        payload,
+        artifact_root=artifact_root,
+        current_supervision=True,
+    )
+    _assert_public_safe(payload, identity="attempt_bundle")
     control = dict(scientific_attempt_control)
     issues: list[VerificationIssue] = []
     _verify_selected_chain_control(payload, control=control, issues=issues)
@@ -449,23 +450,22 @@ def verify_selected_chain_attempt_bundle(
             str(exc),
         )
 
-    projected_v2 = {
+    compatibility_v2 = {
         key: value
         for key, value in payload.items()
         if key != "scientific_attempt_control"
     }
-    projected_v2["schema_id"] = ATTEMPT_BUNDLE_SCHEMA_ID_V2
-    projected_v2 = _project_authorized_supervision_to_v1(projected_v2)
-    projected_envelope = {
-        "payload": projected_v2,
-        "bundle_digest": canonical_digest(projected_v2),
+    compatibility_v2["schema_id"] = ATTEMPT_BUNDLE_SCHEMA_ID_V2
+    compatibility_envelope = {
+        "payload": compatibility_v2,
+        "bundle_digest": canonical_digest(compatibility_v2),
     }
     with tempfile.TemporaryDirectory(prefix="openzyme-aox-v2-verify-") as raw:
         projected_path = Path(raw) / "attempt-bundle-v2.json"
         projected_path.write_bytes(
-            canonical_json_bytes(projected_envelope) + b"\n"
+            canonical_json_bytes(compatibility_envelope) + b"\n"
         )
-        historical = _verify_attempt_bundle_v2(
+        historical = _verify_attempt_bundle_v2_with_current_supervision(
             projected_path,
             artifact_root=artifact_root,
         )
@@ -479,52 +479,6 @@ def verify_selected_chain_attempt_bundle(
         attempt_kind=attempt_kind,
         issues=tuple(issues),
     )
-
-
-def _project_authorized_supervision_to_v1(
-    payload: Mapping[str, object],
-) -> dict[str, Any]:
-    """Create the exact historical receipt view used only by frozen @2 checks."""
-
-    projected = dict(payload)
-    product_path = projected.get("product_path")
-    if not isinstance(product_path, Mapping):
-        return projected
-    normalized_product_path = dict(product_path)
-    receipt = normalized_product_path.get("attempt_supervision")
-    if not isinstance(receipt, Mapping):
-        projected["product_path"] = normalized_product_path
-        return projected
-    normalized_receipt = dict(receipt)
-    if normalized_receipt.get("schema_id") != (
-        "aox_live_attempt_supervision_receipt@2"
-    ):
-        projected["product_path"] = normalized_product_path
-        return projected
-    normalized_receipt.pop("attempt_authority_id", None)
-    normalized_receipt.pop("attempt_authority_request_digest", None)
-    normalized_receipt["schema_id"] = "aox_live_attempt_supervision_receipt@1"
-    try:
-        from .aox_attempt_supervision import SUPERVISION_SCHEMA_ID_V1
-        from .aox_attempt_supervision import supervision_contract_digest
-
-        normalized_receipt["supervisor_contract_digest"] = (
-            supervision_contract_digest(
-                timeout_seconds=float(normalized_receipt["timeout_seconds"]),
-                term_grace_seconds=float(
-                    normalized_receipt["term_grace_seconds"]
-                ),
-                kill_grace_seconds=float(
-                    normalized_receipt["kill_grace_seconds"]
-                ),
-                protocol_schema_id=SUPERVISION_SCHEMA_ID_V1,
-            )
-        )
-    except (KeyError, TypeError, ValueError):
-        pass
-    normalized_product_path["attempt_supervision"] = normalized_receipt
-    projected["product_path"] = normalized_product_path
-    return projected
 
 
 def _verify_selected_chain_control(

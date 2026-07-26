@@ -8,7 +8,10 @@ import stat
 
 import pytest
 
+from openzyme_core import MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID
 from openzyme_core.workflow_knowledge import default_workflow_registry
+from openzyme_host_api.aox_attempt_supervision import SUPERVISION_SCHEMA_ID
+from openzyme_host_api.aox_attempt_supervision import SUPERVISION_SCHEMA_ID_V2
 from openzyme_host_api.aox_attempt_supervision import (
     SUPERVISION_RECEIPT_SCHEMA_ID,
 )
@@ -88,6 +91,13 @@ def _parity_receipt() -> dict[str, object]:
         "max_steps_per_agent": 16,
         "auto_enqueue_ready_tasks": False,
         "supervision_timeout_seconds": 15_060,
+        "supervision_protocol_schema_id": SUPERVISION_SCHEMA_ID_V2,
+        "supervision_contract_digest": supervision_contract_digest(
+            timeout_seconds=15_060.0,
+            term_grace_seconds=15.0,
+            kill_grace_seconds=10.0,
+            protocol_schema_id=SUPERVISION_SCHEMA_ID_V2,
+        ),
         "max_micu": 20_000_000,
         "max_cost_microunits": 0,
         "max_wall_time_seconds": 10_800,
@@ -108,7 +118,14 @@ def _parity_receipt() -> dict[str, object]:
         "driver_limits_digest": _digest("driver"),
         "writer_policy_digest": _digest("writer"),
         "tool_response_policy_digest": _digest("tool-response"),
-        "supervision_contract_digest": _digest("supervision"),
+        "source_supervision_contract_digest": source[
+            "supervision_contract_digest"
+        ],
+        "target_supervision_contract_digest": supervision_contract_digest(
+            timeout_seconds=15_060.0,
+            term_grace_seconds=15.0,
+            kill_grace_seconds=10.0,
+        ),
         "public_observation_contract_digest": _digest("public"),
     }
     target = {
@@ -125,6 +142,10 @@ def _parity_receipt() -> dict[str, object]:
             "tool_response_policy_digest"
         ],
         "supervision_timeout_seconds": 15_060.0,
+        "supervision_protocol_schema_id": SUPERVISION_SCHEMA_ID,
+        "supervision_contract_digest": declaration[
+            "target_supervision_contract_digest"
+        ],
         "public_observation_contract_digest": declaration[
             "public_observation_contract_digest"
         ],
@@ -140,6 +161,7 @@ def _parity_receipt() -> dict[str, object]:
             "closure_stage_run_authority_root_process_and_evidence_identities",
             "cursor_614_reconstructed_start_projection",
             "diagnostic_micu_scenario_and_non_acceptance_result_schema",
+            "supervision_protocol_v2_to_v3_local_settlement_repair",
         ],
         "declaration": declaration,
     }
@@ -238,6 +260,18 @@ def _live_result() -> dict[str, object]:
     browser_approval_digest = _digest("browser-approval")
     browser_observation_digest = _digest("browser-observation")
     scientific_control_digest = _digest("scientific-control")
+    scope_rollover_payload = {
+        "phase": "post_closure_scope_open",
+        "attempt_id": attempt_id,
+        "attempt_scope_id": f"mutation_scope_{attempt_id}",
+        "attempt_scope_state": "sealed",
+        "post_scope_id": f"mutation_scope_post_{attempt_id}",
+        "open_scope_count": 1,
+    }
+    scope_rollover = {
+        **scope_rollover_payload,
+        "projection_digest": canonical_digest(scope_rollover_payload),
+    }
     report_source_link_payload = {
         "report_ref": report_ref,
         "primary_pubmed_artifact_ref": primary_pubmed_artifact_ref,
@@ -276,9 +310,17 @@ def _live_result() -> dict[str, object]:
         "protocol_final_sequence": 4,
         "protocol_final_digest": _digest("protocol"),
         "child_exit_code": 0,
-        "quiescent": True,
+        "local_state_settled": True,
         "descendant_retirement_proven": True,
-        "active_mutation_scope_count": 0,
+        "parent_snapshot_revalidated": True,
+        "mutation_authority_schema_id": (
+            MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID
+        ),
+        "mutation_authority_snapshot_digest": _digest(
+            "mutation-authority"
+        ),
+        "mutation_authority_observed_row_count": 2,
+        "nonterminal_mutation_scope_count": 1,
         "active_mutation_writer_count": 0,
         "sqlite_checkpoint": "passed",
         "sqlite_integrity": "passed",
@@ -347,6 +389,7 @@ def _live_result() -> dict[str, object]:
                 "closure_request_id": "closure_request_test",
                 "closure_response_id": "closure_response_test",
                 "closure_id": "closure_test",
+                "scope_rollover": scope_rollover,
                 "scientific_attempt_control_digest": (
                     scientific_control_digest
                 ),
@@ -642,6 +685,27 @@ def test_live_result_closes_nested_evidence_and_browser_ledger_bindings() -> Non
     with pytest.raises(CutoverEvidenceError) as unretired:
         validate_aox_closure_stage_live_result(active_writer)
     assert unretired.value.code == "attempt_supervision_receipt_invalid"
+
+    malformed_rollover = deepcopy(result)
+    rollover = malformed_rollover["runtime"]["closure"]["scope_rollover"]
+    rollover["post_scope_id"] = "mutation_scope_post_forged"
+    rollover["projection_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in rollover.items()
+            if key != "projection_digest"
+        }
+    )
+    malformed_rollover["result_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in malformed_rollover.items()
+            if key != "result_digest"
+        }
+    )
+    with pytest.raises(CutoverEvidenceError) as rollover_error:
+        validate_aox_closure_stage_live_result(malformed_rollover)
+    assert rollover_error.value.code == "closure_stage_live_runtime_invalid"
 
     source_post_hash_drift = deepcopy(result)
     source_post_hash_drift["source"][

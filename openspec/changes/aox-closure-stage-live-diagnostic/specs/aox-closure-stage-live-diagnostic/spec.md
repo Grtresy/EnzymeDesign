@@ -175,14 +175,17 @@ bounded runtime drain, writer registration and retirement, session lease and
 fencing, AOX tool and assistant-response policy, concurrency limits, timeout,
 process-supervision protocol, public V3 API observation, UI identity policy,
 browser observation mode, and append-only MICU ledger used by numbered AOX
-runs. A closed parity receipt MUST enumerate every allowed difference.
+runs. A closed parity receipt MUST enumerate every allowed difference. The
+frozen r59 source supervision contract MUST remain `@2`; the current target
+MUST use `@3`, derive both exact supervisor contract digests from the canonical
+implementation, and admit only the versioned local-settlement repair.
 
 #### Scenario: Verify runtime parity
 - **WHEN** the target runtime configuration is compared with the r59 launch receipt and current pinned declarations
-- **THEN** the frozen canonical effective-config digest is independently reproduced by the target, so model, endpoint and ledger identity, retry, temperature, context/output budget, drain, step, concurrency, timeout, writer, lease, `chrome-once` approval, exact browser `0.5/300/60/180` bounds, supervision, API, UI, and browser fields match
+- **THEN** the frozen canonical effective-config digest is independently reproduced by the target, so model, endpoint and ledger identity, retry, temperature, context/output budget, drain, step, concurrency, timeout, writer, lease, `chrome-once` approval, exact browser `0.5/300/60/180` bounds, API, UI, and browser fields match, while supervision is closed to the exact `@2 → @3` repair
 
 #### Scenario: Accept only declared differences
-- **WHEN** parity differs only in the repaired implementation/workflow/SOP identities, closure-stage authority/root/process/evidence identities, reconstructed start projection, and diagnostic ledger/result attribution
+- **WHEN** parity differs only in the repaired implementation/workflow/SOP identities, closure-stage authority/root/process/evidence identities, reconstructed start projection, diagnostic ledger/result attribution, and supervision protocol `@2 → @3` local-settlement repair
 - **THEN** the parity verifier records those differences and accepts the configuration
 
 #### Scenario: Reject unlisted configuration drift

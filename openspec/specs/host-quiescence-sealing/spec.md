@@ -32,7 +32,7 @@ Before writing canonical SQLite rows, durable events, artifacts, reports, ledger
 - **THEN** the scope cannot become quiescent or sealed
 
 ### Requirement: Freeze closes writer admission before waiting
-The Host MUST enter `freezing` through one transaction that increments the mutation fence and closes new writer admission before checking active writers. Existing writers MUST retain only the authority required to retire or commit work allowed by the freeze policy; stale-generation writers and all new registrations MUST be rejected.
+The Host MUST enter `freezing` through one transaction that increments the mutation fence and closes new writer admission before checking active writers. Existing writers MUST retain only the authority required to retire or commit work allowed by the freeze policy; stale-generation writers and all new registrations MUST be rejected. Session-scoped writer selection, nested-parent validation, and writer registration MUST share one atomic ordering against freeze and follow-up scope creation. The Host MUST distinguish expected zero-open or closed-during-registration coordination from ambiguous open-scope cardinality through a closed typed reason without weakening the fence.
 
 #### Scenario: Begin freeze
 - **WHEN** an authorized owner requests closure of an open scope
@@ -45,6 +45,26 @@ The Host MUST enter `freezing` through one transaction that increments the mutat
 #### Scenario: Stale callback writes after freeze
 - **WHEN** a callback holding the previous generation attempts a canonical commit after freeze
 - **THEN** the repository rejects the commit before any canonical row, artifact, event, report, or ledger changes
+
+#### Scenario: Session writer is admitted atomically
+- **WHEN** a session has exactly one open mutation scope and a writer is admitted
+- **THEN** scope selection, parent validation, generation/fence validation, and registration commit in one atomic ordering
+
+#### Scenario: Freeze wins session writer admission
+- **WHEN** freeze closes the only open scope before the atomic session writer admission commits
+- **THEN** admission fails with the typed expected closed-admission reason and no writer row becomes active
+
+#### Scenario: Open-scope cardinality is ambiguous
+- **WHEN** session writer admission observes more than one open mutation scope
+- **THEN** admission fails with the typed ambiguous-scope reason and MUST NOT be classified as a retryable rollover
+
+#### Scenario: Session has never entered mutation authority
+- **WHEN** a compatibility caller opens a writer turn for a session with no mutation-scope history
+- **THEN** the Host preserves the existing untracked-session behavior without registering a writer
+
+#### Scenario: Owning transaction observes an untracked session
+- **WHEN** a Host-managed write transaction needs a nested writer turn and its stable transaction snapshot proves the session has no mutation-scope history
+- **THEN** the Host preserves the local untracked-session behavior without opening a second writer connection or reacquiring its own SQLite write lock
 
 ### Requirement: Writer retirement is explicit and cannot be inferred from idleness
 A writer MUST become retired only through an explicit fenced retirement commit or a trusted parent/process-supervisor proof that the exact process epoch and all descendants have terminated. Lease expiry, HTTP response, runtime idle, empty queue, missing thread handle, timeout, remote disconnect, or worker heartbeat loss MUST NOT be treated as writer retirement or remote-effect cancellation.
@@ -60,6 +80,25 @@ A writer MUST become retired only through an explicit fenced retirement commit o
 #### Scenario: Local process termination does not cancel HPC
 - **WHEN** a trusted parent proves a local worker process epoch has terminated after remote dispatch
 - **THEN** the local writer may retire but the external operation retains its independent effect/reconciliation state
+
+### Requirement: Local process settlement is distinct from scope quiescence
+The Host MUST distinguish a mutation scope's freeze/quiescence/seal lifecycle from the local process-settlement proof used to hand a root back after an exact process epoch retires. Local settlement MUST require zero active registered writers and a stable bounded authority snapshot, but it MUST NOT require every scope to be terminal. It MUST NOT issue a scope quiescence receipt, seal a scope, or infer workflow completion.
+
+#### Scenario: Writer-free open scope is handed off
+- **WHEN** an exact child process epoch has retired, the bounded mutation-authority snapshot is stable, and a nonterminal scope contains no active writers
+- **THEN** local settlement may succeed while the scope remains unchanged for later fenced writer admission
+
+#### Scenario: Active writer blocks local settlement
+- **WHEN** any writer in the bounded authority snapshot remains `registered` or `retiring`
+- **THEN** local settlement fails and cannot be upgraded by process idleness or a terminal task
+
+#### Scenario: Local settlement is observed twice
+- **WHEN** child and parent independently project the same canonical authority rows around exact process retirement
+- **THEN** both projections yield the same bounded digest without mutating authority state
+
+#### Scenario: Product topology is malformed
+- **WHEN** local writers are zero but the current scope has an invalid product identity, parent, kind, or lifecycle relationship
+- **THEN** local settlement remains only a process fact and the responsible product/Core projection rejects the topology
 
 ### Requirement: Quiescence requires complete and stable canonical state
 The Host MUST issue quiescence only when new writer admission is closed, the complete registered active writer set is empty, every covered write path enforces the current fence, durable event/outbox and SQLite state have reached stable recorded high-watermarks, and artifact publications are atomically complete. Runtime idle, task terminal, capability terminal, or successful shutdown alone MUST NOT satisfy this requirement.

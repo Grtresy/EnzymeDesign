@@ -201,6 +201,10 @@ from .mutation_authority import bind_mutation_write_authority
 from .mutation_authority import canonical_digest
 from .mutation_authority import current_mutation_write_authority
 from .mutation_authority import suspend_mutation_write_authority
+from .mutation_settlement import MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID
+from .mutation_settlement import MutationLocalSettlementError
+from .mutation_settlement import MutationLocalSettlementProjection
+from .mutation_settlement import project_mutation_local_settlement
 from .repositories import SandboxImageRecordRepository
 from .repositories import SandboxRunRecordRepository
 from .repositories import SandboxWorkspaceRecordRepository
@@ -483,6 +487,8 @@ __all__ = [
     "MutationScopeRepository",
     "MutationScopeError",
     "MutationScopeService",
+    "MutationLocalSettlementError",
+    "MutationLocalSettlementProjection",
     "MutationWriterAdmission",
     "MutationWriterAdmissionReason",
     "MutationWriterTurnFactory",
@@ -497,6 +503,7 @@ __all__ = [
     "HOST_MUTATION_COVERAGE_MANIFEST",
     "HOST_MUTATION_POLICY_DIGEST",
     "HOST_MUTATION_POLICY_ID",
+    "MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID",
     "ModelContextProfile",
     "OwnershipError",
     "OptimisticStateConflictError",
@@ -510,6 +517,7 @@ __all__ = [
     "quiescence_receipt_digest",
     "verify_quiescence_evidence",
     "verify_quiescence_evidence_envelope",
+    "project_mutation_local_settlement",
     "PromptBudgetAction",
     "PromptBudgetConfig",
     "PromptBudgetDecision",

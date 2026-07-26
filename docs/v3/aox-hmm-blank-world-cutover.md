@@ -2589,12 +2589,22 @@ client timeout, or a missing process handle cannot substitute for this proof.
 The loopback HTTP tracker remains only a child-process liveness aid before server
 thread retirement; it has no mutation-admission, fence, snapshot, receipt, or
 seal authority. Core and Podman sandbox workers remain non-daemon and use exact
-container/process identities. Numbered `run-live` now wraps the complete attempt in
-a fresh local POSIX spawn child and dedicated process group. Matching quiescence and
-terminal frames, SQLite/root sync, zero exit and an empty group are all required
-before the parent opens the child result. An unrecoverable writer is retired through
-bounded TERM/KILL and yields only parent-owned fatal evidence outside the attempt
-root; no ledger-after or normal attempt bundle is claimed. Ordinary
+container/process identities. Numbered `run-live` wraps the complete attempt in
+a fresh local POSIX spawn child and dedicated process group. Current
+`aox_live_attempt_supervision@3` requires the exact
+`child_started → settling_local_state → local_state_settled → child_terminal`
+chain. The child persists its result, checkpoints/integrity-checks SQLite,
+syncs declared roots and binds a bounded Core mutation-authority snapshot;
+active writers fail, but a writer-free open scope is recorded rather than
+misclassified as a live process. Only after zero exit and an empty exact group
+may the parent retire the root gate, reproduce the snapshot read-only and open
+the result. A normal receipt is still insufficient product closure:
+selected-chain/closure evidence separately requires the Core
+`post_closure_scope_open` projection for the exact deterministic child scope.
+Historical receipt `@1/@2` validation is offline-only and current `@3` evidence
+is never projected to `@1`. An unrecoverable writer is retired through bounded
+TERM/KILL and yields only parent-owned fatal evidence outside the attempt root;
+no ledger-after or normal attempt bundle is claimed. Ordinary
 `AoxCutoverCampaign` construction requires this supervision by default; only the
 explicit `AoxCutoverCampaign.for_non_live_test(...)` fixture seam may omit it, and
 that seam is not a numbered campaign entry. The exact harness contract and residual

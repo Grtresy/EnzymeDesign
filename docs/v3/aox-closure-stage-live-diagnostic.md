@@ -63,13 +63,22 @@ research, HPC, reliability, UI, ledger identity, and every individual driver
 bound together, rather than accepting a different combination that happens to
 derive the same supervision deadline.
 
-Only the repaired clean commit and its derived implementation/contract digests, the
-non-numbered authority/root/process identities, the cursor-614 start
-projection, and diagnostic-only MICU/result schemas may differ. The restored
-operation universe is sealed: model-visible read, coordination, task, report
-and close tools remain normal, while any new provider/HPC/sandbox operation,
-approval, selection/adoption, artifact creation or materialization is rejected
-before dispatch with `no_effect`.
+Only the repaired clean commit and its derived implementation/contract digests,
+the non-numbered authority/root/process identities, the cursor-614 start
+projection, diagnostic-only MICU/result schemas, and the closed supervision
+protocol repair from frozen source `@2` to current target `@3` may differ. The
+parity receipt computes both protocol contract digests through the canonical
+supervisor implementation and names exactly
+`supervision_protocol_v2_to_v3_local_settlement_repair`; model, endpoint,
+MICU, retry, temperature, token, scheduler/drain, writer/lease, process,
+browser, API and UI settings remain equal. Current `@3` proves zero active
+writers plus child/descendant retirement while recording the legal open
+post-closure scope; the independent Core rollover projection must prove that
+scope is the exact `post_closure_scope_open`. The restored operation universe
+is sealed: model-visible read, coordination, task, report and close tools
+remain normal, while any new provider/HPC/sandbox operation, approval,
+selection/adoption, artifact creation or materialization is rejected before
+dispatch with `no_effect`.
 
 ## First consumed diagnostic and fresh-plan repair boundary
 

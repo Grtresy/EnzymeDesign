@@ -18,6 +18,10 @@ import time
 from typing import Any
 from uuid import uuid4
 
+from openzyme_core import MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID
+from openzyme_core import MutationLocalSettlementError
+from openzyme_core import project_mutation_local_settlement
+
 from .aox_cutover_evidence import AttemptRunContext
 from .aox_cutover_evidence import AttemptRunner
 from .aox_cutover_evidence import CutoverEvidenceError
@@ -27,16 +31,30 @@ from .aox_cutover_evidence import safe_micu_ledger_snapshot
 
 
 SUPERVISION_SCHEMA_ID_V1 = "aox_live_attempt_supervision@1"
-SUPERVISION_SCHEMA_ID = "aox_live_attempt_supervision@2"
+SUPERVISION_SCHEMA_ID_V2 = "aox_live_attempt_supervision@2"
+SUPERVISION_SCHEMA_ID = "aox_live_attempt_supervision@3"
 SUPERVISION_RECEIPT_SCHEMA_ID_V1 = "aox_live_attempt_supervision_receipt@1"
-SUPERVISION_RECEIPT_SCHEMA_ID = "aox_live_attempt_supervision_receipt@2"
-SUPERVISION_FATAL_SCHEMA_ID = "aox_live_attempt_fatal@1"
+SUPERVISION_RECEIPT_SCHEMA_ID_V2 = "aox_live_attempt_supervision_receipt@2"
+SUPERVISION_RECEIPT_SCHEMA_ID = "aox_live_attempt_supervision_receipt@3"
+SUPERVISION_FATAL_SCHEMA_ID_V1 = "aox_live_attempt_fatal@1"
+SUPERVISION_FATAL_SCHEMA_ID = "aox_live_attempt_fatal@2"
 SUPERVISION_RESULT_SCHEMA_ID = "aox_live_attempt_child_result@1"
 MAX_FRAME_BYTES = 64 * 1024
 RESULT_BASENAME = ".attempt-supervision-result.json"
 DEFAULT_TERM_GRACE_SECONDS = 15.0
 DEFAULT_KILL_GRACE_SECONDS = 10.0
-_FRAME_TYPES = ("child_started", "quiescing", "quiescent", "child_terminal")
+_LEGACY_FRAME_TYPES = (
+    "child_started",
+    "quiescing",
+    "quiescent",
+    "child_terminal",
+)
+_FRAME_TYPES = (
+    "child_started",
+    "settling_local_state",
+    "local_state_settled",
+    "child_terminal",
+)
 _FRAME_KEYS = frozenset(
     {
         "schema_id",
@@ -61,10 +79,13 @@ _PAYLOAD_KEYS = {
     "child_started": frozenset(
         {"child_pid", "child_pgid", "child_start_time_ticks", "root_identity"}
     ),
-    "quiescing": frozenset({"result_pending"}),
-    "quiescent": frozenset(
+    "settling_local_state": frozenset({"result_pending"}),
+    "local_state_settled": frozenset(
         {
-            "active_mutation_scope_count",
+            "mutation_authority_schema_id",
+            "mutation_authority_snapshot_digest",
+            "mutation_authority_observed_row_count",
+            "nonterminal_mutation_scope_count",
             "active_mutation_writer_count",
             "sqlite_checkpoint",
             "sqlite_integrity",
@@ -83,9 +104,31 @@ _ERROR_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 _FAILURE_TYPE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,127}$")
 
 
+def _is_nonnegative_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
 SUPERVISOR_CONTRACT_BASE = {
     "schema_id": SUPERVISION_SCHEMA_ID,
     "frame_types": list(_FRAME_TYPES),
+    "serialization": "canonical_json_utf8",
+    "frame_limit_bytes": MAX_FRAME_BYTES,
+    "digest": "sha256",
+    "start_method": "spawn",
+    "session_boundary": "posix_setsid_process_group",
+    "retirement_ladder": ["sigterm", "sigkill", "waitpid", "group_empty"],
+    "normal_gate": [
+        "local_state_settled",
+        "child_terminal_normal",
+        "zero_exit",
+        "group_empty",
+        "parent_snapshot_revalidated",
+        "result_digest_match",
+    ],
+}
+_LEGACY_SUPERVISOR_CONTRACT_BASE = {
+    "schema_id": SUPERVISION_SCHEMA_ID_V2,
+    "frame_types": list(_LEGACY_FRAME_TYPES),
     "serialization": "canonical_json_utf8",
     "frame_limit_bytes": MAX_FRAME_BYTES,
     "digest": "sha256",
@@ -108,6 +151,14 @@ class AttemptSupervisionProtocolError(ValueError):
 
 class AttemptRootAccessError(RuntimeError):
     pass
+
+
+class AttemptLocalSettlementError(RuntimeError):
+    retryable = False
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(message)
 
 
 class AttemptSupervisionFatalError(RuntimeError):
@@ -182,7 +233,7 @@ class LifecycleFrameValidator:
     last_sequence: int = 0
     last_digest: str | None = None
     frame_types: list[str] = field(default_factory=list)
-    quiescent_payload: dict[str, object] | None = None
+    settlement_payload: dict[str, object] | None = None
     terminal_payload: dict[str, object] | None = None
 
     def accept(self, content: bytes) -> dict[str, object]:
@@ -230,13 +281,19 @@ class LifecycleFrameValidator:
             raise AttemptSupervisionProtocolError("first frame is not child_started")
         if frame_type in self.frame_types:
             raise AttemptSupervisionProtocolError("frame type was duplicated")
-        if frame_type == "quiescing" and self.frame_types != ["child_started"]:
-            raise AttemptSupervisionProtocolError("quiescing frame is out of order")
-        if frame_type == "quiescent" and self.frame_types != [
-            "child_started",
-            "quiescing",
+        if frame_type == "settling_local_state" and self.frame_types != [
+            "child_started"
         ]:
-            raise AttemptSupervisionProtocolError("quiescent frame is out of order")
+            raise AttemptSupervisionProtocolError(
+                "local settlement start frame is out of order"
+            )
+        if frame_type == "local_state_settled" and self.frame_types != [
+            "child_started",
+            "settling_local_state",
+        ]:
+            raise AttemptSupervisionProtocolError(
+                "local settlement frame is out of order"
+            )
         payload = frame.get("payload")
         if not isinstance(payload, dict) or set(payload) != _PAYLOAD_KEYS[frame_type]:
             raise AttemptSupervisionProtocolError("frame payload fields are not closed")
@@ -253,8 +310,8 @@ class LifecycleFrameValidator:
         self.last_sequence = sequence
         self.last_digest = str(declared_digest)
         self.frame_types.append(str(frame_type))
-        if frame_type == "quiescent":
-            self.quiescent_payload = dict(payload)
+        if frame_type == "local_state_settled":
+            self.settlement_payload = dict(payload)
         elif frame_type == "child_terminal":
             self.terminal_payload = dict(payload)
         return frame
@@ -302,28 +359,36 @@ def _validate_frame_payload(
         ) or payload.get("root_identity") != identity.root_identity:
             raise AttemptSupervisionProtocolError("child start identity is invalid")
         return
-    if frame_type == "quiescing":
+    if frame_type == "settling_local_state":
         if payload.get("result_pending") is not True:
-            raise AttemptSupervisionProtocolError("quiescing payload is invalid")
-        return
-    if frame_type == "quiescent":
-        if (
-            any(
-                not isinstance(payload.get(key), int)
-                or isinstance(payload.get(key), bool)
-                or int(payload[key]) != 0
-                for key in (
-                    "active_mutation_scope_count",
-                    "active_mutation_writer_count",
-                )
+            raise AttemptSupervisionProtocolError(
+                "local settlement start payload is invalid"
             )
+        return
+    if frame_type == "local_state_settled":
+        if (
+            payload.get("mutation_authority_schema_id")
+            != MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID
+            or _DIGEST_PATTERN.fullmatch(
+                str(payload.get("mutation_authority_snapshot_digest") or "")
+            )
+            is None
+            or not _is_nonnegative_int(
+                payload.get("mutation_authority_observed_row_count")
+            )
+            or not _is_nonnegative_int(
+                payload.get("nonterminal_mutation_scope_count")
+            )
+            or payload.get("active_mutation_writer_count") != 0
             or payload.get("sqlite_checkpoint") not in {"passed", "not_present"}
             or payload.get("sqlite_integrity") not in {"passed", "not_present"}
             or payload.get("declared_root_sync") is not True
             or _DIGEST_PATTERN.fullmatch(str(payload.get("result_digest") or ""))
             is None
         ):
-            raise AttemptSupervisionProtocolError("quiescent payload is invalid")
+            raise AttemptSupervisionProtocolError(
+                "local settlement payload is invalid"
+            )
         return
     outcome = payload.get("outcome")
     result_digest = payload.get("result_digest")
@@ -470,50 +535,85 @@ def _write_exclusive_bytes(path: Path, content: bytes, *, final_mode: int) -> No
         os.close(directory)
 
 
-def _sqlite_quiescence(path: Path) -> dict[str, object]:
+def _empty_mutation_settlement() -> dict[str, object]:
+    connection = sqlite3.connect(":memory:")
+    try:
+        return project_mutation_local_settlement(connection).to_dict()
+    finally:
+        connection.close()
+
+
+def _sqlite_local_settlement(
+    path: Path,
+    *,
+    read_only: bool = False,
+) -> dict[str, object]:
     if not path.is_file():
         return {
             "sqlite_checkpoint": "not_present",
             "sqlite_integrity": "not_present",
-            "active_mutation_scope_count": 0,
-            "active_mutation_writer_count": 0,
+            **_empty_mutation_settlement(),
         }
-    connection = sqlite3.connect(path, timeout=5.0)
+    connection = (
+        sqlite3.connect(
+            f"{path.resolve().as_uri()}?mode=ro",
+            uri=True,
+            timeout=5.0,
+        )
+        if read_only
+        else sqlite3.connect(path, timeout=5.0)
+    )
     try:
         connection.execute("PRAGMA busy_timeout = 5000")
-        checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-        if checkpoint is None or int(checkpoint[0]) != 0:
-            raise RuntimeError("SQLite WAL checkpoint remained busy")
-        integrity = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
+        if read_only:
+            connection.execute("PRAGMA query_only = ON")
+            checkpoint_status = "parent_read_only"
+        else:
+            try:
+                checkpoint = connection.execute(
+                    "PRAGMA wal_checkpoint(TRUNCATE)"
+                ).fetchone()
+            except sqlite3.DatabaseError as exc:
+                raise AttemptLocalSettlementError(
+                    "attempt_sqlite_checkpoint_failed",
+                    "SQLite WAL checkpoint failed",
+                ) from exc
+            if checkpoint is None or int(checkpoint[0]) != 0:
+                raise AttemptLocalSettlementError(
+                    "attempt_sqlite_checkpoint_busy",
+                    "SQLite WAL checkpoint remained busy",
+                )
+            checkpoint_status = "passed"
+        try:
+            integrity = [
+                str(row[0]) for row in connection.execute("PRAGMA integrity_check")
+            ]
+        except sqlite3.DatabaseError as exc:
+            raise AttemptLocalSettlementError(
+                "attempt_sqlite_integrity_failed",
+                "SQLite integrity check failed",
+            ) from exc
         if integrity != ["ok"]:
-            raise RuntimeError("SQLite integrity check did not close")
-        tables = {
-            str(row[0])
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            raise AttemptLocalSettlementError(
+                "attempt_sqlite_integrity_failed",
+                "SQLite integrity check did not close",
             )
-        }
-        active_scopes = 0
-        active_writers = 0
-        if "mutation_scope_records" in tables:
-            row = connection.execute(
-                "SELECT COUNT(*) FROM mutation_scope_records "
-                "WHERE state IN ('open', 'freezing', 'quiescent')"
-            ).fetchone()
-            active_scopes = int(row[0]) if row is not None else 0
-        if "mutation_writer_records" in tables:
-            row = connection.execute(
-                "SELECT COUNT(*) FROM mutation_writer_records "
-                "WHERE state IN ('registered', 'retiring')"
-            ).fetchone()
-            active_writers = int(row[0]) if row is not None else 0
-        if active_scopes or active_writers:
-            raise RuntimeError("active mutation authority remains in SQLite")
+        try:
+            projection = project_mutation_local_settlement(connection)
+        except MutationLocalSettlementError as exc:
+            code = (
+                "attempt_mutation_writers_active"
+                if exc.code == "mutation_writers_active"
+                else "attempt_mutation_snapshot_invalid"
+            )
+            raise AttemptLocalSettlementError(
+                code,
+                "mutation authority local settlement failed",
+            ) from exc
         return {
-            "sqlite_checkpoint": "passed",
+            "sqlite_checkpoint": checkpoint_status,
             "sqlite_integrity": "passed",
-            "active_mutation_scope_count": active_scopes,
-            "active_mutation_writer_count": active_writers,
+            **projection.to_dict(),
         }
     finally:
         connection.close()
@@ -598,7 +698,7 @@ def _attempt_child_main(
         evidence = runner(context)
         if not isinstance(evidence, Mapping):
             raise TypeError("attempt runner result must be a mapping")
-        emitter.emit("quiescing", {"result_pending": True})
+        emitter.emit("settling_local_state", {"result_pending": True})
         result_payload = _child_result_payload(
             context=context,
             identity=identity,
@@ -611,14 +711,30 @@ def _attempt_child_main(
             result_content,
             final_mode=0o400,
         )
-        quiescence = _sqlite_quiescence(context.roots.sqlite_path)
-        _fsync_tree(context.roots.attempt_root)
-        quiescent_payload = {
-            **quiescence,
+        settlement = _sqlite_local_settlement(context.roots.sqlite_path)
+        try:
+            _fsync_tree(context.roots.attempt_root)
+        except (OSError, RuntimeError) as exc:
+            raise AttemptLocalSettlementError(
+                "attempt_root_sync_failed",
+                "declared attempt root synchronization failed",
+            ) from exc
+        settlement_payload = {
+            "mutation_authority_schema_id": settlement["schema_id"],
+            "mutation_authority_snapshot_digest": settlement["snapshot_digest"],
+            "mutation_authority_observed_row_count": settlement[
+                "observed_row_count"
+            ],
+            "nonterminal_mutation_scope_count": settlement[
+                "nonterminal_scope_count"
+            ],
+            "active_mutation_writer_count": settlement["active_writer_count"],
+            "sqlite_checkpoint": settlement["sqlite_checkpoint"],
+            "sqlite_integrity": settlement["sqlite_integrity"],
             "declared_root_sync": True,
             "result_digest": result_digest,
         }
-        emitter.emit("quiescent", quiescent_payload)
+        emitter.emit("local_state_settled", settlement_payload)
         emitter.emit(
             "child_terminal",
             {
@@ -830,7 +946,7 @@ def _write_fatal_evidence(
         ),
         "last_valid_sequence": validator.last_sequence,
         "last_valid_frame_digest": validator.last_digest,
-        "quiescent_observed": validator.quiescent_payload is not None,
+        "local_settlement_observed": validator.settlement_payload is not None,
         "descendant_retirement_proven": descendant_retirement_proven,
         "root_access_rejection_count": (
             0 if root_gate is None else root_gate.attempted_access_count
@@ -907,9 +1023,18 @@ def supervision_contract_digest(
     kill_grace_seconds: float,
     protocol_schema_id: str = SUPERVISION_SCHEMA_ID,
 ) -> str:
+    if protocol_schema_id == SUPERVISION_SCHEMA_ID:
+        contract_base = SUPERVISOR_CONTRACT_BASE
+    elif protocol_schema_id in {
+        SUPERVISION_SCHEMA_ID_V1,
+        SUPERVISION_SCHEMA_ID_V2,
+    }:
+        contract_base = _LEGACY_SUPERVISOR_CONTRACT_BASE
+    else:
+        raise ValueError("attempt supervision protocol schema is unsupported")
     return canonical_digest(
         {
-            **SUPERVISOR_CONTRACT_BASE,
+            **contract_base,
             "schema_id": protocol_schema_id,
             "timeout_seconds": timeout_seconds,
             "term_grace_seconds": term_grace_seconds,
@@ -926,36 +1051,23 @@ def validate_attempt_supervision_receipt(
     attempt_authority_id: str | None = None,
     attempt_authority_request_digest: str | None = None,
     expected_contract_digest: str | None = None,
+    allow_legacy: bool = False,
 ) -> dict[str, object]:
-    legacy_keys = {
-        "schema_id",
-        "mode",
-        "attempt_id",
-        "attempt_kind",
-        "campaign_id",
-        "process_epoch",
-        "protocol_final_sequence",
-        "protocol_final_digest",
-        "child_exit_code",
-        "quiescent",
-        "descendant_retirement_proven",
-        "active_mutation_scope_count",
-        "active_mutation_writer_count",
-        "sqlite_checkpoint",
-        "sqlite_integrity",
-        "declared_root_sync",
-        "result_digest",
-        "supervisor_contract_digest",
-        "timeout_seconds",
-        "term_grace_seconds",
-        "kill_grace_seconds",
-    }
+    if not isinstance(receipt, Mapping):
+        raise CutoverEvidenceError(
+            "attempt_supervision_receipt_missing",
+            "live cutover evidence requires process-isolated supervision",
+            details={"identity": "product_path.attempt_supervision"},
+        )
+    normalized = dict(receipt)
+    schema_id = normalized.get("schema_id")
     authority_expected = (
         attempt_authority_id is not None
         or attempt_authority_request_digest is not None
     )
     if authority_expected and (
-        not attempt_authority_id
+        not isinstance(attempt_authority_id, str)
+        or not attempt_authority_id
         or _DIGEST_PATTERN.fullmatch(
             str(attempt_authority_request_digest or "")
         )
@@ -966,28 +1078,48 @@ def validate_attempt_supervision_receipt(
             "supervision validation requires one exact authority identity",
             details={"identity": "product_path.attempt_supervision"},
         )
-    expected_keys = (
-        legacy_keys
-        if not authority_expected
-        else legacy_keys
-        | {"attempt_authority_id", "attempt_authority_request_digest"}
-    )
-    if not isinstance(receipt, Mapping):
-        raise CutoverEvidenceError(
-            "attempt_supervision_receipt_missing",
-            "live cutover evidence requires process-isolated supervision",
-            details={"identity": "product_path.attempt_supervision"},
-        )
-    normalized = dict(receipt)
-    digest_fields = (
+
+    common_keys = {
+        "schema_id",
+        "mode",
+        "attempt_id",
+        "attempt_kind",
+        "campaign_id",
+        "process_epoch",
+        "protocol_final_sequence",
+        "protocol_final_digest",
+        "child_exit_code",
+        "descendant_retirement_proven",
+        "sqlite_checkpoint",
+        "sqlite_integrity",
+        "declared_root_sync",
+        "result_digest",
+        "supervisor_contract_digest",
+        "timeout_seconds",
+        "term_grace_seconds",
+        "kill_grace_seconds",
+    }
+    current_keys = common_keys | {
+        "attempt_authority_id",
+        "attempt_authority_request_digest",
+        "local_state_settled",
+        "parent_snapshot_revalidated",
+        "mutation_authority_schema_id",
+        "mutation_authority_snapshot_digest",
+        "mutation_authority_observed_row_count",
+        "nonterminal_mutation_scope_count",
+        "active_mutation_writer_count",
+    }
+    legacy_keys = common_keys | {
+        "quiescent",
+        "active_mutation_scope_count",
+        "active_mutation_writer_count",
+    }
+    base_digest_fields = (
         "campaign_id",
         "protocol_final_digest",
         "result_digest",
         "supervisor_contract_digest",
-    ) + (
-        ("attempt_authority_request_digest",)
-        if authority_expected
-        else ()
     )
     timeout_seconds = normalized.get("timeout_seconds")
     term_grace_seconds = normalized.get("term_grace_seconds")
@@ -1006,43 +1138,103 @@ def validate_attempt_supervision_receipt(
         and math.isfinite(float(kill_grace_seconds))
         and float(kill_grace_seconds) >= 0
     )
-    if (
-        set(normalized) != expected_keys
-        or normalized.get("schema_id")
-        != (
-            SUPERVISION_RECEIPT_SCHEMA_ID
-            if authority_expected
-            else SUPERVISION_RECEIPT_SCHEMA_ID_V1
+    common_valid = (
+        normalized.get("mode") == "process_isolated_spawn"
+        and normalized.get("attempt_id") == attempt_id
+        and normalized.get("attempt_kind") == attempt_kind
+        and _EPOCH_PATTERN.fullmatch(str(normalized.get("process_epoch") or ""))
+        is not None
+        and all(
+            _DIGEST_PATTERN.fullmatch(str(normalized.get(key) or "")) is not None
+            for key in base_digest_fields
         )
-        or normalized.get("mode") != "process_isolated_spawn"
-        or normalized.get("attempt_id") != attempt_id
-        or normalized.get("attempt_kind") != attempt_kind
-        or (
-            authority_expected
-            and normalized.get("attempt_authority_id")
-            != attempt_authority_id
-        )
-        or (
-            authority_expected
+        and normalized.get("protocol_final_sequence") == 4
+        and normalized.get("child_exit_code") == 0
+        and normalized.get("descendant_retirement_proven") is True
+        and normalized.get("sqlite_checkpoint") in {"passed", "not_present"}
+        and normalized.get("sqlite_integrity") in {"passed", "not_present"}
+        and normalized.get("declared_root_sync") is True
+        and valid_bounds
+    )
+
+    if schema_id == SUPERVISION_RECEIPT_SCHEMA_ID:
+        valid = (
+            set(normalized) == current_keys
+            and authority_expected
+            and common_valid
+            and normalized.get("attempt_authority_id") == attempt_authority_id
             and normalized.get("attempt_authority_request_digest")
-            != attempt_authority_request_digest
+            == attempt_authority_request_digest
+            and _DIGEST_PATTERN.fullmatch(
+                str(normalized.get("attempt_authority_request_digest") or "")
+            )
+            is not None
+            and normalized.get("local_state_settled") is True
+            and normalized.get("parent_snapshot_revalidated") is True
+            and normalized.get("mutation_authority_schema_id")
+            == MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID
+            and _DIGEST_PATTERN.fullmatch(
+                str(normalized.get("mutation_authority_snapshot_digest") or "")
+            )
+            is not None
+            and _is_nonnegative_int(
+                normalized.get("mutation_authority_observed_row_count")
+            )
+            and _is_nonnegative_int(
+                normalized.get("nonterminal_mutation_scope_count")
+            )
+            and normalized.get("active_mutation_writer_count") == 0
         )
-        or _EPOCH_PATTERN.fullmatch(str(normalized.get("process_epoch") or ""))
-        is None
-        or any(
-            _DIGEST_PATTERN.fullmatch(str(normalized.get(key) or "")) is None
-            for key in digest_fields
+        protocol_schema_id = SUPERVISION_SCHEMA_ID
+    elif schema_id in {
+        SUPERVISION_RECEIPT_SCHEMA_ID_V1,
+        SUPERVISION_RECEIPT_SCHEMA_ID_V2,
+    }:
+        legacy_authority = schema_id == SUPERVISION_RECEIPT_SCHEMA_ID_V2
+        expected_keys = (
+            legacy_keys
+            | {"attempt_authority_id", "attempt_authority_request_digest"}
+            if legacy_authority
+            else legacy_keys
         )
-        or normalized.get("protocol_final_sequence") != 4
-        or normalized.get("child_exit_code") != 0
-        or normalized.get("quiescent") is not True
-        or normalized.get("descendant_retirement_proven") is not True
-        or normalized.get("active_mutation_scope_count") != 0
-        or normalized.get("active_mutation_writer_count") != 0
-        or normalized.get("sqlite_checkpoint") not in {"passed", "not_present"}
-        or normalized.get("sqlite_integrity") not in {"passed", "not_present"}
-        or normalized.get("declared_root_sync") is not True
-        or not valid_bounds
+        valid = (
+            allow_legacy
+            and set(normalized) == expected_keys
+            and common_valid
+            and authority_expected is legacy_authority
+            and (
+                not legacy_authority
+                or (
+                    normalized.get("attempt_authority_id")
+                    == attempt_authority_id
+                    and normalized.get("attempt_authority_request_digest")
+                    == attempt_authority_request_digest
+                    and _DIGEST_PATTERN.fullmatch(
+                        str(
+                            normalized.get(
+                                "attempt_authority_request_digest"
+                            )
+                            or ""
+                        )
+                    )
+                    is not None
+                )
+            )
+            and normalized.get("quiescent") is True
+            and normalized.get("active_mutation_scope_count") == 0
+            and normalized.get("active_mutation_writer_count") == 0
+        )
+        protocol_schema_id = (
+            SUPERVISION_SCHEMA_ID_V2
+            if legacy_authority
+            else SUPERVISION_SCHEMA_ID_V1
+        )
+    else:
+        valid = False
+        protocol_schema_id = SUPERVISION_SCHEMA_ID
+
+    if (
+        not valid
         or (
             valid_bounds
             and normalized.get("supervisor_contract_digest")
@@ -1050,11 +1242,7 @@ def validate_attempt_supervision_receipt(
                 timeout_seconds=float(timeout_seconds),
                 term_grace_seconds=float(term_grace_seconds),
                 kill_grace_seconds=float(kill_grace_seconds),
-                protocol_schema_id=(
-                    SUPERVISION_SCHEMA_ID
-                    if authority_expected
-                    else SUPERVISION_SCHEMA_ID_V1
-                ),
+                protocol_schema_id=protocol_schema_id,
             )
         )
         or (
@@ -1218,14 +1406,14 @@ class ProcessIsolatedAttemptRunner:
                     if time.monotonic() - process_dead_at >= max(
                         0.2, 2 * self.poll_interval_seconds
                     ):
-                        failure_code = "attempt_quiescence_missing"
+                        failure_code = "attempt_local_settlement_missing"
                         failure_type = "AttemptProtocolTruncated"
                         break
 
             if failure_code is None and process is not None:
                 process.join(timeout=0)
                 if validator.terminal_payload is None:
-                    failure_code = "attempt_quiescence_missing"
+                    failure_code = "attempt_local_settlement_missing"
                     failure_type = "AttemptProtocolTruncated"
                 elif validator.terminal_payload.get("outcome") != "normal":
                     failure_code = str(
@@ -1240,7 +1428,7 @@ class ProcessIsolatedAttemptRunner:
                     failure_code = "attempt_child_nonzero_exit"
                     failure_type = "AttemptChildExitError"
                 elif validator.frame_types != list(_FRAME_TYPES):
-                    failure_code = "attempt_quiescence_missing"
+                    failure_code = "attempt_local_settlement_missing"
                     failure_type = "AttemptProtocolTruncated"
                 elif child_pgid is None or _process_group_members(child_pgid):
                     failure_code = "attempt_child_descendant_leak"
@@ -1319,12 +1507,42 @@ class ProcessIsolatedAttemptRunner:
                 child_pid=process.pid,
                 descendant_retirement_proven=True,
             )
-            quiescent = validator.quiescent_payload or {}
+            settlement = validator.settlement_payload or {}
             terminal = validator.terminal_payload or {}
             expected_result_digest = str(terminal.get("result_digest") or "")
-            if quiescent.get("result_digest") != expected_result_digest:
+            if settlement.get("result_digest") != expected_result_digest:
                 raise AttemptSupervisionProtocolError(
-                    "terminal result digest differs from quiescence"
+                    "terminal result digest differs from local settlement"
+                )
+            parent_settlement = _sqlite_local_settlement(
+                context.roots.sqlite_path,
+                read_only=True,
+            )
+            settlement_bindings = {
+                "mutation_authority_schema_id": parent_settlement["schema_id"],
+                "mutation_authority_snapshot_digest": parent_settlement[
+                    "snapshot_digest"
+                ],
+                "mutation_authority_observed_row_count": parent_settlement[
+                    "observed_row_count"
+                ],
+                "nonterminal_mutation_scope_count": parent_settlement[
+                    "nonterminal_scope_count"
+                ],
+                "active_mutation_writer_count": parent_settlement[
+                    "active_writer_count"
+                ],
+            }
+            if (
+                parent_settlement["active_writer_count"] != 0
+                or any(
+                    settlement.get(key) != value
+                    for key, value in settlement_bindings.items()
+                )
+            ):
+                raise AttemptLocalSettlementError(
+                    "attempt_mutation_snapshot_drift",
+                    "mutation authority changed after child local settlement",
                 )
             result_content = root_gate.read_bytes(
                 context.roots.evidence_root / RESULT_BASENAME
@@ -1354,17 +1572,27 @@ class ProcessIsolatedAttemptRunner:
                 "protocol_final_sequence": validator.last_sequence,
                 "protocol_final_digest": validator.last_digest,
                 "child_exit_code": process.exitcode,
-                "quiescent": True,
+                "local_state_settled": True,
                 "descendant_retirement_proven": True,
-                "active_mutation_scope_count": quiescent[
-                    "active_mutation_scope_count"
+                "parent_snapshot_revalidated": True,
+                "mutation_authority_schema_id": settlement[
+                    "mutation_authority_schema_id"
                 ],
-                "active_mutation_writer_count": quiescent[
+                "mutation_authority_snapshot_digest": settlement[
+                    "mutation_authority_snapshot_digest"
+                ],
+                "mutation_authority_observed_row_count": settlement[
+                    "mutation_authority_observed_row_count"
+                ],
+                "nonterminal_mutation_scope_count": settlement[
+                    "nonterminal_mutation_scope_count"
+                ],
+                "active_mutation_writer_count": settlement[
                     "active_mutation_writer_count"
                 ],
-                "sqlite_checkpoint": quiescent["sqlite_checkpoint"],
-                "sqlite_integrity": quiescent["sqlite_integrity"],
-                "declared_root_sync": quiescent["declared_root_sync"],
+                "sqlite_checkpoint": settlement["sqlite_checkpoint"],
+                "sqlite_integrity": settlement["sqlite_integrity"],
+                "declared_root_sync": settlement["declared_root_sync"],
                 "result_digest": expected_result_digest,
                 "supervisor_contract_digest": supervision_contract_digest(
                     timeout_seconds=self.timeout_seconds,
@@ -1402,6 +1630,12 @@ class ProcessIsolatedAttemptRunner:
                 )
             if process is None:
                 code = "attempt_child_spawn_unavailable"
+            elif (
+                retirement_proven
+                and isinstance(getattr(exc, "code", None), str)
+                and _ERROR_CODE_PATTERN.fullmatch(str(exc.code)) is not None
+            ):
+                code = str(exc.code)
             elif retirement_proven:
                 code = "attempt_supervision_result_invalid"
             else:
@@ -1432,6 +1666,7 @@ class ProcessIsolatedAttemptRunner:
 
 
 __all__ = [
+    "AttemptLocalSettlementError",
     "AttemptRootAccessError",
     "AttemptRootAccessGate",
     "AttemptSupervisionFatalError",
@@ -1442,8 +1677,13 @@ __all__ = [
     "MAX_FRAME_BYTES",
     "ProcessIsolatedAttemptRunner",
     "SUPERVISION_FATAL_SCHEMA_ID",
+    "SUPERVISION_FATAL_SCHEMA_ID_V1",
     "SUPERVISION_RECEIPT_SCHEMA_ID",
+    "SUPERVISION_RECEIPT_SCHEMA_ID_V1",
+    "SUPERVISION_RECEIPT_SCHEMA_ID_V2",
     "SUPERVISION_SCHEMA_ID",
+    "SUPERVISION_SCHEMA_ID_V1",
+    "SUPERVISION_SCHEMA_ID_V2",
     "build_lifecycle_frame",
     "derive_live_attempt_supervision_timeout_seconds",
     "supervision_contract_digest",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from copy import deepcopy
 import csv
 import hashlib
 import io
@@ -10,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from openzyme_core import MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID
 from openzyme_host_api.aox_architecture_qualification import (
     build_architecture_qualification_receipt,
 )
@@ -18,6 +20,7 @@ from openzyme_host_api.aox_attempt_supervision import DEFAULT_TERM_GRACE_SECONDS
 from openzyme_host_api.aox_attempt_supervision import (
     derive_live_attempt_supervision_timeout_seconds,
 )
+from openzyme_host_api.aox_attempt_supervision import SUPERVISION_RECEIPT_SCHEMA_ID
 from openzyme_host_api.aox_attempt_supervision import supervision_contract_digest
 from openzyme_core.workflow_knowledge import default_workflow_registry
 import openzyme_host_api.aox_cutover_evidence as cutover_evidence
@@ -5202,12 +5205,71 @@ def _seal_selected_chain_fixture(
     control: dict[str, object],
     destination: Path,
 ) -> None:
+    current_payload = deepcopy(payload)
+    _attach_current_supervision_receipt(current_payload)
     selected = {
-        **payload,
+        **current_payload,
         "schema_id": "aox_blank_world_attempt_bundle@3",
         "scientific_attempt_control": control,
     }
     seal_attempt_bundle(selected, destination)
+
+
+def _attach_current_supervision_receipt(
+    payload: dict[str, object],
+) -> None:
+    product_path = dict(payload["product_path"])
+    legacy = dict(product_path["attempt_supervision"])
+    timeout_seconds = float(legacy["timeout_seconds"])
+    term_grace_seconds = float(legacy["term_grace_seconds"])
+    kill_grace_seconds = float(legacy["kill_grace_seconds"])
+    product_path["attempt_supervision"] = {
+        key: legacy[key]
+        for key in (
+            "mode",
+            "attempt_id",
+            "attempt_kind",
+            "campaign_id",
+            "process_epoch",
+            "protocol_final_sequence",
+            "protocol_final_digest",
+            "child_exit_code",
+            "descendant_retirement_proven",
+            "sqlite_checkpoint",
+            "sqlite_integrity",
+            "declared_root_sync",
+            "result_digest",
+            "timeout_seconds",
+            "term_grace_seconds",
+            "kill_grace_seconds",
+        )
+    }
+    product_path["attempt_supervision"].update(
+        {
+            "schema_id": SUPERVISION_RECEIPT_SCHEMA_ID,
+            "attempt_authority_id": "attempt_authority_current",
+            "attempt_authority_request_digest": _digest(
+                "current-supervision-authority"
+            ),
+            "local_state_settled": True,
+            "parent_snapshot_revalidated": True,
+            "mutation_authority_schema_id": (
+                MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID
+            ),
+            "mutation_authority_snapshot_digest": _digest(
+                "current-mutation-authority"
+            ),
+            "mutation_authority_observed_row_count": 2,
+            "nonterminal_mutation_scope_count": 1,
+            "active_mutation_writer_count": 0,
+            "supervisor_contract_digest": supervision_contract_digest(
+                timeout_seconds=timeout_seconds,
+                term_grace_seconds=term_grace_seconds,
+                kill_grace_seconds=kill_grace_seconds,
+            ),
+        }
+    )
+    payload["product_path"] = product_path
 
 
 def test_selected_chain_v3_verifies_full_closed_occurrence_universe(
@@ -5273,6 +5335,7 @@ def test_selected_chain_v3_builder_requires_and_attaches_canonical_control(
 ) -> None:
     payload, _, artifact_root = _build_bundle(tmp_path)
     control = _selected_chain_control(payload)
+    _attach_current_supervision_receipt(payload)
     identity = {
         key: value
         for key, value in payload["identity"].items()
@@ -5315,6 +5378,34 @@ def test_selected_chain_v3_builder_requires_and_attaches_canonical_control(
 
     assert selected["schema_id"] == "aox_blank_world_attempt_bundle@3"
     assert selected["scientific_attempt_control"] == control
+    assert selected["product_path"]["attempt_supervision"]["schema_id"] == (
+        SUPERVISION_RECEIPT_SCHEMA_ID
+    )
+    assert selected["product_path"]["attempt_supervision"][
+        "mutation_authority_snapshot_digest"
+    ] == _digest("current-mutation-authority")
+
+
+def test_selected_chain_v3_rejects_legacy_supervision_without_projection(
+    tmp_path: Path,
+) -> None:
+    payload, _, artifact_root = _build_bundle(tmp_path)
+    control = _selected_chain_control(payload)
+    bundle_path = tmp_path / "selected-chain-v3-legacy-supervision.json"
+    selected = {
+        **payload,
+        "schema_id": "aox_blank_world_attempt_bundle@3",
+        "scientific_attempt_control": control,
+    }
+    seal_attempt_bundle(selected, bundle_path)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(
+        issue.code == "attempt_supervision_receipt_invalid"
+        for issue in result.issues
+    )
 
 
 @pytest.mark.parametrize(

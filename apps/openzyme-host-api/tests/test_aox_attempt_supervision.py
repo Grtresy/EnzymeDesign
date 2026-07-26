@@ -51,6 +51,9 @@ from aox_attempt_supervision_spawn_fixtures import (  # noqa: E402
     ReturningRunner as _ReturningRunner,
 )
 from aox_attempt_supervision_spawn_fixtures import (  # noqa: E402
+    TerminalRolloverRunner as _TerminalRolloverRunner,
+)
+from aox_attempt_supervision_spawn_fixtures import (  # noqa: E402
     TruncatedRunner as _TruncatedRunner,
 )
 
@@ -299,8 +302,71 @@ def test_normal_child_result_requires_sqlite_and_process_retirement(
     assert receipt["sqlite_checkpoint"] == "passed"
     assert receipt["sqlite_integrity"] == "passed"
     assert receipt["descendant_retirement_proven"] is True
+    assert receipt["parent_snapshot_revalidated"] is True
+    assert receipt["nonterminal_mutation_scope_count"] == 0
     assert (context.roots.evidence_root / supervision.RESULT_BASENAME).is_file()
     assert not (context.roots.attempt_root.parent / "failures").exists()
+
+
+def test_writer_free_terminal_rollover_is_valid_local_settlement(
+    tmp_path: Path,
+) -> None:
+    context = _attempt_context(tmp_path)
+
+    evidence = _supervisor(_TerminalRolloverRunner(), context)(context)
+
+    receipt = evidence["product_path"]["attempt_supervision"]
+    assert receipt["local_state_settled"] is True
+    assert receipt["parent_snapshot_revalidated"] is True
+    assert receipt["nonterminal_mutation_scope_count"] == 1
+    assert receipt["active_mutation_writer_count"] == 0
+
+
+def test_active_writer_fails_local_settlement_with_stable_code(
+    tmp_path: Path,
+) -> None:
+    context = _attempt_context(tmp_path)
+
+    with pytest.raises(AttemptSupervisionFatalError) as error:
+        _supervisor(_TerminalRolloverRunner(active_writer=True), context)(context)
+
+    assert error.value.code == "attempt_mutation_writers_active"
+    payload = _fatal_payload(context)
+    assert payload["failure_code"] == "attempt_mutation_writers_active"
+    assert payload["local_settlement_observed"] is False
+
+
+def test_parent_rejects_mutation_snapshot_drift_after_retirement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _attempt_context(tmp_path)
+    original = supervision._sqlite_local_settlement
+
+    def drifted_parent_projection(
+        path: Path,
+        *,
+        read_only: bool = False,
+    ) -> dict[str, object]:
+        projection = original(path, read_only=read_only)
+        if read_only:
+            projection = dict(projection)
+            projection["snapshot_digest"] = "sha256:" + "f" * 64
+        return projection
+
+    monkeypatch.setattr(
+        supervision,
+        "_sqlite_local_settlement",
+        drifted_parent_projection,
+    )
+
+    with pytest.raises(AttemptSupervisionFatalError) as error:
+        _supervisor(_TerminalRolloverRunner(), context)(context)
+
+    assert error.value.code == "attempt_mutation_snapshot_drift"
+    payload = _fatal_payload(context)
+    assert payload["failure_code"] == "attempt_mutation_snapshot_drift"
+    assert payload["local_settlement_observed"] is True
 
 
 @pytest.mark.parametrize(
@@ -308,7 +374,7 @@ def test_normal_child_result_requires_sqlite_and_process_retirement(
     [
         (_BlockingRunner(), {"attempt_child_timeout"}),
         (_FailingRunner(), {"attempt_child_runner_failed"}),
-        (_TruncatedRunner(), {"attempt_quiescence_missing"}),
+        (_TruncatedRunner(), {"attempt_local_settlement_missing"}),
         (_DescendantRunner(), {"attempt_child_descendant_leak"}),
     ],
 )
@@ -373,6 +439,87 @@ def test_supervision_receipt_rejects_unknown_fields(tmp_path: Path) -> None:
         )
 
     assert error.value.code == "attempt_supervision_receipt_invalid"
+
+
+@pytest.mark.parametrize(
+    ("receipt_schema", "protocol_schema", "with_authority"),
+    [
+        (
+            supervision.SUPERVISION_RECEIPT_SCHEMA_ID_V1,
+            supervision.SUPERVISION_SCHEMA_ID_V1,
+            False,
+        ),
+        (
+            supervision.SUPERVISION_RECEIPT_SCHEMA_ID_V2,
+            supervision.SUPERVISION_SCHEMA_ID_V2,
+            True,
+        ),
+    ],
+)
+def test_legacy_receipts_are_explicit_offline_only(
+    receipt_schema: str,
+    protocol_schema: str,
+    with_authority: bool,
+) -> None:
+    receipt = {
+        "schema_id": receipt_schema,
+        "mode": "process_isolated_spawn",
+        "attempt_id": "positive-legacy",
+        "attempt_kind": "positive",
+        "campaign_id": canonical_digest({"campaign": "legacy"}),
+        "process_epoch": "a" * 32,
+        "protocol_final_sequence": 4,
+        "protocol_final_digest": canonical_digest({"frame": "legacy"}),
+        "child_exit_code": 0,
+        "quiescent": True,
+        "descendant_retirement_proven": True,
+        "active_mutation_scope_count": 0,
+        "active_mutation_writer_count": 0,
+        "sqlite_checkpoint": "passed",
+        "sqlite_integrity": "passed",
+        "declared_root_sync": True,
+        "result_digest": canonical_digest({"result": "legacy"}),
+        "supervisor_contract_digest": supervision.supervision_contract_digest(
+            timeout_seconds=30.0,
+            term_grace_seconds=15.0,
+            kill_grace_seconds=10.0,
+            protocol_schema_id=protocol_schema,
+        ),
+        "timeout_seconds": 30.0,
+        "term_grace_seconds": 15.0,
+        "kill_grace_seconds": 10.0,
+    }
+    authority_id = "attempt_authority_legacy"
+    authority_digest = canonical_digest({"authority": "legacy"})
+    if with_authority:
+        receipt.update(
+            {
+                "attempt_authority_id": authority_id,
+                "attempt_authority_request_digest": authority_digest,
+            }
+        )
+
+    with pytest.raises(CutoverEvidenceError):
+        validate_attempt_supervision_receipt(
+            receipt,
+            attempt_id="positive-legacy",
+            attempt_kind="positive",
+            attempt_authority_id=authority_id if with_authority else None,
+            attempt_authority_request_digest=(
+                authority_digest if with_authority else None
+            ),
+        )
+
+    assert validate_attempt_supervision_receipt(
+        receipt,
+        attempt_id="positive-legacy",
+        attempt_kind="positive",
+        attempt_authority_id=authority_id if with_authority else None,
+        attempt_authority_request_digest=(
+            authority_digest if with_authority else None
+        ),
+        allow_legacy=True,
+    ) == receipt
 
 
 def test_campaign_propagates_supervision_fatal_without_attempt_bundle(

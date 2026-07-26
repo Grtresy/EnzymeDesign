@@ -1954,7 +1954,7 @@ def safe_micu_ledger_snapshot(path: Path) -> dict[str, Any]:
     return summary
 
 
-def build_attempt_bundle(
+def _assemble_attempt_bundle_payload(
     *,
     attempt_id: str,
     attempt_kind: str,
@@ -2004,6 +2004,32 @@ def build_attempt_bundle(
     }
     _normalize_artifacts(payload, artifact_root=artifact_root)
     _normalize_record_digests(payload)
+    return payload
+
+
+def build_attempt_bundle(
+    *,
+    attempt_id: str,
+    attempt_kind: str,
+    identity: Mapping[str, object],
+    clean_world: Mapping[str, object],
+    ledger_before: Mapping[str, object],
+    ledger_after: Mapping[str, object],
+    artifact_root: Path,
+    evidence: Mapping[str, object],
+    sealed_at: str | None = None,
+) -> dict[str, Any]:
+    payload = _assemble_attempt_bundle_payload(
+        attempt_id=attempt_id,
+        attempt_kind=attempt_kind,
+        identity=identity,
+        clean_world=clean_world,
+        ledger_before=ledger_before,
+        ledger_after=ledger_after,
+        artifact_root=artifact_root,
+        evidence=evidence,
+        sealed_at=sealed_at,
+    )
     _validate_attempt_semantics(payload, artifact_root=artifact_root)
     _assert_public_safe(payload, identity="attempt_bundle")
     return payload
@@ -2051,10 +2077,11 @@ def seal_campaign_decision(
     return actual_digest
 
 
-def _verify_attempt_bundle_v2(
+def _verify_attempt_bundle_v2_impl(
     bundle_path: Path,
     *,
     artifact_root: Path,
+    current_supervision: bool,
 ) -> VerificationResult:
     issues: list[VerificationIssue] = []
     try:
@@ -2179,7 +2206,11 @@ def _verify_attempt_bundle_v2(
                 artifact_map=artifact_map,
                 issues=issues,
             )
-            _validate_attempt_semantics(payload, artifact_root=artifact_root)
+            _validate_attempt_semantics(
+                payload,
+                artifact_root=artifact_root,
+                current_supervision=current_supervision,
+            )
         except CutoverEvidenceError as exc:
             issues.append(
                 VerificationIssue(
@@ -2224,6 +2255,34 @@ def _verify_attempt_bundle_v2(
         attempt_id=attempt_id,
         attempt_kind=attempt_kind,
         issues=tuple(issues),
+    )
+
+
+def _verify_attempt_bundle_v2(
+    bundle_path: Path,
+    *,
+    artifact_root: Path,
+) -> VerificationResult:
+    """Run the frozen historical @2 and supervision @1 verification path."""
+
+    return _verify_attempt_bundle_v2_impl(
+        bundle_path,
+        artifact_root=artifact_root,
+        current_supervision=False,
+    )
+
+
+def _verify_attempt_bundle_v2_with_current_supervision(
+    bundle_path: Path,
+    *,
+    artifact_root: Path,
+) -> VerificationResult:
+    """Reuse @2 payload checks while retaining and validating an exact @3 receipt."""
+
+    return _verify_attempt_bundle_v2_impl(
+        bundle_path,
+        artifact_root=artifact_root,
+        current_supervision=True,
     )
 
 
@@ -6682,7 +6741,10 @@ def _validate_known_positive_probe(
 
 
 def _validate_attempt_semantics(
-    payload: Mapping[str, Any], *, artifact_root: Path
+    payload: Mapping[str, Any],
+    *,
+    artifact_root: Path,
+    current_supervision: bool = False,
 ) -> None:
     if payload.get("schema_id") != ATTEMPT_BUNDLE_SCHEMA_ID_V2:
         raise CutoverEvidenceError(
@@ -6729,6 +6791,7 @@ def _validate_attempt_semantics(
         from .aox_attempt_supervision import (
             derive_live_attempt_supervision_timeout_seconds,
         )
+        from .aox_attempt_supervision import SUPERVISION_SCHEMA_ID
         from .aox_attempt_supervision import SUPERVISION_SCHEMA_ID_V1
         from .aox_attempt_supervision import supervision_contract_digest
         from .aox_attempt_supervision import validate_attempt_supervision_receipt
@@ -6759,7 +6822,11 @@ def _validate_attempt_semantics(
                     timeout_seconds=timeout_seconds,
                     term_grace_seconds=DEFAULT_TERM_GRACE_SECONDS,
                     kill_grace_seconds=DEFAULT_KILL_GRACE_SECONDS,
-                    protocol_schema_id=SUPERVISION_SCHEMA_ID_V1,
+                    protocol_schema_id=(
+                        SUPERVISION_SCHEMA_ID
+                        if current_supervision
+                        else SUPERVISION_SCHEMA_ID_V1
+                    ),
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise CutoverEvidenceError(
@@ -6768,11 +6835,32 @@ def _validate_attempt_semantics(
                     details={"identity": "product_path.attempt_supervision"},
                 ) from exc
 
+        if current_supervision and isinstance(supervision_receipt, Mapping):
+            attempt_authority_id = supervision_receipt.get(
+                "attempt_authority_id"
+            )
+            attempt_authority_request_digest = supervision_receipt.get(
+                "attempt_authority_request_digest"
+            )
+        else:
+            attempt_authority_id = None
+            attempt_authority_request_digest = None
         validate_attempt_supervision_receipt(
             supervision_receipt,
             attempt_id=str(payload.get("attempt_id") or ""),
             attempt_kind=str(kind),
+            attempt_authority_id=(
+                None
+                if attempt_authority_id is None
+                else str(attempt_authority_id)
+            ),
+            attempt_authority_request_digest=(
+                None
+                if attempt_authority_request_digest is None
+                else str(attempt_authority_request_digest)
+            ),
             expected_contract_digest=expected_supervision_contract_digest,
+            allow_legacy=not current_supervision,
         )
     if (
         (kind == "positive" and outcome_for_config.get("cutover_eligible") is True)

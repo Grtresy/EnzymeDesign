@@ -17,11 +17,20 @@ from urllib.parse import urlsplit
 from openzyme_core import is_published_report_link
 from openzyme_core import is_published_report_status
 from openzyme_core import MutationWriterTurnFactory
+from openzyme_core import ScientificAttemptScopeRolloverEnvelope
+from openzyme_core import ScientificAttemptScopeRolloverIntegrityError
+from openzyme_core import ScientificAttemptScopeRolloverPhase
+from openzyme_core import ScientificAttemptScopeRolloverProjector
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_domain import MutationWriterKind
 from openzyme_runtime import REPO_ROOT
 
+from .aox_attempt_supervision import DEFAULT_KILL_GRACE_SECONDS
+from .aox_attempt_supervision import DEFAULT_TERM_GRACE_SECONDS
 from .aox_attempt_supervision import ProcessIsolatedAttemptRunner
+from .aox_attempt_supervision import SUPERVISION_SCHEMA_ID
+from .aox_attempt_supervision import SUPERVISION_SCHEMA_ID_V2
+from .aox_attempt_supervision import supervision_contract_digest
 from .aox_attempt_supervision import validate_attempt_supervision_receipt
 from .aox_authority_storage import publish_private_canonical_authority
 from .aox_closure_stage_authority import (
@@ -74,10 +83,13 @@ from .foundation import build_configured_foundation
 
 
 AOX_CLOSURE_STAGE_PARITY_RECEIPT_SCHEMA_ID = (
-    "aox_closure_stage_runtime_parity_receipt@1"
+    "aox_closure_stage_runtime_parity_receipt@2"
 )
 AOX_CLOSURE_STAGE_LIVE_RESULT_SCHEMA_ID = (
-    "aox_closure_stage_live_result@1"
+    "aox_closure_stage_live_result@2"
+)
+AOX_CLOSURE_STAGE_CHILD_EVIDENCE_SCHEMA_ID = (
+    "aox_closure_stage_child_evidence@2"
 )
 AOX_CLOSURE_STAGE_DIAGNOSTIC_DECISION_SCHEMA_ID = (
     "aox_closure_stage_diagnostic_decision@1"
@@ -123,6 +135,8 @@ _PARITY_SOURCE_FIELDS = frozenset(
         "max_steps_per_agent",
         "auto_enqueue_ready_tasks",
         "supervision_timeout_seconds",
+        "supervision_protocol_schema_id",
+        "supervision_contract_digest",
         "max_micu",
         "max_cost_microunits",
         "max_wall_time_seconds",
@@ -141,6 +155,8 @@ _PARITY_TARGET_FIELDS = frozenset(
         "writer_policy_digest",
         "tool_response_policy_digest",
         "supervision_timeout_seconds",
+        "supervision_protocol_schema_id",
+        "supervision_contract_digest",
         "public_observation_contract_digest",
     }
 )
@@ -152,7 +168,8 @@ _PARITY_DECLARATION_FIELDS = frozenset(
         "driver_limits_digest",
         "writer_policy_digest",
         "tool_response_policy_digest",
-        "supervision_contract_digest",
+        "source_supervision_contract_digest",
+        "target_supervision_contract_digest",
         "public_observation_contract_digest",
     }
 )
@@ -257,7 +274,19 @@ _LIVE_CLOSURE_FIELDS = frozenset(
         "closure_request_id",
         "closure_response_id",
         "closure_id",
+        "scope_rollover",
         "scientific_attempt_control_digest",
+    }
+)
+_LIVE_SCOPE_ROLLOVER_FIELDS = frozenset(
+    {
+        "phase",
+        "attempt_id",
+        "attempt_scope_id",
+        "attempt_scope_state",
+        "post_scope_id",
+        "open_scope_count",
+        "projection_digest",
     }
 )
 _LIVE_REPORT_SOURCE_LINK_FIELDS = frozenset(
@@ -636,6 +665,13 @@ def _source_launch_observation(
         "max_steps_per_agent": 16,
         "auto_enqueue_ready_tasks": False,
         "supervision_timeout_seconds": 15060,
+        "supervision_protocol_schema_id": SUPERVISION_SCHEMA_ID_V2,
+        "supervision_contract_digest": supervision_contract_digest(
+            timeout_seconds=15060.0,
+            term_grace_seconds=DEFAULT_TERM_GRACE_SECONDS,
+            kill_grace_seconds=DEFAULT_KILL_GRACE_SECONDS,
+            protocol_schema_id=SUPERVISION_SCHEMA_ID_V2,
+        ),
         "max_micu": int(request["max_micu"]),
         "max_cost_microunits": int(request["max_cost_microunits"]),
         "max_wall_time_seconds": int(request["max_wall_time_seconds"]),
@@ -759,12 +795,14 @@ def build_aox_closure_stage_runtime_parity(
         "tool_response_policy_digest": canonical_digest(
             tool_response_policy
         ),
-        "supervision_contract_digest": canonical_digest(
-            {
-                "timeout_seconds": supervision_timeout_seconds,
-                "mode": "process_isolated_spawn",
-                "protocol": "aox_attempt_lifecycle@1",
-            }
+        "source_supervision_contract_digest": source[
+            "supervision_contract_digest"
+        ],
+        "target_supervision_contract_digest": supervision_contract_digest(
+            timeout_seconds=supervision_timeout_seconds,
+            term_grace_seconds=DEFAULT_TERM_GRACE_SECONDS,
+            kill_grace_seconds=DEFAULT_KILL_GRACE_SECONDS,
+            protocol_schema_id=SUPERVISION_SCHEMA_ID,
         ),
         "public_observation_contract_digest": canonical_digest(
             public_contract
@@ -782,6 +820,10 @@ def build_aox_closure_stage_runtime_parity(
             "tool_response_policy_digest"
         ],
         "supervision_timeout_seconds": supervision_timeout_seconds,
+        "supervision_protocol_schema_id": SUPERVISION_SCHEMA_ID,
+        "supervision_contract_digest": declaration[
+            "target_supervision_contract_digest"
+        ],
         "public_observation_contract_digest": declaration[
             "public_observation_contract_digest"
         ],
@@ -791,6 +833,7 @@ def build_aox_closure_stage_runtime_parity(
         "closure_stage_run_authority_root_process_and_evidence_identities",
         "cursor_614_reconstructed_start_projection",
         "diagnostic_micu_scenario_and_non_acceptance_result_schema",
+        "supervision_protocol_v2_to_v3_local_settlement_repair",
     ]
     parity_payload = {
         "schema_id": AOX_CLOSURE_STAGE_PARITY_RECEIPT_SCHEMA_ID,
@@ -881,6 +924,7 @@ def validate_aox_closure_stage_runtime_parity(
             "closure_stage_run_authority_root_process_and_evidence_identities",
             "cursor_614_reconstructed_start_projection",
             "diagnostic_micu_scenario_and_non_acceptance_result_schema",
+            "supervision_protocol_v2_to_v3_local_settlement_repair",
         ]
         or source.get("model") != target.get("model")
         or source.get("effective_config_digest")
@@ -889,10 +933,32 @@ def validate_aox_closure_stage_runtime_parity(
         or source.get("max_steps_per_agent") != 16
         or source.get("auto_enqueue_ready_tasks") is not False
         or source.get("supervision_timeout_seconds") != 15060
+        or source.get("supervision_protocol_schema_id")
+        != SUPERVISION_SCHEMA_ID_V2
+        or source.get("supervision_contract_digest")
+        != supervision_contract_digest(
+            timeout_seconds=15060.0,
+            term_grace_seconds=DEFAULT_TERM_GRACE_SECONDS,
+            kill_grace_seconds=DEFAULT_KILL_GRACE_SECONDS,
+            protocol_schema_id=SUPERVISION_SCHEMA_ID_V2,
+        )
         or source.get("max_micu") != 20_000_000
         or source.get("max_cost_microunits") != 0
         or source.get("max_wall_time_seconds") != 10_800
         or target.get("supervision_timeout_seconds") != 15060
+        or target.get("supervision_protocol_schema_id")
+        != SUPERVISION_SCHEMA_ID
+        or target.get("supervision_contract_digest")
+        != supervision_contract_digest(
+            timeout_seconds=15060.0,
+            term_grace_seconds=DEFAULT_TERM_GRACE_SECONDS,
+            kill_grace_seconds=DEFAULT_KILL_GRACE_SECONDS,
+            protocol_schema_id=SUPERVISION_SCHEMA_ID,
+        )
+        or source.get("supervision_contract_digest")
+        != declaration.get("source_supervision_contract_digest")
+        or target.get("supervision_contract_digest")
+        != declaration.get("target_supervision_contract_digest")
         or source.get("source_launch_receipt_digest")
         != declaration.get("source_launch_receipt_digest")
         or any(
@@ -1067,7 +1133,6 @@ def _runtime_projection(
                 "closure_stage_attempt_missing",
                 "closure-stage runtime lost its reconstructed attempt",
             )
-        scope_id = str(attempt["mutation_scope_id"])
         event_rows = [
             {
                 "cursor": int(row["cursor"]),
@@ -1240,11 +1305,13 @@ def _runtime_projection(
                     connection.execute(
                         """
                         SELECT COUNT(*)
-                        FROM mutation_writer_records
-                        WHERE scope_id = ?
-                          AND state IN ('registered', 'retiring')
+                        FROM mutation_writer_records AS writer
+                        JOIN mutation_scope_records AS scope
+                          ON scope.scope_id = writer.scope_id
+                        WHERE scope.session_id = ?
+                          AND writer.state IN ('registered', 'retiring')
                         """,
-                        (scope_id,),
+                        (session_id,),
                     ).fetchone()[0]
                 ),
                 "unsettled_continuation": int(
@@ -1469,6 +1536,62 @@ def _closure_stage_runtime_summary(
     }
 
 
+def _project_terminal_scope_rollover(
+    provider: SQLiteRepositoryProvider,
+    *,
+    attempt_id: str,
+) -> dict[str, object]:
+    with provider.read() as scope:
+        repositories = scope.repositories
+        attempt = repositories.scientific_attempts.get(attempt_id)
+        if attempt is None:
+            raise LiveProductPathError(
+                "closure_stage_attempt_missing",
+                "closure-stage runtime lost its reconstructed attempt",
+            )
+        envelope = ScientificAttemptScopeRolloverEnvelope(
+            session_id=attempt.session_id,
+            envelope_id=attempt.envelope_id,
+            task_id=attempt.task_id,
+            lane_id=attempt.lane_id,
+            campaign_id=attempt.campaign_id,
+            workflow_id=attempt.workflow_id,
+            scope=attempt.scope,
+            root_ref=attempt.root_ref,
+        )
+        try:
+            projection = ScientificAttemptScopeRolloverProjector(
+                repositories
+            ).project(envelope)
+        except ScientificAttemptScopeRolloverIntegrityError as exc:
+            raise LiveProductPathError(
+                exc.error_code,
+                "closure-stage terminal scope rollover is invalid",
+            ) from exc
+    payload = {
+        "phase": projection.phase.value,
+        "attempt_id": projection.attempt_id,
+        "attempt_scope_id": projection.attempt_scope_id,
+        "attempt_scope_state": projection.attempt_scope_state.value,
+        "post_scope_id": projection.post_scope_id,
+        "open_scope_count": projection.open_scope_count,
+    }
+    if (
+        projection.phase
+        is not ScientificAttemptScopeRolloverPhase.POST_CLOSURE_SCOPE_OPEN
+        or projection.open_scope_count != 1
+        or projection.post_scope_id is None
+    ):
+        raise LiveProductPathError(
+            "scientific_attempt_scope_rollover_invalid",
+            "closure-stage terminal scope rollover is incomplete",
+        )
+    return {
+        **payload,
+        "projection_digest": canonical_digest(payload),
+    }
+
+
 def _validate_terminal_projection(
     *,
     provider: SQLiteRepositoryProvider,
@@ -1601,6 +1724,11 @@ def _validate_terminal_projection(
     closure_responses = list(terminal["closure_responses"])
     closures = list(terminal["closures"])
     terminal_counts = dict(terminal["counts"])
+    attempt_id = str(dict(terminal["attempt"])["attempt_id"])
+    scope_rollover = _project_terminal_scope_rollover(
+        provider,
+        attempt_id=attempt_id,
+    )
     if (
         len(execution_receipts) != 1
         or not execution_receipts[0]["evidence_refs"]
@@ -1640,6 +1768,7 @@ def _validate_terminal_projection(
             "closure_response_id"
         ],
         "closure_id": closures[0]["closure_id"],
+        "scope_rollover": scope_rollover,
         "scientific_attempt_control_digest": canonical_digest(
             formal.scientific_attempt_control
         ),
@@ -1930,7 +2059,7 @@ class ClosureStageLiveRunner(LiveAoxAttemptRunner):
                 receipt.to_dict() for receipt in api.sealed_receipts
             ]
         return {
-            "schema_id": "aox_closure_stage_child_evidence@1",
+            "schema_id": AOX_CLOSURE_STAGE_CHILD_EVIDENCE_SCHEMA_ID,
             "run_class": (
                 AoxLiveRunClass.CLOSURE_STAGE_DIAGNOSTIC.value
             ),
@@ -2123,6 +2252,13 @@ def build_aox_closure_stage_live_result(
         source_manifest["inventory_entries"]
     )
     runtime_summary = dict(child.get("runtime") or {})
+    closure = dict(child.get("closure") or {})
+    scope_rollover = dict(closure.get("scope_rollover") or {})
+    scope_rollover_material = {
+        key: value
+        for key, value in scope_rollover.items()
+        if key != "projection_digest"
+    }
     browser_required = plan.get("browser_observation_receipt") is not None
     browser_observed = runtime_summary.get(
         "browser_observation_observed"
@@ -2131,7 +2267,7 @@ def build_aox_closure_stage_live_result(
         "browser_observation_receipt_digest"
     )
     if (
-        child.get("schema_id") != "aox_closure_stage_child_evidence@1"
+        child.get("schema_id") != AOX_CLOSURE_STAGE_CHILD_EVIDENCE_SCHEMA_ID
         or child.get("run_class")
         != AoxLiveRunClass.CLOSURE_STAGE_DIAGNOSTIC.value
         or child.get("acceptance_eligible") is not False
@@ -2157,6 +2293,21 @@ def build_aox_closure_stage_live_result(
         )
         or (not browser_required and browser_receipt_digest is not None)
         or dict(product_path).get("completed") is not True
+        or set(scope_rollover) != _LIVE_SCOPE_ROLLOVER_FIELDS
+        or scope_rollover.get("phase")
+        != ScientificAttemptScopeRolloverPhase.POST_CLOSURE_SCOPE_OPEN.value
+        or scope_rollover.get("attempt_id")
+        != reconstruction.scientific_attempt_id
+        or scope_rollover.get("attempt_scope_id")
+        != f"mutation_scope_{reconstruction.scientific_attempt_id}"
+        or scope_rollover.get("attempt_scope_state") != "sealed"
+        or scope_rollover.get("open_scope_count") != 1
+        or scope_rollover.get("post_scope_id")
+        != f"mutation_scope_post_{reconstruction.scientific_attempt_id}"
+        or scope_rollover.get("projection_digest")
+        != canonical_digest(scope_rollover_material)
+        or supervision.get("nonterminal_mutation_scope_count")
+        != scope_rollover.get("open_scope_count")
         or source_database_digest != source["database_sha256"]
         or source_inventory_digest != source["inventory_digest"]
     ):
@@ -2375,11 +2526,37 @@ def validate_aox_closure_stage_live_result(
         _require_digest(value, identity=identity)
     runtime_summary = runtime.get("summary")
     closure = runtime.get("closure")
+    scope_rollover = (
+        closure.get("scope_rollover")
+        if isinstance(closure, dict)
+        else None
+    )
     if (
         not isinstance(runtime_summary, dict)
         or set(runtime_summary) != _LIVE_RUNTIME_SUMMARY_FIELDS
         or not isinstance(closure, dict)
         or set(closure) != _LIVE_CLOSURE_FIELDS
+        or not isinstance(scope_rollover, dict)
+        or set(scope_rollover) != _LIVE_SCOPE_ROLLOVER_FIELDS
+        or scope_rollover.get("phase")
+        != ScientificAttemptScopeRolloverPhase.POST_CLOSURE_SCOPE_OPEN.value
+        or scope_rollover.get("attempt_id") != normalized["attempt_id"]
+        or scope_rollover.get("attempt_scope_id")
+        != f"mutation_scope_{normalized['attempt_id']}"
+        or scope_rollover.get("attempt_scope_state") != "sealed"
+        or scope_rollover.get("open_scope_count") != 1
+        or scope_rollover.get("post_scope_id")
+        != f"mutation_scope_post_{normalized['attempt_id']}"
+        or scope_rollover.get("projection_digest")
+        != canonical_digest(
+            {
+                key: value
+                for key, value in scope_rollover.items()
+                if key != "projection_digest"
+            }
+        )
+        or supervision.get("nonterminal_mutation_scope_count")
+        != scope_rollover.get("open_scope_count")
         or runtime_summary.get("session_id") != normalized["session_id"]
         or runtime_summary.get("purpose") != "formal"
         or runtime_summary.get("state") != "completed"
@@ -2413,6 +2590,10 @@ def validate_aox_closure_stage_live_result(
         (
             "runtime.closure.scientific_attempt_control_digest",
             closure.get("scientific_attempt_control_digest"),
+        ),
+        (
+            "runtime.closure.scope_rollover.projection_digest",
+            scope_rollover.get("projection_digest"),
         ),
     ):
         _require_digest(value, identity=identity)

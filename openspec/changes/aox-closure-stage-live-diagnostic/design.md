@@ -257,8 +257,12 @@ and requires the current launch to reproduce that digest exactly. Model, MICU
 endpoint and ledger identities, retries, temperature, context/output budgets,
 drain bounds, per-agent step bounds, concurrency, timeout, writer policy,
 lease/fencing policy, `chrome-once` approval, the `0.5/300/60/180` browser
-bounds, process-supervision protocol, public API routes, UI digest policy, and
-browser observation mode therefore match as one closed numbered-run contract.
+bounds, public API routes, UI digest policy, and browser observation mode
+therefore match as one closed numbered-run contract. The one versioned
+supervision delta is frozen source `@2` to current target `@3`: the parity
+receipt derives both exact contract digests through the canonical supervisor
+implementation and admits only the local-settlement repair that records a
+writer-free post-closure scope instead of treating it as process activity.
 
 Allowed differences are closed to:
 
@@ -266,6 +270,7 @@ Allowed differences are closed to:
 - closure-stage run/authority/root/process/evidence identities;
 - the reconstructed starting projection and its source manifest;
 - diagnostic ledger attribution and non-acceptance result schema.
+- supervision protocol `@2 → @3` local-settlement repair.
 
 All other configuration drift fails before MICU. The same tools remain
 visible so agent strategy is not scripted, but the sealed source attempt
@@ -277,8 +282,11 @@ decision.
 
 The live portion runs in the existing process-isolated attempt supervisor,
 including lifecycle frames, process-group retirement, root-access gate,
-SQLite quiescence, fsync, and fatal-evidence behavior. Parent code cannot read
-or seal the fresh root until descendant retirement is proven.
+SQLite local settlement, bounded mutation-authority snapshot, fsync, and
+fatal-evidence behavior. Parent code cannot read or seal the fresh root until
+descendant retirement is proven. Product completion independently requires
+the Core `post_closure_scope_open` projection; process retirement cannot
+substitute for product scope topology.
 
 The configured append-only MICU ledger is snapshotted before root execution
 and after retirement. Every new model attempt must be attributable to the
