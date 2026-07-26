@@ -27,6 +27,9 @@ from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import ToolRegistry
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
+from openzyme_core.harness import AgentTurnRecoveryObligation
+from openzyme_core.harness import AgentTurnRecoveryUnresolved
+from openzyme_core.harness import AgentTurnRecoveryUnresolvedError
 from openzyme_core.agent_identity import create_agent_member
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
@@ -1165,6 +1168,84 @@ def test_master_max_steps_terminates_exact_signal_without_replay() -> None:
     assert failure is not None
     assert failure.recoverability is FailureRecoverability.AGENT_CAN_REPLAN
     assert failure.retry_eligibility is RetryEligibility.TERMINAL
+
+
+def test_master_unresolved_recovery_is_terminal_typed_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repositories, context, _ = _build_master_failure_context(
+        reason=AgentRuntimeSignalReason.MANUAL_RESUME
+    )
+    unresolved = AgentTurnRecoveryUnresolved(
+        obligation=AgentTurnRecoveryObligation(
+            failure_id="failure_delegate",
+            call_id="call_delegate",
+            tool_name="task.delegate",
+            error_code="workflow_ref_not_authorized",
+            recoverability="agent_can_replan",
+            effect_certainty="no_effect",
+            task_id="task_report",
+        ),
+        reason="response_after_rejection",
+    )
+
+    def fail_with_unresolved_recovery(
+        _repositories: CoreRepositories,
+        _harness_input: object,
+        **_kwargs: object,
+    ) -> HarnessResult:
+        return HarnessResult(
+            session_id="sess_master_failure",
+            status=HarnessStatus.FAILED,
+            snapshot=SessionRuntimeSnapshot.load(
+                repositories,
+                "sess_master_failure",
+            ),
+            events=(),
+            outputs=(),
+            tool_results=(),
+            error=AgentTurnRecoveryUnresolvedError(unresolved),
+        )
+
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "run_agent_harness_loop",
+        fail_with_unresolved_recovery,
+    )
+
+    outcomes = AgentRuntimeScheduler(
+        context,
+        worker_id="test:master-unresolved-recovery",
+    ).run_once_sync("sess_master_failure", max_signals=1)
+
+    signal = repositories.runtime_signals.get("sig_master_failure")
+    failure = repositories.failure_observations.get_by_source(
+        session_id="sess_master_failure",
+        source_kind="runtime_signal",
+        source_ref="sig_master_failure",
+        source_version="attempt:1",
+        phase="runtime",
+        error_code="agent_turn_recovery_unresolved",
+    )
+
+    assert len(outcomes) == 1
+    assert outcomes[0].ok is False
+    assert outcomes[0].teammate_status == HarnessStatus.FAILED.value
+    assert signal is not None
+    assert signal.status is AgentRuntimeSignalStatus.FAILED
+    assert signal.attempt_count == 1
+    assert signal.error_message == "agent_turn_recovery_unresolved"
+    assert not repositories.runtime_signals.list_pending_by_session(
+        "sess_master_failure"
+    )
+    assert failure is not None
+    assert failure.recoverability is FailureRecoverability.AGENT_CAN_REPLAN
+    assert failure.effect_certainty is ExternalEffectCertainty.NO_EFFECT
+    assert failure.retry_eligibility is RetryEligibility.TERMINAL
+    assert failure.facts["reason"] == "response_after_rejection"
+    assert failure.facts["obligation"]["failure_id"] == "failure_delegate"
+    assert failure.facts["exact_signal_retry_eligible"] is False
+    assert failure.facts["effect_scope_ref"] == "sig_master_failure"
 
 
 def test_teammate_max_steps_does_not_mark_business_task_failed() -> None:

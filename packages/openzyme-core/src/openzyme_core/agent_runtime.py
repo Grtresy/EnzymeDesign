@@ -30,6 +30,7 @@ from openzyme_runtime import record_failure_observation
 
 from .harness import HarnessInput
 from .harness import HarnessStatus
+from .harness import AgentTurnRecoveryUnresolvedError
 from .harness import RestoreFocus
 from .harness import SessionRuntimeContext
 from .harness import run_agent_harness_loop
@@ -403,6 +404,12 @@ class AgentRuntimeService:
             if result.status is HarnessStatus.MAX_STEPS_EXCEEDED
             else None
         )
+        recovery_unresolved_observation = (
+            self._turn_recovery_unresolved_observation(
+                claimed,
+                error=result.error,
+            )
+        )
         failure_observation: FailureObservation | None = None
         successor: AgentRuntimeSignal | None = None
         settlement: AgentRuntimeOutcomeSettlement | None = None
@@ -422,15 +429,23 @@ class AgentRuntimeService:
                     error_message=(
                         AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
                         if budget_observation is not None
-                        else summary
+                        else (
+                            "agent_turn_recovery_unresolved"
+                            if recovery_unresolved_observation is not None
+                            else summary
+                        )
                     ),
                     retryable=(
                         False
                         if budget_observation is not None
+                        or recovery_unresolved_observation is not None
                         else _is_retryable_runtime_error(result.error)
                     ),
                     emit=False,
-                    observation=budget_observation,
+                    observation=(
+                        budget_observation
+                        or recovery_unresolved_observation
+                    ),
                 )
             if not signal_write_ok:
                 ok = False
@@ -726,6 +741,12 @@ class AgentRuntimeService:
             if result.status is HarnessStatus.MAX_STEPS_EXCEEDED
             else None
         )
+        recovery_unresolved_observation = (
+            self._turn_recovery_unresolved_observation(
+                claimed,
+                error=result.error,
+            )
+        )
         ok = result.status not in {
             HarnessStatus.FAILED,
             HarnessStatus.MAX_STEPS_EXCEEDED,
@@ -739,18 +760,26 @@ class AgentRuntimeService:
                     AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
                     if budget_observation is not None
                     else (
-                        result.outputs[-1]
-                        if result.outputs
-                        else result.status.value
+                        "agent_turn_recovery_unresolved"
+                        if recovery_unresolved_observation is not None
+                        else (
+                            result.outputs[-1]
+                            if result.outputs
+                            else result.status.value
+                        )
                     )
                 ),
                 retryable=(
                     False
                     if budget_observation is not None
+                    or recovery_unresolved_observation is not None
                     else _is_retryable_runtime_error(result.error)
                 ),
                 emit=False,
-                observation=budget_observation,
+                observation=(
+                    budget_observation
+                    or recovery_unresolved_observation
+                ),
             )
         if not signal_write_ok:
             ok = False
@@ -1067,6 +1096,39 @@ class AgentRuntimeService:
                     self._scientific_selection_recovery_facts(claimed)
                 ),
             },
+        )
+
+    def _turn_recovery_unresolved_observation(
+        self,
+        claimed: AgentRuntimeSignal,
+        *,
+        error: BaseException | None,
+    ) -> RuntimeSignalFailureObservation | None:
+        if not isinstance(error, AgentTurnRecoveryUnresolvedError):
+            return None
+        facts = error.unresolved.to_dict()
+        facts.update(
+            {
+                "exact_signal_retry_eligible": False,
+                "effect_scope": "runtime_signal_transition",
+                "effect_scope_ref": claimed.signal_id,
+            }
+        )
+        return RuntimeSignalFailureObservation(
+            error_code="agent_turn_recovery_unresolved",
+            recoverability=FailureRecoverability.AGENT_CAN_REPLAN,
+            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+            retry_eligibility=RetryEligibility.TERMINAL,
+            safe_summary=(
+                "The internal agent turn ended without settling a "
+                "recoverable no-effect tool failure."
+            ),
+            safe_hint=(
+                "Wake the agent under valid runtime authority to inspect "
+                "the exact failure and choose a durable recovery action or "
+                "explicit task disposition."
+            ),
+            facts=facts,
         )
 
     def _scientific_selection_recovery_facts(

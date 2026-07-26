@@ -130,6 +130,14 @@ V3 的 teammate 是 resident agent member，常驻的是 identity、role、statu
 
 message admission 与 runtime 推进解耦时，结构化 focus 的 canonical truth 仍属于 source message，而不是 signal 或 worker 内存：显式 `skill_keys` 去重后写入同一 user conversation document，signal 只保存 `source_ref`。master 在进入 `working`、发出 `agent.woken` 或调用 provider 前，必须从 exact source 恢复；public user-message 的 participant/session/document identity 任一损坏都 fail closed。普通 agent protocol inbox 可以唤醒 master，但不携带 workflow authority；background worker 与手动 `/runtime/drain` 走相同恢复规则，均不能注入或合并 refs。
 
+compaction 只提供 historical continuity，绝不成为 workflow authority 或当前 runtime
+truth。自动 summary 不再写入 focus、ready task、pending approval、active invocation 或
+active skill；session 与 lane summary 必须分别从各自 scope 重建，不能把某个 actor/lane
+snapshot 复制成 session memory。历史自动 compaction 在 prompt projection 时只移除旧版
+generated volatile/authority sections，原 row 保持 immutable。每个 master/teammate prompt
+都从当前 canonical focus 显式投影 exact `Current authorized workflow refs`，包括空集合；
+memory、task text 与 protocol text 均只作为历史事实，不能扩张该集合。
+
 ### 3.4 No Hidden Fallback
 
 V3 默认失败策略是显式失败传播，而不是隐藏 fallback。
@@ -152,6 +160,15 @@ Failure facts、规则化 likely causes 和 agent hypothesis 是三种不同 aut
 绑定 canonical agent、confidence 和 evidence refs，不能覆盖 Host facts、赋予 retry authority
 或改变 task status。若 provider/driver 使 agent 根本没有产出 decision，Host 只发布
 system-attributed diagnostic，并显式标记 `agent_decision_produced=false`，不得伪造 agent 消息。
+
+internally driven signal turn 收到 `agent_can_replan|agent_can_retry` 且
+`no_effect|terminal_known` 的 typed failed tool result 后，会形成 turn-local recovery
+obligation。agent 仍可自由选择安全修复、其他 durable action、求助或显式 task exit；Harness
+不改参数、不重试、不自动 delegate。只叙述下一步或只做 read 不结算 obligation：第一次 prose
+不持久化并得到结构化 `agent_turn_recovery_action_required`，重复 prose 或剩余 step
+不足时 exact signal 以 `agent_turn_recovery_unresolved` terminal failure 收口，
+`retry_eligibility=terminal`，task 保持原业务状态。direct user-message turn 与 uncertain
+effect/reconciliation failure 不进入这条窄 settlement。
 
 所有 `structured`、`tool_calling`、`chat` 与 connectivity smoke 的 provider 调用都必须经过 `openzyme_runtime.LlmInvocationRuntime`。invoker 只负责构造 payload、结构化解析或 tool response 还原；runtime 统一负责 limiter、timeout、retry/backoff、`Retry-After`、错误 taxonomy 与 LLM debug 记录。502/503/504、transport timeout/connection failure 属于 retryable；429 只有 transient 或带 `Retry-After` 时 retryable，usage/quota/invalid/context 类 429 不重试；400/401/403、schema/tool argument/context window 错误不重试。runtime 不拥有 session compaction、restore context rebuild 或 harness/engine 状态机。
 
@@ -207,7 +224,7 @@ request 冒充 `scientific_closure` evidence。
 
 ### 3.5 Token-Budgeted Harness
 
-V3 master / teammate LLM 调用必须先经过统一 token budget preflight。harness 按模型 profile 估算完整 prompt，包括 system prompt、conversation/messages、tools schema 和 tool observation；达到 80% 记录 warning，达到 85%（包括已经达到 90% emergency 的输入）先且只先执行一次 bounded session/lane compaction、刷新 restore context 并重算。只有重算后仍达到 90% 才显式返回 `context_budget_exceeded`，不得把超限 prompt 交给 provider。prompt-budget compaction 改变的是后续 LLM restore prompt projection，不删除或改写持久 conversation history，也不改变 workspace conversation read model。
+V3 master / teammate LLM 调用必须先经过统一 token budget preflight。harness 按模型 profile 估算完整 prompt，包括 system prompt、conversation/messages、tools schema 和 tool observation；达到 80% 记录 warning，达到 85%（包括已经达到 90% emergency 的输入）先且只先执行一次 bounded session/lane compaction、刷新 restore context 并重算。只有重算后仍达到 90% 才显式返回 `context_budget_exceeded`，不得把超限 prompt 交给 provider。prompt-budget compaction 改变的是后续 LLM restore prompt projection，不删除或改写持久 conversation history，也不改变 workspace conversation read model；它按 session/lane 各自 scope 生成 authority-free historical summary，不能复用当前 actor 的 workflow focus 或把 lane-local 状态提升为 session truth。
 
 当工具结果本身或加入该结果后的下一轮 prompt 超预算时，完整 tool result 写入 `engine_documents(document_kind="tool_result_full")`，并登记为 `ArtifactKind.RESULT` artifact。LLM 只收到小型 observation，包含 `tool_result_context_over_budget`、`original_tool_ok`、`original_status`、`artifact_id` 和 `read_hint`。这不是业务失败判定，也不自动摘要原始 payload；agent 需要时通过 `artifact.get` 分页读取完整结果。
 
@@ -680,6 +697,16 @@ trace/activity/consistency/event/workspace projection。公开 `runtime_command_
 settlement；不得先序列化再解释、按对象 identity 分类、重扫 mutable signal/task/failure/agent
 repository，或把 task business status 反向映射成 scheduler failure。
 
+AOX bounded driver 只从经过 v2 validator 的 command outcome 读取
+`processed_signal_count` 与 `replay_safe`。两个连续 command 都是 replay-safe、零 signal，
+且 timestamp/lease/event/command-id-independent 的 canonical work fingerprint 不变，同时
+不存在 pending/claimed signal、pending approval、active invocation/continuation、working agent 或
+in-flight mutation writer 时，driver 立即停止无证据空转。若 ready unfinished work 仍绑定
+actionable recovery observation，typed blocker 是 `formal_agent_recovery_unresolved`；
+否则是 `formal_runtime_stalled_no_wakeup`。单次 empty observation、任何实际 progress 或
+eligible wake source 都会重置确认；driver 不 auto-enqueue、不制造 successor，也不改变
+`runtime/drain` 或 task semantics。
+
 scheduler layer 的 `completed` 表示 bounded batch 已完成结算，不表示每个 signal、task
 或业务目标成功。teammate max-step 只有在 exact failed signal、同 attempt 的 canonical
 `agent_turn_budget_exhausted` observation、非终态 task 与 exactly one source-bound
@@ -858,6 +885,7 @@ Live gate 解释：
 - AOX r58 是永久 diagnostic NO-GO。它在 clean commit `d00ada97f8eb13af35f9c83247cd51e14138f428` 消费 plan `sha256:691cf17bd8548fa3bfd4e338cb61ce608bb97c4cde17f0e66483b84ff65397e3` 后，probe/formal exact chain、516 candidates、78 representatives、13,778 edges、17 outputs、sealed selection、published report 与 exact-three owner-authored completed task exits均已形成；master 最后却发出 assistant-only final response，active attempt 没有 closure request，120 drains 后以 `formal_runtime_drain_exhausted` 终止。decision `sha256:8c877189130838b29030200d9c592e8e096cd028cd60a5c5bc38dd424c718a57` 与 MICU `96,363,097 / 500,000,000` 只封存失败，formal campaign 未启动。forward `aox_cutover_formal_tool_precondition@2` 在 close-ready state 拒绝且不持久化 assistant-only response，要求 master 在同一 provider response 中提供完整终答和 explicit close；empty companion 在 effect 前失败，successful close 才持久化 exact answer 一次、结算后续 calls 并退休 turn。它不自动 close、推断 selection 或合成答案，普通 session 不受影响。r58 已先形成 meaningful result/report，故未触发再次拆分规范；其 authority/root/effect/artifact/browser/report/state 永久不可复用，任何后继 live 仍需 fresh commit/full admission/pin/plan 与精确授权
 - AOX r59 是永久 formal NO-GO。它在 clean commit `431e2c558c13ebd1f99dcc9e3eae6758630a843d` 消费 exact-three plan `sha256:168aa86c433b3c3b90aab4c665453a56cb796f99056f7d04567bc8f453b8e7de` 后只到达 positive 1；probe/formal 各 exact six operation、Chrome approval、37,772 score-filter accession、2,561 length target、0-candidate healthy-empty result、sealed selection 与 published report均已形成。executor 的 teammate close 被正确以 master-only/no-effect 拒绝后，却将 execution task 错误终结为 blocked；master 无 reopen 语义，又把 `selection_active_writers` / legacy `closure_ready=false` 误解为不能在当前 turn 持久化 intent，最终零 closure request、120 drains exhausted。decision `sha256:8b05ef13dfaf79f9a15a647fbbafa446e7ef75656b16db77a7b32baa8b4c6ccc` 与 MICU lower bound `100,114,267 / 500,000,000` 只封存失败。forward inspection 区分 `closure_request_ready` 与 `closure_finalization_ready`，legacy `closure_ready` 明确只指 Host post-request finalization；`aox_cutover_formal_tool_precondition@3` 复用 canonical selection evaluator，仅在 assigned positive executor 的 sealed current selection 同时满足 `closure_request_ready=true` 时 no-effect 拒绝 `blocked|failed|cancelled`，要求 owner 显式 completed 并把 report/closure 留给 reporter/master。sealed state 本身不是成功证明；seal 后 universe、authority、workflow、process、continuation 或 evidence 漂移时仍保留 generic blocker/failure 出口。它不自动完成 task、关闭 attempt 或选择科学策略，non-ready selection、fault 与普通 V3 session 不受影响。r59 全部 authority/root/state/effect/artifact/report/browser bytes 不得复用；后继仍需 fresh commit/full admission/pin/exact-three plan/roots 与对该 plan 的单独精确批准
 - r59 closure-stage isolated live diagnostic 不属于 `rNN` successor，也不改判上述 NO-GO。它只读限定原 source 并在 fresh root 恢复 cursor 614 等价投影，以 production MICU/runtime/supervision/browser 边界单测 executor → reporter → master closure；source operation universe 不扩张，source-linked report 通过 reporter `task.finish` 同时绑定 published report ref 与 research 已采用的 canonical PubMed artifact ref，而不是解析或规定报告文字；结果永久 `acceptance_eligible=false`，没有 formal bundle、reducer、promotion、push 或 numbered follow-on。其 operator contract 见 `docs/v3/aox-closure-stage-live-diagnostic.md`
+- lifecycle repair commit `c3c560dd6ede54958398fb3e55d5cd62cc956ad1` 的首个 fresh non-`rNN` successor 同样是永久 diagnostic failure。plan `sha256:47ebfa37d653fa51c61eb304b3df620033d57f99aee6a3fcc88ae2e396b861ab` 只消费一次；research/execution 已完成，但 master 从 executor-scoped historical compaction 读到旧 workflow ref，在自己的 empty explicit focus 下调用 `task.delegate`，正确得到 `workflow_ref_not_authorized/terminal_known/agent_can_replan`。下一 call 只叙述“省略 refs”而未执行，report task 保持 ready/unassigned；3 个 command 推进 signal，随后 117 个 replay-safe empty drain 以 generic exhaustion 结束。decision `sha256:eb70608e595d64c785227e4c05b46334a3996d853177341f2da729d4bf9c1abc`、fatal `sha256:27ae166969295685ed56418e6b8abc404c7e3fff88884f5e85c1fe944b7723be` 与全部 root/authority 不可复用。forward correction 使 auto compaction authority-free/scope-correct，以 turn-local typed recovery obligation 拒绝 prose-only settlement，并将 AOX session policy 升为 `aox_cutover_formal_tool_precondition@4`：research/execution completed 且 canonical report ready/unassigned、该 report task 无 pending/claimed runtime signal 时，assistant response no-effect 被拒绝；agent 仍自行选择正确 handoff 或显式 task exit。AOX driver 另以两次一致 v2 zero-signal outcome + canonical no-wakeup proof typed fail-fast，不再重复 117 次无证据 drain。该非-live correction 不授权 live；任何验证仍需 clean commit、fresh non-`rNN` root 与新一次性 plan
 - 裸 `uv run pytest` 通过 `pytest.ini` 默认排除 `integration`、全部 `live_*`、`seeded_live_smoke` 与 `quality_eval`；真实外部测试必须同时满足环境 gate 与命令行显式 `-m` 选择，已配置凭据本身不能触发默认外部调用
 - `live_e2e` 是外部配置和 live 依赖的必要 gate，但不能单独证明单消息完整报告生产路径已经产品完成
 - live E2E 轮询在 task 已失败、所有 agent 均非 working/active 且没有 pending signal 或 unread inbox 时必须立即以持久 failure evidence 收敛；不得把外部 provider rate limit、缺 artifact 或 fail-closed 终止包装成通过，也不得在业务已静止后空等全局超时

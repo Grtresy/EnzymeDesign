@@ -233,6 +233,14 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
   authority、integrity、permission/budget、process cancellation 和 `dispatch_in_doubt`
   保持 fail closed；`blocked` 与 `failed` 仍只能由 agent 通过 `task.finish` 明确选择。
 
+  追加修正记录：closure-stage successor 证明“failed result 已回灌”仍不等于当前 internal
+  signal 已产生 durable decision。Core 现在只对
+  `agent_can_replan|agent_can_retry + no_effect|terminal_known` 建立 turn-local recovery
+  obligation；第一次 prose 不持久化并返回 structured feedback，重复 prose/step bound
+  形成 terminal `agent_turn_recovery_unresolved`。只有 reviewed durable mutation 或
+  explicit terminal action 结算；read/unknown nominal write 不结算。Harness 不自动 retry、
+  delegate、auto-enqueue 或选择 task exit。
+
 - [x] Exact-occurrence AOX gate 把任何中间试错永久等同于最终 scientific failure。
 
   证据：历史 `aox_blank_world_attempt_bundle@2` 以 exact occurrence/history poison
@@ -283,6 +291,15 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
   reporter/master 与 process supervisor 推进。sealed operation universe 只呈现“不能新增
   science”的真实约束，不替 agent 自动 finish/report/close；所有结果永久
   `acceptance_eligible=false`，不能进入 formal bundle/reducer。
+
+  post-r59 closure-stage successor 追加修正记录：auto compaction 不再携带 actor focus、
+  ready/approval/invocation 或 workflow authority，session/lane 各自从 exact scope 重建；
+  legacy automatic rows 只在 prompt projection 移除 generated volatile sections，stored
+  evidence 不改写。master/teammate prompt exact 显示 current workflow refs，包括空集合。
+  AOX formal policy 升为 `@4`，仅在 research/execution completed 而 ready report
+  unassigned/no-signal 时拒绝 premature prose，不执行 handoff。live driver 读取 validated
+  v2 command outcome，并在两次 stable zero-signal/no-wakeup proof 后 typed fail-fast；
+  不改变 scheduler、task 或 ready-task auto-enqueue 语义。
 
 ## 4. 后续工作流
 

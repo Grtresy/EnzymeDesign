@@ -2,6 +2,14 @@
 
 Status: proposed, not implemented in the current AOX/HMM blank-world Goal.
 
+Projection hardening implemented on 2026-07-26 closes only the model-facing
+compaction/empty-selection ambiguity: auto compaction is historical,
+authority-free and scope-correct; legacy generated `Active skills` sections
+are sanitized without rewriting stored rows; every current master/teammate
+prompt displays exact refs or `[]`. This does not add the durable multi-hop
+lineage binding, causal link, revoke/epoch schema or successor inheritance
+specified by this proposal, so the proposal remains deferred.
+
 ## Decision boundary for the current Goal
 
 当前 Goal 只修复一个局部且已经被真实路径触发的 authority 丢失：

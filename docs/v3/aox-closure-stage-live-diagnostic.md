@@ -184,6 +184,48 @@ auto-enqueue, intent rewriting or retry; it requires a separately specified
 agent-operability/recovery contract and a fresh authority if another live
 diagnostic is ever approved. This consumed plan and target are not retryable.
 
+## Authority-free compaction and bounded recovery repair
+
+The successor failure is closed at four distinct boundaries, none of which
+chooses the agent's recovery strategy:
+
+1. Automatic compaction is historical and authority-free. Session and lane
+   summaries are rebuilt from their own scopes and omit current focus, ready
+   tasks, approvals, invocations and workflow refs. Legacy generated
+   `Active skills`/focus sections are removed only from prompt projection; the
+   immutable stored row remains unchanged.
+2. Every master and teammate prompt renders the exact current canonical
+   workflow ref set, including `[]`, and states that memory, task and protocol
+   text cannot grant authority.
+3. An internal signal turn that receives a typed
+   `agent_can_replan|agent_can_retry` and `no_effect|terminal_known` failure
+   must produce a reviewed durable mutation or explicit terminal action.
+   Prose/read-only activity does not settle it: one prose response is rejected
+   without persistence, and repeated prose or the step bound terminates the
+   exact signal as `agent_turn_recovery_unresolved` without retry or successor.
+4. AOX formal policy `aox_cutover_formal_tool_precondition@4` rejects prose
+   when research/execution are complete but the canonical ready report task is
+   unassigned and has no pending/claimed runtime signal. It tells the agent to establish the
+   exact handoff without workflow binding, or explicitly record a real
+   blocker; it never delegates or auto-enqueues.
+
+The diagnostic driver now validates the complete
+`runtime_command_outcome@2`. Two consecutive
+`processed_signal_count=0/replay_safe=true` commands only prove a stall when a
+timestamp/lease/event/command-id-independent work fingerprint is unchanged and
+there is no pending/claimed signal, pending approval, active invocation/continuation, working
+agent or in-flight mutation writer. A ready task with an actionable failure
+produces `formal_agent_recovery_unresolved`; another stable no-wakeup state
+produces `formal_runtime_stalled_no_wakeup`. One transient empty command or any
+wake source resets confirmation. The existing 120-command ceiling remains the
+finite bound for other paths.
+
+This repair does not authorize a live execution. A successor still requires a
+clean committed implementation, a previously nonexistent non-`rNN` root, a
+fresh one-use plan, exact frozen MICU/runtime/browser/supervision/ledger
+parity, and one separately approved consumption. Neither consumed predecessor
+may be retried.
+
 ## Two-command authority flow
 
 First generate current clean-commit architecture qualification and AOX pin

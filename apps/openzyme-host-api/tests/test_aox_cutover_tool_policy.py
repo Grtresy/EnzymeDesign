@@ -240,6 +240,48 @@ def _positive_policy() -> AoxCutoverFormalToolPrecondition:
     )
 
 
+def test_assistant_response_requires_durable_ready_report_handoff() -> None:
+    research, execution, _report = _tasks(report_status="todo")
+    unassigned_report = _record(
+        task_id=AOX_REPORT_TASK_ID,
+        kind="reporting",
+        assigned_ref=None,
+        status=_status("todo"),
+    )
+    repositories = _repositories(
+        tasks=(research, execution, unassigned_report),
+        attempts=(),
+    )
+    policy = _positive_policy()
+
+    rejection = policy.check_assistant_response(
+        _context(repositories),
+        _step(),  # type: ignore[arg-type]
+        "I will hand this to the reporter next.",
+    )
+
+    assert rejection is not None
+    assert rejection.error_code == "aox_cutover_report_handoff_required"
+    assert rejection.details["report_task_id"] == AOX_REPORT_TASK_ID
+    assert rejection.details["authorized_workflow_refs"] == []
+    assert "without a workflow binding" in rejection.hint
+
+
+def test_assistant_response_allows_existing_reporter_handoff() -> None:
+    repositories = _repositories(
+        tasks=_tasks(report_status="todo"),
+        attempts=(),
+    )
+
+    rejection = _positive_policy().check_assistant_response(
+        _context(repositories),
+        _step(),  # type: ignore[arg-type]
+        "The reporter wakeup is already durable.",
+    )
+
+    assert rejection is None
+
+
 @pytest.mark.parametrize(
     "tool_name",
     (
@@ -301,7 +343,7 @@ def test_closure_stage_policy_seals_external_operation_universe(
         "aox_closure_stage_operation_universe_sealed"
     )
     assert result.details == {
-        "policy_id": "aox_cutover_formal_tool_precondition@3",
+        "policy_id": "aox_cutover_formal_tool_precondition@4",
         "precondition_rejected": True,
         "dispatched": False,
         "effect_certainty": "no_effect",

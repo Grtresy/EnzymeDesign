@@ -46,6 +46,7 @@ from openzyme_runtime import ToolInvocation
 from openzyme_runtime import ToolResult
 from openzyme_runtime import ToolRouter
 from openzyme_runtime import ToolRuntime
+from openzyme_runtime import ToolSideEffect
 from openzyme_runtime import ToolSpec
 from openzyme_runtime import sanitize_tool_result_diagnostics
 from openzyme_runtime import sanitize_public_diagnostic_text
@@ -340,9 +341,58 @@ class AssistantResponseRejection:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentTurnRecoveryObligation:
+    failure_id: str
+    call_id: str
+    tool_name: str
+    error_code: str
+    recoverability: str
+    effect_certainty: str
+    task_id: str | None = None
+    lane_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class AgentTurnRecoveryUnresolved:
+    obligation: AgentTurnRecoveryObligation
+    reason: str
+
+    @property
+    def error_code(self) -> str:
+        return "agent_turn_recovery_unresolved"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "error_code": self.error_code,
+            "reason": self.reason,
+            "obligation": self.obligation.to_dict(),
+        }
+
+    def public_summary(self) -> str:
+        return (
+            "agent_turn_recovery_unresolved: "
+            f"failure_id={self.obligation.failure_id} "
+            f"tool={self.obligation.tool_name} "
+            f"error_code={self.obligation.error_code}; "
+            "the internal agent turn ended without a durable recovery action."
+        )
+
+
+class AgentTurnRecoveryUnresolvedError(RuntimeError):
+    def __init__(self, unresolved: AgentTurnRecoveryUnresolved) -> None:
+        self.unresolved = unresolved
+        self.error_code = unresolved.error_code
+        super().__init__(unresolved.public_summary())
+
+
+@dataclass(frozen=True, slots=True)
 class HarnessStep:
     assistant_message: str | None = None
     assistant_response_rejection: AssistantResponseRejection | None = None
+    turn_recovery_unresolved: AgentTurnRecoveryUnresolved | None = None
     tool_invocations: tuple[ToolInvocation, ...] = ()
     tool_rejections: tuple[ToolResult, ...] = ()
     llm_trace: LlmTraceStep | None = None
@@ -354,7 +404,18 @@ class HarnessStep:
     next_focus: RestoreFocus | None = None
 
     def __post_init__(self) -> None:
-        if self.assistant_response_rejection is not None and (
+        exclusive_failure = (
+            self.assistant_response_rejection is not None
+            or self.turn_recovery_unresolved is not None
+        )
+        if (
+            self.assistant_response_rejection is not None
+            and self.turn_recovery_unresolved is not None
+        ):
+            raise ValueError(
+                "a harness step cannot reject and fail the same assistant response"
+            )
+        if exclusive_failure and (
             self.assistant_message is not None
             or self.tool_invocations
             or self.tool_rejections
@@ -366,7 +427,8 @@ class HarnessStep:
             or self.next_focus is not None
         ):
             raise ValueError(
-                "a rejected assistant response step may contain only its LLM trace"
+                "a rejected or unresolved assistant response step may contain "
+                "only its LLM trace"
             )
 
 
@@ -647,6 +709,9 @@ class SessionRuntimeContext:
     wakeup_reason: str | None = None
     current_step_context: AgentStepContext | None = None
     current_tool_router: ToolRouter | None = None
+    turn_recovery_enabled: bool = False
+    turn_recovery_obligation: AgentTurnRecoveryObligation | None = None
+    turn_recovery_rejection_count: int = 0
 
     def persist_outbound_assistant_message(
         self,
@@ -792,6 +857,157 @@ class SessionRuntimeContext:
             skill_keys=self.active_skill_keys,
         )
         return self.restore_context
+
+
+def _actionable_turn_recovery_obligation(
+    result: ToolResult,
+) -> AgentTurnRecoveryObligation | None:
+    if result.ok or not isinstance(result.failure_observation, dict):
+        return None
+    observation = result.failure_observation
+    recoverability = str(observation.get("recoverability") or "")
+    effect_certainty = str(observation.get("effect_certainty") or "")
+    if recoverability not in {"agent_can_replan", "agent_can_retry"}:
+        return None
+    if effect_certainty not in {"no_effect", "terminal_known"}:
+        return None
+    failure_id = str(observation.get("failure_id") or "").strip()
+    if not failure_id:
+        return None
+    return AgentTurnRecoveryObligation(
+        failure_id=failure_id,
+        call_id=result.call_id,
+        tool_name=result.tool_name,
+        error_code=str(
+            observation.get("error_code")
+            or result.error_code
+            or result.status
+            or "tool_error"
+        ),
+        recoverability=recoverability,
+        effect_certainty=effect_certainty,
+        task_id=result.task_id,
+        lane_id=result.lane_id,
+    )
+
+
+_DURABLE_RECOVERY_TOOL_NAMES = frozenset(
+    {
+        "artifact.create_text",
+        "artifact.patch_text",
+        "artifacts.materialize",
+        "artifacts.register",
+        "artifacts.snapshot_code",
+        "attempt.create",
+        "deep_research.resume",
+        "deep_research.start",
+        "execution.pipeline.resume",
+        "execution.pipeline.start",
+        "lane.bind_task",
+        "lane.create",
+        "protocol.send",
+        "report.publish",
+        "report_draft.create",
+        "report_draft.update",
+        "sandbox.exec",
+        "sandbox.file.delete",
+        "sandbox.file.patch",
+        "sandbox.file.write",
+        "scientific.artifact.materialize",
+        "scientific.attempt.close",
+        "scientific.effect.adopt",
+        "scientific.operation.adopt",
+        "scientific.operation.disposition",
+        "scientific.selection.begin",
+        "scientific.selection.seal",
+        "task.create",
+        "task.delegate",
+        "task.finish",
+        "task.update",
+    }
+)
+
+
+def _successful_tool_settles_turn_recovery(
+    context: SessionRuntimeContext,
+    result: ToolResult,
+) -> bool:
+    if not result.ok:
+        return False
+    if result.terminates_turn or result.terminal_action is not None:
+        return True
+    router = context.current_tool_router
+    step_context = context.current_step_context
+    if router is None or step_context is None:
+        return False
+    governance = router.governance(step_context, result.tool_name)
+    if governance is None or governance.side_effect is ToolSideEffect.READ:
+        return False
+    # Legacy function runtimes conservatively report WRITE governance even for
+    # some inspections.  Settle only on this reviewed durable-write contract
+    # until all tools expose precise governance metadata.
+    return result.tool_name in _DURABLE_RECOVERY_TOOL_NAMES
+
+
+def update_agent_turn_recovery(
+    context: SessionRuntimeContext,
+    result: ToolResult,
+) -> None:
+    if not context.turn_recovery_enabled:
+        return
+    obligation = _actionable_turn_recovery_obligation(result)
+    if obligation is not None:
+        context.turn_recovery_obligation = obligation
+        context.turn_recovery_rejection_count = 0
+        return
+    if (
+        context.turn_recovery_obligation is not None
+        and _successful_tool_settles_turn_recovery(context, result)
+    ):
+        context.turn_recovery_obligation = None
+        context.turn_recovery_rejection_count = 0
+
+
+def evaluate_agent_turn_recovery_response(
+    context: SessionRuntimeContext,
+    *,
+    call_index: int,
+    max_steps: int,
+) -> AssistantResponseRejection | AgentTurnRecoveryUnresolved | None:
+    obligation = context.turn_recovery_obligation
+    if not context.turn_recovery_enabled or obligation is None:
+        return None
+    if context.turn_recovery_rejection_count == 0 and call_index < max_steps:
+        context.turn_recovery_rejection_count = 1
+        return AssistantResponseRejection(
+            error_code="agent_turn_recovery_action_required",
+            summary=(
+                "This internal agent response was not persisted because the "
+                "latest recoverable tool failure still lacks a durable "
+                "settlement."
+            ),
+            hint=(
+                "Choose and issue a safe durable recovery action, request "
+                "approval/help, or explicitly finish the task as blocked or "
+                "failed. Read-only inspection and narration do not settle it."
+            ),
+            details={
+                "effect_certainty": obligation.effect_certainty,
+                "response_persisted": False,
+                "failure_id": obligation.failure_id,
+                "failed_call_id": obligation.call_id,
+                "failed_tool_name": obligation.tool_name,
+                "failed_error_code": obligation.error_code,
+            },
+        )
+    return AgentTurnRecoveryUnresolved(
+        obligation=obligation,
+        reason=(
+            "assistant_response_repeated_without_durable_action"
+            if context.turn_recovery_rejection_count
+            else "model_step_budget_exhausted"
+        ),
+    )
 
 
 def _enum_value(value: Any) -> Any:
@@ -1185,8 +1401,13 @@ def _auto_compact_if_needed(
     )
     recent_output = outputs[-1] if outputs else None
     recent_tool = None if not all_tool_results else all_tool_results[-1]
+    session_restore = service.build_restore_context(
+        context.snapshot.session.session_id,
+        skill_keys=(),
+        skill_registry=context.skill_registry,
+    )
     session_summary = service.render_compaction_summary(
-        context.restore_context,
+        session_restore,
         recent_output=recent_output,
         recent_tool_result=recent_tool,
     )
@@ -1198,8 +1419,14 @@ def _auto_compact_if_needed(
         source_range="auto:harness_run",
     )
     if context.restore_focus.lane_id is not None:
+        lane_restore = service.build_restore_context(
+            context.snapshot.session.session_id,
+            lane_id=context.restore_focus.lane_id,
+            skill_keys=(),
+            skill_registry=context.skill_registry,
+        )
         lane_summary = service.render_compaction_summary(
-            context.restore_context,
+            lane_restore,
             recent_output=recent_output,
             recent_tool_result=recent_tool,
         )
@@ -1281,35 +1508,50 @@ def _compact_before_model_call(
         context.repositories,
         event_emitter=lambda event_type, payload: context.emit(event_type, payload),
     )
-    summary = service.render_compaction_summary(
-        context.restore_context,
-        recent_tool_result=None,
-    )
-    if recent_tool_result is not None:
-        summary += (
-            "\nRecent tool activity bounded: "
-            f"{recent_tool_result.tool_name} call_id={recent_tool_result.call_id} "
-            f"ok={recent_tool_result.ok} status={recent_tool_result.status or 'unknown'} "
-            f"summary={_bounded_tool_result_summary(recent_tool_result)}"
+
+    def render_summary(*, lane_id: str | None) -> str:
+        restore = service.build_restore_context(
+            context.snapshot.session.session_id,
+            lane_id=lane_id,
+            skill_keys=(),
+            skill_registry=context.skill_registry,
         )
-    summary += (
-        "\nContext budget action: auto_compact before model call; "
-        f"actor_ref={actor_ref}; prompt_tokens={decision_payload.get('prompt_tokens')}; "
-        f"ratio={decision_payload.get('ratio')}"
-    )
+        summary = service.render_compaction_summary(
+            restore,
+            recent_tool_result=None,
+        )
+        if recent_tool_result is not None:
+            summary += (
+                "\nRecent tool activity bounded: "
+                f"{recent_tool_result.tool_name} "
+                f"call_id={recent_tool_result.call_id} "
+                f"ok={recent_tool_result.ok} "
+                f"status={recent_tool_result.status or 'unknown'} "
+                f"summary={_bounded_tool_result_summary(recent_tool_result)}"
+            )
+        summary += (
+            "\nContext budget action: auto_compact before model call; "
+            f"actor_ref={actor_ref}; "
+            f"prompt_tokens={decision_payload.get('prompt_tokens')}; "
+            f"ratio={decision_payload.get('ratio')}"
+        )
+        return summary
+
+    session_summary = render_summary(lane_id=None)
     service.compact_scope(
         session_id=context.snapshot.session.session_id,
         scope_kind=MemoryScopeKind.SESSION,
         scope_ref=context.snapshot.session.session_id,
-        summary=summary,
+        summary=session_summary,
         source_range="auto:prompt_budget",
     )
     if context.restore_focus.lane_id is not None:
+        lane_summary = render_summary(lane_id=context.restore_focus.lane_id)
         service.compact_scope(
             session_id=context.snapshot.session.session_id,
             scope_kind=MemoryScopeKind.LANE,
             scope_ref=context.restore_focus.lane_id,
-            summary=summary,
+            summary=lane_summary,
             source_range="auto:prompt_budget",
         )
     context.refresh()
@@ -2049,6 +2291,10 @@ def run_agent_harness_loop(
         correlation_id=harness_input.correlation_id,
         signal_id=harness_input.signal_id,
         wakeup_reason=harness_input.wakeup_reason,
+        turn_recovery_enabled=(
+            harness_input.signal_id is not None
+            and harness_input.message is None
+        ),
     )
     outputs: list[str] = []
     all_tool_results: list[ToolResult] = []
@@ -2162,6 +2408,37 @@ def run_agent_harness_loop(
         if step.llm_trace is not None:
             _persist_llm_trace_step(context, step.llm_trace)
             activity_happened = True
+
+        if step.turn_recovery_unresolved is not None:
+            unresolved = step.turn_recovery_unresolved
+            error = AgentTurnRecoveryUnresolvedError(unresolved)
+            outputs.append(unresolved.public_summary())
+            context.emit(
+                "harness.failed",
+                {
+                    **unresolved.to_dict(),
+                    "agent_decision_produced": False,
+                    "durable_recovery_action_produced": False,
+                    "response_persisted": False,
+                },
+            )
+            _auto_compact_if_needed(
+                context,
+                activity_happened=True,
+                outputs=outputs,
+                all_tool_results=all_tool_results,
+            )
+            context.refresh()
+            return HarnessResult(
+                session_id=harness_input.session_id,
+                status=HarnessStatus.FAILED,
+                snapshot=context.snapshot,
+                events=tuple(sink.events),
+                outputs=tuple(outputs),
+                tool_results=tuple(all_tool_results),
+                pending_approval_id=pending_approval_id,
+                error=error,
+            )
 
         for task in step.task_updates:
             repositories.tasks.save(task, intent=TaskWriteIntent.EDIT)
@@ -2464,6 +2741,7 @@ def run_agent_harness_loop(
                     )
                 current_results.append(result)
                 _emit_tool_completed(context, result, invocation)
+                update_agent_turn_recovery(context, result)
                 activity_happened = True
                 context.refresh()
                 if result.ok and result.terminates_turn:
@@ -2651,6 +2929,40 @@ def run_agent_harness_loop(
             outputs=tuple(outputs),
             tool_results=tuple(all_tool_results),
             pending_approval_id=pending_approval_id,
+        )
+
+    if context.turn_recovery_obligation is not None:
+        unresolved = AgentTurnRecoveryUnresolved(
+            obligation=context.turn_recovery_obligation,
+            reason="model_step_budget_exhausted",
+        )
+        error = AgentTurnRecoveryUnresolvedError(unresolved)
+        outputs.append(unresolved.public_summary())
+        context.emit(
+            "harness.failed",
+            {
+                **unresolved.to_dict(),
+                "agent_decision_produced": False,
+                "durable_recovery_action_produced": False,
+                "response_persisted": False,
+            },
+        )
+        _auto_compact_if_needed(
+            context,
+            activity_happened=True,
+            outputs=outputs,
+            all_tool_results=all_tool_results,
+        )
+        context.refresh()
+        return HarnessResult(
+            session_id=harness_input.session_id,
+            status=HarnessStatus.FAILED,
+            snapshot=context.snapshot,
+            events=tuple(sink.events),
+            outputs=tuple(outputs),
+            tool_results=tuple(all_tool_results),
+            pending_approval_id=pending_approval_id,
+            error=error,
         )
 
     context.emit(

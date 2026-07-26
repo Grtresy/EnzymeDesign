@@ -622,6 +622,21 @@ that problem with automatic delegation, intent rewriting, auto-enqueue or a
 retry under the consumed plan. Exact artifacts and the full audit are recorded
 in the linked closure-stage diagnostic document.
 
+The forward repair keeps the fail-closed delegation result and separates four
+contracts: auto compaction is historical/authority-free and scope-correct;
+every actor prompt shows exact current workflow refs or `[]`; an internal
+signal's actionable effect-known failure must reach a known durable mutation
+or explicit terminal action rather than prose-only settlement; and AOX formal
+policy `aox_cutover_formal_tool_precondition@4` rejects a ready, unassigned
+report phase with no pending/claimed runtime signal before prose is persisted. It does not
+auto-delegate, auto-enqueue, rewrite refs or replay the failed call. The AOX
+driver also validates v2 command outcomes and stops after two identical
+zero-signal/no-wakeup semantic observations with
+`formal_agent_recovery_unresolved` or
+`formal_runtime_stalled_no_wakeup`, instead of collecting dozens of identical
+drains. These corrections are non-live evidence until committed and separately
+authorized under a fresh non-`rNN` one-use plan.
+
 ## Numbered launch-preparation boundary
 
 The no-attempt preparation phase may update local configuration, build and hash

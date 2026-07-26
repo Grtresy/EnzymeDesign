@@ -43,6 +43,17 @@ tool observation 继续 bounded loop。若失败只在原 turn 结束后可见�
 delivery recovery failure 或 Host-finalized transition failure，Host 使用 exact source/version
 创建去重 wakeup，并在 claim 时从 canonical repository 重建 recovery brief。
 
+internally driven signal turn 对 ordinary result 还有一个 turn-local settlement
+invariant：只有 typed observation 同时是
+`recoverability=agent_can_replan|agent_can_retry` 与
+`effect_certainty=no_effect|terminal_known` 时才建立 recovery obligation。agent 可自由
+选择任何 reviewed durable mutation、help/authority request 或 explicit terminal task action；
+Harness 不改写参数、不自动重试/delegate。read-only inspection、memory compaction、unknown
+nominal write 或 prose 不清除 obligation。首次 prose 只形成不持久化的
+`agent_turn_recovery_action_required` feedback；重复 prose 或 step bound 形成
+`agent_turn_recovery_unresolved` typed signal failure，exact signal 不重放，task 业务状态
+不变。direct user-message turn 与 reconciliation/unknown-effect path 不进入这条窄规则。
+
 `recovery_required` brief 只能陈述事实和安全边界。agent 可选择：
 
 - 在同一 logical operation 的预声明、effect-safe retry policy 内重试；
@@ -84,6 +95,15 @@ post-core projection 失败，真实 processed count、suspension 和 output/eve
 exception 才能报告 count `0`；旧 `@1` receipt 只读，不回填推导值。Host core receipt
 直接聚合 Core typed settlement，不做 typed-to-dict-to-classifier 往返，不依赖对象 identity，
 也不重扫 mutable signal/task/failure/agent/wakeup repository。
+
+AOX bounded consumer 只接受经 validator 验证的 v2 command outcome。连续两个 outcome
+必须同时满足 `processed_signal_count=0`、`replay_safe=true`、canonical work fingerprint
+一致，并证明 pending/claimed signal、pending approval、active invocation/continuation、working agent 与
+mutation writer 均不存在，才是 no-wakeup stall。ready unfinished work 若仍绑定 actionable
+failure，返回 `formal_agent_recovery_unresolved`；否则返回
+`formal_runtime_stalled_no_wakeup`。fingerprint 排除 timestamp、lease/fence、event/cursor
+和 command id，单次 empty 或任一 semantic/wakeup progress 都重置确认；该 diagnostic 不
+auto-enqueue 或创造 recovery work。
 
 同一个 provider response 中的多个 tool call 作为有序 batch 结算。若某个已 dispatch call
 触发 approval、成功的 `task.finish` / `scientific.attempt.close` terminal action、runtime
@@ -429,8 +449,10 @@ reopen/resume 合同；随后又把 `selection_active_writers` / `closure_ready=
 永久 NO-GO；MICU verified lower bound 为 `100,114,267 / 500,000,000`，全部 r59
 authority/root/state/effect/bytes 不可复用。
 
-current session policy 是 `aox_cutover_formal_tool_precondition@3`。它不增加自动
-task completion 或 attempt closure，只在以下 durable facts 同时成立时拒绝错误终态：
+`aox_cutover_formal_tool_precondition@3` 首先闭合 r59 的 positive execution exit。
+current session policy 已升为 `aox_cutover_formal_tool_precondition@4`；它保留该
+guard，不增加自动 task completion 或 attempt closure，只在以下 durable facts 同时成立时
+拒绝错误终态：
 
 - attempt 是 positive，canonical execution task 仍由当前 teammate owner 操作；
 - active attempt 的 current scientific selection 已 sealed，且同一个 canonical
@@ -446,6 +468,14 @@ adoption、materialization 或 evidence 漂移会让 `closure_request_ready=fals
 `blocked|failed|cancelled` 继续使用 generic task semantics，agent 可修复或建立 child
 selection。fault attempt 和普通 V3 session 同样不受该 guard 影响；guard 不选择科学路线
 或结果。
+
+`@4` 还闭合 execution→report 的 durable handoff seam：当 research/execution 已
+owner-authored completed、canonical report task `todo/ready/unassigned`、blockers completed，
+且没有该 task 的 pending/claimed runtime signal 时，master prose 在 conversation write 前以
+`aox_cutover_report_handoff_required/no_effect` 退回。hint 只陈述可满足的 invariant：
+agent 自己委派 exact report task 给 reporter 且 `workflow_refs` omitted/`[]`，或在真实
+blocker 下显式记录 blocked/failed；policy 不执行 delegation、不 auto-enqueue、不从旧 actor
+memory 借 workflow authority。
 
 ## 12. r59 closure-stage logical fork
 
@@ -496,3 +526,23 @@ inventory 的 before/after digest 分别保持
 该 consumed plan、failed decision 与 fatal 都不可重试或改写；后继 diagnostic 只能在
 统一 lifecycle 修复通过非 live 验证并提交后，针对全新不存在的非 `rNN` target 发布并
 消费一个新 plan。
+
+lifecycle repair `c3c560dd6ede54958398fb3e55d5cd62cc956ad1` 后的 fresh successor
+plan `sha256:47ebfa37d653fa51c61eb304b3df620033d57f99aee6a3fcc88ae2e396b861ab`
+也已永久消费。它在 closure 前暴露另一条链：executor-scoped auto compaction 曾把 workflow
+ref 与 lane-local state 写成 session-like memory；后续 empty-focus master 错把历史 ref 带入
+report delegation，正确收到 `workflow_ref_not_authorized/terminal_known/agent_can_replan`，
+却只叙述省略 ref 而未调用 tool。report ready/unassigned、无 successor；3 个 command 推进
+signal，随后 117 个 replay-safe empty command 到 generic exhaustion。decision
+`sha256:eb70608e595d64c785227e4c05b46334a3996d853177341f2da729d4bf9c1abc`
+与 fatal
+`sha256:27ae166969295685ed56418e6b8abc404c7e3fff88884f5e85c1fe944b7723be`
+不可重试或复用。
+
+forward repair 同时闭合四层而不选择 agent 策略：auto compaction
+authority-free/scope-correct；prompt exact 显示 current refs/empty set；internal signal
+failed-result 必须产生 durable settlement 或 typed unresolved；AOX `@4` 在 ready report
+缺 handoff 时拒绝 prose。live driver 只在两次 validated unchanged no-wakeup proof 后 typed
+fail-fast，保留 120-drain bound 给其他真实未收敛状态。下一次 closure-stage live 若获单独
+批准，仍必须从本修复的 clean commit 发布 fresh non-`rNN` target/plan，并且最多消费一次；
+上述两个 target、authority、MICU/evidence 与 r59 source 都不可复用。

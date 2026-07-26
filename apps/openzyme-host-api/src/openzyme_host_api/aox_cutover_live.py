@@ -33,6 +33,9 @@ from openzyme_core import ScientificAttemptService
 from openzyme_core import build_conversation_projection
 from openzyme_core import current_mutation_write_authority
 from openzyme_core import sandbox_image_record
+from openzyme_core.runtime_drain_receipts import (
+    validate_runtime_command_outcome_v2,
+)
 from openzyme_core.sandbox_runtime import EXEC_POLICY_VERSION
 from openzyme_core.sandbox_workspace import DEFAULT_SANDBOX_IMAGE_REF
 from openzyme_core.workflow_knowledge import default_workflow_registry
@@ -605,6 +608,104 @@ class _DrainCoordinationResult:
     approval_ids: tuple[str, ...]
     browser_approval_receipt: dict[str, object] | None
     fault_receipt: FaultInjectionReceipt | None
+    command_id: str = ""
+    command_status: str = ""
+    command_outcome: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeWakeState:
+    ready_task_ids: tuple[str, ...]
+    pending_signal_ids: tuple[str, ...]
+    claimed_signal_ids: tuple[str, ...]
+    pending_approval_ids: tuple[str, ...]
+    active_invocation_ids: tuple[str, ...]
+    active_continuation_ids: tuple[str, ...]
+    working_agent_ids: tuple[str, ...]
+    actionable_failure: dict[str, str] | None = None
+
+    @property
+    def has_wakeup_source(self) -> bool:
+        return any(
+            (
+                self.pending_signal_ids,
+                self.claimed_signal_ids,
+                self.pending_approval_ids,
+                self.active_invocation_ids,
+                self.active_continuation_ids,
+                self.working_agent_ids,
+            )
+        )
+
+
+_RUNTIME_PROGRESS_TOP_LEVEL_KEYS = (
+    "session",
+    "task_board",
+    "lane_board",
+    "pending_approvals",
+    "inbox",
+    "delegation",
+    "artifacts",
+    "artifact_index",
+    "sandbox_workspaces",
+    "sandbox_runs",
+    "report_drafts",
+    "reports",
+    "scientific_evidence",
+    "runtime_state",
+    "failure_observations",
+    "scientific_attempts",
+)
+_RUNTIME_PROGRESS_VOLATILE_KEYS = frozenset(
+    {
+        "accepted_at",
+        "claim_expires_at",
+        "claimed_at",
+        "completed_at",
+        "created_at",
+        "cursor",
+        "delivery_claim_owner",
+        "delivery_lease_expires_at",
+        "delivery_lease_token",
+        "event_count",
+        "event_id",
+        "event_ids",
+        "event_ids_truncated",
+        "fencing_token",
+        "idle_since",
+        "last_active_at",
+        "lease_expires_at",
+        "lease_owner",
+        "lease_token",
+        "process_epoch",
+        "registered_at",
+        "retired_at",
+        "started_at",
+        "state_version",
+        "updated_at",
+    }
+)
+
+
+def _stable_runtime_progress_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _stable_runtime_progress_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            if str(key) not in _RUNTIME_PROGRESS_VOLATILE_KEYS
+        }
+    if isinstance(value, (list, tuple)):
+        return [_stable_runtime_progress_value(item) for item in value]
+    return value
+
+
+def _runtime_progress_fingerprint(workspace: Mapping[str, object]) -> str:
+    projection = {
+        key: _stable_runtime_progress_value(workspace.get(key))
+        for key in _RUNTIME_PROGRESS_TOP_LEVEL_KEYS
+        if key in workspace
+    }
+    return canonical_digest(projection)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2092,6 +2193,126 @@ class LiveAoxAttemptRunner:
                 provider
             ).has_inflight_mutation_writers(session_id=session_id)
 
+    def _runtime_wake_state(
+        self,
+        provider: SQLiteRepositoryProvider,
+        *,
+        session_id: str,
+    ) -> _RuntimeWakeState:
+        with provider.read() as scope:
+            repositories = scope.repositories
+            ready_tasks = tuple(
+                repositories.tasks.list_ready_by_session(session_id)
+            )
+            ready_task_ids = tuple(
+                sorted(task.task_id for task in ready_tasks)
+            )
+            runtime_signals = tuple(
+                repositories.runtime_signals.list_by_session(session_id)
+            )
+            pending_signal_ids = tuple(
+                sorted(
+                    signal.signal_id
+                    for signal in runtime_signals
+                    if str(
+                        getattr(signal.status, "value", signal.status)
+                    )
+                    == "pending"
+                )
+            )
+            claimed_signal_ids = tuple(
+                sorted(
+                    signal.signal_id
+                    for signal in runtime_signals
+                    if str(
+                        getattr(signal.status, "value", signal.status)
+                    )
+                    == "claimed"
+                )
+            )
+            pending_approval_ids = tuple(
+                sorted(
+                    approval.approval_id
+                    for approval in repositories.approvals.list_pending_by_session(
+                        session_id
+                    )
+                )
+            )
+            active_invocation_ids = tuple(
+                sorted(
+                    invocation.invocation_id
+                    for invocation in repositories.invocations.list_active_by_session(
+                        session_id
+                    )
+                )
+            )
+            active_continuation_ids = tuple(
+                sorted(
+                    continuation.continuation_id
+                    for continuation in repositories.continuation_states.list_by_session(
+                        session_id
+                    )
+                    if not continuation.status.is_terminal
+                )
+            )
+            working_agent_ids = tuple(
+                sorted(
+                    agent.agent_id
+                    for agent in repositories.agents.list_by_session(session_id)
+                    if str(getattr(agent.status, "value", agent.status))
+                    == "working"
+                )
+            )
+            actionable_failure: dict[str, str] | None = None
+            for failure in sorted(
+                repositories.failure_observations.list_by_session(session_id),
+                key=lambda item: (item.created_at, item.failure_id),
+                reverse=True,
+            ):
+                if (
+                    str(
+                        getattr(
+                            failure.recoverability,
+                            "value",
+                            failure.recoverability,
+                        )
+                    )
+                    not in {"agent_can_replan", "agent_can_retry"}
+                    or str(
+                        getattr(
+                            failure.effect_certainty,
+                            "value",
+                            failure.effect_certainty,
+                        )
+                    )
+                    not in {"no_effect", "terminal_known"}
+                    or failure.task_id not in ready_task_ids
+                ):
+                    continue
+                actionable_failure = {
+                    "failure_id": failure.failure_id,
+                    "error_code": failure.error_code,
+                    "recoverability": str(
+                        getattr(
+                            failure.recoverability,
+                            "value",
+                            failure.recoverability,
+                        )
+                    ),
+                    "task_id": str(failure.task_id),
+                }
+                break
+        return _RuntimeWakeState(
+            ready_task_ids=ready_task_ids,
+            pending_signal_ids=pending_signal_ids,
+            claimed_signal_ids=claimed_signal_ids,
+            pending_approval_ids=pending_approval_ids,
+            active_invocation_ids=active_invocation_ids,
+            active_continuation_ids=active_continuation_ids,
+            working_agent_ids=working_agent_ids,
+            actionable_failure=actionable_failure,
+        )
+
     @contextmanager
     def _session_mutation_scope(
         self,
@@ -2557,6 +2778,8 @@ class LiveAoxAttemptRunner:
         scientific_attempt_control: dict[str, object] | None = None
         last_workspace: dict[str, Any] = {}
         last_workspace_response_binding: dict[str, object] = {}
+        last_no_wakeup_fingerprint: str | None = None
+        no_wakeup_confirmation_count = 0
         for drain_number in range(1, self.max_drains + 1):
             if time.monotonic() - started > self.timeout_seconds:
                 break
@@ -2667,6 +2890,99 @@ class LiveAoxAttemptRunner:
                     ),
                     fault_receipt,
                 )
+            command_outcome = coordination.command_outcome
+            processed_signal_count = command_outcome.get(
+                "processed_signal_count"
+            )
+            replay_safe = command_outcome.get("replay_safe")
+            if (
+                type(processed_signal_count) is not int
+                or processed_signal_count != 0
+                or replay_safe is not True
+            ):
+                last_no_wakeup_fingerprint = None
+                no_wakeup_confirmation_count = 0
+                continue
+            wake_state = self._runtime_wake_state(
+                provider,
+                session_id=session_id,
+            )
+            try:
+                has_inflight_writers = self._has_inflight_mutation_writers(
+                    provider,
+                    session_id=session_id,
+                    purpose=purpose,
+                    attempt_authority=attempt_authority,
+                )
+            except AoxRuntimeObservationError as exc:
+                raise LiveProductPathError(
+                    exc.code,
+                    exc.message,
+                    details=exc.details,
+                ) from exc
+            if wake_state.has_wakeup_source or has_inflight_writers:
+                last_no_wakeup_fingerprint = None
+                no_wakeup_confirmation_count = 0
+                continue
+            progress_fingerprint = _runtime_progress_fingerprint(
+                last_workspace
+            )
+            if progress_fingerprint == last_no_wakeup_fingerprint:
+                no_wakeup_confirmation_count += 1
+            else:
+                last_no_wakeup_fingerprint = progress_fingerprint
+                no_wakeup_confirmation_count = 1
+            if no_wakeup_confirmation_count < 2:
+                continue
+            actionable_failure = wake_state.actionable_failure
+            blocker_code = (
+                "formal_agent_recovery_unresolved"
+                if purpose == "formal"
+                and actionable_failure is not None
+                else f"{purpose}_runtime_stalled_no_wakeup"
+            )
+            details: dict[str, object] = {
+                "session_id": session_id,
+                "drain_number": drain_number,
+                "confirmation_count": no_wakeup_confirmation_count,
+                "progress_fingerprint": progress_fingerprint,
+                "runtime_command_id": coordination.command_id,
+                "runtime_command_status": coordination.command_status,
+                "processed_signal_count": processed_signal_count,
+                "replay_safe": True,
+                "ready_task_ids": list(wake_state.ready_task_ids[:16]),
+                "ready_task_count": len(wake_state.ready_task_ids),
+                "pending_signal_count": len(
+                    wake_state.pending_signal_ids
+                ),
+                "claimed_signal_count": len(
+                    wake_state.claimed_signal_ids
+                ),
+                "pending_approval_count": len(
+                    wake_state.pending_approval_ids
+                ),
+                "active_invocation_count": len(
+                    wake_state.active_invocation_ids
+                ),
+                "active_continuation_count": len(
+                    wake_state.active_continuation_ids
+                ),
+                "working_agent_count": len(
+                    wake_state.working_agent_ids
+                ),
+                "inflight_mutation_writer": False,
+            }
+            if actionable_failure is not None:
+                details["actionable_failure"] = dict(actionable_failure)
+            raise LiveProductPathError(
+                blocker_code,
+                (
+                    "the bounded AOX runtime reached two identical "
+                    "replay-safe zero-signal commands with no eligible wake "
+                    "source"
+                ),
+                details=details,
+            )
         if not last_workspace:
             last_workspace = api.get_json(
                 f"/v3/sessions/{session_id}/workspace",
@@ -2919,6 +3235,7 @@ class LiveAoxAttemptRunner:
         latest_binding: dict[str, object] = {}
         coordination_error: Exception | None = None
         cleanup_errors: list[Exception] = []
+        command: dict[str, Any] = {}
         command_id = ""
         command_route = ""
         command_status = ""
@@ -3183,6 +3500,28 @@ class LiveAoxAttemptRunner:
             coordination_error=coordination_error,
             cleanup_errors=cleanup_errors,
         )
+        raw_command_outcome = command.get("bounded_outcome_summary")
+        if not isinstance(raw_command_outcome, dict):
+            raise LiveProductPathError(
+                "runtime_command_outcome_missing",
+                "terminal runtime command omitted its bounded v2 outcome",
+                details={
+                    "command_id": command_id,
+                    "command_status": command_status,
+                },
+            )
+        command_outcome = dict(raw_command_outcome)
+        try:
+            validate_runtime_command_outcome_v2(command_outcome)
+        except ValueError as exc:
+            raise LiveProductPathError(
+                "runtime_command_outcome_invalid",
+                "terminal runtime command returned an invalid bounded v2 outcome",
+                details={
+                    "command_id": command_id,
+                    "command_status": command_status,
+                },
+            ) from exc
 
         latest_workspace = api.get_json(
             f"/v3/sessions/{session_id}/workspace",
@@ -3209,6 +3548,9 @@ class LiveAoxAttemptRunner:
             approval_ids=tuple(newly_approved),
             browser_approval_receipt=browser_approval_receipt,
             fault_receipt=fault_receipt,
+            command_id=command_id,
+            command_status=command_status,
+            command_outcome=command_outcome,
         )
 
     def _wait_for_browser_approval(

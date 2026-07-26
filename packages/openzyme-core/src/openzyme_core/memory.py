@@ -28,8 +28,39 @@ from .conversation import ConversationEntry
 from .conversation import load_recent_conversation
 
 
+_AUTO_COMPACTION_VOLATILE_PREFIXES = (
+    "Focus:",
+    "Ready tasks:",
+    "Pending approvals:",
+    "Active invocations:",
+    "Active skills:",
+    "Current authorized workflow refs:",
+)
+
+
 def _new_memory_id() -> str:
     return f"mem_{uuid4().hex[:12]}"
+
+
+def project_memory_summary_for_prompt(entry: MemoryEntry) -> str:
+    """Project stored memory as historical context, never current authority.
+
+    Automatic compactions created before the authority boundary was explicit
+    can contain generated actor-local state.  Preserve the immutable row while
+    removing only those generated sections from its model-facing projection.
+    Manual/tool-authored memory remains visible as historical, untrusted text.
+    """
+
+    if (
+        entry.kind is not MemoryKind.COMPACTION
+        or not str(entry.source_range or "").startswith("auto:")
+    ):
+        return entry.summary
+    return "\n".join(
+        line
+        for line in entry.summary.splitlines()
+        if not line.startswith(_AUTO_COMPACTION_VOLATILE_PREFIXES)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,16 +261,6 @@ class MemoryService:
         recent_output: str | None = None,
         recent_tool_result: Any | None = None,
     ) -> str:
-        ready_task_ids = ", ".join(task.task_id for task in restore_context.ready_tasks) or "none"
-        approval_ids = ", ".join(approval.approval_id for approval in restore_context.pending_approvals) or "none"
-        invocation_ids = ", ".join(invocation.invocation_id for invocation in restore_context.active_invocations) or "none"
-        skill_keys = ", ".join(skill.skill_key for skill in restore_context.skill_documents) or "none"
-        focus_bits: list[str] = []
-        if restore_context.focused_task_id is not None:
-            focus_bits.append(f"task={restore_context.focused_task_id}")
-        if restore_context.focused_lane_id is not None:
-            focus_bits.append(f"lane={restore_context.focused_lane_id}")
-        focus = ", ".join(focus_bits) or "none"
         continuity = restore_context.session_memory.continuity.summary if restore_context.session_memory.continuity else "none"
         recent_tool_summary = "none"
         if recent_tool_result is not None:
@@ -260,12 +281,7 @@ class MemoryService:
         lines = [
             f"Session {restore_context.session.session_id}: {restore_context.session.title}",
             f"Objective: {restore_context.session.objective}",
-            f"Focus: {focus}",
             f"Session continuity: {continuity}",
-            f"Ready tasks: {ready_task_ids}",
-            f"Pending approvals: {approval_ids}",
-            f"Active invocations: {invocation_ids}",
-            f"Active skills: {skill_keys}",
             f"Recent output: {recent_output or 'none'}",
             f"Recent tool activity: {recent_tool_summary}",
         ]
@@ -428,4 +444,10 @@ def register_memory_tools(registry: Any) -> None:
     registry.register("memory.compact", compact_handler)
 
 
-__all__ = ["MemoryService", "ScopedMemorySummary", "SessionRestoreContext", "register_memory_tools"]
+__all__ = [
+    "MemoryService",
+    "ScopedMemorySummary",
+    "SessionRestoreContext",
+    "project_memory_summary_for_prompt",
+    "register_memory_tools",
+]

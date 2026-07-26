@@ -381,6 +381,25 @@ def _runtime_command_response(
     command_id: str = "runtime_command_001",
     status_code: int = 200,
 ) -> _JsonResponse:
+    bounded_outcome_summary = None
+    if status in {"completed", "locked"}:
+        bounded_outcome_summary = {
+            "schema_version": "runtime_command_outcome@2",
+            "core_receipt_formed": True,
+            "scheduler_status": status,
+            "processed_signal_count": 0,
+            "suspended": False,
+            "projection_status": "complete",
+            "projection_error_code": None,
+            "projection_failed_stage": None,
+            "replay_safe": True,
+            "output_count": 0,
+            "output_ids": [],
+            "output_ids_truncated": False,
+            "event_count": 0,
+            "event_ids": [],
+            "event_ids_truncated": False,
+        }
     return _JsonResponse(
         {
             "session_id": session_id,
@@ -389,6 +408,7 @@ def _runtime_command_response(
             "status_url": (
                 f"/v3/sessions/{session_id}/runtime/commands/{command_id}"
             ),
+            "bounded_outcome_summary": bounded_outcome_summary,
         },
         status_code=status_code,
     )
@@ -487,6 +507,30 @@ class _SerialApprovalJsonClient:
         with self._condition:
             self._force_release = True
             self._condition.notify_all()
+
+
+class _TerminalOutcomeJsonClient(_SerialApprovalJsonClient):
+    def __init__(self, outcome: object) -> None:
+        super().__init__(())
+        self.outcome = outcome
+
+    def get(self, route: str) -> _JsonResponse:
+        if route == (
+            "/v3/sessions/sess_serial/runtime/commands/runtime_command_001"
+        ):
+            payload: dict[str, object] = {
+                "session_id": "sess_serial",
+                "command_id": "runtime_command_001",
+                "status": "completed",
+                "status_url": (
+                    "/v3/sessions/sess_serial/runtime/commands/"
+                    "runtime_command_001"
+                ),
+            }
+            if self.outcome is not None:
+                payload["bounded_outcome_summary"] = self.outcome
+            return _JsonResponse(payload)
+        return super().get(route)
 
 
 class _FailingDrainJsonClient:
@@ -2690,6 +2734,393 @@ def test_formal_session_returns_on_first_post_closure_observation(
     assert calls == {"coordinate": 1, "observe": 1, "closed": 1}
 
 
+def _stall_test_coordination(
+    *,
+    workspace: dict[str, object],
+    processed_signal_count: int = 0,
+    replay_safe: bool = True,
+    command_index: int = 1,
+) -> live._DrainCoordinationResult:
+    return live._DrainCoordinationResult(
+        workspace=workspace,
+        workspace_response_binding={
+            "response_digest": _digest(f"workspace-{command_index}")
+        },
+        approval_ids=(),
+        browser_approval_receipt=None,
+        fault_receipt=None,
+        command_id=f"runtime_command_{command_index:03d}",
+        command_status="completed",
+        command_outcome={
+            "schema_version": "runtime_command_outcome@2",
+            "processed_signal_count": processed_signal_count,
+            "replay_safe": replay_safe,
+        },
+    )
+
+
+def _no_wakeup_state(
+    *,
+    actionable_failure: dict[str, str] | None = None,
+    pending_signal_ids: tuple[str, ...] = (),
+    claimed_signal_ids: tuple[str, ...] = (),
+    pending_approval_ids: tuple[str, ...] = (),
+    active_invocation_ids: tuple[str, ...] = (),
+    active_continuation_ids: tuple[str, ...] = (),
+    working_agent_ids: tuple[str, ...] = (),
+) -> live._RuntimeWakeState:
+    return live._RuntimeWakeState(
+        ready_task_ids=("aox_final_source_linked_report",),
+        pending_signal_ids=pending_signal_ids,
+        claimed_signal_ids=claimed_signal_ids,
+        pending_approval_ids=pending_approval_ids,
+        active_invocation_ids=active_invocation_ids,
+        active_continuation_ids=active_continuation_ids,
+        working_agent_ids=working_agent_ids,
+        actionable_failure=actionable_failure,
+    )
+
+
+def test_runtime_progress_fingerprint_ignores_observation_noise_only() -> None:
+    first = {
+        "session": {
+            "session_id": "sess_stable",
+            "status": "active",
+            "updated_at": "first",
+        },
+        "task_board": {
+            "items": [
+                {
+                    "task": {
+                        "task_id": "task_report",
+                        "status": "todo",
+                        "updated_at": "first",
+                    }
+                }
+            ]
+        },
+        "conversation": [{"message_id": "message_1"}],
+        "agent_traces": {"harness": [{"step_id": "step_1"}]},
+        "activity_feed": [{"event_id": "event_1", "cursor": 10}],
+    }
+    noisy_second = {
+        **first,
+        "session": {
+            "session_id": "sess_stable",
+            "status": "active",
+            "updated_at": "second",
+        },
+        "task_board": {
+            "items": [
+                {
+                    "task": {
+                        "task_id": "task_report",
+                        "status": "todo",
+                        "updated_at": "second",
+                    }
+                }
+            ]
+        },
+        "conversation": [{"message_id": "message_2"}],
+        "agent_traces": {"harness": [{"step_id": "step_2"}]},
+        "activity_feed": [{"event_id": "event_2", "cursor": 11}],
+    }
+    progressed = {
+        **noisy_second,
+        "task_board": {
+            "items": [
+                {
+                    "task": {
+                        "task_id": "task_report",
+                        "status": "in_progress",
+                        "updated_at": "third",
+                    }
+                }
+            ]
+        },
+    }
+
+    first_digest = live._runtime_progress_fingerprint(first)
+
+    assert live._runtime_progress_fingerprint(noisy_second) == first_digest
+    assert live._runtime_progress_fingerprint(progressed) != first_digest
+
+
+@pytest.mark.parametrize(
+    ("actionable_failure", "expected_code"),
+    (
+        (
+            {
+                "failure_id": "failure_report_delegate",
+                "error_code": "workflow_ref_not_authorized",
+                "recoverability": "agent_can_replan",
+                "task_id": "aox_final_source_linked_report",
+            },
+            "formal_agent_recovery_unresolved",
+        ),
+        (None, "formal_runtime_stalled_no_wakeup"),
+    ),
+)
+def test_formal_driver_fails_after_two_confirmed_no_wakeup_drains(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    actionable_failure: dict[str, str] | None,
+    expected_code: str,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        max_drains=20,
+    )
+    provider = SQLiteRepositoryProvider(str(tmp_path / "stall.sqlite3"))
+    workspace = {
+        "session": {"session_id": "sess_stall", "status": "active"},
+        "task_board": {
+            "items": [
+                {
+                    "task": {
+                        "task_id": "aox_final_source_linked_report",
+                        "status": "todo",
+                        "assigned_ref": None,
+                        "updated_at": "volatile",
+                    }
+                }
+            ]
+        },
+    }
+    calls = 0
+
+    def coordinate(*_args: object, **_kwargs: object) -> live._DrainCoordinationResult:
+        nonlocal calls
+        calls += 1
+        return _stall_test_coordination(
+            workspace=workspace,
+            command_index=calls,
+        )
+
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_coordinate_runtime_drain",
+        coordinate,
+    )
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_observe_session_runtime",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            state="incomplete",
+            blocker_code=None,
+        ),
+    )
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_runtime_wake_state",
+        lambda *_args, **_kwargs: _no_wakeup_state(
+            actionable_failure=actionable_failure
+        ),
+    )
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_has_inflight_mutation_writers",
+        lambda *_args, **_kwargs: False,
+    )
+    api = SimpleNamespace(
+        get_event_records=lambda *_args, **_kwargs: (),
+        get_events=lambda *_args, **_kwargs: {
+            "schema_id": "event_receipt@1",
+            "events": [],
+        },
+    )
+
+    with pytest.raises(live.LiveProductPathError) as captured:
+        runner._run_session_scoped(
+            api,  # type: ignore[arg-type]
+            provider,
+            session_id="sess_stall",
+            purpose="formal",
+            message="unused",
+            workflow_refs=(),
+            fault_enabled=False,
+            fault_blob_root=None,
+            browser_gate_enabled=False,
+            mutation_scope={},
+            post_entry_message=False,
+        )
+
+    assert captured.value.code == expected_code
+    assert calls == 2
+    assert captured.value.details["confirmation_count"] == 2
+    assert captured.value.details["processed_signal_count"] == 0
+    assert captured.value.details["replay_safe"] is True
+
+
+@pytest.mark.parametrize(
+    ("wake_state", "inflight_writer"),
+    (
+        (_no_wakeup_state(pending_signal_ids=("signal_pending",)), False),
+        (_no_wakeup_state(claimed_signal_ids=("signal_claimed",)), False),
+        (_no_wakeup_state(pending_approval_ids=("approval_pending",)), False),
+        (_no_wakeup_state(active_invocation_ids=("invocation_active",)), False),
+        (
+            _no_wakeup_state(
+                active_continuation_ids=("continuation_active",)
+            ),
+            False,
+        ),
+        (_no_wakeup_state(working_agent_ids=("agent:working",)), False),
+        (_no_wakeup_state(), True),
+    ),
+)
+def test_formal_driver_does_not_stall_with_eligible_wakeup_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wake_state: live._RuntimeWakeState,
+    inflight_writer: bool,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        max_drains=2,
+    )
+    provider = SQLiteRepositoryProvider(str(tmp_path / "wakeup.sqlite3"))
+    calls = 0
+
+    def coordinate(*_args: object, **_kwargs: object) -> live._DrainCoordinationResult:
+        nonlocal calls
+        calls += 1
+        return _stall_test_coordination(
+            workspace={"task_board": {"items": []}},
+            command_index=calls,
+        )
+
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_coordinate_runtime_drain",
+        coordinate,
+    )
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_observe_session_runtime",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            state="incomplete",
+            blocker_code=None,
+        ),
+    )
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_runtime_wake_state",
+        lambda *_args, **_kwargs: wake_state,
+    )
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_has_inflight_mutation_writers",
+        lambda *_args, **_kwargs: inflight_writer,
+    )
+    api = SimpleNamespace(
+        get_event_records=lambda *_args, **_kwargs: (),
+        get_events=lambda *_args, **_kwargs: {
+            "schema_id": "event_receipt@1",
+            "events": [],
+        },
+    )
+
+    result, _fault = runner._run_session_scoped(
+        api,  # type: ignore[arg-type]
+        provider,
+        session_id="sess_wakeup",
+        purpose="formal",
+        message="unused",
+        workflow_refs=(),
+        fault_enabled=False,
+        fault_blob_root=None,
+        browser_gate_enabled=False,
+        mutation_scope={},
+        post_entry_message=False,
+    )
+
+    assert result.state == "incomplete"
+    assert result.blocker_code == "formal_runtime_drain_exhausted"
+    assert calls == 2
+
+
+def test_formal_driver_requires_consecutive_unchanged_empty_drains(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        max_drains=2,
+    )
+    provider = SQLiteRepositoryProvider(str(tmp_path / "transient.sqlite3"))
+    calls = 0
+
+    def coordinate(*_args: object, **_kwargs: object) -> live._DrainCoordinationResult:
+        nonlocal calls
+        calls += 1
+        return _stall_test_coordination(
+            workspace={
+                "task_board": {
+                    "items": [{"task": {"task_id": f"task_state_{calls}"}}]
+                }
+            },
+            processed_signal_count=0 if calls == 1 else 1,
+            replay_safe=calls == 1,
+            command_index=calls,
+        )
+
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_coordinate_runtime_drain",
+        coordinate,
+    )
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_observe_session_runtime",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            state="incomplete",
+            blocker_code=None,
+        ),
+    )
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_runtime_wake_state",
+        lambda *_args, **_kwargs: _no_wakeup_state(),
+    )
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_has_inflight_mutation_writers",
+        lambda *_args, **_kwargs: False,
+    )
+    api = SimpleNamespace(
+        get_event_records=lambda *_args, **_kwargs: (),
+        get_events=lambda *_args, **_kwargs: {
+            "schema_id": "event_receipt@1",
+            "events": [],
+        },
+    )
+
+    result, _fault = runner._run_session_scoped(
+        api,  # type: ignore[arg-type]
+        provider,
+        session_id="sess_transient",
+        purpose="formal",
+        message="unused",
+        workflow_refs=(),
+        fault_enabled=False,
+        fault_blob_root=None,
+        browser_gate_enabled=False,
+        mutation_scope={},
+        post_entry_message=False,
+    )
+
+    assert result.state == "incomplete"
+    assert result.blocker_code == "formal_runtime_drain_exhausted"
+    assert calls == 2
+
+
 def test_formal_writer_settlement_keeps_other_writers_visible_on_real_sqlite(
     tmp_path: Path,
 ) -> None:
@@ -4331,6 +4762,53 @@ def test_runtime_drain_coordinates_three_serial_approvals_while_blocked(
         not thread.is_alive() or thread.name != "aox-cutover-drain-1"
         for thread in threading.enumerate()
     )
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_code"),
+    (
+        (None, "runtime_command_outcome_missing"),
+        (
+            {"schema_version": "runtime_command_outcome@unsupported"},
+            "runtime_command_outcome_invalid",
+        ),
+    ),
+)
+def test_runtime_drain_requires_valid_terminal_v2_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: object,
+    expected_code: str,
+) -> None:
+    _disable_cutover_operation_budget(monkeypatch)
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    raw_client = _TerminalOutcomeJsonClient(outcome)
+    api = live._PublicHostClient(raw_client)
+
+    with pytest.raises(live.LiveProductPathError) as captured:
+        runner._coordinate_runtime_drain(
+            api,
+            object(),  # type: ignore[arg-type]
+            session_id="sess_serial",
+            purpose="probe",
+            drain_number=1,
+            started=time.monotonic(),
+            pre_event_cursor=0,
+            prior_approval_ids=frozenset(),
+            browser_gate_enabled=False,
+            browser_approval_receipt=None,
+            fault_enabled=False,
+            fault_blob_root=None,
+            fault_receipt=None,
+        )
+
+    assert captured.value.code == expected_code
 
 
 def test_runtime_drain_resolves_approval_exposed_by_waiting_response(

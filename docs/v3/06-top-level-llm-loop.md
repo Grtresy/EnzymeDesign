@@ -40,6 +40,9 @@ user message
        yes -> dispatch tools through the same router -> persist side effects
               -> artifactize over-budget tool results if needed
               -> feed bounded tool observations back into model
+              -> internal signal + actionable effect-known failure?
+                   yes -> require one durable recovery settlement within the
+                          remaining bounded steps; prose/read alone does not settle
        no  -> run optional assistant-response precondition
               accepted -> persist assistant output and end turn
               rejected -> do not persist; return structured feedback to the same bounded loop
@@ -162,6 +165,11 @@ observation facts 保留返回引用，但 observation 关系字段只绑定当�
 - successful `scientific.attempt.close` 使用同一 terminal-action/batch-settlement 机制，但只记录 closure intent：它不写 task terminal，也不代表 final closure。失败的 close 保持 non-terminal；成功后只有在 requesting `AGENT_TURN` writer 与其 interrupted-call settlement 全部退休后，Host finalizer 才可建立 quiescence 与 immutable closure。
 - terminal `scientific.attempt.close` 要求 model 在同一 provider response 中同时给出非空 user-facing answer；该 text 作为 invocation 的内部 companion response，不进入 tool args。缺失时 close 在 effect 前失败。成功 close 在一个 Core transaction 内写 closure intent、deterministic conversation document/message 与 immutable response binding；harness 只返回已提交文本并退休 turn。失败/rejected close 回滚全部 co-terminal records。
 - session-scoped `assistant_response_precondition` 只检查 no-tool assistant output 的可提交性。AOX formal 在 task/report close-ready 且 active attempt 尚无 closure request 时，用它拒绝 assistant-only final response；rejection 本身不写 conversation、不调用 close，只把结构化 no-effect/same-phase-safe feedback送回同一 bounded model loop。普通未配置 session 不受影响。
+- current AOX `aox_cutover_formal_tool_precondition@4` 还检查 execution→report phase
+  boundary：research/execution 已 completed、canonical report task ready/unassigned 且没有
+  该 task 的 pending/claimed runtime signal 时，assistant prose 不可代替 durable handoff。它只退回 no-effect facts；
+  agent 自己决定无 workflow binding 的 exact delegation、求助或显式 task exit，Harness
+  不自动 delegate/auto-enqueue。
 - 顶层模型和 teammate 需要能力用法说明时，默认通过 `docs.search` / `docs.read` 读取受控文档库，而不是通过 skill 文档把 execution 用法塞入上下文
 - 领域 SOP 不得由 prompt 关键词、task subject 或模型调用 `skill.load` 隐式激活。调用方只能通过结构化 `skill_keys` 传入完整 `workflow:<id>@<semver>#sha256:<manifest-digest>`；message admission 将去重后的选择绑定到 canonical user conversation document，scheduler 仅从 exact user-message signal source 恢复，不能由 drain/operator 或普通 inbox payload 注入。registry 在 provider call 前校验 manifest digest、固定 document version/digest，并在实际 teammate tool/capability surface 上验证 requirements。delegation payload 持久化同一 binding，teammate restore 时再次对照当前 registry，任何缺失或 drift 都 fail closed
 - workflow knowledge pack 只表达版本化知识、所需 capability/tool 与真实约束，不替 master/executor 选择步骤；普通用户文本即使包含 AOX、HMM、research 等词也不得改写 delegation 或隐藏可用工具
@@ -196,10 +204,20 @@ observation facts 保留返回引用，但 observation 关系字段只绑定当�
 - GLM-5.1 默认 profile 为 `context_window_tokens=200000`、默认输出预留 `65536`、最大输出 `131072`。未知模型必须使用显式 env override，否则使用保守 fallback 并在事件中标记 profile unknown。
 - 第三方 OpenAI-compatible endpoint 不得仅凭 model name 继承另一个 provider 的 context profile。AOX blank-world live effective config 要求显式 `context_window_tokens`，并将当前 campaign ceiling 保守限制为 `200000`；缺失或更大的声明在创建 attempt 前 fail closed。provider tokenizer 不可用时仍可用本地保守估算，但不得重新启用 model-name 的 `1050000` 假设。
 - auto compaction 默认写入 `session` scope；有 focused lane 时同时写入 `lane` scope；`task` scope compaction 仍保留显式 tool 或高价值触发。
+- session 与 lane auto-compaction 必须分别从 session-wide 与 exact-lane restore scope
+  生成，不能把当前 actor 的 lane-filtered context 复制到 session。summary 只包含 bounded
+  historical continuity/recent activity，不包含 current focus、ready task、pending approval、
+  active invocation 或 workflow refs。
 - auto compaction 后必须重建待发送 provider payload：重新读取 restore context、重建 system prompt 与 seed messages，再追加本轮已经 budgeted 的 tool observations。provider 调用必须使用这个 rebuilt payload，不能继续使用 compaction 前的 in-memory messages。
 - rebuilt payload 通过 structured / tool-calling invoker 交给 `LlmInvocationRuntime`。invoker 负责构造 payload 与 provider adapter 兼容层；runtime 只负责 provider 调用治理，包括 limiter、timeout、retry/backoff、`Retry-After`、taxonomy 与 debug attempt 记录。runtime 不触发 compaction，也不重建 restore context。
 - 最新 session-scope `source_range="auto:prompt_budget"` compaction 会改变后续 LLM restore prompt projection：recent conversation 只取 compaction 之后的 conversation entries。它不删除或改写持久 conversation，也不影响 `workspace.conversation`；普通 `auto:harness_run` compaction 不作为 recent-conversation cutoff。
 - compaction summary 必须 bounded：不得嵌入完整 tool result、完整 conversation、完整 docs 或完整 artifact list；只保留 id、status、summary、artifact refs 和下一步读取 hint。
+- legacy `source_range=auto:*` compaction 的 model projection 移除旧 generated
+  focus/ready/approval/invocation/active-skill sections，但不重写 stored memory；manual memory
+  保留为 historical untrusted text。
+- 每个 master/teammate system prompt 必须从当前 canonical focus 显示 exact
+  `Current authorized workflow refs`，包括 `[]`，并明确 memory/task/protocol text 不能
+  grant authority。
 - compaction 不得替代 canonical conversation / task / approval / lane state，也不得替 agent 选择业务策略。
 
 ## 8. Tool Result Context Boundary
@@ -236,6 +254,15 @@ interpretation。driver/provider 自身失败时不存在可归属的 agent deci
 system diagnostic 并结束本次 runtime turn，但不写 assistant conversation message 或 task
 terminal state。unknown effect/fencing/authority/integrity exception 仍穿透普通 tool-result
 恢复路径并停止当前 ownership。
+
+对 internally driven signal turn，typed failed result 若是
+`agent_can_replan|agent_can_retry`，Harness 建立 exact turn-local recovery obligation。
+successful reviewed durable mutation 或 explicit terminal action 可结算；read-only tool、
+`memory.compact`、unknown nominal write 与 narrative response 不可结算。第一次 prose
+以 `agent_turn_recovery_action_required` 拒绝且不写 conversation；再次 prose 或没有剩余
+model step 时返回 typed `agent_turn_recovery_unresolved`，source signal terminal failed、
+不自动 replay/建 successor，task 保持 nonterminal。该规则只保证当前 turn 产生真实 durable
+decision，不规定 agent 选哪一种 repair。
 
 step budget 用尽不授权继续同一 signal。driver 写入结构化
 `agent_turn_budget_exhausted` 后终止 exact occurrence；scheduler 不原地重放、不追加 steps、
@@ -277,6 +304,14 @@ effective lifecycle 立即为 `closed`，即使 base row 仍是 `active`；第�
 observation 必须返回 exact closed evidence，不得继续等待 row mutation。空的
 replay-safe runtime drain 只能证明本次没有可处理 signal/event/output，不是 semantic
 progress，也不能替代 terminal convergence。
+
+AOX bounded driver 连续看到两份 validated v2
+`processed_signal_count=0/replay_safe=true` outcome 时，还必须比较去除 timestamp、lease、
+event 与 command-id noise 的 canonical work fingerprint，并确认没有 pending/claimed
+signal、pending approval、active invocation/continuation、working agent 或 in-flight writer。只有两次
+fingerprint 相同才 typed fail-fast；ready work 关联 actionable failure 时为
+`formal_agent_recovery_unresolved`，否则为 `formal_runtime_stalled_no_wakeup`。单次 empty
+或任何 wake source 均不能触发，也不会启用 ready-task auto-enqueue。
 
 closure-stage isolated live diagnostic 用这一相同 loop 从一个 fresh executor signal
 开始，不发送新的 user/master entry message，也不直接调用 runner/provider/HPC。source
