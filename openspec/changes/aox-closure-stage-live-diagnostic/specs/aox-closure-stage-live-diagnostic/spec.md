@@ -85,6 +85,10 @@ first erroneous terminal action.
 - **WHEN** the source contains an unknown or dispatch-in-doubt effect, a live continuation or controlled-operation lease, an unsealed or inconsistent selected chain, missing sealed bytes, or an existing scientific closure
 - **THEN** qualification fails closed before target construction
 
+#### Scenario: Qualify the exact nullable primary PubMed lineage
+- **WHEN** the frozen r59 source is qualified at cursor `614`
+- **THEN** the completed research task, exactly one cutover-eligible PubMed artifact, its one succeeded research invocation, and every selected numeric-PMID source ref share the exact research task identity and carry `lane_id=None`; any mixed, empty-string, or non-null lane fails before reconstruction
+
 ### Requirement: Reconstruction creates a fresh, closed, independently verifiable logical fork
 The system SHALL initialize a fresh current-schema SQLite database and fresh
 artifact, blob, evidence, sandbox, and HPC roots beneath the plan-bound target. It
@@ -133,6 +137,10 @@ fresh executor wakeup.
 #### Scenario: Verify the task and report cut
 - **WHEN** the reconstructed runtime snapshot is loaded
 - **THEN** research is completed, execution is `in_progress`, reporting is not completed or published, and no post-cut final assistant response exists
+
+#### Scenario: Keep restored research outside the fresh execution lane
+- **WHEN** the r59 primary PubMed chain is copied into the fresh diagnostic root
+- **THEN** the reconstructed research task and synthetic researcher remain `lane_id=None` with the copied invocation, artifact, and source refs, while only the execution task, executor, scientific attempt, and executor signal bind the fresh execution lane
 
 #### Scenario: Verify a clean runtime handoff
 - **WHEN** reconstruction completes

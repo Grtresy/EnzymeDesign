@@ -647,3 +647,29 @@ source digest 仍不变。decision
 永久 `acceptance_eligible=false`。本次 Core projector/atomic admission/mechanical
 settlement correction 只获得非 live 回归证明；它不复用该 plan/target，不生成 formal
 bundle、reducer、GO/NO-GO、push 或 PR。
+
+terminal-rollover repair commit
+`230ea166eb5fd4e8f383c11825899b4b8858b64d` 随后以 fresh plan
+`sha256:3dd8d6d0bc8d39ae8c029f8ccd7c31d006c2aaaf1f64b41a5f45b7b0d9115e87`
+恰好执行一次。target `aox-closure-stage-0feb62fe7f7e75ef21070c6a` 中三个 task、
+published report `report_9169386fb35f`、co-terminal response 与 immutable closure
+`attempt_closure_c8ee71f7fe423aea0c1c7c6e` 全部形成；6 个 runtime command 精确处理
+6 条 signal，旧 classification/redundant-wakeup seam 没有重现。
+
+最终 verifier 以 `pubmed_primary_receipt_invalid` fail closed。只读数据库证明 primary
+PubMed artifact `art_provider_a10852772d37`、succeeded invocation
+`inv_research_tool_4ed73ef29381` 与 5 条 numeric-PMID source ref 均正确保留 r59 的
+`lane_id=None`，但旧 reconstruction 把 synthetic completed research task/member 错误
+挂到 fresh execution lane。该 lane 只描述新的 execution attempt，不应反向改写历史
+session-scoped research provenance；因此问题属于 reconstruction mapping，而非 agent
+决策。
+
+当前合同在 source qualification 阶段证明 exact primary artifact/task/invocation/source
+和全链 nullable lane，在 fresh target 中让 research task/member 与 copied PubMed lineage
+共同保持 `None`，仅 execution task/executor/scientific attempt/executor signal 进入 fresh
+execution lane。receipt validator 与 independent verifier 都会拒绝 graft、mixed、
+empty-string 或其他不精确映射。failed decision
+`sha256:311ccb035989a860d34524c58d53a68c64990ad27a875c676a2842b44a3988ef`
+和 fatal
+`sha256:d1885f6eee9bf169c098d03afff7172d47d613af6bddd90c22573fa8146f58c2`
+永久 non-acceptance；原 plan、target、MICU/evidence 不可复用。

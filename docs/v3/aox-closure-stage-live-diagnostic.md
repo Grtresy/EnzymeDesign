@@ -17,8 +17,11 @@ fresh current-schema root from the last valid durable boundary after cursor
 - the current selection is sealed and canonically
   `closure_request_ready=true`;
 - the one primary PubMed evidence artifact and all pre-cut artifact bytes are
-  copied to disjoint target storage with equal digests;
-- research is represented as one fresh, explicitly completed task;
+  copied to disjoint target storage with equal digests; the primary artifact,
+  its succeeded invocation, numeric-PMID source refs, completed research task,
+  and synthetic researcher retain the exact source `lane_id=None` lineage;
+- research is represented as one fresh, explicitly completed session-scoped
+  task, not as a member of the fresh execution lane;
 - execution is fresh and `in_progress`, reporting has not run, and no closure
   request, response, final closure, post-cut assistant message, runtime lease,
   writer, or continuation is imported;
@@ -377,6 +380,60 @@ envelope, formal bundle, reducer, GO/NO-GO, push or PR was created. This plan,
 target, browser output and MICU rows are permanently non-retryable. The current
 atomic-admission, Core-projector and mechanical-settlement repair is non-live
 evidence until a new clean commit receives a fresh one-use authority.
+
+## Terminal-rollover successor and nullable-lineage finding
+
+The terminal-rollover repair commit
+`230ea166eb5fd4e8f383c11825899b4b8858b64d` was admitted under fresh one-use
+plan
+`sha256:3dd8d6d0bc8d39ae8c029f8ccd7c31d006c2aaaf1f64b41a5f45b7b0d9115e87`.
+It was consumed exactly once at `2026-07-26T09:30:31.271884+00:00` in
+`/tmp/openzyme-aox-closure-stage-rollover-230ea16-01.64zdBc`, with target
+`aox-closure-stage-0feb62fe7f7e75ef21070c6a` and diagnostic attempt
+`closure-stage-d0fa86dbfdff0c6419031a2d7cbe56d6`.
+
+The production path reached the intended terminal state. All three tasks
+completed, reporter published `report_9169386fb35f`, master formed the
+co-terminal response, and immutable closure
+`attempt_closure_c8ee71f7fe423aea0c1c7c6e` was committed. Six runtime commands
+processed six signals; every signal was completed. The repaired terminal
+rollover therefore did not reproduce the previous classification or redundant
+wakeup failure.
+
+Final verification then failed with `pubmed_primary_receipt_invalid`. Read-only
+inspection proved that the selected PubMed artifact
+`art_provider_a10852772d37`, its succeeded invocation
+`inv_research_tool_4ed73ef29381`, and all five numeric-PMID source refs retained
+the source's correct `lane_id=None`. The reconstruction code had instead
+assigned the synthetic completed research task and researcher to the fresh
+execution lane. The verifier correctly rejected that mixed lineage, but the
+mapping itself was wrong: a new execution lane describes the fresh executor
+attempt, not historical session-scoped research.
+
+The repair makes that nullable lineage a first-class reconstruction invariant.
+Source qualification now proves exactly one cutover-eligible primary PubMed
+artifact and exact task/invocation/source bindings with `lane_id=None`.
+Reconstruction preserves `None` for the research task, researcher, invocation,
+artifact, and source refs; only the execution task, executor, scientific
+attempt, and executor signal receive the fresh execution lane. Receipt
+validation and the independent target verifier reject any grafted, mixed,
+empty-string, or otherwise non-exact lineage before a live result can be
+accepted.
+
+This run added 15 actual `gpt-5.5` MICU rows with `1087131` input, `3649`
+output, and `1090780` charged tokens, plus one failed estimated row charged
+`69711`; there was no overage or hard-limit breach. Source database and
+inventory remained byte-identical at
+`sha256:18a6e7a39fcc2df7e9a1dbe661ebd3bee90e2367f42fd1bb4872f2dfd813226e`
+and
+`sha256:9cc10388ba7e4e9a46e68013b02cc34727bfddac04ab8ea11def7e7132fc6cd5`.
+Decision
+`sha256:311ccb035989a860d34524c58d53a68c64990ad27a875c676a2842b44a3988ef`
+and fatal
+`sha256:d1885f6eee9bf169c098d03afff7172d47d613af6bddd90c22573fa8146f58c2`
+are permanently `acceptance_eligible=false`. The plan, target, MICU rows, and
+evidence cannot be retried or reused; a further diagnostic requires a new clean
+commit, nonexistent target, and independently published one-use authority.
 
 ## Two-command authority flow
 

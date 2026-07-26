@@ -53,6 +53,9 @@ from .aox_closure_stage_authority import (
     AOX_CLOSURE_STAGE_AUTHORITY_PLAN_SCHEMA_ID,
 )
 from .aox_closure_stage_source import (
+    AOX_CLOSURE_STAGE_R59_RESEARCH_TASK_ID,
+)
+from .aox_closure_stage_source import (
     AOX_CLOSURE_STAGE_SOURCE_MANIFEST_SCHEMA_ID,
 )
 from .aox_closure_stage_source import (
@@ -946,7 +949,7 @@ def _identity_map(
             "target": f"agent:executor:{suffix}",
         },
         "research_task_id": {
-            "source": "aox_research_pubmed_evidence",
+            "source": AOX_CLOSURE_STAGE_R59_RESEARCH_TASK_ID,
             "target": f"aox_research_closure_stage_{suffix}",
         },
         "report_task_id": {
@@ -1309,7 +1312,7 @@ def _fresh_product_state(
             priority=TaskPriority.URGENT,
             kind="research",
             assigned_ref=None,
-            lane_id=lane_id,
+            lane_id=None,
             created_at=reconstructed_at,
             updated_at=reconstructed_at,
         ),
@@ -1380,7 +1383,7 @@ def _fresh_product_state(
     researcher = AgentMember(
         agent_id=researcher_agent_id,
         session_id=session_id,
-        lane_id=lane_id,
+        lane_id=None,
         task_id=research_task_id,
         name="Curie",
         role="researcher",
@@ -1644,6 +1647,97 @@ def _finish_reconstructed_research_task(
         ),
     )
     return outcome.finish_ref
+
+
+def _assert_reconstructed_primary_pubmed_lineage(
+    repositories: CoreRepositories,
+    *,
+    manifest: Mapping[str, object],
+    identities: Mapping[str, object],
+) -> None:
+    primary_artifact_ids = tuple(
+        str(item)
+        for item in dict(manifest["scientific_graph"])[
+            "canonical_primary_pubmed_artifact_ids"
+        ]
+    )
+    if len(primary_artifact_ids) != 1:
+        raise CutoverEvidenceError(
+            "closure_stage_reconstruction_primary_research_lineage_invalid",
+            "reconstructed research lineage requires one primary PubMed artifact",
+        )
+    session_id = str(dict(identities["session_id"])["target"])
+    task_id = str(dict(identities["research_task_id"])["target"])
+    researcher_agent_id = str(
+        dict(identities["researcher_agent_id"])["target"]
+    )
+    artifact = repositories.artifacts.get(primary_artifact_ids[0])
+    task = repositories.tasks.get(task_id)
+    researcher = repositories.agents.get(
+        session_id,
+        researcher_agent_id,
+    )
+    invocation = (
+        None
+        if artifact is None or artifact.invocation_id is None
+        else repositories.invocations.get(artifact.invocation_id)
+    )
+    sources = (
+        ()
+        if artifact is None
+        else tuple(
+            source
+            for source in repositories.research_source_refs.list_by_session(
+                session_id
+            )
+            if source.evidence_artifact_id == artifact.artifact_id
+        )
+    )
+    metadata = {} if artifact is None else dict(artifact.metadata or {})
+    if (
+        task is None
+        or task.kind != "research"
+        or task.status is not TaskStatus.COMPLETED
+        or task.lane_id is not None
+        or researcher is None
+        or researcher.task_id != task_id
+        or researcher.lane_id is not None
+        or artifact is None
+        or artifact.session_id != session_id
+        or artifact.task_id != task_id
+        or artifact.lane_id is not None
+        or metadata.get("provider") != "pubmed"
+        or metadata.get("schema_version")
+        != "provider_literature_evidence@1"
+        or metadata.get("provider_outcome") != "completed"
+        or metadata.get("cutover_eligible") is not True
+        or invocation is None
+        or invocation.session_id != session_id
+        or invocation.task_id != task_id
+        or invocation.lane_id is not None
+        or invocation.engine_name != "research_tool"
+        or invocation.status.value != "succeeded"
+        or not invocation.input_ref
+        or not invocation.output_ref
+        or not sources
+        or any(
+            source.session_id != session_id
+            or source.task_id != task_id
+            or source.lane_id is not None
+            or source.invocation_id != invocation.invocation_id
+            or source.provider != "pubmed"
+            or not str(source.pmid or "").isdigit()
+            for source in sources
+        )
+    ):
+        raise CutoverEvidenceError(
+            "closure_stage_reconstruction_primary_research_lineage_invalid",
+            (
+                "reconstructed research task/member and copied PubMed "
+                "invocation/artifact/source refs must preserve all-null lane lineage"
+            ),
+            details={"artifact_id": primary_artifact_ids[0]},
+        )
 
 
 def _grant_and_create_attempt(
@@ -2383,6 +2477,11 @@ def reconstruct_aox_closure_stage(
                 manifest=manifest,
                 identities=identities,
             )
+            _assert_reconstructed_primary_pubmed_lineage(
+                scope.repositories,
+                manifest=manifest,
+                identities=identities,
+            )
             attempt_id, service = _grant_and_create_attempt(
                 scope.repositories,
                 plan=normalized_plan,
@@ -2796,6 +2895,54 @@ def validate_aox_closure_stage_reconstruction_receipt(
     expected_exclusions = {
         field: 0 for field in _EXCLUSION_FIELDS
     }
+
+    def unique_state_record(
+        records: object,
+        *,
+        field: str,
+        value: str,
+    ) -> dict[str, Any] | None:
+        if not isinstance(records, list):
+            return None
+        matches = [
+            dict(record)
+            for record in records
+            if isinstance(record, dict) and record.get(field) == value
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    research_task_id = str(
+        dict(identities["research_task_id"])["target"]
+    )
+    execution_task_id = str(
+        dict(identities["execution_task_id"])["target"]
+    )
+    researcher_agent_id = str(
+        dict(identities["researcher_agent_id"])["target"]
+    )
+    executor_agent_id = str(
+        dict(identities["executor_agent_id"])["target"]
+    )
+    research_task_state = unique_state_record(
+        state.get("tasks"),
+        field="task_id",
+        value=research_task_id,
+    )
+    execution_task_state = unique_state_record(
+        state.get("tasks"),
+        field="task_id",
+        value=execution_task_id,
+    )
+    researcher_state = unique_state_record(
+        state.get("agents"),
+        field="agent_id",
+        value=researcher_agent_id,
+    )
+    executor_state = unique_state_record(
+        state.get("agents"),
+        field="agent_id",
+        value=executor_agent_id,
+    )
     if (
         set(authority) != _RECEIPT_AUTHORITY_FIELDS
         or authority.get("plan_schema_id")
@@ -2871,6 +3018,17 @@ def validate_aox_closure_stage_reconstruction_receipt(
         or target_graph.get("source_to_target_universe_transform")
         != "outer_identity_rewrite_and_service_reseal"
         or set(state) != _CANONICAL_STATE_FIELDS
+        or research_task_state is None
+        or research_task_state.get("status") != TaskStatus.COMPLETED.value
+        or research_task_state.get("lane_id") is not None
+        or researcher_state is None
+        or researcher_state.get("task_id") != research_task_id
+        or researcher_state.get("lane_id") is not None
+        or execution_task_state is None
+        or execution_task_state.get("lane_id") != slot["lane_id"]
+        or executor_state is None
+        or executor_state.get("task_id") != execution_task_id
+        or executor_state.get("lane_id") != slot["lane_id"]
         or dict(state.get("scientific_attempt") or {}).get("attempt_id")
         != target_graph.get("attempt_id")
         or dict(state.get("selection_head") or {}).get("selection_id")
@@ -3057,6 +3215,11 @@ def independently_verify_aox_closure_stage_reconstruction(
         selected_source_rows = _source_rows(
             source_connection,
             manifest=manifest,
+        )
+        _assert_reconstructed_primary_pubmed_lineage(
+            CoreRepositories.from_connection(target_connection),
+            manifest=manifest,
+            identities=identities,
         )
         (
             expected_storage_map,

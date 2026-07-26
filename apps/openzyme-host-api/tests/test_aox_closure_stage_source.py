@@ -292,6 +292,12 @@ def test_repository_backed_event_cut_rejects_missing_or_changed_boundary(
             ")",
             "closure_stage_source_quiescence_invalid",
         ),
+        (
+            "UPDATE session_artifact_records "
+            "SET lane_id = 'lane_grafted_after_source_research' "
+            "WHERE artifact_id = 'art_provider_a10852772d37'",
+            "closure_stage_source_primary_research_lineage_invalid",
+        ),
     ),
 )
 def test_repository_backed_scientific_graph_rejects_unsafe_source_state(

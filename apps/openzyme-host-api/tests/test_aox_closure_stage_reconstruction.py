@@ -299,11 +299,25 @@ def test_repository_backed_r59_cut_reconstructs_into_fresh_isolated_root(
             )
         }
         assert tasks[reconstruction.research_task_id].status.value == "completed"
+        assert tasks[reconstruction.research_task_id].lane_id is None
         assert (
             tasks[str(dict(plan["slot"])["task_id"])].status.value
             == "in_progress"
         )
+        assert (
+            tasks[str(dict(plan["slot"])["task_id"])].lane_id
+            == dict(plan["slot"])["lane_id"]
+        )
         assert tasks[reconstruction.report_task_id].status.value == "todo"
+        researcher = next(
+            member
+            for member in scope.repositories.agents.list_by_session(
+                str(dict(plan["slot"])["session_id"])
+            )
+            if member.role == "researcher"
+        )
+        assert researcher.task_id == reconstruction.research_task_id
+        assert researcher.lane_id is None
         artifacts = scope.repositories.artifacts.list_by_session(
             str(dict(plan["slot"])["session_id"])
         )
@@ -323,6 +337,34 @@ def test_repository_backed_r59_cut_reconstructs_into_fresh_isolated_root(
             ]["formal_adoption_eligible"]
             is False
             for artifact in artifacts
+        )
+        primary_pubmed = next(
+            artifact
+            for artifact in artifacts
+            if dict(artifact.metadata or {}).get("provider") == "pubmed"
+            and dict(artifact.metadata or {}).get("cutover_eligible") is True
+        )
+        assert primary_pubmed.task_id == reconstruction.research_task_id
+        assert primary_pubmed.lane_id is None
+        primary_invocation = scope.repositories.invocations.get(
+            str(primary_pubmed.invocation_id)
+        )
+        assert primary_invocation is not None
+        assert primary_invocation.task_id == reconstruction.research_task_id
+        assert primary_invocation.lane_id is None
+        primary_sources = [
+            source
+            for source in scope.repositories.research_source_refs.list_by_session(
+                str(dict(plan["slot"])["session_id"])
+            )
+            if source.evidence_artifact_id == primary_pubmed.artifact_id
+        ]
+        assert primary_sources
+        assert all(
+            source.task_id == reconstruction.research_task_id
+            and source.lane_id is None
+            and source.invocation_id == primary_invocation.invocation_id
+            for source in primary_sources
         )
         assert (
             scope.repositories.reports.list_by_session(
@@ -375,6 +417,37 @@ def test_repository_backed_r59_cut_reconstructs_into_fresh_isolated_root(
         assert executor_delegation.payload["workflow_manifests"][0][
             "selection_ref"
         ] == _CURRENT_WORKFLOW_REF
+
+    lane_graft = deepcopy(reconstruction.receipt)
+    for task in lane_graft["canonical_state"]["tasks"]:
+        if task["task_id"] == reconstruction.research_task_id:
+            task["lane_id"] = dict(plan["slot"])["lane_id"]
+    for agent in lane_graft["canonical_state"]["agents"]:
+        if agent["role"] == "researcher":
+            agent["lane_id"] = dict(plan["slot"])["lane_id"]
+    lane_graft["canonical_state"]["canonical_state_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in lane_graft["canonical_state"].items()
+            if key != "canonical_state_digest"
+        }
+    )
+    lane_graft["receipt_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in lane_graft.items()
+            if key != "receipt_digest"
+        }
+    )
+    with pytest.raises(CutoverEvidenceError) as grafted_lane:
+        validate_aox_closure_stage_reconstruction_receipt(
+            lane_graft,
+            plan=plan,
+            source_manifest=manifest,
+        )
+    assert grafted_lane.value.code == (
+        "closure_stage_reconstruction_receipt_semantics_invalid"
+    )
 
     nested_extra = deepcopy(reconstruction.receipt)
     nested_extra["plan"]["unexpected_transform"] = "not-closed"
@@ -453,6 +526,55 @@ def test_repository_backed_r59_cut_reconstructs_into_fresh_isolated_root(
     provider = SQLiteRepositoryProvider(
         str(reconstruction.roots.sqlite_path)
     )
+    with provider.connection_scope() as scope:
+        with MutationScopeService(scope.repositories).writer_turn(
+            session_id=str(dict(plan["slot"])["session_id"]),
+            owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+            owner_ref="test:graft-primary-research-lineage",
+        ):
+            with scope.repositories.atomic(
+                prefix="test_graft_primary_research_lineage"
+            ):
+                scope.connection.execute(
+                    """
+                    UPDATE session_artifact_records
+                    SET lane_id = ?
+                    WHERE artifact_id = ?
+                    """,
+                    (
+                        str(dict(plan["slot"])["lane_id"]),
+                        primary_pubmed.artifact_id,
+                    ),
+                )
+    with pytest.raises(CutoverEvidenceError) as grafted_target:
+        independently_verify_aox_closure_stage_reconstruction(
+            reconstruction.receipt,
+            plan=plan,
+            source_manifest=manifest,
+            requalify_source=False,
+            require_pristine_target=False,
+        )
+    assert grafted_target.value.code == (
+        "closure_stage_reconstruction_primary_research_lineage_invalid"
+    )
+    with provider.connection_scope() as scope:
+        with MutationScopeService(scope.repositories).writer_turn(
+            session_id=str(dict(plan["slot"])["session_id"]),
+            owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+            owner_ref="test:restore-primary-research-lineage",
+        ):
+            with scope.repositories.atomic(
+                prefix="test_restore_primary_research_lineage"
+            ):
+                scope.connection.execute(
+                    """
+                    UPDATE session_artifact_records
+                    SET lane_id = NULL
+                    WHERE artifact_id = ?
+                    """,
+                    (primary_pubmed.artifact_id,),
+                )
+
     with provider.connection_scope() as scope:
         with MutationScopeService(scope.repositories).writer_turn(
             session_id=str(dict(plan["slot"])["session_id"]),

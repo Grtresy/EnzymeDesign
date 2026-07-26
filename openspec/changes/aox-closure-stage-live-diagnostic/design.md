@@ -149,6 +149,10 @@ also proves:
 - the sealed selection, disposition/adoption sets, operation universe,
   terminal operation results, artifact metadata, and sealed blob digests are
   internally consistent;
+- the one canonical primary PubMed artifact, its succeeded research
+  invocation, every selected numeric-PMID source ref, and the completed
+  research task share the exact source task identity and the exact nullable
+  source lane identity; for the frozen r59 cut that lane is `None` throughout;
 - the current canonical selection evaluator reports
   `closure_request_ready = true` once inherited source writers are excluded;
 - the source contains no unknown/in-doubt external effect or live
@@ -194,6 +198,15 @@ root. Copied bytes are marked `diagnostic_source_copy`; they are not
 `allowed_prerequisites`, new operation outputs, scientific materialization,
 or formal adoption. Report rows/drafts and final messages created after the
 source cut are not imported.
+
+The fresh execution lane belongs only to the resumed execution task,
+executor, scientific attempt, and runtime handoff. The mechanically completed
+research task and its synthetic resident researcher preserve the qualified
+primary PubMed chain's nullable lane; the frozen r59 chain therefore remains
+`lane_id=None` across task, member, invocation, artifact, and source refs.
+Reconstruction must not graft copied pre-cut evidence onto the fresh
+execution lane, and the independent verifier rejects either a mixed lineage
+or a rewritten source `None`.
 
 The reconstruction receipt contains:
 

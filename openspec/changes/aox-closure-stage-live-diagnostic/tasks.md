@@ -83,6 +83,8 @@
 - [x] 9.7 Audit the complete diff against the OpenSpec requirements, verify no unrelated dirty files are included, and update all implementation checkboxes supported by evidence.
 - [x] 9.8 Stage the coherent pre-live slice, run staged diff checks, create one detailed Chinese Conventional Commit, and verify the worktree is clean.
 - [x] 9.9 Correct the pre-live ledger placement gate discovered by the real authority command so the exact pre-existing config-pinned numbered-run ledger is reused while fresh outputs remain outside the checkout; add identity tests, revalidate, and commit before publishing authority.
+- [x] 9.10 Qualify the frozen r59 primary PubMed task/invocation/artifact/source chain as exact all-null lane lineage, preserve that lane on the reconstructed research task/member, and keep the fresh execution lane scoped to executor/attempt/runtime state.
+- [x] 9.11 Add source/reconstruction/independent-verifier regressions for nullable lineage and mismatch rejection, update stable closure-stage documentation, run focused verification, and create a new clean pre-live commit without rerunning `check-mainline.sh`.
 
 ## 10. One Authorized Non-Numbered MICU Live Diagnostic
 

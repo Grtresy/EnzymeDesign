@@ -36,6 +36,7 @@ AOX_CLOSURE_STAGE_SOURCE_MANIFEST_SCHEMA_ID = (
     "aox_closure_stage_source_manifest@1"
 )
 AOX_CLOSURE_STAGE_SOURCE_MANIFEST_FILENAME = "source-manifest.json"
+AOX_CLOSURE_STAGE_R59_RESEARCH_TASK_ID = "aox_research_pubmed_evidence"
 
 _DIGEST_PATTERN = re.compile(r"^sha256:[a-f0-9]{64}$")
 _MANIFEST_FIELDS = frozenset(
@@ -875,6 +876,119 @@ def _artifact_copy_candidates(
     return paths, sealed_count, engine_document_count, primary_pubmed_ids
 
 
+def _qualify_primary_pubmed_lineage(
+    connection: sqlite3.Connection,
+    source: Mapping[str, object],
+    *,
+    cut_created_at: str,
+    primary_pubmed_ids: list[str],
+) -> None:
+    if len(primary_pubmed_ids) != 1:
+        raise CutoverEvidenceError(
+            "closure_stage_source_primary_research_lineage_invalid",
+            "source cut must identify exactly one primary PubMed artifact",
+        )
+    artifact = connection.execute(
+        """
+        SELECT artifact_id, session_id, task_id, lane_id, invocation_id,
+               metadata_json
+        FROM session_artifact_records
+        WHERE artifact_id = ? AND session_id = ? AND created_at <= ?
+        """,
+        (
+            primary_pubmed_ids[0],
+            source["session_id"],
+            cut_created_at,
+        ),
+    ).fetchone()
+    if artifact is None:
+        raise CutoverEvidenceError(
+            "closure_stage_source_primary_research_lineage_invalid",
+            "primary PubMed artifact is absent from the qualified source cut",
+        )
+    try:
+        metadata = json.loads(str(artifact["metadata_json"]))
+    except json.JSONDecodeError as exc:
+        raise CutoverEvidenceError(
+            "closure_stage_source_primary_research_lineage_invalid",
+            "primary PubMed artifact metadata is malformed",
+        ) from exc
+    task = connection.execute(
+        """
+        SELECT task_id, session_id, kind, status, lane_id
+        FROM tasks
+        WHERE task_id = ?
+        """,
+        (artifact["task_id"],),
+    ).fetchone()
+    invocation = connection.execute(
+        """
+        SELECT invocation_id, session_id, task_id, lane_id, engine_name,
+               status, input_ref, output_ref
+        FROM engine_invocations
+        WHERE invocation_id = ?
+        """,
+        (artifact["invocation_id"],),
+    ).fetchone()
+    sources = connection.execute(
+        """
+        SELECT source_ref_id, session_id, task_id, lane_id, invocation_id,
+               evidence_artifact_id, provider, pmid
+        FROM session_research_source_refs
+        WHERE evidence_artifact_id = ? AND created_at <= ?
+        ORDER BY source_ref_id
+        """,
+        (artifact["artifact_id"], cut_created_at),
+    ).fetchall()
+    expected_task_id = AOX_CLOSURE_STAGE_R59_RESEARCH_TASK_ID
+    expected_invocation_id = artifact["invocation_id"]
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("provider") != "pubmed"
+        or metadata.get("schema_version")
+        != "provider_literature_evidence@1"
+        or metadata.get("provider_outcome") != "completed"
+        or metadata.get("cutover_eligible") is not True
+        or artifact["task_id"] != expected_task_id
+        or artifact["lane_id"] is not None
+        or not isinstance(expected_invocation_id, str)
+        or not expected_invocation_id
+        or task is None
+        or task["session_id"] != source["session_id"]
+        or task["task_id"] != expected_task_id
+        or task["kind"] != "research"
+        or task["status"] != "completed"
+        or task["lane_id"] is not None
+        or invocation is None
+        or invocation["session_id"] != source["session_id"]
+        or invocation["task_id"] != expected_task_id
+        or invocation["lane_id"] is not None
+        or invocation["engine_name"] != "research_tool"
+        or invocation["status"] != "succeeded"
+        or not invocation["input_ref"]
+        or not invocation["output_ref"]
+        or not sources
+        or any(
+            item["session_id"] != source["session_id"]
+            or item["task_id"] != expected_task_id
+            or item["lane_id"] is not None
+            or item["invocation_id"] != expected_invocation_id
+            or item["evidence_artifact_id"] != artifact["artifact_id"]
+            or item["provider"] != "pubmed"
+            or not str(item["pmid"] or "").isdigit()
+            for item in sources
+        )
+    ):
+        raise CutoverEvidenceError(
+            "closure_stage_source_primary_research_lineage_invalid",
+            (
+                "the frozen r59 primary PubMed task, invocation, artifact, "
+                "and source refs do not share the exact all-null lane lineage"
+            ),
+            details={"artifact_id": str(artifact["artifact_id"])},
+        )
+
+
 def _qualify_scientific_graph(
     connection: sqlite3.Connection,
     source: Mapping[str, object],
@@ -1060,6 +1174,12 @@ def _qualify_scientific_graph(
         connection,
         source=source,
         cut_created_at=cut_created_at,
+    )
+    _qualify_primary_pubmed_lineage(
+        connection,
+        source,
+        cut_created_at=cut_created_at,
+        primary_pubmed_ids=primary_pubmed_ids,
     )
     repositories = CoreRepositories.from_connection(connection)
     evaluation = ScientificAttemptService(
