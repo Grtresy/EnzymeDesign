@@ -120,19 +120,36 @@
 > That plan, target, MICU rows, browser receipt, and evidence remain
 > non-retryable; tasks 9.12-9.15 define the forward schema repair before any
 > fresh authority.
+>
+> Permanent evidence note (2026-07-27): clean repair commit
+> `4d7175c0958224ce649e1661062d033b5fad5295` consumed fresh plan
+> `sha256:df31b14becb716e2d50099c0df22a7822ea046a16dd39b3781d54e30d3b000da`
+> exactly once and sealed valid `aox_closure_stage_live_result@3`
+> `sha256:e6ff14b1453801487beccee509377d741d46f5b37d414afe4c8f7381a0fba115`
+> plus completed decision
+> `sha256:ef505a31e345687821cc9f5e0e7e8ba08b222ddb2b782b4df25b9897e196e3bb`.
+> The independently rebuilt evidence proves six terminal-known controlled
+> operations, distinct outer run and inner scientific-attempt identities,
+> executor/reporter/master lifecycle closure, a co-terminal response, exact
+> post-attempt scope, challenged Chrome observation, retired descendants and
+> writers, byte-identical source inventory, and `15` actual `gpt-5.5` rows
+> charging exactly `949419` tokens with no estimate, overage, or hard breach.
+> This is a successful isolated diagnostic only:
+> `acceptance_eligible=false`, with no formal bundle, reducer, promotion,
+> push, PR, or numbered successor.
 
-- [ ] 10.1 Re-resolve the complete frozen r59 source inventory and record pre-live hashes without modifying authority, root, state, effects, artifacts, report, browser bytes, or evidence.
-- [ ] 10.2 Verify the committed HEAD, current config/workflow/SOP/qualification/UI identities, MICU model/provider, ledger capacity, source retirement, zero pending WAL bytes, exact cursor-614 cut, and a nonexistent non-`rNN` target.
-- [ ] 10.3 Publish one reviewable closure-stage authority plan with bounded expiry/resources, inspect its closed payload/digest, and confirm authorization alone created no target or live effect.
-- [ ] 10.4 Consume the deterministic one-use receipt and execute exactly one `run-closure-stage-diagnostic-live` against real MICU with the numbered-run driver, browser, supervision, and ledger settings.
-- [ ] 10.5 Monitor bounded semantic progress without opening the fresh root before retirement; allow the supervisor to finish or fail closed and do not start another run under the same plan.
-- [ ] 10.6 After descendant retirement, verify SQLite/root quiescence and seal the source manifest, reconstruction/parity receipts, live result, ledger transition, source post-hashes, and diagnostic-only decision.
+- [x] 10.1 Re-resolve the complete frozen r59 source inventory and record pre-live hashes without modifying authority, root, state, effects, artifacts, report, browser bytes, or evidence.
+- [x] 10.2 Verify the committed HEAD, current config/workflow/SOP/qualification/UI identities, MICU model/provider, ledger capacity, source retirement, zero pending WAL bytes, exact cursor-614 cut, and a nonexistent non-`rNN` target.
+- [x] 10.3 Publish one reviewable closure-stage authority plan with bounded expiry/resources, inspect its closed payload/digest, and confirm authorization alone created no target or live effect.
+- [x] 10.4 Consume the deterministic one-use receipt and execute exactly one `run-closure-stage-diagnostic-live` against real MICU with the numbered-run driver, browser, supervision, and ledger settings.
+- [x] 10.5 Monitor bounded semantic progress without opening the fresh root before retirement; allow the supervisor to finish or fail closed and do not start another run under the same plan.
+- [x] 10.6 After descendant retirement, verify SQLite/root quiescence and seal the source manifest, reconstruction/parity receipts, live result, ledger transition, source post-hashes, and diagnostic-only decision.
 
 ## 11. Offline Completion Audit and Handoff
 
-- [ ] 11.1 Independently validate all sealed closure-stage schemas, hashes, receipt rebuilds, lifecycle frames, process retirement, MICU attribution, public safety, and source before/after identity.
-- [ ] 11.2 Inspect the fresh canonical database and durable events to prove executor `completed`, reporter publication/completion, master-owned close, co-terminal final response, Host finalization, and terminal convergence.
-- [ ] 11.3 Compare baseline/terminal effects and artifacts to prove no new provider/HPC/sandbox science and no copied source byte entered formal adoption or materialization.
-- [ ] 11.4 Verify the original r59 authority/root/state/effect/artifact/report/browser/evidence inventory remains byte-identical and its existing campaign decision remains unchanged.
-- [ ] 11.5 Confirm no formal bundle, exact-three plan input, campaign reducer decision, GO/NO-GO, promotion, push, PR, or numbered follow-on was created.
-- [ ] 11.6 Record an evidence-backed Chinese analysis of the diagnostic outcome, distinguishing executor-guard behavior, reporter/master closure behavior, final-answer behavior, and any remaining blocker without overstating formal acceptance.
+- [x] 11.1 Independently validate all sealed closure-stage schemas, hashes, receipt rebuilds, lifecycle frames, process retirement, MICU attribution, public safety, and source before/after identity.
+- [x] 11.2 Inspect the fresh canonical database and durable events to prove executor `completed`, reporter publication/completion, master-owned close, co-terminal final response, Host finalization, and terminal convergence.
+- [x] 11.3 Compare baseline/terminal effects and artifacts to prove no new provider/HPC/sandbox science and no copied source byte entered formal adoption or materialization.
+- [x] 11.4 Verify the original r59 authority/root/state/effect/artifact/report/browser/evidence inventory remains byte-identical and its existing campaign decision remains unchanged.
+- [x] 11.5 Confirm no formal bundle, exact-three plan input, campaign reducer decision, GO/NO-GO, promotion, push, PR, or numbered follow-on was created.
+- [x] 11.6 Record an evidence-backed Chinese analysis of the diagnostic outcome, distinguishing executor-guard behavior, reporter/master closure behavior, final-answer behavior, and any remaining blocker without overstating formal acceptance.

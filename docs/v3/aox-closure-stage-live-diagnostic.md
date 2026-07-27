@@ -498,6 +498,45 @@ conflation, universe drift, and supervision drift independently. The consumed
 plan, target, MICU rows, browser receipt, and failed decision above remain
 permanently non-retryable.
 
+## Verified `@3` successor
+
+Clean repair commit `4d7175c0958224ce649e1661062d033b5fad5295`
+passed fresh architecture admission and consumed one-use plan
+`sha256:df31b14becb716e2d50099c0df22a7822ea046a16dd39b3781d54e30d3b000da`
+exactly once beneath
+`/tmp/openzyme-aox-closure-stage-envelope-4d7175c-01.8efTKa`. The plan bound
+target `aox-closure-stage-ab1f884cec602d4414da69b2`, outer run attempt
+`closure-stage-f667a488a95d3b062ff994223f9c9164`, real `gpt-5.5` MICU, fresh
+process/browser roots, and the independently qualified cursor-614 source cut.
+
+The real executor, reporter, and master path completed in six bounded drains.
+All three tasks completed; the exact six controlled operations were
+terminal-known; reporter published `report_9e037bbde835`; and master produced
+the co-terminal response, immutable closure
+`attempt_closure_ce41b066878ede97857e62fc`, and exact post-attempt scope for
+inner scientific attempt `attempt_1aac55d28b6f27c71356ff32`. The challenged
+Chrome observation completed without console errors. Parent supervision
+proved child exit zero, descendant retirement, zero active writers, settled
+local state, SQLite integrity, and one legal nonterminal post-attempt scope.
+
+The sealed `aox_closure_stage_live_result@3` digest is
+`sha256:e6ff14b1453801487beccee509377d741d46f5b37d414afe4c8f7381a0fba115`;
+the completed diagnostic decision is
+`sha256:ef505a31e345687821cc9f5e0e7e8ba08b222ddb2b782b4df25b9897e196e3bb`.
+Independent validators rebuilt the authority consumption, source manifest,
+reconstruction receipt, parity receipt, supervised child-result digest,
+terminal operation projection, live result, and decision. The source
+database/inventory and original r59 campaign decision remained byte-identical;
+no new scientific provider/HPC/sandbox operation or materialization appeared.
+Fifteen actual `gpt-5.5` rows charged exactly `949419` tokens, matching the
+append-only ledger delta, with no estimated row, overage, or hard breach.
+
+This closes the isolated closure-stage diagnostic objective but does not
+promote r59 or create formal campaign evidence. The result remains permanently
+`acceptance_eligible=false`; no formal bundle, exact-three input, reducer
+decision, GO/NO-GO, promotion, push, PR, or numbered follow-on was created.
+The consumed authority and all live artifacts are non-retryable.
+
 ## Two-command authority flow
 
 First generate current clean-commit architecture qualification and AOX pin
