@@ -14089,6 +14089,87 @@ class ExecutionPipelineStartRuntime:
             None,
         )
         if existing_task_invocation is not None:
+            requested_invocation_id = str(
+                invocation.arguments.get("invocation_id") or ""
+            ).strip()
+            requested_idempotency_key = str(
+                invocation.arguments.get("idempotency_key") or ""
+            ).strip()
+            exact_replay = bool(
+                (requested_invocation_id or requested_idempotency_key)
+                and (
+                    not requested_invocation_id
+                    or requested_invocation_id
+                    == existing_task_invocation.invocation_id
+                )
+                and (
+                    not requested_idempotency_key
+                    or requested_idempotency_key
+                    == existing_task_invocation.idempotency_key
+                )
+            )
+            input_document = (
+                None
+                if existing_task_invocation.input_ref is None
+                else runtime_context.repositories.engine_documents.get(
+                    existing_task_invocation.input_ref
+                )
+            )
+            persisted_pipeline = (
+                None
+                if input_document is None
+                else input_document.payload.get("pipeline")
+            )
+            requested_lane_id = (
+                invocation.lane_id
+                if invocation.arguments.get("lane_id") is None
+                else str(invocation.arguments["lane_id"])
+            )
+            request_matches = bool(
+                isinstance(persisted_pipeline, dict)
+                and str(
+                    persisted_pipeline.get("source_code_artifact_id") or ""
+                )
+                == str(invocation.arguments["code_artifact_id"])
+                and dict(persisted_pipeline.get("inputs") or {})
+                == dict(invocation.arguments.get("inputs") or {})
+                and bool(persisted_pipeline.get("dry_run"))
+                == bool(invocation.arguments.get("dry_run", False))
+                and existing_task_invocation.lane_id == requested_lane_id
+            )
+            if exact_replay and request_matches:
+                payload = existing_task_invocation.to_dict()
+                waiting_for_approval = (
+                    existing_task_invocation.status
+                    is EngineInvocationStatus.WAITING_APPROVAL
+                )
+                return ToolResult(
+                    call_id=invocation.call_id,
+                    tool_name=invocation.tool_name,
+                    ok=True,
+                    content=json.dumps(payload, sort_keys=True),
+                    task_id=existing_task_invocation.task_id,
+                    lane_id=existing_task_invocation.lane_id,
+                    status="execution_invocation_already_satisfied",
+                    summary=(
+                        "The exact execution pipeline invocation identity "
+                        "already exists; no second pipeline was started."
+                    ),
+                    details={
+                        "invocation_id": (
+                            existing_task_invocation.invocation_id
+                        ),
+                        "invocation_status": (
+                            existing_task_invocation.status.value
+                        ),
+                        "already_satisfied": True,
+                        "approval_id": existing_task_invocation.approval_id,
+                    },
+                    terminal_action=(
+                        "runtime_suspended" if waiting_for_approval else None
+                    ),
+                    terminates_turn=waiting_for_approval,
+                )
             return ToolResult(
                 call_id=invocation.call_id,
                 tool_name=invocation.tool_name,
@@ -14111,6 +14192,8 @@ class ExecutionPipelineStartRuntime:
                 details={
                     "invocation_id": existing_task_invocation.invocation_id,
                     "invocation_status": existing_task_invocation.status.value,
+                    "requested_identity_matched": exact_replay,
+                    "requested_payload_matched": request_matches,
                 },
             )
         result = self.engine.start_pipeline(
@@ -14136,14 +14219,51 @@ class ExecutionPipelineStartRuntime:
             if invocation.arguments.get("idempotency_key") is None
             else str(invocation.arguments["idempotency_key"]),
         )
+        waiting_for_approval = (
+            result.invocation.status is EngineInvocationStatus.WAITING_APPROVAL
+        )
+        start_succeeded = result.invocation.status not in {
+            EngineInvocationStatus.FAILED,
+            EngineInvocationStatus.CANCELLED,
+        }
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
-            ok=result.invocation.status
-            not in {EngineInvocationStatus.FAILED, EngineInvocationStatus.CANCELLED},
+            ok=start_succeeded,
             content=json.dumps(result.to_dict(), sort_keys=True),
             task_id=result.invocation.task_id,
             lane_id=result.invocation.lane_id,
+            status=(
+                "execution_pipeline_waiting_approval"
+                if waiting_for_approval
+                else (
+                    "execution_pipeline_started"
+                    if start_succeeded
+                    else "execution_pipeline_start_failed"
+                )
+            ),
+            summary=(
+                "Execution pipeline is durably waiting for approval."
+                if waiting_for_approval
+                else (
+                    "Execution pipeline start was recorded."
+                    if start_succeeded
+                    else "Execution pipeline start failed."
+                )
+            ),
+            details={
+                "invocation_id": result.invocation.invocation_id,
+                "invocation_status": result.invocation.status.value,
+                "approval_id": (
+                    None
+                    if result.approval is None
+                    else result.approval.approval_id
+                ),
+            },
+            terminal_action=(
+                "runtime_suspended" if waiting_for_approval else None
+            ),
+            terminates_turn=waiting_for_approval,
         )
 
 
@@ -14196,6 +14316,22 @@ class ExecutionPipelineStatusRuntime:
             tool_name=invocation.tool_name,
             ok=True,
             content=json.dumps(status, sort_keys=True),
+            task_id=(
+                None
+                if status.get("task_id") is None
+                else str(status["task_id"])
+            ),
+            lane_id=(
+                None
+                if status.get("lane_id") is None
+                else str(status["lane_id"])
+            ),
+            status="execution_pipeline_status_projected",
+            summary=(
+                "Projected execution pipeline invocation "
+                f"{status.get('invocation_id')}."
+            ),
+            details=status,
         )
 
 

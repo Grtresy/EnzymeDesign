@@ -855,6 +855,21 @@ class ToolRouter:
                 if validation
                 else RetryEligibility.TERMINAL
             )
+        try:
+            recoverability = FailureRecoverability(
+                str(details.get("recoverability"))
+            )
+        except ValueError:
+            recoverability = (
+                FailureRecoverability.RECONCILIATION_REQUIRED
+                if effect_certainty
+                is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+                else (
+                    FailureRecoverability.AGENT_CAN_RETRY
+                    if validation
+                    else FailureRecoverability.AGENT_CAN_REPLAN
+                )
+            )
         observation = record_failure_observation(
             getattr(self.dispatch_context, "repositories", None),
             session_id=step_context.session_id,
@@ -866,16 +881,7 @@ class ToolRouter:
             source_version=step_context.step_id,
             phase="validation" if validation else "dispatch",
             failure_class=FailureClass.VALIDATION if validation else FailureClass.TOOL,
-            recoverability=(
-                FailureRecoverability.RECONCILIATION_REQUIRED
-                if effect_certainty
-                is ExternalEffectCertainty.DISPATCH_IN_DOUBT
-                else (
-                    FailureRecoverability.AGENT_CAN_RETRY
-                    if validation
-                    else FailureRecoverability.AGENT_CAN_REPLAN
-                )
-            ),
+            recoverability=recoverability,
             effect_certainty=effect_certainty,
             retry_eligibility=retry_eligibility,
             actor_kind=FailureActorKind.HARNESS,

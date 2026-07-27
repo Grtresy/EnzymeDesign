@@ -211,10 +211,11 @@ chooses the agent's recovery strategy:
    text cannot grant authority.
 3. An internal signal turn that receives a typed
    `agent_can_replan|agent_can_retry` and `no_effect|terminal_known` failure
-   must produce a reviewed durable mutation or explicit terminal action.
-   Prose/read-only activity does not settle it: one prose response is rejected
-   without persistence, and repeated prose or the step bound terminates the
-   exact signal as `agent_turn_recovery_unresolved` without retry or successor.
+   must produce an exact failure-bound settlement proof or explicit terminal
+   action. Unrelated prose/read-only/write activity does not settle it: one
+   prose response is rejected without persistence, and repeated prose or the
+   step bound terminates the exact signal as
+   `agent_turn_recovery_unresolved` without retry or successor.
 4. AOX formal policy `aox_cutover_formal_tool_precondition@4` rejects prose
    when research/execution are complete but the canonical ready report task is
    unassigned and has no pending/claimed runtime signal. It tells the agent to establish the

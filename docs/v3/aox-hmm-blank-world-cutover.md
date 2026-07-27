@@ -625,8 +625,9 @@ in the linked closure-stage diagnostic document.
 The forward repair keeps the fail-closed delegation result and separates four
 contracts: auto compaction is historical/authority-free and scope-correct;
 every actor prompt shows exact current workflow refs or `[]`; an internal
-signal's actionable effect-known failure must reach a known durable mutation
-or explicit terminal action rather than prose-only settlement; and AOX formal
+signal's actionable effect-known failure must reach an exact failure-bound
+settlement proof or explicit terminal action rather than unrelated
+prose/read/write settlement; and AOX formal
 policy `aox_cutover_formal_tool_precondition@4` rejects a ready, unassigned
 report phase with no pending/claimed runtime signal before prose is persisted. It does not
 auto-delegate, auto-enqueue, rewrite refs or replay the failed call. The AOX

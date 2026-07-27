@@ -223,6 +223,102 @@ def _finish_terminates_current_turn(context: SessionRuntimeContext, task: Task) 
     return context.agent_id == task.assigned_ref
 
 
+def _already_satisfied_task_finish_result(
+    context: SessionRuntimeContext,
+    invocation: ToolInvocation,
+    task: Task,
+) -> ToolResult | None:
+    arguments = invocation.arguments
+    requested_status = str(arguments.get("status") or "").strip()
+    if requested_status != task.status.value:
+        return None
+    evidence_refs, evidence_error = _coerce_evidence_refs(
+        arguments.get("evidence_refs")
+    )
+    if evidence_error is not None:
+        return None
+    requested_payload = {
+        "task_id": task.task_id,
+        "status": requested_status,
+        "summary": str(arguments.get("summary") or "").strip(),
+        "evidence_refs": list(evidence_refs),
+        "failure_summary": (
+            None
+            if arguments.get("failure_summary") is None
+            else str(arguments["failure_summary"]).strip()
+        ),
+        "failure_ref": (
+            None
+            if arguments.get("failure_ref") is None
+            else str(arguments["failure_ref"]).strip()
+        ),
+        "blocked_reason": (
+            None
+            if arguments.get("blocked_reason") is None
+            else str(arguments["blocked_reason"]).strip()
+        ),
+        "recovery_hint": (
+            None
+            if arguments.get("recovery_hint") is None
+            else str(arguments["recovery_hint"]).strip()
+        ),
+        "next_owner": (
+            None
+            if arguments.get("next_owner") is None
+            else str(arguments["next_owner"]).strip()
+        ),
+    }
+    finish_document = next(
+        (
+            document
+            for document in reversed(
+                context.repositories.engine_documents.list_by_session(
+                    task.session_id
+                )
+            )
+            if document.document_kind == "task_finish"
+            and document.payload.get("task_id") == task.task_id
+            and all(
+                document.payload.get(key) == value
+                for key, value in requested_payload.items()
+            )
+        ),
+        None,
+    )
+    if finish_document is None:
+        return None
+    payload = {
+        "task": task.to_dict(),
+        "finish_ref": finish_document.document_id,
+        **finish_document.payload,
+    }
+    terminates_turn = _finish_terminates_current_turn(context, task)
+    return ToolResult(
+        call_id=invocation.call_id,
+        tool_name=invocation.tool_name,
+        ok=True,
+        content=json.dumps(payload, sort_keys=True),
+        task_id=task.task_id,
+        lane_id=invocation.lane_id,
+        status="task_already_satisfied",
+        summary=(
+            f"task.finish already established {task.status.value} for "
+            f"{task.task_id} with the same canonical finish payload."
+        ),
+        details={
+            "task_id": task.task_id,
+            "task_status": task.status.value,
+            "finish_ref": finish_document.document_id,
+            "evidence_refs": list(evidence_refs),
+            "next_owner": requested_payload["next_owner"],
+            "terminates_current_turn": terminates_turn,
+            "already_satisfied": True,
+        },
+        terminal_action="task.finish",
+        terminates_turn=terminates_turn,
+    )
+
+
 class TaskBoardBucket(StrEnum):
     READY = "ready"
     BLOCKED = "blocked"
@@ -831,17 +927,6 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
                     "session_id": context.snapshot.session.session_id,
                 },
             )
-        if task.status in _TASK_FINISH_STATUSES:
-            return _finish_error_result(
-                invocation,
-                status="task_already_terminal",
-                summary=(
-                    f"task.finish refused: task {task_id!r} already reached business "
-                    f"exit {task.status.value} and no resume/reopen mechanism was requested."
-                ),
-                hint="Use an explicit resume/reopen workflow before finishing the task again.",
-                details={"task_id": task_id, "current_status": task.status.value},
-            )
         if not _can_finish_task(context, task):
             return _finish_error_result(
                 invocation,
@@ -856,6 +941,24 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
                     "agent_id": context.agent_id,
                     "actor_kind": context.actor_kind,
                 },
+            )
+        if task.status in _TASK_FINISH_STATUSES:
+            already_satisfied = _already_satisfied_task_finish_result(
+                context,
+                invocation,
+                task,
+            )
+            if already_satisfied is not None:
+                return already_satisfied
+            return _finish_error_result(
+                invocation,
+                status="task_already_terminal",
+                summary=(
+                    f"task.finish refused: task {task_id!r} already reached business "
+                    f"exit {task.status.value} and no resume/reopen mechanism was requested."
+                ),
+                hint="Use an explicit resume/reopen workflow before finishing the task again.",
+                details={"task_id": task_id, "current_status": task.status.value},
             )
         status = TaskStatus(str(arguments["status"]))
         if status not in _TASK_FINISH_STATUSES:
@@ -998,13 +1101,28 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
     def get_task_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
         service = TaskBoardService(context.repositories, event_emitter=context.emit)
         task = service.get_task(str(invocation.arguments["task_id"]))
+        if (
+            task is not None
+            and task.session_id != context.snapshot.session.session_id
+        ):
+            task = None
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
-            ok=task is not None,
+            ok=True,
             content=json.dumps(None if task is None else task.to_dict(), sort_keys=True),
             task_id=None if task is None else task.task_id,
             lane_id=invocation.lane_id,
+            status="task_not_found" if task is None else "task_projected",
+            summary=(
+                f"No task matched {invocation.arguments['task_id']!r}."
+                if task is None
+                else f"Projected task {task.task_id}."
+            ),
+            details={
+                "task_id": str(invocation.arguments["task_id"]),
+                "found": task is not None,
+            },
         )
 
     def list_tasks_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
@@ -1027,10 +1145,21 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
-            ok=task is not None,
+            ok=True,
             content=json.dumps(None if task is None else task.to_dict(), sort_keys=True),
             task_id=None if task is None else task.task_id,
             lane_id=invocation.lane_id,
+            status="no_ready_task" if task is None else "next_task_projected",
+            summary=(
+                "No ready task matched the current session/lane."
+                if task is None
+                else f"Projected next ready task {task.task_id}."
+            ),
+            details={
+                "found": task is not None,
+                "lane_id": lane_id,
+                "task_id": None if task is None else task.task_id,
+            },
         )
 
     registry.register("task.create", create_task_handler)

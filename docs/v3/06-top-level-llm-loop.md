@@ -176,7 +176,7 @@ observation facts 保留返回引用，但 observation 关系字段只绑定当�
 - workflow knowledge pack 只表达版本化知识、所需 capability/tool 与真实约束，不替 master/executor 选择步骤；普通用户文本即使包含 AOX、HMM、research 等词也不得改写 delegation 或隐藏可用工具
 - 顶层模型不应把用户请求直接裸翻译成 capability invocation
 - `deep_research.start` 以及迁移兼容的 execution engine start 调用默认应由 teammate loop 围绕明确的 `task_id` 发生，而不是由 master 直接调用；execution teammate 的稳定 authoring path 是 sandbox-first，不是让 master 或 executor 直接编排 `execution.pipeline.start`
-- 任一 capability tool 或其下游 SDK/supervisor 创建 pending approval 后，当前 loop 必须停止当前 planning batch；不得继续执行同批后续 tool calls，也不得再进入下一轮 LLM planning。同批后续 call 必须先按 batch settlement 契约写入持久 no-effect disposition；agent-level approval 返回 `waiting_approval`，durable SDK operation 则 park exact sandbox process、持久化 continuation，并让当前 bounded turn 在有界时间内释放 signal/session authority
+- 任一 capability tool 或其下游 SDK/supervisor 创建 pending approval 后，当前 loop 必须停止当前 planning batch；不得继续执行同批后续 tool calls，也不得再进入下一轮 LLM planning。同批后续 call 必须先按 batch settlement 契约写入持久 no-effect disposition。若 recovery obligations 仍在，只有 successful terminal ToolResult 显式 `runtime_suspended`、same-task 且 durable approval identity 可重读时，该 approval 才能结算 failure；非终止 result 遗留 approval 必须以 unresolved recovery fail closed。没有 recovery obligation 的既有 agent-level approval 可继续返回 `waiting_approval`。durable SDK operation 则 park exact sandbox process、持久化 continuation，并让当前 bounded turn 在有界时间内释放 signal/session authority
 - reporting 默认不要求 engine start；report teammate 应优先围绕 `report_draft` 推进交付
 
 首批不默认暴露给模型的高风险操作：
@@ -257,17 +257,31 @@ terminal state。unknown effect/fencing/authority/integrity exception 仍穿透�
 恢复路径并停止当前 ownership。
 
 对 internally driven signal turn，typed failed result 若是
-`agent_can_replan|agent_can_retry`，Harness 建立 exact turn-local recovery obligation。
-successful reviewed durable mutation 或 explicit terminal action 可结算；read-only tool、
-`memory.compact`、unknown nominal write 与 narrative response 不可结算。第一次 prose
-以 `agent_turn_recovery_action_required` 拒绝且不写 conversation；再次 prose 或没有剩余
-model step 时返回 typed `agent_turn_recovery_unresolved`，source signal terminal failed、
-不自动 replay/建 successor，task 保持 nonterminal。该规则只保证当前 turn 产生真实 durable
-decision，不规定 agent 选哪一种 repair。若 failed tool 本身是
-`failure.hypothesis.record`，一个 successful same-tool corrected retry 只有在其
-`hypothesis_id` 可从 current-session repository 重读、canonical agent 相同且完整
-`failure_hypothesis@1` payload 与 ToolResult 相等时才是 durable settlement。它不使
-hypothesis 成为其他 tool failure 的 repair，也不提供 retry authority。
+`agent_can_replan|agent_can_retry` 且 effect 是 `no_effect|terminal_known`，Harness 为每个
+actionable observation 建立 ordered、`failure_id` keyed turn-local obligation；同批多失败
+不会互相覆盖。normal dispatch、context normalization rejection、parallel overflow 与
+interrupted call 的每个 `ToolResult` 都经过同一个 accounting boundary exactly once。
+
+settlement 是闭集 identity proof，而不是“成功写过某个东西”：任意 tool 的同工具 no-effect
+validation corrected retry 可结算一个匹配 failure，包括 read tool；cross-tool 只接受 exact
+dependency disposition、同 invocation 的 execution status、同 attempt/selection 的 scientific
+inspect、同 task 的 `task.finish` 或显式 durable suspension/scientific exit。每项 proof 写
+`failure.recovery.settled`，且只移除匹配 obligation；unrelated read/write、
+`memory.compact`、unknown nominal success 与 narrative response 均不可结算。第一次 prose
+以 `agent_turn_recovery_action_required` 拒绝且不写 conversation；再次 prose、空 driver
+出口或没有剩余 model step 时返回包含完整 obligation set 的 typed
+`agent_turn_recovery_unresolved`，source signal terminal failed、不自动 replay/建
+successor，task 保持 nonterminal。该规则只保证当前 turn 产生真实 durable decision，不规定
+agent 选哪一种 repair。
+
+empty inspection 与 replay 也必须诚实收敛：`task.get` not-found、`task.next` no-ready-work
+是 successful closed result；exact `task.finish` 或 source-bound execution start replay
+只有在 canonical identity/postcondition 相等时返回 already-satisfied，冲突仍失败。
+Harness 在所有 `COMPLETED` / `WAITING_APPROVAL` 出口重新检查 obligations；pending approval
+本身不是 settlement。合法 wait 必须来自 same-task successful terminal
+`runtime_suspended` 且带 durable approval id，才能结算未完成 recovery；没有 recovery
+obligation 的 legacy approval wait 不受此结算规则影响。runtime 仍要求 waiting status 与该
+id 双向一致，所以失败结果不能靠附带 approval id 冒充成功暂停。
 
 当 exact obligation 来自 `task.delegate` 的
 `task_blocked/agent_can_replan/terminal_known`，且失败事实给出 non-empty
@@ -281,6 +295,15 @@ payload 等于 ToolResult，才清除 obligation。该 record 不触发 delegate
 不改 task/scientific state；跨 failure/session/agent 或 dependency/payload drift 均不结算。
 若该 record 调用自身因参数校验失败，只有同工具的 canonical corrected call 可按同一
 closure 结算。
+
+immutable disposition 还是 exact condition subscription。scheduler 每次 claim 前与 Harness
+每次 task mutation 后运行 reconciler；只有全部 condition tasks 在同 session 内 completed，
+才为 disposition owner durable enqueue 一个
+`RECOVERY_REQUIRED/source_ref=<disposition_id>` signal，commit 后通知。source-bound lookup
+覆盖 terminal signals，因此 polling、restart、signal complete/fail/cancel 后都不重复创建。
+该 wakeup 不重试 delegate、不 auto-claim unassigned target、不替换 agent；prompt 只提供
+disposition、original failure、completed condition facts，并明确 target task exit 仍要求
+canonical owner authority。
 
 step budget 用尽不授权继续同一 signal。driver 写入结构化
 `agent_turn_budget_exhausted` 后终止 exact occurrence；scheduler 不原地重放、不追加 steps、

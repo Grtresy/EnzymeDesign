@@ -3332,6 +3332,8 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
     assert workspace["scientific_attempts"]["attempts"][0]["status"] == (
         "closed"
     )
+    scientific_registry = ToolRegistry()
+    register_scientific_attempt_tools(scientific_registry)
     inspection_context = SessionRuntimeContext(
         repositories=repositories,
         event_sink=MemoryEventBus(),
@@ -3339,7 +3341,7 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
             repositories,
             attempt.session_id,
         ),
-        tool_registry=ToolRegistry(),
+        tool_registry=scientific_registry,
         restore_focus=RestoreFocus(
             task_id=attempt.task_id,
             lane_id=attempt.lane_id,
@@ -3359,6 +3361,31 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
     assert world["scientific_attempts"]["attempts"][0]["closure_id"] == (
         closure.closure_id
     )
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.AGENT_TURN,
+        owner_ref="agent-turn:begin-after-attempt-closed",
+    ):
+        closed_mutation = scientific_registry.dispatch(
+            inspection_context,
+            ToolInvocation(
+                call_id="call_begin_after_attempt_closed",
+                tool_name="scientific.selection.begin",
+                arguments={
+                    "attempt_id": attempt.attempt_id,
+                    "idempotency_key": "begin-after-attempt-closed",
+                },
+                task_id=attempt.task_id,
+                lane_id=attempt.lane_id,
+            ),
+        )
+    assert closed_mutation.ok is False
+    assert closed_mutation.error_code == "attempt_already_closed"
+    assert closed_mutation.details["attempt_id"] == attempt.attempt_id
+    assert closed_mutation.details["recoverability"] == (
+        "agent_can_replan"
+    )
+    assert closed_mutation.details["retry_eligibility"] == "terminal"
     evidence = service.export_closed_attempt_evidence(attempt.attempt_id)
     assert evidence["schema_id"] == "scientific_attempt_evidence@1"
     assert evidence["attempt"]["status"] == "closed"
@@ -3458,6 +3485,14 @@ def test_successful_scientific_attempt_close_is_a_terminal_turn_action(
     assert (
         missing_response.error_code
         == "attempt_close_assistant_response_missing"
+    )
+    assert missing_response.details["attempt_id"] == attempt.attempt_id
+    assert missing_response.details["selection_id"] == (
+        selection.selection_id
+    )
+    assert missing_response.details["recoverability"] == "agent_can_retry"
+    assert missing_response.details["retry_eligibility"] == (
+        "same_phase_safe"
     )
     assert (
         repositories.scientific_attempt_closure_requests.get_by_attempt(
@@ -3615,6 +3650,10 @@ def test_successful_scientific_attempt_close_is_a_terminal_turn_action(
         )
     assert conflict.ok is False
     assert conflict.error_code == "attempt_closure_response_conflict"
+    assert conflict.details["attempt_id"] == attempt.attempt_id
+    assert conflict.details["selection_id"] == selection.selection_id
+    assert conflict.details["recoverability"] == "terminal"
+    assert conflict.details["retry_eligibility"] == "terminal"
     assert len(
         build_conversation_projection(repositories, attempt.session_id)
     ) == 1

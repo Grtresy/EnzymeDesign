@@ -3837,7 +3837,7 @@ class SessionRuntimeLeaseRepository:
 class AgentRuntimeSignalRepository:
     connection: sqlite3.Connection
 
-    def save(self, signal: AgentRuntimeSignal) -> None:
+    def _validate(self, signal: AgentRuntimeSignal) -> None:
         _require_enum_member(
             signal.reason, AgentRuntimeSignalReason, "AgentRuntimeSignal.reason"
         )
@@ -3866,6 +3866,9 @@ class AgentRuntimeSignalRepository:
                 record_id=signal.lane_id,
                 expected_session_id=signal.session_id,
             )
+
+    def save(self, signal: AgentRuntimeSignal) -> None:
+        self._validate(signal)
         self.connection.execute(
             """
             INSERT INTO agent_runtime_signals (
@@ -3916,6 +3919,54 @@ class AgentRuntimeSignalRepository:
             ),
         )
         _commit(self.connection)
+
+    def insert_if_absent(
+        self,
+        signal: AgentRuntimeSignal,
+    ) -> AgentRuntimeSignal:
+        """Insert one deterministic signal identity without reviving old state."""
+
+        self._validate(signal)
+        self.connection.execute(
+            """
+            INSERT OR IGNORE INTO agent_runtime_signals (
+                signal_id, session_id, agent_id, task_id, lane_id,
+                correlation_id, reason, source_ref, status, created_at,
+                claimed_at, claimed_by, claim_expires_at, attempt_count,
+                completed_at, error_message, last_error,
+                session_lease_token, session_fencing_token
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                signal.signal_id,
+                signal.session_id,
+                signal.agent_id,
+                signal.task_id,
+                signal.lane_id,
+                signal.correlation_id,
+                signal.reason.value,
+                signal.source_ref,
+                signal.status.value,
+                signal.created_at,
+                signal.claimed_at,
+                signal.claimed_by,
+                signal.claim_expires_at,
+                signal.attempt_count,
+                signal.completed_at,
+                signal.error_message,
+                signal.last_error,
+                signal.session_lease_token,
+                signal.session_fencing_token,
+            ),
+        )
+        _commit(self.connection)
+        saved = self.get(signal.signal_id)
+        if saved is None:
+            raise RuntimeError(
+                "deterministic runtime signal insert did not materialize"
+            )
+        return saved
 
     def get(self, signal_id: str) -> AgentRuntimeSignal | None:
         row = self.connection.execute(

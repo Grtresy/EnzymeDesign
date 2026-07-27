@@ -67,11 +67,38 @@ def _failure(
     invocation: ToolInvocation,
     error: ScientificAttemptError,
 ) -> ToolResult:
+    inspectable_state = error.error_code in {
+        "attempt_already_closed",
+        "attempt_closure_already_requested",
+        "attempt_not_active",
+    }
+    details = {
+        **error.details,
+        "attempt_id": error.details.get(
+            "attempt_id",
+            invocation.arguments.get("attempt_id"),
+        ),
+        "selection_id": error.details.get(
+            "selection_id",
+            invocation.arguments.get("selection_id"),
+        ),
+        "retryable": error.retryable,
+        "precondition_rejected": True,
+        "effect_certainty": "no_effect",
+        "retry_eligibility": (
+            "same_phase_safe" if error.retryable else "terminal"
+        ),
+        "recoverability": (
+            "agent_can_retry"
+            if error.retryable
+            else ("agent_can_replan" if inspectable_state else "terminal")
+        ),
+    }
     payload = {
         "error_code": error.error_code,
         "message": str(error),
         "hint": error.hint,
-        "details": error.details,
+        "details": details,
         "retryable": error.retryable,
     }
     return ToolResult(
@@ -85,7 +112,7 @@ def _failure(
         summary=str(error),
         error_code=error.error_code,
         hint=error.hint,
-        details=error.details,
+        details=details,
     )
 
 

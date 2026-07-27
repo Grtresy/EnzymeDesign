@@ -237,9 +237,9 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
   signal 已产生 durable decision。Core 现在只对
   `agent_can_replan|agent_can_retry + no_effect|terminal_known` 建立 turn-local recovery
   obligation；第一次 prose 不持久化并返回 structured feedback，重复 prose/step bound
-  形成 terminal `agent_turn_recovery_unresolved`。只有 reviewed durable mutation 或
-  explicit terminal action 结算；read/unknown nominal write 不结算。Harness 不自动 retry、
-  delegate、auto-enqueue 或选择 task exit。r60 又补齐一个 narrow same-tool case：
+  形成 terminal `agent_turn_recovery_unresolved`。该阶段实现仍只允许 reviewed durable
+  mutation 或 explicit terminal action，并错误地排除了 corrected read；Harness 不自动
+  retry、delegate、auto-enqueue 或选择 task exit。当时 r60 又补齐一个 narrow same-tool case：
   `failure.hypothesis.record` 自身 validation failure 的 canonical corrected retry 仅在
   repository/current-agent/current-session/payload exact closure 时结算；它不允许 hypothesis
   结算其他 tool failure 或取得 retry/task/scientific authority。
@@ -253,6 +253,23 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
   payload；它不进入 generic write allowlist、不重试 delegate、不改 task/scientific state。
   同工具 invalid-argument corrected retry 保持同样的 repository closure，其他 cross-tool
   write 仍不能结算。
+
+  本轮系统性修正进一步移除上述“reviewed durable mutation / generic write”残留断言。
+  turn recovery 现为 ordered `failure_id` obligation set，normal/context-rejected/overflow/
+  interrupted 的所有 ToolResult 统一 accounting；settlement 只认 corrected same-tool
+  validation retry、exact dependency disposition、execution/scientific identity inspection、
+  same-task `task.finish` 与 explicit same-task suspension/exit，并写
+  `failure.recovery.settled`。因此 unrelated write 不再比 corrected read 更有恢复权。
+  `task.get`/`task.next` empty result 与 exact already-satisfied replay 使用 closed success，
+  conflicting replay 保持失败。
+
+  同时把 recovery gate 从 LLM driver convention 提升为 Harness/Runtime 双边 exit invariant：
+  空 step、direct approval 与 nonterminal pending approval 均不能返回成功或 waiting；合法
+  `runtime_suspended` 必须携带 durable approval identity，runtime 拒绝
+  `FAILED + pending_approval_id`。immutable dependency disposition 由 scheduler pre-claim 和
+  task-mutation 后 reconciler 转换为 exactly-one source-bound `RECOVERY_REQUIRED` signal；
+  terminal signal 也参与去重。wakeup 不重试 delegate、不 claim unassigned target，prompt
+  重建 exact failure/conditions 并保留 agent 策略自由与 task owner authority。
 
 - [x] Exact-occurrence AOX gate 把任何中间试错永久等同于最终 scientific failure。
 

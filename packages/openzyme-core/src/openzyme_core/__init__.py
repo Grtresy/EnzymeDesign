@@ -45,6 +45,11 @@ from .agent_runtime_settlements import AgentRuntimeSettlementDisposition
 from .agent_scheduler import AgentRuntimeScheduler
 from .agent_scheduler import SessionRuntimeLeaseLockedError
 from .harness import AgentStepContext
+from .harness import AgentTurnRecoveryObligation
+from .harness import AgentTurnRecoverySettlement
+from .harness import AgentTurnRecoverySettlementKind
+from .harness import AgentTurnRecoveryUnresolved
+from .harness import AgentTurnRecoveryUnresolvedError
 from .harness import AssistantResponsePrecondition
 from .harness import AssistantResponseRejection
 from .harness import HarnessDriver
@@ -245,6 +250,7 @@ from .failure_repositories import FailureObservationRepository
 from .failure_repositories import FailureRecoveryDispositionRepository
 from .failure_repositories import project_failure_observation
 from .failure_tools import register_failure_tools
+from .failure_recovery import reconcile_satisfied_failure_recovery_dispositions
 from .scientific_attempt_repositories import (
     ScientificArtifactMaterializationRepository,
 )
@@ -378,6 +384,11 @@ from .llm_driver import LlmConversationDriver
 
 __all__ = [
     "AgentStepContext",
+    "AgentTurnRecoveryObligation",
+    "AgentTurnRecoverySettlement",
+    "AgentTurnRecoverySettlementKind",
+    "AgentTurnRecoveryUnresolved",
+    "AgentTurnRecoveryUnresolvedError",
     "AssistantResponsePrecondition",
     "AssistantResponseRejection",
     "ActivityFeedItem",
@@ -710,6 +721,7 @@ __all__ = [
     "register_memory_tools",
     "register_docs_tools",
     "register_failure_tools",
+    "reconcile_satisfied_failure_recovery_dispositions",
     "register_skill_tools",
     "register_subagent_tools",
     "register_task_board_tools",

@@ -1435,6 +1435,11 @@ def test_runtime_signal_repository_completion_and_retry_failure_are_idempotent()
     assert first_complete is not None
     assert second_complete == first_complete
     assert second_complete.status is AgentRuntimeSignalStatus.COMPLETED
+    replayed_insert = repositories.runtime_signals.insert_if_absent(
+        completed_signal
+    )
+    assert replayed_insert == second_complete
+    assert replayed_insert.status is AgentRuntimeSignalStatus.COMPLETED
 
     claimed = repositories.runtime_signals.claim_next(
         session_id=session.session_id,

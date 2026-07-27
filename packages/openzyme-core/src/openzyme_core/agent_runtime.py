@@ -18,6 +18,7 @@ from openzyme_domain import FailureActorKind
 from openzyme_domain import FailureClass
 from openzyme_domain import FailureObservation
 from openzyme_domain import FailureRecoverability
+from openzyme_domain import FailureRecoveryDisposition
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
 from openzyme_domain import Task
@@ -29,6 +30,7 @@ from openzyme_runtime import sanitize_public_diagnostic_text
 from openzyme_runtime import record_failure_observation
 
 from .harness import HarnessInput
+from .harness import HarnessResult
 from .harness import HarnessStatus
 from .harness import AgentTurnRecoveryUnresolvedError
 from .harness import RestoreFocus
@@ -36,6 +38,9 @@ from .harness import SessionRuntimeContext
 from .harness import run_agent_harness_loop
 from .agent_runtime_settlements import AgentRuntimeOutcomeSettlement
 from .agent_runtime_settlements import AgentRuntimeSettlementDisposition
+from .failure_recovery import (
+    resolve_exact_failure_recovery_disposition_failure,
+)
 from .llm_driver import LlmConversationDriver
 from .scientific_attempt_lifecycle import (
     ScientificAttemptLifecycleIntegrityError,
@@ -53,6 +58,18 @@ from .teammates import run_teammate_loop
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:12]}"
+
+
+def _require_consistent_harness_approval_wait(
+    result: HarnessResult,
+) -> None:
+    if (
+        result.status is HarnessStatus.WAITING_APPROVAL
+    ) != (result.pending_approval_id is not None):
+        raise ValueError(
+            "harness waiting-approval status and durable pending "
+            "approval identity disagree"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,8 +374,17 @@ class AgentRuntimeService:
             consumed_message_ids.append(message.message_id)
             self.context.repositories.inbox.set_status(message.message_id, InboxStatus.DELIVERED)
 
-        service = TaskBoardService(self.context.repositories, event_emitter=self.context.emit)
-        if task.status is TaskStatus.TODO:
+        service = TaskBoardService(
+            self.context.repositories,
+            event_emitter=self.context.emit,
+        )
+        disposition_recovery = (
+            self._failure_recovery_disposition_for_signal(signal)
+        )
+        if (
+            task.status is TaskStatus.TODO
+            and disposition_recovery is None
+        ):
             task = service.claim_task(
                 task.task_id,
                 assigned_ref=agent.agent_id,
@@ -386,6 +412,7 @@ class AgentRuntimeService:
             signal_id=signal.signal_id,
             wakeup_reason=signal.reason.value,
         )
+        _require_consistent_harness_approval_wait(result)
         summary, final_status = finalize_teammate_result(
             self.context,
             agent_id=agent.agent_id,
@@ -393,7 +420,8 @@ class AgentRuntimeService:
             correlation_id=correlation_id,
             result=result,
         )
-        if result.pending_approval_id is not None:
+        if result.status is HarnessStatus.WAITING_APPROVAL:
+            assert result.pending_approval_id is not None
             if not self._pending_approval_is_durable_continuation_owned(
                 session_id=agent.session_id,
                 task_id=task.task_id,
@@ -743,6 +771,7 @@ class AgentRuntimeService:
                 self.context.mutation_writer_scope_factory
             ),
         )
+        _require_consistent_harness_approval_wait(result)
         budget_observation = (
             self._budget_exhaustion_observation(
                 claimed,
@@ -1579,6 +1608,82 @@ class AgentRuntimeService:
         payload: dict[str, Any] | None,
     ) -> str:
         if signal.reason is AgentRuntimeSignalReason.RECOVERY_REQUIRED:
+            disposition = self._failure_recovery_disposition_for_signal(
+                signal
+            )
+            if disposition is not None:
+                failure = (
+                    self.context.repositories.failure_observations.get(
+                        disposition.failure_id
+                    )
+                )
+                if (
+                    failure is None
+                    or failure.session_id != signal.session_id
+                    or failure.agent_id != signal.agent_id
+                    or failure.task_id != task.task_id
+                ):
+                    raise ValueError(
+                        "failure recovery disposition wakeup lost its exact "
+                        "failure/task binding"
+                    )
+                condition_tasks = [
+                    self.context.repositories.tasks.get(task_id)
+                    for task_id in disposition.condition_task_ids
+                ]
+                if (
+                    any(item is None for item in condition_tasks)
+                    or any(
+                        item.session_id != signal.session_id
+                        or item.status is not TaskStatus.COMPLETED
+                        for item in condition_tasks
+                        if item is not None
+                    )
+                ):
+                    raise ValueError(
+                        "failure recovery disposition wakeup conditions are "
+                        "no longer exactly satisfied"
+                    )
+                return "\n".join(
+                    [
+                        (
+                            "A durable dependency-bound recovery decision is "
+                            "now ready for reassessment."
+                        ),
+                        "Recovery disposition: "
+                        + json.dumps(
+                            disposition.to_dict(),
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                        "Original failure: "
+                        + json.dumps(
+                            failure.to_dict(),
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                        "Satisfied condition tasks: "
+                        + json.dumps(
+                            [
+                                item.to_dict()
+                                for item in condition_tasks
+                                if item is not None
+                            ],
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                        (
+                            "The harness has not retried the failed action, "
+                            "claimed its target task, or selected a replacement "
+                            "agent. Inspect current state and choose the exact "
+                            "retry, another verified replan, or operator help. "
+                            "Only the task's authorized owner may explicitly "
+                            "exit the target task."
+                        ),
+                        f"Recovery target task {task.task_id}: "
+                        f"{task.description or task.subject}",
+                    ]
+                )
             failures = (
                 []
                 if signal.source_ref is None
@@ -1642,6 +1747,43 @@ class AgentRuntimeService:
             if instructions:
                 return str(instructions)
         return task.description or task.subject
+
+    def _failure_recovery_disposition_for_signal(
+        self,
+        signal: AgentRuntimeSignal,
+    ) -> FailureRecoveryDisposition | None:
+        if (
+            signal.reason is not AgentRuntimeSignalReason.RECOVERY_REQUIRED
+            or not signal.source_ref
+        ):
+            return None
+        disposition = (
+            self.context.repositories.failure_recovery_dispositions.get(
+                signal.source_ref
+            )
+        )
+        if disposition is None:
+            return None
+        failure = resolve_exact_failure_recovery_disposition_failure(
+            self.context.repositories,
+            disposition,
+            session_id=signal.session_id,
+        )
+        if (
+            disposition.session_id != signal.session_id
+            or disposition.agent_id != signal.agent_id
+            or signal.correlation_id
+            != f"recovery:{disposition.disposition_id}"
+            or failure is None
+            or failure.session_id != signal.session_id
+            or failure.agent_id != signal.agent_id
+            or signal.task_id != failure.task_id
+            or signal.lane_id != failure.lane_id
+        ):
+            raise ValueError(
+                "failure recovery disposition signal identity is inconsistent"
+            )
+        return disposition
 
     def _continue_execution_after_approval_signal(
         self, signal: AgentRuntimeSignal

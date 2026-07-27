@@ -10,9 +10,12 @@ import openzyme_core.teammates as teammates_module
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import AgentRuntimeSignalReason
+from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ArtifactKind
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
+from openzyme_domain import FailureRecoveryDisposition
+from openzyme_domain import FailureRecoveryDispositionKind
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import Lane
 from openzyme_domain import LaneStatus
@@ -69,12 +72,17 @@ from openzyme_core.agent_identity import create_agent_member
 from openzyme_core.agent_identity import display_name_for_agent
 from openzyme_core.agent_identity import handle_for_agent
 from openzyme_core.harness import build_agent_step_context
+from openzyme_core.harness import AgentTurnRecoveryUnresolvedError
 from openzyme_core.harness import budget_tool_results_for_prompt
 from openzyme_core.harness import ContextBudgetExceededError
 from openzyme_core.harness import ensure_prompt_budget_before_model_call
 from openzyme_core.harness import evaluate_agent_turn_recovery_response
+from openzyme_core.harness import update_agent_turn_recovery
 from openzyme_core.harness import PromptPayload
 from openzyme_core.llm_driver import _parallel_tool_call_limit_result
+from openzyme_core.failure_recovery import (
+    reconcile_satisfied_failure_recovery_dispositions,
+)
 from openzyme_core.skills import register_skill_tools
 from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_research import DeterministicBioResearchService
@@ -947,6 +955,144 @@ def test_task_finish_completed_updates_task_and_terminates_loop_immediately() ->
     ] == ["call_finish"]
 
 
+def test_task_empty_reads_are_successful_closed_projections() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+    register_task_board_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            session.session_id,
+        ),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+        agent_id="agent:primary",
+        actor_kind="teammate",
+        actor_role="researcher",
+    )
+
+    missing = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_get_missing_task",
+            tool_name="task.get",
+            arguments={"task_id": "task_missing"},
+        ),
+    )
+    TaskBoardService(repositories).finish_task(
+        "task_001",
+        TaskFinishCommand(
+            status=TaskStatus.COMPLETED,
+            finished_by="agent:primary",
+            summary="No ready work remains.",
+        ),
+    )
+    no_ready = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_next_without_ready_task",
+            tool_name="task.next",
+            arguments={},
+        ),
+    )
+
+    assert missing.ok is True
+    assert missing.status == "task_not_found"
+    assert missing.details == {
+        "task_id": "task_missing",
+        "found": False,
+    }
+    assert json.loads(missing.content) is None
+    assert no_ready.ok is True
+    assert no_ready.status == "no_ready_task"
+    assert no_ready.details == {
+        "found": False,
+        "lane_id": None,
+        "task_id": None,
+    }
+    assert json.loads(no_ready.content) is None
+
+
+def test_task_finish_exact_replay_converges_without_another_mutation() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    event_bus = MemoryEventBus()
+    registry = ToolRegistry()
+    register_task_board_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=event_bus,
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            session.session_id,
+        ),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001"),
+        agent_id="agent:primary",
+        actor_kind="teammate",
+        actor_role="researcher",
+    )
+    arguments = {
+        "task_id": "task_001",
+        "status": "completed",
+        "summary": "Canonical completion.",
+    }
+
+    first = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_finish_canonical",
+            tool_name="task.finish",
+            arguments=arguments,
+            task_id="task_001",
+        ),
+    )
+    first_event_count = len(event_bus.events)
+    replay = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_finish_exact_replay",
+            tool_name="task.finish",
+            arguments=arguments,
+            task_id="task_001",
+        ),
+    )
+    conflicting = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_finish_conflicting_replay",
+            tool_name="task.finish",
+            arguments={
+                **arguments,
+                "summary": "Different completion claim.",
+            },
+            task_id="task_001",
+        ),
+    )
+    finish_documents = [
+        document
+        for document in repositories.engine_documents.list_by_session(
+            session.session_id
+        )
+        if document.document_kind == "task_finish"
+    ]
+
+    assert first.ok is True
+    assert replay.ok is True
+    assert replay.status == "task_already_satisfied"
+    assert replay.details["already_satisfied"] is True
+    assert replay.details["finish_ref"] == first.details["finish_ref"]
+    assert len(event_bus.events) == first_event_count
+    assert len(finish_documents) == 1
+    assert conflicting.ok is False
+    assert conflicting.error_code == "task_already_terminal"
+    assert conflicting.failure_observation is not None
+    assert finish_documents[0].payload["summary"] == "Canonical completion."
+
+
 class MasterFinishesDelegatedTaskDriver:
     def __init__(self) -> None:
         self.calls = 0
@@ -1374,6 +1520,7 @@ def test_runtime_suspension_releases_harness_without_terminalizing_task() -> Non
             content="runtime suspended",
             status="suspended_waiting_approval",
             task_id=invocation.task_id,
+            details={"approval_id": "appr_suspend_001"},
             terminal_action="runtime_suspended",
             terminates_turn=True,
         )
@@ -1427,6 +1574,67 @@ def test_runtime_suspension_releases_harness_without_terminalizing_task() -> Non
         "harness.terminal_action",
     }
     assert "task.finished" not in {event.event_type for event in result.events}
+
+
+def test_runtime_suspension_requires_exact_pending_approval_identity() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+
+    def mismatched_suspending_tool(
+        context: SessionRuntimeContext,
+        invocation: ToolInvocation,
+    ) -> ToolResult:
+        context.repositories.approvals.save(
+            ApprovalRequest(
+                approval_id="appr_actual_suspension",
+                session_id=session.session_id,
+                task_id=invocation.task_id,
+                lane_id=invocation.lane_id,
+                kind="controlled_operation",
+                requested_action="Approve the actual suspended operation.",
+                status=ApprovalRequestStatus.PENDING,
+                request_ref="continuation:cont_actual_suspension",
+                resolution_ref=None,
+                created_at="2026-07-27T00:00:00+00:00",
+            )
+        )
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=True,
+            content="runtime suspension projected the wrong approval",
+            status="suspended_waiting_approval",
+            task_id=invocation.task_id,
+            lane_id=invocation.lane_id,
+            details={"approval_id": "appr_wrong_suspension"},
+            terminal_action="runtime_suspended",
+            terminates_turn=True,
+        )
+
+    registry.register("suspending_tool", mismatched_suspending_tool)
+    registry.register("after_suspend_tool", lambda _context, _invocation: "late")
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=3,
+            agent_id="agent:primary",
+            actor_kind="teammate",
+            actor_role="execution",
+        ),
+        driver=RuntimeSuspensionDriver(),
+        tool_registry=registry,
+    )
+
+    assert result.status is HarnessStatus.FAILED
+    assert result.pending_approval_id is None
+    assert isinstance(result.error, RuntimeError)
+    assert "mismatched its exact durable pending approval" in str(
+        result.error
+    )
+    assert repositories.approvals.get("appr_actual_suspension") is not None
 
 
 class ApprovalDriver:
@@ -4208,6 +4416,47 @@ def _seed_recovery_report_task(
     return task_id
 
 
+def _seed_failure_target(
+    repositories: CoreRepositories,
+    *,
+    session: Session,
+    agent_id: str,
+) -> str:
+    registry = ToolRegistry()
+
+    def explode(
+        _context: SessionRuntimeContext,
+        _invocation: ToolInvocation,
+    ) -> ToolResult:
+        raise RuntimeError("seed one exact failure target")
+
+    registry.register("explode", explode)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            session.session_id,
+        ),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001"),
+        agent_id=agent_id,
+        actor_kind="agent",
+        actor_role="researcher",
+    )
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id=f"call_seed_{agent_id.replace(':', '_')}",
+            tool_name="explode",
+            arguments={},
+            task_id="task_001",
+        ),
+    )
+    assert result.failure_observation is not None
+    return str(result.failure_observation["failure_id"])
+
+
 @pytest.mark.parametrize("fail_first_record", (False, True))
 def test_blocked_delegation_accepts_exact_durable_defer_disposition(
     fail_first_record: bool,
@@ -4320,6 +4569,203 @@ def test_blocked_delegation_accepts_exact_durable_defer_disposition(
             """,
             (disposition.disposition_id,),
         )
+
+
+def test_satisfied_recovery_disposition_enqueues_one_durable_wakeup() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+    blocker_task_id = "task_recovery_wakeup_blocker"
+    target_task_id = "task_recovery_wakeup_target"
+    unrelated_condition_task_id = "task_recovery_wakeup_unrelated"
+    service = TaskBoardService(repositories)
+    service.create_task(
+        session_id=session.session_id,
+        task_id=blocker_task_id,
+        subject="Produce the remaining dependency",
+        description="Complete before the target handoff resumes.",
+        assigned_ref=agent.agent_id,
+    )
+    blocker_ids = tuple(sorted(("task_001", blocker_task_id)))
+    service.create_task(
+        session_id=session.session_id,
+        task_id=target_task_id,
+        subject="Delegate after dependencies",
+        description="Remain unassigned until exact recovery.",
+        kind="reporting",
+        blocked_by=blocker_ids,
+    )
+    service.create_task(
+        session_id=session.session_id,
+        task_id=unrelated_condition_task_id,
+        subject="Unrelated completed task",
+        description="Must not satisfy a disposition for another blocker set.",
+    )
+    service.finish_task(
+        unrelated_condition_task_id,
+        TaskFinishCommand(
+            status=TaskStatus.COMPLETED,
+            finished_by="test:harness",
+            summary="Completed unrelated condition task.",
+        ),
+    )
+    registry = ToolRegistry()
+    register_subagent_tools(registry)
+    register_task_board_tools(registry)
+
+    class RecordingNotifier:
+        def __init__(self) -> None:
+            self.sessions: list[str] = []
+
+        def notify(self, session_id: str) -> None:
+            self.sessions.append(session_id)
+
+    notifier = RecordingNotifier()
+    event_bus = MemoryEventBus()
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=event_bus,
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            session.session_id,
+        ),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id=target_task_id),
+        signal_notifier=notifier,
+        agent_id=agent.agent_id,
+        actor_kind="agent",
+        actor_role=agent.role,
+        turn_recovery_enabled=True,
+    )
+    blocked = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_seed_recovery_wakeup",
+            tool_name="task.delegate",
+            arguments={
+                "task_id": target_task_id,
+                "agent_role": "reporter",
+            },
+            task_id=target_task_id,
+        ),
+    )
+    assert blocked.failure_observation is not None
+    failure_id = str(blocked.failure_observation["failure_id"])
+    disposition = repositories.failure_recovery_dispositions.add(
+        FailureRecoveryDisposition(
+            disposition_id="failure_recovery_wakeup_exact",
+            failure_id=failure_id,
+            session_id=session.session_id,
+            agent_id=agent.agent_id,
+            disposition=(
+                FailureRecoveryDispositionKind
+                .DEFER_UNTIL_TASK_DEPENDENCIES_COMPLETE
+            ),
+            condition_task_ids=blocker_ids,
+            rationale="Wait for the exact dependency set.",
+            idempotency_digest="digest_recovery_wakeup_exact",
+            created_at="2026-04-17T09:05:00+00:00",
+        )
+    )
+    mismatched_disposition = repositories.failure_recovery_dispositions.add(
+        FailureRecoveryDisposition(
+            disposition_id="failure_recovery_wakeup_mismatched",
+            failure_id=failure_id,
+            session_id=session.session_id,
+            agent_id=agent.agent_id,
+            disposition=(
+                FailureRecoveryDispositionKind
+                .DEFER_UNTIL_TASK_DEPENDENCIES_COMPLETE
+            ),
+            condition_task_ids=(unrelated_condition_task_id,),
+            rationale="A persisted mismatch must never authorize a wakeup.",
+            idempotency_digest="digest_recovery_wakeup_mismatched",
+            created_at="2026-04-17T09:04:00+00:00",
+        )
+    )
+
+    assert reconcile_satisfied_failure_recovery_dispositions(context) == ()
+    assert notifier.sessions == []
+    assert not [
+        candidate
+        for candidate in repositories.runtime_signals.list_by_session(
+            session.session_id
+        )
+        if candidate.source_ref == mismatched_disposition.disposition_id
+    ]
+    service.finish_task(
+        "task_001",
+        TaskFinishCommand(
+            status=TaskStatus.COMPLETED,
+            finished_by="test:harness",
+            summary="Completed dependency task_001.",
+        ),
+    )
+    final_finish = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_finish_recovery_wakeup_blocker",
+            tool_name="task.finish",
+            arguments={
+                "task_id": blocker_task_id,
+                "status": "completed",
+                "summary": f"Completed dependency {blocker_task_id}.",
+            },
+            task_id=blocker_task_id,
+        ),
+    )
+    assert final_finish.ok is True
+    update_agent_turn_recovery(context, final_finish)
+    assert reconcile_satisfied_failure_recovery_dispositions(context) == ()
+    source_signals = [
+        candidate
+        for candidate in repositories.runtime_signals.list_by_session(
+            session.session_id
+        )
+        if candidate.source_ref == disposition.disposition_id
+    ]
+    assert len(source_signals) == 1
+    signal = source_signals[0]
+    assert signal.reason is AgentRuntimeSignalReason.RECOVERY_REQUIRED
+    assert signal.status is AgentRuntimeSignalStatus.PENDING
+    assert signal.source_ref == disposition.disposition_id
+    assert signal.agent_id == agent.agent_id
+    assert signal.task_id == target_task_id
+    assert signal.correlation_id == f"recovery:{disposition.disposition_id}"
+    assert notifier.sessions == [session.session_id]
+    assert not [
+        candidate
+        for candidate in repositories.runtime_signals.list_by_session(
+            session.session_id
+        )
+        if candidate.source_ref == mismatched_disposition.disposition_id
+    ]
+
+    completed = repositories.runtime_signals.complete(signal.signal_id)
+    assert completed is not None
+    assert completed.status is AgentRuntimeSignalStatus.COMPLETED
+    assert reconcile_satisfied_failure_recovery_dispositions(context) == ()
+    assert notifier.sessions == [session.session_id]
+    source_signals = [
+        candidate
+        for candidate in repositories.runtime_signals.list_by_session(
+            session.session_id
+        )
+        if candidate.source_ref == disposition.disposition_id
+    ]
+    assert source_signals == [completed]
+    wakeup_events = [
+        event
+        for event in event_bus.events
+        if event.event_type == "failure.recovery.wakeup_queued"
+    ]
+    assert len(wakeup_events) == 1
+    assert wakeup_events[0].payload["failure_id"] == failure_id
 
 
 def test_blocked_delegation_rejects_recovery_disposition_with_blocker_drift() -> (
@@ -4623,6 +5069,1326 @@ def test_internal_signal_accepts_canonical_retry_of_failed_hypothesis_record() -
         )
         if entry.role == "assistant"
     ] == ["The corrected durable hypothesis record succeeded."]
+
+
+def test_internal_signal_accepts_corrected_read_retry_with_exact_settlement() -> (
+    None
+):
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+    target_failure_id = _seed_failure_target(
+        repositories,
+        session=session,
+        agent_id=agent.agent_id,
+    )
+    model_factory = FakeModelFactory(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_failure_get_missing_argument",
+                        "name": "failure.get",
+                        "args": {},
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_failure_get_corrected_read",
+                        "name": "failure.get",
+                        "args": {"failure_id": target_failure_id},
+                    }
+                ],
+            },
+            {
+                "content": "The corrected failure read succeeded.",
+                "tool_calls": [],
+            },
+        ]
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=3,
+            signal_id="signal_corrected_read",
+            agent_id=agent.agent_id,
+            actor_kind="agent",
+            actor_role=agent.role,
+            restore_focus=RestoreFocus(task_id="task_001"),
+        ),
+        driver=LlmConversationDriver(model_factory),
+        model_factory=model_factory,
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    assert [item.ok for item in result.tool_results] == [False, True]
+    settlements = [
+        event
+        for event in result.events
+        if event.event_type == "failure.recovery.settled"
+    ]
+    assert len(settlements) == 1
+    assert settlements[0].payload["settlement_kind"] == "corrected_retry"
+    assert (
+        settlements[0].payload["failed_call_id"]
+        == "call_failure_get_missing_argument"
+    )
+    assert (
+        settlements[0].payload["settling_call_id"]
+        == "call_failure_get_corrected_read"
+    )
+
+
+def test_internal_signal_unrelated_task_write_does_not_settle_failed_read() -> (
+    None
+):
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+    model_factory = FakeModelFactory(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_failed_read_before_unrelated_write",
+                        "name": "failure.get",
+                        "args": {},
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_unrelated_task_create",
+                        "name": "task.create",
+                        "args": {
+                            "task_id": "task_unrelated_recovery_write",
+                            "subject": "Unrelated durable write",
+                        },
+                    }
+                ],
+            },
+            {
+                "content": "The unrelated write cannot settle the read.",
+                "tool_calls": [],
+            },
+        ]
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=3,
+            signal_id="signal_unrelated_write",
+            agent_id=agent.agent_id,
+            actor_kind="agent",
+            actor_role=agent.role,
+            restore_focus=RestoreFocus(task_id="task_001"),
+        ),
+        driver=LlmConversationDriver(model_factory),
+        model_factory=model_factory,
+    )
+
+    assert result.status is HarnessStatus.FAILED
+    assert isinstance(result.error, AgentTurnRecoveryUnresolvedError)
+    assert [item.ok for item in result.tool_results] == [False, True]
+    assert result.error.unresolved.obligation.tool_name == "failure.get"
+    assert not [
+        event
+        for event in result.events
+        if event.event_type == "failure.recovery.settled"
+    ]
+
+
+class RecoveryApprovalEscapeDriver:
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del harness_input
+        if not tool_results:
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id="call_failed_before_direct_approval",
+                        tool_name="failure.get",
+                        arguments={},
+                        task_id="task_001",
+                    ),
+                )
+            )
+        return HarnessStep(
+            approval_requests=(
+                ApprovalRequest(
+                    approval_id="appr_unbound_recovery_escape",
+                    session_id=context.snapshot.session.session_id,
+                    task_id="task_001",
+                    lane_id=None,
+                    kind="unbound_recovery_escape",
+                    requested_action="Approve an unrelated action.",
+                    status=ApprovalRequestStatus.PENDING,
+                    request_ref=None,
+                    resolution_ref=None,
+                    created_at="2026-07-27T00:00:00+00:00",
+                ),
+            )
+        )
+
+
+def test_internal_signal_direct_approval_cannot_bypass_exact_settlement() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=2,
+            signal_id="signal_direct_approval_escape",
+            agent_id=agent.agent_id,
+            actor_kind="agent",
+            actor_role=agent.role,
+            restore_focus=RestoreFocus(task_id="task_001"),
+        ),
+        driver=RecoveryApprovalEscapeDriver(),
+    )
+
+    assert result.status is HarnessStatus.FAILED
+    assert result.pending_approval_id is None
+    assert isinstance(result.error, AgentTurnRecoveryUnresolvedError)
+    assert result.error.unresolved.reason == (
+        "approval_request_without_exact_settlement"
+    )
+    assert result.error.unresolved.obligation.call_id == (
+        "call_failed_before_direct_approval"
+    )
+    assert (
+        repositories.approvals.get("appr_unbound_recovery_escape") is None
+    )
+    assert not [
+        event
+        for event in result.events
+        if event.event_type == "approval.requested"
+    ]
+
+
+class RecoveryEmptyStepEscapeDriver:
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input
+        if tool_results:
+            return HarnessStep()
+        return HarnessStep(
+            tool_invocations=(
+                ToolInvocation(
+                    call_id="call_failed_before_empty_step",
+                    tool_name="failure.get",
+                    arguments={},
+                    task_id="task_001",
+                ),
+            )
+        )
+
+
+def test_internal_signal_empty_step_cannot_bypass_exact_settlement() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=2,
+            signal_id="signal_empty_step_escape",
+            agent_id=agent.agent_id,
+            actor_kind="agent",
+            actor_role=agent.role,
+            restore_focus=RestoreFocus(task_id="task_001"),
+        ),
+        driver=RecoveryEmptyStepEscapeDriver(),
+    )
+
+    assert result.status is HarnessStatus.FAILED
+    assert result.pending_approval_id is None
+    assert isinstance(result.error, AgentTurnRecoveryUnresolvedError)
+    assert (
+        result.error.unresolved.reason
+        == "step_completed_without_exact_settlement"
+    )
+    assert result.error.unresolved.obligation.call_id == (
+        "call_failed_before_empty_step"
+    )
+
+
+class RecoveryRawAssistantEscapeDriver:
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input
+        if tool_results:
+            return HarnessStep(
+                assistant_message="Unsettled narration must not persist."
+            )
+        return HarnessStep(
+            tool_invocations=(
+                ToolInvocation(
+                    call_id="call_failed_before_raw_assistant",
+                    tool_name="failure.get",
+                    arguments={},
+                    task_id="task_001",
+                ),
+            )
+        )
+
+
+def test_internal_signal_raw_assistant_cannot_bypass_exact_settlement() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=2,
+            signal_id="signal_raw_assistant_escape",
+            agent_id=agent.agent_id,
+            actor_kind="agent",
+            actor_role=agent.role,
+            restore_focus=RestoreFocus(task_id="task_001"),
+        ),
+        driver=RecoveryRawAssistantEscapeDriver(),
+    )
+
+    assert result.status is HarnessStatus.FAILED
+    assert isinstance(result.error, AgentTurnRecoveryUnresolvedError)
+    assert result.error.unresolved.reason == (
+        "assistant_response_without_exact_settlement"
+    )
+    assert [
+        entry
+        for entry in build_conversation_projection(
+            repositories,
+            session.session_id,
+        )
+        if entry.role == "assistant"
+    ] == []
+
+
+class RecoveryToolApprovalEscapeDriver:
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input
+        return HarnessStep(
+            tool_invocations=(
+                ToolInvocation(
+                    call_id=(
+                        "call_failed_before_tool_approval"
+                        if not tool_results
+                        else "call_unbound_tool_approval"
+                    ),
+                    tool_name=(
+                        "custom.failure"
+                        if not tool_results
+                        else "custom.unbound_approval"
+                    ),
+                    arguments={},
+                    task_id="task_001",
+                ),
+            )
+        )
+
+
+def test_internal_signal_nonterminal_tool_approval_fails_closed() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+    registry = ToolRegistry()
+    registry.register(
+        "custom.failure",
+        lambda _context, invocation: ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=False,
+            content="correct this exact failure",
+            task_id=invocation.task_id,
+            status="custom_validation_failed",
+            error_code="custom_validation_failed",
+            details={
+                "precondition_rejected": True,
+                "retry_eligibility": "same_phase_safe",
+            },
+        ),
+    )
+
+    def create_unbound_approval(
+        context: SessionRuntimeContext,
+        invocation: ToolInvocation,
+    ) -> ToolResult:
+        context.repositories.approvals.save(
+            ApprovalRequest(
+                approval_id="appr_nonterminal_recovery_escape",
+                session_id=context.snapshot.session.session_id,
+                task_id=invocation.task_id,
+                lane_id=invocation.lane_id,
+                kind="malformed_nonterminal_tool",
+                requested_action="Approve an unrelated action.",
+                status=ApprovalRequestStatus.PENDING,
+                request_ref=None,
+                resolution_ref=None,
+                created_at="2026-07-27T00:00:00+00:00",
+            )
+        )
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=True,
+            content="approval persisted without a terminal suspension marker",
+            task_id=invocation.task_id,
+        )
+
+    registry.register("custom.unbound_approval", create_unbound_approval)
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=2,
+            signal_id="signal_tool_approval_escape",
+            agent_id=agent.agent_id,
+            actor_kind="agent",
+            actor_role=agent.role,
+            restore_focus=RestoreFocus(task_id="task_001"),
+        ),
+        driver=RecoveryToolApprovalEscapeDriver(),
+        tool_registry=registry,
+    )
+
+    assert result.status is HarnessStatus.FAILED
+    assert result.pending_approval_id is None
+    assert isinstance(result.error, AgentTurnRecoveryUnresolvedError)
+    assert result.error.unresolved.reason == (
+        "pending_approval_without_exact_settlement"
+    )
+    assert result.error.unresolved.obligation.call_id == (
+        "call_failed_before_tool_approval"
+    )
+    assert (
+        repositories.approvals.get("appr_nonterminal_recovery_escape")
+        is not None
+    )
+    failed_event = next(
+        event
+        for event in result.events
+        if event.event_type == "harness.failed"
+        and event.payload["error_code"] == "agent_turn_recovery_unresolved"
+    )
+    assert failed_event.payload["approval_id"] == (
+        "appr_nonterminal_recovery_escape"
+    )
+
+
+class RecoveryExplicitSuspensionDriver:
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input
+        return HarnessStep(
+            tool_invocations=(
+                ToolInvocation(
+                    call_id=(
+                        "call_failed_before_explicit_suspension"
+                        if not tool_results
+                        else "call_explicit_recovery_suspension"
+                    ),
+                    tool_name=(
+                        "custom.failure"
+                        if not tool_results
+                        else "custom.explicit_suspension"
+                    ),
+                    arguments={},
+                    task_id="task_001",
+                ),
+            )
+        )
+
+
+def test_internal_signal_explicit_durable_suspension_settles_recovery() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+    registry = ToolRegistry()
+    registry.register(
+        "custom.failure",
+        lambda _context, invocation: ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=False,
+            content="correct this exact failure",
+            task_id=invocation.task_id,
+            status="custom_validation_failed",
+            error_code="custom_validation_failed",
+            details={
+                "precondition_rejected": True,
+                "retry_eligibility": "same_phase_safe",
+            },
+        ),
+    )
+
+    def suspend_durably(
+        context: SessionRuntimeContext,
+        invocation: ToolInvocation,
+    ) -> ToolResult:
+        context.repositories.approvals.save(
+            ApprovalRequest(
+                approval_id="appr_exact_recovery_suspension",
+                session_id=context.snapshot.session.session_id,
+                task_id=invocation.task_id,
+                lane_id=invocation.lane_id,
+                kind="exact_recovery_suspension",
+                requested_action="Approve the exact suspended recovery.",
+                status=ApprovalRequestStatus.PENDING,
+                request_ref=None,
+                resolution_ref=None,
+                created_at="2026-07-27T00:00:00+00:00",
+            )
+        )
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=True,
+            content="recovery suspended under durable approval",
+            task_id=invocation.task_id,
+            status="recovery_waiting_approval",
+            details={"approval_id": "appr_exact_recovery_suspension"},
+            terminal_action="runtime_suspended",
+            terminates_turn=True,
+        )
+
+    registry.register("custom.explicit_suspension", suspend_durably)
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=2,
+            signal_id="signal_exact_recovery_suspension",
+            agent_id=agent.agent_id,
+            actor_kind="agent",
+            actor_role=agent.role,
+            restore_focus=RestoreFocus(task_id="task_001"),
+        ),
+        driver=RecoveryExplicitSuspensionDriver(),
+        tool_registry=registry,
+    )
+
+    assert result.status is HarnessStatus.WAITING_APPROVAL
+    assert result.pending_approval_id == "appr_exact_recovery_suspension"
+    assert result.error is None
+    settlements = [
+        event.payload
+        for event in result.events
+        if event.event_type == "failure.recovery.settled"
+    ]
+    assert len(settlements) == 1
+    assert settlements[0]["settlement_kind"] == "durable_suspension"
+    assert settlements[0]["failed_call_id"] == (
+        "call_failed_before_explicit_suspension"
+    )
+    assert settlements[0]["settling_call_id"] == (
+        "call_explicit_recovery_suspension"
+    )
+
+
+def test_internal_signal_retains_two_failures_from_one_batch() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+    model_factory = FakeModelFactory(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_batch_failed_read_1",
+                        "name": "failure.get",
+                        "args": {},
+                    },
+                    {
+                        "id": "call_batch_failed_read_2",
+                        "name": "failure.get",
+                        "args": {},
+                    },
+                ],
+            },
+            {
+                "content": "Both failures still need exact correction.",
+                "tool_calls": [],
+            },
+        ]
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=2,
+            signal_id="signal_multi_failure_batch",
+            agent_id=agent.agent_id,
+            actor_kind="agent",
+            actor_role=agent.role,
+            restore_focus=RestoreFocus(task_id="task_001"),
+        ),
+        driver=LlmConversationDriver(model_factory),
+        model_factory=model_factory,
+    )
+
+    assert result.status is HarnessStatus.FAILED
+    assert isinstance(result.error, AgentTurnRecoveryUnresolvedError)
+    assert [
+        obligation.call_id
+        for obligation in result.error.unresolved.obligations
+    ] == ["call_batch_failed_read_1", "call_batch_failed_read_2"]
+    failed_event = next(
+        event
+        for event in result.events
+        if event.event_type == "harness.failed"
+        and event.payload["error_code"] == "agent_turn_recovery_unresolved"
+    )
+    assert failed_event.payload["obligation_count"] == 2
+
+
+def test_one_corrected_read_settles_only_one_same_tool_failure() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+    target_failure_id = _seed_failure_target(
+        repositories,
+        session=session,
+        agent_id=agent.agent_id,
+    )
+    model_factory = FakeModelFactory(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_ambiguous_failed_read_1",
+                        "name": "failure.get",
+                        "args": {},
+                    },
+                    {
+                        "id": "call_ambiguous_failed_read_2",
+                        "name": "failure.get",
+                        "args": {},
+                    },
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_single_corrected_read",
+                        "name": "failure.get",
+                        "args": {"failure_id": target_failure_id},
+                    }
+                ],
+            },
+            {
+                "content": "One failure is still unresolved.",
+                "tool_calls": [],
+            },
+        ]
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=3,
+            signal_id="signal_single_correction",
+            agent_id=agent.agent_id,
+            actor_kind="agent",
+            actor_role=agent.role,
+            restore_focus=RestoreFocus(task_id="task_001"),
+        ),
+        driver=LlmConversationDriver(model_factory),
+        model_factory=model_factory,
+    )
+
+    assert result.status is HarnessStatus.FAILED
+    assert isinstance(result.error, AgentTurnRecoveryUnresolvedError)
+    assert [
+        obligation.call_id
+        for obligation in result.error.unresolved.obligations
+    ] == ["call_ambiguous_failed_read_1"]
+    settlements = [
+        event.payload
+        for event in result.events
+        if event.event_type == "failure.recovery.settled"
+    ]
+    assert len(settlements) == 1
+    assert settlements[0]["failed_call_id"] == "call_ambiguous_failed_read_2"
+
+
+def test_parallel_overflow_is_accounted_as_recovery_obligation() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+    model_factory = FakeModelFactory(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"call_task_list_{index}",
+                        "name": "task.list",
+                        "args": {},
+                    }
+                    for index in range(1, 5)
+                ],
+            },
+            {
+                "content": "The overflow result cannot be omitted.",
+                "tool_calls": [],
+            },
+        ]
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=2,
+            signal_id="signal_parallel_overflow",
+            agent_id=agent.agent_id,
+            actor_kind="agent",
+            actor_role=agent.role,
+            restore_focus=RestoreFocus(task_id="task_001"),
+        ),
+        driver=LlmConversationDriver(model_factory),
+        model_factory=model_factory,
+    )
+
+    assert result.status is HarnessStatus.FAILED
+    assert isinstance(result.error, AgentTurnRecoveryUnresolvedError)
+    assert (
+        result.error.unresolved.obligation.error_code
+        == "parallel_tool_call_limit_exceeded"
+    )
+    assert result.error.unresolved.obligation.call_id == "call_task_list_4"
+
+
+def test_invalid_tool_context_is_structured_and_correctable() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+    model_factory = FakeModelFactory(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_update_missing_task_context",
+                        "name": "task.update",
+                        "args": {
+                            "task_id": "task_missing_context",
+                            "subject": "Does not dispatch",
+                        },
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_update_corrected_task_context",
+                        "name": "task.update",
+                        "args": {
+                            "task_id": "task_001",
+                            "subject": "Corrected canonical task",
+                        },
+                    }
+                ],
+            },
+            {
+                "content": "The exact task context was corrected.",
+                "tool_calls": [],
+            },
+        ]
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=3,
+            signal_id="signal_invalid_tool_context",
+            agent_id=agent.agent_id,
+            actor_kind="agent",
+            actor_role=agent.role,
+            restore_focus=RestoreFocus(task_id="task_001"),
+        ),
+        driver=LlmConversationDriver(model_factory),
+        model_factory=model_factory,
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    assert [item.ok for item in result.tool_results] == [False, True]
+    assert result.tool_results[0].error_code == "invalid_tool_context"
+    assert result.tool_results[0].failure_observation is not None
+    assert (
+        result.tool_results[0].failure_observation["effect_certainty"]
+        == "no_effect"
+    )
+    assert result.tool_results[1].task_id == "task_001"
+
+
+def _direct_turn_recovery_context(
+    repositories: CoreRepositories,
+    session: Session,
+    registry: ToolRegistry,
+    *,
+    agent_id: str,
+) -> tuple[SessionRuntimeContext, MemoryEventBus]:
+    event_bus = MemoryEventBus()
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=event_bus,
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            session.session_id,
+        ),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001"),
+        agent_id=agent_id,
+        actor_kind="agent",
+        actor_role="researcher",
+        turn_recovery_enabled=True,
+    )
+    return context, event_bus
+
+
+def test_terminal_known_same_tool_success_requires_declared_relation() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+    registry = ToolRegistry()
+    call_count = 0
+
+    def stateful_tool(
+        _context: SessionRuntimeContext,
+        invocation: ToolInvocation,
+    ) -> ToolResult:
+        nonlocal call_count
+        call_count += 1
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=call_count > 1,
+            content="current state",
+            task_id=invocation.task_id,
+            status="state_conflict" if call_count == 1 else "state_projected",
+            error_code="state_conflict" if call_count == 1 else None,
+            details={"state_id": f"state_{call_count}"},
+        )
+
+    registry.register("custom.state", stateful_tool)
+    context, event_bus = _direct_turn_recovery_context(
+        repositories,
+        session,
+        registry,
+        agent_id=agent.agent_id,
+    )
+    failed = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_custom_state_failed",
+            tool_name="custom.state",
+            arguments={},
+            task_id="task_001",
+        ),
+    )
+    update_agent_turn_recovery(context, failed)
+    succeeded = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_custom_state_unrelated_success",
+            tool_name="custom.state",
+            arguments={},
+            task_id="task_001",
+        ),
+    )
+    update_agent_turn_recovery(context, succeeded)
+
+    assert failed.failure_observation is not None
+    assert succeeded.ok is True
+    assert [
+        obligation.call_id
+        for obligation in context.pending_turn_recovery_obligations()
+    ] == ["call_custom_state_failed"]
+    assert not [
+        event
+        for event in event_bus.events
+        if event.event_type == "failure.recovery.settled"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("projected_invocation_id", "settles"),
+    (("inv_expected", True), ("inv_other", False)),
+)
+def test_execution_status_settlement_requires_exact_invocation_identity(
+    projected_invocation_id: str,
+    settles: bool,
+) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="executor",
+        task_id="task_001",
+    )
+    registry = ToolRegistry()
+    registry.register(
+        "execution.pipeline.start",
+        lambda _context, invocation: ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=False,
+            content="existing execution",
+            task_id="task_001",
+            status="existing_execution_invocation",
+            error_code="existing_execution_invocation",
+            details={"invocation_id": "inv_expected"},
+        ),
+    )
+    registry.register(
+        "execution.pipeline.status",
+        lambda _context, invocation: ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=True,
+            content=json.dumps(
+                {"invocation_id": projected_invocation_id},
+                sort_keys=True,
+            ),
+            task_id="task_001",
+            status="execution_pipeline_status_projected",
+            details={"invocation_id": projected_invocation_id},
+        ),
+    )
+    context, event_bus = _direct_turn_recovery_context(
+        repositories,
+        session,
+        registry,
+        agent_id=agent.agent_id,
+    )
+
+    failed = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_execution_existing",
+            tool_name="execution.pipeline.start",
+            arguments={},
+            task_id="task_001",
+        ),
+    )
+    update_agent_turn_recovery(context, failed)
+    inspected = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_execution_status",
+            tool_name="execution.pipeline.status",
+            arguments={"invocation_id": projected_invocation_id},
+            task_id="task_001",
+        ),
+    )
+    update_agent_turn_recovery(context, inspected)
+
+    obligations = context.pending_turn_recovery_obligations()
+    settlements = [
+        event.payload
+        for event in event_bus.events
+        if event.event_type == "failure.recovery.settled"
+    ]
+    assert (not obligations) is settles
+    assert bool(settlements) is settles
+    if settles:
+        assert settlements[0]["settlement_kind"] == (
+            "existing_state_verified"
+        )
+        assert "execution_invocation:inv_expected" in (
+            settlements[0]["proof_refs"]
+        )
+
+
+@pytest.mark.parametrize(
+    ("projected_selection_id", "settles"),
+    (("selection_expected", True), ("selection_other", False)),
+)
+def test_scientific_inspection_settlement_requires_exact_attempt_selection(
+    projected_selection_id: str,
+    settles: bool,
+) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+    registry = ToolRegistry()
+    registry.register(
+        "scientific.attempt.close",
+        lambda _context, invocation: ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=False,
+            content="attempt already closed",
+            task_id="task_001",
+            status="scientific_command_rejected",
+            error_code="attempt_already_closed",
+            details={
+                "attempt_id": "attempt_expected",
+                "selection_id": "selection_expected",
+            },
+        ),
+    )
+    registry.register(
+        "scientific.attempt.inspect",
+        lambda _context, invocation: ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=True,
+            content=json.dumps(
+                {
+                    "attempt": {"attempt_id": "attempt_expected"},
+                    "selection": {
+                        "selection_id": projected_selection_id,
+                    },
+                },
+                sort_keys=True,
+            ),
+            task_id="task_001",
+            status="scientific_selection_projected",
+            details={
+                "attempt": {"attempt_id": "attempt_expected"},
+                "selection": {
+                    "selection_id": projected_selection_id,
+                },
+            },
+        ),
+    )
+    context, event_bus = _direct_turn_recovery_context(
+        repositories,
+        session,
+        registry,
+        agent_id=agent.agent_id,
+    )
+
+    failed = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_scientific_closed",
+            tool_name="scientific.attempt.close",
+            arguments={
+                "attempt_id": "attempt_expected",
+                "selection_id": "selection_expected",
+            },
+            task_id="task_001",
+        ),
+    )
+    update_agent_turn_recovery(context, failed)
+    inspected = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_scientific_inspect",
+            tool_name="scientific.attempt.inspect",
+            arguments={
+                "attempt_id": "attempt_expected",
+                "selection_id": projected_selection_id,
+            },
+            task_id="task_001",
+        ),
+    )
+    update_agent_turn_recovery(context, inspected)
+
+    obligations = context.pending_turn_recovery_obligations()
+    settlements = [
+        event.payload
+        for event in event_bus.events
+        if event.event_type == "failure.recovery.settled"
+    ]
+    assert (not obligations) is settles
+    assert bool(settlements) is settles
+    if settles:
+        assert settlements[0]["settlement_kind"] == (
+            "existing_state_verified"
+        )
+        assert {
+            "scientific_attempt:attempt_expected",
+            "scientific_selection:selection_expected",
+        } <= set(settlements[0]["proof_refs"])
+
+
+@pytest.mark.parametrize(
+    ("closed_attempt_id", "settles"),
+    (("attempt_expected", True), ("attempt_other", False)),
+)
+def test_scientific_exit_settlement_requires_exact_attempt_identity(
+    closed_attempt_id: str,
+    settles: bool,
+) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+    registry = ToolRegistry()
+    registry.register(
+        "scientific.operation.adopt",
+        lambda _context, invocation: ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=False,
+            content="scientific operation cannot be adopted",
+            task_id="task_001",
+            status="scientific_command_rejected",
+            error_code="scientific_operation_not_adoptable",
+            details={"attempt_id": "attempt_expected"},
+        ),
+    )
+    registry.register(
+        "scientific.attempt.close",
+        lambda _context, invocation: ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=True,
+            content="scientific attempt closure requested",
+            task_id="task_001",
+            status="scientific_attempt_closure_requested",
+            details={"attempt_id": closed_attempt_id},
+            terminal_action="scientific.attempt.close",
+            terminates_turn=True,
+        ),
+    )
+    context, event_bus = _direct_turn_recovery_context(
+        repositories,
+        session,
+        registry,
+        agent_id=agent.agent_id,
+    )
+
+    failed = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_scientific_operation_failure",
+            tool_name="scientific.operation.adopt",
+            arguments={"attempt_id": "attempt_expected"},
+            task_id="task_001",
+        ),
+    )
+    update_agent_turn_recovery(context, failed)
+    closed = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_scientific_attempt_exit",
+            tool_name="scientific.attempt.close",
+            arguments={"attempt_id": closed_attempt_id},
+            task_id="task_001",
+        ),
+    )
+    update_agent_turn_recovery(context, closed)
+
+    obligations = context.pending_turn_recovery_obligations()
+    settlements = [
+        event.payload
+        for event in event_bus.events
+        if event.event_type == "failure.recovery.settled"
+    ]
+    assert (not obligations) is settles
+    assert bool(settlements) is settles
+    if settles:
+        assert settlements[0]["settlement_kind"] == "scientific_exit"
+        assert (
+            "scientific_attempt:attempt_expected"
+            in settlements[0]["proof_refs"]
+        )
+
+
+def test_task_finish_settles_only_obligations_bound_to_same_task() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    repositories.tasks.save(
+        Task.create(
+            task_id="task_other_recovery",
+            session_id=session.session_id,
+            subject="Other recovery task",
+            description="Keep this obligation open.",
+            assigned_ref="agent:primary",
+        )
+    )
+    registry = ToolRegistry()
+
+    def fail(
+        _context: SessionRuntimeContext,
+        invocation: ToolInvocation,
+    ) -> ToolResult:
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=False,
+            content="known local failure",
+            task_id=invocation.task_id,
+            status="known_local_failure",
+            error_code="known_local_failure",
+        )
+
+    registry.register("custom.fail", fail)
+    register_task_board_tools(registry)
+    context, event_bus = _direct_turn_recovery_context(
+        repositories,
+        session,
+        registry,
+        agent_id="agent:primary",
+    )
+    for call_id, task_id in (
+        ("call_fail_primary", "task_001"),
+        ("call_fail_other", "task_other_recovery"),
+    ):
+        failed = registry.dispatch(
+            context,
+            ToolInvocation(
+                call_id=call_id,
+                tool_name="custom.fail",
+                arguments={},
+                task_id=task_id,
+            ),
+        )
+        update_agent_turn_recovery(context, failed)
+
+    finished = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_finish_primary_recovery",
+            tool_name="task.finish",
+            arguments={
+                "task_id": "task_001",
+                "status": "completed",
+                "summary": "The primary task exits explicitly.",
+            },
+            task_id="task_001",
+        ),
+    )
+    update_agent_turn_recovery(context, finished)
+
+    assert finished.ok is True
+    assert [
+        obligation.call_id
+        for obligation in context.pending_turn_recovery_obligations()
+    ] == ["call_fail_other"]
+    settlements = [
+        event.payload
+        for event in event_bus.events
+        if event.event_type == "failure.recovery.settled"
+    ]
+    assert [item["settlement_kind"] for item in settlements] == [
+        "task_exit"
+    ]
+    assert settlements[0]["failed_call_id"] == "call_fail_primary"
 
 
 def test_failure_hypothesis_does_not_settle_another_tool_recovery_obligation() -> (
@@ -5606,6 +7372,86 @@ def test_tool_router_validates_required_and_enum_schema_before_dispatch() -> Non
     }
     assert valid.ok is True
     assert dispatched == [{"name": "x", "mode": "fast"}]
+
+
+def test_tool_router_preserves_explicit_failure_recovery_metadata() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+    registry = ToolRegistry()
+
+    def handler(
+        _context: SessionRuntimeContext,
+        invocation: ToolInvocation,
+    ) -> ToolResult:
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=False,
+            content="Known state requires inspection.",
+            task_id=invocation.task_id,
+            status="known_state",
+            error_code="known_state",
+            details={
+                "precondition_rejected": True,
+                "effect_certainty": "no_effect",
+                "retry_eligibility": "terminal",
+                "recoverability": "agent_can_replan",
+            },
+        )
+
+    registry.register("example.recovery_metadata", handler)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            session.session_id,
+        ),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001"),
+        agent_id=agent.agent_id,
+        actor_kind="agent",
+        actor_role=agent.role,
+    )
+    router = registry.to_tool_router(
+        context,
+        descriptors=(
+            ToolDescriptor(
+                tool_name="example.recovery_metadata",
+                description="Return an explicit recovery classification.",
+                input_schema={
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            ),
+        ),
+    )
+    step_context = build_agent_step_context(context, call_index=1)
+
+    result = router.dispatch(
+        step_context,
+        ToolInvocation(
+            call_id="call_explicit_recovery_metadata",
+            tool_name="example.recovery_metadata",
+            arguments={},
+            task_id="task_001",
+        ),
+    )
+
+    assert result.failure_observation is not None
+    assert result.failure_observation["phase"] == "validation"
+    assert result.failure_observation["effect_certainty"] == "no_effect"
+    assert result.failure_observation["retry_eligibility"] == "terminal"
+    assert result.failure_observation["recoverability"] == (
+        "agent_can_replan"
+    )
 
 
 def test_builtin_tool_catalog_exposes_top_level_mutating_tools() -> None:

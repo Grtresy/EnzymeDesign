@@ -88,42 +88,22 @@ def _recovery_target_is_current(
     *,
     failure_id: str,
 ) -> bool:
-    obligation = context.turn_recovery_obligation
-    if obligation is None:
-        return False
-    if (
-        obligation.failure_id == failure_id
+    obligation = context.turn_recovery_obligations.get(failure_id)
+    if not (
+        obligation is not None
         and obligation.tool_name == "task.delegate"
         and obligation.error_code == "task_blocked"
         and obligation.recoverability == "agent_can_replan"
         and obligation.effect_certainty == "terminal_known"
     ):
-        failure = context.repositories.failure_observations.get(failure_id)
-        return bool(
-            failure is not None
-            and failure.source_ref == obligation.call_id
-        )
-    if not (
-        obligation.tool_name == "failure.recovery.record"
-        and obligation.error_code == "invalid_tool_arguments"
-        and obligation.recoverability == "agent_can_retry"
-        and obligation.effect_certainty == "no_effect"
-    ):
         return False
-    failed_retry = context.repositories.failure_observations.get(
-        obligation.failure_id
-    )
+    failure = context.repositories.failure_observations.get(failure_id)
     return bool(
-        failed_retry is not None
-        and failed_retry.session_id == context.snapshot.session.session_id
-        and failed_retry.agent_id == context.agent_id
-        and failed_retry.source_kind == "tool_invocation"
-        and failed_retry.source_ref == obligation.call_id
-        and failed_retry.error_code == obligation.error_code
-        and failed_retry.recoverability.value == "agent_can_retry"
-        and failed_retry.effect_certainty.value == "no_effect"
-        and failed_retry.retry_eligibility.value == "same_phase_safe"
-        and failed_retry.facts.get("tool_name") == "failure.recovery.record"
+        failure is not None
+        and failure.session_id == context.snapshot.session.session_id
+        and failure.agent_id == context.agent_id
+        and failure.source_kind == "tool_invocation"
+        and failure.source_ref == obligation.call_id
     )
 
 

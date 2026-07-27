@@ -162,17 +162,36 @@ Failure facts、规则化 likely causes 和 agent hypothesis 是三种不同 aut
 system-attributed diagnostic，并显式标记 `agent_decision_produced=false`，不得伪造 agent 消息。
 
 internally driven signal turn 收到 `agent_can_replan|agent_can_retry` 且
-`no_effect|terminal_known` 的 typed failed tool result 后，会形成 turn-local recovery
-obligation。agent 仍可自由选择安全修复、其他 durable action、求助或显式 task exit；Harness
-不改参数、不重试、不自动 delegate。只叙述下一步或只做 read 不结算 obligation：第一次 prose
-不持久化并得到结构化 `agent_turn_recovery_action_required`，重复 prose 或剩余 step
-不足时 exact signal 以 `agent_turn_recovery_unresolved` terminal failure 收口，
-`retry_eligibility=terminal`，task 保持原业务状态。direct user-message turn 与 uncertain
-effect/reconciliation failure 不进入这条窄 settlement。若 obligation 本身来自失败的
-`failure.hypothesis.record`，同一 agent 的 canonical corrected retry 只有在
-repository 可重读且完整 `failure_hypothesis@1` payload 与成功 ToolResult exact equality
-时才结算；它不能结算其他 tool 的失败，也不改变 hypothesis 的非 retry-authority、
-非 task/scientific-state 语义。
+`no_effect|terminal_known` 的 typed failed tool result 后，会按 observation 顺序保存
+`failure_id` keyed turn-local recovery obligations；同批后一个失败不能覆盖前一个失败。
+normal dispatch、task/lane normalization rejection、parallel overflow 与 interrupted call
+产生的每个 `ToolResult` 都必须且只可进入一次 accounting。agent 仍可自由选择安全修复、
+verified replan、求助、显式 task exit 或 durable suspension；Harness 不改参数、不重试、
+不自动 delegate。
+
+settlement 是 failure 与成功 proof result 之间的闭集关系，不再按 read/write governance 或
+tool-name allowlist 推断。当前闭集包括：任意 read/write tool 的同工具 no-effect
+validation corrected retry（一次无歧义成功最多结算一个 failure）、exact
+`failure.recovery.record`、同 invocation id 的 `execution.pipeline.status`、同
+attempt/selection 的 `scientific.attempt.inspect`、同 task 的 `task.finish`，以及同 task
+显式 `runtime_suspended` / scientific exit。每次成功结算都写 immutable
+`failure.recovery.settled` event；unrelated read、write、memory compaction 或 prose 均不
+结算。`task.get` not-found、`task.next` no-ready-work 是成功的 closed empty read；只有
+canonical identity 与 postcondition 完全相等的 `task.finish` / execution start replay
+才返回 already-satisfied；execution request 同时显式给出 invocation id 与 idempotency key
+时二者必须全部匹配，任一冲突都继续失败。
+
+Harness 在每个 `COMPLETED` / `WAITING_APPROVAL` 出口重新检查完整 obligation set，不能把
+driver 空 step、直接 approval request 或“工具碰巧留下 pending approval”当作恢复完成。
+可结算 recovery obligation 的合法暂停必须由成功的 same-task terminal ToolResult 显式声明
+`terminal_action=runtime_suspended`，并留下 durable pending approval id；
+`execution.pipeline.start` 的 `WAITING_APPROVAL` 也使用该契约。teammate runtime 再要求
+Harness status 与 `pending_approval_id` 双向一致，所以 `FAILED + approval id` 不能被误判
+为 signal success。第一次 prose 不持久化并得到结构化
+`agent_turn_recovery_action_required`；重复 prose、空出口或剩余 step 不足时 exact signal
+以包含完整 bounded obligation list 的 `agent_turn_recovery_unresolved` terminal failure
+收口，task 保持原业务状态。direct user-message turn 与 uncertain
+effect/reconciliation failure 不进入这条窄 settlement。
 
 `task.delegate` 因 durable `blocked_by` 尚未完成而返回
 `task_blocked/agent_can_replan/terminal_known` 时，agent 不应伪造 `task.update`、提前退出
@@ -185,6 +204,15 @@ repository 重读并与完整 payload 相等。该记录不可变，不重试 de
 不改变 task 或 scientific state；cross-tool、cross-session、cross-agent、payload/state drift
 一律 fail closed。若该记录工具自身发生 no-effect 参数校验失败，只允许同工具的规范修正调用
 按相同 repository closure 结算。
+
+该 immutable disposition 同时是 exact condition subscription，不是仅供展示的历史记录。
+scheduler 在 claim signal 前、Harness 在 task mutation 后都执行同一 reconciler；只有
+disposition 的所有 condition tasks 在同 session 内达到 `completed`，才为 disposition
+owner 原子写入一个 `reason=recovery_required/source_ref=<disposition_id>` 的 durable signal，
+commit 后再通知。去重查询覆盖 pending/claimed/completed/failed/cancelled 全状态，poll、
+restart 或 signal 已完成后都不会复制 wakeup。该 wakeup 不自动重试 delegate、不认领仍为
+unassigned `todo` 的 target task、不替换 agent；turn prompt 只重建 exact disposition、
+original failure 与 completed conditions，并说明只有 canonical task owner 才能执行 task exit。
 
 所有 `structured`、`tool_calling`、`chat` 与 connectivity smoke 的 provider 调用都必须经过 `openzyme_runtime.LlmInvocationRuntime`。invoker 只负责构造 payload、结构化解析或 tool response 还原；runtime 统一负责 limiter、timeout、retry/backoff、`Retry-After`、错误 taxonomy 与 LLM debug 记录。502/503/504、transport timeout/connection failure 属于 retryable；429 只有 transient 或带 `Retry-After` 时 retryable，usage/quota/invalid/context 类 429 不重试；400/401/403、schema/tool argument/context window 错误不重试。runtime 不拥有 session compaction、restore context rebuild 或 harness/engine 状态机。
 

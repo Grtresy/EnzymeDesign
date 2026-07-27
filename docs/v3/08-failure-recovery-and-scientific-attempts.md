@@ -55,18 +55,39 @@ delivery recovery failure 或 Host-finalized transition failure，Host 使用 ex
 internally driven signal turn 对 ordinary result 还有一个 turn-local settlement
 invariant：只有 typed observation 同时是
 `recoverability=agent_can_replan|agent_can_retry` 与
-`effect_certainty=no_effect|terminal_known` 时才建立 recovery obligation。agent 可自由
-选择任何 reviewed durable mutation、help/authority request 或 explicit terminal task action；
-Harness 不改写参数、不自动重试/delegate。read-only inspection、memory compaction、unknown
-nominal write 或 prose 不清除 obligation。首次 prose 只形成不持久化的
-`agent_turn_recovery_action_required` feedback；重复 prose 或 step bound 形成
-`agent_turn_recovery_unresolved` typed signal failure，exact signal 不重放，task 业务状态
-不变。一个更窄的 same-tool retry 规则只适用于 obligation 自身来自
-`failure.hypothesis.record` validation failure：后续成功 record 必须由 current agent 写入
-current session，并由 repository 重读证明完整 `failure_hypothesis@1` 与 ToolResult exact
-equality。它不结算其他 tool 的 failure，不把 cause hypothesis 升级为 retry authority，
-也不改变 task/scientific state。direct user-message turn 与
+`effect_certainty=no_effect|terminal_known` 时才建立 recovery obligation。obligations 以
+observation 顺序、`failure_id` key 保存；后一个 failure 不覆盖前一个，同一 failure 重复
+accounting 幂等。normal dispatch、task/lane normalization rejection、parallel overflow 与
+interrupted call 产生的每个 `ToolResult` 都通过同一个 accounting boundary exactly once。
+
+agent 可自由选择 corrected retry、verified replan、help/authority request、explicit terminal
+task action 或 durable suspension；Harness 不改写参数、不自动重试/delegate。settlement
+只来自 failure-bound closed matcher：
+
+- 同工具 `no_effect + same_phase_safe` validation corrected retry，包括 read tool；一个无
+  multi-failure proof 的成功一次最多结算一个 matching failure；
+- exact `failure.recovery.record` dependency disposition；
+- exact invocation id 的 `execution.pipeline.status`；
+- exact attempt id 与 selection id 的 `scientific.attempt.inspect`；
+- 同 task 的 `task.finish`；
+- 同 task 的 explicit `runtime_suspended` 或 scientific exit。
+
+每个 settlement 写 immutable `failure.recovery.settled`，并只删除它证明的 obligation。
+read/write governance、全局 tool-name allowlist、unrelated nominal mutation、memory
+compaction 或 prose 都不是 proof。首次 prose 只形成不持久化的
+`agent_turn_recovery_action_required` feedback；重复 prose、empty driver exit 或 step bound
+形成带完整 bounded obligation list 的 `agent_turn_recovery_unresolved` typed signal
+failure，exact signal 不重放，task 业务状态不变。direct user-message turn 与
 reconciliation/unknown-effect path 不进入这条窄规则。
+
+empty read 与 replay 使用显式 convergence semantics：`task.get` not-found 和 `task.next`
+no-ready-work 是 successful closed observation；exact `task.finish` / source-bound execution
+start replay 只有在 canonical identity 与 postcondition 相等时 already-satisfied，conflict
+继续失败。Harness 在所有 `COMPLETED` / `WAITING_APPROVAL` 出口重新检查 obligations；
+direct approval、空 step 或非终止工具遗留 pending approval 都不能逃逸未结算 failure。
+可结算 recovery 的 valid wait 必须是 same-task successful terminal `runtime_suspended`
+且 durable approval id 可重读；没有 recovery obligation 的 legacy approval wait 保持既有
+语义。runtime 再要求 waiting status 与 approval id 双向一致。
 
 blocked delegation 还有一个不要求虚假 task mutation 的窄 settlement。只有当前
 obligation 来自 `task.delegate` 的
@@ -81,6 +102,15 @@ state；agent 在未来 wake 中仍需根据新 durable state 自主决定是否
 cross-session、cross-agent、missing/synthetic record、terminal non-completed blocker 或
 payload/dependency drift 均 fail closed。该工具自身的 no-effect 参数校验失败只允许同工具
 canonical corrected call 按相同 closure 结算。
+
+immutable disposition 同时充当 exact condition subscription。scheduler pre-claim 与
+post-task-mutation path 运行同一个 reconciler；只有所有 condition tasks 存在于同 session 且
+为 `completed`，才为 disposition owner 原子创建一个
+`recovery_required/source_ref=<disposition_id>` signal，并在 commit 后 notify。signal
+repository 的 source lookup 覆盖 pending、claimed 与全部 terminal 状态，所以 polling、
+restart 或已消费 signal 不会产生第二个 wakeup。该 wake 不执行 delegate、不 claim
+unassigned target、不换 agent；runtime prompt 只重建 exact disposition、original failure 与
+completed conditions，target task exit 仍受 canonical owner authority 限制。
 
 `recovery_required` brief 只能陈述事实和安全边界。agent 可选择：
 
@@ -134,8 +164,8 @@ failure，返回 `formal_agent_recovery_unresolved`；否则返回
 auto-enqueue 或创造 recovery work。
 
 同一个 provider response 中的多个 tool call 作为有序 batch 结算。若某个已 dispatch call
-触发 approval、成功的 `task.finish` / `scientific.attempt.close` terminal action、runtime
-suspension 或 boundary-fatal failure，harness
+触发 explicit `runtime_suspended` approval、成功的 `task.finish` /
+`scientific.attempt.close` terminal action或 boundary-fatal failure，harness
 停止 dispatch 余下 call，但不能让它们消失：后续 eligible call 记录
 `tool_call_batch_interrupted/no_effect/verify_then_retry`，overflow call 记录
 `parallel_tool_call_limit_exceeded/no_effect/same_phase_safe`。causal call 若已跨过外部

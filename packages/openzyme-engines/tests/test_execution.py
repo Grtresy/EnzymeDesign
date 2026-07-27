@@ -2288,12 +2288,128 @@ def test_execution_pipeline_start_rejects_duplicate_task_invocation() -> None:
             lane_id="lane_001",
         ),
     )
+    existing = repositories.invocations.list_by_task(
+        session.session_id,
+        "task_001",
+    )
+    existing_count = len(existing)
+    existing_invocation_id = str(second.details["invocation_id"])
+    existing_invocation = repositories.invocations.get(
+        existing_invocation_id
+    )
+    assert existing_invocation is not None
+    exact_replay = router.dispatch(
+        step_context,
+        ToolInvocation(
+            call_id="call_start_exact_replay",
+            tool_name="execution.pipeline.start",
+            arguments={
+                **arguments,
+                "invocation_id": existing_invocation_id,
+            },
+            task_id="task_001",
+            lane_id="lane_001",
+        ),
+    )
+    idempotency_replay = router.dispatch(
+        step_context,
+        ToolInvocation(
+            call_id="call_start_idempotency_replay",
+            tool_name="execution.pipeline.start",
+            arguments={
+                **arguments,
+                "idempotency_key": existing_invocation.idempotency_key,
+            },
+            task_id="task_001",
+            lane_id="lane_001",
+        ),
+    )
+    mixed_identity_replay = router.dispatch(
+        step_context,
+        ToolInvocation(
+            call_id="call_start_mixed_identity_replay",
+            tool_name="execution.pipeline.start",
+            arguments={
+                **arguments,
+                "invocation_id": existing_invocation_id,
+                "idempotency_key": "conflicting:idempotency",
+            },
+            task_id="task_001",
+            lane_id="lane_001",
+        ),
+    )
+    conflicting_replay = router.dispatch(
+        step_context,
+        ToolInvocation(
+            call_id="call_start_conflicting_replay",
+            tool_name="execution.pipeline.start",
+            arguments={
+                **arguments,
+                "invocation_id": "inv_conflicting_identity",
+            },
+            task_id="task_001",
+            lane_id="lane_001",
+        ),
+    )
+    drifted_exact_replay = router.dispatch(
+        step_context,
+        ToolInvocation(
+            call_id="call_start_drifted_exact_replay",
+            tool_name="execution.pipeline.start",
+            arguments={
+                **arguments,
+                "inputs": {
+                    **dict(arguments["inputs"]),
+                    "context_artifact_ids": ["art_context_drift"],
+                },
+                "invocation_id": existing_invocation_id,
+            },
+            task_id="task_001",
+            lane_id="lane_001",
+        ),
+    )
 
     assert first.ok is True
+    assert first.status == "execution_pipeline_waiting_approval"
+    assert first.terminal_action == "runtime_suspended"
+    assert first.terminates_turn is True
+    assert first.details["approval_id"] is not None
     assert second.ok is False
     assert second.status == "existing_execution_invocation"
     assert second.error_code == "existing_execution_invocation"
     assert "execution.pipeline.status" in second.hint
+    assert exact_replay.ok is True
+    assert exact_replay.status == "execution_invocation_already_satisfied"
+    assert exact_replay.details == {
+        "invocation_id": existing_invocation_id,
+        "invocation_status": existing_invocation.status.value,
+        "already_satisfied": True,
+        "approval_id": existing_invocation.approval_id,
+    }
+    assert exact_replay.terminal_action == "runtime_suspended"
+    assert exact_replay.terminates_turn is True
+    assert idempotency_replay.ok is True
+    assert (
+        idempotency_replay.status
+        == "execution_invocation_already_satisfied"
+    )
+    assert mixed_identity_replay.ok is False
+    assert mixed_identity_replay.status == "existing_execution_invocation"
+    assert (
+        mixed_identity_replay.details["requested_identity_matched"] is False
+    )
+    assert conflicting_replay.ok is False
+    assert conflicting_replay.status == "existing_execution_invocation"
+    assert drifted_exact_replay.ok is False
+    assert drifted_exact_replay.status == "existing_execution_invocation"
+    assert drifted_exact_replay.details["requested_identity_matched"] is True
+    assert drifted_exact_replay.details["requested_payload_matched"] is False
+    assert len(
+        repositories.invocations.list_by_task(
+            session.session_id,
+            "task_001",
+        )
+    ) == existing_count
 
 
 def test_execution_engine_tool_descriptors_derive_from_registered_runtimes() -> None:
