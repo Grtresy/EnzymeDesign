@@ -937,6 +937,117 @@ _DURABLE_RECOVERY_TOOL_NAMES = frozenset(
 )
 
 
+def _successful_failure_recovery_disposition_settles(
+    context: SessionRuntimeContext,
+    result: ToolResult,
+    obligation: AgentTurnRecoveryObligation,
+) -> bool:
+    if not (
+        result.tool_name == "failure.recovery.record"
+        and result.status == "failure_recovery_disposition_recorded"
+        and isinstance(result.details, dict)
+    ):
+        return False
+    disposition_id = str(result.details.get("disposition_id") or "").strip()
+    record = (
+        None
+        if not disposition_id
+        else context.repositories.failure_recovery_dispositions.get(
+            disposition_id
+        )
+    )
+    if (
+        record is None
+        or record.session_id != context.snapshot.session.session_id
+        or record.agent_id != context.agent_id
+        or record.disposition.value
+        != "defer_until_task_dependencies_complete"
+        or record.to_dict() != result.details
+    ):
+        return False
+    failure = context.repositories.failure_observations.get(record.failure_id)
+    if (
+        failure is None
+        or failure.session_id != record.session_id
+        or failure.agent_id != record.agent_id
+        or failure.source_kind != "tool_invocation"
+        or failure.error_code != "task_blocked"
+        or failure.recoverability.value != "agent_can_replan"
+        or failure.effect_certainty.value != "terminal_known"
+        or failure.retry_eligibility.value != "terminal"
+        or failure.facts.get("tool_name") != "task.delegate"
+        or not failure.task_id
+    ):
+        return False
+    observed_values = failure.facts.get("blocked_by_open_task_ids")
+    if (
+        not isinstance(observed_values, list | tuple)
+        or any(not isinstance(value, str) for value in observed_values)
+    ):
+        return False
+    observed_task_ids = tuple(
+        sorted(value.strip() for value in observed_values)
+    )
+    task = context.repositories.tasks.get(failure.task_id)
+    if (
+        task is None
+        or task.session_id != record.session_id
+        or task.status is not TaskStatus.TODO
+        or task.assigned_ref is not None
+    ):
+        return False
+    current_open_task_ids: list[str] = []
+    for blocker_id in task.blocked_by:
+        blocker = context.repositories.tasks.get(blocker_id)
+        if (
+            blocker is None
+            or blocker.session_id != record.session_id
+            or blocker.status
+            not in {TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED}
+        ):
+            return False
+        if blocker.status is not TaskStatus.COMPLETED:
+            current_open_task_ids.append(blocker_id)
+    if not (
+        record.condition_task_ids
+        == tuple(sorted(current_open_task_ids))
+        == observed_task_ids
+    ):
+        return False
+    direct_settlement = (
+        obligation.failure_id == record.failure_id
+        and obligation.call_id == failure.source_ref
+        and obligation.tool_name == "task.delegate"
+        and obligation.error_code == "task_blocked"
+        and obligation.recoverability == "agent_can_replan"
+        and obligation.effect_certainty == "terminal_known"
+    )
+    if direct_settlement:
+        return True
+    if not (
+        obligation.tool_name == "failure.recovery.record"
+        and obligation.error_code == "invalid_tool_arguments"
+        and obligation.recoverability == "agent_can_retry"
+        and obligation.effect_certainty == "no_effect"
+    ):
+        return False
+    failed_retry = context.repositories.failure_observations.get(
+        obligation.failure_id
+    )
+    return bool(
+        failed_retry is not None
+        and failed_retry.session_id == record.session_id
+        and failed_retry.agent_id == record.agent_id
+        and failed_retry.source_kind == "tool_invocation"
+        and failed_retry.source_ref == obligation.call_id
+        and failed_retry.error_code == obligation.error_code
+        and failed_retry.recoverability.value == "agent_can_retry"
+        and failed_retry.effect_certainty.value == "no_effect"
+        and failed_retry.retry_eligibility.value == "same_phase_safe"
+        and failed_retry.facts.get("tool_name") == "failure.recovery.record"
+    )
+
+
 def _successful_tool_settles_turn_recovery(
     context: SessionRuntimeContext,
     result: ToolResult,
@@ -946,6 +1057,15 @@ def _successful_tool_settles_turn_recovery(
     if result.terminates_turn or result.terminal_action is not None:
         return True
     obligation = context.turn_recovery_obligation
+    if (
+        obligation is not None
+        and _successful_failure_recovery_disposition_settles(
+            context,
+            result,
+            obligation,
+        )
+    ):
+        return True
     if (
         obligation is not None
         and obligation.tool_name == "failure.hypothesis.record"
@@ -1022,7 +1142,10 @@ def evaluate_agent_turn_recovery_response(
             hint=(
                 "Choose and issue a safe durable recovery action, request "
                 "approval/help, or explicitly finish the task as blocked or "
-                "failed. Read-only inspection and narration do not settle it."
+                "failed. If task.delegate is blocked only by declared open "
+                "dependencies, failure.recovery.record may durably defer that "
+                "exact handoff without retry authority. Read-only inspection "
+                "and narration do not settle it."
             ),
             details={
                 "effect_certainty": obligation.effect_certainty,

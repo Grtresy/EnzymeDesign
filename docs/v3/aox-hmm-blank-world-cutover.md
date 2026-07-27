@@ -1,6 +1,6 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r59 exposed cross-layer architecture-verification, workflow-binding and lifecycle handoff gaps after earlier runtime/HPC and authority work. r48 through r59 are permanent NO-GO evidence. The executable architecture-qualification gate and diagnostic/formal run-class split are implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. r59 produced a valid healthy-empty scientific result, sealed selection and published report, then proved that a master-only closure handoff could be misclassified as a blocked positive execution exit and that inspection conflated closure-request readiness with post-turn finalization readiness. Later non-`rNN` closure-stage diagnostics remain permanent non-acceptance evidence: the latest one proved executor → reporter → master closure, then exposed a terminal-command observer collision with the normal attempt-scope freezing window. The forward session-scoped lifecycle precondition, split readiness projection and bounded same-command rollover coordination are implemented below. Local Live cutover stays **NO-GO**: implementation completion does not authorize another diagnostic or formal run, and one later separately approved formal acceptance campaign must still seal two real positive attempts plus one controlled fault attempt on one commit/config identity. Existing `authorize` and `run-live` remain formal-acceptance-only; diagnostic uses separately approved `authorize-diagnostic` and `run-diagnostic-live`.
+Status: r43-r61 exposed cross-layer architecture-verification, workflow-binding, lifecycle handoff and typed recovery gaps after earlier runtime/HPC and authority work. r48 through r61 are permanent NO-GO evidence; r60/r61 are diagnostic-only and always `acceptance_eligible=false`. The executable architecture-qualification gate and diagnostic/formal run-class split are implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. r59 produced a valid healthy-empty scientific result, sealed selection and published report, then proved that a master-only closure handoff could be misclassified as a blocked positive execution exit and that inspection conflated closure-request readiness with post-turn finalization readiness. Later closure-stage diagnostics remain permanent non-acceptance evidence; r61 most recently proved exact-six probe availability, then exposed that an agent could not durably express “defer this blocked delegation until its declared dependencies complete” without manufacturing a task mutation. The forward lifecycle, readiness and typed recovery corrections are implemented below. Local Live cutover stays **NO-GO**: implementation completion does not authorize another diagnostic or formal run, and one later separately approved formal acceptance campaign must still seal two real positive attempts plus one controlled fault attempt on one commit/config identity. Existing `authorize` and `run-live` remain formal-acceptance-only; diagnostic uses separately approved `authorize-diagnostic` and `run-diagnostic-live`.
 
 Historical r14-r59 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
@@ -2775,9 +2775,37 @@ same tool's no-effect validation obligation. Decision
 is permanent diagnostic NO-GO, and 8.3/8.3a remain incomplete. The forward
 correction recognizes only a repository-verified, current-session/current-agent,
 payload-exact corrected same-tool record; it does not let hypotheses settle other
-tool failures or authorize retry/task/scientific changes. The corrections do not
-authorize `preflight`, another closure-stage run,
+tool failures or authorize retry/task/scientific changes.
+
+r61 then consumed diagnostic plan
+`sha256:0825957e40b09ad2e2975d98d10fad53f855e1beace4375c6d8836a314df506a`
+on `a66a15597ce3aefdff73105f5a6ad8b14a577089`. Its exact-six independent probe
+again succeeded, but formal master execution stopped before scientific attempt,
+formal controlled operation, approval, report or closure. The canonical report
+task still had its research/execution dependencies open when master called
+`task.delegate`; exact failure `failure_74cdc468bf2825461268` correctly returned
+`task_blocked/agent_can_replan/terminal_known`. The agent identified that it
+should wait, but prose and `FailureHypothesis` could not durably settle that
+cross-tool obligation, so the signal closed as
+`agent_turn_recovery_unresolved`. Decision
+`sha256:21d8d0a7421669a4b5c7c36abee3c66c500794f4b2d7150aefa84a68c241e93d`
+is permanent diagnostic NO-GO; MICU ended at
+`109,839,777 / 500,000,000`, with delta `1,193,541`, remaining `390,160,223`,
+and no breach/overage. 8.3/8.3a remain incomplete.
+
+The forward contract creates the report task with both canonical dependencies,
+delegates only ready research/execution work, and leaves later reporter handoff
+to a future wake. If a stale plan still reaches the same failure,
+`failure.recovery.record` may append only
+`failure_recovery_disposition@1/defer_until_task_dependencies_complete` after
+the source failure, canonical agent/session, unassigned `todo` target,
+observed/current blocker equality and nonterminal dependency state all close.
+Harness re-reads the immutable record and exact payload before settling. It does
+not retry delegation, authorize a later retry, rewrite dependencies, mutate
+task/scientific state or let another tool's write substitute for this decision.
+
+These corrections do not authorize `preflight`, another closure-stage run,
 `run-diagnostic-live`, `run-live`, a numbered root, provider/MICU call, HPC
 job, browser campaign or formal attempt. Formal acceptance requires a
 different separately approved exact-three plan after a fresh clean full
-admission and pin. No r59 or consumed diagnostic plan is authority.
+admission and pin. No r59, r60 or r61 consumed plan is authority.

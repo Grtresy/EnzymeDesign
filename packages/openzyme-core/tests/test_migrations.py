@@ -247,6 +247,9 @@ def test_migration_asset_is_available() -> None:
     closure_response_sql = get_migration_sql(
         "035_v3_scientific_attempt_closure_response"
     )
+    recovery_disposition_sql = get_migration_sql(
+        "036_v3_failure_recovery_dispositions"
+    )
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -355,6 +358,18 @@ def test_migration_asset_is_available() -> None:
         "mutation_guard_scientific_attempt_closure_response_records_delete"
         in closure_response_sql
     )
+    assert (
+        "CREATE TABLE failure_recovery_disposition_records"
+        in recovery_disposition_sql
+    )
+    assert (
+        "failure_recovery_disposition_records_immutable_update"
+        in recovery_disposition_sql
+    )
+    assert (
+        "mutation_guard_failure_recovery_disposition_records_insert"
+        in recovery_disposition_sql
+    )
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -391,6 +406,7 @@ def test_migration_asset_is_available() -> None:
         "033_v3_scientific_attempt_selection",
         "034_v3_failure_hypotheses",
         "035_v3_scientific_attempt_closure_response",
+        "036_v3_failure_recovery_dispositions",
     )
 
 
@@ -443,6 +459,7 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "controlled_operation_dispatch_requests",
         "controlled_operation_result_artifacts",
         "scientific_attempt_closure_response_records",
+        "failure_recovery_disposition_records",
         "runtime_command_records",
         "mutation_scope_records",
         "mutation_writer_records",
@@ -600,6 +617,11 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "quiescence_receipt_records_immutable_delete",
         "failure_hypothesis_records_immutable_update",
         "failure_hypothesis_records_immutable_delete",
+        "failure_recovery_disposition_records_immutable_update",
+        "failure_recovery_disposition_records_immutable_delete",
+        "mutation_guard_failure_recovery_disposition_records_insert",
+        "mutation_guard_failure_recovery_disposition_records_update",
+        "mutation_guard_failure_recovery_disposition_records_delete",
     }.issubset(trigger_names)
 
 

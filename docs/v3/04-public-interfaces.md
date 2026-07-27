@@ -471,10 +471,15 @@ credential、private authority，也不扩张 exact-nine scientific prerequisite
 ## 9. Failure 与 scientific-attempt public surface
 
 `workspace.failure_observations` 只投影 safe facts、likely causes、recoverability、effect certainty、
-retry eligibility、evidence refs 和 separately attributed hypotheses；private diagnostic digest
+retry eligibility、evidence refs、separately attributed hypotheses 和 separately attributed
+recovery dispositions；private diagnostic digest
 与原始 exception 不公开。`runtime.system_diagnostic` 明确是 system voice，不能作为
-conversation assistant message。Web UI/CLI 可以显示 error、候选原因和 agent hypothesis，但不能
-把其中任何一项解释为 retry approval 或 task terminal。
+conversation assistant message。`failure.get` 的
+`agent_recovery_dispositions` 保存完整 immutable 历史，当前
+`failure_recovery_disposition@1` public payload 固定
+`retry_authorized=false`、`task_status_changed=false`、
+`scientific_state_changed=false`。Web UI/CLI 可以显示 error、候选原因、agent hypothesis
+和恢复决策，但不能把其中任何一项解释为 retry approval、已执行 recovery 或 task terminal。
 
 Host API 提供 scientific-attempt authorization、command、finalization 和 read projection。
 authority request 使用 strict DTO；actor/grantor 等身份来自受控边界。`attempt.create` 和

@@ -364,6 +364,7 @@ def test_closure_stage_policy_seals_external_operation_universe(
         "artifact.list",
         "deep_research.status",
         "execution.pipeline.status",
+        "failure.recovery.record",
         "protocol.send",
         "report.publish",
         "report_draft.update",

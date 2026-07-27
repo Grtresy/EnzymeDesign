@@ -244,6 +244,16 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
   repository/current-agent/current-session/payload exact closure 时结算；它不允许 hypothesis
   结算其他 tool failure 或取得 retry/task/scientific authority。
 
+  r61 随后证明合法的 dependency wait 也需要 typed durable decision，而不是让 agent
+  制造无意义 `task.update`。`failure.recovery.record` 现在只接受
+  `task.delegate -> task_blocked/terminal_known`，并把
+  `defer_until_task_dependencies_complete` 写成 immutable
+  `failure_recovery_disposition@1`。handler 与 Harness 双重重读 failure、canonical
+  agent/session、unassigned `todo` target、observed/current blocker equality 和 record
+  payload；它不进入 generic write allowlist、不重试 delegate、不改 task/scientific state。
+  同工具 invalid-argument corrected retry 保持同样的 repository closure，其他 cross-tool
+  write 仍不能结算。
+
 - [x] Exact-occurrence AOX gate 把任何中间试错永久等同于最终 scientific failure。
 
   证据：历史 `aox_blank_world_attempt_bundle@2` 以 exact occurrence/history poison

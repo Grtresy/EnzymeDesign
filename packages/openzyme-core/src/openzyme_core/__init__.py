@@ -239,8 +239,10 @@ from .reliability_repositories import ReliabilityRepositoryError
 from .reliability_repositories import is_transient_sqlite_contention
 from .failure_repositories import FailureObservationConflictError
 from .failure_repositories import FailureHypothesisConflictError
+from .failure_repositories import FailureRecoveryDispositionConflictError
 from .failure_repositories import FailureHypothesisRepository
 from .failure_repositories import FailureObservationRepository
+from .failure_repositories import FailureRecoveryDispositionRepository
 from .failure_repositories import project_failure_observation
 from .failure_tools import register_failure_tools
 from .scientific_attempt_repositories import (
@@ -447,8 +449,10 @@ __all__ = [
     "EngineRegistry",
     "FailureObservationConflictError",
     "FailureHypothesisConflictError",
+    "FailureRecoveryDispositionConflictError",
     "FailureHypothesisRepository",
     "FailureObservationRepository",
+    "FailureRecoveryDispositionRepository",
     "EngineInvocationRepository",
     "DurableEventConflictError",
     "DurableEventRecord",

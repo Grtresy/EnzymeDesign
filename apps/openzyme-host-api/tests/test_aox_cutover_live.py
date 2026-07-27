@@ -3417,6 +3417,16 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
         in prompt
     )
     assert (
+        "Create any missing research and execution tasks before the missing "
+        "reporting task"
+        in prompt
+    )
+    assert "both canonical upstream tasks in blocked_by" in prompt
+    assert "do not attempt reporter delegation while either dependency" in prompt
+    assert "defer_until_task_dependencies_complete" in prompt
+    assert "failure.recovery.record" in prompt
+    assert "Delegate the reporter only after both dependencies complete" in prompt
+    assert (
         "include the complete final user-facing answer as response text in the "
         "same model response that calls scientific.attempt.close"
         in prompt

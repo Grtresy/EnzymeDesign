@@ -483,6 +483,50 @@ def failure_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                 "additionalProperties": False,
             },
         ),
+        ToolDescriptor(
+            tool_name="failure.recovery.record",
+            description=(
+                "Append one exact, no-authority recovery disposition when "
+                "task.delegate returned terminal-known task_blocked because "
+                "declared task dependencies are still incomplete. The Host "
+                "requires the observed blocker set to equal current durable "
+                "state. This does not retry delegation, authorize a retry, "
+                "change task status, or mutate scientific state."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "failure_id": {"type": "string", "minLength": 1},
+                    "disposition": {
+                        "type": "string",
+                        "enum": [
+                            "defer_until_task_dependencies_complete",
+                        ],
+                    },
+                    "condition_task_ids": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "minItems": 1,
+                        "maxItems": 32,
+                        "uniqueItems": True,
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000,
+                    },
+                    "idempotency_key": {"type": "string", "minLength": 1},
+                },
+                "required": [
+                    "failure_id",
+                    "disposition",
+                    "condition_task_ids",
+                    "rationale",
+                    "idempotency_key",
+                ],
+                "additionalProperties": False,
+            },
+        ),
     )
 
 

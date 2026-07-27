@@ -59,6 +59,7 @@ from openzyme_core import builtin_tool_descriptors
 from openzyme_core import top_level_tool_descriptors
 from openzyme_core import build_teammate_registry
 from openzyme_core import ProtocolService
+from openzyme_core import project_failure_observation
 from openzyme_core import register_task_board_tools
 from openzyme_core import register_subagent_tools
 from openzyme_core import register_failure_tools
@@ -71,6 +72,7 @@ from openzyme_core.harness import build_agent_step_context
 from openzyme_core.harness import budget_tool_results_for_prompt
 from openzyme_core.harness import ContextBudgetExceededError
 from openzyme_core.harness import ensure_prompt_budget_before_model_call
+from openzyme_core.harness import evaluate_agent_turn_recovery_response
 from openzyme_core.harness import PromptPayload
 from openzyme_core.llm_driver import _parallel_tool_call_limit_result
 from openzyme_core.skills import register_skill_tools
@@ -126,6 +128,119 @@ class BudgetTestModelFactory:
     def create_tool_calling_invoker(self, *, purpose: str):
         del purpose
         return self.invoker
+
+
+class BlockedDelegationRecoveryDriver:
+    def __init__(
+        self,
+        *,
+        report_task_id: str,
+        blocker_task_ids: tuple[str, ...],
+        fail_first_record: bool = False,
+    ) -> None:
+        self.report_task_id = report_task_id
+        self.blocker_task_ids = blocker_task_ids
+        self.fail_first_record = fail_first_record
+        self.phase = 0
+        self.blocked_failure_id: str | None = None
+
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[ToolResult, ...],
+    ) -> HarnessStep:
+        if self.phase == 0:
+            self.phase = 1
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id="call_blocked_report_delegate",
+                        tool_name="task.delegate",
+                        arguments={
+                            "task_id": self.report_task_id,
+                            "agent_role": "reporter",
+                        },
+                        task_id=self.report_task_id,
+                    ),
+                )
+            )
+        if self.phase == 1:
+            assert len(tool_results) == 1
+            assert tool_results[0].failure_observation is not None
+            self.blocked_failure_id = str(
+                tool_results[0].failure_observation["failure_id"]
+            )
+            self.phase = 2
+            arguments: dict[str, object] = {
+                "failure_id": self.blocked_failure_id,
+                "disposition": "defer_until_task_dependencies_complete",
+                "condition_task_ids": list(self.blocker_task_ids),
+                "rationale": (
+                    "The report handoff must wait for both declared upstream "
+                    "tasks to complete."
+                ),
+            }
+            if not self.fail_first_record:
+                arguments["idempotency_key"] = "defer-report-handoff-v1"
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id="call_record_report_defer",
+                        tool_name="failure.recovery.record",
+                        arguments=arguments,
+                        task_id=self.report_task_id,
+                    ),
+                )
+            )
+        if self.phase == 2 and self.fail_first_record:
+            assert len(tool_results) == 1
+            assert tool_results[0].error_code == "invalid_tool_arguments"
+            assert self.blocked_failure_id is not None
+            self.phase = 3
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id="call_record_report_defer_corrected",
+                        tool_name="failure.recovery.record",
+                        arguments={
+                            "failure_id": self.blocked_failure_id,
+                            "disposition": (
+                                "defer_until_task_dependencies_complete"
+                            ),
+                            "condition_task_ids": list(
+                                self.blocker_task_ids
+                            ),
+                            "rationale": (
+                                "The report handoff must wait for both "
+                                "declared upstream tasks to complete."
+                            ),
+                            "idempotency_key": (
+                                "defer-report-handoff-corrected-v1"
+                            ),
+                        },
+                        task_id=self.report_task_id,
+                    ),
+                )
+            )
+        self.phase += 1
+        recovery_failure = evaluate_agent_turn_recovery_response(
+            context,
+            call_index=harness_input.max_steps,
+            max_steps=harness_input.max_steps,
+        )
+        if recovery_failure is not None:
+            assert not isinstance(
+                recovery_failure,
+                AssistantResponseRejection,
+            )
+            return HarnessStep(turn_recovery_unresolved=recovery_failure)
+        return HarnessStep(
+            assistant_message=(
+                "The blocked report handoff is durably deferred until its "
+                "declared dependencies complete."
+            )
+        )
 
 
 # Keep this fixture inside the auto-compaction band after current public tool
@@ -4091,6 +4206,193 @@ def _seed_recovery_report_task(
         kind="reporting",
     )
     return task_id
+
+
+@pytest.mark.parametrize("fail_first_record", (False, True))
+def test_blocked_delegation_accepts_exact_durable_defer_disposition(
+    fail_first_record: bool,
+) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+    execution_task_id = "task_recovery_execution"
+    report_task_id = "task_recovery_blocked_report"
+    blocker_task_ids = tuple(sorted(("task_001", execution_task_id)))
+    service = TaskBoardService(repositories)
+    service.create_task(
+        session_id=session.session_id,
+        task_id=execution_task_id,
+        subject="Run the upstream execution",
+        description="Produce the execution evidence needed by reporting.",
+        kind="execution",
+    )
+    service.create_task(
+        session_id=session.session_id,
+        task_id=report_task_id,
+        subject="Publish the dependent report",
+        description="Wait for research and execution before delegation.",
+        kind="reporting",
+        blocked_by=blocker_task_ids,
+    )
+    registry = ToolRegistry()
+    register_subagent_tools(registry)
+    register_failure_tools(registry)
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=4 if fail_first_record else 3,
+            signal_id="signal_defer_blocked_report",
+            agent_id=agent.agent_id,
+            actor_kind="agent",
+            actor_role=agent.role,
+            restore_focus=RestoreFocus(task_id=report_task_id),
+        ),
+        driver=BlockedDelegationRecoveryDriver(
+            report_task_id=report_task_id,
+            blocker_task_ids=blocker_task_ids,
+            fail_first_record=fail_first_record,
+        ),
+        tool_registry=registry,
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    assert result.tool_results[0].error_code == "task_blocked"
+    assert (
+        result.tool_results[-1].status
+        == "failure_recovery_disposition_recorded"
+    )
+    if fail_first_record:
+        assert [item.ok for item in result.tool_results] == [False, False, True]
+        assert result.tool_results[1].error_code == "invalid_tool_arguments"
+    else:
+        assert [item.ok for item in result.tool_results] == [False, True]
+    assert result.outputs == (
+        "The blocked report handoff is durably deferred until its declared "
+        "dependencies complete.",
+    )
+    failure_id = str(
+        result.tool_results[0].failure_observation["failure_id"]
+    )
+    failure = repositories.failure_observations.get(failure_id)
+    assert failure is not None
+    assert failure.safe_hint is not None
+    assert "failure.recovery.record" in failure.safe_hint
+    dispositions = (
+        repositories.failure_recovery_dispositions.list_by_failure(failure_id)
+    )
+    assert len(dispositions) == 1
+    disposition = dispositions[0]
+    assert disposition.agent_id == agent.agent_id
+    assert disposition.condition_task_ids == blocker_task_ids
+    assert disposition.to_dict()["retry_authorized"] is False
+    assert disposition.to_dict()["task_status_changed"] is False
+    assert disposition.to_dict()["scientific_state_changed"] is False
+    projected = project_failure_observation(repositories, failure)
+    assert projected["agent_recovery_dispositions"] == [
+        disposition.to_dict()
+    ]
+    assert projected["latest_agent_recovery_disposition"] == (
+        disposition.to_dict()
+    )
+    report_task = repositories.tasks.get(report_task_id)
+    assert report_task is not None
+    assert report_task.status is TaskStatus.TODO
+    assert report_task.assigned_ref is None
+    assert report_task.blocked_by == blocker_task_ids
+    assert not [
+        member
+        for member in repositories.agents.list_by_session(session.session_id)
+        if member.role == "reporter"
+    ]
+    with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+        repositories.tasks.connection.execute(
+            """
+            UPDATE failure_recovery_disposition_records
+            SET rationale = 'rewritten'
+            WHERE disposition_id = ?
+            """,
+            (disposition.disposition_id,),
+        )
+
+
+def test_blocked_delegation_rejects_recovery_disposition_with_blocker_drift() -> (
+    None
+):
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+    execution_task_id = "task_recovery_execution_drift"
+    report_task_id = "task_recovery_report_drift"
+    actual_blockers = tuple(sorted(("task_001", execution_task_id)))
+    service = TaskBoardService(repositories)
+    service.create_task(
+        session_id=session.session_id,
+        task_id=execution_task_id,
+        subject="Run the upstream execution",
+        description="Produce execution evidence.",
+        kind="execution",
+    )
+    service.create_task(
+        session_id=session.session_id,
+        task_id=report_task_id,
+        subject="Publish the dependent report",
+        description="Wait for both upstream tasks.",
+        kind="reporting",
+        blocked_by=actual_blockers,
+    )
+    registry = ToolRegistry()
+    register_subagent_tools(registry)
+    register_failure_tools(registry)
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=3,
+            signal_id="signal_defer_blocked_report_drift",
+            agent_id=agent.agent_id,
+            actor_kind="agent",
+            actor_role=agent.role,
+            restore_focus=RestoreFocus(task_id=report_task_id),
+        ),
+        driver=BlockedDelegationRecoveryDriver(
+            report_task_id=report_task_id,
+            blocker_task_ids=("task_001",),
+        ),
+        tool_registry=registry,
+    )
+
+    assert result.status is HarnessStatus.FAILED
+    assert [item.ok for item in result.tool_results] == [False, False]
+    mismatch = result.tool_results[1]
+    assert mismatch.error_code == "invalid_tool_arguments"
+    assert mismatch.failure_observation is not None
+    assert "do not exactly match" in str(
+        mismatch.failure_observation["facts"]["public_error"]
+    )
+    assert (
+        repositories.failure_recovery_dispositions.list_by_session(
+            session.session_id
+        )
+        == []
+    )
+    report_task = repositories.tasks.get(report_task_id)
+    assert report_task is not None
+    assert report_task.status is TaskStatus.TODO
+    assert report_task.assigned_ref is None
+    assert report_task.blocked_by == actual_blockers
 
 
 def test_internal_signal_rejects_prose_then_accepts_corrected_durable_recovery() -> (

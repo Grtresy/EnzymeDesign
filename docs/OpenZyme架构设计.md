@@ -174,6 +174,18 @@ repository 可重读且完整 `failure_hypothesis@1` payload 与成功 ToolResul
 时才结算；它不能结算其他 tool 的失败，也不改变 hypothesis 的非 retry-authority、
 非 task/scientific-state 语义。
 
+`task.delegate` 因 durable `blocked_by` 尚未完成而返回
+`task_blocked/agent_can_replan/terminal_known` 时，agent 不应伪造 `task.update`、提前退出
+task 或靠 prose 等待。它可以调用 `failure.recovery.record` 追加一个
+`failure_recovery_disposition@1`，仅表达
+`defer_until_task_dependencies_complete`。Harness 只在 failure/session/canonical agent、
+目标 task、failure 中的 blocker 集合与 repository 当前 open dependency 集合完全一致，
+且所有 blocker 仍为 `todo|in_progress` 时结算 exact turn obligation；成功结果还必须从
+repository 重读并与完整 payload 相等。该记录不可变，不重试 delegate、不授权未来 retry、
+不改变 task 或 scientific state；cross-tool、cross-session、cross-agent、payload/state drift
+一律 fail closed。若该记录工具自身发生 no-effect 参数校验失败，只允许同工具的规范修正调用
+按相同 repository closure 结算。
+
 所有 `structured`、`tool_calling`、`chat` 与 connectivity smoke 的 provider 调用都必须经过 `openzyme_runtime.LlmInvocationRuntime`。invoker 只负责构造 payload、结构化解析或 tool response 还原；runtime 统一负责 limiter、timeout、retry/backoff、`Retry-After`、错误 taxonomy 与 LLM debug 记录。502/503/504、transport timeout/connection failure 属于 retryable；429 只有 transient 或带 `Retry-After` 时 retryable，usage/quota/invalid/context 类 429 不重试；400/401/403、schema/tool argument/context window 错误不重试。runtime 不拥有 session compaction、restore context rebuild 或 harness/engine 状态机。
 
 tool-calling provider schema 必须经过 `openzyme_runtime.ProviderToolAdapter`。OpenZyme 内部 truth 是 dotted canonical `ToolSpec.tool_name`，例如 `task.create`、`execution.pipeline.start`；adapter 将 canonical `ToolSpec` 投影为 provider-visible tools，并输出 `canonical_to_provider` / `provider_to_canonical` 映射。MICU 的 `task.create -> task_create` 这类 dotted alias 只存在于 adapter 生成的 provider request 与 LLM debug 记录中；provider response 返回后必须先恢复 canonical tool name，再进入 driver、`ToolRouter.dispatch()`、tool invocation、tool result、workspace `agent_traces` 与 `tool.invoked` / `tool.rejected` / `tool.completed` events。非 MICU / 不需要 alias 的 OpenAI-compatible base URL 保持 canonical 名称。
@@ -239,7 +251,7 @@ V3 master / teammate LLM 调用必须先经过统一 token budget preflight。ha
 - fresh empty SQLite：启动时按当前 migration 列表初始化，并写入 `PRAGMA user_version`
 - current-version SQLite：启动时校验关键表存在后复用
 
-旧 schema、未知 schema、非空但未标记 `user_version` 的 SQLite 文件不做隐式修复、备份或删除；启动路径必须 fail fast。`026` 至 `034` migrations 已把 canonical controlled-operation execution、runtime command/continuation、dispatch request、immutable result artifact、mutation authority/snapshot、failure observation/hypothesis 和 scientific attempt authority/selection/closure 纳入 current schema 与升级校验。需要长期保留的研究结果、execution 输出与报告应通过 artifact、report 或 export 留存，而不是依赖旧 SQLite runtime 文件跨 schema 版本继续可用。
+旧 schema、未知 schema、非空但未标记 `user_version` 的 SQLite 文件不做隐式修复、备份或删除；启动路径必须 fail fast。`026` 至 `036` migrations 已把 canonical controlled-operation execution、runtime command/continuation、dispatch request、immutable result artifact、mutation authority/snapshot、failure observation/hypothesis/recovery disposition 和 scientific attempt authority/selection/closure response 纳入 current schema 与升级校验。需要长期保留的研究结果、execution 输出与报告应通过 artifact、report 或 export 留存，而不是依赖旧 SQLite runtime 文件跨 schema 版本继续可用。
 
 Python import shim、CLI alias、`execution.pipeline.*`、Podman runner、runtime/tools/execution 包 seam 与旧 HTTP/runner call shape 的 sunset 证据统一由 `scripts/audit-v3-compat-callers.py` 和 `docs/v3/compatibility-sunset.md` 管理。仓库内零 caller 只证明当前 checkout，不证明外部零 caller；所有 `DEPRECATE` / `RETIRE-BLOCKED` surface 在 external inventory/telemetry/owner evidence 仍为 unknown 时必须保留。已经不存在的 `/v1`/`/v2`、raw runner lifecycle 参数和 legacy workspace activation 标为 `RETIRED` 防回归，不得把归档源码本身误删。
 

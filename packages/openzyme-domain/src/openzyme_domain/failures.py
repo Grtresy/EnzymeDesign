@@ -12,6 +12,7 @@ from .reliability import RetryEligibility
 
 FAILURE_OBSERVATION_SCHEMA_VERSION = "failure_observation@1"
 FAILURE_HYPOTHESIS_SCHEMA_VERSION = "failure_hypothesis@1"
+FAILURE_RECOVERY_DISPOSITION_SCHEMA_VERSION = "failure_recovery_disposition@1"
 AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE = "agent_turn_budget_exhausted"
 
 
@@ -44,6 +45,40 @@ class FailureHypothesisConfidence(StrEnum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
+
+
+class FailureRecoveryDispositionKind(StrEnum):
+    DEFER_UNTIL_TASK_DEPENDENCIES_COMPLETE = (
+        "defer_until_task_dependencies_complete"
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class FailureRecoveryDisposition:
+    """One immutable, no-authority recovery decision for an exact failure."""
+
+    SCHEMA_VERSION: ClassVar[str] = FAILURE_RECOVERY_DISPOSITION_SCHEMA_VERSION
+
+    disposition_id: str
+    failure_id: str
+    session_id: str
+    agent_id: str
+    disposition: FailureRecoveryDispositionKind
+    condition_task_ids: tuple[str, ...]
+    rationale: str
+    idempotency_digest: str
+    created_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["schema_version"] = self.SCHEMA_VERSION
+        data["disposition"] = self.disposition.value
+        data["condition_task_ids"] = list(self.condition_task_ids)
+        data["retry_authorized"] = False
+        data["task_status_changed"] = False
+        data["scientific_state_changed"] = False
+        data.pop("idempotency_digest", None)
+        return data
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,11 +203,14 @@ __all__ = [
     "AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE",
     "FAILURE_HYPOTHESIS_SCHEMA_VERSION",
     "FAILURE_OBSERVATION_SCHEMA_VERSION",
+    "FAILURE_RECOVERY_DISPOSITION_SCHEMA_VERSION",
     "FailureActorKind",
     "FailureClass",
     "FailureHypothesis",
     "FailureHypothesisConfidence",
     "FailureObservation",
+    "FailureRecoveryDisposition",
+    "FailureRecoveryDispositionKind",
     "FailureRecoverability",
     "likely_causes_for_error_code",
 ]

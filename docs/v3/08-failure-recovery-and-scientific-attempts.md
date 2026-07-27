@@ -30,11 +30,20 @@ private exception 只保留不可逆 digest，不能进入 public projection。
 2. `likely_causes`：由稳定 error code 确定性映射出的候选原因；
 3. `FailureHypothesis`：agent 通过 `failure.hypothesis.record` 追加的解释，绑定真实
    canonical agent、confidence、evidence refs 和 idempotency identity。
+4. `FailureRecoveryDisposition`：agent 对一个 exact、effect-known failure 追加的无权限
+   恢复决策；当前闭集只包含 blocked delegation 的
+   `defer_until_task_dependencies_complete`。
 
 `FailureHypothesis` 是独立 append-only row，不能回写或覆盖
 `FailureObservation`。`failure.get` 和 workspace projection 可以把两者联读；投影中的
 `agent_hypothesis` 只是 latest compatibility view，`agent_hypotheses` 才是完整归属历史。
 记录 hypothesis 不提供 retry authority，不消除 unknown effect，也不改变 task status。
+
+`FailureRecoveryDisposition` 同样是 append-only row，绑定 exact failure、session、
+canonical agent、condition task ids、rationale 与 idempotency identity。`failure.get`
+把完整历史投影为 `agent_recovery_dispositions`，但记录本身不执行恢复动作。其公开 payload
+显式固定 `retry_authorized=false`、`task_status_changed=false` 和
+`scientific_state_changed=false`。
 
 ## 3. Runtime recovery
 
@@ -58,6 +67,20 @@ current session，并由 repository 重读证明完整 `failure_hypothesis@1` �
 equality。它不结算其他 tool 的 failure，不把 cause hypothesis 升级为 retry authority，
 也不改变 task/scientific state。direct user-message turn 与
 reconciliation/unknown-effect path 不进入这条窄规则。
+
+blocked delegation 还有一个不要求虚假 task mutation 的窄 settlement。只有当前
+obligation 来自 `task.delegate` 的
+`task_blocked/agent_can_replan/terminal_known/retry_eligibility=terminal`，failure 绑定
+canonical agent 和 unassigned `todo` target，且它的 `blocked_by_open_task_ids` 与
+repository 当前 open dependencies 精确相等、每个 blocker 仍为 `todo|in_progress` 时，
+`failure.recovery.record` 才可追加
+`failure_recovery_disposition@1/defer_until_task_dependencies_complete`。Harness 再重读
+record 并验证完整 payload、source observation 与当前 dependency state 后，才结算 exact
+obligation。它不自动 delegate、更新 task、授权 blocker 完成后的 retry 或改变 scientific
+state；agent 在未来 wake 中仍需根据新 durable state 自主决定是否 delegate。cross-tool、
+cross-session、cross-agent、missing/synthetic record、terminal non-completed blocker 或
+payload/dependency drift 均 fail closed。该工具自身的 no-effect 参数校验失败只允许同工具
+canonical corrected call 按相同 closure 结算。
 
 `recovery_required` brief 只能陈述事实和安全边界。agent 可选择：
 

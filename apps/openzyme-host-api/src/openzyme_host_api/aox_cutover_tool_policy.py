@@ -38,6 +38,7 @@ _CLOSURE_STAGE_ALLOWED_TOOLS = frozenset(
         "execution.pipeline.status",
         "failure.get",
         "failure.hypothesis.record",
+        "failure.recovery.record",
         "lane.bind_task",
         "lane.create",
         "lane.list",

@@ -78,6 +78,7 @@ from .mutation_authority import writer_allows_resource
 if TYPE_CHECKING:
     from .failure_repositories import FailureHypothesisRepository
     from .failure_repositories import FailureObservationRepository
+    from .failure_repositories import FailureRecoveryDispositionRepository
     from .durable_coordination_repositories import ContinuationDeliveryRepository
     from .durable_coordination_repositories import MutationScopeRepository
     from .durable_coordination_repositories import MutationWriterRepository
@@ -5961,6 +5962,7 @@ class CoreRepositories:
     quiescence_snapshots: "QuiescenceSnapshotRepository"
     failure_observations: "FailureObservationRepository"
     failure_hypotheses: "FailureHypothesisRepository"
+    failure_recovery_dispositions: "FailureRecoveryDispositionRepository"
     scientific_attempt_authorizations: "ScientificAttemptAuthorizationRepository"
     scientific_attempt_admission_requests: "ScientificAttemptAdmissionRequestRepository"
     scientific_attempts: "ScientificAttemptRepository"
@@ -6167,6 +6169,7 @@ class CoreRepositories:
         )
         from .failure_repositories import FailureHypothesisRepository
         from .failure_repositories import FailureObservationRepository
+        from .failure_repositories import FailureRecoveryDispositionRepository
         from .scientific_attempt_repositories import (
             ScientificArtifactMaterializationRepository,
         )
@@ -6235,6 +6238,9 @@ class CoreRepositories:
             quiescence_snapshots=QuiescenceSnapshotRepository(connection),
             failure_observations=FailureObservationRepository(connection),
             failure_hypotheses=FailureHypothesisRepository(connection),
+            failure_recovery_dispositions=(
+                FailureRecoveryDispositionRepository(connection)
+            ),
             scientific_attempt_authorizations=(
                 ScientificAttemptAuthorizationRepository(connection)
             ),

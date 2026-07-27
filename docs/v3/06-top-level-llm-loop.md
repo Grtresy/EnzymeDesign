@@ -269,6 +269,19 @@ decision，不规定 agent 选哪一种 repair。若 failed tool 本身是
 `failure_hypothesis@1` payload 与 ToolResult 相等时才是 durable settlement。它不使
 hypothesis 成为其他 tool failure 的 repair，也不提供 retry authority。
 
+当 exact obligation 来自 `task.delegate` 的
+`task_blocked/agent_can_replan/terminal_known`，且失败事实给出 non-empty
+`blocked_by_open_task_ids` 时，agent 可以选择
+`failure.recovery.record(disposition="defer_until_task_dependencies_complete", ...)`。
+这不是 generic nominal write allowlist：handler 与 Harness 都必须重读同一个
+`FailureObservation`、canonical agent/session、unassigned `todo` target 和每个 dependency，
+并证明请求、失败快照、当前 open blocker 集合完全相等且 blocker 仍为
+`todo|in_progress`。随后再重读 immutable `failure_recovery_disposition@1` 并要求完整
+payload 等于 ToolResult，才清除 obligation。该 record 不触发 delegate、不允许 retry、
+不改 task/scientific state；跨 failure/session/agent 或 dependency/payload drift 均不结算。
+若该 record 调用自身因参数校验失败，只有同工具的 canonical corrected call 可按同一
+closure 结算。
+
 step budget 用尽不授权继续同一 signal。driver 写入结构化
 `agent_turn_budget_exhausted` 后终止 exact occurrence；scheduler 不原地重放、不追加 steps、
 不重开 operation/selection。`agent_can_replan` 只说明 master 可在新的 canonical turn 中读取

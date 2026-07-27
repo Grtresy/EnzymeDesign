@@ -394,6 +394,14 @@ master 与 teammate 都可以通过 `artifact.list` / `artifact.get` / `artifact
   agent canonical corrected retry 只有在 repository 重读出的 current-session
   `failure_hypothesis@1` 与成功 ToolResult 完整相等时才结算；该窄规则不允许 hypothesis
   结算其他 tool failure，也不赋予 retry/reconciliation/task/scientific authority。
+  `task.delegate` 的 exact `task_blocked/agent_can_replan/terminal_known` obligation
+  还有一个独立的窄出口：agent 可用 `failure.recovery.record` 持久化
+  `failure_recovery_disposition@1` 的
+  `defer_until_task_dependencies_complete`。该工具要求 observation、current agent/session、
+  unassigned `todo` target、observed blockers 与当前 open dependencies 完全一致，且 blockers
+  仍为 `todo|in_progress`；Harness repository 重读 payload 后才结算。记录不执行 delegate、
+  不授权 retry、不改 task/scientific state，任何 identity/payload/dependency drift 均拒绝。
+  该工具自身的 no-effect 参数校验失败只能由同工具的 canonical corrected call 结算。
   direct user-message turn、dispatch-in-doubt 与 reconciliation path 不适用。
 - 如果 bounded loop 到达 max steps，runtime 以 `agent_turn_budget_exhausted` 将 exact signal/turn terminalize，`retry_eligibility=terminal` 且不自动 replay/增加 budget；同时记录 `recoverability=agent_can_replan`，保持 task status 与业务 failure fields 不变。signal-local `no_effect` 不能覆盖同 turn 已持久化的 controlled-operation effect。source-bound、去重的 master wakeup 从 canonical failure observation 与当前 scientific selection evaluation 重建 facts，master 在新的 turn 中显式决定下一步。
 - scientific recovery 不直接读取 append-only `ScientificAttempt.status` 判断 terminal。它先联读 attempt、closure request 与 closure，优先恢复最新的 `open`、可接收 mutation 的 attempt；若较旧 attempt 已 closed 而较新 attempt open，必须选择后者；若全部 closed，则只投影最新 exact closure 和 `status=closed`，不得再把 selection evaluation 表述为 active work。request-only lifecycle 投影为 `closure_requested`，不接收新 scientific mutation；identity/selection/status 图不一致时以 `scientific_attempt_lifecycle_invalid` 停止恢复。

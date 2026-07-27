@@ -912,6 +912,59 @@ effect、改写 Host failure facts 或改变 task/scientific state。synthetic�
 append-only repository，不新增顶层状态；后继 live 仍需 fresh correction commit、full
 admission、pin、独立 diagnostic plan/consumption/root 和对该 exact plan 的单独批准。
 
+### 2026-07-27 r61 full-path diagnostic blocked-delegation disposition correction
+
+r61 在 clean commit `a66a15597ce3aefdff73105f5a6ad8b14a577089` 上消费独立
+full-path diagnostic plan
+`sha256:0825957e40b09ad2e2975d98d10fad53f855e1beace4375c6d8836a314df506a`，
+root 为 `aox-diagnostic-ad91859299754d89a52d2edf`，attempt 为
+`diagnostic-positive-e521b461d344c1258dd47d0389ef7e6c`。其 one-slot authority
+与 formal exact-three campaign 保持 schema/root/reducer 隔离，
+`acceptance_eligible=false`。
+
+独立 probe 再次完成六项真实 operation：NCBI `op_f44bb795fecf`、UniProt
+`op_87f19387e204`、MAFFT `op_511fb3fe1dc0`、hmmbuild
+`op_3ad9f919b85a`、CD-HIT `op_564c4bfeeab9` 与 HMMalign
+`op_b3a928948f9a`；六项 approval、terminal identity 与 quiescence receipt
+`sha256:a6d80e2453eb6a59768a488c2bf24173381362553b15d0b6095fef99e26f51db`
+均闭合。formal 尚未创建 scientific attempt、controlled operation、approval、
+selection、report 或 closure，因此 probe success 仍不是产品路径结果。
+
+formal master 先以错误 kind `report` 创建 canonical report id，得到无效参数 failure，
+随即用 `reporting` 修正并成功创建 research/execution/report 三项 task。research 和
+execution delegation 成功；report task 仍由这两项 durable dependency 阻塞时，master
+提前调用 `task.delegate`，形成 exact
+`failure_74cdc468bf2825461268`：
+`task_blocked/agent_can_replan/terminal_known/retry_eligibility=terminal`，
+facts 中的 `blocked_by_open_task_ids` 正好是 canonical research 与 execution task。
+agent 正确识别为“等待上游完成”，也追加了 failure hypothesis，但只重复 prose，
+没有可表达“按现有依赖等待”的 durable recovery decision。Harness 因而保持 obligation，
+最终以 `failure_fa7bb62e36562f834a2b` /
+`agent_turn_recovery_unresolved` 终结 signal，runtime command failed。
+
+diagnostic decision
+`sha256:21d8d0a7421669a4b5c7c36abee3c66c500794f4b2d7150aefa84a68c241e93d`
+保持永久 **NO-GO**。MICU 从 `108,646,236` 增至
+`109,839,777 / 500,000,000`，delta `1,193,541`、remaining `390,160,223`，
+零 breach/overage。8.3/8.3a 仍未完成；r61 plan、consumption、root、probe effects、
+SQLite/failure rows 与 decision 全部不可复用。
+
+forward correction 不把 prose、hypothesis 或任意 write 视为等待决策。新增
+`failure_recovery_disposition@1` 与 `failure.recovery.record`，初始闭集只允许
+`defer_until_task_dependencies_complete`。handler 只接受当前 agent/session 的 exact
+`task.delegate -> task_blocked/terminal_known` observation，要求 target 仍为 unassigned
+`todo`，请求 task ids、failure snapshot 与 repository 当前 open dependencies 完全相等，
+且 blockers 仍为 `todo|in_progress`。Harness 随后重读 immutable record、source failure
+与 current dependencies，完整 payload equality 后才结算 obligation。record 显式不授权
+retry、不执行 delegate、不改 task/scientific state；cross-tool/session/agent/failure、
+terminal non-completed dependency、synthetic/missing/payload/state drift 全部拒绝。该工具
+自身发生 no-effect 参数校验失败时，仅同工具 canonical corrected call 可按相同 repository
+closure 结算。AOX prompt 同时要求 report task 声明两项 dependency、只 delegate ready
+tasks，并在 stale plan 仍触发该失败时使用此 typed disposition，不自动改写 agent 策略。
+
+后继 live 仍需 fresh correction commit、full admission、pin、独立 diagnostic
+plan/consumption/root 和用户对 exact plan 的单独批准。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

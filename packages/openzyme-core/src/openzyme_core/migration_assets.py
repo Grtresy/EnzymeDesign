@@ -40,6 +40,7 @@ MIGRATION_IDS: tuple[str, ...] = (
     "033_v3_scientific_attempt_selection",
     "034_v3_failure_hypotheses",
     "035_v3_scientific_attempt_closure_response",
+    "036_v3_failure_recovery_dispositions",
 )
 CURRENT_SQLITE_SCHEMA_VERSION = len(MIGRATION_IDS)
 MINIMUM_AUTOMATIC_UPGRADE_VERSION = 25
@@ -67,6 +68,7 @@ _REQUIRED_CURRENT_SCHEMA_TABLES: frozenset[str] = frozenset(
         "quiescence_snapshot_records",
         "failure_observation_records",
         "failure_hypothesis_records",
+        "failure_recovery_disposition_records",
         "scientific_attempt_authorization_records",
         "scientific_attempt_admission_request_records",
         "scientific_attempt_records",
@@ -112,6 +114,11 @@ _REQUIRED_CURRENT_SCHEMA_TRIGGERS: frozenset[str] = frozenset(
         "failure_observation_records_immutable_delete",
         "failure_hypothesis_records_immutable_update",
         "failure_hypothesis_records_immutable_delete",
+        "failure_recovery_disposition_records_immutable_update",
+        "failure_recovery_disposition_records_immutable_delete",
+        "mutation_guard_failure_recovery_disposition_records_insert",
+        "mutation_guard_failure_recovery_disposition_records_update",
+        "mutation_guard_failure_recovery_disposition_records_delete",
         "scientific_attempt_admission_requests_immutable_update",
         "scientific_attempt_admission_requests_immutable_delete",
         "scientific_attempt_run_bindings_immutable_update",
