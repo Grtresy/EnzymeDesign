@@ -93,7 +93,10 @@ full-path `diagnostic` run classes. It receives independent closed schemas:
 - `aox_closure_stage_diagnostic_authority_consumption@1`;
 - `aox_closure_stage_source_manifest@1`;
 - `aox_closure_stage_reconstruction_receipt@1`;
-- `aox_closure_stage_live_result@1`;
+- `aox_closure_stage_runtime_parity_declaration@2`;
+- `aox_closure_stage_runtime_parity_receipt@2`;
+- `aox_closure_stage_child_evidence@3`;
+- `aox_closure_stage_live_result@3`;
 - `aox_closure_stage_diagnostic_decision@1`.
 
 Its generated diagnostic identifier, root namespace, supervision identity,
@@ -342,6 +345,21 @@ The sealed private result contains full receipts. The public-safe diagnostic
 decision contains bounded summaries and their digests. Failure at any stage
 seals a diagnostic failure when process retirement permits; it never changes
 formal acceptance state.
+
+The `@3` child/result boundary names the process-isolated outer identity
+`run_attempt_id` separately from the reconstructed control-plane
+`scientific_attempt_id`. Scope rollover, closure, and reconstruction target
+graph bind only the latter; process supervision and one-use authority bind
+only the former. The result also closes one operation binding across the
+canonical workspace `scientific_evidence.operations` count, terminal operation
+list and count, terminal closure universe, reconstruction target graph, and
+terminal projection digest. It carries the exact six bounded terminal
+operation summaries and references the parent-supervised child-result digest,
+so offline verification can reproduce the list digest and resolve the exact
+child evidence. The validated parent supervision receipt's
+contract digest must equal the parity declaration's target supervision
+contract digest. A stale workspace branch, conflated identity, unbound digest,
+or hand-written count fails with a boundary-specific evidence error.
 
 ### 9. Expose an explicit two-command operator flow
 

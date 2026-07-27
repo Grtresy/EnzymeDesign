@@ -588,7 +588,9 @@ class SessionDriveResult:
             dict(self.workspace.get("task_board") or {}).get("items") or []
         )
         operations = list(
-            dict(self.workspace.get("runtime_state") or {}).get("controlled_operations")
+            dict(self.workspace.get("scientific_evidence") or {}).get(
+                "operations"
+            )
             or []
         )
         return {

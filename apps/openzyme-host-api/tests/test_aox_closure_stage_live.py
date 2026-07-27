@@ -5,11 +5,13 @@ from dataclasses import replace
 from pathlib import Path
 import pickle
 import stat
+from types import SimpleNamespace
 
 import pytest
 
 from openzyme_core import MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID
 from openzyme_core.workflow_knowledge import default_workflow_registry
+from openzyme_host_api import aox_closure_stage_live as closure_stage_live
 from openzyme_host_api.aox_attempt_supervision import SUPERVISION_SCHEMA_ID
 from openzyme_host_api.aox_attempt_supervision import SUPERVISION_SCHEMA_ID_V2
 from openzyme_host_api.aox_attempt_supervision import (
@@ -28,6 +30,9 @@ from openzyme_host_api.aox_closure_stage_authority import (
     AOX_CLOSURE_STAGE_RUNTIME_PARITY_DECLARATION_SCHEMA_ID,
 )
 from openzyme_host_api.aox_closure_stage_live import (
+    AOX_CLOSURE_STAGE_CHILD_EVIDENCE_SCHEMA_ID,
+)
+from openzyme_host_api.aox_closure_stage_live import (
     AOX_CLOSURE_STAGE_DIAGNOSTIC_DECISION_SCHEMA_ID,
 )
 from openzyme_host_api.aox_closure_stage_live import (
@@ -42,11 +47,21 @@ from openzyme_host_api.aox_closure_stage_live import (
 from openzyme_host_api.aox_closure_stage_live import (
     _closure_stage_browser_anchor,
 )
+from openzyme_host_api.aox_closure_stage_live import (
+    _closure_stage_runtime_summary,
+)
 from openzyme_host_api.aox_closure_stage_live import _effect_delta
 from openzyme_host_api.aox_closure_stage_live import _sha256_file
 from openzyme_host_api.aox_closure_stage_live import (
     build_aox_closure_stage_diagnostic_decision,
 )
+from openzyme_host_api.aox_closure_stage_live import (
+    build_aox_closure_stage_live_result,
+)
+from openzyme_host_api.aox_closure_stage_reconstruction import (
+    ClosureStageReconstruction,
+)
+from openzyme_host_api.aox_cutover_live import SessionDriveResult
 from openzyme_host_api.aox_closure_stage_live import (
     seal_aox_closure_stage_runtime_parity,
 )
@@ -223,9 +238,10 @@ def _ledger_snapshot(
 
 
 def _live_result() -> dict[str, object]:
-    attempt_id = "closure-stage-" + "a" * 32
+    run_attempt_id = "closure-stage-" + "a" * 32
+    scientific_attempt_id = "attempt_" + "f" * 24
     session_id = CLOSURE_STAGE_DIAGNOSTIC_RUN_POLICY.identities(
-        attempt_id
+        run_attempt_id
     )[0]
     authority_id = "attempt_authority_" + "b" * 24
     request_digest = _digest("authority-request")
@@ -260,12 +276,25 @@ def _live_result() -> dict[str, object]:
     browser_approval_digest = _digest("browser-approval")
     browser_observation_digest = _digest("browser-observation")
     scientific_control_digest = _digest("scientific-control")
+    operation_universe_digest = _digest("operation-universe")
+    terminal_projection_digest = _digest("terminal")
+    terminal_operations = [
+        {
+            "operation_id": f"operation_{index}",
+            "operation_digest": _digest(f"operation-{index}"),
+            "status": "completed",
+            "effect_certainty": "terminal_known",
+        }
+        for index in range(6)
+    ]
     scope_rollover_payload = {
         "phase": "post_closure_scope_open",
-        "attempt_id": attempt_id,
-        "attempt_scope_id": f"mutation_scope_{attempt_id}",
+        "attempt_id": scientific_attempt_id,
+        "attempt_scope_id": f"mutation_scope_{scientific_attempt_id}",
         "attempt_scope_state": "sealed",
-        "post_scope_id": f"mutation_scope_post_{attempt_id}",
+        "post_scope_id": (
+            f"mutation_scope_post_{scientific_attempt_id}"
+        ),
         "open_scope_count": 1,
     }
     scope_rollover = {
@@ -303,7 +332,7 @@ def _live_result() -> dict[str, object]:
     supervision = {
         "schema_id": SUPERVISION_RECEIPT_SCHEMA_ID,
         "mode": "process_isolated_spawn",
-        "attempt_id": attempt_id,
+        "attempt_id": run_attempt_id,
         "attempt_kind": "positive",
         "campaign_id": _digest("campaign"),
         "process_epoch": "c" * 32,
@@ -327,11 +356,11 @@ def _live_result() -> dict[str, object]:
         "declared_root_sync": True,
         "result_digest": _digest("child-result"),
         "supervisor_contract_digest": supervision_contract_digest(
-            timeout_seconds=30.0,
+            timeout_seconds=15_060.0,
             term_grace_seconds=15.0,
             kill_grace_seconds=10.0,
         ),
-        "timeout_seconds": 30.0,
+        "timeout_seconds": 15_060.0,
         "term_grace_seconds": 15.0,
         "kill_grace_seconds": 10.0,
         "attempt_authority_id": authority_id,
@@ -342,7 +371,8 @@ def _live_result() -> dict[str, object]:
         "run_class": AoxLiveRunClass.CLOSURE_STAGE_DIAGNOSTIC.value,
         "acceptance_eligible": False,
         "diagnostic_id": "aox_closure_stage_" + "d" * 24,
-        "attempt_id": attempt_id,
+        "run_attempt_id": run_attempt_id,
+        "scientific_attempt_id": scientific_attempt_id,
         "session_id": session_id,
         "status": "completed",
         "completed_at": "2026-07-26T00:00:00+00:00",
@@ -368,14 +398,38 @@ def _live_result() -> dict[str, object]:
             "receipt_digest": _digest("reconstruction"),
             "target_root_identity": _digest("target-root"),
             "canonical_state_digest": _digest("canonical-state"),
+            "scientific_attempt_id": scientific_attempt_id,
+            "operation_count": 6,
+            "operation_universe_digest": operation_universe_digest,
         },
         "parity": {
             "receipt_digest": _digest("parity"),
             "declaration_digest": _digest("parity-declaration"),
+            "target_supervision_contract_digest": supervision[
+                "supervisor_contract_digest"
+            ],
         },
         "runtime": {
             "summary": runtime_summary,
-            "terminal_projection_digest": _digest("terminal"),
+            "child_result_digest": supervision["result_digest"],
+            "terminal_projection_digest": terminal_projection_digest,
+            "operation_binding": {
+                "scientific_attempt_id": scientific_attempt_id,
+                "projected_operation_count": 6,
+                "terminal_operation_count": 6,
+                "terminal_operations": terminal_operations,
+                "terminal_operations_digest": canonical_digest(
+                    terminal_operations
+                ),
+                "terminal_operation_universe_digest": (
+                    operation_universe_digest
+                ),
+                "reconstruction_operation_count": 6,
+                "reconstruction_operation_universe_digest": (
+                    operation_universe_digest
+                ),
+                "terminal_projection_digest": terminal_projection_digest,
+            },
             "closure": {
                 "task_receipts": task_receipts,
                 "report_id": "report_closure_stage",
@@ -464,7 +518,100 @@ def _live_result() -> dict[str, object]:
             ),
         },
     }
+    operation_binding = payload["runtime"]["operation_binding"]
+    operation_binding["binding_digest"] = canonical_digest(
+        operation_binding
+    )
     return {**payload, "result_digest": canonical_digest(payload)}
+
+
+def _supervised_child_evidence(
+    result: dict[str, object],
+    *,
+    selection_id: str,
+) -> dict[str, object]:
+    scientific_attempt_id = str(result["scientific_attempt_id"])
+    operation_universe_digest = str(
+        result["reconstruction"]["operation_universe_digest"]
+    )
+    operations = [
+        {
+            "operation_id": f"operation_{index}",
+            "operation_digest": _digest(f"operation-{index}"),
+            "status": "completed",
+            "effect_certainty": "terminal_known",
+        }
+        for index in range(6)
+    ]
+    drive = SessionDriveResult(
+        session_id=str(result["session_id"]),
+        purpose="formal",
+        state="completed",
+        blocker_code=None,
+        workspace={
+            "task_board": {"items": [{}, {}, {}]},
+            "scientific_evidence": {"operations": operations},
+            "runtime_state": {"controlled_operations": []},
+        },
+        workspace_response_binding={},
+        event_receipt={"stream_digest": _digest("events")},
+        drain_count=3,
+        approval_ids=(),
+        browser_approval_receipt={"label": "browser-approval"},
+        browser_observation_receipt={"label": "browser-observation"},
+        mutation_scope={},
+        scientific_attempt_control={"label": "scientific-control"},
+    )
+    terminal_payload = {
+        "attempt": {
+            "attempt_id": scientific_attempt_id,
+            "status": "active",
+            "mutation_scope_id": (
+                f"mutation_scope_{scientific_attempt_id}"
+            ),
+        },
+        "operations": operations,
+        "counts": {"controlled_operation": 6},
+        "closures": [
+            {
+                "attempt_id": scientific_attempt_id,
+                "selection_id": selection_id,
+                "operation_universe_digest": (
+                    operation_universe_digest
+                ),
+            }
+        ],
+    }
+    terminal = {
+        **terminal_payload,
+        "projection_digest": canonical_digest(terminal_payload),
+    }
+    return {
+        "schema_id": AOX_CLOSURE_STAGE_CHILD_EVIDENCE_SCHEMA_ID,
+        "run_class": AoxLiveRunClass.CLOSURE_STAGE_DIAGNOSTIC.value,
+        "acceptance_eligible": False,
+        "diagnostic_id": result["diagnostic_id"],
+        "run_attempt_id": result["run_attempt_id"],
+        "scientific_attempt_id": scientific_attempt_id,
+        "session_id": result["session_id"],
+        "reconstruction_receipt_digest": result["reconstruction"][
+            "receipt_digest"
+        ],
+        "health": {},
+        "baseline": {},
+        "terminal": terminal,
+        "effects": deepcopy(result["effects"]),
+        "closure": deepcopy(result["runtime"]["closure"]),
+        "micu_attempts": deepcopy(result["micu"]["attempts"]),
+        "api_receipts": [
+            {"sequence": sequence} for sequence in range(1, 5)
+        ],
+        "runtime": _closure_stage_runtime_summary(drive),
+        "product_path": {
+            "completed": True,
+            "attempt_supervision": deepcopy(result["supervision"]),
+        },
+    }
 
 
 def test_runtime_parity_is_closed_reproducible_and_private(
@@ -508,6 +655,136 @@ def test_runtime_parity_is_closed_reproducible_and_private(
     assert config_error.value.code == (
         "closure_stage_runtime_parity_receipt_invalid"
     )
+
+
+def test_session_drive_summary_uses_canonical_scientific_evidence() -> None:
+    result = _live_result()
+    child = _supervised_child_evidence(
+        result,
+        selection_id="selection_" + "1" * 24,
+    )
+
+    assert child["runtime"]["projected_operation_count"] == 6
+    assert child["runtime"]["task_count"] == 3
+
+
+def test_real_shape_builder_validator_and_decision_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture_result = _live_result()
+    selection_id = "selection_" + "1" * 24
+    source_database_digest = _digest("source-database")
+    source_inventory_entries: list[dict[str, object]] = []
+    source_manifest = {
+        "manifest_digest": _digest("source-manifest"),
+        "source_inventory": {
+            "database_path": "/tmp/read-only-source.sqlite3",
+            "database_sha256": source_database_digest,
+            "inventory_digest": canonical_digest(
+                source_inventory_entries
+            ),
+        },
+        "inventory_entries": source_inventory_entries,
+    }
+    reconstruction = ClosureStageReconstruction(
+        roots=SimpleNamespace(
+            proof={"root_identity": _digest("target-root")}
+        ),
+        receipt={
+            "receipt_digest": _digest("reconstruction"),
+            "canonical_state": {
+                "canonical_state_digest": _digest(
+                    "canonical-state"
+                )
+            },
+            "target_graph": {
+                "attempt_id": fixture_result[
+                    "scientific_attempt_id"
+                ],
+                "selection_id": selection_id,
+                "operation_universe_digest": fixture_result[
+                    "reconstruction"
+                ]["operation_universe_digest"],
+                "operation_count": 6,
+                "closure_request_ready": True,
+                "source_to_target_universe_transform": (
+                    "outer_identity_rewrite_and_service_reseal"
+                ),
+            },
+        },
+        scientific_attempt_id=str(
+            fixture_result["scientific_attempt_id"]
+        ),
+        selection_id=selection_id,
+        executor_agent_id="agent:executor:test",
+        research_task_id="task_research",
+        report_task_id="task_report",
+    )
+    plan = {
+        "diagnostic_id": fixture_result["diagnostic_id"],
+        "plan_digest": _digest("plan"),
+        "browser_observation_receipt": "/tmp/browser.json",
+        "resources": {"max_micu": 20_000_000},
+        "slot": {
+            "attempt_id": fixture_result["run_attempt_id"],
+            "session_id": fixture_result["session_id"],
+            "envelope_id": fixture_result["authority"][
+                "envelope_id"
+            ],
+            "request_digest": fixture_result["authority"][
+                "request_digest"
+            ],
+        },
+    }
+    child = _supervised_child_evidence(
+        fixture_result,
+        selection_id=selection_id,
+    )
+    monkeypatch.setattr(
+        closure_stage_live,
+        "independently_verify_aox_closure_stage_source_manifest",
+        lambda _manifest: None,
+    )
+    monkeypatch.setattr(
+        closure_stage_live,
+        "independently_verify_aox_closure_stage_reconstruction",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        closure_stage_live,
+        "_sha256_file",
+        lambda _path: source_database_digest,
+    )
+
+    live_result = build_aox_closure_stage_live_result(
+        plan=plan,
+        consumption={"consumed": True},
+        source_manifest=source_manifest,
+        reconstruction=reconstruction,
+        parity=_parity_receipt(),
+        evidence=child,
+        ledger_before=fixture_result["ledger"]["before"],
+        ledger_after=fixture_result["ledger"]["after"],
+    )
+    decision = build_aox_closure_stage_diagnostic_decision(
+        plan=plan,
+        source_manifest=source_manifest,
+        source_post_verified=True,
+        live_result=live_result,
+        failure=None,
+    )
+
+    assert live_result["run_attempt_id"] != (
+        live_result["scientific_attempt_id"]
+    )
+    assert live_result["runtime"]["operation_binding"][
+        "terminal_operation_count"
+    ] == 6
+    assert live_result["parity"][
+        "target_supervision_contract_digest"
+    ] == live_result["supervision"]["supervisor_contract_digest"]
+    assert decision["status"] == "completed"
+    assert decision["live_result_digest"] == live_result["result_digest"]
 
 
 def test_closure_stage_sop_digest_is_separate_from_stable_workflow() -> None:
@@ -705,7 +982,124 @@ def test_live_result_closes_nested_evidence_and_browser_ledger_bindings() -> Non
     )
     with pytest.raises(CutoverEvidenceError) as rollover_error:
         validate_aox_closure_stage_live_result(malformed_rollover)
-    assert rollover_error.value.code == "closure_stage_live_runtime_invalid"
+    assert rollover_error.value.code == (
+        "closure_stage_live_scope_rollover_invalid"
+    )
+
+    conflated_attempts = deepcopy(result)
+    rollover = conflated_attempts["runtime"]["closure"][
+        "scope_rollover"
+    ]
+    rollover["attempt_id"] = conflated_attempts["run_attempt_id"]
+    rollover["attempt_scope_id"] = (
+        f"mutation_scope_{conflated_attempts['run_attempt_id']}"
+    )
+    rollover["post_scope_id"] = (
+        f"mutation_scope_post_{conflated_attempts['run_attempt_id']}"
+    )
+    rollover["projection_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in rollover.items()
+            if key != "projection_digest"
+        }
+    )
+    conflated_attempts["result_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in conflated_attempts.items()
+            if key != "result_digest"
+        }
+    )
+    with pytest.raises(CutoverEvidenceError) as conflated:
+        validate_aox_closure_stage_live_result(conflated_attempts)
+    assert conflated.value.code == (
+        "closure_stage_live_scope_rollover_invalid"
+    )
+
+    stale_public_operation_count = deepcopy(result)
+    stale_public_operation_count["runtime"]["summary"][
+        "projected_operation_count"
+    ] = 0
+    stale_public_operation_count["result_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in stale_public_operation_count.items()
+            if key != "result_digest"
+        }
+    )
+    with pytest.raises(CutoverEvidenceError) as operation_count:
+        validate_aox_closure_stage_live_result(
+            stale_public_operation_count
+        )
+    assert operation_count.value.code == (
+        "closure_stage_live_operation_binding_invalid"
+    )
+
+    terminal_operation_drift = deepcopy(result)
+    operation_binding = terminal_operation_drift["runtime"][
+        "operation_binding"
+    ]
+    operation_binding["terminal_operations"][0][
+        "operation_digest"
+    ] = _digest("different-terminal-operation")
+    operation_binding["binding_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in operation_binding.items()
+            if key != "binding_digest"
+        }
+    )
+    terminal_operation_drift["result_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in terminal_operation_drift.items()
+            if key != "result_digest"
+        }
+    )
+    with pytest.raises(CutoverEvidenceError) as operation_drift:
+        validate_aox_closure_stage_live_result(
+            terminal_operation_drift
+        )
+    assert operation_drift.value.code == (
+        "closure_stage_live_operation_binding_invalid"
+    )
+
+    child_binding_drift = deepcopy(result)
+    child_binding_drift["runtime"]["child_result_digest"] = _digest(
+        "different-child-result"
+    )
+    child_binding_drift["result_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in child_binding_drift.items()
+            if key != "result_digest"
+        }
+    )
+    with pytest.raises(CutoverEvidenceError) as child_binding:
+        validate_aox_closure_stage_live_result(child_binding_drift)
+    assert child_binding.value.code == (
+        "closure_stage_live_child_binding_invalid"
+    )
+
+    supervision_parity_drift = deepcopy(result)
+    supervision_parity_drift["parity"][
+        "target_supervision_contract_digest"
+    ] = _digest("different-supervision-contract")
+    supervision_parity_drift["result_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in supervision_parity_drift.items()
+            if key != "result_digest"
+        }
+    )
+    with pytest.raises(CutoverEvidenceError) as supervision_parity:
+        validate_aox_closure_stage_live_result(
+            supervision_parity_drift
+        )
+    assert supervision_parity.value.code == (
+        "closure_stage_live_supervision_parity_invalid"
+    )
 
     source_post_hash_drift = deepcopy(result)
     source_post_hash_drift["source"][

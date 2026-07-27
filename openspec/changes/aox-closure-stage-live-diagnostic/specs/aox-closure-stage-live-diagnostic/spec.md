@@ -275,6 +275,15 @@ attempt, selection, report, inbox, event, response, writer, lease, runtime,
 public API, browser, process, ledger, and filesystem evidence agree. A local
 tool result, a report alone, a closure request alone, or an idle runtime MUST
 NOT establish completion.
+The closed `aox_closure_stage_child_evidence@3` and
+`aox_closure_stage_live_result@3` envelopes SHALL distinguish the
+process-isolated `run_attempt_id` from the reconstructed
+`scientific_attempt_id`. The canonical workspace operation summary SHALL read
+`scientific_evidence.operations`; it MUST NOT fall back to a removed
+`runtime_state` operation branch. Completion SHALL additionally bind the
+workspace operation count, terminal operation list/count/projection,
+scientific closure universe, reconstruction target universe, and target
+supervision parity contract.
 
 #### Scenario: Prove the complete closing sequence
 - **WHEN** execution and reporting tasks complete, a source-linked report is published, the resident master creates exactly one closure request and co-terminal response binding, the active writer retires, and Host finalization creates exactly one closure record
@@ -287,6 +296,22 @@ NOT establish completion.
 #### Scenario: Verify final response consistency
 - **WHEN** a final assistant response is persisted
 - **THEN** exactly one such response agrees with the canonical task board, published report, scientific closure, inbox thread, durable events, and public API/browser projection
+
+#### Scenario: Keep run and scientific attempt identities distinct
+- **WHEN** a retired closure-stage child is assembled into a live result
+- **THEN** one authority-bound non-`rNN` `run_attempt_id` identifies process supervision while one `attempt_<digest>` `scientific_attempt_id` identifies reconstruction, closure, and scope rollover, and substituting either for the other fails closed
+
+#### Scenario: Reproduce the closed operation universe
+- **WHEN** the terminal result is verified
+- **THEN** the canonical workspace operation count, bounded terminal list length, terminal controlled-operation count, and reconstruction target count are exactly six; the terminal list and projection digests are recomputed; the result references the parent-supervised child-result digest; and the terminal closure universe digest equals the reconstruction target universe digest
+
+#### Scenario: Bind supervision to runtime parity
+- **WHEN** parent supervision has retired the child
+- **THEN** its independently validated `supervisor_contract_digest` exactly equals the runtime-parity target supervision contract digest
+
+#### Scenario: Reject a stale operation projection or fixture assertion
+- **WHEN** a summary reads operations from a removed workspace branch, a fixture hand-writes a successful count, or any operation/identity/supervision binding differs
+- **THEN** the verifier emits a boundary-specific failure and cannot seal a completed live result or decision
 
 #### Scenario: Reject partial closure
 - **WHEN** any required layer is missing, contradictory, duplicated, stale, or still live

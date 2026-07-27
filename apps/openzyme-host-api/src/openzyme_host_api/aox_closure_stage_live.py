@@ -86,10 +86,10 @@ AOX_CLOSURE_STAGE_PARITY_RECEIPT_SCHEMA_ID = (
     "aox_closure_stage_runtime_parity_receipt@2"
 )
 AOX_CLOSURE_STAGE_LIVE_RESULT_SCHEMA_ID = (
-    "aox_closure_stage_live_result@2"
+    "aox_closure_stage_live_result@3"
 )
 AOX_CLOSURE_STAGE_CHILD_EVIDENCE_SCHEMA_ID = (
-    "aox_closure_stage_child_evidence@2"
+    "aox_closure_stage_child_evidence@3"
 )
 AOX_CLOSURE_STAGE_DIAGNOSTIC_DECISION_SCHEMA_ID = (
     "aox_closure_stage_diagnostic_decision@1"
@@ -103,6 +103,7 @@ AOX_CLOSURE_STAGE_PARITY_RECEIPT_FILENAME = (
 )
 _DIGEST_PATTERN = re.compile(r"^sha256:[a-f0-9]{64}$")
 _ERROR_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
+_SCIENTIFIC_ATTEMPT_ID_PATTERN = re.compile(r"^attempt_[a-f0-9]{24}$")
 _TERMINAL_MICU_STATUSES = frozenset(
     {
         "succeeded",
@@ -188,7 +189,8 @@ _LIVE_RESULT_FIELDS = frozenset(
         "run_class",
         "acceptance_eligible",
         "diagnostic_id",
-        "attempt_id",
+        "run_attempt_id",
+        "scientific_attempt_id",
         "session_id",
         "status",
         "completed_at",
@@ -230,19 +232,47 @@ _LIVE_RECONSTRUCTION_FIELDS = frozenset(
         "receipt_digest",
         "target_root_identity",
         "canonical_state_digest",
+        "scientific_attempt_id",
+        "operation_count",
+        "operation_universe_digest",
     }
 )
 _LIVE_PARITY_FIELDS = frozenset(
     {
         "receipt_digest",
         "declaration_digest",
+        "target_supervision_contract_digest",
     }
 )
 _LIVE_RUNTIME_FIELDS = frozenset(
     {
         "summary",
+        "child_result_digest",
         "terminal_projection_digest",
+        "operation_binding",
         "closure",
+    }
+)
+_LIVE_OPERATION_BINDING_FIELDS = frozenset(
+    {
+        "scientific_attempt_id",
+        "projected_operation_count",
+        "terminal_operation_count",
+        "terminal_operations",
+        "terminal_operations_digest",
+        "terminal_operation_universe_digest",
+        "reconstruction_operation_count",
+        "reconstruction_operation_universe_digest",
+        "terminal_projection_digest",
+        "binding_digest",
+    }
+)
+_LIVE_TERMINAL_OPERATION_FIELDS = frozenset(
+    {
+        "operation_id",
+        "operation_digest",
+        "status",
+        "effect_certainty",
     }
 )
 _LIVE_RUNTIME_SUMMARY_FIELDS = frozenset(
@@ -414,6 +444,33 @@ _LIVE_LEDGER_COUNTER_FIELDS = frozenset(
         "estimated_attempt_count",
         "reservation_overage_tokens",
         "hard_limit_breach_count",
+    }
+)
+_CHILD_EVIDENCE_FIELDS = frozenset(
+    {
+        "schema_id",
+        "run_class",
+        "acceptance_eligible",
+        "diagnostic_id",
+        "run_attempt_id",
+        "scientific_attempt_id",
+        "session_id",
+        "reconstruction_receipt_digest",
+        "health",
+        "baseline",
+        "terminal",
+        "effects",
+        "closure",
+        "micu_attempts",
+        "api_receipts",
+        "runtime",
+        "product_path",
+    }
+)
+_CHILD_PRODUCT_PATH_FIELDS = frozenset(
+    {
+        "completed",
+        "attempt_supervision",
     }
 )
 _DECISION_FIELDS = frozenset(
@@ -2065,7 +2122,8 @@ class ClosureStageLiveRunner(LiveAoxAttemptRunner):
             ),
             "acceptance_eligible": False,
             "diagnostic_id": self.diagnostic_id,
-            "attempt_id": context.roots.attempt_id,
+            "run_attempt_id": context.roots.attempt_id,
+            "scientific_attempt_id": self.scientific_attempt_id,
             "session_id": session_id,
             "reconstruction_receipt_digest": (
                 self.reconstruction_receipt_digest
@@ -2089,10 +2147,14 @@ def _normalize_supervised_child_evidence(
 ) -> dict[str, Any]:
     normalized = dict(evidence)
     product_path = normalized.get("product_path")
-    if not isinstance(product_path, dict):
+    if (
+        set(normalized) != _CHILD_EVIDENCE_FIELDS
+        or not isinstance(product_path, dict)
+        or set(product_path) != _CHILD_PRODUCT_PATH_FIELDS
+    ):
         raise CutoverEvidenceError(
             "closure_stage_supervised_result_invalid",
-            "supervised child evidence lacks product-path binding",
+            "supervised child evidence violates its closed envelope",
         )
     supervision = product_path.get("attempt_supervision")
     if not isinstance(supervision, dict):
@@ -2101,6 +2163,115 @@ def _normalize_supervised_child_evidence(
             "closure-stage child result lacks parent supervision",
         )
     return normalized
+
+
+def _build_terminal_operation_binding(
+    *,
+    runtime_summary: Mapping[str, object],
+    terminal: Mapping[str, object],
+    reconstruction: ClosureStageReconstruction,
+) -> dict[str, Any]:
+    scientific_attempt_id = reconstruction.scientific_attempt_id
+    target_graph = reconstruction.receipt.get("target_graph")
+    terminal_attempt = terminal.get("attempt")
+    terminal_counts = terminal.get("counts")
+    terminal_operations = terminal.get("operations")
+    terminal_closures = terminal.get("closures")
+    if (
+        not isinstance(target_graph, dict)
+        or not isinstance(terminal_attempt, dict)
+        or not isinstance(terminal_counts, dict)
+        or not isinstance(terminal_operations, list)
+        or not isinstance(terminal_closures, list)
+        or len(terminal_closures) != 1
+        or not isinstance(terminal_closures[0], dict)
+    ):
+        raise CutoverEvidenceError(
+            "closure_stage_live_operation_binding_invalid",
+            "closure-stage terminal operation evidence is incomplete",
+        )
+    terminal_closure = terminal_closures[0]
+    terminal_projection_digest = _require_digest(
+        terminal.get("projection_digest"),
+        identity="child.terminal.projection_digest",
+    )
+    terminal_universe_digest = _require_digest(
+        terminal_closure.get("operation_universe_digest"),
+        identity="child.terminal.closures.operation_universe_digest",
+    )
+    reconstruction_universe_digest = _require_digest(
+        target_graph.get("operation_universe_digest"),
+        identity="reconstruction.target_graph.operation_universe_digest",
+    )
+    operation_ids = [
+        str(operation.get("operation_id") or "")
+        for operation in terminal_operations
+        if isinstance(operation, dict)
+    ]
+    if (
+        len(terminal_operations) != 6
+        or any(
+            not isinstance(operation, dict)
+            or set(operation) != _LIVE_TERMINAL_OPERATION_FIELDS
+            or not isinstance(operation.get("operation_id"), str)
+            or not str(operation["operation_id"]).strip()
+            or _DIGEST_PATTERN.fullmatch(
+                str(operation.get("operation_digest") or "")
+            )
+            is None
+            or operation.get("status") != "completed"
+            or operation.get("effect_certainty") != "terminal_known"
+            for operation in terminal_operations
+        )
+        or len(operation_ids) != len(set(operation_ids))
+        or operation_ids != sorted(operation_ids)
+        or terminal_projection_digest
+        != canonical_digest(
+            {
+                key: value
+                for key, value in terminal.items()
+                if key != "projection_digest"
+            }
+        )
+        or terminal_attempt.get("attempt_id") != scientific_attempt_id
+        or target_graph.get("attempt_id") != scientific_attempt_id
+        or target_graph.get("selection_id") != reconstruction.selection_id
+        or terminal_closure.get("attempt_id") != scientific_attempt_id
+        or terminal_closure.get("selection_id") != reconstruction.selection_id
+        or terminal_counts.get("controlled_operation")
+        != len(terminal_operations)
+        or runtime_summary.get("projected_operation_count")
+        != len(terminal_operations)
+        or target_graph.get("operation_count") != len(terminal_operations)
+        or terminal_universe_digest != reconstruction_universe_digest
+    ):
+        raise CutoverEvidenceError(
+            "closure_stage_live_operation_binding_invalid",
+            "closure-stage operation projections do not reproduce one closed universe",
+        )
+    payload = {
+        "scientific_attempt_id": scientific_attempt_id,
+        "projected_operation_count": runtime_summary[
+            "projected_operation_count"
+        ],
+        "terminal_operation_count": len(terminal_operations),
+        "terminal_operations": terminal_operations,
+        "terminal_operations_digest": canonical_digest(
+            terminal_operations
+        ),
+        "terminal_operation_universe_digest": terminal_universe_digest,
+        "reconstruction_operation_count": target_graph[
+            "operation_count"
+        ],
+        "reconstruction_operation_universe_digest": (
+            reconstruction_universe_digest
+        ),
+        "terminal_projection_digest": terminal_projection_digest,
+    }
+    return {
+        **payload,
+        "binding_digest": canonical_digest(payload),
+    }
 
 
 def _validate_live_ledger_snapshot(
@@ -2252,6 +2423,7 @@ def build_aox_closure_stage_live_result(
         source_manifest["inventory_entries"]
     )
     runtime_summary = dict(child.get("runtime") or {})
+    terminal = dict(child.get("terminal") or {})
     closure = dict(child.get("closure") or {})
     scope_rollover = dict(closure.get("scope_rollover") or {})
     scope_rollover_material = {
@@ -2266,13 +2438,25 @@ def build_aox_closure_stage_live_result(
     browser_receipt_digest = runtime_summary.get(
         "browser_observation_receipt_digest"
     )
+    operation_binding = _build_terminal_operation_binding(
+        runtime_summary=runtime_summary,
+        terminal=terminal,
+        reconstruction=reconstruction,
+    )
+    target_graph = dict(reconstruction.receipt["target_graph"])
+    parity_target = dict(validated_parity["target"])
+    target_supervision_contract_digest = str(
+        parity_target["supervision_contract_digest"]
+    )
     if (
         child.get("schema_id") != AOX_CLOSURE_STAGE_CHILD_EVIDENCE_SCHEMA_ID
         or child.get("run_class")
         != AoxLiveRunClass.CLOSURE_STAGE_DIAGNOSTIC.value
         or child.get("acceptance_eligible") is not False
         or child.get("diagnostic_id") != plan["diagnostic_id"]
-        or child.get("attempt_id") != slot["attempt_id"]
+        or child.get("run_attempt_id") != slot["attempt_id"]
+        or child.get("scientific_attempt_id")
+        != reconstruction.scientific_attempt_id
         or child.get("session_id") != slot["session_id"]
         or child.get("reconstruction_receipt_digest")
         != reconstruction.receipt["receipt_digest"]
@@ -2308,6 +2492,8 @@ def build_aox_closure_stage_live_result(
         != canonical_digest(scope_rollover_material)
         or supervision.get("nonterminal_mutation_scope_count")
         != scope_rollover.get("open_scope_count")
+        or supervision.get("supervisor_contract_digest")
+        != target_supervision_contract_digest
         or source_database_digest != source["database_sha256"]
         or source_inventory_digest != source["inventory_digest"]
     ):
@@ -2338,7 +2524,8 @@ def build_aox_closure_stage_live_result(
         "run_class": AoxLiveRunClass.CLOSURE_STAGE_DIAGNOSTIC.value,
         "acceptance_eligible": False,
         "diagnostic_id": plan["diagnostic_id"],
-        "attempt_id": slot["attempt_id"],
+        "run_attempt_id": slot["attempt_id"],
+        "scientific_attempt_id": reconstruction.scientific_attempt_id,
         "session_id": slot["session_id"],
         "status": "completed",
         "completed_at": datetime.now(UTC).isoformat(),
@@ -2368,18 +2555,28 @@ def build_aox_closure_stage_live_result(
             "canonical_state_digest": dict(
                 reconstruction.receipt["canonical_state"]
             )["canonical_state_digest"],
+            "scientific_attempt_id": reconstruction.scientific_attempt_id,
+            "operation_count": target_graph["operation_count"],
+            "operation_universe_digest": target_graph[
+                "operation_universe_digest"
+            ],
         },
         "parity": {
             "receipt_digest": validated_parity["receipt_digest"],
             "declaration_digest": canonical_digest(
                 validated_parity["declaration"]
             ),
+            "target_supervision_contract_digest": (
+                target_supervision_contract_digest
+            ),
         },
         "runtime": {
             "summary": child["runtime"],
-            "terminal_projection_digest": dict(child["terminal"])[
+            "child_result_digest": supervision["result_digest"],
+            "terminal_projection_digest": terminal[
                 "projection_digest"
             ],
+            "operation_binding": operation_binding,
             "closure": child["closure"],
         },
         "effects": child["effects"],
@@ -2466,7 +2663,8 @@ def validate_aox_closure_stage_live_result(
             "closure_stage_live_result_schema_invalid",
             "closure-stage live result violates its closed success contract",
         )
-    attempt_id = normalized.get("attempt_id")
+    run_attempt_id = normalized.get("run_attempt_id")
+    scientific_attempt_id = normalized.get("scientific_attempt_id")
     diagnostic_id = normalized.get("diagnostic_id")
     if (
         not isinstance(diagnostic_id, str)
@@ -2474,13 +2672,23 @@ def validate_aox_closure_stage_live_result(
             diagnostic_id
         )
         is None
-        or not isinstance(attempt_id, str)
+        or not isinstance(run_attempt_id, str)
         or CLOSURE_STAGE_DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(
-            attempt_id
+            run_attempt_id
         )
         is None
+        or not isinstance(scientific_attempt_id, str)
+        or _SCIENTIFIC_ATTEMPT_ID_PATTERN.fullmatch(
+            scientific_attempt_id
+        )
+        is None
+        or scientific_attempt_id == run_attempt_id
         or normalized.get("session_id")
-        != CLOSURE_STAGE_DIAGNOSTIC_RUN_POLICY.identities(attempt_id)[0]
+        != CLOSURE_STAGE_DIAGNOSTIC_RUN_POLICY.identities(
+            run_attempt_id
+        )[0]
+        or reconstruction.get("scientific_attempt_id")
+        != scientific_attempt_id
         or not isinstance(authority.get("envelope_id"), str)
         or not str(authority["envelope_id"]).strip()
     ):
@@ -2517,15 +2725,29 @@ def validate_aox_closure_stage_live_result(
             "reconstruction.canonical_state_digest",
             reconstruction.get("canonical_state_digest"),
         ),
+        (
+            "reconstruction.operation_universe_digest",
+            reconstruction.get("operation_universe_digest"),
+        ),
         ("parity.receipt_digest", parity.get("receipt_digest")),
         (
             "parity.declaration_digest",
             parity.get("declaration_digest"),
         ),
+        (
+            "parity.target_supervision_contract_digest",
+            parity.get("target_supervision_contract_digest"),
+        ),
     ):
         _require_digest(value, identity=identity)
     runtime_summary = runtime.get("summary")
     closure = runtime.get("closure")
+    operation_binding = runtime.get("operation_binding")
+    bound_terminal_operations = (
+        operation_binding.get("terminal_operations")
+        if isinstance(operation_binding, dict)
+        else None
+    )
     scope_rollover = (
         closure.get("scope_rollover")
         if isinstance(closure, dict)
@@ -2536,17 +2758,34 @@ def validate_aox_closure_stage_live_result(
         or set(runtime_summary) != _LIVE_RUNTIME_SUMMARY_FIELDS
         or not isinstance(closure, dict)
         or set(closure) != _LIVE_CLOSURE_FIELDS
-        or not isinstance(scope_rollover, dict)
+        or runtime_summary.get("session_id") != normalized["session_id"]
+        or runtime_summary.get("purpose") != "formal"
+        or runtime_summary.get("state") != "completed"
+        or runtime_summary.get("blocker_code") is not None
+        or type(runtime_summary.get("drain_count")) is not int
+        or int(runtime_summary["drain_count"]) < 1
+        or type(runtime_summary.get("approval_count")) is not int
+        or int(runtime_summary["approval_count"]) != 0
+        or runtime_summary.get("task_count") != 3
+        or not isinstance(runtime_summary.get("event_receipt"), dict)
+        or not isinstance(runtime_summary.get("mutation_scope"), dict)
+    ):
+        raise CutoverEvidenceError(
+            "closure_stage_live_runtime_summary_invalid",
+            "closure-stage live result lacks one closed completed runtime projection",
+        )
+    if (
+        not isinstance(scope_rollover, dict)
         or set(scope_rollover) != _LIVE_SCOPE_ROLLOVER_FIELDS
         or scope_rollover.get("phase")
         != ScientificAttemptScopeRolloverPhase.POST_CLOSURE_SCOPE_OPEN.value
-        or scope_rollover.get("attempt_id") != normalized["attempt_id"]
+        or scope_rollover.get("attempt_id") != scientific_attempt_id
         or scope_rollover.get("attempt_scope_id")
-        != f"mutation_scope_{normalized['attempt_id']}"
+        != f"mutation_scope_{scientific_attempt_id}"
         or scope_rollover.get("attempt_scope_state") != "sealed"
         or scope_rollover.get("open_scope_count") != 1
         or scope_rollover.get("post_scope_id")
-        != f"mutation_scope_post_{normalized['attempt_id']}"
+        != f"mutation_scope_post_{scientific_attempt_id}"
         or scope_rollover.get("projection_digest")
         != canonical_digest(
             {
@@ -2557,24 +2796,102 @@ def validate_aox_closure_stage_live_result(
         )
         or supervision.get("nonterminal_mutation_scope_count")
         != scope_rollover.get("open_scope_count")
-        or runtime_summary.get("session_id") != normalized["session_id"]
-        or runtime_summary.get("purpose") != "formal"
-        or runtime_summary.get("state") != "completed"
-        or runtime_summary.get("blocker_code") is not None
-        or type(runtime_summary.get("drain_count")) is not int
-        or int(runtime_summary["drain_count"]) < 1
-        or type(runtime_summary.get("approval_count")) is not int
-        or int(runtime_summary["approval_count"]) != 0
-        or runtime_summary.get("task_count") != 3
-        or runtime_summary.get("projected_operation_count") != 6
-        or not isinstance(runtime_summary.get("event_receipt"), dict)
-        or not isinstance(runtime_summary.get("mutation_scope"), dict)
     ):
         raise CutoverEvidenceError(
-            "closure_stage_live_runtime_invalid",
-            "closure-stage live result lacks one closed completed runtime projection",
+            "closure_stage_live_scope_rollover_invalid",
+            "closure-stage live result does not bind the scientific attempt scope rollover",
+        )
+    if (
+        not isinstance(operation_binding, dict)
+        or set(operation_binding) != _LIVE_OPERATION_BINDING_FIELDS
+        or operation_binding.get("scientific_attempt_id")
+        != scientific_attempt_id
+        or not isinstance(bound_terminal_operations, list)
+        or len(bound_terminal_operations) != 6
+        or any(
+            not isinstance(operation, dict)
+            or set(operation) != _LIVE_TERMINAL_OPERATION_FIELDS
+            or not isinstance(operation.get("operation_id"), str)
+            or not str(operation["operation_id"]).strip()
+            or _DIGEST_PATTERN.fullmatch(
+                str(operation.get("operation_digest") or "")
+            )
+            is None
+            or operation.get("status") != "completed"
+            or operation.get("effect_certainty") != "terminal_known"
+            for operation in bound_terminal_operations
+        )
+        or [
+            str(operation["operation_id"])
+            for operation in bound_terminal_operations
+        ]
+        != sorted(
+            {
+                str(operation["operation_id"])
+                for operation in bound_terminal_operations
+            }
+        )
+        or operation_binding.get("terminal_operations_digest")
+        != canonical_digest(bound_terminal_operations)
+        or type(reconstruction.get("operation_count")) is not int
+        or reconstruction.get("operation_count") != 6
+        or any(
+            type(operation_binding.get(field)) is not int
+            or operation_binding.get(field) != 6
+            for field in (
+                "projected_operation_count",
+                "terminal_operation_count",
+                "reconstruction_operation_count",
+            )
+        )
+        or runtime_summary.get("projected_operation_count")
+        != operation_binding.get("projected_operation_count")
+        or reconstruction.get("operation_count")
+        != operation_binding.get("reconstruction_operation_count")
+        or reconstruction.get("operation_universe_digest")
+        != operation_binding.get(
+            "reconstruction_operation_universe_digest"
+        )
+        or operation_binding.get("terminal_operation_universe_digest")
+        != operation_binding.get(
+            "reconstruction_operation_universe_digest"
+        )
+        or runtime.get("terminal_projection_digest")
+        != operation_binding.get("terminal_projection_digest")
+        or operation_binding.get("binding_digest")
+        != canonical_digest(
+            {
+                key: value
+                for key, value in operation_binding.items()
+                if key != "binding_digest"
+            }
+        )
+    ):
+        raise CutoverEvidenceError(
+            "closure_stage_live_operation_binding_invalid",
+            "closure-stage live result does not close one operation universe across projections",
+        )
+    if (
+        runtime.get("child_result_digest")
+        != supervision.get("result_digest")
+    ):
+        raise CutoverEvidenceError(
+            "closure_stage_live_child_binding_invalid",
+            "closure-stage runtime does not reference its supervised child result",
+        )
+    if (
+        parity.get("target_supervision_contract_digest")
+        != supervision.get("supervisor_contract_digest")
+    ):
+        raise CutoverEvidenceError(
+            "closure_stage_live_supervision_parity_invalid",
+            "closure-stage supervision receipt differs from the parity target contract",
         )
     for identity, value in (
+        (
+            "runtime.child_result_digest",
+            runtime.get("child_result_digest"),
+        ),
         (
             "runtime.terminal_projection_digest",
             runtime.get("terminal_projection_digest"),
@@ -2595,6 +2912,26 @@ def validate_aox_closure_stage_live_result(
             "runtime.closure.scope_rollover.projection_digest",
             scope_rollover.get("projection_digest"),
         ),
+        (
+            "runtime.operation_binding.terminal_operations_digest",
+            operation_binding.get("terminal_operations_digest"),
+        ),
+        (
+            "runtime.operation_binding.terminal_operation_universe_digest",
+            operation_binding.get(
+                "terminal_operation_universe_digest"
+            ),
+        ),
+        (
+            "runtime.operation_binding.reconstruction_operation_universe_digest",
+            operation_binding.get(
+                "reconstruction_operation_universe_digest"
+            ),
+        ),
+        (
+            "runtime.operation_binding.binding_digest",
+            operation_binding.get("binding_digest"),
+        ),
     ):
         _require_digest(value, identity=identity)
     if (
@@ -2602,7 +2939,7 @@ def validate_aox_closure_stage_live_result(
         != closure["scientific_attempt_control_digest"]
     ):
         raise CutoverEvidenceError(
-            "closure_stage_live_runtime_invalid",
+            "closure_stage_live_runtime_summary_invalid",
             "closure-stage runtime and closure control projections disagree",
         )
     task_receipts = closure.get("task_receipts")
@@ -2900,7 +3237,7 @@ def validate_aox_closure_stage_live_result(
         )
     validate_attempt_supervision_receipt(
         supervision,
-        attempt_id=attempt_id,
+        attempt_id=run_attempt_id,
         attempt_kind="positive",
         attempt_authority_id=str(authority["envelope_id"]),
         attempt_authority_request_digest=str(authority["request_digest"]),

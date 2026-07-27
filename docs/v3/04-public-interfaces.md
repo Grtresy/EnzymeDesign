@@ -247,6 +247,7 @@ engine invocation terminal state 或 protocol message 都不能自动设置这�
 - `artifacts`
 - `report_drafts`
 - `reports`
+- `scientific_evidence`
 - `capabilities`
 - `runtime_state`
 
@@ -265,6 +266,7 @@ engine invocation terminal state 或 protocol message 都不能自动设置这�
 - `capabilities` 是可扩展分区，按 `capability_key` 挂载各 engine 的投影
 - 不应把当前 engine 名称直接固化为 workspace 顶层 contract，避免后续每新增一种能力都破坏接口
 - `runtime_state` 是 diagnostic-only projection：区分 `agent_turn_failed`、`runtime_signal_failed`、`task_failed`、`runtime_attention` 与 `outcome_unconsumed` / `capability_outcome_ready`，但不自动改变 task business status。terminal capability outcome 只表示可作为证据的结果已经 ready，并可用于 wake owner；它不代表 teammate、master 或 task 已完成
+- `scientific_evidence.operations` 是 session controlled-operation 的 canonical public summary；consumer 不得从 `runtime_state` 猜测或兼容读取 operation list。需要把 workspace operation 数量写入密封 evidence 时，必须由该 canonical branch 生成，并与 private terminal projection/reconstruction receipt 交叉验证
 - `task_board`、`delegation`、`lane_board` 共同表达内部执行状态；它们不是 conversation 的附属调试信息，而是与 conversation 并列的 control-plane 读模型
 - `delegation.agents` 默认表达 resident team roster：agent identity、role、status、task/lane focus、correlation thread 与 last active time。默认用户 projection 不暴露 unread inbox count、pending signal count 或 raw wakeup reason；这些属于 diagnostic-only 信息
 - `artifacts` 默认是 session 共享工作面的安全投影，供 UI 呈现，也供后续 agent loops 作为可读取 catalog 理解当前工作面；普通投影不直接返回文件内容或 Host 私有路径
@@ -544,4 +546,10 @@ output 上，从而不绕过 process-isolated attempt-root access gate。
 全部 `acceptance_eligible=false`，CLI 不暴露 promotion、formal adoption、campaign
 reducer、push、retry 或 next-numbered-run 参数。Host `/v3` API 本身不新增恢复 endpoint；
 该 trusted-operator CLI 只组合既有 public session/runtime/workspace/events 与正常 tool
-contract。
+contract。当前 private child/live 边界分别是
+`aox_closure_stage_child_evidence@3` 与
+`aox_closure_stage_live_result@3`：外层 `run_attempt_id` 绑定 authority/process
+supervision，内层 `scientific_attempt_id` 绑定 reconstructed attempt/closure/scope；
+workspace operation count、terminal projection/universe、reconstruction target graph 与
+parity target supervision contract 必须闭合，旧 `@1/@2` 或混淆身份的 envelope
+fail-closed。

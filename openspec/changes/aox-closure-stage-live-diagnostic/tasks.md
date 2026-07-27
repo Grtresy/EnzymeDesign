@@ -50,7 +50,7 @@
 - [x] 6.1 Implement closure-specific evidence collection for task transitions, MICU-attributed agent turns, protocol handoff, report publication, closure request/response/document binding, Host finalization, runtime settlement, public API, and browser observations.
 - [x] 6.2 Require exactly one execution `completed` exit, one published source-linked fresh report, one completed reporter task, one master closure request, one co-terminal final response binding, and one finalized closure record.
 - [x] 6.3 Require no live signal, lease, writer, continuation, operation claim, process descendant, or browser handoff and no new external scientific effect at terminal verification.
-- [x] 6.4 Implement `aox_closure_stage_live_result@1` and `aox_closure_stage_diagnostic_decision@1` sealing after retirement, including source post-hashes, reconstruction/parity digests, MICU transition, bounded public-safe projection, and `acceptance_eligible: false`.
+- [x] 6.4 Implement `aox_closure_stage_child_evidence@3`, `aox_closure_stage_live_result@3`, and `aox_closure_stage_diagnostic_decision@1` sealing after retirement, including distinct run/scientific attempt identities, source post-hashes, reconstruction/parity/operation/supervision bindings, MICU transition, bounded public-safe projection, and `acceptance_eligible: false`.
 - [x] 6.5 Implement finite fatal sealing that records diagnostic failure without manufacturing closure, formal evidence, or source mutation.
 - [x] 6.6 Add verifier tests for complete closure, partial/duplicate/contradictory layers, stale public/browser projection, incomplete retirement/accounting, source post-hash drift, hidden effects, unsafe public fields, and formal-adoption rejection.
 
@@ -85,6 +85,10 @@
 - [x] 9.9 Correct the pre-live ledger placement gate discovered by the real authority command so the exact pre-existing config-pinned numbered-run ledger is reused while fresh outputs remain outside the checkout; add identity tests, revalidate, and commit before publishing authority.
 - [x] 9.10 Qualify the frozen r59 primary PubMed task/invocation/artifact/source chain as exact all-null lane lineage, preserve that lane on the reconstructed research task/member, and keep the fresh execution lane scoped to executor/attempt/runtime state.
 - [x] 9.11 Add source/reconstruction/independent-verifier regressions for nullable lineage and mismatch rejection, update stable closure-stage documentation, run focused verification, and create a new clean pre-live commit without rerunning `check-mainline.sh`.
+- [x] 9.12 Replace the stale workspace operation summary path with canonical `scientific_evidence.operations`, without a legacy fallback.
+- [x] 9.13 Separate outer `run_attempt_id` from inner `scientific_attempt_id` and close operation-count/universe/terminal-projection plus supervision-parity bindings in the child/result schemas.
+- [x] 9.14 Add a real-shape `SessionDriveResult → child → builder → validator → decision` regression with distinct identities and fail-closed stale-count, identity-conflation, operation-binding, and supervision-drift cases.
+- [x] 9.15 Synchronize OpenSpec, the main architecture, public workspace contract, and closure-stage stable documentation; run focused tests, ruff, strict OpenSpec validation, evals, and diff checks without rerunning `check-mainline.sh`, then create one clean pre-live commit.
 
 ## 10. One Authorized Non-Numbered MICU Live Diagnostic
 
@@ -102,6 +106,20 @@
 > authority. The resolver repair and any one fresh follow-up diagnostic are
 > tracked by
 > `openspec/changes/unify-scientific-attempt-lifecycle-projection/tasks.md`.
+>
+> Permanent evidence note (2026-07-27): the later clean commit
+> `349293b3f91976cdda99db38bb8f960530b00cd9` consumed plan
+> `sha256:428bf4820d30331a0e7ce1dfc9ceb140abb294ff762893fb46a32a2db71cc641`
+> exactly once. Its real MICU/runtime/browser/supervision path completed all
+> three tasks, published the report, created the co-terminal response and
+> immutable closure, opened the exact post-attempt scope, and retired the
+> process tree. Final result verification nevertheless sealed failed decision
+> `sha256:fdae6390e15710332c0a46dd212ae90b588c163747b0f210052152fc3bdc9a84`
+> because the summary read a removed runtime operation branch and the `@2`
+> validator conflated the outer run attempt with the inner scientific attempt.
+> That plan, target, MICU rows, browser receipt, and evidence remain
+> non-retryable; tasks 9.12-9.15 define the forward schema repair before any
+> fresh authority.
 
 - [ ] 10.1 Re-resolve the complete frozen r59 source inventory and record pre-live hashes without modifying authority, root, state, effects, artifacts, report, browser bytes, or evidence.
 - [ ] 10.2 Verify the committed HEAD, current config/workflow/SOP/qualification/UI identities, MICU model/provider, ledger capacity, source retirement, zero pending WAL bytes, exact cursor-614 cut, and a nonexistent non-`rNN` target.

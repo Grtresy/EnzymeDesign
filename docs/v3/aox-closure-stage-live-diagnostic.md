@@ -444,6 +444,60 @@ are permanently `acceptance_eligible=false`. The plan, target, MICU rows, and
 evidence cannot be retried or reused; a further diagnostic requires a new clean
 commit, nonexistent target, and independently published one-use authority.
 
+## Supervision-repair successor and result-envelope finding
+
+The clean supervision repair commit
+`349293b3f91976cdda99db38bb8f960530b00cd9` was admitted and exercised under
+fresh one-use plan
+`sha256:428bf4820d30331a0e7ce1dfc9ceb140abb294ff762893fb46a32a2db71cc641`.
+It was consumed exactly once at `2026-07-26T16:03:10.985060+00:00` beneath
+`/tmp/openzyme-aox-closure-stage-supervision-349293b-01.s6rOow`, binding target
+`aox-closure-stage-c8b6db6296e12355d96a1ff3` and outer run attempt
+`closure-stage-377c697db59a311988e713540ce7c6d3`.
+
+The production child completed the lifecycle under test. Six drains processed
+the bounded runtime; research, execution, and reporting tasks all completed;
+reporter published `report_dcdc48787749`; master created the co-terminal
+response and immutable closure
+`attempt_closure_1f770b18f1760245a19fa112`; and Core projected the exact open
+post-closure scope for inner scientific attempt
+`attempt_1f11158bdb21feceaac39613`. The challenged Chrome observation was
+submitted, 548 public API receipts were captured, all descendants and active
+writers retired, and supervision accepted one legal nonterminal post-attempt
+scope. Seventeen actual `gpt-5.5` rows charged `960999` tokens with no estimate,
+overage, or hard-limit breach. The source database and inventory remained
+byte-identical.
+
+Final result assembly nevertheless failed with
+`closure_stage_live_runtime_invalid`. The child terminal projection contained
+six sorted terminal-known operations and controlled-operation count six, and
+its closure universe
+`sha256:a457d150fb6b9175dea42161a9146d44e761eab9367c0c228776483f379b4a01`
+exactly matched the independently rebuilt reconstruction target. The shared
+`SessionDriveResult.safe_summary()` still read the removed
+`runtime_state.controlled_operations` branch, so it projected zero. The `@2`
+live-result validator also compared the inner scope-rollover identity with the
+outer run attempt, even though construction correctly kept them distinct.
+Hand-written test fixtures assigned both identities the same value and supplied
+the count six directly, so the focused verifier tests were falsely green. The
+sealed failed decision is
+`sha256:fdae6390e15710332c0a46dd212ae90b588c163747b0f210052152fc3bdc9a84`;
+there is no live-result artifact or formal follow-on.
+
+The forward result-envelope repair uses
+`aox_closure_stage_child_evidence@3` and
+`aox_closure_stage_live_result@3`. It reads the canonical
+`workspace.scientific_evidence.operations` projection without a legacy
+fallback; names `run_attempt_id` and `scientific_attempt_id` separately; and
+cross-binds the workspace count, exact six bounded terminal operation
+summaries and their digest, recomputed terminal projection, supervised child
+result, closure universe, reconstruction target graph, and parity target
+supervision contract. A real-shape builder-to-decision regression keeps
+the two attempt identities different and rejects stale counts, identity
+conflation, universe drift, and supervision drift independently. The consumed
+plan, target, MICU rows, browser receipt, and failed decision above remain
+permanently non-retryable.
+
 ## Two-command authority flow
 
 First generate current clean-commit architecture qualification and AOX pin
@@ -584,6 +638,12 @@ The evidence root contains the closed source manifest, reconstruction receipt,
 runtime-parity receipt and, on success, `closure-stage-live-result.json`. The
 target root always receives `closure-stage-diagnostic-decision.json`, including
 finite failure. Every closure-stage schema fixes `acceptance_eligible=false`.
+The current private child/result envelopes are
+`aox_closure_stage_child_evidence@3` and
+`aox_closure_stage_live_result@3`; the latter exposes distinct outer
+`run_attempt_id` and inner `scientific_attempt_id` plus closed
+operation/supervision bindings. Older `@1/@2` live-result or child evidence
+cannot be accepted as current success.
 No command creates `aox_blank_world_attempt_bundle@3`, invokes the exact-three
 campaign reducer, emits GO/NO-GO, promotes bytes, pushes a branch, or authorizes
 a later numbered attempt.
