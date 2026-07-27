@@ -864,6 +864,54 @@ current workflow ref 为
 `workflow:aox-hmm-live@2.0.0#sha256:a34878a922536f429acb7ebef52e303610df184fcc16acf4dce894704321b313`；
 r59 correction 初稿固定的旧 ref 对任何后继 admission/pin/authority 均 stale。
 
+### 2026-07-27 r60 full-path diagnostic recovery-settlement correction
+
+r60 在 clean commit `fb890390dc0518476da6334885df3d623bbb9426` 上消费独立
+full-path diagnostic plan
+`sha256:4467743b950fec87a50464d1ada1149e0c5ba5582bf6faf8d7b068b2f4e1d4ce`，
+root 为 `aox-diagnostic-1b4458dc162671cc71d84399`，attempt 为
+`diagnostic-positive-d01e53efad6c224c1791421cb32e3447`。run-class 隔离继续成立：
+该 plan 只授权一个 `acceptance_eligible=false` diagnostic slot，没有启动 formal
+exact-three campaign。
+
+独立 probe 的 NCBI `op_e2f517086e3f`、MAFFT `op_18d3fae18639`、hmmbuild
+`op_bd941b05e9ae`、UniProt `op_59f4daae1f0a`、CD-HIT
+`op_758a11d2fc72` 与 HMMalign `op_c87011a68d2b` 六项真实 operation 全部完成。
+formal researcher 完成而 scientific attempt 仍 active，canonical execution task 为
+`in_progress`、report task 为 `todo`；formal 尚未产生 provider/HPC controlled operation
+或 Chrome approval，因此不能把 probe success 表述为产品路径成功。
+
+直接 blocker 是 turn-local recovery settlement 过窄。master 先在上游 task 仍 blocked 时
+尝试 reporter delegation，形成 terminal-known/no-effect
+`failure_53512639855e20439560`；随后调用 `failure.hypothesis.record` 时漏传必需
+`idempotency_key`，形成 `agent_can_retry/no_effect/same_phase_safe`
+`failure_fc34244aeb4a850e72bc`。同一 agent 紧接着以补齐 idempotency key 的 canonical
+调用成功写入原目标 failure 的 hypothesis；在 Harness 第一次拒绝 assistant-only prose 后，
+agent 又读取 `failure_fc34244aeb4a850e72bc` 并为它持久化 exact
+`failure_hypothesis_bfcf3591d7be824c6da9`。旧 settlement allowlist 仍把这两个成功的
+`failure.hypothesis.record` 都当作 unknown nominal write，最终错误产生
+`assistant_response_repeated_without_durable_action` /
+`agent_turn_recovery_unresolved`，使 exact signal 和 runtime command failed。
+
+diagnostic decision
+`sha256:3c8a5001b237e25dbfdde386b02c9138f2c1148fd5f7d2f4c69d4db6e196fc37`
+保持永久 **NO-GO**。MICU 从 `107,813,011` 增至
+`108,646,236 / 500,000,000`，delta `833,225`、remaining `391,353,764`，
+零 breach/overage。由于 formal runtime 在形成 fully settled diagnostic receipt 前失败，
+8.3/8.3a 仍未完成；r60 plan、consumption、root、state、probe effects、failure records 与
+decision 全部不可复用。
+
+forward correction 不把任意 hypothesis 解释为 repair。只有当前 recovery obligation
+本身由失败的 `failure.hypothesis.record` 产生，且后续同名调用返回成功
+`failure_hypothesis_recorded`，Harness 才从 repository 重读该 `hypothesis_id`，并要求
+它与 ToolResult 的完整 `failure_hypothesis@1` payload 相等、session 与 canonical agent
+均等于当前 turn 后结算该 obligation。这覆盖缺失参数后的 canonical corrected retry，
+同时不允许 hypothesis 结算其他工具的失败、赋予 retry authority、reconcile unknown
+effect、改写 Host failure facts 或改变 task/scientific state。synthetic、跨 session、
+跨 agent、missing 或 payload-drift result 均不结算。该局部合同沿用现有 truth owner 与
+append-only repository，不新增顶层状态；后继 live 仍需 fresh correction commit、full
+admission、pin、独立 diagnostic plan/consumption/root 和对该 exact plan 的单独批准。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

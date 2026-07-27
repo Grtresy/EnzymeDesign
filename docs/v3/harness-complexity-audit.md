@@ -239,7 +239,10 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
   obligation；第一次 prose 不持久化并返回 structured feedback，重复 prose/step bound
   形成 terminal `agent_turn_recovery_unresolved`。只有 reviewed durable mutation 或
   explicit terminal action 结算；read/unknown nominal write 不结算。Harness 不自动 retry、
-  delegate、auto-enqueue 或选择 task exit。
+  delegate、auto-enqueue 或选择 task exit。r60 又补齐一个 narrow same-tool case：
+  `failure.hypothesis.record` 自身 validation failure 的 canonical corrected retry 仅在
+  repository/current-agent/current-session/payload exact closure 时结算；它不允许 hypothesis
+  结算其他 tool failure 或取得 retry/task/scientific authority。
 
 - [x] Exact-occurrence AOX gate 把任何中间试错永久等同于最终 scientific failure。
 

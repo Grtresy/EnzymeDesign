@@ -390,8 +390,11 @@ master 与 teammate 都可以通过 `artifact.list` / `artifact.get` / `artifact
   success 或 prose 不能。第一次 prose 得到不持久化的
   `agent_turn_recovery_action_required`；重复 prose 或 step bound 产生 terminal
   `agent_turn_recovery_unresolved` signal failure，不自动重试/加 budget/建 successor，也不改
-  task business status。direct user-message turn、dispatch-in-doubt 与 reconciliation path
-  不适用。
+  task business status。当前 obligation 若正是失败的 `failure.hypothesis.record`，其同一
+  agent canonical corrected retry 只有在 repository 重读出的 current-session
+  `failure_hypothesis@1` 与成功 ToolResult 完整相等时才结算；该窄规则不允许 hypothesis
+  结算其他 tool failure，也不赋予 retry/reconciliation/task/scientific authority。
+  direct user-message turn、dispatch-in-doubt 与 reconciliation path 不适用。
 - 如果 bounded loop 到达 max steps，runtime 以 `agent_turn_budget_exhausted` 将 exact signal/turn terminalize，`retry_eligibility=terminal` 且不自动 replay/增加 budget；同时记录 `recoverability=agent_can_replan`，保持 task status 与业务 failure fields 不变。signal-local `no_effect` 不能覆盖同 turn 已持久化的 controlled-operation effect。source-bound、去重的 master wakeup 从 canonical failure observation 与当前 scientific selection evaluation 重建 facts，master 在新的 turn 中显式决定下一步。
 - scientific recovery 不直接读取 append-only `ScientificAttempt.status` 判断 terminal。它先联读 attempt、closure request 与 closure，优先恢复最新的 `open`、可接收 mutation 的 attempt；若较旧 attempt 已 closed 而较新 attempt open，必须选择后者；若全部 closed，则只投影最新 exact closure 和 `status=closed`，不得再把 selection evaluation 表述为 active work。request-only lifecycle 投影为 `closure_requested`，不接收新 scientific mutation；identity/selection/status 图不一致时以 `scientific_attempt_lifecycle_invalid` 停止恢复。
 - `AgentRuntimeOutcome` 必须携带 Core-owned immutable typed `AgentRuntimeOutcomeSettlement`。普通 completed/failed、waiting approval 与 budget-replan handoff 是闭集 disposition；handoff 在同一个短 transaction 和 session runtime authority 内绑定 source occurrence、task/agent/lane/correlation snapshot、exact failure observation 与唯一 pending master successor。缺失/重复/取消 successor 或 identity drift 只能得到普通 failed settlement，Host 不得在 lease 释放后重建一个“更成功”的版本。
@@ -440,7 +443,10 @@ tool contract 或 explicit terminal action 成功后才清除。若 bounded turn
 `agent_turn_recovery_unresolved` observation：
 `recoverability=agent_can_replan`、`effect_certainty=no_effect`、
 `retry_eligibility=terminal`，并保留 obligation facts。该机制约束 settlement，不选择
-修复策略或创建新的 runtime work。
+修复策略或创建新的 runtime work。`failure.hypothesis.record` 的 validation failure 是一个
+窄 typed retry 例外：只认同一 agent 成功写入且 repository/payload exact closure 的
+corrected same-tool call；任意 hypothesis、synthetic result 或其他 tool failure 均不能借此
+清除 obligation。
 
 scientific admission/closure 是两阶段 Host transition：agent 只请求，Host 等 bounded writer
 退休后 finalizes 并重新唤醒 agent。nonretryable finalizer rejection 必须成为 durable

@@ -2764,10 +2764,19 @@ Until those artifacts exist, documentation and UI must state NO-GO. Historical S
 
 r59 remains the latest numbered/formal live fact. It is a failed campaign whose
 exact-three plan is consumed and whose later slots cannot be reused. The later
-non-`rNN` closure-stage runs do not revise that verdict: all are permanently
-`acceptance_eligible=false`, and the latest consumed plan ended at the
-post-closure observer rollover seam described above. The forward corrections
-do not authorize `preflight`, another closure-stage run,
+non-`rNN` closure-stage runs and r60 full-path diagnostic do not revise that
+verdict: all are permanently `acceptance_eligible=false`. r60 consumed diagnostic
+plan `sha256:4467743b950fec87a50464d1ada1149e0c5ba5582bf6faf8d7b068b2f4e1d4ce`;
+its exact-six independent probe succeeded, but the formal master failed before
+any formal controlled operation or Chrome approval because a successful canonical
+retry of `failure.hypothesis.record` was not recognized as settlement of that
+same tool's no-effect validation obligation. Decision
+`sha256:3c8a5001b237e25dbfdde386b02c9138f2c1148fd5f7d2f4c69d4db6e196fc37`
+is permanent diagnostic NO-GO, and 8.3/8.3a remain incomplete. The forward
+correction recognizes only a repository-verified, current-session/current-agent,
+payload-exact corrected same-tool record; it does not let hypotheses settle other
+tool failures or authorize retry/task/scientific changes. The corrections do not
+authorize `preflight`, another closure-stage run,
 `run-diagnostic-live`, `run-live`, a numbered root, provider/MICU call, HPC
 job, browser campaign or formal attempt. Formal acceptance requires a
 different separately approved exact-three plan after a fresh clean full

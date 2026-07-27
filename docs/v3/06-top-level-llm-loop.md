@@ -263,7 +263,11 @@ successful reviewed durable mutation 或 explicit terminal action 可结算；re
 以 `agent_turn_recovery_action_required` 拒绝且不写 conversation；再次 prose 或没有剩余
 model step 时返回 typed `agent_turn_recovery_unresolved`，source signal terminal failed、
 不自动 replay/建 successor，task 保持 nonterminal。该规则只保证当前 turn 产生真实 durable
-decision，不规定 agent 选哪一种 repair。
+decision，不规定 agent 选哪一种 repair。若 failed tool 本身是
+`failure.hypothesis.record`，一个 successful same-tool corrected retry 只有在其
+`hypothesis_id` 可从 current-session repository 重读、canonical agent 相同且完整
+`failure_hypothesis@1` payload 与 ToolResult 相等时才是 durable settlement。它不使
+hypothesis 成为其他 tool failure 的 repair，也不提供 retry authority。
 
 step budget 用尽不授权继续同一 signal。driver 写入结构化
 `agent_turn_budget_exhausted` 后终止 exact occurrence；scheduler 不原地重放、不追加 steps、

@@ -448,7 +448,10 @@ def failure_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             description=(
                 "Append your own bounded hypothesis about one observed failure. "
                 "This does not rewrite Host facts, authorize retry, reconcile an "
-                "unknown effect, or change task status."
+                "unknown effect, or change task status. If this exact tool just "
+                "failed validation inside an internal signal turn, a successful "
+                "canonical retry durably settles only that tool-call recovery "
+                "obligation; it does not settle failures from other tools."
             ),
             input_schema={
                 "type": "object",

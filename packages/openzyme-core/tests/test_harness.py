@@ -4193,6 +4193,245 @@ def test_internal_signal_rejects_prose_then_accepts_corrected_durable_recovery()
     assert signals[0].agent_id == reporters[0].agent_id
 
 
+def test_internal_signal_accepts_canonical_retry_of_failed_hypothesis_record() -> (
+    None
+):
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+    registry = ToolRegistry()
+
+    def explode(
+        _context: SessionRuntimeContext,
+        _invocation: ToolInvocation,
+    ) -> ToolResult:
+        raise RuntimeError("seed one terminal-known failure")
+
+    registry.register("explode", explode)
+    register_failure_tools(registry)
+    seed_context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001"),
+        agent_id=agent.agent_id,
+        actor_kind="agent",
+        actor_role=agent.role,
+    )
+    seed_result = registry.dispatch(
+        seed_context,
+        ToolInvocation(
+            call_id="call_seed_hypothesis_target",
+            tool_name="explode",
+            arguments={},
+            task_id="task_001",
+        ),
+    )
+    assert seed_result.failure_observation is not None
+    target_failure_id = seed_result.failure_observation["failure_id"]
+    hypothesis = "The observed local failure has a bounded terminal outcome."
+    model_factory = FakeModelFactory(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_hypothesis_missing_idempotency",
+                        "name": "failure.hypothesis.record",
+                        "args": {
+                            "failure_id": target_failure_id,
+                            "hypothesis": hypothesis,
+                            "confidence": "high",
+                            "evidence_refs": [f"failure:{target_failure_id}"],
+                        },
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_hypothesis_corrected_retry",
+                        "name": "failure.hypothesis.record",
+                        "args": {
+                            "failure_id": target_failure_id,
+                            "hypothesis": hypothesis,
+                            "confidence": "high",
+                            "evidence_refs": [f"failure:{target_failure_id}"],
+                            "idempotency_key": "r60-hypothesis-retry-v1",
+                        },
+                    }
+                ],
+            },
+            {
+                "content": "The corrected durable hypothesis record succeeded.",
+                "tool_calls": [],
+            },
+        ]
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=3,
+            signal_id="signal_hypothesis_retry_recovery",
+            agent_id=agent.agent_id,
+            actor_kind="agent",
+            actor_role=agent.role,
+            restore_focus=RestoreFocus(task_id="task_001"),
+        ),
+        driver=LlmConversationDriver(model_factory),
+        model_factory=model_factory,
+        tool_registry=registry,
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    assert [item.ok for item in result.tool_results] == [False, True]
+    failed, corrected = result.tool_results
+    assert failed.error_code == "invalid_tool_arguments"
+    assert failed.failure_observation is not None
+    assert failed.failure_observation["effect_certainty"] == "no_effect"
+    assert failed.failure_observation["failure_id"] != target_failure_id
+    assert corrected.status == "failure_hypothesis_recorded"
+    assert corrected.details["failure_id"] == target_failure_id
+    saved = repositories.failure_hypotheses.get(
+        corrected.details["hypothesis_id"]
+    )
+    assert saved is not None
+    assert saved.to_dict() == corrected.details
+    assert result.outputs == (
+        "The corrected durable hypothesis record succeeded.",
+    )
+    assert not any(
+        event.event_type in {"assistant.response.rejected", "harness.failed"}
+        for event in result.events
+    )
+    assert [
+        entry.content
+        for entry in build_conversation_projection(
+            repositories,
+            session.session_id,
+        )
+        if entry.role == "assistant"
+    ] == ["The corrected durable hypothesis record succeeded."]
+
+
+def test_failure_hypothesis_does_not_settle_another_tool_recovery_obligation() -> (
+    None
+):
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
+    registry = ToolRegistry()
+
+    def explode(
+        _context: SessionRuntimeContext,
+        _invocation: ToolInvocation,
+    ) -> ToolResult:
+        raise RuntimeError("seed an unrelated hypothesis target")
+
+    registry.register("explode", explode)
+    register_failure_tools(registry)
+    seed_context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001"),
+        agent_id=agent.agent_id,
+        actor_kind="agent",
+        actor_role=agent.role,
+    )
+    seed_result = registry.dispatch(
+        seed_context,
+        ToolInvocation(
+            call_id="call_seed_unrelated_hypothesis_target",
+            tool_name="explode",
+            arguments={},
+            task_id="task_001",
+        ),
+    )
+    assert seed_result.failure_observation is not None
+    target_failure_id = seed_result.failure_observation["failure_id"]
+    model_factory = FakeModelFactory(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_failure_get_missing_id",
+                        "name": "failure.get",
+                        "args": {},
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_record_unrelated_hypothesis",
+                        "name": "failure.hypothesis.record",
+                        "args": {
+                            "failure_id": target_failure_id,
+                            "hypothesis": "This is unrelated to the failed read call.",
+                            "confidence": "high",
+                            "evidence_refs": [f"failure:{target_failure_id}"],
+                            "idempotency_key": "unrelated-hypothesis-v1",
+                        },
+                    }
+                ],
+            },
+            {
+                "content": "The unrelated write should not settle the failed read.",
+                "tool_calls": [],
+            },
+        ]
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=3,
+            signal_id="signal_unrelated_hypothesis_recovery",
+            agent_id=agent.agent_id,
+            actor_kind="agent",
+            actor_role=agent.role,
+            restore_focus=RestoreFocus(task_id="task_001"),
+        ),
+        driver=LlmConversationDriver(model_factory),
+        model_factory=model_factory,
+        tool_registry=registry,
+    )
+
+    assert result.status is HarnessStatus.FAILED
+    assert [item.ok for item in result.tool_results] == [False, True]
+    failed, recorded = result.tool_results
+    assert failed.tool_name == "failure.get"
+    assert failed.error_code == "invalid_tool_arguments"
+    assert recorded.status == "failure_hypothesis_recorded"
+    assert result.outputs[-1].startswith("agent_turn_recovery_unresolved:")
+    assert not any(
+        entry.role == "assistant"
+        for entry in build_conversation_projection(
+            repositories,
+            session.session_id,
+        )
+    )
+
+
 def test_internal_signal_repeated_recovery_prose_fails_without_successor() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)

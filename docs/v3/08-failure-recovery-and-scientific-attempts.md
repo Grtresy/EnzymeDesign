@@ -52,7 +52,12 @@ Harness 不改写参数、不自动重试/delegate。read-only inspection、memo
 nominal write 或 prose 不清除 obligation。首次 prose 只形成不持久化的
 `agent_turn_recovery_action_required` feedback；重复 prose 或 step bound 形成
 `agent_turn_recovery_unresolved` typed signal failure，exact signal 不重放，task 业务状态
-不变。direct user-message turn 与 reconciliation/unknown-effect path 不进入这条窄规则。
+不变。一个更窄的 same-tool retry 规则只适用于 obligation 自身来自
+`failure.hypothesis.record` validation failure：后续成功 record 必须由 current agent 写入
+current session，并由 repository 重读证明完整 `failure_hypothesis@1` 与 ToolResult exact
+equality。它不结算其他 tool 的 failure，不把 cause hypothesis 升级为 retry authority，
+也不改变 task/scientific state。direct user-message turn 与
+reconciliation/unknown-effect path 不进入这条窄规则。
 
 `recovery_required` brief 只能陈述事实和安全边界。agent 可选择：
 

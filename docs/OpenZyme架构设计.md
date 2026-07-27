@@ -168,7 +168,11 @@ obligation。agent 仍可自由选择安全修复、其他 durable action、求�
 不持久化并得到结构化 `agent_turn_recovery_action_required`，重复 prose 或剩余 step
 不足时 exact signal 以 `agent_turn_recovery_unresolved` terminal failure 收口，
 `retry_eligibility=terminal`，task 保持原业务状态。direct user-message turn 与 uncertain
-effect/reconciliation failure 不进入这条窄 settlement。
+effect/reconciliation failure 不进入这条窄 settlement。若 obligation 本身来自失败的
+`failure.hypothesis.record`，同一 agent 的 canonical corrected retry 只有在
+repository 可重读且完整 `failure_hypothesis@1` payload 与成功 ToolResult exact equality
+时才结算；它不能结算其他 tool 的失败，也不改变 hypothesis 的非 retry-authority、
+非 task/scientific-state 语义。
 
 所有 `structured`、`tool_calling`、`chat` 与 connectivity smoke 的 provider 调用都必须经过 `openzyme_runtime.LlmInvocationRuntime`。invoker 只负责构造 payload、结构化解析或 tool response 还原；runtime 统一负责 limiter、timeout、retry/backoff、`Retry-After`、错误 taxonomy 与 LLM debug 记录。502/503/504、transport timeout/connection failure 属于 retryable；429 只有 transient 或带 `Retry-After` 时 retryable，usage/quota/invalid/context 类 429 不重试；400/401/403、schema/tool argument/context window 错误不重试。runtime 不拥有 session compaction、restore context rebuild 或 harness/engine 状态机。
 

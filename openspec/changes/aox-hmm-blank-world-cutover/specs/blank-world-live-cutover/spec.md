@@ -90,6 +90,11 @@ The collector SHALL reconstruct exactly one durable delegation request for each 
 - **WHEN** the authority-bound formal session calls `task.create` without an explicit canonical id, with a suffixed/replacement id, or with a canonical id carrying the wrong research/execution/reporting kind
 - **THEN** the Router precondition returns an LLM-readable validation result with `precondition_rejected=true`, `effect_certainty=no_effect`, and `retry_eligibility=same_phase_safe`; it does not dispatch the task handler, while probe and unrelated sessions retain ordinary task semantics
 
+#### Scenario: Settle only a canonical corrected failure-hypothesis retry
+- **WHEN** an internal signal turn has a current `invalid_tool_arguments`, `agent_can_retry`, `no_effect` recovery obligation produced by a failed `failure.hypothesis.record`, and the same agent subsequently succeeds with that same tool after correcting its request
+- **THEN** Harness clears that obligation only after re-reading the returned `hypothesis_id` from the current session repository and proving that its canonical agent identity and complete `failure_hypothesis@1` payload exactly equal the successful ToolResult; the next assistant response may then persist
+- **AND** a hypothesis for a failure produced by another tool, a synthetic/missing/drifted/cross-session/cross-agent record, read-only inspection, or prose does not settle the obligation; the hypothesis still does not authorize retry, reconcile unknown effect, rewrite Host facts, or change task/scientific state
+
 #### Scenario: Reject premature scientific-attempt closure
 - **WHEN** a formal master requests `scientific.attempt.close` before the board is exactly the authority-bound research/execution/report task set, before each task has one matching explicit business exit, before a positive has one linked ready report and published draft, or while a fault has any ready/published success report state
 - **THEN** the Router precondition rejects the request without closing the attempt and reports the observed task/report mismatch; it permits retry only after the agent reconciles durable state, and it never chooses an operation, task outcome, scientific branch, or replacement plan for the agent

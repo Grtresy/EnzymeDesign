@@ -945,6 +945,30 @@ def _successful_tool_settles_turn_recovery(
         return False
     if result.terminates_turn or result.terminal_action is not None:
         return True
+    obligation = context.turn_recovery_obligation
+    if (
+        obligation is not None
+        and obligation.tool_name == "failure.hypothesis.record"
+        and obligation.error_code == "invalid_tool_arguments"
+        and obligation.recoverability == "agent_can_retry"
+        and obligation.effect_certainty == "no_effect"
+        and result.tool_name == "failure.hypothesis.record"
+        and result.status == "failure_hypothesis_recorded"
+    ):
+        details = dict(result.details or {})
+        hypothesis_id = str(details.get("hypothesis_id") or "").strip()
+        hypothesis = (
+            None
+            if not hypothesis_id
+            else context.repositories.failure_hypotheses.get(hypothesis_id)
+        )
+        if (
+            hypothesis is not None
+            and hypothesis.session_id == context.snapshot.session.session_id
+            and hypothesis.agent_id == context.agent_id
+            and hypothesis.to_dict() == details
+        ):
+            return True
     router = context.current_tool_router
     step_context = context.current_step_context
     if router is None or step_context is None:
