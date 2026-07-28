@@ -1,3 +1,7 @@
+> **Partially superseded:** `simplify-v3-harness-control-boundary` removes the
+> recovery-obligation design below. Compaction authority and stall detection
+> remain active.
+
 ## Context
 
 The closure-stage diagnostic reached a valid cross-actor transition: the

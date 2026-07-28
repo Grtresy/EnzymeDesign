@@ -90,15 +90,15 @@ The collector SHALL reconstruct exactly one durable delegation request for each 
 - **WHEN** the authority-bound formal session calls `task.create` without an explicit canonical id, with a suffixed/replacement id, or with a canonical id carrying the wrong research/execution/reporting kind
 - **THEN** the Router precondition returns an LLM-readable validation result with `precondition_rejected=true`, `effect_certainty=no_effect`, and `retry_eligibility=same_phase_safe`; it does not dispatch the task handler, while probe and unrelated sessions retain ordinary task semantics
 
-#### Scenario: Settle only a canonical corrected failure-hypothesis retry
-- **WHEN** an internal signal turn has a current `invalid_tool_arguments`, `agent_can_retry`, `no_effect` recovery obligation produced by a failed `failure.hypothesis.record`, and the same agent subsequently succeeds with that same tool after correcting its request
-- **THEN** Harness clears that obligation only after re-reading the returned `hypothesis_id` from the current session repository and proving that its canonical agent identity and complete `failure_hypothesis@1` payload exactly equal the successful ToolResult; the next assistant response may then persist
-- **AND** a hypothesis for a failure produced by another tool, a synthetic/missing/drifted/cross-session/cross-agent record, read-only inspection, or prose does not settle the obligation; the hypothesis still does not authorize retry, reconcile unknown effect, rewrite Host facts, or change task/scientific state
+#### Scenario: Keep an ordinary no-effect failure inside the bounded turn
+- **WHEN** an internal signal turn receives `invalid_tool_arguments`, `task_blocked`, or another ordinary effect-known rejection
+- **THEN** Harness records one ToolResult and FailureObservation, feeds it back to the model, and does not create a recovery obligation, exact-settlement requirement, response veto, or boundary-fatal result merely because the agent next reads, retries, replans, or responds with prose
+- **AND** task, approval, scientific, and external-operation state remain unchanged unless a later canonical command actually changes them
 
-#### Scenario: Durably defer one dependency-blocked delegation
-- **WHEN** an internal signal turn has a current `task.delegate` failure with `task_blocked`, `agent_can_replan`, `terminal_known`, and `retry_eligibility=terminal`; its canonical unassigned `todo` target remains blocked by the same non-empty set of `todo|in_progress` task dependencies recorded in `blocked_by_open_task_ids`; and the same canonical agent calls `failure.recovery.record` with `disposition=defer_until_task_dependencies_complete`, that exact failure id, blocker set, rationale, and idempotency key
-- **THEN** Core appends one immutable `failure_recovery_disposition@1`, explicitly reports `retry_authorized=false`, `task_status_changed=false`, and `scientific_state_changed=false`, and Harness clears only that exact obligation after re-reading the source observation, current dependency state, repository record, current session/agent identity, and complete ToolResult payload for equality
-- **AND** the tool does not delegate, retry, rewrite dependencies, change task/scientific state, or authorize a future retry; a cross-tool/session/agent/failure record, completed or terminal-noncompleted blocker drift, missing/synthetic record, mismatched blocker set, or payload drift fails closed, while a no-effect argument failure from `failure.recovery.record` itself can be settled only by a canonical corrected same-tool call that passes the same repository closure
+#### Scenario: Keep dependency wait in the canonical task graph
+- **WHEN** `task.delegate` observes that the canonical target still has open `Task.blocked_by` dependencies
+- **THEN** it returns LLM-readable no-effect facts without delegating, rewriting dependencies, recording a failure-recovery disposition, or enqueuing `RECOVERY_REQUIRED`
+- **AND** only a real user/task/protocol/approval/engine/continuation event can create later runtime work; Harness does not require the agent to persist a particular waiting strategy
 
 #### Scenario: Reject premature scientific-attempt closure
 - **WHEN** a formal master requests `scientific.attempt.close` before the board is exactly the authority-bound research/execution/report task set, before each task has one matching explicit business exit, before a positive has one linked ready report and published draft, or while a fault has any ready/published success report state
@@ -108,13 +108,13 @@ The collector SHALL reconstruct exactly one durable delegation request for each 
 - **WHEN** `scientific.attempt.close` carries a non-empty companion final response, passes its runtime preconditions, and records the immutable closure request while later tool calls remain in the same provider response
 - **THEN** the close result is a successful terminal action, the harness persists that exact companion text once as the final assistant conversation message, retires the requesting turn without another model step, and settles every later call as `tool_call_batch_interrupted` with `effect_certainty=no_effect` and `retry_eligibility=verify_then_retry`; Host finalization remains post-turn and does not complete a business task
 
-#### Scenario: Reject a close-ready assistant-only response
+#### Scenario: Do not reinterpret a close-ready assistant-only response as closure
 - **WHEN** the authority-bound AOX formal master emits an assistant-only response after the exact task exits and positive/fault report state satisfy the close precondition, while the one active attempt still has no closure request
-- **THEN** the response precondition records a structured `aox_cutover_close_required_before_final_response` rejection, does not persist the proposed assistant message, reports `effect_certainty=no_effect` and `retry_eligibility=same_phase_safe`, and gives the same agent another bounded decision opportunity without creating or choosing a closure request
+- **THEN** the assistant message may persist under ordinary conversation semantics, but no closure request, task transition, reporter handoff, or acceptance eligibility is inferred from it; AOX policy does not reject narration or choose the next strategy
 
 #### Scenario: Require one co-terminal final response
 - **WHEN** the master calls `scientific.attempt.close` without non-empty response text in that same provider response, or the close handler returns a failure
-- **THEN** no closure request and no assistant conversation message are created; only a successful close intent may authorize exact-once persistence of its companion response, and ordinary non-AOX assistant responses remain unchanged
+- **THEN** no closure request or closure-bound companion message is created; only a successful close intent may bind and persist its companion response exactly once, while ordinary assistant responses remain independent conversation facts
 
 #### Scenario: Accept the canonical successful report publication states
 - **WHEN** the canonical reporting task has exactly one non-empty published draft linked to exactly one report whose domain status is `ready` or `published`

@@ -27,4 +27,4 @@
 
 - [x] 5.1 Synchronize `docs/OpenZyme架构设计.md` and relevant `docs/v3/` runtime/harness documents with the exact-settlement contract.
 - [x] 5.2 Review the complete diff, preserve unrelated user work, and create one validated local git commit.
-- [ ] 5.3 Restore the approved non-r starting state, run and personally supervise the real MICU test, and audit its final artifacts.
+- [x] 5.3 Superseded without running MICU: the replacement change removes the exact-settlement premise and requires fresh non-live validation before any separately authorized live work.

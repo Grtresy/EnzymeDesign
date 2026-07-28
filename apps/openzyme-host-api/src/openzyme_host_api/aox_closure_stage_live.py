@@ -1899,9 +1899,6 @@ class ClosureStageLiveRunner(LiveAoxAttemptRunner):
             v3_repository_provider=provider,
             v3_background_runtime_enabled=False,
             v3_tool_dispatch_precondition=lifecycle_policy,
-            v3_assistant_response_precondition=(
-                lifecycle_policy.check_assistant_response
-            ),
             v3_sandbox_workspace_root=context.roots.sandbox_root,
             v3_artifact_blob_root=context.roots.blob_root,
         )

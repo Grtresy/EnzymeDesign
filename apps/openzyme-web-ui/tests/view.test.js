@@ -179,7 +179,7 @@ test("activity keeps historical runtime receipt uncertainty explicit", () => {
   assert.doesNotMatch(html, /replay safe true/);
 });
 
-test("structured failure view separates facts, likely causes, and agent hypothesis", () => {
+test("structured failure view separates facts and likely causes", () => {
   const html = renderV3Failures({
     runtime_state: {
       task_attention: [
@@ -201,8 +201,6 @@ test("structured failure view separates facts, likely causes, and agent hypothes
         retry_eligibility: "same_phase_safe",
         facts: { agent_decision_produced: false, status_code: 502 },
         likely_causes: ["The configured provider is temporarily unavailable."],
-        agent_hypothesis: "Quota may be exhausted.",
-        agent_hypothesis_confidence: "low",
         safe_hint: "Resume after operator recovery.",
       },
     ],
@@ -210,7 +208,6 @@ test("structured failure view separates facts, likely causes, and agent hypothes
 
   assert.match(html, /Harness facts/);
   assert.match(html, /Likely causes/);
-  assert.match(html, /Agent hypothesis \(low\)/);
   assert.match(html, /failure_001/);
   assert.doesNotMatch(html, /private_diagnostic_digest/);
 });

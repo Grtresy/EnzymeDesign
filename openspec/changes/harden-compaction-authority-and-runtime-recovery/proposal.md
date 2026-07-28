@@ -1,3 +1,7 @@
+> **Partially superseded:** `simplify-v3-harness-control-boundary` removes this
+> change's turn-local recovery obligation, exact settlement, and response
+> rejection. Its compaction-authority and bounded no-wakeup diagnostics remain.
+
 ## Why
 
 The fresh non-`rNN` closure-stage diagnostic exposed a cross-turn truth split:

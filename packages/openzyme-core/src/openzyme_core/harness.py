@@ -52,9 +52,6 @@ from openzyme_runtime import sanitize_public_diagnostic_text
 from openzyme_runtime import record_failure_observation
 
 from .engines import EngineRegistry
-from .failure_recovery import (
-    reconcile_satisfied_failure_recovery_dispositions,
-)
 from .mutation_authority import current_mutation_write_authority
 from .mutation_quiescence import MutationScopeService
 from .repositories import EngineDocumentRecord
@@ -319,125 +316,8 @@ class LlmTraceStep:
 
 
 @dataclass(frozen=True, slots=True)
-class AssistantResponseRejection:
-    error_code: str
-    summary: str
-    hint: str
-    details: dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if not self.error_code.strip():
-            raise ValueError("assistant response rejection error_code must be non-empty")
-        if not self.summary.strip():
-            raise ValueError("assistant response rejection summary must be non-empty")
-        if not self.hint.strip():
-            raise ValueError("assistant response rejection hint must be non-empty")
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "error_code": self.error_code,
-            "summary": self.summary,
-            "hint": self.hint,
-            "details": dict(self.details),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class AgentTurnRecoveryObligation:
-    failure_id: str
-    call_id: str
-    tool_name: str
-    error_code: str
-    recoverability: str
-    effect_certainty: str
-    retry_eligibility: str = ""
-    phase: str = ""
-    task_id: str | None = None
-    lane_id: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-class AgentTurnRecoverySettlementKind(StrEnum):
-    CORRECTED_RETRY = "corrected_retry"
-    CONDITION_DEFERRED = "condition_deferred"
-    EXISTING_STATE_VERIFIED = "existing_state_verified"
-    TASK_EXIT = "task_exit"
-    DURABLE_SUSPENSION = "durable_suspension"
-    SCIENTIFIC_EXIT = "scientific_exit"
-
-
-@dataclass(frozen=True, slots=True)
-class AgentTurnRecoverySettlement:
-    failure_id: str
-    failed_call_id: str
-    failed_tool_name: str
-    settling_call_id: str
-    settling_tool_name: str
-    kind: AgentTurnRecoverySettlementKind
-    proof_refs: tuple[str, ...] = ()
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "failure_id": self.failure_id,
-            "failed_call_id": self.failed_call_id,
-            "failed_tool_name": self.failed_tool_name,
-            "settling_call_id": self.settling_call_id,
-            "settling_tool_name": self.settling_tool_name,
-            "settlement_kind": self.kind.value,
-            "proof_refs": list(self.proof_refs),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class AgentTurnRecoveryUnresolved:
-    obligation: AgentTurnRecoveryObligation
-    reason: str
-    additional_obligations: tuple[AgentTurnRecoveryObligation, ...] = ()
-
-    @property
-    def obligations(self) -> tuple[AgentTurnRecoveryObligation, ...]:
-        return (self.obligation, *self.additional_obligations)
-
-    @property
-    def error_code(self) -> str:
-        return "agent_turn_recovery_unresolved"
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "error_code": self.error_code,
-            "reason": self.reason,
-            "obligation": self.obligation.to_dict(),
-            "obligations": [
-                obligation.to_dict() for obligation in self.obligations
-            ],
-            "obligation_count": len(self.obligations),
-        }
-
-    def public_summary(self) -> str:
-        return (
-            "agent_turn_recovery_unresolved: "
-            f"failure_id={self.obligation.failure_id} "
-            f"tool={self.obligation.tool_name} "
-            f"error_code={self.obligation.error_code}; "
-            f"unresolved_count={len(self.obligations)}; "
-            "the internal agent turn ended without a durable recovery action."
-        )
-
-
-class AgentTurnRecoveryUnresolvedError(RuntimeError):
-    def __init__(self, unresolved: AgentTurnRecoveryUnresolved) -> None:
-        self.unresolved = unresolved
-        self.error_code = unresolved.error_code
-        super().__init__(unresolved.public_summary())
-
-
-@dataclass(frozen=True, slots=True)
 class HarnessStep:
     assistant_message: str | None = None
-    assistant_response_rejection: AssistantResponseRejection | None = None
-    turn_recovery_unresolved: AgentTurnRecoveryUnresolved | None = None
     tool_invocations: tuple[ToolInvocation, ...] = ()
     tool_rejections: tuple[ToolResult, ...] = ()
     llm_trace: LlmTraceStep | None = None
@@ -447,34 +327,6 @@ class HarnessStep:
     engine_invocations: tuple[EngineInvocation, ...] = ()
     session_status: SessionStatus | None = None
     next_focus: RestoreFocus | None = None
-
-    def __post_init__(self) -> None:
-        exclusive_failure = (
-            self.assistant_response_rejection is not None
-            or self.turn_recovery_unresolved is not None
-        )
-        if (
-            self.assistant_response_rejection is not None
-            and self.turn_recovery_unresolved is not None
-        ):
-            raise ValueError(
-                "a harness step cannot reject and fail the same assistant response"
-            )
-        if exclusive_failure and (
-            self.assistant_message is not None
-            or self.tool_invocations
-            or self.tool_rejections
-            or self.task_updates
-            or self.approval_requests
-            or self.memory_entries
-            or self.engine_invocations
-            or self.session_status is not None
-            or self.next_focus is not None
-        ):
-            raise ValueError(
-                "a rejected or unresolved assistant response step may contain "
-                "only its LLM trace"
-            )
 
 
 class HarnessDriver(Protocol):
@@ -490,10 +342,6 @@ ToolHandler = Callable[["SessionRuntimeContext", ToolInvocation], ToolResult | s
 ToolDispatchPrecondition = Callable[
     ["SessionRuntimeContext", AgentStepContext, ToolInvocation],
     ToolResult | None,
-]
-AssistantResponsePrecondition = Callable[
-    ["SessionRuntimeContext", AgentStepContext, str],
-    AssistantResponseRejection | None,
 ]
 
 
@@ -731,7 +579,6 @@ class SessionRuntimeContext:
     reliability_settings: Any | None = None
     durable_route_adapter_policy_ids: dict[str, str] = field(default_factory=dict)
     tool_dispatch_precondition: ToolDispatchPrecondition | None = None
-    assistant_response_precondition: AssistantResponsePrecondition | None = None
     assistant_response_recipient: str = "user"
     assistant_response_recipient_kind: InboxParticipantKind = (
         InboxParticipantKind.USER
@@ -754,23 +601,6 @@ class SessionRuntimeContext:
     wakeup_reason: str | None = None
     current_step_context: AgentStepContext | None = None
     current_tool_router: ToolRouter | None = None
-    turn_recovery_enabled: bool = False
-    turn_recovery_obligations: dict[str, AgentTurnRecoveryObligation] = field(
-        default_factory=dict
-    )
-    turn_recovery_rejection_count: int = 0
-
-    @property
-    def turn_recovery_obligation(self) -> AgentTurnRecoveryObligation | None:
-        """Compatibility projection; recovery accounting uses the complete set."""
-
-        return next(iter(self.turn_recovery_obligations.values()), None)
-
-    def pending_turn_recovery_obligations(
-        self,
-    ) -> tuple[AgentTurnRecoveryObligation, ...]:
-        return tuple(self.turn_recovery_obligations.values())
-
     def persist_outbound_assistant_message(
         self,
         *,
@@ -926,290 +756,6 @@ class SessionRuntimeContext:
         return self.restore_context
 
 
-def _actionable_turn_recovery_obligation(
-    result: ToolResult,
-) -> AgentTurnRecoveryObligation | None:
-    if result.ok or not isinstance(result.failure_observation, dict):
-        return None
-    observation = result.failure_observation
-    recoverability = str(observation.get("recoverability") or "")
-    effect_certainty = str(observation.get("effect_certainty") or "")
-    retry_eligibility = str(observation.get("retry_eligibility") or "")
-    phase = str(observation.get("phase") or "")
-    if recoverability not in {"agent_can_replan", "agent_can_retry"}:
-        return None
-    if effect_certainty not in {"no_effect", "terminal_known"}:
-        return None
-    failure_id = str(observation.get("failure_id") or "").strip()
-    if not failure_id:
-        return None
-    return AgentTurnRecoveryObligation(
-        failure_id=failure_id,
-        call_id=result.call_id,
-        tool_name=result.tool_name,
-        error_code=str(
-            observation.get("error_code")
-            or result.error_code
-            or result.status
-            or "tool_error"
-        ),
-        recoverability=recoverability,
-        effect_certainty=effect_certainty,
-        retry_eligibility=retry_eligibility,
-        phase=phase,
-        task_id=(
-            str(observation["task_id"])
-            if observation.get("task_id") is not None
-            else result.task_id
-        ),
-        lane_id=(
-            str(observation["lane_id"])
-            if observation.get("lane_id") is not None
-            else result.lane_id
-        ),
-    )
-
-
-def _failure_for_turn_recovery_obligation(
-    context: SessionRuntimeContext,
-    obligation: AgentTurnRecoveryObligation,
-) -> Any | None:
-    failure = context.repositories.failure_observations.get(
-        obligation.failure_id
-    )
-    if (
-        failure is None
-        or failure.session_id != context.snapshot.session.session_id
-        or failure.agent_id != context.agent_id
-        or failure.source_kind != "tool_invocation"
-        or failure.source_ref != obligation.call_id
-        or failure.error_code != obligation.error_code
-        or failure.facts.get("tool_name") != obligation.tool_name
-    ):
-        return None
-    return failure
-
-
-def _successful_failure_recovery_disposition_settles(
-    context: SessionRuntimeContext,
-    result: ToolResult,
-    obligation: AgentTurnRecoveryObligation,
-) -> bool:
-    if not (
-        result.tool_name == "failure.recovery.record"
-        and result.status == "failure_recovery_disposition_recorded"
-        and isinstance(result.details, dict)
-    ):
-        return False
-    disposition_id = str(result.details.get("disposition_id") or "").strip()
-    record = (
-        None
-        if not disposition_id
-        else context.repositories.failure_recovery_dispositions.get(
-            disposition_id
-        )
-    )
-    if (
-        record is None
-        or record.session_id != context.snapshot.session.session_id
-        or record.agent_id != context.agent_id
-        or record.disposition.value
-        != "defer_until_task_dependencies_complete"
-        or record.to_dict() != result.details
-    ):
-        return False
-    failure = context.repositories.failure_observations.get(record.failure_id)
-    if (
-        failure is None
-        or failure.session_id != record.session_id
-        or failure.agent_id != record.agent_id
-        or failure.source_kind != "tool_invocation"
-        or failure.error_code != "task_blocked"
-        or failure.recoverability.value != "agent_can_replan"
-        or failure.effect_certainty.value != "terminal_known"
-        or failure.retry_eligibility.value != "terminal"
-        or failure.facts.get("tool_name") != "task.delegate"
-        or not failure.task_id
-    ):
-        return False
-    observed_values = failure.facts.get("blocked_by_open_task_ids")
-    if (
-        not isinstance(observed_values, list | tuple)
-        or any(not isinstance(value, str) for value in observed_values)
-    ):
-        return False
-    observed_task_ids = tuple(
-        sorted(value.strip() for value in observed_values)
-    )
-    task = context.repositories.tasks.get(failure.task_id)
-    if (
-        task is None
-        or task.session_id != record.session_id
-        or task.status is not TaskStatus.TODO
-        or task.assigned_ref is not None
-    ):
-        return False
-    current_open_task_ids: list[str] = []
-    for blocker_id in task.blocked_by:
-        blocker = context.repositories.tasks.get(blocker_id)
-        if (
-            blocker is None
-            or blocker.session_id != record.session_id
-            or blocker.status
-            not in {TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED}
-        ):
-            return False
-        if blocker.status is not TaskStatus.COMPLETED:
-            current_open_task_ids.append(blocker_id)
-    if not (
-        record.condition_task_ids
-        == tuple(sorted(current_open_task_ids))
-        == observed_task_ids
-    ):
-        return False
-    direct_settlement = (
-        obligation.failure_id == record.failure_id
-        and obligation.call_id == failure.source_ref
-        and obligation.tool_name == "task.delegate"
-        and obligation.error_code == "task_blocked"
-        and obligation.recoverability == "agent_can_replan"
-        and obligation.effect_certainty == "terminal_known"
-    )
-    return direct_settlement
-
-
-def _successful_corrected_retry_settles(
-    context: SessionRuntimeContext,
-    result: ToolResult,
-    obligation: AgentTurnRecoveryObligation,
-) -> bool:
-    if (
-        not result.ok
-        or result.call_id == obligation.call_id
-        or result.tool_name != obligation.tool_name
-    ):
-        return False
-    failure = _failure_for_turn_recovery_obligation(context, obligation)
-    if failure is None:
-        return False
-    if (
-        failure.phase == "validation"
-        and failure.effect_certainty.value == "no_effect"
-        and failure.retry_eligibility.value == "same_phase_safe"
-    ):
-        return True
-    if (
-        failure.facts.get("tool_name") == "task.delegate"
-        and failure.effect_certainty.value == "terminal_known"
-        and failure.task_id is not None
-        and result.task_id == failure.task_id
-    ):
-        return True
-    if not (
-        failure.facts.get("tool_name") == "execution.pipeline.start"
-        and failure.error_code == "existing_execution_invocation"
-        and result.status == "execution_invocation_already_satisfied"
-    ):
-        return False
-    invocation_id = str(failure.facts.get("invocation_id") or "").strip()
-    payload = _result_payload(result)
-    return bool(
-        invocation_id
-        and str(payload.get("invocation_id") or "") == invocation_id
-    )
-
-
-def _result_payload(result: ToolResult) -> dict[str, Any]:
-    if isinstance(result.details, dict) and result.details:
-        return dict(result.details)
-    try:
-        payload = json.loads(result.content)
-    except (TypeError, json.JSONDecodeError):
-        return {}
-    return dict(payload) if isinstance(payload, dict) else {}
-
-
-def _successful_existing_state_inspection_settles(
-    context: SessionRuntimeContext,
-    result: ToolResult,
-    obligation: AgentTurnRecoveryObligation,
-) -> tuple[bool, tuple[str, ...]]:
-    failure = _failure_for_turn_recovery_obligation(context, obligation)
-    if failure is None:
-        return False, ()
-    payload = _result_payload(result)
-    if (
-        obligation.tool_name == "execution.pipeline.start"
-        and obligation.error_code == "existing_execution_invocation"
-        and result.tool_name == "execution.pipeline.status"
-        and result.task_id == obligation.task_id
-    ):
-        invocation_id = str(
-            failure.facts.get("invocation_id") or ""
-        ).strip()
-        if (
-            invocation_id
-            and str(payload.get("invocation_id") or "") == invocation_id
-        ):
-            return True, (f"execution_invocation:{invocation_id}",)
-    if (
-        obligation.tool_name.startswith(("scientific.", "attempt."))
-        and result.tool_name == "scientific.attempt.inspect"
-        and result.task_id == obligation.task_id
-    ):
-        attempt_id = str(failure.facts.get("attempt_id") or "").strip()
-        selection_id = str(
-            failure.facts.get("selection_id") or ""
-        ).strip()
-        attempt_payload = payload.get("attempt")
-        selection_payload = payload.get("selection")
-        if (
-            attempt_id
-            and isinstance(attempt_payload, dict)
-            and str(attempt_payload.get("attempt_id") or "") == attempt_id
-            and (
-                not selection_id
-                or (
-                    isinstance(selection_payload, dict)
-                    and str(
-                        selection_payload.get("selection_id") or ""
-                    )
-                    == selection_id
-                )
-            )
-        ):
-            proof_refs = [f"scientific_attempt:{attempt_id}"]
-            if selection_id:
-                proof_refs.append(
-                    f"scientific_selection:{selection_id}"
-                )
-            return True, tuple(proof_refs)
-    return False, ()
-
-
-def _successful_task_exit_settles(
-    result: ToolResult,
-    obligation: AgentTurnRecoveryObligation,
-) -> tuple[bool, tuple[str, ...]]:
-    if not (
-        result.ok
-        and result.tool_name == "task.finish"
-        and result.terminal_action == "task.finish"
-        and result.task_id
-        and obligation.task_id == result.task_id
-    ):
-        return False, ()
-    finish_ref = str((result.details or {}).get("finish_ref") or "").strip()
-    return True, tuple(
-        ref
-        for ref in (
-            f"task:{result.task_id}",
-            f"task_finish:{finish_ref}" if finish_ref else "",
-        )
-        if ref
-    )
-
-
 def _exact_pending_approval_for_suspension(
     context: SessionRuntimeContext,
     result: ToolResult,
@@ -1232,302 +778,6 @@ def _exact_pending_approval_for_suspension(
     ):
         return None
     return approval
-
-
-def _successful_boundary_exit_settles(
-    context: SessionRuntimeContext,
-    result: ToolResult,
-    obligation: AgentTurnRecoveryObligation,
-) -> tuple[AgentTurnRecoverySettlementKind | None, tuple[str, ...]]:
-    if not (
-        result.ok
-        and result.terminates_turn
-        and result.task_id
-        and obligation.task_id == result.task_id
-    ):
-        return None, ()
-    if result.terminal_action == "runtime_suspended":
-        approval = _exact_pending_approval_for_suspension(
-            context,
-            result,
-        )
-        if approval is None:
-            return None, ()
-        details = dict(result.details or {})
-        proof_refs = tuple(
-            ref
-            for ref in (
-                f"task:{result.task_id}",
-                f"approval:{approval.approval_id}",
-                (
-                    f"continuation:{details['continuation_id']}"
-                    if details.get("continuation_id")
-                    else ""
-                ),
-            )
-            if ref
-        )
-        return AgentTurnRecoverySettlementKind.DURABLE_SUSPENSION, proof_refs
-    if (
-        result.terminal_action == "scientific.attempt.close"
-        and obligation.tool_name.startswith(("scientific.", "attempt."))
-    ):
-        failure = _failure_for_turn_recovery_obligation(
-            context,
-            obligation,
-        )
-        failed_attempt_id = (
-            ""
-            if failure is None
-            else str(failure.facts.get("attempt_id") or "").strip()
-        )
-        closed_attempt_id = str(
-            (result.details or {}).get("attempt_id") or ""
-        ).strip()
-        if (
-            not failed_attempt_id
-            or closed_attempt_id != failed_attempt_id
-        ):
-            return None, ()
-        return (
-            AgentTurnRecoverySettlementKind.SCIENTIFIC_EXIT,
-            tuple(
-                ref
-                for ref in (
-                    f"task:{result.task_id}",
-                    f"scientific_attempt:{closed_attempt_id}",
-                )
-                if ref
-            ),
-        )
-    return None, ()
-
-
-def _settlements_for_successful_tool(
-    context: SessionRuntimeContext,
-    result: ToolResult,
-) -> tuple[AgentTurnRecoverySettlement, ...]:
-    if not result.ok or not context.turn_recovery_obligations:
-        return ()
-    matches: list[AgentTurnRecoverySettlement] = []
-    matched_failure_ids: set[str] = set()
-    obligations = context.pending_turn_recovery_obligations()
-
-    for obligation in obligations:
-        kind: AgentTurnRecoverySettlementKind | None = None
-        proof_refs: tuple[str, ...] = ()
-        if _successful_failure_recovery_disposition_settles(
-            context,
-            result,
-            obligation,
-        ):
-            kind = AgentTurnRecoverySettlementKind.CONDITION_DEFERRED
-            disposition_id = str(
-                (result.details or {}).get("disposition_id") or ""
-            ).strip()
-            proof_refs = tuple(
-                ref
-                for ref in (
-                    f"failure:{obligation.failure_id}",
-                    (
-                        f"failure_recovery_disposition:{disposition_id}"
-                        if disposition_id
-                        else ""
-                    ),
-                )
-                if ref
-            )
-        else:
-            task_exit, task_proof_refs = _successful_task_exit_settles(
-                result,
-                obligation,
-            )
-            if task_exit:
-                kind = AgentTurnRecoverySettlementKind.TASK_EXIT
-                proof_refs = task_proof_refs
-            else:
-                boundary_kind, boundary_proof_refs = (
-                    _successful_boundary_exit_settles(
-                        context,
-                        result,
-                        obligation,
-                    )
-                )
-                if boundary_kind is not None:
-                    kind = boundary_kind
-                    proof_refs = boundary_proof_refs
-                else:
-                    verified, verified_refs = (
-                        _successful_existing_state_inspection_settles(
-                            context,
-                            result,
-                            obligation,
-                        )
-                    )
-                    if verified:
-                        kind = (
-                            AgentTurnRecoverySettlementKind.EXISTING_STATE_VERIFIED
-                        )
-                        proof_refs = verified_refs
-        if kind is None:
-            continue
-        matched_failure_ids.add(obligation.failure_id)
-        matches.append(
-            AgentTurnRecoverySettlement(
-                failure_id=obligation.failure_id,
-                failed_call_id=obligation.call_id,
-                failed_tool_name=obligation.tool_name,
-                settling_call_id=result.call_id,
-                settling_tool_name=result.tool_name,
-                kind=kind,
-                proof_refs=tuple(
-                    dict.fromkeys(
-                        (
-                            f"failure:{obligation.failure_id}",
-                            f"tool_call:{result.call_id}",
-                            *proof_refs,
-                        )
-                    )
-                ),
-            )
-        )
-
-    corrected_candidates = [
-        obligation
-        for obligation in obligations
-        if obligation.failure_id not in matched_failure_ids
-        and _successful_corrected_retry_settles(
-            context,
-            result,
-            obligation,
-        )
-    ]
-    if corrected_candidates:
-        obligation = corrected_candidates[-1]
-        matches.append(
-            AgentTurnRecoverySettlement(
-                failure_id=obligation.failure_id,
-                failed_call_id=obligation.call_id,
-                failed_tool_name=obligation.tool_name,
-                settling_call_id=result.call_id,
-                settling_tool_name=result.tool_name,
-                kind=AgentTurnRecoverySettlementKind.CORRECTED_RETRY,
-                proof_refs=(
-                    f"failure:{obligation.failure_id}",
-                    f"tool_call:{result.call_id}",
-                ),
-            )
-        )
-    return tuple(matches)
-
-
-def update_agent_turn_recovery(
-    context: SessionRuntimeContext,
-    result: ToolResult,
-) -> None:
-    if not context.turn_recovery_enabled:
-        return
-    obligation = _actionable_turn_recovery_obligation(result)
-    if obligation is not None:
-        context.turn_recovery_obligations.setdefault(
-            obligation.failure_id,
-            obligation,
-        )
-        context.turn_recovery_rejection_count = 0
-        return
-    settlements = _settlements_for_successful_tool(context, result)
-    if settlements:
-        for settlement in settlements:
-            context.turn_recovery_obligations.pop(
-                settlement.failure_id,
-                None,
-            )
-            context.emit(
-                "failure.recovery.settled",
-                settlement.to_dict(),
-            )
-        context.turn_recovery_rejection_count = 0
-    if result.ok:
-        reconcile_satisfied_failure_recovery_dispositions(context)
-
-
-def evaluate_agent_turn_recovery_response(
-    context: SessionRuntimeContext,
-    *,
-    call_index: int,
-    max_steps: int,
-) -> AssistantResponseRejection | AgentTurnRecoveryUnresolved | None:
-    obligations = context.pending_turn_recovery_obligations()
-    if not context.turn_recovery_enabled or not obligations:
-        return None
-    obligation = obligations[0]
-    if context.turn_recovery_rejection_count == 0 and call_index < max_steps:
-        context.turn_recovery_rejection_count = 1
-        return AssistantResponseRejection(
-            error_code="agent_turn_recovery_action_required",
-            summary=(
-                "This internal agent response was not persisted because the "
-                "recoverable tool failure set still lacks exact settlement."
-            ),
-            hint=(
-                "Correct the exact failed call, use a declared identity-bound "
-                "inspection or recovery disposition, request a durable "
-                "suspension, or explicitly finish the same task. Unrelated "
-                "reads, writes, and narration do not settle failures."
-            ),
-            details={
-                "effect_certainty": obligation.effect_certainty,
-                "response_persisted": False,
-                "failure_id": obligation.failure_id,
-                "failed_call_id": obligation.call_id,
-                "failed_tool_name": obligation.tool_name,
-                "failed_error_code": obligation.error_code,
-                "obligation_count": len(obligations),
-                "obligations": [
-                    item.to_dict() for item in obligations
-                ],
-            },
-        )
-    return AgentTurnRecoveryUnresolved(
-        obligation=obligation,
-        additional_obligations=obligations[1:],
-        reason=(
-            "assistant_response_repeated_without_durable_action"
-            if context.turn_recovery_rejection_count
-            else "model_step_budget_exhausted"
-        ),
-    )
-
-
-def _record_unresolved_agent_turn_recovery(
-    context: SessionRuntimeContext,
-    *,
-    reason: str,
-    outputs: list[str],
-    response_persisted: bool = False,
-    event_details: dict[str, Any] | None = None,
-) -> AgentTurnRecoveryUnresolvedError | None:
-    obligations = context.pending_turn_recovery_obligations()
-    if not context.turn_recovery_enabled or not obligations:
-        return None
-    unresolved = AgentTurnRecoveryUnresolved(
-        obligation=obligations[0],
-        additional_obligations=obligations[1:],
-        reason=reason,
-    )
-    error = AgentTurnRecoveryUnresolvedError(unresolved)
-    outputs.append(unresolved.public_summary())
-    context.emit(
-        "harness.failed",
-        {
-            **unresolved.to_dict(),
-            "agent_decision_produced": False,
-            "durable_recovery_action_produced": False,
-            "response_persisted": response_persisted,
-            **dict(event_details or {}),
-        },
-    )
-    return error
 
 
 def _enum_value(value: Any) -> Any:
@@ -2760,11 +2010,9 @@ def _settle_undispatched_tool_calls(
                 retry_eligibility=RetryEligibility.VERIFY_THEN_RETRY,
             )
             _emit_tool_rejection(context, result, invocation)
-            update_agent_turn_recovery(context, result)
             settled.append(result)
     for result, invocation in prepared_overflow_calls:
         _emit_tool_rejection(context, result, invocation)
-        update_agent_turn_recovery(context, result)
         settled.append(result)
     return tuple(settled)
 
@@ -2790,7 +2038,6 @@ def run_agent_harness_loop(
     reliability_settings: Any | None = None,
     durable_route_adapter_policy_ids: dict[str, str] | None = None,
     tool_dispatch_precondition: ToolDispatchPrecondition | None = None,
-    assistant_response_precondition: AssistantResponsePrecondition | None = None,
     mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None,
     sandbox_host_binding_factory: (
         Callable[
@@ -2829,7 +2076,6 @@ def run_agent_harness_loop(
         reliability_settings=reliability_settings,
         durable_route_adapter_policy_ids=dict(durable_route_adapter_policy_ids or {}),
         tool_dispatch_precondition=tool_dispatch_precondition,
-        assistant_response_precondition=assistant_response_precondition,
         assistant_response_recipient=harness_input.sender,
         assistant_response_recipient_kind=harness_input.sender_kind,
         persist_conversation=harness_input.persist_conversation,
@@ -2841,10 +2087,6 @@ def run_agent_harness_loop(
         correlation_id=harness_input.correlation_id,
         signal_id=harness_input.signal_id,
         wakeup_reason=harness_input.wakeup_reason,
-        turn_recovery_enabled=(
-            harness_input.signal_id is not None
-            and harness_input.message is None
-        ),
     )
     outputs: list[str] = []
     all_tool_results: list[ToolResult] = []
@@ -2959,37 +2201,6 @@ def run_agent_harness_loop(
             _persist_llm_trace_step(context, step.llm_trace)
             activity_happened = True
 
-        if step.turn_recovery_unresolved is not None:
-            unresolved = step.turn_recovery_unresolved
-            error = AgentTurnRecoveryUnresolvedError(unresolved)
-            outputs.append(unresolved.public_summary())
-            context.emit(
-                "harness.failed",
-                {
-                    **unresolved.to_dict(),
-                    "agent_decision_produced": False,
-                    "durable_recovery_action_produced": False,
-                    "response_persisted": False,
-                },
-            )
-            _auto_compact_if_needed(
-                context,
-                activity_happened=True,
-                outputs=outputs,
-                all_tool_results=all_tool_results,
-            )
-            context.refresh()
-            return HarnessResult(
-                session_id=harness_input.session_id,
-                status=HarnessStatus.FAILED,
-                snapshot=context.snapshot,
-                events=tuple(sink.events),
-                outputs=tuple(outputs),
-                tool_results=tuple(all_tool_results),
-                pending_approval_id=pending_approval_id,
-                error=error,
-            )
-
         for task in step.task_updates:
             repositories.tasks.save(task, intent=TaskWriteIntent.EDIT)
             context.emit(
@@ -3001,9 +2212,6 @@ def run_agent_harness_loop(
                 },
             )
             activity_happened = True
-        if step.task_updates:
-            reconcile_satisfied_failure_recovery_dispositions(context)
-
         for memory in step.memory_entries:
             repositories.memory.save(memory)
             context.emit(
@@ -3065,78 +2273,7 @@ def run_agent_harness_loop(
             )
             activity_happened = True
 
-        if step.assistant_response_rejection is not None:
-            rejection = step.assistant_response_rejection
-            context.emit(
-                "assistant.response.rejected",
-                {
-                    **rejection.to_dict(),
-                    "response_persisted": False,
-                    "step_id": (
-                        None
-                        if context.current_step_context is None
-                        else context.current_step_context.step_id
-                    ),
-                    "call_index": (
-                        None
-                        if context.current_step_context is None
-                        else context.current_step_context.call_index
-                    ),
-                },
-            )
-            activity_happened = True
-            context.refresh()
-            continue
-
-        if step.approval_requests:
-            error = _record_unresolved_agent_turn_recovery(
-                context,
-                reason="approval_request_without_exact_settlement",
-                outputs=outputs,
-            )
-            if error is not None:
-                _auto_compact_if_needed(
-                    context,
-                    activity_happened=True,
-                    outputs=outputs,
-                    all_tool_results=all_tool_results,
-                )
-                context.refresh()
-                return HarnessResult(
-                    session_id=harness_input.session_id,
-                    status=HarnessStatus.FAILED,
-                    snapshot=context.snapshot,
-                    events=tuple(sink.events),
-                    outputs=tuple(outputs),
-                    tool_results=tuple(all_tool_results),
-                    pending_approval_id=None,
-                    error=error,
-                )
-
         if step.assistant_message is not None:
-            error = _record_unresolved_agent_turn_recovery(
-                context,
-                reason="assistant_response_without_exact_settlement",
-                outputs=outputs,
-            )
-            if error is not None:
-                _auto_compact_if_needed(
-                    context,
-                    activity_happened=True,
-                    outputs=outputs,
-                    all_tool_results=all_tool_results,
-                )
-                context.refresh()
-                return HarnessResult(
-                    session_id=harness_input.session_id,
-                    status=HarnessStatus.FAILED,
-                    snapshot=context.snapshot,
-                    events=tuple(sink.events),
-                    outputs=tuple(outputs),
-                    tool_results=tuple(all_tool_results),
-                    pending_approval_id=None,
-                    error=error,
-                )
             _persist_outbound_assistant_message(
                 context,
                 step.assistant_message,
@@ -3266,7 +2403,6 @@ def run_agent_harness_loop(
                     )
                     current_results.append(result)
                     _emit_tool_rejection(context, result, invocation)
-                    update_agent_turn_recovery(context, result)
                     activity_happened = True
                     context.refresh()
                     continue
@@ -3325,7 +2461,6 @@ def run_agent_harness_loop(
                     )
                     current_results.append(failure_result)
                     _emit_tool_completed(context, failure_result, invocation)
-                    update_agent_turn_recovery(context, failure_result)
                     current_results.extend(
                         _settle_undispatched_tool_calls(
                             context,
@@ -3391,7 +2526,6 @@ def run_agent_harness_loop(
                     )
                 current_results.append(result)
                 _emit_tool_completed(context, result, invocation)
-                update_agent_turn_recovery(context, result)
                 activity_happened = True
                 context.refresh()
                 if result.ok and result.terminates_turn:
@@ -3447,27 +2581,6 @@ def run_agent_harness_loop(
                         )
                     )
                     all_tool_results.extend(current_results)
-                    error = _record_unresolved_agent_turn_recovery(
-                        context,
-                        reason="terminal_action_without_exact_settlement",
-                        outputs=outputs,
-                        response_persisted=assistant_response_persisted,
-                        event_details={
-                            "terminal_call_id": result.call_id,
-                        },
-                    )
-                    if error is not None:
-                        context.refresh()
-                        return HarnessResult(
-                            session_id=harness_input.session_id,
-                            status=HarnessStatus.FAILED,
-                            snapshot=context.snapshot,
-                            events=tuple(sink.events),
-                            outputs=tuple(outputs),
-                            tool_results=tuple(all_tool_results),
-                            pending_approval_id=None,
-                            error=error,
-                        )
                     _auto_compact_if_needed(
                         context,
                         activity_happened=activity_happened,
@@ -3540,33 +2653,6 @@ def run_agent_harness_loop(
                         )
                     )
                     all_tool_results.extend(current_results)
-                    error = _record_unresolved_agent_turn_recovery(
-                        context,
-                        reason="pending_approval_without_exact_settlement",
-                        outputs=outputs,
-                        event_details={
-                            "approval_id": pending_approval_id,
-                            "triggering_call_id": result.call_id,
-                        },
-                    )
-                    if error is not None:
-                        _auto_compact_if_needed(
-                            context,
-                            activity_happened=True,
-                            outputs=outputs,
-                            all_tool_results=all_tool_results,
-                        )
-                        context.refresh()
-                        return HarnessResult(
-                            session_id=harness_input.session_id,
-                            status=HarnessStatus.FAILED,
-                            snapshot=context.snapshot,
-                            events=tuple(sink.events),
-                            outputs=tuple(outputs),
-                            tool_results=tuple(all_tool_results),
-                            pending_approval_id=None,
-                            error=error,
-                        )
                     _auto_compact_if_needed(
                         context,
                         activity_happened=activity_happened,
@@ -3609,32 +2695,6 @@ def run_agent_harness_loop(
         )
         context.refresh()
         pending_approval_id = _pending_approval_id(context.snapshot)
-        error = _record_unresolved_agent_turn_recovery(
-            context,
-            reason=(
-                "pending_approval_without_exact_settlement"
-                if pending_approval_id is not None
-                else "step_completed_without_exact_settlement"
-            ),
-            outputs=outputs,
-            event_details=(
-                None
-                if pending_approval_id is None
-                else {"approval_id": pending_approval_id}
-            ),
-        )
-        if error is not None:
-            context.refresh()
-            return HarnessResult(
-                session_id=harness_input.session_id,
-                status=HarnessStatus.FAILED,
-                snapshot=context.snapshot,
-                events=tuple(sink.events),
-                outputs=tuple(outputs),
-                tool_results=tuple(all_tool_results),
-                pending_approval_id=None,
-                error=error,
-            )
         if pending_approval_id is not None:
             return HarnessResult(
                 session_id=harness_input.session_id,
@@ -3660,42 +2720,6 @@ def run_agent_harness_loop(
             outputs=tuple(outputs),
             tool_results=tuple(all_tool_results),
             pending_approval_id=pending_approval_id,
-        )
-
-    remaining_obligations = context.pending_turn_recovery_obligations()
-    if remaining_obligations:
-        unresolved = AgentTurnRecoveryUnresolved(
-            obligation=remaining_obligations[0],
-            additional_obligations=remaining_obligations[1:],
-            reason="model_step_budget_exhausted",
-        )
-        error = AgentTurnRecoveryUnresolvedError(unresolved)
-        outputs.append(unresolved.public_summary())
-        context.emit(
-            "harness.failed",
-            {
-                **unresolved.to_dict(),
-                "agent_decision_produced": False,
-                "durable_recovery_action_produced": False,
-                "response_persisted": False,
-            },
-        )
-        _auto_compact_if_needed(
-            context,
-            activity_happened=True,
-            outputs=outputs,
-            all_tool_results=all_tool_results,
-        )
-        context.refresh()
-        return HarnessResult(
-            session_id=harness_input.session_id,
-            status=HarnessStatus.FAILED,
-            snapshot=context.snapshot,
-            events=tuple(sink.events),
-            outputs=tuple(outputs),
-            tool_results=tuple(all_tool_results),
-            pending_approval_id=pending_approval_id,
-            error=error,
         )
 
     context.emit(

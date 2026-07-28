@@ -155,64 +155,36 @@ V3 默认失败策略是显式失败传播，而不是隐藏 fallback。
 - 不得通过隐藏 fallback 重新打开 blocked action、替换用户目标、默认选择可运行工具或合成虚假 plan
 - bounded loop 到达上限可以标记 runtime signal/agent failure，但不能据此推断业务 task 已完成或失败
 
-Failure facts、规则化 likely causes 和 agent hypothesis 是三种不同 authority。
-`FailureObservation` 不可变；agent 只能通过 append-only `FailureHypothesis` 记录自己的解释，
-绑定 canonical agent、confidence 和 evidence refs，不能覆盖 Host facts、赋予 retry authority
-或改变 task status。若 provider/driver 使 agent 根本没有产出 decision，Host 只发布
-system-attributed diagnostic，并显式标记 `agent_decision_produced=false`，不得伪造 agent 消息。
+`FailureObservation` 是 immutable Host/Harness fact；`failure.get` 是唯一 active failure
+tool。模型对原因和策略的判断保留在当次 reasoning、普通 protocol message 或用户回复中，
+不再升级成 `FailureHypothesis` / `FailureRecoveryDisposition` control-plane 对象。历史
+SQLite migration 与旧表只为兼容既有数据库保留，runtime 不再读写或投影这些表。
 
-internally driven signal turn 收到 `agent_can_replan|agent_can_retry` 且
-`no_effect|terminal_known` 的 typed failed tool result 后，会按 observation 顺序保存
-`failure_id` keyed turn-local recovery obligations；同批后一个失败不能覆盖前一个失败。
-normal dispatch、task/lane normalization rejection、parallel overflow 与 interrupted call
-产生的每个 `ToolResult` 都必须且只可进入一次 accounting。agent 仍可自由选择安全修复、
-verified replan、求助、显式 task exit 或 durable suspension；Harness 不改参数、不重试、
-不自动 delegate。
+effect-known ordinary failure 只做一次事实结算：产生标准 `ToolResult`、持久化
+`FailureObservation`、闭合 provider transcript，然后把 observation 回灌同一 bounded
+model loop。Harness 不再从失败派生 turn-local recovery obligation、settlement matcher、
+response veto 或第二条 `RECOVERY_REQUIRED` wakeup；它也不要求 agent 用某个特定 read/write
+证明“已经恢复”。agent 可以在剩余 step 内修正、换路、读取状态、求助、解释限制或显式
+`task.finish`。这些选择的业务含义只由实际调用及其 canonical state 决定。
 
-settlement 是 failure 与成功 proof result 之间的闭集关系，不再按 read/write governance 或
-tool-name allowlist 推断。当前闭集包括：任意 read/write tool 的同工具 no-effect
-validation corrected retry（一次无歧义成功最多结算一个 failure）、exact
-`failure.recovery.record`、同 invocation id 的 `execution.pipeline.status`、同
-attempt/selection 的 `scientific.attempt.inspect`、同 task 的 `task.finish`，以及同 task
-显式 `runtime_suspended` / scientific exit。每次成功结算都写 immutable
-`failure.recovery.settled` event；unrelated read、write、memory compaction 或 prose 均不
-结算。`task.get` not-found、`task.next` no-ready-work 是成功的 closed empty read；只有
-canonical identity 与 postcondition 完全相等的 `task.finish` / execution start replay
-才返回 already-satisfied；execution request 同时显式给出 invocation id 与 idempotency key
-时二者必须全部匹配，任一冲突都继续失败。
+Harness `COMPLETED` 只表示本次 bounded turn 正常处理完，不表示 task completed。
+step budget 用尽返回 `MAX_STEPS_EXCEEDED` runtime outcome，task 仍保持原业务状态；空回复或
+prose 也不因前序安全失败变成 harness fatal。pending approval 是独立 durable suspension
+边界：只有 canonical pending approval 可产生 `WAITING_APPROVAL`，且 runtime status 与
+approval identity 必须一致。unknown effect、fencing、authority、integrity、permission、
+provider/driver failure 与 process cancellation 仍在各自边界 fail closed。
 
-Harness 在每个 `COMPLETED` / `WAITING_APPROVAL` 出口重新检查完整 obligation set，不能把
-driver 空 step、直接 approval request 或“工具碰巧留下 pending approval”当作恢复完成。
-可结算 recovery obligation 的合法暂停必须由成功的 same-task terminal ToolResult 显式声明
-`terminal_action=runtime_suspended`，并留下 durable pending approval id；
-`execution.pipeline.start` 的 `WAITING_APPROVAL` 也使用该契约。teammate runtime 再要求
-Harness status 与 `pending_approval_id` 双向一致，所以 `FAILED + approval id` 不能被误判
-为 signal success。第一次 prose 不持久化并得到结构化
-`agent_turn_recovery_action_required`；重复 prose、空出口或剩余 step 不足时 exact signal
-以包含完整 bounded obligation list 的 `agent_turn_recovery_unresolved` terminal failure
-收口，task 保持原业务状态。direct user-message turn 与 uncertain
-effect/reconciliation failure 不进入这条窄 settlement。
+`task.get` not-found、`task.next` no-ready-work 是成功的 closed empty read；只有 canonical
+identity 与 postcondition 完全相等的 `task.finish` / execution start replay 才返回
+already-satisfied。execution request 同时显式给出 invocation id 与 idempotency key 时二者
+必须全部匹配，任一冲突都继续失败。continuation 或 controlled execution 在原 turn 之后
+产生失败时，现有 source-bound `ENGINE_COMPLETED` wakeup 携带可重读的 failure facts；
+runtime 不再为同一事实制造 recovery-specific signal taxonomy。
 
-`task.delegate` 因 durable `blocked_by` 尚未完成而返回
-`task_blocked/agent_can_replan/terminal_known` 时，agent 不应伪造 `task.update`、提前退出
-task 或靠 prose 等待。它可以调用 `failure.recovery.record` 追加一个
-`failure_recovery_disposition@1`，仅表达
-`defer_until_task_dependencies_complete`。Harness 只在 failure/session/canonical agent、
-目标 task、failure 中的 blocker 集合与 repository 当前 open dependency 集合完全一致，
-且所有 blocker 仍为 `todo|in_progress` 时结算 exact turn obligation；成功结果还必须从
-repository 重读并与完整 payload 相等。该记录不可变，不重试 delegate、不授权未来 retry、
-不改变 task 或 scientific state；cross-tool、cross-session、cross-agent、payload/state drift
-一律 fail closed。若该记录工具自身发生 no-effect 参数校验失败，只允许同工具的规范修正调用
-按相同 repository closure 结算。
-
-该 immutable disposition 同时是 exact condition subscription，不是仅供展示的历史记录。
-scheduler 在 claim signal 前、Harness 在 task mutation 后都执行同一 reconciler；只有
-disposition 的所有 condition tasks 在同 session 内达到 `completed`，才为 disposition
-owner 原子写入一个 `reason=recovery_required/source_ref=<disposition_id>` 的 durable signal，
-commit 后再通知。去重查询覆盖 pending/claimed/completed/failed/cancelled 全状态，poll、
-restart 或 signal 已完成后都不会复制 wakeup。该 wakeup 不自动重试 delegate、不认领仍为
-unassigned `todo` 的 target task、不替换 agent；turn prompt 只重建 exact disposition、
-original failure 与 completed conditions，并说明只有 canonical task owner 才能执行 task exit。
+`Lane` 保留为 cwd、branch、workspace projection 与 task execution isolation 的具体资源，
+但不再充当 ordinary failure 的普适 causal/recovery proof identity。只有确实发生在某 lane
+内的对象才绑定 lane；session-scoped research/provenance 允许 `lane_id=None`，不得为了通过
+恢复 matcher 将历史事实嫁接到当前 lane。
 
 所有 `structured`、`tool_calling`、`chat` 与 connectivity smoke 的 provider 调用都必须经过 `openzyme_runtime.LlmInvocationRuntime`。invoker 只负责构造 payload、结构化解析或 tool response 还原；runtime 统一负责 limiter、timeout、retry/backoff、`Retry-After`、错误 taxonomy 与 LLM debug 记录。502/503/504、transport timeout/connection failure 属于 retryable；429 只有 transient 或带 `Retry-After` 时 retryable，usage/quota/invalid/context 类 429 不重试；400/401/403、schema/tool argument/context window 错误不重试。runtime 不拥有 session compaction、restore context rebuild 或 harness/engine 状态机。
 
@@ -767,7 +739,6 @@ Projection 约束：
 - `task_available`
 - `approval_resolved`
 - `engine_completed`
-- `recovery_required`
 - `manual_resume`
 
 Claim 语义：
@@ -830,10 +801,11 @@ failed/terminal，后继是独立 master turn。任何闭包缺失、普通 fail
 `failed`，但本次 signal 正常 completed 时，scheduler settlement 仍可 completed；两者是
 正交事实。
 
-普通失败结果已在同一 turn 交给 agent 时不额外制造 recovery wakeup。只有 continuation、
-controlled operation 或 Host finalizer 在原 turn 之后才暴露失败时，才按 exact
-source/version 去重创建 `recovery_required`。claim 后从 repository 重建事实，不能复制旧 prompt
-或规定固定修复策略。
+普通失败结果已在同一 turn 交给 agent 时不额外制造 recovery wakeup。continuation 或
+controlled operation 在原 turn 之后才暴露成功或失败时，统一按 exact source/version
+创建 `engine_completed`；claim 后从 repository 重建 effect、result 与 failure facts，
+不能复制旧 prompt 或规定固定修复策略。Host finalizer 的 nonretryable boundary failure
+继续写 system-attributed observation/diagnostic，不伪造 agent recovery signal。
 
 ---
 
@@ -999,8 +971,8 @@ Live gate 解释：
 - AOX r58 是永久 diagnostic NO-GO。它在 clean commit `d00ada97f8eb13af35f9c83247cd51e14138f428` 消费 plan `sha256:691cf17bd8548fa3bfd4e338cb61ce608bb97c4cde17f0e66483b84ff65397e3` 后，probe/formal exact chain、516 candidates、78 representatives、13,778 edges、17 outputs、sealed selection、published report 与 exact-three owner-authored completed task exits均已形成；master 最后却发出 assistant-only final response，active attempt 没有 closure request，120 drains 后以 `formal_runtime_drain_exhausted` 终止。decision `sha256:8c877189130838b29030200d9c592e8e096cd028cd60a5c5bc38dd424c718a57` 与 MICU `96,363,097 / 500,000,000` 只封存失败，formal campaign 未启动。forward `aox_cutover_formal_tool_precondition@2` 在 close-ready state 拒绝且不持久化 assistant-only response，要求 master 在同一 provider response 中提供完整终答和 explicit close；empty companion 在 effect 前失败，successful close 才持久化 exact answer 一次、结算后续 calls 并退休 turn。它不自动 close、推断 selection 或合成答案，普通 session 不受影响。r58 已先形成 meaningful result/report，故未触发再次拆分规范；其 authority/root/effect/artifact/browser/report/state 永久不可复用，任何后继 live 仍需 fresh commit/full admission/pin/plan 与精确授权
 - AOX r59 是永久 formal NO-GO。它在 clean commit `431e2c558c13ebd1f99dcc9e3eae6758630a843d` 消费 exact-three plan `sha256:168aa86c433b3c3b90aab4c665453a56cb796f99056f7d04567bc8f453b8e7de` 后只到达 positive 1；probe/formal 各 exact six operation、Chrome approval、37,772 score-filter accession、2,561 length target、0-candidate healthy-empty result、sealed selection 与 published report均已形成。executor 的 teammate close 被正确以 master-only/no-effect 拒绝后，却将 execution task 错误终结为 blocked；master 无 reopen 语义，又把 `selection_active_writers` / legacy `closure_ready=false` 误解为不能在当前 turn 持久化 intent，最终零 closure request、120 drains exhausted。decision `sha256:8b05ef13dfaf79f9a15a647fbbafa446e7ef75656b16db77a7b32baa8b4c6ccc` 与 MICU lower bound `100,114,267 / 500,000,000` 只封存失败。forward inspection 区分 `closure_request_ready` 与 `closure_finalization_ready`，legacy `closure_ready` 明确只指 Host post-request finalization；`aox_cutover_formal_tool_precondition@3` 复用 canonical selection evaluator，仅在 assigned positive executor 的 sealed current selection 同时满足 `closure_request_ready=true` 时 no-effect 拒绝 `blocked|failed|cancelled`，要求 owner 显式 completed 并把 report/closure 留给 reporter/master。sealed state 本身不是成功证明；seal 后 universe、authority、workflow、process、continuation 或 evidence 漂移时仍保留 generic blocker/failure 出口。它不自动完成 task、关闭 attempt 或选择科学策略，non-ready selection、fault 与普通 V3 session 不受影响。r59 全部 authority/root/state/effect/artifact/report/browser bytes 不得复用；后继仍需 fresh commit/full admission/pin/exact-three plan/roots 与对该 plan 的单独精确批准
 - r59 closure-stage isolated live diagnostic 不属于 `rNN` successor，也不改判上述 NO-GO。它只读限定原 source 并在 fresh root 恢复 cursor 614 等价投影，以 production MICU/runtime/supervision/browser 边界单测 executor → reporter → master closure；source operation universe 不扩张，source-linked report 通过 reporter `task.finish` 同时绑定 published report ref 与 research 已采用的 canonical PubMed artifact ref，而不是解析或规定报告文字。primary PubMed artifact/task/invocation/source 的 exact nullable lane lineage 必须由 source qualifier、reconstruction receipt 与 independent verifier 共同证明；fresh execution lane 不得污染 session-scoped research。当前 `aox_closure_stage_child_evidence@3` / `aox_closure_stage_live_result@3` 把 authority/process 的外层 `run_attempt_id` 与 control-plane closure/scope 的内层 `scientific_attempt_id` 分型，并要求 `workspace.scientific_evidence.operations`、terminal projection/closure universe、reconstruction target graph 与 parity target supervision contract 交叉闭合；不得从 diagnostic `runtime_state` 兼容猜测 operation，也不得用 hand-written count 代替证据。结果永久 `acceptance_eligible=false`，没有 formal bundle、reducer、promotion、push 或 numbered follow-on。其 operator contract 见 `docs/v3/aox-closure-stage-live-diagnostic.md`
-- lifecycle repair commit `c3c560dd6ede54958398fb3e55d5cd62cc956ad1` 的首个 fresh non-`rNN` successor 同样是永久 diagnostic failure。plan `sha256:47ebfa37d653fa51c61eb304b3df620033d57f99aee6a3fcc88ae2e396b861ab` 只消费一次；research/execution 已完成，但 master 从 executor-scoped historical compaction 读到旧 workflow ref，在自己的 empty explicit focus 下调用 `task.delegate`，正确得到 `workflow_ref_not_authorized/terminal_known/agent_can_replan`。下一 call 只叙述“省略 refs”而未执行，report task 保持 ready/unassigned；3 个 command 推进 signal，随后 117 个 replay-safe empty drain 以 generic exhaustion 结束。decision `sha256:eb70608e595d64c785227e4c05b46334a3996d853177341f2da729d4bf9c1abc`、fatal `sha256:27ae166969295685ed56418e6b8abc404c7e3fff88884f5e85c1fe944b7723be` 与全部 root/authority 不可复用。forward correction 使 auto compaction authority-free/scope-correct，以 turn-local typed recovery obligation 拒绝 prose-only settlement，并将 AOX session policy 升为 `aox_cutover_formal_tool_precondition@4`：research/execution completed 且 canonical report ready/unassigned、该 report task 无 pending/claimed runtime signal 时，assistant response no-effect 被拒绝；agent 仍自行选择正确 handoff 或显式 task exit。AOX driver 另以两次一致 v2 zero-signal outcome + canonical no-wakeup proof typed fail-fast，不再重复 117 次无证据 drain。该非-live correction 不授权 live；任何验证仍需 clean commit、fresh non-`rNN` root 与新一次性 plan
-- repair commit `4bf4c4244fae68beff8e5d47717e83824ff2367e` 的 fresh non-`rNN` plan `sha256:7394c5200582b114a72fa08b0711dc993f4c7164dd66c1fb20dd1cf837060ae2` 已且仅已消费一次。它证明 authority-free prompt 与 recovery guard 的目标路径：master 的 `task.delegate` 使用 `workflow_refs=[]`，reporter 发布 `report_16937278db9c` 并完成 canonical report task，research/execution/report 三 task 全部 completed；master 在同一 response 写出终答与 `scientific.attempt.close`，产生 closure response 和 immutable closure `attempt_closure_a2f78d1fd2199e239696b99e`，cursor `263` 为 `scientific.attempt.closed`。5 个 runtime command 各处理 1 条 signal，零 empty drain。旧 terminal-command coordinator 随后在 attempt scope 已 `freezing`、post scope 尚未 open 的 bounded rollover window 申请 observer，被 `mutation_writer_admission_closed` 后错误归类为 `mutation_driver_writer_identity_invalid`；decision `sha256:470df988b817867c5fb80b859fd60c414d99a873e66a839283beb13fe1bef237` 与 fatal `sha256:a3c4a24fcb6e9342dc11faa48bdb393481c0c9e1f4a1b9559c83b4fada0e8123` 永久 non-acceptance。post-live correction 只对 exact authority/attempt、zero-open、无 competing scope 的 `freezing|quiescent|sealed` 状态在同一 command deadline 内等待；其他 identity/scope 错误仍 fail closed，超时为 `scientific_attempt_scope_rollover_stalled`。本 plan、target、MICU 与证据不可复用，该 correction 未经第二次 live 验证且不自行产生新 authority
+- lifecycle repair commit `c3c560dd6ede54958398fb3e55d5cd62cc956ad1` 的首个 fresh non-`rNN` successor 同样是永久 diagnostic failure。plan `sha256:47ebfa37d653fa51c61eb304b3df620033d57f99aee6a3fcc88ae2e396b861ab` 只消费一次；research/execution 已完成，但 master 从 executor-scoped historical compaction 读到旧 workflow ref，在自己的 empty explicit focus 下调用 `task.delegate`，正确得到 `workflow_ref_not_authorized/terminal_known/agent_can_replan`。下一 call 只叙述“省略 refs”而未执行，report task 保持 ready/unassigned；3 个 command 推进 signal，随后 117 个 replay-safe empty drain 以 generic exhaustion 结束。decision `sha256:eb70608e595d64c785227e4c05b46334a3996d853177341f2da729d4bf9c1abc`、fatal `sha256:27ae166969295685ed56418e6b8abc404c7e3fff88884f5e85c1fe944b7723be` 与全部 root/authority 不可复用。随后曾加入 turn-local recovery obligation 和 AOX prose-response veto；2026-07-28 的 control-boundary simplification 已认定两者把策略判断误升格为 Harness fatal，并从现行实现与合同删除。保留的修复只有 authority-free/scope-correct compaction、canonical tool/domain guards 与两次一致 no-wakeup diagnostic；历史 plan 不因此获得复用或重试资格
+- repair commit `4bf4c4244fae68beff8e5d47717e83824ff2367e` 的 fresh non-`rNN` plan `sha256:7394c5200582b114a72fa08b0711dc993f4c7164dd66c1fb20dd1cf837060ae2` 已且仅已消费一次。它证明 authority-free prompt 与 durable handoff 路径：master 的 `task.delegate` 使用 `workflow_refs=[]`，reporter 发布 `report_16937278db9c` 并完成 canonical report task，research/execution/report 三 task 全部 completed；master 在同一 response 写出终答与 `scientific.attempt.close`，产生 closure response 和 immutable closure `attempt_closure_a2f78d1fd2199e239696b99e`，cursor `263` 为 `scientific.attempt.closed`。5 个 runtime command 各处理 1 条 signal，零 empty drain；该事实不再被解释为已删除 response veto/recovery matcher 的有效性证明。旧 terminal-command coordinator 随后在 attempt scope 已 `freezing`、post scope 尚未 open 的 bounded rollover window 申请 observer，被 `mutation_writer_admission_closed` 后错误归类为 `mutation_driver_writer_identity_invalid`；decision `sha256:470df988b817867c5fb80b859fd60c414d99a873e66a839283beb13fe1bef237` 与 fatal `sha256:a3c4a24fcb6e9342dc11faa48bdb393481c0c9e1f4a1b9559c83b4fada0e8123` 永久 non-acceptance。post-live correction 只对 exact authority/attempt、zero-open、无 competing scope 的 `freezing|quiescent|sealed` 状态在同一 command deadline 内等待；其他 identity/scope 错误仍 fail closed，超时为 `scientific_attempt_scope_rollover_stalled`。本 plan、target、MICU 与证据不可复用，该 correction 未经第二次 live 验证且不自行产生新 authority
 - clean commit `349293b3f91976cdda99db38bb8f960530b00cd9` 的 fresh plan `sha256:428bf4820d30331a0e7ce1dfc9ceb140abb294ff762893fb46a32a2db71cc641` 同样只消费一次。真实 executor/reporter/master、report `report_dcdc48787749`、co-terminal response、immutable closure `attempt_closure_1f770b18f1760245a19fa112`、post-closure scope、Chrome observation、17 次 actual MICU 与 parent supervision 均闭合；最终 verifier 却因两个 evidence-envelope 陈旧断言 fail closed：shared summary 从已删除的 `runtime_state.controlled_operations` 得到 0，而 terminal/reconstruction 都证明 exact six；`@2` validator 又拿外层 `closure-stage-377c697db59a311988e713540ce7c6d3` 比较内层 `attempt_1f11158bdb21feceaac39613` scope。decision `sha256:fdae6390e15710332c0a46dd212ae90b588c163747b0f210052152fc3bdc9a84` 永久 non-acceptance，无 live result/formal follow-on。forward `@3` schema 只修证据分型与交叉绑定，不修改 agent 策略、科学 universe 或 supervisor 行为；旧 plan/target/MICU/browser/evidence 不可复用
 - clean repair commit `4d7175c0958224ce649e1661062d033b5fad5295` 的 fresh non-`rNN` plan `sha256:df31b14becb716e2d50099c0df22a7822ea046a16dd39b3781d54e30d3b000da` 已且仅已消费一次。真实 `gpt-5.5` executor/reporter/master 在 6 次 bounded drain 内完成三项 task、exact six terminal-known operation、report `report_9e037bbde835`、co-terminal response、immutable closure `attempt_closure_ce41b066878ede97857e62fc` 与 inner attempt `attempt_1aac55d28b6f27c71356ff32` 的 exact post-attempt scope；外层 run attempt `closure-stage-f667a488a95d3b062ff994223f9c9164` 保持独立。challenged Chrome、parent supervision、SQLite/quiescence、source reconstruction、runtime parity、operation projection 与 MICU ledger 均经离线独立重算闭合；15 条 actual MICU 精确计费 `949419` tokens，无 estimate/overage/hard breach，source inventory 与原 r59 campaign decision 字节不变，也无新增 scientific provider/HPC/sandbox operation 或 materialization。`aox_closure_stage_live_result@3` `sha256:e6ff14b1453801487beccee509377d741d46f5b37d414afe4c8f7381a0fba115` 和 completed decision `sha256:ef505a31e345687821cc9f5e0e7e8ba08b222ddb2b782b4df25b9897e196e3bb` 只证明 isolated closure-stage diagnostic 成功；仍永久 `acceptance_eligible=false`，不改判 r59，不产生 formal bundle、exact-three input、reducer、GO/NO-GO、promotion、push、PR 或 numbered follow-on
 - 裸 `uv run pytest` 通过 `pytest.ini` 默认排除 `integration`、全部 `live_*`、`seeded_live_smoke` 与 `quality_eval`；真实外部测试必须同时满足环境 gate 与命令行显式 `-m` 选择，已配置凭据本身不能触发默认外部调用

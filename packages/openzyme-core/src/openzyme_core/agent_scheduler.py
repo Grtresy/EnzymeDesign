@@ -27,9 +27,6 @@ from openzyme_runtime import sanitize_public_diagnostic_text
 from .agent_runtime import AgentRuntimeOutcome
 from .agent_runtime import AgentRuntimeService
 from .engines import EngineRegistry
-from .failure_recovery import (
-    reconcile_satisfied_failure_recovery_dispositions,
-)
 from .repositories import CoreRepositories
 from .harness import SessionRuntimeContext
 from .harness import SessionRuntimeSnapshot
@@ -228,13 +225,6 @@ class AgentRuntimeScheduler:
             return outcome
 
         try:
-            with self.context.repositories.runtime_write_fence(
-                session_lease
-            ):
-                reconcile_satisfied_failure_recovery_dispositions(
-                    self.context,
-                    session_id=session_id,
-                )
             if auto_enqueue_ready_tasks:
                 AgentRuntimeService(self.context).auto_enqueue_ready_tasks(session_id)
             if self.context.model_factory is None:

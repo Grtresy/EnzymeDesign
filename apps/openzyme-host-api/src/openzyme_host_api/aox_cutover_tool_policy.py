@@ -4,7 +4,6 @@ from dataclasses import dataclass
 import json
 from typing import Any, Literal
 
-from openzyme_core import AssistantResponseRejection
 from openzyme_core import ScientificAttemptError
 from openzyme_core import ScientificAttemptService
 from openzyme_core import is_published_report_link
@@ -37,8 +36,6 @@ _CLOSURE_STAGE_ALLOWED_TOOLS = frozenset(
         "docs.search",
         "execution.pipeline.status",
         "failure.get",
-        "failure.hypothesis.record",
-        "failure.recovery.record",
         "lane.bind_task",
         "lane.create",
         "lane.list",
@@ -69,74 +66,6 @@ _CLOSURE_STAGE_ALLOWED_TOOLS = frozenset(
 def _status_value(record: object) -> str:
     status = getattr(record, "status", None)
     return str(getattr(status, "value", status) or "")
-
-
-def _report_handoff_response_rejection(
-    repositories: Any,
-    *,
-    session_id: str,
-    research_task_id: str,
-    execution_task_id: str,
-    report_task_id: str,
-) -> AssistantResponseRejection | None:
-    research = repositories.tasks.get(research_task_id)
-    execution = repositories.tasks.get(execution_task_id)
-    report = repositories.tasks.get(report_task_id)
-    if (
-        research is None
-        or execution is None
-        or report is None
-        or _status_value(research) != "completed"
-        or _status_value(execution) != "completed"
-        or _status_value(report) != "todo"
-        or getattr(report, "assigned_ref", None)
-    ):
-        return None
-    tasks_by_id = {
-        task.task_id: task
-        for task in repositories.tasks.list_by_session(session_id)
-    }
-    open_blockers = [
-        task_id
-        for task_id in tuple(getattr(report, "blocked_by", ()) or ())
-        if task_id not in tasks_by_id
-        or _status_value(tasks_by_id[task_id]) != "completed"
-    ]
-    if open_blockers:
-        return None
-    runtime_signals = getattr(repositories, "runtime_signals", None)
-    pending_report_signal = False
-    if runtime_signals is not None and callable(
-        getattr(runtime_signals, "list_by_session", None)
-    ):
-        pending_report_signal = any(
-            getattr(signal, "task_id", None) == report_task_id
-            and _status_value(signal) in {"pending", "claimed"}
-            for signal in runtime_signals.list_by_session(session_id)
-        )
-    if pending_report_signal:
-        return None
-    return AssistantResponseRejection(
-        error_code="aox_cutover_report_handoff_required",
-        summary=(
-            "The AOX cutover response was not persisted because research and "
-            "execution are complete but the ready report task has no durable "
-            "reporter handoff."
-        ),
-        hint=(
-            "Delegate the exact report task to a reporter without a workflow "
-            "binding (omit workflow_refs or pass []), or explicitly finish the "
-            "task as blocked/failed when a real blocker prevents handoff."
-        ),
-        details={
-            "policy_id": AOX_CUTOVER_TOOL_PRECONDITION_ID,
-            "assistant_response_persisted": False,
-            "effect_certainty": "no_effect",
-            "retry_eligibility": "same_phase_safe",
-            "report_task_id": report_task_id,
-            "authorized_workflow_refs": [],
-        },
-    )
 
 
 def evaluate_aox_source_linked_report(
@@ -526,119 +455,6 @@ class AoxCutoverFormalToolPrecondition:
                 invocation,
             )
         return None
-
-    def check_assistant_response(
-        self,
-        context: Any,
-        step_context: AgentStepContext,
-        assistant_response: str,
-    ) -> AssistantResponseRejection | None:
-        if (
-            step_context.session_id != self.session_id
-            or step_context.actor_kind != "master"
-        ):
-            return None
-        repositories = context.repositories
-        report_handoff_rejection = _report_handoff_response_rejection(
-            repositories,
-            session_id=self.session_id,
-            research_task_id=self.research_task_id,
-            execution_task_id=self.execution_task_id,
-            report_task_id=self.report_task_id,
-        )
-        if report_handoff_rejection is not None:
-            return report_handoff_rejection
-        scientific_attempts = ScientificAttemptService(
-            repositories,
-            workflow_contract_registry=getattr(
-                context,
-                "scientific_workflow_contract_registry",
-                None,
-            ),
-        )
-        open_attempts = []
-        for attempt in repositories.scientific_attempts.list_by_session(
-            self.session_id
-        ):
-            try:
-                lifecycle = scientific_attempts.resolve_attempt_lifecycle(
-                    attempt.attempt_id
-                )
-            except ScientificAttemptError as exc:
-                return AssistantResponseRejection(
-                    error_code=exc.error_code,
-                    summary=(
-                        "The AOX cutover final response was not persisted "
-                        "because canonical scientific-attempt lifecycle "
-                        "evidence is inconsistent."
-                    ),
-                    hint=(
-                        "Inspect and repair the canonical attempt, closure "
-                        "request, and closure identities before continuing."
-                    ),
-                    details={
-                        "policy_id": AOX_CUTOVER_TOOL_PRECONDITION_ID,
-                        "assistant_response_persisted": False,
-                        "effect_certainty": "no_effect",
-                        "retry_eligibility": "terminal",
-                        "attempt_id": attempt.attempt_id,
-                    },
-                )
-            if lifecycle.accepts_scientific_mutation:
-                open_attempts.append(attempt)
-        if len(open_attempts) != 1:
-            return None
-        attempt = open_attempts[0]
-        if str(getattr(attempt, "task_id", "")) != self.execution_task_id:
-            return None
-
-        readiness_probe = ToolInvocation(
-            call_id="aox_cutover_assistant_response_readiness",
-            tool_name="scientific.attempt.close",
-            arguments={},
-            task_id=self.execution_task_id,
-            assistant_response_text=assistant_response,
-        )
-        if (
-            self._check_attempt_close(
-                context,
-                step_context,
-                readiness_probe,
-            )
-            is not None
-        ):
-            return None
-
-        attempt_id = str(getattr(attempt, "attempt_id", ""))
-        resolved_head = repositories.scientific_selections.resolve_head(
-            attempt_id
-        )
-        selection_id = (
-            None
-            if resolved_head is None
-            else resolved_head.head.selection_id
-        )
-        return AssistantResponseRejection(
-            error_code="aox_cutover_close_required_before_final_response",
-            summary=(
-                "The AOX cutover final response was not persisted because the "
-                "canonical task and report exits are ready but the active "
-                "scientific attempt has not received an explicit closure request."
-            ),
-            hint=(
-                "In one model response, include the complete user-facing final "
-                "answer as response text and call scientific.attempt.close for "
-                "the active attempt and exact sealed selection."
-            ),
-            details={
-                "policy_id": AOX_CUTOVER_TOOL_PRECONDITION_ID,
-                "assistant_response_persisted": False,
-                "effect_certainty": "no_effect",
-                "retry_eligibility": "same_phase_safe",
-                "attempt_id": attempt_id,
-                "selection_id": selection_id,
-            },
-        )
 
     def _check_task_finish(
         self,

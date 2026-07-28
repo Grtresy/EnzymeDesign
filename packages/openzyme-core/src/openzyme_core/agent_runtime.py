@@ -18,7 +18,6 @@ from openzyme_domain import FailureActorKind
 from openzyme_domain import FailureClass
 from openzyme_domain import FailureObservation
 from openzyme_domain import FailureRecoverability
-from openzyme_domain import FailureRecoveryDisposition
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
 from openzyme_domain import Task
@@ -32,15 +31,11 @@ from openzyme_runtime import record_failure_observation
 from .harness import HarnessInput
 from .harness import HarnessResult
 from .harness import HarnessStatus
-from .harness import AgentTurnRecoveryUnresolvedError
 from .harness import RestoreFocus
 from .harness import SessionRuntimeContext
 from .harness import run_agent_harness_loop
 from .agent_runtime_settlements import AgentRuntimeOutcomeSettlement
 from .agent_runtime_settlements import AgentRuntimeSettlementDisposition
-from .failure_recovery import (
-    resolve_exact_failure_recovery_disposition_failure,
-)
 from .llm_driver import LlmConversationDriver
 from .scientific_attempt_lifecycle import (
     ScientificAttemptLifecycleIntegrityError,
@@ -378,13 +373,7 @@ class AgentRuntimeService:
             self.context.repositories,
             event_emitter=self.context.emit,
         )
-        disposition_recovery = (
-            self._failure_recovery_disposition_for_signal(signal)
-        )
-        if (
-            task.status is TaskStatus.TODO
-            and disposition_recovery is None
-        ):
+        if task.status is TaskStatus.TODO:
             task = service.claim_task(
                 task.task_id,
                 assigned_ref=agent.agent_id,
@@ -442,12 +431,6 @@ class AgentRuntimeService:
             if result.status is HarnessStatus.MAX_STEPS_EXCEEDED
             else None
         )
-        recovery_unresolved_observation = (
-            self._turn_recovery_unresolved_observation(
-                claimed,
-                error=result.error,
-            )
-        )
         failure_observation: FailureObservation | None = None
         successor: AgentRuntimeSignal | None = None
         settlement: AgentRuntimeOutcomeSettlement | None = None
@@ -467,23 +450,15 @@ class AgentRuntimeService:
                     error_message=(
                         AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
                         if budget_observation is not None
-                        else (
-                            "agent_turn_recovery_unresolved"
-                            if recovery_unresolved_observation is not None
-                            else summary
-                        )
+                        else summary
                     ),
                     retryable=(
                         False
                         if budget_observation is not None
-                        or recovery_unresolved_observation is not None
                         else _is_retryable_runtime_error(result.error)
                     ),
                     emit=False,
-                    observation=(
-                        budget_observation
-                        or recovery_unresolved_observation
-                    ),
+                    observation=budget_observation,
                 )
             if not signal_write_ok:
                 ok = False
@@ -764,9 +739,6 @@ class AgentRuntimeService:
             tool_dispatch_precondition=(
                 self.context.tool_dispatch_precondition
             ),
-            assistant_response_precondition=(
-                self.context.assistant_response_precondition
-            ),
             mutation_writer_scope_factory=(
                 self.context.mutation_writer_scope_factory
             ),
@@ -779,12 +751,6 @@ class AgentRuntimeService:
             )
             if result.status is HarnessStatus.MAX_STEPS_EXCEEDED
             else None
-        )
-        recovery_unresolved_observation = (
-            self._turn_recovery_unresolved_observation(
-                claimed,
-                error=result.error,
-            )
         )
         ok = result.status not in {
             HarnessStatus.FAILED,
@@ -799,26 +765,18 @@ class AgentRuntimeService:
                     AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
                     if budget_observation is not None
                     else (
-                        "agent_turn_recovery_unresolved"
-                        if recovery_unresolved_observation is not None
-                        else (
-                            result.outputs[-1]
-                            if result.outputs
-                            else result.status.value
-                        )
+                        result.outputs[-1]
+                        if result.outputs
+                        else result.status.value
                     )
                 ),
                 retryable=(
                     False
                     if budget_observation is not None
-                    or recovery_unresolved_observation is not None
                     else _is_retryable_runtime_error(result.error)
                 ),
                 emit=False,
-                observation=(
-                    budget_observation
-                    or recovery_unresolved_observation
-                ),
+                observation=budget_observation,
             )
         if not signal_write_ok:
             ok = False
@@ -1271,39 +1229,6 @@ class AgentRuntimeService:
             },
         )
 
-    def _turn_recovery_unresolved_observation(
-        self,
-        claimed: AgentRuntimeSignal,
-        *,
-        error: BaseException | None,
-    ) -> RuntimeSignalFailureObservation | None:
-        if not isinstance(error, AgentTurnRecoveryUnresolvedError):
-            return None
-        facts = error.unresolved.to_dict()
-        facts.update(
-            {
-                "exact_signal_retry_eligible": False,
-                "effect_scope": "runtime_signal_transition",
-                "effect_scope_ref": claimed.signal_id,
-            }
-        )
-        return RuntimeSignalFailureObservation(
-            error_code="agent_turn_recovery_unresolved",
-            recoverability=FailureRecoverability.AGENT_CAN_REPLAN,
-            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
-            retry_eligibility=RetryEligibility.TERMINAL,
-            safe_summary=(
-                "The internal agent turn ended without settling a "
-                "recoverable no-effect tool failure."
-            ),
-            safe_hint=(
-                "Wake the agent under valid runtime authority to inspect "
-                "the exact failure and choose a durable recovery action or "
-                "explicit task disposition."
-            ),
-            facts=facts,
-        )
-
     def _scientific_selection_recovery_facts(
         self,
         claimed: AgentRuntimeSignal,
@@ -1607,109 +1532,37 @@ class AgentRuntimeService:
         task: Task,
         payload: dict[str, Any] | None,
     ) -> str:
-        if signal.reason is AgentRuntimeSignalReason.RECOVERY_REQUIRED:
-            disposition = self._failure_recovery_disposition_for_signal(
-                signal
-            )
-            if disposition is not None:
-                failure = (
-                    self.context.repositories.failure_observations.get(
-                        disposition.failure_id
-                    )
-                )
-                if (
-                    failure is None
-                    or failure.session_id != signal.session_id
-                    or failure.agent_id != signal.agent_id
-                    or failure.task_id != task.task_id
-                ):
-                    raise ValueError(
-                        "failure recovery disposition wakeup lost its exact "
-                        "failure/task binding"
-                    )
-                condition_tasks = [
-                    self.context.repositories.tasks.get(task_id)
-                    for task_id in disposition.condition_task_ids
-                ]
-                if (
-                    any(item is None for item in condition_tasks)
-                    or any(
-                        item.session_id != signal.session_id
-                        or item.status is not TaskStatus.COMPLETED
-                        for item in condition_tasks
-                        if item is not None
-                    )
-                ):
-                    raise ValueError(
-                        "failure recovery disposition wakeup conditions are "
-                        "no longer exactly satisfied"
-                    )
-                return "\n".join(
-                    [
-                        (
-                            "A durable dependency-bound recovery decision is "
-                            "now ready for reassessment."
-                        ),
-                        "Recovery disposition: "
-                        + json.dumps(
-                            disposition.to_dict(),
-                            ensure_ascii=False,
-                            sort_keys=True,
-                        ),
-                        "Original failure: "
-                        + json.dumps(
-                            failure.to_dict(),
-                            ensure_ascii=False,
-                            sort_keys=True,
-                        ),
-                        "Satisfied condition tasks: "
-                        + json.dumps(
-                            [
-                                item.to_dict()
-                                for item in condition_tasks
-                                if item is not None
-                            ],
-                            ensure_ascii=False,
-                            sort_keys=True,
-                        ),
-                        (
-                            "The harness has not retried the failed action, "
-                            "claimed its target task, or selected a replacement "
-                            "agent. Inspect current state and choose the exact "
-                            "retry, another verified replan, or operator help. "
-                            "Only the task's authorized owner may explicitly "
-                            "exit the target task."
-                        ),
-                        f"Recovery target task {task.task_id}: "
-                        f"{task.description or task.subject}",
-                    ]
-                )
+        if (
+            signal.reason is AgentRuntimeSignalReason.ENGINE_COMPLETED
+            and signal.source_ref
+        ):
             failures = (
-                []
-                if signal.source_ref is None
-                else self.context.repositories.failure_observations.list_by_source(
+                self.context.repositories.failure_observations.list_by_source(
                     session_id=signal.session_id,
                     source_kind="continuation",
                     source_ref=signal.source_ref,
                 )
             )
-            lines = [
-                "A durable runtime failure requires your explicit recovery decision.",
-                "Harness facts: "
-                + json.dumps(
-                    [failure.to_dict() for failure in failures],
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                (
-                    "Choose freely among a safe repair/replan, reconciliation, "
-                    "requesting user or operator help, or task.finish(status='blocked'). "
-                    "Use task.finish(status='failed') only when the task itself is "
-                    "genuinely impossible. Do not replay an unknown external effect."
-                ),
-                f"Task {task.task_id}: {task.description or task.subject}",
-            ]
-            return "\n".join(lines)
+            if failures:
+                lines = [
+                    "A controlled operation completed with failure evidence.",
+                    "Harness facts: "
+                    + json.dumps(
+                        [failure.to_dict() for failure in failures],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    (
+                        "Choose freely among a safe repair/replan, reconciliation, "
+                        "requesting user or operator help, or "
+                        "task.finish(status='blocked'). Use "
+                        "task.finish(status='failed') only when the task itself is "
+                        "genuinely impossible. Do not replay an unknown external "
+                        "effect."
+                    ),
+                    f"Task {task.task_id}: {task.description or task.subject}",
+                ]
+                return "\n".join(lines)
         if signal.reason is AgentRuntimeSignalReason.APPROVAL_RESOLVED:
             invocation_id = self._execution_invocation_id_for_approval(signal.source_ref)
             failure = self._execution_failure_for_approval(signal.source_ref)
@@ -1747,43 +1600,6 @@ class AgentRuntimeService:
             if instructions:
                 return str(instructions)
         return task.description or task.subject
-
-    def _failure_recovery_disposition_for_signal(
-        self,
-        signal: AgentRuntimeSignal,
-    ) -> FailureRecoveryDisposition | None:
-        if (
-            signal.reason is not AgentRuntimeSignalReason.RECOVERY_REQUIRED
-            or not signal.source_ref
-        ):
-            return None
-        disposition = (
-            self.context.repositories.failure_recovery_dispositions.get(
-                signal.source_ref
-            )
-        )
-        if disposition is None:
-            return None
-        failure = resolve_exact_failure_recovery_disposition_failure(
-            self.context.repositories,
-            disposition,
-            session_id=signal.session_id,
-        )
-        if (
-            disposition.session_id != signal.session_id
-            or disposition.agent_id != signal.agent_id
-            or signal.correlation_id
-            != f"recovery:{disposition.disposition_id}"
-            or failure is None
-            or failure.session_id != signal.session_id
-            or failure.agent_id != signal.agent_id
-            or signal.task_id != failure.task_id
-            or signal.lane_id != failure.lane_id
-        ):
-            raise ValueError(
-                "failure recovery disposition signal identity is inconsistent"
-            )
-        return disposition
 
     def _continue_execution_after_approval_signal(
         self, signal: AgentRuntimeSignal

@@ -2630,7 +2630,7 @@ def test_continuation_delivery_missing_process_preserves_result_and_wakes_owner(
     assert execution.result_handle_ref == result.result_handle_id
     signals = repositories.runtime_signals.list_pending_by_session(operation.session_id)
     assert len(signals) == 1
-    assert signals[0].reason is AgentRuntimeSignalReason.RECOVERY_REQUIRED
+    assert signals[0].reason is AgentRuntimeSignalReason.ENGINE_COMPLETED
     assert signals[0].source_ref == ready.continuation_id
     idle = worker.run_once()
     assert idle.action == "idle"
@@ -2678,7 +2678,7 @@ def test_startup_recovery_preserves_result_and_wakes_once_when_process_is_gone()
     )
     signals = repositories.runtime_signals.list_pending_by_session(operation.session_id)
     assert len(signals) == 1
-    assert signals[0].reason is AgentRuntimeSignalReason.RECOVERY_REQUIRED
+    assert signals[0].reason is AgentRuntimeSignalReason.ENGINE_COMPLETED
     assert signals[0].source_ref == ready.continuation_id
     assert writer_scopes == [
         {

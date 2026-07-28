@@ -38,7 +38,7 @@ WAL because both mean zero pending WAL bytes, but rejects any nonzero WAL.
 The child reuses the production OpenZyme composition used by numbered runs:
 the configured MICU model factory, tool catalog, session runtime commands,
 one-signal drains, sixteen-step agent turns, writer/lease/fencing rules,
-tool/assistant-response preconditions, process-group supervision, append-only
+tool-dispatch preconditions, normal assistant conversation persistence, process-group supervision, append-only
 MICU ledger, public Host API, Web UI and challenged Chrome observation.
 
 The frozen r59 launch facts are hard requirements:
@@ -209,18 +209,15 @@ chooses the agent's recovery strategy:
 2. Every master and teammate prompt renders the exact current canonical
    workflow ref set, including `[]`, and states that memory, task and protocol
    text cannot grant authority.
-3. An internal signal turn that receives a typed
-   `agent_can_replan|agent_can_retry` and `no_effect|terminal_known` failure
-   must produce an exact failure-bound settlement proof or explicit terminal
-   action. Unrelated prose/read-only/write activity does not settle it: one
-   prose response is rejected without persistence, and repeated prose or the
-   step bound terminates the exact signal as
-   `agent_turn_recovery_unresolved` without retry or successor.
-4. AOX formal policy `aox_cutover_formal_tool_precondition@4` rejects prose
-   when research/execution are complete but the canonical ready report task is
-   unassigned and has no pending/claimed runtime signal. It tells the agent to establish the
-   exact handoff without workflow binding, or explicitly record a real
-   blocker; it never delegates or auto-enqueues.
+3. An effect-known ordinary failure is persisted once as ToolResult plus
+   `FailureObservation` and remains inside the bounded model loop. It does not
+   create a turn-local recovery obligation, exact settlement matcher, response
+   rejection, or synthetic wakeup; task state changes only through canonical
+   domain commands.
+4. AOX formal policy `aox_cutover_formal_tool_precondition@4` retains only
+   mutation-time authority/task/attempt/close validation. Assistant prose may
+   persist but cannot delegate, finish, close, or create acceptance eligibility;
+   the policy never chooses handoff strategy, delegates, or auto-enqueues.
 
 The diagnostic driver now validates the complete
 `runtime_command_outcome@2`. Two consecutive

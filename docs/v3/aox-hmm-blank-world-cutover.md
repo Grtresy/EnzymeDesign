@@ -481,24 +481,26 @@ is permanent **NO-GO**. MICU cumulative usage is
 `2,119,558` and no breach/overage. Every r58 authority, root, state, effect,
 artifact, browser receipt, report and decision is immutable and non-reusable.
 
-The forward policy is `aox_cutover_formal_tool_precondition@2`. Once exact
-task/report close readiness holds for the one active formal attempt, an
-assistant-only response is rejected before conversation persistence and
-returned to the same bounded master loop as no-effect feedback. The master
-must include its complete final answer in the same provider response as
-`scientific.attempt.close`; an empty companion fails before closure effect.
-Only a successful close transaction may return that exact text, interrupt later
-calls and retire the turn. The transaction commits the closure request,
-deterministic conversation document/message and immutable
-`scientific_attempt_closure_response@1` binding together; same-fact replay
-returns the existing message and changed-response reuse fails closed. One shared
-publication predicate accepts an exact linked `ready` or `published` report plus
-its published non-empty draft across policy, projection, collector and verifier,
-while preserving the real enum. Host still does not auto-close, infer
-selection/outcome, synthesize an answer or alter ordinary session behavior.
-Because r58 had already formed a meaningful result/report, it did not trigger a
-second diagnostic/formal specification split. This correction does not authorize
-r59 or any formal campaign action.
+The immediate r58 forward policy was
+`aox_cutover_formal_tool_precondition@2`: it rejected a close-ready
+assistant-only response and required another bounded model decision. The
+2026-07-28 control-boundary simplification later removed that response half
+because narration order is strategy, not a mutation-safety invariant.
+Assistant text now follows ordinary conversation persistence and never implies
+close, task completion, handoff, or acceptance eligibility.
+
+The close command itself still requires a non-empty companion response in the
+same provider response; an empty companion fails before closure effect. A
+successful close transaction commits the closure request, deterministic
+conversation document/message and immutable
+`scientific_attempt_closure_response@1` binding together, interrupts later
+calls and retires the turn. Same-fact replay returns the existing message and
+changed-response reuse fails closed. One shared publication predicate accepts
+an exact linked `ready` or `published` report plus its published non-empty draft
+across policy, projection, collector and verifier while preserving the real
+enum. Host still does not auto-close, infer selection/outcome, synthesize an
+answer or alter ordinary session behavior. Neither correction authorizes r59
+or any formal campaign action.
 
 ## r59 formal attempt: permanent NO-GO
 
@@ -2774,9 +2776,12 @@ retry of `failure.hypothesis.record` was not recognized as settlement of that
 same tool's no-effect validation obligation. Decision
 `sha256:3c8a5001b237e25dbfdde386b02c9138f2c1148fd5f7d2f4c69d4db6e196fc37`
 is permanent diagnostic NO-GO, and 8.3/8.3a remain incomplete. The forward
-correction recognizes only a repository-verified, current-session/current-agent,
-payload-exact corrected same-tool record; it does not let hypotheses settle other
-tool failures or authorize retry/task/scientific changes.
+correction at that time added a same-tool recovery matcher. The later
+`simplify-v3-harness-control-boundary` review removed that matcher and the
+hypothesis control plane entirely: a no-effect validation result is already a
+safe observation and cannot become Harness fatal merely because the next agent
+action is prose, read, retry, or another strategy. This architecture correction
+does not revise or reuse r60 evidence.
 
 r61 then consumed diagnostic plan
 `sha256:0825957e40b09ad2e2975d98d10fad53f855e1beace4375c6d8836a314df506a`
@@ -2794,16 +2799,15 @@ is permanent diagnostic NO-GO; MICU ended at
 `109,839,777 / 500,000,000`, with delta `1,193,541`, remaining `390,160,223`,
 and no breach/overage. 8.3/8.3a remain incomplete.
 
-The forward contract creates the report task with both canonical dependencies,
-delegates only ready research/execution work, and leaves later reporter handoff
-to a future wake. If a stale plan still reaches the same failure,
-`failure.recovery.record` may append only
-`failure_recovery_disposition@1/defer_until_task_dependencies_complete` after
-the source failure, canonical agent/session, unassigned `todo` target,
-observed/current blocker equality and nonterminal dependency state all close.
-Harness re-reads the immutable record and exact payload before settling. It does
-not retry delegation, authorize a later retry, rewrite dependencies, mutate
-task/scientific state or let another tool's write substitute for this decision.
+The durable workflow contract still creates the report task with both canonical
+dependencies, delegates only ready research/execution work, and leaves later
+reporter handoff to a future real wake. The intermediate
+`failure.recovery.record`/condition-subscription design has been removed:
+`Task.blocked_by` is the dependency truth, `task.delegate` returns no-effect
+facts while blockers remain open, and user/task/protocol/approval/engine/
+continuation events are the only wake sources. Harness neither retries nor
+requires the agent to record a particular waiting strategy. This correction
+does not revise or reuse r61 evidence.
 
 These corrections do not authorize `preflight`, another closure-stage run,
 `run-diagnostic-live`, `run-live`, a numbered root, provider/MICU call, HPC

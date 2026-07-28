@@ -139,10 +139,8 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
                 error_code="task_blocked",
                 hint=(
                     "Do not retry delegation while these dependencies remain "
-                    "open. In an internal signal turn, use "
-                    "failure.recovery.record with this exact failure and "
-                    "blocker set to durably defer the handoff; delegate only "
-                    "after the blockers complete."
+                    "open. Delegate only after the canonical task graph reports "
+                    "that every blocker has completed."
                 ),
                 details={"blocked_by_open_task_ids": list(open_blockers)},
             )

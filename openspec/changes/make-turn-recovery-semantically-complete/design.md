@@ -1,3 +1,8 @@
+> **Superseded:** This design remains historical evidence for the r60/r61
+> matcher-based implementation. New work follows
+> `simplify-v3-harness-control-boundary` and removes the proof machine instead
+> of adding recovery relations.
+
 ## Context
 
 Internal agent turns use a recovery gate after tool failures so narration cannot be mistaken for recovery. The current gate has five coupled defects:

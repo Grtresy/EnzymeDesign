@@ -1,3 +1,6 @@
+> **Superseded:** `simplify-v3-harness-control-boundary` removes the
+> disposition-derived continuation contract from the active runtime.
+
 ## ADDED Requirements
 
 ### Requirement: Condition-bound recovery deferral has an exact durable wakeup

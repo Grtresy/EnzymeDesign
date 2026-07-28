@@ -20,9 +20,6 @@ from openzyme_core import HarnessResult
 from openzyme_core import HarnessStatus
 from openzyme_core import MemoryEventBus
 from openzyme_core import RestoreFocus
-from openzyme_core import TaskBoardService
-from openzyme_core import TaskFinishCommand
-from openzyme_core import ToolInvocation
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeLeaseRepository
@@ -30,10 +27,6 @@ from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import ToolRegistry
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
-from openzyme_core import register_subagent_tools
-from openzyme_core.harness import AgentTurnRecoveryObligation
-from openzyme_core.harness import AgentTurnRecoveryUnresolved
-from openzyme_core.harness import AgentTurnRecoveryUnresolvedError
 from openzyme_core.agent_identity import create_agent_member
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
@@ -54,8 +47,6 @@ from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import FailureRecoverability
-from openzyme_domain import FailureRecoveryDisposition
-from openzyme_domain import FailureRecoveryDispositionKind
 from openzyme_domain import RetryEligibility
 from openzyme_domain import SandboxImageCompatibility
 from openzyme_domain import SandboxRunRecord
@@ -384,178 +375,6 @@ def test_scheduler_respects_max_signals_and_session_concurrency() -> None:
     task = repositories.tasks.get("task_0")
     assert task is not None
     assert task.status is TaskStatus.COMPLETED
-
-
-def test_scheduler_reconciles_dependency_recovery_before_claim_without_target_claim(
-    monkeypatch,
-) -> None:
-    connection = connect_sqlite(":memory:", check_same_thread=False)
-    apply_sqlite_migrations(connection)
-    repositories = CoreRepositories.from_connection(connection)
-    session = Session.create(
-        "sess_recovery_disposition",
-        "proj_001",
-        "Recovery",
-        "Resume an exact deferred delegation.",
-    )
-    repositories.sessions.save(session)
-    agent = create_agent_member(
-        repositories,
-        session_id=session.session_id,
-        role="researcher",
-    )
-    service = TaskBoardService(repositories)
-    service.create_task(
-        session_id=session.session_id,
-        task_id="task_recovery_condition",
-        subject="Complete the dependency",
-        description="Gate the downstream delegation.",
-    )
-    service.create_task(
-        session_id=session.session_id,
-        task_id="task_recovery_target",
-        subject="Delegate the report",
-        description="Stay unassigned until the recovery agent decides.",
-        kind="reporting",
-        blocked_by=("task_recovery_condition",),
-    )
-    registry = ToolRegistry()
-    register_subagent_tools(registry)
-    event_bus = MemoryEventBus()
-    context = SessionRuntimeContext(
-        repositories=repositories,
-        event_sink=event_bus,
-        snapshot=SessionRuntimeSnapshot.load(
-            repositories,
-            session.session_id,
-        ),
-        tool_registry=registry,
-        restore_focus=RestoreFocus(task_id="task_recovery_target"),
-        model_factory=object(),
-        agent_id=agent.agent_id,
-        actor_kind="agent",
-        actor_role=agent.role,
-    )
-    blocked = registry.dispatch(
-        context,
-        ToolInvocation(
-            call_id="call_scheduler_recovery_blocked",
-            tool_name="task.delegate",
-            arguments={
-                "task_id": "task_recovery_target",
-                "agent_role": "reporter",
-            },
-            task_id="task_recovery_target",
-        ),
-    )
-    assert blocked.failure_observation is not None
-    failure_id = str(blocked.failure_observation["failure_id"])
-    disposition = repositories.failure_recovery_dispositions.add(
-        FailureRecoveryDisposition(
-            disposition_id="disposition_scheduler_recovery",
-            failure_id=failure_id,
-            session_id=session.session_id,
-            agent_id=agent.agent_id,
-            disposition=(
-                FailureRecoveryDispositionKind
-                .DEFER_UNTIL_TASK_DEPENDENCIES_COMPLETE
-            ),
-            condition_task_ids=("task_recovery_condition",),
-            rationale="Resume only after the exact dependency completes.",
-            idempotency_digest="digest_scheduler_recovery",
-            created_at="2026-04-16T10:00:00+00:00",
-        )
-    )
-    service.finish_task(
-        "task_recovery_condition",
-        TaskFinishCommand(
-            status=TaskStatus.COMPLETED,
-            finished_by="test:scheduler",
-            summary="The exact recovery condition is complete.",
-        ),
-    )
-    captured: dict[str, object] = {}
-
-    def recovery_turn(
-        runtime_context: SessionRuntimeContext,
-        **kwargs,
-    ) -> HarnessResult:
-        captured.update(kwargs)
-        target = runtime_context.repositories.tasks.get(
-            "task_recovery_target"
-        )
-        assert target is not None
-        captured["target_assigned_ref_during_turn"] = target.assigned_ref
-        return HarnessResult(
-            session_id=session.session_id,
-            status=HarnessStatus.COMPLETED,
-            snapshot=SessionRuntimeSnapshot.load(
-                runtime_context.repositories,
-                session.session_id,
-            ),
-            events=(),
-            outputs=("Recovery state was reassessed.",),
-            tool_results=(),
-        )
-
-    monkeypatch.setattr(
-        agent_runtime_module,
-        "run_teammate_loop",
-        recovery_turn,
-    )
-    scheduler = AgentRuntimeScheduler(
-        context,
-        worker_id="test:recovery-disposition",
-    )
-
-    outcomes = scheduler.run_once_sync(
-        session.session_id,
-        max_signals=1,
-    )
-
-    assert len(outcomes) == 1
-    assert outcomes[0].ok is True
-    target = repositories.tasks.get("task_recovery_target")
-    assert target is not None
-    assert target.status is TaskStatus.TODO
-    assert target.assigned_ref is None
-    assert captured["target_assigned_ref_during_turn"] is None
-    instructions = str(captured["instructions"])
-    assert disposition.disposition_id in instructions
-    assert failure_id in instructions
-    assert "task_recovery_condition" in instructions
-    assert "has not retried the failed action" in instructions
-    recovery_signals = [
-        signal
-        for signal in repositories.runtime_signals.list_by_session(
-            session.session_id
-        )
-        if signal.source_ref == disposition.disposition_id
-    ]
-    assert len(recovery_signals) == 1
-    assert (
-        recovery_signals[0].status
-        is AgentRuntimeSignalStatus.COMPLETED
-    )
-    assert recovery_signals[0].claimed_by == (
-        "test:recovery-disposition"
-    )
-
-    repeated = scheduler.run_once_sync(
-        session.session_id,
-        max_signals=1,
-        signal_ids={recovery_signals[0].signal_id},
-    )
-    assert repeated == ()
-    assert len(
-        [
-            signal
-            for signal in repositories.runtime_signals.list_by_session(
-                session.session_id
-            )
-            if signal.source_ref == disposition.disposition_id
-        ]
-    ) == 1
 
 
 def test_scheduler_releases_session_lease_after_runtime_suspension(monkeypatch) -> None:
@@ -1285,13 +1104,6 @@ def test_master_runtime_inherits_tool_dispatch_precondition(
     ) -> None:
         return None
 
-    def response_precondition(
-        _context: SessionRuntimeContext,
-        _step_context: object,
-        _assistant_response: str,
-    ) -> None:
-        return None
-
     captured: dict[str, object] = {}
 
     def capture_harness_call(
@@ -1329,7 +1141,6 @@ def test_master_runtime_inherits_tool_dispatch_precondition(
         restore_focus=RestoreFocus(),
         model_factory=FakeModelFactory(),
         tool_dispatch_precondition=precondition,
-        assistant_response_precondition=response_precondition,
     )
 
     outcomes = AgentRuntimeScheduler(
@@ -1340,10 +1151,6 @@ def test_master_runtime_inherits_tool_dispatch_precondition(
     assert len(outcomes) == 1
     assert outcomes[0].ok is True
     assert captured["tool_dispatch_precondition"] is precondition
-    assert (
-        captured["assistant_response_precondition"]
-        is response_precondition
-    )
 
 
 def test_scheduler_fails_missing_master_inbox_source_before_provider() -> None:
@@ -1408,84 +1215,6 @@ def test_master_max_steps_terminates_exact_signal_without_replay() -> None:
     assert failure is not None
     assert failure.recoverability is FailureRecoverability.AGENT_CAN_REPLAN
     assert failure.retry_eligibility is RetryEligibility.TERMINAL
-
-
-def test_master_unresolved_recovery_is_terminal_typed_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    repositories, context, _ = _build_master_failure_context(
-        reason=AgentRuntimeSignalReason.MANUAL_RESUME
-    )
-    unresolved = AgentTurnRecoveryUnresolved(
-        obligation=AgentTurnRecoveryObligation(
-            failure_id="failure_delegate",
-            call_id="call_delegate",
-            tool_name="task.delegate",
-            error_code="workflow_ref_not_authorized",
-            recoverability="agent_can_replan",
-            effect_certainty="no_effect",
-            task_id="task_report",
-        ),
-        reason="response_after_rejection",
-    )
-
-    def fail_with_unresolved_recovery(
-        _repositories: CoreRepositories,
-        _harness_input: object,
-        **_kwargs: object,
-    ) -> HarnessResult:
-        return HarnessResult(
-            session_id="sess_master_failure",
-            status=HarnessStatus.FAILED,
-            snapshot=SessionRuntimeSnapshot.load(
-                repositories,
-                "sess_master_failure",
-            ),
-            events=(),
-            outputs=(),
-            tool_results=(),
-            error=AgentTurnRecoveryUnresolvedError(unresolved),
-        )
-
-    monkeypatch.setattr(
-        agent_runtime_module,
-        "run_agent_harness_loop",
-        fail_with_unresolved_recovery,
-    )
-
-    outcomes = AgentRuntimeScheduler(
-        context,
-        worker_id="test:master-unresolved-recovery",
-    ).run_once_sync("sess_master_failure", max_signals=1)
-
-    signal = repositories.runtime_signals.get("sig_master_failure")
-    failure = repositories.failure_observations.get_by_source(
-        session_id="sess_master_failure",
-        source_kind="runtime_signal",
-        source_ref="sig_master_failure",
-        source_version="attempt:1",
-        phase="runtime",
-        error_code="agent_turn_recovery_unresolved",
-    )
-
-    assert len(outcomes) == 1
-    assert outcomes[0].ok is False
-    assert outcomes[0].teammate_status == HarnessStatus.FAILED.value
-    assert signal is not None
-    assert signal.status is AgentRuntimeSignalStatus.FAILED
-    assert signal.attempt_count == 1
-    assert signal.error_message == "agent_turn_recovery_unresolved"
-    assert not repositories.runtime_signals.list_pending_by_session(
-        "sess_master_failure"
-    )
-    assert failure is not None
-    assert failure.recoverability is FailureRecoverability.AGENT_CAN_REPLAN
-    assert failure.effect_certainty is ExternalEffectCertainty.NO_EFFECT
-    assert failure.retry_eligibility is RetryEligibility.TERMINAL
-    assert failure.facts["reason"] == "response_after_rejection"
-    assert failure.facts["obligation"]["failure_id"] == "failure_delegate"
-    assert failure.facts["exact_signal_retry_eligible"] is False
-    assert failure.facts["effect_scope_ref"] == "sig_master_failure"
 
 
 def test_teammate_max_steps_does_not_mark_business_task_failed() -> None:

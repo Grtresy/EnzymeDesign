@@ -245,46 +245,10 @@ def _positive_policy() -> AoxCutoverFormalToolPrecondition:
     )
 
 
-def test_assistant_response_requires_durable_ready_report_handoff() -> None:
-    research, execution, _report = _tasks(report_status="todo")
-    unassigned_report = _record(
-        task_id=AOX_REPORT_TASK_ID,
-        kind="reporting",
-        assigned_ref=None,
-        status=_status("todo"),
-    )
-    repositories = _repositories(
-        tasks=(research, execution, unassigned_report),
-        attempts=(),
-    )
+def test_cutover_policy_has_no_assistant_response_veto() -> None:
     policy = _positive_policy()
 
-    rejection = policy.check_assistant_response(
-        _context(repositories),
-        _step(),  # type: ignore[arg-type]
-        "I will hand this to the reporter next.",
-    )
-
-    assert rejection is not None
-    assert rejection.error_code == "aox_cutover_report_handoff_required"
-    assert rejection.details["report_task_id"] == AOX_REPORT_TASK_ID
-    assert rejection.details["authorized_workflow_refs"] == []
-    assert "without a workflow binding" in rejection.hint
-
-
-def test_assistant_response_allows_existing_reporter_handoff() -> None:
-    repositories = _repositories(
-        tasks=_tasks(report_status="todo"),
-        attempts=(),
-    )
-
-    rejection = _positive_policy().check_assistant_response(
-        _context(repositories),
-        _step(),  # type: ignore[arg-type]
-        "The reporter wakeup is already durable.",
-    )
-
-    assert rejection is None
+    assert not hasattr(policy, "check_assistant_response")
 
 
 @pytest.mark.parametrize(
@@ -364,7 +328,6 @@ def test_closure_stage_policy_seals_external_operation_universe(
         "artifact.list",
         "deep_research.status",
         "execution.pipeline.status",
-        "failure.recovery.record",
         "protocol.send",
         "report.publish",
         "report_draft.update",
@@ -1842,18 +1805,6 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
             )
 
     report_subject = repositories.tasks.get(AOX_REPORT_TASK_ID).subject
-    response_rejection = lifecycle_policy.check_assistant_response(
-        _context(repositories),
-        _step(),  # type: ignore[arg-type]
-        "Premature assistant-only final response.",
-    )
-    assert response_rejection is not None
-    assert (
-        response_rejection.error_code
-        == "aox_cutover_close_required_before_final_response"
-    )
-    assert response_rejection.details["attempt_id"] == attempt.attempt_id
-    assert response_rejection.details["selection_id"] == selection.selection_id
 
     driver = _CloseThenMutationDriver(
         attempt_id=attempt.attempt_id,
@@ -1879,9 +1830,6 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
                 AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
             ),
             tool_dispatch_precondition=lifecycle_policy,
-            assistant_response_precondition=(
-                lifecycle_policy.check_assistant_response
-            ),
         )
         request = repositories.scientific_attempt_closure_requests.get_by_attempt(
             attempt.attempt_id

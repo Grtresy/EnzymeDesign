@@ -432,98 +432,13 @@ def failure_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         ToolDescriptor(
             tool_name="failure.get",
             description=(
-                "Inspect one public-safe immutable failure observation and its "
-                "separately attributed agent hypotheses. Host facts, deterministic "
-                "likely causes, and agent interpretations remain distinct."
+                "Inspect one public-safe immutable failure observation, including "
+                "typed effect certainty and deterministic likely causes."
             ),
             input_schema={
                 "type": "object",
                 "properties": {"failure_id": {"type": "string"}},
                 "required": ["failure_id"],
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="failure.hypothesis.record",
-            description=(
-                "Append your own bounded hypothesis about one observed failure. "
-                "This does not rewrite Host facts, authorize retry, reconcile an "
-                "unknown effect, or change task status. If this exact tool just "
-                "failed validation inside an internal signal turn, a successful "
-                "canonical retry durably settles only that tool-call recovery "
-                "obligation; it does not settle failures from other tools."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "failure_id": {"type": "string"},
-                    "hypothesis": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 2000,
-                    },
-                    "confidence": {
-                        "type": "string",
-                        "enum": ["low", "medium", "high"],
-                    },
-                    "evidence_refs": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "maxItems": 32,
-                        "uniqueItems": True,
-                    },
-                    "idempotency_key": {"type": "string", "minLength": 1},
-                },
-                "required": [
-                    "failure_id",
-                    "hypothesis",
-                    "confidence",
-                    "idempotency_key",
-                ],
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="failure.recovery.record",
-            description=(
-                "Append one exact, no-authority recovery disposition when "
-                "task.delegate returned terminal-known task_blocked because "
-                "declared task dependencies are still incomplete. The Host "
-                "requires the observed blocker set to equal current durable "
-                "state. This does not retry delegation, authorize a retry, "
-                "change task status, or mutate scientific state."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "failure_id": {"type": "string", "minLength": 1},
-                    "disposition": {
-                        "type": "string",
-                        "enum": [
-                            "defer_until_task_dependencies_complete",
-                        ],
-                    },
-                    "condition_task_ids": {
-                        "type": "array",
-                        "items": {"type": "string", "minLength": 1},
-                        "minItems": 1,
-                        "maxItems": 32,
-                        "uniqueItems": True,
-                    },
-                    "rationale": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 2000,
-                    },
-                    "idempotency_key": {"type": "string", "minLength": 1},
-                },
-                "required": [
-                    "failure_id",
-                    "disposition",
-                    "condition_task_ids",
-                    "rationale",
-                    "idempotency_key",
-                ],
                 "additionalProperties": False,
             },
         ),

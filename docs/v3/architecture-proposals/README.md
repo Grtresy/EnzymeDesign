@@ -39,11 +39,12 @@ commit 的 full/zero-P0 architecture admission 可以解除架构阻断，且仍
 通过全部外部、科学与证据门禁。资格验证本身不创建 attempt，也不调用真实
 provider/runner/Chrome/MICU。
 
-本轮另有三个 active changes，均明确停在下一次编号 live attempt 之前：
+当前相关 active changes 均明确停在下一次编号 live attempt 之前：
 
-- [`restore-agent-recoverability-and-explicit-refusal`](/openspec/changes/restore-agent-recoverability-and-explicit-refusal/)：
-  structured failure observation、agent hypothesis、ordinary failed-result continuation、system
-  diagnostic 与显式 refusal；
+- [`simplify-v3-harness-control-boundary`](/openspec/changes/simplify-v3-harness-control-boundary/)：
+  保留 structured failure observation、ordinary failed-result continuation、system
+  diagnostic 与显式 refusal，同时删除 hypothesis/disposition、turn-local recovery proof、
+  synthetic wakeup 与 assistant-response veto；早期 recovery 扩展只保留历史证据；
 - [`add-scientific-attempt-selection-and-closure`](/openspec/changes/add-scientific-attempt-selection-and-closure/)：
   durable fresh authority、full occurrence universe、selection/disposition/adoption/materialization
   与 closure；

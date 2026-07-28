@@ -10,6 +10,8 @@ V3 的核心立场：
 - `learn-claude-code` 是 V3 的方法论基线。
 - LangGraph / LangChain 可以继续存在，但只能作为 `deep_research`、`execution` 等**内部能力引擎**的实现工具，不能重新成为产品级 workflow truth owner。
 - Monorepo 包布局默认收敛为：`packages/openzyme-domain`、`packages/openzyme-core`、`packages/openzyme-engines`，避免重新拆出产品级 graph/storage 栈。
+- effect-known ordinary failure 是 agent-readable observation，不是第二套 recovery workflow；
+  Harness 不用 response veto 或 exact matcher规定 agent 的下一步策略。
 
 先读文档顺序：
 
@@ -43,7 +45,7 @@ AOX/HMM live cutover：
   `run-diagnostic-live`、单槽 authority、diagnostic root/consumption/decision 与 cross-mode
   negative gate 也已实现。diagnostic 永久 `acceptance_eligible=false`，不能生成/进入
   `@3` bundle/reducer；现有 `authorize` / `run-live` 仍只代表 formal acceptance。
-- `pin`、`preflight`、`run-live` 与 `run-diagnostic-live` 均先要求当前 clean commit 的 full architecture qualification report；qualification 通过本身只解除架构阻断，不创建 attempt，也不自动恢复 numbered campaign。无 attempt 的准备阶段止于 canonical `pin`；CLI `preflight` 会创建 blank-world attempt root，因此每个新 diagnostic 或 formal campaign 都必须另获 operator 授权并使用 fresh roots。r59 已永久 formal NO-GO；forward `@3` policy 将 canonically `closure_request_ready` 的 positive execution handoff 与 master closure 分开，并将 closure-request readiness 与 writer-gated Host finalization 分开，绝不从 sealed state 单独推断成功；current `@4` 保留该 guard，并在 research/execution completed、canonical report ready/unassigned 且该 report task 无 pending/claimed runtime signal 时拒绝 prose-only transition，不自动 handoff。该实现及非-live gate 不授权下一轮 diagnostic 或 formal live。
+- `pin`、`preflight`、`run-live` 与 `run-diagnostic-live` 均先要求当前 clean commit 的 full architecture qualification report；qualification 通过本身只解除架构阻断，不创建 attempt，也不自动恢复 numbered campaign。无 attempt 的准备阶段止于 canonical `pin`；CLI `preflight` 会创建 blank-world attempt root，因此每个新 diagnostic 或 formal campaign 都必须另获 operator 授权并使用 fresh roots。r59 已永久 formal NO-GO；forward `@3` policy 将 canonically `closure_request_ready` 的 positive execution handoff 与 master closure 分开，并将 closure-request readiness 与 writer-gated Host finalization 分开，绝不从 sealed state 单独推断成功。current `@4` 历史 id 仅保留 mutation-time task/attempt/close guard；prose 不再被 policy 拦截，也不会自动 handoff、finish、close 或获得 acceptance eligibility。该实现及非-live gate 不授权下一轮 diagnostic 或 formal live。
 - `authorize-closure-stage-diagnostic` / `run-closure-stage-diagnostic-live` 是第三个 schema-disjoint operator flow：前者只发布一次性 plan，后者只在非 `rNN` fresh root 中恢复 cursor 614 等价状态并最多运行一次真实 MICU 收尾。源 r59 不写、科学 operation universe 不扩张、结果永久 `acceptance_eligible=false`；该 flow 不是 `run-diagnostic-live` 的别名，也没有 promotion/reducer/numbered continuation。
 
 Execution pipeline SDK docs:

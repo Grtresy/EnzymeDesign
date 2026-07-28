@@ -259,16 +259,11 @@ SQLite connection / transaction ownership：
 - scheduler 只能 claim `pending` signal 或 lease 已过期的 `claimed` signal；claim 时必须写入 `claimed_by`、`claim_expires_at` 并递增 `attempt_count`
 - claim 后必须要么 `completed`，要么释放回 `pending`，要么写入 `failed`；失败重试只允许在明确 retryable 且未超过 attempt 上限时回到 `pending`
 - duplicate wakeup 去重按 `session_id + agent_id + reason + source_ref` 作用于未完成 signal，避免同一 inbox message 或 engine completion 被重复排队
-- immutable `failure_recovery_disposition@1/defer_until_task_dependencies_complete`
-  是 exact condition subscription：所有 condition tasks 在同 session 完成后，scheduler
-  pre-claim 与 task-mutation 后 reconciler 只能为 disposition owner 创建一个
-  `reason=recovery_required/source_ref=<disposition_id>` signal。该 source lookup 必须覆盖
-  pending、claimed、completed、failed 与 cancelled，不能因 signal 已消费、进程重启或再次
-  polling 重建第二份 work
-- disposition recovery signal 不授予 target task ownership：若 target 仍是 unassigned
-  `todo`，runtime 不得在 wake 前机械 claim；prompt 从 canonical disposition、original
-  failure 与 completed condition tasks 重建事实，agent 自主选择 retry/replan/help，task exit
-  仍要求 canonical owner
+- task dependency 只由 canonical `Task.blocked_by` 表达；ordinary `task.delegate`
+  rejection 不创建 failure disposition、condition subscription 或
+  `reason=recovery_required` signal
+- runtime work 只来自上面列出的真实 user/task/protocol/approval/engine/manual sources。
+  signal 不自动授予 unassigned target task ownership，task exit 仍要求 canonical owner
 - `last_error` 保存最近一次失败原因；`error_message` 表达当前 terminal failure 或待重试错误摘要
 - signal claim lease 只保护单条 signal 不被重复处理，不代表 worker 拥有整个 session runtime 推进权
 - scheduler 在 claim signal 时应绑定当前 `SessionRuntimeLease` 的 `lease_token` / `fencing_token`；complete / fail / release 写回必须校验当前 worker 仍持有有效 session lease
@@ -527,10 +522,10 @@ control plane 不以其存在推断 session/task 完成。AOX 只在独立 launc
 
 ## 7. Failure 与 scientific-attempt objects
 
-新增顶层 canonical objects：
+顶层 canonical objects：
 
-- immutable `FailureObservation` 与 append-only、agent-attributed
-  `FailureHypothesis`；
+- immutable `FailureObservation`；active failure surface 只有 `failure.get`，agent
+  hypothesis/恢复策略不另建 control-plane object；
 - `ScientificAttemptAuthorization`、admission request 与 exact attempt scope；
 - immutable selection revisions/head、operation/run occurrence bindings、
   dispositions、effect adoptions 与 artifact materializations；

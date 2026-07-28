@@ -3,16 +3,10 @@ from .models import RunStatus
 from .models import SourceRefKind
 from .models import utc_now_iso
 from .failures import AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
-from .failures import FAILURE_HYPOTHESIS_SCHEMA_VERSION
 from .failures import FAILURE_OBSERVATION_SCHEMA_VERSION
-from .failures import FAILURE_RECOVERY_DISPOSITION_SCHEMA_VERSION
 from .failures import FailureActorKind
 from .failures import FailureClass
-from .failures import FailureHypothesis
-from .failures import FailureHypothesisConfidence
 from .failures import FailureObservation
-from .failures import FailureRecoveryDisposition
-from .failures import FailureRecoveryDispositionKind
 from .failures import FailureRecoverability
 from .failures import likely_causes_for_error_code
 from .scientific_attempts import (
@@ -165,16 +159,10 @@ __all__ = [
     "CONTROL_PLANE_ENTITY_NAMES",
     "EngineInvocation",
     "EngineInvocationStatus",
-    "FAILURE_HYPOTHESIS_SCHEMA_VERSION",
     "FAILURE_OBSERVATION_SCHEMA_VERSION",
-    "FAILURE_RECOVERY_DISPOSITION_SCHEMA_VERSION",
     "FailureActorKind",
     "FailureClass",
-    "FailureHypothesis",
-    "FailureHypothesisConfidence",
     "FailureObservation",
-    "FailureRecoveryDisposition",
-    "FailureRecoveryDispositionKind",
     "FailureRecoverability",
     "SCIENTIFIC_ARTIFACT_MATERIALIZATION_SCHEMA_VERSION",
     "SCIENTIFIC_ATTEMPT_ADMISSION_REQUEST_SCHEMA_VERSION",

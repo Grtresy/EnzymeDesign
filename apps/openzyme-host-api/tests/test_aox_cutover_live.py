@@ -3423,17 +3423,16 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     )
     assert "both canonical upstream tasks in blocked_by" in prompt
     assert "do not attempt reporter delegation while either dependency" in prompt
-    assert "defer_until_task_dependencies_complete" in prompt
-    assert "failure.recovery.record" in prompt
+    assert "inspect the canonical task graph" in prompt
     assert "Delegate the reporter only after both dependencies complete" in prompt
     assert (
-        "include the complete final user-facing answer as response text in the "
-        "same model response that calls scientific.attempt.close"
+        "includes the complete final user-facing answer as response text with "
+        "scientific.attempt.close"
         in prompt
     )
     assert (
-        "assistant-only final response at close-ready state is rejected without "
-        "persistence or effect"
+        "Assistant text alone does not close the attempt or make an incomplete "
+        "state acceptance-eligible"
         in prompt
     )
     assert (

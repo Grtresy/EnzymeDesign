@@ -23,7 +23,6 @@ from .conversation import build_conversation_projection
 from .controlled_operation_projection import project_controlled_operation_summary
 from .controlled_operation_projection import is_controlled_operation_artifact_public
 from .protocols import ProtocolService
-from .failure_repositories import project_failure_observation
 from .runtime_consistency import RuntimeConsistencyService
 from .scientific_attempts import ScientificAttemptService
 from .scientific_workflow_contracts import ScientificWorkflowContractRegistry
@@ -269,7 +268,7 @@ class SessionProjectionBuilder:
         )
         failure_observations = tuple(
             self._sanitize_execution_projection(
-                project_failure_observation(self.repositories, observation)
+                observation.to_dict()
             )
             for observation in self.repositories.failure_observations.list_by_session(
                 session_id

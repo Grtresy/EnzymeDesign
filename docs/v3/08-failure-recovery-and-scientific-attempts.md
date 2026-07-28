@@ -1,4 +1,4 @@
-# Failure recovery、显式拒绝与 scientific attempt
+# Failure observation、显式拒绝与 scientific attempt
 
 ## 1. 当前稳定结论
 
@@ -17,133 +17,61 @@ OpenZyme 的 harness 负责忠实、结构化、低摩擦地呈现真实约束�
 - provider/driver 使 agent 根本无法作出决定时，Host 只发布 system-attributed
   diagnostic，并明确 `agent_decision_produced=false`；不得伪造 agent 回复。
 
-## 2. FailureObservation 与 agent hypothesis
+## 2. FailureObservation
 
-`FailureObservation` 是 immutable canonical fact，绑定 session/task/lane/agent、
-source kind/ref/version、phase、稳定 error code、recoverability、effect certainty、
-retry eligibility、safe facts、规则化 likely causes、evidence refs 与 actor identity。
-private exception 只保留不可逆 digest，不能进入 public projection。
+`FailureObservation` 是 immutable canonical fact，绑定可确认的 source、phase、稳定
+error code、recoverability、effect certainty、retry eligibility、safe facts、规则化
+likely causes、evidence refs 与 actor identity。session/task/agent/lane 只在事实确实属于
+该 scope 时绑定；session-scoped provenance 允许 `lane_id=None`。private exception 只保留
+不可逆 digest，不能进入 public projection。
 
-三类内容必须保持分离：
+`failure.get` 是唯一 active failure tool。agent hypothesis、rationale 或下一步策略保留在
+模型 reasoning、普通 protocol/memory 文本或用户回复中，不再写入独立
+`FailureHypothesis` / `FailureRecoveryDisposition` control-plane row。历史 migration
+`034`/`036` 及其表只为打开旧 SQLite 保留；runtime/repository/tool/projection 不再使用它们。
 
-1. `facts`：Host/Harness 已确认的事实；
-2. `likely_causes`：由稳定 error code 确定性映射出的候选原因；
-3. `FailureHypothesis`：agent 通过 `failure.hypothesis.record` 追加的解释，绑定真实
-   canonical agent、confidence、evidence refs 和 idempotency identity。
-4. `FailureRecoveryDisposition`：agent 对一个 exact、effect-known failure 追加的无权限
-   恢复决策；当前闭集只包含 blocked delegation 的
-   `defer_until_task_dependencies_complete`。
+## 3. Runtime failure delivery
 
-`FailureHypothesis` 是独立 append-only row，不能回写或覆盖
-`FailureObservation`。`failure.get` 和 workspace projection 可以把两者联读；投影中的
-`agent_hypothesis` 只是 latest compatibility view，`agent_hypotheses` 才是完整归属历史。
-记录 hypothesis 不提供 retry authority，不消除 unknown effect，也不改变 task status。
+ordinary failed tool result 成功交给 agent 后，不另造重复 wakeup；Harness 将它作为下一轮
+tool observation 继续 bounded loop。normal dispatch、context normalization rejection、
+parallel overflow 与 interrupted call 的每个 `ToolResult` 只进入一次 accounting boundary。
+`no_effect|terminal_known` 表示安全事实已经闭合，不需要第二个 obligation 或“恢复证明”。
 
-`FailureRecoveryDisposition` 同样是 append-only row，绑定 exact failure、session、
-canonical agent、condition task ids、rationale 与 idempotency identity。`failure.get`
-把完整历史投影为 `agent_recovery_dispositions`，但记录本身不执行恢复动作。其公开 payload
-显式固定 `retry_authorized=false`、`task_status_changed=false` 和
-`scientific_state_changed=false`。
+agent 可自由选择 corrected retry、verified replan、read、help/authority request、prose、
+explicit terminal task action 或 durable suspension；Harness 不改写参数、不自动
+retry/delegate，也不拒绝 narration。`COMPLETED` 只表示 turn 正常结束，
+`MAX_STEPS_EXCEEDED` 只表示 bounded budget 用尽；二者都不改变 task。provider/driver
+不可运行、unknown effect、fencing、authority、integrity、permission 与 process
+cancellation 仍停止对应 ownership。
 
-## 3. Runtime recovery
-
-ordinary failed tool result 成功交给 agent 后，不另造重复 wakeup；harness 将它作为下一轮
-tool observation 继续 bounded loop。若失败只在原 turn 结束后可见，例如 continuation
-delivery recovery failure 或 Host-finalized transition failure，Host 使用 exact source/version
-创建去重 wakeup，并在 claim 时从 canonical repository 重建 recovery brief。
-
-internally driven signal turn 对 ordinary result 还有一个 turn-local settlement
-invariant：只有 typed observation 同时是
-`recoverability=agent_can_replan|agent_can_retry` 与
-`effect_certainty=no_effect|terminal_known` 时才建立 recovery obligation。obligations 以
-observation 顺序、`failure_id` key 保存；后一个 failure 不覆盖前一个，同一 failure 重复
-accounting 幂等。normal dispatch、task/lane normalization rejection、parallel overflow 与
-interrupted call 产生的每个 `ToolResult` 都通过同一个 accounting boundary exactly once。
-
-agent 可自由选择 corrected retry、verified replan、help/authority request、explicit terminal
-task action 或 durable suspension；Harness 不改写参数、不自动重试/delegate。settlement
-只来自 failure-bound closed matcher：
-
-- 同工具 `no_effect + same_phase_safe` validation corrected retry，包括 read tool；一个无
-  multi-failure proof 的成功一次最多结算一个 matching failure；
-- exact `failure.recovery.record` dependency disposition；
-- exact invocation id 的 `execution.pipeline.status`；
-- exact attempt id 与 selection id 的 `scientific.attempt.inspect`；
-- 同 task 的 `task.finish`；
-- 同 task 的 explicit `runtime_suspended` 或 scientific exit。
-
-每个 settlement 写 immutable `failure.recovery.settled`，并只删除它证明的 obligation。
-read/write governance、全局 tool-name allowlist、unrelated nominal mutation、memory
-compaction 或 prose 都不是 proof。首次 prose 只形成不持久化的
-`agent_turn_recovery_action_required` feedback；重复 prose、empty driver exit 或 step bound
-形成带完整 bounded obligation list 的 `agent_turn_recovery_unresolved` typed signal
-failure，exact signal 不重放，task 业务状态不变。direct user-message turn 与
-reconciliation/unknown-effect path 不进入这条窄规则。
+若 continuation 或 controlled execution 的结果只在原 turn 之后可见，runtime 使用现有
+source-bound `ENGINE_COMPLETED` signal，并在 claim 时从 canonical repository 重建
+result/failure facts。Host finalizer 的 nonretryable failure 产生 system-attributed
+observation/diagnostic。两者都不使用 `RECOVERY_REQUIRED` reason，也不从 ordinary failure
+派生 condition subscription。
 
 empty read 与 replay 使用显式 convergence semantics：`task.get` not-found 和 `task.next`
 no-ready-work 是 successful closed observation；exact `task.finish` / source-bound execution
 start replay 只有在 canonical identity 与 postcondition 相等时 already-satisfied，conflict
-继续失败。Harness 在所有 `COMPLETED` / `WAITING_APPROVAL` 出口重新检查 obligations；
-direct approval、空 step 或非终止工具遗留 pending approval 都不能逃逸未结算 failure。
-可结算 recovery 的 valid wait 必须是 same-task successful terminal `runtime_suspended`
-且 durable approval id 可重读；没有 recovery obligation 的 legacy approval wait 保持既有
-语义。runtime 再要求 waiting status 与 approval id 双向一致。
+继续失败。`WAITING_APPROVAL` 只来自 successful terminal `runtime_suspended` 与可重读的
+durable approval id，runtime 要求 status 与 id 双向一致。
 
-blocked delegation 还有一个不要求虚假 task mutation 的窄 settlement。只有当前
-obligation 来自 `task.delegate` 的
-`task_blocked/agent_can_replan/terminal_known/retry_eligibility=terminal`，failure 绑定
-canonical agent 和 unassigned `todo` target，且它的 `blocked_by_open_task_ids` 与
-repository 当前 open dependencies 精确相等、每个 blocker 仍为 `todo|in_progress` 时，
-`failure.recovery.record` 才可追加
-`failure_recovery_disposition@1/defer_until_task_dependencies_complete`。Harness 再重读
-record 并验证完整 payload、source observation 与当前 dependency state 后，才结算 exact
-obligation。它不自动 delegate、更新 task、授权 blocker 完成后的 retry 或改变 scientific
-state；agent 在未来 wake 中仍需根据新 durable state 自主决定是否 delegate。cross-tool、
-cross-session、cross-agent、missing/synthetic record、terminal non-completed blocker 或
-payload/dependency drift 均 fail closed。该工具自身的 no-effect 参数校验失败只允许同工具
-canonical corrected call 按相同 closure 结算。
-
-immutable disposition 同时充当 exact condition subscription。scheduler pre-claim 与
-post-task-mutation path 运行同一个 reconciler；只有所有 condition tasks 存在于同 session 且
-为 `completed`，才为 disposition owner 原子创建一个
-`recovery_required/source_ref=<disposition_id>` signal，并在 commit 后 notify。signal
-repository 的 source lookup 覆盖 pending、claimed 与全部 terminal 状态，所以 polling、
-restart 或已消费 signal 不会产生第二个 wakeup。该 wake 不执行 delegate、不 claim
-unassigned target、不换 agent；runtime prompt 只重建 exact disposition、original failure 与
-completed conditions，target task exit 仍受 canonical owner authority 限制。
-
-`recovery_required` brief 只能陈述事实和安全边界。agent 可选择：
-
-- 在同一 logical operation 的预声明、effect-safe retry policy 内重试；
-- 创建新的显式 operation/plan；
-- reconciliation；
-- 请求 user/operator/authority；
-- `task.finish(status="blocked")`；
-- 在 objective 确知无法完成时 `task.finish(status="failed")`。
-
-Harness 不得静默改参数、切 provider/backend、重开 operation、创建新 formal attempt 或把
-known failure 擦除。step budget 用尽只是 non-business runtime outcome。
+blocked dependency 只由 canonical `Task.blocked_by` 表达。`task.delegate` 对 open dependency
+返回 LLM-readable no-effect facts，但不写 disposition、不订阅 condition、不排队 synthetic
+wakeup。未来 user/task/protocol/approval/engine/continuation 等真实事件若产生 signal，
+agent 再读取最新状态并自主决定。
 
 step-budget exhaustion 使用 canonical `agent_turn_budget_exhausted` observation。exact
-signal/turn 以 `retry_eligibility=terminal` 结束且不会自动 replay；
-`recoverability=agent_can_replan` 属于 task/agent 的下一步决策层，表示 master 可用一个新的
-source-bound wakeup 显式 replan。`effect_certainty=no_effect` 的 scope 是 runtime signal
-transition，不得擦除同 turn 已经持久化的 controlled-operation execution/result。task status、
-failure summary/ref 保持原样。
-
-Core 必须在同一个短 transaction/session runtime authority 中形成 typed
-`AgentRuntimeOutcomeSettlement`，而不是让 receipt assembly 在 lease 释放后重建交接。
-settlement 绑定 exact teammate occurrence、同 attempt observation、task/agent/lane/correlation
-snapshot 与 exactly one source-bound pending master wakeup。全部一致时 scheduler batch
-可以记为 completed handoff，但 exact signal 仍是 failed，新的 wakeup 才是可 claim 的
-recovery work；任一要素缺失/歧义、cancelled/duplicate successor、普通 runtime failure 或
-master 自身 max-step 仍然是 scheduler failure，不能靠重标状态绕过。
+signal/turn 以 `retry_eligibility=terminal` 结束且不会原地 replay 或增加 budget；task
+status 与业务 failure fields 保持原样。Core 的 `AgentRuntimeOutcomeSettlement` 只固化
+signal occurrence、bounded batch barrier 与可验证的 budget handoff，不承担 ordinary
+tool-failure recovery proof。Host 不得在 lease 释放后从 mutable read model重建更“成功”的
+receipt。
 
 任一 master 或 teammate max-step outcome 都是当前 bounded batch barrier。scheduler 允许
 已经 claim 的 wave 完成，然后停止新 claim；即使 `max_signals > 1`，该 occurrence 新建的
 successor 也必须等下一条 command/background tick。后续 task 或 successor 状态变化不会
-反向改写 immutable settlement。task business exit 与 scheduler settlement 正交：例如 agent
-显式 `task.finish(status="failed")` 后 signal 正常 completed，scheduler batch仍可 completed。
+反向改写 immutable occurrence settlement。task business exit 与 scheduler settlement 正交。
 
 manual runtime drain 在 scheduler batch 后先形成 immutable
 `RuntimeDrainCoreReceipt`，再独立结算 trace/activity/consistency/event/workspace
@@ -161,7 +89,8 @@ mutation writer 均不存在，才是 no-wakeup stall。ready unfinished work �
 failure，返回 `formal_agent_recovery_unresolved`；否则返回
 `formal_runtime_stalled_no_wakeup`。fingerprint 排除 timestamp、lease/fence、event/cursor
 和 command id，单次 empty 或任一 semantic/wakeup progress 都重置确认；该 diagnostic 不
-auto-enqueue 或创造 recovery work。
+auto-enqueue 或创造 recovery work。前一个 error code 是历史 AOX diagnostic 名称，只表示
+ready work 仍关联 failure facts，不表示存在 turn recovery obligation。
 
 同一个 provider response 中的多个 tool call 作为有序 batch 结算。若某个已 dispatch call
 触发 explicit `runtime_suspended` approval、成功的 `task.finish` /
@@ -171,7 +100,7 @@ auto-enqueue 或创造 recovery work。
 `parallel_tool_call_limit_exceeded/no_effect/same_phase_safe`。causal call 若已跨过外部
 dispatch boundary，则保留原始 effect certainty 和 retry eligibility；
 `dispatch_in_doubt/reconcile_required` 绝不能被后续批次收尾覆盖成 `no_effect`。这些
-disposition 是事实与恢复边界，不是 retry authority；agent 必须在新 turn 中先检查
+observations 是事实与 effect/retry 边界，不是 retry authority；agent 必须在新 turn 中先检查
 durable state，再决定是否重发、改道、reconcile 或请求帮助。
 
 批次结算也不能把 pre-batch snapshot 当成所有调用的验证真相。eligible call 的 task/lane
@@ -518,18 +447,19 @@ probe 与 formal exact operations、516 candidates、78 representatives、13,778
 根因不是 closure authority 缺失，而是两个原合同不相容：assistant-only response 可以成为
 conversation truth，但之后没有新 signal 让 master close；tool-call response 中即使已有
 最终文本，successful close 又会立即退休 turn，而旧 harness 只把该文本写入 LLM trace。
-r58 correction 当时的 `aox_cutover_formal_tool_precondition@2` 通过两个显式入口闭合它：
+r58 correction 当时的 `aox_cutover_formal_tool_precondition@2` 同时加入 response veto 与
+co-terminal close contract。2026-07-28 的 control-boundary simplification 删除前者：
+assistant text 现在按普通 conversation 语义持久化，但不会自动 close、handoff、finish 或
+获得 acceptance eligibility。保留的 close command contract是：
 
-- close-ready assistant-only response 在 conversation write 前得到结构化 no-effect rejection，
-  proposed text 不持久化，agent 获得同一 bounded turn 内的新决策机会；
-- master 必须在同一 provider response 中提供完整终答和 explicit
-  `scientific.attempt.close`；empty companion 在 closure effect 前失败；
+- master 调用 `scientific.attempt.close` 时必须在同一 provider response 中提供完整终答；
+  empty companion 在 closure effect 前失败；
 - successful close 在同一 Core transaction 写 closure request、deterministic conversation
   document/message 与 immutable response binding，随后设置 companion-persistence 标记、
   结算同批后续 call 并退休 turn；Host finalizer 仍只在 writer 退休后推进。
 
-该 guard 不自动关闭 attempt、不推断 selection、不合成答案、不改变 task/report 真状态，
-也不影响普通 session。r58 已产生 meaningful result/report，因此没有触发“首个有效结果前
+tool guard 不自动关闭 attempt、不推断 selection、不合成答案、不改变 task/report 真状态。
+r58 已产生 meaningful result/report，因此没有触发“首个有效结果前
 再次遇到 framework defect”时才执行的规范再拆分条件；formal exact-three acceptance 仍需
 fresh commit/full admission/pin 与独立精确授权。
 
@@ -649,13 +579,11 @@ signal，随后 117 个 replay-safe empty command 到 generic exhaustion。decis
 `sha256:27ae166969295685ed56418e6b8abc404c7e3fff88884f5e85c1fe944b7723be`
 不可重试或复用。
 
-forward repair 同时闭合四层而不选择 agent 策略：auto compaction
-authority-free/scope-correct；prompt exact 显示 current refs/empty set；internal signal
-failed-result 必须产生 durable settlement 或 typed unresolved；AOX `@4` 在 ready report
-缺 handoff 时拒绝 prose。live driver 只在两次 validated unchanged no-wakeup proof 后 typed
-fail-fast，保留 120-drain bound 给其他真实未收敛状态。下一次 closure-stage live 若获单独
-批准，仍必须从本修复的 clean commit 发布 fresh non-`rNN` target/plan，并且最多消费一次；
-上述两个 target、authority、MICU/evidence 与 r59 source 都不可复用。
+当时的 forward repair 同时加入 authority-free/scope-correct compaction、exact current
+workflow refs、turn-local recovery proof 与 AOX prose veto。2026-07-28 的
+control-boundary simplification 保留前两项和两次一致 no-wakeup diagnostic，但认定后两项
+把 agent 策略误升格为 Harness fatal，已从 active contract 删除。这个后续架构纠正不改写
+该 run 的历史 verdict，也不使上述 target、authority、MICU/evidence 或 r59 source 可复用。
 
 该批准已在 clean repair commit
 `4bf4c4244fae68beff8e5d47717e83824ff2367e` 上恰好消费一次。fresh plan

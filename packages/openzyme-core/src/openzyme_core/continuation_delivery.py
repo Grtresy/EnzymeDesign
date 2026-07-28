@@ -108,7 +108,6 @@ class ContinuationWakeService:
         existing = self.repositories.runtime_signals.get(signal_id)
         if existing is not None:
             return existing
-        requires_recovery = recovery_failed
         if not recovery_failed:
             execution = (
                 self.repositories.controlled_operation_executions.get_by_operation_id(
@@ -121,7 +120,6 @@ class ContinuationWakeService:
                 and execution.terminal_outcome
                 is not ControlledOperationExecutionTerminalOutcome.SUCCEEDED
             ):
-                requires_recovery = True
                 record_failure_observation(
                     self.repositories,
                     session_id=continuation.session_id,
@@ -169,11 +167,7 @@ class ContinuationWakeService:
             task_id=continuation.originating_task_id,
             lane_id=continuation.originating_lane_id,
             correlation_id=continuation.continuation_id,
-            reason=(
-                AgentRuntimeSignalReason.RECOVERY_REQUIRED
-                if requires_recovery
-                else AgentRuntimeSignalReason.ENGINE_COMPLETED
-            ),
+            reason=AgentRuntimeSignalReason.ENGINE_COMPLETED,
             source_ref=continuation.continuation_id,
             status=AgentRuntimeSignalStatus.PENDING,
             created_at=created_at,

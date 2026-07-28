@@ -10,7 +10,9 @@
 
 **OpenZyme V3 应采用严格 harness 边界。**
 
-Harness 负责 tools、state、permissions、recovery、projection 和 execution boundaries。Master agent 与 teammate agents 负责用户意图理解、任务拆解、完成判断、诊断策略和下一步决策。
+Harness 负责 tools、canonical state、permissions、failure/effect facts、projection 和
+execution boundaries。Master agent 与 teammate agents 负责用户意图理解、任务拆解、完成
+判断、诊断策略和下一步决策；Harness 不建立第二套 recovery workflow 证明这些策略。
 
 ## 2. 评审规则
 
@@ -227,49 +229,20 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
   停止 ownership；两者都形成 immutable safe observation，且都不自动改变 task。agent 可以
   repair/replan/help/refuse，Host 只在 agent 无法运行时使用 system voice。
 
-  修正记录：`restore-agent-recoverability-and-explicit-refusal` 建立
-  `FailureObservation`、append-only agent-attributed `FailureHypothesis`、ordinary
-  failed-result continuation、exact `recovery_required` wakeup 与 system diagnostic。fencing、
-  authority、integrity、permission/budget、process cancellation 和 `dispatch_in_doubt`
-  保持 fail closed；`blocked` 与 `failed` 仍只能由 agent 通过 `task.finish` 明确选择。
+  修正记录：第一阶段建立 `FailureObservation` 与 ordinary failed-result continuation，
+  并保留 fencing、authority、integrity、permission/budget、process cancellation 和
+  `dispatch_in_doubt` 的 fail-closed 边界。随后 r60/r61 为了强迫 internal signal turn
+  产生 Harness 可识别的“durable decision”，逐步加入 hypothesis、turn-local obligation、
+  exact settlement matcher、response rejection、dependency disposition、reconciler 与
+  `RECOVERY_REQUIRED` signal。
 
-  追加修正记录：closure-stage successor 证明“failed result 已回灌”仍不等于当前 internal
-  signal 已产生 durable decision。Core 现在只对
-  `agent_can_replan|agent_can_retry + no_effect|terminal_known` 建立 turn-local recovery
-  obligation；第一次 prose 不持久化并返回 structured feedback，重复 prose/step bound
-  形成 terminal `agent_turn_recovery_unresolved`。该阶段实现仍只允许 reviewed durable
-  mutation 或 explicit terminal action，并错误地排除了 corrected read；Harness 不自动
-  retry、delegate、auto-enqueue 或选择 task exit。当时 r60 又补齐一个 narrow same-tool case：
-  `failure.hypothesis.record` 自身 validation failure 的 canonical corrected retry 仅在
-  repository/current-agent/current-session/payload exact closure 时结算；它不允许 hypothesis
-  结算其他 tool failure 或取得 retry/task/scientific authority。
-
-  r61 随后证明合法的 dependency wait 也需要 typed durable decision，而不是让 agent
-  制造无意义 `task.update`。`failure.recovery.record` 现在只接受
-  `task.delegate -> task_blocked/terminal_known`，并把
-  `defer_until_task_dependencies_complete` 写成 immutable
-  `failure_recovery_disposition@1`。handler 与 Harness 双重重读 failure、canonical
-  agent/session、unassigned `todo` target、observed/current blocker equality 和 record
-  payload；它不进入 generic write allowlist、不重试 delegate、不改 task/scientific state。
-  同工具 invalid-argument corrected retry 保持同样的 repository closure，其他 cross-tool
-  write 仍不能结算。
-
-  本轮系统性修正进一步移除上述“reviewed durable mutation / generic write”残留断言。
-  turn recovery 现为 ordered `failure_id` obligation set，normal/context-rejected/overflow/
-  interrupted 的所有 ToolResult 统一 accounting；settlement 只认 corrected same-tool
-  validation retry、exact dependency disposition、execution/scientific identity inspection、
-  same-task `task.finish` 与 explicit same-task suspension/exit，并写
-  `failure.recovery.settled`。因此 unrelated write 不再比 corrected read 更有恢复权。
-  `task.get`/`task.next` empty result 与 exact already-satisfied replay 使用 closed success，
-  conflicting replay 保持失败。
-
-  同时把 recovery gate 从 LLM driver convention 提升为 Harness/Runtime 双边 exit invariant：
-  空 step、direct approval 与 nonterminal pending approval 均不能返回成功或 waiting；合法
-  `runtime_suspended` 必须携带 durable approval identity，runtime 拒绝
-  `FAILED + pending_approval_id`。immutable dependency disposition 由 scheduler pre-claim 和
-  task-mutation 后 reconciler 转换为 exactly-one source-bound `RECOVERY_REQUIRED` signal；
-  terminal signal 也参与去重。wakeup 不重试 delegate、不 claim unassigned target，prompt
-  重建 exact failure/conditions 并保留 agent 策略自由与 task owner authority。
+  2026-07-28 复杂度复盘认定后半段是元问题本身：它没有保护新的不可逆安全性质，却把开放的
+  agent 策略变成必须不断补充的闭集 matcher。`simplify-v3-harness-control-boundary` 因此
+  删除 hypothesis/disposition active control plane、turn recovery machine、synthetic wakeup
+  与 response veto，只保留 `FailureObservation`、ordinary continuation 和真实安全边界。
+  `COMPLETED` / `MAX_STEPS_EXCEEDED` 都不推断 task terminal；approval 仍要求 durable identity，
+  unknown effect/authority/fencing 等负控不变。历史 migration 表保留兼容，但 runtime 不再
+  读写或投影。
 
 - [x] Exact-occurrence AOX gate 把任何中间试错永久等同于最终 scientific failure。
 
@@ -303,33 +276,32 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
   real SQLite repository-backed task/report/close/finalizer regression 覆盖，普通 session
   仍保持原 task semantics。
 
-  r58 追加修正记录：terminal close 与 conversation truth 仍有一处 co-terminal 缝隙。
-  close-ready master 的 assistant-only response 现在通过 composition-injected
-  `assistant_response_precondition` 在持久化前 no-effect 退回；agent 必须在同一 provider
-  response 中提供自己的完整终答与 explicit `scientific.attempt.close`。close handler 在
-  effect 前拒绝 empty companion；successful terminal result 只在 closure request、
-  deterministic conversation document/message 与 immutable response binding 已由现有 Core
-  atomic/UoW 一次提交后返回，harness 不执行第二次写入。该 seam 不自动 close、不推断
-  selection、不生成答案，普通 session 没有配置时保持原行为。共享 report-publication
-  predicate 同时接受 exact-linked `ready` 与 `published` report，避免 policy/projection/
-  collector/verifier 对同一 domain enum 产生不同真值。
+  r58/post-r59 曾把 co-terminal conversation 与 report handoff 扩展为 generic
+  `assistant_response_precondition`，并在 AOX `@4` 中拒绝 premature prose。后续复杂度复盘
+  认定“文本是否足以作为下一步策略”不是 safety invariant；该 response seam 已全链删除。
+  保留的事实边界是：close handler 仍要求同一 invocation 的 non-empty companion text，并
+  原子写 closure request、conversation binding；AOX tool precondition 仍只拦截不合法
+  mutation；final verifier 仍拒绝 task/report/selection/closure 不完整的 attempt。assistant
+  prose 本身不会完成任何对象，但也不再因 Harness 期待另一种策略而被丢弃。r59 及其
+  closure-stage diagnostics 的历史 verdict、authority 与不可复用性不变。
 
-  r59 追加诊断边界：为单独验证上述 handoff，而不重放科学 effect 或修改历史证据，
-  closure-stage runner 只读限定 cursor 614、在 fresh current-schema root 中机械恢复
-  source operation/selection/evidence facts，并只注入一个 continuity memory 和 executor
-  signal。之后仍由 production scheduler、tool/response policy、writer/lease/fencing、
-  reporter/master 与 process supervisor 推进。sealed operation universe 只呈现“不能新增
-  science”的真实约束，不替 agent 自动 finish/report/close；所有结果永久
-  `acceptance_eligible=false`，不能进入 formal bundle/reducer。
+  同期保留的其他修正包括 authority-free/scope-correct compaction、prompt 中 exact current
+  workflow refs，以及两次 stable zero-signal/no-wakeup diagnostic。它们呈现 canonical
+  state，不要求 agent 走固定 handoff 剧本。
 
-  post-r59 closure-stage successor 追加修正记录：auto compaction 不再携带 actor focus、
-  ready/approval/invocation 或 workflow authority，session/lane 各自从 exact scope 重建；
-  legacy automatic rows 只在 prompt projection 移除 generated volatile sections，stored
-  evidence 不改写。master/teammate prompt exact 显示 current workflow refs，包括空集合。
-  AOX formal policy 升为 `@4`，仅在 research/execution completed 而 ready report
-  unassigned/no-signal 时拒绝 premature prose，不执行 handoff。live driver 读取 validated
-  v2 command outcome，并在两次 stable zero-signal/no-wakeup proof 后 typed fail-fast；
-  不改变 scheduler、task 或 ready-task auto-enqueue 语义。
+- [x] Lane 与 session lease 是否只是历史复杂度，应随 recovery machine 一并删除。
+
+  证据：Lane symbols 仍有 105 个 Python 文件消费者，覆盖 Host/CLI API、cwd/branch、
+  task/executor workspace isolation 与 projection；session lease 则隔离 background runtime、
+  durable command 与 manual/test scheduler 对同一 session 的并发 mutation，并提供 fencing
+  token。二者都仍保护可观察的资源边界。
+
+  决定：本 slice 保留 Lane entity/API，但降级为 concrete isolation resource；删除随
+  obligation/disposition 消失的 lane equality/copy，不把 nullable session-scoped provenance
+  强接到当前 lane。保留 single-process `SessionRuntimeLease`，因为同进程也存在多个独立
+  worker/command authority，去掉它会重新引入 concurrent advancement 与 stale write，而不是
+  单纯减少策略代码。后续若要删除 Lane，必须先把 cwd/branch/workspace ownership 迁移到一个
+  更小的 task-owned binding；不得以字段数量代替消费者证据。
 
 ## 4. 后续工作流
 

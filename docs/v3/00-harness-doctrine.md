@@ -151,16 +151,28 @@ file-backed SQLite、当前 worker/gateway/projection 与 deterministic controll
 authority、fencing、effect、evidence 与 bounded progress，不把某条固定 AOX workflow 写回通用
 harness。
 
-## 9. Failure recovery 与 attempt doctrine
+## 9. Failure observation 与 attempt doctrine
 
 Harness 的 fail closed 对象是不可违反的真实边界，不是“任何函数返回 false 就杀死 agent”。
 effect 已知的 ordinary failure 必须成为 agent 可读 observation 并允许 bounded turn 继续；
 unknown effect、fencing、authority、integrity、permission、budget 和未退休 process/writer
 才停止对应 ownership。任何 runtime stop 都不等于 task business exit。
 
-Host facts、稳定规则映射出的 likely causes 和 agent 自己的 hypothesis 必须分开归属。
-agent 可以显式拒绝，但 Harness 不替它拒绝：需要外部修复或新 authority 时使用
-`task.finish(blocked)`，objective 本身确知不可能时才使用 `failed`。
+`FailureObservation` 是 Host/Harness 的 immutable fact，`failure.get` 只负责读取。模型的
+hypothesis、解释与恢复策略不进入第二套 failure control plane；Harness 不建立 turn-local
+recovery obligation，不要求 exact settlement，也不因安全失败后的 prose/read 触发 response
+veto。agent 可以显式拒绝，但 Harness 不替它拒绝：需要外部修复或新 authority 时使用
+`task.finish(blocked)`，objective 本身确知不可能时才使用 `failed`。bounded turn 的
+`COMPLETED` / `MAX_STEPS_EXCEEDED` 都不自动改变 task。
+
+失败不会自动创造新的工作。ordinary tool failure 在同一 bounded loop 中交给 agent；
+continuation/engine 的后置结果复用其 canonical `ENGINE_COMPLETED` source-bound signal。
+approval、user message、protocol、task delegation、engine/continuation completion 等真实
+世界变化仍可产生 wakeup，单纯“agent 尚未采取 Harness 期待的恢复动作”不能产生 signal。
+
+Lane 只在它确实提供 cwd、branch、workspace 与 task isolation 时进入事实身份。它不是所有
+failure、provenance 或 recovery 的强制 join key；session-scoped evidence 可以明确保持
+`lane_id=None`。
 
 允许试错不等于忽略历史。formal scientific attempt 必须保留 full occurrence universe，由
 agent 显式 disposition 并选择 adopted chain；closure 同时要求 selection、effect、

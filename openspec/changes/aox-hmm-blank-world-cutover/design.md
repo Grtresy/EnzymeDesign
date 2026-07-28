@@ -866,6 +866,11 @@ r59 correction 初稿固定的旧 ref 对任何后继 admission/pin/authority �
 
 ### 2026-07-27 r60 full-path diagnostic recovery-settlement correction
 
+> Historical design record. The turn-local obligation, hypothesis settlement,
+> and response-veto correction described below was superseded on 2026-07-28 by
+> `simplify-v3-harness-control-boundary`. The r60 failure evidence remains
+> immutable; these mechanisms are no longer active product requirements.
+
 r60 在 clean commit `fb890390dc0518476da6334885df3d623bbb9426` 上消费独立
 full-path diagnostic plan
 `sha256:4467743b950fec87a50464d1ada1149e0c5ba5582bf6faf8d7b068b2f4e1d4ce`，
@@ -913,6 +918,12 @@ append-only repository，不新增顶层状态；后继 live 仍需 fresh correc
 admission、pin、独立 diagnostic plan/consumption/root 和对该 exact plan 的单独批准。
 
 ### 2026-07-27 r61 full-path diagnostic blocked-delegation disposition correction
+
+> Historical design record. The failure recovery disposition, exact settlement,
+> synthetic wakeup, and AOX response-veto correction described below was
+> superseded on 2026-07-28 by `simplify-v3-harness-control-boundary`. The r61
+> failure evidence remains immutable; these mechanisms are no longer active
+> product requirements.
 
 r61 在 clean commit `a66a15597ce3aefdff73105f5a6ad8b14a577089` 上消费独立
 full-path diagnostic plan

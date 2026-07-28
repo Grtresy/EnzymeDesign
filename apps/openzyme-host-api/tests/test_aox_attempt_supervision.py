@@ -330,10 +330,30 @@ def test_active_writer_fails_local_settlement_with_stable_code(
     with pytest.raises(AttemptSupervisionFatalError) as error:
         _supervisor(_TerminalRolloverRunner(active_writer=True), context)(context)
 
-    assert error.value.code == "attempt_mutation_writers_active"
+    assert error.value.code == "mutation_writers_active"
     payload = _fatal_payload(context)
-    assert payload["failure_code"] == "attempt_mutation_writers_active"
+    assert payload["failure_code"] == "mutation_writers_active"
     assert payload["local_settlement_observed"] is False
+
+
+def test_attempt_supervision_preserves_earliest_typed_causal_error() -> None:
+    captured: RuntimeError | None = None
+    try:
+        try:
+            raise CutoverEvidenceError(
+                "canonical_lifecycle_drift",
+                "canonical lifecycle evidence drifted",
+            )
+        except CutoverEvidenceError as cause:
+            raise RuntimeError("outer runner wrapper") from cause
+    except RuntimeError as exc:
+        captured = exc
+
+    assert captured is not None
+    assert supervision._typed_causal_failure(captured) == (
+        "canonical_lifecycle_drift",
+        "CutoverEvidenceError",
+    )
 
 
 def test_parent_rejects_mutation_snapshot_drift_after_retirement(

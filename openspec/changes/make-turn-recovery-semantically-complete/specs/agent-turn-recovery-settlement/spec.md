@@ -1,3 +1,6 @@
+> **Superseded:** `simplify-v3-harness-control-boundary` removes this exact
+> settlement contract from the active Harness.
+
 ## ADDED Requirements
 
 ### Requirement: A turn retains every actionable failure obligation

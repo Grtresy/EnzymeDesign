@@ -1664,9 +1664,6 @@ class LiveAoxAttemptRunner:
             v3_repository_provider=provider,
             v3_background_runtime_enabled=False,
             v3_tool_dispatch_precondition=formal_lifecycle_precondition,
-            v3_assistant_response_precondition=(
-                formal_lifecycle_precondition.check_assistant_response
-            ),
             v3_sandbox_workspace_root=context.roots.sandbox_root,
             v3_artifact_blob_root=context.roots.blob_root,
         )
@@ -4843,11 +4840,9 @@ class LiveAoxAttemptRunner:
             + "that reporting task with both canonical upstream tasks in blocked_by. Delegate "
             + "the ready researcher and executor, but do not attempt reporter delegation while "
             + "either dependency remains open. If a stale plan nevertheless receives "
-            + "task_blocked from task.delegate, record the exact no-authority "
-            + "defer_until_task_dependencies_complete disposition with "
-            + "failure.recovery.record; do not retry, rewrite dependencies, or mutate task "
-            + "status merely to satisfy the turn. Delegate the reporter only after both "
-            + "dependencies complete."
+            + "task_blocked from task.delegate, inspect the canonical task graph; do not "
+            + "retry, rewrite dependencies, or mutate task status merely to satisfy the "
+            + "turn. Delegate the reporter only after both dependencies complete."
             + authority_instruction
             + " When delegating, bind "
             + f"workflow_refs=[{workflow_ref!r}] only to the executor task; researcher and reporter "
@@ -4948,11 +4943,10 @@ class LiveAoxAttemptRunner:
             + "The master must request "
             + "scientific.attempt.close against the sealed final selection only after the task "
             + "board, report publication, and final user-facing answer are ready. The master "
-            + "must include the complete final user-facing answer as response text in the same "
-            + "model response that calls scientific.attempt.close; an assistant-only final "
-            + "response at close-ready state is rejected without persistence or effect. A "
-            + "successful close persists that companion answer exactly once and retires the "
-            + "turn, so the close request is the last mutating action of that turn. "
+            + "includes the complete final user-facing answer as response text with "
+            + "scientific.attempt.close so a successful close persists that companion "
+            + "answer exactly once and retires the turn. Assistant text alone does not close "
+            + "the attempt or make an incomplete state acceptance-eligible. "
             + "sandbox.exec argv is direct argv with no implicit shell parsing: "
             + "never put heredoc, redirection, or pipeline syntax inside a Python argv element; "
             + "write scripts with sandbox.file.write or sandbox.file.patch and then invoke the "

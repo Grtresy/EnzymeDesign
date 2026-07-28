@@ -1,3 +1,6 @@
+> **Superseded:** `simplify-v3-harness-control-boundary` replaces these
+> requirements with observation-only ordinary failure continuation.
+
 ## ADDED Requirements
 
 ### Requirement: Recoverable no-effect failures create a turn obligation

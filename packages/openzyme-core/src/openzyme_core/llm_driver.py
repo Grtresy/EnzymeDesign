@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import json
 from typing import Any
 from uuid import uuid4
 
@@ -10,8 +9,6 @@ from openzyme_runtime import ToolSpec
 from openzyme_domain import MutationWriterKind
 
 from .engines import EngineRegistry
-from .harness import AssistantResponseRejection
-from .harness import AgentTurnRecoveryUnresolved
 from .harness import HarnessInput
 from .harness import HarnessStep
 from .harness import LlmTraceStep
@@ -23,7 +20,6 @@ from .harness import ToolResult
 from .harness import build_agent_step_context
 from .harness import budget_tool_results_for_prompt
 from .harness import ensure_prompt_budget_before_model_call
-from .harness import evaluate_agent_turn_recovery_response
 from .tool_catalog import ToolDescriptor
 from .tool_catalog import top_level_tool_descriptors
 from .skills import render_selected_workflow_context
@@ -302,23 +298,6 @@ def _tool_messages(tool_results: tuple[ToolResult, ...]) -> list[Any]:
     return messages
 
 
-def _assistant_response_rejection_message(
-    rejection: AssistantResponseRejection,
-) -> Any:
-    content = json.dumps(
-        {
-            "assistant_response_rejected": True,
-            **rejection.to_dict(),
-        },
-        sort_keys=True,
-    )
-    try:
-        from langchain_core.messages import SystemMessage
-    except ImportError:
-        return {"role": "system", "content": content}
-    return SystemMessage(content=content)
-
-
 def _assistant_tool_call_messages_for_results(
     messages: list[Any], tool_results: tuple[ToolResult, ...]
 ) -> list[Any]:
@@ -348,9 +327,6 @@ class LlmConversationDriver:
     engine_registry: EngineRegistry | None = None
     max_parallel_tool_calls: int = 3
     _messages: list[Any] = field(default_factory=list)
-    _assistant_response_rejections: list[AssistantResponseRejection] = field(
-        default_factory=list
-    )
     _initialized: bool = False
     _call_index: int = 0
 
@@ -478,10 +454,6 @@ class LlmConversationDriver:
 
         def rebuild_payload() -> PromptPayload:
             rebuilt_messages = _build_seed_messages(context, harness_input)
-            rebuilt_messages.extend(
-                _assistant_response_rejection_message(rejection)
-                for rejection in self._assistant_response_rejections[-3:]
-            )
             if tool_results:
                 rebuilt_messages.extend(
                     _assistant_tool_call_messages_for_results(
@@ -581,43 +553,6 @@ class LlmConversationDriver:
             )
         if not assistant_message:
             assistant_message = "No user-facing response was generated."
-        recovery_settlement = evaluate_agent_turn_recovery_response(
-            context,
-            call_index=call_index,
-            max_steps=harness_input.max_steps,
-        )
-        if isinstance(recovery_settlement, AgentTurnRecoveryUnresolved):
-            return HarnessStep(
-                turn_recovery_unresolved=recovery_settlement,
-                llm_trace=self._trace_step(
-                    response_text=assistant_message,
-                    step_context=step_context,
-                ),
-            )
-        rejection = (
-            recovery_settlement
-            if isinstance(recovery_settlement, AssistantResponseRejection)
-            else None
-        )
-        precondition = context.assistant_response_precondition
-        if rejection is None and precondition is not None:
-            rejection = precondition(
-                context,
-                step_context,
-                assistant_message,
-            )
-        if rejection is not None:
-            self._assistant_response_rejections.append(rejection)
-            self._messages.append(
-                _assistant_response_rejection_message(rejection)
-            )
-            return HarnessStep(
-                assistant_response_rejection=rejection,
-                llm_trace=self._trace_step(
-                    response_text=assistant_message,
-                    step_context=step_context,
-                ),
-            )
         return HarnessStep(
             assistant_message=assistant_message,
             llm_trace=self._trace_step(

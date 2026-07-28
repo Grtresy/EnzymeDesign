@@ -1,3 +1,7 @@
+> **Superseded:** `simplify-v3-harness-control-boundary` replaces this change's
+> premise that every ordinary recoverable failure requires exact same-turn
+> settlement. The remaining real MICU task MUST NOT run from this change.
+
 ## Why
 
 Agent turn recovery currently stores only one actionable failure and settles it through a mixture of special cases and a global write-tool name allowlist. That model loses earlier failures in a parallel batch, rejects valid corrected read retries, allows unrelated cross-tool writes to erase a failure, and misses failures produced before normal dispatch or while settling undispatched calls. It also leaves condition-bound deferral dependent on incidental runtime wakeups and allows some completed/waiting exits to bypass settlement through an empty step or an unbound pending approval. The resulting gaps are the common cause behind the late failures exposed by the r60/r61 live runs.

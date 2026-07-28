@@ -769,11 +769,6 @@ export function renderV3Failures(workspace) {
                 <small>${escapeHtml(failure.failure_id ?? "unknown")} · recoverability ${escapeHtml(failure.recoverability ?? "unknown")} · effect ${escapeHtml(failure.effect_certainty ?? "unknown")} · retry ${escapeHtml(failure.retry_eligibility ?? "unknown")}</small>
                 ${factSummary ? `<small>Harness facts: ${escapeHtml(factSummary)}</small>` : ""}
                 ${likelyCauses.length ? `<small>Likely causes: ${escapeHtml(likelyCauses.join(" | "))}</small>` : ""}
-                ${
-                  failure.agent_hypothesis
-                    ? `<small>Agent hypothesis (${escapeHtml(failure.agent_hypothesis_confidence ?? "unspecified")}): ${escapeHtml(failure.agent_hypothesis)}</small>`
-                    : ""
-                }
                 ${failure.safe_hint ? `<small>Recovery boundary: ${escapeHtml(failure.safe_hint)}</small>` : ""}
               </li>`;
             })

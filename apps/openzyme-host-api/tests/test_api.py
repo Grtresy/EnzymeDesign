@@ -1302,18 +1302,10 @@ def test_v3_runtime_context_preserves_tool_dispatch_precondition(
     ) -> None:
         return None
 
-    def response_precondition(
-        _context: object,
-        _step_context: object,
-        _assistant_response: str,
-    ) -> None:
-        return None
-
     dependencies = HostApiDependencies(
         foundation=foundation,
         v3_repository_provider=provider,
         v3_tool_dispatch_precondition=precondition,
-        v3_assistant_response_precondition=response_precondition,
     )
     with provider.connection_scope() as owner:
         session = Session.create(
@@ -1328,8 +1320,6 @@ def test_v3_runtime_context_preserves_tool_dispatch_precondition(
 
     assert service.tool_dispatch_precondition is precondition
     assert context.tool_dispatch_precondition is precondition
-    assert service.assistant_response_precondition is response_precondition
-    assert context.assistant_response_precondition is response_precondition
 
 
 def test_v3_timed_out_callback_cannot_apply_late_business_effect(

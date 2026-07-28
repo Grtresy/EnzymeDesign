@@ -500,18 +500,42 @@ def _process_group_members(pgid: int) -> tuple[int, ...]:
     return tuple(sorted(members))
 
 
-def _stable_failure_code(exc: BaseException) -> str:
-    candidate = getattr(exc, "code", None)
-    if isinstance(candidate, str) and _ERROR_CODE_PATTERN.fullmatch(candidate):
-        return candidate
-    return "attempt_child_runner_failed"
-
-
 def _safe_failure_type(value: object) -> str:
     candidate = str(value or "")
     if _FAILURE_TYPE_PATTERN.fullmatch(candidate) is not None:
         return candidate
     return "AttemptSupervisionFailure"
+
+
+def _typed_causal_failure(
+    exc: BaseException,
+) -> tuple[str, str] | None:
+    """Return the earliest typed error in a bounded exception chain."""
+
+    current: BaseException | None = exc
+    selected: tuple[str, str] | None = None
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen and len(seen) < 64:
+        seen.add(id(current))
+        candidate = getattr(current, "code", None)
+        if candidate is None:
+            candidate = getattr(current, "error_code", None)
+        if (
+            isinstance(candidate, str)
+            and _ERROR_CODE_PATTERN.fullmatch(candidate) is not None
+        ):
+            selected = (
+                candidate,
+                _safe_failure_type(type(current).__name__),
+            )
+        cause = current.__cause__
+        if cause is not None:
+            current = cause
+        elif not current.__suppress_context__:
+            current = current.__context__
+        else:
+            current = None
+    return selected
 
 
 def _write_exclusive_bytes(path: Path, content: bytes, *, final_mode: int) -> None:
@@ -747,12 +771,21 @@ def _attempt_child_main(
     except BaseException as exc:
         if emitter is not None:
             try:
+                typed_failure = _typed_causal_failure(exc)
                 emitter.emit(
                     "child_terminal",
                     {
                         "outcome": "fatal",
-                        "failure_code": _stable_failure_code(exc),
-                        "failure_type": _safe_failure_type(type(exc).__name__),
+                        "failure_code": (
+                            "attempt_child_runner_failed"
+                            if typed_failure is None
+                            else typed_failure[0]
+                        ),
+                        "failure_type": (
+                            _safe_failure_type(type(exc).__name__)
+                            if typed_failure is None
+                            else typed_failure[1]
+                        ),
                         "result_digest": None,
                     },
                 )
@@ -1632,10 +1665,9 @@ class ProcessIsolatedAttemptRunner:
                 code = "attempt_child_spawn_unavailable"
             elif (
                 retirement_proven
-                and isinstance(getattr(exc, "code", None), str)
-                and _ERROR_CODE_PATTERN.fullmatch(str(exc.code)) is not None
+                and (typed_failure := _typed_causal_failure(exc)) is not None
             ):
-                code = str(exc.code)
+                code = typed_failure[0]
             elif retirement_proven:
                 code = "attempt_supervision_result_invalid"
             else:
