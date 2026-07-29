@@ -5,18 +5,37 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cd "$repo_root"
 
-qualification_tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/openzyme-v3-premerge.XXXXXX")"
-trap 'rm -rf -- "$qualification_tmp_root"' EXIT
+case "$#" in
+  0)
+    mode_args=(--workers 4)
+    ;;
+  1)
+    if [[ "$1" != "--forced-serial" ]]; then
+      echo "usage: $0 [--forced-serial]" >&2
+      exit 2
+    fi
+    mode_args=(--forced-serial)
+    ;;
+  *)
+    echo "usage: $0 [--forced-serial]" >&2
+    exit 2
+    ;;
+esac
 
-uv run ruff check apps packages
-uv run ruff check scripts/audit-v3-compat-callers.py
-uv run python scripts/audit-v3-compat-callers.py --summary
-./scripts/check-v3-architecture-qualification.sh \
-  premerge_subset \
-  "$qualification_tmp_root/report"
-uv run pytest -m "not integration and not live_llm and not live_tavily and not live_hpc and not live_e2e and not quality_eval"
-(
-  cd apps/openzyme-web-ui
-  npm test
-  npm run build
-)
+evidence_parent="$(mktemp -d "${TMPDIR:-/tmp}/openzyme-mainline-authoritative.XXXXXX")"
+evidence_root="$evidence_parent/evidence"
+
+echo "CURRENT AUTHORITY: scripts/check-mainline.sh is the complete non-live merge gate." >&2
+echo "NO OTHER AUTHORITY: this command is not architecture admission, AOX launch, live-campaign, or scientific evidence." >&2
+echo "AUTHORITATIVE EVIDENCE ROOT: $evidence_root" >&2
+echo "ROLLBACK COMPARISON: ./scripts/check-mainline-legacy.sh (never current authority when invoked directly)." >&2
+
+uv run python scripts/run-test-gate.py \
+  mainline_authoritative \
+  "$evidence_root" \
+  "${mode_args[@]}"
+uv run python scripts/run-test-gate.py \
+  verify-mainline-authoritative \
+  "$evidence_root"
+
+echo "CURRENT NON-LIVE MERGE AUTHORITY VERIFIED: $evidence_root" >&2

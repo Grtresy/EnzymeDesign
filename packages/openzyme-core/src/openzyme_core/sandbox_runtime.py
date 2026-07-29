@@ -1676,23 +1676,31 @@ class _ControlSocketServer:
                 "result": self._wait_for_durable_execution(operation),
             }
 
-        operation = self._create_operation(
-            envelope,
-            operation_digest=operation_digest,
-            status=ControlledOperationStatus.WAITING_APPROVAL,
-            approval_state=ApprovalRequestStatus.PENDING.value,
-        )
-        approval = self._create_approval(operation, envelope)
-        operation = replace(
-            operation, approval_id=approval.approval_id, updated_at=utc_now_iso()
-        )
-        if operation.adapter_envelope_schema_version == S12_ADAPTER_ENVELOPE_SCHEMA:
-            operation = replace(
-                operation,
-                adapter_approval_envelope=self._adapter_approval_envelope(operation),
+        with self.repositories.atomic(
+            prefix="legacy_controlled_operation_admission"
+        ):
+            operation = self._create_operation(
+                envelope,
+                operation_digest=operation_digest,
+                status=ControlledOperationStatus.WAITING_APPROVAL,
+                approval_state=ApprovalRequestStatus.PENDING.value,
             )
-        self.repositories.controlled_operations.save(operation)
-        continuation = self._create_continuation(operation, approval)
+            approval = self._create_approval(operation, envelope)
+            operation = replace(
+                operation, approval_id=approval.approval_id, updated_at=utc_now_iso()
+            )
+            if (
+                operation.adapter_envelope_schema_version
+                == S12_ADAPTER_ENVELOPE_SCHEMA
+            ):
+                operation = replace(
+                    operation,
+                    adapter_approval_envelope=self._adapter_approval_envelope(
+                        operation
+                    ),
+                )
+            self.repositories.controlled_operations.save(operation)
+            continuation = self._create_continuation(operation, approval)
         claimed = self._wait_for_approval_and_claim(continuation.continuation_id)
         operation = (
             self.repositories.controlled_operations.get(operation.operation_id)

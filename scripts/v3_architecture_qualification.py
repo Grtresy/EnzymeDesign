@@ -10,6 +10,9 @@ from openzyme_host_api.architecture_qualification import (
     ArchitectureQualificationReportError,
 )
 from openzyme_host_api.architecture_qualification_runner import run_qualification
+from openzyme_host_api.architecture_qualification_runner import (
+    mainline_sidecar_request_from_environment,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -37,12 +40,14 @@ def main(argv: list[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     command = [sys.executable, str(RUNNER_PATH), *(argv or sys.argv[1:])]
     try:
+        mainline_sidecar = mainline_sidecar_request_from_environment()
         result = run_qualification(
             repo_root=REPO_ROOT,
             runner_path=RUNNER_PATH,
             mode=arguments.mode,
             output_directory=arguments.output_dir,
             command=command,
+            mainline_sidecar=mainline_sidecar,
         )
     except ArchitectureQualificationReportError as exc:
         print(

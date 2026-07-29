@@ -31,5 +31,6 @@ openzyme-tools = { workspace = true }
 [dependency-groups]
 dev = [
   "pytest>=9.0.0",
+  "pytest-xdist==3.8.0",
   "ruff>=0.11.0",
 ]

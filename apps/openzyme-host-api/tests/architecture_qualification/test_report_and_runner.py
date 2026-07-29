@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 import hashlib
+import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -32,6 +36,27 @@ from openzyme_host_api.architecture_qualification import (
     verify_architecture_qualification_report,
 )
 from openzyme_host_api.architecture_qualification_runner import non_live_environment
+from openzyme_host_api.architecture_qualification_runner import (
+    MAINLINE_ENVIRONMENT_DIGEST_ENV,
+)
+from openzyme_host_api.architecture_qualification_runner import (
+    MAINLINE_INVOCATION_ID_ENV,
+)
+from openzyme_host_api.architecture_qualification_runner import (
+    MAINLINE_PLAN_DIGEST_ENV,
+)
+from openzyme_host_api.architecture_qualification_runner import (
+    MAINLINE_SIDECAR_OUTPUT_ENV,
+)
+from openzyme_host_api.architecture_qualification_runner import (
+    MAINLINE_SOURCE_DIGEST_ENV,
+)
+from openzyme_host_api.architecture_qualification_runner import (
+    MainlineQualificationSidecarRequest,
+)
+from openzyme_host_api.architecture_qualification_runner import (
+    mainline_sidecar_request_from_environment,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -584,3 +609,148 @@ def test_non_live_environment_scrubs_credentials_and_live_opt_ins() -> None:
     assert "OPENZYME_LIVE_E2E" not in environment
     assert "PYTEST_ADDOPTS" not in environment
     assert "SSH_AUTH_SOCK" not in environment
+
+
+def test_mainline_sidecar_request_is_optional_and_all_or_nothing(
+    tmp_path: Path,
+) -> None:
+    assert mainline_sidecar_request_from_environment({}) is None
+    with pytest.raises(
+        ArchitectureQualificationReportError,
+        match="binding is incomplete",
+    ):
+        mainline_sidecar_request_from_environment(
+            {MAINLINE_SIDECAR_OUTPUT_ENV: str(tmp_path / "sidecar.json")}
+        )
+
+    source = {
+        MAINLINE_SIDECAR_OUTPUT_ENV: str(tmp_path / "sidecar.json"),
+        MAINLINE_INVOCATION_ID_ENV: "invocation-1",
+        MAINLINE_PLAN_DIGEST_ENV: "sha256:" + "1" * 64,
+        MAINLINE_SOURCE_DIGEST_ENV: "sha256:" + "2" * 64,
+        MAINLINE_ENVIRONMENT_DIGEST_ENV: "sha256:" + "3" * 64,
+    }
+    request = mainline_sidecar_request_from_environment(source)
+    assert request == MainlineQualificationSidecarRequest(
+        output_path=tmp_path / "sidecar.json",
+        invocation_id="invocation-1",
+        plan_digest="sha256:" + "1" * 64,
+        source_identity_digest="sha256:" + "2" * 64,
+        environment_digest="sha256:" + "3" * 64,
+    )
+    scrubbed = non_live_environment({**source, "PATH": "/usr/bin"})
+    assert scrubbed["PATH"] == "/usr/bin"
+    assert not set(source) & set(scrubbed)
+
+
+def test_mainline_private_sidecar_is_canonical_bound_and_no_replace(
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "qualification-report.json"
+    report_path.write_text("{}\n", encoding="utf-8")
+    request = MainlineQualificationSidecarRequest(
+        output_path=tmp_path / "qualification-sidecar.json",
+        invocation_id="invocation-1",
+        plan_digest="sha256:" + "1" * 64,
+        source_identity_digest="sha256:" + "2" * 64,
+        environment_digest="sha256:" + "3" * 64,
+    )
+    harness = [
+        {
+            "duration_ns": 2,
+            "markers": [],
+            "node_id": "tests/test_b.py::test_b",
+            "outcome": "pass",
+            "phases": [],
+        },
+        {
+            "duration_ns": 1,
+            "markers": ["parametrize"],
+            "node_id": "tests/test_a.py::test_a",
+            "outcome": "pass",
+            "phases": [],
+        },
+    ]
+    scenarios = [
+        {
+            "duration_ns": 3,
+            "markers": ["architecture_qualification_scenario"],
+            "node_id": "tests/scenarios/test_c.py::test_c",
+            "outcome": "pass",
+            "phases": [],
+        }
+    ]
+    path = runner_module._publish_mainline_sidecar(  # noqa: SLF001
+        repo_root=REPO_ROOT,
+        request=request,
+        mode="premerge_subset",
+        report_path=report_path,
+        report_payload_digest="sha256:" + "4" * 64,
+        harness_records=harness,
+        scenario_records=scenarios,
+    )
+    content = path.read_bytes()
+    payload = json.loads(content)
+    assert content == canonical_json_document_bytes(payload)
+    self_digest = payload.pop("self_digest")
+    assert self_digest == f"sha256:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"
+    assert [item["node_id"] for item in payload["node_results"]] == [
+        "tests/scenarios/test_c.py::test_c",
+        "tests/test_a.py::test_a",
+        "tests/test_b.py::test_b",
+    ]
+    with pytest.raises(
+        ArchitectureQualificationReportError,
+        match="already exists",
+    ):
+        runner_module._publish_mainline_sidecar(  # noqa: SLF001
+            repo_root=REPO_ROOT,
+            request=request,
+            mode="premerge_subset",
+            report_path=report_path,
+            report_payload_digest="sha256:" + "4" * 64,
+            harness_records=harness,
+            scenario_records=scenarios,
+        )
+
+
+def test_mainline_node_hook_records_exact_harness_node(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "node-output.json"
+    environment = dict(os.environ)
+    environment[runner_module._MAINLINE_NODE_OUTPUT_ENV] = str(output)  # noqa: SLF001
+    completed = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "pytest",
+            (
+                "apps/openzyme-host-api/tests/architecture_qualification/"
+                "test_collection.py::"
+                "test_collection_derives_source_and_keeps_stable_id_"
+                "separate_from_node_id"
+            ),
+            "--rootdir=.",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+        ),
+        cwd=REPO_ROOT,
+        env=environment,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(
+        "utf-8",
+        errors="replace",
+    )
+    records = runner_module._load_mainline_node_records(output)  # noqa: SLF001
+    assert len(records) == 1
+    assert records[0]["node_id"].endswith(
+        "::test_collection_derives_source_and_keeps_stable_id_separate_from_node_id"
+    )
+    assert records[0]["outcome"] == "pass"
+    assert records[0]["duration_ns"] >= 0

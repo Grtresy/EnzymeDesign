@@ -28,6 +28,7 @@ V3 的核心立场：
 架构审计与后续修正追踪：
 
 - [architecture-qualification/README.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/architecture-qualification/README.md)：closed invariant registry、真实 production-composition 场景、deterministic report/pure verifier 与 clean admission 操作合同。
+- [test-gate.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/test-gate.md)：当前 optimized `scripts/check-mainline.sh` authority、focused/affected/replay 非权威边界、exact qualification ownership、resource-audited fixed parallelism、receipt、benchmark、forced-serial 与 rollback 合同。
 - [harness-complexity-audit.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/harness-complexity-audit.md)
 - [compatibility-sunset.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/compatibility-sunset.md)
 - [runtime-hpc-reliability-operations.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/runtime-hpc-reliability-operations.md)：persistent SSH、durable operation、command drain 与 mutation scope 的启用、审计和回滚 runbook。

@@ -8,7 +8,17 @@ uv run python scripts/audit-v3-compat-callers.py
 
 生成；日常 gate 可追加 `--summary` 只输出计数和错误。输出 schema 是 `openzyme.v3.compat-caller-audit.v1`；出现 parse error、已退役 seam 的 production caller，或声明为 active/compat 的实现路径消失时命令非零退出。审计覆盖 Python AST、前端/配置源码、TOML entrypoint 与受控文档，不读取 secret，也不把“仓库内零 caller”伪装成“外部零 caller”。
 
-`scripts/check-mainline.sh` 在默认 pytest 和前端 gate 前执行该审计；任何已退役 surface 的 production 回流会直接阻断主线验证。
+当前 optimized `scripts/check-mainline.sh` 仍在 closed pytest plan、qualification、
+general residual 和前端 gate 之前依次执行 audit Ruff 与该 semantic scan；任何已退役
+surface 的 production 回流会保持 fail-fast，直接阻断后续主线验证。
+
+当前实现先构造一个 immutable `RepositoryIndex`：候选 source 每次 invocation 至多读取/
+decode 一次，Python/TOML 至多 parse 一次；symbol、method、DTO、lifecycle、route、
+workspace、entrypoint、docs 与 non-Python literal scanner 共享同一 inventory。文档和
+非-Python exact literals 使用一次 multi-literal pass，不按 seam 重走目录。它不使用
+mtime、cross-run cache 或先前 report，scan/read/parse error 仍按原语义确定性失败。
+Phase 1 canonical/adversarial parity 保留相同 report、caller ordering、classification、
+violation 和 exit outcome。
 
 ## 决策语义
 

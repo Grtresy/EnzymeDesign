@@ -1,0 +1,204 @@
+schema_id = "openzyme_test_gate_config@1"
+worker_hard_max = 4
+supported_profiles = [
+  "focused_diagnostic",
+  "affected_scope_diagnostic",
+  "mainline_authoritative",
+]
+forbidden_dispatch_profiles = [
+  "architecture_admission",
+  "live_campaign",
+]
+
+[operator_evidence]
+repository_plane_only = true
+requires_checkout_external_output_root = true
+product_state_writes = false
+
+[resource_policy]
+default_class = "serial_unknown"
+closed_classes = [
+  "parallel_pure",
+  "parallel_temp_root",
+  "bounded_service",
+  "serial_unknown",
+  "serial_file_sqlite",
+  "serial_global_env",
+  "serial_process_signal",
+  "serial_qualification",
+  "live_external",
+]
+parallel_eligible_classes = [
+  "parallel_pure",
+  "parallel_temp_root",
+]
+
+[pytest_contract]
+marker_expression = "not integration and not live_llm and not live_tavily and not live_hpc and not live_e2e and not quality_eval"
+allowed_non_live_markers = [
+  "architecture_qualification_scenario",
+  "parametrize",
+  "podman",
+  "skip",
+  "skipif",
+  "slow",
+  "xfail",
+]
+forbidden_non_live_markers = [
+  "integration",
+  "live_llm",
+  "live_tavily",
+  "live_hpc",
+  "live_e2e",
+  "seeded_live_smoke",
+  "quality_eval",
+]
+architecture_scenario_marker = "architecture_qualification_scenario"
+
+[environment_policies.legacy_repository_ambient]
+unset = []
+set = {}
+forbidden_markers = [
+  "integration",
+  "live_llm",
+  "live_tavily",
+  "live_hpc",
+  "live_e2e",
+  "seeded_live_smoke",
+  "quality_eval",
+]
+
+[environment_policies.qualification_closed_non_live]
+unset = [
+  "OPENAI_API_KEY",
+  "TAVILY_API_KEY",
+  "MICU_API_KEY",
+  "SSH_AUTH_SOCK",
+  "SSH_AGENT_PID",
+  "OPENZYME_RUN_LIVE",
+  "OPENZYME_RUN_AOX",
+  "OPENZYME_LIVE_E2E",
+  "OPENZYME_LIVE_HPC",
+]
+set = { OPENZYME_ARCHITECTURE_QUALIFICATION = "1", OPENZYME_LOAD_ENV_FILES = "0", PYTHONDONTWRITEBYTECODE = "1" }
+forbidden_markers = [
+  "integration",
+  "live_llm",
+  "live_tavily",
+  "live_hpc",
+  "live_e2e",
+  "seeded_live_smoke",
+  "quality_eval",
+]
+
+[environment_policies.diagnostic_closed_non_live]
+unset = [
+  "OPENAI_API_KEY",
+  "TAVILY_API_KEY",
+  "MICU_API_KEY",
+  "SSH_AUTH_SOCK",
+  "SSH_AGENT_PID",
+  "OPENZYME_RUN_LIVE",
+  "OPENZYME_RUN_AOX",
+  "OPENZYME_LIVE_E2E",
+  "OPENZYME_LIVE_HPC",
+]
+set = { OPENZYME_LOAD_ENV_FILES = "0", PYTHONDONTWRITEBYTECODE = "1" }
+forbidden_markers = [
+  "integration",
+  "live_llm",
+  "live_tavily",
+  "live_hpc",
+  "live_e2e",
+  "seeded_live_smoke",
+  "quality_eval",
+]
+
+[[stages]]
+id = "ruff_source"
+argv = ["uv", "run", "ruff", "check", "apps", "packages"]
+cwd = "."
+environment_policy = "legacy_repository_ambient"
+deadline_seconds = 120
+resource_class = "serial_unknown"
+
+[[stages]]
+id = "ruff_compatibility_audit"
+argv = ["uv", "run", "ruff", "check", "scripts/audit-v3-compat-callers.py"]
+cwd = "."
+environment_policy = "legacy_repository_ambient"
+deadline_seconds = 120
+resource_class = "serial_unknown"
+
+[[stages]]
+id = "compatibility_audit"
+argv = ["uv", "run", "python", "scripts/audit-v3-compat-callers.py", "--summary"]
+cwd = "."
+environment_policy = "legacy_repository_ambient"
+deadline_seconds = 300
+resource_class = "serial_unknown"
+
+[[stages]]
+id = "architecture_qualification_premerge"
+argv = ["./scripts/check-v3-architecture-qualification.sh", "premerge_subset", "{qualification_output_root}"]
+cwd = "."
+environment_policy = "qualification_closed_non_live"
+deadline_seconds = 900
+resource_class = "serial_qualification"
+qualification_mode = "premerge_subset"
+
+[[stages]]
+id = "general_non_live_pytest"
+argv = ["uv", "run", "pytest", "-m", "not integration and not live_llm and not live_tavily and not live_hpc and not live_e2e and not quality_eval"]
+cwd = "."
+environment_policy = "legacy_repository_ambient"
+deadline_seconds = 1800
+resource_class = "serial_unknown"
+
+[[stages]]
+id = "web_ui_test"
+argv = ["npm", "test"]
+cwd = "apps/openzyme-web-ui"
+environment_policy = "legacy_repository_ambient"
+deadline_seconds = 300
+resource_class = "serial_unknown"
+
+[[stages]]
+id = "web_ui_build"
+argv = ["npm", "run", "build"]
+cwd = "apps/openzyme-web-ui"
+environment_policy = "legacy_repository_ambient"
+deadline_seconds = 300
+resource_class = "serial_unknown"
+
+[[profiles]]
+id = "focused_diagnostic"
+stage_ids = []
+authoritative = false
+admission_eligible = false
+live_eligible = false
+summary = "NON-AUTHORITATIVE diagnostic feedback only"
+
+[[profiles]]
+id = "affected_scope_diagnostic"
+stage_ids = []
+authoritative = false
+admission_eligible = false
+live_eligible = false
+summary = "NON-AUTHORITATIVE diagnostic feedback only"
+
+[[profiles]]
+id = "mainline_authoritative"
+stage_ids = [
+  "ruff_source",
+  "ruff_compatibility_audit",
+  "compatibility_audit",
+  "architecture_qualification_premerge",
+  "general_non_live_pytest",
+  "web_ui_test",
+  "web_ui_build",
+]
+authoritative = true
+admission_eligible = false
+live_eligible = false
+summary = "Authoritative non-live mainline merge gate only"

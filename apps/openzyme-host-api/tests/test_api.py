@@ -4356,7 +4356,11 @@ def test_v3_background_runtime_runs_teammate_and_master_followup_without_manual_
             },
         )
         assert created.status_code == 200
-        _seed_v3_execution_artifact(v3_repositories, "sess_bg_v3_engines")
+        _seed_v3_execution_artifact(
+            v3_repositories,
+            "sess_bg_v3_engines",
+            tmp_path=tmp_path,
+        )
         lane = background_client.post(
             "/v3/lanes",
             json={
@@ -5598,7 +5602,10 @@ def test_hpc_operation_failed_after_approval_returns_to_executor_for_diagnostic(
 
 
 def _seed_v3_execution_artifact(
-    repositories: CoreRepositories, session_id: str
+    repositories: CoreRepositories,
+    session_id: str,
+    *,
+    tmp_path: Path,
 ) -> None:
     lines = []
     serial = 1
@@ -5610,7 +5617,8 @@ def _seed_v3_execution_artifact(
             )
             serial += 1
     content = "\n".join(lines) + "\nEND\n"
-    Path("/tmp/v3_input_structure.pdb").write_text(content, encoding="utf-8")
+    structure_path = tmp_path / f"{session_id}-v3-input-structure.pdb"
+    structure_path.write_text(content, encoding="utf-8")
     repositories.artifacts.save(
         SessionArtifactRecord(
             artifact_id="art_v3_structure",
@@ -5620,7 +5628,7 @@ def _seed_v3_execution_artifact(
             invocation_id=None,
             run_id=None,
             kind=ArtifactKind.STRUCTURE,
-            storage_uri="/tmp/v3_input_structure.pdb",
+            storage_uri=str(structure_path),
             relative_path="v3_input_structure.pdb",
             title="v3_input_structure.pdb",
             description=None,
@@ -6146,6 +6154,7 @@ def test_v3_llm_response_event_is_available_before_message_command_finishes() ->
 def test_v3_engine_backed_research_execution_report_draft_loop(
     monkeypatch,
     request,
+    tmp_path: Path,
 ) -> None:
     client, v3_repositories, model_factory = _build_v3_engine_llm_client(monkeypatch)
     _start_runtime_command_client(client, request)
@@ -6159,7 +6168,11 @@ def test_v3_engine_backed_research_execution_report_draft_loop(
         },
     )
     assert created.status_code == 200
-    _seed_v3_execution_artifact(v3_repositories, "sess_v3_engines")
+    _seed_v3_execution_artifact(
+        v3_repositories,
+        "sess_v3_engines",
+        tmp_path=tmp_path,
+    )
     lane = client.post(
         "/v3/lanes",
         json={

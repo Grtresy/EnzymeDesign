@@ -42,6 +42,11 @@ adversarial verifier、signed CI provenance 或真实 provider/HPC/Chrome availa
 - `scripts/v3_architecture_qualification.py` 负责编排 collection、execution 与 report
   publication；`scripts/check-v3-architecture-qualification.sh` 清除 live credential 并
   禁止 live opt-in。
+- test-gate 的 `mainline_authoritative` runner 可以为同一 invocation 传入
+  mainline-private sidecar request，记录 exact harness/scenario node outcomes，并绑定
+  plan、source、environment 与 canonical report digest。两参数 shell command、report
+  schema、publication、pure verifier、admission 和 AOX consumer 保持不变；sidecar 不是
+  admission artifact，也不能跨 invocation 复用。
 - `openzyme_host_api.architecture_qualification_report` 不运行 pytest、不写产品状态，
   只加载并验证 closed `openzyme_v3_architecture_qualification_report@1`。
 - `openzyme_host_api.aox_architecture_qualification` 生成 AOX launch/evidence 消费的
@@ -72,8 +77,19 @@ qualification_parent="$(mktemp -d /tmp/openzyme-v3-qualification.XXXXXX)"
 
 `diagnostic` 可绑定 dirty worktree，用于 GAP/P0 定位，但始终
 `admission_eligible=false`。`premerge_subset` 运行 registry/schema/selection closure 与
-deterministic P0-critical subset，由 `./scripts/check-mainline.sh` 调用；即使全部 green 也
-不能 admission。
+deterministic P0-critical subset，由当前 optimized `./scripts/check-mainline.sh` 作为同一
+invocation 的 stricter owner 调用；即使全部 green 也不能 admission。
+
+在 optimized mainline contract 中，`premerge_subset` 拥有 exact `Qh ∪ Qs`。只有同一
+invocation、同一 source/environment、report 经纯验证且每个 invariant outcome 为 proven
+pass 的 sidecar 才允许 general pytest 从 `G` 中减去这些节点。缺失、mismatch、timeout、
+skip/xfail、report drift 或 prior-invocation sidecar 都会在 general 前失败；runner 不会
+用 ordinary pytest fallback 把 qualification failure 重新解释为 green。
+
+`./scripts/check-mainline.sh --forced-serial` 仍使用同一个 qualification owner、sidecar、
+canonical report 与 pure verifier；它只把 general eligible partition 固定为一 worker。
+`scripts/check-mainline-legacy.sh` 仅用于 rollback comparison，直接调用不会生成当前
+authority receipt，也不改变本页 admission/AOX 边界。
 
 提交全部变更并确保 canonical checkout 完全 clean 后：
 

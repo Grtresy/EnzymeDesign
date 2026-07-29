@@ -14,6 +14,7 @@ import time
 import pytest
 
 from openzyme_core import ArtifactBoundaryService
+from openzyme_core import ApprovalRequestRepository
 from openzyme_core import CoreRepositories
 from openzyme_core import ContinuationDeliveryWorker
 from openzyme_core import ControlledOperationExecutionTransitionService
@@ -1390,6 +1391,32 @@ def _wait_for_operation_with_approval(
     raise AssertionError("expected controlled operation to be linked to approval")
 
 
+def _wait_for_completed_operation(
+    repositories: CoreRepositories,
+    session_id: str,
+    *,
+    runner_thread: threading.Thread,
+    timeout_seconds: float,
+) -> ControlledOperation:
+    deadline = time.monotonic() + timeout_seconds
+    operations: list[ControlledOperation] = []
+    while time.monotonic() < deadline:
+        operations = repositories.controlled_operations.list_by_session(session_id)
+        if (
+            len(operations) == 1
+            and operations[0].status is ControlledOperationStatus.COMPLETED
+        ):
+            return operations[0]
+        if not runner_thread.is_alive():
+            break
+        time.sleep(0.05)
+    statuses = [operation.status.value for operation in operations]
+    raise AssertionError(
+        "expected one completed controlled operation before the sandbox command "
+        f"deadline; runner_alive={runner_thread.is_alive()!r}, statuses={statuses!r}"
+    )
+
+
 def _resolve_s10_approval(
     repositories: CoreRepositories,
     approval_id: str,
@@ -2112,6 +2139,122 @@ def test_control_socket_opens_thread_owned_repository_scope(tmp_path: Path) -> N
 
         assert run.status is SandboxRunStatus.COMPLETED
         assert json.loads(str(run.stdout_summary))["artifact_id"] == "art_thread_owned"
+
+
+def test_legacy_approval_is_not_visible_before_its_continuation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "atomic-legacy-admission.sqlite3"
+    connection = connect_sqlite(str(database_path), check_same_thread=False)
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+
+    @contextmanager
+    def repository_scope():  # type: ignore[no-untyped-def]
+        scoped_connection = connect_sqlite(
+            str(database_path),
+            check_same_thread=False,
+        )
+        try:
+            yield CoreRepositories.from_connection(scoped_connection)
+        finally:
+            scoped_connection.close()
+
+    session, agent, workspace, workspace_root = _seed_workspace(
+        repositories,
+        tmp_path,
+    )
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+        repository_scope_factory=repository_scope,
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/atomic_legacy_admission.py",
+        content=(
+            "from openzyme_pipeline.client import call\n"
+            "call('s10.controlled_operation', {\n"
+            "    'schema_version': 's10.supervised_rpc.v1',\n"
+            "    'idempotency_key': 'atomic_legacy_admission_001',\n"
+            "    'logical_operation_key': 'fake.atomic_legacy_admission',\n"
+            "    'params_digest': 'sha256:atomic-legacy-admission',\n"
+            "    'backend_category': 'provider_http',\n"
+            "    'input_artifact_digests': [],\n"
+            "    'expected_outputs_summary': {'kind': 'json'},\n"
+            "    'resource_estimate': {'seconds': 1},\n"
+            "    'result_summary': {'status': 'completed'},\n"
+            "})\n"
+        ),
+        create_dirs=True,
+    )
+
+    approval_save_entered = threading.Event()
+    allow_approval_save_to_return = threading.Event()
+    original_save = ApprovalRequestRepository.save
+
+    def _save_with_publication_barrier(
+        repository: ApprovalRequestRepository,
+        approval: ApprovalRequest,
+    ) -> None:
+        original_save(repository, approval)
+        if (
+            approval.kind == "sdk_controlled_operation"
+            and approval.status is ApprovalRequestStatus.PENDING
+        ):
+            approval_save_entered.set()
+            assert allow_approval_save_to_return.wait(timeout=5)
+
+    monkeypatch.setattr(
+        ApprovalRequestRepository,
+        "save",
+        _save_with_publication_barrier,
+    )
+    holder: dict[str, object] = {}
+
+    def _run() -> None:
+        holder["run"] = service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/atomic_legacy_admission.py"],
+            timeout_seconds=10,
+        )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    assert approval_save_entered.wait(timeout=5)
+
+    observer_connection = connect_sqlite(str(database_path), check_same_thread=False)
+    observer = CoreRepositories.from_connection(observer_connection)
+    premature_approvals = observer.approvals.list_pending_by_session(
+        session.session_id
+    )
+    allow_approval_save_to_return.set()
+
+    pending = _wait_for_pending_approval(observer, session.session_id)
+    continuation = None
+    for _ in range(100):
+        continuation = observer.continuation_states.get_by_approval_id(
+            pending.approval_id
+        )
+        if continuation is not None:
+            break
+        time.sleep(0.05)
+    assert continuation is not None
+    _resolve_s10_approval(observer, pending.approval_id, decision="approved")
+    thread.join(timeout=10)
+    observer_connection.close()
+
+    assert not thread.is_alive()
+    assert premature_approvals == []
+    run = holder["run"]
+    assert isinstance(run, SandboxRunRecord)
+    assert run.status is SandboxRunStatus.COMPLETED
 
 
 def test_sandbox_exec_controlled_operation_approval_resumes_same_rpc(
@@ -4973,19 +5116,12 @@ def test_sandbox_exec_s12_untrusted_legacy_result_requires_fresh_approval(
     pending = _wait_for_pending_approval(observer, session.session_id)
     _resolve_s10_approval(observer, pending.approval_id, decision="approved")
 
-    first_operation: ControlledOperation | None = None
-    for _ in range(100):
-        operations = observer.controlled_operations.list_by_session(
-            session.session_id
-        )
-        if (
-            len(operations) == 1
-            and operations[0].status is ControlledOperationStatus.COMPLETED
-        ):
-            first_operation = operations[0]
-            break
-        time.sleep(0.05)
-    assert first_operation is not None
+    first_operation = _wait_for_completed_operation(
+        observer,
+        session.session_id,
+        runner_thread=thread,
+        timeout_seconds=5,
+    )
     legacy_result = dict(first_operation.adapter_result_envelope or {})
     assert legacy_result["result_origin"] == "host_adapter_executor"
     observer.controlled_operations.save(

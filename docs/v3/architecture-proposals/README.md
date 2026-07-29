@@ -52,6 +52,15 @@ provider/runner/Chrome/MICU。
   新 production bundle `@3`、冻结历史 `@2`、one-use three-slot authority 和 AOX
   selected-chain qualification。
 
+Verification orchestration proposal
+[authoritative-tiered-test-execution-and-qualification-deduplication.md](authoritative-tiered-test-execution-and-qualification-deduplication.md)
+已由
+[`optimize-authoritative-mainline-testing`](/openspec/changes/optimize-authoritative-mainline-testing/)
+完成实现和 authority cutover；`scripts/check-mainline.sh` 是唯一当前 optimized non-live
+merge gate，旧顺序脚本仅作 rollback comparison。最终 OpenSpec verification 已闭合，
+archive 仍是单独显式动作；该 proposal 在 archive 前暂留本目录。当前合同以
+`docs/v3/test-gate.md`、代码与 change evidence 为准。
+
 [Canonical scientific chain adoption and attempt closure](canonical-scientific-chain-adoption-and-attempt-closure.md)
 由后两项 change 实现，当前保持 `active` 直到 OpenSpec verify/archive；不再属于 deferred。
 
@@ -118,7 +127,6 @@ umbrella 只统一 ownership 与实施顺序，不把成员 proposal 的验收�
 - Scientific closure/adoption residuals: [artifact-derived-conditional-capability-closure.md](artifact-derived-conditional-capability-closure.md), [canonical-research-evidence-adoption-and-invocation-history.md](canonical-research-evidence-adoption-and-invocation-history.md), [versioned-scientific-calculation-capability-projection.md](versioned-scientific-calculation-capability-projection.md). Generic chain selection/attempt closure itself is active/implemented above; these adjacent scopes remain deferred.
 - Artifact/query boundaries: [artifact-path-addressing-for-arbitrary-dictionary-keys.md](artifact-path-addressing-for-arbitrary-dictionary-keys.md), [bounded-canonical-artifact-metadata-manifest-references.md](bounded-canonical-artifact-metadata-manifest-references.md), [bounded-capability-facts-query.md](bounded-capability-facts-query.md).
 - Sandbox/runtime mechanics: [bounded-streaming-sandbox-stdio-capture.md](bounded-streaming-sandbox-stdio-capture.md), [reproducible-sandbox-scientific-dependency-manifest-and-build.md](reproducible-sandbox-scientific-dependency-manifest-and-build.md), [host-authoritative-scientific-calculation-placement-and-sandbox-resource-class.md](host-authoritative-scientific-calculation-placement-and-sandbox-resource-class.md).
-- Verification orchestration: [authoritative-tiered-test-execution-and-qualification-deduplication.md](authoritative-tiered-test-execution-and-qualification-deduplication.md)，定义 focused/affected-scope diagnostic、single-execution mainline plan、qualification 去重、resource-audited 并行与 fail-closed receipt；当前门禁不变。
 - Control/public evidence: [canonical-approval-command-vs-activity-projection-events.md](canonical-approval-command-vs-activity-projection-events.md), [canonical-public-diagnostic-boundary.md](canonical-public-diagnostic-boundary.md), [verifiable-chrome-devtools-observation-transcript.md](verifiable-chrome-devtools-observation-transcript.md).
 - Resource policy: [host-authoritative-controlled-operation-resource-estimate-and-limit-snapshot.md](host-authoritative-controlled-operation-resource-estimate-and-limit-snapshot.md).
 

@@ -14,7 +14,8 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 SQLite schema 兼容策略：
 
 - 本地 V3 SQLite 是开发/runtime control-plane state，不是长期兼容的归档格式
-- 空库按当前 migration 列表初始化，并写入 `PRAGMA user_version`
+- 空库在一个 `BEGIN IMMEDIATE` 原子事务内按当前 migration 列表初始化并写入
+  `PRAGMA user_version`；任一 migration 失败时整体回滚，不暴露部分 fresh schema
 - `user_version` 等于当前 schema version 的库只做关键表校验后复用
 - 旧版本、未知版本、非空但 `user_version = 0` 的库 fail fast
 - Host 不做隐式 migration、自动修复、自动删除或自动备份；operator 需要手动删除旧库，或指定新的 `--v3-sqlite-db` 路径
@@ -130,6 +131,19 @@ SQLite connection / transaction ownership：
 - `resolution_ref`
 - `created_at`
 - `resolved_at`
+
+补充约束：
+
+- frozen `legacy_sync` controlled operation 的首次 admission 必须在一个短
+  `BEGIN IMMEDIATE` Unit of Work 中同时写入 `WAITING_APPROVAL` operation、
+  `PENDING` approval、operation 的 approval binding 与
+  `WAITING_APPROVAL` continuation；commit 前不得向其他 connection 暴露 pending
+  approval。approval wait 与 Host adapter execution 只在该事务提交后开始，不能持有
+  SQLite write lock 跨人工等待或外部调用
+- approval resolver 因而不能观察到“已有 pending approval、尚无对应 continuation”的
+  部分状态；admission 任一步失败时四项写入整体回滚。该兼容不变量不把
+  `legacy_sync` 变成新 durable route 的 fallback，也不改变 `durable_async_v1` 的唯一
+  execution-owner admission contract
 
 ### 2.5 InboxMessage
 

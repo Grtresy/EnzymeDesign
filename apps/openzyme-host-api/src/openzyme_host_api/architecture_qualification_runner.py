@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from .architecture_qualification import LoadedArchitectureQualificationReport
 from .architecture_qualification import ValidatedInvariantRegistry
 from .architecture_qualification import build_architecture_qualification_report
 from .architecture_qualification import build_test_manifest
+from .architecture_qualification import canonical_json_bytes
 from .architecture_qualification import canonical_json_document_bytes
 from .architecture_qualification import collect_architecture_source_identity
 from .architecture_qualification import load_invariant_registry
@@ -28,10 +30,29 @@ from .architecture_qualification import verify_architecture_qualification_report
 
 COLLECTION_SCHEMA_ID = "openzyme_v3_architecture_pytest_collection@1"
 EXECUTION_SCHEMA_ID = "openzyme_v3_architecture_pytest_execution@1"
+MAINLINE_NODE_SCHEMA_ID = "openzyme_v3_mainline_qualification_pytest@1"
+MAINLINE_SIDECAR_SCHEMA_ID = "openzyme_test_qualification_execution@1"
 TEST_ROOT = Path("apps/openzyme-host-api/tests/architecture_qualification")
 SCENARIO_ROOT = TEST_ROOT / "scenarios"
 _COLLECTION_OUTPUT_ENV = "OPENZYME_ARCHITECTURE_COLLECTION_OUTPUT"
 _EXECUTION_OUTPUT_ENV = "OPENZYME_ARCHITECTURE_EXECUTION_OUTPUT"
+MAINLINE_SIDECAR_OUTPUT_ENV = "OPENZYME_MAINLINE_QUALIFICATION_SIDECAR"
+MAINLINE_INVOCATION_ID_ENV = "OPENZYME_MAINLINE_INVOCATION_ID"
+MAINLINE_PLAN_DIGEST_ENV = "OPENZYME_MAINLINE_PLAN_DIGEST"
+MAINLINE_SOURCE_DIGEST_ENV = "OPENZYME_MAINLINE_SOURCE_DIGEST"
+MAINLINE_ENVIRONMENT_DIGEST_ENV = "OPENZYME_MAINLINE_ENVIRONMENT_DIGEST"
+_MAINLINE_NODE_OUTPUT_ENV = "OPENZYME_MAINLINE_QUALIFICATION_NODE_OUTPUT"
+_MAINLINE_REQUEST_ENV_KEYS = frozenset(
+    {
+        MAINLINE_SIDECAR_OUTPUT_ENV,
+        MAINLINE_INVOCATION_ID_ENV,
+        MAINLINE_PLAN_DIGEST_ENV,
+        MAINLINE_SOURCE_DIGEST_ENV,
+        MAINLINE_ENVIRONMENT_DIGEST_ENV,
+        _MAINLINE_NODE_OUTPUT_ENV,
+    }
+)
+_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 _SENSITIVE_ENV_PARTS = (
     "API_KEY",
     "AUTH_TOKEN",
@@ -65,6 +86,16 @@ class QualificationRunResult:
     report: LoadedArchitectureQualificationReport
     report_path: Path
     process_exit_code: int
+    mainline_sidecar_path: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MainlineQualificationSidecarRequest:
+    output_path: Path
+    invocation_id: str
+    plan_digest: str
+    source_identity_digest: str
+    environment_digest: str
 
 
 def _sha256(content: bytes) -> str:
@@ -76,7 +107,13 @@ def non_live_environment(source: Mapping[str, str] | None = None) -> dict[str, s
     for key in tuple(environment):
         upper = key.upper()
         if (
-            key in {_COLLECTION_OUTPUT_ENV, _EXECUTION_OUTPUT_ENV, "PYTEST_ADDOPTS"}
+            key
+            in {
+                _COLLECTION_OUTPUT_ENV,
+                _EXECUTION_OUTPUT_ENV,
+                "PYTEST_ADDOPTS",
+                *_MAINLINE_REQUEST_ENV_KEYS,
+            }
             or any(part in upper for part in _SENSITIVE_ENV_PARTS)
             or any(part in upper for part in _LIVE_ENV_PARTS)
             or upper in {"SSH_AUTH_SOCK", "SSH_AGENT_PID"}
@@ -90,6 +127,70 @@ def non_live_environment(source: Mapping[str, str] | None = None) -> dict[str, s
         }
     )
     return environment
+
+
+def mainline_sidecar_request_from_environment(
+    source: Mapping[str, str] | None = None,
+) -> MainlineQualificationSidecarRequest | None:
+    """Parse the optional all-or-nothing private mainline sidecar binding."""
+
+    environment = os.environ if source is None else source
+    values = {
+        key: environment.get(key)
+        for key in (
+            MAINLINE_SIDECAR_OUTPUT_ENV,
+            MAINLINE_INVOCATION_ID_ENV,
+            MAINLINE_PLAN_DIGEST_ENV,
+            MAINLINE_SOURCE_DIGEST_ENV,
+            MAINLINE_ENVIRONMENT_DIGEST_ENV,
+        )
+    }
+    present = {key for key, value in values.items() if value is not None}
+    if not present:
+        return None
+    if present != set(values):
+        missing = sorted(set(values) - present)
+        raise ArchitectureQualificationReportError(
+            "mainline qualification sidecar binding is incomplete: "
+            + ", ".join(missing)
+        )
+    output_text = values[MAINLINE_SIDECAR_OUTPUT_ENV]
+    invocation_id = values[MAINLINE_INVOCATION_ID_ENV]
+    if not isinstance(output_text, str) or not output_text:
+        raise ArchitectureQualificationReportError(
+            "mainline qualification sidecar output path is invalid"
+        )
+    output_path = Path(output_text)
+    if not output_path.is_absolute():
+        raise ArchitectureQualificationReportError(
+            "mainline qualification sidecar output path must be absolute"
+        )
+    if not isinstance(invocation_id, str) or not invocation_id:
+        raise ArchitectureQualificationReportError(
+            "mainline qualification invocation id is invalid"
+        )
+    digests: dict[str, str] = {}
+    for key in (
+        MAINLINE_PLAN_DIGEST_ENV,
+        MAINLINE_SOURCE_DIGEST_ENV,
+        MAINLINE_ENVIRONMENT_DIGEST_ENV,
+    ):
+        value = values[key]
+        if (
+            not isinstance(value, str)
+            or _DIGEST_PATTERN.fullmatch(value) is None
+        ):
+            raise ArchitectureQualificationReportError(
+                f"mainline qualification binding {key} is invalid"
+            )
+        digests[key] = value
+    return MainlineQualificationSidecarRequest(
+        output_path=output_path,
+        invocation_id=invocation_id,
+        plan_digest=digests[MAINLINE_PLAN_DIGEST_ENV],
+        source_identity_digest=digests[MAINLINE_SOURCE_DIGEST_ENV],
+        environment_digest=digests[MAINLINE_ENVIRONMENT_DIGEST_ENV],
+    )
 
 
 def _execute(
@@ -197,6 +298,55 @@ def _load_canonical_object(path: Path, *, schema_id: str) -> dict[str, object]:
     return payload
 
 
+def _load_mainline_node_records(path: Path) -> list[dict[str, object]]:
+    payload = _load_canonical_object(path, schema_id=MAINLINE_NODE_SCHEMA_ID)
+    if set(payload) != {"nodes", "schema_id"} or not isinstance(
+        payload["nodes"], list
+    ):
+        raise ArchitectureQualificationReportError(
+            "mainline qualification node payload is not closed"
+        )
+    records: list[dict[str, object]] = []
+    for index, raw in enumerate(payload["nodes"]):
+        if not isinstance(raw, dict) or set(raw) != {
+            "duration_ns",
+            "markers",
+            "node_id",
+            "outcome",
+            "phases",
+        }:
+            raise ArchitectureQualificationReportError(
+                f"mainline qualification node record {index} is not closed"
+            )
+        node_id = raw["node_id"]
+        markers = raw["markers"]
+        outcome = raw["outcome"]
+        duration_ns = raw["duration_ns"]
+        phases = raw["phases"]
+        if (
+            not isinstance(node_id, str)
+            or not node_id
+            or not isinstance(markers, list)
+            or any(not isinstance(marker, str) or not marker for marker in markers)
+            or markers != sorted(set(markers))
+            or outcome
+            not in {"pass", "fail", "skip", "xfail", "xpass", "error"}
+            or type(duration_ns) is not int
+            or duration_ns < 0
+            or not isinstance(phases, list)
+        ):
+            raise ArchitectureQualificationReportError(
+                f"mainline qualification node record {index} is invalid"
+            )
+        records.append(dict(raw))
+    node_ids = [str(item["node_id"]) for item in records]
+    if node_ids != sorted(set(node_ids)):
+        raise ArchitectureQualificationReportError(
+            "mainline qualification node ids are not sorted and unique"
+        )
+    return records
+
+
 def _collect_manifest(
     *,
     repo_root: Path,
@@ -274,7 +424,8 @@ def _run_harness_self_tests(
     *,
     repo_root: Path,
     environment: Mapping[str, str],
-) -> CommandExecution:
+    node_output: Path | None = None,
+) -> tuple[CommandExecution, list[dict[str, object]]]:
     command = (
         sys.executable,
         "-m",
@@ -286,13 +437,22 @@ def _run_harness_self_tests(
         "-p",
         "no:cacheprovider",
     )
+    execution_environment = dict(environment)
+    if node_output is not None:
+        execution_environment[_MAINLINE_NODE_OUTPUT_ENV] = str(node_output)
     execution, _, _ = _execute(
         command,
         cwd=repo_root,
-        environment=environment,
+        environment=execution_environment,
         timeout_seconds=180.0,
     )
-    return execution
+    if node_output is None:
+        return execution, []
+    if not node_output.is_file():
+        raise ArchitectureQualificationReportError(
+            "mainline qualification harness node evidence is missing"
+        )
+    return execution, _load_mainline_node_records(node_output)
 
 
 def _fallback_scenario_result(
@@ -325,7 +485,8 @@ def _run_scenario(
     temporary_root: Path,
     environment: Mapping[str, str],
     scenario: Mapping[str, object],
-) -> dict[str, object]:
+    node_output: Path | None = None,
+) -> tuple[dict[str, object], list[dict[str, object]]]:
     scenario_id = str(scenario["scenario_id"])
     output = temporary_root / f"execution-{scenario_id}.json"
     command = (
@@ -340,6 +501,8 @@ def _run_scenario(
     )
     execution_environment = dict(environment)
     execution_environment[_EXECUTION_OUTPUT_ENV] = str(output)
+    if node_output is not None:
+        execution_environment[_MAINLINE_NODE_OUTPUT_ENV] = str(node_output)
     budgets = scenario["budgets"]
     if not isinstance(budgets, Mapping):
         raise ArchitectureQualificationReportError(
@@ -351,16 +514,33 @@ def _run_scenario(
         environment=execution_environment,
         timeout_seconds=float(budgets["deadline_seconds"]) + 15.0,
     )
+    if node_output is None:
+        node_records: list[dict[str, object]] = []
+    elif not node_output.is_file():
+        raise ArchitectureQualificationReportError(
+            f"mainline qualification scenario node evidence is missing: {scenario_id}"
+        )
+    else:
+        node_records = _load_mainline_node_records(node_output)
     if execution.outcome == "timeout" or not output.is_file():
-        return _fallback_scenario_result(scenario=scenario, execution=execution)
+        return (
+            _fallback_scenario_result(scenario=scenario, execution=execution),
+            node_records,
+        )
     try:
         payload = _load_canonical_object(output, schema_id=EXECUTION_SCHEMA_ID)
     except ArchitectureQualificationReportError:
-        return _fallback_scenario_result(scenario=scenario, execution=execution)
+        return (
+            _fallback_scenario_result(scenario=scenario, execution=execution),
+            node_records,
+        )
     if set(payload) != {"records", "schema_id"} or not isinstance(
         payload["records"], list
     ) or len(payload["records"]) != 1:
-        return _fallback_scenario_result(scenario=scenario, execution=execution)
+        return (
+            _fallback_scenario_result(scenario=scenario, execution=execution),
+            node_records,
+        )
     record = payload["records"][0]
     if not isinstance(record, dict) or set(record) != {
         "duration_milliseconds",
@@ -374,7 +554,10 @@ def _run_scenario(
         "scenario_id",
         "test_selector",
     }:
-        return _fallback_scenario_result(scenario=scenario, execution=execution)
+        return (
+            _fallback_scenario_result(scenario=scenario, execution=execution),
+            node_records,
+        )
     expected_process_outcome = {
         "error": "error",
         "fail": "fail",
@@ -389,8 +572,11 @@ def _run_scenario(
         or record["test_selector"] != scenario["test_selector"]
         or execution.outcome != expected_process_outcome
     ):
-        return _fallback_scenario_result(scenario=scenario, execution=execution)
-    return dict(record)
+        return (
+            _fallback_scenario_result(scenario=scenario, execution=execution),
+            node_records,
+        )
+    return dict(record), node_records
 
 
 def _qualification_evidence_is_green(payload: Mapping[str, object]) -> bool:
@@ -425,6 +611,107 @@ def _qualification_evidence_is_green(payload: Mapping[str, object]) -> bool:
     )
 
 
+def _publish_mainline_sidecar(
+    *,
+    repo_root: Path,
+    request: MainlineQualificationSidecarRequest,
+    mode: str,
+    report_path: Path,
+    report_payload_digest: str,
+    harness_records: Sequence[Mapping[str, object]],
+    scenario_records: Sequence[Mapping[str, object]],
+) -> Path:
+    output_path = request.output_path
+    try:
+        root = repo_root.resolve(strict=True)
+        parent = output_path.parent.resolve(strict=True)
+    except OSError as exc:
+        raise ArchitectureQualificationReportError(
+            "mainline qualification sidecar parent does not exist"
+        ) from exc
+    candidate = parent / output_path.name
+    if str(candidate) != str(output_path):
+        raise ArchitectureQualificationReportError(
+            "mainline qualification sidecar path aliases another location"
+        )
+    try:
+        inside_checkout = (
+            os.path.commonpath((str(root), str(candidate))) == str(root)
+        )
+    except ValueError as exc:
+        raise ArchitectureQualificationReportError(
+            "mainline qualification sidecar path cannot be compared"
+        ) from exc
+    if inside_checkout:
+        raise ArchitectureQualificationReportError(
+            "mainline qualification sidecar must be outside the checkout"
+        )
+    if output_path.exists() or output_path.is_symlink():
+        raise ArchitectureQualificationReportError(
+            "mainline qualification sidecar already exists"
+        )
+    harness = [dict(item) for item in harness_records]
+    scenarios = [dict(item) for item in scenario_records]
+    harness.sort(key=lambda item: str(item["node_id"]))
+    scenarios.sort(key=lambda item: str(item["node_id"]))
+    node_results = sorted(
+        [*harness, *scenarios],
+        key=lambda item: str(item["node_id"]),
+    )
+    node_ids = [str(item["node_id"]) for item in node_results]
+    if node_ids != sorted(set(node_ids)):
+        raise ArchitectureQualificationReportError(
+            "mainline qualification sidecar node ids overlap or duplicate"
+        )
+    fields: dict[str, object] = {
+        "schema_id": MAINLINE_SIDECAR_SCHEMA_ID,
+        "invocation_id": request.invocation_id,
+        "plan_digest": request.plan_digest,
+        "source_identity_digest": request.source_identity_digest,
+        "environment_digest": request.environment_digest,
+        "qualification_report_digest": report_payload_digest,
+        "qualification_report_path": str(report_path),
+        "node_results": node_results,
+        "harness_collection": [
+            {
+                "markers": item["markers"],
+                "node_id": item["node_id"],
+            }
+            for item in harness
+        ],
+        "scenario_collection": [
+            {
+                "markers": item["markers"],
+                "node_id": item["node_id"],
+            }
+            for item in scenarios
+        ],
+        "qualification_mode": mode,
+    }
+    fields["self_digest"] = _sha256(canonical_json_bytes(fields))
+    content = canonical_json_document_bytes(fields)
+    try:
+        with output_path.open("xb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError as exc:
+        raise ArchitectureQualificationReportError(
+            "mainline qualification sidecar already exists"
+        ) from exc
+    try:
+        directory_descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    except OSError as exc:
+        raise ArchitectureQualificationReportError(
+            "mainline qualification sidecar parent sync failed"
+        ) from exc
+    return output_path
+
+
 def run_qualification(
     *,
     repo_root: Path,
@@ -432,6 +719,7 @@ def run_qualification(
     mode: str,
     output_directory: Path,
     command: Sequence[str],
+    mainline_sidecar: MainlineQualificationSidecarRequest | None = None,
 ) -> QualificationRunResult:
     root = repo_root.resolve(strict=True)
     registry = load_invariant_registry(repo_root=root)
@@ -444,9 +732,14 @@ def run_qualification(
             environment=environment,
             registry=registry,
         )
-        harness_execution = _run_harness_self_tests(
+        harness_execution, harness_node_records = _run_harness_self_tests(
             repo_root=root,
             environment=environment,
+            node_output=(
+                None
+                if mainline_sidecar is None
+                else temporary_root / "mainline-harness-nodes.json"
+            ),
         )
         harness_result = {
             "duration_milliseconds": (
@@ -479,15 +772,45 @@ def run_qualification(
             for item in raw_scenarios
             if isinstance(item, Mapping) and selection_id in item["selections"]
         ]
-        scenario_results = [
+        scenario_pairs = [
             _run_scenario(
                 repo_root=root,
                 temporary_root=temporary_root,
                 environment=environment,
                 scenario=scenario,
+                node_output=(
+                    None
+                    if mainline_sidecar is None
+                    else temporary_root
+                    / f"mainline-scenario-{scenario['scenario_id']}.json"
+                ),
             )
             for scenario in selected
         ]
+        scenario_results = [result for result, _ in scenario_pairs]
+        scenario_node_records = [
+            node
+            for _, records in scenario_pairs
+            for node in records
+        ]
+        if mainline_sidecar is not None:
+            harness_ids = [
+                str(item["node_id"]) for item in harness_node_records
+            ]
+            scenario_ids = [
+                str(item["node_id"]) for item in scenario_node_records
+            ]
+            expected_scenario_ids = sorted(
+                str(item["test_selector"]) for item in selected
+            )
+            if harness_ids != sorted(set(harness_ids)) or not harness_ids:
+                raise ArchitectureQualificationReportError(
+                    "mainline qualification harness node closure failed"
+                )
+            if sorted(scenario_ids) != expected_scenario_ids:
+                raise ArchitectureQualificationReportError(
+                    "mainline qualification scenario node closure failed"
+                )
     source_identity = collect_architecture_source_identity(repo_root=root)
     report = build_architecture_qualification_report(
         repo_root=root,
@@ -518,16 +841,32 @@ def run_qualification(
         or (mode != "admission" and qualification_green)
         else 1
     )
+    sidecar_path = (
+        None
+        if mainline_sidecar is None
+        else _publish_mainline_sidecar(
+            repo_root=root,
+            request=mainline_sidecar,
+            mode=mode,
+            report_path=report_path,
+            report_payload_digest=report.payload_digest,
+            harness_records=harness_node_records,
+            scenario_records=scenario_node_records,
+        )
+    )
     return QualificationRunResult(
         report=report,
         report_path=report_path,
         process_exit_code=process_exit_code,
+        mainline_sidecar_path=sidecar_path,
     )
 
 
 __all__ = [
     "CommandExecution",
+    "MainlineQualificationSidecarRequest",
     "QualificationRunResult",
+    "mainline_sidecar_request_from_environment",
     "non_live_environment",
     "run_qualification",
 ]

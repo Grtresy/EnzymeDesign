@@ -1,8 +1,24 @@
-# Deferred: authoritative tiered test execution and qualification deduplication
+# Implemented: authoritative tiered test execution and qualification deduplication
 
-Status: proposed. This document records a future test-infrastructure change; it does
-not modify the current `check-mainline.sh`, architecture admission, AOX launch, live
-marker, or scientific evidence contract.
+Status: implemented and fully verified; OpenSpec archive remains pending as a
+separate explicit action. The implementation is owned by
+[`optimize-authoritative-mainline-testing`](/openspec/changes/optimize-authoritative-mainline-testing/).
+The current optimized authority contract is
+[`docs/v3/test-gate.md`](../test-gate.md); timing/critical-path evidence is recorded in
+[`phase9-critical-path.md`](/openspec/changes/optimize-authoritative-mainline-testing/phase9-critical-path.md),
+the post-cutover authoritative/forced-serial receipts and exact comparison in
+[`authority-cutover-evidence.md`](/openspec/changes/optimize-authoritative-mainline-testing/authority-cutover-evidence.md),
+the agreed twenty-case parity in
+[`replay-corpus-evidence.md`](/openspec/changes/optimize-authoritative-mainline-testing/replay-corpus-evidence.md),
+and the independent admission boundary in
+[`architecture-admission-independence-evidence.md`](/openspec/changes/optimize-authoritative-mainline-testing/architecture-admission-independence-evidence.md).
+The final 19-requirement, 71-scenario, and 88-task verification is recorded in
+[`completion-audit.md`](/openspec/changes/optimize-authoritative-mainline-testing/completion-audit.md).
+
+`scripts/check-mainline.sh` is now the unique optimized non-live merge authority.
+The old sequence is frozen at `scripts/check-mainline-legacy.sh` as a directly
+non-authoritative rollback comparison. This implementation did not change architecture
+admission, AOX launch, live marker, or scientific evidence authority.
 
 ## Decision boundary
 
@@ -23,7 +39,7 @@ Implementation must be owned by a dedicated OpenSpec change.
 
 ## Current evidence and structural cost
 
-`./scripts/check-mainline.sh` currently runs these broad stages in sequence:
+Before implementation, `./scripts/check-mainline.sh` ran these broad stages in sequence:
 
 1. Python and compatibility `ruff` checks;
 2. the compatibility-caller audit;
@@ -288,13 +304,16 @@ or an explicit extension of this one after the first four phases are stable.
 
 ## Compatibility and rollback
 
-- `./scripts/check-mainline.sh` remains the rollback authority until plan parity and
-  performance acceptance pass.
-- Shadow mode may generate plans and receipts but cannot suppress current commands.
-- The switch must be atomic: one documented mainline authority, not two scripts whose
-  green meanings differ.
-- Rollback restores the old sequential execution and invalidates optimized-run
-  receipts; it does not reinterpret them as old-format success.
+- `./scripts/check-mainline.sh` is the sole current optimized authority and invokes
+  the authoritative runner plus a separate pure receipt verifier.
+- Shadow/candidate mode may generate plans and receipts but remains
+  `authoritative=false`.
+- `./scripts/check-mainline.sh --forced-serial` preserves the same plan, owners,
+  qualification, frontend and coverage while using one general worker.
+- `./scripts/check-mainline-legacy.sh` preserves the old sequential commands and
+  always labels itself a rollback comparison. Restoring it as the wrapper
+  implementation would invalidate regressed optimized receipts; direct invocation
+  does not reinterpret them as old-format success.
 - Receipt and plan schemas are versioned. Unknown versions fail closed.
 - Architecture admission, its registry and its report schemas remain unchanged unless
   a separate reviewed change explicitly updates them.
@@ -343,8 +362,11 @@ or an explicit extension of this one after the first four phases are stable.
 
 ## Relationship to current contracts
 
-- [`scripts/check-mainline.sh`](/scripts/check-mainline.sh) remains the current broad
-  gate until this proposal is implemented and verified.
+- [`scripts/check-mainline.sh`](/scripts/check-mainline.sh) is the unique current
+  optimized non-live merge gate; its terminal output and receipt explicitly deny
+  admission/AOX/live/scientific authority.
+- [`scripts/check-mainline-legacy.sh`](/scripts/check-mainline-legacy.sh) is the
+  frozen rollback comparison and never current authority when invoked directly.
 - [V3 architecture qualification](../architecture-qualification/README.md) retains
   ownership of deterministic scenario evidence and clean AOX admission.
 - [AOX/HMM blank-world cutover](../aox-hmm-blank-world-cutover.md) continues to require

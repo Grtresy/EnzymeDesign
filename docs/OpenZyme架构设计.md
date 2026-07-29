@@ -248,7 +248,9 @@ V3 master / teammate LLM 调用必须先经过统一 token budget preflight。ha
 
 开发与本地手动测试使用的 V3 SQLite 文件是 runtime/control-plane state，不是长期归档格式。当前主线只支持两类启动输入：
 
-- fresh empty SQLite：启动时按当前 migration 列表初始化，并写入 `PRAGMA user_version`
+- fresh empty SQLite：启动时在一个 `BEGIN IMMEDIATE` 原子事务内按当前 migration
+  列表初始化并写入 `PRAGMA user_version`；任一 migration 失败必须回滚全部 fresh
+  schema 对象，不能留下部分初始化状态
 - current-version SQLite：启动时校验关键表存在后复用
 
 旧 schema、未知 schema、非空但未标记 `user_version` 的 SQLite 文件不做隐式修复、备份或删除；启动路径必须 fail fast。`026` 至 `036` migrations 已把 canonical controlled-operation execution、runtime command/continuation、dispatch request、immutable result artifact、mutation authority/snapshot、failure observation/hypothesis/recovery disposition 和 scientific attempt authority/selection/closure response 纳入 current schema 与升级校验。需要长期保留的研究结果、execution 输出与报告应通过 artifact、report 或 export 留存，而不是依赖旧 SQLite runtime 文件跨 schema 版本继续可用。
@@ -268,6 +270,15 @@ V3 public event log 不是 Host 进程内缓存。`durable_event_records.cursor`
 `ControlledOperationExecution` 是 durable operation 唯一 external-effect owner。worker 只做短 claim/dispatch/poll/materialize slice，外部调用前重新检查 fence，且不持 session lease 或 SQLite transaction跨外部 wall time。恢复只允许在 proven `no_effect` 的同一 phase 内有界进行；direct SSH payload 已写出却丢失响应时进入 `dispatch_in_doubt`，只能 reconcile，不能 replay。
 
 generic mutation closure 先 freeze admission 并推进 fence，再等待每个显式 writer/descendant 退休，获取两次一致的 bounded SQLite/event/artifact/report/live-ledger snapshot，签发 immutable receipt，最后 seal exact generation。runtime idle、空队列、HTTP 返回、timeout 或 missing handle 都不是 writer retirement 证明；seal 也不表示 task completed。完整合同见 `docs/v3/07-runtime-hpc-reliability.md`，迁移和回滚步骤见 `docs/v3/runtime-hpc-reliability-operations.md`。在 deterministic、non-live 与经单独批准的 real-SSH transport-only soak 全部通过前，`rxx` campaign 保持冻结。
+
+frozen `legacy_sync` sandbox controlled operation 仍只承担兼容同步路径，但其首次
+admission 也必须满足 control-plane 可见性原子性：`WAITING_APPROVAL` operation、
+`PENDING` approval、operation→approval binding 与
+`WAITING_APPROVAL` continuation 在同一个短 `BEGIN IMMEDIATE` Unit of Work 中提交，
+任一步失败整体回滚。approval resolver、workspace/UI projection 与其他 connection 不得
+观察到没有 continuation 的 pending approval；人工等待和 Host adapter execution 只在
+commit 后发生，不能持有 write lock 跨外部 wall time。该约束不升级 legacy owner，也不
+允许 durable route 回退到同步 adapter。
 
 ### 3.8 Scientific attempt、selected chain 与 fresh authority
 
@@ -934,9 +945,66 @@ Reporter teammate 默认使用：
 
 ## 9. 验证与 Gate
 
+### 9.1 Repository test-gate authority
+
+`scripts/check-mainline.sh` 现已原子切换为唯一 optimized non-live merge authority：
+默认使用固定四 worker 的资源审计分区，`--forced-serial` 在同一
+plan/owner/coverage/frontend/qualification 合同上固定为一 worker。旧顺序实现冻结在
+`scripts/check-mainline-legacy.sh`，直接调用永远只是 rollback comparison。底层
+`scripts/test_gate/` 仍是 repository/operator plane，不进入 V3 composition，也不写
+session、task、lane、approval、artifact、report 或 scientific attempt 真状态。
+
+| Profile / command | Merge authority | Architecture admission | AOX/live/scientific authority |
+| --- | --- | --- | --- |
+| `focused_diagnostic` | no | no | no |
+| `affected_scope_diagnostic` | no | no | no |
+| immutable `replay-corpus` | no | no | no |
+| shadow/candidate receipt | no | no | no |
+| current optimized `scripts/check-mainline.sh` | yes | no | no |
+| qualification `premerge_subset` / `diagnostic` | no | no | no |
+| clean full qualification `admission` | no | yes | no; AOX launch仍需独立 authority |
+
+Versioned mainline plan 固定现有 Ruff、single-index compatibility audit、
+`premerge_subset`、general non-live pytest、Web UI test/build 的顺序和 fail-fast
+dependency。它收集 `G/Qh/Qs` 并为每个 distinct node 指定唯一 owner；只有同一
+invocation 的已验证 qualification sidecar 才允许 general 执行
+`G - (Qh ∪ Qs)`，不按目录或 broad marker 猜测去重。general residual 再由 exact resource
+manifest 分成固定 `--dist=loadfile` parallel partition 与 conservative serial fallback；
+未分类默认串行、worker 固定为 `1..4`、从不使用 `auto`。authoritative receipt 绑定 source、
+toolchain、environment、collection、owner、resource、stage、qualification 和 frontend，
+并由 wrapper 随运行调用的独立纯 verifier 从 raw evidence 重算。receipt 的
+`authoritative=true` 只表示当前 non-live merge contract；其
+`admission_eligible=false/live_eligible=false` 不可升级。
+
+Focused/affected/replay 即使覆盖全仓也永久
+`authoritative=false/admission_eligible=false/live_eligible=false`。affected unknown
+扩大到 complete-safe，不静默缩小；credential、provider、SSH、Chrome、MICU 或 live opt-in
+不能激活 diagnostic effect。详细 operator contract、命令、rollback 与 timing evidence
+见 `docs/v3/test-gate.md`。
+
+最终五对同源 cold/warm 对照已闭合：legacy median 为 424.62 / 424.14 s，fixed-four
+optimized 为 255.04 / 253.77 s，缩短 39.94% / 40.17%；orchestration overhead median
+2.157%、maximum 2.202%。每个历史 optimized benchmark sample 执行
+2,808/2,808 distinct nodes，
+84 harness + 13 scenario ownership、Web UI 两项结果与纯 receipt verification 全部通过。
+二十 case corpus 的 legacy/optimized proof-node projection 也零 mismatch，
+authority-mode implementation replay 20/20 green；用户已于 2026-07-29 明确同意该
+immutable corpus 作为二十个 clean revisions 的等价 cutover 证据。最新切换后 shadow
+collection 为 `G=2,817`、`Qh∪Qs=97`、residual `2,720`，其中 1,292 个 node 进入已审计
+parallel partition，1,428 个保持 conservative serial；旧 benchmark timing 不被冒充为
+该较新 source 的 timing 样本。切换后的 fixed-four / forced-serial authoritative
+receipt 分别记录 `256.877 s / 393.332 s`，2,817 个 exact node 的归一化
+owner/outcome、qualification、Web UI 与 stage projection 零差异；原始路径和摘要见
+`openspec/changes/optimize-authoritative-mainline-testing/authority-cutover-evidence.md`。
+最终 19 条 requirement、71 个 scenario 与 88 项 task 的逐条核验见
+`openspec/changes/optimize-authoritative-mainline-testing/completion-audit.md`；该核验不
+自动归档 change，也不扩张 architecture admission、AOX 或 live authority。
+
 常用非 live 验证：
 
 - `./scripts/check-mainline.sh`
+- `./scripts/check-mainline.sh --forced-serial`：同一完整权威合同的一 worker 对照；不是缩小 gate
+- `./scripts/check-mainline-legacy.sh`：仅作顺序 rollback comparison；直接调用永不代表当前 authority
 - `./scripts/check-v3-architecture-qualification.sh premerge_subset <checkout外新目录>`：主线 deterministic P0-critical 子集；即使全绿也永不具备 admission 资格
 - `./scripts/check-v3-architecture-qualification.sh diagnostic <checkout外新目录>`：允许绑定 dirty source 的完整 GAP/P0 诊断；永不具备 admission 资格
 - `./scripts/check-v3-architecture-qualification.sh admission <checkout外新目录>`：只接受 canonical clean HEAD、full selection、全部 invariant satisfied 与零 open P0

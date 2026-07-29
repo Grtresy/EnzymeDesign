@@ -217,10 +217,26 @@ def apply_sqlite_migrations(connection: sqlite3.Connection) -> None:
 
 
 def _initialize_empty_sqlite_database(connection: sqlite3.Connection) -> None:
-    for migration_id in MIGRATION_IDS:
-        connection.executescript(get_migration_sql(migration_id))
-    connection.execute(f"PRAGMA user_version = {CURRENT_SQLITE_SCHEMA_VERSION}")
-    connection.commit()
+    if connection.in_transaction:
+        msg = "SQLite initialization cannot start inside an existing transaction."
+        raise SQLiteSchemaMismatchError(msg)
+    migration_sql = "\n".join(
+        get_migration_sql(migration_id) for migration_id in MIGRATION_IDS
+    )
+    try:
+        connection.executescript(
+            "BEGIN IMMEDIATE;\n"
+            f"{migration_sql}\n"
+            f"PRAGMA user_version = {CURRENT_SQLITE_SCHEMA_VERSION};\n"
+            "COMMIT;"
+        )
+    except sqlite3.Error as exc:
+        if connection.in_transaction:
+            connection.rollback()
+        connection.execute("PRAGMA foreign_keys = ON")
+        msg = "failed initializing fresh SQLite database at current schema"
+        raise SQLiteSchemaMismatchError(msg) from exc
+    connection.execute("PRAGMA foreign_keys = ON")
 
 
 def _upgrade_sqlite_database(

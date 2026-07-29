@@ -1,0 +1,444 @@
+{
+  "schema_id": "openzyme_test_affected_scope_map@1",
+  "planner_id": "openzyme_test_diagnostic_planner@1",
+  "complete_safe": {
+    "lint_paths": [
+      "apps",
+      "packages",
+      "scripts"
+    ],
+    "pytest_paths": [
+      "apps",
+      "packages"
+    ],
+    "frontend": true,
+    "reason": "unknown or test-orchestration impact requires the complete non-live diagnostic set"
+  },
+  "minimum_sanity": {
+    "lint_paths": [
+      "scripts/run-test-gate.py",
+      "scripts/test_gate"
+    ],
+    "pytest_paths": [
+      "packages/openzyme-core/tests/test_test_gate_contract.py",
+      "packages/openzyme-core/tests/test_test_gate_diagnostic.py"
+    ],
+    "frontend": false,
+    "reason": "exact documentation/archive-only rule retains nonempty test-gate sanity checks"
+  },
+  "required_owner_roots": [
+    "apps/mcp-hpc-runner",
+    "apps/openzyme-host-api",
+    "apps/openzyme-host-cli",
+    "apps/openzyme-web-ui",
+    "packages/openzyme-core",
+    "packages/openzyme-domain",
+    "packages/openzyme-engines",
+    "packages/openzyme-execution",
+    "packages/openzyme-pipeline",
+    "packages/openzyme-research",
+    "packages/openzyme-runtime",
+    "packages/openzyme-tools",
+    "packages/preprocess-backend"
+  ],
+  "rules": [
+    {
+      "id": "test-gate-planner-complete-safe",
+      "paths": [
+        "scripts/run-test-gate.py",
+        "scripts/test-gate.toml",
+        "scripts/test-affected-scope-map.json"
+      ],
+      "prefixes": [
+        "scripts/test_gate/"
+      ],
+      "lint_paths": [],
+      "pytest_paths": [],
+      "owner_test_root": null,
+      "matching_tests": false,
+      "frontend": true,
+      "mode": "complete_safe",
+      "reason": "planner or dependency-map changes invalidate diagnostic narrowing"
+    },
+    {
+      "id": "mainline-or-qualification-contract-complete-safe",
+      "paths": [
+        "scripts/check-mainline.sh",
+        "scripts/check-v3-architecture-qualification.sh",
+        "pytest.ini",
+        "pyproject.toml",
+        "uv.lock",
+        "skills-lock.json"
+      ],
+      "prefixes": [
+        ".github/",
+        "deploy/",
+        "docker/"
+      ],
+      "lint_paths": [],
+      "pytest_paths": [],
+      "owner_test_root": null,
+      "matching_tests": false,
+      "frontend": true,
+      "mode": "complete_safe",
+      "reason": "workspace, lock, CI, or authority-contract changes require complete safe coverage"
+    },
+    {
+      "id": "compatibility-audit-contract",
+      "paths": [
+        "scripts/audit-v3-compat-callers.py"
+      ],
+      "prefixes": [],
+      "lint_paths": [
+        "scripts/audit-v3-compat-callers.py"
+      ],
+      "pytest_paths": [
+        "packages/openzyme-core/tests/test_compat_caller_audit.py"
+      ],
+      "owner_test_root": null,
+      "matching_tests": false,
+      "frontend": false,
+      "mode": "mapped",
+      "reason": "compatibility audit has an exact owner regression"
+    },
+    {
+      "id": "python-workspace-member-metadata-complete-safe",
+      "paths": [
+        "apps/mcp-hpc-runner/pyproject.toml",
+        "apps/openzyme-host-api/pyproject.toml",
+        "apps/openzyme-host-cli/pyproject.toml",
+        "packages/openzyme-core/pyproject.toml",
+        "packages/openzyme-domain/pyproject.toml",
+        "packages/openzyme-engines/pyproject.toml",
+        "packages/openzyme-execution/pyproject.toml",
+        "packages/openzyme-pipeline/pyproject.toml",
+        "packages/openzyme-research/pyproject.toml",
+        "packages/openzyme-runtime/pyproject.toml",
+        "packages/openzyme-tools/pyproject.toml",
+        "packages/preprocess-backend/pyproject.toml"
+      ],
+      "prefixes": [],
+      "lint_paths": [],
+      "pytest_paths": [],
+      "owner_test_root": null,
+      "matching_tests": false,
+      "frontend": true,
+      "mode": "complete_safe",
+      "reason": "workspace member dependency metadata can change every Python consumer"
+    },
+    {
+      "id": "core-migration-contracts-complete-safe",
+      "paths": [],
+      "prefixes": [
+        "packages/openzyme-core/src/openzyme_core/migrations/"
+      ],
+      "lint_paths": [],
+      "pytest_paths": [],
+      "owner_test_root": null,
+      "matching_tests": false,
+      "frontend": true,
+      "mode": "complete_safe",
+      "reason": "schema migrations can change Core, Host API, projection, and Web UI contracts"
+    },
+    {
+      "id": "core-public-ui-contracts",
+      "paths": [
+        "packages/openzyme-core/src/openzyme_core/artifact_projection.py",
+        "packages/openzyme-core/src/openzyme_core/artifact_tools.py",
+        "packages/openzyme-core/src/openzyme_core/controlled_operation_execution.py",
+        "packages/openzyme-core/src/openzyme_core/controlled_operation_projection.py",
+        "packages/openzyme-core/src/openzyme_core/lane_manager.py",
+        "packages/openzyme-core/src/openzyme_core/protocols.py",
+        "packages/openzyme-core/src/openzyme_core/projections.py",
+        "packages/openzyme-core/src/openzyme_core/report_drafts.py",
+        "packages/openzyme-core/src/openzyme_core/report_publication.py",
+        "packages/openzyme-core/src/openzyme_core/result_artifacts.py",
+        "packages/openzyme-core/src/openzyme_core/runtime_command_projection.py",
+        "packages/openzyme-core/src/openzyme_core/runtime_commands.py",
+        "packages/openzyme-core/src/openzyme_core/runtime_drain_receipts.py",
+        "packages/openzyme-core/src/openzyme_core/task_board.py",
+        "packages/openzyme-core/src/openzyme_core/task_evidence.py",
+        "packages/openzyme-core/src/openzyme_core/trace_projection.py"
+      ],
+      "prefixes": [],
+      "lint_paths": [
+        "packages/openzyme-core"
+      ],
+      "pytest_paths": [
+        "apps/openzyme-host-api/tests/test_api.py",
+        "packages/openzyme-core/tests/test_projections.py"
+      ],
+      "owner_test_root": "packages/openzyme-core/tests",
+      "matching_tests": true,
+      "frontend": true,
+      "mode": "mapped",
+      "reason": "workspace, projection, report, artifact, event, and evidence shapes are consumed by the Web UI"
+    },
+    {
+      "id": "runtime-public-artifact-contracts",
+      "paths": [
+        "packages/openzyme-runtime/src/openzyme_runtime/artifact_projection.py",
+        "packages/openzyme-runtime/src/openzyme_runtime/public_diagnostics.py"
+      ],
+      "prefixes": [],
+      "lint_paths": [
+        "packages/openzyme-runtime"
+      ],
+      "pytest_paths": [
+        "apps/openzyme-host-api/tests/test_api.py"
+      ],
+      "owner_test_root": "packages/openzyme-runtime/tests",
+      "matching_tests": true,
+      "frontend": true,
+      "mode": "mapped",
+      "reason": "public artifact and diagnostic projections have UI consumers"
+    },
+    {
+      "id": "mcp-hpc-runner-owner",
+      "paths": [],
+      "prefixes": [
+        "apps/mcp-hpc-runner/"
+      ],
+      "lint_paths": [
+        "apps/mcp-hpc-runner"
+      ],
+      "pytest_paths": [],
+      "owner_test_root": "apps/mcp-hpc-runner/tests",
+      "matching_tests": true,
+      "frontend": false,
+      "mode": "mapped",
+      "reason": "HPC runner changes select owner-local non-live contracts"
+    },
+    {
+      "id": "host-api-owner-and-ui-contract",
+      "paths": [],
+      "prefixes": [
+        "apps/openzyme-host-api/"
+      ],
+      "lint_paths": [
+        "apps/openzyme-host-api"
+      ],
+      "pytest_paths": [],
+      "owner_test_root": "apps/openzyme-host-api/tests",
+      "matching_tests": true,
+      "frontend": true,
+      "mode": "mapped",
+      "reason": "Host API response and event shapes may be consumed by the Web UI"
+    },
+    {
+      "id": "host-cli-owner",
+      "paths": [],
+      "prefixes": [
+        "apps/openzyme-host-cli/"
+      ],
+      "lint_paths": [
+        "apps/openzyme-host-cli"
+      ],
+      "pytest_paths": [],
+      "owner_test_root": "apps/openzyme-host-cli/tests",
+      "matching_tests": true,
+      "frontend": false,
+      "mode": "mapped",
+      "reason": "thin CLI changes select CLI owner tests"
+    },
+    {
+      "id": "web-ui-owner",
+      "paths": [],
+      "prefixes": [
+        "apps/openzyme-web-ui/"
+      ],
+      "lint_paths": [],
+      "pytest_paths": [],
+      "owner_test_root": null,
+      "matching_tests": false,
+      "frontend": true,
+      "mode": "mapped",
+      "reason": "Web UI source, tests, metadata, lock, or build inputs require test and production build"
+    },
+    {
+      "id": "openzyme-core-owner",
+      "paths": [],
+      "prefixes": [
+        "packages/openzyme-core/"
+      ],
+      "lint_paths": [
+        "packages/openzyme-core"
+      ],
+      "pytest_paths": [],
+      "owner_test_root": "packages/openzyme-core/tests",
+      "matching_tests": true,
+      "frontend": false,
+      "mode": "mapped",
+      "reason": "core-local changes use exact matching owner tests when available"
+    },
+    {
+      "id": "openzyme-domain-cross-layer",
+      "paths": [],
+      "prefixes": [
+        "packages/openzyme-domain/"
+      ],
+      "lint_paths": [
+        "packages/openzyme-domain"
+      ],
+      "pytest_paths": [
+        "apps/openzyme-host-api/tests/test_api.py",
+        "packages/openzyme-core/tests/test_projections.py"
+      ],
+      "owner_test_root": "packages/openzyme-domain/tests",
+      "matching_tests": true,
+      "frontend": true,
+      "mode": "mapped",
+      "reason": "control-plane domain shapes cross Core, Host API, and Web UI boundaries"
+    },
+    {
+      "id": "openzyme-engines-owner",
+      "paths": [],
+      "prefixes": [
+        "packages/openzyme-engines/"
+      ],
+      "lint_paths": [
+        "packages/openzyme-engines"
+      ],
+      "pytest_paths": [],
+      "owner_test_root": "packages/openzyme-engines/tests",
+      "matching_tests": true,
+      "frontend": false,
+      "mode": "mapped",
+      "reason": "capability-engine changes select owner tests"
+    },
+    {
+      "id": "openzyme-execution-cross-layer",
+      "paths": [],
+      "prefixes": [
+        "packages/openzyme-execution/"
+      ],
+      "lint_paths": [
+        "packages/openzyme-execution"
+      ],
+      "pytest_paths": [
+        "packages/openzyme-engines/tests/test_execution.py",
+        "packages/openzyme-runtime/tests/test_execution_contracts.py"
+      ],
+      "owner_test_root": "packages/openzyme-execution/tests",
+      "matching_tests": true,
+      "frontend": false,
+      "mode": "mapped",
+      "reason": "runner-adapter DTOs cross runtime and engine contracts"
+    },
+    {
+      "id": "openzyme-pipeline-owner",
+      "paths": [],
+      "prefixes": [
+        "packages/openzyme-pipeline/"
+      ],
+      "lint_paths": [
+        "packages/openzyme-pipeline"
+      ],
+      "pytest_paths": [],
+      "owner_test_root": "packages/openzyme-pipeline/tests",
+      "matching_tests": true,
+      "frontend": false,
+      "mode": "mapped",
+      "reason": "sandbox SDK changes select pipeline owner tests"
+    },
+    {
+      "id": "openzyme-research-owner",
+      "paths": [],
+      "prefixes": [
+        "packages/openzyme-research/"
+      ],
+      "lint_paths": [
+        "packages/openzyme-research"
+      ],
+      "pytest_paths": [],
+      "owner_test_root": "packages/openzyme-research/tests",
+      "matching_tests": true,
+      "frontend": false,
+      "mode": "mapped",
+      "reason": "research provider changes select non-live owner tests"
+    },
+    {
+      "id": "openzyme-runtime-owner",
+      "paths": [],
+      "prefixes": [
+        "packages/openzyme-runtime/"
+      ],
+      "lint_paths": [
+        "packages/openzyme-runtime"
+      ],
+      "pytest_paths": [],
+      "owner_test_root": "packages/openzyme-runtime/tests",
+      "matching_tests": true,
+      "frontend": false,
+      "mode": "mapped",
+      "reason": "shared runtime changes select owner tests; public projections have a more specific UI rule"
+    },
+    {
+      "id": "openzyme-tools-owner",
+      "paths": [],
+      "prefixes": [
+        "packages/openzyme-tools/"
+      ],
+      "lint_paths": [
+        "packages/openzyme-tools"
+      ],
+      "pytest_paths": [],
+      "owner_test_root": "packages/openzyme-tools/tests",
+      "matching_tests": true,
+      "frontend": false,
+      "mode": "mapped",
+      "reason": "tool catalog and execution registry changes select owner tests"
+    },
+    {
+      "id": "preprocess-backend-owner",
+      "paths": [],
+      "prefixes": [
+        "packages/preprocess-backend/"
+      ],
+      "lint_paths": [
+        "packages/preprocess-backend"
+      ],
+      "pytest_paths": [],
+      "owner_test_root": "packages/preprocess-backend/tests",
+      "matching_tests": true,
+      "frontend": false,
+      "mode": "mapped",
+      "reason": "preprocess backend changes select owner API tests"
+    },
+    {
+      "id": "documentation-and-spec-minimum-sanity",
+      "paths": [
+        "AGENTS.md",
+        "README.md"
+      ],
+      "prefixes": [
+        ".agents/",
+        ".codex/",
+        "docs/",
+        "legacy/",
+        "openspec/"
+      ],
+      "lint_paths": [],
+      "pytest_paths": [],
+      "owner_test_root": null,
+      "matching_tests": false,
+      "frontend": false,
+      "mode": "minimum_sanity",
+      "reason": "exact documentation, agent guidance, archived source, and OpenSpec inputs retain test-gate sanity"
+    },
+    {
+      "id": "other-repository-scripts-complete-safe",
+      "paths": [],
+      "prefixes": [
+        "scripts/"
+      ],
+      "lint_paths": [],
+      "pytest_paths": [],
+      "owner_test_root": null,
+      "matching_tests": false,
+      "frontend": true,
+      "mode": "complete_safe",
+      "reason": "unclassified repository tooling can alter validation semantics"
+    }
+  ]
+}

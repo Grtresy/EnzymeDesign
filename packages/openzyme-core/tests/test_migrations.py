@@ -1,6 +1,7 @@
 import sqlite3
 
 import pytest
+import openzyme_core.migration_assets as migration_assets
 
 from openzyme_core import CURRENT_SQLITE_SCHEMA_VERSION
 from openzyme_core import MIGRATION_IDS
@@ -623,6 +624,50 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "mutation_guard_failure_recovery_disposition_records_update",
         "mutation_guard_failure_recovery_disposition_records_delete",
     }.issubset(trigger_names)
+
+
+def test_fresh_sqlite_initialization_is_atomic_on_migration_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = connect_sqlite(":memory:")
+    original_get_migration_sql = migration_assets.get_migration_sql
+
+    def broken_migration_sql(migration_id: str) -> str:
+        migration_sql = original_get_migration_sql(migration_id)
+        if migration_id == MIGRATION_IDS[17]:
+            return (
+                f"{migration_sql}\n"
+                "CREATE TABLE initialization_must_rollback (id TEXT);\n"
+                "THIS IS NOT VALID SQL;\n"
+            )
+        return migration_sql
+
+    monkeypatch.setattr(
+        migration_assets,
+        "get_migration_sql",
+        broken_migration_sql,
+    )
+
+    with pytest.raises(
+        SQLiteSchemaMismatchError,
+        match="failed initializing fresh SQLite database",
+    ):
+        apply_sqlite_migrations(connection)
+
+    assert connection.in_transaction is False
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 0
+    assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    assert (
+        connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE name NOT LIKE 'sqlite_%'
+              AND type IN ('table', 'index', 'trigger', 'view')
+            """
+        ).fetchone()[0]
+        == 0
+    )
 
 
 def test_task_dependency_trigger_rejects_multi_hop_cycle() -> None:
