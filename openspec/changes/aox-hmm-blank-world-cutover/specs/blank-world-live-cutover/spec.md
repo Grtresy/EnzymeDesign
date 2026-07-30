@@ -580,6 +580,24 @@ signal and scheduler settlement completed normally. AOX SHALL retain
 as the only same-command successor barrier. The driver SHALL first perform the same
 durable operation/task/sandbox observation, then MAY issue one later drain.
 
+A successful `attempt.create` or `scientific.attempt.close` is not an ordinary
+teammate completion or budget-replan handoff. Core MUST NOT queue the generic
+teammate-to-master successor for that result. After the requesting writer
+retires, Host finalization SHALL commit exactly one source-bound owner wake for
+the admitted attempt, immutable closure, or typed transition failure. Whether
+the owner is master or teammate, runtime SHALL supply the same bounded canonical
+facts as ephemeral model context without persisting a conversation message.
+
+The post-drain durable failure observation and failure evidence SHALL share one
+current-task-exit projection. Historical exact exits across resume cycles remain
+history; the latest exact exit matching current status and actor supplies the
+current failure reference. Contradictory same-time current bindings fail closed.
+Actionable operation, current-task, and sandbox candidates SHALL be ordered by
+normalized causal time and stable identity rather than read category. Task facts
+and evidence refs SHALL be bounded with total count, canonical digest, and
+truncation markers, and failure evidence MUST consume that same projection
+without a second task-board reread.
+
 Once coordination fails, the driver MUST preserve that original blocker, MUST reject every unresolved approval that is already visible or becomes visible before the existing attempt deadline solely to release the worker, and MUST NOT approve cleanup or continue scientific execution. Transient compact-control/resolve failures MUST retain only safe secondary diagnostics and MUST be retried with the same idempotency key until drain retirement or that deadline. After a successful drain worker reaches terminal, the coordinator MUST complete at least one compact pending-approval GET known to have begun after that response before concluding that no new `waiting_approval` exists, then bind the returned composite workspace. A drain-thread exception MUST retain the stable command-failure taxonomy; only approval coordination or cleanup exceptions MAY become coordination failures. Client-request completion or timeout MUST NOT be treated as server-handler completion: the loopback boundary SHALL track every server-side mutation lifetime, initiate server shutdown, and wait through server retirement until all mutations become idle before leaving the Host context. Mutation handlers MUST NOT return while a detached writer can still change attempt state.
 
 Canonical sandbox control-socket workers MUST be non-daemon and MUST NOT return from startup failure or stop while their worker is alive; a finite cooperative grace MAY precede a fail-stop join, and socket removal MUST follow worker retirement. Every core or compatibility Podman sandbox invocation SHALL bind an exact Host-private container lease using a random name, protected CID file outside the mounted sandbox root, run-id label and sandbox-root-digest label. Normal, nonzero and timeout paths MUST retire the exact CID before stopping the control worker; name drift MUST NOT bypass CID lookup, and return requires stable repeated absence of both CID and name after `kill`, `wait` and `rm`. Invalid CID, identity ambiguity or lifecycle command failure MUST remain fail-stop rather than release mutable state. Attempt evidence, artifact/SQLite collection and MICU-after observation SHALL occur only after the child Host context has exited and the parent has proved the lifecycle chain, zero exit and empty process group; an unretired handler, control worker, container or descendant MUST trigger bounded fatal retirement rather than race mutable state. Fatal supervision MUST write only parent-owned non-eligible evidence outside the attempt root, MUST leave external outcome unknown, and MUST NOT claim ledger-after, SQLite closure, artifact completeness or a business terminal state. Receipt sequence SHALL be reserved at request start, finalized by the exact response, and sealed only as a contiguous chain with no in-flight or failed reservation, so invocation order remains canonical even when control responses finish before the drain response. A transport or response-normalization failure SHALL preserve its original blocker in non-eligible failure evidence while its missing response leaves the receipt chain explicitly unsealable; it MUST NOT be rewritten as a successful response or eligible chain. These internal coordination requirements MUST NOT be represented as an asynchronous product drain or restart-safe continuation; process supervision remains a harness lifecycle boundary only.
@@ -613,6 +631,14 @@ The sealed `aox_browser_approval_receipt@2` SHALL record mode/channel/Host proce
 #### Scenario: Stop before a failed turn's queued wakeup
 - **WHEN** the one signal claimed by a drain commits a failed controlled operation, sandbox run, or explicit task finish and queues a master wakeup
 - **THEN** the drain returns, the driver preserves that first failure, issues no later drain for the session, creates no replacement task or controlled operation, and seals the queued wakeup only as failure evidence
+
+#### Scenario: Continue only through the Host-finalized transition owner wake
+- **WHEN** the claimed teammate successfully requests attempt admission or closure and retires its writer turn
+- **THEN** no generic master successor is queued, Host finalization creates exactly one source-bound owner wake, and a later drain gives that owner the bounded canonical transition facts
+
+#### Scenario: Preserve current task cause across resume history
+- **WHEN** a task has older exact blocked exits, resumes, and later blocks again while another operation or sandbox failure is also visible
+- **THEN** observation selects the exact current exit and the earliest normalized causal candidate, preserves the task wrapper separately, and failure evidence consumes the identical bounded task projection
 
 #### Scenario: Continue through a closed budget-replan handoff
 - **WHEN** the one teammate signal claimed by a drain exhausts its step budget, the exact signal/observation/task facts close, and one source-bound master wakeup remains queued without a controlled-operation, task, or sandbox terminal failure

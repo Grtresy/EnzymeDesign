@@ -328,6 +328,11 @@ def _live_result() -> dict[str, object]:
         "event_receipt": {"stream_digest": _digest("events")},
         "mutation_scope": {},
         "scientific_attempt_control_digest": scientific_control_digest,
+        "failure_task_projection": {
+            "task_fact_count": 0,
+            "task_facts_digest": canonical_digest([]),
+            "task_facts_truncated": False,
+        },
     }
     supervision = {
         "schema_id": SUPERVISION_RECEIPT_SCHEMA_ID,

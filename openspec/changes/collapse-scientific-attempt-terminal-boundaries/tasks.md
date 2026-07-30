@@ -57,3 +57,27 @@
 - [x] 10.1 Update the active AOX change, `docs/OpenZyme架构设计.md`, and relevant stable `docs/v3/` runtime, lifecycle, public-interface, and failure documents
 - [x] 10.2 Run focused Core/Host tests, ruff, strict OpenSpec validation, non-live eval, and the exact-worktree mainline gate
 - [x] 10.3 Inspect production net deletion and stale symbols, confirm no live/provider/HPC/MICU/Chrome action occurred, create one local Conventional Commit, and leave the worktree clean
+
+## 11. Collapse scientific transition successor ownership
+
+- [x] 11.1 Suppress the generic teammate-to-master successor after a successful `attempt.create` or `scientific.attempt.close` handoff so Host finalization creates the only source-bound successor
+- [x] 11.2 Deliver verified canonical wake facts to master turns through bounded ephemeral harness context without persisting a conversation message
+- [x] 11.3 Bound canonical failure wake facts while retaining exact error/source/effect/retry identity plus evidence count, digest, and truncation facts
+
+## 12. Unify current task exits and typed causal evidence
+
+- [x] 12.1 Project the deterministic current exact `task_finish`, allow historical blocked/resume exits, and fail closed on contradictory current bindings
+- [x] 12.2 Select actionable operation/task/sandbox failure candidates by causal timestamp and stable identity while excluding recovered historical failures
+- [x] 12.3 Reuse the same bounded task-exit facts in failure evidence and remove the duplicate task-board reread/projection
+
+## 13. Prove production composition and synchronize contracts
+
+- [x] 13.1 Add production-path regressions for single transition successor, canonical master wake context, ordinary teammate master notification, and non-persistence
+- [x] 13.2 Add chronology, repeated-exit, conflicting-binding, recovered-history, real-evidence, and projection-bound regressions
+- [x] 13.3 Synchronize the active AOX change, `docs/OpenZyme架构设计.md`, and relevant stable `docs/v3/` runtime, harness-audit, lifecycle, and failure contracts
+
+## 14. Verify and commit the post-r63 correction
+
+- [x] 14.1 Run focused Core/Host tests, ruff, strict OpenSpec validation, and the non-live eval
+- [x] 14.2 Run the exact-worktree non-live mainline gate and inspect production/test line-count plus stale symbols
+- [x] 14.3 Confirm no r64/live/provider/HPC/MICU/Chrome action occurred, review the final diff, create one local Conventional Commit, and leave the worktree clean

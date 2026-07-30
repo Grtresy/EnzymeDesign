@@ -582,6 +582,12 @@ class SessionDriveResult:
     scientific_attempt_control: dict[str, object] | None = None
     wrapper_code: str | None = None
     causal_failure: dict[str, object] | None = None
+    task_facts: tuple[dict[str, object], ...] = ()
+    task_fact_count: int = 0
+    task_facts_digest: str = field(
+        default_factory=lambda: canonical_digest([])
+    )
+    task_facts_truncated: bool = False
 
     def safe_summary(self) -> dict[str, object]:
         task_items = list(
@@ -627,6 +633,11 @@ class SessionDriveResult:
             summary["wrapper_code"] = self.wrapper_code
         if self.causal_failure is not None:
             summary["causal_failure"] = dict(self.causal_failure)
+        summary["failure_task_projection"] = {
+            "task_fact_count": self.task_fact_count,
+            "task_facts_digest": self.task_facts_digest,
+            "task_facts_truncated": self.task_facts_truncated,
+        }
         return summary
 
 
@@ -2951,6 +2962,10 @@ class LiveAoxAttemptRunner:
         last_workspace_response_binding: dict[str, object] = {}
         last_no_wakeup_fingerprint: str | None = None
         no_wakeup_confirmation_count = 0
+        last_task_facts: tuple[dict[str, object], ...] = ()
+        last_task_fact_count = 0
+        last_task_facts_digest = canonical_digest([])
+        last_task_facts_truncated = False
         for drain_number in range(1, self.max_drains + 1):
             if time.monotonic() - started > self.timeout_seconds:
                 break
@@ -3030,6 +3045,22 @@ class LiveAoxAttemptRunner:
                 ) from exc
             state = observation.state
             blocker = observation.blocker_code
+            last_task_facts = tuple(
+                getattr(observation, "task_facts", ())
+            )
+            last_task_fact_count = int(
+                getattr(observation, "task_fact_count", 0)
+            )
+            last_task_facts_digest = str(
+                getattr(
+                    observation,
+                    "task_facts_digest",
+                    canonical_digest([]),
+                )
+            )
+            last_task_facts_truncated = bool(
+                getattr(observation, "task_facts_truncated", False)
+            )
             if state in {"completed", "failed"}:
                 if fault_receipt is not None:
                     fault_receipt = self._complete_fault_receipt(
@@ -3072,6 +3103,10 @@ class LiveAoxAttemptRunner:
                             "causal_failure",
                             None,
                         ),
+                        task_facts=last_task_facts,
+                        task_fact_count=last_task_fact_count,
+                        task_facts_digest=last_task_facts_digest,
+                        task_facts_truncated=last_task_facts_truncated,
                     ),
                     fault_receipt,
                 )
@@ -3194,6 +3229,10 @@ class LiveAoxAttemptRunner:
                 browser_approval_receipt=browser_approval_receipt,
                 mutation_scope=mutation_scope,
                 scientific_attempt_control=scientific_attempt_control,
+                task_facts=last_task_facts,
+                task_fact_count=last_task_fact_count,
+                task_facts_digest=last_task_facts_digest,
+                task_facts_truncated=last_task_facts_truncated,
             ),
             fault_receipt,
         )
@@ -5270,7 +5309,11 @@ class LiveAoxAttemptRunner:
             "operations": []
             if probe_attestation is None
             else list(probe_attestation.operations),
-            "tasks": _failure_task_facts(provider, formal),
+            "tasks": (
+                []
+                if formal is None
+                else [dict(item) for item in formal.task_facts]
+            ),
             "artifacts": [
                 *(() if probe_attestation is None else probe_attestation.artifacts),
                 {
@@ -7563,105 +7606,6 @@ def _task_receipts(
             details={"observed_roles": sorted(role_ids)},
         )
     return sorted(receipts, key=lambda item: str(item["task_id"])), role_ids
-
-
-def _failure_task_facts(
-    provider: SQLiteRepositoryProvider | None,
-    formal: SessionDriveResult | None,
-) -> list[dict[str, object]]:
-    if provider is None or formal is None:
-        return []
-    with provider.read() as scope:
-        repositories = scope.repositories
-        tasks = tuple(repositories.tasks.list_by_session(formal.session_id))
-        agents = tuple(repositories.agents.list_by_session(formal.session_id))
-        documents = tuple(
-            repositories.engine_documents.list_by_session(formal.session_id)
-        )
-    roles_by_agent = {
-        str(getattr(agent, "agent_id", "") or ""): str(
-            getattr(agent, "role", "") or ""
-        )
-        for agent in agents
-    }
-    finishes_by_task: dict[str, list[object]] = {}
-    for document in documents:
-        if getattr(document, "document_kind", None) != "task_finish":
-            continue
-        payload = dict(getattr(document, "payload", None) or {})
-        task_id = str(payload.get("task_id") or "")
-        if task_id:
-            finishes_by_task.setdefault(task_id, []).append(document)
-
-    task_facts: list[dict[str, object]] = []
-    for task in tasks:
-        task_id = str(getattr(task, "task_id", "") or "")
-        assigned_ref = str(getattr(task, "assigned_ref", "") or "")
-        status = str(
-            getattr(getattr(task, "status", None), "value", "") or ""
-        )
-        finish_candidates = finishes_by_task.get(task_id, [])
-        exact_finishes = [
-            document
-            for document in finish_candidates
-            if (
-                payload := dict(getattr(document, "payload", None) or {})
-            ).get("status")
-            == status
-            and payload.get("finished_by") == assigned_ref
-        ]
-        finish = (
-            None
-            if not exact_finishes
-            else max(
-                exact_finishes,
-                key=lambda document: (
-                    str(getattr(document, "created_at", "") or ""),
-                    str(getattr(document, "document_id", "") or ""),
-                ),
-            )
-        )
-        if finish is not None:
-            business_exit = "agent_explicit"
-        elif status not in _TERMINAL_TASK_STATUSES:
-            business_exit = "not_terminal"
-        elif finish_candidates:
-            business_exit = "finish_binding_invalid"
-        else:
-            business_exit = "terminal_without_finish"
-        fact: dict[str, object] = {
-            "task_id": task_id,
-            "role": roles_by_agent.get(assigned_ref, ""),
-            "kind": str(getattr(task, "kind", "") or ""),
-            "status": status,
-            "business_exit": business_exit,
-            "assigned_ref": assigned_ref,
-            "lane_id": getattr(task, "lane_id", None),
-        }
-        if finish is not None:
-            finish_payload = dict(getattr(finish, "payload", None) or {})
-            fact.update(
-                {
-                    "finish_ref": str(
-                        getattr(finish, "document_id", "") or ""
-                    ),
-                    "finish_payload_digest": canonical_digest(finish_payload),
-                    "finished_by": str(
-                        finish_payload.get("finished_by") or ""
-                    ),
-                    "evidence_refs": [
-                        str(item)
-                        for item in finish_payload.get("evidence_refs") or []
-                    ],
-                }
-            )
-            failure_ref = str(
-                finish_payload.get("failure_ref") or ""
-            ).strip()
-            if failure_ref:
-                fact["failure_ref"] = failure_ref
-        task_facts.append(fact)
-    return sorted(task_facts, key=lambda item: str(item["task_id"]))
 
 
 def _select_primary_pubmed_evidence(
@@ -11326,6 +11270,19 @@ def _product_path_failure_receipt(
         else assistant_messages[-1].get("message_id"),
         "public_api_receipt_digest": canonical_digest(
             [item.to_dict() for item in api_receipts]
+        ),
+        "failure_task_projection": (
+            {
+                "task_fact_count": 0,
+                "task_facts_digest": canonical_digest([]),
+                "task_facts_truncated": False,
+            }
+            if formal is None
+            else {
+                "task_fact_count": formal.task_fact_count,
+                "task_facts_digest": formal.task_facts_digest,
+                "task_facts_truncated": formal.task_facts_truncated,
+            }
         ),
         "launch_receipt": {
             "schema_id": AOX_LAUNCH_RECEIPT_SCHEMA_ID,

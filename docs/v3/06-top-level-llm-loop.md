@@ -122,7 +122,7 @@ tool call。该上限不能靠静默截断实现：driver 必须把 provider 返
 “第 `4+` 项 overflow”当成两个互不相关的生命周期。harness 在 dispatch 任何 eligible
 call 前，先为全部 overflow 持久化 no-effect failure observation；公开 tool results 和
 events 仍按 provider 原始 call 顺序结算。若前 `3` 项中的某一项创建 pending approval、
-成功执行 `task.finish` / `scientific.attempt.close` / runtime suspension，或因 authority、integrity、
+成功执行 `task.finish` / `attempt.create` / `scientific.attempt.close` / runtime suspension，或因 authority、integrity、
 `dispatch_in_doubt` 等边界失败而提前返回，则其后的 eligible call 必须显式结算为
 `tool_call_batch_interrupted/no_effect/verify_then_retry`，并记录 causal call 与
 interruption reason；原有 overflow 仍保持
@@ -162,14 +162,19 @@ observation facts 保留返回引用，但 observation 关系字段只绑定当�
 - successful `attempt.create` 使用相同 terminal-action/batch-settlement 机制，只记录 admission intent，不写 task terminal。当前 teammate turn 在 request 提交后结束；Host 等 writer 退休再 finalization，并以 exact admitted attempt id 排队 source-bound wake。
 - successful `scientific.attempt.close` 使用同一 terminal-action/batch-settlement 机制，但只记录 closure intent：它不写 task terminal，也不代表 final closure。失败的 close 保持 non-terminal；成功后只有在 requesting `AGENT_TURN` writer 与其 interrupted-call settlement 全部退休后，Host finalizer 才可建立 quiescence 与 immutable closure。
 - `scientific.attempt.close` 不要求或持久化同一 response 的 companion text；assistant answer 走普通 conversation path。Core 只接受 exact attempt task 当前 canonical assignee，并在 request 与 finalization 两处验证 assignment。successful close 只写 immutable intent 并退休 turn，失败/rejected close 不留下部分 closure state。
+- successful scientific transition handoff 不走 ordinary teammate-result 的 generic
+  master notification。Host-finalized exact owner wake 是该 transition 唯一 successor；
+  ordinary teammate completion 与 max-step budget-replan 仍保留各自 master wake 合同。
 - Host finalizer 为 admitted attempt、immutable closure 或 typed finalizer failure 排队
   source-bound `MANUAL_RESUME`。runtime 使用一个通用 canonical wake-facts projector：
   先按 source identity 解析 attempt / closure / `FailureObservation`，再精确核对 claimed
   signal、actor、session/task/lane/correlation、request graph、derived lifecycle 与当前
-  task assignment。facts 必须先于 task prose 进入 fresh teammate prompt；不得依赖上一
+  task assignment。facts 必须先于 task prose 进入 fresh master 或 teammate prompt；
+  master 以有界 ephemeral system context 接收，不把 facts 写入 conversation。不得依赖上一
   turn conversation、字符串 prefix、隐藏状态或 AOX policy。admission facts 明确该 exact
   attempt 已提交，不能用重复 `attempt.create` 代替继续执行；closure facts不完成业务
-  task；failure facts不自动 retry。task 已 terminal 时复用 generic stale-signal
+  task；failure facts保留 exact source/error/effect/retry，并对 optional facts/evidence
+  暴露 count、digest 与 truncation marker，不自动 retry。task 已 terminal 时复用 generic stale-signal
   mechanical completion。binding 漂移或 durable event 无 canonical record 时在模型前
   fail closed；完全不解析为 canonical transition/failure 的 ordinary manual resume
   保持原行为。

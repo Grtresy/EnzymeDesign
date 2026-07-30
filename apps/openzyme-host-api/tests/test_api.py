@@ -2991,11 +2991,13 @@ def test_scientific_transition_finalizer_reports_nonretryable_host_failure(
     assert admitted_facts["source_kind"] == "scientific_attempt_admitted"
     assert admitted_facts["attempt_id"] == admitted_id
     assert failure_facts["source_kind"] == "failure_observation"
-    assert failure_facts["failure"]["failure_id"] == failure_id
-    assert failure_facts["failure"]["error_code"] == "authorization_exhausted"
-    assert failure_facts["failure"]["recoverability"] == (
-        "authorization_required"
-    )
+    assert failure_facts["failure_id"] == failure_id
+    assert failure_facts["error_code"] == "authorization_exhausted"
+    assert failure_facts["recoverability"] == "authorization_required"
+    assert failure_facts["effect_certainty"] == "no_effect"
+    assert failure_facts["retry_eligibility"] == "terminal"
+    assert failure_facts["facts_key_count"] > 0
+    assert failure_facts["facts_digest"].startswith("sha256:")
     assert all(
         instructions.index("Canonical wake facts: ")
         < instructions.index(f"Task {task_id}:")

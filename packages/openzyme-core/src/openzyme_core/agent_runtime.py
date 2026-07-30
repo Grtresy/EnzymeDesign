@@ -66,6 +66,24 @@ def _require_consistent_harness_approval_wait(
         )
 
 
+_HOST_FINALIZED_SCIENTIFIC_TRANSITION_ACTIONS = frozenset(
+    {
+        "attempt.create",
+        "scientific.attempt.close",
+    }
+)
+
+
+def _successful_host_transition_handoff(result: HarnessResult) -> bool:
+    return any(
+        tool_result.ok
+        and tool_result.terminates_turn
+        and tool_result.terminal_action
+        in _HOST_FINALIZED_SCIENTIFIC_TRANSITION_ACTIONS
+        for tool_result in result.tool_results
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class AgentRuntimeOutcome:
     signal: AgentRuntimeSignal
@@ -328,7 +346,12 @@ class AgentRuntimeService:
             if not_ready is not None:
                 return not_ready
         if agent.agent_id == "agent:master" or agent.role == "master":
-            return self._wake_master(claimed, agent, max_steps=max_steps)
+            return self._wake_master(
+                claimed,
+                agent,
+                max_steps=max_steps,
+                wake_facts=wake_facts,
+            )
 
         payload = self._payload_for_signal(signal)
         task = (
@@ -567,7 +590,10 @@ class AgentRuntimeService:
                         "task_id": task.task_id,
                     },
                 )
-            if result.pending_approval_id is None:
+            if (
+                result.pending_approval_id is None
+                and not _successful_host_transition_handoff(result)
+            ):
                 successor = self._enqueue_master_wakeup_after_teammate(
                     session_id=agent.session_id,
                     source_signal=completed,
@@ -708,6 +734,7 @@ class AgentRuntimeService:
         agent: AgentMember,
         *,
         max_steps: int,
+        wake_facts: CanonicalWakeFacts | None = None,
     ) -> AgentRuntimeOutcome:
         skill_keys = self._master_skill_keys_for_signal(claimed)
         now = utc_now_iso()
@@ -738,6 +765,11 @@ class AgentRuntimeService:
             HarnessInput(
                 session_id=claimed.session_id,
                 message=None,
+                wake_instructions=(
+                    None
+                    if wake_facts is None
+                    else wake_facts.render_instructions()
+                ),
                 max_steps=max_steps,
                 restore_focus=RestoreFocus(
                     task_id=claimed.task_id,

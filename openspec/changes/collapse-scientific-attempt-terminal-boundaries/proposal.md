@@ -9,6 +9,15 @@ executor repeated `attempt.create`, the authority boundary correctly rejected it
 and diagnostic projection flattened the typed `authorization_required` cause into
 `task_blocked` while misreading every nested task-board status as `unknown`.
 
+The post-r63 implementation audit found three narrower composition gaps. A
+successful scientific transition still queued the generic teammate-to-master
+successor before Host finalization could queue the canonical source-bound owner
+wake. Master claims discarded already verified canonical wake facts. AOX failure
+observation also selected category/row-order candidates and used a different
+task-finish replay rule from failure evidence, so a legitimate
+blocked/resumed/blocked history could be treated as ambiguous or projected from a
+different business exit.
+
 ## What Changes
 
 - **BREAKING** Make the assignee of the scientific attempt's canonical task the only agent-facing closure requester; AOX no longer requires the resident master, an exact three-task board, reporter identity, report publication, or final-response text before accepting a closure request.
@@ -22,6 +31,15 @@ and diagnostic projection flattened the typed `authorization_required` cause int
 - Make a successful `attempt.create` request end its bounded writer turn, using the
   same non-business transition handoff as `scientific.attempt.close`; neither
   transition requests `task.finish` before Host finalization and wake delivery.
+- Make the Host-finalized source-bound wake the only successor of a successful
+  scientific transition; suppress the generic teammate-to-master successor for
+  that handoff and deliver the same verified canonical wake facts to either a
+  master or teammate model turn without persisting them as conversation.
+- Project one deterministic current task exit from exact `task_finish` records,
+  allow legitimate historical exits, fail closed on contradictory current
+  bindings, select actionable failure candidates by causal chronology plus stable
+  identity rather than projection category, and reuse that projection for bounded
+  failure task evidence.
 - Collapse live coordination onto canonical lifecycle plus existing writer/process retirement facts. A completed product projection with an open attempt and no eligible wake source fails after two identical replay-safe empty observations with the earliest typed cause rather than exhausting the drain bound.
 - Preserve original operation, task, report, MICU, authority, effect, and process observations through supervision and decision wrappers; retain both the earliest typed cause and any lifecycle wrapper, and do not rewrite completed operations as failed.
 - Stop durably amplifying identical derived runtime-consistency warnings on every command while retaining the read-only consistency projection.

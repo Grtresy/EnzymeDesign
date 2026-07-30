@@ -14,6 +14,7 @@ from openzyme_domain import ScientificAttemptClosure
 from openzyme_domain import ScientificAttemptLifecyclePhase
 from openzyme_domain import Task
 
+from .mutation_authority import canonical_digest
 from .repositories import CoreRepositories
 from .scientific_attempt_lifecycle import (
     ScientificAttemptLifecycleIntegrityError,
@@ -28,6 +29,7 @@ class CanonicalWakeFactsReason(StrEnum):
     CONTROL_BINDING_INVALID = "control_binding_invalid"
     LIFECYCLE_INVALID = "lifecycle_invalid"
     TASK_MISSING = "task_missing"
+    PROJECTION_BOUND_EXCEEDED = "projection_bound_exceeded"
 
 
 class CanonicalWakeFactsError(RuntimeError):
@@ -47,14 +49,30 @@ class CanonicalWakeFactsError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class CanonicalWakeFacts:
+    MAX_FACTS_JSON_CHARS = 3_200
+    MAX_TASK_CONTEXT_CHARS = 512
+
     source_kind: str
     task: Task
     facts: dict[str, Any]
 
+    def __post_init__(self) -> None:
+        if len(self._facts_json()) > self.MAX_FACTS_JSON_CHARS:
+            raise CanonicalWakeFactsError(
+                CanonicalWakeFactsReason.PROJECTION_BOUND_EXCEEDED
+            )
+
+    def _facts_json(self) -> str:
+        return json.dumps(
+            self.facts,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
     def render_instructions(self) -> str:
         lines = [
-            "Canonical wake facts: "
-            + json.dumps(self.facts, ensure_ascii=False, sort_keys=True),
+            "Canonical wake facts: " + self._facts_json(),
         ]
         if self.source_kind == "scientific_attempt_admitted":
             lines.append(
@@ -75,10 +93,10 @@ class CanonicalWakeFacts:
                 "request, or explicit task outcome from the stated recoverability, "
                 "effect certainty, and retry eligibility."
             )
-        lines.append(
-            f"Task {self.task.task_id}: "
-            f"{self.task.description or self.task.subject}"
-        )
+        task_context = str(self.task.description or self.task.subject)
+        if len(task_context) > self.MAX_TASK_CONTEXT_CHARS:
+            task_context = task_context[: self.MAX_TASK_CONTEXT_CHARS] + "…"
+        lines.append(f"Task {self.task.task_id}: {task_context}")
         return "\n".join(lines)
 
 
@@ -305,11 +323,7 @@ class CanonicalWakeFactsProjector:
         return CanonicalWakeFacts(
             source_kind="failure_observation",
             task=task,
-            facts={
-                "schema_version": "canonical_wake_facts@1",
-                "source_kind": "failure_observation",
-                "failure": failure.to_dict(),
-            },
+            facts=_bounded_failure_wake_facts(failure),
         )
 
     def _task(
@@ -378,6 +392,60 @@ class CanonicalWakeFactsProjector:
     @staticmethod
     def _invalid(reason: CanonicalWakeFactsReason) -> None:
         raise CanonicalWakeFactsError(reason)
+
+
+def _bounded_failure_wake_facts(
+    failure: FailureObservation,
+) -> dict[str, Any]:
+    evidence_refs = [str(item) for item in failure.evidence_refs]
+    projected_refs: list[str] = []
+    projected_ref_chars = 0
+    for evidence_ref in evidence_refs:
+        if len(projected_refs) >= 8:
+            break
+        if len(evidence_ref) > 256:
+            break
+        next_chars = projected_ref_chars + len(evidence_ref)
+        if next_chars > 768:
+            break
+        projected_refs.append(evidence_ref)
+        projected_ref_chars = next_chars
+
+    safe_summary = str(failure.safe_summary)
+    if len(safe_summary) > 256:
+        safe_summary = safe_summary[:256] + "…"
+    safe_hint = None if failure.safe_hint is None else str(failure.safe_hint)
+    if safe_hint is not None and len(safe_hint) > 256:
+        safe_hint = safe_hint[:256] + "…"
+
+    return {
+        "schema_version": "canonical_wake_facts@1",
+        "source_kind": "failure_observation",
+        "failure_id": failure.failure_id,
+        "session_id": failure.session_id,
+        "task_id": failure.task_id,
+        "lane_id": failure.lane_id,
+        "agent_id": failure.agent_id,
+        "failure_source_kind": failure.source_kind,
+        "source_ref": failure.source_ref,
+        "source_version": failure.source_version,
+        "phase": failure.phase,
+        "failure_class": failure.failure_class.value,
+        "recoverability": failure.recoverability.value,
+        "effect_certainty": failure.effect_certainty.value,
+        "retry_eligibility": failure.retry_eligibility.value,
+        "actor_kind": failure.actor_kind.value,
+        "error_code": failure.error_code,
+        "safe_summary": safe_summary,
+        "safe_hint": safe_hint,
+        "evidence_refs": projected_refs,
+        "evidence_ref_count": len(evidence_refs),
+        "evidence_refs_digest": canonical_digest(evidence_refs),
+        "evidence_refs_truncated": projected_refs != evidence_refs,
+        "facts_key_count": len(failure.facts),
+        "facts_digest": canonical_digest(failure.facts),
+        "created_at": failure.created_at,
+    }
 
 
 __all__ = [

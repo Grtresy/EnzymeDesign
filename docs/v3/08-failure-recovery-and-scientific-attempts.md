@@ -136,19 +136,35 @@ workflow/scope/effect/resource identity 与当前 lifecycle，避免模型从旧
 拒绝必须生成 system-attributed `FailureObservation` 并以 exact failure id 返回
 responsible agent；不得静默吞掉或自动重放。
 
+successful admission/closure request 不是 ordinary teammate completion：runtime 不为该
+result 预先排 generic `agent:master` successor。requesting writer 退休后，Host finalizer
+在 transition transaction 中创建的 exact source-bound owner wake 是唯一 successor。
+该 wake 可以属于 master 或 teammate，两条模型路径都接收同一 bounded canonical facts；
+master 使用 ephemeral system context，facts 不成为 conversation message。
+
 canonical wake-facts projector 对 admission、closure 与 failure 采用相同 closed binding：
 claimed signal 的 source/correlation/session/task/lane/agent 必须与 canonical records 和
 当前 task assignee 一致；attempt/request、closure/request/lifecycle graph 也必须一致。
 durable transition event 已存在但 canonical record 缺失属于 orphan transition，必须
 fail closed。projector 只提供事实与 effect/retry 边界，不输出 recommended action；
-agent 仍可自主选择继续 attempt、修复、改道、reconcile、请求 authority 或显式结束 task。
+failure projection 保留 exact source/error/effect/retry identity，但 optional facts 与
+evidence refs 使用 deterministic prefix、total count、canonical digest 和 truncation
+marker；整个 prompt context 有硬界。agent 仍可自主选择继续 attempt、修复、改道、
+reconcile、请求 authority 或显式结束 task。
 
 AOX observer 若看到 owner-authored terminal `task.finish`，应从 immutable finish document
 的 `failure_ref` 解析 exact `FailureObservation`，而不是依赖仅在 `failed` row 上复制的
 task failure fields。outer `task_blocked` / `task_failed` 是 wrapper；sealed diagnostic 与
 failure evidence 的首要 blocker 使用最早 typed error code，同时保留 wrapper、cause 的
 recoverability/effect certainty/retry eligibility 和真实 completed/blocked/todo task
-projection。非 eligible evidence可以记录未终态 task，但绝不能因此获得 cutover eligibility。
+projection。current-exit projection 允许同一 task 在 resume 前保留多个历史 exact
+`task_finish`，只选择与当前 status/assignee 匹配的最新 causal exit；同一 causal time
+出现非等价 current binding 时以 `task_finish_current_binding_ambiguous` fail closed。
+recovered historical exit 不重新成为 actionable cause。operation、current task 与 sandbox
+候选按解析到 UTC 的 causal timestamp 排序，再用 stable identity 打破同刻平局，不按
+repository/category 顺序。observation 与 failure evidence 共用这份 bounded task facts；
+task/evidence 总数、digest、truncation 明示，不再二次读取 task board。非 eligible
+evidence可以记录未终态 task，但绝不能因此获得 cutover eligibility。
 
 AOX formal runtime barrier 不能用一个跨 session drive 的长期 outer writer 包住上述
 rollover，否则 pre-attempt scope 永远无法证明 writer 已退休。campaign driver 在每次

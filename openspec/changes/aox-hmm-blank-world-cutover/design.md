@@ -1046,6 +1046,24 @@ diagnostic raw counts 使用真实 nested task projection，non-eligible failure
 保留 bounded terminal/nonterminal task facts。所有 authority、unknown-effect、
 fencing、provenance、writer/quiescence 与 formal GO controls 保持 fail closed。
 
+post-r63 composition correction 进一步收口两处实现边界。成功的
+`attempt.create`/`scientific.attempt.close` 不再同时产生 generic
+teammate-to-master successor；Host finalizer 写入的 source-bound owner wake 是唯一
+transition successor，而 ordinary teammate result 和 turn-budget replan 仍保留原有
+master successor。canonical facts 通过 bounded ephemeral harness context 同时进入
+master 与 teammate turn，不写 conversation 或新的 durable wake state；failure
+projection 保留 exact identity/effect/retry 元数据，并以 count/digest/truncated 表达
+有界 evidence refs 和 raw facts。
+
+AOX observer 对每个 current task 从完整合法 resume history 中选择一个 deterministic
+exact `task_finish`；相同 normalized UTC timestamp 的不等价 current binding
+fail closed 为 `task_finish_current_binding_ambiguous`。operation、current task exit 与
+sandbox 的 actionable typed failure 统一按 timezone-aware causal timestamp 和 stable
+identity 排序，已恢复的历史 blocked exit 不再覆盖当前状态。该 bounded current-task
+projection 由 runtime observation 与 failure evidence 共同消费，不再二次读取 task
+board 生成另一份投影。closure-stage live runtime summary 以 closed nested record
+继续绑定该投影的 count/digest/truncated 元数据，成功路径也不能静默丢弃或改形。
+
 本 correction 只授权 local code/spec/docs、non-live verification 和本地 commit；
 不授权 r64、live authority/root、MICU、provider、HPC 或 Chrome。
 

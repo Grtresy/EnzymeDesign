@@ -31,6 +31,9 @@ from .memory import project_memory_summary_for_prompt
 from .workflow_knowledge import is_workflow_ref
 
 
+_MAX_EPHEMERAL_WAKE_INSTRUCTION_CHARS = 4_096
+
+
 def _extract_tool_calls(message: Any) -> list[dict[str, Any]]:
     if hasattr(message, "tool_calls") and getattr(message, "tool_calls") is not None:
         return list(getattr(message, "tool_calls"))
@@ -233,6 +236,27 @@ def _build_system_prompt(context: SessionRuntimeContext) -> str:
             )
         )
     return "\n".join(sections)
+
+
+def _build_system_prompt_for_input(
+    context: SessionRuntimeContext,
+    harness_input: HarnessInput,
+) -> str:
+    system_prompt = _build_system_prompt(context)
+    wake_instructions = str(harness_input.wake_instructions or "").strip()
+    if not wake_instructions:
+        return system_prompt
+    if len(wake_instructions) > _MAX_EPHEMERAL_WAKE_INSTRUCTION_CHARS:
+        raise ValueError("ephemeral runtime wake context exceeded its bound")
+    return "\n\n".join(
+        (
+            system_prompt,
+            "Ephemeral canonical runtime wake context follows. It is verified "
+            "Host state for this bounded turn, not a user message and not an "
+            "instruction to choose a particular strategy.",
+            wake_instructions,
+        )
+    )
 
 
 def _build_seed_messages(
@@ -438,7 +462,7 @@ class LlmConversationDriver:
             context,
             call_index=call_index,
         )
-        system_prompt = _build_system_prompt(context)
+        system_prompt = _build_system_prompt_for_input(context, harness_input)
         if tool_results:
             tool_results = budget_tool_results_for_prompt(
                 context,
@@ -447,7 +471,7 @@ class LlmConversationDriver:
                 messages=list(self._messages),
                 tools=tools,
             )
-            system_prompt = _build_system_prompt(context)
+            system_prompt = _build_system_prompt_for_input(context, harness_input)
             self._messages.extend(_tool_messages(tool_results))
 
         def rebuild_payload() -> PromptPayload:
@@ -460,7 +484,10 @@ class LlmConversationDriver:
                 )
                 rebuilt_messages.extend(_tool_messages(tool_results))
             return PromptPayload(
-                system_prompt=_build_system_prompt(context),
+                system_prompt=_build_system_prompt_for_input(
+                    context,
+                    harness_input,
+                ),
                 messages=rebuilt_messages,
                 tools=tools,
             )

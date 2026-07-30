@@ -266,6 +266,7 @@ class HarnessInput:
     correlation_id: str | None = None
     signal_id: str | None = None
     wakeup_reason: str | None = None
+    wake_instructions: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

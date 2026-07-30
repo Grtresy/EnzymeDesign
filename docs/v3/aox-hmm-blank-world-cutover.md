@@ -2852,14 +2852,22 @@ diagnostic projection defects, not a revision of the typed causal failure.
 The forward r63 correction makes successful `attempt.create` a non-business
 terminal handoff and replaces the closure-only verifier with a canonical
 admission/closure/failure wake-facts projector. Exact committed facts precede
-task prose in every fresh teammate prompt; source/correlation/session/task/lane/
-agent, request graph, lifecycle and assignment drift fail before a provider
-call, while unrelated manual resumes remain ordinary. AOX observation now
-derives the earliest cause from the owner-authored immutable
-`task_finish.failure_ref`, preserves `task_blocked` as a wrapper, reads nested
-task-board rows correctly, and seals actual completed/blocked/todo task facts
-even when the attempt is non-eligible. It does not retry r63, alter its
-authority/root/SQLite/effects/decision, or authorize r64.
+task prose in every fresh master or teammate prompt without persisting them as
+conversation; source/correlation/session/task/lane/agent, request graph,
+lifecycle and assignment drift fail before a provider call, while unrelated
+manual resumes remain ordinary. The post-r63 composition correction also
+suppresses the competing ordinary teammate-to-master wake so the Host-finalized
+owner wake is the transition's sole successor. AOX observation now derives the
+earliest cause from one deterministic current exact task exit, accepts older
+blocked/resume history, fails closed on contradictory same-time current exits,
+orders operation/task/sandbox candidates by normalized causal time plus stable
+identity, preserves `task_blocked` as a wrapper, and passes the same bounded
+completed/blocked/todo facts and evidence-ref count/digest/truncation metadata
+to failure evidence. The closure-stage live runtime summary keeps the same
+projection count/digest/truncation metadata in its closed schema, so a
+successful path cannot silently drop or reshape that observer contract. It
+does not retry r63, alter its authority/root/SQLite/effects/decision, or
+authorize r64.
 
 These corrections do not authorize `preflight`, another closure-stage run,
 `run-diagnostic-live`, `run-live`, a numbered root, provider/MICU call, HPC

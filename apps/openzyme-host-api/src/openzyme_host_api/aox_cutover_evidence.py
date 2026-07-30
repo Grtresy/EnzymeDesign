@@ -6924,6 +6924,7 @@ def _validate_attempt_semantics(
         }
         allowed_business_exits = {
             "agent_explicit",
+            "current_finish_binding_ambiguous",
             "documented_mechanical_transition",
             "not_terminal",
             "terminal_without_finish",

@@ -195,6 +195,32 @@ uses the real nested task-board shape and carries bounded terminal and
 nonterminal task facts. Formal acceptance remains fail closed; preserving a
 cause or nonterminal task never makes failure evidence eligible.
 
+### 9. Host-finalized transitions have one successor and one causal projection
+
+A successful `attempt.create` or `scientific.attempt.close` is a bounded
+Host-transition handoff, not an ordinary completed teammate result. Runtime
+therefore does not enqueue the generic source-bound master successor for that
+result. After the writer retires, Host finalization atomically writes the
+lifecycle transition and its exact source-bound owner wake. That canonical wake
+is the only successor created by the transition. It may target a teammate or
+master; both paths receive the same verified, bounded, ephemeral wake-facts
+projection. The facts are prompt context only and never become a conversation
+message or another truth store.
+
+AOX observation and failure evidence share one current-task-exit projection.
+For each task, it accepts any historical exact `task_finish` records, selects the
+latest exit matching the task's current status and actor, and resolves its
+`failure_ref` through the exact canonical `FailureObservation`. Contradictory
+same-time current bindings fail closed. Actionable operation, task, and sandbox
+candidates are ordered by causal timestamp then stable identity, not by
+projection category. Historical failures that no longer describe a current
+terminal product state are not actionable candidates. The same bounded task
+facts, bounded evidence-ref summaries, counts, truncation markers, and digests
+feed diagnostic evidence without granting replay authority. Closure-stage live
+summaries bind the projection count/digest/truncation metadata as an exact
+closed nested record, preventing a successful path from silently dropping the
+shared observer contract.
+
 ## Risks / Trade-offs
 
 - **Reassignment during closure:** repeating the owner check at finalization
@@ -217,6 +243,12 @@ cause or nonterminal task never makes failure evidence eligible.
   source-bound, and read-only; negative tests reject stale actor/session/task/
   lane/source bindings and unknown-effect replay while leaving action choice to
   the model.
+- **Generic master wake suppression is transition-specific:** ordinary teammate
+  completion retains its existing master notification. Only a successful
+  Host-finalized scientific transition relies on the canonical owner wake.
+- **Historical task exits remain replayable evidence:** multiple exact exits are
+  valid across resume cycles. Only contradictory candidates for the same current
+  exit fail closed; older exits do not become current causal authority.
 
 ## Migration Plan
 
@@ -237,11 +269,16 @@ cause or nonterminal task never makes failure evidence eligible.
    inspect production line-count reduction.
 8. Commit the complete local slice and stop. A fresh live run requires a
    separate authority plan and explicit approval.
+9. Suppress competing generic successors for scientific handoffs, carry verified
+   wake facts into master turns, unify current task-exit/causal projection, bound
+   diagnostic evidence, synchronize contracts, and repeat only non-live
+   verification before the local commit.
 
 Rollback is a source revert. The retained historical table requires no reverse
 data migration.
 
 ## Open Questions
 
-None. The approved r63 correction fixes the remaining wake-fact, transition
-handoff, causal-evidence, task-projection, and compatibility choices above.
+None. The approved post-r63 correction fixes the remaining single-successor,
+master wake-context, causal-order, current-exit, bounded-evidence, and
+compatibility choices above.

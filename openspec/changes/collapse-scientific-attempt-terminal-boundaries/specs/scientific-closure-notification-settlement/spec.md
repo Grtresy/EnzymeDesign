@@ -7,10 +7,12 @@ before continuing. The projection MUST bind signal kind/source/correlation,
 claim, actor, session, task, lane, request, attempt, closure when present, and
 current lifecycle. A valid notification for a still-open task MUST continue
 through the ordinary fenced model-driven runtime path with those facts ahead of
-task prose; a valid stale notification for an already-terminal task MAY use the
-existing generic mechanical completion path. Runtime MUST NOT persist another
-phase, require or create a co-terminal assistant response, infer a strategy, or
-use an identifier prefix as canonical proof.
+task prose, whether the target is a master or teammate; a valid stale
+notification for an already-terminal task MAY use the existing generic
+mechanical completion path. Canonical facts MUST be bounded and ephemeral and
+MUST NOT be persisted as conversation. Runtime MUST NOT persist another phase,
+require or create a co-terminal assistant response, infer a strategy, or use an
+identifier prefix as canonical proof.
 
 #### Scenario: Exact closure notification wakes an open task
 - **WHEN** a claimed `manual_resume` signal points to the exact immutable closure and the attempt task remains business-nonterminal
@@ -23,6 +25,10 @@ use an identifier prefix as canonical proof.
 #### Scenario: Admission notification is claimed
 - **WHEN** a claimed `manual_resume` signal points to the exact Host-admitted scientific attempt
 - **THEN** runtime supplies the exact attempt, admission request, task/lane/actor, workflow and current lifecycle facts to the fresh model turn, and does not repeat `attempt.create` mechanically
+
+#### Scenario: Master owns the canonical transition wake
+- **WHEN** a claimed exact admitted-attempt, immutable-closure, or failure-observation wake targets the resident master
+- **THEN** runtime supplies the same verified bounded canonical facts as ephemeral model context and does not persist them as a user or assistant conversation message
 
 #### Scenario: Transition failure notification is claimed
 - **WHEN** a claimed `manual_resume` signal points to an exact canonical failure observation
@@ -88,12 +94,22 @@ A successful `attempt.create` or `scientific.attempt.close` MUST terminate the
 current bounded teammate writer turn so Host finalization can run after writer
 retirement. The handoff MUST leave task business status unchanged, MUST NOT be
 reported as `task_finish_required`, and MUST NOT execute a later call from the
-same model response. Failed requests remain ordinary model-readable no-effect
-results and do not terminate the turn.
+same model response. Runtime MUST NOT enqueue the generic teammate-to-master
+successor for this successful handoff; the Host-finalized source-bound owner wake
+MUST be the transition's only successor. Failed requests remain ordinary
+model-readable no-effect results and do not terminate the turn.
 
 #### Scenario: Admission request succeeds
 - **WHEN** `attempt.create` records an exact authorized admission request
 - **THEN** the harness retires the current turn, settles later calls as undispatched no-effect, and waits for the Host-finalized source-bound wake
+
+#### Scenario: Scientific transition has one successor
+- **WHEN** a successful admission or closure request retires its teammate writer and Host finalization commits the transition
+- **THEN** exactly one source-bound owner wake is created for that transition and no competing generic master wake is queued
+
+#### Scenario: Ordinary teammate result still notifies master
+- **WHEN** a teammate turn completes without a successful scientific transition handoff
+- **THEN** the existing generic teammate-to-master successor behavior remains unchanged
 
 #### Scenario: Admission request is rejected
 - **WHEN** `attempt.create` fails authority, identity, resource, or lifecycle validation

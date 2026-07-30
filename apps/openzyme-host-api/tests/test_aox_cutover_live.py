@@ -28,6 +28,10 @@ from openzyme_domain import ControlledOperation
 from openzyme_domain import ControlledOperationExecutionLifecycle
 from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import FailureActorKind
+from openzyme_domain import FailureClass
+from openzyme_domain import FailureObservation
+from openzyme_domain import FailureRecoverability
 from openzyme_domain import RetryEligibility
 from openzyme_domain import MutationScopeKind
 from openzyme_domain import MutationScopeState
@@ -68,6 +72,7 @@ from openzyme_host_api.aox_scientific_contract import (
     AOX_SELECTED_CHAIN_WORKFLOW_ID,
 )
 from openzyme_host_api.aox_runtime_observation import (
+    AoxRuntimeObservationService,
     KNOWN_POSITIVE_PROBE_CONTROLLED_OPERATIONS,
 )
 from openzyme_pipeline import aox_hmmer
@@ -6945,6 +6950,30 @@ def test_r63_failure_projection_preserves_nested_task_states_and_finish_facts(
             repositories.tasks.seed_fixture(task)
         for agent in agents:
             repositories.agents.save(agent)
+        repositories.failure_observations.add(
+            FailureObservation(
+                failure_id="failure_r63",
+                session_id=session.session_id,
+                task_id="task_execution",
+                lane_id=None,
+                agent_id="agent:executor",
+                source_kind="scientific_transition",
+                source_ref="attempt_admission_request_r63",
+                source_version=_digest("r63-failure-source"),
+                phase="attempt_admission_finalization",
+                failure_class=FailureClass.SYSTEM,
+                recoverability=FailureRecoverability.AUTHORIZATION_REQUIRED,
+                effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+                retry_eligibility=RetryEligibility.TERMINAL,
+                actor_kind=FailureActorKind.SYSTEM,
+                error_code="authorization_required",
+                safe_summary="The attempted transition lacked authority.",
+                facts={},
+                likely_causes=(),
+                evidence_refs=("failure:failure_r63",),
+                created_at=now,
+            )
+        )
         for document in (
             EngineDocumentRecord(
                 document_id="finish_research",
@@ -6977,16 +7006,32 @@ def test_r63_failure_projection_preserves_nested_task_states_and_finish_facts(
             ),
         ):
             repositories.engine_documents.save(document)
+        mutation_scope = MutationScopeService(repositories).open_scope(
+            session_id=session.session_id,
+            scope_kind=MutationScopeKind.ATTEMPT,
+            scope_ref="aox-attempt:r63-projection:formal",
+        )
+        MutationScopeService(repositories).register_writer(
+            scope_id=mutation_scope.scope_id,
+            owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+            owner_ref="aox-attempt-driver:r63-projection:formal",
+            trusted_root=True,
+        )
+    observation = AoxRuntimeObservationService(provider).observe_session(
+        session_id=session.session_id,
+        purpose="formal",
+    )
     formal = live.SessionDriveResult(
         session_id=session.session_id,
         purpose="formal",
-        state="failed",
-        blocker_code="authorization_required",
-        wrapper_code="task_blocked",
-        causal_failure={
-            "failure_id": "failure_r63",
-            "error_code": "authorization_required",
-        },
+        state=observation.state,
+        blocker_code=observation.blocker_code,
+        wrapper_code=observation.wrapper_code,
+        causal_failure=observation.causal_failure,
+        task_facts=observation.task_facts,
+        task_fact_count=observation.task_fact_count,
+        task_facts_digest=observation.task_facts_digest,
+        task_facts_truncated=observation.task_facts_truncated,
         workspace={
             "task_board": {
                 "items": [
@@ -7002,7 +7047,7 @@ def test_r63_failure_projection_preserves_nested_task_states_and_finish_facts(
     )
 
     raw_facts = live._diagnostic_formal_facts(formal)
-    task_facts = live._failure_task_facts(provider, formal)
+    task_facts = [dict(item) for item in formal.task_facts]
 
     assert raw_facts["task_status_counts"] == {
         "blocked": 1,

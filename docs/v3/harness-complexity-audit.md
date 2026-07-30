@@ -290,6 +290,25 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   workflow refs，以及两次 stable zero-signal/no-wakeup diagnostic。它们呈现 canonical
   state，不要求 agent 走固定 handoff 剧本。
 
+- [x] Scientific transition 是否同时生成 generic master 与 canonical owner 两个 successor。
+
+  证据：post-r63 production composition audit 证明 successful `attempt.create` 的 teammate
+  result transaction 先按 ordinary completion 排队 `source_ref=<teammate signal>` 的 master
+  wake；Host 在 command batch 结束后才 finalization 并排 exact attempt-id owner wake。
+  master claim 又丢弃已验证 canonical wake facts。两个 wake 都是 durable truth，但只有后者
+  与 transition source 闭合，前者会在 finalization 前形成竞争 turn。
+
+  Doctrine 风险：Harness 把“teammate turn 结束”误当成“master 必须先接手”，制造了不属于
+  scientific lifecycle 的后继，并让 actor routing 决定 agent 是否能看到同一份世界事实。
+  AOX failure collector 又用另一套 latest-finish 读库，使 current cause 与 evidence 可能分叉。
+
+  修正记录：successful admission/closure handoff 不再创建 generic master successor；
+  Host-finalized exact owner wake 是唯一 successor。canonical wake facts 以同一 bounded
+  ephemeral contract 注入 master/teammate，不写 conversation。AOX 以一个 current-exit
+  projection 接受历史 resume exits、同刻矛盾 fail closed，按 causal timestamp/stable id
+  选择 actionable candidate，并把同一 bounded task/evidence facts 交给 failure evidence。
+  ordinary teammate completion 与 max-step budget-replan master wake 不变。
+
 - [x] Lane 与 session lease 是否只是历史复杂度，应随 recovery machine 一并删除。
 
   证据：Lane symbols 仍有 105 个 Python 文件消费者，覆盖 Host/CLI API、cwd/branch、

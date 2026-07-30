@@ -5336,6 +5336,54 @@ def test_llm_conversation_driver_system_prompt_lists_teammates_not_capability_to
     assert "HMM" not in prompt
 
 
+def test_llm_conversation_driver_keeps_canonical_wake_context_ephemeral() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        active_skill_keys=(),
+        skill_registry=SkillRegistry(),
+    )
+    context.refresh_restore_context()
+    model_factory = FakeModelFactory(
+        {"content": "I will continue from the canonical state.", "tool_calls": []}
+    )
+    driver = LlmConversationDriver(model_factory)
+    wake_instructions = (
+        'Canonical wake facts: {"attempt_id":"attempt_ephemeral",'
+        '"source_kind":"scientific_attempt_admitted"}'
+    )
+
+    driver.plan(
+        context,
+        HarnessInput(
+            session_id=session.session_id,
+            wake_instructions=wake_instructions,
+        ),
+        (),
+    )
+
+    call = model_factory.invokers["v3_harness_loop"].calls[0]
+    assert wake_instructions in str(call["system_prompt"])
+    assert "not a user message" in str(call["system_prompt"])
+    assert all(
+        wake_instructions not in _message_content(message)
+        for message in call["messages"]
+    )
+    conversation_documents = [
+        document
+        for document in repositories.engine_documents.list_by_session(
+            session.session_id
+        )
+        if document.document_kind == "conversation_message"
+    ]
+    assert conversation_documents == []
+
+
 def test_llm_provider_call_registers_live_token_ledger_writer() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)

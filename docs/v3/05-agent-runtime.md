@@ -172,7 +172,7 @@ sender teammate
 
 request-response protocol 统一使用 correlation id 追踪 pending、approved、rejected、completed、failed 等状态。shutdown、plan review、handoff、clarification、result completion 都应复用同一套 thread/read model，而不是各自发明独立消息机制。
 
-teammate 完成、阻塞、失败或取消当前 task stage 时必须通过 `task.finish` 显式写入 task 业务出口，并在同一 correlation thread 上写 `delegation_result` 或普通 follow-up response。`task.update`、HarnessStep task update 与 Host task CRUD 保留为普通 task 字段编辑和 `todo` / `in_progress` 等非出口状态迁移；tool/service/repository 三层都必须拒绝把普通 update 用作 completed / failed / blocked / cancelled 业务出口。blocked task 保持 blocked 时允许非状态 edit，但不能再次 finish，必须先显式 resume/reopen；completed / failed / cancelled task edit fail closed。finish intent 只允许 status / updated_at / failure fields 变化，并在单个 transaction 内写 finish document 与 task row，commit 后才发送 task mutation / finished events；rollback 不得泄漏 document、terminal status 或 event。runtime 不根据 teammate loop 的 `idle`、`failed` 或 `max_steps_exceeded` 推断业务 task 已完成或失败。teammate terminal outcome 只更新 canonical state / protocol，并排队 `agent:master` wakeup；master 由 scheduler claim signal 后读取 restore context 和 `protocol.thread(correlation_id)`，再决定是否回复用户、追问 teammate、更新 task 或请求用户澄清。approval resolve 只负责写入 approval 与对应恢复状态：agent-level approval 可以排队必要 wakeup；durable SDK controlled-operation approval 只开放 execution claim，由独立 execution/continuation workers 推进，不能直接 drain teammate 或触发 master response turn。
+teammate 完成、阻塞、失败或取消当前 task stage 时必须通过 `task.finish` 显式写入 task 业务出口，并在同一 correlation thread 上写 `delegation_result` 或普通 follow-up response。`task.update`、HarnessStep task update 与 Host task CRUD 保留为普通 task 字段编辑和 `todo` / `in_progress` 等非出口状态迁移；tool/service/repository 三层都必须拒绝把普通 update 用作 completed / failed / blocked / cancelled 业务出口。blocked task 保持 blocked 时允许非状态 edit，但不能再次 finish，必须先显式 resume/reopen；completed / failed / cancelled task edit fail closed。finish intent 只允许 status / updated_at / failure fields 变化，并在单个 transaction 内写 finish document 与 task row，commit 后才发送 task mutation / finished events；rollback 不得泄漏 document、terminal status 或 event。runtime 不根据 teammate loop 的 `idle`、`failed` 或 `max_steps_exceeded` 推断业务 task 已完成或失败。ordinary teammate terminal outcome 只更新 canonical state / protocol，并排队 `agent:master` wakeup；master 由 scheduler claim signal 后读取 restore context 和 `protocol.thread(correlation_id)`，再决定是否回复用户、追问 teammate、更新 task 或请求用户澄清。successful `attempt.create` / `scientific.attempt.close` 是例外：它们只退休 requesting turn，不排 generic master successor，等待 Host finalizer 提交唯一 source-bound owner wake。approval resolve 只负责写入 approval 与对应恢复状态：agent-level approval 可以排队必要 wakeup；durable SDK controlled-operation approval 只开放 execution claim，由独立 execution/continuation workers 推进，不能直接 drain teammate 或触发 master response turn。
 
 `task.finish.evidence_refs` 使用闭集 `<kind>:<id>` wire contract。tool schema 与每个
 invalid-result `details` 共享 exact format、supported kinds 与示例；repository 再解析当前
@@ -346,8 +346,12 @@ conversation document/message 或 closure-response binding。harness 立即结�
 calls 为 `tool_call_batch_interrupted/no_effect/verify_then_retry` 并退休 requesting
 turn；外层 `AGENT_TURN` writer 连同 settlement 退休后，Host 才能 finalization。Host
 提交 admitted attempt、immutable closure 或 typed finalizer failure 后，以 exact source
-排队 wake；runtime 在 provider 前重建 canonical facts。request rejection 保持
-non-terminal，任一 scientific transition 都不完成业务 task。
+排队唯一 owner wake；requesting result 不同时排 generic master successor。runtime 在
+provider 前重建 canonical facts，并将同一有界投影注入 fresh master 或 teammate turn；
+master 使用 ephemeral system context，facts 不进入 conversation document/message。
+failure facts 保留 exact source/error/effect/retry identity，同时以 count/digest/truncation
+约束 optional facts 与 evidence refs。request rejection 保持 non-terminal，任一
+scientific transition 都不完成业务 task。
 
 `supports_parallel` 目前只作为治理 metadata 暴露和记录；runtime 仍按现有 bounded loop 串行 dispatch，不启用真实并行 tool execution。
 
@@ -377,6 +381,7 @@ master 与 teammate 都可以通过 `artifact.list` / `artifact.get` / `artifact
   dependency/task/protocol/user/engine 真实事件可以正常唤醒 agent，Harness 不为了证明
   “已经选择等待”而创造 synthetic wakeup。
 - 如果 bounded loop 到达 max steps，runtime 以 `agent_turn_budget_exhausted` 将 exact signal/turn terminalize，`retry_eligibility=terminal` 且不自动 replay/增加 budget；同时记录 `recoverability=agent_can_replan`，保持 task status 与业务 failure fields 不变。signal-local `no_effect` 不能覆盖同 turn 已持久化的 controlled-operation effect。source-bound、去重的 master wakeup 从 canonical failure observation 与当前 scientific selection evaluation 重建 facts，master 在新的 turn 中显式决定下一步。
+- 上述 budget-replan master wake 与 scientific transition owner wake 是不同合同：前者绑定 failed max-step occurrence，后者只由 Host finalizer 在 admission/closure/failure transaction 中创建。successful transition 不先创建 generic master wake，避免 master 与 canonical owner 竞争同一 transition。
 - scientific runtime 不直接读取 append-only `ScientificAttempt.status` 判断 terminal。它先联读 attempt、closure request 与 closure，优先恢复最新的 `open`、可接收 mutation 的 attempt；若较旧 attempt 已 closed 而较新 attempt open，必须选择后者；若全部 closed，则只投影最新 exact closure 和 `status=closed`，不得再把 selection evaluation 表述为 active work。request-only lifecycle 投影为 `closure_requested`，不接收新 scientific mutation；identity/selection/status 图不一致时以 `scientific_attempt_lifecycle_invalid` 停止恢复。
 - `AgentRuntimeOutcome` 必须携带 Core-owned immutable typed `AgentRuntimeOutcomeSettlement`。普通 completed/failed、waiting approval 与 budget-replan handoff 是闭集 runtime occurrence receipts；handoff 在同一个短 transaction 和 session runtime authority 内绑定 source occurrence、task/agent/lane/correlation snapshot、exact budget observation 与唯一 pending master successor。它不证明 ordinary tool failure 已按某种策略“恢复”。缺失/重复/取消 successor 或 identity drift 只能得到普通 failed settlement，Host 不得在 lease 释放后重建一个“更成功”的版本。
 - 任一 master/teammate max-step settlement 都设置 bounded batch barrier。当前已 claim wave 可以结束，但 scheduler 随即停止新 claim；本轮新建 successor 即使面对 `max_signals > 1` 也只能由下一条 runtime command 或 background tick 推进。

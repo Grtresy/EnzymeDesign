@@ -293,6 +293,14 @@ _LIVE_RUNTIME_SUMMARY_FIELDS = frozenset(
         "event_receipt",
         "mutation_scope",
         "scientific_attempt_control_digest",
+        "failure_task_projection",
+    }
+)
+_LIVE_FAILURE_TASK_PROJECTION_FIELDS = frozenset(
+    {
+        "task_fact_count",
+        "task_facts_digest",
+        "task_facts_truncated",
     }
 )
 _LIVE_CLOSURE_FIELDS = frozenset(
@@ -2740,6 +2748,11 @@ def validate_aox_closure_stage_live_result(
     runtime_summary = runtime.get("summary")
     closure = runtime.get("closure")
     operation_binding = runtime.get("operation_binding")
+    failure_task_projection = (
+        runtime_summary.get("failure_task_projection")
+        if isinstance(runtime_summary, dict)
+        else None
+    )
     bound_terminal_operations = (
         operation_binding.get("terminal_operations")
         if isinstance(operation_binding, dict)
@@ -2766,6 +2779,12 @@ def validate_aox_closure_stage_live_result(
         or runtime_summary.get("task_count") != 3
         or not isinstance(runtime_summary.get("event_receipt"), dict)
         or not isinstance(runtime_summary.get("mutation_scope"), dict)
+        or not isinstance(failure_task_projection, dict)
+        or set(failure_task_projection)
+        != _LIVE_FAILURE_TASK_PROJECTION_FIELDS
+        or type(failure_task_projection.get("task_fact_count")) is not int
+        or int(failure_task_projection["task_fact_count"]) < 0
+        or type(failure_task_projection.get("task_facts_truncated")) is not bool
     ):
         raise CutoverEvidenceError(
             "closure_stage_live_runtime_summary_invalid",
@@ -2900,6 +2919,10 @@ def validate_aox_closure_stage_live_result(
         (
             "runtime.summary.scientific_attempt_control_digest",
             runtime_summary.get("scientific_attempt_control_digest"),
+        ),
+        (
+            "runtime.summary.failure_task_projection.task_facts_digest",
+            failure_task_projection.get("task_facts_digest"),
         ),
         (
             "runtime.closure.scientific_attempt_control_digest",
