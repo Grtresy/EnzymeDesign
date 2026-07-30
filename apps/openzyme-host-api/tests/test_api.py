@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import openzyme_core.agent_runtime as agent_runtime_module
 from fastapi.testclient import TestClient
 from openzyme_domain import SourceRefKind
 from openzyme_execution import ExecutionArtifactRef
@@ -68,6 +69,7 @@ from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import InboxParticipantKind
+from openzyme_domain import MutationWriterKind
 from openzyme_domain import SandboxRunRecord
 from openzyme_domain import SandboxRunStatus
 from openzyme_domain import RetryEligibility
@@ -79,6 +81,10 @@ from openzyme_domain import TaskStatus
 from openzyme_core import EngineDescriptor
 from openzyme_core import EngineDocumentRecord
 from openzyme_core import EngineRegistry
+from openzyme_core import AgentRuntimeService
+from openzyme_core import HarnessResult
+from openzyme_core import HarnessStatus
+from openzyme_core import MutationScopeService
 from openzyme_core import ProtocolService
 from openzyme_core import CoreRepositories
 from openzyme_core import DurableControlledOperationAdmission
@@ -88,6 +94,7 @@ from openzyme_core import RuntimeWriteFencingError
 from openzyme_core import SandboxProcessHostAuthority
 from openzyme_core import SessionTurnHostAuthority
 from openzyme_core import SandboxWorkspaceService
+from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
 from openzyme_core import connect_sqlite as connect_v3_sqlite
@@ -2924,6 +2931,76 @@ def test_scientific_transition_finalizer_reports_nonretryable_host_failure(
             source_ref=second_request_id,
         )
     ) == 1
+
+    captured_instructions: list[str] = []
+
+    def run_teammate(runtime_context, **kwargs):
+        captured_instructions.append(str(kwargs["instructions"]))
+        return HarnessResult(
+            session_id=session_id,
+            status=HarnessStatus.COMPLETED,
+            snapshot=SessionRuntimeSnapshot.load(
+                runtime_context.repositories,
+                session_id,
+            ),
+            events=(),
+            outputs=("Canonical transition facts observed.",),
+            tool_results=(),
+        )
+
+    monkeypatch.setattr(agent_runtime_module, "run_teammate_loop", run_teammate)
+    service.model_factory = object()
+    failure_id = observations[0].failure_id
+    source_ids = (admitted_id, failure_id)
+    runtime_outcomes = []
+    with MutationScopeService(repositories).writer_turn(
+        session_id=session_id,
+        owner_kind=MutationWriterKind.RUNTIME_COMMAND,
+        owner_ref="fixture:production-transition-wakes",
+    ):
+        for source_id in source_ids:
+            signal = next(
+                item
+                for item in repositories.runtime_signals.list_by_session(
+                    session_id
+                )
+                if item.source_ref == source_id
+            )
+            runtime_outcomes.append(
+                AgentRuntimeService(
+                    service._build_runtime_context(
+                        session_id,
+                        task_id=task_id,
+                        lane_id=lane_id,
+                    )
+                ).wake_agent(signal, max_steps=1)
+            )
+
+    assert all(outcome.ok for outcome in runtime_outcomes)
+    assert len(captured_instructions) == 2
+    admitted_facts = json.loads(
+        captured_instructions[0]
+        .splitlines()[0]
+        .removeprefix("Canonical wake facts: ")
+    )
+    failure_facts = json.loads(
+        captured_instructions[1]
+        .splitlines()[0]
+        .removeprefix("Canonical wake facts: ")
+    )
+    assert admitted_facts["source_kind"] == "scientific_attempt_admitted"
+    assert admitted_facts["attempt_id"] == admitted_id
+    assert failure_facts["source_kind"] == "failure_observation"
+    assert failure_facts["failure"]["failure_id"] == failure_id
+    assert failure_facts["failure"]["error_code"] == "authorization_exhausted"
+    assert failure_facts["failure"]["recoverability"] == (
+        "authorization_required"
+    )
+    assert all(
+        instructions.index("Canonical wake facts: ")
+        < instructions.index(f"Task {task_id}:")
+        for instructions in captured_instructions
+    )
 
 
 def _build_v3_pressure_client(

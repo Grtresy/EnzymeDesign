@@ -159,9 +159,20 @@ observation facts 保留返回引用，但 observation 关系字段只绑定当�
 - 顶层模型优先通过 `task.*` 与 `delegation` 相关工具编排内部工作
 - 顶层模型和 teammate 应优先用 `world.inspect` 读取 task、artifact、approval、operation、outcome、runtime warning、tool schema 和 route policy 等结构化事实；该工具不得提供 recommended_actions 或硬编码 workflow template
 - `task.finish` 是推荐的业务任务出口；成功调用后 harness 立即停止当前 master/teammate loop，不再执行同批后续 tool calls，也不把该 tool result 喂回模型继续探索。同批后续 call 仍按上面的 batch interruption 契约获得持久 no-effect observation。可选 `evidence_refs` 必须使用 schema 显式给出的 closed `<kind>:<id>` wire contract；agent 选择 evidence，repository 解析当前 session ref，runtime 不猜 kind 或补 prefix。`task.update` 保留为普通字段编辑和非终态状态迁移。
+- successful `attempt.create` 使用相同 terminal-action/batch-settlement 机制，只记录 admission intent，不写 task terminal。当前 teammate turn 在 request 提交后结束；Host 等 writer 退休再 finalization，并以 exact admitted attempt id 排队 source-bound wake。
 - successful `scientific.attempt.close` 使用同一 terminal-action/batch-settlement 机制，但只记录 closure intent：它不写 task terminal，也不代表 final closure。失败的 close 保持 non-terminal；成功后只有在 requesting `AGENT_TURN` writer 与其 interrupted-call settlement 全部退休后，Host finalizer 才可建立 quiescence 与 immutable closure。
 - `scientific.attempt.close` 不要求或持久化同一 response 的 companion text；assistant answer 走普通 conversation path。Core 只接受 exact attempt task 当前 canonical assignee，并在 request 与 finalization 两处验证 assignment。successful close 只写 immutable intent 并退休 turn，失败/rejected close 不留下部分 closure state。
-- Host finalizer 为 immutable closure 排队的 source-bound `MANUAL_RESUME` 是 ordinary transition notification。runtime 在 claim 后、provider call 前核 exact signal/actor/session/task/lane/correlation、attempt/request/closure 与 derived closed lifecycle；task 仍 nonterminal 时走普通 fenced model-driven wake，让 assignee 显式 `task.finish(status=completed)`，task 已 terminal 时复用 generic stale-signal mechanical completion。它不创建第二条 assistant response、scientific-specific settlement event、closure、report 或 signal；binding 漂移在模型前 fail closed。
+- Host finalizer 为 admitted attempt、immutable closure 或 typed finalizer failure 排队
+  source-bound `MANUAL_RESUME`。runtime 使用一个通用 canonical wake-facts projector：
+  先按 source identity 解析 attempt / closure / `FailureObservation`，再精确核对 claimed
+  signal、actor、session/task/lane/correlation、request graph、derived lifecycle 与当前
+  task assignment。facts 必须先于 task prose 进入 fresh teammate prompt；不得依赖上一
+  turn conversation、字符串 prefix、隐藏状态或 AOX policy。admission facts 明确该 exact
+  attempt 已提交，不能用重复 `attempt.create` 代替继续执行；closure facts不完成业务
+  task；failure facts不自动 retry。task 已 terminal 时复用 generic stale-signal
+  mechanical completion。binding 漂移或 durable event 无 canonical record 时在模型前
+  fail closed；完全不解析为 canonical transition/failure 的 ordinary manual resume
+  保持原行为。
 - assistant text 本身从不完成 task、委派 reporter、请求 scientific closure 或产生
   acceptance eligibility；它可以正常持久化，不再经过 session-scoped response veto。需要
   durable state change 时，agent 必须实际调用相应 domain tool。

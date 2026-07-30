@@ -4715,6 +4715,50 @@ def _rewrite_envelope(bundle_path: Path, mutate) -> None:
     bundle_path.write_bytes(canonical_json_bytes(envelope) + b"\n")
 
 
+def test_noneligible_positive_bundle_preserves_nonterminal_failure_tasks(
+    tmp_path: Path,
+) -> None:
+    def project_failed_runtime(evidence: dict[str, object]) -> None:
+        outcome = evidence["scientific_outcome"]
+        assert isinstance(outcome, dict)
+        outcome.update(
+            {
+                "status": "failed",
+                "failure_code": "authorization_required",
+                "blocker_code": "authorization_required",
+                "wrapper_code": "task_blocked",
+                "cutover_eligible": False,
+            }
+        )
+        report = evidence["report"]
+        assert isinstance(report, dict)
+        report["status"] = "failed_evidence"
+        report["cutover_eligible"] = False
+        tasks = evidence["tasks"]
+        assert isinstance(tasks, list) and len(tasks) == 3
+        tasks[0]["status"] = "completed"
+        tasks[0]["business_exit"] = "agent_explicit"
+        tasks[1]["status"] = "blocked"
+        tasks[1]["business_exit"] = "agent_explicit"
+        tasks[1]["failure_ref"] = "failure_authorization_required"
+        tasks[2]["status"] = "todo"
+        tasks[2]["business_exit"] = "not_terminal"
+
+    payload, bundle_path, artifact_root = _build_bundle(
+        tmp_path,
+        mutate_evidence=project_failed_runtime,
+    )
+
+    assert payload["scientific_outcome"]["cutover_eligible"] is False
+    assert sorted(task["status"] for task in payload["tasks"]) == [
+        "blocked",
+        "completed",
+        "todo",
+    ]
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+    assert result.passed
+
+
 def _selected_chain_control(
     payload: dict[str, object],
 ) -> dict[str, object]:

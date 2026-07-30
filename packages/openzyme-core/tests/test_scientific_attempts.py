@@ -22,6 +22,7 @@ from openzyme_core import AgentRuntimeSettlementDisposition
 from openzyme_core import ArtifactBoundaryService
 from openzyme_core import CoreRepositories
 from openzyme_core import ControlledOperationResultArtifactRef
+from openzyme_core import DurableEventRecord
 from openzyme_core import HistoricalScientificWorkflowContract
 from openzyme_core import HarnessResult
 from openzyme_core import HarnessStatus
@@ -45,9 +46,6 @@ from openzyme_core import ScientificAttemptScopeRolloverPhase
 from openzyme_core import ScientificAttemptScopeRolloverProjector
 from openzyme_core import ScientificAttemptScopeRolloverReason
 from openzyme_core import ScientificAttemptService
-from openzyme_core import ScientificClosureNotificationReason
-from openzyme_core import ScientificClosureNotificationSettlementError
-from openzyme_core import ScientificClosureNotificationVerifier
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import ScientificOperationSignature
 from openzyme_core import ScientificSelectionEvaluator
@@ -61,6 +59,7 @@ from openzyme_core import TaskFinishCommand
 from openzyme_core import TaskMutation
 from openzyme_core import ToolInvocation
 from openzyme_core import ToolRegistry
+from openzyme_core import ToolResult
 from openzyme_core import WorldInspectionService
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import canonical_digest
@@ -70,6 +69,10 @@ from openzyme_core import register_scientific_attempt_tools
 from openzyme_core import register_task_board_tools
 from openzyme_core import resolve_scientific_attempt_lifecycle
 from openzyme_core import scientific_attempt_tool_descriptors
+from openzyme_core.runtime_wake_facts import CanonicalWakeFactsError
+from openzyme_core.runtime_wake_facts import CanonicalWakeFactsProjector
+from openzyme_core.runtime_wake_facts import CanonicalWakeFactsReason
+from openzyme_core.teammates import finalize_teammate_result
 from openzyme_domain import AgentMember
 from openzyme_domain import AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
 from openzyme_domain import AgentMemberStatus
@@ -250,6 +253,7 @@ def _grant(
     service: ScientificAttemptService,
     *,
     max_attempts: int = 2,
+    expires_at: str = EXPIRES,
 ) -> ScientificAttemptAuthorization:
     return service.grant_authorization(
         session_id="sess_scientific",
@@ -267,7 +271,7 @@ def _grant(
         max_micu=100,
         max_cost_microunits=10_000,
         max_wall_time_seconds=7_200,
-        expires_at=EXPIRES,
+        expires_at=expires_at,
         idempotency_key="grant-1",
     )
 
@@ -2652,12 +2656,14 @@ def test_exact_closure_notification_wakes_open_task_through_ordinary_model_path(
         closure_request_id=request.closure_request_id
     )
     calls: list[str] = []
+    captured_instructions: list[str] = []
 
     def run_teammate(
         runtime_context: SessionRuntimeContext,
-        **_kwargs: Any,
+        **kwargs: Any,
     ) -> HarnessResult:
         calls.append("model")
+        captured_instructions.append(str(kwargs["instructions"]))
         return HarnessResult(
             session_id=attempt.session_id,
             status=HarnessStatus.COMPLETED,
@@ -2710,6 +2716,17 @@ def test_exact_closure_notification_wakes_open_task_through_ordinary_model_path(
         )
 
     assert calls == ["model"]
+    assert len(captured_instructions) == 1
+    assert captured_instructions[0].startswith("Canonical wake facts: ")
+    facts_line = captured_instructions[0].splitlines()[0]
+    facts = json.loads(facts_line.removeprefix("Canonical wake facts: "))
+    assert facts["source_kind"] == "scientific_attempt_closed"
+    assert facts["closure_id"] == closure.closure_id
+    assert facts["attempt_id"] == attempt.attempt_id
+    assert facts["task_id"] == attempt.task_id
+    assert captured_instructions[0].index(closure.closure_id) < (
+        captured_instructions[0].index(f"Task {attempt.task_id}:")
+    )
     assert outcome.ok is True
     assert outcome.signal.status is AgentRuntimeSignalStatus.COMPLETED
     assert outcome.settlement is not None
@@ -2725,11 +2742,80 @@ def test_exact_closure_notification_wakes_open_task_through_ordinary_model_path(
     )
 
 
+def test_exact_admission_wake_projects_canonical_facts_before_task_prose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+    captured_instructions: list[str] = []
+
+    def run_teammate(
+        runtime_context: SessionRuntimeContext,
+        **kwargs: Any,
+    ) -> HarnessResult:
+        captured_instructions.append(str(kwargs["instructions"]))
+        return HarnessResult(
+            session_id=attempt.session_id,
+            status=HarnessStatus.COMPLETED,
+            snapshot=SessionRuntimeSnapshot.load(
+                runtime_context.repositories,
+                attempt.session_id,
+            ),
+            events=(),
+            outputs=("Admission observed; continuing the admitted attempt.",),
+            tool_results=(),
+        )
+
+    monkeypatch.setattr(agent_runtime_module, "run_teammate_loop", run_teammate)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, attempt.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        model_factory=object(),
+        scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
+    )
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.RUNTIME_COMMAND,
+        owner_ref="fixture:admission-canonical-wake",
+    ):
+        signal = AgentRuntimeService(context).enqueue_signal(
+            session_id=attempt.session_id,
+            agent_id=attempt.created_by,
+            task_id=attempt.task_id,
+            lane_id=attempt.lane_id,
+            correlation_id=attempt.attempt_id,
+            reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+            source_ref=attempt.attempt_id,
+            notify=False,
+        )
+        assert signal is not None
+        outcome = AgentRuntimeService(context).wake_agent(signal, max_steps=1)
+
+    assert outcome.ok is True
+    assert len(captured_instructions) == 1
+    instructions = captured_instructions[0]
+    assert instructions.startswith("Canonical wake facts: ")
+    facts = json.loads(
+        instructions.splitlines()[0].removeprefix("Canonical wake facts: ")
+    )
+    assert facts["source_kind"] == "scientific_attempt_admitted"
+    assert facts["attempt_id"] == attempt.attempt_id
+    assert facts["admission_request_id"] == attempt.admission_request_id
+    assert facts["lifecycle_phase"] == "open"
+    assert instructions.index(attempt.attempt_id) < instructions.index(
+        f"Task {attempt.task_id}:"
+    )
+    assert len(repositories.scientific_attempts.list_by_session(attempt.session_id)) == 1
+
+
 @pytest.mark.parametrize(
     "source_ref",
-    ["operator:resume", None, "scientific_attempt"],
+    ["operator:resume", None],
 )
-def test_non_closure_manual_resume_keeps_master_model_path(
+def test_unrelated_manual_resume_keeps_master_model_path(
     monkeypatch: pytest.MonkeyPatch,
     source_ref: str | None,
 ) -> None:
@@ -2800,9 +2886,7 @@ def test_non_closure_manual_resume_keeps_master_model_path(
             lane_id=attempt.lane_id,
             correlation_id="corr_ordinary_resume",
             reason=AgentRuntimeSignalReason.MANUAL_RESUME,
-            source_ref=(
-                attempt.attempt_id if source_ref == "scientific_attempt" else source_ref
-            ),
+            source_ref=source_ref,
             notify=False,
         )
         assert signal is not None
@@ -2887,11 +2971,11 @@ def test_closure_notification_binding_drift_fails_closed_before_model(
 
     assert outcome.ok is False
     assert outcome.signal.status is AgentRuntimeSignalStatus.FAILED
-    assert outcome.signal.error_message == ("scientific_closure_notification_invalid")
-    assert outcome.teammate_status == ("scientific_closure_notification_invalid")
+    assert outcome.signal.error_message == "canonical_wake_facts_invalid"
+    assert outcome.teammate_status == "canonical_wake_facts_invalid"
 
 
-def test_closure_notification_verifier_accepts_exact_binding_and_rejects_missing_source() -> (
+def test_canonical_wake_projector_accepts_exact_closure_and_rejects_binding_drift() -> (
     None
 ):
     repositories, service = _world()
@@ -2917,25 +3001,112 @@ def test_closure_notification_verifier_accepts_exact_binding_and_rejects_missing
         claimed_by="runtime:test",
         attempt_count=1,
     )
-    proof = ScientificClosureNotificationVerifier(repositories).verify(claimed)
-    assert proof is not None
-    assert proof.signal == claimed
-    assert proof.task.task_id == attempt.task_id
-    assert proof.attempt == attempt
-    assert proof.closure_request == request
-    assert proof.closure == closure
+    facts = CanonicalWakeFactsProjector(repositories).project(claimed)
+    assert facts is not None
+    assert facts.task.task_id == attempt.task_id
+    assert facts.source_kind == "scientific_attempt_closed"
+    assert facts.facts["closure_id"] == closure.closure_id
+    assert facts.facts["attempt_id"] == attempt.attempt_id
 
-    with pytest.raises(ScientificClosureNotificationSettlementError) as source_error:
-        ScientificClosureNotificationVerifier(repositories).verify(
-            replace(
-                claimed,
-                source_ref="attempt_closure_missing",
-                correlation_id="attempt_closure_missing",
-            )
+    with pytest.raises(CanonicalWakeFactsError) as binding_error:
+        CanonicalWakeFactsProjector(repositories).project(
+            replace(claimed, correlation_id="wrong-correlation")
         )
     assert (
-        source_error.value.reason is ScientificClosureNotificationReason.SOURCE_MISSING
+        binding_error.value.reason
+        is CanonicalWakeFactsReason.CONTROL_BINDING_INVALID
     )
+
+
+def test_canonical_wake_projector_rejects_orphan_transition_event() -> None:
+    repositories, service = _world()
+    orphan_attempt_id = "attempt_orphan_event"
+    with service.mutation_scopes.writer_turn(
+        session_id="sess_scientific",
+        owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+        owner_ref="fixture:orphan-transition-event",
+    ):
+        repositories.durable_events.append(
+            DurableEventRecord(
+                event_id="evt_orphan_attempt",
+                session_id="sess_scientific",
+                event_type="scientific.attempt.admitted",
+                created_at=NOW,
+                payload={
+                    "record_id": orphan_attempt_id,
+                    "actor_ref": "agent:scientist",
+                    "task_id": "task_scientific",
+                    "lane_id": "lane_scientific",
+                },
+            )
+        )
+    signal = AgentRuntimeSignal(
+        signal_id="signal_orphan_attempt",
+        session_id="sess_scientific",
+        agent_id="agent:scientist",
+        task_id="task_scientific",
+        lane_id="lane_scientific",
+        correlation_id=orphan_attempt_id,
+        reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+        source_ref=orphan_attempt_id,
+        status=AgentRuntimeSignalStatus.CLAIMED,
+        created_at=NOW,
+        claimed_at=NOW,
+        claimed_by="runtime:test",
+        attempt_count=1,
+    )
+
+    with pytest.raises(CanonicalWakeFactsError) as source_error:
+        CanonicalWakeFactsProjector(repositories).project(signal)
+    assert (
+        source_error.value.reason
+        is CanonicalWakeFactsReason.SOURCE_RECORD_MISSING
+    )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "drifted_value"),
+    (
+        ("status", AgentRuntimeSignalStatus.PENDING),
+        ("session_id", "sess_other"),
+        ("agent_id", "agent:other"),
+        ("task_id", "task_other"),
+        ("lane_id", "lane_other"),
+        ("correlation_id", "attempt_other"),
+    ),
+)
+def test_canonical_admission_wake_rejects_signal_binding_drift(
+    field_name: str,
+    drifted_value: object,
+) -> None:
+    repositories, service = _world()
+    attempt = _grant_and_create(service)
+    claimed = AgentRuntimeSignal(
+        signal_id="signal_admission_binding_exact",
+        session_id=attempt.session_id,
+        agent_id=attempt.created_by,
+        task_id=attempt.task_id,
+        lane_id=attempt.lane_id,
+        correlation_id=attempt.attempt_id,
+        reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+        source_ref=attempt.attempt_id,
+        status=AgentRuntimeSignalStatus.CLAIMED,
+        created_at=NOW,
+        claimed_at=NOW,
+        claimed_by="runtime:test",
+        attempt_count=1,
+    )
+
+    with pytest.raises(CanonicalWakeFactsError) as binding_error:
+        CanonicalWakeFactsProjector(repositories).project(
+            replace(claimed, **{field_name: drifted_value})
+        )
+    expected_reason = (
+        CanonicalWakeFactsReason.SIGNAL_NOT_CLAIMED
+        if field_name == "status"
+        else CanonicalWakeFactsReason.CONTROL_BINDING_INVALID
+    )
+    assert binding_error.value.reason is expected_reason
 
 
 def test_closure_rollover_failure_rolls_back_and_replays_cleanly(
@@ -3387,6 +3558,97 @@ def test_successful_scientific_attempt_close_is_a_terminal_turn_action() -> None
         attempt.attempt_id
     )
     assert replay_request == request
+
+
+def test_successful_attempt_create_is_a_non_business_terminal_handoff() -> None:
+    repositories, service = _world()
+    authority = _grant(service, expires_at="2099-01-01T00:00:00+00:00")
+    registry = ToolRegistry()
+    register_scientific_attempt_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, "sess_scientific"),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(
+            task_id="task_scientific",
+            lane_id="lane_scientific",
+        ),
+        agent_id="agent:scientist",
+        actor_kind="teammate",
+        actor_role="scientist",
+        scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
+    )
+
+    with service.mutation_scopes.writer_turn(
+        session_id="sess_scientific",
+        owner_kind=MutationWriterKind.AGENT_TURN,
+        owner_ref="agent-turn:create-handoff",
+    ):
+        result: ToolResult = registry.dispatch(
+            context,
+            ToolInvocation(
+                call_id="call_attempt_create_handoff",
+                tool_name="attempt.create",
+                arguments={
+                    "envelope_id": authority.envelope_id,
+                    "task_id": "task_scientific",
+                    "lane_id": "lane_scientific",
+                    "campaign_id": "campaign_aox",
+                    "workflow_id": "aox_blank_world",
+                    "scope": "formal",
+                    "workflow_contract_digest": TEST_WORKFLOW_CONTRACT.digest,
+                    "requested_effect_classes": ["provider", "hpc"],
+                    "reserved_micu": 10,
+                    "reserved_cost_microunits": 1_000,
+                    "reserved_wall_time_seconds": 600,
+                    "provider": "openai",
+                    "hpc_target": "hpc:approved",
+                    "idempotency_key": "attempt-create-handoff",
+                },
+                task_id="task_scientific",
+                lane_id="lane_scientific",
+            ),
+        )
+        harness_result = HarnessResult(
+            session_id="sess_scientific",
+            status=HarnessStatus.COMPLETED,
+            snapshot=SessionRuntimeSnapshot.load(
+                repositories,
+                "sess_scientific",
+            ),
+            events=(),
+            outputs=(result.summary or "",),
+            tool_results=(result,),
+        )
+        summary, member_status = finalize_teammate_result(
+            context,
+            agent_id="agent:scientist",
+            task_id="task_scientific",
+            correlation_id="corr_attempt_create_handoff",
+            result=harness_result,
+        )
+
+    assert result.ok is True, result.content
+    assert result.terminal_action == "attempt.create"
+    assert result.terminates_turn is True
+    assert member_status is AgentMemberStatus.IDLE
+    assert "admission request" in summary
+    task = repositories.tasks.get("task_scientific")
+    assert task is not None
+    assert task.status is TaskStatus.TODO
+    status_message = next(
+        message
+        for message in repositories.inbox.list_by_session("sess_scientific")
+        if message.correlation_id == "corr_attempt_create_handoff"
+    )
+    payload = repositories.engine_documents.get(status_message.payload_ref)
+    assert payload is not None
+    assert payload.payload["status"] == "transition_requested"
+    assert payload.payload["business_status"] == "unchanged"
+    assert payload.payload["task_status"] == "todo"
+    assert payload.payload["terminal_action"] == "attempt.create"
+    assert payload.payload["required_action"] is None
 
 
 def test_attempt_closure_requires_current_canonical_task_assignee() -> None:

@@ -1018,6 +1018,37 @@ events。
 effect，也不授权 numbered follow-on。下一次 live 仍需 fresh clean commit 上的新 plan
 与用户对 exact plan 的单独批准。
 
+### 2026-07-30 r63 canonical wake-facts correction
+
+r63 的 fresh diagnostic authority、one-use consumption、exact commit、root、probe、
+formal SQLite 与 decision 均保留为永久 **NO-GO**。隔离 probe 的两项 provider 与四项
+HPC operation 全部完成；formal executor 的第一项 `attempt.create` 也以 exact authority
+参数成功记录并由 Host finalizer 准入。最早 typed failure 出现在随后 source-bound
+`manual_resume`：fresh teammate driver 只得到原 task prose，没有 admitted attempt 或
+transition facts，于是错误地再次调用 `attempt.create`，Host 正确以
+`authorization_required/no_effect/terminal` 拒绝。executor 随后显式 blocked task，
+而 AOX observer/diagnostic 又把 causal failure 压成 `task_blocked`，并因读取
+`TaskBoardItem.status` 而不是 `TaskBoardItem.task.status` 将三个 task 全部投影为
+`unknown`。
+
+forward correction 不新增 signal reason、phase、持久 wake state、automatic inspect、
+retry 或 task finish。Core 以一个 bounded read-only resolver 直接投影已有 admitted
+attempt、immutable closure 与 failure observation，重核 claimed signal/source/
+correlation/session/task/lane/actor/request/lifecycle binding，并把 facts 放在 task prose
+之前；unrelated manual resume 保持 ordinary。`attempt.create` 与
+`scientific.attempt.close` 成功后共享 non-business bounded-turn handoff，让 Host 在
+writer retirement 后 finalization；失败请求仍是可读 no-effect tool result。
+
+AOX observation 从 owner-authored task-finish 的 exact `failure_ref` 解析 canonical
+FailureObservation，以其 error code 作为 earliest cause，同时单独保留
+`task_blocked` wrapper、effect certainty、retry eligibility 与 evidence refs。
+diagnostic raw counts 使用真实 nested task projection，non-eligible failure evidence
+保留 bounded terminal/nonterminal task facts。所有 authority、unknown-effect、
+fencing、provenance、writer/quiescence 与 formal GO controls 保持 fail closed。
+
+本 correction 只授权 local code/spec/docs、non-live verification 和本地 commit；
+不授权 r64、live authority/root、MICU、provider、HPC 或 Chrome。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

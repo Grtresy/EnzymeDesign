@@ -580,6 +580,8 @@ class SessionDriveResult:
     browser_observation_receipt: dict[str, object] | None = None
     mutation_scope: dict[str, object] = field(default_factory=dict)
     scientific_attempt_control: dict[str, object] | None = None
+    wrapper_code: str | None = None
+    causal_failure: dict[str, object] | None = None
 
     def safe_summary(self) -> dict[str, object]:
         task_items = list(
@@ -589,7 +591,7 @@ class SessionDriveResult:
             dict(self.workspace.get("scientific_evidence") or {}).get("operations")
             or []
         )
-        return {
+        summary: dict[str, object] = {
             "session_id": self.session_id,
             "purpose": self.purpose,
             "state": self.state,
@@ -621,6 +623,11 @@ class SessionDriveResult:
                 else canonical_digest(self.scientific_attempt_control)
             ),
         }
+        if self.wrapper_code is not None:
+            summary["wrapper_code"] = self.wrapper_code
+        if self.causal_failure is not None:
+            summary["causal_failure"] = dict(self.causal_failure)
+        return summary
 
 
 def _bounded_status_counts(
@@ -662,7 +669,14 @@ def _diagnostic_formal_facts(
             "active_writer_count": 0,
         }
     workspace = formal.workspace
-    tasks = list(dict(workspace.get("task_board") or {}).get("items") or [])
+    task_items = list(
+        dict(workspace.get("task_board") or {}).get("items") or []
+    )
+    tasks = [
+        dict(item.get("task") or {})
+        for item in task_items[:256]
+        if isinstance(item, dict) and isinstance(item.get("task"), dict)
+    ]
     scientific_evidence = dict(workspace.get("scientific_evidence") or {})
     operations = list(scientific_evidence.get("operations") or [])
     attempts_projection = workspace.get("scientific_attempts")
@@ -683,7 +697,7 @@ def _diagnostic_formal_facts(
         if type(raw_active_writers) is int and raw_active_writers >= 0
         else 0
     )
-    return {
+    facts: dict[str, object] = {
         "formal_observed": True,
         "drain_count": formal.drain_count,
         "task_status_counts": _bounded_status_counts(
@@ -716,6 +730,11 @@ def _diagnostic_formal_facts(
         ),
         "active_writer_count": active_writer_count,
     }
+    if formal.wrapper_code is not None:
+        facts["wrapper_code"] = formal.wrapper_code
+    if formal.causal_failure is not None:
+        facts["causal_failure"] = dict(formal.causal_failure)
+    return facts
 
 
 @dataclass(frozen=True, slots=True)
@@ -3043,6 +3062,16 @@ class LiveAoxAttemptRunner:
                         browser_approval_receipt=browser_approval_receipt,
                         mutation_scope=mutation_scope,
                         scientific_attempt_control=(scientific_attempt_control),
+                        wrapper_code=getattr(
+                            observation,
+                            "wrapper_code",
+                            None,
+                        ),
+                        causal_failure=getattr(
+                            observation,
+                            "causal_failure",
+                            None,
+                        ),
                     ),
                     fault_receipt,
                 )
@@ -4671,7 +4700,7 @@ class LiveAoxAttemptRunner:
         formal: SessionDriveResult,
         *,
         browser_gate_required: bool,
-    ) -> dict[str, str] | None:
+    ) -> dict[str, object] | None:
         if formal.state != "completed":
             code = formal.blocker_code or "canonical_product_path_incomplete"
             message = {
@@ -4687,10 +4716,15 @@ class LiveAoxAttemptRunner:
                 code,
                 "formal product path did not reach its complete accepted state",
             )
-            return {
+            blocker: dict[str, object] = {
                 "code": code,
                 "message": message,
             }
+            if formal.wrapper_code is not None:
+                blocker["wrapper_code"] = formal.wrapper_code
+            if formal.causal_failure is not None:
+                blocker["causal_failure"] = dict(formal.causal_failure)
+            return blocker
         if browser_gate_required and formal.browser_approval_receipt is None:
             return {
                 "code": "browser_approval_not_observed",
@@ -5236,7 +5270,7 @@ class LiveAoxAttemptRunner:
             "operations": []
             if probe_attestation is None
             else list(probe_attestation.operations),
-            "tasks": [],
+            "tasks": _failure_task_facts(provider, formal),
             "artifacts": [
                 *(() if probe_attestation is None else probe_attestation.artifacts),
                 {
@@ -5282,6 +5316,12 @@ class LiveAoxAttemptRunner:
             },
             "fault_injection": fault_injection,
         }
+        scientific_outcome = dict(evidence["scientific_outcome"])
+        if formal is not None and formal.wrapper_code is not None:
+            scientific_outcome["wrapper_code"] = formal.wrapper_code
+        if formal is not None and formal.causal_failure is not None:
+            scientific_outcome["causal_failure"] = dict(formal.causal_failure)
+        evidence["scientific_outcome"] = scientific_outcome
         product_path = dict(evidence["product_path"])
         product_path["mutation_quiescence"] = {
             "probe": None if probe is None else dict(probe.mutation_scope),
@@ -7523,6 +7563,105 @@ def _task_receipts(
             details={"observed_roles": sorted(role_ids)},
         )
     return sorted(receipts, key=lambda item: str(item["task_id"])), role_ids
+
+
+def _failure_task_facts(
+    provider: SQLiteRepositoryProvider | None,
+    formal: SessionDriveResult | None,
+) -> list[dict[str, object]]:
+    if provider is None or formal is None:
+        return []
+    with provider.read() as scope:
+        repositories = scope.repositories
+        tasks = tuple(repositories.tasks.list_by_session(formal.session_id))
+        agents = tuple(repositories.agents.list_by_session(formal.session_id))
+        documents = tuple(
+            repositories.engine_documents.list_by_session(formal.session_id)
+        )
+    roles_by_agent = {
+        str(getattr(agent, "agent_id", "") or ""): str(
+            getattr(agent, "role", "") or ""
+        )
+        for agent in agents
+    }
+    finishes_by_task: dict[str, list[object]] = {}
+    for document in documents:
+        if getattr(document, "document_kind", None) != "task_finish":
+            continue
+        payload = dict(getattr(document, "payload", None) or {})
+        task_id = str(payload.get("task_id") or "")
+        if task_id:
+            finishes_by_task.setdefault(task_id, []).append(document)
+
+    task_facts: list[dict[str, object]] = []
+    for task in tasks:
+        task_id = str(getattr(task, "task_id", "") or "")
+        assigned_ref = str(getattr(task, "assigned_ref", "") or "")
+        status = str(
+            getattr(getattr(task, "status", None), "value", "") or ""
+        )
+        finish_candidates = finishes_by_task.get(task_id, [])
+        exact_finishes = [
+            document
+            for document in finish_candidates
+            if (
+                payload := dict(getattr(document, "payload", None) or {})
+            ).get("status")
+            == status
+            and payload.get("finished_by") == assigned_ref
+        ]
+        finish = (
+            None
+            if not exact_finishes
+            else max(
+                exact_finishes,
+                key=lambda document: (
+                    str(getattr(document, "created_at", "") or ""),
+                    str(getattr(document, "document_id", "") or ""),
+                ),
+            )
+        )
+        if finish is not None:
+            business_exit = "agent_explicit"
+        elif status not in _TERMINAL_TASK_STATUSES:
+            business_exit = "not_terminal"
+        elif finish_candidates:
+            business_exit = "finish_binding_invalid"
+        else:
+            business_exit = "terminal_without_finish"
+        fact: dict[str, object] = {
+            "task_id": task_id,
+            "role": roles_by_agent.get(assigned_ref, ""),
+            "kind": str(getattr(task, "kind", "") or ""),
+            "status": status,
+            "business_exit": business_exit,
+            "assigned_ref": assigned_ref,
+            "lane_id": getattr(task, "lane_id", None),
+        }
+        if finish is not None:
+            finish_payload = dict(getattr(finish, "payload", None) or {})
+            fact.update(
+                {
+                    "finish_ref": str(
+                        getattr(finish, "document_id", "") or ""
+                    ),
+                    "finish_payload_digest": canonical_digest(finish_payload),
+                    "finished_by": str(
+                        finish_payload.get("finished_by") or ""
+                    ),
+                    "evidence_refs": [
+                        str(item)
+                        for item in finish_payload.get("evidence_refs") or []
+                    ],
+                }
+            )
+            failure_ref = str(
+                finish_payload.get("failure_ref") or ""
+            ).strip()
+            if failure_ref:
+                fact["failure_ref"] = failure_ref
+        task_facts.append(fact)
+    return sorted(task_facts, key=lambda item: str(item["task_id"]))
 
 
 def _select_primary_pubmed_evidence(

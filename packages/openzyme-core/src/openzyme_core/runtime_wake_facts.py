@@ -1,0 +1,388 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+import json
+from typing import Any
+
+from openzyme_domain import AgentRuntimeSignal
+from openzyme_domain import AgentRuntimeSignalReason
+from openzyme_domain import AgentRuntimeSignalStatus
+from openzyme_domain import FailureObservation
+from openzyme_domain import ScientificAttempt
+from openzyme_domain import ScientificAttemptClosure
+from openzyme_domain import ScientificAttemptLifecyclePhase
+from openzyme_domain import Task
+
+from .repositories import CoreRepositories
+from .scientific_attempt_lifecycle import (
+    ScientificAttemptLifecycleIntegrityError,
+)
+from .scientific_attempt_lifecycle import ScientificAttemptLifecycleResolver
+
+
+class CanonicalWakeFactsReason(StrEnum):
+    SIGNAL_NOT_CLAIMED = "signal_not_claimed"
+    SOURCE_RECORD_MISSING = "source_record_missing"
+    REQUEST_MISSING = "request_missing"
+    CONTROL_BINDING_INVALID = "control_binding_invalid"
+    LIFECYCLE_INVALID = "lifecycle_invalid"
+    TASK_MISSING = "task_missing"
+
+
+class CanonicalWakeFactsError(RuntimeError):
+    error_code = "canonical_wake_facts_invalid"
+    retryable = False
+
+    def __init__(self, reason: CanonicalWakeFactsReason) -> None:
+        super().__init__("canonical runtime wake facts are inconsistent")
+        self.reason = reason
+        self.details: dict[str, Any] = {
+            "boundary": "canonical_wake_facts",
+            "disposition": "fail_closed",
+            "settlement_reason": reason.value,
+            "mutation_applied": False,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalWakeFacts:
+    source_kind: str
+    task: Task
+    facts: dict[str, Any]
+
+    def render_instructions(self) -> str:
+        lines = [
+            "Canonical wake facts: "
+            + json.dumps(self.facts, ensure_ascii=False, sort_keys=True),
+        ]
+        if self.source_kind == "scientific_attempt_admitted":
+            lines.append(
+                "The Host already finalized this attempt admission. Do not call "
+                "attempt.create again for this transition; continue from the exact "
+                "attempt and lifecycle facts above."
+            )
+        elif self.source_kind == "scientific_attempt_closed":
+            lines.append(
+                "The Host already finalized this attempt closure. The immutable "
+                "closure does not finish the business task; decide the task outcome "
+                "explicitly from current evidence."
+            )
+        else:
+            lines.append(
+                "This is typed causal failure evidence. Do not automatically replay "
+                "an effect. Choose a repair, replan, reconciliation, authorization "
+                "request, or explicit task outcome from the stated recoverability, "
+                "effect certainty, and retry eligibility."
+            )
+        lines.append(
+            f"Task {self.task.task_id}: "
+            f"{self.task.description or self.task.subject}"
+        )
+        return "\n".join(lines)
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalWakeFactsProjector:
+    repositories: CoreRepositories
+
+    def project(
+        self,
+        signal: AgentRuntimeSignal,
+    ) -> CanonicalWakeFacts | None:
+        if signal.reason is not AgentRuntimeSignalReason.MANUAL_RESUME:
+            return None
+        source_ref = str(signal.source_ref or "").strip()
+        if not source_ref:
+            return None
+
+        closure = self.repositories.scientific_attempt_closures.get(source_ref)
+        if closure is not None:
+            return self._closure_facts(signal, closure)
+
+        attempt = self.repositories.scientific_attempts.get(source_ref)
+        if attempt is not None:
+            return self._attempt_facts(signal, attempt)
+
+        failure = self.repositories.failure_observations.get(source_ref)
+        if failure is not None:
+            return self._failure_facts(signal, failure)
+
+        if self._has_orphan_transition_event(signal.session_id, source_ref):
+            self._invalid(CanonicalWakeFactsReason.SOURCE_RECORD_MISSING)
+        return None
+
+    def _attempt_facts(
+        self,
+        signal: AgentRuntimeSignal,
+        attempt: ScientificAttempt,
+    ) -> CanonicalWakeFacts:
+        self._require_claimed(signal)
+        request = self.repositories.scientific_attempt_admission_requests.get(
+            attempt.admission_request_id
+        )
+        if request is None:
+            self._invalid(CanonicalWakeFactsReason.REQUEST_MISSING)
+        assert request is not None
+        if (
+            signal.source_ref != attempt.attempt_id
+            or signal.correlation_id != attempt.attempt_id
+            or signal.session_id != attempt.session_id
+            or signal.task_id != attempt.task_id
+            or signal.lane_id != attempt.lane_id
+            or signal.agent_id != request.actor_ref
+            or attempt.admission_request_id != request.admission_request_id
+            or attempt.envelope_id != request.envelope_id
+            or attempt.session_id != request.session_id
+            or attempt.task_id != request.task_id
+            or attempt.lane_id != request.lane_id
+            or attempt.campaign_id != request.campaign_id
+            or attempt.workflow_id != request.workflow_id
+            or attempt.scope is not request.scope
+            or attempt.workflow_contract_digest
+            != request.workflow_contract_digest
+            or attempt.requested_effect_classes
+            != request.requested_effect_classes
+            or attempt.provider != request.provider
+            or attempt.hpc_target != request.hpc_target
+            or attempt.reserved_micu != request.reserved_micu
+            or attempt.reserved_cost_microunits
+            != request.reserved_cost_microunits
+            or attempt.reserved_wall_time_seconds
+            != request.reserved_wall_time_seconds
+            or attempt.created_by != request.actor_ref
+            or attempt.idempotency_key != request.idempotency_key
+            or attempt.request_digest != request.request_digest
+        ):
+            self._invalid(CanonicalWakeFactsReason.CONTROL_BINDING_INVALID)
+        lifecycle = self._lifecycle(attempt)
+        task = self._task(
+            signal,
+            session_id=attempt.session_id,
+            task_id=attempt.task_id,
+            lane_id=attempt.lane_id,
+            actor_ref=request.actor_ref,
+        )
+        return CanonicalWakeFacts(
+            source_kind="scientific_attempt_admitted",
+            task=task,
+            facts={
+                "schema_version": "canonical_wake_facts@1",
+                "source_kind": "scientific_attempt_admitted",
+                "attempt_id": attempt.attempt_id,
+                "admission_request_id": request.admission_request_id,
+                "envelope_id": attempt.envelope_id,
+                "session_id": attempt.session_id,
+                "task_id": attempt.task_id,
+                "lane_id": attempt.lane_id,
+                "campaign_id": attempt.campaign_id,
+                "workflow_id": attempt.workflow_id,
+                "scope": attempt.scope.value,
+                "ordinal": attempt.ordinal,
+                "record_status": attempt.status.value,
+                "lifecycle_phase": lifecycle.phase.value,
+                "workflow_contract_digest": attempt.workflow_contract_digest,
+                "requested_effect_classes": list(
+                    attempt.requested_effect_classes
+                ),
+                "provider": attempt.provider,
+                "hpc_target": attempt.hpc_target,
+                "reserved_micu": attempt.reserved_micu,
+                "reserved_cost_microunits": (
+                    attempt.reserved_cost_microunits
+                ),
+                "reserved_wall_time_seconds": (
+                    attempt.reserved_wall_time_seconds
+                ),
+                "request_digest": attempt.request_digest,
+                "actor_ref": request.actor_ref,
+                "created_at": attempt.created_at,
+            },
+        )
+
+    def _closure_facts(
+        self,
+        signal: AgentRuntimeSignal,
+        closure: ScientificAttemptClosure,
+    ) -> CanonicalWakeFacts:
+        self._require_claimed(signal)
+        attempt = self.repositories.scientific_attempts.get(closure.attempt_id)
+        if attempt is None:
+            self._invalid(CanonicalWakeFactsReason.SOURCE_RECORD_MISSING)
+        request = self.repositories.scientific_attempt_closure_requests.get(
+            closure.closure_request_id
+        )
+        if request is None:
+            self._invalid(CanonicalWakeFactsReason.REQUEST_MISSING)
+        assert attempt is not None and request is not None
+        if (
+            signal.source_ref != closure.closure_id
+            or signal.correlation_id != closure.closure_id
+            or signal.session_id != attempt.session_id
+            or signal.task_id != attempt.task_id
+            or signal.lane_id != attempt.lane_id
+            or signal.agent_id != request.actor_ref
+            or closure.actor_ref != request.actor_ref
+            or closure.attempt_id != request.attempt_id
+            or closure.selection_id != request.selection_id
+            or closure.closure_request_id != request.closure_request_id
+            or closure.idempotency_key != request.idempotency_key
+        ):
+            self._invalid(CanonicalWakeFactsReason.CONTROL_BINDING_INVALID)
+        lifecycle = self._lifecycle(attempt)
+        if (
+            lifecycle.phase is not ScientificAttemptLifecyclePhase.CLOSED
+            or lifecycle.closure != closure
+            or lifecycle.closure_request != request
+        ):
+            self._invalid(CanonicalWakeFactsReason.LIFECYCLE_INVALID)
+        task = self._task(
+            signal,
+            session_id=attempt.session_id,
+            task_id=attempt.task_id,
+            lane_id=attempt.lane_id,
+            actor_ref=request.actor_ref,
+        )
+        return CanonicalWakeFacts(
+            source_kind="scientific_attempt_closed",
+            task=task,
+            facts={
+                "schema_version": "canonical_wake_facts@1",
+                "source_kind": "scientific_attempt_closed",
+                "closure_id": closure.closure_id,
+                "closure_request_id": request.closure_request_id,
+                "attempt_id": attempt.attempt_id,
+                "selection_id": closure.selection_id,
+                "session_id": attempt.session_id,
+                "task_id": attempt.task_id,
+                "lane_id": attempt.lane_id,
+                "campaign_id": attempt.campaign_id,
+                "workflow_id": attempt.workflow_id,
+                "lifecycle_phase": lifecycle.phase.value,
+                "closure_digest": closure.closure_digest,
+                "operation_universe_digest": (
+                    closure.operation_universe_digest
+                ),
+                "disposition_digest": closure.disposition_digest,
+                "adoption_digest": closure.adoption_digest,
+                "materialization_digest": closure.materialization_digest,
+                "authority_consumption_digest": (
+                    closure.authority_consumption_digest
+                ),
+                "quiescence_receipt_id": closure.quiescence_receipt_id,
+                "quiescence_receipt_digest": (
+                    closure.quiescence_receipt_digest
+                ),
+                "actor_ref": request.actor_ref,
+                "created_at": closure.created_at,
+            },
+        )
+
+    def _failure_facts(
+        self,
+        signal: AgentRuntimeSignal,
+        failure: FailureObservation,
+    ) -> CanonicalWakeFacts:
+        self._require_claimed(signal)
+        if (
+            signal.source_ref != failure.failure_id
+            or signal.correlation_id != failure.failure_id
+            or signal.session_id != failure.session_id
+            or signal.task_id != failure.task_id
+            or signal.lane_id != failure.lane_id
+            or signal.agent_id != failure.agent_id
+            or failure.task_id is None
+            or failure.agent_id is None
+        ):
+            self._invalid(CanonicalWakeFactsReason.CONTROL_BINDING_INVALID)
+        task = self._task(
+            signal,
+            session_id=failure.session_id,
+            task_id=failure.task_id,
+            lane_id=failure.lane_id,
+            actor_ref=failure.agent_id,
+        )
+        return CanonicalWakeFacts(
+            source_kind="failure_observation",
+            task=task,
+            facts={
+                "schema_version": "canonical_wake_facts@1",
+                "source_kind": "failure_observation",
+                "failure": failure.to_dict(),
+            },
+        )
+
+    def _task(
+        self,
+        signal: AgentRuntimeSignal,
+        *,
+        session_id: str,
+        task_id: str,
+        lane_id: str | None,
+        actor_ref: str,
+    ) -> Task:
+        task = self.repositories.tasks.get(task_id)
+        if task is None:
+            self._invalid(CanonicalWakeFactsReason.TASK_MISSING)
+        assert task is not None
+        if (
+            task.session_id != session_id
+            or task.task_id != signal.task_id
+            or task.lane_id != lane_id
+            or task.assigned_ref != actor_ref
+        ):
+            self._invalid(CanonicalWakeFactsReason.CONTROL_BINDING_INVALID)
+        return task
+
+    def _lifecycle(self, attempt: ScientificAttempt):
+        try:
+            return ScientificAttemptLifecycleResolver(self.repositories).resolve(
+                attempt
+            )
+        except ScientificAttemptLifecycleIntegrityError as exc:
+            raise CanonicalWakeFactsError(
+                CanonicalWakeFactsReason.LIFECYCLE_INVALID
+            ) from exc
+
+    def _has_orphan_transition_event(
+        self,
+        session_id: str,
+        source_ref: str,
+    ) -> bool:
+        for event_type in (
+            "scientific.attempt.admitted",
+            "scientific.attempt.closed",
+        ):
+            if self.repositories.durable_events.list_scientific_transition_events(
+                session_id=session_id,
+                event_type=event_type,
+                record_id=source_ref,
+            ):
+                return True
+        return any(
+            event.event_type == "scientific.transition.failed"
+            and event.payload.get("failure_id") == source_ref
+            for event in self.repositories.durable_events.list_by_session(
+                session_id,
+                visibilities=("public", "audit", "internal"),
+            )
+        )
+
+    @staticmethod
+    def _require_claimed(signal: AgentRuntimeSignal) -> None:
+        if signal.status is not AgentRuntimeSignalStatus.CLAIMED:
+            raise CanonicalWakeFactsError(
+                CanonicalWakeFactsReason.SIGNAL_NOT_CLAIMED
+            )
+
+    @staticmethod
+    def _invalid(reason: CanonicalWakeFactsReason) -> None:
+        raise CanonicalWakeFactsError(reason)
+
+
+__all__ = [
+    "CanonicalWakeFacts",
+    "CanonicalWakeFactsError",
+    "CanonicalWakeFactsProjector",
+    "CanonicalWakeFactsReason",
+]

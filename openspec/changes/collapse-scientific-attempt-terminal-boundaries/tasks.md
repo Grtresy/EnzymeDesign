@@ -39,3 +39,21 @@
 - [x] 7.1 Run strict OpenSpec validation and focused Core/Host regression suites
 - [x] 7.2 Run the repository non-live mainline gate and inspect production/test line-count deltas
 - [x] 7.3 Confirm no live/provider/HPC/browser action occurred, review the final diff, and leave a commit-ready cleanly scoped change
+
+## 8. Close the r63 canonical-wake composition gap
+
+- [x] 8.1 Replace the closure-only verifier and prefix classifier with one bounded read-only wake-facts projection for exact admitted-attempt, immutable-closure, and failure-observation sources while retaining claim/session/task/lane/actor/lifecycle fail-closed bindings
+- [x] 8.2 Make successful `attempt.create` and `scientific.attempt.close` share a non-business bounded-turn handoff that does not emit `task_finish_required` or mutate task status
+- [x] 8.3 Add production-composition and trace-variation regressions proving fresh teammate prompts receive current canonical facts without automatic inspect/retry/finish, stale or forged bindings fail closed, and ordinary manual resumes stay ordinary
+
+## 9. Preserve typed causal evidence and real task facts
+
+- [x] 9.1 Resolve an exact task-finish `failure_ref` to its canonical failure observation, retain the task lifecycle wrapper separately, and preserve unknown-effect/retry/provenance fields without replay authority
+- [x] 9.2 Fix nested task-board status extraction and replace empty failure task evidence with bounded observed terminal/nonterminal task facts while keeping all failure evidence non-eligible
+- [x] 9.3 Add r63-shaped, historical SQLite, malformed-reference, wrapper-preservation, and real-projection regressions
+
+## 10. Synchronize and verify the r63 correction
+
+- [x] 10.1 Update the active AOX change, `docs/OpenZyme架构设计.md`, and relevant stable `docs/v3/` runtime, lifecycle, public-interface, and failure documents
+- [x] 10.2 Run focused Core/Host tests, ruff, strict OpenSpec validation, non-live eval, and the exact-worktree mainline gate
+- [x] 10.3 Inspect production net deletion and stale symbols, confirm no live/provider/HPC/MICU/Chrome action occurred, create one local Conventional Commit, and leave the worktree clean

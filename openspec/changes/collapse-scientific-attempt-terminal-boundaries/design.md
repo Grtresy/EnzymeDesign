@@ -164,6 +164,37 @@ paths will stop appending the same derived warning event on every drain or
 message transition. Canonical state changes remain durable; repeated reads do
 not create new truth.
 
+### 8. Scientific wakes project canonical facts without prescribing strategy
+
+Every claimed `manual_resume` first resolves its source against existing
+canonical records. An admitted attempt, immutable closure, or failure
+observation is projected into one bounded wake-facts payload only when the
+source, correlation, signal claim, session, task, lane, actor, request, and
+current lifecycle bindings agree. Orphaned durable scientific-transition
+events fail closed. An unrelated manual resume remains an ordinary wake; there
+is no identifier-prefix classifier, synthetic signal, persisted phase, or
+fallback action.
+
+The facts precede task prose in the fresh teammate prompt and state what Host
+already finalized. Admission facts identify the exact open/current attempt,
+closure facts identify the immutable closure and current lifecycle, and failure
+facts preserve error code, effect certainty, retry eligibility, and evidence
+references. The harness does not call `inspect`, retry, finish, or choose a
+strategy on the agent's behalf.
+
+Successful `attempt.create` and `scientific.attempt.close` both terminate the
+bounded writer turn as scientific-transition handoffs. The generic teammate
+result path records that handoff without emitting `task_finish_required`;
+business task status stays unchanged until a later source-bound wake and
+explicit agent action.
+
+AOX observation derives a task's typed cause from the immutable
+`task_finish.failure_ref` and its exact `FailureObservation`, while keeping
+`task_blocked` or another task lifecycle label as a wrapper. Failure evidence
+uses the real nested task-board shape and carries bounded terminal and
+nonterminal task facts. Formal acceptance remains fail closed; preserving a
+cause or nonterminal task never makes failure evidence eligible.
+
 ## Risks / Trade-offs
 
 - **Reassignment during closure:** repeating the owner check at finalization
@@ -182,6 +213,10 @@ not create new truth.
   includes only replay-safe control-plane facts and is applied only with no
   signals, writers, or wake source, preventing a transient active path from
   being mislabeled.
+- **Fresh prompts now expose more control facts:** the projection is bounded,
+  source-bound, and read-only; negative tests reject stale actor/session/task/
+  lane/source bindings and unknown-effect replay while leaving action choice to
+  the model.
 
 ## Migration Plan
 
@@ -190,14 +225,17 @@ not create new truth.
    response persistence, and the special runtime settlement.
 3. Convert closure notification verification into an ordinary-runtime
    preflight and update AOX policy/catalog text.
-4. Join lifecycle into runtime observation, add the two-observation no-wakeup
-   stop, preserve diagnostic facts, narrow source checks, and stop repeated
-   warning event writes.
-5. Update focused tests, the active AOX OpenSpec, main architecture documents,
+4. Replace closure-only wake handling with the canonical wake-facts projection,
+   terminate both scientific transition requests as bounded handoffs, and keep
+   task business state orthogonal.
+5. Join lifecycle and task-finish causes into runtime observation, add the
+   two-observation no-wakeup stop, preserve diagnostic facts, narrow source
+   checks, and stop repeated warning event writes.
+6. Update focused tests, the active AOX OpenSpec, main architecture documents,
    and stable `docs/v3/` contracts.
-6. Run OpenSpec validation, focused tests, non-live mainline validation, and
+7. Run OpenSpec validation, focused tests, non-live mainline validation, and
    inspect production line-count reduction.
-7. Commit the complete local slice and stop. A fresh live run requires a
+8. Commit the complete local slice and stop. A fresh live run requires a
    separate authority plan and explicit approval.
 
 Rollback is a source revert. The retained historical table requires no reverse
@@ -205,5 +243,5 @@ data migration.
 
 ## Open Questions
 
-None. Phase 2 approval fixes the ownership, lifecycle ordering, ordinary-wake,
-bounded-stop, evidence-preservation, and compatibility choices above.
+None. The approved r63 correction fixes the remaining wake-fact, transition
+handoff, causal-evidence, task-projection, and compatibility choices above.

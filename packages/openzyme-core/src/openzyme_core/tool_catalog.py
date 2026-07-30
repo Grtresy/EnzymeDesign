@@ -478,7 +478,9 @@ def scientific_attempt_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                 "authorization envelope. The Host checks count, resources, effect "
                 "classes, provider/HPC target, expiry, and unresolved effects, then "
                 "finalizes the exact attempt scope after this writer turn retires. "
-                "It never silently shrinks the requested plan."
+                "A successful request ends the current bounded turn without changing "
+                "business task status; the Host resumes the teammate with canonical "
+                "attempt facts. It never silently shrinks the requested plan."
             ),
             input_schema={
                 "type": "object",

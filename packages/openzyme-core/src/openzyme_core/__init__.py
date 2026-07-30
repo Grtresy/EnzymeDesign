@@ -279,12 +279,6 @@ from .scientific_attempt_rollover import ScientificAttemptScopeRolloverProjector
 from .scientific_attempt_rollover import ScientificAttemptScopeRolloverReason
 from .scientific_attempt_rollover import scientific_attempt_post_scope_id
 from .scientific_attempt_rollover import scientific_attempt_post_scope_ref
-from .scientific_closure_notification import ScientificClosureNotificationProof
-from .scientific_closure_notification import ScientificClosureNotificationReason
-from .scientific_closure_notification import (
-    ScientificClosureNotificationSettlementError,
-)
-from .scientific_closure_notification import ScientificClosureNotificationVerifier
 from .scientific_attempts import SCIENTIFIC_ATTEMPT_AUTHORIZATION_POLICY_ID
 from .scientific_attempts import ScientificAttemptError
 from .scientific_attempts import ScientificAttemptService
@@ -604,10 +598,6 @@ __all__ = [
     "ScientificAttemptScopeRolloverProjection",
     "ScientificAttemptScopeRolloverProjector",
     "ScientificAttemptScopeRolloverReason",
-    "ScientificClosureNotificationProof",
-    "ScientificClosureNotificationReason",
-    "ScientificClosureNotificationSettlementError",
-    "ScientificClosureNotificationVerifier",
     "ScientificAttemptRepository",
     "ScientificAttemptRepositoryError",
     "ScientificAttemptService",

@@ -21,6 +21,8 @@ from fastapi import FastAPI
 import httpx
 import pytest
 
+from openzyme_domain import AgentMember
+from openzyme_domain import AgentMemberStatus
 from openzyme_domain import ArtifactKind
 from openzyme_domain import ControlledOperation
 from openzyme_domain import ControlledOperationExecutionLifecycle
@@ -38,6 +40,8 @@ from openzyme_domain import SessionReportDraftRecord
 from openzyme_domain import SessionReportDraftStatus
 from openzyme_domain import SessionReportRecord
 from openzyme_domain import SessionReportStatus
+from openzyme_domain import Task
+from openzyme_domain import TaskStatus
 from openzyme_core import DurableEventRecord
 from openzyme_core import EngineDocumentRecord
 from openzyme_core import MutationScopeService
@@ -6885,6 +6889,141 @@ def test_positive_blocker_preserves_formal_failure_before_browser_gate(
             "same-operation approval receipt"
         ),
     }
+
+
+def test_r63_failure_projection_preserves_nested_task_states_and_finish_facts(
+    tmp_path: Path,
+) -> None:
+    provider = SQLiteRepositoryProvider(str(tmp_path / "r63.sqlite3"))
+    session = Session.create(
+        session_id="sess_r63_projection",
+        project_id="aox-blank-world-cutover",
+        title="r63 projection",
+        objective="Preserve real task and causal evidence",
+    )
+    task_specs = (
+        ("task_research", "research", "agent:researcher", TaskStatus.COMPLETED),
+        ("task_execution", "execution", "agent:executor", TaskStatus.BLOCKED),
+        ("task_report", "reporting", "agent:reporter", TaskStatus.TODO),
+    )
+    tasks = tuple(
+        Task.create(
+            task_id=task_id,
+            session_id=session.session_id,
+            subject=kind,
+            description=f"{kind} task",
+            status=status,
+            kind=kind,
+            assigned_ref=agent_id,
+        )
+        for task_id, kind, agent_id, status in task_specs
+    )
+    now = "2026-07-30T00:00:00+00:00"
+    agents = tuple(
+        AgentMember(
+            agent_id=agent_id,
+            session_id=session.session_id,
+            lane_id=None,
+            task_id=task_id,
+            name=role,
+            role=role,
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at=now,
+            updated_at=now,
+        )
+        for task_id, role, agent_id, _ in (
+            ("task_research", "researcher", "agent:researcher", None),
+            ("task_execution", "executor", "agent:executor", None),
+            ("task_report", "reporter", "agent:reporter", None),
+        )
+    )
+    with provider.write() as scope:
+        repositories = scope.repositories
+        repositories.sessions.save(session)
+        for task in tasks:
+            repositories.tasks.seed_fixture(task)
+        for agent in agents:
+            repositories.agents.save(agent)
+        for document in (
+            EngineDocumentRecord(
+                document_id="finish_research",
+                session_id=session.session_id,
+                document_kind="task_finish",
+                payload={
+                    "task_id": "task_research",
+                    "status": "completed",
+                    "finished_by": "agent:researcher",
+                    "summary": "Research complete.",
+                    "evidence_refs": ["artifact:research"],
+                },
+                created_at=now,
+                updated_at=now,
+            ),
+            EngineDocumentRecord(
+                document_id="finish_execution_blocked",
+                session_id=session.session_id,
+                document_kind="task_finish",
+                payload={
+                    "task_id": "task_execution",
+                    "status": "blocked",
+                    "finished_by": "agent:executor",
+                    "summary": "Authority required.",
+                    "evidence_refs": ["failure:failure_r63"],
+                    "failure_ref": "failure_r63",
+                },
+                created_at=now,
+                updated_at=now,
+            ),
+        ):
+            repositories.engine_documents.save(document)
+    formal = live.SessionDriveResult(
+        session_id=session.session_id,
+        purpose="formal",
+        state="failed",
+        blocker_code="authorization_required",
+        wrapper_code="task_blocked",
+        causal_failure={
+            "failure_id": "failure_r63",
+            "error_code": "authorization_required",
+        },
+        workspace={
+            "task_board": {
+                "items": [
+                    {"task": task.to_dict(), "bucket": task.status.value}
+                    for task in tasks
+                ]
+            }
+        },
+        workspace_response_binding={},
+        event_receipt={},
+        drain_count=2,
+        approval_ids=(),
+    )
+
+    raw_facts = live._diagnostic_formal_facts(formal)
+    task_facts = live._failure_task_facts(provider, formal)
+
+    assert raw_facts["task_status_counts"] == {
+        "blocked": 1,
+        "completed": 1,
+        "todo": 1,
+    }
+    assert raw_facts["wrapper_code"] == "task_blocked"
+    assert raw_facts["causal_failure"] == formal.causal_failure
+    assert [(item["task_id"], item["status"]) for item in task_facts] == [
+        ("task_execution", "blocked"),
+        ("task_report", "todo"),
+        ("task_research", "completed"),
+    ]
+    execution = next(
+        item for item in task_facts if item["task_id"] == "task_execution"
+    )
+    assert execution["business_exit"] == "agent_explicit"
+    assert execution["finish_ref"] == "finish_execution_blocked"
+    assert execution["failure_ref"] == "failure_r63"
+    report = next(item for item in task_facts if item["task_id"] == "task_report")
+    assert report["business_exit"] == "not_terminal"
 
 
 def test_failed_probe_payload_separates_execution_from_attestation() -> None:

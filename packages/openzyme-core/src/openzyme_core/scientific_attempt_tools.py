@@ -235,6 +235,8 @@ def register_scientific_attempt_tools(registry: ToolRegistry) -> None:
                 "Recorded a fresh-attempt admission request; the Host will "
                 "finalize it after this bounded writer turn retires."
             ),
+            terminal_action="attempt.create",
+            terminates_turn=True,
         )
 
     def begin_handler(

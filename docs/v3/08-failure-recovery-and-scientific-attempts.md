@@ -46,8 +46,11 @@ cancellation 仍停止对应 ownership。
 
 若 continuation 或 controlled execution 的结果只在原 turn 之后可见，runtime 使用现有
 source-bound `ENGINE_COMPLETED` signal，并在 claim 时从 canonical repository 重建
-result/failure facts。Host finalizer 的 nonretryable failure 产生 system-attributed
-observation/diagnostic。两者都不使用 `RECOVERY_REQUIRED` reason，也不从 ordinary failure
+result/failure facts。Host scientific finalizer 的 admitted attempt、immutable closure
+与 nonretryable failure 共用 source-bound `MANUAL_RESUME` 和 canonical wake-facts
+projector；projector 直接解析 canonical record identity，不匹配字符串 prefix，也不写新的
+workflow state。facts 在 fresh prompt 中先于 task prose；invalid binding 在 provider
+前 fail closed。两类路径都不使用 `RECOVERY_REQUIRED` reason，也不从 ordinary failure
 派生 condition subscription。
 
 empty read 与 replay 使用显式 convergence semantics：`task.get` not-found 和 `task.next`
@@ -94,7 +97,7 @@ ready work 仍关联 failure facts，不表示存在 turn recovery obligation。
 
 同一个 provider response 中的多个 tool call 作为有序 batch 结算。若某个已 dispatch call
 触发 explicit `runtime_suspended` approval、成功的 `task.finish` /
-`scientific.attempt.close` terminal action或 boundary-fatal failure，harness
+`attempt.create` / `scientific.attempt.close` terminal action或 boundary-fatal failure，harness
 停止 dispatch 余下 call，但不能让它们消失：后续 eligible call 记录
 `tool_call_batch_interrupted/no_effect/verify_then_retry`，overflow call 记录
 `parallel_tool_call_limit_exceeded/no_effect/same_phase_safe`。causal call 若已跨过外部
@@ -122,10 +125,30 @@ effect/adoption policy 与 same-attempt reuse policy。validator、inspection/re
 bundle verifier 都消费这个 registry object；unknown digest、近似版本或 historical-only
 contract 不得 fallback 到 prompt、静态 enum 或 Host 私有 callable。
 
-agent 的 `attempt.create` 只写 admission request。它自己的 mutation writer 退休后，
-Host finalizer 才在新的短 authority slice 中原子校验和消费 envelope、打开 attempt scope，
-再唤醒原 agent。这样不会让同一 writer 既申请又自批 authority。非 retryable finalizer
-拒绝必须生成 system-attributed failure observation 并返回 responsible agent；不得静默吞掉。
+agent 的 `attempt.create` 只写 admission request。successful ToolResult 标记
+`terminal_action="attempt.create"` 与 `terminates_turn=true`，作为非业务终态 bounded
+handoff 立即结束当前 writer turn；它不要求 agent 同轮再叙述、inspect 或
+`task.finish`。writer 退休后，Host finalizer 才在新的短 authority slice 中原子校验和消费
+envelope、打开 attempt scope，再以 exact attempt id 唤醒原 agent。fresh prompt 的
+canonical admission facts明确 attempt 已提交、request/envelope/session/task/lane/campaign/
+workflow/scope/effect/resource identity 与当前 lifecycle，避免模型从旧 task prose重复
+`attempt.create`。这样不会让同一 writer 既申请又自批 authority。非 retryable finalizer
+拒绝必须生成 system-attributed `FailureObservation` 并以 exact failure id 返回
+responsible agent；不得静默吞掉或自动重放。
+
+canonical wake-facts projector 对 admission、closure 与 failure 采用相同 closed binding：
+claimed signal 的 source/correlation/session/task/lane/agent 必须与 canonical records 和
+当前 task assignee 一致；attempt/request、closure/request/lifecycle graph 也必须一致。
+durable transition event 已存在但 canonical record 缺失属于 orphan transition，必须
+fail closed。projector 只提供事实与 effect/retry 边界，不输出 recommended action；
+agent 仍可自主选择继续 attempt、修复、改道、reconcile、请求 authority 或显式结束 task。
+
+AOX observer 若看到 owner-authored terminal `task.finish`，应从 immutable finish document
+的 `failure_ref` 解析 exact `FailureObservation`，而不是依赖仅在 `failed` row 上复制的
+task failure fields。outer `task_blocked` / `task_failed` 是 wrapper；sealed diagnostic 与
+failure evidence 的首要 blocker 使用最早 typed error code，同时保留 wrapper、cause 的
+recoverability/effect certainty/retry eligibility 和真实 completed/blocked/todo task
+projection。非 eligible evidence可以记录未终态 task，但绝不能因此获得 cutover eligibility。
 
 AOX formal runtime barrier 不能用一个跨 session drive 的长期 outer writer 包住上述
 rollover，否则 pre-attempt scope 永远无法证明 writer 已退休。campaign driver 在每次

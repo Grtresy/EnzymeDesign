@@ -41,13 +41,9 @@ from .scientific_attempt_lifecycle import (
     ScientificAttemptLifecycleIntegrityError,
 )
 from .scientific_attempt_lifecycle import ScientificAttemptLifecycleResolver
-from .scientific_closure_notification import (
-    ScientificClosureNotificationProof,
-)
-from .scientific_closure_notification import (
-    ScientificClosureNotificationSettlementError,
-)
-from .scientific_closure_notification import ScientificClosureNotificationVerifier
+from .runtime_wake_facts import CanonicalWakeFacts
+from .runtime_wake_facts import CanonicalWakeFactsError
+from .runtime_wake_facts import CanonicalWakeFactsProjector
 from .task_board import TaskBoardService
 from .teammate_roster import teammate_role_for_task_kind
 from .teammates import finalize_teammate_result
@@ -317,19 +313,17 @@ class AgentRuntimeService:
                 ok=False,
                 summary="agent not found",
             )
-        closure_proof, closure_rejection = (
-            self._scientific_closure_notification_preflight(
-                claimed,
-                agent,
-            )
+        wake_facts, wake_facts_rejection = self._canonical_wake_facts_preflight(
+            claimed,
+            agent,
         )
-        if closure_rejection is not None:
-            return closure_rejection
-        if closure_proof is not None:
+        if wake_facts_rejection is not None:
+            return wake_facts_rejection
+        if wake_facts is not None:
             not_ready = self._task_not_ready_outcome(
                 claimed,
                 agent,
-                closure_proof.task,
+                wake_facts.task,
             )
             if not_ready is not None:
                 return not_ready
@@ -337,7 +331,11 @@ class AgentRuntimeService:
             return self._wake_master(claimed, agent, max_steps=max_steps)
 
         payload = self._payload_for_signal(signal)
-        task = self._resolve_task(signal, agent, payload)
+        task = (
+            wake_facts.task
+            if wake_facts is not None
+            else self._resolve_task(signal, agent, payload)
+        )
         if task is None:
             summary = "Focused task required for wakeup."
             failed, _, _ = self._fail_signal(
@@ -421,7 +419,12 @@ class AgentRuntimeService:
                 )
 
         self._continue_execution_after_approval_signal(signal)
-        instructions = self._instructions_for_signal(signal, task, payload)
+        instructions = self._instructions_for_signal(
+            signal,
+            task,
+            payload,
+            wake_facts=wake_facts,
+        )
         correlation_id = signal.correlation_id or _new_id("corr")
         result = run_teammate_loop(
             self.context,
@@ -859,19 +862,19 @@ class AgentRuntimeService:
             waiting_approval_id=result.pending_approval_id,
         )
 
-    def _scientific_closure_notification_preflight(
+    def _canonical_wake_facts_preflight(
         self,
         claimed: AgentRuntimeSignal,
         agent: AgentMember,
     ) -> tuple[
-        ScientificClosureNotificationProof | None,
+        CanonicalWakeFacts | None,
         AgentRuntimeOutcome | None,
     ]:
         try:
-            proof = ScientificClosureNotificationVerifier(
+            facts = CanonicalWakeFactsProjector(
                 self.context.repositories
-            ).verify(claimed)
-        except ScientificClosureNotificationSettlementError as exc:
+            ).project(claimed)
+        except CanonicalWakeFactsError as exc:
             failed, signal_write_ok, _ = self._fail_signal(
                 claimed,
                 error_message=exc.error_code,
@@ -889,7 +892,7 @@ class AgentRuntimeService:
             )
             if signal_write_ok:
                 self.context.emit(
-                    "scientific.closure_notification.rejected",
+                    "runtime.wake_facts.rejected",
                     {
                         "signal_id": failed.signal_id,
                         "agent_id": failed.agent_id,
@@ -909,22 +912,21 @@ class AgentRuntimeService:
                     agent=agent,
                     ok=False,
                     summary=(
-                        "scientific closure notification failed exact binding "
-                        "verification"
+                        "canonical wake facts failed exact binding verification"
                         if signal_write_ok
                         else (
-                            "session runtime lease fencing rejected; scientific "
-                            "closure notification write was not applied"
+                            "session runtime lease fencing rejected; canonical "
+                            "wake-facts write was not applied"
                         )
                     ),
                     teammate_status=(
-                        "scientific_closure_notification_invalid"
+                        "canonical_wake_facts_invalid"
                         if signal_write_ok
-                        else "scientific_closure_notification_write_rejected"
+                        else "canonical_wake_facts_write_rejected"
                     ),
                 ),
             )
-        return proof, None
+        return facts, None
 
     def _task_not_ready_outcome(
         self,
@@ -1502,7 +1504,11 @@ class AgentRuntimeService:
         signal: AgentRuntimeSignal,
         task: Task,
         payload: dict[str, Any] | None,
+        *,
+        wake_facts: CanonicalWakeFacts | None = None,
     ) -> str:
+        if wake_facts is not None:
+            return wake_facts.render_instructions()
         if (
             signal.reason is AgentRuntimeSignalReason.ENGINE_COMPLETED
             and signal.source_ref

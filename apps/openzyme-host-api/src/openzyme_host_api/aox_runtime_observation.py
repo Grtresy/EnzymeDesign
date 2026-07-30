@@ -75,6 +75,8 @@ class AoxSessionRuntimeObservation:
     state: Literal["completed", "failed", "incomplete"]
     blocker_code: str | None
     barrier: RuntimeBarrierProjection
+    wrapper_code: str | None = None
+    causal_failure: dict[str, object] | None = None
 
 
 @dataclass(slots=True)
@@ -126,6 +128,13 @@ class AoxRuntimeObservationService:
             reports = repositories.reports.list_by_session(session_id)
             drafts = repositories.report_drafts.list_by_session(session_id)
             agents = repositories.agents.list_by_session(session_id)
+            documents = repositories.engine_documents.list_by_session(session_id)
+            failures = {
+                failure.failure_id: failure
+                for failure in repositories.failure_observations.list_by_session(
+                    session_id
+                )
+            }
             messages = build_conversation_projection(repositories, session_id)
 
         failed_operation = next(
@@ -144,15 +153,35 @@ class AoxRuntimeObservationService:
                 ),
                 barrier=barrier,
             )
-        failed_task = next(
-            (task for task in tasks if task.status.value in _FAILED_TASK_STATUSES),
-            None,
-        )
-        if failed_task is not None:
+        failed_tasks = [
+            task
+            for task in tasks
+            if task.status.value in _FAILED_TASK_STATUSES
+        ]
+        if failed_tasks:
+            failed_task = failed_tasks[0]
+            causal_failure = None
+            for candidate in failed_tasks:
+                candidate_failure = _task_causal_failure(
+                    task=candidate,
+                    documents=documents,
+                    failures=failures,
+                )
+                if candidate_failure is not None:
+                    failed_task = candidate
+                    causal_failure = candidate_failure
+                    break
+            wrapper_code = f"task_{failed_task.status.value}"
             return AoxSessionRuntimeObservation(
                 state="failed",
-                blocker_code=f"task_{failed_task.status.value}",
+                blocker_code=(
+                    wrapper_code
+                    if causal_failure is None
+                    else str(causal_failure["error_code"])
+                ),
                 barrier=barrier,
+                wrapper_code=wrapper_code,
+                causal_failure=causal_failure,
             )
         blocked_tasks = [task for task in tasks if task.status.value == "blocked"]
         if blocked_tasks:
@@ -163,10 +192,25 @@ class AoxRuntimeObservationService:
                     blocker_code=None,
                     barrier=barrier,
                 )
+            causal_failure = None
+            for blocked_task in blocked_tasks:
+                causal_failure = _task_causal_failure(
+                    task=blocked_task,
+                    documents=documents,
+                    failures=failures,
+                )
+                if causal_failure is not None:
+                    break
             return AoxSessionRuntimeObservation(
                 state="failed",
-                blocker_code="task_blocked",
+                blocker_code=(
+                    "task_blocked"
+                    if causal_failure is None
+                    else str(causal_failure["error_code"])
+                ),
                 barrier=barrier,
+                wrapper_code="task_blocked",
+                causal_failure=causal_failure,
             )
         failed_run = next(
             (
@@ -256,6 +300,66 @@ class AoxRuntimeObservationService:
                     "record_limit": projection.record_limit,
                 },
             )
+
+
+def _task_causal_failure(
+    *,
+    task: object,
+    documents: list[object],
+    failures: dict[str, object],
+) -> dict[str, object] | None:
+    task_id = str(getattr(task, "task_id", "") or "")
+    session_id = str(getattr(task, "session_id", "") or "")
+    assigned_ref = str(getattr(task, "assigned_ref", "") or "")
+    status = str(getattr(getattr(task, "status", None), "value", "") or "")
+    finish_documents = [
+        document
+        for document in documents
+        if getattr(document, "document_kind", None) == "task_finish"
+        and (
+            payload := dict(getattr(document, "payload", None) or {})
+        ).get("task_id")
+        == task_id
+        and payload.get("status") == status
+        and payload.get("finished_by") == assigned_ref
+    ]
+    if len(finish_documents) != 1:
+        return None
+    finish = max(
+        finish_documents,
+        key=lambda document: (
+            str(getattr(document, "created_at", "") or ""),
+            str(getattr(document, "document_id", "") or ""),
+        ),
+    )
+    payload = dict(getattr(finish, "payload", None) or {})
+    failure_ref = str(payload.get("failure_ref") or "").strip()
+    failure = None if not failure_ref else failures.get(failure_ref)
+    if (
+        failure is None
+        or failure.session_id != session_id
+        or failure.task_id != task_id
+        or failure.lane_id != getattr(task, "lane_id", None)
+        or failure.agent_id != assigned_ref
+    ):
+        return None
+    return {
+        "failure_id": failure.failure_id,
+        "error_code": failure.error_code,
+        "failure_class": failure.failure_class.value,
+        "recoverability": failure.recoverability.value,
+        "effect_certainty": failure.effect_certainty.value,
+        "retry_eligibility": failure.retry_eligibility.value,
+        "actor_kind": failure.actor_kind.value,
+        "source_kind": failure.source_kind,
+        "source_ref": failure.source_ref,
+        "source_version": failure.source_version,
+        "phase": failure.phase,
+        "safe_summary": failure.safe_summary,
+        "safe_hint": failure.safe_hint,
+        "evidence_refs": list(failure.evidence_refs),
+        "task_finish_ref": str(getattr(finish, "document_id", "") or ""),
+    }
 
 
 __all__ = [

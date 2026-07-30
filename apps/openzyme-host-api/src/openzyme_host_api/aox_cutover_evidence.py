@@ -6904,24 +6904,49 @@ def _validate_attempt_semantics(
             details={"identity": "operations"},
         )
     tasks = [dict(item) for item in payload.get("tasks") or []]
-    allowed_task_statuses = (
-        {"completed", "failed", "cancelled"}
-        if kind == "positive"
-        else {"completed", "failed", "blocked", "cancelled"}
+    eligible_positive = (
+        kind == "positive" and outcome.get("cutover_eligible") is True
     )
+    if eligible_positive:
+        allowed_task_statuses = {"completed", "failed", "cancelled"}
+        allowed_business_exits = {
+            "agent_explicit",
+            "documented_mechanical_transition",
+        }
+    elif kind == "positive":
+        allowed_task_statuses = {
+            "todo",
+            "in_progress",
+            "completed",
+            "failed",
+            "blocked",
+            "cancelled",
+        }
+        allowed_business_exits = {
+            "agent_explicit",
+            "documented_mechanical_transition",
+            "not_terminal",
+            "terminal_without_finish",
+            "finish_binding_invalid",
+        }
+    else:
+        allowed_task_statuses = {"completed", "failed", "blocked", "cancelled"}
+        allowed_business_exits = {
+            "agent_explicit",
+            "documented_mechanical_transition",
+        }
     if any(
         task.get("status") not in allowed_task_statuses
-        or task.get("business_exit")
-        not in {"agent_explicit", "documented_mechanical_transition"}
+        or task.get("business_exit") not in allowed_business_exits
         for task in tasks
     ):
         raise CutoverEvidenceError(
             "task_business_exit_invalid",
-            "attempt tasks require explicit or documented terminal business exits",
+            "attempt tasks do not match the eligibility-specific business-exit contract",
             details={"identity": "tasks"},
         )
     if kind == "positive":
-        eligible = outcome.get("cutover_eligible") is True
+        eligible = eligible_positive
         if eligible:
             _validate_mutation_quiescence_projection(
                 product_path,

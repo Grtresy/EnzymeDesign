@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from openzyme_core import CoreRepositories
+from openzyme_core import EngineDocumentRecord
 from openzyme_core import MutationScopeService
 from openzyme_core import RuntimeBarrierBlockerCode
 from openzyme_core import RuntimeBarrierCounts
@@ -14,9 +15,17 @@ from openzyme_core import RuntimeBarrierProjection
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
+from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import FailureActorKind
+from openzyme_domain import FailureClass
+from openzyme_domain import FailureObservation
+from openzyme_domain import FailureRecoverability
 from openzyme_domain import MutationScopeKind
 from openzyme_domain import MutationWriterKind
+from openzyme_domain import RetryEligibility
 from openzyme_domain import Session
+from openzyme_domain import Task
+from openzyme_domain import TaskStatus
 from openzyme_host_api import aox_cutover_live
 from openzyme_host_api.aox_runtime_observation import AoxRuntimeObservationError
 from openzyme_host_api.aox_runtime_observation import AoxRuntimeObservationService
@@ -204,6 +213,8 @@ def test_formal_product_readiness_waits_for_closed_attempt(
                 for role in ("researcher", "executor", "reporter")
             )
         ),
+        engine_documents=records(),
+        failure_observations=records(),
     )
 
     @contextmanager
@@ -250,6 +261,179 @@ def test_formal_product_readiness_waits_for_closed_attempt(
     assert open_attempt.blocker_code == "scientific_attempt_open"
     assert closed_attempt.state == "completed"
     assert closed_attempt.blocker_code is None
+
+
+def test_blocked_task_projects_typed_causal_failure_and_wrapper(
+    tmp_path: Path,
+) -> None:
+    connection, repositories, provider = _file_backed_repositories(tmp_path)
+    task = Task.create(
+        task_id="task_aox_execution",
+        session_id=SESSION_ID,
+        subject="Execute AOX",
+        description="Run the authorized formal chain",
+        status=TaskStatus.BLOCKED,
+        kind="execution",
+        assigned_ref="agent:executor",
+    )
+    repositories.tasks.seed_fixture(task)
+    failure = FailureObservation(
+        failure_id="failure_reconciliation_required",
+        session_id=SESSION_ID,
+        task_id=task.task_id,
+        lane_id=None,
+        agent_id="agent:executor",
+        source_kind="scientific_transition",
+        source_ref="controlled_operation_dispatch_unknown",
+        source_version="sha256:request",
+        phase="dispatch",
+        failure_class=FailureClass.CONTROLLED_EFFECT,
+        recoverability=FailureRecoverability.RECONCILIATION_REQUIRED,
+        effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+        retry_eligibility=RetryEligibility.RECONCILE_REQUIRED,
+        actor_kind=FailureActorKind.SYSTEM,
+        error_code="external_effect_outcome_unknown",
+        safe_summary="The external dispatch outcome is not known.",
+        safe_hint="Reconcile the exact operation before any retry.",
+        facts={"mutation_applied": False},
+        likely_causes=("Dispatch crossed the external-effect boundary.",),
+        evidence_refs=(
+            "controlled_operation:controlled_operation_dispatch_unknown",
+        ),
+        created_at="2026-07-30T00:00:00+00:00",
+    )
+    repositories.failure_observations.add(failure)
+    repositories.engine_documents.save(
+        EngineDocumentRecord(
+            document_id="task_finish_blocked_execution",
+            session_id=SESSION_ID,
+            document_kind="task_finish",
+            payload={
+                "task_id": task.task_id,
+                "status": "blocked",
+                "finished_by": "agent:executor",
+                "summary": "Authority required.",
+                "evidence_refs": [f"failure:{failure.failure_id}"],
+                "failure_ref": failure.failure_id,
+            },
+            created_at="2026-07-30T00:00:01+00:00",
+            updated_at="2026-07-30T00:00:01+00:00",
+        )
+    )
+    mutation_service = MutationScopeService(repositories)
+    mutation_scope = mutation_service.open_scope(
+        session_id=SESSION_ID,
+        scope_kind=MutationScopeKind.ATTEMPT,
+        scope_ref="aox-attempt:attempt_typed_failure:formal",
+    )
+    mutation_service.register_writer(
+        scope_id=mutation_scope.scope_id,
+        owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+        owner_ref="aox-attempt-driver:attempt_typed_failure:formal",
+        trusted_root=True,
+    )
+
+    observation = AoxRuntimeObservationService(provider).observe_session(
+        session_id=SESSION_ID,
+        purpose="formal",
+    )
+
+    assert observation.state == "failed"
+    assert observation.blocker_code == "external_effect_outcome_unknown"
+    assert observation.wrapper_code == "task_blocked"
+    assert observation.causal_failure is not None
+    assert observation.causal_failure["failure_id"] == failure.failure_id
+    assert observation.causal_failure["recoverability"] == (
+        "reconciliation_required"
+    )
+    assert observation.causal_failure["effect_certainty"] == (
+        "dispatch_in_doubt"
+    )
+    assert observation.causal_failure["retry_eligibility"] == (
+        "reconcile_required"
+    )
+    assert observation.causal_failure["task_finish_ref"] == (
+        "task_finish_blocked_execution"
+    )
+    connection.close()
+
+
+def test_blocked_task_rejects_mismatched_failure_binding(
+    tmp_path: Path,
+) -> None:
+    connection, repositories, provider = _file_backed_repositories(tmp_path)
+    task = Task.create(
+        task_id="task_aox_execution_mismatch",
+        session_id=SESSION_ID,
+        subject="Execute AOX",
+        description="Run the authorized formal chain",
+        status=TaskStatus.BLOCKED,
+        kind="execution",
+        assigned_ref="agent:executor",
+    )
+    repositories.tasks.seed_fixture(task)
+    failure = FailureObservation(
+        failure_id="failure_wrong_agent",
+        session_id=SESSION_ID,
+        task_id=task.task_id,
+        lane_id=None,
+        agent_id="agent:other",
+        source_kind="scientific_transition",
+        source_ref="attempt_admission_request_wrong",
+        source_version="sha256:wrong",
+        phase="admission_finalization",
+        failure_class=FailureClass.SYSTEM,
+        recoverability=FailureRecoverability.AUTHORIZATION_REQUIRED,
+        effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+        retry_eligibility=RetryEligibility.TERMINAL,
+        actor_kind=FailureActorKind.SYSTEM,
+        error_code="authorization_required",
+        safe_summary="Wrongly bound failure.",
+        facts={},
+        likely_causes=(),
+        evidence_refs=(),
+        created_at="2026-07-30T00:00:00+00:00",
+    )
+    repositories.failure_observations.add(failure)
+    repositories.engine_documents.save(
+        EngineDocumentRecord(
+            document_id="task_finish_wrong_failure_binding",
+            session_id=SESSION_ID,
+            document_kind="task_finish",
+            payload={
+                "task_id": task.task_id,
+                "status": "blocked",
+                "finished_by": "agent:executor",
+                "summary": "Blocked.",
+                "evidence_refs": [],
+                "failure_ref": failure.failure_id,
+            },
+            created_at="2026-07-30T00:00:01+00:00",
+            updated_at="2026-07-30T00:00:01+00:00",
+        )
+    )
+    mutation_service = MutationScopeService(repositories)
+    mutation_scope = mutation_service.open_scope(
+        session_id=SESSION_ID,
+        scope_kind=MutationScopeKind.ATTEMPT,
+        scope_ref="aox-attempt:attempt_bad_failure:formal",
+    )
+    mutation_service.register_writer(
+        scope_id=mutation_scope.scope_id,
+        owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+        owner_ref="aox-attempt-driver:attempt_bad_failure:formal",
+        trusted_root=True,
+    )
+
+    observation = AoxRuntimeObservationService(provider).observe_session(
+        session_id=SESSION_ID,
+        purpose="formal",
+    )
+
+    assert observation.blocker_code == "task_blocked"
+    assert observation.wrapper_code == "task_blocked"
+    assert observation.causal_failure is None
+    connection.close()
 
 
 def test_campaign_driver_does_not_reintroduce_direct_runtime_database_helpers() -> None:

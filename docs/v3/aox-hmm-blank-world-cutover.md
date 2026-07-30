@@ -2833,6 +2833,34 @@ operation/task/report/lifecycle facts and measured MICU even without control,
 but stays non-eligible; formal acceptance still requires exact immutable
 control.
 
+The next diagnostic, r63, is also permanent NO-GO. It ran from clean commit
+`8e70c9ae951888a7cbc07bcfa9cf8b0bbcde7a96`; the bounded independent probe
+completed its exact two-provider/four-HPC surface, and the executor's first
+`attempt.create` produced a valid admitted formal attempt. The Host then queued
+the exact attempt-id `MANUAL_RESUME`, but the fresh teammate received only the
+original task prose and not the committed admission facts. It therefore issued
+a second, drifted `attempt.create`; the Host correctly rejected that call as
+`authorization_required/no_effect/terminal`, and the owner explicitly finished
+the execution task as blocked with
+`failure_cf29c4815df93f19feb7`. Research was completed and the canonical report
+task remained todo. The sealed decision
+`sha256:4311910ba7d18c6488092a5276a5c3a1f4e9092b3ac5af6083ced17ccd0338d4`
+retained only the outer `task_blocked` wrapper, projected the three formal task
+states as `unknown`, and emitted an empty failure-evidence task list; these are
+diagnostic projection defects, not a revision of the typed causal failure.
+
+The forward r63 correction makes successful `attempt.create` a non-business
+terminal handoff and replaces the closure-only verifier with a canonical
+admission/closure/failure wake-facts projector. Exact committed facts precede
+task prose in every fresh teammate prompt; source/correlation/session/task/lane/
+agent, request graph, lifecycle and assignment drift fail before a provider
+call, while unrelated manual resumes remain ordinary. AOX observation now
+derives the earliest cause from the owner-authored immutable
+`task_finish.failure_ref`, preserves `task_blocked` as a wrapper, reads nested
+task-board rows correctly, and seals actual completed/blocked/todo task facts
+even when the attempt is non-eligible. It does not retry r63, alter its
+authority/root/SQLite/effects/decision, or authorize r64.
+
 These corrections do not authorize `preflight`, another closure-stage run,
 `run-diagnostic-live`, `run-live`, a numbered root, provider/MICU call, HPC
 job, browser campaign or formal attempt. Formal acceptance requires a

@@ -1342,6 +1342,20 @@ def _terminal_task_finish_result(result: HarnessResult) -> ToolResult | None:
     return None
 
 
+def _terminal_non_business_handoff_result(
+    result: HarnessResult,
+) -> ToolResult | None:
+    for tool_result in reversed(result.tool_results):
+        if (
+            tool_result.ok
+            and tool_result.terminates_turn
+            and tool_result.terminal_action
+            not in {None, "task.finish", "runtime_suspended"}
+        ):
+            return tool_result
+    return None
+
+
 def finalize_teammate_result(
     context: SessionRuntimeContext,
     *,
@@ -1420,6 +1434,40 @@ def finalize_teammate_result(
         )
         if task_status == "blocked":
             return message, AgentMemberStatus.BLOCKED
+        return message, AgentMemberStatus.IDLE
+    handoff_result = _terminal_non_business_handoff_result(result)
+    if handoff_result is not None:
+        task = context.repositories.tasks.get(task_id)
+        task_status = None if task is None else task.status.value
+        message = (
+            handoff_result.summary
+            or handoff_result.status
+            or f"{agent_id} requested a bounded Host transition."
+        )
+        protocol.reply(
+            session_id=context.snapshot.session.session_id,
+            sender=agent_id,
+            sender_kind=InboxParticipantKind.AGENT,
+            recipient="harness",
+            recipient_kind=InboxParticipantKind.HARNESS,
+            message_type="status_update",
+            correlation_id=correlation_id,
+            payload_ref=protocol.persist_payload(
+                session_id=context.snapshot.session.session_id,
+                document_kind="protocol_payload",
+                payload={
+                    "task_id": task_id,
+                    "status": "transition_requested",
+                    "runtime_status": result.status.value,
+                    "business_status": "unchanged",
+                    "task_status": task_status,
+                    "summary": message,
+                    "outputs": list(result.outputs),
+                    "terminal_action": handoff_result.terminal_action,
+                    "required_action": None,
+                },
+            ),
+        )
         return message, AgentMemberStatus.IDLE
     recovered_outcome_summary = _recover_terminal_outcome_summary_from_workspace(
         context,

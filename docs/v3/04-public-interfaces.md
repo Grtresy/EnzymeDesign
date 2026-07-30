@@ -154,22 +154,21 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `details`: structured diagnostic metadata
 - `content`: legacy content string
 - `payload`: parsed JSON payload when `content` is JSON
-- `terminal_action`: explicit terminal action name such as `task.finish` or a successful `scientific.attempt.close`, otherwise `null`
+- `terminal_action`: explicit terminal action name such as `task.finish`, successful `attempt.create`, or successful `scientific.attempt.close`, otherwise `null`
 - `terminates_turn`: whether the harness must stop the current master/teammate loop immediately after this result
 
 `ok=true` must not mean "no downstream work remains"; it only means that the specific tool completed its promised action. `ok=false` means the model must not assume the requested action happened.
 
-`terminates_turn=true` 只允许由显式 terminal tool 设置。`task.finish` 是业务 task 出口；成功的
-`scientific.attempt.close` 是独立的 scientific lifecycle turn barrier，只写 immutable
-closure request 并等待 requester writer 退休后的 Host finalization。close invocation
-不携带或持久化 companion response；assistant text 仍走普通 conversation contract。
-successful close result 退休当前 turn，并使同批后续 call 获得
-interrupted/no-effect settlement；失败的 close 保持 non-terminal。close 只接受 exact
-attempt task 当前 canonical assignee，request 与 finalization 都重核 assignment。
-immutable closure 后的 source-bound signal 沿普通 runtime wake 让 assignee 显式完成
-task；closure 本身不写 task terminal state。普通 tool success、capability success、
-engine invocation terminal state 或 protocol message 也不能自动把业务 task 写为
-completed / failed。
+`terminates_turn=true` 只允许由显式 terminal tool 设置。`task.finish` 是业务 task 出口；
+成功的 `attempt.create` 与 `scientific.attempt.close` 是独立的 scientific transition
+turn barrier，分别只写 immutable admission request / closure request，并等待 requester
+writer 退休后的 Host finalization。两者成功时都退休当前 turn，并使同批后续 call 获得
+interrupted/no-effect settlement；失败时保持 non-terminal。transition handoff 不要求
+`task.finish`，也不改变业务 task status。Host 提交 admission、closure 或 typed
+finalizer failure 后，用 source-bound signal 唤醒原 assignee；runtime 必须在 provider
+调用前从 canonical record 重建 bounded wake facts，并把 facts 放在 task prose 之前。
+普通 tool success、capability success、engine invocation terminal state 或 protocol
+message 也不能自动把业务 task 写为 completed / failed。
 
 当工具本身已经执行完成，但完整 result 或下一轮 prompt 会超过 token budget 时，harness 返回 context-budget observation，而不是把完整 result 塞回模型：
 
@@ -476,14 +475,18 @@ recovery 或 task terminal。
 
 Host API 提供 scientific-attempt authorization、command、finalization 和 read projection。
 authority request 使用 strict DTO；actor/grantor 等身份来自受控边界。`attempt.create` 和
-`scientific.attempt.close` 返回 request/intention，最终 admission/closure 由 Host 在原 writer
-连同该 provider batch 的未 dispatch call settlement 全部退休后执行。successful close
-ToolResult 标记 `terminal_action="scientific.attempt.close"` 与 `terminates_turn=true`；
-它只持久化 immutable request，不携带 companion assistant text，也不创建
-message/document/response binding。只有 exact attempt task 当前 canonical assignee
-可以发起 request，Core 在 finalization 再次核对 assignment。closure request 本身不是
-final `scientific_closure` evidence，也不写 task terminal；immutable closure 形成后，
-source-bound ordinary wake 让 assignee 显式完成 task。
+`scientific.attempt.close` 返回 request/intention，最终 admission/closure 由 Host 在原
+writer 连同该 provider batch 的未 dispatch call settlement 全部退休后执行。successful
+ToolResult 分别标记 `terminal_action="attempt.create"` /
+`"scientific.attempt.close"` 与 `terminates_turn=true`；它们只持久化 immutable request，
+不携带 companion assistant text，也不创建 message/document/response binding。只有 exact
+attempt task 当前 canonical assignee 可以发起 closure request，Core 在 finalization 再次
+核对 assignment。request 本身不是 final attempt/closure evidence，也不写 task terminal；
+Host finalization 后的 source-bound wake 从 exact admission/attempt/lifecycle 或
+request/attempt/closure/lifecycle 记录投影 facts。nonretryable finalizer failure 则投影
+exact `FailureObservation` 的 error code、recoverability、effect certainty、retry
+eligibility 与 evidence refs。任何 source/correlation/session/task/lane/agent binding
+漂移或已有 durable transition event 却缺 canonical record 都在 provider 前 fail closed。
 workspace 显示 envelope usage、attempts、universe/dispositions、selected chain、
 materializations 和 closure，不投影 provider/HPC private allowlist。
 

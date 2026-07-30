@@ -330,34 +330,24 @@ session。master wake 与 delegated teammate turn 必须继承同一注入实例
 通过角色切换绕过约束。
 
 AOX blank-world cutover 当前使用
-`aox_cutover_formal_tool_precondition@4`；该历史 id 只保留 tool-dispatch 入口，呈现
-authority 已固定的局部 mutation 约束：
-formal session 只能创建 exact research/execution/report task id，且
-`scientific.attempt.close` 只有在 exact task identity、显式 business exit 与
-positive/fault 对应 report state 闭合后才放行。每项 business exit 必须恰有一个
-status-matching finish receipt，且 `finished_by` 等于 task 的 canonical `assigned_ref`；
-generic master recovery finish 仍可写产品状态，但不能满足 AOX formal eligibility。
-positive executor 的 sealed current selection 只有经同一 canonical evaluator 证明
-`closure_request_ready=true`，其 execution handoff 才由 durable science truth 闭合；
-该 assigned executor 再请求 `blocked|failed|cancelled` 会被
-`aox_cutover_positive_execution_exit_mismatch/no_effect/same_phase_safe` 拒绝，owner
-必须显式完成 task，并把 report/closure 留给 reporter/master。sealed state 本身不是
-readiness：seal 后 universe、authority、workflow、process、continuation、disposition、
-adoption、materialization 或 evidence 漂移时仍保留 generic 显式 blocker/failure 出口；
-fault attempt 与普通 session 也不受这一窄 guard 影响。
-`@4` 不再拥有 report-handoff response boundary：assistant prose 可以正常持久化，但不会
-委派 reporter、完成 task、请求 closure 或获得 acceptance eligibility。需要这些 durable
-变化时 agent 必须实际调用 domain tool；guard 不自动 delegate、auto-enqueue 或选择结果，
-也不选择 operation、selection、query、执行顺序或科学分支。
+`aox_cutover_formal_tool_precondition@5`，只呈现 authority 已固定的局部 mutation
+约束：formal session 创建 task 时只能使用 exact research/execution/report id 与 kind；
+sealed closure-stage diagnostic 还会拒绝新的 operation-universe mutation，并要求 assigned
+reporter 的 completed finish 绑定 exact published report 与 canonical PubMed source。
+它不再决定 close actor/order、positive execution exit 或 assistant response；generic
+task/selection/report/closure verifier 仍独立 fail closed。需要 durable 变化时 agent 必须
+实际调用 domain tool；guard 不自动 delegate、auto-enqueue、完成 task、请求 closure 或
+选择 operation、selection、query、执行顺序和科学分支。
 
-successful `scientific.attempt.close` 是通用 terminal turn action，不是 AOX-specific
-prompt rule。close handler 先要求同一 invocation 带有非空 companion assistant text；
-缺失时不写 closure request。它在同一 Core atomic transaction 内持久化 closure intent、
-deterministic conversation document/message 与 immutable response binding 后，harness
-只返回已提交文本并立即结算同批后续 calls 为
-`tool_call_batch_interrupted/no_effect/verify_then_retry`，不再调用模型；外层
-`AGENT_TURN` writer 连同 settlement 退休后，Host 才能推进 final closure。close rejection
-保持 non-terminal且不持久化终答，scientific closure 不完成 task。
+successful `attempt.create` 与 `scientific.attempt.close` 都是通用 scientific-transition
+terminal turn action，不是 AOX-specific prompt rule。handler 在 Core atomic boundary
+内只持久化对应 admission / closure request，不要求 companion assistant text，也不创建
+conversation document/message 或 closure-response binding。harness 立即结算同批后续
+calls 为 `tool_call_batch_interrupted/no_effect/verify_then_retry` 并退休 requesting
+turn；外层 `AGENT_TURN` writer 连同 settlement 退休后，Host 才能 finalization。Host
+提交 admitted attempt、immutable closure 或 typed finalizer failure 后，以 exact source
+排队 wake；runtime 在 provider 前重建 canonical facts。request rejection 保持
+non-terminal，任一 scientific transition 都不完成业务 task。
 
 `supports_parallel` 目前只作为治理 metadata 暴露和记录；runtime 仍按现有 bounded loop 串行 dispatch，不启用真实并行 tool execution。
 

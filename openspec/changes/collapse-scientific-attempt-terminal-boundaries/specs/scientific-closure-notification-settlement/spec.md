@@ -1,14 +1,16 @@
 ## MODIFIED Requirements
 
-### Requirement: Exact immutable-closure notification settles without a model turn
-Agent runtime MUST verify every closure-like notification against canonical
-scientific records before continuing. The proof MUST bind signal kind/source,
-actor, session, task, lane or correlation, attempt, closure request, closure,
-and lifecycle. A valid notification for a still-open task MUST continue through
-the ordinary fenced model-driven runtime path; a valid stale notification for
-an already-terminal task MAY use the existing generic mechanical completion
-path. Runtime MUST NOT require or create a co-terminal assistant response,
-closure-response document, digest, or special scientific settlement.
+### Requirement: Canonical scientific transition wakes project exact facts
+Agent runtime MUST resolve every claimed scientific-transition wake against
+canonical admitted-attempt, immutable-closure, or failure-observation records
+before continuing. The projection MUST bind signal kind/source/correlation,
+claim, actor, session, task, lane, request, attempt, closure when present, and
+current lifecycle. A valid notification for a still-open task MUST continue
+through the ordinary fenced model-driven runtime path with those facts ahead of
+task prose; a valid stale notification for an already-terminal task MAY use the
+existing generic mechanical completion path. Runtime MUST NOT persist another
+phase, require or create a co-terminal assistant response, infer a strategy, or
+use an identifier prefix as canonical proof.
 
 #### Scenario: Exact closure notification wakes an open task
 - **WHEN** a claimed `manual_resume` signal points to the exact immutable closure and the attempt task remains business-nonterminal
@@ -19,16 +21,24 @@ closure-response document, digest, or special scientific settlement.
 - **THEN** the existing generic terminal-task signal path may complete the stale signal without a model turn
 
 #### Scenario: Admission notification is claimed
-- **WHEN** a `manual_resume` signal points to an admission transition or scientific attempt rather than an immutable closure
-- **THEN** runtime keeps the existing model-driven wake behavior
+- **WHEN** a claimed `manual_resume` signal points to the exact Host-admitted scientific attempt
+- **THEN** runtime supplies the exact attempt, admission request, task/lane/actor, workflow and current lifecycle facts to the fresh model turn, and does not repeat `attempt.create` mechanically
+
+#### Scenario: Transition failure notification is claimed
+- **WHEN** a claimed `manual_resume` signal points to an exact canonical failure observation
+- **THEN** runtime supplies its error code, source, effect certainty, retry eligibility and evidence refs without granting retry or replay authority
 
 #### Scenario: Ordinary manual resume is claimed
-- **WHEN** a `manual_resume` signal is not source-bound to a scientific closure
+- **WHEN** a `manual_resume` signal does not resolve to a canonical attempt, closure, failure observation, or orphaned durable scientific-transition event
 - **THEN** runtime keeps the existing model-driven wake behavior
 
 #### Scenario: Closure actor or control-plane binding differs
 - **WHEN** the closure resolves but actor, session, task, lane, correlation, request, or attempt binding differs from the claimed signal
 - **THEN** runtime fails closed and MUST NOT complete the signal or call the model
+
+#### Scenario: Durable transition event has no source record
+- **WHEN** a claimed source is named by a durable admitted/closed transition event but its canonical attempt or closure record is absent
+- **THEN** runtime fails closed without falling back to task prose
 
 #### Scenario: Attempt task is not terminal
 - **WHEN** closure records verify but the attempt's business task is not in an explicit terminal state
@@ -72,3 +82,19 @@ facts.
 #### Scenario: Attempt scope history is inspected
 - **WHEN** the complete seam has converged
 - **THEN** the attempt scope history is monotonic and never changes from `freezing`, `quiescent`, or `sealed` back to `open`
+
+### Requirement: Scientific transition requests end only the bounded writer turn
+A successful `attempt.create` or `scientific.attempt.close` MUST terminate the
+current bounded teammate writer turn so Host finalization can run after writer
+retirement. The handoff MUST leave task business status unchanged, MUST NOT be
+reported as `task_finish_required`, and MUST NOT execute a later call from the
+same model response. Failed requests remain ordinary model-readable no-effect
+results and do not terminate the turn.
+
+#### Scenario: Admission request succeeds
+- **WHEN** `attempt.create` records an exact authorized admission request
+- **THEN** the harness retires the current turn, settles later calls as undispatched no-effect, and waits for the Host-finalized source-bound wake
+
+#### Scenario: Admission request is rejected
+- **WHEN** `attempt.create` fails authority, identity, resource, or lifecycle validation
+- **THEN** the failed tool result remains visible to the agent and no terminal handoff or task mutation is inferred
