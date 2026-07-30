@@ -53,6 +53,7 @@ from .background_runtime import V3DurableWorkSupervisor
 from .aox_scientific_contract import (
     AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY,
 )
+from .aox_bundle_finalizer import finalize_aox_deliverable_bundle
 from .durable_routes import build_host_hpc_route_adapters
 from .durable_routes import build_host_provider_route_adapters
 from .runtime_commands import HostRuntimeCommandExecutor
@@ -751,6 +752,7 @@ class HostApiDependencies:
             research_adapter=self.foundation.research_adapter,
             sandbox_workspace_root=self.v3_sandbox_workspace_root,
             artifact_blob_root=self.v3_artifact_blob_root,
+            artifact_bundle_finalizer=finalize_aox_deliverable_bundle,
             signal_notifier=self.v3_signal_notifier,
             durable_work_notifier=self.v3_durable_work_notifier,
             reliability_shadow_observer=(self.foundation.reliability_shadow_observer),

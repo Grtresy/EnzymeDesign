@@ -17,6 +17,7 @@ from uuid import uuid4
 import zlib
 
 from openzyme_core.workflow_knowledge import workflow_manifest_content_sha256
+from openzyme_pipeline import aox_finalization
 from openzyme_pipeline import aox_reference
 from openzyme_research import safe_public_locator
 from openzyme_runtime import LIVE_MICU_TOKEN_HARD_LIMIT
@@ -32,7 +33,6 @@ from .aox_cutover_runtime_config import normalize_aox_blank_world_runtime_config
 from .aox_live_run_class import AoxLiveRunClass
 from .aox_live_run_class import authority_root_ref
 from .aox_live_run_class import authority_run_class
-from .aox_live_run_class import CLOSURE_STAGE_DIAGNOSTIC_RUN_POLICY
 from .aox_live_run_class import DIAGNOSTIC_RUN_POLICY
 from .aox_live_run_class import policy_for_run_class
 
@@ -1687,6 +1687,14 @@ def create_blank_world_roots(
     run_class: AoxLiveRunClass = AoxLiveRunClass.FORMAL_ACCEPTANCE,
     diagnostic_id: str | None = None,
 ) -> BlankWorldRoots:
+    if str(run_class) == "closure_stage_diagnostic":
+        raise CutoverEvidenceError(
+            "closure_stage_live_run_class_retired",
+            (
+                "historical closure-stage diagnostic identities are frozen "
+                "evidence and cannot create or satisfy a current run"
+            ),
+        )
     try:
         normalized_run_class = AoxLiveRunClass(run_class)
     except ValueError as exc:
@@ -1711,9 +1719,7 @@ def create_blank_world_roots(
         assert_formal_campaign_root(campaign_root)
         if DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(
             identifier
-        ) or CLOSURE_STAGE_DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(
-            identifier
-        ):
+        ) or re.fullmatch(r"closure-stage-[a-f0-9]{32}", identifier):
             raise CutoverEvidenceError(
                 "formal_campaign_diagnostic_attempt_forbidden",
                 "formal acceptance rejects diagnostic attempt identities",
@@ -1725,14 +1731,6 @@ def create_blank_world_roots(
         raise CutoverEvidenceError(
             "diagnostic_attempt_identity_invalid",
             "diagnostic execution permits exactly one diagnostic positive identity",
-        )
-    elif normalized_run_class is AoxLiveRunClass.CLOSURE_STAGE_DIAGNOSTIC:
-        raise CutoverEvidenceError(
-            "closure_stage_blank_world_forbidden",
-            (
-                "closure-stage diagnostics require an independently verified "
-                "reconstructed root, never a blank-world attempt"
-            ),
         )
     prerequisites = normalize_aox_cutover_prerequisites(allowed_prerequisites)
     qualification = _normalize_architecture_qualification(
@@ -2112,6 +2110,12 @@ def _verify_attempt_bundle_v2_impl(
             )
             _verify_fixed_deliverable_artifact_contracts(
                 payload,
+                artifact_map=artifact_map,
+                issues=issues,
+            )
+            _verify_unified_final_deliverables(
+                payload,
+                artifact_root=artifact_root,
                 artifact_map=artifact_map,
                 issues=issues,
             )
@@ -3949,7 +3953,7 @@ def _hmmer_upstream_empty_is_proven(
             and empty_materialization_identity.get("calculation_id")
             == "aox_upstream_empty_materialization@1"
             and empty_membership_identity.get("calculation_id")
-            == "canonical_empty_cluster_membership@1"
+            == aox_finalization.EMPTY_MEMBERSHIP_CALCULATION_ID
             and empty_scoring_identity.get("calculation_id")
             == "aox_reference_only_scoring_alignment@1"
             and operation_refs(empty_materialization, "inputs")
@@ -7632,6 +7636,318 @@ def _verify_fixed_deliverable_artifact_contracts(
             )
 
 
+def _verify_unified_final_deliverables(
+    payload: Mapping[str, Any],
+    *,
+    artifact_root: Path,
+    artifact_map: Mapping[str, Mapping[str, Any]],
+    issues: list[VerificationIssue],
+) -> None:
+    from openzyme_pipeline import aox_candidate
+    from openzyme_pipeline import aox_finalization
+
+    from .aox_final_deliverable_validation import (
+        S15_AOX_HMM_FIXED_DELIVERABLES,
+    )
+    from .aox_final_deliverable_validation import (
+        validate_aox_final_artifacts,
+    )
+    from .aox_bundle_finalizer import (
+        required_aox_conditional_output_paths,
+    )
+
+    receipt_value = dict(payload.get("scientific_checks") or {}).get(
+        "finalization_receipt"
+    )
+    if not isinstance(receipt_value, dict):
+        # Historical sealed bundles remain independently verifiable. Current
+        # formal runs cannot reach collection without the runtime receipt gate;
+        # when the new receipt is present, this verifier always recomputes it.
+        return
+    receipt = dict(receipt_value)
+    receipt_without_digest = dict(receipt)
+    declared_receipt_digest = receipt_without_digest.pop(
+        "receipt_digest", None
+    )
+    control = payload.get("scientific_attempt_control")
+    control_payload = control if isinstance(control, dict) else {}
+    attempt = dict(control_payload.get("attempt") or {})
+    selection = dict(control_payload.get("selection") or {})
+    validation_metadata = receipt.get("validation_metadata")
+    receipt_artifacts = receipt.get("artifacts")
+    if (
+        receipt.get("schema_id")
+        != aox_finalization.FINALIZATION_RECEIPT_SCHEMA_ID
+        or receipt.get("status") != "passed"
+        or declared_receipt_digest != canonical_digest(receipt_without_digest)
+        or receipt.get("attempt_id") != attempt.get("attempt_id")
+        or receipt.get("selection_id") != selection.get("selection_id")
+        or receipt.get("execution_task_id") != attempt.get("task_id")
+        or receipt.get("agent_id") != selection.get("actor_ref")
+        or not isinstance(validation_metadata, dict)
+        or set(validation_metadata) != S15_AOX_HMM_FIXED_DELIVERABLES
+        or not all(
+            isinstance(metadata, dict)
+            for metadata in validation_metadata.values()
+        )
+        or not isinstance(receipt_artifacts, list)
+    ):
+        issues.append(
+            VerificationIssue(
+                code="aox_finalization_receipt_invalid",
+                identity="scientific_checks.finalization_receipt",
+                message=(
+                    "atomic finalization receipt failed its closed identity "
+                    "or source-bound task check"
+                ),
+            )
+        )
+        return
+
+    records_by_path: dict[str, tuple[str, Mapping[str, Any]]] = {}
+    for artifact_id, record in artifact_map.items():
+        provenance = dict(record.get("provenance") or {})
+        path = str(
+            record.get("deliverable_path")
+            or provenance.get("catalog_relative_path")
+            or ""
+        )
+        if path not in S15_AOX_HMM_FIXED_DELIVERABLES:
+            continue
+        if path in records_by_path:
+            issues.append(
+                VerificationIssue(
+                    code="aox_finalization_artifact_cardinality_invalid",
+                    identity=f"artifact:{path}",
+                    message=(
+                        "atomic finalization evidence contains duplicate "
+                        "deliverable paths"
+                    ),
+                )
+            )
+            return
+        records_by_path[path] = (artifact_id, record)
+
+    artifact_text: dict[str, str] = {}
+    unreadable = False
+    for path, (_, record) in records_by_path.items():
+        try:
+            content = _resolve_artifact_path(
+                artifact_root,
+                str(record.get("relative_path") or ""),
+            ).read_bytes()
+            artifact_text[path] = content.decode("utf-8")
+        except (CutoverEvidenceError, OSError, UnicodeDecodeError):
+            unreadable = True
+            issues.append(
+                VerificationIssue(
+                    code="aox_finalization_artifact_unreadable",
+                    identity=f"artifact:{path}",
+                    message=(
+                        "atomic finalization deliverable is not readable UTF-8"
+                    ),
+                )
+            )
+    if unreadable:
+        return
+    validation = validate_aox_final_artifacts(
+        set(records_by_path),
+        artifact_text,
+        {
+            str(path): dict(metadata)
+            for path, metadata in validation_metadata.items()
+        },
+    )
+    if validation.get("passed") is not True:
+        earliest = validation.get("earliest_error")
+        issues.append(
+            VerificationIssue(
+                code=str(
+                    validation.get("earliest_error_code")
+                    or "aox_final_deliverable_validation_failed"
+                ),
+                identity="scientific_checks.finalization_receipt.validation",
+                message=(
+                    "unified offline validator preserved the earliest typed "
+                    f"cause: {earliest!r}"
+                ),
+                expected=True,
+                actual=False,
+            )
+        )
+        return
+    if receipt.get("validation") != validation:
+        issues.append(
+            VerificationIssue(
+                code="aox_finalization_receipt_validation_drift",
+                identity="scientific_checks.finalization_receipt.validation",
+                message=(
+                    "offline validator result differs from the live/eval "
+                    "receipt result"
+                ),
+                expected=canonical_digest(receipt.get("validation")),
+                actual=canonical_digest(validation),
+            )
+        )
+
+    expected_refs = {
+        (
+            path,
+            artifact_id,
+            str(record.get("content_digest") or ""),
+        )
+        for path, (artifact_id, record) in records_by_path.items()
+    }
+    observed_refs = {
+        (
+            str(item.get("relative_path") or ""),
+            str(item.get("artifact_id") or ""),
+            str(item.get("content_digest") or ""),
+        )
+        for item in receipt_artifacts
+        if isinstance(item, dict)
+    }
+    if observed_refs != expected_refs:
+        issues.append(
+            VerificationIssue(
+                code="aox_finalization_receipt_artifact_drift",
+                identity="scientific_checks.finalization_receipt.artifacts",
+                message=(
+                    "atomic finalization receipt does not bind the sealed "
+                    "17-deliverable evidence set"
+                ),
+            )
+        )
+    calculations = receipt.get("calculation_receipts")
+    if not isinstance(calculations, list) or not all(
+        isinstance(item, dict) for item in calculations
+    ):
+        issues.append(
+            VerificationIssue(
+                code="aox_finalization_receipt_calculation_invalid",
+                identity=(
+                    "scientific_checks.finalization_receipt.calculation_receipts"
+                ),
+                message="atomic finalization receipt lacks calculation receipts",
+            )
+        )
+        return
+    calculations_by_id = {
+        str(item.get("calculation_id") or ""): dict(item)
+        for item in calculations
+    }
+    candidate = calculations_by_id.get(aox_candidate.CALCULATION_ID)
+    finalizer = calculations_by_id.get(
+        aox_finalization.FINALIZATION_CALCULATION_ID
+    )
+    receipt_refs_by_path = {
+        str(item.get("relative_path") or ""): dict(item)
+        for item in receipt_artifacts
+        if isinstance(item, dict)
+    }
+    conditional_ids = set(calculations_by_id).intersection(
+        {
+            aox_finalization.UPSTREAM_EMPTY_CALCULATION_ID,
+            aox_finalization.REFERENCE_ONLY_ALIGNMENT_CALCULATION_ID,
+            aox_finalization.EMPTY_MEMBERSHIP_CALCULATION_ID,
+        }
+    )
+    try:
+        if (
+            len(calculations_by_id) != len(calculations)
+            or candidate is None
+            or finalizer
+            != aox_finalization.finalization_calculation_receipt()
+        ):
+            raise ValueError("calculation receipt cardinality drifted")
+        aox_candidate.validate_calculation_receipt(candidate)
+        expected_conditional = required_aox_conditional_output_paths(
+            validation
+        )
+        if conditional_ids != set(expected_conditional):
+            raise ValueError("conditional calculation set drifted")
+        if (
+            candidate.get("target_input_digest")
+            != receipt_refs_by_path["aox_hmm/target.fasta"].get(
+                "content_digest"
+            )
+            or candidate.get("scoring_input_digest")
+            != receipt_refs_by_path[
+                "aox_hmm/scored_ref_plus_hits.csv"
+            ].get("content_digest")
+            or candidate.get("output_digest")
+            != receipt_refs_by_path["aox_hmm/AOX_candidates.fasta"].get(
+                "content_digest"
+            )
+            or candidate.get("candidate_count")
+            != validation.get("candidate_count")
+        ):
+            raise ValueError("candidate receipt artifact binding drifted")
+        for calculation_id, path in expected_conditional.items():
+            calculation_receipt = calculations_by_id[calculation_id]
+            aox_finalization.validate_conditional_receipt(
+                calculation_receipt
+            )
+            if calculation_receipt.get(
+                "output_digest"
+            ) != receipt_refs_by_path[path].get("content_digest"):
+                raise ValueError("conditional output binding drifted")
+            source_calculation = calculation_receipt.get(
+                "source_calculation"
+            )
+            if (
+                calculation_id
+                == aox_finalization.EMPTY_MEMBERSHIP_CALCULATION_ID
+                and source_calculation != candidate
+            ):
+                raise ValueError("empty membership source drifted")
+            if (
+                calculation_id
+                == aox_finalization.UPSTREAM_EMPTY_CALCULATION_ID
+                and isinstance(source_calculation, dict)
+                and source_calculation.get("output_digest")
+                != receipt_refs_by_path[
+                    "aox_hmm/hmmer_score_filtered_accessions.csv"
+                ].get("content_digest")
+            ):
+                raise ValueError("upstream empty source drifted")
+            if (
+                calculation_id
+                == aox_finalization.REFERENCE_ONLY_ALIGNMENT_CALCULATION_ID
+                and isinstance(source_calculation, dict)
+            ):
+                source_id = source_calculation.get("calculation_id")
+                if (
+                    source_id
+                    == aox_finalization.UPSTREAM_EMPTY_CALCULATION_ID
+                    and source_calculation
+                    != calculations_by_id.get(
+                        aox_finalization.UPSTREAM_EMPTY_CALCULATION_ID
+                    )
+                ) or (
+                    source_id
+                    != aox_finalization.UPSTREAM_EMPTY_CALCULATION_ID
+                    and source_calculation.get("output_digest")
+                    != receipt_refs_by_path["aox_hmm/target.fasta"].get(
+                        "content_digest"
+                    )
+                ):
+                    raise ValueError("reference-only source drifted")
+    except Exception:
+        issues.append(
+            VerificationIssue(
+                code="aox_finalization_receipt_calculation_invalid",
+                identity=(
+                    "scientific_checks.finalization_receipt.calculation_receipts"
+                ),
+                message=(
+                    "atomic finalization receipt contains a drifted or "
+                    "uninstalled calculation identity"
+                ),
+            )
+        )
+
+
 def _verify_record_digests(
     payload: Mapping[str, Any], *, issues: list[VerificationIssue]
 ) -> None:
@@ -8656,7 +8972,7 @@ def _verify_aox_operation_dag(
                 else target_count > 0
             )
             and membership_identity.get("calculation_id")
-            == "canonical_empty_cluster_membership@1"
+            == aox_finalization.EMPTY_MEMBERSHIP_CALCULATION_ID
             and has_ref("empty_membership", "inputs", "candidates")
             and has_ref("empty_membership", "outputs", "cdhit_membership")
             and reference_only_valid

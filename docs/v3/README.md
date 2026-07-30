@@ -37,7 +37,7 @@ V3 的核心立场：
 AOX/HMM live cutover：
 
 - [aox-hmm-blank-world-cutover.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-hmm-blank-world-cutover.md)
-- [aox-closure-stage-live-diagnostic.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-closure-stage-live-diagnostic.md)：记录从 r59 cursor 614 只读事实构造的 historical fresh logical fork；其中 executor → reporter → master closure 是当时合同，结果永久不可进入 formal acceptance，current lifecycle 以本页 Phase 2 说明和稳定 runtime 文档为准。
+- [aox-closure-stage-live-diagnostic.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-closure-stage-live-diagnostic.md)：只读历史封存页。r65 已删除其 authority/reconstruction/live/CLI 可执行链；历史 SQLite/evidence 仍可离线核验，但永久不能进入 formal acceptance。
 - 新 production attempt 使用 selected-chain `aox_blank_world_attempt_bundle@3`；
   历史 `@2` verifier 与 r48-r59 NO-GO evidence 保持冻结。r56 后的 target contract
   将 diagnostic live 与 exact-three formal acceptance 分开。post-r56 atomic closure
@@ -46,8 +46,8 @@ AOX/HMM live cutover：
   `run-diagnostic-live`、单槽 authority、diagnostic root/consumption/decision 与 cross-mode
   negative gate 也已实现。diagnostic 永久 `acceptance_eligible=false`，不能生成/进入
   `@3` bundle/reducer；现有 `authorize` / `run-live` 仍只代表 formal acceptance。
-- `pin`、`preflight`、`run-live` 与 `run-diagnostic-live` 均先要求当前 clean commit 的 full architecture qualification report；qualification 通过本身只解除架构阻断，不创建 attempt，也不自动恢复 numbered campaign。无 attempt 的准备阶段止于 canonical `pin`；CLI `preflight` 会创建 blank-world attempt root，因此每个新 diagnostic 或 formal campaign 都必须另获 operator 授权并使用 fresh roots。r59 是永久 formal NO-GO，r60-r62 是永久 diagnostic NO-GO。Phase 2 current `aox_cutover_formal_tool_precondition@5` 删除 historical master-only/co-terminal close gate；exact attempt-task canonical assignee 先请求 immutable closure，ordinary closure wake 后再显式完成 task，report 与 master answer 独立。prose 不会自动 handoff、finish、close 或获得 acceptance eligibility。该实现及非-live gate 不授权下一轮 diagnostic 或 formal live，旧 authority/root/state 均不可复用。
-- `authorize-closure-stage-diagnostic` / `run-closure-stage-diagnostic-live` 是第三个 schema-disjoint operator flow：前者只发布一次性 plan，后者只在非 `rNN` fresh root 中恢复 cursor 614 等价状态并最多运行一次真实 MICU 收尾。源 r59 不写、科学 operation universe 不扩张、结果永久 `acceptance_eligible=false`；该 flow 不是 `run-diagnostic-live` 的别名，也没有 promotion/reducer/numbered continuation。
+- `pin`、`preflight`、`run-live` 与 `run-diagnostic-live` 均先要求当前 clean commit 的 full architecture qualification report；qualification 通过本身只解除架构阻断，不创建 attempt，也不自动恢复 numbered campaign。无 attempt 的准备阶段止于 canonical `pin`；CLI `preflight` 会创建 blank-world attempt root，因此每个新 diagnostic 或 formal campaign 都必须另获 operator 授权并使用 fresh roots。r59 是永久 formal NO-GO，r60-r65 是永久 diagnostic NO-GO。current `aox_cutover_formal_tool_precondition@6` 要求 exact source-bound finalization receipt；没有 atomic 17-deliverable validation receipt 时，attempt close、execution completed 与 report handoff 都以 no-effect fail closed。该实现及非-live gate 不授权下一轮 diagnostic 或 formal live，旧 authority/root/state 均不可复用。
+- closure-stage authority/reconstruction/live/CLI 已从 current product surface 退役。architecture qualification 只保留 historical run-class/attempt-id 的 formal non-adoption negative gate；不存在恢复旧 flow 的兼容命令。
 
 Execution pipeline SDK docs:
 

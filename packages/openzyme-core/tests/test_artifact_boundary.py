@@ -645,6 +645,62 @@ def test_snapshot_code_then_register_seals_output_and_keeps_duplicate_paths(tmp_
     assert "storage_uri" not in json.dumps(first.to_payload())
 
 
+def test_read_registration_draft_prevalidates_without_persisting_artifact(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    workspace_path = workspace_root / workspace.sandbox_workspace_id
+    source = workspace_path / "src" / "main.py"
+    source.write_text("print('ready')\n", encoding="utf-8")
+    output = workspace_path / "output" / "result.csv"
+    content = "id,score\nA,1\n"
+    output.write_text(content, encoding="utf-8")
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        blob_store_root=tmp_path / "blobs",
+    )
+    snapshot = service.snapshot_code(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        paths="/workspace/src",
+        entrypoint="/workspace/src/main.py",
+        metadata={"purpose": "r65-prevalidation"},
+    )
+    artifact_ids_before = {
+        artifact.artifact_id
+        for artifact in repositories.artifacts.list_by_session(session.session_id)
+    }
+
+    draft = service.read_registration_draft(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        path="/workspace/output/result.csv",
+        kind="result",
+        format="csv",
+        metadata={"required_columns": ["id", "score"]},
+        source_snapshot_artifact_id=snapshot.artifact.artifact_id,
+    )
+
+    assert draft.public_path == "/workspace/output/result.csv"
+    assert draft.relative_path == "result.csv"
+    assert draft.content == content.encode("utf-8")
+    assert draft.content_digest == _digest(content)
+    assert draft.kind is ArtifactKind.RESULT
+    assert draft.metadata == {
+        "format": "csv",
+        "required_columns": ["id", "score"],
+    }
+    assert draft.validation["status"] == "passed"
+    assert draft.source_snapshot_artifact_id == snapshot.artifact.artifact_id
+    assert draft.source_tree_digest == snapshot.source_tree_digest
+    assert {
+        artifact.artifact_id
+        for artifact in repositories.artifacts.list_by_session(session.session_id)
+    } == artifact_ids_before
+
+
 def test_snapshot_code_empty_paths_reports_empty_selection_without_committing(
     tmp_path: Path,
 ) -> None:

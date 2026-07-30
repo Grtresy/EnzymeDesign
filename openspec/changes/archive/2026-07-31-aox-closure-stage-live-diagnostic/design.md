@@ -1,3 +1,11 @@
+> **Retired by r65 (2026-07-31):** the following design documents the historical
+> one-shot implementation and evidence chain. No current production module or
+> operator command implements it. Current AOX finalization instead requires
+> exact typed calculations, atomic 17-draft prevalidation and a persisted
+> source-bound `aox_final_deliverable_validation_receipt@1`. The archived design
+> remains useful only for SQLite/evidence compatibility and formal non-adoption
+> review.
+
 ## Context
 
 r59's expensive scientific path reached a healthy-empty AOX/HMM result and a

@@ -10,51 +10,14 @@ from openzyme_runtime import AgentStepContext
 from openzyme_runtime import ToolInvocation
 from openzyme_runtime import ToolResult
 
-
-AOX_CUTOVER_TOOL_PRECONDITION_ID = "aox_cutover_formal_tool_precondition@5"
-AOX_RESEARCH_TASK_ID = "aox_research_pubmed_evidence"
-AOX_REPORT_TASK_ID = "aox_final_source_linked_report"
-
-_CLOSURE_STAGE_ALLOWED_TOOLS = frozenset(
-    {
-        "artifact.diff_text",
-        "artifact.get",
-        "artifact.list",
-        "artifact.preview",
-        "artifact.range",
-        "artifact.read_text",
-        "deep_research.dossier",
-        "deep_research.status",
-        "docs.read",
-        "docs.search",
-        "execution.pipeline.status",
-        "failure.get",
-        "lane.bind_task",
-        "lane.create",
-        "lane.list",
-        "memory.compact",
-        "protocol.send",
-        "protocol.thread",
-        "report.publish",
-        "report_draft.get",
-        "report_draft.update",
-        "sandbox.file.list",
-        "sandbox.file.read",
-        "sandbox.workspace.status",
-        "scientific.attempt.close",
-        "scientific.attempt.inspect",
-        "skill.load",
-        "task.create",
-        "task.delegate",
-        "task.finish",
-        "task.get",
-        "task.list",
-        "task.next",
-        "task.update",
-        "world.inspect",
-    }
+from .aox_bundle_finalizer import AoxBundleFinalizationError
+from .aox_bundle_finalizer import (
+    validate_persisted_aox_finalization_receipt,
 )
 
+AOX_CUTOVER_TOOL_PRECONDITION_ID = "aox_cutover_formal_tool_precondition@6"
+AOX_RESEARCH_TASK_ID = "aox_research_pubmed_evidence"
+AOX_REPORT_TASK_ID = "aox_final_source_linked_report"
 
 def _status_value(record: object) -> str:
     status = getattr(record, "status", None)
@@ -68,7 +31,6 @@ def evaluate_aox_source_linked_report(
     research_task_id: str,
     report_task_id: str,
     reporter_evidence_refs: tuple[str, ...],
-    require_diagnostic_source_copy: bool = False,
 ) -> dict[str, object]:
     """Resolve the durable report -> task finish -> PubMed evidence chain.
 
@@ -175,14 +137,6 @@ def evaluate_aox_source_linked_report(
     primary_artifact_digest = str(
         metadata.get("content_digest") or metadata.get("sealed_digest") or ""
     )
-    source_copy = metadata.get("diagnostic_source_copy")
-    source_copy_valid = (
-        isinstance(source_copy, dict)
-        and source_copy.get("source_artifact_id") == primary_artifact_id
-        and str(source_copy.get("source_manifest_digest") or "").startswith("sha256:")
-        and source_copy.get("formal_adoption_eligible") is False
-        and source_copy.get("new_effect") is False
-    )
     if (
         primary_artifact is None
         or getattr(primary_artifact, "session_id", None) != session_id
@@ -195,7 +149,6 @@ def evaluate_aox_source_linked_report(
             character not in "0123456789abcdef"
             for character in primary_artifact_digest[7:]
         )
-        or (require_diagnostic_source_copy and not source_copy_valid)
     ):
         blocker_codes.append("primary_pubmed_artifact_invalid")
 
@@ -299,7 +252,6 @@ class AoxCutoverFormalToolPrecondition:
     attempt_kind: Literal["positive", "fault"]
     research_task_id: str = AOX_RESEARCH_TASK_ID
     report_task_id: str = AOX_REPORT_TASK_ID
-    sealed_operation_universe: bool = False
 
     def __post_init__(self) -> None:
         if not self.session_id.strip():
@@ -345,120 +297,186 @@ class AoxCutoverFormalToolPrecondition:
     ) -> ToolResult | None:
         if step_context.session_id != self.session_id:
             return None
-        if (
-            self.sealed_operation_universe
-            and invocation.tool_name not in _CLOSURE_STAGE_ALLOWED_TOOLS
-        ):
-            return _rejection(
-                invocation,
-                code="aox_closure_stage_operation_universe_sealed",
-                summary=(
-                    "The closure-stage diagnostic rejected a new scientific "
-                    "or sandbox mutation because the restored operation "
-                    "universe is sealed."
-                ),
-                hint=(
-                    "Use the existing sealed artifacts and selection. Complete "
-                    "the scientific lifecycle and task handoff, then publish "
-                    "the report without starting new science."
-                ),
-                details={
-                    "tool_name": invocation.tool_name,
-                    "operation_universe_sealed": True,
-                },
-            )
         if invocation.tool_name == "task.create":
             return self._check_task_create(context, invocation)
-        if invocation.tool_name == "task.finish":
-            return self._check_task_finish(
+        if self.attempt_kind == "positive":
+            finalization_result = self._check_finalization_gate(
                 context,
-                step_context,
                 invocation,
             )
+            if finalization_result is not None:
+                return finalization_result
         return None
 
-    def _check_task_finish(
+    def _check_finalization_gate(
         self,
         context: Any,
-        step_context: AgentStepContext,
         invocation: ToolInvocation,
     ) -> ToolResult | None:
-        """Require the closure-stage reporting exit to bind canonical sources."""
-
         requested_task_id = str(
             invocation.arguments.get("task_id") or invocation.task_id or ""
         )
         requested_status = str(invocation.arguments.get("status") or "")
-        if (
-            self.sealed_operation_universe
-            and self.attempt_kind == "positive"
-            and requested_task_id == self.report_task_id
+        requires_receipt = False
+        receipt_id: str | None = None
+        attempt_id: str | None = None
+        selection_id: str | None = None
+        evidence_refs: tuple[str, ...] = ()
+
+        if invocation.tool_name == "scientific.attempt.close":
+            requires_receipt = True
+            receipt_id = str(
+                invocation.arguments.get("finalization_receipt_id") or ""
+            )
+            attempt_id = str(invocation.arguments.get("attempt_id") or "")
+            selection_id = str(
+                invocation.arguments.get("selection_id") or ""
+            )
+        elif (
+            invocation.tool_name == "task.finish"
             and requested_status == "completed"
+            and requested_task_id
+            in {self.execution_task_id, self.report_task_id}
         ):
-            report_task = context.repositories.tasks.get(self.report_task_id)
-            assigned_ref = str(getattr(report_task, "assigned_ref", "") or "")
-            if (
-                step_context.actor_kind != "teammate"
-                or not assigned_ref
-                or assigned_ref != step_context.agent_id
-            ):
+            requires_receipt = True
+            evidence_refs = tuple(
+                str(item)
+                for item in (
+                    invocation.arguments.get("evidence_refs") or []
+                )
+            )
+            finalization_refs = sorted(
+                {
+                    ref.removeprefix("document:")
+                    for ref in evidence_refs
+                    if ref.startswith("document:aox_finalization_")
+                }
+            )
+            if len(finalization_refs) > 1:
                 return _rejection(
                     invocation,
-                    code="aox_closure_stage_report_finish_actor_invalid",
+                    code="aox_finalization_receipt_evidence_ambiguous",
                     summary=(
-                        "The closure-stage reporting task may be completed only "
-                        "by its assigned reporter."
+                        "AOX execution/report completion must cite exactly one "
+                        "finalization receipt document."
                     ),
                     hint=(
-                        "Let the assigned reporter publish the source-linked "
-                        "report and issue its own task.finish receipt."
+                        "Include the exact document:<receipt_id> returned by "
+                        "the atomic 17-deliverable finalizer."
                     ),
                     details={
-                        "task_id": self.report_task_id,
-                        "expected_finished_by": assigned_ref or None,
-                        "observed_finished_by": step_context.agent_id,
+                        "task_id": requested_task_id,
+                        "observed_finalization_receipt_ids": (
+                            finalization_refs
+                        ),
                     },
                 )
-            evaluation = evaluate_aox_source_linked_report(
+            if finalization_refs:
+                receipt_id = finalization_refs[0]
+        elif (
+            invocation.tool_name == "task.delegate"
+            and requested_task_id == self.report_task_id
+        ):
+            requires_receipt = True
+        elif invocation.tool_name == "report.publish":
+            requires_receipt = True
+
+        if not requires_receipt:
+            return None
+        if invocation.tool_name == "scientific.attempt.close" and not all(
+            (receipt_id, attempt_id, selection_id)
+        ):
+            return _rejection(
+                invocation,
+                code="aox_finalization_receipt_required",
+                summary=(
+                    "AOX attempt closure requires the exact passed finalization "
+                    "receipt id."
+                ),
+                hint=(
+                    "Run the installed atomic 17-deliverable finalizer, then "
+                    "retry closure with finalization_receipt_id from its result."
+                ),
+                details={
+                    "execution_task_id": self.execution_task_id,
+                    "requested_attempt_id": attempt_id or None,
+                    "requested_selection_id": selection_id or None,
+                },
+            )
+        try:
+            payload = validate_persisted_aox_finalization_receipt(
                 context.repositories,
                 session_id=self.session_id,
-                research_task_id=self.research_task_id,
-                report_task_id=self.report_task_id,
-                reporter_evidence_refs=tuple(
-                    str(item)
-                    for item in (invocation.arguments.get("evidence_refs") or [])
-                ),
-                require_diagnostic_source_copy=True,
+                execution_task_id=self.execution_task_id,
+                receipt_id=receipt_id,
+                attempt_id=attempt_id,
+                selection_id=selection_id,
             )
-            if evaluation["ready"] is not True:
-                return _rejection(
-                    invocation,
-                    code=("aox_closure_stage_report_source_link_invalid"),
-                    summary=(
-                        "The closure-stage reporter cannot finish because the "
-                        "published report is not durably linked to the canonical "
-                        "PubMed source artifact."
+        except AoxBundleFinalizationError as exc:
+            return _rejection(
+                invocation,
+                code=exc.error_code,
+                summary=str(exc),
+                hint=exc.hint,
+                details={
+                    "execution_task_id": self.execution_task_id,
+                    **dict(exc.details),
+                },
+            )
+        persisted_receipt_id = str(payload["receipt_id"])
+        if invocation.tool_name == "task.finish" and (
+            f"document:{persisted_receipt_id}" not in evidence_refs
+        ):
+            return _rejection(
+                invocation,
+                code="aox_finalization_receipt_evidence_missing",
+                summary=(
+                    "AOX execution/report completion must cite the exact "
+                    "validation receipt document."
+                ),
+                hint=(
+                    "Include document:<receipt_id> in task.finish.evidence_refs "
+                    "alongside the task's other exact evidence."
+                ),
+                details={
+                    "task_id": requested_task_id,
+                    "required_evidence_ref": (
+                        f"document:{persisted_receipt_id}"
                     ),
-                    hint=(
-                        "Publish one non-empty report draft, then finish with "
-                        "both exact refs from required_evidence_refs. These refs "
-                        "bind the published report and restored PubMed source "
-                        "without creating new science."
-                    ),
-                    details={
-                        "task_id": self.report_task_id,
-                        "blocker_codes": list(evaluation["blocker_codes"]),
-                        "required_evidence_refs": list(
-                            evaluation["required_evidence_refs"]
-                        ),
-                        "observed_evidence_refs": list(
-                            evaluation["observed_evidence_refs"]
-                        ),
-                        "missing_evidence_refs": list(
-                            evaluation["missing_evidence_refs"]
-                        ),
-                    },
-                )
+                    "observed_evidence_refs": list(evidence_refs),
+                },
+            )
+        report_progress = (
+            invocation.tool_name == "task.delegate"
+            and requested_task_id == self.report_task_id
+        ) or invocation.tool_name == "report.publish" or (
+            invocation.tool_name == "task.finish"
+            and requested_task_id == self.report_task_id
+            and requested_status == "completed"
+        )
+        execution_task = context.repositories.tasks.get(
+            self.execution_task_id
+        )
+        if report_progress and _status_value(execution_task) != "completed":
+            return _rejection(
+                invocation,
+                code="aox_finalization_execution_not_completed",
+                summary=(
+                    "AOX report handoff requires the receipt-bound execution "
+                    "task to be completed first."
+                ),
+                hint=(
+                    "Close the receipt-bound attempt and let the assigned "
+                    "executor complete its task with document:<receipt_id>, "
+                    "then retry report handoff."
+                ),
+                details={
+                    "execution_task_id": self.execution_task_id,
+                    "execution_task_status": _status_value(execution_task)
+                    or None,
+                    "receipt_id": persisted_receipt_id,
+                },
+            )
         return None
 
     def _check_task_create(

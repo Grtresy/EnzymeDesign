@@ -330,11 +330,14 @@ session。master wake 与 delegated teammate turn 必须继承同一注入实例
 通过角色切换绕过约束。
 
 AOX blank-world cutover 当前使用
-`aox_cutover_formal_tool_precondition@5`，只呈现 authority 已固定的局部 mutation
+`aox_cutover_formal_tool_precondition@6`，只呈现 authority 已固定的局部 mutation
 约束：formal session 创建 task 时只能使用 exact research/execution/report id 与 kind；
-sealed closure-stage diagnostic 还会拒绝新的 operation-universe mutation，并要求 assigned
-reporter 的 completed finish 绑定 exact published report 与 canonical PubMed source。
-它不再决定 close actor/order、positive execution exit 或 assistant response；generic
+attempt close、execution completed、report delegation/publication/completion 必须引用
+persisted、source-bound 且重新验证通过的
+`aox_final_deliverable_validation_receipt@1`。缺失或 drifted receipt 在 handler 和
+mutation writer 前以 `no_effect` 拒绝。已退役的 closure-stage run class/attempt family
+仍被 formal non-adoption gate 拒绝，但没有 runnable authority/reconstruction/live
+special case。guard 不决定 close actor/order 或 assistant response；generic
 task/selection/report/closure verifier 仍独立 fail closed。需要 durable 变化时 agent 必须
 实际调用 domain tool；guard 不自动 delegate、auto-enqueue、完成 task、请求 closure 或
 选择 operation、selection、query、执行顺序和科学分支。

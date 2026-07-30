@@ -429,6 +429,9 @@ ambiguous 永远 fail closed。
 - executor sandbox 的 `/workspace` working copy 不是 canonical artifact store；只有 `artifacts.materialize`、`artifacts.register`、`artifacts.snapshot_code` 产生或回链的 Host-owned records 才进入 canonical workspace
 - `artifacts.register` 的 canonical visible boundary 是 Artifact row commit；validation、Blob 写入、sealed digest recheck、provenance 完整性或 row commit 任一步失败都不得创建 visible Artifact record，也不得 fallback 到 mutable workspace path
 - `artifacts.snapshot_code` 生成 `ArtifactKind.CODE` source tree snapshot，记录 `sandbox_workspace_id`、entrypoint、`source_tree_digest`、file digest manifest 和 parent snapshot；snapshot 必须先在同 Blob store 内构造并核对临时树，再原子安装为只读 sealed tree，后续复用仍重算 tree digest；后续 run、approval、SDK operation 与 registered output provenance 必须绑定 snapshot id / digest
+- `ArtifactBoundaryService.read_registration_draft` 只读取并验证 immutable registration preimage；它不写 Blob、Artifact row 或 workspace registered ids。需要 bundle-level 原子性的 capability 必须先对全部 draft 完成 path、bytes、digest、metadata、validator 与 source snapshot 校验，再进入唯一 transaction
+- AOX fixed 17 deliverables 由 Host-owned `artifacts.finalize_bundle` boundary 原子提交。它绑定 exact formal attempt、sealed selection、execution task/agent、sandbox run、source snapshot/tree 和 installed calculation receipts；任一 draft 或 unified validator 失败都保持零 visible artifact/document mutation
+- successful AOX bundle transaction 同时提交 17 个 immutable Artifact row 与一个 `aox_final_deliverable_validation_receipt@1` EngineDocument。receipt 是 source-bound validation capability，不是 workspace 路径清单；persisted verifier 必须从 sealed bytes 和 exact bindings 重算，drift 时不得用于 attempt closure、execution completed 或 report handoff
 - canonical artifact 来源仍是 artifact row 的关系字段与 `metadata_json`；workspace projection 中的 `artifact.provenance` 是从这些 canonical 字段派生的展示模型，不是新的数据库字段或 migration 要求
 
 `report_draft` 建议最小字段：

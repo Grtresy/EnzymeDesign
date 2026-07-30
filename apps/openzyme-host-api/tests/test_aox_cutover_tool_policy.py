@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 import openzyme_core.agent_runtime as agent_runtime_module
+import openzyme_host_api.aox_cutover_tool_policy as tool_policy_module
 
 from openzyme_core import CoreRepositories
 from openzyme_core import HarnessInput
@@ -75,6 +76,35 @@ from openzyme_runtime import ToolInvocation
 SESSION_ID = "sess_formal_policy"
 EXECUTION_TASK_ID = "aox_execution_cutover_policy"
 FINAL_RESPONSE = "AOX formal workflow completed with a source-linked report."
+FINALIZATION_RECEIPT_ID = "aox_finalization_test_receipt"
+
+
+@pytest.fixture(autouse=True)
+def _passed_finalization_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
+    def validate(
+        _repositories: object,
+        *,
+        session_id: str,
+        execution_task_id: str,
+        receipt_id: str | None = None,
+        attempt_id: str | None = None,
+        selection_id: str | None = None,
+    ) -> dict[str, object]:
+        assert session_id == SESSION_ID
+        assert execution_task_id == EXECUTION_TASK_ID
+        if receipt_id not in {None, FINALIZATION_RECEIPT_ID}:
+            raise AssertionError("unexpected finalization receipt id")
+        return {
+            "receipt_id": FINALIZATION_RECEIPT_ID,
+            "attempt_id": attempt_id,
+            "selection_id": selection_id,
+        }
+
+    monkeypatch.setattr(
+        tool_policy_module,
+        "validate_persisted_aox_finalization_receipt",
+        validate,
+    )
 
 
 def _record(**values: object) -> SimpleNamespace:
@@ -222,6 +252,7 @@ def _close_invocation() -> ToolInvocation:
         arguments={
             "attempt_id": "attempt_001",
             "selection_id": "selection_001",
+            "finalization_receipt_id": FINALIZATION_RECEIPT_ID,
             "actor_ref": "agent:master",
             "idempotency_key": "close:001",
         },
@@ -242,311 +273,129 @@ def test_cutover_policy_has_no_assistant_response_veto() -> None:
     assert not hasattr(policy, "check_assistant_response")
 
 
-@pytest.mark.parametrize(
-    "tool_name",
-    (
-        "artifact.create_text",
-        "artifact.patch_text",
-        "artifacts.materialize",
-        "artifacts.register",
-        "artifacts.snapshot_code",
-        "attempt.create",
-        "deep_research.resume",
-        "deep_research.start",
-        "execution.pipeline.start",
-        "interpro.query",
-        "pubmed.search",
-        "rcsb_pdb.download_structure",
-        "rcsb_pdb.search",
-        "sandbox.exec",
-        "sandbox.file.delete",
-        "sandbox.file.patch",
-        "sandbox.file.write",
-        "scientific.artifact.materialize",
-        "scientific.effect.adopt",
-        "scientific.operation.adopt",
-        "scientific.operation.disposition",
-        "scientific.selection.begin",
-        "scientific.selection.seal",
-        "semantic_scholar.search",
-        "uniprot.download_fasta",
-        "uniprot.lookup",
-        "web.fetch",
-        "web.search",
-        "future.external.effect",
-    ),
-)
-def test_closure_stage_policy_seals_external_operation_universe(
-    tool_name: str,
-) -> None:
-    policy = AoxCutoverFormalToolPrecondition(
-        session_id=SESSION_ID,
-        execution_task_id=EXECUTION_TASK_ID,
-        attempt_kind="positive",
-        sealed_operation_universe=True,
-    )
+def test_cutover_policy_requires_exact_receipt_for_positive_close() -> None:
     invocation = ToolInvocation(
-        call_id="call_closure_stage_sealed",
-        tool_name=tool_name,
-        arguments={},
+        call_id="call_close_without_receipt",
+        tool_name="scientific.attempt.close",
+        arguments={
+            "attempt_id": "attempt_001",
+            "selection_id": "selection_001",
+            "idempotency_key": "close:without-receipt",
+        },
     )
 
-    result = policy(
-        _context(_repositories(tasks=())),
+    result = _positive_policy()(
+        _context(_repositories(tasks=_tasks())),
         _step(),  # type: ignore[arg-type]
         invocation,
     )
 
     assert result is not None
-    assert result.ok is False
-    assert result.error_code == ("aox_closure_stage_operation_universe_sealed")
-    assert result.details == {
-        "policy_id": "aox_cutover_formal_tool_precondition@5",
-        "precondition_rejected": True,
-        "dispatched": False,
-        "effect_certainty": "no_effect",
-        "retry_eligibility": "same_phase_safe",
-        "tool_name": tool_name,
-        "operation_universe_sealed": True,
-    }
+    assert result.error_code == "aox_finalization_receipt_required"
+    assert result.details["effect_certainty"] == "no_effect"
+
+
+def test_cutover_policy_requires_receipt_document_on_execution_completion() -> None:
+    invocation = ToolInvocation(
+        call_id="call_finish_without_receipt_evidence",
+        tool_name="task.finish",
+        arguments={
+            "task_id": EXECUTION_TASK_ID,
+            "status": "completed",
+            "evidence_refs": ["artifact:result"],
+        },
+        task_id=EXECUTION_TASK_ID,
+    )
+
+    result = _positive_policy()(
+        _context(_repositories(tasks=_tasks())),
+        _step(actor_kind="teammate", agent_id="agent_executor"),  # type: ignore[arg-type]
+        invocation,
+    )
+
+    assert result is not None
+    assert result.error_code == "aox_finalization_receipt_evidence_missing"
+    assert result.details["required_evidence_ref"] == (
+        f"document:{FINALIZATION_RECEIPT_ID}"
+    )
+
+
+def test_cutover_policy_rejects_ambiguous_receipt_evidence() -> None:
+    invocation = ToolInvocation(
+        call_id="call_finish_with_ambiguous_receipts",
+        tool_name="task.finish",
+        arguments={
+            "task_id": EXECUTION_TASK_ID,
+            "status": "completed",
+            "evidence_refs": [
+                f"document:{FINALIZATION_RECEIPT_ID}",
+                "document:aox_finalization_other_receipt",
+            ],
+        },
+        task_id=EXECUTION_TASK_ID,
+    )
+
+    result = _positive_policy()(
+        _context(_repositories(tasks=_tasks())),
+        _step(actor_kind="teammate", agent_id="agent_executor"),  # type: ignore[arg-type]
+        invocation,
+    )
+
+    assert result is not None
+    assert result.error_code == (
+        "aox_finalization_receipt_evidence_ambiguous"
+    )
+    assert result.details["effect_certainty"] == "no_effect"
 
 
 @pytest.mark.parametrize(
-    "tool_name",
-    (
-        "artifact.list",
-        "deep_research.status",
-        "execution.pipeline.status",
-        "protocol.send",
-        "report.publish",
-        "report_draft.update",
-        "scientific.attempt.close",
-        "task.finish",
-        "world.inspect",
-    ),
+    "invocation",
+    [
+        ToolInvocation(
+            call_id="call_delegate_report_early",
+            tool_name="task.delegate",
+            arguments={"task_id": AOX_REPORT_TASK_ID},
+            task_id=AOX_REPORT_TASK_ID,
+        ),
+        ToolInvocation(
+            call_id="call_publish_report_early",
+            tool_name="report.publish",
+            arguments={"draft_id": "draft_001"},
+            task_id=AOX_REPORT_TASK_ID,
+        ),
+        ToolInvocation(
+            call_id="call_finish_report_early",
+            tool_name="task.finish",
+            arguments={
+                "task_id": AOX_REPORT_TASK_ID,
+                "status": "completed",
+                "evidence_refs": [
+                    f"document:{FINALIZATION_RECEIPT_ID}"
+                ],
+            },
+            task_id=AOX_REPORT_TASK_ID,
+        ),
+    ],
 )
-def test_closure_stage_policy_keeps_declared_handoff_tools_available(
-    tool_name: str,
+def test_cutover_policy_blocks_report_handoff_until_execution_completed(
+    invocation: ToolInvocation,
 ) -> None:
-    policy = AoxCutoverFormalToolPrecondition(
-        session_id=SESSION_ID,
-        execution_task_id=EXECUTION_TASK_ID,
-        attempt_kind="positive",
-        sealed_operation_universe=True,
-    )
-    invocation = ToolInvocation(
-        call_id="call_closure_stage_allowed",
-        tool_name=tool_name,
-        arguments={},
-    )
-
-    result = policy(
-        _context(_repositories(tasks=())),
-        _step(),  # type: ignore[arg-type]
+    result = _positive_policy()(
+        _context(
+            _repositories(
+                tasks=_tasks(
+                    execution_status="in_progress",
+                    report_status="pending",
+                )
+            )
+        ),
+        _step(actor_kind="teammate", agent_id="agent_reporter"),  # type: ignore[arg-type]
         invocation,
     )
-    assert result is None or result.error_code != (
-        "aox_closure_stage_operation_universe_sealed"
-    )
 
-
-def test_closure_stage_report_finish_requires_durable_pubmed_source_link() -> None:
-    tasks = _tasks(report_status="in_progress")
-    primary_artifact_id = "art_primary_pubmed"
-    report_id = "report_closure_stage"
-    content_ref = "doc_report_content"
-    documents = (
-        _record(
-            document_id="finish_research",
-            document_kind="task_finish",
-            payload={
-                "task_id": AOX_RESEARCH_TASK_ID,
-                "status": "completed",
-                "finished_by": "agent_researcher",
-                "evidence_refs": [f"artifact:{primary_artifact_id}"],
-            },
-        ),
-        _record(
-            document_id=content_ref,
-            document_kind="report_draft_content",
-            payload={"markdown": "# AOX/HMM diagnostic\n\nSource-linked."},
-        ),
-    )
-    repositories = _repositories(
-        tasks=tasks,
-        reports=(
-            _record(
-                report_id=report_id,
-                session_id=SESSION_ID,
-                task_id=AOX_REPORT_TASK_ID,
-                status=_status("ready"),
-            ),
-        ),
-        drafts=(
-            _record(
-                draft_id="draft_closure_stage",
-                session_id=SESSION_ID,
-                task_id=AOX_REPORT_TASK_ID,
-                status=_status("published"),
-                content_ref=content_ref,
-                published_report_id=report_id,
-            ),
-        ),
-        documents=documents,
-        artifacts=(
-            _record(
-                artifact_id=primary_artifact_id,
-                session_id=SESSION_ID,
-                task_id=AOX_RESEARCH_TASK_ID,
-                metadata={
-                    "provider": "pubmed",
-                    "cutover_eligible": True,
-                    "content_digest": "sha256:" + "a" * 64,
-                    "diagnostic_source_copy": {
-                        "source_artifact_id": primary_artifact_id,
-                        "source_manifest_digest": ("sha256:" + "b" * 64),
-                        "formal_adoption_eligible": False,
-                        "new_effect": False,
-                    },
-                },
-            ),
-        ),
-        source_refs=(
-            _record(
-                source_ref_id="source_ref_pubmed_001",
-                evidence_artifact_id=primary_artifact_id,
-                provider="pubmed",
-                pmid="42278471",
-                task_id=AOX_RESEARCH_TASK_ID,
-            ),
-        ),
-    )
-    policy = AoxCutoverFormalToolPrecondition(
-        session_id=SESSION_ID,
-        execution_task_id=EXECUTION_TASK_ID,
-        attempt_kind="positive",
-        sealed_operation_universe=True,
-    )
-
-    missing_source = policy(
-        _context(repositories),
-        _step(
-            actor_kind="teammate",
-            agent_id="agent_reporter",
-        ),  # type: ignore[arg-type]
-        ToolInvocation(
-            call_id="call_report_finish_missing_source",
-            tool_name="task.finish",
-            arguments={
-                "task_id": AOX_REPORT_TASK_ID,
-                "status": "completed",
-                "summary": "Published the report.",
-                "evidence_refs": [f"report:{report_id}"],
-            },
-        ),
-    )
-
-    assert missing_source is not None
-    assert missing_source.error_code == ("aox_closure_stage_report_source_link_invalid")
-    assert missing_source.details["missing_evidence_refs"] == [
-        f"artifact:{primary_artifact_id}"
-    ]
-
-    linked = policy(
-        _context(repositories),
-        _step(
-            actor_kind="teammate",
-            agent_id="agent_reporter",
-        ),  # type: ignore[arg-type]
-        ToolInvocation(
-            call_id="call_report_finish_linked",
-            tool_name="task.finish",
-            arguments={
-                "task_id": AOX_REPORT_TASK_ID,
-                "status": "completed",
-                "summary": "Published the source-linked report.",
-                "evidence_refs": [
-                    f"report:{report_id}",
-                    f"artifact:{primary_artifact_id}",
-                ],
-            },
-        ),
-    )
-
-    assert linked is None
-
-    completed_documents = (
-        documents[0],
-        _record(
-            document_id="finish_execution",
-            document_kind="task_finish",
-            payload={
-                "task_id": EXECUTION_TASK_ID,
-                "status": "completed",
-                "finished_by": "agent_executor",
-                "evidence_refs": ["artifact:art_execution_result"],
-            },
-        ),
-        _record(
-            document_id="finish_reporter",
-            document_kind="task_finish",
-            payload={
-                "task_id": AOX_REPORT_TASK_ID,
-                "status": "completed",
-                "finished_by": "agent_reporter",
-                "evidence_refs": [
-                    f"report:{report_id}",
-                    f"artifact:{primary_artifact_id}",
-                ],
-            },
-        ),
-        documents[1],
-    )
-    completed_repositories = _repositories(
-        tasks=_tasks(),
-        reports=repositories.reports.list_by_session(SESSION_ID),
-        drafts=repositories.report_drafts.list_by_session(SESSION_ID),
-        documents=completed_documents,
-        artifacts=(repositories.artifacts.get(primary_artifact_id),),
-        source_refs=repositories.research_source_refs.list_by_session(SESSION_ID),
-    )
-
-    assert (
-        policy(
-            _context(completed_repositories),
-            _step(),  # type: ignore[arg-type]
-            _close_invocation(),
-        )
-        is None
-    )
-
-    reporter_without_source = _record(
-        document_id=completed_documents[2].document_id,
-        document_kind=completed_documents[2].document_kind,
-        payload={
-            **completed_documents[2].payload,
-            "evidence_refs": [f"report:{report_id}"],
-        },
-    )
-    unlinked_repositories = _repositories(
-        tasks=_tasks(),
-        reports=repositories.reports.list_by_session(SESSION_ID),
-        drafts=repositories.report_drafts.list_by_session(SESSION_ID),
-        documents=(
-            completed_documents[0],
-            completed_documents[1],
-            reporter_without_source,
-            completed_documents[3],
-        ),
-        artifacts=(repositories.artifacts.get(primary_artifact_id),),
-        source_refs=repositories.research_source_refs.list_by_session(SESSION_ID),
-    )
-    close_delegated = policy(
-        _context(unlinked_repositories),
-        _step(),  # type: ignore[arg-type]
-        _close_invocation(),
-    )
-    assert close_delegated is None
+    assert result is not None
+    assert result.error_code == "aox_finalization_execution_not_completed"
+    assert result.details["effect_certainty"] == "no_effect"
 
 
 def test_cutover_policy_rejects_noncanonical_task_creation_without_effect() -> None:
@@ -701,11 +550,14 @@ def test_cutover_policy_leaves_sealed_attempt_lifecycle_to_core() -> None:
         ToolInvocation(
             call_id="call_completed_after_seal",
             tool_name="task.finish",
-            arguments={
-                "task_id": EXECUTION_TASK_ID,
-                "status": "completed",
-                "summary": "Sealed the positive scientific selection.",
-            },
+                arguments={
+                    "task_id": EXECUTION_TASK_ID,
+                    "status": "completed",
+                    "summary": "Sealed the positive scientific selection.",
+                    "evidence_refs": [
+                        f"document:{FINALIZATION_RECEIPT_ID}"
+                    ],
+                },
             task_id=EXECUTION_TASK_ID,
         ),
     )
@@ -960,9 +812,10 @@ def test_cutover_policy_does_not_require_final_response_on_close() -> None:
         call_id="call_close_without_response",
         tool_name="scientific.attempt.close",
         arguments={
-            "attempt_id": "attempt_001",
-            "selection_id": "selection_001",
-            "idempotency_key": "close:without-response",
+                "attempt_id": "attempt_001",
+                "selection_id": "selection_001",
+                "finalization_receipt_id": FINALIZATION_RECEIPT_ID,
+                "idempotency_key": "close:without-response",
         },
     )
 

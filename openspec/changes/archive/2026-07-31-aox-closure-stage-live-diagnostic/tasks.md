@@ -153,3 +153,8 @@
 - [x] 11.4 Verify the original r59 authority/root/state/effect/artifact/report/browser/evidence inventory remains byte-identical and its existing campaign decision remains unchanged.
 - [x] 11.5 Confirm no formal bundle, exact-three plan input, campaign reducer decision, GO/NO-GO, promotion, push, PR, or numbered follow-on was created.
 - [x] 11.6 Record an evidence-backed Chinese analysis of the diagnostic outcome, distinguishing executor-guard behavior, reporter/master closure behavior, final-answer behavior, and any remaining blocker without overstating formal acceptance.
+
+## 12. r65 Retirement
+
+- [x] 12.1 Retire and delete the completed closure-stage authority, source qualification, reconstruction, live runner, CLI and dedicated runnable tests because the historical state cannot satisfy the current source-bound finalization/close contract.
+- [x] 12.2 Preserve migration 035 and historical SQLite/evidence readers, retain the formal non-adoption negative gate, convert stable operator documentation to a read-only archive, and archive this completed OpenSpec change without syncing its retired capability into current main specs.

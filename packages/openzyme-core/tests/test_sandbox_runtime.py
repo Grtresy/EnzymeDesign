@@ -330,6 +330,14 @@ def test_control_socket_registers_nested_artifact_publisher_writer(
             "params": {"path": "/workspace/output/result.csv"},
         }
     )
+    finalized = server._handle(
+        {
+            "jsonrpc": "2.0",
+            "id": "finalize",
+            "method": "artifacts.finalize_bundle",
+            "params": {"attempt_id": "attempt_r65"},
+        }
+    )
     fetched = server._handle(
         {
             "jsonrpc": "2.0",
@@ -340,6 +348,7 @@ def test_control_socket_registers_nested_artifact_publisher_writer(
     )
 
     assert registered["result"] == {"ok": True}
+    assert finalized["result"] == {"ok": True}
     assert fetched["result"] == {"ok": True}
     assert observed == [
         {
@@ -350,8 +359,68 @@ def test_control_socket_registers_nested_artifact_publisher_writer(
                 "artifacts.register"
             ),
             "process_epoch": 1,
-        }
+        },
+        {
+            "session_id": "sess_artifact_writer",
+            "owner_kind": MutationWriterKind.ARTIFACT_PUBLISHER,
+            "owner_ref": (
+                "sandbox-artifact-publisher:srun_artifact_writer:"
+                "artifacts.finalize_bundle"
+            ),
+            "process_epoch": 1,
+        },
     ]
+
+
+def test_control_socket_dispatches_source_bound_bundle_finalizer(
+    tmp_path: Path,
+) -> None:
+    observed: list[dict[str, object]] = []
+
+    def finalize(**kwargs: object) -> dict[str, object]:
+        observed.append(dict(kwargs))
+        return {
+            "bundle_artifact_ids": ["art_result"],
+            "finalization_receipt_id": "doc_finalization_receipt",
+        }
+
+    server = _control_socket_server(tmp_path, name="bundle_finalizer")
+    server.task_id = "task_execution"
+    server.lane_id = "lane_execution"
+    server.artifact_bundle_finalizer = finalize
+
+    response = server._handle(
+        {
+            "jsonrpc": "2.0",
+            "id": "finalize",
+            "method": "artifacts.finalize_bundle",
+            "params": {
+                "attempt_id": "attempt_r65",
+                "selection_digest": _digest_text("selection"),
+            },
+        }
+    )
+
+    assert response["result"] == {
+        "bundle_artifact_ids": ["art_result"],
+        "finalization_receipt_id": "doc_finalization_receipt",
+    }
+    assert len(observed) == 1
+    call = observed[0]
+    assert call["repositories"] is server.repositories
+    assert isinstance(call["artifact_boundary_service"], ArtifactBoundaryService)
+    assert call["session_id"] == "sess_bundle_finalizer"
+    assert call["sandbox_workspace_id"] == "sw_bundle_finalizer"
+    assert call["sandbox_run_id"] == "srun_bundle_finalizer"
+    assert call["agent_id"] == "agent:executor"
+    assert call["task_id"] == "task_execution"
+    assert call["lane_id"] == "lane_execution"
+    assert call["source_snapshot_artifact_id"] == "art_source"
+    assert call["source_tree_digest"] == _digest_text("source")
+    assert call["params"] == {
+        "attempt_id": "attempt_r65",
+        "selection_digest": _digest_text("selection"),
+    }
 
 
 def test_control_socket_round_trips_frames_larger_than_one_recv(

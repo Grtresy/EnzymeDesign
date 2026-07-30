@@ -28,9 +28,6 @@ from openzyme_host_api.aox_cutover_evidence import assert_formal_campaign_root
 from openzyme_host_api.aox_cutover_evidence import create_blank_world_roots
 from openzyme_host_api.aox_cutover_evidence import execute_aox_attempt
 from openzyme_host_api.aox_cutover_evidence import verify_attempt_bundle
-from openzyme_host_api.aox_closure_stage_live import (
-    build_aox_closure_stage_diagnostic_decision,
-)
 from openzyme_host_api.aox_diagnostic_authority import (
     build_aox_diagnostic_authority_plan,
 )
@@ -119,7 +116,7 @@ def test_aox_diagnostic_and_formal_run_classes_remain_disjoint(
         )
     closure_plan = {
         "schema_id": "aox_closure_stage_diagnostic_authority_plan@1",
-        "run_class": AoxLiveRunClass.CLOSURE_STAGE_DIAGNOSTIC.value,
+        "run_class": "closure_stage_diagnostic",
         "acceptance_eligible": False,
         "diagnostic_id": "aox_closure_stage_" + "b" * 24,
         "slot": {"attempt_id": "closure-stage-" + "c" * 32},
@@ -144,28 +141,10 @@ def test_aox_diagnostic_and_formal_run_classes_remain_disjoint(
             tmp_path / "aox-closure-stage-" / ("d" * 24),
             attempt_kind="positive",
             attempt_id="closure-stage-" + "c" * 32,
-            run_class=AoxLiveRunClass.CLOSURE_STAGE_DIAGNOSTIC,
+            run_class="closure_stage_diagnostic",  # type: ignore[arg-type]
             allowed_prerequisites=prerequisites,
             architecture_qualification=qualification,
         )
-    closure_decision = build_aox_closure_stage_diagnostic_decision(
-        plan=closure_plan,
-        source_manifest={
-            "manifest_digest": _digest("4"),
-            "source_inventory": {
-                "database_sha256": _digest("5"),
-                "inventory_digest": _digest("6"),
-            },
-        },
-        source_post_verified=True,
-        live_result=None,
-        failure=CutoverEvidenceError(
-            "closure_stage_qualification_probe",
-            "qualification probe",
-        ),
-    )
-    assert closure_decision["acceptance_eligible"] is False
-    assert closure_decision["formal_adoption"]["eligible"] is False
     equal_digest_diagnostic = deepcopy(diagnostic)
     equal_digest_diagnostic["plan_digest"] = formal["plan_digest"]
     with pytest.raises(CutoverEvidenceError) as cross_consumption:
@@ -316,7 +295,7 @@ def test_aox_diagnostic_and_formal_run_classes_remain_disjoint(
         "closure_blank_error": closure_blank_rejection.value.code,
         "closure_diagnostic_error": closure_diagnostic_rejection.value.code,
         "closure_formal_error": closure_formal_rejection.value.code,
-        "closure_run_class": closure_decision["run_class"],
+        "closure_run_class": closure_plan["run_class"],
         "formal_plan_error": formal_plan_rejection.value.code,
         "formal_root_error": root_rejection.value.code,
         "formal_verification_passed": verification.passed,

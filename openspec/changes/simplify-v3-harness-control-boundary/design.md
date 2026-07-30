@@ -105,8 +105,10 @@ selection/closure facts 完整时才能被 verifier 接纳。
 ### 5. Lifecycle/readiness is computed once
 
 `ScientificSelectionEvaluation`/derived attempt lifecycle 是唯一 canonical truth。Host
-supervisor、AOX runtime observation、evidence collector 与 closure-stage consumer 不得再
-从 mutable base attempt row、report enum 子集或局部 event window重建另一个 readiness。
+supervisor、AOX runtime observation 与 evidence collector 不得再从 mutable base attempt
+row、report enum 子集或局部 event window重建另一个 readiness。historical closure-stage
+consumer 已由 r65 退役删除，其 SQLite/evidence 兼容 reader 也不得成为 active readiness
+owner。
 
 实现时优先删除重复判断并传递现有 evaluation payload，而不是建立新的 projection/service。
 outer error 只可在没有内层根因时生成自己的 code；已有 causal error 必须原样保留。

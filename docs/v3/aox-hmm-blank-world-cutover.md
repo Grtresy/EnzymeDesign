@@ -14,7 +14,7 @@ effect, active process/writer, incomplete disposition, authority/resource breach
 or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r59
 fact can be upgraded, backfilled, or adopted.
 The current workflow knowledge identity is
-`workflow:aox-hmm-live@2.0.0#sha256:8865f1364cbd5261f953dd7e901f02b3812f96cae34376f177c8ad78c8c08218`;
+`workflow:aox-hmm-live@2.0.0#sha256:e1f66087c5e632d8e5cc93f38fda6ed1947d77ab5f9c3f7a6ae0358b9d9b447e`;
 the next live launch must still bind that ref to a fresh clean commit,
 qualification report, pin and authority plan.
 
@@ -532,16 +532,13 @@ The forward inspection contract now reports `closure_request_ready` separately
 from `closure_finalization_ready`; legacy `closure_ready` is explicitly
 `host_finalization_after_request`. The requesting turn is itself an expected
 active writer, so that fact can block Host finalization while leaving
-agent-authored closure intent requestable. Current policy
-`aox_cutover_formal_tool_precondition@3` also rejects an assigned positive
-executor's `blocked|failed|cancelled` exit only when its sealed current
-selection is canonically `closure_request_ready`, using
-`aox_cutover_positive_execution_exit_mismatch/no_effect/same_phase_safe`;
-owner-authored `completed` remains required. This is a lifecycle constraint,
-not automatic task completion, closure, scientific selection or retry.
-Sealed state alone is not readiness: pre-seal blockers and post-seal universe,
-authority, workflow, process, continuation or evidence drift retain generic
-task semantics, as do fault attempts and ordinary sessions.
+agent-authored closure intent requestable. That r59-era `@3` policy is
+historical. Current `aox_cutover_formal_tool_precondition@6` additionally
+requires a persisted source-bound
+`aox_final_deliverable_validation_receipt@1` for attempt close, execution
+completion and every report handoff transition. Sealed selection, sandbox
+success or 17 visible paths alone are not readiness; missing or drifted receipt
+facts are rejected before mutation with no effect.
 
 The repinned SOP digest is
 `sha256:2aff245ff633a33f1533e3d076ace08908ee7dcfbbf57b7d0207f576c2d8fa4e`
@@ -561,13 +558,10 @@ and bytes are immutable and non-reusable. A successor requires a fresh clean
 commit, full admission, pin, exact-three plan, roots and separate approval of
 that exact plan.
 
-The separately specified
-[closure-stage isolated live diagnostic](aox-closure-stage-live-diagnostic.md)
-does not amend that verdict or reuse r59 authority. It may qualify the frozen
-source read-only and construct an equivalent cursor-614 projection only in a
-fresh non-`rNN` `aox-closure-stage-*` root. Its one-use authority, MICU
-attribution and source/reconstruction/parity/live/decision schemas are
-disjoint from both full-path diagnostic and formal acceptance; every result is
+The [closure-stage diagnostic archive](aox-closure-stage-live-diagnostic.md)
+records the historical non-`rNN` logical forks. r65 retired and deleted their
+authority, source qualification, reconstruction, live driver and CLI chain.
+Historical SQLite rows and sealed schemas remain readable, but every result is
 permanently `acceptance_eligible=false` and cannot enter an `@3` bundle or the
 campaign reducer.
 
@@ -592,10 +586,8 @@ are permanent diagnostic failure evidence, not a partial success to promote.
 The repair centralizes lifecycle derivation over attempt, closure request and
 closure: exact closure is terminal on first observation even if the base row is
 active; request-only state rejects mutation; contradictory graphs fail closed.
-The consumed authority and target cannot be retried. Any single follow-up
-diagnostic requires a clean validated repair commit, a fresh non-`rNN` target
-and a separately published one-use plan with otherwise identical production
-MICU/runtime/browser/supervision/ledger bounds.
+The consumed authority and target cannot be retried. The runnable successor
+contract has now been retired; there is no replacement one-use plan.
 
 ### Repair-commit closure-stage successor: pre-closure strategy failure
 
@@ -670,9 +662,9 @@ admission closed. Waiting remains inside the current command deadline and
 never admits a new drain or retries agent/tool work; deadline exhaustion is
 `scientific_attempt_scope_rollover_stalled`. Parent mismatch, missing or
 ambiguous identity, and inconsistent scope cardinality still fail immediately.
-This last correction has focused non-live coverage only. The consumed plan,
-target and evidence cannot be retried, and no new live authority follows from
-the code change.
+This historical correction had focused non-live coverage only. The consumed
+plan, target and evidence cannot be retried, and r65 later removed the runnable
+closure-stage authority.
 
 ## Numbered launch-preparation boundary
 
@@ -701,16 +693,14 @@ the resolved values; a hand-written declaration is not accepted.
 
 The CLI command named `preflight` is deliberately outside this no-attempt phase:
 it creates the first blank-world attempt root. `preflight`, `run-live`,
-`run-diagnostic-live`, `run-closure-stage-diagnostic-live`, the
-known-positive provider/model probe, canonical Chrome approval, positive
+`run-diagnostic-live`, the known-positive provider/model probe, canonical Chrome approval, positive
 attempts, and the controlled fault attempt require a separate explicit launch
 authorization. Production `run-live` additionally consumes the exact authority
 plan into its deterministic absent `.consumed.json` sibling before live launch
 construction or root creation. `run-diagnostic-live` does the same only for its
-single-slot plan and distinct `.diagnostic-consumed.json` sibling. The
-closure-stage command consumes only its schema-disjoint
-`.closure-stage-consumed.json` plan, reconstructs into a non-numbered fresh
-root, and remains permanently ineligible for formal adoption. Standalone
+single-slot plan and distinct `.diagnostic-consumed.json` sibling. Historical
+closure-stage commands and `.closure-stage-consumed.json` reconstruction are
+retired and cannot be restored through a legacy flag. Standalone
 availability diagnostics can inform readiness but
 cannot satisfy campaign evidence or be adopted into an attempt.
 
@@ -2748,6 +2738,36 @@ expected to remain short of the Chrome GO criterion. The command runs positive
 offline verification, identity mismatch or MICU ledger violation produces
 NO-GO and exit code `2`.
 
+## r65 exact finalization boundary
+
+r65 Phase 2 is a non-live contract correction. The installed SDK now projects
+`aox_exact_calculation_manifest@1` and owns motif-candidate filtering,
+conditional-empty materialization and fixed-17 normalization with exact
+calculation/implementation/serializer identities. The accepted candidate field
+is `passes_motif_rule`; legacy `pass_rule` and arbitrary source-snapshot scripts
+cannot substitute for `aox_motif_candidate_filter@1`.
+
+The three healthy-empty materializers accept only a typed zero receipt from
+their exact installed upstream calculation. `artifacts.finalize_bundle` then:
+
+1. requires every fixed relative path exactly once;
+2. reads and validates all immutable drafts without persistence;
+3. binds the formal attempt, sealed selection, execution task/agent, sandbox
+   run, source snapshot/tree and calculation receipts;
+4. runs the one production-owned validator also used by live collection, eval
+   and offline evidence;
+5. atomically commits all 17 artifacts and
+   `aox_final_deliverable_validation_receipt@1`, or commits none.
+
+The validator preserves the earliest typed error plus the canonical digest of
+all errors. Persisted receipt validation recomputes sealed bytes, validation
+metadata, artifact refs and every source/calculation binding. Attempt closure,
+execution `completed`, report delegation/publication/completion and report
+handoff all fail with no effect unless this exact receipt is present and valid.
+
+This implementation does not authorize r66, any live attempt, MICU/provider/HPC
+traffic or browser activity.
+
 ## Current acceptance boundary
 
 Offline unit/eval success proves implementation behavior only. Local Live cutover becomes GO only after the real public product path also demonstrates:
@@ -2756,6 +2776,8 @@ Offline unit/eval success proves implementation behavior only. Local Live cutove
   identically through pin, root proof, launch receipt, attempt bundle and offline
   verification;
 - two clean-root positive runs with published reports and passed offline verification;
+- each positive execution has one persisted, source-bound
+  `aox_final_deliverable_validation_receipt@1` covering the exact 17 artifacts;
 - one reached derived AOX-reference fault with exact NCBI→selection→MAFFT
   lineage and sealed negative-state closure;
 - at least one Chrome-observed approval resume of the same operation plus consistent workspace/events/report/evidence and a clean console;
@@ -2863,11 +2885,10 @@ blocked/resume history, fails closed on contradictory same-time current exits,
 orders operation/task/sandbox candidates by normalized causal time plus stable
 identity, preserves `task_blocked` as a wrapper, and passes the same bounded
 completed/blocked/todo facts and evidence-ref count/digest/truncation metadata
-to failure evidence. The closure-stage live runtime summary keeps the same
-projection count/digest/truncation metadata in its closed schema, so a
-successful path cannot silently drop or reshape that observer contract. It
-does not retry r63, alter its authority/root/SQLite/effects/decision, or
-authorize r64.
+to failure evidence. Historical closure-stage evidence kept the same projection
+count/digest/truncation metadata in its sealed schema; r65 retains offline
+compatibility but removes that live consumer. The correction does not retry
+r63, alter its authority/root/SQLite/effects/decision, or authorize r64.
 
 The r64 diagnostic is likewise a permanent NO-GO. Its independent probe
 completed all six operations; the formal run completed five operations before
@@ -2897,8 +2918,16 @@ all agree. The exception creates no work or authority, retries or replays no
 effect, cannot repeat for the same source, and fails closed on every drift.
 It does not rerun or revise r64 and does not authorize r65.
 
-These corrections do not authorize `preflight`, another closure-stage run,
-`run-diagnostic-live`, `run-live`, a numbered root, provider/MICU call, HPC
+r65 retires the entire completed closure-stage authority/reconstruction/live/CLI
+chain and installs exact candidate, conditional-empty and finalization
+calculations. Atomic draft prevalidation plus a persisted source-bound
+`aox_final_deliverable_validation_receipt@1` now gates attempt close, execution
+completion and report handoff; unified validation preserves the earliest typed
+cause across live/eval/offline consumers. This is a local non-live correction,
+not a new attempt.
+
+These corrections do not authorize `preflight`, any retired closure-stage
+operation, `run-diagnostic-live`, `run-live`, a numbered root, provider/MICU call, HPC
 job, browser campaign or formal attempt. Formal acceptance requires a
 different separately approved exact-three plan after a fresh clean full
 admission and pin. No r59, r60, r61 or r62 consumed plan is authority.

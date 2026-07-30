@@ -181,10 +181,11 @@ observation facts 保留返回引用，但 observation 关系字段只绑定当�
 - assistant text 本身从不完成 task、委派 reporter、请求 scientific closure 或产生
   acceptance eligibility；它可以正常持久化，不再经过 session-scoped response veto。需要
   durable state change 时，agent 必须实际调用相应 domain tool。
-- historical AOX `aox_cutover_formal_tool_precondition@1`–`@4` 只用于解释旧 evidence；
-  current `@5` contract 只检查 canonical task creation、report source-link 和
-  session-scoped operation universe，scientific closure safety 由 Core lifecycle owner
-  负责。
+- historical AOX `aox_cutover_formal_tool_precondition@1`–`@5` 只用于解释旧 evidence；
+  current `@6` contract 检查 canonical task creation、report source-link、
+  session-scoped operation universe，以及 attempt close/execution completion/report
+  handoff 的 exact source-bound finalization receipt；scientific closure lifecycle
+  safety 仍由 Core owner 负责。
   它不检查或拒绝 assistant response，不自动 delegate/auto-enqueue，也不规定 handoff 策略。
 - 顶层模型和 teammate 需要能力用法说明时，默认通过 `docs.search` / `docs.read` 读取受控文档库，而不是通过 skill 文档把 execution 用法塞入上下文
 - 领域 SOP 不得由 prompt 关键词、task subject 或模型调用 `skill.load` 隐式激活。调用方只能通过结构化 `skill_keys` 传入完整 `workflow:<id>@<semver>#sha256:<manifest-digest>`；message admission 将去重后的选择绑定到 canonical user conversation document，scheduler 仅从 exact user-message signal source 恢复，不能由 drain/operator 或普通 inbox payload 注入。registry 在 provider call 前校验 manifest digest、固定 document version/digest，并在实际 teammate tool/capability surface 上验证 requirements。delegation payload 持久化同一 binding，teammate restore 时再次对照当前 registry，任何缺失或 drift 都 fail closed
@@ -338,12 +339,15 @@ fingerprint 相同才 typed fail-fast；ready work 关联 actionable failure 时
 `scientific_attempt_open_no_wakeup`，否则为 `formal_runtime_stalled_no_wakeup`。单次 empty
 或任何 wake source 均不能触发，也不会启用 ready-task auto-enqueue。
 
-closure-stage isolated live diagnostic 用这一相同 loop 从一个 fresh executor signal
-开始，不发送新的 user/master entry message，也不直接调用 runner/provider/HPC。source
-selection/operation universe 已 sealed；composition-injected tool precondition 在 dispatch
-前拒绝所有新 science/sandbox/artifact mutation，但保留普通 task/protocol/report/close
-策略空间。canonical `closure_request_ready=true` 时，executor 作为 exact attempt-task
-assignee 先请求 closure；Host finalization 后 ordinary wake 再让 executor 显式
-`task.finish(status=completed)`。reporter/master 后续由 durable signal、bounded drain 与
-各自 writer 独立推进；runtime idle、drain terminal 或 source healthy-empty 都不自动生成
-完成、报告、closure 或终答。
+historical closure-stage isolated live loop 已退役；current runtime 不提供从冻结 SQLite
+重建 fresh executor signal 的 authority、CLI 或 fallback。sealed historical evidence 只
+参与离线 non-adoption 验证。
+
+current AOX executor 在 sandbox 内完成 exact calculations 后，只能调用一次
+`artifacts.finalize_bundle`。Host 在任何 artifact/document mutation 前预校验完整 17
+draft、source/attempt/selection/calculation identity 与 unified validation，并原子返回
+source-bound finalization receipt。后续 `scientific.attempt.close`、execution
+`task.finish(completed)` 和 report handoff 都重新验证同一 receipt；缺失或 earliest typed
+validation failure 会作为 model-readable no-effect observation 返回。runtime idle、drain
+terminal、sandbox success、17 个可见路径或 healthy-empty prose 都不自动生成 receipt、
+业务完成、报告、closure 或终答。

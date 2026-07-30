@@ -57,9 +57,11 @@ Stable boundary:
   same-attempt disposition/adoption/materialization; cross-attempt reuse is
   forbidden.
 - The scientific attempt's exact task assignee owns `scientific.attempt.close`.
-  Immutable closure must precede `task.finish(status=completed)`; closure,
-  report publication, and resident-master response delivery are independent
-  facts, and no companion response binding is created.
+  For formal AOX, the request must carry the persisted source-bound
+  `aox_final_deliverable_validation_receipt@1`; execution completion and report
+  handoff must cite and revalidate the same receipt. Immutable closure, task
+  completion, report publication, and resident-master response delivery remain
+  independent facts, and no companion response binding is created.
 - Runner-owned per-target ControlMaster reuse is transport infrastructure. It does not provide a persistent remote shell, preserve cwd/environment, or let executor code control SSH options.
 
 Examples:

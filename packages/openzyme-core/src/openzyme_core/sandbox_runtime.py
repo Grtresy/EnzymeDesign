@@ -620,6 +620,7 @@ class _ControlSocketServer:
     live_process_registry: LiveProcessRegistry | None = None
     workspace_root: Path | None = None
     artifact_blob_root: Path | None = None
+    artifact_bundle_finalizer: Any | None = None
     host_gateway: SandboxHostGateway | None = None
     host_call_context_factory: SandboxHostCallContextFactory | None = None
     reliability_shadow_observer: Any | None = None
@@ -1067,6 +1068,7 @@ class _ControlSocketServer:
                 if method in {
                     "artifacts.register",
                     "artifacts.register_many",
+                    "artifacts.finalize_bundle",
                     "artifacts.snapshot_code",
                 }:
                     with self._nested_mutation_writer(
@@ -1277,6 +1279,32 @@ class _ControlSocketServer:
                         strict=True,
                     )
                 ]
+            elif method == "artifacts.finalize_bundle":
+                if self.artifact_bundle_finalizer is None:
+                    raise SandboxRuntimeError(
+                        "artifact_bundle_finalizer_unavailable",
+                        "this Host has no artifact bundle finalizer",
+                    )
+                result = self.artifact_bundle_finalizer(
+                    repositories=self.repositories,
+                    artifact_boundary_service=self._artifact_boundary_service(),
+                    session_id=self.session_id,
+                    sandbox_workspace_id=self.sandbox_workspace_id,
+                    sandbox_run_id=self.sandbox_run_id,
+                    agent_id=self.agent_id,
+                    task_id=self.task_id,
+                    lane_id=self.lane_id,
+                    source_snapshot_artifact_id=(
+                        self.source_snapshot_artifact_id
+                    ),
+                    source_tree_digest=self.source_tree_digest,
+                    params=dict(params),
+                )
+                if not isinstance(result, dict):
+                    raise SandboxRuntimeError(
+                        "artifact_bundle_finalizer_response_invalid",
+                        "artifact bundle finalizer returned a non-object response",
+                    )
             elif method == "artifacts.snapshot_code":
                 result = (
                     self._artifact_boundary_service()
@@ -1301,6 +1329,17 @@ class _ControlSocketServer:
                 hint=exc.hint,
                 details=exc.details,
                 retryable=exc.retryable,
+            ) from exc
+        except Exception as exc:
+            error_code = getattr(exc, "error_code", None)
+            if not isinstance(error_code, str) or not error_code:
+                raise
+            raise SandboxRuntimeError(
+                error_code,
+                str(exc),
+                hint=getattr(exc, "hint", None),
+                details=dict(getattr(exc, "details", {}) or {}),
+                retryable=bool(getattr(exc, "retryable", False)),
             ) from exc
         return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
 
@@ -3421,6 +3460,7 @@ class SandboxRuntimeService:
     repositories: CoreRepositories
     workspace_root: Path | None = None
     artifact_blob_root: Path | None = None
+    artifact_bundle_finalizer: Any | None = None
     log_root: Path | None = None
     execution_backend: str = "podman"
     podman_binary: str = "podman"
@@ -3891,6 +3931,7 @@ class SandboxRuntimeService:
             live_process_registry=live_process_registry,
             workspace_root=self.workspace_root,
             artifact_blob_root=self.artifact_blob_root,
+            artifact_bundle_finalizer=self.artifact_bundle_finalizer,
             host_gateway=self.host_gateway,
             host_call_context_factory=self.host_call_context_factory,
             reliability_shadow_observer=self.reliability_shadow_observer,
@@ -5321,6 +5362,7 @@ def register_sandbox_runtime_tools(
             context.repositories,
             workspace_root=context.sandbox_workspace_root,
             artifact_blob_root=context.artifact_blob_root,
+            artifact_bundle_finalizer=context.artifact_bundle_finalizer,
             host_gateway=host_gateway,
             host_call_context_factory=host_call_context_factory,
             mutation_writer_scope_factory=mutation_writer_scope_factory,

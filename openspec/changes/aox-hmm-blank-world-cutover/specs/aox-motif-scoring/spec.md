@@ -52,6 +52,40 @@ The canonical scored output SHALL use `motif_rule_score` and `passes_motif_rule`
 - **WHEN** an output contains only legacy `activity_score`, `seq_score`, or `pass_rule` fields
 - **THEN** cutover validation rejects it rather than interpreting it as `aox_motif_rule_score@1`
 
+### Requirement: Exact motif candidate calculation
+The sandbox SDK SHALL expose `aox_motif_candidate_filter@1` as a dependency-free
+typed calculation over canonical `aox_motif_rule_score@1` rows and the exact target
+FASTA identity. It SHALL accept only `passes_motif_rule` and
+`motif_rule_score_tenths`, verify the scorer contract/implementation, sequence,
+reference, alignment and input digests, exclude the coordinate reference, and
+serialize the selected target sequences in canonical lexical FASTA order. Its
+closed result and metadata SHALL publish the candidate count, membership digest,
+output digest, calculation contract digest, and calculation implementation digest.
+No agent-local field alias, source snapshot, empty file, or prose assertion MAY
+substitute for the installed calculation or its canonical serializer.
+
+#### Scenario: Select the r65-shaped candidate set
+- **WHEN** canonical scorer rows contain the coordinate reference plus 2,561 target records and exactly 516 target records have `passes_motif_rule=true`
+- **THEN** the exact candidate calculation emits 516 target records and a non-zero canonical FASTA; a filter that reads legacy or invented field names fails closed rather than returning healthy empty
+
+#### Scenario: Materialize a typed healthy empty result
+- **WHEN** canonical scorer rows validly contain no passing target
+- **THEN** the calculation emits an exact zero-candidate result and canonical zero-record FASTA with a source-bound typed empty reason, rather than inferring emptiness from file size or a missing field
+
+### Requirement: Exact conditional-empty calculations
+Every operation-omitting AOX branch SHALL use an installed typed calculation with a
+closed input/result schema, canonical serializer, contract digest, and real
+implementation digest. `aox_upstream_empty_materialization@1`,
+`aox_reference_only_scoring_alignment@1`, and
+`aox_empty_membership@1` MAY activate only from their exact upstream typed zero
+receipt and SHALL bind every emitted empty/header-only deliverable. A sealed source
+snapshot proves only sandbox source identity and MUST NOT be recorded as any of
+these calculation implementations.
+
+#### Scenario: Reject an arbitrary source implementation substitute
+- **WHEN** a sandbox source digest is supplied without the installed calculation result and serializer receipt
+- **THEN** qualification and finalization reject the branch even if all empty files and metadata are self-consistent
+
 ### Requirement: Reference golden compatibility
 The implementation SHALL be tested against immutable, minimal golden inputs derived from the user-authorized reference notebook and runner, while keeping all reference outputs outside live input roots. Golden expectations SHALL cover exact scores, pass decisions, rule residues, ordering, and failure cases.
 

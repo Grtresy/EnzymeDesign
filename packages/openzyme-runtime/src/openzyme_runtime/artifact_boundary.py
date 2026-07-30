@@ -210,6 +210,19 @@ class RegisterResult:
 
 
 @dataclass(frozen=True, slots=True)
+class RegistrationDraft:
+    public_path: str
+    relative_path: str
+    content: bytes
+    content_digest: str
+    kind: ArtifactKind
+    metadata: dict[str, Any]
+    validation: dict[str, Any]
+    source_snapshot_artifact_id: str
+    source_tree_digest: str
+
+
+@dataclass(frozen=True, slots=True)
 class SourceSnapshotResult:
     artifact: SessionArtifactRecord
     source_tree_digest: str
@@ -1382,6 +1395,131 @@ class ArtifactBoundaryService:
             tree_digest=artifact_metadata.get("tree_digest"),
             validation=validation,
             reused=False,
+        )
+
+    def read_registration_draft(
+        self,
+        *,
+        session_id: str,
+        sandbox_workspace_id: str,
+        path: str,
+        kind: str | ArtifactKind = ArtifactKind.RESULT,
+        format: str | None = None,
+        validation_profile: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        source_snapshot_artifact_id: str,
+    ) -> RegistrationDraft:
+        """Read and validate one immutable-registration preimage without mutation."""
+
+        self._require_workspace(session_id, sandbox_workspace_id)
+        workspace_path = self._workspace_path(sandbox_workspace_id)
+        kind_value = _artifact_kind(kind)
+        source_snapshot_id = str(source_snapshot_artifact_id).strip()
+        if not source_snapshot_id:
+            raise ArtifactBoundaryError(
+                "source_snapshot_required",
+                "artifact draft validation requires a source snapshot",
+            )
+        source_snapshot = self.repositories.artifacts.get(source_snapshot_id)
+        source_snapshot_metadata = (
+            {} if source_snapshot is None else dict(source_snapshot.metadata or {})
+        )
+        if (
+            source_snapshot is None
+            or source_snapshot.session_id != session_id
+            or source_snapshot.kind is not ArtifactKind.CODE
+            or source_snapshot_metadata.get("semantic_type")
+            != "pipeline_source_snapshot"
+            or source_snapshot_metadata.get("format") != "source_tree"
+            or source_snapshot_metadata.get("sandbox_workspace_id")
+            != sandbox_workspace_id
+            or not isinstance(
+                source_snapshot_metadata.get("source_tree_digest"), str
+            )
+            or _SHA256_PATTERN.fullmatch(
+                str(source_snapshot_metadata.get("source_tree_digest"))
+            )
+            is None
+        ):
+            raise ArtifactBoundaryError(
+                "source_snapshot_unavailable",
+                "artifact draft source snapshot is not bound to this workspace",
+            )
+        metadata_payload = self._resolve_registration_metadata(
+            workspace_path=workspace_path,
+            metadata=metadata,
+            metadata_sidecar=None,
+        )
+        if format is not None:
+            metadata_payload["format"] = str(format)
+        metadata_validation_profile = metadata_payload.get("validation_profile")
+        if (
+            metadata_validation_profile == FASTA_ZERO_RECORDS_VALIDATION_PROFILE
+            and validation_profile != FASTA_ZERO_RECORDS_VALIDATION_PROFILE
+        ):
+            raise ArtifactBoundaryError(
+                "artifact_validation_failed",
+                "fasta_zero_records@1 must be selected through validation_profile",
+            )
+        if (
+            validation_profile is not None
+            and metadata_validation_profile not in {None, "", validation_profile}
+        ):
+            raise ArtifactBoundaryError(
+                "artifact_validation_failed",
+                "artifact validation_profile conflicts with metadata",
+            )
+        if validation_profile is not None:
+            metadata_payload["validation_profile"] = str(validation_profile)
+        public_path = _public_path(path, default=WORKSPACE_OUTPUT / "artifact")
+        source_path = _resolve_workspace_host_path(
+            workspace_path,
+            public_path,
+            allowed_root=WORKSPACE_OUTPUT,
+            error_code="artifact_register_invalid_path",
+        )
+        if not source_path.is_file() or source_path.is_symlink():
+            raise ArtifactBoundaryError(
+                "artifact_register_invalid_path",
+                "finalization draft must be a non-symlink regular file",
+            )
+        relative_path = _workspace_relative(
+            public_path,
+            WORKSPACE_OUTPUT,
+            error_code="artifact_register_invalid_path",
+        ).as_posix()
+        digest_before, summary_before = _digest_path(source_path)
+        content = source_path.read_bytes()
+        digest_after, summary_after = _digest_path(source_path)
+        if (
+            summary_before.get("type") != "file"
+            or digest_before != _sha256_bytes(content)
+            or digest_after != digest_before
+            or summary_after != summary_before
+        ):
+            raise ArtifactBoundaryError(
+                "artifact_source_unstable",
+                "artifact draft changed while it was read",
+            )
+        validation = _run_validator(
+            source_path,
+            kind=kind_value,
+            format_value=metadata_payload.get("format"),
+            validation_profile=validation_profile,
+            metadata=metadata_payload,
+        )
+        return RegistrationDraft(
+            public_path=public_path.as_posix(),
+            relative_path=relative_path,
+            content=content,
+            content_digest=digest_before,
+            kind=kind_value,
+            metadata=metadata_payload,
+            validation=validation,
+            source_snapshot_artifact_id=source_snapshot_id,
+            source_tree_digest=str(
+                source_snapshot_metadata["source_tree_digest"]
+            ),
         )
 
     def seal_external_bytes(

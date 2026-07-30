@@ -108,6 +108,8 @@ from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_domain import MutationScopeKind
 from openzyme_domain import Session
+from openzyme_pipeline import aox_candidate
+from openzyme_pipeline import aox_finalization
 from openzyme_pipeline import aox_hmmer
 from openzyme_pipeline import aox_motif
 from openzyme_pipeline import aox_reference
@@ -124,38 +126,31 @@ GOLDEN_ALIGNMENT = (
 )
 AOX_POST_UNIPROT_FILTER_ID = aox_sequence_join.CONTRACT_ID
 AOX_POST_UNIPROT_FILTER_CONTRACT_DIGEST = aox_sequence_join.CONTRACT_DIGEST
-AOX_UPSTREAM_EMPTY_MATERIALIZATION_ID = "aox_upstream_empty_materialization@1"
-AOX_UPSTREAM_EMPTY_MATERIALIZATION_CONTRACT_DIGEST = canonical_digest(
-    {
-        "calculation_id": AOX_UPSTREAM_EMPTY_MATERIALIZATION_ID,
-        "input_contract_id": aox_hmmer.CONTRACT_ID,
-        "reference_accession": aox_motif.REFERENCE_ACCESSION,
-        "outputs": [
-            "aox_hmm/hits_len650_700_200.csv",
-            "aox_hmm/target.fasta",
-        ],
-    }
+AOX_UPSTREAM_EMPTY_MATERIALIZATION_ID = (
+    aox_finalization.UPSTREAM_EMPTY_CALCULATION_ID
 )
-AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_ID = "aox_reference_only_scoring_alignment@1"
-AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_CONTRACT_DIGEST = canonical_digest(
-    {
-        "calculation_id": AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_ID,
-        "reference_accession": aox_motif.REFERENCE_ACCESSION,
-        "trigger": "empty_scoring_input_targets",
-        "input": "aox_hmm/AOX_scoring_input.fasta",
-        "output": "aox_hmm/AOX_scoring_alignment.fasta",
-    }
+AOX_UPSTREAM_EMPTY_MATERIALIZATION_CONTRACT_DIGEST = (
+    aox_finalization.CALCULATION_CONTRACT_DIGESTS[
+        AOX_UPSTREAM_EMPTY_MATERIALIZATION_ID
+    ]
 )
-AOX_EMPTY_MEMBERSHIP_ID = "canonical_empty_cluster_membership@1"
-AOX_EMPTY_MEMBERSHIP_CONTRACT_DIGEST = canonical_digest(
-    {
-        "calculation_id": AOX_EMPTY_MEMBERSHIP_ID,
-        "membership_schema_id": aox_similarity.MEMBERSHIP_SCHEMA_ID,
-        "identity_threshold_ppm": aox_similarity.DEFAULT_THRESHOLD_PPM,
-        "output": "aox_hmm/AOX_candidates_cdhit85.clusters.csv",
-    }
+AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_ID = (
+    aox_finalization.REFERENCE_ONLY_ALIGNMENT_CALCULATION_ID
 )
-AOX_DELIVERABLE_NORMALIZATION_ID = "aox_hmm_deliverable_normalization@1"
+AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_CONTRACT_DIGEST = (
+    aox_finalization.CALCULATION_CONTRACT_DIGESTS[
+        AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_ID
+    ]
+)
+AOX_EMPTY_MEMBERSHIP_ID = aox_finalization.EMPTY_MEMBERSHIP_CALCULATION_ID
+AOX_EMPTY_MEMBERSHIP_CONTRACT_DIGEST = (
+    aox_finalization.CALCULATION_CONTRACT_DIGESTS[
+        AOX_EMPTY_MEMBERSHIP_ID
+    ]
+)
+AOX_DELIVERABLE_NORMALIZATION_ID = (
+    aox_finalization.FINALIZATION_CALCULATION_ID
+)
 
 
 def _digest(value: str) -> str:
@@ -860,12 +855,25 @@ def _refresh_sandbox_calculation_identity(operation: dict[str, object]) -> None:
         )
     elif calculation_id == AOX_UPSTREAM_EMPTY_MATERIALIZATION_ID:
         calculation_contract_digest = AOX_UPSTREAM_EMPTY_MATERIALIZATION_CONTRACT_DIGEST
+        calculation_implementation_digest = aox_finalization.IMPLEMENTATION_DIGEST
     elif calculation_id == AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_ID:
         calculation_contract_digest = (
             AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_CONTRACT_DIGEST
         )
+        calculation_implementation_digest = aox_finalization.IMPLEMENTATION_DIGEST
     elif calculation_id == AOX_EMPTY_MEMBERSHIP_ID:
         calculation_contract_digest = AOX_EMPTY_MEMBERSHIP_CONTRACT_DIGEST
+        calculation_implementation_digest = aox_finalization.IMPLEMENTATION_DIGEST
+    elif calculation_id == aox_candidate.CALCULATION_ID:
+        calculation_contract_digest = aox_candidate.CONTRACT_DIGEST
+        calculation_implementation_digest = aox_candidate.IMPLEMENTATION_DIGEST
+    elif calculation_id == AOX_DELIVERABLE_NORMALIZATION_ID:
+        calculation_contract_digest = (
+            aox_finalization.CALCULATION_CONTRACT_DIGESTS[
+                AOX_DELIVERABLE_NORMALIZATION_ID
+            ]
+        )
+        calculation_implementation_digest = aox_finalization.IMPLEMENTATION_DIGEST
     material = {
         "schema_version": "openzyme_sandbox_calculation_receipt@1",
         "sandbox_run_id": "sandbox_run_aox",
@@ -3051,6 +3059,9 @@ def _valid_evidence(
     operation_by_id_for_contract = {item["operation_id"]: item for item in operations}
     operation_by_id_for_contract["op_deliverable_normalization"]["kind"] = (
         AOX_DELIVERABLE_NORMALIZATION_ID
+    )
+    operation_by_id_for_contract["op_candidate_filter"]["kind"] = (
+        aox_candidate.CALCULATION_ID
     )
     operation_runtime_receipts = {
         "op_ncbi": (

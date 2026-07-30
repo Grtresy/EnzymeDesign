@@ -1,7 +1,7 @@
 {
   "workflow_id": "aox-hmm-live",
   "version": "2.0.0",
-  "content_sha256": "sha256:8865f1364cbd5261f953dd7e901f02b3812f96cae34376f177c8ad78c8c08218",
+  "content_sha256": "sha256:e1f66087c5e632d8e5cc93f38fda6ed1947d77ab5f9c3f7a6ae0358b9d9b447e",
   "title": "AOX/HMM live cutover",
   "summary": "Digest-pinned exact-14 AOX/HMM cutover with split model/coordinate references, HMMER-to-UniProt identity joins, artifact-derived healthy-empty closure, and scientific fail-closed acceptance.",
   "capability_requirements": [
@@ -17,7 +17,7 @@
     {
       "doc_id": "aox-hmm-live",
       "version": "v3",
-      "content_sha256": "sha256:b64584ccf55b264e11e8419bab036d326b9ffef9c815bb748eddc570d2502d0d"
+      "content_sha256": "sha256:95be94b1bfd9475bb118681c319c5fb8eaa25c122d423b0f78448331cdd2eda4"
     },
     {
       "doc_id": "aox-motif-rule-score-v1",

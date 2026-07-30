@@ -1320,6 +1320,7 @@ def run_teammate_loop(
         ),
         sandbox_workspace_root=parent_context.sandbox_workspace_root,
         artifact_blob_root=parent_context.artifact_blob_root,
+        artifact_bundle_finalizer=parent_context.artifact_bundle_finalizer,
         signal_notifier=parent_context.signal_notifier,
         reliability_shadow_observer=parent_context.reliability_shadow_observer,
         reliability_settings=parent_context.reliability_settings,

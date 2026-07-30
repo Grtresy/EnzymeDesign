@@ -1109,6 +1109,71 @@ attempt drift 均维持原 failed result，不再 drain。
 本 Phase 2 只授权 local code/spec/docs、non-live verification 和本地 commit；不授权
 r65、live authority/root、MICU、provider、HPC 或 Chrome。
 
+### 2026-07-31 r65 exact calculation and atomic finalization correction
+
+r65 的 fresh diagnostic authority、one-use consumption、exact commit、root、probe、
+formal SQLite、provider/HPC effects、sealed sandbox source 与 decision 全部保留为永久
+**NO-GO**。probe 与 formal 的 exact-six controlled operations 都成功，但 agent-local
+candidate filter 读取非 canonical 字段 `passes|pass|passed|motif_pass` 与
+`score_tenths|motif_score_tenths`，没有读取 scorer 已发布的
+`passes_motif_rule` / `motif_rule_score_tenths`。因此 2,561 条 target 中本应由 516 条
+通过记录构成的 candidate FASTA 被写成零字节；脚本继续逐项注册 17 个 normalized
+deliverable、关闭 attempt、完成 execution 并交接 report，直到晚期 evidence collector
+才由 validator 返回 146 项错误。该事实证明既有 Host-only calculation label、
+任意 sealed source-snapshot implementation digest 与 post-hoc validator 不能构成
+scientific capability 或 terminal authorization。
+
+forward contract 将 motif candidate filter、upstream-empty materialization、
+reference-only alignment、empty membership 以及 final deliverable normalization
+迁入 dependency-free `openzyme_pipeline` exact typed calculation。每项 capability
+拥有 closed input/result schema、canonical serializer、contract digest 与真实
+implementation digest；candidate filter 只接受 `aox_motif_rule_score@1` canonical rows，
+从 `passes_motif_rule` 派生 membership，并对 score、sequence、reference 与 digest
+closure fail closed。conditional-empty 只可由 exact typed zero-upstream result触发，
+不能由空文件、prose 或脚本分支伪造。qualification、SOP 与 installed callable map
+必须逐项列出 callable/result/serializer/contract/implementation closure；agent source
+snapshot 只证明执行源码身份，永久不得替代任何 calculation implementation。
+
+新增 `aox_final_deliverable_bundle@1` Host finalization boundary。sandbox 以一次
+`artifacts.finalize_bundle` 请求提交固定 17 path 的 closed draft manifest 与 exact
+calculation receipts；Host 在同一 source/session/workspace/sandbox run、attempt 和
+selection binding 下读取每个 draft，先运行统一的 live/eval/offline scientific
+validator，再开启短 SQLite transaction。只有完整验证通过时，transaction 才一次性写入
+17 个 catalog occurrence 与一个 deterministic immutable
+`aox_final_deliverable_validation_receipt@1` document；任一 draft、metadata、calculation、
+serializer、path、digest、validation 或第 N 次 catalog write/receipt write 失败都回滚
+全部 catalog truth。content-addressed seal 可留下无引用 immutable blob，但不能出现
+部分 artifact row、receipt、attempt closure 或 business terminal state。
+
+receipt 绑定 session/task/attempt/selection/workspace/sandbox run/source snapshot、
+exact 17 artifact ids/digests、calculation ids/digests、validator digest 和 bundle digest。
+AOX formal tool precondition 在 dispatch 前重读并验证该 receipt：
+`scientific.attempt.close` 必须引用相同 attempt/selection 的 exact passed receipt；
+execution `task.finish(status=completed)` 必须在 evidence refs 中携带该 document；
+report delegation/publication/completion 必须绑定同一 receipt 与已关闭 execution。
+missing、duplicate、stale、cross-source、cross-attempt、cross-selection、artifact drift、
+calculation drift 或 failed receipt 均以 typed no-effect error 拒绝，且不自动 retry、
+补注册、完成 task、关闭 attempt 或创建替代 work。
+
+live、eval 与 offline evidence verification 共享一个 production-owned validator，
+保留完整 ordered typed errors 与 earliest causal error；public projection 只可产生
+bounded summary，不能用 `error_count` 覆盖 cause。旧
+`_sandbox_source_implementation_digest` 与逐项 normalized registration 路径删除；
+formal 中间态若需 staging，必须使用非 normalized intermediate artifact identity。
+
+已完成的 closure-stage live diagnostic change 同步退役。其 authority、source builder、
+reconstruction、live runner、run class、tool-policy 特例、CLI commands 与 runnable docs
+全部删除，因为其 master-only companion-response validator 与 current assignee-owned、
+response-free close contract 永久不可同时满足。migration `035`、旧 SQLite table/rows、
+历史 sealed evidence schema reader 与 formal non-adoption rejection 保留；任何历史
+closure-stage authority/root/result/artifact 都不能成为 current formal authority、
+calculation receipt、finalization receipt 或 campaign evidence。归档该完成 change 只
+表示历史实施工件封存，不恢复 runnable surface。
+
+本 Phase 2 只授权 local code/spec/docs、non-live verification、OpenSpec sync/archive 与
+本地 commit；不授权 r66、live authority/root、MICU、provider、HPC 或 Chrome。后继 live
+仍需 fresh clean commit 上的新 exact plan 与用户单独批准。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

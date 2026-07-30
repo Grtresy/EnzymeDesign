@@ -458,21 +458,25 @@ execution core，正式与诊断 runner 不复制 product path；collector 边�
 formal 独占 selected-chain `@3` builder/reducer，diagnostic 对所有嵌套
 `acceptance_eligible|cutover_eligible` 强制 false，只投影 completed/blocker、计数与 digest。
 
-r59 之后增加的 `closure_stage_diagnostic` 是第三个 schema-disjoint 类别，而不是上述
-full-path diagnostic 的参数模式。它只能以只读 immutable source qualifier 限定 r59
+r59 之后曾增加 `closure_stage_diagnostic` 作为第三个 schema-disjoint 类别，而不是上述
+full-path diagnostic 的参数模式。它当时只能以只读 immutable source qualifier 限定 r59
 cursor 614 cut，在 fresh current-schema、非 `rNN` root 重建 execution handoff 前的等价
 状态；不重跑、采用或物化 source scientific effect。其 authority/consumption/source/
-reconstruction/parity/live/decision schema、MICU scenario 与 root namespace 都与前两类
-互斥，并永久 `acceptance_eligible=false`。该类别没有 formal collector、bundle、reducer、
-promotion 或 numbered continuation。
+reconstruction/parity/live/decision schema、MICU scenario 与 root namespace 当时均与前
+两类互斥，并永久 `acceptance_eligible=false`。r65 已删除该类别的 production authority、
+source qualifier、reconstruction、live driver、CLI 与 runnable tests；只保留 historical
+SQLite/evidence 兼容和 formal non-adoption gate，不存在 current collector、bundle、
+reducer、promotion、operator endpoint 或 numbered continuation。
 
-两类 closed validator、publisher、consumer、slot identity、root namespace/ancestor marker、
-collector 与 verifier 已有 cross-mode negative 回归；即使删除 diagnostic run-class 字段或
-把 plan digest 伪造成与 formal 相同，也会在 root/effect 前失败。architecture qualification
-增加 `evidence-projection.aox-run-class-disjoint-closure`，使用 file-backed SQLite 且记录
-零真实外部 effect。实现和非 live gate 通过不授权真实 diagnostic 或 r57；diagnostic plan
-与后续 formal exact-three plan 仍必须分别取得 operator 精确批准，普通失败的 `run-live`
-也永远不能事后改称 diagnostic。
+full-path diagnostic 与 formal 的 closed validator、publisher、consumer、slot identity、
+root namespace/ancestor marker、collector 与 verifier 仍有 cross-mode negative 回归；
+即使删除 diagnostic run-class 字段或把 plan digest 伪造成与 formal 相同，也会在
+root/effect 前失败。architecture qualification 的
+`evidence-projection.aox-run-class-disjoint-closure` 现在只以 raw historical literals 和
+file-backed SQLite compatibility 证明 closure-stage evidence 永远不能进入 formal
+acceptance，并记录零真实外部 effect，不加载已删除的 production modules。实现和非 live
+gate 通过不授权真实 diagnostic；full-path diagnostic plan 与后续 formal exact-three plan
+仍必须分别取得 operator 精确批准，普通失败的 `run-live` 也永远不能事后改称 diagnostic。
 
 ## 9. r57 后的 formal tool precondition
 
@@ -485,13 +489,15 @@ turn budget。该轮没有 fully settled diagnostic receipt，永久 NO-GO 且�
 
 forward correction 不把 report/task/conversation 状态并入 scientific-attempt 真状态，也
 不让 Host 推断业务终态。historical AOX precondition `@1`–`@4` 曾复制 exact board、
-master close、report publication 与 response handoff；Phase 2 current
-`aox_cutover_formal_tool_precondition@5` 删除这些共终止 veto，只保留：
+master close、report publication 与 response handoff；Phase 2 `@5` 删除这些共终止 veto，
+r65 current `aox_cutover_formal_tool_precondition@6` 在其基础上保留：
 
 - `task.create` 的显式 id 与 kind 必须属于 authority-bound canonical
   research/execution/report 闭集；
 - scientific operation 必须属于 exact session-scoped allowed universe；
 - report publication 仍必须满足 source-link guard。
+- attempt close、execution completed 与 report handoff 必须通过 exact persisted
+  source-bound final-deliverable validation receipt。
 
 scientific closure 的唯一 lifecycle owner 是 `ScientificAttempt.task_id` 当前
 `assigned_ref`。Core 在 closure request 和 Host finalization 两处验证该 assignee，同时
@@ -583,67 +589,41 @@ reopen/resume 合同；随后又把 `selection_active_writers` / `closure_ready=
 永久 NO-GO；MICU verified lower bound 为 `100,114,267 / 500,000,000`，全部 r59
 authority/root/state/effect/bytes 不可复用。
 
-`aox_cutover_formal_tool_precondition@3` 首先闭合 r59 的 positive execution exit。
-current session policy 已升为 `aox_cutover_formal_tool_precondition@4`；它保留该
-guard，不增加自动 task completion 或 attempt closure，只在以下 durable facts 同时成立时
-拒绝错误终态：
+`aox_cutover_formal_tool_precondition@3/@4` 是 r59 时期的 historical guard。current
+policy 是 `aox_cutover_formal_tool_precondition@6`，并以 exact typed finalization
+capability 取代“看到 sealed selection/17 paths 就完成或 handoff”的推断：
 
-- attempt 是 positive，canonical execution task 仍由当前 teammate owner 操作；
-- active attempt 的 current scientific selection 已 sealed，且同一个 canonical
-  selection evaluator 当前仍投影 `closure_request_ready=true`；
-- executor 请求 `blocked|failed|cancelled` 业务出口。
+- `aox_motif_candidate_filter@1` 只消费 canonical target FASTA 与 canonical scoring CSV；
+  conditional-empty outputs 只接受 installed source calculation 的 typed zero receipt；
+- `artifacts.finalize_bundle` 在 mutation 前读取并验证全部 fixed 17 draft，绑定 formal
+  attempt、sealed selection、execution task/agent、sandbox run、source snapshot/tree 与
+  installed calculation identities；
+- unified live/eval/offline validator 保留完整 errors、canonical digest 和
+  `earliest_error_code`；失败时 Artifact 与 EngineDocument 都保持零新增；
+- 成功 transaction 原子提交 17 artifacts 与
+  `aox_final_deliverable_validation_receipt@1`，persisted verifier 再从 sealed bytes 与
+  exact source bindings 重算；
+- `aox_final_deliverable_normalization_result@1` 只是 installed normalization
+  calculation result，不是 Host validation receipt，也不能用于 terminal gate；
+- current attempt-task canonical assignee 调用
+  `scientific.attempt.close(finalization_receipt_id=...)`。execution
+  `task.finish(completed)` 必须引用 `document:<receipt_id>`；report delegation、publication、
+  completion 与 handoff 也必须通过同一 receipt gate，并等待 execution task 已完成。
 
-拒绝码为 `aox_cutover_positive_execution_exit_mismatch`，effect 是 `no_effect`，
-retry 是 `same_phase_safe`，并明确 `required_status=completed`、closure actor 是 master。
-owner 仍须自己提交 completed result/evidence，reporter 仍须自己发布，master 仍须自己在
-co-terminal response 中请求 closure。sealed state 本身不证明 successful handoff；seal 后
-operation universe、authority、workflow contract、process/continuation、disposition、
-adoption、materialization 或 evidence 漂移会让 `closure_request_ready=false`，此时
-`blocked|failed|cancelled` 继续使用 generic task semantics，agent 可修复或建立 child
-selection。fault attempt 和普通 V3 session 同样不受该 guard 影响；guard 不选择科学路线
-或结果。
+缺失、跨 attempt/selection/source、artifact/metadata drift 或 arbitrary source-snapshot
+implementation substitute 都以 `no_effect/same_phase_safe` 拒绝，不写错误 attempt
+closure、execution terminal 或 report handoff。policy 不生成 receipt、不自动完成 task、
+不自动委派或发布，也不选择科学路线。
 
-`@4` 还闭合 execution→report 的 durable handoff seam：当 research/execution 已
-owner-authored completed、canonical report task `todo/ready/unassigned`、blockers completed，
-且没有该 task 的 pending/claimed runtime signal 时，master prose 在 conversation write 前以
-`aox_cutover_report_handoff_required/no_effect` 退回。hint 只陈述可满足的 invariant：
-agent 自己委派 exact report task 给 reporter 且 `workflow_refs` omitted/`[]`，或在真实
-blocker 下显式记录 blocked/failed；policy 不执行 delegation、不 auto-enqueue、不从旧 actor
-memory 借 workflow authority。
+## 12. r59 closure-stage logical fork（历史，已退役）
 
-## 12. r59 closure-stage logical fork
-
-为了只验证上述 forward handoff，而不重放约 906 MB 的科学路径或修改历史证据，
-closure-stage diagnostic 在 live 前执行两次独立事实核验：
-
-1. source qualifier 以 `mode=ro&immutable=1` 读取冻结 SQLite，要求 source process 已退休、
-   WAL 不存在或长度为零、主库及完整 allowlist inventory 摘要不变，并证明 cursor 607/
-   610/613/614 与首个错误 cursor 615 的身份、顺序和 payload；
-2. reconstruction verifier 从 source 与 fresh target 重新计算表级 row-set、identity、
-   byte-map、cut projection 和 canonical evaluator 摘要，拒绝未声明字段/row/byte、
-   cursor 615 后状态、active lease/writer/continuation 或 readiness 差异。
-
-fresh target 保留 terminal-known operation/result、occurrence/adoption/disposition/selection
-图和 digest-equal source artifact copy，但把 copied bytes 标记为
-`diagnostic_source_copy`，不登记为新 effect、materialization 或 formal adoption。
-research task 由机械 bootstrap 明确完成；execution task 为 `in_progress`，report 未运行，
-attempt active；只新增一条 factual continuity memory 与一个 executor signal。随后由正常
-production MICU runtime 自主推进 executor completion、reporter publication/completion 和
-master-owned co-terminal response + closure。
-
-operation universe 在 child 启动前密封；任何 provider/HPC/sandbox/approval/selection/
-adoption/materialization 写操作在 dispatch 前以 `no_effect` 拒绝。terminal verifier 要求
-科学 effect counters 与 session/scientific artifact 集合不变；fresh report 严格沿用
-`report_draft_content` engine document + draft/report 链，且 signal、lease、writer、
-continuation、process descendant 全部退休。`source-linked` 不靠报告文字匹配：
-reporter 的 owner-authored `task.finish` 必须同时绑定 exact published report ref 和
-research finish 已采用的 canonical PubMed artifact ref，pre-close 与 terminal verifier
-复算这条 durable graph。runtime parity 还从冻结 supervision result
-重算 r59 的完整 effective-config digest，要求当前 launch 与其完全一致，并逐项固定
-`chrome-once`、`7200/120/1/16`、浏览器 `0.5/300/60/180` 秒边界；诊断 MICU rows 必须
-精确重放 ledger delta，且本次总 charge 不超过同一 `20000000` authority。无论成功或有限失败，source 还要再次
-hash；诊断 decision 永不改变 r59 的 formal NO-GO。完整 operator contract 见
-`aox-closure-stage-live-diagnostic.md`。
+r59 logical fork 曾以 read-only SQLite source qualifier、fresh reconstruction、sealed
+operation universe、production runtime/parity 和 source-linked report 验证历史 closure
+链。r65 已删除它的 authority、source qualifier、reconstruction、live driver、CLI 与
+dedicated runnable tests；不存在 current operator contract 或 successor。historical
+SQLite/migrations 和 sealed `aox_closure_stage_*` evidence 继续只读兼容，formal
+non-adoption gate 继续拒绝 raw run class、attempt-id family、authority/root/receipt/
+decision/artifact。以下记录仅用于解释已封存的 historical decisions，不能作为运行步骤。
 
 首次实际消费的 closure-stage authority plan
 `sha256:81cc5ba229775fee8bdc327a14f00efe0a8e15c01ccf567749b5cc0e2457a7e4`
@@ -657,9 +637,8 @@ inventory 的 before/after digest 分别保持
 `sha256:18a6e7a39fcc2df7e9a1dbe661ebd3bee90e2367f42fd1bb4872f2dfd813226e`
 和
 `sha256:9cc10388ba7e4e9a46e68013b02cc34727bfddac04ab8ea11def7e7132fc6cd5`。
-该 consumed plan、failed decision 与 fatal 都不可重试或改写；后继 diagnostic 只能在
-统一 lifecycle 修复通过非 live 验证并提交后，针对全新不存在的非 `rNN` target 发布并
-消费一个新 plan。
+该 consumed plan、failed decision 与 fatal 都不可重试或改写；其 runnable successor
+contract 已于 r65 退役。
 
 lifecycle repair `c3c560dd6ede54958398fb3e55d5cd62cc956ad1` 后的 fresh successor
 plan `sha256:47ebfa37d653fa51c61eb304b3df620033d57f99aee6a3fcc88ae2e396b861ab`

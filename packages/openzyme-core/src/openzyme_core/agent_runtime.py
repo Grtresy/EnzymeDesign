@@ -798,6 +798,9 @@ class AgentRuntimeService:
             ),
             sandbox_workspace_root=self.context.sandbox_workspace_root,
             artifact_blob_root=self.context.artifact_blob_root,
+            artifact_bundle_finalizer=(
+                self.context.artifact_bundle_finalizer
+            ),
             signal_notifier=self.context.signal_notifier,
             reliability_shadow_observer=self.context.reliability_shadow_observer,
             reliability_settings=self.context.reliability_settings,

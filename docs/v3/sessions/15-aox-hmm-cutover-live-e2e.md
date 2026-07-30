@@ -1558,6 +1558,30 @@ remaining `399,885,733`，零 breach/overage。r59 plan 已整体消费，positi
 后继 formal campaign 必须 fresh commit/full admission/pin/exact-three plan/roots，并对
 新 plan 重新取得精确授权。
 
+## r65 exact calculation / atomic finalization Phase 2
+
+r65 是非 live implementation slice，不是一次 attempt。它退役并删除 historical
+closure-stage authority/source/reconstruction/live/CLI runnable chain，只保留 SQLite
+兼容、sealed evidence offline verification 与 formal non-adoption negative gate。
+
+current sandbox SDK 以 `aox_exact_calculation_manifest@1` 安装：
+
+- `aox_motif_candidate_filter@1`；
+- `aox_upstream_empty_materialization@1`；
+- `aox_reference_only_scoring_alignment@1`；
+- `aox_empty_membership@1`；
+- `aox_final_deliverable_normalization@1`。
+
+conditional-empty capability 只接受 exact installed upstream calculation 的 typed zero
+receipt；source snapshot 或 agent-authored equivalent code 不能替代 implementation
+identity。fixed 17 outputs 只能经 `artifacts.finalize_bundle`：Host 先对全部 immutable
+draft 做零写入预校验，使用统一 live/eval/offline validator 保留 earliest typed cause，
+再原子提交 17 artifacts 与 source-bound
+`aox_final_deliverable_validation_receipt@1`，否则提交零项。
+
+attempt close、execution completed、report delegation/publication/completion 与 report
+handoff 都必须重新验证该 receipt。该 Phase 2 不启动 r66/live/MICU/provider/HPC/Chrome。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

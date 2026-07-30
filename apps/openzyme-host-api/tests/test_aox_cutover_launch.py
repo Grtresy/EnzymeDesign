@@ -947,6 +947,9 @@ def _sandbox_backend_probe_payload() -> dict[str, object]:
         "biopython_version": launch.aox_similarity.BIOPYTHON_VERSION,
         "numpy_version": launch.aox_similarity.NUMPY_VERSION,
         "algorithm": launch.aox_similarity.ALIGNMENT_BACKEND_ALGORITHM,
+        "exact_calculation_manifest": (
+            launch.aox_finalization.installed_calculation_manifest()
+        ),
     }
 
 

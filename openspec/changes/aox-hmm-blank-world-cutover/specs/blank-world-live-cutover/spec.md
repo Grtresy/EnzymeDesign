@@ -684,6 +684,71 @@ The sealed `aox_browser_approval_receipt@2` SHALL record mode/channel/Host proce
 - **WHEN** the campaign uses `auto`, serves a different UI/Host process, lacks ordered resolution/continuation evidence, or resumes a different operation/sandbox identity
 - **THEN** the attempt lacks canonical Chrome proof and the campaign remains NO-GO
 
+### Requirement: Atomic AOX final deliverable finalization
+The exact 17 normalized AOX deliverables SHALL enter the artifact catalog only
+through one `aox_final_deliverable_bundle@1` Host finalization request. The request
+SHALL bind the current session, execution task, scientific attempt, selected chain,
+workspace, sandbox run, sealed source snapshot and exact typed calculation
+receipts. Before any catalog mutation, Host SHALL prevalidate every draft and run
+the same production AOX scientific validator used by eval and offline verification.
+The installed `aox_final_deliverable_normalization@1` calculation SHALL emit
+`aox_final_deliverable_normalization_result@1`; that calculation result MUST NOT
+be confused with or substituted for the Host-issued validation receipt.
+Only a passed complete bundle MAY be committed, and the 17 artifact occurrences
+plus one deterministic immutable `aox_final_deliverable_validation_receipt@1`
+document SHALL share one short repository transaction. Any validation, metadata,
+path, digest, calculation, serializer, catalog-write or receipt-write failure SHALL
+leave zero normalized artifact occurrences and no receipt for that request.
+
+The receipt SHALL close over all source identities, exact 17 artifact ids and
+digests, calculation ids/contract/implementation digests, validator digest, bundle
+digest and ordered typed validation result. It SHALL be replay-idempotent only for
+the identical preimage. Public projections MAY bound the error list but MUST retain
+the earliest typed cause and its digest. Unreferenced immutable content-addressed
+blobs created during a failed transaction are not catalog truth and SHALL grant no
+acceptance authority.
+
+#### Scenario: Reject the r65 zero-candidate bundle atomically
+- **WHEN** motif scoring proves 516 target candidates but the candidate FASTA draft is zero bytes or its dependent tables/report claim healthy empty
+- **THEN** prevalidation reports the candidate mismatch as the earliest typed cause, writes none of the 17 normalized artifact rows, writes no validation receipt, and leaves attempt/task/report state nonterminal
+
+#### Scenario: Roll back a partial catalog failure
+- **WHEN** the Nth artifact catalog write or validation-receipt write fails after earlier writes in the same finalization transaction
+- **THEN** the transaction rolls back all 17 catalog occurrences and the receipt, and a later retry must present the identical complete source-bound preimage
+
+### Requirement: Validation receipt terminal gates
+The system MUST require AOX formal `scientific.attempt.close`, execution
+completion, report delegation, report publication and reporter completion to
+each re-read one exact passed
+final-deliverable validation receipt for the current attempt and selection.
+Execution and reporter completion SHALL carry `document:<receipt_id>` in their
+owner-authored evidence refs. Missing, duplicate, stale, failed, cross-session,
+cross-task, cross-attempt, cross-selection, cross-workspace, cross-run,
+cross-source, artifact-drift or calculation-drift receipts SHALL be rejected before
+dispatch as typed `no_effect` failures. The policy SHALL NOT synthesize a receipt,
+register missing artifacts, retry a calculation, complete a task, close an attempt,
+delegate a replacement task or publish a report.
+Report delegation, publication and reporter completion MUST additionally observe
+the receipt-bound execution task in `completed`; a passed receipt alone MUST NOT
+permit early report handoff.
+
+#### Scenario: Prevent false terminal progression
+- **WHEN** a formal AOX run has files or individually registered artifacts but no exact passed source-bound receipt
+- **THEN** attempt closure, execution completion and report handoff all fail closed without business-state mutation
+
+### Requirement: Retired closure-stage diagnostic non-adoption
+The current runtime MUST NOT expose the completed closure-stage live
+diagnostic/authority/reconstruction/CLI subsystem through a runner, authority
+mint, run class, command, tool-policy
+exception or runnable operator documentation because its historical master-only
+companion-response contract cannot satisfy the current assignee-owned response-free
+close contract. Migration `035`, historical SQLite tables/rows, sealed evidence
+readers and explicit formal non-adoption validation SHALL remain.
+
+#### Scenario: Reject historical closure-stage adoption
+- **WHEN** a historical closure-stage authority, root, result, receipt or artifact is presented to a current formal cutover path
+- **THEN** it is rejected as non-adoptable and cannot satisfy calculation, finalization, closure, campaign or GO evidence
+
 ### Requirement: Bounded composite workspace and approval mutation projection
 The session workspace is a collection read model. Every Artifact occurrence in `workspace.artifacts`, `artifact_index`, `activity_feed`, and capability projections MUST use the same deterministic bounded item contract as `artifact.list`: exact canonical metadata remains unchanged in the Artifact row and readable through `artifact.get`, while the composite response retains short identity fields plus `artifact_list_metadata_summary@1` / `artifact_list_record_summary@1` digest, count, size, omission, and paging hints. A large accession, sequence-digest, page-digest, or identity-mapping collection MUST NOT be copied into any of those workspace branches. Activity-event backfill inside a mutation MUST build only the sanitized activity projection rather than recursively constructing the entire workspace. An approval resolve MAY still return the bounded workspace command result, but its SQLite write transaction MUST NOT scale with repeated unbounded artifact metadata projection.
 

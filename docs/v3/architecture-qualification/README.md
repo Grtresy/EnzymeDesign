@@ -57,8 +57,10 @@ reconciliation、bounded terminal convergence、restart/fencing、supervisor pro
 operator retirement、boundary scale 与 evidence projection；AOX admission/receipt
 及 schema-disjoint run-class closure 场景归入 evidence projection。后者在零外部 effect
 下以真实 file-backed SQLite 证明 full-path diagnostic one-slot
-plan/consumption/root/decision 与非 `rNN` closure-stage diagnostic 都不能被 formal
-publisher/consumer/blank-world root/verifier/reducer 接纳，即使伪造相同 plan digest。
+plan/consumption/root/decision，以及已退役 closure-stage raw run class、attempt-id family
+和 historical evidence 都不能被 formal publisher/consumer/blank-world
+root/verifier/reducer 接纳，即使伪造相同 plan digest。该 negative gate 使用 frozen
+literals，不依赖或恢复已删除的 closure-stage production modules。
 每个场景都有 finite step、tick、state/event、effect 与
 wall-clock budget。skip、xfail、missing collection、timeout、budget exhaustion 或证据不完整
 只能得到 `violated|unproven`，不能得到 pass。
@@ -119,11 +121,11 @@ verifier 才是 authority。
 
 ## AOX admission and evidence binding
 
-AOX `pin`、`preflight`、`run-live`、`run-diagnostic-live`、
-`authorize-closure-stage-diagnostic` 与 `run-closure-stage-diagnostic-live` 必须显式接收
+AOX `pin`、`preflight`、`run-live` 与 `run-diagnostic-live` 必须显式接收
 `--architecture-qualification-report`。验证先于 live settings、pin runner attestation、
 attempt-root、sandbox runtime probe 以及任何 provider/runner/Chrome/MICU 调用。不存在
-force、debug、environment、legacy 或 pass-boolean bypass。
+force、debug、environment、legacy 或 pass-boolean bypass。closure-stage authorize/run
+commands 已退役，不能通过 qualification report 恢复。
 
 pin transaction marker 是 `aox_cutover_pin_commit@2`，public pin receipt 是
 `aox_cutover_pin_receipt@2`，blank-world root proof 是
@@ -144,12 +146,11 @@ declarations 验证并消费 deterministic sibling，随后才能构造 live lau
 decision 永久 `acceptance_eligible=false`，不能生成 `@3` 或进入 reducer。该 non-live
 qualification scenario 证明结构边界，不批准真实 diagnostic 或 formal campaign。
 
-closure-stage flow 另用
-`aox_closure_stage_diagnostic_authority_plan@1`、deterministic
-`.closure-stage-consumed.json`、reconstructed-root/source/parity/live/decision closed
-schemas；blank-world root factory 对该 run class 必须 fail closed。它也永久
-`acceptance_eligible=false`，不能与 full-path diagnostic 互换，且 qualification 通过同样
-不构成真实 MICU 启动授权。
+historical `aox_closure_stage_*` plan/consumption/root/source/parity/live/decision schemas
+只保留离线读取与 formal non-adoption。blank-world root factory、formal publisher 和
+verifier 对 raw `closure_stage_diagnostic` 及 closure-stage attempt-id family 必须
+fail closed；registry 不再把已删除的 authority/reconstruction/live/CLI 文件纳入
+implementation identity。
 
 Architecture qualification 是 operator admission，不是 scientific input。AOX
 `allowed_prerequisites` 保持原 exact-nine closed schema。资格通过只解除 deterministic
@@ -159,6 +160,9 @@ verification 仍须独立通过，campaign 也必须由 operator 另行显式启
 AOX admission scenario 还执行 selected-chain contract closure：active registry 必须能以
 `for_new_attempt=true` 精确解析 `aox_blank_world_selected_chain@2`，historical `@1`
 必须返回 read-only rejection；new launch config schema 必须是
-`aox_blank_world_runtime_config@3`。该 scenario source 与当前 source commit/test manifest
+`aox_blank_world_runtime_config@3`。sandbox scientific backend probe 还必须从实际复制的
+SDK 读取 `aox_exact_calculation_manifest@1`，证明 candidate/conditional-empty/finalization
+exact callables、contract/implementation digests 与 fixed 17 path digest 都已安装；source
+snapshot 或 workflow prose 不能替代该证明。该 scenario source 与当前 source commit/test manifest
 共同进入 qualification receipt，因此 contract/config 改动会使旧 report 与 pin 失效。
 这只证明 non-live admission 行为，不创建 attempt 或授权 external effect。

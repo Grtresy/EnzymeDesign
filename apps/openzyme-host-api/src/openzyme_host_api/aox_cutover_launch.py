@@ -24,6 +24,7 @@ from openzyme_core.sandbox_runtime import EXEC_MAX_TIMEOUT_SECONDS
 from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_engines import PodmanPipelineSandboxRunner
 from openzyme_engines.execution import BioProviderHttpConfig
+from openzyme_pipeline import aox_finalization
 from openzyme_pipeline import aox_motif
 from openzyme_pipeline import aox_reference
 from openzyme_pipeline import aox_similarity
@@ -63,7 +64,7 @@ from .foundation import resolve_configured_foundation_settings
 EFFECTIVE_CONFIG_SCHEMA_ID = AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID
 MICU_SCENARIO = "aox_blank_world_cutover"
 AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_SCHEMA_ID = (
-    "aox_sandbox_scientific_backend_probe@1"
+    "aox_sandbox_scientific_backend_probe@2"
 )
 _AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_FIELDS = frozenset(
     {
@@ -73,6 +74,7 @@ _AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_FIELDS = frozenset(
         "biopython_version",
         "numpy_version",
         "algorithm",
+        "exact_calculation_manifest",
     }
 )
 
@@ -444,7 +446,20 @@ def _probe_aox_sandbox_scientific_backend(
     probe_script = "\n".join(
         (
             "import json",
-            "from openzyme_pipeline import aox_similarity",
+            "from openzyme_pipeline import aox_candidate, aox_finalization, aox_similarity",
+            "required_callables = (",
+            "    aox_candidate.filter_motif_candidates,",
+            "    aox_finalization.finalization_calculation_receipt,",
+            "    aox_finalization.finalize_deliverable_bundle,",
+            "    aox_finalization.hmmer_zero_source_receipt,",
+            "    aox_finalization.materialize_empty_membership,",
+            "    aox_finalization.materialize_reference_only_alignment,",
+            "    aox_finalization.materialize_upstream_empty,",
+            "    aox_finalization.sequence_join_zero_source_receipt,",
+            "    aox_finalization.validate_conditional_receipt,",
+            ")",
+            "if not all(callable(item) for item in required_callables):",
+            "    raise RuntimeError('AOX exact calculation callable missing')",
             "backend = aox_similarity._load_alignment_backend()",
             "aligner = aox_similarity._new_packed_aligner(5, backend)",
             "payload = {",
@@ -454,6 +469,7 @@ def _probe_aox_sandbox_scientific_backend(
             "    'biopython_version': backend.bio_version,",
             "    'numpy_version': backend.numpy_version,",
             "    'algorithm': str(aligner.algorithm),",
+            "    'exact_calculation_manifest': aox_finalization.installed_calculation_manifest(),",
             "}",
             "print(json.dumps(payload, sort_keys=True, separators=(',', ':'), allow_nan=False))",
         )
@@ -557,6 +573,9 @@ def _probe_aox_sandbox_scientific_backend(
         "biopython_version": aox_similarity.BIOPYTHON_VERSION,
         "numpy_version": aox_similarity.NUMPY_VERSION,
         "algorithm": aox_similarity.ALIGNMENT_BACKEND_ALGORITHM,
+        "exact_calculation_manifest": (
+            aox_finalization.installed_calculation_manifest()
+        ),
     }
     mismatched = _mismatched_fields(expected, payload)
     if mismatched:

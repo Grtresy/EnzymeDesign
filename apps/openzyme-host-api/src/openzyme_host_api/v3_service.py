@@ -354,6 +354,7 @@ class V3HostApiService:
     )
     sandbox_workspace_root: Path | None = None
     artifact_blob_root: Path | None = None
+    artifact_bundle_finalizer: Callable[..., dict[str, Any]] | None = None
     scheduler_limits: dict[str, int] = field(default_factory=dict)
     signal_notifier: Any | None = None
     durable_work_notifier: Any | None = None
@@ -1433,6 +1434,7 @@ class V3HostApiService:
             ),
             sandbox_workspace_root=self.sandbox_workspace_root,
             artifact_blob_root=self.artifact_blob_root,
+            artifact_bundle_finalizer=self.artifact_bundle_finalizer,
             signal_notifier=self.signal_notifier,
             reliability_shadow_observer=self.reliability_shadow_observer,
             reliability_settings=self.reliability_settings,

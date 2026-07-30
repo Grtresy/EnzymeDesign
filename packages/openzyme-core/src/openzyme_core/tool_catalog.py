@@ -667,6 +667,7 @@ def scientific_attempt_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                 "properties": {
                     "attempt_id": {"type": "string"},
                     "selection_id": {"type": "string"},
+                    "finalization_receipt_id": {"type": "string"},
                     "idempotency_key": idempotency,
                 },
                 "required": [

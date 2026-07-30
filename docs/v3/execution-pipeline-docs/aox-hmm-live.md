@@ -891,7 +891,7 @@ registered with `validation_profile="fasta_zero_records@1"`. Its metadata must
 contain one stable `empty_result_reason` and the versioned
 `derivation_contract_id` that actually produced the empty branch, such as
 `aox_upstream_empty_materialization@1`, `aox_sequence_length_join@2`,
-`aox_motif_candidate_filter@1`, or `canonical_empty_cluster_membership@1`.
+`aox_motif_candidate_filter@1`, or `aox_empty_membership@1`.
 Without that explicit profile the normal FASTA validator still requires real
 records. Header-only files, whitespace, `>EMPTY\nX`, `NO_*` text, placeholder
 clusters, self-loop graph rows, and any other non-zero sentinel are invalid.
@@ -900,6 +900,52 @@ AOX verifier still recomputes the sealed catalog validation receipt, branch and
 provenance before accepting it as healthy empty. A zero-byte sequence without
 `openzyme_typed_empty_artifact_validation@1`, or with a receipt reason that
 differs from the scientific outcome, is ineligible.
+
+## Exact calculation and finalization capability
+
+The installed sandbox SDK exposes an
+`aox_exact_calculation_manifest@1`. Qualification checks the copied SDK
+manifest rather than trusting workflow prose or an arbitrary source snapshot.
+The current closed calculations are:
+
+- `aox_motif_candidate_filter@1` /
+  `aox_candidate.filter_motif_candidates`: consumes canonical target FASTA and
+  canonical `aox_motif_rule_score@1` CSV bytes, filters only
+  `passes_motif_rule=true`, and emits a typed membership/output receipt;
+- `aox_upstream_empty_materialization@1`: accepts only a typed zero receipt from
+  the installed HMMER score-filter calculation;
+- `aox_reference_only_scoring_alignment@1`: accepts only the exact coordinate
+  reference plus a typed upstream-empty or sequence-length-join zero receipt;
+- `aox_empty_membership@1`: accepts only the typed zero receipt from
+  `aox_motif_candidate_filter@1`;
+- `aox_final_deliverable_normalization@1`: fixes the exact 17 relative paths,
+  serializer identity and bundle path digest, and emits
+  `aox_final_deliverable_normalization_result@1`. This calculation result is not
+  the Host validation receipt.
+
+Conditional-empty bytes are therefore calculated outputs, not handcrafted
+placeholders. Every receipt binds the installed calculation id, contract digest,
+implementation digest, serializer, source calculation, output digest/count and
+stable empty reason. A `source_snapshot_artifact_id`, ad-hoc script digest or
+agent-authored metadata cannot substitute for that identity.
+
+Publication uses exactly one
+`aox_finalization.finalize_deliverable_bundle(...)` call. The SDK rejects
+missing, duplicate or extra paths before transport. Host then reads and
+validates every immutable draft without committing it, runs the same
+final-deliverable validator used by live collection, eval and offline evidence,
+and either commits all 17 artifacts plus one source-bound
+`aox_final_deliverable_validation_receipt@1` in a single transaction or commits
+nothing. Validation preserves the earliest typed error and a canonical digest
+of the complete error list. Generic `artifacts.register` /
+`artifacts.register_many` cannot form the accepted final bundle.
+
+The persisted receipt is revalidated from sealed artifact bytes and its exact
+attempt, selection, execution task/agent, sandbox run, source snapshot/tree and
+calculation identities. It is a prerequisite for attempt closure, execution
+completion and report delegation/publication/handoff. Report handoff additionally
+waits for the receipt-bound execution task to be completed; those transitions never
+infer success from a completed sandbox run or from the presence of 17 paths.
 
 ## Known-positive probe contract
 

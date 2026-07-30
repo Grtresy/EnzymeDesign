@@ -1,25 +1,35 @@
-# Deferred: versioned scientific-calculation capability projection
+# Versioned scientific-calculation capability projection
 
-Status: proposed, not implemented in the current AOX/HMM blank-world Goal.
+Status: AOX candidate/conditional-empty/finalization slice implemented in r65;
+the general cross-domain registry remains deferred.
 
-## Decision boundary for the current Goal
+## r65 implemented slice
 
-当前 Goal 只做两类局部纠正：
+2026-07-31 的 r65 Phase 2 实现了当前 formal AOX closure 所需的最窄完整 slice：
 
-1. 对仓库中已经存在的 `openzyme_pipeline.aox_*` 精确实现，在显式选择的 AOX
-   workflow pack 中投影 callable、canonical serializer、contract digest 与
-   implementation digest，禁止 agent 近似重写；
-2. collector/offline verifier 从封存 bytes 重算科学结果，任何 approximation、sentinel、
-   schema-shaped 假行或 digest drift 都 fail closed。
+1. `aox_motif_candidate_filter@1` 成为 typed SDK callable/result/serializer/receipt；
+2. `aox_upstream_empty_materialization@1`、
+   `aox_reference_only_scoring_alignment@1` 与 `aox_empty_membership@1` 只接受 exact
+   installed zero-source calculation receipt；
+3. `aox_final_deliverable_normalization@1` 与
+   `aox_exact_calculation_manifest@1` 枚举 exact callable、contract/implementation digest、
+   serializer 与 fixed 17 path identity；
+4. `artifacts.finalize_bundle` 在零写入 draft prevalidation 后原子提交 17 artifacts 与
+   source-bound `aox_final_deliverable_validation_receipt@1`；
+5. live/eval/offline 共用 production-owned final-deliverable validator，保留 earliest typed
+   cause；persisted verifier 仍从 sealed bytes、metadata 与 exact bindings 重算。
 
-这不能解决全部架构问题。当前一些版本化计算同时拥有 typed Python callable、结果对象与
-测试 fixture；另一些计算只存在于 Host collector 常量、验证分支和 Markdown 说明中。例如
-`aox_motif_candidate_filter@1`、`aox_upstream_empty_materialization@1`、
-`aox_reference_only_scoring_alignment@1` 与
-`canonical_empty_cluster_membership@1` 尚未形成统一、可发现的 SDK capability facade。
-若在本 Goal 中统一它们，会改变 Pipeline SDK API、calculation ownership、workflow manifest、
-artifact metadata、collector/verifier schema 以及历史 bundle 兼容，属于大型架构调整，因此
-本文件只记录计划，不实施。
+这不等于通用跨领域 registry 已完成。reference、HMMER、sequence join、motif、
+similarity 等既有模块仍各自拥有 identity；当前 manifest 是 AOX launch qualification 的
+closed projection，不是新的顶层产品状态或自动 workflow graph。历史 bundle 继续由 frozen
+verifier 读取，r65 不重解释其 calculation identity。
+
+## Remaining decision boundary
+
+后续通用化仍需统一 immutable calculation records、跨领域 discovery、workflow subset
+projection 和 migration governance。缺少通用 registry 时不得回退到 arbitrary
+source-snapshot implementation substitute；current AOX slice 的 exact receipts 已是 formal
+finalization 的必要条件。
 
 ## Problem evidence
 

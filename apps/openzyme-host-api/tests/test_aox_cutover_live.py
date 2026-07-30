@@ -3407,7 +3407,9 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
         "openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions" in prompt
     )
     assert "openzyme_pipeline.aox_motif.score_aligned_fasta" in prompt
+    assert "openzyme_pipeline.aox_candidate.filter_motif_candidates" in prompt
     assert "openzyme_pipeline.aox_similarity.build_similarity_graph" in prompt
+    assert "openzyme_pipeline.aox_finalization conditional-empty/final-bundle" in prompt
     assert "/provider_parsed/proteins.fasta" in prompt
     assert "/provider_parsed/parsed_hits.csv" in prompt
     assert "/provider_parsed/sequences.fasta" in prompt
@@ -3444,11 +3446,11 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     assert "never use it as a read-only environment-inspection shortcut" in prompt
     assert "first author an explicit inspection source under /workspace/src" in prompt
     assert "known terminal local failure is recoverable" in prompt
-    assert "every normalized final FASTA with kind='sequence', format='fasta'" in prompt
+    assert "every normalized final FASTA draft with kind='sequence', format='fasta'" in prompt
     assert "AOX_ref.hmm with kind='result', format='hmm'" in prompt
-    assert "every normalized final CSV with kind='result', format='csv'" in prompt
+    assert "every normalized final CSV draft with kind='result', format='csv'" in prompt
     assert (
-        "both normalized final JSON files with kind='result', format='json'" in prompt
+        "both normalized final JSON drafts with kind='result', format='json'" in prompt
     )
     assert "Artifact kind 'model' is invalid" in prompt
     assert "model, alignment, table, or graph belong in format or metadata" in prompt
@@ -3482,7 +3484,11 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     assert "actor rejection is the intended no-effect handoff" not in prompt
     assert "scientific.attempt.close" in prompt
     assert "Persist each completed controlled-operation response" in prompt
-    assert "Publish each canonical final deliverable path only once" in prompt
+    assert "Publish the exact final deliverable set only through that atomic finalizer" in prompt
+    assert "Never call artifacts.register or artifacts.register_many for a fixed 17-path" in prompt
+    assert "aox_finalization.finalize_deliverable_bundle exactly once" in prompt
+    assert "finalization_receipt_id" in prompt
+    assert "including document:<receipt_id>" in prompt
     assert "whose source may reach the real EBI HMMER wait" in prompt
     assert "must use timeout_seconds=3600" in prompt
     assert "Short preflight inspection or post-failure diagnostic commands" in prompt

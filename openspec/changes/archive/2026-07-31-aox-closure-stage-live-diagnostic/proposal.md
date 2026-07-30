@@ -1,3 +1,12 @@
+> **2026-07-31 retirement note:** this change is a completed historical
+> diagnostic record. r65 Phase 2 removed its production authority, source
+> qualification, reconstruction, live runner, CLI and dedicated runnable tests
+> because the sealed historical state cannot satisfy the current source-bound
+> finalization/close contract and can never enter formal acceptance. Historical
+> SQLite compatibility, sealed evidence verification and the formal
+> non-adoption negative gate remain. The delta spec below is not synced into
+> current main specs as an active capability.
+
 ## Why
 
 r59 proved the expensive scientific path through a valid healthy-empty result, a sealed

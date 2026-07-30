@@ -22,17 +22,19 @@ Baseline: clean `60f2e3a` production tree plus this OpenSpec change.
 - `assistant_response_precondition` crosses 12 Python files:
   Harness context, both model drivers, teammate context copying, runtime/scheduler,
   Host dependency composition, AOX cutover/closure-stage runners and tests.
-- Only AOX cutover and closure-stage composition inject a production callback.
-  Ordinary V3 sessions receive `None`; therefore removing the generic hook deletes
-  a cross-layer seam whose sole active product consumer is workflow-specific.
+- At this change's baseline only AOX cutover and closure-stage composition injected
+  a production callback. r65 later retired the closure-stage production chain;
+  current AOX formal composition uses only mutation preconditions and the
+  source-bound finalization receipt gate. Ordinary V3 sessions receive no
+  workflow-specific narration hook.
 
 ## Lifecycle/readiness
 
 - Canonical `ScientificSelectionEvaluation` already exists in Core.
 - Seven production Python files mention request/finalization readiness. AOX policy
-  consumes the evaluator, while live prompt, closure source and reconstruction
-  duplicate or copy selected booleans. The initial implementation should remove
-  policy/prompt reconstruction rather than introduce another evaluator.
+  consumes the evaluator; historical closure source/reconstruction duplicated
+  selected booleans and were later deleted by r65. The implementation removes
+  duplicated policy/prompt reconstruction rather than introducing another evaluator.
 
 ## Lane
 

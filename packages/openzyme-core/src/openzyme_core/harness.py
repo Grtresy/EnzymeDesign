@@ -575,6 +575,7 @@ class SessionRuntimeContext:
     )
     sandbox_workspace_root: Path | None = None
     artifact_blob_root: Path | None = None
+    artifact_bundle_finalizer: Any | None = None
     signal_notifier: Any | None = None
     reliability_shadow_observer: Any | None = None
     reliability_settings: Any | None = None
@@ -2026,6 +2027,7 @@ def run_agent_harness_loop(
     ) = None,
     sandbox_workspace_root: Path | None = None,
     artifact_blob_root: Path | None = None,
+    artifact_bundle_finalizer: Any | None = None,
     signal_notifier: Any | None = None,
     reliability_shadow_observer: Any | None = None,
     reliability_settings: Any | None = None,
@@ -2062,6 +2064,7 @@ def run_agent_harness_loop(
         scientific_workflow_contract_registry=(scientific_workflow_contract_registry),
         sandbox_workspace_root=sandbox_workspace_root,
         artifact_blob_root=artifact_blob_root,
+        artifact_bundle_finalizer=artifact_bundle_finalizer,
         signal_notifier=signal_notifier,
         reliability_shadow_observer=reliability_shadow_observer,
         reliability_settings=reliability_settings,

@@ -522,6 +522,30 @@ exact replay 返回原 identities，partial/mismatched replay fail closed 且
 `failed|superseded|abandoned`；旧 `scientific.effect.adopt` 不再出现在新 catalog，但历史
 split records 仍可只读检查。
 
+AOX fixed deliverable publication 只有一个 sandbox-facing mutation：
+`artifacts.finalize_bundle`。它不是 generic `artifacts.register_many` 的别名；Host 先读取
+全部 17 个 immutable registration draft，绑定 exact formal attempt、sealed selection、
+execution task/agent、sandbox run、source snapshot/tree digest 和 versioned calculation
+receipts，再用统一 validator 预校验。任一 input、path、digest、calculation identity、
+conditional source receipt 或 validation error 都在 artifact/document 写入前失败，并保留
+`earliest_error_code` 与 canonical error digest。
+SDK 内 `aox_final_deliverable_normalization@1` 的 closed calculation result schema 是
+`aox_final_deliverable_normalization_result@1`；它只证明 exact 17-path normalization
+calculation，不能冒充 Host 签发的 source-bound validation receipt。
+
+成功 transaction 原子提交 fixed 17 artifacts 与
+`aox_final_deliverable_validation_receipt@1` engine document。receipt 包含 exact artifact
+refs、source/attempt/selection bindings、candidate/conditional/finalizer calculation
+identities、validation metadata、完整 validation result 与 receipt digest。该 receipt id 是
+`scientific.attempt.close(finalization_receipt_id=...)` 的必要参数；execution
+`task.finish(completed)` 必须在 `evidence_refs` 中携带
+`document:<finalization_receipt_id>`。report `task.delegate`、`report.publish` 与 report
+task completion 同样要求 receipt 已通过 persisted source-bound revalidation，且
+receipt-bound execution task 已经 `completed`。缺失、
+跨 source、跨 attempt、跨 selection、metadata/artifact drift 或 arbitrary
+source-snapshot implementation substitute 都返回 no-effect typed precondition failure，
+不得产生 attempt closure、execution completed 或 report handoff。
+
 AOX `authorize` 只发布 reviewable one-use exact-three formal plan，不创建 root；
 `run-live` 仍是唯一正式 acceptance command。独立 `authorize-diagnostic` 只发布
 `aox_diagnostic_attempt_authority_plan@1` 的单 positive-shaped slot，
@@ -535,28 +559,9 @@ run class、plan schema/digest 和 sibling filename。diagnostic root 使用
 run class、复制后错误 sibling、identity/qualification/resource drift、重复消费、跨类
 plan/receipt/root 或相同 digest reuse 均在 effect/root 前拒绝。
 
-独立的 r59 收尾隔离诊断使用
-`authorize-closure-stage-diagnostic` /
-`run-closure-stage-diagnostic-live`，只接受
-`aox_closure_stage_diagnostic_authority_plan@1` 与 deterministic
-`.closure-stage-consumed.json` sibling。它不复用 `authorize-diagnostic` authority，
-也不创建 `aox-diagnostic-*` 或 `rNN-*` root；plan 绑定 source inventory/cursor 614、
-fresh `aox-closure-stage-*` root/process、当前 clean commit/config/workflow/SOP/
-qualification/UI、r59-equivalent MICU/driver/supervision limits 与 ledger identity。
-ledger 必须是 config pin 已绑定且预先存在的累计 ledger；它可沿用 numbered run 在
-ignored `.openzyme/` 下的既有路径，不受 fresh output 的 checkout 外置规则约束，但
-source/target/output alias 仍然 fail-closed。
-`chrome-once` 还要求 authorize 与 run 使用同一个 plan-bound、fresh append-only 外部
-browser receipt；它不得位于 checkout、冻结 source、fresh target root 或其他 mutable
-output 上，从而不绕过 process-isolated attempt-root access gate。
-运行结果只有 closed closure-stage source/reconstruction/parity/live/decision schemas，
-全部 `acceptance_eligible=false`，CLI 不暴露 promotion、formal adoption、campaign
-reducer、push、retry 或 next-numbered-run 参数。Host `/v3` API 本身不新增恢复 endpoint；
-该 trusted-operator CLI 只组合既有 public session/runtime/workspace/events 与正常 tool
-contract。当前 private child/live 边界分别是
-`aox_closure_stage_child_evidence@3` 与
-`aox_closure_stage_live_result@3`：外层 `run_attempt_id` 绑定 authority/process
-supervision，内层 `scientific_attempt_id` 绑定 reconstructed attempt/closure/scope；
-workspace operation count、terminal projection/universe、reconstruction target graph 与
-parity target supervision contract 必须闭合，旧 `@1/@2` 或混淆身份的 envelope
-fail-closed。
+r59 closure-stage authority/reconstruction/live/CLI 已退役，public/CLI surface 不再包含
+`authorize-closure-stage-diagnostic` 或 `run-closure-stage-diagnostic-live`。historical
+SQLite rows 与 `aox_closure_stage_*` sealed evidence schemas 只供离线兼容核验；
+architecture qualification 继续以 raw historical run-class/attempt-id literals 证明它们
+不能满足 formal publisher、bundle verifier 或 reducer。不得把旧 schema 解释为隐藏
+operator endpoint。

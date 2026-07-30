@@ -689,6 +689,11 @@ def test_s15_final_output_validator_accepts_schema_valid_empty_science() -> None
         "scientific_outcome": "empty",
         "scientific_branch": "motif_filter_empty",
         "omitted_operation_roles": ["cdhit"],
+        "errors_digest": (
+            "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        ),
+        "earliest_error": None,
+        "earliest_error_code": None,
     }
 
 

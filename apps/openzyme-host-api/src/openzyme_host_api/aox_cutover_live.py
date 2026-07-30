@@ -57,6 +57,8 @@ from openzyme_domain import MutationWriterKind
 from openzyme_domain import RetryEligibility
 from openzyme_domain import ScientificAttemptScope
 from openzyme_domain import SessionArtifactRecord
+from openzyme_pipeline import aox_candidate
+from openzyme_pipeline import aox_finalization
 from openzyme_pipeline import aox_hmmer
 from openzyme_pipeline import aox_motif
 from openzyme_pipeline import aox_reference
@@ -112,11 +114,17 @@ from .aox_runtime_observation import AoxRuntimeObservationService
 from .aox_cutover_tool_policy import AOX_REPORT_TASK_ID
 from .aox_cutover_tool_policy import AOX_RESEARCH_TASK_ID
 from .aox_cutover_tool_policy import AoxCutoverFormalToolPrecondition
+from .aox_bundle_finalizer import AoxBundleFinalizationError
+from .aox_bundle_finalizer import (
+    validate_persisted_aox_finalization_receipt,
+)
 from .app import HostApiDependencies
 from .app import create_app
-from .evals import S15_AOX_HMM_FIXED_DELIVERABLES
 from .evals import S15_AOX_HMM_FIXED_PROMPT
-from .evals import _s15_aox_validate_final_artifacts
+from .aox_final_deliverable_validation import (
+    S15_AOX_HMM_FIXED_DELIVERABLES,
+)
+from .aox_final_deliverable_validation import validate_aox_final_artifacts
 from .foundation import build_configured_foundation
 
 
@@ -144,52 +152,37 @@ KNOWN_POSITIVE_PROBE_UNIPROT_ACCESSIONS = ("P68871", "P69905")
 S12_OPERATION_IDENTITY_SCHEMA = "openzyme_controlled_operation_s12@1"
 SANDBOX_CALCULATION_IDENTITY_SCHEMA = "openzyme_sandbox_calculation_receipt@1"
 HMMER_SCORE_FILTERED_ACCESSIONS_PATH = "aox_hmm/hmmer_score_filtered_accessions.csv"
-AOX_CANDIDATE_FILTER_ID = "aox_motif_candidate_filter@1"
-AOX_CANDIDATE_FILTER_CONTRACT_DIGEST = canonical_digest(
-    {
-        "calculation_id": AOX_CANDIDATE_FILTER_ID,
-        "scoring_contract_id": aox_motif.CONTRACT_ID,
-        "threshold_tenths": aox_motif.THRESHOLD_TENTHS,
-        "reference_accession": aox_motif.REFERENCE_ACCESSION,
-    }
+AOX_CANDIDATE_FILTER_ID = aox_candidate.CALCULATION_ID
+AOX_CANDIDATE_FILTER_CONTRACT_DIGEST = aox_candidate.CONTRACT_DIGEST
+AOX_UPSTREAM_EMPTY_MATERIALIZATION_ID = (
+    aox_finalization.UPSTREAM_EMPTY_CALCULATION_ID
 )
-AOX_UPSTREAM_EMPTY_MATERIALIZATION_ID = "aox_upstream_empty_materialization@1"
-AOX_UPSTREAM_EMPTY_MATERIALIZATION_CONTRACT_DIGEST = canonical_digest(
-    {
-        "calculation_id": AOX_UPSTREAM_EMPTY_MATERIALIZATION_ID,
-        "input_contract_id": aox_hmmer.CONTRACT_ID,
-        "reference_accession": aox_motif.REFERENCE_ACCESSION,
-        "outputs": [
-            "aox_hmm/hits_len650_700_200.csv",
-            "aox_hmm/target.fasta",
-        ],
-    }
+AOX_UPSTREAM_EMPTY_MATERIALIZATION_CONTRACT_DIGEST = (
+    aox_finalization.CALCULATION_CONTRACT_DIGESTS[
+        AOX_UPSTREAM_EMPTY_MATERIALIZATION_ID
+    ]
 )
-AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_ID = "aox_reference_only_scoring_alignment@1"
-AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_CONTRACT_DIGEST = canonical_digest(
-    {
-        "calculation_id": AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_ID,
-        "reference_accession": aox_motif.REFERENCE_ACCESSION,
-        "trigger": "empty_scoring_input_targets",
-        "input": "aox_hmm/AOX_scoring_input.fasta",
-        "output": "aox_hmm/AOX_scoring_alignment.fasta",
-    }
+AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_ID = (
+    aox_finalization.REFERENCE_ONLY_ALIGNMENT_CALCULATION_ID
 )
-AOX_EMPTY_MEMBERSHIP_ID = "canonical_empty_cluster_membership@1"
-AOX_EMPTY_MEMBERSHIP_CONTRACT_DIGEST = canonical_digest(
-    {
-        "calculation_id": AOX_EMPTY_MEMBERSHIP_ID,
-        "membership_schema_id": aox_similarity.MEMBERSHIP_SCHEMA_ID,
-        "identity_threshold_ppm": aox_similarity.DEFAULT_THRESHOLD_PPM,
-        "output": "aox_hmm/AOX_candidates_cdhit85.clusters.csv",
-    }
+AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_CONTRACT_DIGEST = (
+    aox_finalization.CALCULATION_CONTRACT_DIGESTS[
+        AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_ID
+    ]
 )
-AOX_DELIVERABLE_NORMALIZATION_ID = "aox_hmm_deliverable_normalization@1"
-AOX_DELIVERABLE_NORMALIZATION_CONTRACT_DIGEST = canonical_digest(
-    {
-        "calculation_id": AOX_DELIVERABLE_NORMALIZATION_ID,
-        "deliverable_paths": sorted(S15_AOX_HMM_FIXED_DELIVERABLES),
-    }
+AOX_EMPTY_MEMBERSHIP_ID = aox_finalization.EMPTY_MEMBERSHIP_CALCULATION_ID
+AOX_EMPTY_MEMBERSHIP_CONTRACT_DIGEST = (
+    aox_finalization.CALCULATION_CONTRACT_DIGESTS[
+        AOX_EMPTY_MEMBERSHIP_ID
+    ]
+)
+AOX_DELIVERABLE_NORMALIZATION_ID = (
+    aox_finalization.FINALIZATION_CALCULATION_ID
+)
+AOX_DELIVERABLE_NORMALIZATION_CONTRACT_DIGEST = (
+    aox_finalization.CALCULATION_CONTRACT_DIGESTS[
+        AOX_DELIVERABLE_NORMALIZATION_ID
+    ]
 )
 
 _TERMINAL_OPERATION_STATUSES = {"completed", "failed", "recovery_failed"}
@@ -5255,8 +5248,11 @@ class LiveAoxAttemptRunner:
             + "openzyme_pipeline.aox_reference.assemble_scoring_input, "
             + "openzyme_pipeline.aox_hmmer.parse_and_filter_csv, "
             + "openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions, "
-            + "openzyme_pipeline.aox_motif.score_aligned_fasta, and "
-            + "openzyme_pipeline.aox_similarity.build_similarity_graph with their canonical "
+            + "openzyme_pipeline.aox_motif.score_aligned_fasta, "
+            + "openzyme_pipeline.aox_candidate.filter_motif_candidates, "
+            + "openzyme_pipeline.aox_similarity.build_similarity_graph, and the exact "
+            + "openzyme_pipeline.aox_finalization conditional-empty/final-bundle helpers "
+            + "with their canonical "
             + "serializers; never reimplement or approximate a pinned calculation. Follow the "
             + "stable signature table in the pinned AOX/HMM SOP and supply every bound "
             + "expected_*_digest. In particular, call join_score_filtered_accessions("
@@ -5265,7 +5261,16 @@ class LiveAoxAttemptRunner:
             + "in that positional order. Here candidate_fasta is the exact full pre-CD-HIT "
             + "AOX_candidates.fasta and cdhit_membership_csv is the full one-row-per-member "
             + "AOX_candidates_cdhit85.clusters.csv; the clustered representative FASTA "
-            + "AOX_candidates_cdhit85.fasta is never a graph input. Do not guess keyword "
+            + "AOX_candidates_cdhit85.fasta is never a graph input. Create "
+            + "AOX_candidates.fasta only from "
+            + "aox_candidate.filter_motif_candidates(target_fasta, "
+            + "scored_ref_plus_hits_csv, ...) and retain its calculation_receipt(). For a "
+            + "typed zero branch, obtain the exact upstream receipt with "
+            + "aox_finalization.hmmer_zero_source_receipt or "
+            + "aox_finalization.sequence_join_zero_source_receipt, then materialize only the "
+            + "branch-applicable output with materialize_upstream_empty, "
+            + "materialize_reference_only_alignment, or materialize_empty_membership and "
+            + "retain each calculation_receipt(). Do not guess keyword "
             + "aliases or serialize result "
             + "internals by hand. Every primary payload accessor named by that table returns "
             + "Python str, while metadata() returns a dict. Encode payload text exactly once "
@@ -5297,14 +5302,23 @@ class LiveAoxAttemptRunner:
             + "remains necessary, first author an explicit inspection source under "
             + "/workspace/src and run that file. A known terminal local failure is "
             + "recoverable inside this scientific attempt; diagnose it, preserve its "
-            + "occurrence, and choose whether to retry. Register every normalized final "
-            + "FASTA with kind='sequence', format='fasta'; AOX_ref.hmm with kind='result', "
-            + "format='hmm'; every normalized final CSV with kind='result', format='csv'; and "
-            + "both normalized final JSON files with kind='result', format='json'. Artifact kind "
+            + "occurrence, and choose whether to retry. Prepare every normalized final "
+            + "FASTA draft with kind='sequence', format='fasta'; AOX_ref.hmm with kind='result', "
+            + "format='hmm'; every normalized final CSV draft with kind='result', format='csv'; "
+            + "and both normalized final JSON drafts with kind='result', format='json'. Artifact kind "
             + "'model' is invalid: semantic labels such as model, alignment, table, or graph belong "
             + "in format or metadata and must never be invented as kind values. A permitted "
             + "zero-record FASTA keeps kind='sequence', format='fasta' and additionally uses its "
-            + "required typed validation profile. Persist each completed "
+            + "required typed validation profile. Never call artifacts.register or "
+            + "artifacts.register_many for a fixed 17-path aox_hmm/ deliverable. After all 17 "
+            + "drafts exist under /workspace/output, call "
+            + "aox_finalization.finalize_deliverable_bundle exactly once with every fixed path "
+            + "once, the candidate/finalization calculation receipts, and exactly the "
+            + "conditional receipts required by the observed branch. The Host prevalidates "
+            + "the whole bundle and atomically commits all catalog rows plus one immutable "
+            + "source-bound receipt; preserve the returned receipt_id. Intermediate non-final "
+            + "paths may still be registered when a controlled operation requires an immutable "
+            + "input. Persist each completed "
             + "controlled-operation response under /workspace/work before downstream parsing. "
             + "Intermediate paths may fail and be retried. Never hide or delete an occurrence. "
             + "Use scientific.selection.begin over the full occurrence universe, then inspect "
@@ -5330,14 +5344,20 @@ class LiveAoxAttemptRunner:
             + "or reconcile-required prior execution, unretired mutation writer, authority "
             + "mismatch, or resource-bound breach must stop further approval and remain "
             + "explicitly blocked. A known closed no-effect failure does not poison the "
-            + "attempt. Publish each canonical final deliverable path only once, after selecting "
-            + "the final chain. For an unavailable harness/operator/user capability, use "
+            + "attempt. Publish the exact final deliverable set only through that atomic "
+            + "finalizer after selecting the final chain. For an unavailable "
+            + "harness/operator/user capability, use "
             + "task.finish(status='blocked') with the exact error and likely cause; use failed "
             + "only when the scientific task is genuinely impossible. A teammate "
             + "that owns the exact attempt task must request scientific.attempt.close when a "
-            + "positive selection is sealed and remains closure_request_ready. After Host "
+            + "positive selection is sealed, remains closure_request_ready, and the passed "
+            + "bundle receipt exists; pass its exact receipt_id as finalization_receipt_id. "
+            + "After Host "
             + "finalization, the ordinary closure notification wakes that same executor, which "
-            + "must then finish its canonical task completed with the actual result evidence. "
+            + "must then finish its canonical task completed with the actual result evidence "
+            + "including document:<receipt_id>. Reporter delegation, report.publish, and report "
+            + "task completion are permitted only after that same receipt exists, and report "
+            + "completion must cite the same document ref. "
             + "Do not call task.finish(status='completed') before immutable closure. Report "
             + "publication and the resident master's user-facing response remain independent. "
             + "A pre-seal blocker "
@@ -7346,6 +7366,7 @@ def _final_deliverable_copies(
     *,
     artifacts: Mapping[str, SessionArtifactRecord],
     copies: dict[str, CatalogArtifactCopy],
+    finalization_receipt: Mapping[str, object],
 ) -> tuple[
     dict[str, CatalogArtifactCopy],
     dict[str, SessionArtifactRecord],
@@ -7368,7 +7389,24 @@ def _final_deliverable_copies(
         )
     artifact_by_path = {path: records[0] for path, records in by_path.items()}
     text_by_path: dict[str, str] = {}
-    metadata_by_path: dict[str, dict[str, object]] = {}
+    raw_validation_metadata = finalization_receipt.get("validation_metadata")
+    if not isinstance(raw_validation_metadata, dict) or set(
+        raw_validation_metadata
+    ) != S15_AOX_HMM_FIXED_DELIVERABLES:
+        raise LiveProductPathError(
+            "finalization_receipt_validation_metadata_invalid",
+            "AOX finalization receipt lacks the exact validator metadata preimage",
+        )
+    metadata_by_path = {
+        str(path): dict(metadata)
+        for path, metadata in raw_validation_metadata.items()
+        if isinstance(metadata, dict)
+    }
+    if set(metadata_by_path) != S15_AOX_HMM_FIXED_DELIVERABLES:
+        raise LiveProductPathError(
+            "finalization_receipt_validation_metadata_invalid",
+            "AOX finalization receipt contains invalid validator metadata",
+        )
     copy_by_path: dict[str, CatalogArtifactCopy] = {}
     for path, artifact in artifact_by_path.items():
         expected_kind, expected_format = AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS[path]
@@ -7408,9 +7446,8 @@ def _final_deliverable_copies(
                 "normalized AOX deliverables must be UTF-8 scientific artifacts",
                 details={"path": path},
             ) from exc
-        metadata_by_path[path] = dict(artifact.metadata or {})
         copy_by_path[path] = copied
-    validation = _s15_aox_validate_final_artifacts(
+    validation = validate_aox_final_artifacts(
         set(copy_by_path),
         text_by_path,
         metadata_by_path,
@@ -7422,7 +7459,39 @@ def _final_deliverable_copies(
             details={
                 "error_count": len(validation.get("errors") or []),
                 "missing_count": len(validation.get("missing_paths") or []),
+                "errors_digest": validation.get("errors_digest"),
+                "earliest_error": validation.get("earliest_error"),
+                "earliest_error_code": validation.get(
+                    "earliest_error_code"
+                ),
             },
+        )
+    if validation != finalization_receipt.get("validation"):
+        raise LiveProductPathError(
+            "finalization_receipt_validation_drift",
+            "AOX live evidence validator differs from the persisted atomic receipt",
+            details={
+                "live_validation_digest": canonical_digest(validation),
+                "receipt_validation_digest": canonical_digest(
+                    finalization_receipt.get("validation")
+                ),
+            },
+        )
+    receipt_artifacts = finalization_receipt.get("artifacts")
+    if not isinstance(receipt_artifacts, list) or {
+        (
+            str(item.get("relative_path") or ""),
+            str(item.get("artifact_id") or ""),
+        )
+        for item in receipt_artifacts
+        if isinstance(item, dict)
+    } != {
+        (path, artifact.artifact_id)
+        for path, artifact in artifact_by_path.items()
+    }:
+        raise LiveProductPathError(
+            "finalization_receipt_artifact_drift",
+            "AOX live evidence artifacts differ from the persisted atomic receipt",
         )
     return copy_by_path, artifact_by_path, validation
 
@@ -7501,18 +7570,6 @@ def _score_filtered_hmmer_accessions(
             },
         )
     return result
-
-
-def _sandbox_source_implementation_digest(run: object, calculation_id: str) -> str:
-    return canonical_digest(
-        {
-            "calculation_id": calculation_id,
-            "source_snapshot_artifact_id": str(
-                getattr(run, "source_snapshot_artifact_id") or ""
-            ),
-            "source_snapshot_digest": str(getattr(run, "source_tree_digest") or ""),
-        }
-    )
 
 
 def _operation_backend_run_id(operation_record: Mapping[str, object]) -> str:
@@ -8850,6 +8907,40 @@ def _collect_positive_evidence(
         agents=agents,
         documents=documents,
     )
+    control = formal.scientific_attempt_control
+    attempt_payload = (
+        {}
+        if not isinstance(control, dict)
+        else dict(control.get("attempt") or {})
+    )
+    selection_payload = (
+        {}
+        if not isinstance(control, dict)
+        else dict(control.get("selection") or {})
+    )
+    try:
+        with provider.read() as scope:
+            finalization_receipt = (
+                validate_persisted_aox_finalization_receipt(
+                    scope.repositories,
+                    session_id=formal.session_id,
+                    execution_task_id=task_ids_by_role["execution"],
+                    attempt_id=str(attempt_payload.get("attempt_id") or ""),
+                    selection_id=str(
+                        selection_payload.get("selection_id") or ""
+                    ),
+                )
+            )
+    except (AoxBundleFinalizationError, KeyError) as exc:
+        raise LiveProductPathError(
+            getattr(
+                exc,
+                "error_code",
+                "aox_finalization_receipt_missing",
+            ),
+            "formal AOX evidence lacks one valid source-bound finalization receipt",
+            details=dict(getattr(exc, "details", {}) or {}),
+        ) from exc
     primary_pubmed = _select_primary_pubmed_evidence(
         sources=sources,
         invocations=invocations,
@@ -8948,6 +9039,7 @@ def _collect_positive_evidence(
         context,
         artifacts=artifacts,
         copies=copies,
+        finalization_receipt=finalization_receipt,
     )
     calculation_run = _sandbox_run_for_final_deliverables(
         final_artifacts,
@@ -9250,16 +9342,12 @@ def _collect_positive_evidence(
         _artifact_ref(final_copies[path])
         for path in sorted(S15_AOX_HMM_FIXED_DELIVERABLES - specialized_paths)
     ]
-    source_implementation_digest = _sandbox_source_implementation_digest(
-        calculation_run,
-        AOX_DELIVERABLE_NORMALIZATION_ID,
-    )
     normalization_operation = _sandbox_calculation_record(
         run=calculation_run,
         role="deliverable_normalization",
         calculation_id=AOX_DELIVERABLE_NORMALIZATION_ID,
         calculation_contract_digest=AOX_DELIVERABLE_NORMALIZATION_CONTRACT_DIGEST,
-        calculation_implementation_digest=source_implementation_digest,
+        calculation_implementation_digest=aox_finalization.IMPLEMENTATION_DIGEST,
         parameters={"deliverable_count": len(S15_AOX_HMM_FIXED_DELIVERABLES)},
         inputs=all_controlled_outputs,
         outputs=normalization_outputs,
@@ -9336,9 +9424,8 @@ def _collect_positive_evidence(
             calculation_contract_digest=(
                 AOX_UPSTREAM_EMPTY_MATERIALIZATION_CONTRACT_DIGEST
             ),
-            calculation_implementation_digest=_sandbox_source_implementation_digest(
-                calculation_run,
-                AOX_UPSTREAM_EMPTY_MATERIALIZATION_ID,
+            calculation_implementation_digest=(
+                aox_finalization.IMPLEMENTATION_DIGEST
             ),
             parameters={
                 "reason": upstream_empty_reason or "",
@@ -9383,10 +9470,7 @@ def _collect_positive_evidence(
                 AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_CONTRACT_DIGEST
             ),
             calculation_implementation_digest=(
-                _sandbox_source_implementation_digest(
-                    calculation_run,
-                    AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_ID,
-                )
+                aox_finalization.IMPLEMENTATION_DIGEST
             ),
             parameters={
                 "reason": upstream_empty_reason or "no_candidates_after_length_filter",
@@ -9416,10 +9500,7 @@ def _collect_positive_evidence(
         role="candidate_filter",
         calculation_id=AOX_CANDIDATE_FILTER_ID,
         calculation_contract_digest=AOX_CANDIDATE_FILTER_CONTRACT_DIGEST,
-        calculation_implementation_digest=_sandbox_source_implementation_digest(
-            calculation_run,
-            AOX_CANDIDATE_FILTER_ID,
-        ),
+        calculation_implementation_digest=aox_candidate.IMPLEMENTATION_DIGEST,
         parameters={
             "reference_accession": aox_motif.REFERENCE_ACCESSION,
             "threshold_tenths": aox_motif.THRESHOLD_TENTHS,
@@ -9434,9 +9515,8 @@ def _collect_positive_evidence(
             role="empty_membership",
             calculation_id=AOX_EMPTY_MEMBERSHIP_ID,
             calculation_contract_digest=AOX_EMPTY_MEMBERSHIP_CONTRACT_DIGEST,
-            calculation_implementation_digest=_sandbox_source_implementation_digest(
-                calculation_run,
-                AOX_EMPTY_MEMBERSHIP_ID,
+            calculation_implementation_digest=(
+                aox_finalization.IMPLEMENTATION_DIGEST
             ),
             parameters={
                 "identity_threshold_ppm": aox_similarity.DEFAULT_THRESHOLD_PPM,
@@ -9931,6 +10011,7 @@ def _collect_positive_evidence(
             "content": final_message.content,
         },
         "scientific_checks": {
+            "finalization_receipt": finalization_receipt,
             "scoring": {
                 "alignment_artifact_id": str(scoring_alignment.record["artifact_id"]),
                 "scored_artifact_id": str(motif_scores.record["artifact_id"]),
