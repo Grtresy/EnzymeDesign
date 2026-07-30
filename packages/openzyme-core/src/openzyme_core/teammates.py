@@ -1120,7 +1120,6 @@ class TeammateConversationDriver(HarnessDriver):
                         arguments=args,
                         task_id=str(args.get("task_id") or self.task_id),
                         lane_id=None if "lane_id" not in args else str(args["lane_id"]),
-                        assistant_response_text=response_text or None,
                     )
                 )
             all_invocations = tuple(invocations)
@@ -1327,9 +1326,7 @@ def run_teammate_loop(
         durable_route_adapter_policy_ids=(
             parent_context.durable_route_adapter_policy_ids
         ),
-        tool_dispatch_precondition=(
-            parent_context.tool_dispatch_precondition
-        ),
+        tool_dispatch_precondition=(parent_context.tool_dispatch_precondition),
         mutation_writer_scope_factory=(parent_context.mutation_writer_scope_factory),
     )
 

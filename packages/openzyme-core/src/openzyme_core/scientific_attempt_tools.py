@@ -26,9 +26,7 @@ def _actor(context: SessionRuntimeContext) -> str:
 def _service(context: SessionRuntimeContext) -> ScientificAttemptService:
     return ScientificAttemptService(
         context.repositories,
-        workflow_contract_registry=(
-            context.scientific_workflow_contract_registry
-        ),
+        workflow_contract_registry=(context.scientific_workflow_contract_registry),
         artifact_boundary=ArtifactBoundaryService(
             context.repositories,
             workspace_root=context.sandbox_workspace_root,
@@ -45,7 +43,6 @@ def _success(
     summary: str,
     terminal_action: str | None = None,
     terminates_turn: bool = False,
-    persists_assistant_response: bool = False,
 ) -> ToolResult:
     return ToolResult(
         call_id=invocation.call_id,
@@ -59,7 +56,6 @@ def _success(
         details=payload,
         terminal_action=terminal_action,
         terminates_turn=terminates_turn,
-        persists_assistant_response=persists_assistant_response,
     )
 
 
@@ -85,9 +81,7 @@ def _failure(
         "retryable": error.retryable,
         "precondition_rejected": True,
         "effect_certainty": "no_effect",
-        "retry_eligibility": (
-            "same_phase_safe" if error.retryable else "terminal"
-        ),
+        "retry_eligibility": ("same_phase_safe" if error.retryable else "terminal"),
         "recoverability": (
             "agent_can_retry"
             if error.retryable
@@ -124,7 +118,6 @@ def _execute(
     summary: str,
     terminal_action: str | None = None,
     terminates_turn: bool = False,
-    persists_assistant_response: bool = False,
 ) -> ToolResult:
     try:
         record = callback()
@@ -138,7 +131,6 @@ def _execute(
         summary=summary,
         terminal_action=terminal_action,
         terminates_turn=terminates_turn,
-        persists_assistant_response=persists_assistant_response,
     )
 
 
@@ -216,17 +208,12 @@ def register_scientific_attempt_tools(registry: ToolRegistry) -> None:
                 campaign_id=str(arguments["campaign_id"]),
                 workflow_id=str(arguments["workflow_id"]),
                 scope=ScientificAttemptScope(str(arguments["scope"])),
-                workflow_contract_digest=str(
-                    arguments["workflow_contract_digest"]
-                ),
+                workflow_contract_digest=str(arguments["workflow_contract_digest"]),
                 requested_effect_classes=tuple(
-                    str(item)
-                    for item in arguments.get("requested_effect_classes", ())
+                    str(item) for item in arguments.get("requested_effect_classes", ())
                 ),
                 reserved_micu=arguments.get("reserved_micu", 0),
-                reserved_cost_microunits=arguments.get(
-                    "reserved_cost_microunits", 0
-                ),
+                reserved_cost_microunits=arguments.get("reserved_cost_microunits", 0),
                 reserved_wall_time_seconds=arguments.get(
                     "reserved_wall_time_seconds", 0
                 ),
@@ -337,9 +324,7 @@ def register_scientific_attempt_tools(registry: ToolRegistry) -> None:
                 selection_id=str(arguments["selection_id"]),
                 adoption_id=str(arguments["adoption_id"]),
                 source_artifact_id=str(arguments["source_artifact_id"]),
-                target_sandbox_run_id=str(
-                    arguments["target_sandbox_run_id"]
-                ),
+                target_sandbox_run_id=str(arguments["target_sandbox_run_id"]),
                 target=str(arguments["target"]),
                 actor_ref=_actor(context),
                 idempotency_key=str(arguments["idempotency_key"]),
@@ -359,9 +344,7 @@ def register_scientific_attempt_tools(registry: ToolRegistry) -> None:
                 selection_id=str(arguments["selection_id"]),
                 actor_ref=_actor(context),
                 idempotency_key=str(arguments["idempotency_key"]),
-                expected_universe_digest=str(
-                    arguments["expected_universe_digest"]
-                ),
+                expected_universe_digest=str(arguments["expected_universe_digest"]),
             ),
             status="scientific_selection_sealed",
             summary="Sealed the complete selected scientific chain.",
@@ -372,123 +355,14 @@ def register_scientific_attempt_tools(registry: ToolRegistry) -> None:
         invocation: ToolInvocation,
     ) -> ToolResult:
         arguments = invocation.arguments
-
-        def request_closure() -> object:
-            if (
-                invocation.assistant_response_text is None
-                or not invocation.assistant_response_text.strip()
-            ):
-                raise ScientificAttemptError(
-                    "attempt_close_assistant_response_missing",
-                    (
-                        "Scientific attempt closure requires a non-empty final "
-                        "assistant response in the same model response."
-                    ),
-                    hint=(
-                        "Return the user-facing final answer as response text and "
-                        "call scientific.attempt.close in that same response."
-                    ),
-                    details={
-                        "assistant_response_present": False,
-                        "effect_certainty": "no_effect",
-                    },
-                    retryable=True,
-                )
-            if not context.persist_conversation:
-                raise ScientificAttemptError(
-                    "attempt_close_conversation_persistence_disabled",
-                    (
-                        "Scientific attempt closure requires canonical "
-                        "conversation persistence for its final response."
-                    ),
-                    details={"effect_certainty": "no_effect"},
-                    retryable=True,
-                )
-            service = _service(context)
-            response_text = invocation.assistant_response_text
-            assert response_text is not None
-            with context.repositories.atomic(
-                prefix="scientific_attempt_close_response"
-            ):
-                existing = (
-                    context.repositories.scientific_attempt_closure_requests
-                    .get_by_attempt(str(arguments["attempt_id"]))
-                )
-                if existing is not None:
-                    stored_response = (
-                        context.repositories.scientific_attempt_closure_responses
-                        .get_by_closure_request(existing.closure_request_id)
-                    )
-                    if stored_response is None:
-                        raise ScientificAttemptError(
-                            "attempt_closure_response_missing",
-                            (
-                                "Existing scientific attempt closure intent "
-                                "predates or violates the co-terminal response "
-                                "contract."
-                            ),
-                            hint="Do not backfill or replace the immutable request.",
-                        )
-                    prepared = service.prepare_closure_response(
-                        request=existing,
-                        recipient=context.assistant_response_recipient,
-                        recipient_kind=(
-                            context.assistant_response_recipient_kind.value
-                        ),
-                        assistant_response_text=response_text,
-                    )
-                    if prepared != stored_response:
-                        raise ScientificAttemptError(
-                            "attempt_closure_response_conflict",
-                            (
-                                "Closure idempotency identity was replayed with "
-                                "different final-response facts."
-                            ),
-                        )
-                    service.require_closure_response(existing)
-                    return existing
-
-                def persist_response(request: object) -> None:
-                    prepared = service.prepare_closure_response(
-                        request=request,  # type: ignore[arg-type]
-                        recipient=context.assistant_response_recipient,
-                        recipient_kind=(
-                            context.assistant_response_recipient_kind.value
-                        ),
-                        assistant_response_text=response_text,
-                    )
-                    message = context.persist_outbound_assistant_message(
-                        content=response_text,
-                        message_id=prepared.message_id,
-                        document_id=prepared.document_id,
-                        created_at=prepared.created_at,
-                    )
-                    if message.payload_ref != prepared.document_id:
-                        raise ScientificAttemptError(
-                            "attempt_closure_response_persistence_mismatch",
-                            (
-                                "Canonical assistant message did not retain "
-                                "its bound document."
-                            ),
-                        )
-                    (
-                        context.repositories.scientific_attempt_closure_responses
-                        .add(prepared)
-                    )
-
-                request = service.request_attempt_closure(
-                    attempt_id=str(arguments["attempt_id"]),
-                    selection_id=str(arguments["selection_id"]),
-                    actor_ref=_actor(context),
-                    idempotency_key=str(arguments["idempotency_key"]),
-                    persist_closure_response=persist_response,
-                )
-                service.require_closure_response(request)
-                return request
-
         return _execute(
             invocation,
-            request_closure,
+            lambda: _service(context).request_attempt_closure(
+                attempt_id=str(arguments["attempt_id"]),
+                selection_id=str(arguments["selection_id"]),
+                actor_ref=_actor(context),
+                idempotency_key=str(arguments["idempotency_key"]),
+            ),
             status="scientific_attempt_closure_requested",
             summary=(
                 "Recorded closure intent; the Host finalizer must establish exact "
@@ -496,7 +370,6 @@ def register_scientific_attempt_tools(registry: ToolRegistry) -> None:
             ),
             terminal_action="scientific.attempt.close",
             terminates_turn=True,
-            persists_assistant_response=True,
         )
 
     registry.register("scientific.attempt.inspect", inspect_handler)

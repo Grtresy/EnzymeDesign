@@ -156,22 +156,20 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `payload`: parsed JSON payload when `content` is JSON
 - `terminal_action`: explicit terminal action name such as `task.finish` or a successful `scientific.attempt.close`, otherwise `null`
 - `terminates_turn`: whether the harness must stop the current master/teammate loop immediately after this result
-- `persists_assistant_response`: whether this successful terminal result requires the harness to persist the non-empty companion response text carried by the same provider response
 
 `ok=true` must not mean "no downstream work remains"; it only means that the specific tool completed its promised action. `ok=false` means the model must not assume the requested action happened.
 
 `terminates_turn=true` 只允许由显式 terminal tool 设置。`task.finish` 是业务 task 出口；成功的
 `scientific.attempt.close` 是独立的 scientific lifecycle turn barrier，只写 immutable
 closure request 并等待 requester writer 退休后的 Host finalization。close invocation
-还必须携带同一 provider response 的非空 user-facing text；缺失时 handler 在 closure effect
-前失败。只有 successful close result 才设置
-`persists_assistant_response=true` 只在 closure request、确定性 conversation
-document/message 与 immutable closure-response binding 已于同一事务提交后返回；harness
-只投影该已提交终答并退休 turn，不执行第二次写入。二者都使同批后续 call 获得
-interrupted/no-effect settlement 且不再进入下一 model step；失败的 close 保持
-non-terminal，并且不得持久化 companion response。普通 tool success、capability success、
-engine invocation terminal state 或 protocol message 都不能自动设置这些标记，也不能自动
-把业务 task 写为 completed / failed。
+不携带或持久化 companion response；assistant text 仍走普通 conversation contract。
+successful close result 退休当前 turn，并使同批后续 call 获得
+interrupted/no-effect settlement；失败的 close 保持 non-terminal。close 只接受 exact
+attempt task 当前 canonical assignee，request 与 finalization 都重核 assignment。
+immutable closure 后的 source-bound signal 沿普通 runtime wake 让 assignee 显式完成
+task；closure 本身不写 task terminal state。普通 tool success、capability success、
+engine invocation terminal state 或 protocol message 也不能自动把业务 task 写为
+completed / failed。
 
 当工具本身已经执行完成，但完整 result 或下一轮 prompt 会超过 token budget 时，harness 返回 context-budget observation，而不是把完整 result 塞回模型：
 
@@ -407,8 +405,6 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `runtime.lease_heartbeat_failed`
 - `runtime.lease_lost`
 - `runtime.fencing_rejected`
-- `runtime.consistency.warning`
-- `runtime.state_attention`
 
 这些事件默认服务于“用户与 master agent 的单一对话体验”，而不是把 V3 暴露成多线程运维控制台。
 
@@ -446,7 +442,7 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `runtime.session_locked` 表示某个 session 当前由另一个 runtime owner 持有推进权；manual drain / background tick 必须尊重该状态
 - `runtime.lease_heartbeat_failed` / `runtime.lease_lost` 表示当前 scheduler 无法继续证明 session ownership；payload 只暴露非凭据型 fencing/worker identity 与安全 error type，不暴露 lease token、数据库路径或内部异常全文
 - `runtime.fencing_rejected` 表示 stale worker 的 signal 写回被 session lease fencing 拒绝，不能覆盖新 owner 的结果；同一 fence 从 sandbox control / Host API 暴露时使用 non-retryable `runtime_write_fenced`，不泄露 lease token、数据库路径或原始异常全文
-- `runtime.consistency.warning` / `runtime.state_attention` 是只读诊断事件；它们可提示 operator 或 master follow-up，但不得自动把 task 写为 completed / failed
+- `workspace.runtime_state.warnings` / `task_attention` 是请求时计算的只读诊断投影；它们可提示 operator 或 master follow-up，但不得自动把 task 写为 completed / failed，也不得在每次 drain 重复追加 derived durable event
 
 ## 7. Legacy Boundary
 
@@ -483,11 +479,11 @@ authority request 使用 strict DTO；actor/grantor 等身份来自受控边界�
 `scientific.attempt.close` 返回 request/intention，最终 admission/closure 由 Host 在原 writer
 连同该 provider batch 的未 dispatch call settlement 全部退休后执行。successful close
 ToolResult 标记 `terminal_action="scientific.attempt.close"` 与 `terminates_turn=true`；
-同时仅在 request/message/document/response-binding 原子提交成功时标记
-`persists_assistant_response=true`。ToolInvocation 内部携带同一 provider response 的
-companion assistant text；该字段不进入 tool args/public trace，也不授权 handler 生成或
-改写答案。closure request 本身不是 final `scientific_closure`
-evidence，也不写 task terminal。
+它只持久化 immutable request，不携带 companion assistant text，也不创建
+message/document/response binding。只有 exact attempt task 当前 canonical assignee
+可以发起 request，Core 在 finalization 再次核对 assignment。closure request 本身不是
+final `scientific_closure` evidence，也不写 task terminal；immutable closure 形成后，
+source-bound ordinary wake 让 assignee 显式完成 task。
 workspace 显示 envelope usage、attempts、universe/dispositions、selected chain、
 materializations 和 closure，不投影 provider/HPC private allowlist。
 

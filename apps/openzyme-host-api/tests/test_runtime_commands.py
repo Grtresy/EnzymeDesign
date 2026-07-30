@@ -16,7 +16,6 @@ from openzyme_core import RuntimeDrainCoreReceipt
 from openzyme_core import RuntimeDrainProjectionOutcome
 from openzyme_core import RuntimeCommandWorker
 from openzyme_core import SQLiteRepositoryProvider
-from openzyme_core import project_runtime_command
 from openzyme_core.agent_identity import create_agent_member
 from openzyme_domain import AgentRuntimeSignal
 from openzyme_domain import AgentRuntimeSignalReason
@@ -83,9 +82,7 @@ def _drain_result(
     return V3RuntimeDrainResult(
         session_id=session_id,
         core_receipt=RuntimeDrainCoreReceipt(
-            scheduler_status=(
-                "waiting_approval" if suspended else "completed"
-            ),
+            scheduler_status=("waiting_approval" if suspended else "completed"),
             processed_signal_count=processed_signal_count,
             suspended=suspended,
         ),
@@ -150,9 +147,7 @@ class _FailingTaskToolCallingInvoker:
         self.calls += 1
         if self.calls > 1:
             return {
-                "content": (
-                    "The business task was explicitly closed as failed."
-                ),
+                "content": ("The business task was explicitly closed as failed."),
                 "tool_calls": [],
             }
         return {
@@ -165,9 +160,7 @@ class _FailingTaskToolCallingInvoker:
                         "task_id": self.task_id,
                         "status": "failed",
                         "summary": "Master explicitly closed the business task.",
-                        "failure_summary": (
-                            "The bounded objective is not achievable."
-                        ),
+                        "failure_summary": ("The bounded objective is not achievable."),
                     },
                 }
             ],
@@ -294,10 +287,7 @@ def _completed_outcome_with_failed_business_task() -> AgentRuntimeOutcome:
 def test_host_scheduler_settlement_ignores_explicit_business_task_failure() -> None:
     outcome = _completed_outcome_with_failed_business_task()
 
-    assert (
-        V3HostApiService._outcomes_include_scheduler_failure([outcome])
-        is False
-    )
+    assert V3HostApiService._outcomes_include_scheduler_failure([outcome]) is False
     assert outcome.settlement is not None
     assert outcome.settlement.task_status is TaskStatus.FAILED
 
@@ -334,10 +324,7 @@ def test_host_scheduler_settlement_keeps_ordinary_signal_failure_failed() -> Non
         teammate_status="runtime_exception",
     )
 
-    assert (
-        V3HostApiService._outcomes_include_scheduler_failure([outcome])
-        is True
-    )
+    assert V3HostApiService._outcomes_include_scheduler_failure([outcome]) is True
 
 
 def test_r55_shaped_runtime_drain_settles_closed_teammate_budget_replan_handoff(
@@ -453,16 +440,12 @@ def test_file_backed_worker_consumes_budget_successor_only_on_next_command(
             mode="connection"
         ),
         executor=HostRuntimeCommandExecutor(
-            service_scope=lambda: dependencies.v3_service_scope(
-                mode="connection"
-            ),
+            service_scope=lambda: dependencies.v3_service_scope(mode="connection"),
             worker_id="test:two-command-budget-handoff",
         ),
         worker_id="test:two-command-budget-handoff",
         mutation_writer_scope_factory=dependencies.v3_mutation_writer_scope,
-        post_writer_finalizer=(
-            dependencies.finalize_pending_v3_scientific_transitions
-        ),
+        post_writer_finalizer=(dependencies.finalize_pending_v3_scientific_transitions),
     )
 
     first_outcome = worker.run_once()
@@ -472,15 +455,11 @@ def test_file_backed_worker_consumes_budget_successor_only_on_next_command(
         task_after_first = repositories.tasks.get(task_id)
         successors = [
             signal
-            for signal in repositories.runtime_signals.list_by_session(
-                session_id
-            )
+            for signal in repositories.runtime_signals.list_by_session(session_id)
             if signal.agent_id == "agent:master"
             and signal.source_ref == source_signal_id
         ]
-        first_stored = repositories.runtime_commands.get(
-            first_command.command_id
-        )
+        first_stored = repositories.runtime_commands.get(first_command.command_id)
     assert source_after_first is not None
     assert source_after_first.status is AgentRuntimeSignalStatus.FAILED
     assert source_after_first.attempt_count == 1
@@ -509,19 +488,11 @@ def test_file_backed_worker_consumes_budget_successor_only_on_next_command(
     second_outcome = worker.run_once()
     assert second_outcome.status == "completed"
     with dependencies.v3_repository_scope(mode="read") as repositories:
-        source_after_second = repositories.runtime_signals.get(
-            source_signal_id
-        )
-        successor_after_second = repositories.runtime_signals.get(
-            successor.signal_id
-        )
+        source_after_second = repositories.runtime_signals.get(source_signal_id)
+        successor_after_second = repositories.runtime_signals.get(successor.signal_id)
         task_after_second = repositories.tasks.get(task_id)
-        first_after_second = repositories.runtime_commands.get(
-            first_command.command_id
-        )
-        second_stored = repositories.runtime_commands.get(
-            second_command.command_id
-        )
+        first_after_second = repositories.runtime_commands.get(first_command.command_id)
+        second_stored = repositories.runtime_commands.get(second_command.command_id)
     assert source_after_second is not None
     assert source_after_second.status is AgentRuntimeSignalStatus.FAILED
     assert source_after_second.attempt_count == 1
@@ -536,12 +507,8 @@ def test_file_backed_worker_consumes_budget_successor_only_on_next_command(
     assert second_stored is not None
     assert second_stored.status.value == "completed"
     assert second_stored.bounded_outcome_summary is not None
-    assert second_stored.bounded_outcome_summary["scheduler_status"] == (
-        "completed"
-    )
-    assert second_stored.bounded_outcome_summary[
-        "processed_signal_count"
-    ] == 1
+    assert second_stored.bounded_outcome_summary["scheduler_status"] == ("completed")
+    assert second_stored.bounded_outcome_summary["processed_signal_count"] == 1
 
 
 def test_runtime_drain_fails_when_budget_replan_wakeup_is_missing(
@@ -616,7 +583,7 @@ def test_runtime_drain_keeps_master_budget_exhaustion_failed(
 
 @pytest.mark.parametrize(
     "failed_stage",
-    ("runtime_consistency", "event_append", "workspace"),
+    ("event_append", "workspace"),
 )
 def test_runtime_drain_preserves_core_receipt_across_projection_failures(
     monkeypatch,  # type: ignore[no-untyped-def]
@@ -691,13 +658,7 @@ def test_runtime_drain_preserves_core_receipt_across_projection_failures(
                 f"{failed_stage} failed at /home/private/control.sqlite3"
             )
 
-        if failed_stage == "runtime_consistency":
-            monkeypatch.setattr(
-                V3HostApiService,
-                "_extend_with_runtime_consistency_events",
-                injected_failure,
-            )
-        elif failed_stage == "event_append":
+        if failed_stage == "event_append":
             monkeypatch.setattr(V3EventStore, "append", injected_failure)
         else:
             monkeypatch.setattr(
@@ -708,11 +669,6 @@ def test_runtime_drain_preserves_core_receipt_across_projection_failures(
             monkeypatch.setattr(
                 V3HostApiService,
                 "_extend_with_activity_events",
-                lambda *args, **kwargs: None,
-            )
-            monkeypatch.setattr(
-                V3HostApiService,
-                "_extend_with_runtime_consistency_events",
                 lambda *args, **kwargs: None,
             )
             monkeypatch.setattr(
@@ -734,9 +690,7 @@ def test_runtime_drain_preserves_core_receipt_across_projection_failures(
     assert result.projection_outcome.status == "failed"
     assert result.projection_outcome.error_code == "runtime_projection_failed"
     assert result.projection_outcome.failed_stage == failed_stage
-    assert "[redacted-host-path]" in str(
-        result.projection_outcome.safe_summary
-    )
+    assert "[redacted-host-path]" in str(result.projection_outcome.safe_summary)
     assert "/home/private" not in str(result.projection_outcome.safe_summary)
     assert summary["schema_version"] == "runtime_command_outcome@2"
     assert summary["core_receipt_formed"] is True
@@ -751,166 +705,83 @@ def test_runtime_drain_preserves_core_receipt_across_projection_failures(
     assert "blindly replay" in str(result.safe_retry_hint)
 
 
-def test_file_backed_runtime_command_reports_durable_progress_after_projection_failure(
-    monkeypatch,  # type: ignore[no-untyped-def]
+def test_runtime_consistency_warnings_remain_read_only_across_drains(
     tmp_path,  # type: ignore[no-untyped-def]
 ) -> None:
     provider = SQLiteRepositoryProvider(
-        str(tmp_path / "r54-runtime-receipt.sqlite3")
+        str(tmp_path / "runtime-consistency-projection.sqlite3")
     )
-    dependencies = _dependencies(repository_provider=provider)
-    session_id = "sess_r54_runtime_receipt"
-    signal_id = "signal_r54_runtime_receipt"
-
-    def process_signal_then_return(
-        self,  # type: ignore[no-untyped-def]
-        observed_session_id,
-        events,
-        **kwargs,
-    ):
-        del kwargs
-        assert observed_session_id == session_id
-        completed = self.repositories.runtime_signals.complete(signal_id)
-        assert completed is not None
-        assert completed.status is AgentRuntimeSignalStatus.COMPLETED
-        events.append(
-            {
-                "event_id": "evt_r54_signal_completed",
-                "session_id": session_id,
-                "event_type": "agent.runtime_signal.updated",
-                "created_at": "2026-07-24T00:00:00+00:00",
-                "payload": {
-                    "signal_id": signal_id,
-                    "status": "completed",
-                },
-            }
+    session_id = "sess_runtime_consistency_projection"
+    task_id = "task_runtime_consistency_projection"
+    with provider.connection_scope() as scope:
+        service = V3HostApiService(
+            repositories=scope.repositories,
+            event_store=V3EventStore(scope.repositories),
+            model_factory=object(),
         )
-        agent = self.repositories.agents.get(session_id, "agent:master")
-        assert agent is not None
-        return [
-            AgentRuntimeOutcome(
-                signal=completed,
-                task=None,
-                agent=agent,
-                ok=True,
-                summary="Synthetic completed scheduler outcome.",
-                teammate_status="completed",
-            )
-        ]
-
-    def fail_consistency_projection(*args, **kwargs):  # type: ignore[no-untyped-def]
-        del args, kwargs
-        raise RuntimeError(
-            "selection head projection failed at "
-            "/home/private/r54-control.sqlite3"
-        )
-
-    monkeypatch.setattr(
-        V3HostApiService,
-        "_drain_pending_agent_signals",
-        process_signal_then_return,
-    )
-    monkeypatch.setattr(
-        V3HostApiService,
-        "_extend_with_runtime_consistency_events",
-        fail_consistency_projection,
-    )
-
-    with dependencies.v3_service_scope(mode="write") as service:
         service.create_session(
             project_id="proj_runtime_commands",
             session_id=session_id,
-            title="r54 runtime receipt",
-            objective="Preserve durable progress after projection failure.",
+            title="Read-only runtime consistency",
+            objective="Project warnings without appending derived events.",
         )
-        command, created = service.admit_runtime_command(
+        task = Task.create(
+            task_id=task_id,
             session_id=session_id,
-            idempotency_key="drain:r54-receipt",
-            max_signals=1,
-            max_steps_per_agent=1,
-            auto_enqueue_ready_tasks=False,
+            subject="Preserve the business task",
+            description="A failed runtime turn must not mutate task state.",
+            status=TaskStatus.IN_PROGRESS,
         )
-    assert created is True
-    with dependencies.v3_repository_scope(mode="write") as repositories:
-        repositories.runtime_signals.save(
+        service.repositories.tasks.save(task)
+        agent = create_agent_member(
+            service.repositories,
+            session_id=session_id,
+            role="executor",
+            task_id=task_id,
+        )
+        service.repositories.tasks.save(replace(task, assigned_ref=agent.agent_id))
+        service.repositories.runtime_signals.save(
             AgentRuntimeSignal(
-                signal_id=signal_id,
+                signal_id="signal_runtime_consistency_failed",
                 session_id=session_id,
-                agent_id="agent:master",
+                agent_id=agent.agent_id,
+                task_id=task_id,
                 reason=AgentRuntimeSignalReason.MANUAL_RESUME,
-                status=AgentRuntimeSignalStatus.PENDING,
+                status=AgentRuntimeSignalStatus.FAILED,
                 created_at="2026-07-24T00:00:00+00:00",
+                completed_at="2026-07-24T00:00:01+00:00",
+                attempt_count=1,
+                error_message="provider turn failed",
             )
         )
-    with dependencies.v3_service_scope(mode="connection") as service:
-        drain_result = service.drain_runtime(
+
+        first = service.drain_runtime(
             session_id=session_id,
             max_signals=1,
             max_steps_per_agent=1,
             auto_enqueue_ready_tasks=False,
-            worker_id="test:r54-scheduler",
         )
-
-    class CapturedDrainService:
-        def drain_runtime(self, **kwargs):  # type: ignore[no-untyped-def]
-            del kwargs
-            return drain_result
-
-    @contextmanager
-    def captured_service_scope():  # type: ignore[no-untyped-def]
-        yield CapturedDrainService()
-
-    execution_result = HostRuntimeCommandExecutor(
-        service_scope=captured_service_scope,
-        worker_id="test:r54-runtime-command",
-    )(command)
-
-    def replay_captured_result(claimed):  # type: ignore[no-untyped-def]
-        del claimed
-        return execution_result
-
-    worker_outcome = RuntimeCommandWorker(
-        repository_scope_factory=lambda: dependencies.v3_repository_scope(
-            mode="connection"
-        ),
-        executor=replay_captured_result,
-        worker_id="test:r54-runtime-command",
-    ).run_once()
-    assert worker_outcome.status == "failed"
-
-    with provider.read() as unit_of_work:
-        stored_signal = unit_of_work.repositories.runtime_signals.get(signal_id)
-        stored_command = unit_of_work.repositories.runtime_commands.get(
-            command.command_id
+        second = service.drain_runtime(
+            session_id=session_id,
+            max_signals=1,
+            max_steps_per_agent=1,
+            auto_enqueue_ready_tasks=False,
         )
-        finished_events = [
-            event
-            for event in unit_of_work.repositories.durable_events.list_by_session(
-                session_id
-            )
-            if event.event_type == "runtime.command.finished"
+        durable_event_types = [
+            event.event_type
+            for event in service.repositories.durable_events.list_by_session(session_id)
         ]
-    assert stored_command is not None
-    terminal = project_runtime_command(stored_command)
-    summary = terminal["bounded_outcome_summary"]
-    assert terminal["status"] == "failed"
-    assert terminal["error_code"] == "runtime_projection_failed"
-    assert summary["schema_version"] == "runtime_command_outcome@2"
-    assert summary["core_receipt_formed"] is True
-    assert summary["scheduler_status"] == "completed"
-    assert summary["processed_signal_count"] == 1
-    assert summary["projection_status"] == "failed"
-    assert summary["projection_error_code"] == "runtime_projection_failed"
-    assert summary["projection_failed_stage"] == "runtime_consistency"
-    assert summary["replay_safe"] is False
-    assert "blindly replay" in str(terminal["safe_retry_hint"])
-    assert "/home/private" not in str(terminal)
-    assert stored_signal is not None
-    assert stored_signal.status is AgentRuntimeSignalStatus.COMPLETED
-    assert stored_command.bounded_outcome_summary == summary
-    assert len(finished_events) == 1
-    assert finished_events[0].payload["bounded_outcome_summary"] == summary
-    assert "/home/private" not in str(finished_events[0].payload)
+
+    for result in (first, second):
+        runtime_state = result.workspace["runtime_state"]
+        assert "runtime_signal_failed" in {
+            warning["code"] for warning in runtime_state["warnings"]
+        }
+        assert result.core_receipt.processed_signal_count == 0
+    assert not {
+        "runtime.consistency.warning",
+        "runtime.state_attention",
+    } & set(durable_event_types)
 
 
 def test_session_command_routes_use_registered_mutation_writers_and_seal(
@@ -973,9 +844,7 @@ def test_session_command_routes_use_registered_mutation_writers_and_seal(
         assert rejected.status_code >= 400
 
         with dependencies.v3_repository_scope(mode="read") as repositories:
-            messages = repositories.inbox.list_by_session(
-                "sess_command_mutation_scope"
-            )
+            messages = repositories.inbox.list_by_session("sess_command_mutation_scope")
         assert len(messages) == 1
 
 
@@ -1292,9 +1161,7 @@ def test_runtime_api_downgrade_is_rejected_while_a_command_is_active(
     )
     with pytest.raises(
         RuntimeError,
-        match=(
-            "cannot downgrade while active durable commands or continuations exist"
-        ),
+        match=("cannot downgrade while active durable commands or continuations exist"),
     ):
         create_app(sync_dependencies)
 

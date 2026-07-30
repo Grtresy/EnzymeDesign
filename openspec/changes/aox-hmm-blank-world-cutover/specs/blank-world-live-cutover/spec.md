@@ -101,48 +101,48 @@ The collector SHALL reconstruct exactly one durable delegation request for each 
 - **AND** only a real user/task/protocol/approval/engine/continuation event can create later runtime work; Harness does not require the agent to persist a particular waiting strategy
 
 #### Scenario: Reject premature scientific-attempt closure
-- **WHEN** a formal master requests `scientific.attempt.close` before the board is exactly the authority-bound research/execution/report task set, before each task has one matching explicit business exit, before a positive has one linked ready report and published draft, or while a fault has any ready/published success report state
-- **THEN** the Router precondition rejects the request without closing the attempt and reports the observed task/report mismatch; it permits retry only after the agent reconciles durable state, and it never chooses an operation, task outcome, scientific branch, or replacement plan for the agent
+- **WHEN** the canonical scientific task assignee requests `scientific.attempt.close` before selection, operation, authority, provenance, writer, or quiescence controls are ready
+- **THEN** Core rejects the request without closing the attempt, returns the typed blocking facts, and never chooses an operation, task outcome, scientific branch, report state, response, or replacement plan for the agent
 
 #### Scenario: Retire the requesting turn after successful closure intent
-- **WHEN** `scientific.attempt.close` carries a non-empty companion final response, passes its runtime preconditions, and records the immutable closure request while later tool calls remain in the same provider response
-- **THEN** the close result is a successful terminal action, the harness persists that exact companion text once as the final assistant conversation message, retires the requesting turn without another model step, and settles every later call as `tool_call_batch_interrupted` with `effect_certainty=no_effect` and `retry_eligibility=verify_then_retry`; Host finalization remains post-turn and does not complete a business task
+- **WHEN** the canonical scientific task assignee calls `scientific.attempt.close`, passes Core controls, and records the immutable closure request while later tool calls remain in the same provider response
+- **THEN** the close result is a successful terminal action, the harness retires the requesting turn without another model step, and settles every later call as `tool_call_batch_interrupted` with `effect_certainty=no_effect` and `retry_eligibility=verify_then_retry`; Host finalization remains post-turn and does not complete a business task or persist companion response state
 
 #### Scenario: Do not reinterpret a close-ready assistant-only response as closure
-- **WHEN** the authority-bound AOX formal master emits an assistant-only response after the exact task exits and positive/fault report state satisfy the close precondition, while the one active attempt still has no closure request
-- **THEN** the assistant message may persist under ordinary conversation semantics, but no closure request, task transition, reporter handoff, or acceptance eligibility is inferred from it; AOX policy does not reject narration or choose the next strategy
+- **WHEN** an agent emits an assistant-only response while one active attempt still has no closure request
+- **THEN** the assistant message may persist under ordinary conversation semantics, but no closure request, task transition, reporter handoff, or acceptance eligibility is inferred from it
 
-#### Scenario: Require one co-terminal final response
-- **WHEN** the master calls `scientific.attempt.close` without non-empty response text in that same provider response, or the close handler returns a failure
-- **THEN** no closure request or closure-bound companion message is created; only a successful close intent may bind and persist its companion response exactly once, while ordinary assistant responses remain independent conversation facts
+#### Scenario: Keep response delivery independent from closure
+- **WHEN** the canonical assignee calls `scientific.attempt.close` with empty, non-empty, or absent assistant response text
+- **THEN** closure authorization depends only on canonical scientific and mutation controls; the runtime creates no closure-bound message, document, digest, or response binding
 
 #### Scenario: Accept the canonical successful report publication states
 - **WHEN** the canonical reporting task has exactly one non-empty published draft linked to exactly one report whose domain status is `ready` or `published`
 - **THEN** the shared report-publication predicate treats the link as one successful publication in policy, workspace projection, live collection, and offline verification; no consumer may independently narrow the accepted report state or normalize away the persisted enum
 
-#### Scenario: Commit closure intent and its final response atomically
-- **WHEN** a successful `scientific.attempt.close` records its immutable intent and co-terminal response
-- **THEN** one SQLite transaction persists the closure request, deterministic conversation document, deterministic assistant inbox message, and immutable response binding, while any failure rolls all four records back; same-fact replay returns the existing binding without another message and different-response reuse fails closed
+#### Scenario: Commit only immutable closure intent
+- **WHEN** a successful `scientific.attempt.close` records its immutable intent
+- **THEN** Core persists the closure request without creating conversation records; same-fact replay returns the existing request and conflicting request identity fails closed
 
 #### Scenario: Expose canonical task-finish evidence references
 - **WHEN** an agent prepares or submits `task.finish.evidence_refs`
 - **THEN** the tool schema and every invalid-reference result expose the exact `<kind>:<id>` format and closed supported kinds, session repositories still resolve every supplied reference, and the runtime neither guesses a kind from an opaque id nor adds a prefix or substitutes a closure request for a finalized scientific closure
 
 #### Scenario: Require owner-authored formal task exits
-- **WHEN** an AOX formal close or final evidence collection evaluates the canonical researcher, executor, and reporter tasks
+- **WHEN** final AOX evidence collection evaluates the canonical researcher, executor, and reporter tasks
 - **THEN** each task has exactly one status-matching `task.finish` receipt whose `finished_by` equals that task's canonical `assigned_ref`; a master-authored proxy finish may remain valid generic V3 state but cannot satisfy AOX formal readiness or cutover evidence
 
 #### Scenario: Preserve a canonically ready positive execution handoff
-- **WHEN** the assigned positive executor's sealed current scientific selection evaluates `closure_request_ready=true` through the same canonical selection evaluator used by closure request, and the executor then requests `task.finish` with `blocked`, `failed`, or `cancelled`, including after its own `scientific.attempt.close` was correctly rejected at the master-only actor boundary
-- **THEN** the session-scoped formal precondition rejects that false negative task exit with `effect_certainty=no_effect` and `retry_eligibility=same_phase_safe`, exposes `completed` as the required execution exit plus master as the closure actor, permits the owner-authored completed exit, and does not infer readiness from sealed state alone
+- **WHEN** the assigned positive executor's current scientific selection evaluates `closure_request_ready=true`
+- **THEN** that executor may request immutable closure; after Host finalization, the ordinary source-bound wake lets the same assignee explicitly call `task.finish(status=completed)`, while closure itself never mutates the task
 
 #### Scenario: Preserve explicit blockers after post-seal readiness drift
 - **WHEN** the current selection remains sealed but canonical evaluation reports `closure_request_ready=false` because the operation universe, authority, process, continuation, disposition, adoption, materialization, workflow contract, or evidence closure no longer matches the sealed selection
-- **THEN** the AOX precondition does not force a `completed` execution exit, the attempted `blocked`, `failed`, or `cancelled` exit remains under ordinary task semantics, and the harness requires a new current selection or other agent-authored repair rather than treating stale seal state as scientific success
+- **THEN** closure fails closed, explicit `blocked`, `failed`, or `cancelled` task exit remains available under ordinary task semantics, and the harness requires a new current selection or other agent-authored repair rather than treating stale seal state as scientific success
 
 #### Scenario: Separate closure intent from writer-gated finalization
-- **WHEN** a sealed current selection is otherwise complete and the requesting master turn is the only reason inspection reports `selection_active_writers`
-- **THEN** inspection reports `closure_request_ready=true` and `closure_finalization_ready=false`, retains the legacy `closure_ready` field as Host-finalization readiness, permits the master to persist agent-authored closure intent in that turn, and requires Host finalization to wait until the requesting writer retires
+- **WHEN** a sealed current selection is otherwise complete and the requesting assignee turn is the only reason inspection reports `selection_active_writers`
+- **THEN** inspection reports `closure_request_ready=true` and `closure_finalization_ready=false`, retains the legacy `closure_ready` field as Host-finalization readiness, permits the assignee to persist agent-authored closure intent in that turn, and requires Host finalization to wait until the requesting writer retires
 
 #### Scenario: Keep capability inspection bounded
 - **WHEN** a capability invocation owns megabyte-scale documents, outputs, evidence, source, or gaps
@@ -441,7 +441,7 @@ A zero-record FASTA MAY pass artifact registration only when its bytes are exact
 
 A typed pipeline source snapshot directory SHALL retain `kind=code` and be sealed in evidence as canonical `openzyme_sealed_source_tree@1`. Entries MUST use unique sorted safe relative paths and bind file size, content digest, canonical base64 bytes, and a recomputable tree digest. The builder and offline verifier MUST public-safety scan every UTF-8 file after decoding its base64 bytes and MUST reject symlinks, non-regular files, empty trees, kind drift, private decoded source, non-canonical JSON/base64, per-file drift, tree drift, or a directory artifact without the exact source-snapshot semantic type/format.
 
-The public scanner MAY classify only the four exact AOX logical manifest suffixes `/provider_parsed/metadata.json`, `/provider_parsed/parsed_hits.csv`, `/provider_parsed/proteins.fasta`, and `/provider_parsed/sequences.fasta` as non-Host paths. For a sealed Python source identity only, it MAY recognize a lexical Python path-division attribute expression such as `Path("aox_hmm")/p.name` so `/p.name` is not treated as an absolute Unix locator. This MUST NOT create a directory-wide provider allowlist or a generic exception after `)`. Unknown suffixes, traversal, arbitrary text such as `prefix)/p.name`, `/home/...`, `/tmp/...`, and every other unrecognized absolute path MUST still fail closed. Existing logical `/workspace`, `/openzyme/control.sock`, and closed public `/v3/...` route handling remains unchanged.
+The public scanner MUST preserve exact declared source bytes and MUST reject secret-like material, private backend locators, private URLs, path escape, digest drift, and explicit private roots including `/home`, `/root`, `/tmp`, `/scratch`, `/cluster`, `/gpfs`, `/lustre`, `/mnt`, `/private`, Windows drives, UNC paths, and their supported encoded forms. It MUST NOT classify every slash-prefixed program token as a Host path: portable shebangs, application route syntax, custom logical selectors, and ordinary language path expressions remain source bytes unless they match a closed unsafe category. Existing logical `/workspace`, `/openzyme/control.sock`, and closed public `/v3/...` route handling remains unchanged.
 
 #### Scenario: Register a derived zero-record FASTA
 - **WHEN** a reached scientific branch legitimately derives no sequence records and registers exact-zero FASTA with the complete typed profile metadata
@@ -455,17 +455,17 @@ The public scanner MAY classify only the four exact AOX logical manifest suffixe
 - **WHEN** a bundle contains the executor or probe pipeline source snapshot
 - **THEN** the verifier decodes every canonical envelope entry and reproduces all per-file and source-tree digests before accepting source provenance
 
-#### Scenario: Preserve exact AOX logical selectors and Python path joins
-- **WHEN** a sealed Python source contains any of the four exact AOX provider-manifest suffixes and a real expression such as `Path("aox_hmm")/p.name`
-- **THEN** the scanner accepts those logical values without weakening digest, source-tree, or private-path verification
+#### Scenario: Preserve portable source syntax
+- **WHEN** a sealed Python source contains `#!/usr/bin/env python3`, application route syntax, a custom logical selector, or a real expression such as `Path("aox_hmm")/p.name`
+- **THEN** the scanner preserves those exact bytes without weakening secret, private-root, locator, traversal, or digest verification
 
-#### Scenario: Reject a lookalike absolute path
-- **WHEN** public evidence contains `/provider_parsed/private.txt`, traversal, `/home/...`, `/tmp/...`, `prefix)/p.name`, or an arbitrary `/p.name` outside the recognized sealed-source syntax
-- **THEN** public-safety verification fails as an unrecognized absolute path and the attempt is not cutover eligible
+#### Scenario: Reject an explicit private root
+- **WHEN** public evidence contains traversal, `/home/...`, `/tmp/...`, `/scratch/...`, a private Windows or UNC root, an encoded private root, a private locator, URL, or secret-like material
+- **THEN** public-safety verification fails with the applicable typed unsafe category and the attempt is not cutover eligible
 
 #### Scenario: Seal the known-positive probe source without path ambiguity
 - **WHEN** the known-positive probe supplies its NCBI and UniProt output directories
-- **THEN** the source uses complete `/workspace/output/provider/ncbi` and `/workspace/output/provider/uniprot` literals and passes the unchanged sealed-source public-safety verifier
+- **THEN** declared source bytes remain digest-bound and pass only when no secret, private root, private locator, path escape, or digest mismatch is present
 
 ### Requirement: Runtime lease liveness remains independent and fail closed
 During a file-backed runtime turn, every session-lease heartbeat and contention retry SHALL open and close a fresh repository connection rather than reuse the coordinator or blocking worker connection. Only SQLite `BUSY` and `LOCKED` MAY be retried, with capped backoff that continues only until success or the currently observed lease expiry. The repository SHALL acquire SQLite writer authority before calculating heartbeat/acquire timestamps; waiting across the old expiry MUST NOT revive a lease. Other exceptions SHALL propagate after scheduler cleanup restores the prior context and releases any releasable row, and confirmed or locally observed lease loss SHALL stop renewal. Any subsequent stale canonical write SHALL remain rejected and SHALL cross sandbox control, Pipeline SDK, and Host API as non-retryable `runtime_write_fenced` with a safe fixed public diagnostic.

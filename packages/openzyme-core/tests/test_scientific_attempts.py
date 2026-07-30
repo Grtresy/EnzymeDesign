@@ -49,7 +49,6 @@ from openzyme_core import ScientificClosureNotificationReason
 from openzyme_core import ScientificClosureNotificationSettlementError
 from openzyme_core import ScientificClosureNotificationVerifier
 from openzyme_core import SQLiteRepositoryProvider
-from openzyme_core import build_conversation_projection
 from openzyme_core import ScientificOperationSignature
 from openzyme_core import ScientificSelectionEvaluator
 from openzyme_core import ScientificSelectionIntegrityError
@@ -59,6 +58,7 @@ from openzyme_core import ScientificWorkflowRolePolicy
 from openzyme_core import ScientificWorkflowScopePolicy
 from openzyme_core import TaskBoardService
 from openzyme_core import TaskFinishCommand
+from openzyme_core import TaskMutation
 from openzyme_core import ToolInvocation
 from openzyme_core import ToolRegistry
 from openzyme_core import WorldInspectionService
@@ -67,6 +67,7 @@ from openzyme_core import canonical_digest
 from openzyme_core import connect_sqlite
 from openzyme_core import controlled_operation_artifact_set_digest
 from openzyme_core import register_scientific_attempt_tools
+from openzyme_core import register_task_board_tools
 from openzyme_core import resolve_scientific_attempt_lifecycle
 from openzyme_core import scientific_attempt_tool_descriptors
 from openzyme_domain import AgentMember
@@ -86,7 +87,6 @@ from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import ControlledOperationResultHandle
 from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import ExternalEffectCertainty
-from openzyme_domain import InboxParticipantKind
 from openzyme_domain import Lane
 from openzyme_domain import LaneStatus
 from openzyme_domain import MutationScopeKind
@@ -116,9 +116,7 @@ from openzyme_domain import TaskStatus
 
 
 NOW = "2026-07-23T00:00:00+00:00"
-EXPIRES = (
-    datetime.fromisoformat(NOW).astimezone(UTC) + timedelta(days=7)
-).isoformat()
+EXPIRES = (datetime.fromisoformat(NOW).astimezone(UTC) + timedelta(days=7)).isoformat()
 TEST_WORKFLOW_CONTRACT = ScientificWorkflowContract(
     schema_id="scientific_workflow_contract@2",
     contract_id="test_scientific_selection@2",
@@ -593,49 +591,6 @@ def _rollover_envelope(
     return ScientificAttemptScopeRolloverEnvelope(**values)
 
 
-def _persist_closure_response(
-    *,
-    repositories: CoreRepositories,
-    service: ScientificAttemptService,
-    request: ScientificAttemptClosureRequest,
-    content: str,
-) -> object:
-    response = service.prepare_closure_response(
-        request=request,
-        recipient="user:owner",
-        recipient_kind=InboxParticipantKind.USER.value,
-        assistant_response_text=content,
-    )
-    context = SessionRuntimeContext(
-        repositories=repositories,
-        event_sink=MemoryEventBus(),
-        snapshot=SessionRuntimeSnapshot.load(
-            repositories,
-            "sess_scientific",
-        ),
-        tool_registry=ToolRegistry(),
-        restore_focus=RestoreFocus(
-            task_id="task_scientific",
-            lane_id="lane_scientific",
-        ),
-        assistant_response_recipient="user:owner",
-        assistant_response_recipient_kind=InboxParticipantKind.USER,
-    )
-    with service.mutation_scopes.writer_turn(
-        session_id="sess_scientific",
-        owner_kind=MutationWriterKind.AGENT_TURN,
-        owner_ref=f"fixture:closure-response:{request.closure_request_id}",
-    ):
-        context.persist_outbound_assistant_message(
-            content=content,
-            message_id=response.message_id,
-            document_id=response.document_id,
-            created_at=response.created_at,
-        )
-        repositories.scientific_attempt_closure_responses.add(response)
-    return response
-
-
 def _close_existing_attempt(
     service: ScientificAttemptService,
     *,
@@ -698,9 +653,7 @@ def _scientific_recovery_facts(
         agent_id="agent:scientist",
         actor_kind="teammate",
         actor_role="scientist",
-        scientific_workflow_contract_registry=(
-            TEST_WORKFLOW_CONTRACT_REGISTRY
-        ),
+        scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
     )
     signal = AgentRuntimeSignal(
         signal_id="signal_scientific_recovery",
@@ -712,9 +665,7 @@ def _scientific_recovery_facts(
         status=AgentRuntimeSignalStatus.CLAIMED,
         created_at=NOW,
     )
-    return AgentRuntimeService(context)._scientific_selection_recovery_facts(
-        signal
-    )
+    return AgentRuntimeService(context)._scientific_selection_recovery_facts(signal)
 
 
 def _lifecycle_request(
@@ -760,7 +711,9 @@ def _lifecycle_closure(
     )
 
 
-def test_scientific_attempt_lifecycle_resolves_open_requested_closed_and_blocked() -> None:
+def test_scientific_attempt_lifecycle_resolves_open_requested_closed_and_blocked() -> (
+    None
+):
     _, service = _world()
     attempt = _grant_and_create(service)
     open_lifecycle = resolve_scientific_attempt_lifecycle(
@@ -891,9 +844,7 @@ def test_scientific_attempt_lifecycle_rejects_contradictory_records(
     assert invalid.value.details["mutation_applied"] is False
 
 
-def test_malformed_lifecycle_fails_projection_recovery_mutation_and_audit() -> (
-    None
-):
+def test_malformed_lifecycle_fails_projection_recovery_mutation_and_audit() -> None:
     repositories, service = _world()
     attempt = _grant_and_create(service)
     mismatched_request = replace(
@@ -918,9 +869,7 @@ def test_malformed_lifecycle_fails_projection_recovery_mutation_and_audit() -> (
             attempt.session_id,
             task_id=attempt.task_id,
         )
-    assert projection_error.value.error_code == (
-        "scientific_attempt_lifecycle_invalid"
-    )
+    assert projection_error.value.error_code == ("scientific_attempt_lifecycle_invalid")
     assert projection_error.value.details["integrity_reason"] == (
         "closure_request_attempt_mismatch"
     )
@@ -931,32 +880,24 @@ def test_malformed_lifecycle_fails_projection_recovery_mutation_and_audit() -> (
             sandbox_run_id="run_never_bound",
             actor_ref="agent:scientist",
         )
-    assert mutation_error.value.error_code == (
-        "scientific_attempt_lifecycle_invalid"
-    )
+    assert mutation_error.value.error_code == ("scientific_attempt_lifecycle_invalid")
     assert mutation_error.value.details["mutation_applied"] is False
 
     recovery = _scientific_recovery_facts(projected_repositories)
     assert recovery["status"] == "attempt_lifecycle_invalid"
     assert recovery["error_code"] == "scientific_attempt_lifecycle_invalid"
-    assert recovery["integrity_reason"] == (
-        "closure_request_attempt_mismatch"
-    )
+    assert recovery["integrity_reason"] == ("closure_request_attempt_mismatch")
 
     audit = RuntimeConsistencyService(
         projected_repositories,
-        scientific_workflow_contract_registry=(
-            TEST_WORKFLOW_CONTRACT_REGISTRY
-        ),
+        scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
     ).audit_session(attempt.session_id)
     lifecycle_warning = next(
         item
         for item in audit.warnings
         if item.code == "scientific_attempt_lifecycle_invalid"
     )
-    assert lifecycle_warning.runtime_status == (
-        "closure_request_attempt_mismatch"
-    )
+    assert lifecycle_warning.runtime_status == ("closure_request_attempt_mismatch")
 
 
 def _seed_legacy_split_adoption_facts(
@@ -981,16 +922,12 @@ def _seed_legacy_split_adoption_facts(
     repositories = service.repositories
     attempt = repositories.scientific_attempts.get(selection.attempt_id)
     assert attempt is not None
-    execution = (
-        repositories.controlled_operation_executions.get_by_operation_id(
-            operation.operation_id
-        )
+    execution = repositories.controlled_operation_executions.get_by_operation_id(
+        operation.operation_id
     )
     assert execution is not None
     assert execution.result_handle_ref is not None
-    result = repositories.controlled_operation_results.get(
-        execution.result_handle_ref
-    )
+    result = repositories.controlled_operation_results.get(execution.result_handle_ref)
     assert result is not None
     digest = request_digest or canonical_digest(
         {
@@ -1065,9 +1002,7 @@ def _seed_legacy_split_adoption_facts(
     return disposition, adoption
 
 
-def test_atomic_operation_adoption_commits_both_facts_and_replays_exactly() -> (
-    None
-):
+def test_atomic_operation_adoption_commits_both_facts_and_replays_exactly() -> None:
     repositories, service = _world()
     attempt = _grant_and_create(service)
     operation, _ = _add_occurrence(
@@ -1120,9 +1055,7 @@ def test_atomic_operation_adoption_commits_both_facts_and_replays_exactly() -> (
     ) == (first.adoption,)
 
 
-def test_atomic_operation_adoption_tool_returns_both_canonical_identities() -> (
-    None
-):
+def test_atomic_operation_adoption_tool_returns_both_canonical_identities() -> None:
     repositories, service = _world()
     attempt = _grant_and_create(service)
     operation, _ = _add_occurrence(
@@ -1154,9 +1087,7 @@ def test_atomic_operation_adoption_tool_returns_both_canonical_identities() -> (
         agent_id="agent:scientist",
         actor_kind="teammate",
         actor_role="scientist",
-        scientific_workflow_contract_registry=(
-            TEST_WORKFLOW_CONTRACT_REGISTRY
-        ),
+        scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
     )
 
     result = registry.dispatch(
@@ -1185,21 +1116,25 @@ def test_atomic_operation_adoption_tool_returns_both_canonical_identities() -> (
     assert payload["workflow_role"] == "final"
     assert payload["disposition_id"].startswith("disposition_")
     assert payload["adoption_id"].startswith("adoption_")
-    assert len(
-        repositories.scientific_dispositions.list_by_selection(
-            selection.selection_id
+    assert (
+        len(
+            repositories.scientific_dispositions.list_by_selection(
+                selection.selection_id
+            )
         )
-    ) == 1
-    assert len(
-        repositories.scientific_effect_adoptions.list_by_selection(
-            selection.selection_id
+        == 1
+    )
+    assert (
+        len(
+            repositories.scientific_effect_adoptions.list_by_selection(
+                selection.selection_id
+            )
         )
-    ) == 1
+        == 1
+    )
 
 
-def test_atomic_operation_adoption_reports_exact_current_head_without_repair() -> (
-    None
-):
+def test_atomic_operation_adoption_reports_exact_current_head_without_repair() -> None:
     repositories, service = _world()
     attempt = _grant_and_create(service)
     operation, _ = _add_occurrence(
@@ -1214,9 +1149,7 @@ def test_atomic_operation_adoption_reports_exact_current_head_without_repair() -
         actor_ref="agent:scientist",
         idempotency_key="selection-atomic-stale-head-first",
     )
-    first_head = repositories.scientific_selections.get_head(
-        attempt.attempt_id
-    )
+    first_head = repositories.scientific_selections.get_head(attempt.attempt_id)
     assert first_head is not None
     current = service.begin_selection(
         attempt_id=attempt.attempt_id,
@@ -1239,25 +1172,16 @@ def test_atomic_operation_adoption_reports_exact_current_head_without_repair() -
     assert rejected.value.error_code == "selection_not_current_head"
     assert rejected.value.details["selection_id"] == first.selection_id
     assert rejected.value.details["selection_revision"] == 1
-    assert rejected.value.details["current_selection_id"] == (
-        current.selection_id
-    )
+    assert rejected.value.details["current_selection_id"] == (current.selection_id)
     assert rejected.value.details["current_selection_revision"] == 2
     assert rejected.value.details["head_state_version"] == 2
-    assert rejected.value.details["retry_boundary"] == (
-        "refresh_exact_selection"
-    )
+    assert rejected.value.details["retry_boundary"] == ("refresh_exact_selection")
     assert rejected.value.details["mutation_applied"] is False
     assert (
-        repositories.scientific_dispositions.list_by_selection(
-            first.selection_id
-        )
-        == ()
+        repositories.scientific_dispositions.list_by_selection(first.selection_id) == ()
     )
     assert (
-        repositories.scientific_effect_adoptions.list_by_selection(
-            first.selection_id
-        )
+        repositories.scientific_effect_adoptions.list_by_selection(first.selection_id)
         == ()
     )
 
@@ -1316,9 +1240,7 @@ def test_atomic_operation_adoption_rejects_invalid_role_without_partial_state(
     assert rejected.value.details["mutation_applied"] is False
     assert "recommended_actions" not in rejected.value.details
     assert (
-        repositories.scientific_dispositions.list_by_selection(
-            selection.selection_id
-        )
+        repositories.scientific_dispositions.list_by_selection(selection.selection_id)
         == ()
     )
     assert (
@@ -1358,16 +1280,12 @@ def test_atomic_operation_adoption_rejects_unknown_effect_without_partial_state(
         )
 
     assert rejected.value.error_code == "effect_adoption_not_terminal_known"
-    assert rejected.value.details["retry_boundary"] == (
-        "reconcile_external_effect"
-    )
+    assert rejected.value.details["retry_boundary"] == ("reconcile_external_effect")
     assert "selection_unknown_effect" in rejected.value.details["blocker_codes"]
     assert rejected.value.details["mutation_applied"] is False
     assert "recommended_actions" not in rejected.value.details
     assert (
-        repositories.scientific_dispositions.list_by_selection(
-            selection.selection_id
-        )
+        repositories.scientific_dispositions.list_by_selection(selection.selection_id)
         == ()
     )
     assert (
@@ -1419,13 +1337,9 @@ def test_atomic_operation_adoption_revalidates_canonical_preconditions_in_transa
         succeeded=True,
         effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
         approval_id=(
-            "approval_pending"
-            if precondition == "approval_invalid"
-            else None
+            "approval_pending" if precondition == "approval_invalid" else None
         ),
-        approval_state=(
-            "pending" if precondition == "approval_invalid" else None
-        ),
+        approval_state=("pending" if precondition == "approval_invalid" else None),
         approval_digest=None,
     )
     if precondition == "result_missing":
@@ -1439,9 +1353,7 @@ def test_atomic_operation_adoption_revalidates_canonical_preconditions_in_transa
     elif precondition == "artifact_set_invalid":
 
         def reject_artifact_set(_: Any) -> None:
-            raise ImmutableIdentityConflictError(
-                "injected artifact-set mismatch"
-            )
+            raise ImmutableIdentityConflictError("injected artifact-set mismatch")
 
         service.repositories = replace(
             repositories,
@@ -1471,9 +1383,7 @@ def test_atomic_operation_adoption_revalidates_canonical_preconditions_in_transa
     assert rejected.value.details["requested_role"] == "final"
     assert rejected.value.details["mutation_applied"] is False
     assert (
-        repositories.scientific_dispositions.list_by_selection(
-            selection.selection_id
-        )
+        repositories.scientific_dispositions.list_by_selection(selection.selection_id)
         == ()
     )
     assert (
@@ -1501,9 +1411,7 @@ def test_atomic_operation_adoption_rolls_back_when_second_record_fails() -> None
     )
 
     def reject_adoption(_: ScientificEffectAdoption) -> None:
-        raise ScientificAttemptIdentityConflictError(
-            "injected second-record conflict"
-        )
+        raise ScientificAttemptIdentityConflictError("injected second-record conflict")
 
     service.repositories = replace(
         repositories,
@@ -1530,9 +1438,7 @@ def test_atomic_operation_adoption_rolls_back_when_second_record_fails() -> None
     assert rejected.value.details["current_adoption"] is None
     assert rejected.value.details["mutation_applied"] is False
     assert (
-        repositories.scientific_dispositions.list_by_selection(
-            selection.selection_id
-        )
+        repositories.scientific_dispositions.list_by_selection(selection.selection_id)
         == ()
     )
     assert (
@@ -1576,9 +1482,7 @@ def test_atomic_operation_adoption_rejects_partial_or_mismatched_replay(
         }
     )
     seeded_digest = (
-        request_digest
-        if replay_state == "partial"
-        else "sha256:" + ("f" * 64)
+        request_digest if replay_state == "partial" else "sha256:" + ("f" * 64)
     )
     seeded = _seed_legacy_split_adoption_facts(
         service,
@@ -1611,9 +1515,12 @@ def test_atomic_operation_adoption_rejects_partial_or_mismatched_replay(
         selection.selection_id
     ) == (seeded[0],)
     expected_adoptions = () if seeded[1] is None else (seeded[1],)
-    assert repositories.scientific_effect_adoptions.list_by_selection(
-        selection.selection_id
-    ) == expected_adoptions
+    assert (
+        repositories.scientific_effect_adoptions.list_by_selection(
+            selection.selection_id
+        )
+        == expected_adoptions
+    )
 
 
 def test_new_contract_hides_and_rejects_legacy_adoption_writes() -> None:
@@ -1655,9 +1562,7 @@ def test_new_contract_hides_and_rejects_legacy_adoption_writes() -> None:
             actor_ref="agent:scientist",
             idempotency_key="legacy-adoption-rejected",
         )
-    assert adoption_rejected.value.error_code == (
-        "scientific_legacy_adoption_disabled"
-    )
+    assert adoption_rejected.value.error_code == ("scientific_legacy_adoption_disabled")
     assert adoption_rejected.value.details["mutation_applied"] is False
 
     descriptors = {
@@ -1673,9 +1578,9 @@ def test_new_contract_hides_and_rejects_legacy_adoption_writes() -> None:
         "reason_code",
         "idempotency_key",
     ]
-    assert descriptors["scientific.operation.disposition"].input_schema[
-        "properties"
-    ]["kind"]["enum"] == ["superseded", "failed", "abandoned"]
+    assert descriptors["scientific.operation.disposition"].input_schema["properties"][
+        "kind"
+    ]["enum"] == ["superseded", "failed", "abandoned"]
 
     registry = ToolRegistry()
     register_scientific_attempt_tools(registry)
@@ -1694,9 +1599,7 @@ def test_new_contract_hides_and_rejects_legacy_adoption_writes() -> None:
         agent_id="agent:scientist",
         actor_kind="teammate",
         actor_role="scientist",
-        scientific_workflow_contract_registry=(
-            TEST_WORKFLOW_CONTRACT_REGISTRY
-        ),
+        scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
     )
     with service.mutation_scopes.writer_turn(
         session_id=attempt.session_id,
@@ -1722,9 +1625,7 @@ def test_new_contract_hides_and_rejects_legacy_adoption_writes() -> None:
     assert hidden.status == "unknown_tool"
     assert hidden.error_code == "unknown_tool"
     assert (
-        repositories.scientific_dispositions.list_by_selection(
-            selection.selection_id
-        )
+        repositories.scientific_dispositions.list_by_selection(selection.selection_id)
         == ()
     )
     assert (
@@ -1761,9 +1662,7 @@ def test_historical_split_adoption_records_remain_exactly_readable() -> None:
     assert disposition is not None
     assert adoption is not None
 
-    resolved_head = repositories.scientific_selections.resolve_head(
-        attempt.attempt_id
-    )
+    resolved_head = repositories.scientific_selections.resolve_head(attempt.attempt_id)
     assert resolved_head is not None
     historical_attempt = replace(
         attempt,
@@ -1812,8 +1711,8 @@ def test_historical_split_adoption_records_remain_exactly_readable() -> None:
         "workflow_role": "final",
     }
     assert page["contract"]["contract_id"] == "test_scientific_selection@1"
-    assert "workflow_contract_historical_read_only" in (
-        page["readiness"]["blocker_codes"]
+    assert (
+        "workflow_contract_historical_read_only" in (page["readiness"]["blocker_codes"])
     )
     assert repositories.scientific_dispositions.list_by_selection(
         selection.selection_id
@@ -1845,16 +1744,12 @@ def test_authorization_is_atomic_bounded_and_idempotent() -> None:
         idempotency_key=attempt.idempotency_key,
     )
     assert replay.attempt_id == attempt.attempt_id
-    authority = repositories.scientific_attempt_authorizations.get(
-        attempt.envelope_id
-    )
+    authority = repositories.scientific_attempt_authorizations.get(attempt.envelope_id)
     assert authority is not None
     assert authority.consumed_attempts == 1
     assert authority.reserved_micu == 10
 
-    with pytest.raises(
-        ScientificAttemptError, match="not authorized"
-    ) as forbidden:
+    with pytest.raises(ScientificAttemptError, match="not authorized") as forbidden:
         service.create_attempt(
             envelope_id=attempt.envelope_id,
             session_id=attempt.session_id,
@@ -1922,10 +1817,7 @@ def test_authorization_and_admission_reject_boolean_resource_values() -> None:
             actor_ref="agent:scientist",
             idempotency_key="attempt-bool",
         )
-    assert (
-        invalid_admission.value.error_code
-        == "authorization_resource_invalid"
-    )
+    assert invalid_admission.value.error_code == "authorization_resource_invalid"
 
 
 @pytest.mark.parametrize(
@@ -1999,17 +1891,12 @@ def test_agent_requests_admission_then_host_rolls_scope_after_writer_retires() -
             service.finalize_attempt_admission(
                 admission_request_id=request.admission_request_id
             )
-        assert (
-            active_writer.value.error_code
-            == "attempt_admission_writer_still_active"
-        )
+        assert active_writer.value.error_code == "attempt_admission_writer_still_active"
 
     attempt = service.finalize_attempt_admission(
         admission_request_id=request.admission_request_id
     )
-    sealed_session_scope = repositories.mutation_scopes.get(
-        session_scope.scope_id
-    )
+    sealed_session_scope = repositories.mutation_scopes.get(session_scope.scope_id)
     attempt_scope = repositories.mutation_scopes.get(attempt.mutation_scope_id)
     assert sealed_session_scope is not None
     assert sealed_session_scope.state is MutationScopeState.SEALED
@@ -2049,9 +1936,7 @@ def test_concurrent_admission_finalizers_consume_one_envelope_slot(
             worker_service = ScientificAttemptService(
                 CoreRepositories.from_connection(worker_connection),
                 now=lambda: NOW,
-                workflow_contract_registry=(
-                    TEST_WORKFLOW_CONTRACT_REGISTRY
-                ),
+                workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
             )
             try:
                 attempt = worker_service.finalize_attempt_admission(
@@ -2073,9 +1958,9 @@ def test_concurrent_admission_finalizers_consume_one_envelope_slot(
 
     assert [kind for kind, _ in outcomes].count("created") == 1
     assert [kind for kind, _ in outcomes].count("error") == 1
-    assert {
-        detail for kind, detail in outcomes if kind == "error"
-    } == {"authorization_exhausted"}
+    assert {detail for kind, detail in outcomes if kind == "error"} == {
+        "authorization_exhausted"
+    }
 
     verification_connection = connect_sqlite(str(database_path), enable_wal=True)
     try:
@@ -2085,10 +1970,8 @@ def test_concurrent_admission_finalizers_consume_one_envelope_slot(
         attempts = verification_repositories.scientific_attempts.list_by_session(
             "sess_scientific"
         )
-        consumed = (
-            verification_repositories.scientific_attempt_authorizations.get(
-                authority.envelope_id
-            )
+        consumed = verification_repositories.scientific_attempt_authorizations.get(
+            authority.envelope_id
         )
         assert len(attempts) == 1
         assert consumed is not None
@@ -2129,12 +2012,8 @@ def test_file_backed_closure_rollover_is_atomic_to_concurrent_reader(
             enable_wal=True,
         )
         try:
-            worker_repositories = CoreRepositories.from_connection(
-                worker_connection
-            )
-            closure_repository = (
-                worker_repositories.scientific_attempt_closures
-            )
+            worker_repositories = CoreRepositories.from_connection(worker_connection)
+            closure_repository = worker_repositories.scientific_attempt_closures
 
             def add_then_pause(record: Any) -> Any:
                 stored = closure_repository.add(record)
@@ -2323,9 +2202,7 @@ def test_runtime_consistency_missing_task_uses_effective_closed_status() -> None
 
     audit = RuntimeConsistencyService(
         projected_repositories,
-        scientific_workflow_contract_registry=(
-            TEST_WORKFLOW_CONTRACT_REGISTRY
-        ),
+        scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
     ).audit_session("sess_scientific")
 
     warning = next(
@@ -2433,16 +2310,13 @@ def test_terminal_scope_rollover_projection_is_monotonic() -> None:
     assert closure.attempt_id == attempt.attempt_id
     post_open = projector.project(_rollover_envelope(attempt))
     assert (
-        post_open.phase
-        is ScientificAttemptScopeRolloverPhase.POST_CLOSURE_SCOPE_OPEN
+        post_open.phase is ScientificAttemptScopeRolloverPhase.POST_CLOSURE_SCOPE_OPEN
     )
     assert post_open.attempt_scope_state is MutationScopeState.SEALED
     assert post_open.post_scope_id == f"mutation_scope_post_{attempt.attempt_id}"
     assert post_open.open_scope_count == 1
 
-    stored_attempt_scope = repositories.mutation_scopes.get(
-        attempt.mutation_scope_id
-    )
+    stored_attempt_scope = repositories.mutation_scopes.get(attempt.mutation_scope_id)
     assert stored_attempt_scope is not None
     assert stored_attempt_scope.state is MutationScopeState.SEALED
 
@@ -2494,9 +2368,7 @@ def test_file_backed_finalization_and_first_observer_serialize_into_post_scope(
 
     def observe() -> str:
         observer_started.set()
-        factory = MutationWriterTurnFactory(
-            repository_scope_factory=repository_scope
-        )
+        factory = MutationWriterTurnFactory(repository_scope_factory=repository_scope)
         with factory.open(
             session_id=attempt.session_id,
             owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
@@ -2518,29 +2390,21 @@ def test_file_backed_finalization_and_first_observer_serialize_into_post_scope(
     with provider.read() as reader:
         repositories = reader.repositories
         closure = repositories.scientific_attempt_closures.get(closure_id)
-        scopes = repositories.mutation_scopes.list_by_session(
-            attempt.session_id
-        )
-        attempt_scope = repositories.mutation_scopes.get(
-            attempt.mutation_scope_id
-        )
+        scopes = repositories.mutation_scopes.list_by_session(attempt.session_id)
+        attempt_scope = repositories.mutation_scopes.get(attempt.mutation_scope_id)
         post_scope = next(
             scope
             for scope in scopes
             if scope.parent_scope_id == attempt.mutation_scope_id
         )
-        projection = ScientificAttemptScopeRolloverProjector(
-            repositories
-        ).project(_rollover_envelope(attempt))
-        observer_writers = repositories.mutation_writers.list_all(
-            post_scope.scope_id
+        projection = ScientificAttemptScopeRolloverProjector(repositories).project(
+            _rollover_envelope(attempt)
         )
+        observer_writers = repositories.mutation_writers.list_all(post_scope.scope_id)
         active_writers = [
             writer
             for scope in scopes
-            for writer in repositories.mutation_writers.list_active(
-                scope.scope_id
-            )
+            for writer in repositories.mutation_writers.list_active(scope.scope_id)
         ]
 
     assert closure is not None
@@ -2550,8 +2414,7 @@ def test_file_backed_finalization_and_first_observer_serialize_into_post_scope(
     assert post_scope.scope_id == f"mutation_scope_post_{attempt.attempt_id}"
     assert post_scope.state is MutationScopeState.OPEN
     assert (
-        projection.phase
-        is ScientificAttemptScopeRolloverPhase.POST_CLOSURE_SCOPE_OPEN
+        projection.phase is ScientificAttemptScopeRolloverPhase.POST_CLOSURE_SCOPE_OPEN
     )
     assert len(observer_writers) == 1
     assert observer_writers[0].state.is_terminal
@@ -2576,17 +2439,13 @@ def test_terminal_scope_rollover_rejects_drifted_post_scope_identity(
         service,
         suffix=f"rollover-wrong-{field}",
     )
-    service.finalize_closure_request(
-        closure_request_id=request.closure_request_id
-    )
+    service.finalize_closure_request(closure_request_id=request.closure_request_id)
     scopes = repositories.mutation_scopes.list_by_session(attempt.session_id)
     attempt_scope = next(
         scope for scope in scopes if scope.scope_id == attempt.mutation_scope_id
     )
     post_scope = next(
-        scope
-        for scope in scopes
-        if scope.parent_scope_id == attempt.mutation_scope_id
+        scope for scope in scopes if scope.parent_scope_id == attempt.mutation_scope_id
     )
     projected_scopes = _RepositoryProxy(
         repositories.mutation_scopes,
@@ -2600,12 +2459,10 @@ def test_terminal_scope_rollover_rejects_drifted_post_scope_identity(
         mutation_scopes=projected_scopes,
     )
 
-    with pytest.raises(
-        ScientificAttemptScopeRolloverIntegrityError
-    ) as caught:
-        ScientificAttemptScopeRolloverProjector(
-            projected_repositories
-        ).project(_rollover_envelope(attempt))
+    with pytest.raises(ScientificAttemptScopeRolloverIntegrityError) as caught:
+        ScientificAttemptScopeRolloverProjector(projected_repositories).project(
+            _rollover_envelope(attempt)
+        )
     assert (
         caught.value.reason
         is ScientificAttemptScopeRolloverReason.POST_SCOPE_IDENTITY_INVALID
@@ -2618,17 +2475,11 @@ def test_terminal_scope_rollover_rejects_binding_and_topology_ambiguity() -> Non
         service,
         suffix="rollover-ambiguous",
     )
-    service.finalize_closure_request(
-        closure_request_id=request.closure_request_id
-    )
+    service.finalize_closure_request(closure_request_id=request.closure_request_id)
     projector = ScientificAttemptScopeRolloverProjector(repositories)
 
-    with pytest.raises(
-        ScientificAttemptScopeRolloverIntegrityError
-    ) as binding_error:
-        projector.project(
-            _rollover_envelope(attempt, root_ref="attempts/wrong-root")
-        )
+    with pytest.raises(ScientificAttemptScopeRolloverIntegrityError) as binding_error:
+        projector.project(_rollover_envelope(attempt, root_ref="attempts/wrong-root"))
     assert (
         binding_error.value.reason
         is ScientificAttemptScopeRolloverReason.ATTEMPT_BINDING_INVALID
@@ -2636,9 +2487,7 @@ def test_terminal_scope_rollover_rejects_binding_and_topology_ambiguity() -> Non
 
     scopes = repositories.mutation_scopes.list_by_session(attempt.session_id)
     post_scope = next(
-        scope
-        for scope in scopes
-        if scope.parent_scope_id == attempt.mutation_scope_id
+        scope for scope in scopes if scope.parent_scope_id == attempt.mutation_scope_id
     )
     projected_scopes = _RepositoryProxy(
         repositories.mutation_scopes,
@@ -2655,12 +2504,10 @@ def test_terminal_scope_rollover_rejects_binding_and_topology_ambiguity() -> Non
         repositories,
         mutation_scopes=projected_scopes,
     )
-    with pytest.raises(
-        ScientificAttemptScopeRolloverIntegrityError
-    ) as topology_error:
-        ScientificAttemptScopeRolloverProjector(
-            projected_repositories
-        ).project(_rollover_envelope(attempt))
+    with pytest.raises(ScientificAttemptScopeRolloverIntegrityError) as topology_error:
+        ScientificAttemptScopeRolloverProjector(projected_repositories).project(
+            _rollover_envelope(attempt)
+        )
     assert (
         topology_error.value.reason
         is ScientificAttemptScopeRolloverReason.SCOPE_TOPOLOGY_AMBIGUOUS
@@ -2674,17 +2521,13 @@ def test_terminal_scope_rollover_rejects_lifecycle_scope_mismatch() -> None:
         service,
         suffix="rollover-lifecycle-mismatch",
     )
-    service.finalize_closure_request(
-        closure_request_id=request.closure_request_id
-    )
+    service.finalize_closure_request(closure_request_id=request.closure_request_id)
     scopes = repositories.mutation_scopes.list_by_session(attempt.session_id)
     attempt_scope = next(
         scope for scope in scopes if scope.scope_id == attempt.mutation_scope_id
     )
     post_scope = next(
-        scope
-        for scope in scopes
-        if scope.parent_scope_id == attempt.mutation_scope_id
+        scope for scope in scopes if scope.parent_scope_id == attempt.mutation_scope_id
     )
     projected_scopes = _RepositoryProxy(
         repositories.mutation_scopes,
@@ -2698,31 +2541,23 @@ def test_terminal_scope_rollover_rejects_lifecycle_scope_mismatch() -> None:
         mutation_scopes=projected_scopes,
     )
 
-    with pytest.raises(
-        ScientificAttemptScopeRolloverIntegrityError
-    ) as caught:
-        ScientificAttemptScopeRolloverProjector(
-            projected_repositories
-        ).project(_rollover_envelope(attempt))
+    with pytest.raises(ScientificAttemptScopeRolloverIntegrityError) as caught:
+        ScientificAttemptScopeRolloverProjector(projected_repositories).project(
+            _rollover_envelope(attempt)
+        )
     assert (
         caught.value.reason
         is ScientificAttemptScopeRolloverReason.LIFECYCLE_SCOPE_MISMATCH
     )
 
 
-def test_exact_closure_notification_settles_without_model_or_duplicate_response(
+def test_exact_closure_notification_for_terminal_task_uses_stale_signal_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repositories, service = _world()
     attempt, request = _ready_closure_request(
         service,
         suffix="closure-notification-settlement",
-    )
-    response = _persist_closure_response(
-        repositories=repositories,
-        service=service,
-        request=request,
-        content="The exact scientific attempt is complete.",
     )
     closure = service.finalize_closure_request(
         closure_request_id=request.closure_request_id
@@ -2767,15 +2602,9 @@ def test_exact_closure_notification_settles_without_model_or_duplicate_response(
         tool_registry=ToolRegistry(),
         restore_focus=RestoreFocus(),
         model_factory=object(),
-        scientific_workflow_contract_registry=(
-            TEST_WORKFLOW_CONTRACT_REGISTRY
-        ),
+        scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
     )
     runtime = AgentRuntimeService(context)
-    conversation_before = build_conversation_projection(
-        repositories,
-        attempt.session_id,
-    )
     with service.mutation_scopes.writer_turn(
         session_id=attempt.session_id,
         owner_kind=MutationWriterKind.RUNTIME_COMMAND,
@@ -2796,31 +2625,101 @@ def test_exact_closure_notification_settles_without_model_or_duplicate_response(
 
     assert outcome.ok is True
     assert outcome.signal.status is AgentRuntimeSignalStatus.COMPLETED
-    assert outcome.teammate_status == (
-        "scientific_closure_notification_settled"
-    )
+    assert outcome.teammate_status == "stale_signal_ignored"
     assert outcome.settlement is not None
     assert outcome.settlement.disposition is (
-        AgentRuntimeSettlementDisposition
-        .SCIENTIFIC_CLOSURE_NOTIFICATION_SETTLED
+        AgentRuntimeSettlementDisposition.SIGNAL_COMPLETED
     )
-    assert build_conversation_projection(
-        repositories,
-        attempt.session_id,
-    ) == conversation_before
+    assert repositories.scientific_attempt_closures.get(closure.closure_id) == closure
     assert (
-        repositories.scientific_attempt_closures.get(closure.closure_id)
-        == closure
+        repositories.runtime_signals.list_pending_by_session(attempt.session_id) == []
     )
-    assert (
-        repositories.scientific_attempt_closure_responses
-        .get_by_closure_request(request.closure_request_id)
-        == response
+    assert not any(
+        event.event_type.startswith("scientific.closure_notification.settled")
+        for event in event_bus.events
     )
-    assert repositories.runtime_signals.list_pending_by_session(
-        attempt.session_id
-    ) == []
-    assert any(
+
+
+def test_exact_closure_notification_wakes_open_task_through_ordinary_model_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repositories, service = _world()
+    attempt, request = _ready_closure_request(
+        service,
+        suffix="closure-notification-ordinary-wake",
+    )
+    closure = service.finalize_closure_request(
+        closure_request_id=request.closure_request_id
+    )
+    calls: list[str] = []
+
+    def run_teammate(
+        runtime_context: SessionRuntimeContext,
+        **_kwargs: Any,
+    ) -> HarnessResult:
+        calls.append("model")
+        return HarnessResult(
+            session_id=attempt.session_id,
+            status=HarnessStatus.COMPLETED,
+            snapshot=SessionRuntimeSnapshot.load(
+                runtime_context.repositories,
+                attempt.session_id,
+            ),
+            events=(),
+            outputs=("Closure observed; task completion remains explicit.",),
+            tool_results=(),
+        )
+
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "run_teammate_loop",
+        run_teammate,
+    )
+    event_bus = MemoryEventBus()
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=event_bus,
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            attempt.session_id,
+        ),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        model_factory=object(),
+        scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
+    )
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.RUNTIME_COMMAND,
+        owner_ref="fixture:closure-notification-ordinary-wake",
+    ):
+        signal = AgentRuntimeService(context).enqueue_signal(
+            session_id=attempt.session_id,
+            agent_id=request.actor_ref,
+            task_id=attempt.task_id,
+            lane_id=attempt.lane_id,
+            correlation_id=closure.closure_id,
+            reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+            source_ref=closure.closure_id,
+            notify=False,
+        )
+        assert signal is not None
+        outcome = AgentRuntimeService(context).wake_agent(
+            signal,
+            max_steps=1,
+        )
+
+    assert calls == ["model"]
+    assert outcome.ok is True
+    assert outcome.signal.status is AgentRuntimeSignalStatus.COMPLETED
+    assert outcome.settlement is not None
+    assert outcome.settlement.disposition is (
+        AgentRuntimeSettlementDisposition.SIGNAL_COMPLETED
+    )
+    task = repositories.tasks.get(attempt.task_id)
+    assert task is not None
+    assert task.status is TaskStatus.IN_PROGRESS
+    assert not any(
         event.event_type == "scientific.closure_notification.settled"
         for event in event_bus.events
     )
@@ -2902,9 +2801,7 @@ def test_non_closure_manual_resume_keeps_master_model_path(
             correlation_id="corr_ordinary_resume",
             reason=AgentRuntimeSignalReason.MANUAL_RESUME,
             source_ref=(
-                attempt.attempt_id
-                if source_ref == "scientific_attempt"
-                else source_ref
+                attempt.attempt_id if source_ref == "scientific_attempt" else source_ref
             ),
             notify=False,
         )
@@ -2927,12 +2824,6 @@ def test_closure_notification_binding_drift_fails_closed_before_model(
     attempt, request = _ready_closure_request(
         service,
         suffix="closure-notification-drift",
-    )
-    _persist_closure_response(
-        repositories=repositories,
-        service=service,
-        request=request,
-        content="Closure response is already durable.",
     )
     closure = service.finalize_closure_request(
         closure_request_id=request.closure_request_id
@@ -2996,15 +2887,11 @@ def test_closure_notification_binding_drift_fails_closed_before_model(
 
     assert outcome.ok is False
     assert outcome.signal.status is AgentRuntimeSignalStatus.FAILED
-    assert outcome.signal.error_message == (
-        "scientific_closure_notification_invalid"
-    )
-    assert outcome.teammate_status == (
-        "scientific_closure_notification_invalid"
-    )
+    assert outcome.signal.error_message == ("scientific_closure_notification_invalid")
+    assert outcome.teammate_status == ("scientific_closure_notification_invalid")
 
 
-def test_closure_notification_verifier_rejects_missing_source_and_response() -> (
+def test_closure_notification_verifier_accepts_exact_binding_and_rejects_missing_source() -> (
     None
 ):
     repositories, service = _world()
@@ -3016,7 +2903,7 @@ def test_closure_notification_verifier_rejects_missing_source_and_response() -> 
         closure_request_id=request.closure_request_id
     )
     claimed = AgentRuntimeSignal(
-        signal_id="signal_closure_response_invalid",
+        signal_id="signal_closure_binding_exact",
         session_id=attempt.session_id,
         agent_id=request.actor_ref,
         task_id=attempt.task_id,
@@ -3030,18 +2917,15 @@ def test_closure_notification_verifier_rejects_missing_source_and_response() -> 
         claimed_by="runtime:test",
         attempt_count=1,
     )
-    with pytest.raises(
-        ScientificClosureNotificationSettlementError
-    ) as response_error:
-        ScientificClosureNotificationVerifier(repositories).verify(claimed)
-    assert (
-        response_error.value.reason
-        is ScientificClosureNotificationReason.RESPONSE_INVALID
-    )
+    proof = ScientificClosureNotificationVerifier(repositories).verify(claimed)
+    assert proof is not None
+    assert proof.signal == claimed
+    assert proof.task.task_id == attempt.task_id
+    assert proof.attempt == attempt
+    assert proof.closure_request == request
+    assert proof.closure == closure
 
-    with pytest.raises(
-        ScientificClosureNotificationSettlementError
-    ) as source_error:
+    with pytest.raises(ScientificClosureNotificationSettlementError) as source_error:
         ScientificClosureNotificationVerifier(repositories).verify(
             replace(
                 claimed,
@@ -3050,8 +2934,7 @@ def test_closure_notification_verifier_rejects_missing_source_and_response() -> 
             )
         )
     assert (
-        source_error.value.reason
-        is ScientificClosureNotificationReason.SOURCE_MISSING
+        source_error.value.reason is ScientificClosureNotificationReason.SOURCE_MISSING
     )
 
 
@@ -3085,21 +2968,15 @@ def test_closure_rollover_failure_rolls_back_and_replays_cleanly(
             )
 
     assert (
-        repositories.scientific_attempt_closures.get_by_attempt(
-            attempt.attempt_id
-        )
+        repositories.scientific_attempt_closures.get_by_attempt(attempt.attempt_id)
         is None
     )
-    rolled_back_scope = repositories.mutation_scopes.get(
-        attempt.mutation_scope_id
-    )
+    rolled_back_scope = repositories.mutation_scopes.get(attempt.mutation_scope_id)
     assert rolled_back_scope is not None
     assert rolled_back_scope.state is MutationScopeState.OPEN
     assert [
         scope
-        for scope in repositories.mutation_scopes.list_by_session(
-            attempt.session_id
-        )
+        for scope in repositories.mutation_scopes.list_by_session(attempt.session_id)
         if scope.parent_scope_id == attempt.mutation_scope_id
     ] == []
 
@@ -3113,9 +2990,7 @@ def test_closure_rollover_failure_rolls_back_and_replays_cleanly(
     )
     post_scopes = [
         scope
-        for scope in repositories.mutation_scopes.list_by_session(
-            attempt.session_id
-        )
+        for scope in repositories.mutation_scopes.list_by_session(attempt.session_id)
         if scope.parent_scope_id == attempt.mutation_scope_id
     ]
     assert len(post_scopes) == 1
@@ -3187,12 +3062,15 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
         expected_universe_digest=universe.universe_digest,
     )
     assert sealed.state is ScientificSelectionState.SEALED
-    assert service.seal_selection(
-        selection_id=selection.selection_id,
-        actor_ref="agent:scientist",
-        idempotency_key="seal-selection",
-        expected_universe_digest=universe.universe_digest,
-    ) == sealed
+    assert (
+        service.seal_selection(
+            selection_id=selection.selection_id,
+            actor_ref="agent:scientist",
+            idempotency_key="seal-selection",
+            expected_universe_digest=universe.universe_digest,
+        )
+        == sealed
+    )
 
     request = service.request_attempt_closure(
         attempt_id=attempt.attempt_id,
@@ -3200,12 +3078,15 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
         actor_ref="agent:scientist",
         idempotency_key="close-attempt",
     )
-    assert service.request_attempt_closure(
-        attempt_id=attempt.attempt_id,
-        selection_id=selection.selection_id,
-        actor_ref="agent:scientist",
-        idempotency_key="close-attempt",
-    ) == request
+    assert (
+        service.request_attempt_closure(
+            attempt_id=attempt.attempt_id,
+            selection_id=selection.selection_id,
+            actor_ref="agent:scientist",
+            idempotency_key="close-attempt",
+        )
+        == request
+    )
     requested_inspection = service.inspect_selection(
         session_id=attempt.session_id,
         attempt_id=attempt.attempt_id,
@@ -3251,20 +3132,14 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
             idempotency_key="selection-after-close-request",
             parent_selection_id=selection.selection_id,
         )
-    assert (
-        revised_after_close.value.error_code
-        == "attempt_closure_already_requested"
-    )
+    assert revised_after_close.value.error_code == "attempt_closure_already_requested"
     with pytest.raises(ScientificAttemptError) as rebound_after_close:
         service.bind_run(
             attempt_id=attempt.attempt_id,
             sandbox_run_id="run_trial",
             actor_ref="agent:scientist",
         )
-    assert (
-        rebound_after_close.value.error_code
-        == "attempt_closure_already_requested"
-    )
+    assert rebound_after_close.value.error_code == "attempt_closure_already_requested"
     with pytest.raises(ScientificAttemptError) as disposition_after_close:
         service.disposition_operation(
             selection_id=selection.selection_id,
@@ -3275,8 +3150,7 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
             idempotency_key="late-disposition-after-close-request",
         )
     assert (
-        disposition_after_close.value.error_code
-        == "attempt_closure_already_requested"
+        disposition_after_close.value.error_code == "attempt_closure_already_requested"
     )
     task_before = repositories.tasks.get(attempt.task_id)
     closure = service.finalize_closure_request(
@@ -3299,9 +3173,7 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
     assert closed_inspection["attempt"]["effective_status"] == "closed"
     assert closed_inspection["attempt"]["lifecycle_phase"] == "closed"
     assert closed_inspection["attempt"]["closure_id"] == closure.closure_id
-    assert (
-        closed_inspection["attempt"]["accepts_scientific_mutation"] is False
-    )
+    assert closed_inspection["attempt"]["accepts_scientific_mutation"] is False
     closed_readiness = service.project_session_readiness_summary(
         attempt.session_id,
         task_id=attempt.task_id,
@@ -3323,15 +3195,15 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
     assert projected["attempts"][0]["status"] == "closed"
     assert projected["attempts"][0]["record_status"] == "active"
     assert projected["attempts"][0]["lifecycle_phase"] == "closed"
-    workspace = SessionProjectionBuilder(
-        repositories,
-        scientific_workflow_contract_registry=(
-            TEST_WORKFLOW_CONTRACT_REGISTRY
-        ),
-    ).build_session_workspace(attempt.session_id).to_dict()
-    assert workspace["scientific_attempts"]["attempts"][0]["status"] == (
-        "closed"
+    workspace = (
+        SessionProjectionBuilder(
+            repositories,
+            scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
+        )
+        .build_session_workspace(attempt.session_id)
+        .to_dict()
     )
+    assert workspace["scientific_attempts"]["attempts"][0]["status"] == ("closed")
     scientific_registry = ToolRegistry()
     register_scientific_attempt_tools(scientific_registry)
     inspection_context = SessionRuntimeContext(
@@ -3349,9 +3221,7 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
         agent_id="agent:scientist",
         actor_kind="teammate",
         actor_role="scientist",
-        scientific_workflow_contract_registry=(
-            TEST_WORKFLOW_CONTRACT_REGISTRY
-        ),
+        scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
     )
     world = WorldInspectionService(inspection_context).inspect(
         sections=("scientific_attempts",),
@@ -3382,19 +3252,13 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
     assert closed_mutation.ok is False
     assert closed_mutation.error_code == "attempt_already_closed"
     assert closed_mutation.details["attempt_id"] == attempt.attempt_id
-    assert closed_mutation.details["recoverability"] == (
-        "agent_can_replan"
-    )
+    assert closed_mutation.details["recoverability"] == ("agent_can_replan")
     assert closed_mutation.details["retry_eligibility"] == "terminal"
     evidence = service.export_closed_attempt_evidence(attempt.attempt_id)
     assert evidence["schema_id"] == "scientific_attempt_evidence@1"
     assert evidence["attempt"]["status"] == "closed"
     assert evidence["evidence_digest"] == canonical_digest(
-        {
-            key: value
-            for key, value in evidence.items()
-            if key != "evidence_digest"
-        }
+        {key: value for key, value in evidence.items() if key != "evidence_digest"}
     )
     assert evidence["operation_universe"]["operation_count"] == 2
     assert "allowed_hpc_targets" not in evidence["attempt_authority"]
@@ -3415,21 +3279,16 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
                 status=TaskStatus.COMPLETED,
                 finished_by="agent:scientist",
                 summary="The selected scientific chain passed acceptance.",
-                evidence_refs=(
-                    f"scientific_closure:{closure.closure_id}",
-                ),
+                evidence_refs=(f"scientific_closure:{closure.closure_id}",),
             ),
         )
     assert outcome.task.status is TaskStatus.COMPLETED
     assert (
-        f"scientific_closure:{closure.closure_id}"
-        in outcome.payload["evidence_refs"]
+        f"scientific_closure:{closure.closure_id}" in outcome.payload["evidence_refs"]
     )
 
 
-def test_successful_scientific_attempt_close_is_a_terminal_turn_action(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_successful_scientific_attempt_close_is_a_terminal_turn_action() -> None:
     repositories, service = _world()
     attempt, _, selection = _ready_selection(
         service,
@@ -3465,96 +3324,7 @@ def test_successful_scientific_attempt_close_is_a_terminal_turn_action(
     with service.mutation_scopes.writer_turn(
         session_id=attempt.session_id,
         owner_kind=MutationWriterKind.AGENT_TURN,
-        owner_ref="agent-turn:missing-close-response",
-    ):
-        missing_response = registry.dispatch(
-            context,
-            ToolInvocation(
-                call_id="call_terminal_close_missing_response",
-                tool_name="scientific.attempt.close",
-                arguments={
-                    "attempt_id": attempt.attempt_id,
-                    "selection_id": selection.selection_id,
-                    "idempotency_key": "close-terminal-close-tool",
-                },
-                task_id=attempt.task_id,
-                lane_id=attempt.lane_id,
-            ),
-        )
-    assert missing_response.ok is False
-    assert (
-        missing_response.error_code
-        == "attempt_close_assistant_response_missing"
-    )
-    assert missing_response.details["attempt_id"] == attempt.attempt_id
-    assert missing_response.details["selection_id"] == (
-        selection.selection_id
-    )
-    assert missing_response.details["recoverability"] == "agent_can_retry"
-    assert missing_response.details["retry_eligibility"] == (
-        "same_phase_safe"
-    )
-    assert (
-        repositories.scientific_attempt_closure_requests.get_by_attempt(
-            attempt.attempt_id
-        )
-        is None
-    )
-
-    def fail_response_persistence(
-        _context: SessionRuntimeContext,
-        *,
-        content: str,
-        message_id: str | None = None,
-        document_id: str | None = None,
-        created_at: str | None = None,
-    ) -> object:
-        del content, message_id, document_id, created_at
-        raise ScientificAttemptError(
-            "injected_closure_response_failure",
-            "injected closure response persistence failure",
-        )
-
-    with monkeypatch.context() as patch:
-        patch.setattr(
-            SessionRuntimeContext,
-            "persist_outbound_assistant_message",
-            fail_response_persistence,
-        )
-        with service.mutation_scopes.writer_turn(
-            session_id=attempt.session_id,
-            owner_kind=MutationWriterKind.AGENT_TURN,
-            owner_ref="agent-turn:close-response-rollback",
-        ):
-            rolled_back = registry.dispatch(
-                context,
-                ToolInvocation(
-                    call_id="call_terminal_close_rollback",
-                    tool_name="scientific.attempt.close",
-                    arguments={
-                        "attempt_id": attempt.attempt_id,
-                        "selection_id": selection.selection_id,
-                        "idempotency_key": "close-terminal-close-tool",
-                    },
-                    task_id=attempt.task_id,
-                    lane_id=attempt.lane_id,
-                    assistant_response_text="The scientific attempt is complete.",
-                ),
-            )
-    assert rolled_back.ok is False
-    assert rolled_back.error_code == "injected_closure_response_failure"
-    assert (
-        repositories.scientific_attempt_closure_requests.get_by_attempt(
-            attempt.attempt_id
-        )
-        is None
-    )
-    assert build_conversation_projection(repositories, attempt.session_id) == ()
-
-    with service.mutation_scopes.writer_turn(
-        session_id=attempt.session_id,
-        owner_kind=MutationWriterKind.AGENT_TURN,
-        owner_ref="agent-turn:close-response-success",
+        owner_ref="agent-turn:close-success",
     ):
         result = registry.dispatch(
             context,
@@ -3568,7 +3338,6 @@ def test_successful_scientific_attempt_close_is_a_terminal_turn_action(
                 },
                 task_id=attempt.task_id,
                 lane_id=attempt.lane_id,
-                assistant_response_text="The scientific attempt is complete.",
             ),
         )
 
@@ -3576,9 +3345,8 @@ def test_successful_scientific_attempt_close_is_a_terminal_turn_action(
     assert result.status == "scientific_attempt_closure_requested"
     assert result.terminal_action == "scientific.attempt.close"
     assert result.terminates_turn is True
-    assert result.persists_assistant_response is True
     assert result.envelope()["terminates_turn"] is True
-    assert result.envelope()["persists_assistant_response"] is True
+    assert "persists_assistant_response" not in result.envelope()
     assert (
         repositories.scientific_attempt_closure_requests.get_by_attempt(
             attempt.attempt_id
@@ -3589,24 +3357,16 @@ def test_successful_scientific_attempt_close_is_a_terminal_turn_action(
         attempt.attempt_id
     )
     assert request is not None
-    response = (
-        repositories.scientific_attempt_closure_responses
-        .get_by_closure_request(request.closure_request_id)
-    )
-    assert response is not None
-    assert service.require_closure_response(request) == response
-    conversation = build_conversation_projection(
-        repositories,
-        attempt.session_id,
-    )
-    assert [entry.content for entry in conversation] == [
-        "The scientific attempt is complete."
-    ]
+    historical_response_count = repositories.tasks.connection.execute(
+        "SELECT COUNT(*) FROM scientific_attempt_closure_response_records"
+    ).fetchone()
+    assert historical_response_count is not None
+    assert historical_response_count[0] == 0
 
     with service.mutation_scopes.writer_turn(
         session_id=attempt.session_id,
         owner_kind=MutationWriterKind.AGENT_TURN,
-        owner_ref="agent-turn:close-response-replay",
+        owner_ref="agent-turn:close-replay",
     ):
         replay = registry.dispatch(
             context,
@@ -3620,43 +3380,159 @@ def test_successful_scientific_attempt_close_is_a_terminal_turn_action(
                 },
                 task_id=attempt.task_id,
                 lane_id=attempt.lane_id,
-                assistant_response_text="The scientific attempt is complete.",
             ),
         )
     assert replay.ok is True
-    assert len(
-        build_conversation_projection(repositories, attempt.session_id)
-    ) == 1
+    replay_request = repositories.scientific_attempt_closure_requests.get_by_attempt(
+        attempt.attempt_id
+    )
+    assert replay_request == request
 
+
+def test_attempt_closure_requires_current_canonical_task_assignee() -> None:
+    repositories, service = _world()
+    attempt, _, selection = _ready_selection(
+        service,
+        suffix="canonical-close-owner",
+    )
+    universe = service.operation_universe(attempt.attempt_id)
+    service.seal_selection(
+        selection_id=selection.selection_id,
+        actor_ref="agent:scientist",
+        idempotency_key="seal-canonical-close-owner",
+        expected_universe_digest=universe.universe_digest,
+    )
+
+    with pytest.raises(ScientificAttemptError) as rejected:
+        service.request_attempt_closure(
+            attempt_id=attempt.attempt_id,
+            selection_id=selection.selection_id,
+            actor_ref="agent:master",
+            idempotency_key="close-canonical-close-owner",
+        )
+
+    assert rejected.value.error_code == "attempt_closure_actor_not_owner"
+    assert rejected.value.retryable is True
+    assert rejected.value.details["task_id"] == attempt.task_id
+    assert rejected.value.details["assigned_ref"] == "agent:scientist"
+    assert (
+        repositories.scientific_attempt_closure_requests.get_by_attempt(
+            attempt.attempt_id
+        )
+        is None
+    )
+
+
+def test_attempt_closure_rechecks_assignment_before_finalization() -> None:
+    repositories, service = _world()
+    attempt, request = _ready_closure_request(
+        service,
+        suffix="closure-owner-drift",
+    )
     with service.mutation_scopes.writer_turn(
         session_id=attempt.session_id,
         owner_kind=MutationWriterKind.AGENT_TURN,
-        owner_ref="agent-turn:close-response-conflict",
+        owner_ref="fixture:closure-owner-reassignment",
     ):
-        conflict = registry.dispatch(
+        TaskBoardService(repositories).edit_task(
+            attempt.task_id,
+            TaskMutation(
+                assigned_ref="agent:replacement",
+                updated_at="2026-07-23T00:01:00+00:00",
+            ),
+        )
+
+    with pytest.raises(ScientificAttemptError) as rejected:
+        service.finalize_closure_request(closure_request_id=request.closure_request_id)
+
+    assert rejected.value.error_code == "attempt_closure_actor_not_owner"
+    assert rejected.value.details["assigned_ref"] == "agent:replacement"
+    assert (
+        repositories.scientific_attempt_closures.get_by_attempt(attempt.attempt_id)
+        is None
+    )
+
+
+def test_task_finish_completed_requires_immutable_scientific_closure() -> None:
+    repositories, service = _world()
+    attempt, request = _ready_closure_request(
+        service,
+        suffix="task-finish-after-closure",
+    )
+    registry = ToolRegistry()
+    register_task_board_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(
+            repositories,
+            attempt.session_id,
+        ),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(
+            task_id=attempt.task_id,
+            lane_id=attempt.lane_id,
+        ),
+        agent_id="agent:scientist",
+        actor_kind="teammate",
+        actor_role="scientist",
+    )
+    arguments = {
+        "task_id": attempt.task_id,
+        "status": "completed",
+        "summary": "Scientific work completed after immutable closure.",
+    }
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.AGENT_TURN,
+        owner_ref="fixture:task-finish-before-closure",
+    ):
+        rejected = registry.dispatch(
             context,
             ToolInvocation(
-                call_id="call_terminal_close_conflict",
-                tool_name="scientific.attempt.close",
+                call_id="call_finish_before_closure",
+                tool_name="task.finish",
+                arguments=arguments,
+                task_id=attempt.task_id,
+                lane_id=attempt.lane_id,
+            ),
+        )
+
+    assert rejected.ok is False
+    assert rejected.error_code == "scientific_attempt_task_not_closed"
+    assert rejected.details["effect_certainty"] == "no_effect"
+    assert rejected.details["attempt_lifecycles"] == [
+        {
+            "attempt_id": attempt.attempt_id,
+            "phase": "closure_requested",
+        }
+    ]
+
+    closure = service.finalize_closure_request(
+        closure_request_id=request.closure_request_id
+    )
+    with service.mutation_scopes.writer_turn(
+        session_id=attempt.session_id,
+        owner_kind=MutationWriterKind.AGENT_TURN,
+        owner_ref="fixture:task-finish-after-closure",
+    ):
+        completed = registry.dispatch(
+            context,
+            ToolInvocation(
+                call_id="call_finish_after_closure",
+                tool_name="task.finish",
                 arguments={
-                    "attempt_id": attempt.attempt_id,
-                    "selection_id": selection.selection_id,
-                    "idempotency_key": "close-terminal-close-tool",
+                    **arguments,
+                    "evidence_refs": [f"scientific_closure:{closure.closure_id}"],
                 },
                 task_id=attempt.task_id,
                 lane_id=attempt.lane_id,
-                assistant_response_text="A different final response.",
             ),
         )
-    assert conflict.ok is False
-    assert conflict.error_code == "attempt_closure_response_conflict"
-    assert conflict.details["attempt_id"] == attempt.attempt_id
-    assert conflict.details["selection_id"] == selection.selection_id
-    assert conflict.details["recoverability"] == "terminal"
-    assert conflict.details["retry_eligibility"] == "terminal"
-    assert len(
-        build_conversation_projection(repositories, attempt.session_id)
-    ) == 1
+
+    assert completed.ok is True
+    assert completed.status == "completed"
+    assert repositories.tasks.get(attempt.task_id).status is TaskStatus.COMPLETED
 
 
 def test_same_attempt_cross_run_adoption_materializes_exact_sealed_bytes(
@@ -3727,15 +3603,9 @@ def test_same_attempt_cross_run_adoption_materializes_exact_sealed_bytes(
     assert receipt.adoption_id == adoption.adoption_id
     assert receipt.source_sandbox_run_id == "run_source"
     assert receipt.target_sandbox_run_id == "run_target"
-    assert receipt.source_artifact_digest == source_artifact.metadata[
-        "content_digest"
-    ]
+    assert receipt.source_artifact_digest == source_artifact.metadata["content_digest"]
     materialized_path = (
-        workspace_root
-        / "workspace_scientific"
-        / "input"
-        / "adopted"
-        / "result.dat"
+        workspace_root / "workspace_scientific" / "input" / "adopted" / "result.dat"
     )
     assert materialized_path.read_bytes() == b"accepted-scientific-result\n"
 
@@ -3776,10 +3646,7 @@ def test_same_attempt_cross_run_adoption_materializes_exact_sealed_bytes(
     )
     assert carried.selection_id == next_selection.selection_id
     assert carried.receipt_id != receipt.receipt_id
-    assert (
-        carried.boundary_materialization_id
-        == receipt.boundary_materialization_id
-    )
+    assert carried.boundary_materialization_id == receipt.boundary_materialization_id
     assert materialized_path.read_bytes() == b"accepted-scientific-result\n"
 
     Path(source_artifact.storage_uri).write_bytes(b"tampered\n")
@@ -3947,9 +3814,9 @@ def test_selection_evaluator_reports_all_bounded_gaps_deterministically() -> Non
     assert first.gap_counts["selection_unknown_effect"] == 1
     assert first.gap_counts["selection_adoption_incomplete"] == 1
     summary = first.summary(max_ids=2)
-    assert summary["bounded_operation_ids"][
-        "selection_disposition_incomplete"
-    ] == [missing_disposition.operation_id]
+    assert summary["bounded_operation_ids"]["selection_disposition_incomplete"] == [
+        missing_disposition.operation_id
+    ]
     assert "recommended_actions" not in summary
 
     with pytest.raises(ScientificAttemptError) as seal_rejected:
@@ -3959,20 +3826,16 @@ def test_selection_evaluator_reports_all_bounded_gaps_deterministically() -> Non
             idempotency_key="seal-evaluation-gaps",
             expected_universe_digest=selection.operation_universe_digest,
         )
-    assert (
-        seal_rejected.value.error_code
-        == "selection_disposition_incomplete"
-    )
-    assert seal_rejected.value.details["blocker_codes"] == list(
-        first.blocker_codes
-    )
+    assert seal_rejected.value.error_code == "selection_disposition_incomplete"
+    assert seal_rejected.value.details["blocker_codes"] == list(first.blocker_codes)
     assert seal_rejected.value.details["mutation_applied"] is False
 
     with pytest.raises(ScientificAttemptError) as closure_rejected:
         service._raise_selection_evaluation(first, for_closure=True)
     assert closure_rejected.value.error_code == seal_rejected.value.error_code
-    assert closure_rejected.value.details["blocker_codes"] == (
-        seal_rejected.value.details["blocker_codes"]
+    assert (
+        closure_rejected.value.details["blocker_codes"]
+        == (seal_rejected.value.details["blocker_codes"])
     )
 
 
@@ -4061,9 +3924,7 @@ def test_selection_evaluator_detects_unexpected_and_duplicate_facts() -> None:
     adoptions = repositories.scientific_effect_adoptions.list_by_selection(
         selection.selection_id
     )
-    resolved_head = repositories.scientific_selections.resolve_head(
-        attempt.attempt_id
-    )
+    resolved_head = repositories.scientific_selections.resolve_head(attempt.attempt_id)
     assert resolved_head is not None
     universe = service.operation_universe(attempt.attempt_id)
 
@@ -4100,12 +3961,8 @@ def test_selection_evaluator_detects_unexpected_and_duplicate_facts() -> None:
         resolved_head=resolved_head,
         universe=universe,
     )
-    assert "selection_disposition_incomplete" in (
-        duplicate_evaluation.blocker_codes
-    )
-    assert "selection_adoption_incomplete" in (
-        duplicate_evaluation.blocker_codes
-    )
+    assert "selection_disposition_incomplete" in (duplicate_evaluation.blocker_codes)
+    assert "selection_adoption_incomplete" in (duplicate_evaluation.blocker_codes)
 
     unexpected_disposition = replace(
         dispositions[0],
@@ -4128,15 +3985,14 @@ def test_selection_evaluator_detects_unexpected_and_duplicate_facts() -> None:
         resolved_head=resolved_head,
         universe=universe,
     )
-    assert "selection_disposition_incomplete" in (
-        unexpected_evaluation.blocker_codes
+    assert "selection_disposition_incomplete" in (unexpected_evaluation.blocker_codes)
+    assert "selection_adoption_unexpected" in (unexpected_evaluation.blocker_codes)
+    assert (
+        operation.operation_id
+        in unexpected_evaluation.summary()["bounded_operation_ids"][
+            "selection_adoption_unexpected"
+        ]
     )
-    assert "selection_adoption_unexpected" in (
-        unexpected_evaluation.blocker_codes
-    )
-    assert operation.operation_id in unexpected_evaluation.summary()[
-        "bounded_operation_ids"
-    ]["selection_adoption_unexpected"]
 
 
 def test_selection_evaluator_detects_cross_attempt_and_authority_mismatch() -> None:
@@ -4145,9 +4001,7 @@ def test_selection_evaluator_detects_cross_attempt_and_authority_mismatch() -> N
         service,
         suffix="authority-facts",
     )
-    resolved_head = repositories.scientific_selections.resolve_head(
-        attempt.attempt_id
-    )
+    resolved_head = repositories.scientific_selections.resolve_head(attempt.attempt_id)
     assert resolved_head is not None
     universe = service.operation_universe(attempt.attempt_id)
 
@@ -4167,13 +4021,14 @@ def test_selection_evaluator_detects_cross_attempt_and_authority_mismatch() -> N
         universe=universe,
     )
     assert "effect_adoption_cross_attempt" in cross_attempt.blocker_codes
-    assert operation.operation_id in cross_attempt.summary()[
-        "bounded_operation_ids"
-    ]["effect_adoption_cross_attempt"]
-
-    authority = repositories.scientific_attempt_authorizations.get(
-        attempt.envelope_id
+    assert (
+        operation.operation_id
+        in cross_attempt.summary()["bounded_operation_ids"][
+            "effect_adoption_cross_attempt"
+        ]
     )
+
+    authority = repositories.scientific_attempt_authorizations.get(attempt.envelope_id)
     assert authority is not None
     authority_repositories = replace(
         repositories,
@@ -4273,9 +4128,7 @@ def test_selection_evaluator_detects_universe_and_head_cas_drift() -> None:
         )
     assert seal_rejected.value.error_code == "selection_universe_changed"
 
-    head = service.repositories.scientific_selections.get_head(
-        attempt.attempt_id
-    )
+    head = service.repositories.scientific_selections.get_head(attempt.attempt_id)
     assert head is not None
     second = service.begin_selection(
         attempt_id=attempt.attempt_id,
@@ -4306,9 +4159,7 @@ def test_attempt_closure_reuses_the_exact_selection_evaluation() -> None:
         idempotency_key="seal-closure-evaluation",
         expected_universe_digest=selection.operation_universe_digest,
     )
-    authority = repositories.scientific_attempt_authorizations.get(
-        attempt.envelope_id
-    )
+    authority = repositories.scientific_attempt_authorizations.get(attempt.envelope_id)
     assert authority is not None
     service.repositories = replace(
         repositories,
@@ -4322,9 +4173,7 @@ def test_attempt_closure_reuses_the_exact_selection_evaluation() -> None:
         attempt_id=attempt.attempt_id,
         selection_id=sealed.selection_id,
     )
-    assert evaluation.blocker_codes == (
-        "selection_attempt_authority_mismatch",
-    )
+    assert evaluation.blocker_codes == ("selection_attempt_authority_mismatch",)
     with pytest.raises(ScientificAttemptError) as rejected:
         service.request_attempt_closure(
             attempt_id=attempt.attempt_id,
@@ -4333,9 +4182,7 @@ def test_attempt_closure_reuses_the_exact_selection_evaluation() -> None:
             idempotency_key="close-with-authority-drift",
         )
     assert rejected.value.error_code == evaluation.blocker_codes[0]
-    assert rejected.value.details["blocker_codes"] == list(
-        evaluation.blocker_codes
-    )
+    assert rejected.value.details["blocker_codes"] == list(evaluation.blocker_codes)
     assert rejected.value.details["mutation_applied"] is False
 
 
@@ -4373,9 +4220,7 @@ def test_scientific_selection_inspection_pages_every_occurrence_once() -> None:
         page_count += 1
         assert page["schema_id"] == "scientific_selection_inspection@1"
         assert page["head"]["selection_state"] == "draft"
-        assert page["contract"]["contract_id"] == (
-            TEST_WORKFLOW_CONTRACT.contract_id
-        )
+        assert page["contract"]["contract_id"] == (TEST_WORKFLOW_CONTRACT.contract_id)
         assert page["readiness"]["seal_ready"] is False
         assert page["strategy_policy"]["harness_recommends_actions"] is False
         assert "recommended_actions" not in page
@@ -4384,10 +4229,7 @@ def test_scientific_selection_inspection_pages_every_occurrence_once() -> None:
             and occurrence["compatible_roles"] == ["final"]
             for occurrence in page["occurrences"]
         )
-        page_ids = [
-            occurrence["operation_id"]
-            for occurrence in page["occurrences"]
-        ]
+        page_ids = [occurrence["operation_id"] for occurrence in page["occurrences"]]
         assert page_ids == sorted(page_ids)
         observed.extend(page_ids)
         for issue in page["issues"]:
@@ -4433,9 +4275,7 @@ def test_scientific_attempt_inspect_tool_projects_exact_bounded_page() -> None:
         agent_id="agent:scientist",
         actor_kind="teammate",
         actor_role="scientist",
-        scientific_workflow_contract_registry=(
-            TEST_WORKFLOW_CONTRACT_REGISTRY
-        ),
+        scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
     )
 
     result = registry.dispatch(
@@ -4457,9 +4297,7 @@ def test_scientific_attempt_inspect_tool_projects_exact_bounded_page() -> None:
     payload = json.loads(result.content)
     assert payload["occurrences"][0]["operation_id"] == operation.operation_id
     assert payload["occurrences"][0]["compatible_roles"] == ["final"]
-    assert payload["readiness"]["blocker_codes"] == [
-        "selection_disposition_incomplete"
-    ]
+    assert payload["readiness"]["blocker_codes"] == ["selection_disposition_incomplete"]
     serialized = json.dumps(payload, sort_keys=True)
     for forbidden in (
         "recommended_actions",
@@ -4508,10 +4346,7 @@ def test_scientific_selection_inspection_rejects_stale_or_cross_scope_cursor() -
             limit=1,
             cursor=cursor[:-2] + "xx",
         )
-    assert (
-        malformed.value.error_code
-        == "scientific_inspection_cursor_invalid"
-    )
+    assert malformed.value.error_code == "scientific_inspection_cursor_invalid"
     assert malformed.value.details["mutation_applied"] is False
 
     with pytest.raises(ScientificAttemptError) as wrong_session:
@@ -4521,10 +4356,7 @@ def test_scientific_selection_inspection_rejects_stale_or_cross_scope_cursor() -
             selection_id=selection.selection_id,
             limit=1,
         )
-    assert (
-        wrong_session.value.error_code
-        == "scientific_inspection_scope_mismatch"
-    )
+    assert wrong_session.value.error_code == "scientific_inspection_scope_mismatch"
     assert "attempt_id" not in wrong_session.value.details
 
     with pytest.raises(ScientificAttemptError) as wrong_task:
@@ -4535,9 +4367,7 @@ def test_scientific_selection_inspection_rejects_stale_or_cross_scope_cursor() -
             selection_id=selection.selection_id,
             limit=1,
         )
-    assert wrong_task.value.error_code == (
-        "scientific_inspection_scope_mismatch"
-    )
+    assert wrong_task.value.error_code == ("scientific_inspection_scope_mismatch")
 
 
 def test_scientific_shared_projection_contains_only_bounded_readiness() -> None:
@@ -4568,9 +4398,7 @@ def test_scientific_shared_projection_contains_only_bounded_readiness() -> None:
     assert readiness["seal_ready"] is True
     assert readiness["closure_request_ready"] is False
     assert readiness["closure_finalization_ready"] is False
-    assert readiness["closure_ready_phase"] == (
-        "host_finalization_after_request"
-    )
+    assert readiness["closure_ready_phase"] == ("host_finalization_after_request")
     for forbidden in (
         "occurrences",
         "dispositions",
@@ -4635,13 +4463,9 @@ def test_missing_disposition_and_unknown_effect_fail_closed() -> None:
     assert unknown.value.error_code == "selection_unknown_effect"
     audit = RuntimeConsistencyService(
         repositories,
-        scientific_workflow_contract_registry=(
-            TEST_WORKFLOW_CONTRACT_REGISTRY
-        ),
+        scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
     ).audit_session(attempt.session_id)
-    assert "selection_unknown_effect" in {
-        warning.code for warning in audit.warnings
-    }
+    assert "selection_unknown_effect" in {warning.code for warning in audit.warnings}
 
     mutation = MutationScopeService(repositories, now=lambda: NOW)
     mutation.begin_freeze(attempt.mutation_scope_id)
@@ -4705,10 +4529,7 @@ def test_selection_head_resolves_the_canonical_selection_lifecycle() -> None:
     repositories, service = _world()
     attempt = _grant_and_create(service)
 
-    assert (
-        repositories.scientific_selections.resolve_head(attempt.attempt_id)
-        is None
-    )
+    assert repositories.scientific_selections.resolve_head(attempt.attempt_id) is None
 
     operation, _ = _add_occurrence(
         service,
@@ -4743,9 +4564,7 @@ def test_selection_head_resolves_the_canonical_selection_lifecycle() -> None:
         expected_universe_digest=selection.operation_universe_digest,
     )
 
-    resolved = repositories.scientific_selections.resolve_head(
-        attempt.attempt_id
-    )
+    resolved = repositories.scientific_selections.resolve_head(attempt.attempt_id)
     assert resolved is not None
     assert resolved.selection == sealed
     assert resolved.selection.state is ScientificSelectionState.SEALED
@@ -4828,15 +4647,9 @@ def test_invalid_selection_head_fails_mutation_closed_and_projects_attention(
     assert rejected.value.details["integrity_reason"] == reason_code
     assert rejected.value.details["mutation_applied"] is False
 
-    audit = RuntimeConsistencyService(repositories).audit_session(
-        attempt.session_id
-    )
-    warnings = {
-        warning.code: warning for warning in audit.warnings
-    }
-    assert warnings["scientific_selection_head_invalid"].runtime_status == (
-        reason_code
-    )
+    audit = RuntimeConsistencyService(repositories).audit_session(attempt.session_id)
+    warnings = {warning.code: warning for warning in audit.warnings}
+    assert warnings["scientific_selection_head_invalid"].runtime_status == (reason_code)
     task = repositories.tasks.get(attempt.task_id)
     assert task is not None
     assert not task.status.is_terminal
@@ -4873,13 +4686,9 @@ def test_file_backed_runtime_consistency_handles_r54_shaped_draft_head(
             )
         )
 
-    audit = RuntimeConsistencyService(repositories).audit_session(
-        attempt.session_id
-    )
+    audit = RuntimeConsistencyService(repositories).audit_session(attempt.session_id)
 
-    resolved = repositories.scientific_selections.resolve_head(
-        attempt.attempt_id
-    )
+    resolved = repositories.scientific_selections.resolve_head(attempt.attempt_id)
     assert resolved is not None
     assert resolved.selection.selection_id == selection.selection_id
     assert resolved.selection.state is ScientificSelectionState.DRAFT
@@ -4945,9 +4754,7 @@ def test_budget_exhaustion_observes_current_selection_without_mutation(
         tool_registry=ToolRegistry(),
         restore_focus=RestoreFocus(),
         model_factory=object(),
-        scientific_workflow_contract_registry=(
-            TEST_WORKFLOW_CONTRACT_REGISTRY
-        ),
+        scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
     )
 
     with service.mutation_scopes.writer_turn(
@@ -4965,9 +4772,7 @@ def test_budget_exhaustion_observes_current_selection_without_mutation(
         phase="runtime",
         error_code=AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE,
     )
-    resolved = repositories.scientific_selections.resolve_head(
-        attempt.attempt_id
-    )
+    resolved = repositories.scientific_selections.resolve_head(attempt.attempt_id)
 
     assert outcome.ok is False
     assert failure is not None
@@ -4979,9 +4784,7 @@ def test_budget_exhaustion_observes_current_selection_without_mutation(
     assert recovery["evaluation"]["attempt_id"] == attempt.attempt_id
     assert recovery["evaluation"]["selection_id"] == selection.selection_id
     assert recovery["evaluation"]["seal_ready"] is False
-    assert "selection_adopted_chain_empty" in (
-        recovery["evaluation"]["blocker_codes"]
-    )
+    assert "selection_adopted_chain_empty" in (recovery["evaluation"]["blocker_codes"])
     assert "recommended_actions" not in recovery
     assert resolved is not None
     assert resolved.selection.state is ScientificSelectionState.DRAFT
@@ -4993,9 +4796,7 @@ def test_budget_exhaustion_observes_current_selection_without_mutation(
 def test_authority_repository_rejects_in_place_identity_mutation() -> None:
     repositories, service = _world()
     attempt = _grant_and_create(service)
-    authority = repositories.scientific_attempt_authorizations.get(
-        attempt.envelope_id
-    )
+    authority = repositories.scientific_attempt_authorizations.get(attempt.envelope_id)
     assert authority is not None
     with service.mutation_scopes.writer_turn(
         session_id=attempt.session_id,
@@ -5012,6 +4813,7 @@ def test_authority_repository_rejects_in_place_identity_mutation() -> None:
                     """,
                     (authority.envelope_id,),
                 )
-    assert repositories.scientific_attempt_authorizations.get(
-        authority.envelope_id
-    ) == authority
+    assert (
+        repositories.scientific_attempt_authorizations.get(authority.envelope_id)
+        == authority
+    )

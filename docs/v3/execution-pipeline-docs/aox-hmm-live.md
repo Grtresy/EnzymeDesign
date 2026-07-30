@@ -73,32 +73,32 @@ invariants; it never instructs the agent to seal or finish the task.
 ### Positive execution and closure handoff
 
 For a positive attempt, sealing the current complete selection proves that the
-executor's scientific execution stage succeeded, including a valid
-artifact-derived healthy-empty branch. The executor must then finish its
-canonical execution task `completed` with the actual result/evidence. It must
-not convert that stage to `blocked`, `failed`, or `cancelled` merely because its
-own `scientific.attempt.close` call is rejected: closure is master-only, and
-`aox_cutover_close_actor_violation` is the intended
-`no_effect/same_phase_safe` handoff. Report publication remains the reporter's
-responsibility and closure remains the resident master's responsibility.
+executor's scientific execution stage is ready for closure, including a valid
+artifact-derived healthy-empty branch. The executor is the exact attempt-task
+canonical assignee, so it must call `scientific.attempt.close` before
+`task.finish(status=completed)`. Core validates selection, operation,
+authority, provenance, writer and quiescence facts and rechecks the assignment
+at Host finalization. After immutable closure, the ordinary source-bound wake
+returns control to the executor, which explicitly completes the task with the
+actual result/evidence. Report publication remains the reporter's
+responsibility and the resident master's user response remains independent.
 
-The formal Router enforces this only after the assigned positive executor's
-sealed current selection evaluates `closure_request_ready=true` through the
-same canonical evaluator used by the close path. Sealed state alone is not
-readiness. A pre-seal blocker, or post-seal universe, authority, workflow,
-process, continuation, disposition, adoption, materialization, or evidence
-drift, still uses ordinary explicit task failure/blocker semantics. Fault
-attempts retain their required negative exits; there is no hidden completion,
-reopen, retry, or inferred scientific outcome.
+Sealed state alone is not readiness. A pre-seal blocker, or post-seal universe,
+authority, workflow, process, continuation, disposition, adoption,
+materialization, or evidence drift, makes close fail closed while leaving
+ordinary explicit `blocked`, `failed`, or `cancelled` task exits available.
+Fault attempts retain their required negative exits; there is no hidden
+completion, reopen, retry, inferred scientific outcome, or master proxy close.
 
 Inspection separates the two closure phases. `closure_request_ready=true`
 means the canonical evaluator proves that the sealed current selection still
-satisfies the selection-side condition for the master to persist agent-authored
+satisfies the selection-side condition for the canonical assignee to persist
+agent-authored
 closure intent in the current turn.
 `closure_finalization_ready=false` can simply mean the requesting turn remains
 an active mutation writer. The legacy `closure_ready` field describes that
 later `host_finalization_after_request` phase; `selection_active_writers` does
-not require waiting for another master wake before issuing the close request.
+not require waiting for another wake before issuing the close request.
 
 ## Controlled execution boundary
 
@@ -630,17 +630,15 @@ select positional `artifact_ids`, `adapter_result_envelope` lists, or a file
 with merely a similar basename.
 
 Those four leading-slash strings are logical manifest suffixes, not Host
-locators. The public evidence scanner permits exactly
-`/provider_parsed/proteins.fasta`, `/provider_parsed/parsed_hits.csv`,
-`/provider_parsed/sequences.fasta`, and `/provider_parsed/metadata.json`; it
-does not allow the provider directory generally. While scanning a sealed Python
-source tree it also recognizes the lexical Python path-join form such as
-`Path("aox_hmm")/p.name` instead of misclassifying `/p.name` as an absolute Unix
-path. This is a narrow source-syntax exception: arbitrary text such as
-`prefix)/p.name`, an unknown suffix such as `/provider_parsed/private.txt`,
-traversal, `/home/...`, `/tmp/...`, and every other unrecognized absolute path
-still fail closed. Existing logical `/workspace`, `/openzyme/control.sock`, and
-closed public `/v3/...` routes remain unchanged.
+locators. Sealed source safety preserves exact declared bytes and rejects a
+closed unsafe corpus: secret-like material, private backend locator or URL,
+traversal/path escape, digest drift, explicit `/home`, `/root`, `/tmp`,
+`/scratch`, `/cluster`, `/gpfs`, `/lustre`, `/mnt`, `/private`, Windows/UNC
+roots, and supported encoded forms. It does not classify every slash-prefixed
+program token as a Host path, so `#!/usr/bin/env python3`, application routes,
+custom logical selectors, and `Path("aox_hmm")/p.name` remain ordinary source
+syntax when no unsafe category matches. Existing logical `/workspace`,
+`/openzyme/control.sock`, and closed public `/v3/...` routes remain unchanged.
 
 The runner templates likewise own their output paths. The caller declares the
 exact path set below, calls `hpc.fetch_outputs`, and selects each artifact from

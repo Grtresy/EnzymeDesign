@@ -26,9 +26,7 @@ KNOWN_POSITIVE_PROBE_CONTROLLED_OPERATIONS = frozenset(
 )
 
 _FAILED_OPERATION_STATUSES = frozenset({"failed", "recovery_failed"})
-_TERMINAL_TASK_STATUSES = frozenset(
-    {"completed", "failed", "cancelled", "blocked"}
-)
+_TERMINAL_TASK_STATUSES = frozenset({"completed", "failed", "cancelled", "blocked"})
 _FAILED_TASK_STATUSES = frozenset({"failed", "cancelled"})
 _AOX_OBSERVER_WRITER = RuntimeBarrierObserverWriter(
     owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
@@ -99,15 +97,17 @@ class AoxRuntimeObservationService:
         return projection
 
     def has_inflight_mutation_writers(self, *, session_id: str) -> bool:
-        return self.project_barrier(
-            session_id=session_id
-        ).counts.active_mutation_writers > 0
+        return (
+            self.project_barrier(session_id=session_id).counts.active_mutation_writers
+            > 0
+        )
 
     def observe_session(
         self,
         *,
         session_id: str,
         purpose: Literal["probe", "formal"],
+        formal_attempt_closed: bool = False,
     ) -> AoxSessionRuntimeObservation:
         with self.provider.read() as scope:
             repositories = scope.repositories
@@ -156,9 +156,7 @@ class AoxRuntimeObservationService:
             )
         blocked_tasks = [task for task in tasks if task.status.value == "blocked"]
         if blocked_tasks:
-            active_suspensions = set(
-                barrier.active_durable_suspension_task_ids
-            )
+            active_suspensions = set(barrier.active_durable_suspension_task_ids)
             if all(task.task_id in active_suspensions for task in blocked_tasks):
                 return AoxSessionRuntimeObservation(
                     state="incomplete",
@@ -220,7 +218,7 @@ class AoxRuntimeObservationService:
             report.status.value in {"ready", "published"} for report in reports
         )
         draft_published = any(draft.status.value == "published" for draft in drafts)
-        completed = bool(
+        product_ready = bool(
             S15_AOX_HMM_FIXED_DELIVERABLES <= artifact_paths
             and {"research", "execution", "reporting"} <= task_kinds
             and {"researcher", "executor", "reporter"} <= roles
@@ -228,8 +226,14 @@ class AoxRuntimeObservationService:
             and draft_published
             and assistant_message
         )
+        if product_ready and not formal_attempt_closed:
+            return AoxSessionRuntimeObservation(
+                state="incomplete",
+                blocker_code="scientific_attempt_open",
+                barrier=barrier,
+            )
         return AoxSessionRuntimeObservation(
-            state="completed" if completed else "incomplete",
+            state="completed" if product_ready else "incomplete",
             blocker_code=None,
             barrier=barrier,
         )

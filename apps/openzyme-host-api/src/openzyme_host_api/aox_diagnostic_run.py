@@ -33,7 +33,10 @@ from .aox_live_run_class import AoxLiveRunClass
 from .aox_live_run_class import DIAGNOSTIC_RUN_POLICY
 
 
-AOX_DIAGNOSTIC_DECISION_SCHEMA_ID = "aox_blank_world_diagnostic_decision@1"
+AOX_DIAGNOSTIC_DECISION_SCHEMA_ID = "aox_blank_world_diagnostic_decision@2"
+_LEGACY_DIAGNOSTIC_DECISION_SCHEMA_IDS = frozenset(
+    {"aox_blank_world_diagnostic_decision@1"}
+)
 AOX_DIAGNOSTIC_DECISION_FILENAME = "diagnostic-decision.json"
 _ERROR_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 _DECISION_FIELDS = frozenset(
@@ -76,17 +79,21 @@ def _diagnostic_decision(
 ) -> dict[str, Any]:
     slot = dict(plan["slot"])
     evidence = {} if execution is None else execution.evidence
-    diagnostic_observation = dict(
-        evidence.get("diagnostic_observation") or {}
-    )
-    product_path_completed = (
+    diagnostic_observation = dict(evidence.get("diagnostic_observation") or {})
+    control = evidence.get("scientific_attempt_control")
+    observed_product_path_completed = (
         diagnostic_observation.get("product_path_completed") is True
+    )
+    product_path_completed = bool(
+        observed_product_path_completed and isinstance(control, dict)
     )
     outcome = dict(evidence.get("scientific_outcome") or {})
     report = dict(evidence.get("report") or {})
     blocker_code: str | None
     if failure is not None:
         blocker_code = _safe_failure_code(failure)
+    elif observed_product_path_completed and not isinstance(control, dict):
+        blocker_code = "scientific_attempt_control_missing"
     elif product_path_completed:
         blocker_code = None
     else:
@@ -101,7 +108,6 @@ def _diagnostic_decision(
             else "diagnostic_product_path_incomplete"
         )
     root_proof = {} if execution is None else execution.roots.proof
-    control = evidence.get("scientific_attempt_control")
     decision_payload = {
         "schema_id": AOX_DIAGNOSTIC_DECISION_SCHEMA_ID,
         "run_class": AoxLiveRunClass.DIAGNOSTIC.value,
@@ -127,9 +133,7 @@ def _diagnostic_decision(
         ),
         "authority": {
             "plan_schema_id": AOX_DIAGNOSTIC_AUTHORITY_PLAN_SCHEMA_ID,
-            "consumption_schema_id": (
-                AOX_DIAGNOSTIC_AUTHORITY_CONSUMPTION_SCHEMA_ID
-            ),
+            "consumption_schema_id": (AOX_DIAGNOSTIC_AUTHORITY_CONSUMPTION_SCHEMA_ID),
             "plan_digest": plan["plan_digest"],
             "consumption_digest": canonical_digest(dict(consumption)),
             "envelope_id": slot["envelope_id"],
@@ -137,24 +141,18 @@ def _diagnostic_decision(
         },
         "root": {
             "proof_schema_id": (
-                None
-                if execution is None
-                else root_proof.get("schema_id")
+                None if execution is None else root_proof.get("schema_id")
             ),
             "root_namespace": plan["root_namespace"],
             "root_marker_digest": canonical_digest(dict(root_marker)),
             "root_identity": (
-                None
-                if execution is None
-                else root_proof.get("root_identity")
+                None if execution is None else root_proof.get("root_identity")
             ),
         },
         "micu_ledger": (
             {
                 "status": "not_claimed",
-                "reason": (
-                    "diagnostic_runner_failed_before_settled_snapshot"
-                ),
+                "reason": ("diagnostic_runner_failed_before_settled_snapshot"),
             }
             if execution is None
             else {
@@ -173,10 +171,9 @@ def _diagnostic_decision(
                 None if execution is None else canonical_digest(evidence)
             ),
             "scientific_attempt_control_digest": (
-                canonical_digest(control)
-                if isinstance(control, dict)
-                else None
+                canonical_digest(control) if isinstance(control, dict) else None
             ),
+            "raw_facts": dict(diagnostic_observation.get("raw_facts") or {}),
         },
     }
     return {
@@ -189,10 +186,14 @@ def validate_aox_diagnostic_decision(
     decision: Mapping[str, object],
 ) -> dict[str, Any]:
     normalized = dict(decision)
+    schema_id = normalized.get("schema_id")
     if (
         set(normalized) != _DECISION_FIELDS
-        or normalized.get("schema_id")
-        != AOX_DIAGNOSTIC_DECISION_SCHEMA_ID
+        or schema_id
+        not in {
+            AOX_DIAGNOSTIC_DECISION_SCHEMA_ID,
+            *_LEGACY_DIAGNOSTIC_DECISION_SCHEMA_IDS,
+        }
         or normalized.get("run_class") != AoxLiveRunClass.DIAGNOSTIC.value
         or normalized.get("acceptance_eligible") is not False
         or normalized.get("attempt_kind") != "positive"
@@ -207,11 +208,9 @@ def validate_aox_diagnostic_decision(
     attempt_id = normalized.get("attempt_id")
     if (
         not isinstance(diagnostic_id, str)
-        or DIAGNOSTIC_RUN_POLICY.campaign_id_pattern.fullmatch(diagnostic_id)
-        is None
+        or DIAGNOSTIC_RUN_POLICY.campaign_id_pattern.fullmatch(diagnostic_id) is None
         or not isinstance(attempt_id, str)
-        or DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(attempt_id)
-        is None
+        or DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(attempt_id) is None
     ):
         raise CutoverEvidenceError(
             "diagnostic_decision_identity_invalid",
@@ -233,8 +232,7 @@ def validate_aox_diagnostic_decision(
             "envelope_id",
             "request_digest",
         }
-        or authority.get("plan_schema_id")
-        != AOX_DIAGNOSTIC_AUTHORITY_PLAN_SCHEMA_ID
+        or authority.get("plan_schema_id") != AOX_DIAGNOSTIC_AUTHORITY_PLAN_SCHEMA_ID
         or authority.get("consumption_schema_id")
         != AOX_DIAGNOSTIC_AUTHORITY_CONSUMPTION_SCHEMA_ID
         or not isinstance(root, dict)
@@ -246,20 +244,28 @@ def validate_aox_diagnostic_decision(
             "root_identity",
         }
         or root.get("root_namespace") != diagnostic_id.replace("_", "-")
-        or root.get("proof_schema_id")
-        not in {None, DIAGNOSTIC_ROOT_PROOF_SCHEMA_ID}
+        or root.get("proof_schema_id") not in {None, DIAGNOSTIC_ROOT_PROOF_SCHEMA_ID}
         or not isinstance(observations, dict)
-        or set(observations)
-        != {
-            "product_path_completed",
-            "scientific_status",
-            "report_status",
-            "approval_count",
-            "operation_count",
-            "artifact_count",
-            "evidence_digest",
-            "scientific_attempt_control_digest",
-        }
+    ):
+        raise CutoverEvidenceError(
+            "diagnostic_decision_binding_invalid",
+            "diagnostic decision does not bind its disjoint authority and root",
+        )
+    expected_observation_fields = {
+        "product_path_completed",
+        "scientific_status",
+        "report_status",
+        "approval_count",
+        "operation_count",
+        "artifact_count",
+        "evidence_digest",
+        "scientific_attempt_control_digest",
+    }
+    if schema_id == AOX_DIAGNOSTIC_DECISION_SCHEMA_ID:
+        expected_observation_fields.add("raw_facts")
+    if set(observations) != expected_observation_fields or (
+        schema_id == AOX_DIAGNOSTIC_DECISION_SCHEMA_ID
+        and not isinstance(observations.get("raw_facts"), dict)
     ):
         raise CutoverEvidenceError(
             "diagnostic_decision_binding_invalid",
@@ -289,8 +295,7 @@ def validate_aox_diagnostic_decision(
     if (
         type(observations.get("product_path_completed")) is not bool
         or any(
-            type(observations.get(key)) is not int
-            or int(observations[key]) < 0
+            type(observations.get(key)) is not int or int(observations[key]) < 0
             for key in (
                 "approval_count",
                 "operation_count",
@@ -304,8 +309,7 @@ def validate_aox_diagnostic_decision(
                 or set(blocker) != {"code", "identity"}
                 or blocker.get("identity") != "diagnostic.runner"
                 or not isinstance(blocker.get("code"), str)
-                or _ERROR_CODE_PATTERN.fullmatch(str(blocker["code"]))
-                is None
+                or _ERROR_CODE_PATTERN.fullmatch(str(blocker["code"])) is None
             )
         )
         or (
@@ -315,10 +319,7 @@ def validate_aox_diagnostic_decision(
                 or blocker is not None
             )
         )
-        or (
-            normalized.get("status") != "completed_product_path"
-            and blocker is None
-        )
+        or (normalized.get("status") != "completed_product_path" and blocker is None)
         or not isinstance(micu_ledger, dict)
         or (
             set(micu_ledger) == {"status", "reason"}
@@ -364,11 +365,7 @@ def validate_aox_diagnostic_decision(
             "diagnostic decisions cannot contain formal acceptance evidence",
         )
     expected_digest = canonical_digest(
-        {
-            key: value
-            for key, value in normalized.items()
-            if key != "decision_digest"
-        }
+        {key: value for key, value in normalized.items() if key != "decision_digest"}
     )
     if normalized.get("decision_digest") != expected_digest:
         raise CutoverEvidenceError(
@@ -385,9 +382,7 @@ def seal_aox_diagnostic_decision(
     normalized = validate_aox_diagnostic_decision(decision)
     content = canonical_json_bytes(normalized) + b"\n"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(
-        f".{destination.name}.{uuid4().hex}.tmp"
-    )
+    temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
     try:
         with temporary.open("xb") as handle:
             handle.write(content)

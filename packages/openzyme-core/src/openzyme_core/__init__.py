@@ -251,9 +251,6 @@ from .scientific_attempt_repositories import ScientificAttemptBindingRepository
 from .scientific_attempt_repositories import (
     ScientificAttemptClosureRequestRepository,
 )
-from .scientific_attempt_repositories import (
-    ScientificAttemptClosureResponseRepository,
-)
 from .scientific_attempt_repositories import ScientificAttemptClosureRepository
 from .scientific_attempt_repositories import ScientificAttemptIdentityConflictError
 from .scientific_attempt_repositories import ScientificAttemptRepository
@@ -596,7 +593,6 @@ __all__ = [
     "ScientificAttemptAuthorizationRepository",
     "ScientificAttemptBindingRepository",
     "ScientificAttemptClosureRequestRepository",
-    "ScientificAttemptClosureResponseRepository",
     "ScientificAttemptClosureRepository",
     "ScientificAttemptError",
     "ScientificAttemptIdentityConflictError",

@@ -293,17 +293,21 @@ transition、deterministic public event、以及对原 agent 的 source-bound
 状态，并以 record/event/source identity 补齐一次；terminal signal 不重开。这样既没有
 scope gap，也没有 closure commit 后 agent 永久失联的第二条 crash seam。
 
-closure notification 被 claim 后先走 Core mechanical settlement verifier。只有 signal
-kind/source/correlation、requesting actor、session/task/lane、attempt/request/selection/
-closure、derived `closed` lifecycle，以及 co-terminal response 的 message/document/
-recipient/digest 全部一致，且 attempt task 已显式 terminal，runtime 才通过原 claim
-lease/fence 完成 signal 并发出 typed settled event。该路径不调用 provider，不追加第二条
-assistant response，也不创建 closure/response/report/signal。普通 resume、admission 或
-attempt notification，以及 closure 已存在但 task 非终态的情形仍由 agent 策略处理；
-closure-like binding/response 缺失则在 model 前 fail closed。
+closure notification 被 claim 后先核对 signal kind/source/correlation、requesting actor、
+session/task/lane、attempt/request/closure 与 derived `closed` lifecycle。task 仍
+business-nonterminal 时，runtime 沿普通 claimed-signal model path 唤醒 canonical
+assignee；task 已 terminal 时复用 generic stale-task mechanical completion。两条路径都受
+原 claim lease/fence 保护，不追加 closure-bound assistant response，不创建
+closure/response/report/signal，也不发 scientific-specific settled event。普通
+resume、admission 或 attempt notification 保持既有行为；closure-like binding 缺失或漂移
+在 model 前 fail closed。
 
 quiescence 只证明“不会再变”，selection 只证明“采用什么”，两者互不替代。closed attempt 是
-agent 可消费的 evidence，不是 `task.finish`；owner 仍需显式决定完成、继续、blocked 或 failed。
+agent 可消费的 evidence，不是 `task.finish`；canonical task assignee 仍需显式决定完成、
+继续、blocked 或 failed。对 bound attempt 调用 `task.finish(status=completed)` 时，
+Core 要求至少一个 immutable closed attempt 且不存在 open/closure-requested attempt；
+closure 前完成以 `scientific_attempt_task_not_closed` no-effect error 拒绝，非 completed
+显式出口保持普通 task 语义。
 只有 final closure id 才能形成 `scientific_closure:<closure_id>` evidence ref；closure request
 不能被 runtime 替换成该证据。`task.finish.evidence_refs` 的 schema 与 invalid-result details
 共同暴露 closed `<kind>:<id>` format，repository 仍负责当前 session 解析。
@@ -411,28 +415,25 @@ r57 是第一轮真实 diagnostic-mode attempt。其 run-class 隔离正确，�
 report task，并在 execution/report 未业务终结、零 report 时请求 attempt close，随后耗尽
 turn budget。该轮没有 fully settled diagnostic receipt，永久 NO-GO 且不可复用。
 
-forward correction 不把 report/task 状态并入 scientific-attempt 真状态，也不让 Host 推断
-业务终态。Host 仅为 authority-bound AOX formal session 注入
-`aox_cutover_formal_tool_precondition@1`，在 Router 的真实 handler 前验证：
+forward correction 不把 report/task/conversation 状态并入 scientific-attempt 真状态，也
+不让 Host 推断业务终态。historical AOX precondition `@1`–`@4` 曾复制 exact board、
+master close、report publication 与 response handoff；Phase 2 current
+`aox_cutover_formal_tool_precondition@5` 删除这些共终止 veto，只保留：
 
-- `task.create` 的显式 id 与 kind 必须属于 exact research/execution/report 闭集；
-- `scientific.attempt.close` 必须由 master 请求，task set/role/kind 必须 exact，每项 task
-  必须已有唯一 matching `task.finish`，且 receipt 的 `finished_by` 必须等于该 task 的
-  canonical `assigned_ref`；
-- positive 必须已有 canonical reporting task 绑定的唯一 ready/published report 与
-  published draft；
-  fault 必须是 research completed、execution/report negative exit，且不存在
-  ready/published success report state。
+- `task.create` 的显式 id 与 kind 必须属于 authority-bound canonical
+  research/execution/report 闭集；
+- scientific operation 必须属于 exact session-scoped allowed universe；
+- report publication 仍必须满足 source-link guard。
 
-不满足时返回 `precondition_rejected=true`、`effect_certainty=no_effect`、
-`retry_eligibility=same_phase_safe` 的 validation observation，attempt 保持 open，agent
-自行修正或选择失败出口。guard 不生成 task/report、不完成 task、不选择 selection/operation
-或 retry，也不应用于 probe/其他 session。这样保持“scientific closure 不推断业务终态”，
-同时把 authority 已固定的真实验收约束从脆弱 prompt 变成低摩擦结构化事实。
-generic V3 的 master recovery finish authority 不变，但 master 代写 researcher/executor/
-reporter exit 不满足 AOX formal readiness，也不能进入 positive/fault collector receipt。
+scientific closure 的唯一 lifecycle owner 是 `ScientificAttempt.task_id` 当前
+`assigned_ref`。Core 在 closure request 和 Host finalization 两处验证该 assignee，同时
+保持 selection、operation、authority、provenance、writer 与 quiescence fail-closed
+controls。guard 不生成 task/report、不完成 task、不选择 selection/operation 或 retry，
+也不应用于 probe/其他 session。generic master recovery finish authority 不变，但
+master 代写 researcher/executor/reporter exit 仍不满足 AOX final evidence collector 的
+owner-authored receipt 要求。
 
-## 10. r58 后的 co-terminal final response
+## 10. r58 historical co-terminal contract 与 Phase 2 supersession
 
 r58 在 clean commit `d00ada97f8eb13af35f9c83247cd51e14138f428` 消费 diagnostic
 plan `sha256:691cf17bd8548fa3bfd4e338cb61ce608bb97c4cde17f0e66483b84ff65397e3`。
@@ -444,30 +445,55 @@ probe 与 formal exact operations、516 candidates、78 representatives、13,778
 `sha256:8c877189130838b29030200d9c592e8e096cd028cd60a5c5bc38dd424c718a57`
 永久 NO-GO，r58 状态/effect/bytes 不得复用。
 
-根因不是 closure authority 缺失，而是两个原合同不相容：assistant-only response 可以成为
-conversation truth，但之后没有新 signal 让 master close；tool-call response 中即使已有
-最终文本，successful close 又会立即退休 turn，而旧 harness 只把该文本写入 LLM trace。
-r58 correction 当时的 `aox_cutover_formal_tool_precondition@2` 同时加入 response veto 与
-co-terminal close contract。2026-07-28 的 control-boundary simplification 删除前者：
-assistant text 现在按普通 conversation 语义持久化，但不会自动 close、handoff、finish 或
-获得 acceptance eligibility。保留的 close command contract是：
+当时根因是两个旧合同不相容：assistant-only response 可以成为 conversation truth，但
+没有新 signal 让 master close；tool-call response 中即使已有最终文本，successful close
+又会立即退休 turn。r58/post-r58 correction 因此曾引入 response veto、master-only
+co-terminal close、deterministic conversation binding 和 response digest。那些记录仍是
+解释 r58–r62 的 frozen historical contract，migration `035` 和旧 table 也继续可读，但
+它们不再是 active product contract。
 
-- master 调用 `scientific.attempt.close` 时必须在同一 provider response 中提供完整终答；
-  empty companion 在 closure effect 前失败；
-- successful close 在同一 Core transaction 写 closure request、deterministic conversation
-  document/message 与 immutable response binding，随后设置 companion-persistence 标记、
-  结算同批后续 call 并退休 turn；Host finalizer 仍只在 writer 退休后推进。
+Phase 2 删除 active closure-response domain/repository/service、ToolInvocation companion
+field、conversation transaction 和 scientific-specific settlement。current close
+command 只允许 exact attempt-task canonical assignee，且只写 immutable request；
+assistant answer、report publication 与 resident-master delivery 完全独立。Host 在
+requester writer 退休后 finalization，ordinary source-bound wake 再让 assignee 显式
+完成 task。tool guard 不自动关闭 attempt、不推断 selection、不合成答案、不改变
+task/report 真状态。
 
-tool guard 不自动关闭 attempt、不推断 selection、不合成答案、不改变 task/report 真状态。
-r58 已产生 meaningful result/report，因此没有触发“首个有效结果前
-再次遇到 framework defect”时才执行的规范再拆分条件；formal exact-three acceptance 仍需
-fresh commit/full admission/pin 与独立精确授权。
-
-post-r58 审计进一步要求 report publication 由一个共享派生谓词判断：
+report publication 仍由一个共享派生谓词判断：
 `report.status in {ready,published}`、`draft.status=published`、同 session/task、精确
 `published_report_id` 与非空 content ref 必须同时成立；policy/projection/collector/
-offline verifier 不得各自缩窄。closure response transaction 中任一步失败整体回滚，同事实
-replay 不新增消息，不同 response 重用相同 closure identity 必须 fail closed。
+offline verifier 不得各自缩窄。但该 predicate 只服务 report/acceptance，不参与
+scientific closure authorization。formal exact-three acceptance 仍需 fresh clean
+commit/full admission/pin 与独立精确授权。
+
+### 10.1 r62 failure chain 与 bounded supervision
+
+r62 full-path diagnostic 在 clean commit
+`5265c7813c64880c03bef3aee15e552e4f4d1c49` 上产生 13 项 completed controlled
+operation、三个 completed canonical task、sealed selection 与 published report，但
+executor 的 close 被旧 `aox_cutover_close_actor_violation` 拒绝；master 随后遇到
+`aox_cutover_task_identity_not_ready`，写出普通终答而没有 duplicated close。attempt
+因此保持 open，124 个 runtime command 中后续空 drain 最终包装为
+`formal_runtime_drain_exhausted`，decision 再包装为
+`scientific_attempt_control_missing`。zero closure request/response/closure 是该轮的真实
+lifecycle fact；consumed authority、root、SQLite、effects 与 failed decision 永久
+non-acceptance、不可复用。
+
+current observation 把 formal product readiness 与 exact immutable closure 联读：前者已
+满足但 attempt open 时返回 `scientific_attempt_open`。若连续两次 runtime command 都是
+`processed_signal_count=0/replay_safe=true`、canonical work fingerprint 相同，且没有
+pending/claimed signal、approval、invocation、continuation、working agent 或 in-flight
+writer，则 driver 立即以 `scientific_attempt_open_no_wakeup` 终止；已有更早 actionable
+typed failure 时仍优先保留该 cause。这个 bounded stop 不创建 synthetic wake、fallback、
+task mutation 或 closure。
+
+diagnostic collection 不再因缺 immutable control 丢弃已观察事实：operation/task/report/
+lifecycle counts、raw facts、process state 与 measured MICU 保留，decision 仍强制
+`acceptance_eligible=false`。formal acceptance 则继续要求 exact
+`scientific_attempt_control`。probe execution/check status 与后续 attestation status 分开；
+attestation unavailable 不把已证明的 passed check 改写为 failed，未执行 check 记为
+`unobserved`。
 
 ## 11. r59 后的 positive execution handoff
 

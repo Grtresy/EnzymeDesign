@@ -26,7 +26,6 @@ from openzyme_domain import ScientificAttemptAuthorization
 from openzyme_domain import ScientificAttemptAuthorityStatus
 from openzyme_domain import ScientificAttemptClosure
 from openzyme_domain import ScientificAttemptClosureRequest
-from openzyme_domain import ScientificAttemptClosureResponse
 from openzyme_domain import ScientificAttemptScope
 from openzyme_domain import ScientificAttemptStatus
 from openzyme_domain import ScientificChainSelection
@@ -67,37 +66,11 @@ from .scientific_workflow_contracts import ScientificWorkflowContractError
 from .scientific_workflow_contracts import ScientificWorkflowContractRegistry
 
 
-SCIENTIFIC_ATTEMPT_AUTHORIZATION_POLICY_ID = (
-    "scientific_attempt_authorization_policy@1"
-)
+SCIENTIFIC_ATTEMPT_AUTHORIZATION_POLICY_ID = "scientific_attempt_authorization_policy@1"
 EMPTY_DISPOSITION_DIGEST = canonical_digest([])
 EMPTY_ADOPTION_DIGEST = canonical_digest([])
 SCIENTIFIC_SELECTION_INSPECTION_MAX_LIMIT = 50
 SCIENTIFIC_SELECTION_INSPECTION_DEFAULT_LIMIT = 20
-
-
-def _closure_response_binding_digest(
-    *,
-    closure_request_id: str,
-    attempt_id: str,
-    message_id: str,
-    document_id: str,
-    recipient: str,
-    recipient_kind: str,
-    response_digest: str,
-) -> str:
-    return canonical_digest(
-        {
-            "schema_version": ScientificAttemptClosureResponse.SCHEMA_VERSION,
-            "closure_request_id": closure_request_id,
-            "attempt_id": attempt_id,
-            "message_id": message_id,
-            "document_id": document_id,
-            "recipient": recipient,
-            "recipient_kind": recipient_kind,
-            "response_digest": response_digest,
-        }
-    )
 
 
 class ScientificAttemptError(RuntimeError):
@@ -181,7 +154,9 @@ def _parse_timestamp(value: str, *, field_name: str) -> datetime:
 
 
 def _normalized_unique(values: tuple[str, ...] | list[str]) -> tuple[str, ...]:
-    normalized = tuple(sorted({str(value).strip() for value in values if str(value).strip()}))
+    normalized = tuple(
+        sorted({str(value).strip() for value in values if str(value).strip()})
+    )
     return normalized
 
 
@@ -232,13 +207,9 @@ def scientific_attempt_authorization_request(
         "grantor_kind": grantor_kind,
         "grantor_ref": grantor_ref,
         "allowed_scopes": sorted(scope.value for scope in normalized_scopes),
-        "allowed_effect_classes": list(
-            _normalized_unique(allowed_effect_classes)
-        ),
+        "allowed_effect_classes": list(_normalized_unique(allowed_effect_classes)),
         "allowed_providers": list(_normalized_unique(allowed_providers)),
-        "allowed_hpc_targets": list(
-            _normalized_unique(allowed_hpc_targets)
-        ),
+        "allowed_hpc_targets": list(_normalized_unique(allowed_hpc_targets)),
         "max_attempts": max_attempts,
         "max_micu": max_micu,
         "max_cost_microunits": max_cost_microunits,
@@ -315,10 +286,7 @@ class ScientificAttemptService:
         if (
             type(max_attempts) is not int
             or max_attempts < 1
-            or any(
-                type(value) is not int or value < 0
-                for value in resource_values[1:]
-            )
+            or any(type(value) is not int or value < 0 for value in resource_values[1:])
         ):
             raise ScientificAttemptError(
                 "authorization_resource_invalid",
@@ -356,10 +324,12 @@ class ScientificAttemptService:
             )
         )
         effective_policy_digest = str(request["policy_digest"])
-        existing = self.repositories.scientific_attempt_authorizations.get_by_idempotency(
-            session_id=session_id,
-            grantor_ref=actor,
-            idempotency_key=idempotency_key,
+        existing = (
+            self.repositories.scientific_attempt_authorizations.get_by_idempotency(
+                session_id=session_id,
+                grantor_ref=actor,
+                idempotency_key=idempotency_key,
+            )
         )
         if existing is not None:
             self._require_replay_digest(existing.request_digest, request_digest)
@@ -402,9 +372,7 @@ class ScientificAttemptService:
             reserved_wall_time_seconds=0,
             expires_at=expires_at,
             policy_digest=effective_policy_digest,
-            idempotency_key=self._require_text(
-                "idempotency_key", idempotency_key
-            ),
+            idempotency_key=self._require_text("idempotency_key", idempotency_key),
             request_digest=request_digest,
             status=ScientificAttemptAuthorityStatus.ACTIVE,
             state_version=1,
@@ -495,7 +463,9 @@ class ScientificAttemptService:
         hpc_target: str | None = None,
     ) -> ScientificAttemptAdmissionRequest:
         normalized_scope = (
-            scope if isinstance(scope, ScientificAttemptScope) else ScientificAttemptScope(scope)
+            scope
+            if isinstance(scope, ScientificAttemptScope)
+            else ScientificAttemptScope(scope)
         )
         normalized_effects = _normalized_unique(requested_effect_classes)
         actor = self._require_actor(actor_ref)
@@ -587,9 +557,7 @@ class ScientificAttemptService:
             reserved_cost_microunits=reserved_cost_microunits,
             reserved_wall_time_seconds=reserved_wall_time_seconds,
             actor_ref=actor,
-            idempotency_key=self._require_text(
-                "idempotency_key", idempotency_key
-            ),
+            idempotency_key=self._require_text("idempotency_key", idempotency_key),
             request_digest=request_digest,
             created_at=self.now(),
         )
@@ -598,9 +566,7 @@ class ScientificAttemptService:
             owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
             owner_ref=f"attempt.admission.request:{record.admission_request_id}",
         ):
-            return self.repositories.scientific_attempt_admission_requests.add(
-                record
-            )
+            return self.repositories.scientific_attempt_admission_requests.add(record)
 
     def finalize_attempt_admission(
         self,
@@ -655,9 +621,7 @@ class ScientificAttemptService:
             )
             self._resolve_new_workflow_contract(
                 workflow_id=admission.workflow_id,
-                workflow_contract_digest=(
-                    admission.workflow_contract_digest
-                ),
+                workflow_contract_digest=(admission.workflow_contract_digest),
                 scope=admission.scope,
             )
             assert authority is not None
@@ -692,9 +656,7 @@ class ScientificAttemptService:
                 raise ScientificAttemptError(
                     "attempt_admission_prior_attempt_unclosed",
                     "a prior scientific attempt must close before another is admitted",
-                    details={
-                        "attempt_ids": [item.attempt_id for item in unclosed]
-                    },
+                    details={"attempt_ids": [item.attempt_id for item in unclosed]},
                 )
             parent_scope_id = self._seal_pre_attempt_scope(admission.session_id)
             ordinal = authority.consumed_attempts + 1
@@ -743,9 +705,7 @@ class ScientificAttemptService:
                 consumed = replace(
                     authority,
                     consumed_attempts=ordinal,
-                    reserved_micu=(
-                        authority.reserved_micu + admission.reserved_micu
-                    ),
+                    reserved_micu=(authority.reserved_micu + admission.reserved_micu),
                     reserved_cost_microunits=(
                         authority.reserved_cost_microunits
                         + admission.reserved_cost_microunits
@@ -931,10 +891,7 @@ class ScientificAttemptService:
                 "scientific attempt has no current selection head",
                 details={"attempt_id": attempt_id, "mutation_applied": False},
             )
-        if (
-            selection_id is not None
-            and resolved_head.head.selection_id != selection_id
-        ):
+        if selection_id is not None and resolved_head.head.selection_id != selection_id:
             raise ScientificAttemptError(
                 "selection_not_current_head",
                 "requested scientific selection is not the current CAS head",
@@ -977,10 +934,7 @@ class ScientificAttemptService:
                 details={"mutation_applied": False},
             )
         resolved_head = self._resolve_selection_head(attempt_id)
-        if (
-            resolved_head is None
-            or resolved_head.head.selection_id != selection_id
-        ):
+        if resolved_head is None or resolved_head.head.selection_id != selection_id:
             raise ScientificAttemptError(
                 "scientific_inspection_selection_not_current",
                 "requested selection is not the exact current attempt head",
@@ -1003,9 +957,7 @@ class ScientificAttemptService:
             operation_universe_digest=evaluation.operation_universe_digest,
             occurrence_count=len(evaluation.occurrences),
         )
-        page_occurrences = evaluation.occurrences[
-            offset : offset + effective_limit
-        ]
+        page_occurrences = evaluation.occurrences[offset : offset + effective_limit]
         next_offset = offset + len(page_occurrences)
         next_cursor = (
             None
@@ -1052,9 +1004,7 @@ class ScientificAttemptService:
                 "closure_requested": lifecycle.closure_requested,
                 "closure_request_id": lifecycle.closure_request_id,
                 "closure_id": lifecycle.closure_id,
-                "accepts_scientific_mutation": (
-                    lifecycle.accepts_scientific_mutation
-                ),
+                "accepts_scientific_mutation": (lifecycle.accepts_scientific_mutation),
             },
             "head": {
                 "selection_id": resolved_head.head.selection_id,
@@ -1085,13 +1035,9 @@ class ScientificAttemptService:
                 "next_cursor": next_cursor,
                 "has_more": next_cursor is not None,
                 "head_state_version": resolved_head.head.state_version,
-                "operation_universe_digest": (
-                    evaluation.operation_universe_digest
-                ),
+                "operation_universe_digest": (evaluation.operation_universe_digest),
             },
-            "occurrences": [
-                occurrence.to_dict() for occurrence in page_occurrences
-            ],
+            "occurrences": [occurrence.to_dict() for occurrence in page_occurrences],
             "issues": [
                 {
                     **issue.to_dict(),
@@ -1181,9 +1127,7 @@ class ScientificAttemptService:
                     "accepts_scientific_mutation": (
                         lifecycle.accepts_scientific_mutation
                     ),
-                    "workflow_contract_digest": (
-                        attempt.workflow_contract_digest
-                    ),
+                    "workflow_contract_digest": (attempt.workflow_contract_digest),
                     "selection_head": head,
                     "readiness": readiness,
                     "closure_requested": lifecycle.closure_requested,
@@ -1279,9 +1223,7 @@ class ScientificAttemptService:
                 adoption_digest=EMPTY_ADOPTION_DIGEST,
                 workflow_contract_digest=attempt.workflow_contract_digest,
                 actor_ref=actor,
-                idempotency_key=self._require_text(
-                    "idempotency_key", idempotency_key
-                ),
+                idempotency_key=self._require_text("idempotency_key", idempotency_key),
                 request_digest=request_digest,
                 created_at=now,
             )
@@ -1392,9 +1334,7 @@ class ScientificAttemptService:
             reason_code=self._require_text("reason_code", reason_code),
             replacement_operation_id=replacement_operation_id,
             actor_ref=actor,
-            idempotency_key=self._require_text(
-                "idempotency_key", idempotency_key
-            ),
+            idempotency_key=self._require_text("idempotency_key", idempotency_key),
             request_digest=request_digest,
             created_at=self.now(),
         )
@@ -1424,9 +1364,7 @@ class ScientificAttemptService:
             "idempotency_key",
             idempotency_key,
         )
-        candidate_selection = self.repositories.scientific_selections.get(
-            selection_ref
-        )
+        candidate_selection = self.repositories.scientific_selections.get(selection_ref)
         try:
             selection, attempt = self._require_draft_head(selection_ref)
             contract = self._resolve_mutable_workflow_contract(attempt)
@@ -1505,11 +1443,9 @@ class ScientificAttemptService:
                     + _stable_id("disposition", request_digest)
                 ),
             ):
-                with self.repositories.atomic(
-                    prefix="scientific_operation_adopt"
-                ):
-                    current_selection, current_attempt = (
-                        self._require_draft_head(selection_ref)
+                with self.repositories.atomic(prefix="scientific_operation_adopt"):
+                    current_selection, current_attempt = self._require_draft_head(
+                        selection_ref
                     )
                     current_universe = self.operation_universe(
                         current_attempt.attempt_id
@@ -1543,9 +1479,7 @@ class ScientificAttemptService:
                                 selection=current_selection,
                                 operation_id=operation_ref,
                                 requested_role=role,
-                                error_code=(
-                                    "selection_operation_out_of_universe"
-                                ),
+                                error_code=("selection_operation_out_of_universe"),
                             ),
                         )
                     replay = self._resolve_operation_adoption_replay(
@@ -1560,11 +1494,9 @@ class ScientificAttemptService:
                     )
                     if replay is not None:
                         return replay
-                    operation, execution, result = (
-                        self._require_adoptable_execution(
-                            attempt=current_attempt,
-                            operation_id=operation_ref,
-                        )
+                    operation, execution, result = self._require_adoptable_execution(
+                        attempt=current_attempt,
+                        operation_id=operation_ref,
                     )
                     self._validate_workflow_role(
                         attempt=current_attempt,
@@ -1617,15 +1549,11 @@ class ScientificAttemptService:
                         request_digest=request_digest,
                         created_at=created_at,
                     )
-                    stored_disposition = (
-                        self.repositories.scientific_dispositions.add(
-                            disposition
-                        )
+                    stored_disposition = self.repositories.scientific_dispositions.add(
+                        disposition
                     )
-                    stored_adoption = (
-                        self.repositories.scientific_effect_adoptions.add(
-                            adoption
-                        )
+                    stored_adoption = self.repositories.scientific_effect_adoptions.add(
+                        adoption
                     )
                     return ScientificOperationAdoptionResult(
                         disposition=stored_disposition,
@@ -1648,9 +1576,7 @@ class ScientificAttemptService:
                     selection=selection,
                     operation_id=operation_ref,
                     requested_role=role,
-                    error_code=(
-                        "scientific_operation_adoption_integrity_conflict"
-                    ),
+                    error_code=("scientific_operation_adoption_integrity_conflict"),
                 ),
             ) from exc
 
@@ -1665,10 +1591,7 @@ class ScientificAttemptService:
     ) -> ScientificEffectAdoption:
         selection, attempt = self._require_draft_head(selection_id)
         contract = self._resolve_mutable_workflow_contract(attempt)
-        if (
-            contract.effect_adoption_policy
-            == SCIENTIFIC_EFFECT_ADOPTION_POLICY_ATOMIC
-        ):
+        if contract.effect_adoption_policy == SCIENTIFIC_EFFECT_ADOPTION_POLICY_ATOMIC:
             raise ScientificAttemptError(
                 "scientific_legacy_adoption_disabled",
                 "legacy effect adoption is disabled for this workflow contract",
@@ -1742,9 +1665,7 @@ class ScientificAttemptService:
             effect_certainty=execution.effect_certainty.value,
             approval_digest=execution.approval_digest,
             actor_ref=actor,
-            idempotency_key=self._require_text(
-                "idempotency_key", idempotency_key
-            ),
+            idempotency_key=self._require_text("idempotency_key", idempotency_key),
             request_digest=request_digest,
             created_at=self.now(),
         )
@@ -1799,10 +1720,8 @@ class ScientificAttemptService:
                 "materialization_adoption_scope_invalid",
                 "artifact adoption does not belong to the exact selection",
             )
-        result_refs = (
-            self.repositories.controlled_operation_result_artifacts.list_by_result_handle(
-                adoption.result_handle_id
-            )
+        result_refs = self.repositories.controlled_operation_result_artifacts.list_by_result_handle(
+            adoption.result_handle_id
         )
         source_ref = next(
             (ref for ref in result_refs if ref.artifact_id == source_artifact_id),
@@ -1873,15 +1792,11 @@ class ScientificAttemptService:
                 target_path=materialized.path,
                 boundary_materialization_id=materialized.materialization_id,
                 actor_ref=actor,
-                idempotency_key=self._require_text(
-                    "idempotency_key", idempotency_key
-                ),
+                idempotency_key=self._require_text("idempotency_key", idempotency_key),
                 request_digest=request_digest,
                 created_at=self.now(),
             )
-            return self.repositories.scientific_artifact_materializations.add(
-                receipt
-            )
+            return self.repositories.scientific_artifact_materializations.add(receipt)
 
     def seal_selection(
         self,
@@ -1901,10 +1816,7 @@ class ScientificAttemptService:
         attempt = self._require_attempt(selection.attempt_id)
         self._resolve_mutable_workflow_contract(attempt)
         resolved_head = self._resolve_selection_head(selection.attempt_id)
-        if (
-            resolved_head is None
-            or resolved_head.head.selection_id != selection_id
-        ):
+        if resolved_head is None or resolved_head.head.selection_id != selection_id:
             raise ScientificAttemptError(
                 "selection_not_current_head",
                 "scientific selection is not the current CAS head",
@@ -1923,9 +1835,7 @@ class ScientificAttemptService:
                 "selection_not_draft",
                 "invalidated scientific selection cannot be sealed",
             )
-        attempt = self._require_mutation_admissible_attempt(
-            selection.attempt_id
-        )
+        attempt = self._require_mutation_admissible_attempt(selection.attempt_id)
         request_digest = canonical_digest(
             {
                 "command": "scientific.selection.seal",
@@ -1951,13 +1861,11 @@ class ScientificAttemptService:
                 },
                 retryable=True,
             )
-        dispositions = (
-            self.repositories.scientific_dispositions.list_by_selection(selection_id)
+        dispositions = self.repositories.scientific_dispositions.list_by_selection(
+            selection_id
         )
-        adoptions = (
-            self.repositories.scientific_effect_adoptions.list_by_selection(
-                selection_id
-            )
+        adoptions = self.repositories.scientific_effect_adoptions.list_by_selection(
+            selection_id
         )
         evaluation = self._selection_evaluator().evaluate(
             attempt=attempt,
@@ -1965,9 +1873,7 @@ class ScientificAttemptService:
             universe=universe,
         )
         self._raise_selection_evaluation(evaluation, for_closure=False)
-        disposition_digest = canonical_digest(
-            [item.to_dict() for item in dispositions]
-        )
+        disposition_digest = canonical_digest([item.to_dict() for item in dispositions])
         adoption_digest = canonical_digest([item.to_dict() for item in adoptions])
         sealed = replace(
             selection,
@@ -1998,9 +1904,6 @@ class ScientificAttemptService:
         selection_id: str,
         actor_ref: str,
         idempotency_key: str,
-        persist_closure_response: (
-            Callable[[ScientificAttemptClosureRequest], None] | None
-        ) = None,
     ) -> ScientificAttemptClosureRequest:
         """Persist agent closure intent while its writer still has authority.
 
@@ -2012,6 +1915,7 @@ class ScientificAttemptService:
         attempt = self._require_active_attempt(attempt_id)
         self._resolve_mutable_workflow_contract(attempt)
         actor = self._require_actor(actor_ref)
+        self._require_attempt_task_owner(attempt, actor_ref=actor)
         request = {
             "command": "scientific.attempt.close",
             "attempt_id": attempt_id,
@@ -2020,10 +1924,8 @@ class ScientificAttemptService:
             "idempotency_key": idempotency_key,
         }
         request_digest = canonical_digest(request)
-        existing = (
-            self.repositories.scientific_attempt_closure_requests.get_by_attempt(
-                attempt_id
-            )
+        existing = self.repositories.scientific_attempt_closure_requests.get_by_attempt(
+            attempt_id
         )
         if existing is not None:
             self._require_replay_digest(existing.request_digest, request_digest)
@@ -2031,8 +1933,7 @@ class ScientificAttemptService:
         resolved_head = self._resolve_selection_head(attempt_id)
         selection = (
             None
-            if resolved_head is None
-            or resolved_head.head.selection_id != selection_id
+            if resolved_head is None or resolved_head.head.selection_id != selection_id
             else resolved_head.selection
         )
         if (
@@ -2059,15 +1960,11 @@ class ScientificAttemptService:
         self._raise_selection_evaluation(evaluation, for_closure=False)
         self._assert_attempt_quiescent(attempt)
         record = ScientificAttemptClosureRequest(
-            closure_request_id=_stable_id(
-                "attempt_closure_request", request_digest
-            ),
+            closure_request_id=_stable_id("attempt_closure_request", request_digest),
             attempt_id=attempt_id,
             selection_id=selection_id,
             actor_ref=actor,
-            idempotency_key=self._require_text(
-                "idempotency_key", idempotency_key
-            ),
+            idempotency_key=self._require_text("idempotency_key", idempotency_key),
             request_digest=request_digest,
             created_at=self.now(),
         )
@@ -2076,128 +1973,8 @@ class ScientificAttemptService:
             owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
             owner_ref=f"attempt.close.request:{record.closure_request_id}",
         ):
-            stored = self.repositories.scientific_attempt_closure_requests.add(
-                record
-            )
-            if persist_closure_response is not None:
-                persist_closure_response(stored)
+            stored = self.repositories.scientific_attempt_closure_requests.add(record)
             return stored
-
-    def prepare_closure_response(
-        self,
-        *,
-        request: ScientificAttemptClosureRequest,
-        recipient: str,
-        recipient_kind: str,
-        assistant_response_text: str,
-    ) -> ScientificAttemptClosureResponse:
-        response_text = str(assistant_response_text)
-        self._require_text(
-            "assistant_response_text",
-            response_text,
-        )
-        response_digest = canonical_digest(
-            {"assistant_response_text": response_text}
-        )
-        identity_digest = canonical_digest(
-            {
-                "closure_request_id": request.closure_request_id,
-                "attempt_id": request.attempt_id,
-                "recipient": recipient,
-                "recipient_kind": recipient_kind,
-                "response_digest": response_digest,
-            }
-        ).removeprefix("sha256:")
-        message_id = f"msg_close_{identity_digest[:24]}"
-        document_id = f"msgdoc_close_{identity_digest[:24]}"
-        binding_digest = _closure_response_binding_digest(
-            closure_request_id=request.closure_request_id,
-            attempt_id=request.attempt_id,
-            message_id=message_id,
-            document_id=document_id,
-            recipient=recipient,
-            recipient_kind=recipient_kind,
-            response_digest=response_digest,
-        )
-        return ScientificAttemptClosureResponse(
-            closure_response_id=f"attempt_closure_response_{identity_digest[:24]}",
-            closure_request_id=request.closure_request_id,
-            attempt_id=request.attempt_id,
-            message_id=message_id,
-            document_id=document_id,
-            recipient=self._require_text("recipient", recipient),
-            recipient_kind=self._require_text(
-                "recipient_kind",
-                recipient_kind,
-            ),
-            response_digest=response_digest,
-            binding_digest=binding_digest,
-            created_at=request.created_at,
-        )
-
-    def require_closure_response(
-        self,
-        request: ScientificAttemptClosureRequest,
-    ) -> ScientificAttemptClosureResponse:
-        response = (
-            self.repositories.scientific_attempt_closure_responses
-            .get_by_closure_request(request.closure_request_id)
-        )
-        if response is None:
-            raise ScientificAttemptError(
-                "attempt_closure_response_missing",
-                "scientific attempt closure request has no durable final response",
-                hint=(
-                    "Do not backfill the request; issue a fresh closure intent "
-                    "under the current co-terminal response contract."
-                ),
-            )
-        attempt = self._require_attempt(request.attempt_id)
-        messages = [
-            message
-            for message in self.repositories.inbox.list_by_session(
-                attempt.session_id
-            )
-            if message.message_id == response.message_id
-        ]
-        document = self.repositories.engine_documents.get(response.document_id)
-        content = (
-            ""
-            if document is None
-            else str(dict(document.payload).get("content") or "")
-        )
-        expected_binding_digest = _closure_response_binding_digest(
-            closure_request_id=request.closure_request_id,
-            attempt_id=request.attempt_id,
-            message_id=response.message_id,
-            document_id=response.document_id,
-            recipient=response.recipient,
-            recipient_kind=response.recipient_kind,
-            response_digest=response.response_digest,
-        )
-        if (
-            response.attempt_id != request.attempt_id
-            or len(messages) != 1
-            or messages[0].sender != "harness"
-            or messages[0].recipient != response.recipient
-            or messages[0].recipient_kind.value != response.recipient_kind
-            or messages[0].message_type != "assistant_message"
-            or messages[0].payload_ref != response.document_id
-            or document is None
-            or document.session_id != attempt.session_id
-            or document.document_kind != "conversation_message"
-            or dict(document.payload).get("message_id") != response.message_id
-            or dict(document.payload).get("role") != "assistant"
-            or not content.strip()
-            or canonical_digest({"assistant_response_text": content})
-            != response.response_digest
-            or expected_binding_digest != response.binding_digest
-        ):
-            raise ScientificAttemptError(
-                "attempt_closure_response_invalid",
-                "scientific attempt closure response binding is incomplete or inconsistent",
-            )
-        return response
 
     def finalize_closure_request(
         self,
@@ -2233,12 +2010,6 @@ class ScientificAttemptService:
                 "attempt_closure_request_missing",
                 "scientific attempt closure request does not exist",
             )
-        response = (
-            self.repositories.scientific_attempt_closure_responses
-            .get_by_closure_request(request.closure_request_id)
-        )
-        if response is not None:
-            self.require_closure_response(request)
         attempt = self._require_attempt(request.attempt_id)
         existing = self.repositories.scientific_attempt_closures.get_by_attempt(
             attempt.attempt_id
@@ -2261,6 +2032,10 @@ class ScientificAttemptService:
                 )
             self._ensure_post_closure_scope(attempt)
             return existing
+        self._require_attempt_task_owner(
+            attempt,
+            actor_ref=request.actor_ref,
+        )
         self._assert_attempt_quiescent(attempt)
         active_writers = self.repositories.mutation_writers.list_active(
             attempt.mutation_scope_id
@@ -2269,9 +2044,7 @@ class ScientificAttemptService:
             raise ScientificAttemptError(
                 "attempt_closure_writers_active",
                 "attempt still has active mutation writers",
-                details={
-                    "writer_ids": [writer.writer_id for writer in active_writers]
-                },
+                details={"writer_ids": [writer.writer_id for writer in active_writers]},
                 retryable=True,
             )
         scope = self.repositories.mutation_scopes.get(attempt.mutation_scope_id)
@@ -2374,14 +2147,14 @@ class ScientificAttemptService:
                     },
                 )
             return existing
+        self._require_attempt_task_owner(attempt, actor_ref=actor)
         closure_request = self.repositories.scientific_attempt_closure_requests.get(
             closure_request_id
         )
         resolved_head = self._resolve_selection_head(attempt_id)
         selection = (
             None
-            if resolved_head is None
-            or resolved_head.head.selection_id != selection_id
+            if resolved_head is None or resolved_head.head.selection_id != selection_id
             else resolved_head.selection
         )
         if (
@@ -2403,13 +2176,11 @@ class ScientificAttemptService:
                 "attempt_closure_universe_changed",
                 "operation universe changed after selection sealing",
             )
-        dispositions = (
-            self.repositories.scientific_dispositions.list_by_selection(selection_id)
+        dispositions = self.repositories.scientific_dispositions.list_by_selection(
+            selection_id
         )
-        adoptions = (
-            self.repositories.scientific_effect_adoptions.list_by_selection(
-                selection_id
-            )
+        adoptions = self.repositories.scientific_effect_adoptions.list_by_selection(
+            selection_id
         )
         assert resolved_head is not None
         evaluation = self._selection_evaluator().evaluate(
@@ -2506,9 +2277,7 @@ class ScientificAttemptService:
             quiescence_receipt_digest=receipt.receipt_digest,
             closure_digest=canonical_digest(closure_payload),
             actor_ref=actor,
-            idempotency_key=self._require_text(
-                "idempotency_key", idempotency_key
-            ),
+            idempotency_key=self._require_text("idempotency_key", idempotency_key),
             request_digest=request_digest,
             created_at=self.now(),
         )
@@ -2561,13 +2330,9 @@ class ScientificAttemptService:
                     "allowed_scopes": [
                         scope.value for scope in authority.allowed_scopes
                     ],
-                    "allowed_effect_classes": list(
-                        authority.allowed_effect_classes
-                    ),
+                    "allowed_effect_classes": list(authority.allowed_effect_classes),
                     "allowed_provider_count": len(authority.allowed_providers),
-                    "allowed_hpc_target_count": len(
-                        authority.allowed_hpc_targets
-                    ),
+                    "allowed_hpc_target_count": len(authority.allowed_hpc_targets),
                     "status": authority.status.value,
                     "attempts": {
                         "consumed": authority.consumed_attempts,
@@ -2606,12 +2371,8 @@ class ScientificAttemptService:
                     "campaign_id": request.campaign_id,
                     "workflow_id": request.workflow_id,
                     "scope": request.scope.value,
-                    "workflow_contract_digest": (
-                        request.workflow_contract_digest
-                    ),
-                    "requested_effect_classes": list(
-                        request.requested_effect_classes
-                    ),
+                    "workflow_contract_digest": (request.workflow_contract_digest),
+                    "requested_effect_classes": list(request.requested_effect_classes),
                     "provider_authorized": request.provider is not None,
                     "hpc_target_authorized": request.hpc_target is not None,
                     "reserved": {
@@ -2655,10 +2416,8 @@ class ScientificAttemptService:
         authority = self.repositories.scientific_attempt_authorizations.get(
             attempt.envelope_id
         )
-        admission = (
-            self.repositories.scientific_attempt_admission_requests.get(
-                attempt.admission_request_id
-            )
+        admission = self.repositories.scientific_attempt_admission_requests.get(
+            attempt.admission_request_id
         )
         closure = lifecycle.closure
         closure_request = lifecycle.closure_request
@@ -2691,15 +2450,11 @@ class ScientificAttemptService:
             )
         verify_quiescence_evidence(receipt=receipt, snapshot=snapshot)
         universe = self.operation_universe(attempt_id)
-        dispositions = (
-            self.repositories.scientific_dispositions.list_by_selection(
-                selection.selection_id
-            )
+        dispositions = self.repositories.scientific_dispositions.list_by_selection(
+            selection.selection_id
         )
-        adoptions = (
-            self.repositories.scientific_effect_adoptions.list_by_selection(
-                selection.selection_id
-            )
+        adoptions = self.repositories.scientific_effect_adoptions.list_by_selection(
+            selection.selection_id
         )
         materializations = (
             self.repositories.scientific_artifact_materializations.list_by_selection(
@@ -2708,8 +2463,7 @@ class ScientificAttemptService:
         )
         authorization_payload = authority.to_dict()
         authorization_payload["allowed_provider_digests"] = [
-            self._private_identity_digest(item)
-            for item in authority.allowed_providers
+            self._private_identity_digest(item) for item in authority.allowed_providers
         ]
         authorization_payload["allowed_hpc_target_digests"] = [
             self._private_identity_digest(item)
@@ -2752,9 +2506,7 @@ class ScientificAttemptService:
             "selection": selection.to_dict(),
             "dispositions": [item.to_dict() for item in dispositions],
             "adoptions": [item.to_dict() for item in adoptions],
-            "materializations": [
-                item.to_dict() for item in materializations
-            ],
+            "materializations": [item.to_dict() for item in materializations],
             "closure_request": closure_request.to_dict(),
             "quiescence": build_quiescence_evidence_envelope(
                 receipt=receipt,
@@ -2851,10 +2603,7 @@ class ScientificAttemptService:
             reserved_cost_microunits,
             reserved_wall_time_seconds,
         )
-        if any(
-            type(value) is not int or value < 0
-            for value in requested
-        ):
+        if any(type(value) is not int or value < 0 for value in requested):
             raise ScientificAttemptError(
                 "authorization_resource_invalid",
                 "attempt resource reservations must be non-negative",
@@ -2970,9 +2719,7 @@ class ScientificAttemptService:
             raise ScientificAttemptError(
                 "attempt_admission_writers_active",
                 "pre-attempt session scope still has active writers",
-                details={
-                    "writer_ids": [writer.writer_id for writer in active_writers]
-                },
+                details={"writer_ids": [writer.writer_id for writer in active_writers]},
                 retryable=True,
             )
         if scope.state is MutationScopeState.OPEN:
@@ -3005,9 +2752,7 @@ class ScientificAttemptService:
         return scope.scope_id
 
     def _ensure_post_closure_scope(self, attempt: ScientificAttempt) -> None:
-        scopes = self.repositories.mutation_scopes.list_by_session(
-            attempt.session_id
-        )
+        scopes = self.repositories.mutation_scopes.list_by_session(attempt.session_id)
         children = [
             scope
             for scope in scopes
@@ -3018,17 +2763,11 @@ class ScientificAttemptService:
                 raise ScientificAttemptError(
                     "attempt_post_closure_scope_ambiguous",
                     "attempt closure has more than one follow-up mutation scope",
-                    details={
-                        "scope_ids": sorted(scope.scope_id for scope in children)
-                    },
+                    details={"scope_ids": sorted(scope.scope_id for scope in children)},
                 )
             child = children[0]
-            expected_scope_id = scientific_attempt_post_scope_id(
-                attempt.attempt_id
-            )
-            expected_scope_ref = scientific_attempt_post_scope_ref(
-                attempt.attempt_id
-            )
+            expected_scope_id = scientific_attempt_post_scope_id(attempt.attempt_id)
+            expected_scope_ref = scientific_attempt_post_scope_ref(attempt.attempt_id)
             if (
                 child.scope_id != expected_scope_id
                 or child.session_id != attempt.session_id
@@ -3077,27 +2816,22 @@ class ScientificAttemptService:
         idempotency_key: str,
         request_digest: str,
     ) -> ScientificOperationAdoptionResult | None:
-        disposition = (
-            self.repositories.scientific_dispositions.get_by_idempotency(
-                selection_id=selection.selection_id,
-                actor_ref=actor_ref,
-                idempotency_key=idempotency_key,
-            )
+        disposition = self.repositories.scientific_dispositions.get_by_idempotency(
+            selection_id=selection.selection_id,
+            actor_ref=actor_ref,
+            idempotency_key=idempotency_key,
         )
-        adoption = (
-            self.repositories.scientific_effect_adoptions.get_by_idempotency(
-                selection_id=selection.selection_id,
-                actor_ref=actor_ref,
-                idempotency_key=idempotency_key,
-            )
+        adoption = self.repositories.scientific_effect_adoptions.get_by_idempotency(
+            selection_id=selection.selection_id,
+            actor_ref=actor_ref,
+            idempotency_key=idempotency_key,
         )
         if disposition is None and adoption is None:
             return None
         if (
             disposition is None
             or adoption is None
-            or disposition.disposition_id
-            != _stable_id("disposition", request_digest)
+            or disposition.disposition_id != _stable_id("disposition", request_digest)
             or adoption.adoption_id != _stable_id("adoption", request_digest)
             or disposition.selection_id != selection.selection_id
             or adoption.selection_id != selection.selection_id
@@ -3105,8 +2839,7 @@ class ScientificAttemptService:
             or adoption.attempt_id != attempt.attempt_id
             or disposition.operation_id != operation_id
             or adoption.operation_id != operation_id
-            or disposition.kind
-            is not ScientificOperationDispositionKind.ADOPTED
+            or disposition.kind is not ScientificOperationDispositionKind.ADOPTED
             or disposition.workflow_role != workflow_role
             or adoption.workflow_role != workflow_role
             or disposition.reason_code != reason_code
@@ -3127,9 +2860,7 @@ class ScientificAttemptService:
                     selection=selection,
                     operation_id=operation_id,
                     requested_role=workflow_role,
-                    error_code=(
-                        "scientific_operation_adoption_integrity_conflict"
-                    ),
+                    error_code=("scientific_operation_adoption_integrity_conflict"),
                 ),
             )
         return ScientificOperationAdoptionResult(
@@ -3144,23 +2875,18 @@ class ScientificAttemptService:
         operation_id: str,
         workflow_role: str,
     ) -> None:
-        dispositions = (
-            self.repositories.scientific_dispositions.list_by_selection(
-                selection_id
-            )
+        dispositions = self.repositories.scientific_dispositions.list_by_selection(
+            selection_id
         )
-        adoptions = (
-            self.repositories.scientific_effect_adoptions.list_by_selection(
-                selection_id
-            )
+        adoptions = self.repositories.scientific_effect_adoptions.list_by_selection(
+            selection_id
         )
         conflicting_dispositions = tuple(
             disposition
             for disposition in dispositions
             if disposition.operation_id == operation_id
             or (
-                disposition.kind
-                is ScientificOperationDispositionKind.ADOPTED
+                disposition.kind is ScientificOperationDispositionKind.ADOPTED
                 and disposition.workflow_role == workflow_role
             )
         )
@@ -3176,12 +2902,10 @@ class ScientificAttemptService:
                 "operation or workflow role already has different selection facts",
                 details={
                     "current_disposition_ids": [
-                        item.disposition_id
-                        for item in conflicting_dispositions[:4]
+                        item.disposition_id for item in conflicting_dispositions[:4]
                     ],
                     "current_adoption_ids": [
-                        item.adoption_id
-                        for item in conflicting_adoptions[:4]
+                        item.adoption_id for item in conflicting_adoptions[:4]
                     ],
                     "mutation_applied": False,
                 },
@@ -3241,37 +2965,24 @@ class ScientificAttemptService:
             if operation_id not in occurrence_ids
             else self.repositories.controlled_operations.get(operation_id)
         )
-        dispositions = (
-            self.repositories.scientific_dispositions.list_by_selection(
-                selection.selection_id
-            )
+        dispositions = self.repositories.scientific_dispositions.list_by_selection(
+            selection.selection_id
         )
-        adoptions = (
-            self.repositories.scientific_effect_adoptions.list_by_selection(
-                selection.selection_id
-            )
+        adoptions = self.repositories.scientific_effect_adoptions.list_by_selection(
+            selection.selection_id
         )
         current_disposition = next(
-            (
-                item
-                for item in dispositions
-                if item.operation_id == operation_id
-            ),
+            (item for item in dispositions if item.operation_id == operation_id),
             None,
         )
         current_adoption = next(
-            (
-                item
-                for item in adoptions
-                if item.operation_id == operation_id
-            ),
+            (item for item in adoptions if item.operation_id == operation_id),
             None,
         )
         contract = self._resolve_readable_workflow_contract(attempt)
         if isinstance(contract, HistoricalScientificWorkflowContract):
             allowed_roles = tuple(
-                role["role_id"]
-                for role in contract.project(attempt.scope)["roles"]
+                role["role_id"] for role in contract.project(attempt.scope)["roles"]
             )
             compatible_roles: tuple[str, ...] = ()
         else:
@@ -3313,15 +3024,9 @@ class ScientificAttemptService:
             "selection_id": selection.selection_id,
             "selection_revision": selection.revision,
             "selection_state": selection.state.value,
-            "current_selection_id": (
-                None if head is None else head.selection_id
-            ),
-            "current_selection_revision": (
-                None if head is None else head.revision
-            ),
-            "head_state_version": (
-                None if head is None else head.state_version
-            ),
+            "current_selection_id": (None if head is None else head.selection_id),
+            "current_selection_revision": (None if head is None else head.revision),
+            "head_state_version": (None if head is None else head.state_version),
             "operation_id": operation_id,
             "operation_signature": (
                 None
@@ -3431,17 +3136,14 @@ class ScientificAttemptService:
                 "immutable controlled-operation result is missing or inconsistent",
             )
         try:
-            self.repositories.controlled_operation_result_artifacts.assert_exact(
-                result
-            )
+            self.repositories.controlled_operation_result_artifacts.assert_exact(result)
         except ImmutableIdentityConflictError as exc:
             raise ScientificAttemptError(
                 "effect_adoption_result_invalid",
                 "immutable controlled-operation artifact set is inconsistent",
             ) from exc
         if operation.approval_id is not None and (
-            operation.approval_state != "approved"
-            or execution.approval_digest is None
+            operation.approval_state != "approved" or execution.approval_digest is None
         ):
             raise ScientificAttemptError(
                 "effect_adoption_approval_invalid",
@@ -3528,15 +3230,10 @@ class ScientificAttemptService:
                 "selection_missing",
                 "scientific selection does not exist",
             )
-        attempt = self._require_mutation_admissible_attempt(
-            selection.attempt_id
-        )
+        attempt = self._require_mutation_admissible_attempt(selection.attempt_id)
         self._resolve_mutable_workflow_contract(attempt)
         resolved_head = self._resolve_selection_head(selection.attempt_id)
-        if (
-            resolved_head is None
-            or resolved_head.head.selection_id != selection_id
-        ):
+        if resolved_head is None or resolved_head.head.selection_id != selection_id:
             raise ScientificAttemptError(
                 "selection_not_current_head",
                 "scientific selection is not the current CAS head",
@@ -3571,11 +3268,7 @@ class ScientificAttemptService:
         blockers = tuple(
             issue
             for issue in evaluation.issues
-            if (
-                issue.blocks_closure
-                if for_closure
-                else issue.blocks_seal
-            )
+            if (issue.blocks_closure if for_closure else issue.blocks_seal)
         )
         if not blockers:
             return
@@ -3701,13 +3394,11 @@ class ScientificAttemptService:
             ) from exc
         if (
             not isinstance(payload, dict)
-            or payload.get("schema_id")
-            != "scientific_selection_cursor@1"
+            or payload.get("schema_id") != "scientific_selection_cursor@1"
             or payload.get("attempt_id") != attempt_id
             or payload.get("selection_id") != selection_id
             or payload.get("head_state_version") != head_state_version
-            or payload.get("operation_universe_digest")
-            != operation_universe_digest
+            or payload.get("operation_universe_digest") != operation_universe_digest
             or isinstance(payload.get("offset"), bool)
             or not isinstance(payload.get("offset"), int)
             or payload["offset"] < 0
@@ -3804,6 +3495,38 @@ class ScientificAttemptService:
                 "scientific attempt does not exist",
             )
         return attempt
+
+    def _require_attempt_task_owner(
+        self,
+        attempt: ScientificAttempt,
+        *,
+        actor_ref: str,
+    ) -> None:
+        task = self.repositories.tasks.get(attempt.task_id)
+        if (
+            task is None
+            or task.session_id != attempt.session_id
+            or task.assigned_ref != actor_ref
+        ):
+            raise ScientificAttemptError(
+                "attempt_closure_actor_not_owner",
+                (
+                    "scientific attempt closure can be requested only by the "
+                    "current assignee of its canonical task"
+                ),
+                hint=(
+                    "Inspect the task assignment and let its canonical assignee "
+                    "request closure."
+                ),
+                details={
+                    "attempt_id": attempt.attempt_id,
+                    "task_id": attempt.task_id,
+                    "assigned_ref": None if task is None else task.assigned_ref,
+                    "actor_ref": actor_ref,
+                    "mutation_applied": False,
+                },
+                retryable=True,
+            )
 
     def resolve_attempt_lifecycle(
         self,

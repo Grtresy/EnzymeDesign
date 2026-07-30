@@ -28,7 +28,6 @@ class ToolInvocation:
     arguments: dict[str, Any]
     task_id: str | None = None
     lane_id: str | None = None
-    assistant_response_text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,7 +46,6 @@ class ToolResult:
     failure_observation: dict[str, Any] | None = None
     terminal_action: str | None = None
     terminates_turn: bool = False
-    persists_assistant_response: bool = False
 
     def envelope(self) -> dict[str, Any]:
         details = dict(self.details or {})
@@ -62,7 +60,6 @@ class ToolResult:
             "content": self.content,
             "terminal_action": self.terminal_action,
             "terminates_turn": self.terminates_turn,
-            "persists_assistant_response": self.persists_assistant_response,
         }
         try:
             envelope["payload"] = json.loads(self.content)
@@ -110,9 +107,7 @@ def sanitize_tool_result_diagnostics(result: ToolResult) -> ToolResult:
         else:
             public_content = sanitize_public_diagnostic_text(result.content)
     safe_details = sanitize_public_diagnostic_payload(result.details or {})
-    safe_failure = sanitize_public_diagnostic_payload(
-        result.failure_observation or {}
-    )
+    safe_failure = sanitize_public_diagnostic_payload(result.failure_observation or {})
     return replace(
         result,
         status=safe_status,
@@ -447,9 +442,7 @@ class ToolRouter:
             return None
         return runtime.governance(step_context)
 
-    def is_visible(
-        self, step_context: AgentStepContext, runtime: ToolRuntime
-    ) -> bool:
+    def is_visible(self, step_context: AgentStepContext, runtime: ToolRuntime) -> bool:
         if not runtime.is_visible(step_context):
             return False
         governance = runtime.governance(step_context)
@@ -553,9 +546,7 @@ class ToolRouter:
                         summary=message,
                         error_code="runtime_fencing_rejected",
                         hint="Allow the active runtime owner to resume this work.",
-                        details={
-                            "reason": sanitize_public_diagnostic_text(str(exc))
-                        },
+                        details={"reason": sanitize_public_diagnostic_text(str(exc))},
                     )
                     self._attach_failure_observation(
                         step_context,
@@ -586,9 +577,7 @@ class ToolRouter:
                     return self._attach_failure_observation(
                         step_context,
                         invocation,
-                        sanitize_tool_result_diagnostics(
-                            precondition_result
-                        ),
+                        sanitize_tool_result_diagnostics(precondition_result),
                         governance=governance,
                     )
             mutation_scope_factory = getattr(
@@ -830,11 +819,15 @@ class ToolRouter:
             return sanitize_tool_result_diagnostics(result)
         error_code = result.error_code or result.status or "tool_error"
         details = dict(result.details or {})
-        validation = error_code in {
-            "invalid_tool_arguments",
-            "unknown_tool",
-            "tool_not_visible",
-        } or details.get("precondition_rejected") is True
+        validation = (
+            error_code
+            in {
+                "invalid_tool_arguments",
+                "unknown_tool",
+                "tool_not_visible",
+            }
+            or details.get("precondition_rejected") is True
+        )
         try:
             effect_certainty = ExternalEffectCertainty(
                 str(details.get("effect_certainty"))
@@ -846,9 +839,7 @@ class ToolRouter:
                 else ExternalEffectCertainty.TERMINAL_KNOWN
             )
         try:
-            retry_eligibility = RetryEligibility(
-                str(details.get("retry_eligibility"))
-            )
+            retry_eligibility = RetryEligibility(str(details.get("retry_eligibility")))
         except ValueError:
             retry_eligibility = (
                 RetryEligibility.SAME_PHASE_SAFE
@@ -856,14 +847,11 @@ class ToolRouter:
                 else RetryEligibility.TERMINAL
             )
         try:
-            recoverability = FailureRecoverability(
-                str(details.get("recoverability"))
-            )
+            recoverability = FailureRecoverability(str(details.get("recoverability")))
         except ValueError:
             recoverability = (
                 FailureRecoverability.RECONCILIATION_REQUIRED
-                if effect_certainty
-                is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+                if effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
                 else (
                     FailureRecoverability.AGENT_CAN_RETRY
                     if validation

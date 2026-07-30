@@ -373,9 +373,7 @@ def _browser_screenshot_png(
         or interlace != 0
     ):
         return None
-    row_bytes = (
-        width * channels_by_color_type[color_type] * bit_depth + 7
-    ) // 8
+    row_bytes = (width * channels_by_color_type[color_type] * bit_depth + 7) // 8
     expected_decoded_size = height * (1 + row_bytes)
     if expected_decoded_size > _MAX_BROWSER_SCREENSHOT_DECODED_BYTES:
         return None
@@ -588,9 +586,7 @@ class SessionDriveResult:
             dict(self.workspace.get("task_board") or {}).get("items") or []
         )
         operations = list(
-            dict(self.workspace.get("scientific_evidence") or {}).get(
-                "operations"
-            )
+            dict(self.workspace.get("scientific_evidence") or {}).get("operations")
             or []
         )
         return {
@@ -625,6 +621,101 @@ class SessionDriveResult:
                 else canonical_digest(self.scientific_attempt_control)
             ),
         }
+
+
+def _bounded_status_counts(
+    records: object,
+    *,
+    field_name: str,
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    if not isinstance(records, list):
+        return counts
+    for record in records[:256]:
+        if not isinstance(record, dict):
+            continue
+        value = (
+            safe_public_machine_identifier(
+                record.get(field_name),
+                fallback="unknown",
+            )
+            or "unknown"
+        )
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _diagnostic_formal_facts(
+    formal: SessionDriveResult | None,
+) -> dict[str, object]:
+    if formal is None:
+        return {
+            "formal_observed": False,
+            "drain_count": 0,
+            "task_status_counts": {},
+            "operation_status_counts": {},
+            "operation_effect_certainty_counts": {},
+            "report_status_counts": {},
+            "draft_status_counts": {},
+            "attempt_phase_counts": {},
+            "sandbox_status_counts": {},
+            "active_writer_count": 0,
+        }
+    workspace = formal.workspace
+    tasks = list(dict(workspace.get("task_board") or {}).get("items") or [])
+    scientific_evidence = dict(workspace.get("scientific_evidence") or {})
+    operations = list(scientific_evidence.get("operations") or [])
+    attempts_projection = workspace.get("scientific_attempts")
+    attempts = (
+        list(attempts_projection.get("attempts") or [])
+        if isinstance(attempts_projection, dict)
+        else []
+    )
+    reports = list(workspace.get("reports") or [])
+    drafts = list(workspace.get("report_drafts") or [])
+    sandbox_runs = list(workspace.get("sandbox_runs") or [])
+    raw_active_writers = formal.mutation_scope.get(
+        "active_writer_count",
+        0,
+    )
+    active_writer_count = (
+        raw_active_writers
+        if type(raw_active_writers) is int and raw_active_writers >= 0
+        else 0
+    )
+    return {
+        "formal_observed": True,
+        "drain_count": formal.drain_count,
+        "task_status_counts": _bounded_status_counts(
+            tasks,
+            field_name="status",
+        ),
+        "operation_status_counts": _bounded_status_counts(
+            operations,
+            field_name="status",
+        ),
+        "operation_effect_certainty_counts": _bounded_status_counts(
+            operations,
+            field_name="effect_certainty",
+        ),
+        "report_status_counts": _bounded_status_counts(
+            reports,
+            field_name="status",
+        ),
+        "draft_status_counts": _bounded_status_counts(
+            drafts,
+            field_name="status",
+        ),
+        "attempt_phase_counts": _bounded_status_counts(
+            attempts,
+            field_name="lifecycle_phase",
+        ),
+        "sandbox_status_counts": _bounded_status_counts(
+            sandbox_runs,
+            field_name="status",
+        ),
+        "active_writer_count": active_writer_count,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -1098,9 +1189,7 @@ class _PublicHostClient:
                     },
                 )
             receipts = tuple(sorted(self._receipts, key=lambda item: item.sequence))
-        if [item.sequence for item in receipts] != list(
-            range(1, len(receipts) + 1)
-        ):
+        if [item.sequence for item in receipts] != list(range(1, len(receipts) + 1)):
             raise LiveProductPathError(
                 "public_api_receipt_chain_incomplete",
                 "public API receipt chain has an unfinalized sequence gap",
@@ -1382,9 +1471,7 @@ class _PublicHostClient:
         sequence: int | None = None,
     ) -> None:
         canonical_route = route.split("?", 1)[0]
-        request_payload: Mapping[str, object] = (
-            {} if payload is None else dict(payload)
-        )
+        request_payload: Mapping[str, object] = {} if payload is None else dict(payload)
         if method == "GET" and canonical_route.endswith("/events"):
             match = re.fullmatch(
                 r"(?P<path>/v3/sessions/[A-Za-z0-9._-]+/events)"
@@ -1542,8 +1629,7 @@ class _PublicHostClient:
             }
             permitted = permitted or (method == "POST" and segments[3] == "messages")
             permitted = permitted or (
-                method == "POST"
-                and segments[3] == "scientific-attempt-authorizations"
+                method == "POST" and segments[3] == "scientific-attempt-authorizations"
             )
         elif len(segments) == 5 and segments[:2] == ["v3", "sessions"]:
             permitted = method == "POST" and segments[3:] == ["runtime", "drain"]
@@ -1712,11 +1798,7 @@ class LiveAoxAttemptRunner:
                 )
             )
         if outcome.kind == "fault":
-            if (
-                outcome.probe is None
-                or outcome.formal is None
-                or outcome.fault is None
-            ):
+            if outcome.probe is None or outcome.formal is None or outcome.fault is None:
                 raise AssertionError("fault live outcome lacks terminal state")
             return self._project_run_class_evidence(
                 self._fault_evidence(
@@ -1777,15 +1859,19 @@ class LiveAoxAttemptRunner:
 
         projected = force_non_acceptance(evidence)
         assert isinstance(projected, dict)
+        diagnostic_observation = dict(projected.get("diagnostic_observation") or {})
+        diagnostic_observation.update(
+            {
+                "product_path_completed": product_path_completed,
+                "observed_scientific_status": original_outcome.get("status"),
+                "observed_report_status": original_report.get("status"),
+            }
+        )
         projected.update(
             {
                 "run_class": AoxLiveRunClass.DIAGNOSTIC.value,
                 "acceptance_eligible": False,
-                "diagnostic_observation": {
-                    "product_path_completed": product_path_completed,
-                    "observed_scientific_status": original_outcome.get("status"),
-                    "observed_report_status": original_report.get("status"),
-                },
+                "diagnostic_observation": diagnostic_observation,
             }
         )
         return projected
@@ -1839,8 +1925,7 @@ class LiveAoxAttemptRunner:
                 return _LiveDriveOutcome(
                     kind="failure",
                     blocker={
-                        "code": probe.blocker_code
-                        or "known_positive_probe_incomplete",
+                        "code": probe.blocker_code or "known_positive_probe_incomplete",
                         "message": (
                             "independent NCBI/UniProt and four-tool globin probe "
                             "did not complete"
@@ -1855,13 +1940,10 @@ class LiveAoxAttemptRunner:
             formal_authority = self._require_selected_chain_attempt_authority(
                 context.attempt_authority,
                 session_id=str(
-                    dict(context.attempt_authority or {}).get("session_id")
-                    or ""
+                    dict(context.attempt_authority or {}).get("session_id") or ""
                 ),
                 expected_scope=(
-                    "fault"
-                    if context.roots.attempt_kind == "fault"
-                    else "formal"
+                    "fault" if context.roots.attempt_kind == "fault" else "formal"
                 ),
                 outer_attempt_id=context.roots.attempt_id,
             )
@@ -1964,9 +2046,7 @@ class LiveAoxAttemptRunner:
                             "served_ui_dist_digest"
                         ),
                         "browser_observation_challenge": (
-                            formal.browser_approval_receipt.get(
-                                "observation_challenge"
-                            )
+                            formal.browser_approval_receipt.get("observation_challenge")
                         ),
                         "browser_observation_receipt_path": (
                             None
@@ -2036,9 +2116,7 @@ class LiveAoxAttemptRunner:
         expected_scope: Literal["formal", "fault"],
         outer_attempt_id: str | None = None,
     ) -> dict[str, object]:
-        authority = (
-            {} if raw_authority is None else dict(raw_authority)
-        )
+        authority = {} if raw_authority is None else dict(raw_authority)
         request = authority.get("authority_request")
         attempt_id = str(authority.get("attempt_id") or "")
         policy = policy_for_run_class(self.run_class)
@@ -2052,9 +2130,7 @@ class LiveAoxAttemptRunner:
             observed_run_class = authority_run_class(authority)
         except ValueError:
             observed_run_class = None
-        expected_attempt_kind = (
-            "fault" if expected_scope == "fault" else "positive"
-        )
+        expected_attempt_kind = "fault" if expected_scope == "fault" else "positive"
         if (
             not isinstance(request, dict)
             or observed_run_class is not self.run_class
@@ -2068,8 +2144,7 @@ class LiveAoxAttemptRunner:
             or request.get("session_id") != session_id
             or request.get("task_id") != authority.get("task_id")
             or request.get("campaign_id") is None
-            or request.get("workflow_id")
-            != AOX_SELECTED_CHAIN_WORKFLOW_ID
+            or request.get("workflow_id") != AOX_SELECTED_CHAIN_WORKFLOW_ID
             or request.get("root_ref") != expected_root_ref
             or request.get("allowed_scopes") != [expected_scope]
             or request.get("max_attempts") != 1
@@ -2080,10 +2155,8 @@ class LiveAoxAttemptRunner:
             raise LiveProductPathError(
                 "attempt_authority_slot_identity_invalid",
                 (
-                    "formal session does not match its exact predeclared "
-                    "authority slot"
-                    if self.run_class
-                    is AoxLiveRunClass.FORMAL_ACCEPTANCE
+                    "formal session does not match its exact predeclared authority slot"
+                    if self.run_class is AoxLiveRunClass.FORMAL_ACCEPTANCE
                     else (
                         "diagnostic session does not match its exact "
                         "predeclared authority slot"
@@ -2109,10 +2182,7 @@ class LiveAoxAttemptRunner:
                 session_id=session_id,
                 scope_kind=MutationScopeKind.SESSION,
                 scope_ref=f"aox-pre-attempt:{outer_attempt_id}",
-                scope_id=(
-                    "mutation_scope_pre_"
-                    + _safe_id(outer_attempt_id)
-                ),
+                scope_id=("mutation_scope_pre_" + _safe_id(outer_attempt_id)),
             )
 
     @contextmanager
@@ -2148,9 +2218,7 @@ class LiveAoxAttemptRunner:
                 details={"session_id": session_id},
             )
         writer_factory = MutationWriterTurnFactory(
-            repository_scope_factory=lambda: self._provider_repository_scope(
-                provider
-            )
+            repository_scope_factory=lambda: self._provider_repository_scope(provider)
         )
         try:
             # A formal scientific attempt rolls its pre-attempt session scope
@@ -2198,6 +2266,7 @@ class LiveAoxAttemptRunner:
         session_id: str,
         purpose: Literal["probe", "formal"],
         attempt_authority: Mapping[str, object] | None,
+        formal_attempt_closed: bool = False,
         rollover_deadline: float | None = None,
     ) -> AoxSessionRuntimeObservation:
         return self._bounded_runtime_barrier_read(
@@ -2206,11 +2275,10 @@ class LiveAoxAttemptRunner:
             purpose=purpose,
             attempt_authority=attempt_authority,
             rollover_deadline=rollover_deadline,
-            read=lambda: AoxRuntimeObservationService(
-                provider
-            ).observe_session(
+            read=lambda: AoxRuntimeObservationService(provider).observe_session(
                 session_id=session_id,
                 purpose=purpose,
+                formal_attempt_closed=formal_attempt_closed,
             ),
         )
 
@@ -2283,13 +2351,10 @@ class LiveAoxAttemptRunner:
                     ) from exc
                 if (
                     rollover_projection.phase
-                    is ScientificAttemptScopeRolloverPhase
-                    .POST_CLOSURE_SCOPE_OPEN
+                    is ScientificAttemptScopeRolloverPhase.POST_CLOSURE_SCOPE_OPEN
                 ):
                     continue
-                time.sleep(
-                    min(self.browser_poll_interval_seconds, remaining)
-                )
+                time.sleep(min(self.browser_poll_interval_seconds, remaining))
 
     def _runtime_wake_state(
         self,
@@ -2299,12 +2364,8 @@ class LiveAoxAttemptRunner:
     ) -> _RuntimeWakeState:
         with provider.read() as scope:
             repositories = scope.repositories
-            ready_tasks = tuple(
-                repositories.tasks.list_ready_by_session(session_id)
-            )
-            ready_task_ids = tuple(
-                sorted(task.task_id for task in ready_tasks)
-            )
+            ready_tasks = tuple(repositories.tasks.list_ready_by_session(session_id))
+            ready_task_ids = tuple(sorted(task.task_id for task in ready_tasks))
             runtime_signals = tuple(
                 repositories.runtime_signals.list_by_session(session_id)
             )
@@ -2312,20 +2373,14 @@ class LiveAoxAttemptRunner:
                 sorted(
                     signal.signal_id
                     for signal in runtime_signals
-                    if str(
-                        getattr(signal.status, "value", signal.status)
-                    )
-                    == "pending"
+                    if str(getattr(signal.status, "value", signal.status)) == "pending"
                 )
             )
             claimed_signal_ids = tuple(
                 sorted(
                     signal.signal_id
                     for signal in runtime_signals
-                    if str(
-                        getattr(signal.status, "value", signal.status)
-                    )
-                    == "claimed"
+                    if str(getattr(signal.status, "value", signal.status)) == "claimed"
                 )
             )
             pending_approval_ids = tuple(
@@ -2357,8 +2412,7 @@ class LiveAoxAttemptRunner:
                 sorted(
                     agent.agent_id
                     for agent in repositories.agents.list_by_session(session_id)
-                    if str(getattr(agent.status, "value", agent.status))
-                    == "working"
+                    if str(getattr(agent.status, "value", agent.status)) == "working"
                 )
             )
             actionable_failure: dict[str, str] | None = None
@@ -2433,9 +2487,7 @@ class LiveAoxAttemptRunner:
                 scope_ref=f"aox-attempt:{attempt_id}:{purpose}",
             )
         writer_factory = MutationWriterTurnFactory(
-            repository_scope_factory=lambda: self._provider_repository_scope(
-                provider
-            )
+            repository_scope_factory=lambda: self._provider_repository_scope(provider)
         )
         try:
             with writer_factory.open(
@@ -2625,7 +2677,9 @@ class LiveAoxAttemptRunner:
                     "artifact_snapshot_source_missing",
                     "a catalog artifact has no readable sealed source",
                 ) from exc
-            if source.is_symlink() or (resolved != root and root not in resolved.parents):
+            if source.is_symlink() or (
+                resolved != root and root not in resolved.parents
+            ):
                 raise MutationScopeError(
                     "artifact_snapshot_storage_boundary_invalid",
                     "a catalog artifact escapes the attempt blob boundary",
@@ -2913,9 +2967,7 @@ class LiveAoxAttemptRunner:
                 attempt_authority=attempt_authority,
             )
             last_workspace = coordination.workspace
-            last_workspace_response_binding = (
-                coordination.workspace_response_binding
-            )
+            last_workspace_response_binding = coordination.workspace_response_binding
             approval_ids.extend(coordination.approval_ids)
             browser_approval_receipt = coordination.browser_approval_receipt
             fault_receipt = coordination.fault_receipt
@@ -2926,12 +2978,29 @@ class LiveAoxAttemptRunner:
                     session_id=session_id,
                     authority=attempt_authority,
                 )
+            closed: (
+                tuple[
+                    dict[str, object],
+                    dict[str, object],
+                ]
+                | None
+            ) = None
+            if attempt_authority is not None:
+                closed = self._closed_formal_attempt_control(
+                    provider,
+                    session_id=session_id,
+                    authority=attempt_authority,
+                )
+                if closed is not None:
+                    scientific_attempt_control, formal_scope = closed
+                    mutation_scope.update(formal_scope)
             try:
                 observation = self._observe_session_runtime(
                     provider,
                     session_id=session_id,
                     purpose=purpose,
                     attempt_authority=attempt_authority,
+                    formal_attempt_closed=closed is not None,
                     rollover_deadline=started + self.timeout_seconds,
                 )
             except AoxRuntimeObservationError as exc:
@@ -2943,16 +3012,6 @@ class LiveAoxAttemptRunner:
             state = observation.state
             blocker = observation.blocker_code
             if state in {"completed", "failed"}:
-                if attempt_authority is not None:
-                    closed = self._closed_formal_attempt_control(
-                        provider,
-                        session_id=session_id,
-                        authority=attempt_authority,
-                    )
-                    if closed is None:
-                        continue
-                    scientific_attempt_control, formal_scope = closed
-                    mutation_scope.update(formal_scope)
                 if fault_receipt is not None:
                     fault_receipt = self._complete_fault_receipt(
                         provider,
@@ -2983,16 +3042,12 @@ class LiveAoxAttemptRunner:
                         approval_ids=tuple(approval_ids),
                         browser_approval_receipt=browser_approval_receipt,
                         mutation_scope=mutation_scope,
-                        scientific_attempt_control=(
-                            scientific_attempt_control
-                        ),
+                        scientific_attempt_control=(scientific_attempt_control),
                     ),
                     fault_receipt,
                 )
             command_outcome = coordination.command_outcome
-            processed_signal_count = command_outcome.get(
-                "processed_signal_count"
-            )
+            processed_signal_count = command_outcome.get("processed_signal_count")
             replay_safe = command_outcome.get("replay_safe")
             if (
                 type(processed_signal_count) is not int
@@ -3024,9 +3079,7 @@ class LiveAoxAttemptRunner:
                 last_no_wakeup_fingerprint = None
                 no_wakeup_confirmation_count = 0
                 continue
-            progress_fingerprint = _runtime_progress_fingerprint(
-                last_workspace
-            )
+            progress_fingerprint = _runtime_progress_fingerprint(last_workspace)
             if progress_fingerprint == last_no_wakeup_fingerprint:
                 no_wakeup_confirmation_count += 1
             else:
@@ -3037,9 +3090,12 @@ class LiveAoxAttemptRunner:
             actionable_failure = wake_state.actionable_failure
             blocker_code = (
                 "formal_agent_recovery_unresolved"
-                if purpose == "formal"
-                and actionable_failure is not None
-                else f"{purpose}_runtime_stalled_no_wakeup"
+                if purpose == "formal" and actionable_failure is not None
+                else (
+                    "scientific_attempt_open_no_wakeup"
+                    if blocker == "scientific_attempt_open"
+                    else f"{purpose}_runtime_stalled_no_wakeup"
+                )
             )
             details: dict[str, object] = {
                 "session_id": session_id,
@@ -3052,25 +3108,14 @@ class LiveAoxAttemptRunner:
                 "replay_safe": True,
                 "ready_task_ids": list(wake_state.ready_task_ids[:16]),
                 "ready_task_count": len(wake_state.ready_task_ids),
-                "pending_signal_count": len(
-                    wake_state.pending_signal_ids
-                ),
-                "claimed_signal_count": len(
-                    wake_state.claimed_signal_ids
-                ),
-                "pending_approval_count": len(
-                    wake_state.pending_approval_ids
-                ),
-                "active_invocation_count": len(
-                    wake_state.active_invocation_ids
-                ),
-                "active_continuation_count": len(
-                    wake_state.active_continuation_ids
-                ),
-                "working_agent_count": len(
-                    wake_state.working_agent_ids
-                ),
+                "pending_signal_count": len(wake_state.pending_signal_ids),
+                "claimed_signal_count": len(wake_state.claimed_signal_ids),
+                "pending_approval_count": len(wake_state.pending_approval_ids),
+                "active_invocation_count": len(wake_state.active_invocation_ids),
+                "active_continuation_count": len(wake_state.active_continuation_ids),
+                "working_agent_count": len(wake_state.working_agent_ids),
                 "inflight_mutation_writer": False,
+                "observation_blocker_code": blocker,
             }
             if actionable_failure is not None:
                 details["actionable_failure"] = dict(actionable_failure)
@@ -3137,26 +3182,21 @@ class LiveAoxAttemptRunner:
         with provider.read() as scope:
             task = scope.repositories.tasks.get(task_id)
             lane = scope.repositories.lanes.get(lane_id)
-            assigned_ref = (
-                None if task is None else str(task.assigned_ref or "")
-            )
+            assigned_ref = None if task is None else str(task.assigned_ref or "")
             agent = (
                 None
                 if not assigned_ref
                 else scope.repositories.agents.get(session_id, assigned_ref)
             )
-            existing = (
-                scope.repositories.scientific_attempt_authorizations.get(
-                    str(authority["envelope_id"])
-                )
+            existing = scope.repositories.scientific_attempt_authorizations.get(
+                str(authority["envelope_id"])
             )
         if existing is not None:
             if (
                 existing.session_id != session_id
                 or existing.task_id != task_id
                 or existing.root_ref != authority_root_ref(authority)
-                or existing.request_digest
-                != str(authority["request_digest"])
+                or existing.request_digest != str(authority["request_digest"])
             ):
                 raise LiveProductPathError(
                     "attempt_authority_durable_identity_mismatch",
@@ -3185,10 +3225,7 @@ class LiveAoxAttemptRunner:
             )
         request = dict(authority["authority_request"])
         response = api.post_json(
-            (
-                f"/v3/sessions/{session_id}/"
-                "scientific-attempt-authorizations"
-            ),
+            (f"/v3/sessions/{session_id}/scientific-attempt-authorizations"),
             authority_grant_payload(authority),
             idempotency_key=str(request["idempotency_key"]),
         )
@@ -3222,9 +3259,7 @@ class LiveAoxAttemptRunner:
                 repositories.scientific_attempts.list_by_session(session_id)
             )
             matching = [
-                attempt
-                for attempt in attempts
-                if attempt.envelope_id == envelope_id
+                attempt for attempt in attempts if attempt.envelope_id == envelope_id
             ]
             if len(attempts) != len(matching) or len(matching) > 1:
                 raise LiveProductPathError(
@@ -3251,19 +3286,13 @@ class LiveAoxAttemptRunner:
                 )
             service = ScientificAttemptService(
                 repositories,
-                workflow_contract_registry=(
-                    AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
-                ),
+                workflow_contract_registry=(AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY),
             )
             try:
-                lifecycle = service.resolve_attempt_lifecycle(
-                    attempt.attempt_id
-                )
+                lifecycle = service.resolve_attempt_lifecycle(attempt.attempt_id)
                 if not lifecycle.is_closed:
                     return None
-                control = service.export_closed_attempt_evidence(
-                    attempt.attempt_id
-                )
+                control = service.export_closed_attempt_evidence(attempt.attempt_id)
             except ScientificAttemptError as exc:
                 raise _scientific_attempt_live_error(
                     exc,
@@ -3296,9 +3325,7 @@ class LiveAoxAttemptRunner:
                 )
             active = [
                 item
-                for item in repositories.mutation_scopes.list_by_session(
-                    session_id
-                )
+                for item in repositories.mutation_scopes.list_by_session(session_id)
                 if not item.state.is_terminal
             ]
             if len(active) == 1:
@@ -3320,21 +3347,15 @@ class LiveAoxAttemptRunner:
 
         allowed_admission_reasons = {
             MutationWriterAdmissionReason.ZERO_OPEN_SCOPE.value,
-            (
-                MutationWriterAdmissionReason
-                .SCOPE_CLOSED_DURING_REGISTRATION.value
-            ),
+            (MutationWriterAdmissionReason.SCOPE_CLOSED_DURING_REGISTRATION.value),
         }
         if (
             purpose != "formal"
             or attempt_authority is None
-            or observation_error.code
-            != "mutation_driver_writer_identity_invalid"
+            or observation_error.code != "mutation_driver_writer_identity_invalid"
             or observation_error.details.get("mutation_scope_error_code")
             != "mutation_writer_admission_closed"
-            or observation_error.details.get(
-                "mutation_writer_admission_reason"
-            )
+            or observation_error.details.get("mutation_writer_admission_reason")
             not in allowed_admission_reasons
         ):
             return None
@@ -3459,8 +3480,7 @@ class LiveAoxAttemptRunner:
                 command.get("session_id") != session_id
                 or not command_id
                 or command_route != expected_command_route
-                or command_status
-                not in {"accepted", "claimed", *terminal_statuses}
+                or command_status not in {"accepted", "claimed", *terminal_statuses}
             ):
                 raise LiveProductPathError(
                     "runtime_command_admission_invalid",
@@ -3531,15 +3551,12 @@ class LiveAoxAttemptRunner:
                         # read to the same pending item in the workspace.
                         browser_workspace = api.get_json(
                             f"/v3/sessions/{session_id}/workspace",
-                            _timeout_seconds=max(
-                                0.001, deadline - time.monotonic()
-                            ),
+                            _timeout_seconds=max(0.001, deadline - time.monotonic()),
                         )
                         browser_workspace_receipt = api.last_receipt
                         workspace_matches = [
                             dict(item)
-                            for item in browser_workspace.get("pending_approvals")
-                            or []
+                            for item in browser_workspace.get("pending_approvals") or []
                             if isinstance(item, dict)
                             and str(item.get("approval_id") or "") == approval_id
                         ]
@@ -3586,9 +3603,7 @@ class LiveAoxAttemptRunner:
                             f"/v3/approvals/{approval_id}/resolve",
                             {"decision": "approved"},
                             idempotency_key=f"{session_id}:approve:{approval_id}",
-                            _timeout_seconds=max(
-                                0.001, deadline - time.monotonic()
-                            ),
+                            _timeout_seconds=max(0.001, deadline - time.monotonic()),
                         )
                     handled.add(approval_id)
                     newly_approved.append(approval_id)
@@ -3599,14 +3614,12 @@ class LiveAoxAttemptRunner:
                     continue
                 if command_status in terminal_statuses:
                     try:
-                        has_inflight_writers = (
-                            self._has_inflight_mutation_writers(
-                                provider,
-                                session_id=session_id,
-                                purpose=purpose,
-                                attempt_authority=attempt_authority,
-                                rollover_deadline=deadline,
-                            )
+                        has_inflight_writers = self._has_inflight_mutation_writers(
+                            provider,
+                            session_id=session_id,
+                            purpose=purpose,
+                            attempt_authority=attempt_authority,
+                            rollover_deadline=deadline,
                         )
                     except AoxRuntimeObservationError as exc:
                         raise LiveProductPathError(
@@ -3615,9 +3628,7 @@ class LiveAoxAttemptRunner:
                             details=exc.details,
                         ) from exc
                     if has_inflight_writers:
-                        time.sleep(
-                            min(self.browser_poll_interval_seconds, remaining)
-                        )
+                        time.sleep(min(self.browser_poll_interval_seconds, remaining))
                         continue
                     break
                 time.sleep(min(self.browser_poll_interval_seconds, remaining))
@@ -3807,9 +3818,9 @@ class LiveAoxAttemptRunner:
                 "browser_approval_ui_identity_missing",
                 "Chrome approval handoff lacks the sealed built-UI identity",
             )
-        observation_challenge = "sha256:" + hashlib.sha256(
-            secrets.token_bytes(32)
-        ).hexdigest()
+        observation_challenge = (
+            "sha256:" + hashlib.sha256(secrets.token_bytes(32)).hexdigest()
+        )
         if (
             self.browser_observation_receipt_path is not None
             and self.browser_observation_receipt_path.exists()
@@ -4091,15 +4102,11 @@ class LiveAoxAttemptRunner:
                 "browser_observation_receipt_path_missing",
                 "chrome-once requires a fresh Chrome DevTools MCP observation receipt path",
             )
-        hold_deadline = (
-            observation_ready_started + self.browser_completion_hold_seconds
-        )
+        hold_deadline = observation_ready_started + self.browser_completion_hold_seconds
         hold_wall_deadline_ns = observation_ready_wall_ns + int(
             round(self.browser_completion_hold_seconds * 1_000_000_000)
         )
-        deadline = (
-            hold_deadline + self.browser_observation_submission_timeout_seconds
-        )
+        deadline = hold_deadline + self.browser_observation_submission_timeout_seconds
         raw: dict[str, object] | None = None
         last_failure_type = "receipt_missing"
         while time.monotonic() < deadline:
@@ -4147,7 +4154,12 @@ class LiveAoxAttemptRunner:
                     continue
                 raw = _strict_json_object(second_bytes.decode("utf-8"))
                 break
-            except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+            except (
+                OSError,
+                UnicodeDecodeError,
+                ValueError,
+                json.JSONDecodeError,
+            ) as exc:
                 last_failure_type = type(exc).__name__
                 time.sleep(min(self.browser_poll_interval_seconds, 0.1))
         if raw is None:
@@ -4226,8 +4238,7 @@ class LiveAoxAttemptRunner:
             == list(range(1, len(entries) + 1))
             and all(
                 set(item) == {"sequence", "level", "source", "message_digest"}
-                and item.get("level")
-                in {"debug", "info", "log", "warning"}
+                and item.get("level") in {"debug", "info", "log", "warning"}
                 and bool(str(item.get("source") or ""))
                 and _SHA256_DIGEST_PATTERN.fullmatch(
                     str(item.get("message_digest") or "")
@@ -4241,15 +4252,13 @@ class LiveAoxAttemptRunner:
             set(raw) != expected_keys
             or raw.get("schema_id") != BROWSER_OBSERVATION_RECEIPT_SCHEMA_ID
             or raw.get("observation_mode") != BROWSER_OBSERVATION_MODE
-            or raw.get("observation_challenge")
-            != approval.get("observation_challenge")
+            or raw.get("observation_challenge") != approval.get("observation_challenge")
             or raw.get("session_id") != formal.session_id
             or raw.get("approval_id") != approval.get("approval_id")
             or raw.get("operation_id") != approval.get("operation_id")
             or raw.get("page_url") != approval.get("page_url")
             or raw.get("host_process_id") != approval.get("host_process_id")
-            or raw.get("served_ui_dist_digest")
-            != approval.get("served_ui_dist_digest")
+            or raw.get("served_ui_dist_digest") != approval.get("served_ui_dist_digest")
             or not str(raw.get("page_target_id") or "")
             or type(raw.get("observation_window_seconds")) not in {int, float}
             or float(raw.get("observation_window_seconds") or -1)
@@ -4291,8 +4300,7 @@ class LiveAoxAttemptRunner:
                 "evaluate_script",
                 "take_screenshot",
             }.issubset({str(item.get("method") or "") for item in transcript})
-            or raw.get("devtools_transcript_digest")
-            != canonical_digest(transcript)
+            or raw.get("devtools_transcript_digest") != canonical_digest(transcript)
             or set(command)
             != {
                 "command_id",
@@ -4336,10 +4344,7 @@ class LiveAoxAttemptRunner:
             )
         accepted_at_unix_ns = time.time_ns()
         if accepted_at_unix_ns > hold_wall_deadline_ns + int(
-            round(
-                self.browser_observation_submission_timeout_seconds
-                * 1_000_000_000
-            )
+            round(self.browser_observation_submission_timeout_seconds * 1_000_000_000)
         ):
             raise LiveProductPathError(
                 "browser_observation_submission_timeout",
@@ -4478,16 +4483,12 @@ class LiveAoxAttemptRunner:
     ) -> dict[str, str] | None:
         try:
             policy = policy_for_run_class(self.run_class)
-            expected_session_id = policy.identities(
-                context.roots.attempt_id
-            )[0]
+            expected_session_id = policy.identities(context.roots.attempt_id)[0]
             self._require_selected_chain_attempt_authority(
                 context.attempt_authority,
                 session_id=expected_session_id,
                 expected_scope=(
-                    "fault"
-                    if context.roots.attempt_kind == "fault"
-                    else "formal"
+                    "fault" if context.roots.attempt_kind == "fault" else "formal"
                 ),
                 outer_attempt_id=context.roots.attempt_id,
             )
@@ -4672,9 +4673,23 @@ class LiveAoxAttemptRunner:
         browser_gate_required: bool,
     ) -> dict[str, str] | None:
         if formal.state != "completed":
+            code = formal.blocker_code or "canonical_product_path_incomplete"
+            message = {
+                "scientific_attempt_open": (
+                    "formal scientific work is product-ready but its canonical "
+                    "attempt remains open"
+                ),
+                "scientific_attempt_open_no_wakeup": (
+                    "the canonical scientific attempt remained open across two "
+                    "identical no-wakeup observations"
+                ),
+            }.get(
+                code,
+                "formal product path did not reach its complete accepted state",
+            )
             return {
-                "code": formal.blocker_code or "canonical_product_path_incomplete",
-                "message": "formal product path did not reach its published-report exit",
+                "code": code,
+                "message": message,
             }
         if browser_gate_required and formal.browser_approval_receipt is None:
             return {
@@ -4834,8 +4849,9 @@ class LiveAoxAttemptRunner:
             + "task board and inbox against exactly that canonical set: create only a missing "
             + "canonical member, advance any existing member, and never create another, "
             + "suffixed, or replacement task id. The runtime rejects a noncanonical task id "
-            + "without effect and rejects scientific.attempt.close until the exact task "
-            + "business exits and positive/fault report state are ready. Create any missing "
+            + "without effect. Scientific closure is owned by the exact scientific attempt "
+            + "task assignee and is independent from report and assistant-response delivery. "
+            + "Create any missing "
             + "research and execution tasks before the missing reporting task, then create "
             + "that reporting task with both canonical upstream tasks in blocked_by. Delegate "
             + "the ready researcher and executor, but do not attempt reporter delegation while "
@@ -4918,10 +4934,10 @@ class LiveAoxAttemptRunner:
             + "bytes forward; the Host reuses identical bytes without overwrite. Seal only the "
             + "final complete selection. In scientific.attempt.inspect, "
             + "closure_request_ready means the canonical evaluator proves the sealed current "
-            + "selection can support master-authored closure intent in the current turn; sealed "
+            + "selection can support assignee-authored closure intent in the current turn; sealed "
             + "state alone is not readiness. closure_finalization_ready and the legacy "
             + "closure_ready field describe the later Host finalization side. "
-            + "selection_active_writers therefore does not require the master to wait before "
+            + "selection_active_writers therefore does not require the assignee to wait before "
             + "requesting closure, because the requesting turn is itself an expected writer. "
             + "Unknown external effect, dispatch-in-doubt, an active "
             + "or reconcile-required prior execution, unretired mutation writer, authority "
@@ -4931,22 +4947,19 @@ class LiveAoxAttemptRunner:
             + "the final chain. For an unavailable harness/operator/user capability, use "
             + "task.finish(status='blocked') with the exact error and likely cause; use failed "
             + "only when the scientific task is genuinely impossible. A teammate "
-            + "scientific.attempt.close actor rejection is the intended no-effect handoff, not "
-            + "an unavailable capability: when a positive selection is sealed and remains "
-            + "closure_request_ready, the executor must finish its canonical task completed "
-            + "with the actual result evidence and leave report publication plus closure to the "
-            + "reporter and resident master. The runtime rejects a blocked/failed/cancelled "
-            + "positive execution exit only under that canonical readiness. A pre-seal blocker "
+            + "that owns the exact attempt task must request scientific.attempt.close when a "
+            + "positive selection is sealed and remains closure_request_ready. After Host "
+            + "finalization, the ordinary closure notification wakes that same executor, which "
+            + "must then finish its canonical task completed with the actual result evidence. "
+            + "Do not call task.finish(status='completed') before immutable closure. Report "
+            + "publication and the resident master's user-facing response remain independent. "
+            + "A pre-seal blocker "
             + "or post-seal universe, authority, workflow, process, continuation, disposition, "
             + "adoption, materialization, or evidence drift retains ordinary explicit exit "
             + "semantics. "
-            + "The master must request "
-            + "scientific.attempt.close against the sealed final selection only after the task "
-            + "board, report publication, and final user-facing answer are ready. The master "
-            + "includes the complete final user-facing answer as response text with "
-            + "scientific.attempt.close so a successful close persists that companion "
-            + "answer exactly once and retires the turn. Assistant text alone does not close "
-            + "the attempt or make an incomplete state acceptance-eligible. "
+            + "Assistant text alone does not close the attempt or make an incomplete state "
+            + "acceptance-eligible, and scientific.attempt.close never persists a companion "
+            + "assistant response. "
             + "sandbox.exec argv is direct argv with no implicit shell parsing: "
             + "never put heredoc, redirection, or pipeline syntax inside a Python argv element; "
             + "write scripts with sandbox.file.write or sandbox.file.patch and then invoke the "
@@ -4983,10 +4996,10 @@ class LiveAoxAttemptRunner:
                 " If the required execution chain fails, do not publish or claim a successful "
                 "report. Select the exact successful NCBI prefix as adopted, disposition the "
                 "injected failed MAFFT occurrence as failed, seal that full occurrence "
-                "selection, and have the master request scientific.attempt.close after the "
-                "negative-state report/task closure. Explicitly finish the execution task "
-                "failed, finish reporting blocked or cancelled, and bind the final assistant "
-                "response to the exact observed "
+                "selection, then request scientific.attempt.close as the canonical assignee "
+                "before explicitly finishing the execution task failed. Finish reporting "
+                "blocked or cancelled, and ground the final assistant response in the exact "
+                "observed "
                 "structured fields failure_code=artifact_blob_digest_mismatch and "
                 "status=failed."
             )
@@ -5044,9 +5057,7 @@ class LiveAoxAttemptRunner:
                 "campaign_attempt_number": context.attempt_number,
                 "approval_mode": self.approval_mode,
                 "browser_approval_receipt": formal.browser_approval_receipt,
-                "browser_observation_receipt": (
-                    formal.browser_observation_receipt
-                ),
+                "browser_observation_receipt": (formal.browser_observation_receipt),
                 "public_api_receipt_digest": canonical_digest(public_api_receipts),
             }
         )
@@ -5058,9 +5069,7 @@ class LiveAoxAttemptRunner:
                 "scientific_attempt_control_missing",
                 "positive evidence lacks the exact closed selected chain",
             )
-        evidence["scientific_attempt_control"] = dict(
-            formal.scientific_attempt_control
-        )
+        evidence["scientific_attempt_control"] = dict(formal.scientific_attempt_control)
         return evidence
 
     def _attach_effective_config(
@@ -5115,9 +5124,7 @@ class LiveAoxAttemptRunner:
         }
         raw_blocker_details = blocker.get("details")
         blocker_details = _sealed_failure_details(
-            raw_blocker_details
-            if isinstance(raw_blocker_details, Mapping)
-            else None
+            raw_blocker_details if isinstance(raw_blocker_details, Mapping) else None
         )
         if blocker_details:
             blocker_record["details"] = blocker_details
@@ -5148,9 +5155,7 @@ class LiveAoxAttemptRunner:
                     "code": exc.code,
                     "message": _safe_message(exc),
                 }
-        sanitized_blocker_payload = sanitize_public_diagnostic_payload(
-            blocker_payload
-        )
+        sanitized_blocker_payload = sanitize_public_diagnostic_payload(blocker_payload)
         if not isinstance(sanitized_blocker_payload, dict):
             raise LiveProductPathError(
                 "failure_evidence_sanitization_failed",
@@ -5163,10 +5168,13 @@ class LiveAoxAttemptRunner:
                 identity="live_failure_evidence",
             )
         except CutoverEvidenceError:
-            safe_blocker_code = safe_public_machine_identifier(
-                blocker_code,
-                fallback="live_product_path_failed",
-            ) or "live_product_path_failed"
+            safe_blocker_code = (
+                safe_public_machine_identifier(
+                    blocker_code,
+                    fallback="live_product_path_failed",
+                )
+                or "live_product_path_failed"
+            )
             fallback_blocker: dict[str, object] = {
                 "code": safe_blocker_code,
                 "message": "[redacted-private-diagnostic]",
@@ -5260,6 +5268,12 @@ class LiveAoxAttemptRunner:
             "scientific_checks": {},
             "warnings": [],
             "degradations": [blocker_code],
+            "diagnostic_observation": {
+                "product_path_completed": False,
+                "observed_scientific_status": "failed",
+                "observed_report_status": "failed_evidence",
+                "raw_facts": _diagnostic_formal_facts(formal),
+            },
             "scientific_outcome": {
                 "status": "failed",
                 "failure_code": failure_code,
@@ -5355,9 +5369,7 @@ class LiveAoxAttemptRunner:
                 "scientific_attempt_control_missing",
                 "fault evidence lacks the exact closed selected chain",
             )
-        evidence["scientific_attempt_control"] = dict(
-            formal.scientific_attempt_control
-        )
+        evidence["scientific_attempt_control"] = dict(formal.scientific_attempt_control)
         return evidence
 
     def _inject_before_hpc_approval(
@@ -5668,8 +5680,7 @@ def operation_evidence_record(
     conflicting_fields = {
         field: str(result.get(field) or "").strip()
         for field in ("backend_run_id", "provider_request_id", "run_id")
-        if field != backend_identity_field
-        and str(result.get(field) or "").strip()
+        if field != backend_identity_field and str(result.get(field) or "").strip()
     }
     if conflicting_fields:
         identity_mismatch = bool(backend_run_id) and any(
@@ -5935,9 +5946,9 @@ def _copy_catalog_artifact(
             details={"artifact_id": artifact.artifact_id},
         )
     if deliverable_path:
-        expected_kind, expected_format = (
-            AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS[deliverable_path]
-        )
+        expected_kind, expected_format = AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS[
+            deliverable_path
+        ]
         if artifact.kind.value != expected_kind or artifact_format != expected_format:
             raise LiveProductPathError(
                 "final_deliverable_artifact_contract_mismatch",
@@ -6181,8 +6192,7 @@ def _raw_provider_response_digests(content: bytes) -> tuple[str, ...]:
             raw_record.get("body_encoding") != "base64"
             or raw_record.get("size_bytes") != len(raw)
             or raw_record.get("body_digest") != digest
-            or base64.b64encode(raw).decode("ascii")
-            != raw_record.get("body_base64")
+            or base64.b64encode(raw).decode("ascii") != raw_record.get("body_base64")
         ):
             return ()
         if payload.get("provider") == "uniprot":
@@ -6403,12 +6413,9 @@ def _selected_completed_formal_operations(
             "scientific_selected_chain_missing",
             "closed scientific attempt has no adopted controlled operations",
         )
-    operation_by_id = {
-        operation.operation_id: operation for operation in operations
-    }
+    operation_by_id = {operation.operation_id: operation for operation in operations}
     expected_method_by_role = {
-        role: AOX_WORKFLOW_METHOD_BY_ROLE[role]
-        for role in AOX_FORMAL_WORKFLOW_ROLES
+        role: AOX_WORKFLOW_METHOD_BY_ROLE[role] for role in AOX_FORMAL_WORKFLOW_ROLES
     }
     selected: dict[str, ControlledOperation] = {}
     selected_ids: set[str] = set()
@@ -6548,9 +6555,7 @@ def _assert_cutover_operation_budget_before_approval(
                 "approval_id": approval_id,
                 "sandbox_runs": [
                     {
-                        "sandbox_run_id": str(
-                            getattr(run, "sandbox_run_id", "") or ""
-                        ),
+                        "sandbox_run_id": str(getattr(run, "sandbox_run_id", "") or ""),
                         "status": str(getattr(run.status, "value", "")),
                         "error_code": getattr(run, "error_code", None),
                     }
@@ -6607,18 +6612,14 @@ def _assert_selected_chain_operation_approval(
 ) -> None:
     with provider.read() as scope:
         repositories = scope.repositories
-        attempts = tuple(
-            repositories.scientific_attempts.list_by_session(session_id)
-        )
+        attempts = tuple(repositories.scientific_attempts.list_by_session(session_id))
         matching = [
             attempt
             for attempt in attempts
             if attempt.envelope_id == str(authority["envelope_id"])
         ]
-        stored_authority = (
-            repositories.scientific_attempt_authorizations.get(
-                str(authority["envelope_id"])
-            )
+        stored_authority = repositories.scientific_attempt_authorizations.get(
+            str(authority["envelope_id"])
         )
         execution_by_operation = {
             operation.operation_id: (
@@ -6636,13 +6637,9 @@ def _assert_selected_chain_operation_approval(
             )
             for operation in operations
         }
-        operation_attempt_id = (
-            operation_attempt_by_id.get(current.operation_id)
-        )
-        run_attempt_id = (
-            repositories.scientific_attempt_bindings.attempt_for_run(
-                current.sandbox_run_id
-            )
+        operation_attempt_id = operation_attempt_by_id.get(current.operation_id)
+        run_attempt_id = repositories.scientific_attempt_bindings.attempt_for_run(
+            current.sandbox_run_id
         )
         attempt_lifecycle = None
         if len(matching) == 1:
@@ -6676,9 +6673,7 @@ def _assert_selected_chain_operation_approval(
             "scientific_attempt_operation_not_authorized",
             "formal authority does not permit this controlled SDK method",
             details={
-                "sdk_method": (
-                    f"{current.sdk_module}.{current.function_name}"
-                ),
+                "sdk_method": (f"{current.sdk_module}.{current.function_name}"),
             },
         )
     expected_effect = (
@@ -6702,8 +6697,7 @@ def _assert_selected_chain_operation_approval(
         or current.task_id != attempt.task_id
         or current.lane_id != attempt.lane_id
         or expected_effect not in attempt.requested_effect_classes
-        or stored_authority.request_digest
-        != str(authority["request_digest"])
+        or stored_authority.request_digest != str(authority["request_digest"])
         or stored_authority.root_ref != attempt.root_ref
         or stored_authority.consumed_attempts != 1
         or stored_authority.status.value not in {"active", "exhausted"}
@@ -6737,10 +6731,8 @@ def _assert_selected_chain_operation_approval(
         expired
         or elapsed_seconds > attempt.reserved_wall_time_seconds
         or attempt.reserved_micu > stored_authority.max_micu
-        or attempt.reserved_cost_microunits
-        > stored_authority.max_cost_microunits
-        or attempt.reserved_wall_time_seconds
-        > stored_authority.max_wall_time_seconds
+        or attempt.reserved_cost_microunits > stored_authority.max_cost_microunits
+        or attempt.reserved_wall_time_seconds > stored_authority.max_wall_time_seconds
     ):
         raise LiveProductPathError(
             "scientific_attempt_resource_authority_exceeded",
@@ -6752,8 +6744,7 @@ def _assert_selected_chain_operation_approval(
         current_execution is None
         or current_execution.lifecycle_state
         is not ControlledOperationExecutionLifecycle.AWAITING_APPROVAL
-        or current_execution.effect_certainty
-        is not ExternalEffectCertainty.NO_EFFECT
+        or current_execution.effect_certainty is not ExternalEffectCertainty.NO_EFFECT
         or current_execution.retry_eligibility
         not in {
             RetryEligibility.SAME_PHASE_SAFE,
@@ -6790,10 +6781,8 @@ def _assert_selected_chain_operation_approval(
             not execution.lifecycle_state.is_terminal
             or execution.lifecycle_state
             is ControlledOperationExecutionLifecycle.RECONCILE_REQUIRED
-            or execution.effect_certainty
-            is ExternalEffectCertainty.DISPATCH_IN_DOUBT
-            or execution.retry_eligibility
-            is RetryEligibility.RECONCILE_REQUIRED
+            or execution.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+            or execution.retry_eligibility is RetryEligibility.RECONCILE_REQUIRED
         ):
             unsafe_prior.append(
                 {
@@ -6805,8 +6794,7 @@ def _assert_selected_chain_operation_approval(
     active_other_runs = [
         str(getattr(run, "sandbox_run_id", "") or "")
         for run in sandbox_runs
-        if str(getattr(run, "sandbox_run_id", "") or "")
-        != current.sandbox_run_id
+        if str(getattr(run, "sandbox_run_id", "") or "") != current.sandbox_run_id
         and getattr(getattr(run, "status", None), "value", None)
         not in _TERMINAL_SANDBOX_STATUSES
     ]
@@ -6833,9 +6821,7 @@ def _assert_hmmer_sandbox_policy(
     with provider.read() as scope:
         sandbox_run = scope.repositories.sandbox_runs.get(current.sandbox_run_id)
     raw_policy = (
-        None
-        if sandbox_run is None
-        else getattr(sandbox_run, "resource_policy", None)
+        None if sandbox_run is None else getattr(sandbox_run, "resource_policy", None)
     )
     policy = {} if not isinstance(raw_policy, dict) else dict(raw_policy)
     observed_timeout = policy.get("timeout_seconds")
@@ -6852,9 +6838,7 @@ def _assert_hmmer_sandbox_policy(
                 "session_id": session_id,
                 "approval_id": approval_id,
                 "operation_id": current.operation_id,
-                "expected_timeout_seconds": (
-                    AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
-                ),
+                "expected_timeout_seconds": (AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS),
                 "observed_timeout_seconds": (
                     observed_timeout if type(observed_timeout) is int else None
                 ),
@@ -6984,9 +6968,7 @@ def _final_deliverable_copies(
     metadata_by_path: dict[str, dict[str, object]] = {}
     copy_by_path: dict[str, CatalogArtifactCopy] = {}
     for path, artifact in artifact_by_path.items():
-        expected_kind, expected_format = (
-            AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS[path]
-        )
+        expected_kind, expected_format = AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS[path]
         raw_format = dict(artifact.metadata or {}).get("format")
         actual_format = raw_format if isinstance(raw_format, str) else ""
         if artifact.kind.value != expected_kind or actual_format != expected_format:
@@ -7414,9 +7396,7 @@ def _pubmed_receipts(
             "task_id": getattr(source, "task_id", None),
             "lane_id": getattr(source, "lane_id", None),
             "invocation_id": str(getattr(source, "invocation_id")),
-            "evidence_artifact_id": str(
-                getattr(source, "evidence_artifact_id")
-            ),
+            "evidence_artifact_id": str(getattr(source, "evidence_artifact_id")),
         }
         for source in source_rows
     ]
@@ -7439,9 +7419,7 @@ def _pubmed_receipts(
         "engine_name": "research_tool",
         "status": "succeeded",
         "task_id": str(invocation_task_id or ""),
-        "lane_id": (
-            None if invocation_lane_id is None else str(invocation_lane_id)
-        ),
+        "lane_id": (None if invocation_lane_id is None else str(invocation_lane_id)),
         "input_ref": input_ref,
         "input_document_digest": canonical_digest(getattr(input_document, "payload")),
         "output_ref": output_ref,
@@ -7619,8 +7597,7 @@ def _select_primary_pubmed_evidence(
     if (
         invocation is None
         or getattr(invocation, "engine_name", None) != "research_tool"
-        or getattr(getattr(invocation, "status", None), "value", None)
-        != "succeeded"
+        or getattr(getattr(invocation, "status", None), "value", None) != "succeeded"
         or getattr(invocation, "task_id", None) != researcher_task_id
         or getattr(invocation, "lane_id", None) != researcher_task.get("lane_id")
         or not getattr(invocation, "input_ref", None)
@@ -7704,9 +7681,7 @@ def _bind_delegation_workflow_receipts(
         matches = [
             document
             for document in delegation_documents
-            if str(
-                dict(getattr(document, "payload", None) or {}).get("task_id") or ""
-            )
+            if str(dict(getattr(document, "payload", None) or {}).get("task_id") or "")
             == task_id
         ]
         if len(matches) != 1:
@@ -7823,10 +7798,7 @@ def _durable_browser_approval_events(
             dict(getattr(matches[0], "to_dict")()),
             expected_type=event_type,  # type: ignore[arg-type]
         )
-        if (
-            record.get("session_id") != session_id
-            or record != receipt.get(record_key)
-        ):
+        if record.get("session_id") != session_id or record != receipt.get(record_key):
             raise LiveProductPathError(
                 "browser_approval_durable_event_drift",
                 "observed browser event differs from the authoritative durable record",
@@ -7922,9 +7894,7 @@ def _published_report_receipt(
     scientific_artifacts: list[CatalogArtifactCopy],
 ) -> tuple[dict[str, object], dict[str, object], list[dict[str, object]]]:
     published_reports = [
-        report
-        for report in reports
-        if is_published_report_status(report)
+        report for report in reports if is_published_report_status(report)
     ]
     published_drafts = [
         draft
@@ -8324,11 +8294,9 @@ def _attach_product_receipts(
     ]
     final_event_cursors = [item.get("cursor") for item in final_event_records]
     if (
-        len(final_event_records)
-        != int(formal.event_receipt.get("event_count") or -1)
+        len(final_event_records) != int(formal.event_receipt.get("event_count") or -1)
         or any(
-            item.get("session_id") != formal.session_id
-            for item in final_event_records
+            item.get("session_id") != formal.session_id for item in final_event_records
         )
         or any(
             not isinstance(cursor, int) or isinstance(cursor, bool)
@@ -8337,9 +8305,7 @@ def _attach_product_receipts(
         or final_event_cursors != sorted(set(final_event_cursors))
         or formal.event_receipt.get("event_stream_digest")
         != canonical_digest(final_event_records)
-        or dict(formal.event_receipt.get("public_response_binding") or {}).get(
-            "route"
-        )
+        or dict(formal.event_receipt.get("public_response_binding") or {}).get("route")
         != f"/v3/sessions/{formal.session_id}/events?replay=1&after_cursor=0"
     ):
         raise LiveProductPathError(
@@ -8394,9 +8360,7 @@ def _attach_product_receipts(
                 "scope": "formal",
                 "origin": "attestation",
                 "kind": "workspace_projection",
-                "provenance": {
-                    "producer": "aox_public_final_workspace_snapshot@1"
-                },
+                "provenance": {"producer": "aox_public_final_workspace_snapshot@1"},
             },
             {
                 "artifact_id": final_event_artifact_id,
@@ -8404,15 +8368,11 @@ def _attach_product_receipts(
                 "scope": "formal",
                 "origin": "attestation",
                 "kind": "event_log",
-                "provenance": {
-                    "producer": "aox_public_final_event_replay@1"
-                },
+                "provenance": {"producer": "aox_public_final_event_replay@1"},
             },
         ]
     )
-    product_path["public_final_workspace_artifact_id"] = (
-        final_workspace_artifact_id
-    )
+    product_path["public_final_workspace_artifact_id"] = final_workspace_artifact_id
     product_path["public_final_workspace_artifact_digest"] = _sha256(
         final_workspace_bytes
     )
@@ -8507,9 +8467,7 @@ def _collect_positive_evidence(
         dict(probe_attestation.probe.get("isolation") or {}).get("hpc_workspace_id")
         or ""
     )
-    attempt_hpc_workspace_ids = formal_hpc_workspace_ids | {
-        probe_hpc_workspace_id
-    }
+    attempt_hpc_workspace_ids = formal_hpc_workspace_ids | {probe_hpc_workspace_id}
 
     operation_by_role = _selected_completed_formal_operations(
         formal,
@@ -9186,10 +9144,10 @@ def _collect_positive_evidence(
         _approval_record(operation, approvals)
         for operation in operation_by_role.values()
     ]
-    if (
-        pubmed_engine_invocation["task_id"] != task_ids_by_role["researcher"]
-        or pubmed_engine_invocation["lane_id"]
-        != primary_pubmed.researcher_task.get("lane_id")
+    if pubmed_engine_invocation["task_id"] != task_ids_by_role[
+        "researcher"
+    ] or pubmed_engine_invocation["lane_id"] != primary_pubmed.researcher_task.get(
+        "lane_id"
     ):
         raise LiveProductPathError(
             "pubmed_research_task_mismatch",
@@ -9429,9 +9387,7 @@ def _collect_positive_evidence(
             {
                 "uniprot_sequences": str(uniprot_sequences.record["artifact_id"]),
                 "uniprot_metadata": str(uniprot_metadata.record["artifact_id"]),
-                "uniprot_raw_response": str(
-                    uniprot_raw_response.record["artifact_id"]
-                ),
+                "uniprot_raw_response": str(uniprot_raw_response.record["artifact_id"]),
             }
         )
     provider_dependency: dict[str, object] = {
@@ -9652,8 +9608,7 @@ def _attach_fault_public_final_snapshot_artifacts(
             for cursor in cursors
         )
         or cursors != sorted(set(cursors))
-        or canonical_digest(events)
-        != formal.event_receipt.get("event_stream_digest")
+        or canonical_digest(events) != formal.event_receipt.get("event_stream_digest")
         or event_binding.get("route")
         != f"/v3/sessions/{formal.session_id}/events?replay=1&after_cursor=0"
         or workspace_binding.get("route")
@@ -9686,9 +9641,7 @@ def _attach_fault_public_final_snapshot_artifacts(
     workspace_artifact_id = (
         f"art_public_final_workspace_{_safe_id(context.roots.attempt_id)}"
     )
-    event_artifact_id = (
-        f"art_public_final_events_{_safe_id(context.roots.attempt_id)}"
-    )
+    event_artifact_id = f"art_public_final_events_{_safe_id(context.roots.attempt_id)}"
     workspace_path = "formal/attestation/public-final-workspace.json"
     event_path = "formal/attestation/public-final-event-replay.json"
     _write_sealed_bytes(context.roots.artifact_root, workspace_path, workspace_bytes)
@@ -9701,9 +9654,7 @@ def _attach_fault_public_final_snapshot_artifacts(
                 "scope": "formal",
                 "origin": "attestation",
                 "kind": "workspace_projection",
-                "provenance": {
-                    "producer": "aox_public_final_workspace_snapshot@1"
-                },
+                "provenance": {"producer": "aox_public_final_workspace_snapshot@1"},
             },
             {
                 "artifact_id": event_artifact_id,
@@ -11150,9 +11101,15 @@ def _collect_probe_attestation(
 
 def _failed_probe_payload(probe: SessionDriveResult | None) -> dict[str, object]:
     state = "failed" if probe is None else probe.state
+    execution_status = (
+        "passed" if probe is not None and probe.state == "completed" else "unobserved"
+    )
     return {
         "probe_id": KNOWN_POSITIVE_PROBE_ID,
         "status": "failed",
+        "attestation_status": (
+            "failed" if execution_status == "passed" else "not_attempted"
+        ),
         "failure_code": (
             "probe_not_started" if probe is None else "probe_attestation_unavailable"
         ),
@@ -11164,7 +11121,8 @@ def _failed_probe_payload(probe: SessionDriveResult | None) -> dict[str, object]
                 {
                     "check_id": check_id,
                     "category": "provider",
-                    "status": "failed",
+                    "status": execution_status,
+                    "attestation_status": "unavailable",
                 }
                 for check_id in (
                     "ncbi_globin_pair",
@@ -11175,7 +11133,8 @@ def _failed_probe_payload(probe: SessionDriveResult | None) -> dict[str, object]
                 {
                     "check_id": check_id,
                     "category": "hpc",
-                    "status": "failed",
+                    "status": execution_status,
+                    "attestation_status": "unavailable",
                 }
                 for check_id in (
                     "hpc_mafft",
@@ -11221,9 +11180,7 @@ def _product_path_failure_receipt(
         "entry_message_digest": (
             ""
             if not entry_messages
-            else _sha256(
-                str(entry_messages[0].get("content") or "").encode("utf-8")
-            )
+            else _sha256(str(entry_messages[0].get("content") or "").encode("utf-8"))
         ),
         "final_master_response_id": None
         if not assistant_messages

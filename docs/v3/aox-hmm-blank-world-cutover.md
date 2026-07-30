@@ -1,6 +1,6 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r61 exposed cross-layer architecture-verification, workflow-binding, lifecycle handoff and typed recovery gaps after earlier runtime/HPC and authority work. r48 through r61 are permanent NO-GO evidence; r60/r61 are diagnostic-only and always `acceptance_eligible=false`. The executable architecture-qualification gate and diagnostic/formal run-class split are implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. r59 produced a valid healthy-empty scientific result, sealed selection and published report, then proved that a master-only closure handoff could be misclassified as a blocked positive execution exit and that inspection conflated closure-request readiness with post-turn finalization readiness. Later closure-stage diagnostics remain permanent non-acceptance evidence; r61 most recently proved exact-six probe availability, then exposed that an agent could not durably express “defer this blocked delegation until its declared dependencies complete” without manufacturing a task mutation. The forward lifecycle, readiness and typed recovery corrections are implemented below. Local Live cutover stays **NO-GO**: implementation completion does not authorize another diagnostic or formal run, and one later separately approved formal acceptance campaign must still seal two real positive attempts plus one controlled fault attempt on one commit/config identity. Existing `authorize` and `run-live` remain formal-acceptance-only; diagnostic uses separately approved `authorize-diagnostic` and `run-diagnostic-live`.
+Status: r43-r62 exposed cross-layer architecture-verification, workflow-binding, lifecycle handoff and typed recovery gaps after earlier runtime/HPC and authority work. r48 through r62 are permanent NO-GO evidence; r60-r62 are diagnostic-only and always `acceptance_eligible=false`. The executable architecture-qualification gate and diagnostic/formal run-class split are implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. r59 produced a valid healthy-empty scientific result, sealed selection and published report under the historical master-only closure contract. r62 later completed 13 formal operations, three canonical tasks and report publication, but the same split ownership rejected executor close, the master omitted duplicated close, and the open attempt was flattened through drain exhaustion into `scientific_attempt_control_missing`. Phase 2 now collapses the forward lifecycle to the exact attempt-task canonical assignee, removes active co-terminal response machinery, and bounds an unchanged open-attempt/no-wakeup state. Local Live cutover stays **NO-GO**: implementation completion does not authorize another diagnostic or formal run, and one later separately approved formal acceptance campaign must still seal two real positive attempts plus one controlled fault attempt on one commit/config identity. Existing `authorize` and `run-live` remain formal-acceptance-only; diagnostic uses separately approved `authorize-diagnostic` and `run-diagnostic-live`.
 
 Historical r14-r59 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
@@ -14,7 +14,7 @@ effect, active process/writer, incomplete disposition, authority/resource breach
 or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r59
 fact can be upgraded, backfilled, or adopted.
 The current workflow knowledge identity is
-`workflow:aox-hmm-live@2.0.0#sha256:a34878a922536f429acb7ebef52e303610df184fcc16acf4dce894704321b313`;
+`workflow:aox-hmm-live@2.0.0#sha256:8865f1364cbd5261f953dd7e901f02b3812f96cae34376f177c8ad78c8c08218`;
 the next live launch must still bind that ref to a fresh clean commit,
 qualification report, pin and authority plan.
 
@@ -1151,14 +1151,13 @@ request/observation/error diagnostic trio through the same artifact boundary,
 then retains its canonical code/stage/retryability with safe refs. This does not
 retry or replay the operation and does not change the fixed 17 deliverables.
 
-Public-safety validation now distinguishes the four exact AOX logical manifest
-suffixes (`/provider_parsed/metadata.json`,
-`/provider_parsed/parsed_hits.csv`, `/provider_parsed/proteins.fasta`, and
-`/provider_parsed/sequences.fasta`) from Host paths, and recognizes a sealed
-Python source expression such as `Path("aox_hmm")/p.name` as a lexical path
-join. There is no general provider-path or slash exception: an unknown suffix,
-traversal, arbitrary `prefix)/p.name`, `/home/...`, `/tmp/...`, or any other
-unrecognized absolute path remains rejected.
+Public-safety validation preserves exact sealed source bytes while rejecting
+closed unsafe categories: secrets, private backend locators/URLs, traversal,
+digest drift, explicit private Unix/HPC roots, Windows/UNC roots and supported
+encoded forms. It does not classify every slash-prefixed program token as a
+Host path; portable shebangs, application routes, custom logical selectors and
+language path expressions remain source syntax when no unsafe category
+matches.
 
 The r16-r19 reruns all remain strict **NO-GO** and none of their roots may be
 reused. r16 stopped before science because its launch environment omitted the
@@ -2809,8 +2808,33 @@ continuation events are the only wake sources. Harness neither retries nor
 requires the agent to record a particular waiting strategy. This correction
 does not revise or reuse r61 evidence.
 
+Phase 2 addresses the later r62 diagnostic without revising it. r62 ran on
+`5265c7813c64880c03bef3aee15e552e4f4d1c49`, completed 13 controlled
+operations, all three canonical tasks, a sealed selection and a published
+report, but created zero closure request/response/closure. The earliest
+scientific lifecycle failure was the executor's
+`aox_cutover_close_actor_violation`; a later master
+`aox_cutover_task_identity_not_ready`, empty-drain tail,
+`formal_runtime_drain_exhausted` and outer
+`scientific_attempt_control_missing` were downstream wrappers. Its consumed
+authority, root, SQLite and decision are permanent non-acceptance evidence.
+
+The forward contract now makes the exact attempt-task `assigned_ref` the only
+closure requester and rechecks it at finalization. `scientific.attempt.close`
+does not bind assistant text, report state or resident-master delivery; active
+closure-response APIs and scientific-specific notification settlement are
+removed while migration `035` remains historical-readable. Immutable closure
+precedes generic completed task exit; its ordinary source-bound wake lets the
+same assignee explicitly call `task.finish(status=completed)`. A formal
+product-ready open attempt that repeats twice with replay-safe zero signals,
+zero writers and no other wake source stops as
+`scientific_attempt_open_no_wakeup`. Diagnostic evidence preserves raw
+operation/task/report/lifecycle facts and measured MICU even without control,
+but stays non-eligible; formal acceptance still requires exact immutable
+control.
+
 These corrections do not authorize `preflight`, another closure-stage run,
 `run-diagnostic-live`, `run-live`, a numbered root, provider/MICU call, HPC
 job, browser campaign or formal attempt. Formal acceptance requires a
 different separately approved exact-three plan after a fresh clean full
-admission and pin. No r59, r60 or r61 consumed plan is authority.
+admission and pin. No r59, r60, r61 or r62 consumed plan is authority.

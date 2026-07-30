@@ -807,8 +807,8 @@ def test_closure_stage_sop_digest_is_separate_from_stable_workflow() -> None:
     assert closure_stage_sop_digest != execution_sop_digest
     assert workflow_ref == (
         "workflow:aox-hmm-live@2.0.0#"
-        "sha256:a34878a922536f429acb7ebef52e303610"
-        "df184fcc16acf4dce894704321b313"
+        "sha256:8865f1364cbd5261f953dd7e901f02b381"
+        "2f96cae34376f177c8ad78c8c08218"
     )
 
 

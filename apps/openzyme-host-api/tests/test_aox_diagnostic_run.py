@@ -141,6 +141,11 @@ def _fake_execution(
                 "product_path_completed": True,
                 "observed_scientific_status": "completed",
                 "observed_report_status": "published",
+                "raw_facts": {
+                    "operation_status_counts": {"completed": 13},
+                    "task_status_counts": {"completed": 3},
+                    "report_status": "published",
+                },
             },
             "scientific_outcome": {
                 "status": "completed",
@@ -167,8 +172,8 @@ def test_diagnostic_collector_emits_only_append_only_non_acceptance_decision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plan, consumption, plan_path, identity, prerequisites, qualification = (
-        _authority(tmp_path)
+    plan, consumption, plan_path, identity, prerequisites, qualification = _authority(
+        tmp_path
     )
     diagnostic_root = tmp_path / str(plan["root_namespace"])
     captured: dict[str, object] = {}
@@ -204,16 +209,20 @@ def test_diagnostic_collector_emits_only_append_only_non_acceptance_decision(
     assert decision["acceptance_eligible"] is False
     assert decision["status"] == "completed_product_path"
     assert decision["blocker"] is None
-    assert decision["root"]["proof_schema_id"] == (
-        DIAGNOSTIC_ROOT_PROOF_SCHEMA_ID
-    )
+    assert decision["micu_ledger"] == {
+        "before": {"charged_tokens": 10},
+        "after": {"charged_tokens": 20},
+    }
+    assert decision["observations"]["raw_facts"] == {
+        "operation_status_counts": {"completed": 13},
+        "task_status_counts": {"completed": 3},
+        "report_status": "published",
+    }
+    assert decision["root"]["proof_schema_id"] == (DIAGNOSTIC_ROOT_PROOF_SCHEMA_ID)
     assert captured["run_class"] is AoxLiveRunClass.DIAGNOSTIC
     assert captured["kind"] == "positive"
     assert captured["number"] == 1
-    assert (
-        captured["authority"]["run_class"]
-        == AoxLiveRunClass.DIAGNOSTIC.value
-    )
+    assert captured["authority"]["run_class"] == AoxLiveRunClass.DIAGNOSTIC.value
     decision_path = diagnostic_root / AOX_DIAGNOSTIC_DECISION_FILENAME
     assert decision_path.is_file()
     assert decision_path.stat().st_mode & 0o222 == 0
@@ -268,12 +277,86 @@ def test_diagnostic_collector_emits_only_append_only_non_acceptance_decision(
         )
 
 
+def test_diagnostic_production_execution_preserves_facts_without_control(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, consumption, _, identity, prerequisites, qualification = _authority(tmp_path)
+    diagnostic_root = tmp_path / str(plan["root_namespace"])
+    roots = _fake_execution(
+        diagnostic_root=diagnostic_root,
+        plan=plan,
+    ).roots
+    monkeypatch.setattr(
+        "openzyme_host_api.aox_cutover_evidence.create_blank_world_roots",
+        lambda *_args, **_kwargs: roots,
+    )
+    monkeypatch.setattr(
+        "openzyme_host_api.aox_attempt_supervision."
+        "validate_attempt_supervision_receipt",
+        lambda *_args, **_kwargs: None,
+    )
+    raw_facts = {
+        "operation_status_counts": {"completed": 13},
+        "task_status_counts": {"completed": 3},
+    }
+    execution_identity = {
+        **identity,
+        "workflow_ref": "workflow:aox-hmm-live@1.0.0#sha256:" + "1" * 64,
+        "scoring_contract_digest": "sha256:" + "2" * 64,
+        "scoring_implementation_digest": "sha256:" + "3" * 64,
+        "image_digest": "sha256:" + "4" * 64,
+        "sdk_digest": "sha256:" + "5" * 64,
+    }
+
+    execution = execute_aox_attempt(
+        campaign_root=diagnostic_root,
+        identity=execution_identity,
+        ledger_path=tmp_path / "ledger.sqlite3",
+        runner=lambda _context: {
+            "product_path": {"attempt_supervision": {}},
+            "diagnostic_observation": {
+                "product_path_completed": True,
+                "raw_facts": raw_facts,
+            },
+        },
+        allowed_prerequisites=prerequisites,
+        architecture_qualification=qualification,
+        number=1,
+        kind="positive",
+        authority=plan["slot"],
+        run_class=AoxLiveRunClass.DIAGNOSTIC,
+    )
+
+    assert "scientific_attempt_control" not in execution.evidence
+    assert execution.evidence["diagnostic_observation"]["raw_facts"] == raw_facts
+    decision = diagnostic_module._diagnostic_decision(
+        plan=plan,
+        consumption=consumption,
+        root_marker={"schema_id": "test-diagnostic-root-marker"},
+        execution=execution,
+        failure=None,
+    )
+
+    assert decision["status"] == "blocked"
+    assert decision["blocker"] == {
+        "code": "scientific_attempt_control_missing",
+        "identity": "diagnostic.runner",
+    }
+    assert decision["observations"]["raw_facts"] == raw_facts
+    assert decision["micu_ledger"] == {
+        "before": execution.ledger_before,
+        "after": execution.ledger_after,
+    }
+    assert validate_aox_diagnostic_decision(decision) == decision
+
+
 def test_diagnostic_execution_failure_seals_only_non_acceptance_decision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plan, consumption, plan_path, identity, prerequisites, qualification = (
-        _authority(tmp_path)
+    plan, consumption, plan_path, identity, prerequisites, qualification = _authority(
+        tmp_path
     )
     diagnostic_root = tmp_path / str(plan["root_namespace"])
 
@@ -313,9 +396,7 @@ def test_diagnostic_execution_failure_seals_only_non_acceptance_decision(
     }
     assert decision["root"]["proof_schema_id"] is None
     assert validate_aox_diagnostic_decision(decision) == decision
-    assert (
-        diagnostic_root / AOX_DIAGNOSTIC_DECISION_FILENAME
-    ).is_file()
+    assert (diagnostic_root / AOX_DIAGNOSTIC_DECISION_FILENAME).is_file()
     assert not tuple(diagnostic_root.rglob("attempt-bundle.json"))
     assert not tuple(diagnostic_root.rglob("campaign-decision.json"))
 
@@ -345,18 +426,13 @@ def test_diagnostic_runner_projection_forces_all_eligibility_false() -> None:
     assert projected["report"]["cutover_eligible"] is False
     assert projected["nested"]["acceptance_eligible"] is False
     assert projected["nested"]["items"][0]["cutover_eligible"] is False
-    assert (
-        projected["diagnostic_observation"]["product_path_completed"]
-        is True
-    )
+    assert projected["diagnostic_observation"]["product_path_completed"] is True
 
 
 def test_shared_execution_core_rejects_stripped_or_cross_mode_slot_before_root(
     tmp_path: Path,
 ) -> None:
-    diagnostic, _, _, identity, prerequisites, qualification = _authority(
-        tmp_path
-    )
+    diagnostic, _, _, identity, prerequisites, qualification = _authority(tmp_path)
     diagnostic_slot = deepcopy(diagnostic["slot"])
     assert isinstance(diagnostic_slot, dict)
     diagnostic_slot.pop("run_class")
@@ -388,9 +464,7 @@ def test_shared_execution_core_rejects_stripped_or_cross_mode_slot_before_root(
                 campaign_root=root,
                 identity=identity,
                 ledger_path=tmp_path / "unused-ledger.sqlite3",
-                runner=lambda context: (_ for _ in ()).throw(
-                    AssertionError(context)
-                ),
+                runner=lambda context: (_ for _ in ()).throw(AssertionError(context)),
                 allowed_prerequisites=prerequisites,
                 architecture_qualification=qualification,
                 number=1,

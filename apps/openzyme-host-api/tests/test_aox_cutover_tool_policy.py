@@ -149,20 +149,14 @@ def _repositories(
     resolved_head: SimpleNamespace | None = None,
 ) -> SimpleNamespace:
     by_id = {task.task_id: task for task in tasks}
-    attempts_by_id = {
-        attempt.attempt_id: attempt for attempt in attempts
-    }
-    finish_documents = (
-        _finish_documents(tasks) if documents is None else documents
-    )
+    attempts_by_id = {attempt.attempt_id: attempt for attempt in attempts}
+    finish_documents = _finish_documents(tasks) if documents is None else documents
     documents_by_id = {
         str(document.document_id): document
         for document in finish_documents
         if getattr(document, "document_id", None) is not None
     }
-    artifacts_by_id = {
-        str(artifact.artifact_id): artifact for artifact in artifacts
-    }
+    artifacts_by_id = {str(artifact.artifact_id): artifact for artifact in artifacts}
     return _record(
         tasks=_record(
             get=by_id.get,
@@ -204,9 +198,7 @@ def _context(
 ) -> SimpleNamespace:
     return _record(
         repositories=repositories,
-        scientific_workflow_contract_registry=(
-            scientific_workflow_contract_registry
-        ),
+        scientific_workflow_contract_registry=(scientific_workflow_contract_registry),
     )
 
 
@@ -233,7 +225,6 @@ def _close_invocation() -> ToolInvocation:
             "actor_ref": "agent:master",
             "idempotency_key": "close:001",
         },
-        assistant_response_text=FINAL_RESPONSE,
     )
 
 
@@ -308,11 +299,9 @@ def test_closure_stage_policy_seals_external_operation_universe(
 
     assert result is not None
     assert result.ok is False
-    assert result.error_code == (
-        "aox_closure_stage_operation_universe_sealed"
-    )
+    assert result.error_code == ("aox_closure_stage_operation_universe_sealed")
     assert result.details == {
-        "policy_id": "aox_cutover_formal_tool_precondition@4",
+        "policy_id": "aox_cutover_formal_tool_precondition@5",
         "precondition_rejected": True,
         "dispatched": False,
         "effect_certainty": "no_effect",
@@ -374,9 +363,7 @@ def test_closure_stage_report_finish_requires_durable_pubmed_source_link() -> No
                 "task_id": AOX_RESEARCH_TASK_ID,
                 "status": "completed",
                 "finished_by": "agent_researcher",
-                "evidence_refs": [
-                    f"artifact:{primary_artifact_id}"
-                ],
+                "evidence_refs": [f"artifact:{primary_artifact_id}"],
             },
         ),
         _record(
@@ -417,9 +404,7 @@ def test_closure_stage_report_finish_requires_durable_pubmed_source_link() -> No
                     "content_digest": "sha256:" + "a" * 64,
                     "diagnostic_source_copy": {
                         "source_artifact_id": primary_artifact_id,
-                        "source_manifest_digest": (
-                            "sha256:" + "b" * 64
-                        ),
+                        "source_manifest_digest": ("sha256:" + "b" * 64),
                         "formal_adoption_eligible": False,
                         "new_effect": False,
                     },
@@ -462,9 +447,7 @@ def test_closure_stage_report_finish_requires_durable_pubmed_source_link() -> No
     )
 
     assert missing_source is not None
-    assert missing_source.error_code == (
-        "aox_closure_stage_report_source_link_invalid"
-    )
+    assert missing_source.error_code == ("aox_closure_stage_report_source_link_invalid")
     assert missing_source.details["missing_evidence_refs"] == [
         f"artifact:{primary_artifact_id}"
     ]
@@ -524,12 +507,8 @@ def test_closure_stage_report_finish_requires_durable_pubmed_source_link() -> No
         reports=repositories.reports.list_by_session(SESSION_ID),
         drafts=repositories.report_drafts.list_by_session(SESSION_ID),
         documents=completed_documents,
-        artifacts=(
-            repositories.artifacts.get(primary_artifact_id),
-        ),
-        source_refs=repositories.research_source_refs.list_by_session(
-            SESSION_ID
-        ),
+        artifacts=(repositories.artifacts.get(primary_artifact_id),),
+        source_refs=repositories.research_source_refs.list_by_session(SESSION_ID),
     )
 
     assert (
@@ -559,22 +538,15 @@ def test_closure_stage_report_finish_requires_durable_pubmed_source_link() -> No
             reporter_without_source,
             completed_documents[3],
         ),
-        artifacts=(
-            repositories.artifacts.get(primary_artifact_id),
-        ),
-        source_refs=repositories.research_source_refs.list_by_session(
-            SESSION_ID
-        ),
+        artifacts=(repositories.artifacts.get(primary_artifact_id),),
+        source_refs=repositories.research_source_refs.list_by_session(SESSION_ID),
     )
-    close_rejected = policy(
+    close_delegated = policy(
         _context(unlinked_repositories),
         _step(),  # type: ignore[arg-type]
         _close_invocation(),
     )
-    assert close_rejected is not None
-    assert close_rejected.error_code == (
-        "aox_closure_stage_report_source_link_not_ready"
-    )
+    assert close_delegated is None
 
 
 def test_cutover_policy_rejects_noncanonical_task_creation_without_effect() -> None:
@@ -653,7 +625,7 @@ def test_cutover_policy_rejects_duplicate_canonical_task() -> None:
     assert result.error_code == "aox_cutover_task_already_exists"
 
 
-def test_cutover_policy_rejects_close_before_positive_task_exits() -> None:
+def test_cutover_policy_delegates_close_before_positive_task_exits_to_core() -> None:
     tasks = _tasks(execution_status="in_progress")
 
     result = _positive_policy()(
@@ -662,25 +634,20 @@ def test_cutover_policy_rejects_close_before_positive_task_exits() -> None:
         _close_invocation(),
     )
 
-    assert result is not None
-    assert result.error_code == "aox_cutover_task_exits_not_ready"
-    assert result.details["task_statuses"][EXECUTION_TASK_ID] == (
-        "in_progress"
-    )
+    assert result is None
 
 
-def test_cutover_policy_rejects_close_from_teammate() -> None:
+def test_cutover_policy_delegates_teammate_close_to_core() -> None:
     result = _positive_policy()(
         _context(_repositories(tasks=_tasks())),
         _step(actor_kind="teammate"),  # type: ignore[arg-type]
         _close_invocation(),
     )
 
-    assert result is not None
-    assert result.error_code == "aox_cutover_close_actor_violation"
+    assert result is None
 
 
-def test_cutover_policy_does_not_infer_handoff_from_sealed_state_alone() -> None:
+def test_cutover_policy_leaves_sealed_attempt_lifecycle_to_core() -> None:
     tasks = _tasks(execution_status="in_progress")
     attempts = (
         _record(
@@ -710,11 +677,7 @@ def test_cutover_policy_does_not_infer_handoff_from_sealed_state_alone() -> None
         teammate_step,  # type: ignore[arg-type]
         _close_invocation(),
     )
-    assert close_result is not None
-    assert close_result.error_code == "aox_cutover_close_actor_violation"
-    assert "must not make a sealed positive execution task blocked" in (
-        close_result.hint or ""
-    )
+    assert close_result is None
 
     blocked_result = _positive_policy()(
         _context(repositories),
@@ -725,9 +688,7 @@ def test_cutover_policy_does_not_infer_handoff_from_sealed_state_alone() -> None
             arguments={
                 "task_id": EXECUTION_TASK_ID,
                 "status": "blocked",
-                "blocked_reason": (
-                    "Only the master may close the scientific attempt."
-                ),
+                "blocked_reason": ("Only the master may close the scientific attempt."),
             },
             task_id=EXECUTION_TASK_ID,
         ),
@@ -817,7 +778,7 @@ def test_cutover_policy_leaves_fault_execution_exits_generic() -> None:
     assert result is None
 
 
-def test_cutover_policy_rejects_extra_task_and_wrong_assignment() -> None:
+def test_cutover_policy_does_not_project_task_topology_into_close() -> None:
     extra_tasks = (
         *_tasks(),
         _record(
@@ -832,11 +793,7 @@ def test_cutover_policy_rejects_extra_task_and_wrong_assignment() -> None:
         _step(),  # type: ignore[arg-type]
         _close_invocation(),
     )
-    assert extra_result is not None
-    assert extra_result.error_code == "aox_cutover_task_set_not_ready"
-    assert extra_result.details["extra_task_ids"] == [
-        "aox_final_source_linked_report_retry"
-    ]
+    assert extra_result is None
 
     wrong_assignment = list(_tasks())
     wrong_assignment[1] = _record(
@@ -850,11 +807,10 @@ def test_cutover_policy_rejects_extra_task_and_wrong_assignment() -> None:
         _step(),  # type: ignore[arg-type]
         _close_invocation(),
     )
-    assert identity_result is not None
-    assert identity_result.error_code == "aox_cutover_task_identity_not_ready"
+    assert identity_result is None
 
 
-def test_cutover_policy_rejects_mismatched_task_finish_receipt() -> None:
+def test_cutover_policy_does_not_project_finish_receipts_into_close() -> None:
     tasks = _tasks()
     documents = list(_finish_documents(tasks))
     documents[1] = _record(
@@ -877,17 +833,10 @@ def test_cutover_policy_rejects_mismatched_task_finish_receipt() -> None:
         _close_invocation(),
     )
 
-    assert result is not None
-    assert (
-        result.error_code
-        == "aox_cutover_task_finish_receipts_not_ready"
-    )
-    assert result.details["finish_issues"][0]["task_id"] == (
-        EXECUTION_TASK_ID
-    )
+    assert result is None
 
 
-def test_cutover_policy_rejects_master_proxy_task_finish_receipt() -> None:
+def test_cutover_policy_does_not_project_finish_actor_into_close() -> None:
     tasks = _tasks()
     documents = list(_finish_documents(tasks))
     documents[1] = _record(
@@ -910,21 +859,10 @@ def test_cutover_policy_rejects_master_proxy_task_finish_receipt() -> None:
         _close_invocation(),
     )
 
-    assert result is not None
-    assert result.error_code == "aox_cutover_task_finish_receipts_not_ready"
-    assert result.details["finish_issues"] == [
-        {
-            "task_id": EXECUTION_TASK_ID,
-            "task_status": "completed",
-            "finish_receipt_count": 1,
-            "finish_statuses": ["completed"],
-            "expected_finished_by": "agent_executor",
-            "observed_finished_by": ["agent:master"],
-        }
-    ]
+    assert result is None
 
 
-def test_cutover_policy_requires_exact_positive_report_link() -> None:
+def test_cutover_policy_does_not_project_report_link_into_close() -> None:
     tasks = _tasks()
 
     result = _positive_policy()(
@@ -933,9 +871,7 @@ def test_cutover_policy_requires_exact_positive_report_link() -> None:
         _close_invocation(),
     )
 
-    assert result is not None
-    assert result.error_code == "aox_cutover_positive_report_not_ready"
-    assert result.details["report_link_ready"] is False
+    assert result is None
 
 
 def test_cutover_policy_allows_ready_positive_close() -> None:
@@ -1002,7 +938,7 @@ def test_cutover_policy_allows_r58_published_positive_close() -> None:
     assert result is None
 
 
-def test_cutover_policy_requires_final_response_on_ready_close() -> None:
+def test_cutover_policy_does_not_require_final_response_on_close() -> None:
     tasks = _tasks()
     reports = (
         _record(
@@ -1042,10 +978,7 @@ def test_cutover_policy_requires_final_response_on_ready_close() -> None:
         invocation,
     )
 
-    assert result is not None
-    assert result.error_code == "aox_cutover_final_response_missing"
-    assert result.details["assistant_response_present"] is False
-    assert result.details["effect_certainty"] == "no_effect"
+    assert result is None
 
 
 def test_cutover_policy_allows_closed_fault_without_success_report() -> None:
@@ -1077,7 +1010,7 @@ def test_cutover_policy_allows_closed_fault_without_success_report() -> None:
     assert result is None
 
 
-def test_cutover_policy_rejects_fault_success_report_state() -> None:
+def test_cutover_policy_does_not_project_fault_report_state_into_close() -> None:
     policy = AoxCutoverFormalToolPrecondition(
         session_id=SESSION_ID,
         execution_task_id=EXECUTION_TASK_ID,
@@ -1101,9 +1034,7 @@ def test_cutover_policy_rejects_fault_success_report_state() -> None:
         _close_invocation(),
     )
 
-    assert result is not None
-    assert result.error_code == "aox_cutover_fault_report_state_invalid"
-    assert result.details["success_report_ids"] == ["report_unexpected"]
+    assert result is None
 
 
 def test_cutover_policy_does_not_affect_probe_or_other_sessions() -> None:
@@ -1217,7 +1148,6 @@ class _CloseThenMutationDriver:
                     },
                     task_id=EXECUTION_TASK_ID,
                     lane_id="lane_execution",
-                    assistant_response_text=FINAL_RESPONSE,
                 ),
                 ToolInvocation(
                     call_id="call_mutation_after_close",
@@ -1547,9 +1477,7 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
         arguments={
             "task_id": EXECUTION_TASK_ID,
             "status": "blocked",
-            "blocked_reason": (
-                "Only the master may close the scientific attempt."
-            ),
+            "blocked_reason": ("Only the master may close the scientific attempt."),
         },
         task_id=EXECUTION_TASK_ID,
     )
@@ -1574,10 +1502,7 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
                     ),
                     executor_step,  # type: ignore[arg-type]
                     ToolInvocation(
-                        call_id=(
-                            "call_repository_"
-                            f"{requested_status}_after_seal"
-                        ),
+                        call_id=(f"call_repository_{requested_status}_after_seal"),
                         tool_name="task.finish",
                         arguments={
                             "task_id": EXECUTION_TASK_ID,
@@ -1590,44 +1515,18 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
     assert ready_evaluation.closure_request_ready is True
     assert ready_evaluation.closure_finalization_ready is False
     assert "selection_active_writers" in ready_evaluation.blocker_codes
-    assert all(result is not None for result in ready_results)
-    for requested_status, ready_result in zip(
-        ("blocked", "failed", "cancelled"),
-        ready_results,
-        strict=True,
-    ):
-        assert ready_result is not None
-        assert (
-            ready_result.error_code
-            == "aox_cutover_positive_execution_exit_mismatch"
-        )
-        assert ready_result.details["selection_id"] == (
-            selection.selection_id
-        )
-        assert ready_result.details["requested_status"] == requested_status
-        assert ready_result.details["closure_request_ready"] is True
-        assert ready_result.details["closure_finalization_ready"] is False
-        assert "selection_active_writers" in (
-            ready_result.details["selection_blocker_codes"]
-        )
-        assert ready_result.details["effect_certainty"] == "no_effect"
+    assert ready_results == [None, None, None]
 
     authority_connection = connect_sqlite(":memory:")
     repositories.tasks.connection.backup(authority_connection)
-    authority_repositories = CoreRepositories.from_connection(
-        authority_connection
-    )
+    authority_repositories = CoreRepositories.from_connection(authority_connection)
     authority_scientific = ScientificAttemptService(
         authority_repositories,
         now=lambda: now,
-        workflow_contract_registry=(
-            AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
-        ),
+        workflow_contract_registry=(AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY),
     )
-    authority_record = (
-        authority_repositories.scientific_attempt_authorizations.get(
-            attempt.envelope_id
-        )
+    authority_record = authority_repositories.scientific_attempt_authorizations.get(
+        attempt.envelope_id
     )
     assert authority_record is not None
     with authority_scientific.mutation_scopes.writer_turn(
@@ -1650,9 +1549,7 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
     )
     assert authority_evaluation.selection_state == "sealed"
     assert authority_evaluation.closure_request_ready is False
-    assert "selection_attempt_authority_invalid" in (
-        authority_evaluation.blocker_codes
-    )
+    assert "selection_attempt_authority_invalid" in (authority_evaluation.blocker_codes)
     assert (
         lifecycle_policy(
             _context(
@@ -1669,15 +1566,11 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
 
     universe_connection = connect_sqlite(":memory:")
     repositories.tasks.connection.backup(universe_connection)
-    universe_repositories = CoreRepositories.from_connection(
-        universe_connection
-    )
+    universe_repositories = CoreRepositories.from_connection(universe_connection)
     universe_scientific = ScientificAttemptService(
         universe_repositories,
         now=lambda: now,
-        workflow_contract_registry=(
-            AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
-        ),
+        workflow_contract_registry=(AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY),
     )
     drift_run = SandboxRunRecord(
         sandbox_run_id="run_repository_universe_drift",
@@ -1735,9 +1628,7 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
     assert universe_evaluation.selection_state == "sealed"
     assert universe_evaluation.closure_request_ready is False
     assert "selection_universe_changed" in universe_evaluation.blocker_codes
-    assert "selection_disposition_incomplete" in (
-        universe_evaluation.blocker_codes
-    )
+    assert "selection_disposition_incomplete" in (universe_evaluation.blocker_codes)
     assert (
         lifecycle_policy(
             _context(
@@ -1813,16 +1704,16 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
     with scientific.mutation_scopes.writer_turn(
         session_id=SESSION_ID,
         owner_kind=MutationWriterKind.AGENT_TURN,
-        owner_ref="agent-turn:repository-backed-master",
+        owner_ref="agent-turn:repository-backed-executor",
     ):
         result = run_agent_harness_loop(
             repositories,
             HarnessInput(
                 session_id=SESSION_ID,
                 max_steps=3,
-                agent_id="agent:master",
-                actor_kind="master",
-                actor_role="master",
+                agent_id="agent_executor",
+                actor_kind="teammate",
+                actor_role="executor",
             ),
             driver=driver,
             tool_registry=ToolRegistry(),
@@ -1847,8 +1738,8 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
     assert close_result.ok is True
     assert close_result.terminal_action == "scientific.attempt.close"
     assert close_result.terminates_turn is True
-    assert close_result.persists_assistant_response is True
-    assert result.outputs == (FINAL_RESPONSE,)
+    assert "persists_assistant_response" not in close_result.envelope()
+    assert result.outputs == ()
     assert interrupted.call_id == "call_mutation_after_close"
     assert interrupted.error_code == "tool_call_batch_interrupted"
     assert interrupted.details == {
@@ -1866,11 +1757,7 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
         if event.event_type == "tool.invoked"
     ] == ["call_repository_close"]
     conversation = build_conversation_projection(repositories, SESSION_ID)
-    assistant_entries = [
-        entry for entry in conversation if entry.role == "assistant"
-    ]
-    assert len(assistant_entries) == 1
-    assert assistant_entries[0].content == FINAL_RESPONSE
+    assert conversation == ()
     host_service = V3HostApiService(
         repositories=repositories,
         event_store=V3EventStore(repositories),
@@ -1891,7 +1778,7 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
     )
     assert closure is not None
     assert closure.attempt_id == attempt.attempt_id
-    assert closure.actor_ref == "agent:master"
+    assert closure.actor_ref == "agent_executor"
     closure_signals = [
         signal
         for signal in repositories.runtime_signals.list_by_session(SESSION_ID)
@@ -1937,9 +1824,7 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
             auto_enqueue_ready_tasks=False,
             worker_id="test:scientific-terminal-settlement",
         )
-    settled_signal = repositories.runtime_signals.get(
-        closure_signals[0].signal_id
-    )
+    settled_signal = repositories.runtime_signals.get(closure_signals[0].signal_id)
     assert drained.status == "completed"
     assert drained.processed_signal_count == 1
     assert settled_signal is not None
@@ -1947,18 +1832,16 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
     assert repositories.runtime_signals.list_pending_by_session(SESSION_ID) == []
     assert repositories.session_runtime_leases.get_active(SESSION_ID) is None
     assert build_conversation_projection(repositories, SESSION_ID) == conversation
-    assert any(
+    assert not any(
         event["event_type"] == "scientific.closure_notification.settled"
         for event in drained.events
     )
-    assert (
-        repositories.scientific_attempt_closure_responses
-        .get_by_closure_request(request.closure_request_id)
-        is not None
-    )
-    persisted_attempt = repositories.scientific_attempts.get(
-        attempt.attempt_id
-    )
+    historical_response_count = repositories.tasks.connection.execute(
+        "SELECT COUNT(*) FROM scientific_attempt_closure_response_records"
+    ).fetchone()
+    assert historical_response_count is not None
+    assert historical_response_count[0] == 0
+    persisted_attempt = repositories.scientific_attempts.get(attempt.attempt_id)
     assert persisted_attempt is not None
     assert persisted_attempt.status.value == "active"
 

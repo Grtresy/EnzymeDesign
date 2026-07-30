@@ -129,9 +129,7 @@ class _OperationReadProvider:
                 ),
                 sandbox_runs=SimpleNamespace(
                     get=sandbox_runs.get,
-                    list_by_session=lambda _session_id: tuple(
-                        sandbox_runs.values()
-                    ),
+                    list_by_session=lambda _session_id: tuple(sandbox_runs.values()),
                 ),
             )
 
@@ -179,10 +177,7 @@ class _SelectedChainApprovalProvider:
         closure_request: object | None = None,
         closure: object | None = None,
     ) -> None:
-        runs_by_id = {
-            str(getattr(run, "sandbox_run_id")): run
-            for run in sandbox_runs
-        }
+        runs_by_id = {str(getattr(run, "sandbox_run_id")): run for run in sandbox_runs}
         self._repositories = SimpleNamespace(
             controlled_operations=SimpleNamespace(
                 list_by_session=lambda _session_id: operations
@@ -194,9 +189,7 @@ class _SelectedChainApprovalProvider:
             scientific_attempts=SimpleNamespace(
                 list_by_session=lambda _session_id: (attempt,),
                 get=lambda attempt_id: (
-                    attempt
-                    if attempt_id == getattr(attempt, "attempt_id")
-                    else None
+                    attempt if attempt_id == getattr(attempt, "attempt_id") else None
                 ),
             ),
             scientific_attempt_authorizations=SimpleNamespace(
@@ -243,9 +236,7 @@ class _AuthorityGrantProvider:
         self._repositories = SimpleNamespace(
             tasks=SimpleNamespace(get=lambda _task_id: task),
             lanes=SimpleNamespace(get=lambda _lane_id: lane),
-            agents=SimpleNamespace(
-                get=lambda _session_id, _agent_id: agent
-            ),
+            agents=SimpleNamespace(get=lambda _session_id, _agent_id: agent),
             scientific_attempt_authorizations=SimpleNamespace(
                 get=lambda _envelope_id: existing
             ),
@@ -409,9 +400,7 @@ def _runtime_command_response(
             "session_id": session_id,
             "command_id": command_id,
             "status": status,
-            "status_url": (
-                f"/v3/sessions/{session_id}/runtime/commands/{command_id}"
-            ),
+            "status_url": (f"/v3/sessions/{session_id}/runtime/commands/{command_id}"),
             "bounded_outcome_summary": bounded_outcome_summary,
         },
         status_code=status_code,
@@ -435,9 +424,7 @@ class _SerialApprovalJsonClient:
 
     def get(self, route: str) -> _JsonResponse:
         self.get_routes.append(route)
-        if route == (
-            "/v3/sessions/sess_serial/runtime/commands/runtime_command_001"
-        ):
+        if route == ("/v3/sessions/sess_serial/runtime/commands/runtime_command_001"):
             with self._condition:
                 completed = self._force_release or (
                     self._current_index is not None
@@ -456,9 +443,7 @@ class _SerialApprovalJsonClient:
                 and self._current_index is not None
                 and self._current_index < len(self.approval_ids)
             ):
-                pending = [
-                    {"approval_id": self.approval_ids[self._current_index]}
-                ]
+                pending = [{"approval_id": self.approval_ids[self._current_index]}]
         return _approval_projection_response(
             route,
             session_id="sess_serial",
@@ -496,16 +481,12 @@ class _SerialApprovalJsonClient:
             assert self._current_index < len(self.approval_ids)
             assert approval_id == self.approval_ids[self._current_index]
             self.call_order.append(f"resolve:{approval_id}:{decision}")
-            self.resolve_calls.append(
-                (approval_id, decision, self._drain_inflight)
-            )
+            self.resolve_calls.append((approval_id, decision, self._drain_inflight))
             self._current_index += 1
             if decision != "approved":
                 self._force_release = True
             self._condition.notify_all()
-        return _JsonResponse(
-            {"approval_id": approval_id, "decision": decision}
-        )
+        return _JsonResponse({"approval_id": approval_id, "decision": decision})
 
     def release_all(self) -> None:
         with self._condition:
@@ -519,16 +500,13 @@ class _TerminalOutcomeJsonClient(_SerialApprovalJsonClient):
         self.outcome = outcome
 
     def get(self, route: str) -> _JsonResponse:
-        if route == (
-            "/v3/sessions/sess_serial/runtime/commands/runtime_command_001"
-        ):
+        if route == ("/v3/sessions/sess_serial/runtime/commands/runtime_command_001"):
             payload: dict[str, object] = {
                 "session_id": "sess_serial",
                 "command_id": "runtime_command_001",
                 "status": "completed",
                 "status_url": (
-                    "/v3/sessions/sess_serial/runtime/commands/"
-                    "runtime_command_001"
+                    "/v3/sessions/sess_serial/runtime/commands/runtime_command_001"
                 ),
             }
             if self.outcome is not None:
@@ -593,9 +571,7 @@ class _ConcurrentDrainAndWorkspaceFailureJsonClient:
         headers: dict[str, str],
     ) -> _JsonResponse:
         del json, headers
-        assert route == (
-            "/v3/sessions/sess_concurrent_failure/runtime/drain"
-        )
+        assert route == ("/v3/sessions/sess_concurrent_failure/runtime/drain")
         return _runtime_command_response(
             session_id="sess_concurrent_failure",
             status="accepted",
@@ -659,9 +635,7 @@ class _CoordinationCleanupFailureJsonClient:
         headers: dict[str, str],
     ) -> _JsonResponse:
         del json, headers
-        assert route == (
-            "/v3/sessions/sess_cleanup_precedence/runtime/drain"
-        )
+        assert route == ("/v3/sessions/sess_cleanup_precedence/runtime/drain")
         return _runtime_command_response(
             session_id="sess_cleanup_precedence",
             status="accepted",
@@ -746,9 +720,7 @@ class _DelayedCoordinationCleanupApprovalJsonClient:
         self.resolve_calls.append((self.approval_id, decision))
         assert decision == "rejected"
         self.release_drain.set()
-        return _JsonResponse(
-            {"approval_id": self.approval_id, "decision": decision}
-        )
+        return _JsonResponse({"approval_id": self.approval_id, "decision": decision})
 
 
 class _DrainReturnsPendingApprovalJsonClient:
@@ -802,9 +774,7 @@ class _DrainReturnsPendingApprovalJsonClient:
             (self.approval_id, decision, self.drain_returned.is_set())
         )
         self.pending = False
-        return _JsonResponse(
-            {"approval_id": self.approval_id, "decision": decision}
-        )
+        return _JsonResponse({"approval_id": self.approval_id, "decision": decision})
 
 
 class _TerminalCommandDelayedApprovalJsonClient:
@@ -819,8 +789,7 @@ class _TerminalCommandDelayedApprovalJsonClient:
 
     def get(self, route: str) -> _JsonResponse:
         if route == (
-            "/v3/sessions/sess_terminal_writer/runtime/commands/"
-            "runtime_command_001"
+            "/v3/sessions/sess_terminal_writer/runtime/commands/runtime_command_001"
         ):
             return _runtime_command_response(
                 session_id="sess_terminal_writer",
@@ -852,9 +821,7 @@ class _TerminalCommandDelayedApprovalJsonClient:
         decision = str(json.get("decision") or "")
         self.resolve_calls.append((self.approval_id, decision))
         self.pending = False
-        return _JsonResponse(
-            {"approval_id": self.approval_id, "decision": decision}
-        )
+        return _JsonResponse({"approval_id": self.approval_id, "decision": decision})
 
 
 def _one_pixel_grayscale_png(
@@ -902,26 +869,24 @@ def _attempt_authority(
     lane_id = f"lane_aox_execution_{suffix}"
     scope = "fault" if roots.attempt_kind == "fault" else "formal"
     identity_digest = cutover_evidence.canonical_digest(_identity())
-    envelope_id, request_digest, request = (
-        scientific_attempt_authorization_identity(
-            session_id=session_id,
-            task_id=task_id,
-            campaign_id="aox_campaign_test",
-            workflow_id=AOX_SELECTED_CHAIN_WORKFLOW_ID,
-            root_ref=f"attempts/{roots.attempt_id}",
-            grantor_kind="operator",
-            grantor_ref="user:local-dev",
-            allowed_scopes=(scope,),
-            allowed_effect_classes=("hpc", "provider"),
-            allowed_providers=(f"aox-provider-routes@{identity_digest}",),
-            allowed_hpc_targets=(f"aox-hpc-routes@{identity_digest}",),
-            max_attempts=1,
-            max_micu=10_000,
-            max_cost_microunits=10_000_000,
-            max_wall_time_seconds=3_600,
-            expires_at="2099-01-01T00:00:00+00:00",
-            idempotency_key=f"{roots.attempt_id}:authority",
-        )
+    envelope_id, request_digest, request = scientific_attempt_authorization_identity(
+        session_id=session_id,
+        task_id=task_id,
+        campaign_id="aox_campaign_test",
+        workflow_id=AOX_SELECTED_CHAIN_WORKFLOW_ID,
+        root_ref=f"attempts/{roots.attempt_id}",
+        grantor_kind="operator",
+        grantor_ref="user:local-dev",
+        allowed_scopes=(scope,),
+        allowed_effect_classes=("hpc", "provider"),
+        allowed_providers=(f"aox-provider-routes@{identity_digest}",),
+        allowed_hpc_targets=(f"aox-hpc-routes@{identity_digest}",),
+        max_attempts=1,
+        max_micu=10_000,
+        max_cost_microunits=10_000_000,
+        max_wall_time_seconds=3_600,
+        expires_at="2099-01-01T00:00:00+00:00",
+        idempotency_key=f"{roots.attempt_id}:authority",
     )
     return {
         "ordinal": 1,
@@ -974,13 +939,10 @@ def test_live_uniprot_raw_response_parser_is_strict_and_digest_bound() -> None:
     }
     content = (json.dumps(response, sort_keys=True, indent=2) + "\n").encode()
 
-    assert live._raw_provider_response_digests(content) == (
-        f"sha256:{body_digest}",
-    )
+    assert live._raw_provider_response_digests(content) == (f"sha256:{body_digest}",)
 
     duplicate_body = (
-        b'{"results":[{"primaryAccession":"P12345",'
-        b'"primaryAccession":"P12345"}]}\n'
+        b'{"results":[{"primaryAccession":"P12345","primaryAccession":"P12345"}]}\n'
     )
     response["responses"][0].update(
         {
@@ -989,9 +951,7 @@ def test_live_uniprot_raw_response_parser_is_strict_and_digest_bound() -> None:
             "size_bytes": len(duplicate_body),
         }
     )
-    duplicate_content = (
-        json.dumps(response, sort_keys=True, indent=2) + "\n"
-    ).encode()
+    duplicate_content = (json.dumps(response, sort_keys=True, indent=2) + "\n").encode()
 
     assert live._raw_provider_response_digests(duplicate_content) == ()
 
@@ -1184,9 +1144,7 @@ def test_live_collector_rejects_noncanonical_hpc_backend_identity() -> None:
         live.operation_evidence_record(
             operation,
             scope="probe",
-            inputs=[
-                {"artifact_id": "art_input", "content_digest": _digest("input")}
-            ],
+            inputs=[{"artifact_id": "art_input", "content_digest": _digest("input")}],
             outputs=[
                 {"artifact_id": "art_output", "content_digest": _digest("output")}
             ],
@@ -1203,9 +1161,7 @@ def test_live_collector_requires_current_hpc_run_id_for_completed_operation() ->
         live.operation_evidence_record(
             operation,
             scope="probe",
-            inputs=[
-                {"artifact_id": "art_input", "content_digest": _digest("input")}
-            ],
+            inputs=[{"artifact_id": "art_input", "content_digest": _digest("input")}],
             outputs=[
                 {"artifact_id": "art_output", "content_digest": _digest("output")}
             ],
@@ -1228,9 +1184,7 @@ def test_live_collector_rejects_mismatched_hpc_backend_identities() -> None:
         live.operation_evidence_record(
             operation,
             scope="probe",
-            inputs=[
-                {"artifact_id": "art_input", "content_digest": _digest("input")}
-            ],
+            inputs=[{"artifact_id": "art_input", "content_digest": _digest("input")}],
             outputs=[
                 {"artifact_id": "art_output", "content_digest": _digest("output")}
             ],
@@ -1336,9 +1290,7 @@ def test_live_collector_uses_canonical_provider_http_request_id() -> None:
         operation,
         scope="probe",
         inputs=[{"artifact_id": "art_input", "content_digest": _digest("input")}],
-        outputs=[
-            {"artifact_id": "art_output", "content_digest": _digest("output")}
-        ],
+        outputs=[{"artifact_id": "art_output", "content_digest": _digest("output")}],
     )
 
     assert record["backend_run_id"] == "provider_request_001"
@@ -1374,9 +1326,7 @@ def test_live_collector_rejects_invalid_provider_http_receipt_identity(
         live.operation_evidence_record(
             operation,
             scope="probe",
-            inputs=[
-                {"artifact_id": "art_input", "content_digest": _digest("input")}
-            ],
+            inputs=[{"artifact_id": "art_input", "content_digest": _digest("input")}],
             outputs=[
                 {"artifact_id": "art_output", "content_digest": _digest("output")}
             ],
@@ -1512,9 +1462,7 @@ def test_selected_chain_approval_allows_known_failure_but_not_unknown_effect(
         root_ref=f"attempts/{authority['attempt_id']}",
         campaign_id=request["campaign_id"],
         workflow_id=AOX_SELECTED_CHAIN_WORKFLOW_ID,
-        workflow_contract_digest=(
-            live.AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
-        ),
+        workflow_contract_digest=(live.AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST),
         requested_effect_classes=("hpc", "provider"),
         provider=request["allowed_providers"][0],
         hpc_target=request["allowed_hpc_targets"][0],
@@ -1536,9 +1484,7 @@ def test_selected_chain_approval_allows_known_failure_but_not_unknown_effect(
         max_wall_time_seconds=request["max_wall_time_seconds"],
     )
     current_execution = SimpleNamespace(
-        lifecycle_state=(
-            ControlledOperationExecutionLifecycle.AWAITING_APPROVAL
-        ),
+        lifecycle_state=(ControlledOperationExecutionLifecycle.AWAITING_APPROVAL),
         effect_certainty=ExternalEffectCertainty.NO_EFFECT,
         retry_eligibility=RetryEligibility.SAME_PHASE_SAFE,
     )
@@ -1617,15 +1563,10 @@ def test_selected_chain_approval_allows_known_failure_but_not_unknown_effect(
             approval_id=current.approval_id or "",
             attempt_authority=authority,
         )
-    assert (
-        late_approval.value.code
-        == "scientific_attempt_approval_authority_mismatch"
-    )
+    assert late_approval.value.code == "scientific_attempt_approval_authority_mismatch"
 
     dispatch_in_doubt = SimpleNamespace(
-        lifecycle_state=(
-            ControlledOperationExecutionLifecycle.RECONCILE_REQUIRED
-        ),
+        lifecycle_state=(ControlledOperationExecutionLifecycle.RECONCILE_REQUIRED),
         effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
         retry_eligibility=RetryEligibility.RECONCILE_REQUIRED,
     )
@@ -1668,10 +1609,7 @@ def test_selected_chain_approval_allows_known_failure_but_not_unknown_effect(
             approval_id=unauthorized.approval_id or "",
             attempt_authority=authority,
         )
-    assert (
-        forbidden_method.value.code
-        == "scientific_attempt_operation_not_authorized"
-    )
+    assert forbidden_method.value.code == "scientific_attempt_operation_not_authorized"
 
 
 def test_closed_formal_attempt_rejects_lifecycle_mismatch_immediately() -> None:
@@ -2608,10 +2546,7 @@ def test_formal_runtime_observation_binds_and_retires_exact_driver(
     assert len(writers) == 1
     assert writers[0].writer_id == observation.barrier.observer_writer_id
     assert writers[0].owner_kind.value == "attempt_driver"
-    assert (
-        writers[0].owner_ref
-        == "aox-attempt-driver:positive-observer:formal"
-    )
+    assert writers[0].owner_ref == "aox-attempt-driver:positive-observer:formal"
     assert writers[0].parent_writer_id is None
     assert writers[0].state.value == "retired"
     assert active_writers == []
@@ -2651,9 +2586,7 @@ def test_formal_session_returns_on_first_post_closure_observation(
             raise AssertionError("post-closure empty drain was issued")
         return live._DrainCoordinationResult(
             workspace={"task_board": {"items": []}},
-            workspace_response_binding={
-                "response_digest": _digest("workspace")
-            },
+            workspace_response_binding={"response_digest": _digest("workspace")},
             approval_ids=(),
             browser_approval_receipt=None,
             fault_receipt=None,
@@ -2851,7 +2784,7 @@ def test_runtime_progress_fingerprint_ignores_observation_noise_only() -> None:
 
 
 @pytest.mark.parametrize(
-    ("actionable_failure", "expected_code"),
+    ("actionable_failure", "observation_blocker", "expected_code"),
     (
         (
             {
@@ -2860,15 +2793,22 @@ def test_runtime_progress_fingerprint_ignores_observation_noise_only() -> None:
                 "recoverability": "agent_can_replan",
                 "task_id": "aox_final_source_linked_report",
             },
+            None,
             "formal_agent_recovery_unresolved",
         ),
-        (None, "formal_runtime_stalled_no_wakeup"),
+        (None, None, "formal_runtime_stalled_no_wakeup"),
+        (
+            None,
+            "scientific_attempt_open",
+            "scientific_attempt_open_no_wakeup",
+        ),
     ),
 )
 def test_formal_driver_fails_after_two_confirmed_no_wakeup_drains(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     actionable_failure: dict[str, str] | None,
+    observation_blocker: str | None,
     expected_code: str,
 ) -> None:
     ledger_path = tmp_path / "ledger.sqlite3"
@@ -2913,7 +2853,7 @@ def test_formal_driver_fails_after_two_confirmed_no_wakeup_drains(
         "_observe_session_runtime",
         lambda *_args, **_kwargs: SimpleNamespace(
             state="incomplete",
-            blocker_code=None,
+            blocker_code=observation_blocker,
         ),
     )
     monkeypatch.setattr(
@@ -2966,9 +2906,7 @@ def test_formal_driver_fails_after_two_confirmed_no_wakeup_drains(
         (_no_wakeup_state(pending_approval_ids=("approval_pending",)), False),
         (_no_wakeup_state(active_invocation_ids=("invocation_active",)), False),
         (
-            _no_wakeup_state(
-                active_continuation_ids=("continuation_active",)
-            ),
+            _no_wakeup_state(active_continuation_ids=("continuation_active",)),
             False,
         ),
         (_no_wakeup_state(working_agent_ids=("agent:working",)), False),
@@ -3066,9 +3004,7 @@ def test_formal_driver_requires_consecutive_unchanged_empty_drains(
         calls += 1
         return _stall_test_coordination(
             workspace={
-                "task_board": {
-                    "items": [{"task": {"task_id": f"task_state_{calls}"}}]
-                }
+                "task_board": {"items": [{"task": {"task_id": f"task_state_{calls}"}}]}
             },
             processed_signal_count=0 if calls == 1 else 1,
             replay_safe=calls == 1,
@@ -3173,19 +3109,14 @@ def test_formal_writer_settlement_keeps_other_writers_visible_on_real_sqlite(
         attempt_authority={"attempt_id": "positive-writer-settlement"},
     )
     with provider.read() as unit_of_work:
-        writers = unit_of_work.repositories.mutation_writers.list_all(
+        writers = unit_of_work.repositories.mutation_writers.list_all(scope.scope_id)
+        active_writers = unit_of_work.repositories.mutation_writers.list_active(
             scope.scope_id
-        )
-        active_writers = (
-            unit_of_work.repositories.mutation_writers.list_active(
-                scope.scope_id
-            )
         )
     observers = [
         writer
         for writer in writers
-        if writer.owner_ref
-        == "aox-attempt-driver:positive-writer-settlement:formal"
+        if writer.owner_ref == "aox-attempt-driver:positive-writer-settlement:formal"
     ]
     assert len(observers) == 1
     assert observers[0].state.value == "retired"
@@ -3212,19 +3143,14 @@ def test_formal_writer_settlement_keeps_other_writers_visible_on_real_sqlite(
         attempt_authority={"attempt_id": "positive-writer-settlement"},
     )
     with provider.read() as unit_of_work:
-        writers = unit_of_work.repositories.mutation_writers.list_all(
+        writers = unit_of_work.repositories.mutation_writers.list_all(scope.scope_id)
+        active_writers = unit_of_work.repositories.mutation_writers.list_active(
             scope.scope_id
-        )
-        active_writers = (
-            unit_of_work.repositories.mutation_writers.list_active(
-                scope.scope_id
-            )
         )
     observers = [
         writer
         for writer in writers
-        if writer.owner_ref
-        == "aox-attempt-driver:positive-writer-settlement:formal"
+        if writer.owner_ref == "aox-attempt-driver:positive-writer-settlement:formal"
     ]
     assert len(observers) == 2
     assert all(writer.state.value == "retired" for writer in observers)
@@ -3364,7 +3290,9 @@ def test_known_positive_probe_prompt_exposes_fixed_runner_output_contracts(
     assert "bio_tools/cdhit/clustered.fasta" in prompt
     assert "bio_tools/cdhit/clusters.csv" in prompt
     assert "bio_tools/hmmalign/aligned.fasta" in prompt
-    assert "hmmbuild bio_tools/hmmbuild/model.hmm as kind='result', format='hmm'" in prompt
+    assert (
+        "hmmbuild bio_tools/hmmbuild/model.hmm as kind='result', format='hmm'" in prompt
+    )
     assert "Never declare kind='model'" in prompt
     assert "all four run handles, including the terminal HMMalign" in prompt
     assert "unique fetch_refs entry whose declared_output_path" in prompt
@@ -3413,39 +3341,38 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     assert "never create another, suffixed, or replacement task id" in prompt
     assert "runtime rejects a noncanonical task id without effect" in prompt
     assert (
-        "rejects scientific.attempt.close until the exact task business exits"
-        in prompt
+        "Scientific closure is owned by the exact scientific attempt task "
+        "assignee" in prompt
     )
     assert (
         "Create any missing research and execution tasks before the missing "
-        "reporting task"
-        in prompt
+        "reporting task" in prompt
     )
     assert "both canonical upstream tasks in blocked_by" in prompt
     assert "do not attempt reporter delegation while either dependency" in prompt
     assert "inspect the canonical task graph" in prompt
     assert "Delegate the reporter only after both dependencies complete" in prompt
     assert (
-        "includes the complete final user-facing answer as response text with "
-        "scientific.attempt.close"
-        in prompt
-    )
-    assert (
         "Assistant text alone does not close the attempt or make an incomplete "
-        "state acceptance-eligible"
-        in prompt
+        "state acceptance-eligible" in prompt
     )
     assert (
-        "successful close persists that companion answer exactly once"
+        "scientific.attempt.close never persists a companion assistant response"
         in prompt
     )
-    assert f"workflow_refs=[{_identity()['workflow_ref']!r}] only to the executor" in prompt
+    assert "complete final user-facing answer as response text" not in prompt
+    assert (
+        f"workflow_refs=[{_identity()['workflow_ref']!r}] only to the executor"
+        in prompt
+    )
     assert "researcher and reporter must omit workflow_refs" in prompt
     assert "openzyme_pipeline.aox_reference.select_hmm_reference_set" in prompt
     assert "openzyme_pipeline.aox_reference.select_scoring_reference" in prompt
     assert "openzyme_pipeline.aox_reference.assemble_scoring_input" in prompt
     assert "openzyme_pipeline.aox_hmmer.parse_and_filter_csv" in prompt
-    assert "openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions" in prompt
+    assert (
+        "openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions" in prompt
+    )
     assert "openzyme_pipeline.aox_motif.score_aligned_fasta" in prompt
     assert "openzyme_pipeline.aox_similarity.build_similarity_graph" in prompt
     assert "/provider_parsed/proteins.fasta" in prompt
@@ -3475,7 +3402,9 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     assert "do not reread it" in prompt
     assert "/workspace/input is a Host-managed read-only mount" in prompt
     assert "never mkdir, write, copy, or pre-create a materialization target" in prompt
-    assert "artifacts.materialize itself creates the target and missing parents" in prompt
+    assert (
+        "artifacts.materialize itself creates the target and missing parents" in prompt
+    )
     assert "use /workspace/work for mutable scratch" in prompt
     assert "Every otherwise-valid sandbox.exec invocation" in prompt
     assert "that reaches source preflight, including Python -c" in prompt
@@ -3485,7 +3414,9 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     assert "every normalized final FASTA with kind='sequence', format='fasta'" in prompt
     assert "AOX_ref.hmm with kind='result', format='hmm'" in prompt
     assert "every normalized final CSV with kind='result', format='csv'" in prompt
-    assert "both normalized final JSON files with kind='result', format='json'" in prompt
+    assert (
+        "both normalized final JSON files with kind='result', format='json'" in prompt
+    )
     assert "Artifact kind 'model' is invalid" in prompt
     assert "model, alignment, table, or graph belong in format or metadata" in prompt
     assert "zero-record FASTA keeps kind='sequence', format='fasta'" in prompt
@@ -3503,13 +3434,19 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
         "current selection"
     ) in prompt
     assert "closure_finalization_ready and the legacy closure_ready field" in prompt
-    assert "selection_active_writers therefore does not require the master to wait" in prompt
+    assert (
+        "selection_active_writers therefore does not require the assignee to wait"
+        in prompt
+    )
     assert "task.finish(status='blocked')" in prompt
     assert "sealed state alone is not readiness" in prompt
     assert "post-seal universe, authority, workflow" in prompt
-    assert "actor rejection is the intended no-effect handoff" in prompt
-    assert "executor must finish its canonical task completed" in prompt
-    assert "rejects a blocked/failed/cancelled positive execution exit" in prompt
+    assert "must request scientific.attempt.close" in prompt
+    assert "ordinary closure notification wakes that same executor" in prompt
+    assert (
+        "Do not call task.finish(status='completed') before immutable closure" in prompt
+    )
+    assert "actor rejection is the intended no-effect handoff" not in prompt
     assert "scientific.attempt.close" in prompt
     assert "Persist each completed controlled-operation response" in prompt
     assert "Publish each canonical final deliverable path only once" in prompt
@@ -3524,13 +3461,15 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
         "uniprot_metadata_json, ...)" in prompt
     )
     assert (
-        "build_similarity_graph(candidate_fasta, cdhit_membership_csv, ...)"
-        in prompt
+        "build_similarity_graph(candidate_fasta, cdhit_membership_csv, ...)" in prompt
     )
     assert "exact full pre-CD-HIT AOX_candidates.fasta" in prompt
     assert "full one-row-per-member AOX_candidates_cdhit85.clusters.csv" in prompt
     assert "AOX_candidates_cdhit85.fasta is never a graph input" in prompt
-    assert "Every primary payload accessor named by that table returns Python str" in prompt
+    assert (
+        "Every primary payload accessor named by that table returns Python str"
+        in prompt
+    )
     assert "metadata() returns a dict" in prompt
     assert "Encode payload text exactly once with UTF-8" in prompt
     assert "never pass str to a bytes-only writer" in prompt
@@ -3583,9 +3522,7 @@ def test_formal_delegation_workflow_binding_is_exact_and_executor_scoped(
                 "nickname": role,
                 "display_name": role.capitalize(),
                 "handle": f"@{role}",
-                "workflow_refs": [workflow.selection_ref]
-                if role == "executor"
-                else [],
+                "workflow_refs": [workflow.selection_ref] if role == "executor" else [],
                 "workflow_manifests": [workflow.to_dict()]
                 if role == "executor"
                 else [],
@@ -3608,8 +3545,7 @@ def test_formal_delegation_workflow_binding_is_exact_and_executor_scoped(
     assert all(item["delegation_request_ref"] for item in bound)
     assert all(item["delegation_request_digest"] for item in bound)
     assert all(
-        item["delegation_request"]["document_id"]
-        == item["delegation_request_ref"]
+        item["delegation_request"]["document_id"] == item["delegation_request_ref"]
         and item["delegation_request"]["agent_id"] == item["assigned_ref"]
         and live.canonical_digest(item["delegation_request"])
         == item["delegation_request_digest"]
@@ -3657,8 +3593,7 @@ def test_catalog_source_snapshot_directory_is_sealed_as_self_verifying_envelope(
         [
             {
                 "relative_path": relative_path,
-                "content_digest": "sha256:"
-                + hashlib.sha256(content).hexdigest(),
+                "content_digest": "sha256:" + hashlib.sha256(content).hexdigest(),
                 "size_bytes": len(content),
             }
             for relative_path, content in sorted(files.items())
@@ -3703,7 +3638,7 @@ def test_probe_provider_output_literals_are_self_verifying_source(
     )
     source_root = roots.blob_root / "sealed" / "source" / "probe-snapshot"
     source_root.mkdir(parents=True)
-    content = b'''\
+    content = b"""\
 from openzyme_pipeline import artifacts, bio
 
 WORK = "/workspace/work"
@@ -3732,7 +3667,7 @@ expected_outputs = [
     "bio_tools/cdhit/clusters.csv",
     "bio_tools/hmmalign/aligned.fasta",
 ]
-'''
+"""
     source_path = source_root / "aox_probe.py"
     source_path.write_bytes(content)
     tree_digest = live.canonical_digest(
@@ -3942,9 +3877,10 @@ def test_catalog_copy_seals_typed_zero_fasta_registration_receipt(
     assert cache_hit.record["provenance"]["deliverable_path"] == (
         "aox_hmm/target.fasta"
     )
-    assert cache_hit.record["provenance"][
-        "deliverable_artifact_contract_id"
-    ] == cutover_evidence.AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+    assert (
+        cache_hit.record["provenance"]["deliverable_artifact_contract_id"]
+        == cutover_evidence.AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+    )
 
 
 @pytest.mark.parametrize("mismatch", ("kind", "format"))
@@ -4418,10 +4354,7 @@ def test_formal_authority_grant_waits_for_exact_executor_delegation(
     assert isinstance(request, dict)
     assert calls == [
         (
-            (
-                f"/v3/sessions/{session_id}/"
-                "scientific-attempt-authorizations"
-            ),
+            (f"/v3/sessions/{session_id}/scientific-attempt-authorizations"),
             live.authority_grant_payload(authority),
             str(request["idempotency_key"]),
         )
@@ -4549,9 +4482,7 @@ def test_cli_exposes_real_live_campaign_command(tmp_path: Path) -> None:
     assert args.max_drains == 120
     assert args.max_signals_per_drain == 1
     assert args.browser_completion_hold_seconds == 60.0
-    assert args.attempt_authority_plan == (
-        tmp_path / "attempt-authority-plan.json"
-    )
+    assert args.attempt_authority_plan == (tmp_path / "attempt-authority-plan.json")
     assert args.attempt_authority_consumption == (
         tmp_path / "attempt-authority-plan.json.consumed.json"
     )
@@ -4675,16 +4606,12 @@ def test_live_runner_preserves_transport_blocker_when_receipt_chain_failed(
         live.canonical_digest([])
     )
     blocker_payload = json.loads(
-        (
-            roots.artifact_root / "formal/live-product-path-blocker.json"
-        ).read_text(encoding="utf-8")
+        (roots.artifact_root / "formal/live-product-path-blocker.json").read_text(
+            encoding="utf-8"
+        )
     )
-    assert blocker_payload["blocker"]["code"] == (
-        "host_public_api_transport_failed"
-    )
-    assert blocker_payload["blocker"]["details"] == {
-        "failure_type": "ConnectError"
-    }
+    assert blocker_payload["blocker"]["code"] == ("host_public_api_transport_failed")
+    assert blocker_payload["blocker"]["details"] == {"failure_type": "ConnectError"}
     assert blocker_payload["public_api_receipts"] == []
     assert raw_client.calls == ["/v3/runtime/health"]
 
@@ -4745,9 +4672,7 @@ def test_runtime_drain_coordinates_three_serial_approvals_while_blocked(
     assert coordination.workspace_response_binding[
         "response_semantic_digest"
     ] == live.canonical_digest(coordination.workspace)
-    assert raw_client.get_routes.count(
-        "/v3/sessions/sess_serial/workspace"
-    ) == 1
+    assert raw_client.get_routes.count("/v3/sessions/sess_serial/workspace") == 1
     assert (
         "/v3/sessions/sess_serial/runtime/commands/runtime_command_001"
         in raw_client.get_routes
@@ -4761,9 +4686,7 @@ def test_runtime_drain_coordinates_three_serial_approvals_while_blocked(
         for route in raw_client.get_routes[:-1]
     )
     sealed = api.sealed_receipts
-    assert [receipt.sequence for receipt in sealed] == list(
-        range(1, len(sealed) + 1)
-    )
+    assert [receipt.sequence for receipt in sealed] == list(range(1, len(sealed) + 1))
     drain_receipts = [
         receipt
         for receipt in sealed
@@ -4988,16 +4911,13 @@ def test_formal_terminal_runtime_command_uses_bounded_observer_on_real_sqlite(
         writers = unit_of_work.repositories.mutation_writers.list_all(
             scopes[0].scope_id
         )
-        active_writers = (
-            unit_of_work.repositories.mutation_writers.list_active(
-                scopes[0].scope_id
-            )
+        active_writers = unit_of_work.repositories.mutation_writers.list_active(
+            scopes[0].scope_id
         )
     assert len(scopes) == 1
     assert len(writers) == 1
     assert (
-        writers[0].owner_ref
-        == "aox-attempt-driver:positive-terminal-observer:formal"
+        writers[0].owner_ref == "aox-attempt-driver:positive-terminal-observer:formal"
     )
     assert writers[0].state.value == "retired"
     assert active_writers == []
@@ -5077,9 +4997,7 @@ class _FormalRolloverState:
                     scope_id=f"mutation_scope_post_{self.attempt_id}",
                     session_id=self.session_id,
                     scope_kind=MutationScopeKind.SESSION,
-                    scope_ref=(
-                        f"post-scientific-attempt:{self.attempt_id}"
-                    ),
+                    scope_ref=(f"post-scientific-attempt:{self.attempt_id}"),
                     parent_scope_id=self.post_scope_parent_id,
                     state=MutationScopeState.OPEN,
                 ),
@@ -5110,9 +5028,7 @@ def _formal_rollover_provider(
         envelope_id=envelope_id,
     )
     provider = SimpleNamespace(
-        read=lambda: _SelectedChainApprovalProvider._Scope(
-            state.repositories()
-        )
+        read=lambda: _SelectedChainApprovalProvider._Scope(state.repositories())
     )
     return provider, state
 
@@ -5150,8 +5066,7 @@ def test_formal_terminal_command_waits_through_exact_scope_rollover(
     session_id = "sess_serial"
     envelope_id = "attempt_authority_rollover"
     provider, rollover = _formal_rollover_provider(
-        session_id=session_id,
-        envelope_id=envelope_id
+        session_id=session_id, envelope_id=envelope_id
     )
     raw_client = _SerialApprovalJsonClient(())
     api = live._PublicHostClient(raw_client)
@@ -5167,9 +5082,7 @@ def test_formal_terminal_command_waits_through_exact_scope_rollover(
                 "mutation_driver_writer_identity_invalid",
                 "runtime coordination lacks one exact outer attempt-driver writer",
                 details={
-                    "mutation_scope_error_code": (
-                        "mutation_writer_admission_closed"
-                    ),
+                    "mutation_scope_error_code": ("mutation_writer_admission_closed"),
                     "mutation_writer_admission_reason": "zero_open_scope",
                 },
             )
@@ -5225,8 +5138,7 @@ def test_full_formal_observation_uses_the_same_scope_rollover_wait(
     )
     envelope_id = "attempt_authority_full_observation_rollover"
     provider, rollover = _formal_rollover_provider(
-        session_id="sess_formal_rollover",
-        envelope_id=envelope_id
+        session_id="sess_formal_rollover", envelope_id=envelope_id
     )
     observer_checks = 0
     expected = SimpleNamespace(state="completed", blocker_code=None)
@@ -5240,9 +5152,7 @@ def test_full_formal_observation_uses_the_same_scope_rollover_wait(
                 "mutation_driver_writer_identity_invalid",
                 "runtime coordination lacks one exact outer attempt-driver writer",
                 details={
-                    "mutation_scope_error_code": (
-                        "mutation_writer_admission_closed"
-                    ),
+                    "mutation_scope_error_code": ("mutation_writer_admission_closed"),
                     "mutation_writer_admission_reason": "zero_open_scope",
                 },
             )
@@ -5299,9 +5209,7 @@ def test_formal_terminal_command_does_not_mask_other_observer_identity_errors(
             "mutation_driver_writer_identity_invalid",
             "runtime coordination lacks one exact outer attempt-driver writer",
             details={
-                "mutation_scope_error_code": (
-                    "mutation_writer_parent_scope_mismatch"
-                )
+                "mutation_scope_error_code": ("mutation_writer_parent_scope_mismatch")
             },
         )
         yield
@@ -5357,12 +5265,8 @@ def test_formal_rollover_never_retries_ambiguous_original_admission(
             "mutation_driver_writer_identity_invalid",
             "runtime coordination lacks one exact outer attempt-driver writer",
             details={
-                "mutation_scope_error_code": (
-                    "mutation_writer_admission_ambiguous"
-                ),
-                "mutation_writer_admission_reason": (
-                    "ambiguous_open_scopes"
-                ),
+                "mutation_scope_error_code": ("mutation_writer_admission_ambiguous"),
+                "mutation_writer_admission_reason": ("ambiguous_open_scopes"),
                 "open_scope_count": 2,
             },
         )
@@ -5416,9 +5320,7 @@ def test_formal_rollover_invalid_post_parent_fails_typed(
             "mutation_driver_writer_identity_invalid",
             "runtime coordination lacks one exact outer attempt-driver writer",
             details={
-                "mutation_scope_error_code": (
-                    "mutation_writer_admission_closed"
-                ),
+                "mutation_scope_error_code": ("mutation_writer_admission_closed"),
                 "mutation_writer_admission_reason": "zero_open_scope",
             },
         )
@@ -5442,9 +5344,7 @@ def test_formal_rollover_invalid_post_parent_fails_typed(
             rollover_deadline=time.monotonic() + 1.0,
         )
 
-    assert captured.value.code == (
-        "scientific_attempt_scope_rollover_invalid"
-    )
+    assert captured.value.code == ("scientific_attempt_scope_rollover_invalid")
     assert captured.value.details == {
         "scope_rollover_reason": "post_scope_identity_invalid",
         "scope_state": "sealed",
@@ -5469,16 +5369,12 @@ def test_runtime_barrier_observer_preserves_atomic_admission_reason(
     )
     with provider.write() as unit_of_work:
         unit_of_work.repositories.sessions.save(session)
-        scope = MutationScopeService(
-            unit_of_work.repositories
-        ).open_scope(
+        scope = MutationScopeService(unit_of_work.repositories).open_scope(
             session_id=session.session_id,
             scope_kind=MutationScopeKind.SESSION,
             scope_ref=session.session_id,
         )
-        MutationScopeService(
-            unit_of_work.repositories
-        ).begin_freeze(scope.scope_id)
+        MutationScopeService(unit_of_work.repositories).begin_freeze(scope.scope_id)
 
     with pytest.raises(live.AoxRuntimeObservationError) as captured:
         with runner._runtime_barrier_observer(
@@ -5518,16 +5414,22 @@ def test_sealed_rollover_details_are_bounded_and_allowlisted() -> None:
         "scope_rollover_reason": "post_scope_identity_invalid",
         "scope_state": "sealed",
     }
-    assert live._sealed_failure_details(
-        {
-            "open_scope_count": True,
-        }
-    ) == {}
-    assert live._sealed_failure_details(
-        {
-            "open_scope_count": live._MAX_SEALED_OPEN_SCOPE_COUNT + 1,
-        }
-    ) == {}
+    assert (
+        live._sealed_failure_details(
+            {
+                "open_scope_count": True,
+            }
+        )
+        == {}
+    )
+    assert (
+        live._sealed_failure_details(
+            {
+                "open_scope_count": live._MAX_SEALED_OPEN_SCOPE_COUNT + 1,
+            }
+        )
+        == {}
+    )
 
 
 def test_formal_scope_rollover_wait_remains_bounded_and_typed(
@@ -5554,12 +5456,10 @@ def test_formal_scope_rollover_wait_remains_bounded_and_typed(
             "mutation_driver_writer_identity_invalid",
             "runtime coordination lacks one exact outer attempt-driver writer",
             details={
-                    "mutation_scope_error_code": (
-                        "mutation_writer_admission_closed"
-                    ),
-                    "mutation_writer_admission_reason": "zero_open_scope",
-                },
-            )
+                "mutation_scope_error_code": ("mutation_writer_admission_closed"),
+                "mutation_writer_admission_reason": "zero_open_scope",
+            },
+        )
         yield
 
     monkeypatch.setattr(
@@ -5691,9 +5591,7 @@ def test_same_inflight_drain_uses_chrome_once_then_auto_approves(
             {"decision": "approved"},
             idempotency_key=f"{session_id}:browser-approve:{approval_id}",
         )
-        updated_workspace = handoff_api.get_json(
-            f"/v3/sessions/{session_id}/workspace"
-        )
+        updated_workspace = handoff_api.get_json(f"/v3/sessions/{session_id}/workspace")
         return chrome_receipt, updated_workspace
 
     monkeypatch.setattr(
@@ -5729,8 +5627,7 @@ def test_same_inflight_drain_uses_chrome_once_then_auto_approves(
     assert coordination.browser_approval_receipt is chrome_receipt
     assert coordination.workspace == {"pending_approvals": []}
     assert all(
-        not thread.is_alive()
-        or thread.name != f"aox-cutover-drain-{drain_number}"
+        not thread.is_alive() or thread.name != f"aox-cutover-drain-{drain_number}"
         for thread in threading.enumerate()
     )
 
@@ -5866,8 +5763,7 @@ def test_runtime_drain_primary_error_wins_over_cleanup_failure(
     assert raw_client.drain_finished.is_set()
     assert "private cleanup failure detail" not in str(error.value)
     assert all(
-        not thread.is_alive()
-        or thread.name != f"aox-cutover-drain-{drain_number}"
+        not thread.is_alive() or thread.name != f"aox-cutover-drain-{drain_number}"
         for thread in threading.enumerate()
     )
 
@@ -5930,8 +5826,7 @@ def test_runtime_drain_rejects_approval_delayed_past_old_cleanup_window(
     assert raw_client.resolve_calls == [(raw_client.approval_id, "rejected")]
     assert raw_client.drain_finished.is_set()
     assert all(
-        not thread.is_alive()
-        or thread.name != f"aox-cutover-drain-{drain_number}"
+        not thread.is_alive() or thread.name != f"aox-cutover-drain-{drain_number}"
         for thread in threading.enumerate()
     )
 
@@ -5983,8 +5878,7 @@ def test_runtime_drain_cleanup_read_recovers_and_rejects_later_approval(
     assert raw_client.drain_finished.is_set()
     assert "private transient cleanup read detail" not in str(error.value)
     assert all(
-        not thread.is_alive()
-        or thread.name != f"aox-cutover-drain-{drain_number}"
+        not thread.is_alive() or thread.name != f"aox-cutover-drain-{drain_number}"
         for thread in threading.enumerate()
     )
 
@@ -6068,8 +5962,7 @@ def test_runtime_drain_command_failure_wins_over_primary_and_cleanup_failures(
     assert "private cleanup failure detail" not in str(error.value)
     assert "private drain failure detail" not in str(error.value)
     assert all(
-        not thread.is_alive()
-        or thread.name != f"aox-cutover-drain-{drain_number}"
+        not thread.is_alive() or thread.name != f"aox-cutover-drain-{drain_number}"
         for thread in threading.enumerate()
     )
 
@@ -6134,8 +6027,7 @@ def test_fault_injection_invariant_failure_rejects_pending_without_approval(
     assert error.value.code == "fault_target_digest_binding_invalid"
     assert raw_client.resolve_calls == [(approval_id, "rejected", True)]
     assert not any(
-        decision == "approved"
-        for _, decision, _ in raw_client.resolve_calls
+        decision == "approved" for _, decision, _ in raw_client.resolve_calls
     )
     assert raw_client.call_order == [
         f"inject:{approval_id}",
@@ -6501,8 +6393,7 @@ def test_chrome_once_waits_for_exact_public_resolution_events(
                 _public_receipt(
                     sequence=len(self.receipts) + 1,
                     route=(
-                        "/v3/sessions/sess_browser_001/events"
-                        "?replay=1&after_cursor=10"
+                        "/v3/sessions/sess_browser_001/events?replay=1&after_cursor=10"
                     ),
                     semantic_value=list(resolution_events),
                 )
@@ -6626,8 +6517,7 @@ def test_chrome_once_rejects_explicit_operator_decision(
                 _public_receipt(
                     sequence=len(self.receipts) + 1,
                     route=(
-                        "/v3/sessions/sess_browser_001/events"
-                        "?replay=1&after_cursor=10"
+                        "/v3/sessions/sess_browser_001/events?replay=1&after_cursor=10"
                     ),
                     semantic_value=list(records),
                 )
@@ -6703,27 +6593,27 @@ def test_chrome_once_rejects_continuation_operation_identity_drift(
                 records: tuple[dict[str, object], ...] = ()
             else:
                 records = (
-                {
-                    "cursor": 1,
-                    "event_id": "event_resolved",
-                    "event_type": "approval.resolved",
-                    "payload": {
-                        "approval_id": "approval_browser_001",
-                        "decision": "approved",
-                        "actor_ref": "local-user",
+                    {
+                        "cursor": 1,
+                        "event_id": "event_resolved",
+                        "event_type": "approval.resolved",
+                        "payload": {
+                            "approval_id": "approval_browser_001",
+                            "decision": "approved",
+                            "actor_ref": "local-user",
+                        },
                     },
-                },
-                {
-                    "cursor": 2,
-                    "event_id": "event_continuation",
-                    "event_type": "sdk_controlled_operation.approval_resolved",
-                    "payload": {
-                        "approval_id": "approval_browser_001",
-                        "operation_id": "operation_browser_001",
-                        "operation_digest": _digest("drift"),
-                        "continuation_id": "continuation_browser_001",
-                        "decision": "approved",
-                    },
+                    {
+                        "cursor": 2,
+                        "event_id": "event_continuation",
+                        "event_type": "sdk_controlled_operation.approval_resolved",
+                        "payload": {
+                            "approval_id": "approval_browser_001",
+                            "operation_id": "operation_browser_001",
+                            "operation_digest": _digest("drift"),
+                            "continuation_id": "continuation_browser_001",
+                            "decision": "approved",
+                        },
                     },
                 )
             self._append_receipt(
@@ -6920,9 +6810,7 @@ def test_chrome_observation_rejects_receipt_written_before_hold_end(
                     "content": "completed",
                 }
             ],
-            "reports": [
-                {"report_id": "report_observation_001", "status": "published"}
-            ],
+            "reports": [{"report_id": "report_observation_001", "status": "published"}],
             "scientific_evidence": {
                 "operations": [
                     {
@@ -6978,7 +6866,7 @@ def test_positive_blocker_preserves_formal_failure_before_browser_gate(
         browser_gate_required=True,
     ) == {
         "code": "workflow_ref_not_authorized",
-        "message": "formal product path did not reach its published-report exit",
+        "message": "formal product path did not reach its complete accepted state",
     }
 
     completed_without_browser = replace(
@@ -6997,6 +6885,32 @@ def test_positive_blocker_preserves_formal_failure_before_browser_gate(
             "same-operation approval receipt"
         ),
     }
+
+
+def test_failed_probe_payload_separates_execution_from_attestation() -> None:
+    completed_probe = live.SessionDriveResult(
+        session_id="sess_probe_attestation",
+        purpose="probe",
+        state="completed",
+        blocker_code=None,
+        workspace={},
+        workspace_response_binding={},
+        event_receipt={},
+        drain_count=1,
+        approval_ids=(),
+    )
+
+    completed = live._failed_probe_payload(completed_probe)
+    not_started = live._failed_probe_payload(None)
+
+    assert completed["status"] == "failed"
+    assert completed["attestation_status"] == "failed"
+    assert {check["status"] for check in completed["checks"]} == {"passed"}
+    assert {check["attestation_status"] for check in completed["checks"]} == {
+        "unavailable"
+    }
+    assert not_started["attestation_status"] == "not_attempted"
+    assert {check["status"] for check in not_started["checks"]} == {"unobserved"}
 
 
 def _primary_pubmed_fixture(
@@ -7207,7 +7121,9 @@ def test_primary_pubmed_selection_rejects_invalid_selected_receipt(
     assert error.value.code == error_code
 
 
-def test_aox_prompt_preserves_iterative_research_and_structured_primary_adoption() -> None:
+def test_aox_prompt_preserves_iterative_research_and_structured_primary_adoption() -> (
+    None
+):
     prompt = live.S15_AOX_HMM_FIXED_PROMPT
 
     assert "Bounded iterative PubMed searches are allowed" in prompt
@@ -7421,9 +7337,7 @@ def test_chrome_observation_accepts_stable_post_hold_receipt(
     receipt = runner._wait_for_browser_observation(
         formal,
         observation_ready_started=time.monotonic() - 0.02,
-        observation_ready_wall_ns=(
-            receipt_path.stat().st_mtime_ns - 20_000_000
-        ),
+        observation_ready_wall_ns=(receipt_path.stat().st_mtime_ns - 20_000_000),
     )
 
     assert receipt["host_observation_hold_satisfied"] is True
@@ -7459,17 +7373,14 @@ def test_cli_exposes_chrome_once_mode(tmp_path: Path) -> None:
             str(tmp_path / "identity.json"),
             "--allowed-prerequisites",
             str(tmp_path / "prerequisites.json"),
-                "--architecture-qualification-report",
-                str(tmp_path / "architecture-qualification.json"),
-                "--attempt-authority-plan",
-                str(tmp_path / "attempt-authority-plan.json"),
-                "--attempt-authority-consumption",
-                str(
-                    tmp_path
-                    / "attempt-authority-plan.json.consumed.json"
-                ),
-                "--approval-mode",
-                "chrome-once",
+            "--architecture-qualification-report",
+            str(tmp_path / "architecture-qualification.json"),
+            "--attempt-authority-plan",
+            str(tmp_path / "attempt-authority-plan.json"),
+            "--attempt-authority-consumption",
+            str(tmp_path / "attempt-authority-plan.json.consumed.json"),
+            "--approval-mode",
+            "chrome-once",
             "--browser-completion-hold-seconds",
             "0",
             "--browser-approval-timeout-seconds",

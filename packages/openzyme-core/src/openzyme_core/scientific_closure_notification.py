@@ -10,7 +10,6 @@ from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ScientificAttempt
 from openzyme_domain import ScientificAttemptClosure
 from openzyme_domain import ScientificAttemptClosureRequest
-from openzyme_domain import ScientificAttemptClosureResponse
 from openzyme_domain import ScientificAttemptLifecyclePhase
 from openzyme_domain import Task
 
@@ -19,8 +18,6 @@ from .scientific_attempt_lifecycle import (
     ScientificAttemptLifecycleIntegrityError,
 )
 from .scientific_attempt_lifecycle import ScientificAttemptLifecycleResolver
-from .scientific_attempts import ScientificAttemptError
-from .scientific_attempts import ScientificAttemptService
 
 
 class ScientificClosureNotificationReason(StrEnum):
@@ -31,7 +28,6 @@ class ScientificClosureNotificationReason(StrEnum):
     CONTROL_BINDING_INVALID = "control_binding_invalid"
     LIFECYCLE_INVALID = "lifecycle_invalid"
     TASK_MISSING = "task_missing"
-    RESPONSE_INVALID = "response_invalid"
 
 
 class ScientificClosureNotificationSettlementError(RuntimeError):
@@ -39,9 +35,7 @@ class ScientificClosureNotificationSettlementError(RuntimeError):
     retryable = False
 
     def __init__(self, reason: ScientificClosureNotificationReason) -> None:
-        super().__init__(
-            "scientific closure notification bindings are inconsistent"
-        )
+        super().__init__("scientific closure notification bindings are inconsistent")
         self.reason = reason
         self.details: dict[str, Any] = {
             "boundary": "scientific_closure_notification",
@@ -58,7 +52,6 @@ class ScientificClosureNotificationProof:
     attempt: ScientificAttempt
     closure_request: ScientificAttemptClosureRequest
     closure: ScientificAttemptClosure
-    response: ScientificAttemptClosureResponse
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,9 +106,9 @@ class ScientificClosureNotificationVerifier:
                 ScientificClosureNotificationReason.CONTROL_BINDING_INVALID
             )
         try:
-            lifecycle = ScientificAttemptLifecycleResolver(
-                self.repositories
-            ).resolve(attempt)
+            lifecycle = ScientificAttemptLifecycleResolver(self.repositories).resolve(
+                attempt
+            )
         except ScientificAttemptLifecycleIntegrityError as exc:
             raise ScientificClosureNotificationSettlementError(
                 ScientificClosureNotificationReason.LIFECYCLE_INVALID
@@ -133,23 +126,12 @@ class ScientificClosureNotificationVerifier:
             raise ScientificClosureNotificationSettlementError(
                 ScientificClosureNotificationReason.TASK_MISSING
             )
-        try:
-            response = ScientificAttemptService(
-                self.repositories
-            ).require_closure_response(request)
-        except ScientificAttemptError as exc:
-            raise ScientificClosureNotificationSettlementError(
-                ScientificClosureNotificationReason.RESPONSE_INVALID
-            ) from exc
-        if not task.status.is_terminal:
-            return None
         return ScientificClosureNotificationProof(
             signal=signal,
             task=task,
             attempt=attempt,
             closure_request=request,
             closure=closure,
-            response=response,
         )
 
 

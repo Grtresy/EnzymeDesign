@@ -50,9 +50,7 @@ BLANK_WORLD_ROOT_PROOF_SCHEMA_ID = "aox_blank_world_root_proof@2"
 AOX_LAUNCH_RECEIPT_SCHEMA_ID = "aox_blank_world_launch_receipt@2"
 SEALED_SOURCE_TREE_SCHEMA_ID = "openzyme_sealed_source_tree@1"
 FORMAL_DELEGATION_REQUEST_SCHEMA_ID = "aox_formal_delegation_request@1"
-TYPED_EMPTY_ARTIFACT_VALIDATION_SCHEMA_ID = (
-    "openzyme_typed_empty_artifact_validation@1"
-)
+TYPED_EMPTY_ARTIFACT_VALIDATION_SCHEMA_ID = "openzyme_typed_empty_artifact_validation@1"
 KNOWN_POSITIVE_PROBE_SCHEMA_ID = "aox_known_positive_probe@2"
 KNOWN_POSITIVE_PROBE_ID = "independent_globin_provider_hpc_probe"
 KNOWN_POSITIVE_PROBE_NCBI_ACCESSIONS = ("NP_000509.1", "NP_000549.1")
@@ -64,9 +62,7 @@ _FAULT_ALLOWED_PREFAULT_DELIVERABLES = frozenset(
         "aox_hmm/AOX_coordinate_reference_AAB57849.1.fasta",
     }
 )
-AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID = (
-    "aox_fixed_deliverable_artifact_contract@1"
-)
+AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID = "aox_fixed_deliverable_artifact_contract@1"
 AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS = {
     "aox_hmm/AOX_ref21.fasta": ("sequence", "fasta"),
     "aox_hmm/AOX_coordinate_reference_AAB57849.1.fasta": ("sequence", "fasta"),
@@ -92,9 +88,7 @@ _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ATTEMPT_ID_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,119}$")
 _ERROR_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 _EMPTY_RESULT_REASON_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
-_DERIVATION_CONTRACT_PATTERN = re.compile(
-    r"^[a-z][a-z0-9_.-]*@[1-9][0-9]*$"
-)
+_DERIVATION_CONTRACT_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]*@[1-9][0-9]*$")
 _DELEGATION_REQUEST_PAYLOAD_KEYS = {
     "task_id",
     "instructions",
@@ -248,11 +242,7 @@ _BROWSER_PAGE_STATE_KEYS = {
 
 
 def _validated_browser_png(encoded: object) -> tuple[bytes, int, int] | None:
-    if (
-        not isinstance(encoded, str)
-        or not encoded
-        or len(encoded) > 64 * 1024 * 1024
-    ):
+    if not isinstance(encoded, str) or not encoded or len(encoded) > 64 * 1024 * 1024:
         return None
     try:
         content = base64.b64decode(encoded, validate=True)
@@ -319,9 +309,7 @@ def _validated_browser_png(encoded: object) -> tuple[bytes, int, int] | None:
         or interlace != 0
     ):
         return None
-    row_bytes = (
-        width * channels_by_color_type[color_type] * bit_depth + 7
-    ) // 8
+    row_bytes = (width * channels_by_color_type[color_type] * bit_depth + 7) // 8
     expected_decoded_size = height * (1 + row_bytes)
     if expected_decoded_size > 64 * 1024 * 1024:
         return None
@@ -344,6 +332,8 @@ def _validated_browser_png(encoded: object) -> tuple[bytes, int, int] | None:
     ):
         return None
     return content, width, height
+
+
 _SENSITIVE_KEY_PATTERN = re.compile(
     r"^(?:(?:[a-z0-9]+[_-])*(?:authorization|cookie|password|passwd|secret|"
     r"api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|"
@@ -373,8 +363,8 @@ _SENSITIVE_VALUE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _HOST_PATH_PATTERN = re.compile(
-    r"(?:^|[\s\"'=:,(])(?:/(?:app|cluster|code|data|etc|gpfs|home|lustre|"
-    r"mnt|opt|private|project|root|run|scratch|srv|tmp|usr|var|Users)(?:/|$)|"
+    r"(?<![A-Za-z0-9._/\\-])(?:/(?:cluster|gpfs|home|lustre|mnt|private|root|"
+    r"scratch|tmp|Users)(?:/|$)|"
     r"[A-Za-z]:[\\/]|\\\\[A-Za-z0-9_.-]+\\|file://)",
     re.IGNORECASE,
 )
@@ -389,26 +379,10 @@ _PRIVATE_LOCATOR_PATTERN = re.compile(
     r"(?i)(?:storage|s3|gs|gcs|azure|ssh|scp|file|postgres|postgresql|redis|"
     r"mongodb(?:\+srv)?|mysql|mariadb|amqp|amqps)://[^\s\"'<>]*"
 )
-_ABSOLUTE_UNIX_LOCATION_PATTERN = re.compile(r"/(?!/)[^\s\"'<>;,()]+")
-_ABSOLUTE_UNIX_NON_BOUNDARY_CHARS = frozenset(
-    ":/]ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"
-)
-_PYTHON_PATH_DIVISION_ATTRIBUTE_PATTERN = re.compile(
-    r"/[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*"
-)
-_AOX_LOGICAL_MANIFEST_SUFFIXES = frozenset(
-    {
-        "/provider_parsed/metadata.json",
-        "/provider_parsed/parsed_hits.csv",
-        "/provider_parsed/proteins.fasta",
-        "/provider_parsed/sequences.fasta",
-    }
-)
 _ENCODED_PRIVATE_LOCATION_PATTERN = re.compile(
-    r"(?i)(?:\\/|%2f)(?:app|cluster|code|data|etc|gpfs|home|lustre|mnt|opt|"
-    r"private|project|root|run|scratch|srv|tmp|usr|var|Users)(?:\\/|%2f)"
+    r"(?i)(?:\\/|%2f)(?:cluster|gpfs|home|lustre|mnt|private|root|scratch|"
+    r"tmp|Users)(?:\\/|%2f)"
 )
-_PUBLIC_API_ROUTE_PATTERN = re.compile(r"^/(?:v3|health|ui)(?:[/?].*)?$")
 _CAMEL_CASE_BOUNDARY_PATTERN = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _SAFE_PUBLIC_METADATA_KEYS = frozenset(
     {
@@ -808,9 +782,7 @@ def project_formal_delegation_request(
         "display_name": request["display_name"],
         "handle": request["handle"],
         "workflow_refs": list(request["workflow_refs"]),
-        "workflow_manifests": [
-            dict(item) for item in request["workflow_manifests"]
-        ],
+        "workflow_manifests": [dict(item) for item in request["workflow_manifests"]],
     }
     _assert_public_safe(projection, identity="formal_delegation_request")
     return projection
@@ -1020,16 +992,12 @@ def verify_sealed_source_tree_envelope(
     normalized_files: list[dict[str, object]] = []
     seen_paths: set[str] = set()
     for index, raw in enumerate(envelope["files"]):
-        if (
-            not isinstance(raw, dict)
-            or set(raw)
-            != {
-                "relative_path",
-                "size_bytes",
-                "content_digest",
-                "content_base64",
-            }
-        ):
+        if not isinstance(raw, dict) or set(raw) != {
+            "relative_path",
+            "size_bytes",
+            "content_digest",
+            "content_base64",
+        }:
             raise CutoverEvidenceError(
                 "sealed_source_tree_file_invalid",
                 "sealed source-tree file entry has an unsupported closed schema",
@@ -1188,9 +1156,7 @@ def _validate_delegation_workflow_bindings(payload: Mapping[str, Any]) -> None:
                     },
                 )
             continue
-        if len(workflow_manifests) != 1 or not isinstance(
-            workflow_manifests[0], dict
-        ):
+        if len(workflow_manifests) != 1 or not isinstance(workflow_manifests[0], dict):
             raise CutoverEvidenceError(
                 "delegation_workflow_manifest_invalid",
                 "executor delegation requires exactly one pinned workflow manifest snapshot",
@@ -1238,8 +1204,7 @@ def _validate_delegation_workflow_bindings(payload: Mapping[str, Any]) -> None:
             or not manifest_path
             or PurePosixPath(manifest_path).is_absolute()
             or any(
-                part in {"", ".", ".."}
-                for part in PurePosixPath(manifest_path).parts
+                part in {"", ".", ".."} for part in PurePosixPath(manifest_path).parts
             )
             or not isinstance(knowledge_refs, list)
             or not knowledge_refs
@@ -1248,9 +1213,7 @@ def _validate_delegation_workflow_bindings(payload: Mapping[str, Any]) -> None:
                 or set(reference) != {"doc_id", "version", "content_sha256"}
                 or not str(reference.get("doc_id") or "")
                 or not str(reference.get("version") or "")
-                or _DIGEST_PATTERN.fullmatch(
-                    str(reference.get("content_sha256") or "")
-                )
+                or _DIGEST_PATTERN.fullmatch(str(reference.get("content_sha256") or ""))
                 is None
                 for reference in knowledge_refs
             )
@@ -1649,9 +1612,7 @@ def assert_formal_campaign_root(campaign_root: Path) -> None:
     )
     if (
         requested.is_symlink()
-        or requested.name.startswith(
-            DIAGNOSTIC_RUN_POLICY.root_namespace_prefix or ""
-        )
+        or requested.name.startswith(DIAGNOSTIC_RUN_POLICY.root_namespace_prefix or "")
         or marker_found
     ):
         raise CutoverEvidenceError(
@@ -1748,11 +1709,10 @@ def create_blank_world_roots(
         )
     if normalized_run_class is AoxLiveRunClass.FORMAL_ACCEPTANCE:
         assert_formal_campaign_root(campaign_root)
-        if (
-            DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(identifier)
-            or CLOSURE_STAGE_DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(
-                identifier
-            )
+        if DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(
+            identifier
+        ) or CLOSURE_STAGE_DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(
+            identifier
         ):
             raise CutoverEvidenceError(
                 "formal_campaign_diagnostic_attempt_forbidden",
@@ -1760,8 +1720,7 @@ def create_blank_world_roots(
             )
     elif normalized_run_class is AoxLiveRunClass.DIAGNOSTIC and (
         attempt_kind != "positive"
-        or DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(identifier)
-        is None
+        or DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(identifier) is None
     ):
         raise CutoverEvidenceError(
             "diagnostic_attempt_identity_invalid",
@@ -2296,9 +2255,7 @@ def verify_attempt_bundle(
     try:
         envelope = _strict_json_loads(bundle_path.read_text(encoding="utf-8"))
         payload = envelope.get("payload") if isinstance(envelope, dict) else None
-        schema_id = (
-            payload.get("schema_id") if isinstance(payload, dict) else None
-        )
+        schema_id = payload.get("schema_id") if isinstance(payload, dict) else None
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
         return _verify_attempt_bundle_v2(
             bundle_path,
@@ -2809,9 +2766,7 @@ def _append_independence_blockers(
         "hpc_workspace_ids": lambda payload: {
             str(item)
             for item in dict(
-                dict(payload.get("product_path") or {}).get(
-                    "hpc_workspace_binding"
-                )
+                dict(payload.get("product_path") or {}).get("hpc_workspace_binding")
                 or {}
             ).get("workspace_ids")
             or []
@@ -2864,9 +2819,7 @@ def execute_aox_attempt(
             )
         normalized_authority = dict(authority)
         try:
-            observed_run_class = authority_run_class(
-                normalized_authority
-            )
+            observed_run_class = authority_run_class(normalized_authority)
         except ValueError as exc:
             raise CutoverEvidenceError(
                 "attempt_authority_run_class_invalid",
@@ -2882,17 +2835,14 @@ def execute_aox_attempt(
         ) = policy.identities(attempt_id)
         request = normalized_authority.get("authority_request")
         request_campaign_id = (
-            None
-            if not isinstance(request, dict)
-            else request.get("campaign_id")
+            None if not isinstance(request, dict) else request.get("campaign_id")
         )
         if (
             observed_run_class is not normalized_run_class
             or normalized_authority.get("ordinal") != number
             or normalized_authority.get("attempt_kind") != kind
             or policy.attempt_id_pattern.fullmatch(attempt_id) is None
-            or normalized_authority.get("session_id")
-            != expected_session_id
+            or normalized_authority.get("session_id") != expected_session_id
             or normalized_authority.get("task_id") != expected_task_id
             or normalized_authority.get("lane_id") != expected_lane_id
             or normalized_authority.get("scope")
@@ -2906,8 +2856,7 @@ def execute_aox_attempt(
             or request.get("task_id") != expected_task_id
             or request.get("root_ref") != expected_root_ref
             or not isinstance(request_campaign_id, str)
-            or policy.campaign_id_pattern.fullmatch(request_campaign_id)
-            is None
+            or policy.campaign_id_pattern.fullmatch(request_campaign_id) is None
         ):
             raise CutoverEvidenceError(
                 "attempt_authority_slot_identity_invalid",
@@ -2927,14 +2876,10 @@ def execute_aox_attempt(
         run_class=normalized_run_class,
         diagnostic_id=(
             None
-            if normalized_run_class
-            is AoxLiveRunClass.FORMAL_ACCEPTANCE
+            if normalized_run_class is AoxLiveRunClass.FORMAL_ACCEPTANCE
             or normalized_authority is None
             else str(
-                dict(
-                    normalized_authority["authority_request"]
-                ).get("campaign_id")
-                or ""
+                dict(normalized_authority["authority_request"]).get("campaign_id") or ""
             )
         ),
     )
@@ -2963,14 +2908,10 @@ def execute_aox_attempt(
 
         assert normalized_authority is not None
         validate_attempt_supervision_receipt(
-            dict(evidence.get("product_path") or {}).get(
-                "attempt_supervision"
-            ),
+            dict(evidence.get("product_path") or {}).get("attempt_supervision"),
             attempt_id=roots.attempt_id,
             attempt_kind=kind,
-            attempt_authority_id=str(
-                normalized_authority["envelope_id"]
-            ),
+            attempt_authority_id=str(normalized_authority["envelope_id"]),
             attempt_authority_request_digest=str(
                 normalized_authority["request_digest"]
             ),
@@ -2978,28 +2919,31 @@ def execute_aox_attempt(
     after = safe_micu_ledger_snapshot(ledger_path)
     if not allow_unisolated_non_live_test_runner:
         control = evidence.get("scientific_attempt_control")
-        if not isinstance(control, dict):
+        if normalized_run_class is AoxLiveRunClass.FORMAL_ACCEPTANCE and not isinstance(
+            control, dict
+        ):
             raise CutoverEvidenceError(
                 "scientific_attempt_control_missing",
                 "production AOX runner did not return closed selected-chain evidence",
                 details={"identity": "scientific_attempt_control"},
             )
         assert normalized_authority is not None
-        control_authority = control.get("attempt_authority")
-        if (
-            not isinstance(control_authority, dict)
-            or control_authority.get("envelope_id")
-            != normalized_authority["envelope_id"]
-            or control_authority.get("root_ref")
-            != authority_root_ref(normalized_authority)
-        ):
-            raise CutoverEvidenceError(
-                "scientific_attempt_authority_mismatch",
-                "runner evidence did not consume the exact run-class authority",
-                details={
-                    "identity": "scientific_attempt_control.attempt_authority"
-                },
-            )
+        if isinstance(control, dict):
+            control_authority = control.get("attempt_authority")
+            if (
+                not isinstance(control_authority, dict)
+                or control_authority.get("envelope_id")
+                != normalized_authority["envelope_id"]
+                or control_authority.get("root_ref")
+                != authority_root_ref(normalized_authority)
+            ):
+                raise CutoverEvidenceError(
+                    "scientific_attempt_authority_mismatch",
+                    "runner evidence did not consume the exact run-class authority",
+                    details={
+                        "identity": ("scientific_attempt_control.attempt_authority")
+                    },
+                )
     return AttemptExecution(
         roots=roots,
         ledger_before=before,
@@ -3266,9 +3210,7 @@ def _campaign_runner_failure_evidence(
             "canonical_api_only": True,
             "participant_roles": [],
             "launch_receipt": {
-                "architecture_qualification": roots.proof[
-                    "architecture_qualification"
-                ],
+                "architecture_qualification": roots.proof["architecture_qualification"],
                 "hpc_workspace_label": roots.hpc_workspace_label,
                 "root_identity": roots.proof["root_identity"],
                 "schema_id": AOX_LAUNCH_RECEIPT_SCHEMA_ID,
@@ -3472,9 +3414,7 @@ def _validate_clean_world_proof(payload: Mapping[str, Any]) -> None:
         dict(clean_world.get("allowed_prerequisites") or {}),
         identity={key: bundle_identity.get(key) for key in _IDENTITY_FIELDS},
     )
-    architecture_qualification_value = clean_world.get(
-        "architecture_qualification"
-    )
+    architecture_qualification_value = clean_world.get("architecture_qualification")
     if not isinstance(architecture_qualification_value, Mapping):
         raise CutoverEvidenceError(
             "aox_architecture_qualification_receipt_invalid",
@@ -3488,8 +3428,7 @@ def _validate_clean_world_proof(payload: Mapping[str, Any]) -> None:
     if (
         set(clean_world) != _BLANK_WORLD_ROOT_PROOF_KEYS
         or clean_world.get("schema_id") != BLANK_WORLD_ROOT_PROOF_SCHEMA_ID
-        or clean_world.get("architecture_qualification")
-        != architecture_qualification
+        or clean_world.get("architecture_qualification") != architecture_qualification
         or clean_world.get("attempt_id") != payload.get("attempt_id")
         or clean_world.get("attempt_kind") != payload.get("attempt_kind")
         or clean_world.get("root_names") != expected_root_names
@@ -3525,7 +3464,9 @@ def _validate_architecture_qualification_evidence(
         raise CutoverEvidenceError(
             "aox_architecture_qualification_receipt_missing",
             "attempt evidence lacks the launch-bound architecture qualification receipt",
-            details={"identity": "product_path.launch_receipt.architecture_qualification"},
+            details={
+                "identity": "product_path.launch_receipt.architecture_qualification"
+            },
         )
     clean_receipt = _normalize_architecture_qualification(
         clean_value,
@@ -3542,7 +3483,9 @@ def _validate_architecture_qualification_evidence(
         raise CutoverEvidenceError(
             "aox_architecture_qualification_receipt_mismatch",
             "attempt launch receipt does not match its blank-world qualification proof",
-            details={"identity": "product_path.launch_receipt.architecture_qualification"},
+            details={
+                "identity": "product_path.launch_receipt.architecture_qualification"
+            },
         )
 
 
@@ -4370,10 +4313,7 @@ def _validate_required_live_chain(
             or invocation.get("status") != "succeeded"
             or not str(invocation.get("task_id") or "")
             or "lane_id" not in invocation
-            or (
-                lane_id is not None
-                and (not isinstance(lane_id, str) or not lane_id)
-            )
+            or (lane_id is not None and (not isinstance(lane_id, str) or not lane_id))
             or not str(invocation.get("input_ref") or "")
             or not str(invocation.get("output_ref") or "")
             or not str(invocation.get("started_at") or "")
@@ -4646,9 +4586,7 @@ def _validate_required_live_chain(
             "eligible AOX evidence requires one durable researcher, executor, and reporter task",
             details={"identity": "tasks"},
         )
-    researcher_task = next(
-        task for task in tasks if task.get("role") == "researcher"
-    )
+    researcher_task = next(task for task in tasks if task.get("role") == "researcher")
     scientific_chain = dict(
         dict(payload.get("scientific_checks") or {}).get("aox_chain") or {}
     )
@@ -4684,7 +4622,9 @@ def _validate_required_live_chain(
         raise CutoverEvidenceError(
             "pubmed_primary_task_binding_invalid",
             "the researcher task.finish receipt must select the primary PubMed artifact",
-            details={"identity": f"task:{researcher_task.get('task_id')}:evidence_refs"},
+            details={
+                "identity": f"task:{researcher_task.get('task_id')}:evidence_refs"
+            },
         )
     if pubmed_invocation.get("task_id") != researcher_task.get("task_id"):
         raise CutoverEvidenceError(
@@ -4697,10 +4637,7 @@ def _validate_required_live_chain(
         "lane_id" not in researcher_task
         or (
             researcher_lane_id is not None
-            and (
-                not isinstance(researcher_lane_id, str)
-                or not researcher_lane_id
-            )
+            and (not isinstance(researcher_lane_id, str) or not researcher_lane_id)
         )
         or pubmed_invocation.get("lane_id") != researcher_lane_id
     ):
@@ -4740,8 +4677,7 @@ def _validate_required_live_chain(
         }.issubset(source_ref)
         or source_ref.get("task_id") != researcher_task.get("task_id")
         or source_ref.get("lane_id") != researcher_lane_id
-        or source_ref.get("invocation_id")
-        != pubmed_invocation.get("invocation_id")
+        or source_ref.get("invocation_id") != pubmed_invocation.get("invocation_id")
         or source_ref.get("evidence_artifact_id") != primary_artifact_id
         for source_ref in pubmed_source_refs
     ):
@@ -4909,12 +4845,19 @@ def _validate_required_live_chain(
         continuation_id = str(browser_approval.get("continuation_id") or "")
         effective_config = dict(launch_receipt.get("effective_config") or {})
         driver_config = dict(effective_config.get("driver") or {})
-        event_read_bound = any(
-            receipt.get("method") == "GET"
-            and _event_replay_route_semantics(str(receipt.get("route") or ""))
-            == (f"/v3/sessions/{product_path.get('session_id')}/events", int(pre_cursor))
-            for receipt in public_api_receipts
-        ) if isinstance(pre_cursor, int) and not isinstance(pre_cursor, bool) else False
+        event_read_bound = (
+            any(
+                receipt.get("method") == "GET"
+                and _event_replay_route_semantics(str(receipt.get("route") or ""))
+                == (
+                    f"/v3/sessions/{product_path.get('session_id')}/events",
+                    int(pre_cursor),
+                )
+                for receipt in public_api_receipts
+            )
+            if isinstance(pre_cursor, int) and not isinstance(pre_cursor, bool)
+            else False
+        )
         if (
             set(browser_approval) != _BROWSER_APPROVAL_RECEIPT_KEYS
             or browser_approval.get("schema_id") != "aox_browser_approval_receipt@2"
@@ -5144,8 +5087,7 @@ def _public_api_route_is_canonical(method: str, route: str) -> bool:
             and segments[3] in {"workspace", "events", "pending-approvals"}
         ) or (
             method == "POST"
-            and segments[3]
-            in {"messages", "scientific-attempt-authorizations"}
+            and segments[3] in {"messages", "scientific-attempt-authorizations"}
         )
     if len(segments) == 5 and segments[:2] == ["v3", "sessions"]:
         return (
@@ -5316,9 +5258,7 @@ def _validate_public_api_receipts(
         for item in receipts
         if item.get("method") == "POST" and item.get("route") == drain_route
     ]
-    runtime_command_route_prefix = (
-        f"/v3/sessions/{session_id}/runtime/commands/"
-    )
+    runtime_command_route_prefix = f"/v3/sessions/{session_id}/runtime/commands/"
     matching_runtime_commands = [
         item
         for item in receipts
@@ -5350,8 +5290,7 @@ def _validate_public_api_receipts(
         or len(runtime_command_routes) != len(matching_drains)
         or not matching_workspaces
         or not matching_events
-        or matching_messages[0].get("request_digest")
-        != expected_message_request_digest
+        or matching_messages[0].get("request_digest") != expected_message_request_digest
     ):
         valid = False
     else:
@@ -5368,8 +5307,7 @@ def _validate_public_api_receipts(
                 for item in matching_workspaces
             )
             and any(
-                int(item["sequence"]) > first_drain_sequence
-                for item in matching_events
+                int(item["sequence"]) > first_drain_sequence for item in matching_events
             )
             and all(
                 any(
@@ -5387,9 +5325,7 @@ def _validate_public_api_receipts(
     final_workspace_digest = str(
         product_path.get("public_final_workspace_digest") or ""
     )
-    final_event_digest = str(
-        product_path.get("public_final_event_stream_digest") or ""
-    )
+    final_event_digest = str(product_path.get("public_final_event_stream_digest") or "")
     valid = valid and (
         _DIGEST_PATTERN.fullmatch(final_workspace_digest) is not None
         and _DIGEST_PATTERN.fullmatch(final_event_digest) is not None
@@ -5404,14 +5340,17 @@ def _validate_public_api_receipts(
             receipts=receipts,
             expected_semantic_digest=final_event_digest,
         )
-        and (_event_replay_route_semantics(
-            str(
-                dict(product_path.get("public_final_event_response_binding") or {}).get(
-                    "route"
+        and (
+            _event_replay_route_semantics(
+                str(
+                    dict(
+                        product_path.get("public_final_event_response_binding") or {}
+                    ).get("route")
+                    or ""
                 )
-                or ""
             )
-        ) or (None,))[0]
+            or (None,)
+        )[0]
         == f"/v3/sessions/{session_id}/events"
     )
     if not valid:
@@ -5478,7 +5417,9 @@ def _validate_public_final_snapshot_artifacts(
         else []
     )
     session_id = str(product_path.get("session_id") or "")
-    workspace_digest = canonical_digest(workspace) if isinstance(workspace, dict) else ""
+    workspace_digest = (
+        canonical_digest(workspace) if isinstance(workspace, dict) else ""
+    )
     event_digest = canonical_digest(events)
     cursors = [item.get("cursor") for item in events]
     event_ids = [str(item.get("event_id") or "") for item in events]
@@ -5491,8 +5432,7 @@ def _validate_public_final_snapshot_artifacts(
             "workspace_digest",
             "response_binding",
         }
-        and workspace_record.get("schema_id")
-        == "aox_public_final_workspace_snapshot@1"
+        and workspace_record.get("schema_id") == "aox_public_final_workspace_snapshot@1"
         and workspace_record.get("session_id") == session_id
         and isinstance(workspace, dict)
         and workspace_record.get("workspace_digest") == workspace_digest
@@ -5552,9 +5492,12 @@ def _validate_public_final_snapshot_artifacts(
             receipts=public_api_receipts,
             expected_semantic_digest=event_digest,
         )
-        and (_event_replay_route_semantics(
-            str(dict(event_record.get("response_binding") or {}).get("route") or "")
-        ) or (None, None))
+        and (
+            _event_replay_route_semantics(
+                str(dict(event_record.get("response_binding") or {}).get("route") or "")
+            )
+            or (None, None)
+        )
         == (f"/v3/sessions/{session_id}/events", 0)
         and event_record.get("response_binding")
         == product_path.get("public_final_event_response_binding")
@@ -5576,15 +5519,12 @@ def _validate_fault_closure_against_public_snapshots(
     events: Sequence[Mapping[str, Any]],
 ) -> None:
     fault = dict(payload.get("fault_injection") or {})
-    closure_artifact_id = str(
-        fault.get("negative_state_closure_artifact_id") or ""
-    )
+    closure_artifact_id = str(fault.get("negative_state_closure_artifact_id") or "")
     closure_artifact = next(
         (
             dict(item)
             for item in payload.get("artifacts") or []
-            if isinstance(item, dict)
-            and item.get("artifact_id") == closure_artifact_id
+            if isinstance(item, dict) and item.get("artifact_id") == closure_artifact_id
         ),
         None,
     )
@@ -5746,7 +5686,11 @@ def _validate_fault_closure_against_public_snapshots(
         key=lambda item: str(item["operation_id"] or ""),
     )
     closure_consumers = sorted(
-        (dict(item) for item in closure.get("consumer_states") or [] if isinstance(item, dict)),
+        (
+            dict(item)
+            for item in closure.get("consumer_states") or []
+            if isinstance(item, dict)
+        ),
         key=lambda item: str(item.get("operation_id") or ""),
     )
     comparisons = (
@@ -5807,8 +5751,7 @@ def _browser_durable_event_is_valid(
         and record.get("schema_version") == "openzyme.v3.event.v1"
         and record.get("visibility") == "public"
         and (
-            record.get("actor_ref") is None
-            or isinstance(record.get("actor_ref"), str)
+            record.get("actor_ref") is None or isinstance(record.get("actor_ref"), str)
         )
         and (
             record.get("command_id") is None
@@ -5852,8 +5795,7 @@ def _browser_workspace_snapshots_are_valid(
     }
     post_operations = [
         dict(item)
-        for item in dict(post.get("scientific_evidence") or {}).get("operations")
-        or []
+        for item in dict(post.get("scientific_evidence") or {}).get("operations") or []
         if isinstance(item, dict)
     ]
     matching_post = [
@@ -5902,10 +5844,12 @@ def _browser_event_response_bindings_are_valid(
         return False
     session_id = str(browser.get("session_id") or "")
     target_records = {
-        str(dict(browser.get("resolution_event_record") or {}).get("event_id") or ""):
-        dict(browser.get("resolution_event_record") or {}),
-        str(dict(browser.get("continuation_event_record") or {}).get("event_id") or ""):
-        dict(browser.get("continuation_event_record") or {}),
+        str(
+            dict(browser.get("resolution_event_record") or {}).get("event_id") or ""
+        ): dict(browser.get("resolution_event_record") or {}),
+        str(
+            dict(browser.get("continuation_event_record") or {}).get("event_id") or ""
+        ): dict(browser.get("continuation_event_record") or {}),
     }
     matched: dict[str, list[dict[str, Any]]] = {
         event_id: [] for event_id in target_records if event_id
@@ -5926,9 +5870,7 @@ def _browser_event_response_bindings_are_valid(
             or semantics is None
             or semantics[0] != f"/v3/sessions/{session_id}/events"
             or not _public_response_binding_is_valid(
-                {
-                    key: binding.get(key) for key in _PUBLIC_RESPONSE_BINDING_KEYS
-                },
+                {key: binding.get(key) for key in _PUBLIC_RESPONSE_BINDING_KEYS},
                 receipts=public_api_receipts,
                 expected_semantic_digest=canonical_digest(records),
             )
@@ -6019,9 +5961,7 @@ def _browser_observation_receipt_is_valid(
         "workspace_response_binding": product_path.get(
             "public_final_workspace_response_binding"
         ),
-        "event_stream_digest": product_path.get(
-            "public_final_event_stream_digest"
-        ),
+        "event_stream_digest": product_path.get("public_final_event_stream_digest"),
         "event_last_cursor": product_path.get("public_final_event_last_cursor"),
         "event_response_binding": product_path.get(
             "public_final_event_response_binding"
@@ -6048,17 +5988,14 @@ def _browser_observation_receipt_is_valid(
     return bool(
         set(receipt) == _BROWSER_OBSERVATION_RECEIPT_KEYS
         and receipt.get("schema_id") == "aox_browser_observation_receipt@2"
-        and receipt.get("observation_mode")
-        == "chrome_devtools_mcp_file_handoff"
-        and receipt.get("observation_challenge")
-        == browser.get("observation_challenge")
+        and receipt.get("observation_mode") == "chrome_devtools_mcp_file_handoff"
+        and receipt.get("observation_challenge") == browser.get("observation_challenge")
         and receipt.get("session_id") == browser.get("session_id")
         and receipt.get("approval_id") == browser.get("approval_id")
         and receipt.get("operation_id") == browser.get("operation_id")
         and receipt.get("page_url") == browser.get("page_url")
         and receipt.get("host_process_id") == browser.get("host_process_id")
-        and receipt.get("served_ui_dist_digest")
-        == browser.get("served_ui_dist_digest")
+        and receipt.get("served_ui_dist_digest") == browser.get("served_ui_dist_digest")
         and str(receipt.get("page_target_id") or "")
         and receipt.get("observation_window_seconds")
         == driver.get("browser_completion_hold_seconds")
@@ -6088,10 +6025,7 @@ def _browser_observation_receipt_is_valid(
         <= int(receipt.get("host_observation_not_before_unix_ns") or 0)
         + int(
             round(
-                float(
-                    driver.get("browser_observation_submission_timeout_seconds")
-                    or 0
-                )
+                float(driver.get("browser_observation_submission_timeout_seconds") or 0)
                 * 1_000_000_000
             )
         )
@@ -6140,8 +6074,7 @@ def _browser_observation_receipt_is_valid(
             "evaluate_script",
             "take_screenshot",
         }.issubset({str(item.get("method") or "") for item in transcript})
-        and receipt.get("devtools_transcript_digest")
-        == canonical_digest(transcript)
+        and receipt.get("devtools_transcript_digest") == canonical_digest(transcript)
         and _public_response_binding_is_valid(
             page_state.get("workspace_response_binding"),
             receipts=public_api_receipts,
@@ -6153,9 +6086,15 @@ def _browser_observation_receipt_is_valid(
             receipts=public_api_receipts,
             expected_semantic_digest=str(page_state.get("event_stream_digest") or ""),
         )
-        and (_event_replay_route_semantics(
-            str(dict(page_state.get("event_response_binding") or {}).get("route") or "")
-        ) or (None,))[0]
+        and (
+            _event_replay_route_semantics(
+                str(
+                    dict(page_state.get("event_response_binding") or {}).get("route")
+                    or ""
+                )
+            )
+            or (None,)
+        )[0]
         == f"/v3/sessions/{product_path.get('session_id')}/events"
         and set(command)
         == {
@@ -6175,8 +6114,7 @@ def _browser_observation_receipt_is_valid(
         is not None
         and command.get("response_digest") == expected_response_digest
         and screenshot is not None
-        and f"sha256:{hashlib.sha256(screenshot[0]).hexdigest()}"
-        == screenshot_digest
+        and f"sha256:{hashlib.sha256(screenshot[0]).hexdigest()}" == screenshot_digest
         and receipt.get("screenshot_width") == screenshot[1]
         and receipt.get("screenshot_height") == screenshot[2]
     )
@@ -6782,9 +6720,7 @@ def _validate_attempt_semantics(
     fault_for_config = dict(payload.get("fault_injection") or {})
     supervision_required = (
         kind == "positive" and outcome_for_config.get("cutover_eligible") is True
-    ) or (
-        kind == "fault" and fault_for_config.get("reached_target_seam") is True
-    )
+    ) or (kind == "fault" and fault_for_config.get("reached_target_seam") is True)
     if supervision_required or supervision_receipt is not None:
         from .aox_attempt_supervision import DEFAULT_KILL_GRACE_SECONDS
         from .aox_attempt_supervision import DEFAULT_TERM_GRACE_SECONDS
@@ -6836,9 +6772,7 @@ def _validate_attempt_semantics(
                 ) from exc
 
         if current_supervision and isinstance(supervision_receipt, Mapping):
-            attempt_authority_id = supervision_receipt.get(
-                "attempt_authority_id"
-            )
+            attempt_authority_id = supervision_receipt.get("attempt_authority_id")
             attempt_authority_request_digest = supervision_receipt.get(
                 "attempt_authority_request_digest"
             )
@@ -6850,9 +6784,7 @@ def _validate_attempt_semantics(
             attempt_id=str(payload.get("attempt_id") or ""),
             attempt_kind=str(kind),
             attempt_authority_id=(
-                None
-                if attempt_authority_id is None
-                else str(attempt_authority_id)
+                None if attempt_authority_id is None else str(attempt_authority_id)
             ),
             attempt_authority_request_digest=(
                 None
@@ -6862,12 +6794,8 @@ def _validate_attempt_semantics(
             expected_contract_digest=expected_supervision_contract_digest,
             allow_legacy=not current_supervision,
         )
-    if (
-        (kind == "positive" and outcome_for_config.get("cutover_eligible") is True)
-        or (
-            kind == "fault"
-            and fault_for_config.get("reached_target_seam") is True
-        )
+    if (kind == "positive" and outcome_for_config.get("cutover_eligible") is True) or (
+        kind == "fault" and fault_for_config.get("reached_target_seam") is True
     ):
         _validate_effective_config_attestation(payload)
         _validate_delegation_workflow_bindings(payload)
@@ -6927,7 +6855,10 @@ def _validate_attempt_semantics(
         or probe.get("bounded") is not True
         or probe.get("formal_data_isolated") is not True
         or not {"provider", "hpc"}.issubset(check_categories)
-        or any(item.get("status") not in {"passed", "failed"} for item in checks)
+        or any(
+            item.get("status") not in {"passed", "failed", "unobserved"}
+            for item in checks
+        )
     ):
         raise CutoverEvidenceError(
             "known_positive_probe_invalid",
@@ -7162,9 +7093,7 @@ def _validate_mutation_quiescence_projection(
             raise CutoverEvidenceError(
                 "mutation_quiescence_missing",
                 "probe and formal sessions require bounded mutation projections",
-                details={
-                    "identity": f"product_path.mutation_quiescence.{purpose}"
-                },
+                details={"identity": f"product_path.mutation_quiescence.{purpose}"},
             )
         projections[purpose] = dict(candidate)
     for purpose, projection in projections.items():
@@ -7183,20 +7112,14 @@ def _validate_mutation_quiescence_projection(
             or not isinstance(projection.get("generation"), int)
             or isinstance(projection.get("generation"), bool)
             or int(projection["generation"]) < 1
-            or _DIGEST_PATTERN.fullmatch(
-                str(projection.get("policy_digest") or "")
-            )
+            or _DIGEST_PATTERN.fullmatch(str(projection.get("policy_digest") or ""))
             is None
-            or _DIGEST_PATTERN.fullmatch(
-                str(projection.get("coverage_digest") or "")
-            )
+            or _DIGEST_PATTERN.fullmatch(str(projection.get("coverage_digest") or ""))
             is None
             or not isinstance(writer_counts, dict)
             or not writer_counts
             or any(
-                not isinstance(value, int)
-                or isinstance(value, bool)
-                or value < 1
+                not isinstance(value, int) or isinstance(value, bool) or value < 1
                 for value in writer_counts.values()
             )
             or active_writer_counts != {}
@@ -7223,13 +7146,9 @@ def _validate_mutation_quiescence_projection(
         if not isinstance(receipt, dict) or (
             not str(receipt.get("receipt_id") or "")
             or not str(receipt.get("snapshot_id") or "")
-            or _DIGEST_PATTERN.fullmatch(
-                str(receipt.get("receipt_digest") or "")
-            )
+            or _DIGEST_PATTERN.fullmatch(str(receipt.get("receipt_digest") or ""))
             is None
-            or _DIGEST_PATTERN.fullmatch(
-                str(receipt.get("snapshot_digest") or "")
-            )
+            or _DIGEST_PATTERN.fullmatch(str(receipt.get("snapshot_digest") or ""))
             is None
             or not str(receipt.get("issued_at") or "")
             or not str(projection.get("sealed_at") or "")
@@ -7240,11 +7159,10 @@ def _validate_mutation_quiescence_projection(
                 "sealed mutation closure lacks an exact public receipt identity",
                 details={"identity": f"{identity}.receipt"},
             )
-    if (
-        projections["probe"].get("policy_digest")
-        != projections["formal"].get("policy_digest")
-        or projections["probe"].get("coverage_digest")
-        != projections["formal"].get("coverage_digest")
+    if projections["probe"].get("policy_digest") != projections["formal"].get(
+        "policy_digest"
+    ) or projections["probe"].get("coverage_digest") != projections["formal"].get(
+        "coverage_digest"
     ):
         raise CutoverEvidenceError(
             "mutation_quiescence_contract_drift",
@@ -7300,6 +7218,8 @@ def _validate_attempt_hpc_workspace_binding(payload: Mapping[str, Any]) -> None:
             "attempt must seal the exact authoritative HPC workspace identity set",
             details={"identity": "product_path.hpc_workspace_binding"},
         )
+
+
 def _verify_required_shape(
     payload: Mapping[str, Any], issues: list[VerificationIssue]
 ) -> bool:
@@ -7537,8 +7457,7 @@ def _verify_artifacts(
             )
             if (
                 set(receipt) != _TYPED_EMPTY_ARTIFACT_VALIDATION_KEYS
-                or receipt.get("schema_id")
-                != TYPED_EMPTY_ARTIFACT_VALIDATION_SCHEMA_ID
+                or receipt.get("schema_id") != TYPED_EMPTY_ARTIFACT_VALIDATION_SCHEMA_ID
                 or receipt.get("kind") != "sequence"
                 or format_value not in {"fa", "faa", "fasta"}
                 or receipt.get("validation_profile") != "fasta_zero_records@1"
@@ -7625,9 +7544,7 @@ def _verify_fixed_deliverable_artifact_contracts(
             continue
         path = next(iter(recognized_paths))
         by_path[path].append((artifact_id, record))
-        expected_kind, expected_format = (
-            AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS[path]
-        )
+        expected_kind, expected_format = AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS[path]
         if (
             deliverable_path != path
             or catalog_path != path
@@ -7650,18 +7567,14 @@ def _verify_fixed_deliverable_artifact_contracts(
                         "deliverable_path": path,
                         "kind": expected_kind,
                         "format": expected_format,
-                        "contract_id": (
-                            AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
-                        ),
+                        "contract_id": (AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID),
                     },
                     actual={
                         "deliverable_path": deliverable_path,
                         "catalog_relative_path": catalog_path,
                         "kind": record.get("kind"),
                         "format": record.get("format"),
-                        "contract_id": record.get(
-                            "deliverable_artifact_contract_id"
-                        ),
+                        "contract_id": record.get("deliverable_artifact_contract_id"),
                         "provenance_contract_id": provenance.get(
                             "deliverable_artifact_contract_id"
                         ),
@@ -7674,9 +7587,7 @@ def _verify_fixed_deliverable_artifact_contracts(
         is True
     ):
         invalid_counts = {
-            path: len(records)
-            for path, records in by_path.items()
-            if len(records) != 1
+            path: len(records) for path, records in by_path.items() if len(records) != 1
         }
         if invalid_counts:
             issues.append(
@@ -7688,7 +7599,9 @@ def _verify_fixed_deliverable_artifact_contracts(
                         "for every fixed AOX deliverable path"
                     ),
                     expected={path: 1 for path in sorted(invalid_counts)},
-                    actual={path: invalid_counts[path] for path in sorted(invalid_counts)},
+                    actual={
+                        path: invalid_counts[path] for path in sorted(invalid_counts)
+                    },
                 )
             )
 
@@ -9230,8 +9143,7 @@ def _verify_uniprot_raw_sequence_join_closure(
             issues,
             code="sequence_join_raw_artifact_missing",
             identity=(
-                "scientific_checks.sequence_join."
-                "uniprot_raw_response_artifact_id"
+                "scientific_checks.sequence_join.uniprot_raw_response_artifact_id"
             ),
             message="sequence-join evidence lacks the exact UniProt raw response artifact",
         )
@@ -9294,8 +9206,7 @@ def _verify_uniprot_raw_sequence_join_closure(
     operations = [
         item
         for item in payload.get("operations") or []
-        if isinstance(item, dict)
-        and item.get("operation_id") == uniprot_operation_id
+        if isinstance(item, dict) and item.get("operation_id") == uniprot_operation_id
     ]
     providers = [
         item
@@ -9320,13 +9231,9 @@ def _verify_uniprot_raw_sequence_join_closure(
     )
     output_refs = list(raw_output_refs) if output_refs_valid else []
     expected_artifact_ids = set(scientific_artifact_ids.values())
-    scientific_output_ids = [
-        str(ref.get("artifact_id") or "") for ref in output_refs
-    ]
+    scientific_output_ids = [str(ref.get("artifact_id") or "") for ref in output_refs]
     raw_provider_artifact_ids = provider.get("artifact_ids")
-    provider_artifact_ids_valid = isinstance(
-        raw_provider_artifact_ids, list
-    ) and all(
+    provider_artifact_ids_valid = isinstance(raw_provider_artifact_ids, list) and all(
         isinstance(artifact_id, str) and artifact_id
         for artifact_id in raw_provider_artifact_ids
     )
@@ -9339,8 +9246,7 @@ def _verify_uniprot_raw_sequence_join_closure(
         or provider.get("operation_id") != uniprot_operation_id
         or provider.get("status") != "completed"
         or provider.get("canonical_ref_kind") != "controlled_operation"
-        or _DIGEST_PATTERN.fullmatch(str(operation.get("params_digest") or ""))
-        is None
+        or _DIGEST_PATTERN.fullmatch(str(operation.get("params_digest") or "")) is None
         or provider.get("request_digest") != operation.get("params_digest")
         or not output_refs_valid
         or not provider_artifact_ids_valid
@@ -9365,9 +9271,7 @@ def _verify_uniprot_raw_sequence_join_closure(
         )
         or any(
             next(
-                ref
-                for ref in output_refs
-                if ref.get("artifact_id") == artifact_id
+                ref for ref in output_refs if ref.get("artifact_id") == artifact_id
             ).get("content_digest")
             != scientific_artifacts[role].get("content_digest")
             for role, artifact_id in scientific_artifact_ids.items()
@@ -9453,8 +9357,7 @@ def _verify_uniprot_raw_sequence_join_closure(
         )
     if (
         not isinstance(raw_envelope, dict)
-        or set(raw_envelope)
-        != {"schema_id", "provider", "operation", "responses"}
+        or set(raw_envelope) != {"schema_id", "provider", "operation", "responses"}
         or raw_envelope.get("schema_id") != "provider_raw_http_response_set@1"
         or raw_envelope.get("provider") != "uniprot"
         or raw_envelope.get("operation") != "bio.uniprot_fetch"
@@ -9570,9 +9473,7 @@ def _verify_uniprot_raw_sequence_join_closure(
             ),
         )
     present_release_dates = [
-        value
-        for value in release_date_headers
-        if isinstance(value, str) and value
+        value for value in release_date_headers if isinstance(value, str) and value
     ]
     release_dates_valid = (
         not present_release_dates
@@ -9734,9 +9635,7 @@ def _verify_uniprot_raw_sequence_join_closure(
             "active": not inactive,
             "entry_type": entry_type,
             "reviewed": (
-                None
-                if inactive
-                else reviewed_by_active_entry_type[entry_type]
+                None if inactive else reviewed_by_active_entry_type[entry_type]
             ),
             "inactive_reason": result.get("inactiveReason"),
             "sequence": result.get("sequence"),
@@ -9853,8 +9752,7 @@ def _verify_uniprot_raw_sequence_join_closure(
                 or not isinstance(declared_length, int)
                 or declared_length != len(sequence)
                 or record.get("sequence_length") != len(sequence)
-                or record.get("sequence_digest")
-                != _sha256(sequence.encode("utf-8"))
+                or record.get("sequence_digest") != _sha256(sequence.encode("utf-8"))
             ):
                 return _sequence_join_raw_issue(
                     issues,
@@ -11534,34 +11432,6 @@ def _assert_public_safe(payload: object, *, identity: str) -> None:
                 "attempt evidence contains a query-bearing or fragmented URL",
                 details={"identity": identity},
             )
-    for path_match in _ABSOLUTE_UNIX_LOCATION_PATTERN.finditer(payload):
-        candidate = path_match.group(0)
-        if (
-            path_match.start() > 0
-            and payload[path_match.start() - 1]
-            in _ABSOLUTE_UNIX_NON_BOUNDARY_CHARS
-        ):
-            continue
-        if (
-            identity.startswith("sealed_source_tree:")
-            and path_match.start() > 0
-            and payload[path_match.start() - 1] == ")"
-            and _PYTHON_PATH_DIVISION_ATTRIBUTE_PATTERN.fullmatch(candidate)
-        ):
-            continue
-        if candidate == "/workspace" or candidate.startswith("/workspace/"):
-            continue
-        if candidate == "/openzyme/control.sock":
-            continue
-        if _PUBLIC_API_ROUTE_PATTERN.fullmatch(candidate):
-            continue
-        if candidate in _AOX_LOGICAL_MANIFEST_SUFFIXES:
-            continue
-        raise CutoverEvidenceError(
-            "public_projection_host_path",
-            "attempt evidence contains an unrecognized absolute path",
-            details={"identity": identity},
-        )
 
 
 def assert_public_safe_payload(

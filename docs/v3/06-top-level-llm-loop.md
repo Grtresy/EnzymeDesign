@@ -160,13 +160,15 @@ observation facts 保留返回引用，但 observation 关系字段只绑定当�
 - 顶层模型和 teammate 应优先用 `world.inspect` 读取 task、artifact、approval、operation、outcome、runtime warning、tool schema 和 route policy 等结构化事实；该工具不得提供 recommended_actions 或硬编码 workflow template
 - `task.finish` 是推荐的业务任务出口；成功调用后 harness 立即停止当前 master/teammate loop，不再执行同批后续 tool calls，也不把该 tool result 喂回模型继续探索。同批后续 call 仍按上面的 batch interruption 契约获得持久 no-effect observation。可选 `evidence_refs` 必须使用 schema 显式给出的 closed `<kind>:<id>` wire contract；agent 选择 evidence，repository 解析当前 session ref，runtime 不猜 kind 或补 prefix。`task.update` 保留为普通字段编辑和非终态状态迁移。
 - successful `scientific.attempt.close` 使用同一 terminal-action/batch-settlement 机制，但只记录 closure intent：它不写 task terminal，也不代表 final closure。失败的 close 保持 non-terminal；成功后只有在 requesting `AGENT_TURN` writer 与其 interrupted-call settlement 全部退休后，Host finalizer 才可建立 quiescence 与 immutable closure。
-- terminal `scientific.attempt.close` 要求 model 在同一 provider response 中同时给出非空 user-facing answer；该 text 作为 invocation 的内部 companion response，不进入 tool args。缺失时 close 在 effect 前失败。成功 close 在一个 Core transaction 内写 closure intent、deterministic conversation document/message 与 immutable response binding；harness 只返回已提交文本并退休 turn。失败/rejected close 回滚全部 co-terminal records。
-- Host finalizer 为 immutable closure 排队的 source-bound `MANUAL_RESUME` 是 transition notification，不是默认的第二次答复请求。runtime 在 claim 后、任何 provider call 前核 exact signal/actor/session/task/lane/correlation、attempt/request/selection/closure、derived closed lifecycle，以及 co-terminal message/document/recipient/digest；仅当 attempt task 已显式 terminal 时，沿现有 claim fence 机械完成 signal 并发送 `scientific.closure_notification.settled`。它不再调用模型或持久化第二条 assistant response。普通 resume、admission/attempt notification 与 nonterminal task 保持既有 model-driven 路径，closure-like binding 漂移则在模型前 fail closed。
+- `scientific.attempt.close` 不要求或持久化同一 response 的 companion text；assistant answer 走普通 conversation path。Core 只接受 exact attempt task 当前 canonical assignee，并在 request 与 finalization 两处验证 assignment。successful close 只写 immutable intent 并退休 turn，失败/rejected close 不留下部分 closure state。
+- Host finalizer 为 immutable closure 排队的 source-bound `MANUAL_RESUME` 是 ordinary transition notification。runtime 在 claim 后、provider call 前核 exact signal/actor/session/task/lane/correlation、attempt/request/closure 与 derived closed lifecycle；task 仍 nonterminal 时走普通 fenced model-driven wake，让 assignee 显式 `task.finish(status=completed)`，task 已 terminal 时复用 generic stale-signal mechanical completion。它不创建第二条 assistant response、scientific-specific settlement event、closure、report 或 signal；binding 漂移在模型前 fail closed。
 - assistant text 本身从不完成 task、委派 reporter、请求 scientific closure 或产生
   acceptance eligibility；它可以正常持久化，不再经过 session-scoped response veto。需要
   durable state change 时，agent 必须实际调用相应 domain tool。
-- current AOX `aox_cutover_formal_tool_precondition@4` 的历史 id 保留，但 active contract
-  只检查 mutating tool 的 authority-bound task/attempt 闭集与 scientific close readiness。
+- historical AOX `aox_cutover_formal_tool_precondition@1`–`@4` 只用于解释旧 evidence；
+  current `@5` contract 只检查 canonical task creation、report source-link 和
+  session-scoped operation universe，scientific closure safety 由 Core lifecycle owner
+  负责。
   它不检查或拒绝 assistant response，不自动 delegate/auto-enqueue，也不规定 handoff 策略。
 - 顶层模型和 teammate 需要能力用法说明时，默认通过 `docs.search` / `docs.read` 读取受控文档库，而不是通过 skill 文档把 execution 用法塞入上下文
 - 领域 SOP 不得由 prompt 关键词、task subject 或模型调用 `skill.load` 隐式激活。调用方只能通过结构化 `skill_keys` 传入完整 `workflow:<id>@<semver>#sha256:<manifest-digest>`；message admission 将去重后的选择绑定到 canonical user conversation document，scheduler 仅从 exact user-message signal source 恢复，不能由 drain/operator 或普通 inbox payload 注入。registry 在 provider call 前校验 manifest digest、固定 document version/digest，并在实际 teammate tool/capability surface 上验证 requirements。delegation payload 持久化同一 binding，teammate restore 时再次对照当前 registry，任何缺失或 drift 都 fail closed
@@ -190,7 +192,7 @@ observation facts 保留返回引用，但 observation 关系字段只绑定当�
 - conversation 拓扑固定为 user <-> master；teammate output 是内部 protocol/task result，不直接写入 user chat
 - waiting approval 的 canonical 信号是 approval card / `workspace.pending_approvals`；后端不得把 pending approval 投影成“执行已完成”类 assistant message
 - approved execution pipeline completion 不直接进入 chat；Host 记录 invocation/run/artifact/activity 后只排队 executor wakeup signal。scheduler 恢复 executor；executor 读取 workspace evidence，并通过 `task.finish` 与 protocol result 显式写入业务结果，再排队 `agent:master` wakeup。master 由 scheduler 恢复后，基于 restore context 和 `protocol.thread(correlation_id)` 决定是否向用户汇报工具级结果摘要。`Pipeline sandbox completed` 只能作为内部 wrapper/run metadata，不得包装为 `Execution finished: ...` 发送给用户。
-- `workspace.runtime_state` 与 `runtime.consistency.warning` 只表达 diagnostic/projection：`agent_turn_failed`、`runtime_signal_failed`、`runtime_attention` 或 `outcome_unconsumed` / `capability_outcome_ready` 都不能自动写 task terminal state。terminal capability outcome 只作为 evidence 和 wakeup source；业务 task exit 仍只能由 `task.finish` 或已文档化机械迁移完成。
+- `workspace.runtime_state` 是请求时计算的 diagnostic projection：`agent_turn_failed`、`runtime_signal_failed`、`runtime_attention` 或 `outcome_unconsumed` / `capability_outcome_ready` 都不能自动写 task terminal state，也不在每次 drain 追加 derived warning event。terminal capability outcome 只作为 evidence 和 wakeup source；业务 task exit 仍只能由 `task.finish` 或已文档化机械迁移完成。
 - `world.inspect` 可把 `workspace.runtime_state`、pending approval、paused/blocked/outcome-ready、controlled operation 与 engine invocation 对应关系聚合为模型可读事实；它不能替代 `task.finish`，也不能把查询结果解释为固定下一步。teammate 的 `capabilities` section 绑定当前 task，master 保留既有显式 session-wide 权限；newest-first facts page 最多 20 个 invocation、每类 8 个 closed opaque refs、serialized facts 64 KiB，只返回状态、时间、`output_ref` 与 document/artifact/evidence/source/gap counts，不复用 UI rich projection，也不内联 `documents`、`output_document`、`output_payload`、evidence 正文、source refs 或 gaps。当前 repository hydration 成本尚未有界，后续窄列/lazy/cursor 重构按独立架构提案推进。
 - streaming events 继续存在，但不再是刷新恢复聊天内容的唯一来源
 - UI 刷新后必须可以仅靠 workspace projection 恢复 conversation timeline
@@ -316,15 +318,16 @@ AOX bounded driver 连续看到两份 validated v2
 event 与 command-id noise 的 canonical work fingerprint，并确认没有 pending/claimed
 signal、pending approval、active invocation/continuation、working agent 或 in-flight writer。只有两次
 fingerprint 相同才 typed fail-fast；ready work 关联 actionable failure 时为
-`formal_agent_recovery_unresolved`，否则为 `formal_runtime_stalled_no_wakeup`。单次 empty
+`formal_agent_recovery_unresolved`，product-ready 但 exact attempt 仍 open 时为
+`scientific_attempt_open_no_wakeup`，否则为 `formal_runtime_stalled_no_wakeup`。单次 empty
 或任何 wake source 均不能触发，也不会启用 ready-task auto-enqueue。
 
 closure-stage isolated live diagnostic 用这一相同 loop 从一个 fresh executor signal
 开始，不发送新的 user/master entry message，也不直接调用 runner/provider/HPC。source
 selection/operation universe 已 sealed；composition-injected tool precondition 在 dispatch
 前拒绝所有新 science/sandbox/artifact mutation，但保留普通 task/protocol/report/close
-策略空间。executor 对 master-only close 的 no-effect rejection 只能作为 handoff 事实；
-canonical `closure_request_ready=true` 时其负 terminal exit 会被拒绝，`completed` 仍须
-由 executor 显式选择。reporter/master 后续由 durable signal、bounded drain 与各自
-writer 推进；runtime idle、drain terminal 或 source healthy-empty 都不自动生成完成、
-报告、closure 或终答。
+策略空间。canonical `closure_request_ready=true` 时，executor 作为 exact attempt-task
+assignee 先请求 closure；Host finalization 后 ordinary wake 再让 executor 显式
+`task.finish(status=completed)`。reporter/master 后续由 durable signal、bounded drain 与
+各自 writer 独立推进；runtime idle、drain terminal 或 source healthy-empty 都不自动生成
+完成、报告、closure 或终答。

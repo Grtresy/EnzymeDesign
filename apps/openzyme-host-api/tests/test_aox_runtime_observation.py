@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from openzyme_core import CoreRepositories
 from openzyme_core import MutationScopeService
 from openzyme_core import RuntimeBarrierBlockerCode
+from openzyme_core import RuntimeBarrierCounts
+from openzyme_core import RuntimeBarrierProjection
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
@@ -16,6 +20,7 @@ from openzyme_domain import Session
 from openzyme_host_api import aox_cutover_live
 from openzyme_host_api.aox_runtime_observation import AoxRuntimeObservationError
 from openzyme_host_api.aox_runtime_observation import AoxRuntimeObservationService
+from openzyme_host_api.evals import S15_AOX_HMM_FIXED_DELIVERABLES
 
 
 SESSION_ID = "sess_aox_runtime_observation"
@@ -75,9 +80,7 @@ def test_aox_observer_excludes_exact_driver_and_tracks_attached_writer(
     assert observer.has_inflight_mutation_writers(session_id=SESSION_ID)
     active = observer.observe_session(session_id=SESSION_ID, purpose="formal")
     assert active.state == "incomplete"
-    assert active.barrier.has_blocker(
-        RuntimeBarrierBlockerCode.ACTIVE_MUTATION_WRITER
-    )
+    assert active.barrier.has_blocker(RuntimeBarrierBlockerCode.ACTIVE_MUTATION_WRITER)
 
     mutation_service.retire_writer(
         child.writer_id,
@@ -107,9 +110,7 @@ def test_aox_observer_rejects_missing_open_scope(tmp_path: Path) -> None:
     connection, _, provider = _file_backed_repositories(tmp_path)
 
     with pytest.raises(AoxRuntimeObservationError) as error:
-        AoxRuntimeObservationService(provider).project_barrier(
-            session_id=SESSION_ID
-        )
+        AoxRuntimeObservationService(provider).project_barrier(session_id=SESSION_ID)
 
     assert error.value.code == "mutation_scope_coordination_invalid"
     connection.close()
@@ -153,12 +154,102 @@ def test_aox_observer_rejects_ambiguous_open_scopes(tmp_path: Path) -> None:
     connection.commit()
 
     with pytest.raises(AoxRuntimeObservationError) as error:
-        AoxRuntimeObservationService(provider).project_barrier(
-            session_id=SESSION_ID
-        )
+        AoxRuntimeObservationService(provider).project_barrier(session_id=SESSION_ID)
 
     assert error.value.code == "mutation_scope_coordination_invalid"
     connection.close()
+
+
+def test_formal_product_readiness_waits_for_closed_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def records(items: tuple[object, ...] = ()):
+        return SimpleNamespace(list_by_session=lambda _session_id: items)
+
+    repositories = SimpleNamespace(
+        controlled_operations=records(),
+        tasks=records(
+            tuple(
+                SimpleNamespace(
+                    kind=kind,
+                    status=SimpleNamespace(value="completed"),
+                )
+                for kind in ("research", "execution", "reporting")
+            )
+        ),
+        sandbox_runs=records(),
+        artifacts=records(
+            tuple(
+                SimpleNamespace(relative_path=path)
+                for path in S15_AOX_HMM_FIXED_DELIVERABLES
+            )
+        ),
+        reports=records(
+            (
+                SimpleNamespace(
+                    status=SimpleNamespace(value="published"),
+                ),
+            )
+        ),
+        report_drafts=records(
+            (
+                SimpleNamespace(
+                    status=SimpleNamespace(value="published"),
+                ),
+            )
+        ),
+        agents=records(
+            tuple(
+                SimpleNamespace(role=role)
+                for role in ("researcher", "executor", "reporter")
+            )
+        ),
+    )
+
+    @contextmanager
+    def read_scope():
+        yield SimpleNamespace(repositories=repositories)
+
+    barrier = RuntimeBarrierProjection(
+        session_id=SESSION_ID,
+        task_id=None,
+        ready=True,
+        blocker_codes=(),
+        counts=RuntimeBarrierCounts(),
+        active_durable_suspension_task_ids=(),
+        observer_writer_id="writer_formal_observer",
+        record_limit=10_000,
+        observed_record_count=0,
+        records_truncated=False,
+        latest_runtime_command_status=None,
+    )
+    monkeypatch.setattr(
+        "openzyme_host_api.aox_runtime_observation."
+        "RuntimeBarrierProjectionService.project",
+        lambda *_args, **_kwargs: barrier,
+    )
+    monkeypatch.setattr(
+        "openzyme_host_api.aox_runtime_observation.build_conversation_projection",
+        lambda *_args, **_kwargs: (SimpleNamespace(role="assistant"),),
+    )
+    observer = AoxRuntimeObservationService(
+        SimpleNamespace(read=read_scope)  # type: ignore[arg-type]
+    )
+
+    open_attempt = observer.observe_session(
+        session_id=SESSION_ID,
+        purpose="formal",
+    )
+    closed_attempt = observer.observe_session(
+        session_id=SESSION_ID,
+        purpose="formal",
+        formal_attempt_closed=True,
+    )
+
+    assert open_attempt.state == "incomplete"
+    assert open_attempt.blocker_code == "scientific_attempt_open"
+    assert closed_attempt.state == "completed"
+    assert closed_attempt.blocker_code is None
 
 
 def test_campaign_driver_does_not_reintroduce_direct_runtime_database_helpers() -> None:

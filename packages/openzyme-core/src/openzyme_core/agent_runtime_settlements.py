@@ -19,9 +19,7 @@ from openzyme_domain import Task
 from openzyme_domain import TaskStatus
 
 
-AGENT_RUNTIME_OUTCOME_SETTLEMENT_SCHEMA_VERSION = (
-    "agent_runtime_outcome_settlement@1"
-)
+AGENT_RUNTIME_OUTCOME_SETTLEMENT_SCHEMA_VERSION = "agent_runtime_outcome_settlement@1"
 
 
 class AgentRuntimeSettlementDisposition(StrEnum):
@@ -29,9 +27,6 @@ class AgentRuntimeSettlementDisposition(StrEnum):
     SIGNAL_FAILED = "signal_failed"
     WAITING_APPROVAL = "waiting_approval"
     BUDGET_REPLAN_HANDOFF = "budget_replan_handoff"
-    SCIENTIFIC_CLOSURE_NOTIFICATION_SETTLED = (
-        "scientific_closure_notification_settled"
-    )
 
 
 def _require_identity(field_name: str, value: str) -> None:
@@ -79,10 +74,7 @@ class AgentRuntimeOutcomeSettlement:
             raise TypeError("runtime outcome settlement disposition is invalid")
         if not isinstance(self.source_signal_status, AgentRuntimeSignalStatus):
             raise TypeError("runtime outcome source signal status is invalid")
-        if (
-            type(self.source_attempt_count) is not int
-            or self.source_attempt_count < 0
-        ):
+        if type(self.source_attempt_count) is not int or self.source_attempt_count < 0:
             raise ValueError(
                 "runtime outcome source attempt count must be non-negative"
             )
@@ -117,21 +109,15 @@ class AgentRuntimeOutcomeSettlement:
             AgentRuntimeSignalStatus,
         ):
             raise TypeError("runtime outcome successor signal status is invalid")
-        if (
-            self.disposition
-            is AgentRuntimeSettlementDisposition.BUDGET_REPLAN_HANDOFF
-        ):
+        if self.disposition is AgentRuntimeSettlementDisposition.BUDGET_REPLAN_HANDOFF:
             self._validate_budget_replan_handoff()
         elif (
             self.disposition
             in {
                 AgentRuntimeSettlementDisposition.SIGNAL_COMPLETED,
                 AgentRuntimeSettlementDisposition.WAITING_APPROVAL,
-                AgentRuntimeSettlementDisposition
-                .SCIENTIFIC_CLOSURE_NOTIFICATION_SETTLED,
             }
-            and self.source_signal_status
-            is not AgentRuntimeSignalStatus.COMPLETED
+            and self.source_signal_status is not AgentRuntimeSignalStatus.COMPLETED
         ):
             raise ValueError(
                 "successful runtime settlement requires a completed signal"
@@ -160,19 +146,15 @@ class AgentRuntimeOutcomeSettlement:
             not self.batch_barrier
             or self.source_signal_status is not AgentRuntimeSignalStatus.FAILED
             or self.source_attempt_count <= 0
-            or self.source_error_code
-            != AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
+            or self.source_error_code != AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
             or self.task_id is None
             or self.task_status is None
             or self.task_status.is_terminal
             or self.failure_observation_id is None
-            or self.failure_source_version
-            != f"attempt:{self.source_attempt_count}"
-            or self.failure_error_code
-            != AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
+            or self.failure_source_version != f"attempt:{self.source_attempt_count}"
+            or self.failure_error_code != AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
             or self.successor_signal_id is None
-            or self.successor_signal_status
-            is not AgentRuntimeSignalStatus.PENDING
+            or self.successor_signal_status is not AgentRuntimeSignalStatus.PENDING
             or self.successor_agent_id != "agent:master"
             or self.successor_source_ref != self.source_signal_id
             or self.successor_task_id != self.task_id
@@ -244,28 +226,20 @@ class AgentRuntimeOutcomeSettlement:
             or failure.agent_id != agent.agent_id
             or failure.source_kind != "runtime_signal"
             or failure.source_ref != source_signal.signal_id
-            or failure.source_version
-            != f"attempt:{source_signal.attempt_count}"
+            or failure.source_version != f"attempt:{source_signal.attempt_count}"
             or failure.phase != "runtime"
             or failure.failure_class is not FailureClass.RUNTIME
-            or failure.recoverability
-            is not FailureRecoverability.AGENT_CAN_REPLAN
-            or failure.effect_certainty
-            is not ExternalEffectCertainty.NO_EFFECT
+            or failure.recoverability is not FailureRecoverability.AGENT_CAN_REPLAN
+            or failure.effect_certainty is not ExternalEffectCertainty.NO_EFFECT
             or failure.retry_eligibility is not RetryEligibility.TERMINAL
             or failure.actor_kind is not FailureActorKind.SYSTEM
-            or failure.error_code
-            != AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
+            or failure.error_code != AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
             or failure.facts.get("signal_id") != source_signal.signal_id
-            or failure.facts.get("attempt_count")
-            != source_signal.attempt_count
-            or failure.facts.get("effect_scope")
-            != "runtime_signal_transition"
-            or failure.facts.get("effect_scope_ref")
-            != source_signal.signal_id
+            or failure.facts.get("attempt_count") != source_signal.attempt_count
+            or failure.facts.get("effect_scope") != "runtime_signal_transition"
+            or failure.facts.get("effect_scope_ref") != source_signal.signal_id
             or failure.facts.get("exact_signal_retry_eligible") is not False
-            or failure.facts.get("controlled_operation_effects_preserved")
-            is not True
+            or failure.facts.get("controlled_operation_effects_preserved") is not True
             or type(failure.facts.get("max_steps")) is not int
             or int(failure.facts["max_steps"]) <= 0
         ):
@@ -283,17 +257,12 @@ class AgentRuntimeOutcomeSettlement:
             or successor.correlation_id is None
             or (
                 source_signal.correlation_id is not None
-                and successor.correlation_id
-                != source_signal.correlation_id
+                and successor.correlation_id != source_signal.correlation_id
             )
         ):
-            raise ValueError(
-                "budget-replan successor signal is not canonically closed"
-            )
+            raise ValueError("budget-replan successor signal is not canonically closed")
         return cls(
-            disposition=(
-                AgentRuntimeSettlementDisposition.BUDGET_REPLAN_HANDOFF
-            ),
+            disposition=(AgentRuntimeSettlementDisposition.BUDGET_REPLAN_HANDOFF),
             source_signal_id=source_signal.signal_id,
             source_signal_status=source_signal.status,
             source_attempt_count=source_signal.attempt_count,
@@ -315,22 +284,6 @@ class AgentRuntimeOutcomeSettlement:
             successor_task_id=successor.task_id,
             successor_lane_id=successor.lane_id,
             successor_correlation_id=successor.correlation_id,
-        )
-
-    @classmethod
-    def scientific_closure_notification(
-        cls,
-        *,
-        signal: AgentRuntimeSignal,
-        task: Task,
-    ) -> AgentRuntimeOutcomeSettlement:
-        return cls.from_signal_outcome(
-            signal=signal,
-            task=task,
-            disposition=(
-                AgentRuntimeSettlementDisposition
-                .SCIENTIFIC_CLOSURE_NOTIFICATION_SETTLED
-            ),
         )
 
     def to_dict(self) -> dict[str, Any]:

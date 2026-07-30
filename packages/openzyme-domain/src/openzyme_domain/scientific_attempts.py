@@ -7,26 +7,19 @@ from typing import Any
 from typing import ClassVar
 
 
-SCIENTIFIC_ATTEMPT_AUTHORIZATION_SCHEMA_VERSION = (
-    "scientific_attempt_authorization@1"
-)
+SCIENTIFIC_ATTEMPT_AUTHORIZATION_SCHEMA_VERSION = "scientific_attempt_authorization@1"
 SCIENTIFIC_ATTEMPT_ADMISSION_REQUEST_SCHEMA_VERSION = (
     "scientific_attempt_admission_request@1"
 )
 SCIENTIFIC_ATTEMPT_SCHEMA_VERSION = "scientific_attempt@1"
 SCIENTIFIC_CHAIN_SELECTION_SCHEMA_VERSION = "scientific_chain_selection@1"
-SCIENTIFIC_OPERATION_DISPOSITION_SCHEMA_VERSION = (
-    "scientific_operation_disposition@1"
-)
+SCIENTIFIC_OPERATION_DISPOSITION_SCHEMA_VERSION = "scientific_operation_disposition@1"
 SCIENTIFIC_EFFECT_ADOPTION_SCHEMA_VERSION = "scientific_effect_adoption@1"
 SCIENTIFIC_ARTIFACT_MATERIALIZATION_SCHEMA_VERSION = (
     "scientific_artifact_materialization@1"
 )
 SCIENTIFIC_ATTEMPT_CLOSURE_REQUEST_SCHEMA_VERSION = (
     "scientific_attempt_closure_request@1"
-)
-SCIENTIFIC_ATTEMPT_CLOSURE_RESPONSE_SCHEMA_VERSION = (
-    "scientific_attempt_closure_response@1"
 )
 SCIENTIFIC_ATTEMPT_CLOSURE_SCHEMA_VERSION = "scientific_attempt_closure@1"
 
@@ -130,9 +123,7 @@ class ScientificOperationDispositionKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ScientificAttemptAuthorization:
-    SCHEMA_VERSION: ClassVar[str] = (
-        SCIENTIFIC_ATTEMPT_AUTHORIZATION_SCHEMA_VERSION
-    )
+    SCHEMA_VERSION: ClassVar[str] = SCIENTIFIC_ATTEMPT_AUTHORIZATION_SCHEMA_VERSION
 
     envelope_id: str
     session_id: str
@@ -216,7 +207,9 @@ class ScientificAttemptAuthorization:
             self.reserved_wall_time_seconds,
         )
         if any(value < 0 for value in ceilings + consumed):
-            raise ValueError("scientific attempt authority resources must be non-negative")
+            raise ValueError(
+                "scientific attempt authority resources must be non-negative"
+            )
         if self.max_attempts < 1 or self.state_version < 1:
             raise ValueError(
                 "scientific attempt authority must have a positive count and version"
@@ -239,9 +232,7 @@ class ScientificAttemptAuthorization:
 class ScientificAttemptAdmissionRequest:
     """Agent intent finalized by the Host after the requesting writer retires."""
 
-    SCHEMA_VERSION: ClassVar[str] = (
-        SCIENTIFIC_ATTEMPT_ADMISSION_REQUEST_SCHEMA_VERSION
-    )
+    SCHEMA_VERSION: ClassVar[str] = SCIENTIFIC_ATTEMPT_ADMISSION_REQUEST_SCHEMA_VERSION
 
     admission_request_id: str
     envelope_id: str
@@ -284,11 +275,14 @@ class ScientificAttemptAdmissionRequest:
             "requested_effect_classes",
             self.requested_effect_classes,
         )
-        if min(
-            self.reserved_micu,
-            self.reserved_cost_microunits,
-            self.reserved_wall_time_seconds,
-        ) < 0:
+        if (
+            min(
+                self.reserved_micu,
+                self.reserved_cost_microunits,
+                self.reserved_wall_time_seconds,
+            )
+            < 0
+        ):
             raise ValueError(
                 "scientific attempt admission reservations must be non-negative"
             )
@@ -355,11 +349,14 @@ class ScientificAttempt:
         )
         if self.ordinal < 1 or self.state_version < 1:
             raise ValueError("scientific attempt ordinal and version must be positive")
-        if min(
-            self.reserved_micu,
-            self.reserved_cost_microunits,
-            self.reserved_wall_time_seconds,
-        ) < 0:
+        if (
+            min(
+                self.reserved_micu,
+                self.reserved_cost_microunits,
+                self.reserved_wall_time_seconds,
+            )
+            < 0
+        ):
             raise ValueError("scientific attempt reservations must be non-negative")
 
     def to_dict(self) -> dict[str, Any]:
@@ -417,9 +414,7 @@ class ScientificChainSelection:
 
 @dataclass(frozen=True, slots=True)
 class ScientificOperationDisposition:
-    SCHEMA_VERSION: ClassVar[str] = (
-        SCIENTIFIC_OPERATION_DISPOSITION_SCHEMA_VERSION
-    )
+    SCHEMA_VERSION: ClassVar[str] = SCIENTIFIC_OPERATION_DISPOSITION_SCHEMA_VERSION
 
     disposition_id: str
     selection_id: str
@@ -513,9 +508,7 @@ class ScientificEffectAdoption:
 
 @dataclass(frozen=True, slots=True)
 class ScientificArtifactMaterialization:
-    SCHEMA_VERSION: ClassVar[str] = (
-        SCIENTIFIC_ARTIFACT_MATERIALIZATION_SCHEMA_VERSION
-    )
+    SCHEMA_VERSION: ClassVar[str] = SCIENTIFIC_ARTIFACT_MATERIALIZATION_SCHEMA_VERSION
 
     receipt_id: str
     selection_id: str
@@ -561,9 +554,7 @@ class ScientificArtifactMaterialization:
 class ScientificAttemptClosureRequest:
     """Agent intent consumed by the Host only after the requesting writer retires."""
 
-    SCHEMA_VERSION: ClassVar[str] = (
-        SCIENTIFIC_ATTEMPT_CLOSURE_REQUEST_SCHEMA_VERSION
-    )
+    SCHEMA_VERSION: ClassVar[str] = SCIENTIFIC_ATTEMPT_CLOSURE_REQUEST_SCHEMA_VERSION
 
     closure_request_id: str
     attempt_id: str
@@ -582,44 +573,6 @@ class ScientificAttemptClosureRequest:
             actor_ref=self.actor_ref,
             idempotency_key=self.idempotency_key,
             request_digest=self.request_digest,
-            created_at=self.created_at,
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return _serialize_record(self, schema_version=self.SCHEMA_VERSION)
-
-
-@dataclass(frozen=True, slots=True)
-class ScientificAttemptClosureResponse:
-    """Immutable binding from one closure intent to its canonical final answer."""
-
-    SCHEMA_VERSION: ClassVar[str] = (
-        SCIENTIFIC_ATTEMPT_CLOSURE_RESPONSE_SCHEMA_VERSION
-    )
-
-    closure_response_id: str
-    closure_request_id: str
-    attempt_id: str
-    message_id: str
-    document_id: str
-    recipient: str
-    recipient_kind: str
-    response_digest: str
-    binding_digest: str
-    created_at: str
-
-    def __post_init__(self) -> None:
-        _require_nonempty(
-            type(self).__name__,
-            closure_response_id=self.closure_response_id,
-            closure_request_id=self.closure_request_id,
-            attempt_id=self.attempt_id,
-            message_id=self.message_id,
-            document_id=self.document_id,
-            recipient=self.recipient,
-            recipient_kind=self.recipient_kind,
-            response_digest=self.response_digest,
-            binding_digest=self.binding_digest,
             created_at=self.created_at,
         )
 

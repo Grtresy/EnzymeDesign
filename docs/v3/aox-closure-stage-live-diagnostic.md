@@ -4,6 +4,15 @@ Status: implemented as a permanently non-acceptance diagnostic. It is not a
 numbered `rNN` campaign, does not repair or continue r59 in place, and cannot
 produce a formal attempt bundle or GO/NO-GO reducer input.
 
+Phase 2 note (2026-07-30): this document preserves the historical
+executor → reporter → master/co-terminal contract used by the sealed
+closure-stage evidence. It is not the current lifecycle SOP. Current code makes
+the exact attempt-task canonical assignee the closure requester, requires
+immutable closure before explicit completed task exit, routes the closure
+notification through ordinary fenced runtime, and keeps report/master response
+delivery independent. No historical plan, root, response binding, or result is
+reusable under that forward contract.
+
 ## Purpose and fixed start boundary
 
 This diagnostic isolates the lifecycle segment that r59 did not complete. Its

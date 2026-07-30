@@ -569,9 +569,9 @@ class SessionRuntimeContext:
     engine_registry: EngineRegistry | None = None
     bio_research_service: Any | None = None
     research_adapter: Any | None = None
-    scientific_workflow_contract_registry: (
-        ScientificWorkflowContractRegistry | None
-    ) = None
+    scientific_workflow_contract_registry: ScientificWorkflowContractRegistry | None = (
+        None
+    )
     sandbox_workspace_root: Path | None = None
     artifact_blob_root: Path | None = None
     signal_notifier: Any | None = None
@@ -580,9 +580,7 @@ class SessionRuntimeContext:
     durable_route_adapter_policy_ids: dict[str, str] = field(default_factory=dict)
     tool_dispatch_precondition: ToolDispatchPrecondition | None = None
     assistant_response_recipient: str = "user"
-    assistant_response_recipient_kind: InboxParticipantKind = (
-        InboxParticipantKind.USER
-    )
+    assistant_response_recipient_kind: InboxParticipantKind = InboxParticipantKind.USER
     persist_conversation: bool = True
     mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None
     sandbox_host_binding_factory: (
@@ -601,6 +599,7 @@ class SessionRuntimeContext:
     wakeup_reason: str | None = None
     current_step_context: AgentStepContext | None = None
     current_tool_router: ToolRouter | None = None
+
     def persist_outbound_assistant_message(
         self,
         *,
@@ -760,9 +759,7 @@ def _exact_pending_approval_for_suspension(
     context: SessionRuntimeContext,
     result: ToolResult,
 ) -> ApprovalRequest | None:
-    approval_id = str(
-        (result.details or {}).get("approval_id") or ""
-    ).strip()
+    approval_id = str((result.details or {}).get("approval_id") or "").strip()
     if not approval_id or not result.task_id:
         return None
     approval = context.repositories.approvals.get(approval_id)
@@ -771,10 +768,7 @@ def _exact_pending_approval_for_suspension(
         or approval.status is not ApprovalRequestStatus.PENDING
         or approval.session_id != context.snapshot.session.session_id
         or approval.task_id != result.task_id
-        or (
-            result.lane_id is not None
-            and approval.lane_id != result.lane_id
-        )
+        or (result.lane_id is not None and approval.lane_id != result.lane_id)
     ):
         return None
     return approval
@@ -1834,9 +1828,7 @@ def _record_tool_rejection(
         source_kind="tool_invocation",
         source_ref=result.call_id,
         source_version=(
-            fallback_source_version
-            if step_context is None
-            else step_context.step_id
+            fallback_source_version if step_context is None else step_context.step_id
         ),
         phase=phase,
         failure_class=failure_class,
@@ -2066,9 +2058,7 @@ def run_agent_harness_loop(
         engine_registry=engine_registry,
         bio_research_service=bio_research_service,
         research_adapter=research_adapter,
-        scientific_workflow_contract_registry=(
-            scientific_workflow_contract_registry
-        ),
+        scientific_workflow_contract_registry=(scientific_workflow_contract_registry),
         sandbox_workspace_root=sandbox_workspace_root,
         artifact_blob_root=artifact_blob_root,
         signal_notifier=signal_notifier,
@@ -2364,9 +2354,7 @@ def run_agent_harness_loop(
                         ),
                     )
                 except ValueError as exc:
-                    public_error = sanitize_public_diagnostic_text(
-                        str(exc)
-                    ).strip()
+                    public_error = sanitize_public_diagnostic_text(str(exc)).strip()
                     invocation = raw_invocation
                     result = _record_tool_rejection(
                         context,
@@ -2475,9 +2463,7 @@ def run_agent_harness_loop(
                                     len(raw_invocations) + 1,
                                 )
                             ),
-                            prepared_overflow_calls=tuple(
-                                prepared_overflow_calls
-                            ),
+                            prepared_overflow_calls=tuple(prepared_overflow_calls),
                             interrupted_by_call_id=invocation.call_id,
                             interruption_reason="boundary_fatal_dispatch",
                             fallback_source_version=turn_source_ref,
@@ -2529,20 +2515,6 @@ def run_agent_harness_loop(
                 activity_happened = True
                 context.refresh()
                 if result.ok and result.terminates_turn:
-                    assistant_response_persisted = False
-                    if result.persists_assistant_response:
-                        assistant_response = invocation.assistant_response_text
-                        if (
-                            assistant_response is None
-                            or not assistant_response.strip()
-                        ):
-                            raise RuntimeError(
-                                "terminal tool requested assistant response "
-                                "persistence without a non-empty companion response"
-                            )
-                        outputs.append(assistant_response)
-                        assistant_response_persisted = True
-                        activity_happened = True
                     context.emit(
                         "harness.terminal_action",
                         {
@@ -2551,9 +2523,6 @@ def run_agent_harness_loop(
                             "terminal_action": result.terminal_action,
                             "status": result.status
                             or ("ok" if result.ok else "failed"),
-                            "assistant_response_persisted": (
-                                assistant_response_persisted
-                            ),
                         },
                     )
                     current_results.extend(
@@ -2570,9 +2539,7 @@ def run_agent_harness_loop(
                                     len(raw_invocations) + 1,
                                 )
                             ),
-                            prepared_overflow_calls=tuple(
-                                prepared_overflow_calls
-                            ),
+                            prepared_overflow_calls=tuple(prepared_overflow_calls),
                             interrupted_by_call_id=result.call_id,
                             interruption_reason=(
                                 result.terminal_action or "terminal_action"
@@ -2589,11 +2556,9 @@ def run_agent_harness_loop(
                     )
                     context.refresh()
                     if result.terminal_action == "runtime_suspended":
-                        pending_approval = (
-                            _exact_pending_approval_for_suspension(
-                                context,
-                                result,
-                            )
+                        pending_approval = _exact_pending_approval_for_suspension(
+                            context,
+                            result,
                         )
                         if pending_approval is None:
                             error = RuntimeError(
@@ -2644,9 +2609,7 @@ def run_agent_harness_loop(
                                     len(raw_invocations) + 1,
                                 )
                             ),
-                            prepared_overflow_calls=tuple(
-                                prepared_overflow_calls
-                            ),
+                            prepared_overflow_calls=tuple(prepared_overflow_calls),
                             interrupted_by_call_id=result.call_id,
                             interruption_reason="pending_approval",
                             fallback_source_version=turn_source_ref,

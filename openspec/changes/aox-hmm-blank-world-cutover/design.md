@@ -976,6 +976,48 @@ tasks，并在 stale plan 仍触发该失败时使用此 typed disposition，不
 后继 live 仍需 fresh correction commit、full admission、pin、独立 diagnostic
 plan/consumption/root 和用户对 exact plan 的单独批准。
 
+### 2026-07-30 Phase 2 scientific terminal-boundary collapse
+
+r58–r62 的 authority、root、operation、task、report、response binding、closure、
+MICU 与 decision 仍是不可改写、不可复用的历史事实；其中 co-terminal response 和
+master-only close 仅描述当时生效的旧契约。Phase 2 将 forward contract 收敛为一个
+canonical lifecycle owner：`ScientificAttempt.task_id` 当前 `assigned_ref` 是唯一可以
+请求 closure 的 agent，Core 在 request 和 Host finalization 两处都重核 assignment。
+selection、operation、authority、provenance、writer、quiescence 与 immutable closure
+继续 fail closed，但 report publication、resident-master answer 和 conversation delivery
+不再参与 scientific closure authorization。
+
+`scientific.attempt.close` 仍是 terminal turn action，但不再携带或持久化 companion
+assistant response。active closure-response domain/repository/service、conversation
+transaction、digest binding 与 scientific-specific no-model settlement 已删除；
+migration `035`、旧表和历史 row 保留为 frozen evidence compatibility，current runtime
+不再写入。Host 写 immutable closure 和 source-bound notification 后，open attempt task
+沿 ordinary fenced model-driven wake 继续，canonical assignee 再显式
+`task.finish(status=completed)`；generic task completion 会在 closure 前以 typed
+`scientific_attempt_task_not_closed` no-effect error 拒绝。terminal task 上的旧 notification
+只走既有 stale-signal mechanical path，closure 从不自动完成 task。
+
+AOX formal policy 升至 `aox_cutover_formal_tool_precondition@5`，删除 master、exact-three
+task/report/response 共终止 veto，只保留 session-scoped operation universe、canonical task
+creation 与 report source-link guards。formal product-ready 还必须观察 exact immutable
+closure；若相同 open attempt 连续两次处于 replay-safe zero-signal、zero-writer 且无 wake
+source，driver 以 `scientific_attempt_open_no_wakeup` 有界终止，而不是耗尽全局 drain。
+diagnostic wrapper 保留已观察 operation/task/report/lifecycle、raw facts 与实测 MICU；
+缺 closure 只使 diagnostic non-eligible，formal acceptance 仍要求 exact control。
+
+sealed source safety 改为 closed unsafe-category scanner：仍拒绝 secret、private locator/
+URL、path escape、digest drift、explicit private roots 及其编码形式，但不再把任意
+slash-prefixed program token 当作 Host path，因此 portable shebang、route syntax 和普通
+language path expression 保留 exact bytes。probe execution status 与后续 attestation
+status 分栏，attestation failure 不回写已证明的 passed operation。runtime consistency
+warning 保持 workspace read-only projection，不再在每次 drain 追加 derived durable
+events。
+
+本 correction 只完成 local/non-live implementation、tests、specs 与 docs；它不创建或
+消费 admission、pin、diagnostic/formal authority、root、MICU、provider/HPC/browser
+effect，也不授权 numbered follow-on。下一次 live 仍需 fresh clean commit 上的新 plan
+与用户对 exact plan 的单独批准。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

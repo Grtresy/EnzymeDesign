@@ -56,6 +56,10 @@ Stable boundary:
   attempt `@3` keeps the full occurrence universe and allows only explicit
   same-attempt disposition/adoption/materialization; cross-attempt reuse is
   forbidden.
+- The scientific attempt's exact task assignee owns `scientific.attempt.close`.
+  Immutable closure must precede `task.finish(status=completed)`; closure,
+  report publication, and resident-master response delivery are independent
+  facts, and no companion response binding is created.
 - Runner-owned per-target ControlMaster reuse is transport infrastructure. It does not provide a persistent remote shell, preserve cwd/environment, or let executor code control SSH options.
 
 Examples:

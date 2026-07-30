@@ -202,9 +202,7 @@ def _build_system_prompt(context: SessionRuntimeContext) -> str:
     if restore.session_memory.compaction is not None:
         sections.append(
             "Session compaction (historical): "
-            + project_memory_summary_for_prompt(
-                restore.session_memory.compaction
-            )
+            + project_memory_summary_for_prompt(restore.session_memory.compaction)
         )
     elif restore.session_memory.continuity is not None:
         sections.append(
@@ -518,7 +516,6 @@ class LlmConversationDriver:
                         arguments=arguments,
                         task_id=task_id,
                         lane_id=lane_id,
-                        assistant_response_text=response_text or None,
                     )
                 )
             all_invocations = tuple(invocations)

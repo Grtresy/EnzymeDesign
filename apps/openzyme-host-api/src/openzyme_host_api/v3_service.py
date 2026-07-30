@@ -26,7 +26,6 @@ from openzyme_core import HarnessStatus
 from openzyme_core import LaneManager
 from openzyme_core import MutationScopeService
 from openzyme_core import RestoreFocus
-from openzyme_core import RuntimeConsistencyService
 from openzyme_core import CommandIdempotencyConflictError
 from openzyme_core import runtime_command_request_digest
 from openzyme_core import RuntimeWriteFencingError
@@ -330,9 +329,7 @@ class V3RuntimeDrainResult:
 
     @property
     def bounded_outcome_summary(self) -> dict[str, Any]:
-        return self.core_receipt.bounded_outcome_summary(
-            self.projection_outcome
-        )
+        return self.core_receipt.bounded_outcome_summary(self.projection_outcome)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -352,9 +349,9 @@ class V3HostApiService:
     model_factory: Any | None = None
     bio_research_service: Any | None = None
     research_adapter: Any | None = None
-    scientific_workflow_contract_registry: (
-        ScientificWorkflowContractRegistry | None
-    ) = None
+    scientific_workflow_contract_registry: ScientificWorkflowContractRegistry | None = (
+        None
+    )
     sandbox_workspace_root: Path | None = None
     artifact_blob_root: Path | None = None
     scheduler_limits: dict[str, int] = field(default_factory=dict)
@@ -656,9 +653,7 @@ class V3HostApiService:
     def scientific_attempt_control(self) -> ScientificAttemptService:
         return ScientificAttemptService(
             self.repositories,
-            workflow_contract_registry=(
-                self.scientific_workflow_contract_registry
-            ),
+            workflow_contract_registry=(self.scientific_workflow_contract_registry),
             artifact_boundary=ArtifactBoundaryService(
                 self.repositories,
                 workspace_root=self.sandbox_workspace_root,
@@ -683,8 +678,7 @@ class V3HostApiService:
             grantor_kind=str(payload.get("grantor_kind") or "user"),
             grantor_ref=grantor_ref,
             allowed_scopes=tuple(
-                ScientificAttemptScope(str(item))
-                for item in payload["allowed_scopes"]
+                ScientificAttemptScope(str(item)) for item in payload["allowed_scopes"]
             ),
             allowed_effect_classes=tuple(
                 str(item) for item in payload["allowed_effect_classes"]
@@ -764,18 +758,14 @@ class V3HostApiService:
             "scientific.selection.seal": frozenset(
                 {"selection_id", "expected_universe_digest"}
             ),
-            "scientific.attempt.close": frozenset(
-                {"attempt_id", "selection_id"}
-            ),
+            "scientific.attempt.close": frozenset({"attempt_id", "selection_id"}),
         }
         optional_fields: dict[str, frozenset[str]] = {
             "attempt.create": frozenset({"provider", "hpc_target"}),
             "scientific.selection.begin": frozenset(
                 {"expected_head_state_version", "parent_selection_id"}
             ),
-            "scientific.operation.disposition": frozenset(
-                {"replacement_operation_id"}
-            ),
+            "scientific.operation.disposition": frozenset({"replacement_operation_id"}),
         }
         required = required_fields.get(command)
         if required is None:
@@ -799,19 +789,13 @@ class V3HostApiService:
                 campaign_id=str(payload["campaign_id"]),
                 workflow_id=str(payload["workflow_id"]),
                 scope=ScientificAttemptScope(str(payload["scope"])),
-                workflow_contract_digest=str(
-                    payload["workflow_contract_digest"]
-                ),
+                workflow_contract_digest=str(payload["workflow_contract_digest"]),
                 requested_effect_classes=tuple(
                     str(item) for item in payload["requested_effect_classes"]
                 ),
                 reserved_micu=payload["reserved_micu"],
-                reserved_cost_microunits=payload[
-                    "reserved_cost_microunits"
-                ],
-                reserved_wall_time_seconds=payload[
-                    "reserved_wall_time_seconds"
-                ],
+                reserved_cost_microunits=payload["reserved_cost_microunits"],
+                reserved_wall_time_seconds=payload["reserved_wall_time_seconds"],
                 provider=(
                     None
                     if payload.get("provider") is None
@@ -878,9 +862,7 @@ class V3HostApiService:
                 selection_id=str(payload["selection_id"]),
                 actor_ref=actor_ref,
                 idempotency_key=idempotency_key,
-                expected_universe_digest=str(
-                    payload["expected_universe_digest"]
-                ),
+                expected_universe_digest=str(payload["expected_universe_digest"]),
             )
         elif command == "scientific.attempt.close":
             record = control.request_attempt_closure(
@@ -956,44 +938,32 @@ class V3HostApiService:
         ):
             control = self.scientific_attempt_control()
             if transition_kind == "admission":
-                request = (
-                    self.repositories.scientific_attempt_admission_requests.get(
-                        request_id
-                    )
+                request = self.repositories.scientific_attempt_admission_requests.get(
+                    request_id
                 )
                 if request is None or request.session_id != session_id:
-                    raise ValueError(
-                        "admission request does not belong to the session"
-                    )
+                    raise ValueError("admission request does not belong to the session")
                 record = control.finalize_attempt_admission(
                     admission_request_id=request_id
                 )
                 attempt = record
                 event_type = "scientific.attempt.admitted"
             else:
-                request = (
-                    self.repositories.scientific_attempt_closure_requests.get(
-                        request_id
-                    )
+                request = self.repositories.scientific_attempt_closure_requests.get(
+                    request_id
                 )
                 attempt = (
                     None
                     if request is None
-                    else self.repositories.scientific_attempts.get(
-                        request.attempt_id
-                    )
+                    else self.repositories.scientific_attempts.get(request.attempt_id)
                 )
                 if (
                     request is None
                     or attempt is None
                     or attempt.session_id != session_id
                 ):
-                    raise ValueError(
-                        "closure request does not belong to the session"
-                    )
-                record = control.finalize_closure_request(
-                    closure_request_id=request_id
-                )
+                    raise ValueError("closure request does not belong to the session")
+                record = control.finalize_closure_request(closure_request_id=request_id)
                 event_type = "scientific.attempt.closed"
 
             transition_record_id = (
@@ -1021,9 +991,7 @@ class V3HostApiService:
                 )
             )
             if len(transition_events) > 1:
-                raise RuntimeError(
-                    "scientific transition has ambiguous durable events"
-                )
+                raise RuntimeError("scientific transition has ambiguous durable events")
             existing_event = (
                 deterministic_event
                 if deterministic_event is not None
@@ -1044,10 +1012,9 @@ class V3HostApiService:
                     "scientific transition event identity conflicts with durable state"
                 )
 
-            agent = (
-                self.repositories.agents.get(session_id, request.actor_ref)
-                if request.actor_ref.startswith("agent:")
-                else None
+            agent = self.repositories.agents.get(
+                session_id,
+                request.actor_ref,
             )
             existing_signal = (
                 None
@@ -1129,10 +1096,10 @@ class V3HostApiService:
 
         # Closure first permits a same-turn request for a subsequent authorized
         # attempt to roll the newly opened follow-up session scope.
-        for request in (
-            self.repositories.scientific_attempt_closure_requests.list_by_session(
-                session_id
-            )
+        for (
+            request
+        ) in self.repositories.scientific_attempt_closure_requests.list_by_session(
+            session_id
         ):
             try:
                 _, transition_events = (
@@ -1162,10 +1129,10 @@ class V3HostApiService:
                 continue
             events.extend(transition_events)
 
-        for request in (
-            self.repositories.scientific_attempt_admission_requests.list_by_session(
-                session_id
-            )
+        for (
+            request
+        ) in self.repositories.scientific_attempt_admission_requests.list_by_session(
+            session_id
         ):
             try:
                 _, transition_events = (
@@ -1223,9 +1190,7 @@ class V3HostApiService:
                 lane_id,
                 exc,
             ) in pending_failures:
-                authorization_failure = exc.error_code.startswith(
-                    "authorization_"
-                )
+                authorization_failure = exc.error_code.startswith("authorization_")
                 agent = (
                     self.repositories.agents.get(session_id, actor_ref)
                     if actor_ref.startswith("agent:")
@@ -1443,37 +1408,6 @@ class V3HostApiService:
                 events.append(event)
                 seen_trace_ids.add(trace_id)
 
-    def _extend_with_runtime_consistency_events(
-        self, session_id: str, events: list[dict[str, Any]]
-    ) -> None:
-        audit = RuntimeConsistencyService(
-            self.repositories,
-            scientific_workflow_contract_registry=(
-                self.scientific_workflow_contract_registry
-            ),
-        ).audit_session(session_id)
-        for warning in audit.warnings:
-            events.append(
-                _event(
-                    "runtime.consistency.warning",
-                    session_id,
-                    warning.to_dict(),
-                )
-            )
-        attention_items = [
-            item
-            for item in audit.task_attention
-            if item.get("needs_attention") or item.get("runtime_attention")
-        ]
-        if attention_items:
-            events.append(
-                _event(
-                    "runtime.state_attention",
-                    session_id,
-                    {"tasks": attention_items},
-                )
-            )
-
     def _build_runtime_context(
         self,
         session_id: str,
@@ -1543,7 +1477,6 @@ class V3HostApiService:
             self._touch_session(session_id)
             self._extend_with_trace_events(session_id, events)
             self._extend_with_activity_events(session_id, events)
-            self._extend_with_runtime_consistency_events(session_id, events)
             self.event_store.append(session_id, events)
         return [outcome.to_dict() for outcome in outcomes]
 
@@ -1615,9 +1548,8 @@ class V3HostApiService:
         has_pending_approval = bool(
             self.repositories.approvals.list_pending_by_session(session_id)
         )
-        waiting = (
-            has_pending_approval
-            or self._outcomes_include_waiting_approval(outcomes)
+        waiting = has_pending_approval or self._outcomes_include_waiting_approval(
+            outcomes
         )
         if waiting:
             scheduler_status = HarnessStatus.WAITING_APPROVAL.value
@@ -1628,8 +1560,7 @@ class V3HostApiService:
         master_outputs = tuple(
             output
             for outcome in outcomes
-            if outcome.agent is not None
-            and outcome.agent.agent_id == "agent:master"
+            if outcome.agent is not None and outcome.agent.agent_id == "agent:master"
             for output in outcome.outputs
         )
         response_outputs = () if has_pending_approval else master_outputs
@@ -1646,8 +1577,7 @@ class V3HostApiService:
         event_ids = tuple(
             event_id
             for event in events
-            if isinstance((event_id := event.get("event_id")), str)
-            and event_id
+            if isinstance((event_id := event.get("event_id")), str) and event_id
         )
         return (
             RuntimeDrainCoreReceipt(
@@ -1673,8 +1603,7 @@ class V3HostApiService:
         safe_summary = sanitize_public_diagnostic_text(str(error)).strip()
         projection = RuntimeDrainProjectionOutcome.failed(
             safe_summary=(
-                safe_summary[:2_000]
-                or "Runtime projection settlement failed."
+                safe_summary[:2_000] or "Runtime projection settlement failed."
             ),
             failed_stage=failed_stage,
         )
@@ -1704,20 +1633,13 @@ class V3HostApiService:
         try:
             with self.operation_lock:
                 if current_mutation_write_authority() is None:
-                    self.finalize_pending_scientific_transitions(
-                        session_id=session_id
-                    )
+                    self.finalize_pending_scientific_transitions(session_id=session_id)
                 stage = "session_touch"
                 self._touch_session(session_id)
                 stage = "trace_events"
                 self._extend_with_trace_events(session_id, events)
                 stage = "activity_events"
                 self._extend_with_activity_events(session_id, events)
-                stage = "runtime_consistency"
-                self._extend_with_runtime_consistency_events(
-                    session_id,
-                    events,
-                )
                 stage = "event_append"
                 self.event_store.append(session_id, events)
                 stage = "workspace"
@@ -1787,12 +1709,10 @@ class V3HostApiService:
                 ),
             )
         try:
-            core_receipt, response_outputs = (
-                self._runtime_drain_core_receipt(
-                    session_id=session_id,
-                    outcomes=outcomes,
-                    events=events,
-                )
+            core_receipt, response_outputs = self._runtime_drain_core_receipt(
+                session_id=session_id,
+                outcomes=outcomes,
+                events=events,
             )
         except Exception as exc:
             core_receipt = RuntimeDrainCoreReceipt(
@@ -1835,38 +1755,17 @@ class V3HostApiService:
             if settlement is None:
                 return True
             disposition = settlement.disposition
-            if disposition is (
-                AgentRuntimeSettlementDisposition.BUDGET_REPLAN_HANDOFF
-            ):
-                if (
-                    outcome.ok
-                    or not settlement.batch_barrier
-                ):
+            if disposition is (AgentRuntimeSettlementDisposition.BUDGET_REPLAN_HANDOFF):
+                if outcome.ok or not settlement.batch_barrier:
                     return True
                 continue
-            if disposition is (
-                AgentRuntimeSettlementDisposition.SIGNAL_FAILED
-            ):
+            if disposition is (AgentRuntimeSettlementDisposition.SIGNAL_FAILED):
                 return True
-            if disposition is (
-                AgentRuntimeSettlementDisposition.WAITING_APPROVAL
-            ):
-                if (
-                    not outcome.ok
-                    or not outcome.waiting_approval_id
-                ):
+            if disposition is (AgentRuntimeSettlementDisposition.WAITING_APPROVAL):
+                if not outcome.ok or not outcome.waiting_approval_id:
                     return True
                 continue
-            if disposition is (
-                AgentRuntimeSettlementDisposition.SIGNAL_COMPLETED
-            ):
-                if not outcome.ok:
-                    return True
-                continue
-            if disposition is (
-                AgentRuntimeSettlementDisposition
-                .SCIENTIFIC_CLOSURE_NOTIFICATION_SETTLED
-            ):
+            if disposition is (AgentRuntimeSettlementDisposition.SIGNAL_COMPLETED):
                 if not outcome.ok:
                     return True
                 continue

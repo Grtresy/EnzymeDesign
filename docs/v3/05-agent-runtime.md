@@ -263,11 +263,11 @@ task dependency 是 runtime 调度前置约束而不是 UI hint。任一 depende
 - `sandbox.exec` 的 canonical `SandboxRun.compatibility` 记录实际 execution backend、配置 image ref、resolved immutable image id/digest、Pipeline SDK source-tree digest、sandbox protocol/manifest/exec-policy version 与组合 `runtime_identity_digest`；adapter continuation 只能从对应 run 继承这组身份，不能由 restore context、workspace projection 或 mutable tag 重建
 - memory summary 与压缩后的 continuity notes
 
-r59 closure-stage 隔离诊断不导入 source restore prompt、LLM trace、assistant message、
-runtime signal、lease 或 writer。它从 qualified cursor 614 机械生成一条 task-scoped
-continuity memory，并只排队一个 fresh executor signal。随后完全走普通 restore-context
-构造和 scheduler claim：executor 仍必须自己调用 `task.finish(completed)`，reporter 仍需
-自己 draft/publish/finish，master 仍需在同一 provider response 中给出终答并调用 close。
+r59 closure-stage 隔离诊断的 historical reconstruction 不导入 source restore prompt、
+LLM trace、assistant message、runtime signal、lease 或 writer。current forward runtime
+仍完全走普通 restore-context 构造和 scheduler claim：executor 作为 exact attempt-task
+assignee 先请求 immutable closure，收到 ordinary closure wake 后再显式
+`task.finish(completed)`；reporter 自己 draft/publish/finish，master 的用户答复保持独立。
 重建器不得代替这些 agent 行为，也不得把 source 的错误 terminal state 或后续 master/
 reporter facts 写进 fresh control plane。
 

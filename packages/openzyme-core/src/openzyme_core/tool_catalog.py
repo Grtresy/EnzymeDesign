@@ -654,10 +654,11 @@ def scientific_attempt_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         ToolDescriptor(
             tool_name="scientific.attempt.close",
             description=(
-                "Request Host finalization of the exact sealed selection without "
-                "changing task status. Success ends this turn: later same-response "
-                "calls are not dispatched and no next model step runs. Rejection is "
-                "non-terminal; Host finalizes only after the writer retires."
+                "As the canonical attempt task assignee, request Host finalization "
+                "of the exact sealed selection without changing task status. "
+                "Success ends this turn; Host finalizes only after the writer "
+                "retires. Process the closure wake, then explicitly call "
+                "task.finish(completed)."
             ),
             input_schema={
                 "type": "object",

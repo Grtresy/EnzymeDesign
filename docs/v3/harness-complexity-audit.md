@@ -181,7 +181,7 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
 
   修正记录：默认 delegation projection / Web UI 不再暴露 `pending_signal_count`、raw `wakeup_reason`、`latest_signal_reason` 和 unread inbox count 作为用户界面语义；低层 runtime signal 仍保留在 event/debug 路径中用于诊断。
 
-  追加修正记录：workspace projection 新增 diagnostic-only `runtime_state`，明确区分 `agent_turn_failed`、`runtime_signal_failed`、`task_failed`、`runtime_attention` 与 `outcome_unconsumed` / `capability_outcome_ready`。terminal capability outcome 只表示 evidence ready 和 owner wakeup，不代表 teammate/task completed。该 projection 和 `runtime.consistency.warning` / `runtime.state_attention` events 只提示 follow-up，不自动写 task completed/failed；业务终态仍由 `task.finish` 写入。
+  追加修正记录：workspace projection 新增 diagnostic-only `runtime_state`，明确区分 `agent_turn_failed`、`runtime_signal_failed`、`task_failed`、`runtime_attention` 与 `outcome_unconsumed` / `capability_outcome_ready`。terminal capability outcome 只表示 evidence ready 和 owner wakeup，不代表 teammate/task completed。Phase 2 保留该请求时只读 projection，但删除每次 drain 重复追加的 `runtime.consistency.warning` / `runtime.state_attention` derived durable events；业务终态仍由 `task.finish` 写入。
 
 - [x] Composite workspace 被当作 approval control poll，导致科学 metadata 反向放大 runtime coordination。
 
@@ -278,11 +278,12 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
 
   r58/post-r59 曾把 co-terminal conversation 与 report handoff 扩展为 generic
   `assistant_response_precondition`，并在 AOX `@4` 中拒绝 premature prose。后续复杂度复盘
-  认定“文本是否足以作为下一步策略”不是 safety invariant；该 response seam 已全链删除。
-  保留的事实边界是：close handler 仍要求同一 invocation 的 non-empty companion text，并
-  原子写 closure request、conversation binding；AOX tool precondition 仍只拦截不合法
-  mutation；final verifier 仍拒绝 task/report/selection/closure 不完整的 attempt。assistant
-  prose 本身不会完成任何对象，但也不再因 Harness 期待另一种策略而被丢弃。r59 及其
+  认定“文本是否足以作为下一步策略”不是 safety invariant；Phase 2 进一步删除 companion
+  text、closure-response repository/conversation transaction 与 scientific-specific
+  settlement。current close handler 只接受 exact attempt-task canonical assignee，只写
+  immutable request；AOX `@5` 只拦截 canonical task/operation/report-source mutation；
+  final verifier 仍拒绝 task/report/selection/closure 不完整的 attempt。assistant prose
+  本身不会完成任何对象，也不再因 Harness 期待另一种策略而被丢弃。r58–r62 及
   closure-stage diagnostics 的历史 verdict、authority 与不可复用性不变。
 
   同期保留的其他修正包括 authority-free/scope-correct compaction、prompt 中 exact current

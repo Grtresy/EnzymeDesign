@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
+from openzyme_domain import ScientificAttemptLifecyclePhase
 from openzyme_domain import TaskStatus
 from openzyme_domain.control_plane import utc_now_iso
 
@@ -21,6 +22,10 @@ from .agent_identity import resolve_agent_reference
 from .repositories import CoreRepositories
 from .repositories import EngineDocumentRecord
 from .repositories import TaskWriteIntent
+from .scientific_attempt_lifecycle import (
+    ScientificAttemptLifecycleIntegrityError,
+)
+from .scientific_attempt_lifecycle import ScientificAttemptLifecycleResolver
 from .task_evidence import TASK_FINISH_EVIDENCE_REF_FORMAT
 from .task_evidence import TASK_FINISH_EVIDENCE_REF_KINDS
 from .task_evidence import task_finish_evidence_contract_details
@@ -118,6 +123,85 @@ def _finish_error_result(
     )
 
 
+def _scientific_attempt_completion_guard(
+    repositories: CoreRepositories,
+    *,
+    invocation: ToolInvocation,
+    task: Task,
+) -> ToolResult | None:
+    attempts = [
+        attempt
+        for attempt in repositories.scientific_attempts.list_by_session(task.session_id)
+        if attempt.task_id == task.task_id
+    ]
+    if not attempts:
+        return None
+    resolver = ScientificAttemptLifecycleResolver(repositories)
+    try:
+        lifecycles = [resolver.resolve(attempt) for attempt in attempts]
+    except ScientificAttemptLifecycleIntegrityError as exc:
+        return _finish_error_result(
+            invocation,
+            status=exc.error_code,
+            summary=(
+                "task.finish(completed) refused because bound scientific "
+                "attempt lifecycle evidence is inconsistent."
+            ),
+            hint="Inspect and repair the canonical attempt lifecycle before retrying.",
+            details={
+                "task_id": task.task_id,
+                **exc.details,
+                "effect_certainty": "no_effect",
+            },
+        )
+    blocking = [
+        lifecycle
+        for lifecycle in lifecycles
+        if lifecycle.phase
+        in {
+            ScientificAttemptLifecyclePhase.OPEN,
+            ScientificAttemptLifecyclePhase.CLOSURE_REQUESTED,
+        }
+    ]
+    closed = [
+        lifecycle
+        for lifecycle in lifecycles
+        if lifecycle.phase is ScientificAttemptLifecyclePhase.CLOSED
+    ]
+    if not blocking and closed:
+        return None
+    return _finish_error_result(
+        invocation,
+        status="scientific_attempt_task_not_closed",
+        summary=(
+            "task.finish(completed) refused: the task requires an immutable "
+            "scientific attempt closure before explicit completion."
+        ),
+        hint=(
+            "Call scientific.attempt.close as the canonical task assignee, "
+            "await Host finalization, then retry task.finish(completed)."
+        ),
+        details={
+            "task_id": task.task_id,
+            "attempt_lifecycles": [
+                {
+                    "attempt_id": lifecycle.attempt.attempt_id,
+                    "phase": lifecycle.phase.value,
+                }
+                for lifecycle in lifecycles
+            ],
+            "open_attempt_ids": [
+                lifecycle.attempt.attempt_id for lifecycle in blocking
+            ],
+            "closed_attempt_ids": [
+                lifecycle.attempt.attempt_id for lifecycle in closed
+            ],
+            "effect_certainty": "no_effect",
+            "retryable": True,
+        },
+    )
+
+
 def _coerce_evidence_refs(value: Any) -> tuple[tuple[str, ...], str | None]:
     if value is None:
         return (), None
@@ -202,7 +286,9 @@ def _validate_evidence_refs(
 
 
 def _can_finish_task(context: SessionRuntimeContext, task: Task) -> bool:
-    if is_teammate_role_alias(context.agent_id) or is_teammate_role_alias(task.assigned_ref):
+    if is_teammate_role_alias(context.agent_id) or is_teammate_role_alias(
+        task.assigned_ref
+    ):
         return False
     if context.agent_id == task.assigned_ref and context.agent_id is not None:
         return True
@@ -272,9 +358,7 @@ def _already_satisfied_task_finish_result(
         (
             document
             for document in reversed(
-                context.repositories.engine_documents.list_by_session(
-                    task.session_id
-                )
+                context.repositories.engine_documents.list_by_session(task.session_id)
             )
             if document.document_kind == "task_finish"
             and document.payload.get("task_id") == task.task_id
@@ -444,7 +528,9 @@ class TaskBoardService:
         )
         self.repositories.tasks.validate_dependencies(task)
         self.repositories.tasks.save(task, intent=TaskWriteIntent.EDIT)
-        self._emit("task.created", {"task_id": task.task_id, "session_id": task.session_id})
+        self._emit(
+            "task.created", {"task_id": task.task_id, "session_id": task.session_id}
+        )
         self._emit_task_state(task)
         if task.assigned_ref is not None:
             self._emit(
@@ -454,10 +540,7 @@ class TaskBoardService:
         return task
 
     def edit_task(self, task_id: str, mutation: TaskMutation) -> Task:
-        if (
-            mutation.status is not _UNSET
-            and mutation.status in _TASK_FINISH_STATUSES
-        ):
+        if mutation.status is not _UNSET and mutation.status in _TASK_FINISH_STATUSES:
             raise TaskExitStatusRequiresFinish(
                 operation="task.edit",
                 status=mutation.status,
@@ -513,10 +596,16 @@ class TaskBoardService:
         updated = Task(
             task_id=task.task_id,
             session_id=task.session_id,
-            subject=task.subject if mutation.subject is _UNSET else str(mutation.subject),
-            description=task.description if mutation.description is _UNSET else str(mutation.description),
+            subject=task.subject
+            if mutation.subject is _UNSET
+            else str(mutation.subject),
+            description=task.description
+            if mutation.description is _UNSET
+            else str(mutation.description),
             status=task.status if mutation.status is _UNSET else mutation.status,
-            priority=task.priority if mutation.priority is _UNSET else mutation.priority,
+            priority=task.priority
+            if mutation.priority is _UNSET
+            else mutation.priority,
             kind=task.kind if mutation.kind is _UNSET else str(mutation.kind),
             assigned_ref=task.assigned_ref
             if mutation.assigned_ref is _UNSET
@@ -526,13 +615,19 @@ class TaskBoardService:
                 value=mutation.assigned_ref,
             ),
             created_at=task.created_at,
-            updated_at=utc_now_iso() if mutation.updated_at is _UNSET else str(mutation.updated_at),
+            updated_at=utc_now_iso()
+            if mutation.updated_at is _UNSET
+            else str(mutation.updated_at),
             lane_id=task.lane_id if mutation.lane_id is _UNSET else mutation.lane_id,
-            blocked_by=task.blocked_by if mutation.blocked_by is _UNSET else mutation.blocked_by,
+            blocked_by=task.blocked_by
+            if mutation.blocked_by is _UNSET
+            else mutation.blocked_by,
             failure_summary=task.failure_summary
             if mutation.failure_summary is _UNSET
             else mutation.failure_summary,
-            failure_ref=task.failure_ref if mutation.failure_ref is _UNSET else mutation.failure_ref,
+            failure_ref=task.failure_ref
+            if mutation.failure_ref is _UNSET
+            else mutation.failure_ref,
         )
         self.repositories.tasks.validate_dependencies(updated)
         self.repositories.tasks.save(updated, intent=write_intent)
@@ -577,31 +672,21 @@ class TaskBoardService:
             )
         summary = command.summary.strip()
         failure_summary = (
-            None
-            if command.failure_summary is None
-            else command.failure_summary.strip()
+            None if command.failure_summary is None else command.failure_summary.strip()
         )
         failure_ref = (
             None if command.failure_ref is None else command.failure_ref.strip()
         )
         blocked_reason = (
-            None
-            if command.blocked_reason is None
-            else command.blocked_reason.strip()
+            None if command.blocked_reason is None else command.blocked_reason.strip()
         )
         recovery_hint = (
-            None
-            if command.recovery_hint is None
-            else command.recovery_hint.strip()
+            None if command.recovery_hint is None else command.recovery_hint.strip()
         )
-        next_owner = (
-            None if command.next_owner is None else command.next_owner.strip()
-        )
+        next_owner = None if command.next_owner is None else command.next_owner.strip()
         if command.status is TaskStatus.COMPLETED and not summary:
             raise ValueError("task.finish(completed) requires a non-empty summary")
-        if command.status is TaskStatus.FAILED and not (
-            failure_summary or failure_ref
-        ):
+        if command.status is TaskStatus.FAILED and not (failure_summary or failure_ref):
             raise ValueError(
                 "task.finish(failed) requires failure_summary or failure_ref"
             )
@@ -616,9 +701,7 @@ class TaskBoardService:
             "user",
             "teammate",
         }:
-            raise ValueError(
-                "task.finish next_owner must be master, user, or teammate"
-            )
+            raise ValueError("task.finish next_owner must be master, user, or teammate")
         evidence_error = _validate_evidence_refs(
             self.repositories,
             session_id=task.session_id,
@@ -668,9 +751,7 @@ class TaskBoardService:
                         else _UNSET
                     ),
                     failure_ref=(
-                        failure_ref
-                        if command.status is TaskStatus.FAILED
-                        else _UNSET
+                        failure_ref if command.status is TaskStatus.FAILED else _UNSET
                     ),
                 ),
                 write_intent=TaskWriteIntent.FINISH,
@@ -702,8 +783,12 @@ class TaskBoardService:
             return self.repositories.tasks.list_by_session(session_id)
         return self.repositories.tasks.list_by_lane(session_id, lane_id)
 
-    def list_ready_tasks(self, session_id: str, *, lane_id: str | None = None) -> list[Task]:
-        return self.repositories.tasks.list_ready_by_session(session_id, lane_id=lane_id)
+    def list_ready_tasks(
+        self, session_id: str, *, lane_id: str | None = None
+    ) -> list[Task]:
+        return self.repositories.tasks.list_ready_by_session(
+            session_id, lane_id=lane_id
+        )
 
     def open_blocker_ids(self, task: Task) -> tuple[str, ...]:
         blockers: list[str] = []
@@ -713,7 +798,9 @@ class TaskBoardService:
                 blockers.append(blocker_id)
         return tuple(blockers)
 
-    def select_next_task(self, session_id: str, *, lane_id: str | None = None) -> Task | None:
+    def select_next_task(
+        self, session_id: str, *, lane_id: str | None = None
+    ) -> Task | None:
         ready_tasks = self.list_ready_tasks(session_id, lane_id=lane_id)
         if not ready_tasks:
             return None
@@ -726,11 +813,17 @@ class TaskBoardService:
             ),
         )[0]
 
-    def build_projection(self, session_id: str, *, lane_id: str | None = None) -> TaskBoardProjection:
+    def build_projection(
+        self, session_id: str, *, lane_id: str | None = None
+    ) -> TaskBoardProjection:
         tasks = self.list_tasks(session_id, lane_id=lane_id)
         items = tuple(self._build_items(tasks))
-        ready_tasks = tuple(item for item in items if item.bucket is TaskBoardBucket.READY)
-        blocked_tasks = tuple(item for item in items if item.bucket is TaskBoardBucket.BLOCKED)
+        ready_tasks = tuple(
+            item for item in items if item.bucket is TaskBoardBucket.READY
+        )
+        blocked_tasks = tuple(
+            item for item in items if item.bucket is TaskBoardBucket.BLOCKED
+        )
         next_task = self.select_next_task(session_id, lane_id=lane_id)
         return TaskBoardProjection(
             session_id=session_id,
@@ -769,7 +862,14 @@ class TaskBoardService:
 
     def _emit_task_state(self, task: Task) -> None:
         projection = self.build_projection(task.session_id)
-        item = next((candidate for candidate in projection.items if candidate.task.task_id == task.task_id), None)
+        item = next(
+            (
+                candidate
+                for candidate in projection.items
+                if candidate.task.task_id == task.task_id
+            ),
+            None,
+        )
         if item is None:
             return
         if item.bucket is TaskBoardBucket.READY:
@@ -802,11 +902,15 @@ def _bucket_for_task(task: Task, open_blockers: tuple[str, ...]) -> TaskBoardBuc
 
 
 def register_task_board_tools(registry: ToolRegistry) -> None:
-    def create_task_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+    def create_task_handler(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> ToolResult:
         service = TaskBoardService(context.repositories, event_emitter=context.emit)
         arguments = invocation.arguments
         task_id = str(arguments.get("task_id") or f"task_{uuid4().hex[:12]}")
-        requested_status = TaskStatus(str(arguments.get("status", TaskStatus.TODO.value)))
+        requested_status = TaskStatus(
+            str(arguments.get("status", TaskStatus.TODO.value))
+        )
         if requested_status not in _TASK_TOOL_MUTATION_STATUSES:
             return _finish_error_result(
                 invocation,
@@ -832,11 +936,15 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
             task_id=task_id,
             subject=str(arguments["subject"]),
             description=str(arguments.get("description") or ""),
-            priority=TaskPriority(str(arguments.get("priority", TaskPriority.NORMAL.value))),
+            priority=TaskPriority(
+                str(arguments.get("priority", TaskPriority.NORMAL.value))
+            ),
             kind=str(arguments.get("kind", "general")),
             status=requested_status,
             assigned_ref=arguments.get("assigned_ref"),
-            lane_id=invocation.lane_id if "lane_id" not in arguments else arguments.get("lane_id"),
+            lane_id=invocation.lane_id
+            if "lane_id" not in arguments
+            else arguments.get("lane_id"),
             blocked_by=tuple(str(item) for item in arguments.get("blocked_by", ())),
             failure_summary=arguments.get("failure_summary"),
             failure_ref=arguments.get("failure_ref"),
@@ -850,14 +958,14 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
             lane_id=invocation.lane_id,
         )
 
-    def update_task_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+    def update_task_handler(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> ToolResult:
         service = TaskBoardService(context.repositories, event_emitter=context.emit)
         arguments = invocation.arguments
         task_id = str(arguments["task_id"])
         requested_status = (
-            None
-            if "status" not in arguments
-            else TaskStatus(str(arguments["status"]))
+            None if "status" not in arguments else TaskStatus(str(arguments["status"]))
         )
         if (
             requested_status is not None
@@ -883,16 +991,32 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
             )
         mutation = TaskMutation(
             subject=arguments["subject"] if "subject" in arguments else _UNSET,
-            description=arguments["description"] if "description" in arguments else _UNSET,
-            status=TaskStatus(str(arguments["status"])) if "status" in arguments else _UNSET,
-            priority=TaskPriority(str(arguments["priority"])) if "priority" in arguments else _UNSET,
+            description=arguments["description"]
+            if "description" in arguments
+            else _UNSET,
+            status=TaskStatus(str(arguments["status"]))
+            if "status" in arguments
+            else _UNSET,
+            priority=TaskPriority(str(arguments["priority"]))
+            if "priority" in arguments
+            else _UNSET,
             kind=arguments["kind"] if "kind" in arguments else _UNSET,
-            assigned_ref=arguments["assigned_ref"] if "assigned_ref" in arguments else _UNSET,
+            assigned_ref=arguments["assigned_ref"]
+            if "assigned_ref" in arguments
+            else _UNSET,
             lane_id=arguments["lane_id"] if "lane_id" in arguments else _UNSET,
-            blocked_by=tuple(str(item) for item in arguments["blocked_by"]) if "blocked_by" in arguments else _UNSET,
-            failure_summary=arguments["failure_summary"] if "failure_summary" in arguments else _UNSET,
-            failure_ref=arguments["failure_ref"] if "failure_ref" in arguments else _UNSET,
-            updated_at=str(arguments["updated_at"]) if "updated_at" in arguments else _UNSET,
+            blocked_by=tuple(str(item) for item in arguments["blocked_by"])
+            if "blocked_by" in arguments
+            else _UNSET,
+            failure_summary=arguments["failure_summary"]
+            if "failure_summary" in arguments
+            else _UNSET,
+            failure_ref=arguments["failure_ref"]
+            if "failure_ref" in arguments
+            else _UNSET,
+            updated_at=str(arguments["updated_at"])
+            if "updated_at" in arguments
+            else _UNSET,
         )
         task = service.edit_task(task_id, mutation)
         return ToolResult(
@@ -904,7 +1028,9 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
             lane_id=invocation.lane_id,
         )
 
-    def finish_task_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+    def finish_task_handler(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> ToolResult:
         service = TaskBoardService(context.repositories, event_emitter=context.emit)
         arguments = invocation.arguments
         task_id = str(arguments["task_id"])
@@ -1004,6 +1130,14 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
                 summary="task.finish(completed) requires a non-empty summary.",
                 details={"task_id": task_id, "requested_status": status.value},
             )
+        if status is TaskStatus.COMPLETED:
+            completion_guard = _scientific_attempt_completion_guard(
+                context.repositories,
+                invocation=invocation,
+                task=task,
+            )
+            if completion_guard is not None:
+                return completion_guard
         if status is TaskStatus.FAILED and not (failure_summary or failure_ref):
             return _finish_error_result(
                 invocation,
@@ -1025,7 +1159,9 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
                 summary="task.finish next_owner must be master, user, or teammate.",
                 details={"task_id": task_id, "next_owner": next_owner},
             )
-        evidence_refs, evidence_error = _coerce_evidence_refs(arguments.get("evidence_refs"))
+        evidence_refs, evidence_error = _coerce_evidence_refs(
+            arguments.get("evidence_refs")
+        )
         if evidence_error is not None:
             return _finish_error_result(
                 invocation,
@@ -1098,19 +1234,20 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
             terminates_turn=terminates_turn,
         )
 
-    def get_task_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+    def get_task_handler(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> ToolResult:
         service = TaskBoardService(context.repositories, event_emitter=context.emit)
         task = service.get_task(str(invocation.arguments["task_id"]))
-        if (
-            task is not None
-            and task.session_id != context.snapshot.session.session_id
-        ):
+        if task is not None and task.session_id != context.snapshot.session.session_id:
             task = None
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
             ok=True,
-            content=json.dumps(None if task is None else task.to_dict(), sort_keys=True),
+            content=json.dumps(
+                None if task is None else task.to_dict(), sort_keys=True
+            ),
             task_id=None if task is None else task.task_id,
             lane_id=invocation.lane_id,
             status="task_not_found" if task is None else "task_projected",
@@ -1125,10 +1262,14 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
             },
         )
 
-    def list_tasks_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+    def list_tasks_handler(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> ToolResult:
         service = TaskBoardService(context.repositories, event_emitter=context.emit)
         lane_id = invocation.arguments.get("lane_id", invocation.lane_id)
-        projection = service.build_projection(context.snapshot.session.session_id, lane_id=lane_id)
+        projection = service.build_projection(
+            context.snapshot.session.session_id, lane_id=lane_id
+        )
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
@@ -1138,15 +1279,21 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
             lane_id=invocation.lane_id,
         )
 
-    def next_task_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+    def next_task_handler(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> ToolResult:
         service = TaskBoardService(context.repositories, event_emitter=context.emit)
         lane_id = invocation.arguments.get("lane_id", invocation.lane_id)
-        task = service.select_next_task(context.snapshot.session.session_id, lane_id=lane_id)
+        task = service.select_next_task(
+            context.snapshot.session.session_id, lane_id=lane_id
+        )
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
             ok=True,
-            content=json.dumps(None if task is None else task.to_dict(), sort_keys=True),
+            content=json.dumps(
+                None if task is None else task.to_dict(), sort_keys=True
+            ),
             task_id=None if task is None else task.task_id,
             lane_id=invocation.lane_id,
             status="no_ready_task" if task is None else "next_task_projected",

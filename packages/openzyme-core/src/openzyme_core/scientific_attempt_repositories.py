@@ -14,9 +14,6 @@ from openzyme_domain import SCIENTIFIC_ATTEMPT_AUTHORIZATION_SCHEMA_VERSION
 from openzyme_domain import (
     SCIENTIFIC_ATTEMPT_CLOSURE_REQUEST_SCHEMA_VERSION,
 )
-from openzyme_domain import (
-    SCIENTIFIC_ATTEMPT_CLOSURE_RESPONSE_SCHEMA_VERSION,
-)
 from openzyme_domain import SCIENTIFIC_ATTEMPT_CLOSURE_SCHEMA_VERSION
 from openzyme_domain import SCIENTIFIC_ATTEMPT_SCHEMA_VERSION
 from openzyme_domain import SCIENTIFIC_CHAIN_SELECTION_SCHEMA_VERSION
@@ -29,7 +26,6 @@ from openzyme_domain import ScientificAttemptAuthorization
 from openzyme_domain import ScientificAttemptAuthorityStatus
 from openzyme_domain import ScientificAttemptClosure
 from openzyme_domain import ScientificAttemptClosureRequest
-from openzyme_domain import ScientificAttemptClosureResponse
 from openzyme_domain import ScientificAttemptScope
 from openzyme_domain import ScientificAttemptStatus
 from openzyme_domain import ScientificChainSelection
@@ -163,12 +159,16 @@ class ScientificAttemptAuthorizationRepository:
                 grantor_ref=record.grantor_ref,
                 idempotency_key=record.idempotency_key,
             )
-            if existing is not None and replace(
-                record,
-                envelope_id=existing.envelope_id,
-                created_at=existing.created_at,
-                updated_at=existing.updated_at,
-            ) == existing:
+            if (
+                existing is not None
+                and replace(
+                    record,
+                    envelope_id=existing.envelope_id,
+                    created_at=existing.created_at,
+                    updated_at=existing.updated_at,
+                )
+                == existing
+            ):
                 _commit(self.connection)
                 return existing
             _commit(self.connection)
@@ -309,13 +309,9 @@ class ScientificAttemptAuthorizationRepository:
                 ScientificAttemptScope(item)
                 for item in _json_loads_list(row["allowed_scopes_json"])
             ),
-            allowed_effect_classes=_json_loads_list(
-                row["allowed_effect_classes_json"]
-            ),
+            allowed_effect_classes=_json_loads_list(row["allowed_effect_classes_json"]),
             allowed_providers=_json_loads_list(row["allowed_providers_json"]),
-            allowed_hpc_targets=_json_loads_list(
-                row["allowed_hpc_targets_json"]
-            ),
+            allowed_hpc_targets=_json_loads_list(row["allowed_hpc_targets_json"]),
             max_attempts=int(row["max_attempts"]),
             max_micu=int(row["max_micu"]),
             max_cost_microunits=int(row["max_cost_microunits"]),
@@ -535,15 +531,19 @@ class ScientificAttemptRepository:
                 envelope_id=record.envelope_id,
                 idempotency_key=record.idempotency_key,
             )
-            if existing is not None and replace(
-                record,
-                attempt_id=existing.attempt_id,
-                root_ref=existing.root_ref,
-                mutation_scope_id=existing.mutation_scope_id,
-                ordinal=existing.ordinal,
-                created_at=existing.created_at,
-                updated_at=existing.updated_at,
-            ) == existing:
+            if (
+                existing is not None
+                and replace(
+                    record,
+                    attempt_id=existing.attempt_id,
+                    root_ref=existing.root_ref,
+                    mutation_scope_id=existing.mutation_scope_id,
+                    ordinal=existing.ordinal,
+                    created_at=existing.created_at,
+                    updated_at=existing.updated_at,
+                )
+                == existing
+            ):
                 _commit(self.connection)
                 return existing
             _commit(self.connection)
@@ -952,13 +952,17 @@ class ScientificSelectionRepository:
                 actor_ref=selection.actor_ref,
                 idempotency_key=selection.idempotency_key,
             )
-            if existing is not None and replace(
-                selection,
-                selection_id=existing.selection_id,
-                revision=existing.revision,
-                parent_selection_id=existing.parent_selection_id,
-                created_at=existing.created_at,
-            ) == existing:
+            if (
+                existing is not None
+                and replace(
+                    selection,
+                    selection_id=existing.selection_id,
+                    revision=existing.revision,
+                    parent_selection_id=existing.parent_selection_id,
+                    created_at=existing.created_at,
+                )
+                == existing
+            ):
                 _commit(self.connection)
                 return existing
             _commit(self.connection)
@@ -1068,15 +1072,11 @@ class ScientificSelectionRepository:
             revision=int(row["selection_revision"]),
             parent_selection_id=row["selection_parent_selection_id"],
             state=ScientificSelectionState(row["selection_state"]),
-            operation_universe_digest=row[
-                "selection_operation_universe_digest"
-            ],
+            operation_universe_digest=row["selection_operation_universe_digest"],
             operation_count=int(row["selection_operation_count"]),
             disposition_digest=row["selection_disposition_digest"],
             adoption_digest=row["selection_adoption_digest"],
-            workflow_contract_digest=row[
-                "selection_workflow_contract_digest"
-            ],
+            workflow_contract_digest=row["selection_workflow_contract_digest"],
             actor_ref=row["selection_actor_ref"],
             idempotency_key=row["selection_idempotency_key"],
             request_digest=row["selection_request_digest"],
@@ -1219,11 +1219,15 @@ class ScientificDispositionRepository:
                 actor_ref=record.actor_ref,
                 idempotency_key=record.idempotency_key,
             )
-            if existing is not None and replace(
-                record,
-                disposition_id=existing.disposition_id,
-                created_at=existing.created_at,
-            ) == existing:
+            if (
+                existing is not None
+                and replace(
+                    record,
+                    disposition_id=existing.disposition_id,
+                    created_at=existing.created_at,
+                )
+                == existing
+            ):
                 _commit(self.connection)
                 return existing
             _commit(self.connection)
@@ -1337,11 +1341,15 @@ class ScientificEffectAdoptionRepository:
                 actor_ref=record.actor_ref,
                 idempotency_key=record.idempotency_key,
             )
-            if existing is not None and replace(
-                record,
-                adoption_id=existing.adoption_id,
-                created_at=existing.created_at,
-            ) == existing:
+            if (
+                existing is not None
+                and replace(
+                    record,
+                    adoption_id=existing.adoption_id,
+                    created_at=existing.created_at,
+                )
+                == existing
+            ):
                 _commit(self.connection)
                 return existing
             _commit(self.connection)
@@ -1471,12 +1479,16 @@ class ScientificArtifactMaterializationRepository:
                 actor_ref=record.actor_ref,
                 idempotency_key=record.idempotency_key,
             )
-            if existing is not None and replace(
-                record,
-                receipt_id=existing.receipt_id,
-                boundary_materialization_id=existing.boundary_materialization_id,
-                created_at=existing.created_at,
-            ) == existing:
+            if (
+                existing is not None
+                and replace(
+                    record,
+                    receipt_id=existing.receipt_id,
+                    boundary_materialization_id=existing.boundary_materialization_id,
+                    created_at=existing.created_at,
+                )
+                == existing
+            ):
                 _commit(self.connection)
                 return existing
             _commit(self.connection)
@@ -1574,11 +1586,15 @@ class ScientificAttemptClosureRequestRepository:
             )
         except sqlite3.IntegrityError as exc:
             existing = self.get_by_attempt(record.attempt_id)
-            if existing is not None and replace(
-                record,
-                closure_request_id=existing.closure_request_id,
-                created_at=existing.created_at,
-            ) == existing:
+            if (
+                existing is not None
+                and replace(
+                    record,
+                    closure_request_id=existing.closure_request_id,
+                    created_at=existing.created_at,
+                )
+                == existing
+            ):
                 _commit(self.connection)
                 return existing
             _commit(self.connection)
@@ -1647,101 +1663,6 @@ class ScientificAttemptClosureRequestRepository:
 
 
 @dataclass(slots=True)
-class ScientificAttemptClosureResponseRepository:
-    connection: sqlite3.Connection
-
-    def add(
-        self,
-        record: ScientificAttemptClosureResponse,
-    ) -> ScientificAttemptClosureResponse:
-        try:
-            self.connection.execute(
-                """
-                INSERT INTO scientific_attempt_closure_response_records (
-                    closure_response_id,
-                    schema_version,
-                    closure_request_id,
-                    attempt_id,
-                    message_id,
-                    document_id,
-                    recipient,
-                    recipient_kind,
-                    response_digest,
-                    binding_digest,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record.closure_response_id,
-                    SCIENTIFIC_ATTEMPT_CLOSURE_RESPONSE_SCHEMA_VERSION,
-                    record.closure_request_id,
-                    record.attempt_id,
-                    record.message_id,
-                    record.document_id,
-                    record.recipient,
-                    record.recipient_kind,
-                    record.response_digest,
-                    record.binding_digest,
-                    record.created_at,
-                ),
-            )
-        except sqlite3.IntegrityError as exc:
-            existing = self.get_by_closure_request(record.closure_request_id)
-            if existing == record:
-                _commit(self.connection)
-                return existing
-            _commit(self.connection)
-            raise ScientificAttemptIdentityConflictError(
-                "scientific attempt closure response already has different facts"
-            ) from exc
-        _commit(self.connection)
-        return record
-
-    def get_by_closure_request(
-        self,
-        closure_request_id: str,
-    ) -> ScientificAttemptClosureResponse | None:
-        row = self.connection.execute(
-            """
-            SELECT *
-            FROM scientific_attempt_closure_response_records
-            WHERE closure_request_id = ?
-            """,
-            (closure_request_id,),
-        ).fetchone()
-        return None if row is None else self._row(row)
-
-    def get_by_attempt(
-        self,
-        attempt_id: str,
-    ) -> ScientificAttemptClosureResponse | None:
-        row = self.connection.execute(
-            """
-            SELECT *
-            FROM scientific_attempt_closure_response_records
-            WHERE attempt_id = ?
-            """,
-            (attempt_id,),
-        ).fetchone()
-        return None if row is None else self._row(row)
-
-    @staticmethod
-    def _row(row: sqlite3.Row) -> ScientificAttemptClosureResponse:
-        return ScientificAttemptClosureResponse(
-            closure_response_id=row["closure_response_id"],
-            closure_request_id=row["closure_request_id"],
-            attempt_id=row["attempt_id"],
-            message_id=row["message_id"],
-            document_id=row["document_id"],
-            recipient=row["recipient"],
-            recipient_kind=row["recipient_kind"],
-            response_digest=row["response_digest"],
-            binding_digest=row["binding_digest"],
-            created_at=row["created_at"],
-        )
-
-
-@dataclass(slots=True)
 class ScientificAttemptClosureRepository:
     connection: sqlite3.Connection
 
@@ -1791,11 +1712,15 @@ class ScientificAttemptClosureRepository:
             )
         except sqlite3.IntegrityError as exc:
             existing = self.get_by_attempt(record.attempt_id)
-            if existing is not None and replace(
-                record,
-                closure_id=existing.closure_id,
-                created_at=existing.created_at,
-            ) == existing:
+            if (
+                existing is not None
+                and replace(
+                    record,
+                    closure_id=existing.closure_id,
+                    created_at=existing.created_at,
+                )
+                == existing
+            ):
                 _commit(self.connection)
                 return existing
             _commit(self.connection)

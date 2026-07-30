@@ -105,9 +105,6 @@ if TYPE_CHECKING:
     from .scientific_attempt_repositories import (
         ScientificAttemptClosureRequestRepository,
     )
-    from .scientific_attempt_repositories import (
-        ScientificAttemptClosureResponseRepository,
-    )
     from .scientific_attempt_repositories import ScientificAttemptClosureRepository
     from .scientific_attempt_repositories import ScientificAttemptRepository
     from .scientific_attempt_repositories import ScientificDispositionRepository
@@ -6019,7 +6016,6 @@ class CoreRepositories:
     scientific_effect_adoptions: "ScientificEffectAdoptionRepository"
     scientific_artifact_materializations: "ScientificArtifactMaterializationRepository"
     scientific_attempt_closure_requests: "ScientificAttemptClosureRequestRepository"
-    scientific_attempt_closure_responses: "ScientificAttemptClosureResponseRepository"
     scientific_attempt_closures: "ScientificAttemptClosureRepository"
     file_audit_entries: FileAuditEntryRepository
     command_log_artifacts: CommandLogArtifactRepository
@@ -6231,9 +6227,6 @@ class CoreRepositories:
             ScientificAttemptClosureRequestRepository,
         )
         from .scientific_attempt_repositories import (
-            ScientificAttemptClosureResponseRepository,
-        )
-        from .scientific_attempt_repositories import (
             ScientificAttemptClosureRepository,
         )
         from .scientific_attempt_repositories import ScientificAttemptRepository
@@ -6298,9 +6291,6 @@ class CoreRepositories:
             ),
             scientific_attempt_closure_requests=(
                 ScientificAttemptClosureRequestRepository(connection)
-            ),
-            scientific_attempt_closure_responses=(
-                ScientificAttemptClosureResponseRepository(connection)
             ),
             scientific_attempt_closures=ScientificAttemptClosureRepository(connection),
             file_audit_entries=FileAuditEntryRepository(connection),
