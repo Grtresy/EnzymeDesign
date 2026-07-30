@@ -221,6 +221,35 @@ summaries bind the projection count/digest/truncation metadata as an exact
 closed nested record, preventing a successful path from silently dropping the
 shared observer contract.
 
+### 10. Recoverable controlled-operation failures retain one bounded owner handoff
+
+The runner attempt is the sealed source of a pre-dispatch transport failure.
+Closed SSH and Slurm results carry the same safe machine error code, status,
+effect certainty, retry eligibility, and attempt receipt that the journal
+sealed. The execution adapter and Host durable route preserve that code without
+exposing transport stderr, target, socket, or path. When an exact runner
+reservation exists, Host observes it before consulting its local materialized
+Run, so a generic local failed status cannot overwrite
+`transport_connect_failed/no_effect`.
+
+AOX projects controlled operations once from canonical operation, execution,
+continuation, attempt-binding, and failure rows. The bounded projection includes
+an explicit probe/formal scope plus total count, digest, and truncation facts and
+is shared by runtime observation, diagnostic counts, and failure evidence.
+Probe attestation remains an independent proof; the failure operation list
+merges it with formal facts instead of silently omitting formal failures.
+
+A failed observation still stops by default. One later drain is permitted only
+when the current formal attempt has one exact terminal no-effect execution and
+delivered continuation, an exact `controlled_effect/agent_can_replan/terminal`
+FailureObservation for that source, a business-nonterminal owner task, and
+exactly one pending, unclaimed, zero-attempt `engine_completed` signal whose
+source/correlation/agent/task/lane bindings all agree. The driver consumes no
+authority and creates no work; it merely gives the already queued owner wake
+one bounded turn. It records that source locally so the exception cannot repeat.
+Every missing, duplicate, stale, cross-bound, claimed, replayed, retryable,
+unknown-effect, or dispatch-in-doubt shape remains terminal to supervision.
+
 ## Risks / Trade-offs
 
 - **Reassignment during closure:** repeating the owner check at finalization
@@ -273,12 +302,16 @@ shared observer contract.
    wake facts into master turns, unify current task-exit/causal projection, bound
    diagnostic evidence, synchronize contracts, and repeat only non-live
    verification before the local commit.
+10. Preserve the sealed runner cause through Host, reuse one bounded
+    formal/probe operation projection, permit only the exact one-shot
+    recoverable controlled-operation owner handoff, and repeat only non-live
+    verification before the local commit.
 
 Rollback is a source revert. The retained historical table requires no reverse
 data migration.
 
 ## Open Questions
 
-None. The approved post-r63 correction fixes the remaining single-successor,
-master wake-context, causal-order, current-exit, bounded-evidence, and
-compatibility choices above.
+None. The approved r64 Phase 2 correction fixes the remaining sealed runner
+cause, formal/probe operation projection, and exact one-shot recoverable
+controlled-operation handoff choices above.

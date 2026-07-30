@@ -150,6 +150,45 @@ def test_reserved_execution_is_idempotent_restart_safe_and_no_effect(
     assert restarted.inspect_reserved_execution(reserved["run_id"]) == observation
 
 
+def test_reserved_terminal_inspection_recovers_sealed_sparse_failure_metadata(
+    tmp_path: Path,
+) -> None:
+    server = MCPHpcServer(_config_path(tmp_path))
+    reserved = server.reserve_execution(_reservation_identity())
+    run_id = reserved["run_id"]
+    spec = RunSpec.from_dict(_runspec())
+    spec.run_id = run_id
+    server.store.write_json(run_id, "runspec.json", spec.to_dict())
+    server.attempt_journal.create(spec, selected_mode="ssh")
+    attempt = server.attempt_journal.transition(
+        run_id,
+        phase=RunnerAttemptPhase.TERMINAL,
+        state=RunnerAttemptState.TERMINAL,
+        effect_certainty=RunnerEffectCertainty.NO_EFFECT,
+        retry_eligibility=RunnerRetryEligibility.TERMINAL,
+        safe_failure_code="transport_connect_failed",
+        reason_code="transport_connect_failed",
+    )
+    server.store.write_json(
+        run_id,
+        "run_result_metadata.json",
+        {
+            "runner_phase": attempt.phase.value,
+            "effect_certainty": attempt.effect_certainty.value,
+            "retry_eligibility": attempt.retry_eligibility.value,
+            "reconciliation_required": attempt.reconciliation_required,
+            "runner_attempt_safe_receipt_digest": attempt.safe_receipt_digest,
+        },
+    )
+
+    observation = server.inspect_reserved_execution(run_id)
+
+    assert observation["status"] == "failed"
+    assert observation["error_code"] == "transport_connect_failed"
+    assert observation["effect_certainty"] == "no_effect"
+    assert observation["retry_eligibility"] == "terminal"
+
+
 def test_reserved_execution_dispatch_uses_exact_handle_and_rejects_replay(
     tmp_path: Path,
 ) -> None:

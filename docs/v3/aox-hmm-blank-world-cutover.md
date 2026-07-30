@@ -2869,6 +2869,34 @@ successful path cannot silently drop or reshape that observer contract. It
 does not retry r63, alter its authority/root/SQLite/effects/decision, or
 authorize r64.
 
+The r64 diagnostic is likewise a permanent NO-GO. Its independent probe
+completed all six operations; the formal run completed five operations before
+HMMalign failed prior to dispatch while establishing the bounded SSH
+ControlMaster connection. The sealed runner attempt proved
+`transport_connect_failed/no_effect`, but historical closed metadata omitted
+the terminal code, the adapter rejected lowercase safe codes, and Host-local
+Run projection flattened the cause to
+`durable_hpc_terminal_failure/terminal_known`. The continuation nevertheless
+recorded a `controlled_effect/agent_can_replan` failure and queued one exact
+`engine_completed` owner signal. The old driver stopped before that owner could
+receive one bounded replan turn, and its failure operation list retained only
+the successful probe subset.
+
+The forward r64 correction seals safe status/error/effect/retry metadata for
+SSH and Slurm attempts and makes runner observation precede Host-local Run
+projection whenever an exact reservation exists. One canonical bounded
+operation-facts projection joins operation, unique execution, continuation,
+scientific-attempt binding, and exact failure records; explicit `probe|formal`
+scope plus count/digest/truncation metadata is shared by session observation,
+diagnostic facts, and failure evidence. A failed observation still stops by
+default. Exactly one later drain is allowed only for the already queued,
+pending, unclaimed, zero-attempt owner signal when its source, correlation,
+agent, task, lane, current formal attempt, terminal no-effect execution,
+delivered continuation, typed terminal failure, and business-nonterminal task
+all agree. The exception creates no work or authority, retries or replays no
+effect, cannot repeat for the same source, and fails closed on every drift.
+It does not rerun or revise r64 and does not authorize r65.
+
 These corrections do not authorize `preflight`, another closure-stage run,
 `run-diagnostic-live`, `run-live`, a numbered root, provider/MICU call, HPC
 job, browser campaign or formal attempt. Formal acceptance requires a

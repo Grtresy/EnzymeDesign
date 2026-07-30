@@ -377,6 +377,35 @@ def test_hpc_runner_adapter_reserves_dispatches_and_inspects_exact_run() -> None
     assert sent["runspec"]["metadata"]["openzyme"]["session_id"] == "sess_001"
 
 
+def test_hpc_runner_adapter_preserves_lowercase_sealed_error_code() -> None:
+    class FailedRunnerServer(FakeRunnerServer):
+        def inspect_reserved_execution(self, run_id):  # type: ignore[no-untyped-def]
+            return {
+                "run_id": run_id,
+                "status": "failed",
+                "selected_mode": "ssh",
+                "phase": "terminal",
+                "effect_certainty": "no_effect",
+                "retry_eligibility": "terminal",
+                "reconciliation_required": False,
+                "retryable": False,
+                "runner_attempt_receipt_digest": "sha256:" + "2" * 64,
+                "error_code": "transport_connect_failed",
+                "artifacts": {},
+            }
+
+    adapter = HpcRunnerExecutionAdapter(server=FailedRunnerServer())
+
+    observation = adapter.inspect_reserved_execution(
+        run_id="reserved_run_001"
+    )
+
+    assert observation.status == "failed"
+    assert observation.error_code == "transport_connect_failed"
+    assert observation.effect_certainty == "no_effect"
+    assert observation.retry_eligibility == "terminal"
+
+
 def test_hpc_runner_adapter_recovers_only_an_exact_terminal_reserved_run() -> None:
     server = FakeRunnerServer()
     adapter = HpcRunnerExecutionAdapter(server=server)

@@ -244,6 +244,16 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   unknown effect/authority/fencing 等负控不变。历史 migration 表保留兼容，但 runtime 不再
   读写或投影。
 
+  r64 追加修正记录：旧 runner closed result 丢失
+  `transport_connect_failed/no_effect`，Host 又以 local failed `Run` 抢先覆盖真实 cause；
+  AOX failure evidence 只带 probe subset，driver 还在 exact recoverable owner wake 已排队时
+  立即停止。当前 runner attempt 封存 safe terminal code/effect/retry，runner observation
+  成为 runner-backed execution 的唯一 causal input；AOX 以一份 bounded
+  formal/probe operation facts 服务 observation/evidence。failed supervision 默认不变，
+  仅在 attempt、operation、execution、continuation、failure、task 与 session 内唯一
+  pending zero-attempt owner signal 全部 exact 时允许一次 later drain。该 handoff 不创建
+  recovery machine、不 replay effect、不选择 agent 策略，任何 drift 仍 fail closed。
+
 - [x] Exact-occurrence AOX gate 把任何中间试错永久等同于最终 scientific failure。
 
   证据：历史 `aox_blank_world_attempt_bundle@2` 以 exact occurrence/history poison

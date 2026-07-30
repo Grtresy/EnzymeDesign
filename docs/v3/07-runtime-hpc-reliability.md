@@ -51,6 +51,10 @@ callback 和 recovery path 的 raw save 会在 repository boundary 被拒绝。
 Runner 的 `runner_attempt@1` 冻结 run、operation/execution、approval、RunSpec、route、
 expected outputs、input、effective config、transport identity 与 policy digest。它提供
 phase/effect/recovery 证据，但不成为 task、approval 或 Host execution 的并列 reducer。
+terminal closed metadata 必须同时带 sealed status、safe machine error code、effect
+certainty 与 retry eligibility；历史 sparse metadata 可由同一 sealed attempt 补齐，但
+present conflict 不能被覆盖。Host/adapter 只投影 closed safe fields，不能发布 raw
+exception、stderr、target、credential、command、locator 或 path。
 
 ## 3. 五个彼此独立的 authority boundary
 
@@ -185,6 +189,14 @@ policy 派生 identity，并为每个 identity 持有隔离的 OpenSSH ControlMa
 Transport responses 只公开 closed phase/effect/retry facts、opaque run/artifact refs 与安全
 计数；target/user、ControlPath/generation、command、remote/Host path、PID/job id、credential、
 private receipt 与 raw log 保持 Host-private。
+
+runner-backed Host route 已存在 exact reservation 时，runner inspect 先于任何 Host-local
+`Run` failure shortcut。sealed pre-dispatch `transport_connect_failed/no_effect` 是
+execution 的 causal source；它原样投影到
+`ControlledOperationExecution`、compatibility operation、continuation 与
+`FailureObservation`。本地 `Run` 只在 runner success 后参与 result
+materialization/recovery。typed cause 缺失、非法或与 sealed attempt 冲突时 fail closed，
+不得回退成 generic `durable_hpc_terminal_failure`、猜测 effect 或自动重发。
 
 ## 7. Generic mutation quiescence
 

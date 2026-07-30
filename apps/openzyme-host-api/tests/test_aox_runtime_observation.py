@@ -215,6 +215,11 @@ def test_formal_product_readiness_waits_for_closed_attempt(
         ),
         engine_documents=records(),
         failure_observations=records(),
+        controlled_operation_executions=records(),
+        continuation_states=records(),
+        scientific_attempt_bindings=SimpleNamespace(
+            attempt_for_operation=lambda _operation_id: None
+        ),
     )
 
     @contextmanager
@@ -767,6 +772,7 @@ def test_actionable_failures_are_ordered_by_causal_time_not_category(
                     operation_id="operation_later_failure",
                     status=SimpleNamespace(value="failed"),
                     error_code="later_operation_failure",
+                    created_at="2026-07-30T00:00:03Z",
                     updated_at="2026-07-30T00:00:03Z",
                 ),
             )
@@ -786,6 +792,11 @@ def test_actionable_failures_are_ordered_by_causal_time_not_category(
         ),
         engine_documents=records((finish,)),
         failure_observations=records((failure,)),
+        controlled_operation_executions=records(),
+        continuation_states=records(),
+        scientific_attempt_bindings=SimpleNamespace(
+            attempt_for_operation=lambda _operation_id: None
+        ),
     )
 
     @contextmanager
@@ -856,6 +867,11 @@ def test_failure_task_projection_is_bounded_with_digest_metadata(
         agents=records(),
         engine_documents=records(),
         failure_observations=records(),
+        controlled_operation_executions=records(),
+        continuation_states=records(),
+        scientific_attempt_bindings=SimpleNamespace(
+            attempt_for_operation=lambda _operation_id: None
+        ),
     )
 
     @contextmanager

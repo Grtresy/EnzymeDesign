@@ -628,9 +628,25 @@ The sealed `aox_browser_approval_receipt@2` SHALL record mode/channel/Host proce
 - **WHEN** one live sandbox turn requests multiple controlled-operation approvals in sequence before its drain can return
 - **THEN** the driver resolves each approval exactly once under the fixed browser/auto policy, never opens a second concurrent drain, joins the original worker, and seals request-start order rather than response-completion order
 
-#### Scenario: Stop before a failed turn's queued wakeup
-- **WHEN** the one signal claimed by a drain commits a failed controlled operation, sandbox run, or explicit task finish and queues a master wakeup
-- **THEN** the drain returns, the driver preserves that first failure, issues no later drain for the session, creates no replacement task or controlled operation, and seals the queued wakeup only as failure evidence
+#### Scenario: Stop before a failed turn's unrelated queued wakeup
+- **WHEN** the one signal claimed by a drain commits a failed sandbox run or explicit task finish, or a controlled-operation failure lacks the exact recoverable owner-handoff contract
+- **THEN** the drain returns, the driver preserves that first failure, issues no later drain for the session, creates no replacement task or controlled operation, and seals any queued wakeup only as failure evidence
+
+#### Scenario: Continue once through an exact recoverable controlled-operation handoff
+- **WHEN** one formal operation has an exact terminal execution and continuation whose canonical failure is `controlled_effect/agent_can_replan/no_effect/terminal`, its task remains business-nonterminal, and exactly one unclaimed zero-attempt `engine_completed` signal binds the same source, correlation, owner, task, lane, and current scientific attempt
+- **THEN** the driver preserves the failure, issues exactly one later bounded drain that may claim only that existing owner wake, creates no signal/task/operation/attempt/approval/authority, and leaves the agent free to replan without retrying or replaying the failed effect
+
+#### Scenario: Reject an unsafe controlled-operation handoff
+- **WHEN** the candidate failure or owner wake is missing, duplicated, mismatched, claimed, cancelled, previously consumed, cross-attempt, nonterminal, retryable, dispatch-in-doubt, or not proven no-effect
+- **THEN** the driver returns the original failed observation without another drain or replacement work
+
+#### Scenario: Preserve one runner-to-Host causal fact
+- **WHEN** a sealed runner attempt terminates before dispatch with `transport_connect_failed/no_effect`
+- **THEN** closed runner metadata, execution adapter, Host durable observation, controlled-operation execution, continuation failure, runtime observation, and failure evidence preserve that exact safe error/effect pair rather than replacing it with a generic Host failure
+
+#### Scenario: Merge formal and probe operation facts
+- **WHEN** probe operations completed and later formal operations include a failure
+- **THEN** diagnostic and failure evidence consume one bounded canonical operation projection with explicit `probe` or `formal` scope, total count, digest, and truncation metadata instead of exposing only the successful probe subset
 
 #### Scenario: Continue only through the Host-finalized transition owner wake
 - **WHEN** the claimed teammate successfully requests attempt admission or closure and retires its writer turn

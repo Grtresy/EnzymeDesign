@@ -9,6 +9,7 @@ import uuid
 
 from .attempts import receipt_digest
 from .attempts import runner_phase_precedes
+from .attempts import safe_runner_exception_code
 from .attempts import RunnerAttempt
 from .attempts import RunnerAttemptError
 from .attempts import RunnerAttemptJournal
@@ -486,6 +487,8 @@ class SSHRunner:
         error_code: str,
     ) -> RunResult:
         metadata = {
+            "status": "failed",
+            "error_code": error_code,
             "runner_phase": attempt.phase.value,
             "effect_certainty": attempt.effect_certainty.value,
             "retry_eligibility": attempt.retry_eligibility.value,
@@ -671,20 +674,24 @@ class SSHRunner:
                         error_code="DISPATCH_IN_DOUBT",
                     )
                 if attempt.state is RunnerAttemptState.TERMINAL:
+                    fallback = (
+                        "PRE_EFFECT_RECOVERY_EXHAUSTED"
+                        if attempt.safe_failure_code
+                        == "pre_effect_recovery_exhausted"
+                        else (
+                            "PREFLIGHT_FAILED"
+                            if isinstance(exc, PreflightError)
+                            else "PRE_EFFECT_RUNNER_FAILED"
+                        )
+                    )
                     return self._closed_attempt_result(
                         spec,
                         run_id=spec.run_id,
                         remote_run_dir=self._remote_run_dir(spec.run_id),
                         attempt=attempt,
-                        error_code=(
-                            "PRE_EFFECT_RECOVERY_EXHAUSTED"
-                            if attempt.safe_failure_code
-                            == "pre_effect_recovery_exhausted"
-                            else (
-                                "PREFLIGHT_FAILED"
-                                if isinstance(exc, PreflightError)
-                                else "PRE_EFFECT_RUNNER_FAILED"
-                            )
+                        error_code=safe_runner_exception_code(
+                            exc,
+                            fallback=fallback,
                         ),
                     )
             raise
@@ -710,9 +717,14 @@ class SSHRunner:
             return
         if attempt.effect_certainty is RunnerEffectCertainty.NO_EFFECT:
             failure_code = attempt.safe_failure_code or (
-                "deterministic_preflight_failed"
-                if isinstance(exc, PreflightError)
-                else "pre_effect_runner_failed"
+                safe_runner_exception_code(
+                    exc,
+                    fallback=(
+                        "deterministic_preflight_failed"
+                        if isinstance(exc, PreflightError)
+                        else "pre_effect_runner_failed"
+                    ),
+                )
             )
             self.attempt_journal.transition(
                 run_id,

@@ -587,6 +587,7 @@ class _FakeReservedRunner:
         self.effect_certainty = "no_effect"
         self.retry_eligibility = "same_phase_safe"
         self.reconciliation_required = False
+        self.error_code: str | None = None
         self.dispatch_in_doubt = dispatch_in_doubt
         self.reserve_count = 0
         self.submit_count = 0
@@ -646,6 +647,7 @@ class _FakeReservedRunner:
             reconciliation_required=self.reconciliation_required,
             retryable=self.retry_eligibility
             in {"same_phase_safe", "verify_then_retry"},
+            error_code=self.error_code,
             runner_attempt_receipt_digest="sha256:" + "b" * 64,
         )
 
@@ -1049,6 +1051,31 @@ def test_hpc_route_preserves_direct_ssh_dispatch_ambiguity() -> None:
     assert reconciled.kind is DurableRouteObservationKind.RECONCILE_REQUIRED
     assert runner.submit_count == 1
     assert runner.recover_count == 0
+
+
+def test_hpc_route_prefers_exact_runner_cause_over_generic_local_run() -> None:
+    adapter, execution, request, runner = _hpc_route_fixture()
+    runner.status = "failed"
+    runner.effect_certainty = "no_effect"
+    runner.retry_eligibility = "terminal"
+    runner.error_code = "transport_connect_failed"
+    with adapter.repository_scope_factory() as repositories:
+        repositories.runs.records["run_local_failed"] = SimpleNamespace(
+            run_id="run_local_failed",
+            session_id=execution.session_id,
+            invocation_id=f"inv_sandbox_adapter_{execution.operation_id}",
+            approval_id=execution.approval_id,
+            runner_run_id=execution.backend_handle_ref,
+            status=RunStatus.FAILED,
+        )
+
+    result = adapter.poll(execution, request)
+
+    assert result.kind is DurableRouteObservationKind.TERMINAL_FAILURE
+    assert result.error_code == "transport_connect_failed"
+    assert result.effect_certainty is ExternalEffectCertainty.NO_EFFECT
+    assert result.retry_eligibility is RetryEligibility.TERMINAL
+    assert runner.submit_count == 0
 
 
 def test_hpc_route_bounds_host_pre_effect_recovery_on_same_handle() -> None:

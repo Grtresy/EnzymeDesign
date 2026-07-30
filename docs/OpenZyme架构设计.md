@@ -790,6 +790,23 @@ transition，不能擦除该 turn 内已经持久化的 controlled-operation eff
 failure fields 保持不变。source-bound master wakeup 去重，并从 canonical failure observation
 和当前 selection evaluation 构造 bounded recovery facts。
 
+runner-backed controlled operation 存在 exact runner reservation 时，Host 先读取 sealed
+runner terminal observation；本地 `Run` 只参与成功 result 的 materialization/recovery，
+不能覆盖 runner causal source。closed attempt 公开 safe terminal status/error/effect/retry，
+因此 pre-dispatch `transport_connect_failed/no_effect` 原样贯穿 execution、operation、
+continuation 与 `FailureObservation`，private transport diagnostic 仍不投影。AOX 从
+canonical operation、唯一 execution/continuation、attempt binding 与 exact failure 生成一份
+有界 `probe|formal` operation facts，observation、diagnostic 与 failure evidence 共用其
+count/digest/truncated 元数据。
+
+controlled-operation failed observation 默认停止。唯一 bounded handoff 是：当前 formal
+attempt、terminal no-effect execution、delivered continuation、typed
+`controlled_effect/agent_can_replan/terminal` failure、业务非终态 owner task，以及整个
+session 唯一 pending/unclaimed/zero-attempt `engine_completed` signal 的
+source/correlation/agent/task/lane 全部 exact。driver 只允许下一次既有 drain 消费该 wake
+一次；不创建 authority/work、retry/replay effect 或规定策略。任何缺失、重复、claimed、
+cross-bound、unknown-effect 或 dispatch-in-doubt 事实都保持原 failed stop。
+
 Core 为每个 `AgentRuntimeOutcome` 生成 immutable typed
 `AgentRuntimeOutcomeSettlement`。闭集 disposition 只有 signal completed、signal failed、
 waiting approval 和 budget-replan handoff；budget handoff 在同一个短 repository
@@ -1066,6 +1083,7 @@ Live gate 解释：
   接受历史 blocked/resume/blocked receipts、同刻矛盾 fail closed，按规范化 causal
   timestamp 与 stable id 选择当前 operation/task/sandbox cause，并把同一有界 task/evidence
   facts 直接交给 failure evidence，不再二次读库。该 correction 同样不授权任何新 live action。
+- AOX r64 同样是永久 diagnostic NO-GO。独立 probe 六项 operation 完成；formal 前五项完成，HMMalign 在 dispatch 前因 SSH ControlMaster connect 失败。sealed runner attempt 已证明 `transport_connect_failed/no_effect`，旧 closed metadata/adapter/Host projection 却把它压成 `durable_hpc_terminal_failure/terminal_known`；continuation 已形成 `controlled_effect/agent_can_replan` failure 并排队 exact `engine_completed` owner wake，driver 仍立即停止，failure evidence 又只保留 probe facts。forward correction 统一 SSH/Slurm sealed terminal metadata 与 runner-first Host causal projection，以一份 bounded `probe|formal` operation facts 服务 observation/evidence，并只在 exact attempt/operation/execution/continuation/failure/task 与整个 session 唯一 pending zero-attempt owner signal 闭合时允许一次 later drain。它不重试/replay、创建 work/authority 或改判 r64；本地 Phase 2 不授权 r65/live/MICU/provider/HPC/Chrome。
 - r59 closure-stage isolated live diagnostic 不属于 `rNN` successor，也不改判上述 NO-GO。它只读限定原 source 并在 fresh root 恢复 cursor 614 等价投影，以 production MICU/runtime/supervision/browser 边界单测 executor → reporter → master closure；source operation universe 不扩张，source-linked report 通过 reporter `task.finish` 同时绑定 published report ref 与 research 已采用的 canonical PubMed artifact ref，而不是解析或规定报告文字。primary PubMed artifact/task/invocation/source 的 exact nullable lane lineage 必须由 source qualifier、reconstruction receipt 与 independent verifier 共同证明；fresh execution lane 不得污染 session-scoped research。当前 `aox_closure_stage_child_evidence@3` / `aox_closure_stage_live_result@3` 把 authority/process 的外层 `run_attempt_id` 与 control-plane closure/scope 的内层 `scientific_attempt_id` 分型，并要求 `workspace.scientific_evidence.operations`、terminal projection/closure universe、reconstruction target graph 与 parity target supervision contract 交叉闭合；不得从 diagnostic `runtime_state` 兼容猜测 operation，也不得用 hand-written count 代替证据。结果永久 `acceptance_eligible=false`，没有 formal bundle、reducer、promotion、push 或 numbered follow-on。其 operator contract 见 `docs/v3/aox-closure-stage-live-diagnostic.md`
 - lifecycle repair commit `c3c560dd6ede54958398fb3e55d5cd62cc956ad1` 的首个 fresh non-`rNN` successor 同样是永久 diagnostic failure。plan `sha256:47ebfa37d653fa51c61eb304b3df620033d57f99aee6a3fcc88ae2e396b861ab` 只消费一次；research/execution 已完成，但 master 从 executor-scoped historical compaction 读到旧 workflow ref，在自己的 empty explicit focus 下调用 `task.delegate`，正确得到 `workflow_ref_not_authorized/terminal_known/agent_can_replan`。下一 call 只叙述“省略 refs”而未执行，report task 保持 ready/unassigned；3 个 command 推进 signal，随后 117 个 replay-safe empty drain 以 generic exhaustion 结束。decision `sha256:eb70608e595d64c785227e4c05b46334a3996d853177341f2da729d4bf9c1abc`、fatal `sha256:27ae166969295685ed56418e6b8abc404c7e3fff88884f5e85c1fe944b7723be` 与全部 root/authority 不可复用。随后曾加入 turn-local recovery obligation 和 AOX prose-response veto；2026-07-28 的 control-boundary simplification 已认定两者把策略判断误升格为 Harness fatal，并从现行实现与合同删除。保留的修复只有 authority-free/scope-correct compaction、canonical tool/domain guards 与两次一致 no-wakeup diagnostic；历史 plan 不因此获得复用或重试资格
 - repair commit `4bf4c4244fae68beff8e5d47717e83824ff2367e` 的 fresh non-`rNN` plan `sha256:7394c5200582b114a72fa08b0711dc993f4c7164dd66c1fb20dd1cf837060ae2` 已且仅已消费一次。它证明 authority-free prompt 与 durable handoff 路径：master 的 `task.delegate` 使用 `workflow_refs=[]`，reporter 发布 `report_16937278db9c` 并完成 canonical report task，research/execution/report 三 task 全部 completed；master 在同一 response 写出终答与 `scientific.attempt.close`，产生 closure response 和 immutable closure `attempt_closure_a2f78d1fd2199e239696b99e`，cursor `263` 为 `scientific.attempt.closed`。5 个 runtime command 各处理 1 条 signal，零 empty drain；该事实不再被解释为已删除 response veto/recovery matcher 的有效性证明。旧 terminal-command coordinator 随后在 attempt scope 已 `freezing`、post scope 尚未 open 的 bounded rollover window 申请 observer，被 `mutation_writer_admission_closed` 后错误归类为 `mutation_driver_writer_identity_invalid`；decision `sha256:470df988b817867c5fb80b859fd60c414d99a873e66a839283beb13fe1bef237` 与 fatal `sha256:a3c4a24fcb6e9342dc11faa48bdb393481c0c9e1f4a1b9559c83b4fada0e8123` 永久 non-acceptance。post-live correction 只对 exact authority/attempt、zero-open、无 competing scope 的 `freezing|quiescent|sealed` 状态在同一 command deadline 内等待；其他 identity/scope 错误仍 fail closed，超时为 `scientific_attempt_scope_rollover_stalled`。本 plan、target、MICU 与证据不可复用，该 correction 未经第二次 live 验证且不自行产生新 authority

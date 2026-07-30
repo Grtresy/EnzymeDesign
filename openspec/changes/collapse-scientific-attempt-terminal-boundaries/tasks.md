@@ -81,3 +81,10 @@
 - [x] 14.1 Run focused Core/Host tests, ruff, strict OpenSpec validation, and the non-live eval
 - [x] 14.2 Run the exact-worktree non-live mainline gate and inspect production/test line-count plus stale symbols
 - [x] 14.3 Confirm no r64/live/provider/HPC/MICU/Chrome action occurred, review the final diff, create one local Conventional Commit, and leave the worktree clean
+
+## 15. Close the r64 controlled-operation causal handoff
+
+- [x] 15.1 Preserve exact sealed runner `transport_connect_failed/no_effect` evidence through one runner-to-Host causal projection without exposing private transport diagnostics or adding retry/replay behavior
+- [x] 15.2 Project one bounded canonical formal/probe operation-facts set and reuse it across AOX observation, diagnostic raw facts, and failure evidence
+- [x] 15.3 Allow exactly one later drain only for the unique exact source-bound zero-attempt owner wake of a current `controlled_effect/agent_can_replan/no_effect/terminal` failure; fail closed on every identity, lifecycle, effect, authority, duplicate, claim, or replay drift
+- [x] 15.4 Add runner/adapter/Host production-composition and historical-SQLite controls, synchronize OpenSpec and stable architecture docs, run only non-live validation, commit locally, and stop before r65/live/MICU/provider/HPC/Chrome

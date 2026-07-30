@@ -1067,6 +1067,48 @@ board 生成另一份投影。closure-stage live runtime summary 以 closed nest
 本 correction 只授权 local code/spec/docs、non-live verification 和本地 commit；
 不授权 r64、live authority/root、MICU、provider、HPC 或 Chrome。
 
+### 2026-07-30 r64 sealed runner cause and bounded controlled-failure handoff
+
+r64 的 commit、diagnostic authority、root、probe、formal SQLite、runner attempt 与
+decision 全部保留为永久 **NO-GO**。独立 probe 的六项 operation 全部完成；formal
+前五项 operation 完成，HMMalign 在 dispatch 前因 bounded SSH ControlMaster connect
+失败而终止。runner attempt 已封存 `transport_connect_failed` 且 effect 为
+`no_effect`，但旧的 closed-result metadata 未携带 terminal status/error code，
+execution adapter 又只接受大写 error code；Host 还先读取本地 failed Run，并把 cause
+压成 `durable_hpc_terminal_failure/terminal_known`。continuation 已按该错误写入
+`controlled_effect/agent_can_replan` FailureObservation，并排队一个 exact
+source/task/lane/agent 的 `engine_completed` owner wake；AOX driver 却在返回 failed
+observation 后立即停止，未给 canonical owner 一次 bounded replan turn。failure bundle
+同时只保留 probe operations，遗漏已发生的 formal operation facts。
+
+forward correction 让 SSH/Slurm closed attempt metadata 统一携带 sealed status、safe
+machine error code 与既有 effect/retry envelope；adapter 接受大小写安全 machine code，
+Host 在存在 exact runner reservation 时先以 runner observation 为 causal source，
+只在 result materialization 内使用本地 Run。runner 的 `transport_connect_failed` 与
+`no_effect` 因而原样进入 ControlledOperationExecution、ContinuationState、
+FailureObservation 与 agent-facing observation；缺失、非法或与 sealed attempt
+envelope 冲突的 runner projection fail closed，不回退成更宽泛的成功/重试语义。
+
+AOX observer 从 canonical ControlledOperation、唯一 execution、continuation、
+scientific-attempt binding 与 exact FailureObservation 生成一份 bounded operation
+facts projection，以 `scope=probe|formal`、count、digest 和 truncated 标记同时供
+session observation、diagnostic raw facts 与 failure evidence 使用。failure evidence
+合并 probe attestation 与 formal projection，不能再把 probe success 冒充全部 operation
+事实。
+
+failed observation 默认仍立即停止。唯一例外是 exact source-bound bounded handoff：
+当前 failure 必须是同一 formal attempt 中唯一 operation/execution/continuation 的
+`controlled_effect + agent_can_replan + no_effect + terminal`，task 仍为业务非终态，
+且恰有一个未 claim、attempt_count=0、source/correlation/agent/task/lane 全绑定的
+`engine_completed` owner signal。driver 只允许下一次既有 drain 消费该 signal 一次；
+它不创建 signal、operation、task、attempt、approval 或 authority，不 retry/replay
+failed effect，也不规定 agent 必须换用哪种策略。缺失、重复、claimed、cancelled、
+已消费、跨 identity、unknown-effect、dispatch-in-doubt、非 terminal 或 authority/
+attempt drift 均维持原 failed result，不再 drain。
+
+本 Phase 2 只授权 local code/spec/docs、non-live verification 和本地 commit；不授权
+r65、live authority/root、MICU、provider、HPC 或 Chrome。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

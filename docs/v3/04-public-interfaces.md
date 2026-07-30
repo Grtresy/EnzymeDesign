@@ -164,11 +164,13 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 turn barrier，分别只写 immutable admission request / closure request，并等待 requester
 writer 退休后的 Host finalization。两者成功时都退休当前 turn，并使同批后续 call 获得
 interrupted/no-effect settlement；失败时保持 non-terminal。transition handoff 不要求
-`task.finish`，也不改变业务 task status，也不排 ordinary teammate-to-master successor。
-Host 提交 admission、closure 或 typed finalizer failure 后，用唯一 source-bound signal
-唤醒原 assignee；runtime 必须在 provider 调用前从 canonical record 重建 bounded wake
-facts，并把 facts 放在 task prose 之前。master 与 teammate 使用同一 facts contract；
-master 的投影是 ephemeral system context，不写 conversation。
+`task.finish`，也不改变业务 task status。successful scientific transition 不会排队
+ordinary teammate-to-master successor；Host 提交 admission、closure 或 typed finalizer
+failure 后创建的 source-bound owner signal 是该 transition 的唯一 successor。runtime
+必须在 provider 调用前从 canonical record 重建 bounded wake facts，并把 facts 放在 task
+prose 之前。master 与 teammate 使用同一 facts contract；master 的投影是 ephemeral system
+context，不写 conversation。ordinary teammate completion 与 budget-replan 仍保留 generic
+master successor。
 普通 tool success、capability success、engine invocation terminal state 或 protocol
 message 也不能自动把业务 task 写为 completed / failed。
 

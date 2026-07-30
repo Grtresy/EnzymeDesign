@@ -32,6 +32,7 @@ _FAILED_OPERATION_STATUSES = frozenset({"failed", "recovery_failed"})
 _TERMINAL_TASK_STATUSES = frozenset({"completed", "failed", "cancelled", "blocked"})
 _FAILED_TASK_STATUSES = frozenset({"failed", "cancelled"})
 _MAX_FAILURE_TASK_FACTS = 256
+_MAX_FAILURE_OPERATION_FACTS = 256
 _MAX_FAILURE_EVIDENCE_REFS = 16
 _MAX_FAILURE_EVIDENCE_REF_CHARS = 512
 _MAX_FAILURE_EVIDENCE_REF_TOTAL_CHARS = 4_096
@@ -88,6 +89,10 @@ class AoxSessionRuntimeObservation:
     task_fact_count: int = 0
     task_facts_digest: str = ""
     task_facts_truncated: bool = False
+    operation_facts: tuple[dict[str, object], ...] = ()
+    operation_fact_count: int = 0
+    operation_facts_digest: str = ""
+    operation_facts_truncated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +108,23 @@ class _TaskExitProjection:
 @dataclass(frozen=True, slots=True)
 class _TaskFactProjection:
     exits: tuple[_TaskExitProjection, ...]
+    facts: tuple[dict[str, object], ...]
+    total_count: int
+    digest: str
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _OperationProjection:
+    fact: dict[str, object]
+    causal_failure: dict[str, object] | None
+    occurred_at: str
+    stable_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _OperationFactProjection:
+    operations: tuple[_OperationProjection, ...]
     facts: tuple[dict[str, object], ...]
     total_count: int
     digest: str
@@ -168,14 +190,39 @@ class AoxRuntimeObservationService:
             drafts = repositories.report_drafts.list_by_session(session_id)
             agents = repositories.agents.list_by_session(session_id)
             documents = repositories.engine_documents.list_by_session(session_id)
-            failures = {
-                failure.failure_id: failure
-                for failure in repositories.failure_observations.list_by_session(
+            executions = (
+                repositories.controlled_operation_executions.list_by_session(
                     session_id
                 )
+            )
+            continuations = repositories.continuation_states.list_by_session(
+                session_id
+            )
+            failure_records = repositories.failure_observations.list_by_session(
+                session_id
+            )
+            failures = {
+                failure.failure_id: failure
+                for failure in failure_records
+            }
+            attempt_bindings = {
+                operation.operation_id: (
+                    repositories.scientific_attempt_bindings.attempt_for_operation(
+                        operation.operation_id
+                    )
+                )
+                for operation in operations
             }
             messages = build_conversation_projection(repositories, session_id)
 
+        operation_projection = _project_operation_facts(
+            purpose=purpose,
+            operations=operations,
+            executions=executions,
+            continuations=continuations,
+            failures=failure_records,
+            attempt_bindings=attempt_bindings,
+        )
         task_projection = _project_current_task_exits(
             tasks=tasks,
             agents=agents,
@@ -183,7 +230,7 @@ class AoxRuntimeObservationService:
             failures=failures,
         )
         actionable_failure = _earliest_actionable_failure(
-            operations=operations,
+            operation_projection=operation_projection,
             task_projection=task_projection,
             sandbox_runs=sandbox_runs,
             active_suspension_task_ids=frozenset(
@@ -191,11 +238,12 @@ class AoxRuntimeObservationService:
             ),
         )
         if actionable_failure is not None:
-            return _observation_with_task_facts(
+            return _observation_with_facts(
                 state="failed",
                 blocker_code=actionable_failure.blocker_code,
                 barrier=barrier,
                 task_projection=task_projection,
+                operation_projection=operation_projection,
                 wrapper_code=actionable_failure.wrapper_code,
                 causal_failure=actionable_failure.causal_failure,
             )
@@ -203,19 +251,21 @@ class AoxRuntimeObservationService:
         if blocked_tasks:
             active_suspensions = set(barrier.active_durable_suspension_task_ids)
             if all(task.task_id in active_suspensions for task in blocked_tasks):
-                return _observation_with_task_facts(
+                return _observation_with_facts(
                     state="incomplete",
                     blocker_code=None,
                     barrier=barrier,
                     task_projection=task_projection,
+                    operation_projection=operation_projection,
                 )
 
         if not barrier.ready:
-            return _observation_with_task_facts(
+            return _observation_with_facts(
                 state="incomplete",
                 blocker_code=None,
                 barrier=barrier,
                 task_projection=task_projection,
+                operation_projection=operation_projection,
             )
 
         assistant_message = any(message.role == "assistant" for message in messages)
@@ -233,11 +283,12 @@ class AoxRuntimeObservationService:
                 and tasks_terminal
                 and assistant_message
             )
-            return _observation_with_task_facts(
+            return _observation_with_facts(
                 state="completed" if completed else "incomplete",
                 blocker_code=None,
                 barrier=barrier,
                 task_projection=task_projection,
+                operation_projection=operation_projection,
             )
 
         artifact_paths = {artifact.relative_path for artifact in artifacts}
@@ -256,17 +307,19 @@ class AoxRuntimeObservationService:
             and assistant_message
         )
         if product_ready and not formal_attempt_closed:
-            return _observation_with_task_facts(
+            return _observation_with_facts(
                 state="incomplete",
                 blocker_code="scientific_attempt_open",
                 barrier=barrier,
                 task_projection=task_projection,
+                operation_projection=operation_projection,
             )
-        return _observation_with_task_facts(
+        return _observation_with_facts(
             state="completed" if product_ready else "incomplete",
             blocker_code=None,
             barrier=barrier,
             task_projection=task_projection,
+            operation_projection=operation_projection,
         )
 
     @staticmethod
@@ -289,12 +342,13 @@ class AoxRuntimeObservationService:
             )
 
 
-def _observation_with_task_facts(
+def _observation_with_facts(
     *,
     state: Literal["completed", "failed", "incomplete"],
     blocker_code: str | None,
     barrier: RuntimeBarrierProjection,
     task_projection: _TaskFactProjection,
+    operation_projection: _OperationFactProjection,
     wrapper_code: str | None = None,
     causal_failure: dict[str, object] | None = None,
 ) -> AoxSessionRuntimeObservation:
@@ -308,6 +362,10 @@ def _observation_with_task_facts(
         task_fact_count=task_projection.total_count,
         task_facts_digest=task_projection.digest,
         task_facts_truncated=task_projection.truncated,
+        operation_facts=operation_projection.facts,
+        operation_fact_count=operation_projection.total_count,
+        operation_facts_digest=operation_projection.digest,
+        operation_facts_truncated=operation_projection.truncated,
     )
 
 
@@ -359,6 +417,249 @@ def _causal_timestamp(value: object, *, identity: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
+def _project_causal_failure(failure: object) -> dict[str, object]:
+    return {
+        "failure_id": failure.failure_id,
+        "error_code": failure.error_code,
+        "failure_class": failure.failure_class.value,
+        "recoverability": failure.recoverability.value,
+        "effect_certainty": failure.effect_certainty.value,
+        "retry_eligibility": failure.retry_eligibility.value,
+        "actor_kind": failure.actor_kind.value,
+        "source_kind": failure.source_kind,
+        "source_ref": failure.source_ref,
+        "source_version": failure.source_version,
+        "phase": failure.phase,
+        "safe_summary": _bounded_failure_text(failure.safe_summary),
+        "safe_hint": (
+            None
+            if failure.safe_hint is None
+            else _bounded_failure_text(failure.safe_hint)
+        ),
+        **_bounded_evidence_refs(failure.evidence_refs),
+        "created_at": failure.created_at,
+    }
+
+
+def _causal_failure_for_operation(
+    *,
+    operation: object,
+    execution: object | None,
+    continuation: object | None,
+    failures: list[object],
+) -> dict[str, object] | None:
+    if execution is None or continuation is None:
+        return None
+    operation_id = str(getattr(operation, "operation_id", "") or "")
+    execution_id = str(getattr(execution, "execution_id", "") or "")
+    continuation_id = str(getattr(continuation, "continuation_id", "") or "")
+    terminal_outcome = getattr(execution, "terminal_outcome", None)
+    expected_facts = {
+        "continuation_id": continuation_id,
+        "operation_id": operation_id,
+        "execution_id": execution_id,
+        "terminal_outcome": (
+            None if terminal_outcome is None else terminal_outcome.value
+        ),
+    }
+    expected_source_version = (
+        f"execution:{execution_id}:{getattr(execution, 'state_version', '')}"
+    )
+    candidates = [
+        failure
+        for failure in failures
+        if (
+            failure.source_kind == "continuation"
+            and failure.source_ref == continuation_id
+            and failure.source_version == expected_source_version
+            and failure.session_id == getattr(operation, "session_id", None)
+            and failure.task_id == getattr(operation, "task_id", None)
+            and failure.lane_id == getattr(operation, "lane_id", None)
+            and failure.agent_id
+            == getattr(continuation, "originating_agent_id", None)
+            and dict(failure.facts) == expected_facts
+            and failure.error_code == getattr(execution, "error_code", None)
+            and failure.error_code == getattr(operation, "error_code", None)
+        )
+    ]
+    if not candidates:
+        return None
+    if len(candidates) != 1:
+        raise AoxRuntimeObservationError(
+            "controlled_operation_failure_binding_ambiguous",
+            "controlled operation resolves to multiple canonical causal failures",
+            details={"operation_id": operation_id},
+        )
+    return {
+        **_project_causal_failure(candidates[0]),
+        "operation_id": operation_id,
+        "execution_id": execution_id,
+        "continuation_id": continuation_id,
+    }
+
+
+def _project_operation_facts(
+    *,
+    purpose: Literal["probe", "formal"],
+    operations: list[object],
+    executions: list[object],
+    continuations: list[object],
+    failures: list[object],
+    attempt_bindings: dict[str, str | None],
+) -> _OperationFactProjection:
+    executions_by_operation: dict[str, list[object]] = {}
+    for execution in executions:
+        executions_by_operation.setdefault(
+            str(getattr(execution, "operation_id", "") or ""),
+            [],
+        ).append(execution)
+    continuations_by_operation: dict[str, list[object]] = {}
+    for continuation in continuations:
+        continuations_by_operation.setdefault(
+            str(getattr(continuation, "operation_id", "") or ""),
+            [],
+        ).append(continuation)
+
+    projected: list[_OperationProjection] = []
+    all_facts: list[dict[str, object]] = []
+    for operation in sorted(
+        operations,
+        key=lambda item: (
+            _causal_timestamp(
+                getattr(item, "created_at", ""),
+                identity=(
+                    "operation:"
+                    + str(getattr(item, "operation_id", "") or "")
+                ),
+            ),
+            str(getattr(item, "operation_id", "") or ""),
+        ),
+    ):
+        operation_id = str(getattr(operation, "operation_id", "") or "")
+        execution_candidates = executions_by_operation.get(operation_id, [])
+        continuation_candidates = continuations_by_operation.get(operation_id, [])
+        projection_error_code = None
+        if len(execution_candidates) > 1:
+            projection_error_code = "controlled_operation_execution_ambiguous"
+        elif len(continuation_candidates) > 1:
+            projection_error_code = "controlled_operation_continuation_ambiguous"
+        execution = (
+            execution_candidates[0]
+            if len(execution_candidates) == 1
+            else None
+        )
+        continuation = (
+            continuation_candidates[0]
+            if len(continuation_candidates) == 1
+            else None
+        )
+        if execution is not None and (
+            getattr(execution, "session_id", None)
+            != getattr(operation, "session_id", None)
+            or getattr(execution, "task_id", None)
+            != getattr(operation, "task_id", None)
+            or getattr(execution, "lane_id", None)
+            != getattr(operation, "lane_id", None)
+        ):
+            projection_error_code = "controlled_operation_execution_identity_drift"
+        if continuation is not None and (
+            getattr(continuation, "session_id", None)
+            != getattr(operation, "session_id", None)
+            or getattr(continuation, "sandbox_run_id", None)
+            != getattr(operation, "sandbox_run_id", None)
+            or getattr(continuation, "originating_task_id", None)
+            != getattr(operation, "task_id", None)
+            or getattr(continuation, "originating_lane_id", None)
+            != getattr(operation, "lane_id", None)
+        ):
+            projection_error_code = (
+                "controlled_operation_continuation_identity_drift"
+            )
+
+        fact: dict[str, object] = {
+            "scope": purpose,
+            "operation_id": operation_id,
+            "task_id": getattr(operation, "task_id", None),
+            "lane_id": getattr(operation, "lane_id", None),
+            "sandbox_run_id": getattr(operation, "sandbox_run_id", None),
+            "sdk_module": getattr(operation, "sdk_module", None),
+            "function_name": getattr(operation, "function_name", None),
+            "selected_backend": getattr(operation, "selected_backend", None),
+            "status": operation.status.value,
+            "error_code": getattr(operation, "error_code", None),
+            "created_at": getattr(operation, "created_at", None),
+            "updated_at": getattr(operation, "updated_at", None),
+        }
+        attempt_id = attempt_bindings.get(operation_id)
+        if attempt_id is not None:
+            fact["attempt_id"] = attempt_id
+        if execution is not None:
+            fact.update(
+                {
+                    "execution_id": execution.execution_id,
+                    "execution_state": execution.lifecycle_state.value,
+                    "terminal_outcome": (
+                        None
+                        if execution.terminal_outcome is None
+                        else execution.terminal_outcome.value
+                    ),
+                    "effect_certainty": execution.effect_certainty.value,
+                    "retry_eligibility": execution.retry_eligibility.value,
+                    "execution_error_code": execution.error_code,
+                    "execution_state_version": execution.state_version,
+                }
+            )
+        if continuation is not None:
+            fact.update(
+                {
+                    "continuation_id": continuation.continuation_id,
+                    "continuation_status": continuation.status.value,
+                    "continuation_delivery_state": (
+                        continuation.delivery_state.value
+                    ),
+                    "originating_agent_id": continuation.originating_agent_id,
+                }
+            )
+        causal_failure = (
+            None
+            if projection_error_code is not None
+            else _causal_failure_for_operation(
+                operation=operation,
+                execution=execution,
+                continuation=continuation,
+                failures=failures,
+            )
+        )
+        if causal_failure is not None:
+            fact["failure_ref"] = causal_failure["failure_id"]
+            fact["failure_binding"] = "exact"
+        if projection_error_code is not None:
+            fact["projection_error_code"] = projection_error_code
+
+        all_facts.append(fact)
+        projected.append(
+            _OperationProjection(
+                fact=fact,
+                causal_failure=causal_failure,
+                occurred_at=(
+                    str(causal_failure["created_at"])
+                    if causal_failure is not None
+                    else str(getattr(operation, "updated_at", "") or "")
+                ),
+                stable_id=f"operation:{operation_id}",
+            )
+        )
+
+    facts = tuple(all_facts[:_MAX_FAILURE_OPERATION_FACTS])
+    return _OperationFactProjection(
+        operations=tuple(projected),
+        facts=facts,
+        total_count=len(all_facts),
+        digest=canonical_digest(all_facts),
+        truncated=len(facts) != len(all_facts),
+    )
+
+
 def _causal_failure_for_finish(
     *,
     task: object,
@@ -380,25 +681,7 @@ def _causal_failure_for_finish(
     ):
         return None
     return {
-        "failure_id": failure.failure_id,
-        "error_code": failure.error_code,
-        "failure_class": failure.failure_class.value,
-        "recoverability": failure.recoverability.value,
-        "effect_certainty": failure.effect_certainty.value,
-        "retry_eligibility": failure.retry_eligibility.value,
-        "actor_kind": failure.actor_kind.value,
-        "source_kind": failure.source_kind,
-        "source_ref": failure.source_ref,
-        "source_version": failure.source_version,
-        "phase": failure.phase,
-        "safe_summary": _bounded_failure_text(failure.safe_summary),
-        "safe_hint": (
-            None
-            if failure.safe_hint is None
-            else _bounded_failure_text(failure.safe_hint)
-        ),
-        **_bounded_evidence_refs(failure.evidence_refs),
-        "created_at": failure.created_at,
+        **_project_causal_failure(failure),
         "task_finish_ref": str(getattr(finish, "document_id", "") or ""),
     }
 
@@ -595,24 +878,35 @@ def _project_current_task_exits(
 
 def _earliest_actionable_failure(
     *,
-    operations: list[object],
+    operation_projection: _OperationFactProjection,
     task_projection: _TaskFactProjection,
     sandbox_runs: list[object],
     active_suspension_task_ids: frozenset[str],
 ) -> _ActionableFailureCandidate | None:
     candidates: list[_ActionableFailureCandidate] = []
-    for operation in operations:
-        if operation.status.value not in _FAILED_OPERATION_STATUSES:
+    for operation in operation_projection.operations:
+        status = str(operation.fact.get("status") or "")
+        if status not in _FAILED_OPERATION_STATUSES:
             continue
-        operation_id = str(getattr(operation, "operation_id", "") or "")
+        projection_error_code = operation.fact.get("projection_error_code")
+        causal_failure = operation.causal_failure
         candidates.append(
             _ActionableFailureCandidate(
-                occurred_at=str(getattr(operation, "updated_at", "") or ""),
-                stable_id=f"operation:{operation_id}",
+                occurred_at=operation.occurred_at,
+                stable_id=operation.stable_id,
                 blocker_code=(
-                    str(getattr(operation, "error_code", "") or "")
-                    or "controlled_operation_failed"
+                    str(projection_error_code)
+                    if projection_error_code is not None
+                    else (
+                        str(causal_failure["error_code"])
+                        if causal_failure is not None
+                        else (
+                            str(operation.fact.get("error_code") or "")
+                            or "controlled_operation_failed"
+                        )
+                    )
                 ),
+                causal_failure=causal_failure,
             )
         )
 

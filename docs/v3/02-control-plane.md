@@ -346,6 +346,23 @@ durable supervision 的进展也是 owner-produced closed fact，而不是 actio
 
 `ControlledOperation.status/result/error` 对 durable owner 只是由唯一 transition service 在同一 transaction 中派生的兼容投影。immutable result handle 若承载 S12 adapter envelope，完整 envelope 只投影到 `adapter_result_envelope`，其中 exact object `bounded_summary` 单独投影到 `result_summary`；不得把外层 envelope 再嵌入 `result_summary`，否则 sandbox SDK 会看到错误的 wire shape。存在但非 object 的 `bounded_summary` 必须使 transition fail closed；没有该字段的 HPC run handle 与 terminal failure envelope 保持 direct summary 投影。provider callback 丢失后的 materialization 只能从同一 execution handle 已封存且实际 digest 复核通过的 request/observation transcript 重建相同 envelope，不得把 artifact count 通用摘要当作 provider result；closed schema、route/config/output identity、`8 MiB` control-document 或完整 canonical result envelope 的 `256 KiB` core 上限任一不满足即 terminal-known failure。inline summary 只是该完整 envelope 的一部分，bulk identities 必须留在 digest-bound artifacts；EBI HMMER 的 exact candidates 由 `provider_parsed/parsed_hits.csv` 承载而不复制进 summary。terminal-known observation 若不能通过 closed result validation，execution 直接以 `recovery_failed` 终结，不能回到 reconcile queue。raw repository save、legacy adapter、approval row、continuation 或 runtime signal 都不得成为第二个 dispatch/reducer owner。恢复边界由 effect certainty 决定：仅 `no_effect` 可做同 phase 有界恢复，`dispatch_in_doubt` 禁止 replay，`effect_known` 只查询 exact handle，`terminal_known` 只恢复 result/materialization。
 
+runner-backed execution 已存在 exact reservation 时，Host 必须先读取 runner 的 sealed
+terminal observation，再决定 execution transition；本地 `Run` 只参与成功 result 的
+materialization/recovery，不能先把 runner cause 压成 Host-local generic failure。runner
+attempt 的 closed public envelope 固定 terminal status、safe machine error code、
+effect certainty 与 retry eligibility，private target/path/command/raw transport diagnostic
+仍不投影。合法的 `transport_connect_failed/no_effect` 必须原样贯穿 execution、
+compatibility operation、continuation 与 exact `FailureObservation`；missing、非法或与
+sealed attempt 冲突的 typed cause fail closed，不回退成更宽泛的成功、terminal-known
+effect 或自动 retry。
+
+AOX 等 bounded consumer 若需要跨层读取 operation history，必须从 canonical
+`ControlledOperation + unique execution + continuation + scientific-attempt binding +
+FailureObservation` 联合投影一份 operation facts，而不是分别重读 workspace/runner/local
+Run。每个 fact 显式标记 `probe|formal` scope；投影公开 deterministic prefix、total count、
+canonical digest 与 truncation state。该 read model 不成为 reducer，也不授予 retry、
+replay、replacement operation 或 task terminal authority。
+
 Mutation scope 的 closure 顺序固定为 close admission/advance fence、显式等待全部 writer/descendant 退休、捕获两次一致的 bounded SQLite/event/external snapshot、签发 receipt、验证后 seal exact generation。runtime idle、空队列、lease expiry、HTTP 返回、timeout、disconnect 或 missing handle 不能推断 writer retirement；receipt/seal 也不表示 task completed。后续合法写入必须进入显式链接的新 generation。
 
 `MutationWriter` 的 session admission 必须把 scope 列表、唯一 open scope 证明、parent

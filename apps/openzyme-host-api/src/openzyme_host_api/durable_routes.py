@@ -78,6 +78,7 @@ _TOOLCHAIN_RUNTIME_IDENTITY_FIELDS = (
     "image_digest",
 )
 _SAFE_TOOLCHAIN_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$")
+_SAFE_RUNNER_ERROR_CODE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,95}$")
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PROVIDER_REQUEST_KEYS = frozenset(
     {
@@ -1112,9 +1113,6 @@ class HostHpcControlledOperationRouteAdapter:
         request: ControlledOperationDispatchRequest,
     ) -> DurableRouteObservation:
         try:
-            local = self._local_observation(execution)
-            if local is not None:
-                return local
             with self.repository_scope_factory() as repositories:
                 operation = self._require_operation(repositories, execution)
                 engine = self.engine_registry_factory(repositories).require("execution")
@@ -1146,14 +1144,6 @@ class HostHpcControlledOperationRouteAdapter:
                         context=_durable_host_context(repositories, execution),
                     )
                 observation = self._inspect_runner(runner, execution)
-                local = self._local_observation(
-                    execution,
-                    repositories=repositories,
-                    engine=engine,
-                    safe_receipt_digest=self._receipt(observation),
-                )
-                if local is not None:
-                    return local
                 return self._observation_from_runner(
                     execution=execution,
                     request=request,
@@ -1195,9 +1185,6 @@ class HostHpcControlledOperationRouteAdapter:
         request: ControlledOperationDispatchRequest,
     ) -> DurableRouteObservation:
         try:
-            local = self._local_observation(execution)
-            if local is not None:
-                return local
             with self.repository_scope_factory() as repositories:
                 operation = self._require_operation(repositories, execution)
                 engine = self.engine_registry_factory(repositories).require("execution")
@@ -1352,13 +1339,23 @@ class HostHpcControlledOperationRouteAdapter:
                 if effect == ExternalEffectCertainty.NO_EFFECT.value
                 else ExternalEffectCertainty.TERMINAL_KNOWN
             )
+            raw_error_code = getattr(observation, "error_code", None)
+            if raw_error_code is None:
+                error_code = "durable_hpc_terminal_failure"
+            elif (
+                isinstance(raw_error_code, str)
+                and _SAFE_RUNNER_ERROR_CODE.fullmatch(raw_error_code) is not None
+            ):
+                error_code = raw_error_code
+            else:
+                error_code = "durable_hpc_runner_causal_projection_invalid"
             terminal_outcome = (
                 ControlledOperationExecutionTerminalOutcome.CANCELLED
                 if status in {"cancelled", "canceled"}
                 else ControlledOperationExecutionTerminalOutcome.FAILED
             )
             return self._terminal_failure(
-                error_code="durable_hpc_terminal_failure",
+                error_code=error_code,
                 effect_certainty=certainty,
                 backend_handle_ref=execution.backend_handle_ref,
                 safe_receipt_digest=receipt,

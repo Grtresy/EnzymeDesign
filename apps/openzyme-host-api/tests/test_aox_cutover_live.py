@@ -23,10 +23,19 @@ import pytest
 
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
+from openzyme_domain import ApprovalRequest
+from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import ArtifactKind
 from openzyme_domain import ControlledOperation
+from openzyme_domain import ControlledOperationExecution
 from openzyme_domain import ControlledOperationExecutionLifecycle
+from openzyme_domain import ControlledOperationExecutionTerminalOutcome
+from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import ControlledOperationStatus
+from openzyme_domain import ContinuationDeliveryState
+from openzyme_domain import ContinuationResumeStrategy
+from openzyme_domain import ContinuationState
+from openzyme_domain import ContinuationStateStatus
 from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import FailureActorKind
 from openzyme_domain import FailureClass
@@ -36,6 +45,13 @@ from openzyme_domain import RetryEligibility
 from openzyme_domain import MutationScopeKind
 from openzyme_domain import MutationScopeState
 from openzyme_domain import MutationWriterKind
+from openzyme_domain import Lane
+from openzyme_domain import LaneStatus
+from openzyme_domain import SandboxImageCompatibility
+from openzyme_domain import SandboxRunRecord
+from openzyme_domain import SandboxRunStatus
+from openzyme_domain import SandboxWorkspaceRecord
+from openzyme_domain import SandboxWorkspaceStatus
 from openzyme_domain import ScientificAttemptScope
 from openzyme_domain import ScientificAttemptStatus
 from openzyme_domain import Session
@@ -47,10 +63,12 @@ from openzyme_domain import SessionReportStatus
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
 from openzyme_core import DurableEventRecord
+from openzyme_core import ContinuationWakeService
 from openzyme_core import EngineDocumentRecord
 from openzyme_core import MutationScopeService
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import ScientificAttemptError
+from openzyme_core import ScientificAttemptService
 from openzyme_core import scientific_attempt_authorization_identity
 from openzyme_core import verify_quiescence_evidence
 from openzyme_host_api import aox_cutover_live as live
@@ -69,7 +87,13 @@ from openzyme_host_api.aox_cutover_evidence import seal_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import verify_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import _report_publish_receipt_is_valid
 from openzyme_host_api.aox_scientific_contract import (
+    AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY,
+)
+from openzyme_host_api.aox_scientific_contract import (
     AOX_SELECTED_CHAIN_WORKFLOW_ID,
+)
+from openzyme_host_api.aox_scientific_contract import (
+    AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST,
 )
 from openzyme_host_api.aox_runtime_observation import (
     AoxRuntimeObservationService,
@@ -7069,6 +7093,516 @@ def test_r63_failure_projection_preserves_nested_task_states_and_finish_facts(
     assert execution["failure_ref"] == "failure_r63"
     report = next(item for item in task_facts if item["task_id"] == "task_report")
     assert report["business_exit"] == "not_terminal"
+
+
+def test_r64_historical_sqlite_preserves_typed_operation_and_exact_handoff(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "r64-shaped.sqlite3"
+    provider = SQLiteRepositoryProvider(str(database_path))
+    now = "2026-07-30T14:04:06+00:00"
+    session = Session.create(
+        session_id="sess_r64_projection",
+        project_id="aox-blank-world-cutover",
+        title="r64 projection",
+        objective="Preserve the sealed runner cause and owner handoff",
+    )
+    lane = Lane(
+        lane_id="lane_r64_projection",
+        session_id=session.session_id,
+        name="formal",
+        status=LaneStatus.CLAIMED,
+        cwd="/workspace",
+        branch_name=None,
+        claimed_ref="agent:executor:r64",
+        created_at=now,
+        updated_at=now,
+    )
+    task = Task.create(
+        task_id="task_r64_execution",
+        session_id=session.session_id,
+        subject="Execute formal AOX operations",
+        description="Replan from a proven no-effect transport failure",
+        status=TaskStatus.IN_PROGRESS,
+        kind="execution",
+        assigned_ref="agent:executor:r64",
+        lane_id=lane.lane_id,
+    )
+    agent = AgentMember(
+        member_id="member_r64_executor",
+        agent_id="agent:executor:r64",
+        session_id=session.session_id,
+        lane_id=lane.lane_id,
+        task_id=task.task_id,
+        name="executor",
+        role="executor",
+        status=AgentMemberStatus.IDLE,
+        parent_agent_id=None,
+        created_at=now,
+        updated_at=now,
+    )
+    workspace = SandboxWorkspaceRecord(
+        sandbox_workspace_id="workspace_r64",
+        session_id=session.session_id,
+        agent_member_id="member_r64_executor",
+        agent_id=agent.agent_id,
+        status=SandboxWorkspaceStatus.ATTACHED,
+        image_ref="image:r64",
+        image_digest=_digest("r64-image"),
+        image_version="1",
+        sandbox_protocol_version="1",
+        image_compatibility=SandboxImageCompatibility.COMPATIBLE,
+        manifest_version="sandbox_workspace_manifest@1",
+        focus_task_id=task.task_id,
+        focus_lane_id=lane.lane_id,
+        created_at=now,
+        last_attached_at=now,
+    )
+    with provider.write() as scope:
+        repositories = scope.repositories
+        repositories.sessions.save(session)
+        repositories.lanes.save(lane)
+        repositories.tasks.seed_fixture(task)
+        repositories.agents.save(agent)
+        repositories.sandbox_workspaces.save(workspace)
+        scientific = ScientificAttemptService(
+            repositories,
+            now=lambda: now,
+            workflow_contract_registry=(
+                AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
+            ),
+        )
+        authority = scientific.grant_authorization(
+            session_id=session.session_id,
+            task_id=task.task_id,
+            campaign_id="campaign_r64",
+            workflow_id=AOX_SELECTED_CHAIN_WORKFLOW_ID,
+            root_ref="attempts/r64",
+            grantor_kind="user",
+            grantor_ref="user:r64",
+            allowed_scopes=(ScientificAttemptScope.FORMAL,),
+            allowed_effect_classes=("provider", "hpc"),
+            allowed_providers=("provider:r64",),
+            allowed_hpc_targets=("hpc:r64",),
+            max_attempts=1,
+            max_micu=100,
+            max_cost_microunits=100,
+            max_wall_time_seconds=100,
+            expires_at="2026-07-31T00:00:00+00:00",
+            idempotency_key="grant-r64",
+        )
+        attempt = scientific.create_attempt(
+            envelope_id=authority.envelope_id,
+            session_id=session.session_id,
+            task_id=task.task_id,
+            lane_id=lane.lane_id,
+            campaign_id="campaign_r64",
+            workflow_id=AOX_SELECTED_CHAIN_WORKFLOW_ID,
+            scope=ScientificAttemptScope.FORMAL,
+            workflow_contract_digest=(
+                AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
+            ),
+            requested_effect_classes=("provider", "hpc"),
+            reserved_micu=10,
+            reserved_cost_microunits=10,
+            reserved_wall_time_seconds=10,
+            provider="provider:r64",
+            hpc_target="hpc:r64",
+            actor_ref=agent.agent_id,
+            idempotency_key="attempt-r64",
+        )
+        approval = ApprovalRequest(
+            approval_id="approval_r64",
+            session_id=session.session_id,
+            task_id=task.task_id,
+            lane_id=lane.lane_id,
+            kind="external_execution",
+            requested_action="run hmmalign",
+            status=ApprovalRequestStatus.APPROVED,
+            request_ref="operation_r64_hmmalign",
+            resolution_ref="user:r64",
+            created_at=now,
+            resolved_at=now,
+        )
+        sandbox_run = SandboxRunRecord(
+            sandbox_run_id="srun_r64",
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            task_id=task.task_id,
+            lane_id=lane.lane_id,
+            argv=("python", "workflow.py"),
+            argv_digest=_digest("r64-argv"),
+            cwd="/workspace",
+            env_digest=_digest("r64-env"),
+            status=SandboxRunStatus.COMPLETED,
+            exit_code=0,
+            created_at=now,
+            updated_at=now,
+            ended_at=now,
+        )
+        operation = ControlledOperation(
+            operation_id="op_r64_hmmalign",
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            sandbox_run_id=sandbox_run.sandbox_run_id,
+            task_id=task.task_id,
+            lane_id=lane.lane_id,
+            approval_id=approval.approval_id,
+            approval_state="approved",
+            logical_operation_key="bio_tools.hmmalign:r64",
+            operation_digest=_digest("r64-operation"),
+            params_digest=_digest("r64-params"),
+            backend_category="hpc",
+            sdk_module="bio_tools",
+            function_name="hmmalign",
+            route_policy_id="bio_tools.hmmalign.hpc:v1",
+            selected_backend="hpc",
+            owner_mode=ControlledOperationOwnerMode.DURABLE_ASYNC_V1,
+            status=ControlledOperationStatus.FAILED,
+            error_code="transport_connect_failed",
+            error_summary="The bounded SSH transport could not connect.",
+            created_at=now,
+            updated_at=now,
+        )
+        execution = ControlledOperationExecution(
+            execution_id="exec_r64_hmmalign",
+            operation_id=operation.operation_id,
+            session_id=session.session_id,
+            task_id=task.task_id,
+            lane_id=lane.lane_id,
+            approval_id=approval.approval_id,
+            owner_mode=ControlledOperationOwnerMode.DURABLE_ASYNC_V1,
+            operation_digest=operation.operation_digest,
+            approval_digest=_digest("r64-approval"),
+            route_policy_id=str(operation.route_policy_id),
+            selected_backend="hpc",
+            adapter_policy_id="host_s12_durable_adapter:r64",
+            input_identity_digest=_digest("r64-input"),
+            expected_output_contract_digest=_digest("r64-output"),
+            runtime_identity_digest=_digest("r64-runtime"),
+            lifecycle_state=ControlledOperationExecutionLifecycle.TERMINAL,
+            terminal_outcome=ControlledOperationExecutionTerminalOutcome.FAILED,
+            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+            retry_eligibility=RetryEligibility.TERMINAL,
+            dispatch_generation=1,
+            state_version=5,
+            fencing_token=1,
+            backend_handle_ref="runner_r64",
+            error_code="transport_connect_failed",
+            safe_error_summary="The bounded SSH transport could not connect.",
+            created_at=now,
+            updated_at=now,
+            terminal_at=now,
+        )
+        continuation = ContinuationState(
+            continuation_id="srun_r64:op_r64_hmmalign",
+            session_id=session.session_id,
+            operation_id=operation.operation_id,
+            sandbox_run_id=sandbox_run.sandbox_run_id,
+            approval_id=approval.approval_id,
+            status=ContinuationStateStatus.COMPLETED,
+            completed_at=now,
+            created_at=now,
+            updated_at=now,
+            originating_signal_id="signal_r64_origin",
+            originating_agent_id=agent.agent_id,
+            originating_task_id=task.task_id,
+            originating_lane_id=lane.lane_id,
+            originating_tool_call_id="call_r64_hmmalign",
+            originating_invocation_id="invocation_r64",
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            sandbox_runtime_identity=_digest("r64-sandbox-runtime"),
+            process_epoch=1,
+            resume_strategy=(
+                ContinuationResumeStrategy.JOURNALED_SDK_CALL_BOUNDARY
+            ),
+            delivery_state=ContinuationDeliveryState.DELIVERED,
+            delivery_generation=1,
+            delivery_result_digest=_digest("r64-delivery"),
+            state_version=2,
+        )
+        with scientific.mutation_scopes.writer_turn(
+            session_id=session.session_id,
+            owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+            owner_ref="fixture:r64-operation",
+        ):
+            repositories.approvals.save(approval)
+            repositories.sandbox_runs.save(sandbox_run)
+            repositories.controlled_operations.save(operation)
+            repositories.controlled_operation_executions.add(execution)
+            repositories.continuation_states.save(continuation)
+        scientific.bind_run(
+            attempt_id=attempt.attempt_id,
+            sandbox_run_id=sandbox_run.sandbox_run_id,
+            actor_ref=agent.agent_id,
+        )
+        scientific.bind_operation(
+            attempt_id=attempt.attempt_id,
+            operation_id=operation.operation_id,
+            actor_ref=agent.agent_id,
+        )
+        with scientific.mutation_scopes.writer_turn(
+            session_id=session.session_id,
+            owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+            owner_ref="fixture:r64-owner-wake",
+        ):
+            signal = ContinuationWakeService(repositories).enqueue(
+                continuation,
+                created_at=now,
+            )
+        MutationScopeService(repositories).register_writer(
+            scope_id=attempt.mutation_scope_id,
+            owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+            owner_ref=f"aox-attempt-driver:{attempt.attempt_id}:formal",
+            trusted_root=True,
+        )
+
+    reopened = SQLiteRepositoryProvider(str(database_path))
+    observation = AoxRuntimeObservationService(reopened).observe_session(
+        session_id=session.session_id,
+        purpose="formal",
+    )
+    authority_projection = {
+        "attempt_id": attempt.attempt_id,
+        "session_id": session.session_id,
+        "task_id": task.task_id,
+        "lane_id": lane.lane_id,
+        "scope": "formal",
+    }
+
+    assert observation.state == "failed"
+    assert observation.blocker_code == "transport_connect_failed"
+    assert observation.causal_failure is not None
+    assert observation.causal_failure["effect_certainty"] == "no_effect"
+    assert observation.operation_fact_count == 1
+    assert observation.operation_facts_digest.startswith("sha256:")
+    operation_fact = observation.operation_facts[0]
+    assert operation_fact["scope"] == "formal"
+    assert operation_fact["attempt_id"] == attempt.attempt_id
+    assert operation_fact["execution_error_code"] == "transport_connect_failed"
+    assert operation_fact["effect_certainty"] == "no_effect"
+    assert (
+        live.LiveAoxAttemptRunner._recoverable_controlled_operation_handoff_source(
+            reopened,
+            session_id=session.session_id,
+            purpose="formal",
+            attempt_authority=authority_projection,
+            observation=observation,
+        )
+        == continuation.continuation_id
+    )
+
+    with reopened.write() as scope:
+        repositories = scope.repositories
+        with MutationScopeService(repositories).writer_turn(
+            session_id=session.session_id,
+            owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
+            owner_ref="fixture:r64-replayed-signal",
+        ):
+            repositories.runtime_signals.save(
+                replace(signal, attempt_count=1)
+            )
+
+    assert (
+        live.LiveAoxAttemptRunner._recoverable_controlled_operation_handoff_source(
+            reopened,
+            session_id=session.session_id,
+            purpose="formal",
+            attempt_authority=authority_projection,
+            observation=observation,
+        )
+        is None
+    )
+
+
+def test_recoverable_controlled_failure_consumes_only_one_later_drain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(tmp_path / "ledger.sqlite3"),
+        ledger_path=tmp_path / "ledger.sqlite3",
+        max_drains=4,
+    )
+    drain_numbers: list[int] = []
+    drain_signal_limits: list[int | None] = []
+    handoff_checks: list[int] = []
+
+    class Api:
+        @staticmethod
+        def get_event_records(
+            _session_id: str,
+            *,
+            _timeout_seconds: float,
+        ) -> list[dict[str, object]]:
+            return []
+
+        @staticmethod
+        def get_events(
+            _session_id: str,
+            *,
+            _timeout_seconds: float,
+        ) -> dict[str, object]:
+            return {"events": []}
+
+    def coordinate(self, _api, _provider, **kwargs):  # type: ignore[no-untyped-def]
+        del self
+        drain_numbers.append(int(kwargs["drain_number"]))
+        drain_signal_limits.append(kwargs["max_signals_override"])
+        return live._DrainCoordinationResult(
+            workspace={},
+            workspace_response_binding={},
+            approval_ids=(),
+            browser_approval_receipt=None,
+            fault_receipt=None,
+        )
+
+    observation = SimpleNamespace(
+        state="failed",
+        blocker_code="transport_connect_failed",
+        wrapper_code=None,
+        causal_failure={
+            "failure_class": "controlled_effect",
+            "recoverability": "agent_can_replan",
+            "effect_certainty": "no_effect",
+            "retry_eligibility": "terminal",
+        },
+        task_facts=(),
+        task_fact_count=0,
+        task_facts_digest=_digest("empty-task-facts"),
+        task_facts_truncated=False,
+        operation_facts=(),
+        operation_fact_count=0,
+        operation_facts_digest=_digest("empty-operation-facts"),
+        operation_facts_truncated=False,
+    )
+
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_coordinate_runtime_drain",
+        coordinate,
+    )
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_grant_formal_attempt_authority_if_ready",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_closed_formal_attempt_control",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_observe_session_runtime",
+        lambda *_args, **_kwargs: observation,
+    )
+
+    def handoff(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        handoff_checks.append(1)
+        return "srun_r64:op_r64_hmmalign"
+
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_recoverable_controlled_operation_handoff_source",
+        staticmethod(handoff),
+    )
+
+    result, fault = runner._run_session_scoped(
+        Api(),  # type: ignore[arg-type]
+        SimpleNamespace(),  # type: ignore[arg-type]
+        session_id="sess_r64_bounded_handoff",
+        purpose="formal",
+        message="",
+        workflow_refs=(),
+        fault_enabled=False,
+        fault_blob_root=None,
+        browser_gate_enabled=False,
+        mutation_scope={},
+        attempt_authority={
+            "attempt_id": "attempt_r64",
+            "scope": "formal",
+        },
+        post_entry_message=False,
+    )
+
+    assert fault is None
+    assert result.state == "failed"
+    assert result.blocker_code == "transport_connect_failed"
+    assert result.drain_count == 2
+    assert drain_numbers == [1, 2]
+    assert drain_signal_limits == [None, 1]
+    assert handoff_checks == [1]
+
+
+def test_failure_operation_projection_merges_probe_and_formal_canonical_facts() -> (
+    None
+):
+    probe = live.ProbeAttestation(
+        probe={"status": "passed"},
+        approvals=(),
+        operations=(
+            {
+                "scope": "probe",
+                "operation_id": "operation_probe",
+                "status": "completed",
+                "effect_certainty": "terminal_known",
+            },
+        ),
+        artifacts=(),
+    )
+    formal = live.SessionDriveResult(
+        session_id="sess_operation_projection",
+        purpose="formal",
+        state="failed",
+        blocker_code="transport_connect_failed",
+        workspace={
+            "scientific_evidence": {
+                "operations": [
+                    {
+                        "scope": "formal",
+                        "operation_id": "stale_workspace_operation",
+                        "status": "completed",
+                    }
+                ]
+            }
+        },
+        workspace_response_binding={},
+        event_receipt={},
+        drain_count=2,
+        approval_ids=(),
+        operation_facts=(
+            {
+                "scope": "formal",
+                "operation_id": "operation_formal",
+                "status": "failed",
+                "effect_certainty": "no_effect",
+                "execution_error_code": "transport_connect_failed",
+            },
+        ),
+        operation_fact_count=1,
+        operation_facts_digest=_digest("formal-operation-facts"),
+        operation_facts_truncated=False,
+    )
+
+    facts, projection = live._failure_operation_projection(
+        probe_attestation=probe,
+        formal=formal,
+    )
+    raw_facts = live._diagnostic_formal_facts(formal)
+
+    assert [fact["scope"] for fact in facts] == ["probe", "formal"]
+    assert [fact["operation_id"] for fact in facts] == [
+        "operation_probe",
+        "operation_formal",
+    ]
+    assert projection["operation_fact_count"] == 2
+    assert projection["operation_facts_truncated"] is False
+    assert str(projection["operation_facts_digest"]).startswith("sha256:")
+    assert raw_facts["operation_status_counts"] == {"failed": 1}
+    assert raw_facts["operation_effect_certainty_counts"] == {"no_effect": 1}
+    assert raw_facts["operation_facts_digest"] == formal.operation_facts_digest
 
 
 def test_failed_probe_payload_separates_execution_from_attestation() -> None:

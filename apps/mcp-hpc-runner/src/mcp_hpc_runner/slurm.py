@@ -8,6 +8,7 @@ import uuid
 
 from .attempts import receipt_digest
 from .attempts import runner_phase_precedes
+from .attempts import safe_runner_exception_code
 from .attempts import RunnerAttempt
 from .attempts import RunnerAttemptError
 from .attempts import RunnerAttemptJournal
@@ -200,8 +201,15 @@ class SlurmRunner:
                 return [], quarantined, "OUTPUT_CONTRACT_CONFLICT"
 
     @staticmethod
-    def _attempt_metadata(attempt: RunnerAttempt) -> dict[str, object]:
+    def _attempt_metadata(
+        attempt: RunnerAttempt,
+        *,
+        status: str | None = None,
+        error_code: str | None = None,
+    ) -> dict[str, object]:
         return {
+            **({} if status is None else {"status": status}),
+            **({} if error_code is None else {"error_code": error_code}),
             "runner_attempt_safe_receipt_digest": attempt.safe_receipt_digest,
             "runner_phase": attempt.phase.value,
             "effect_certainty": attempt.effect_certainty.value,
@@ -217,6 +225,12 @@ class SlurmRunner:
         error_code: str,
     ) -> RunResult:
         run_id = str(spec.run_id)
+        metadata = self._attempt_metadata(
+            attempt,
+            status="failed",
+            error_code=error_code,
+        )
+        self.store.write_json(run_id, "run_result_metadata.json", metadata)
         return RunResult(
             run_id=run_id,
             requested_mode=spec.execution_mode,
@@ -226,7 +240,7 @@ class SlurmRunner:
             error_code=error_code,
             artifacts={},
             logs={},
-            metadata=self._attempt_metadata(attempt),
+            metadata=metadata,
         )
 
     def _ensure_remote_layout_with_recovery(
@@ -640,18 +654,22 @@ class SlurmRunner:
                         error_code="DISPATCH_IN_DOUBT",
                     )
                 if attempt.state is RunnerAttemptState.TERMINAL:
+                    fallback = (
+                        "PRE_EFFECT_RECOVERY_EXHAUSTED"
+                        if attempt.safe_failure_code
+                        == "pre_effect_recovery_exhausted"
+                        else (
+                            "PREFLIGHT_FAILED"
+                            if isinstance(exc, PreflightError)
+                            else "PRE_EFFECT_RUNNER_FAILED"
+                        )
+                    )
                     return self._closed_attempt_result(
                         spec,
                         attempt,
-                        error_code=(
-                            "PRE_EFFECT_RECOVERY_EXHAUSTED"
-                            if attempt.safe_failure_code
-                            == "pre_effect_recovery_exhausted"
-                            else (
-                                "PREFLIGHT_FAILED"
-                                if isinstance(exc, PreflightError)
-                                else "PRE_EFFECT_RUNNER_FAILED"
-                            )
+                        error_code=safe_runner_exception_code(
+                            exc,
+                            fallback=fallback,
                         ),
                     )
             raise
@@ -666,9 +684,14 @@ class SlurmRunner:
             return
         if attempt.effect_certainty is RunnerEffectCertainty.NO_EFFECT:
             failure_code = attempt.safe_failure_code or (
-                "deterministic_preflight_failed"
-                if isinstance(exc, PreflightError)
-                else "pre_effect_runner_failed"
+                safe_runner_exception_code(
+                    exc,
+                    fallback=(
+                        "deterministic_preflight_failed"
+                        if isinstance(exc, PreflightError)
+                        else "pre_effect_runner_failed"
+                    ),
+                )
             )
             self.attempt_journal.transition(
                 run_id,

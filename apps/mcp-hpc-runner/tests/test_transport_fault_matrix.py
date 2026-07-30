@@ -301,12 +301,18 @@ def test_connect_failure_is_terminal_no_effect_before_remote_work(
     runner.health_results.append(_command_result(255))
     with _server(tmp_path, runner) as server:
         result = server.call_tool("exec.run", {"runspec": _runspec()})
-        attempt = _attempt(server, str(result["run_id"]))
+        run_id = str(result["run_id"])
+        attempt = _attempt(server, run_id)
+        metadata = server.store.read_json(run_id, "run_result_metadata.json")
 
     assert result["status"] == "failed"
+    assert result["error_code"] == "transport_connect_failed"
     assert result["effect_certainty"] == "no_effect"
     assert result["retry_eligibility"] == "terminal"
+    assert metadata["status"] == "failed"
+    assert metadata["error_code"] == "transport_connect_failed"
     assert attempt.phase is RunnerAttemptPhase.TERMINAL
+    assert attempt.safe_failure_code == "transport_connect_failed"
     assert runner.payload_invocations == 0
 
 

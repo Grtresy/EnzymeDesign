@@ -277,6 +277,14 @@ Execution effect certainty 是闭集：`no_effect` 只允许同 phase、同 run�
 
 `mcp-hpc-runner` 的 server 生命周期拥有一个 `SshTransportManager`，按 deployment/config、normalized target、credential/host-key/transport policy 隔离 per-target OpenSSH ControlMaster generation。ssh/scp/rsync 共享同一 option compiler 与 ControlPath，但每个 command 仍是隔离 channel，不依赖持久 shell state。staging 必须重新验证 exact remote file SHA-256 或有界 canonical tree manifest；cache hit 不能代替 bytes 证明。direct SSH 在 payload 已写出后丢失 response 进入 `dispatch_in_doubt`，不允许重发；Slurm 只通过 exact persisted handle poll/reconcile；known terminal 后只恢复 output fetch/verify。完整边界见 [Runtime / HPC 可靠性边界](07-runtime-hpc-reliability.md)。
 
+SSH/Slurm closed attempt metadata 还必须封存 terminal status、safe machine error code 与
+既有 effect/retry envelope。adapter 只接受 bounded safe identifier，不要求全大写，也不
+透传 exception message、target、locator、path 或 raw stderr。runner-backed durable route
+在 exact reservation 存在时以该 observation 为唯一 causal input；例如 pre-dispatch
+`transport_connect_failed/no_effect` 必须保持同一 error/effect 对进入 execution、
+continuation 与 failure projection，不能被本地 failed `Run` 覆盖成
+`durable_hpc_terminal_failure/terminal_known`。
+
 ### 3.2 Pipeline SDK Docs
 
 SDK 用法是 execution capability contract 的一部分，不是模型常识。executor prompt

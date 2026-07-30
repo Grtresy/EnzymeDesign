@@ -929,7 +929,6 @@ class SshTransportManager:
             policy=self.policy,
             control_path=control_path,
         )
-        last_result: Any | None = None
         for attempt in range(self.policy.connect_attempts):
             self._root.record_owner(
                 control_path,
@@ -937,7 +936,7 @@ class SshTransportManager:
                 generation=generation,
                 runner_nonce=self.runner_nonce,
             )
-            last_result = self.command_runner.run(
+            self.command_runner.run(
                 compiler.master_start(),
                 check=False,
                 timeout=self.policy.health_check_timeout_seconds,
@@ -991,7 +990,6 @@ class SshTransportManager:
                     policy=self.policy,
                     control_path=control_path,
                 )
-        del last_result
         raise SshTransportError(
             "transport_connect_failed",
             "SSH ControlMaster could not be established within the bounded policy",

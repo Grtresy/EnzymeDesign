@@ -111,6 +111,35 @@ durable state，再决定是否重发、改道、reconcile 或请求帮助。
 never-dispatched call 的 no-effect observation 则保留原始引用，不为获得 metadata 而
 提前验证未来对象。
 
+### Recoverable controlled-operation owner handoff
+
+AOX session observation 从 canonical operation、唯一 execution、continuation、
+scientific-attempt binding 与 exact `FailureObservation` 生成一份 bounded operation facts
+projection。每项明确标记 `probe|formal` scope，并携带 operation/task/lane/sandbox、
+attempt、execution、continuation 与 exact failure ref；total count、canonical digest 与
+truncation state 由 runtime observation、diagnostic raw facts 和 failure evidence 共用。
+probe attestation 仍是独立证明，但 failure operation list 必须与 formal projection 合并，
+不能用成功 probe 子集替代完整 formal occurrence。
+
+failed observation 默认立即结束 supervision。只有同时满足下列 exact facts，driver 才可
+在本地记住 source，并额外执行一次 later bounded drain：
+
+- 当前 formal attempt 中恰有一个同源 terminal
+  operation/execution/continuation，typed cause 为
+  `controlled_effect/agent_can_replan/no_effect/terminal`；
+- continuation 已 delivered，且 exact `FailureObservation`、attempt binding、
+  task/lane/agent/source/correlation 全部一致；
+- owner task 仍是 `todo|in_progress` 且 assignment 未漂移；
+- 整个 session 恰有一个 pending、unclaimed、`attempt_count=0` 的
+  `engine_completed` owner signal，并且没有 pending approval、active invocation、
+  nonterminal execution/continuation 或其他 runtime signal。
+
+该例外只让已经排队的 owner wake 获得一次 agent turn；它不创建 signal、task、
+operation、attempt、approval 或 authority，不 retry/replay failed effect，也不规定 agent
+策略。source 不能再次使用。缺失、重复、claimed、cancelled、已消费、跨 identity、
+retryable、unknown effect、`dispatch_in_doubt`、nonterminal 或 authority/attempt drift
+全部返回原 failed observation，不再 drain。
+
 ## 4. Fresh scientific-attempt authority
 
 每个 formal scientific attempt 必须先有 durable

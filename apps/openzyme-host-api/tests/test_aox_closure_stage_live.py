@@ -333,6 +333,13 @@ def _live_result() -> dict[str, object]:
             "task_facts_digest": canonical_digest([]),
             "task_facts_truncated": False,
         },
+        "failure_operation_projection": {
+            "operation_fact_count": 6,
+            "operation_facts_digest": _digest(
+                "failure-operation-facts"
+            ),
+            "operation_facts_truncated": False,
+        },
     }
     supervision = {
         "schema_id": SUPERVISION_RECEIPT_SCHEMA_ID,
@@ -566,6 +573,18 @@ def _supervised_child_evidence(
         browser_observation_receipt={"label": "browser-observation"},
         mutation_scope={},
         scientific_attempt_control={"label": "scientific-control"},
+        operation_facts=tuple(
+            {"scope": "formal", **operation}
+            for operation in operations
+        ),
+        operation_fact_count=len(operations),
+        operation_facts_digest=canonical_digest(
+            [
+                {"scope": "formal", **operation}
+                for operation in operations
+            ]
+        ),
+        operation_facts_truncated=False,
     )
     terminal_payload = {
         "attempt": {
@@ -670,6 +689,16 @@ def test_session_drive_summary_uses_canonical_scientific_evidence() -> None:
     )
 
     assert child["runtime"]["projected_operation_count"] == 6
+    assert child["runtime"]["failure_operation_projection"] == {
+        "operation_fact_count": 6,
+        "operation_facts_digest": canonical_digest(
+            [
+                {"scope": "formal", **operation}
+                for operation in child["terminal"]["operations"]
+            ]
+        ),
+        "operation_facts_truncated": False,
+    }
     assert child["runtime"]["task_count"] == 3
 
 

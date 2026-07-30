@@ -294,6 +294,7 @@ _LIVE_RUNTIME_SUMMARY_FIELDS = frozenset(
         "mutation_scope",
         "scientific_attempt_control_digest",
         "failure_task_projection",
+        "failure_operation_projection",
     }
 )
 _LIVE_FAILURE_TASK_PROJECTION_FIELDS = frozenset(
@@ -301,6 +302,13 @@ _LIVE_FAILURE_TASK_PROJECTION_FIELDS = frozenset(
         "task_fact_count",
         "task_facts_digest",
         "task_facts_truncated",
+    }
+)
+_LIVE_FAILURE_OPERATION_PROJECTION_FIELDS = frozenset(
+    {
+        "operation_fact_count",
+        "operation_facts_digest",
+        "operation_facts_truncated",
     }
 )
 _LIVE_CLOSURE_FIELDS = frozenset(
@@ -2753,6 +2761,11 @@ def validate_aox_closure_stage_live_result(
         if isinstance(runtime_summary, dict)
         else None
     )
+    failure_operation_projection = (
+        runtime_summary.get("failure_operation_projection")
+        if isinstance(runtime_summary, dict)
+        else None
+    )
     bound_terminal_operations = (
         operation_binding.get("terminal_operations")
         if isinstance(operation_binding, dict)
@@ -2785,6 +2798,18 @@ def validate_aox_closure_stage_live_result(
         or type(failure_task_projection.get("task_fact_count")) is not int
         or int(failure_task_projection["task_fact_count"]) < 0
         or type(failure_task_projection.get("task_facts_truncated")) is not bool
+        or not isinstance(failure_operation_projection, dict)
+        or set(failure_operation_projection)
+        != _LIVE_FAILURE_OPERATION_PROJECTION_FIELDS
+        or type(
+            failure_operation_projection.get("operation_fact_count")
+        )
+        is not int
+        or int(failure_operation_projection["operation_fact_count"]) < 0
+        or type(
+            failure_operation_projection.get("operation_facts_truncated")
+        )
+        is not bool
     ):
         raise CutoverEvidenceError(
             "closure_stage_live_runtime_summary_invalid",
@@ -2862,6 +2887,8 @@ def validate_aox_closure_stage_live_result(
         )
         or runtime_summary.get("projected_operation_count")
         != operation_binding.get("projected_operation_count")
+        or failure_operation_projection.get("operation_fact_count")
+        != operation_binding.get("projected_operation_count")
         or reconstruction.get("operation_count")
         != operation_binding.get("reconstruction_operation_count")
         or reconstruction.get("operation_universe_digest")
@@ -2923,6 +2950,10 @@ def validate_aox_closure_stage_live_result(
         (
             "runtime.summary.failure_task_projection.task_facts_digest",
             failure_task_projection.get("task_facts_digest"),
+        ),
+        (
+            "runtime.summary.failure_operation_projection.operation_facts_digest",
+            failure_operation_projection.get("operation_facts_digest"),
         ),
         (
             "runtime.closure.scientific_attempt_control_digest",

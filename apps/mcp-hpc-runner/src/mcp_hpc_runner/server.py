@@ -619,8 +619,30 @@ class MCPHpcServer:
             metadata = self.store.read_json(run_id, "run_result_metadata.json")
         except FileNotFoundError:
             metadata = {}
-        if attempt.state is RunnerAttemptState.TERMINAL and metadata:
+        if attempt.state is RunnerAttemptState.TERMINAL:
+            sealed_envelope = {
+                "runner_attempt_safe_receipt_digest": attempt.safe_receipt_digest,
+                "runner_phase": attempt.phase.value,
+                "effect_certainty": attempt.effect_certainty.value,
+                "retry_eligibility": attempt.retry_eligibility.value,
+                "reconciliation_required": attempt.reconciliation_required,
+            }
+            if any(
+                key in metadata and metadata[key] != value
+                for key, value in sealed_envelope.items()
+            ):
+                raise ValueError(
+                    "terminal runner result metadata drifted from its sealed attempt"
+                )
+            metadata = {**sealed_envelope, **metadata}
             status = str(metadata.get("status") or "failed")
+            error_code = metadata.get("error_code")
+            if status == "failed" and error_code is None:
+                error_code = attempt.safe_failure_code
+            if status == "failed" and error_code is None:
+                raise ValueError(
+                    "terminal runner failure has no sealed safe error code"
+                )
             artifacts: dict[str, str] = {}
             if status == "completed":
                 try:
@@ -641,9 +663,9 @@ class MCPHpcServer:
                 {
                     "run_id": run_id,
                     "status": status,
-                    "selected_mode": "ssh",
+                    "selected_mode": selected_mode,
                     "exit_code": metadata.get("exit_code"),
-                    "error_code": metadata.get("error_code"),
+                    "error_code": error_code,
                     "artifacts": artifacts,
                     "logs": {},
                     "metadata": metadata,
@@ -651,7 +673,7 @@ class MCPHpcServer:
                         "toolchain_runtime_identity"
                     ),
                 },
-                authoritative_mode="ssh",
+                authoritative_mode=selected_mode,
                 runtime_request=dict(
                     spec.metadata.get("toolchain_runtime_request") or {}
                 )

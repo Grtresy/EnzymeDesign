@@ -27,7 +27,7 @@ _SAFE_TOOLCHAIN_IDENTIFIER_PATTERN = re.compile(
 )
 _SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SAFE_RUNNER_RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_SAFE_RUNNER_ERROR_CODE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,95}$")
+_SAFE_RUNNER_ERROR_CODE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,95}$")
 _RUNNER_PHASES = frozenset(
     {
         "allocated",

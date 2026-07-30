@@ -151,6 +151,19 @@ def runner_phase_precedes(
     return _PHASE_ORDER[current] < _PHASE_ORDER[target]
 
 
+def safe_runner_exception_code(
+    exc: Exception,
+    *,
+    fallback: str,
+) -> str:
+    """Project only an exception's sealed public machine code."""
+
+    value = getattr(exc, "error_code", None)
+    if isinstance(value, str) and _SAFE_CODE.fullmatch(value) is not None:
+        return value
+    return fallback
+
+
 _RETRY_TRANSITIONS = {
     RunnerRetryEligibility.SAME_PHASE_SAFE: frozenset(RunnerRetryEligibility),
     RunnerRetryEligibility.VERIFY_THEN_RETRY: frozenset(
