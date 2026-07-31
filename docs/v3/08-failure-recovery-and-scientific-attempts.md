@@ -747,7 +747,7 @@ empty-string 或其他不精确映射。failed decision
 `sha256:d1885f6eee9bf169c098d03afff7172d47d613af6bddd90c22573fa8146f58c2`
 永久 non-acceptance；原 plan、target、MICU/evidence 不可复用。
 
-## 14. r68 closed-attempt export 与 evidence finalization
+## 14. post-r68 closed-attempt export 与 evidence finalization
 
 r68 authority consumption发生后，测试在 root/session/attempt 前因 public evidence/startup/
 sealing production reachability 缺失而停止。没有 attempt 就没有 canonical attempt failure
@@ -755,14 +755,30 @@ sealing production reachability 缺失而停止。没有 attempt 就没有 canon
 生成 synthetic closure。该 consumption 永久不可复用。
 
 current Core `export_closed_attempt_evidence()` 只接受 exact session、closed attempt 与 sealed
-selection。Host public service在此基础上重验 formal positive 的 persisted source-bound
-17-deliverable validation receipt，并通过 artifact boundary读取 exact sealed files。错误
-session/selection、open/closing attempt、缺失 finalization、artifact scope/kind/size/digest drift
-都返回 typed public error；export 不回填、不修复、不替 agent 选择 disposition。
+selection。Host public service在此基础上输出 `aox_closed_attempt_evidence@2`，重验 formal
+positive 的 persisted source-bound 17-deliverable validation receipt，并通过 artifact boundary
+读取 exact sealed files；同时从 canonical repositories 与完整 public event replay构造
+`aox_public_product_closure@1`。positive 必须闭合 exact research/execution/reporting 三任务、
+唯一 owner-authored finish、source-linked report/draft、final answer 与全部 completed；export
+不回填、不修复、不替 agent 选择 disposition。
 
-Codex conductor 的 append-only public receipt chain保留每个 command的 request/response
-semantic digest与 non-2xx failure。单一 `finalize-and-seal` 只有在 exact command sequence、
-startup/retirement、workspace/events/export、task/report/closure/finalization 与 MICU source
-binding全部预验证后才创建 output；任一失败保持零 partial bundle。offline verifier从 sealed
-attestations重建 exact payload，不依赖 live repository。一般 safe failure仍不能替代 formal
-byte-flip fault：缺少 exact fault lineage时 reducer输出 `fault_contract_unproven` NO-GO。
+Codex conductor 的 append-only public receipt chain只保留 conductor-owned command 的
+request/response semantic digest与 non-2xx failure；它不得声称调用 agent-owned scientific
+mutation 或 Host-owned admission/closure finalizer。真实 transition 来自 canonical
+control/workspace/events/export。单一 `finalize-and-seal` 只有在 exact command sequence、每个
+bounded drain/status handoff、startup/retirement、final reads、task/report/final answer/closure 与
+MICU source binding全部预验证后才创建 output；任一失败保持零 partial bundle。offline
+verifier从 sealed attestations重建 exact payload，不依赖 live repository。
+
+fault 只通过 authority-bound exact public capability修改 derived
+`aox_hmm/AOX_ref21.fasta` byte 0。immutable claim 先于 bytes mutation；receipt 绑定 artifact、
+authority、source calculation contract、pre/post digest、size 与 idempotency。随后完整
+`aox_fault_negative_state_closure@1` 必须证明唯一 MAFFT consumer 以
+`artifact_blob_digest_mismatch` terminal failed、execution 非成功、reporter 未完成、无
+ready/published report/draft、无 alternate consumer 与 post-fault fixed deliverable，并使
+conversation/final failure/events一致。一般 safe failure仍不能替代该链；缺少任一事实时
+reducer输出 `fault_contract_unproven` 或更早的 typed NO-GO blocker。
+
+formal slot claim 在 root 前以 atomic no-replace 消费 ordinal；`@3` reducer只接受同一
+campaign/plan、顺序 exact 1/2/3、且 attempt/session/task/lane/envelope/selection/root/receipt
+identities全部唯一的两个 positive 与一个 fault bundle。

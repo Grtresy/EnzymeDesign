@@ -24,9 +24,8 @@ from .aox_scientific_contract import AOX_SELECTED_CHAIN_WORKFLOW_ID
 
 
 AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID = "aox_live_attempt_authority_plan@1"
-AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID = (
-    "aox_live_attempt_authority_consumption@2"
-)
+AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID = "aox_live_attempt_authority_consumption@2"
+AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID = "aox_attempt_authority_slot_claim@1"
 AOX_ATTEMPT_AUTHORITY_GRANTOR_REF = "user:local-dev"
 
 _PLAN_FIELDS = frozenset(
@@ -536,6 +535,198 @@ def attempt_authority_consumption_path(plan_path: Path) -> Path:
     return plan_path.with_name(f"{plan_path.name}.consumed.json")
 
 
+def attempt_authority_slot_claim_path(plan_path: Path, ordinal: int) -> Path:
+    if type(ordinal) is not int or ordinal not in {1, 2, 3}:
+        raise CutoverEvidenceError(
+            "attempt_authority_slot_ordinal_invalid",
+            "formal authority slot ordinal must be exactly 1, 2, or 3",
+        )
+    return plan_path.with_name(f"{plan_path.name}.slot-{ordinal}.claimed.json")
+
+
+def claim_aox_attempt_authority_slot(
+    *,
+    plan: Mapping[str, object],
+    consumption: Mapping[str, object],
+    plan_path: Path,
+    ordinal: int,
+    campaign_root: Path,
+) -> dict[str, Any]:
+    """Atomically consume one authority slot before any attempt root is created."""
+
+    slots = plan.get("slots")
+    if (
+        plan.get("schema_id") != AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID
+        or not isinstance(slots, list)
+        or len(slots) != 3
+        or type(ordinal) is not int
+        or ordinal not in {1, 2, 3}
+    ):
+        raise CutoverEvidenceError(
+            "attempt_authority_slot_claim_invalid",
+            "formal slot claim requires one exact slot from a three-slot plan",
+        )
+    if consumption.get("plan_digest") != plan.get("plan_digest"):
+        raise CutoverEvidenceError(
+            "attempt_authority_slot_claim_invalid",
+            "formal slot claim consumption does not bind its plan",
+        )
+    slot = dict(slots[ordinal - 1])
+    if slot.get("ordinal") != ordinal:
+        raise CutoverEvidenceError(
+            "attempt_authority_slot_claim_invalid",
+            "formal slot ordinal does not reproduce its plan position",
+        )
+    claim_path = attempt_authority_slot_claim_path(plan_path, ordinal)
+    root_identity = canonical_digest(
+        {"campaign_root": str(campaign_root.expanduser().absolute())}
+    )
+    payload: dict[str, Any] = {
+        "schema_id": AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID,
+        "run_class": AoxLiveRunClass.FORMAL_ACCEPTANCE.value,
+        "campaign_id": plan["campaign_id"],
+        "plan_digest": plan["plan_digest"],
+        "consumption_digest": canonical_digest(dict(consumption)),
+        "ordinal": ordinal,
+        "attempt_kind": slot["attempt_kind"],
+        "attempt_id": slot["attempt_id"],
+        "session_id": slot["session_id"],
+        "task_id": slot["task_id"],
+        "lane_id": slot["lane_id"],
+        "envelope_id": slot["envelope_id"],
+        "request_digest": slot["request_digest"],
+        "campaign_root_identity": root_identity,
+        "claim_file": claim_path.name,
+        "claimed_at": _utc_now(),
+    }
+    claim = {**payload, "claim_digest": canonical_digest(payload)}
+    publish_private_canonical_authority(
+        claim_path,
+        canonical_json_bytes(claim) + b"\n",
+    )
+    return claim
+
+
+def validate_aox_attempt_authority_slot_claim(
+    claim: Mapping[str, object],
+    *,
+    plan: Mapping[str, object],
+    consumption: Mapping[str, object],
+    plan_path: Path,
+    ordinal: int,
+    campaign_root: Path,
+) -> dict[str, Any]:
+    normalized = dict(claim)
+    slots = plan.get("slots")
+    slot = (
+        dict(slots[ordinal - 1])
+        if isinstance(slots, list) and len(slots) == 3 and ordinal in {1, 2, 3}
+        else {}
+    )
+    payload = {key: value for key, value in normalized.items() if key != "claim_digest"}
+    expected_path = attempt_authority_slot_claim_path(plan_path, ordinal)
+    expected_fields = {
+        "schema_id",
+        "run_class",
+        "campaign_id",
+        "plan_digest",
+        "consumption_digest",
+        "ordinal",
+        "attempt_kind",
+        "attempt_id",
+        "session_id",
+        "task_id",
+        "lane_id",
+        "envelope_id",
+        "request_digest",
+        "campaign_root_identity",
+        "claim_file",
+        "claimed_at",
+        "claim_digest",
+    }
+    expected_bindings = {
+        "campaign_id": plan.get("campaign_id"),
+        "plan_digest": plan.get("plan_digest"),
+        "consumption_digest": canonical_digest(dict(consumption)),
+        "ordinal": ordinal,
+        "attempt_kind": slot.get("attempt_kind"),
+        "attempt_id": slot.get("attempt_id"),
+        "session_id": slot.get("session_id"),
+        "task_id": slot.get("task_id"),
+        "lane_id": slot.get("lane_id"),
+        "envelope_id": slot.get("envelope_id"),
+        "request_digest": slot.get("request_digest"),
+        "campaign_root_identity": canonical_digest(
+            {"campaign_root": str(campaign_root.expanduser().absolute())}
+        ),
+        "claim_file": expected_path.name,
+    }
+    if not all(
+        (
+            set(normalized) == expected_fields,
+            normalized.get("schema_id") == AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID,
+            normalized.get("run_class") == AoxLiveRunClass.FORMAL_ACCEPTANCE.value,
+            all(
+                normalized.get(key) == value for key, value in expected_bindings.items()
+            ),
+            normalized.get("claim_digest") == canonical_digest(payload),
+        )
+    ):
+        raise CutoverEvidenceError(
+            "attempt_authority_slot_claim_invalid",
+            "formal slot claim does not bind its exact plan slot and campaign root",
+        )
+    _parse_timestamp(
+        normalized.get("claimed_at"),
+        code="attempt_authority_slot_claim_invalid",
+        label="claimed_at",
+    )
+    return normalized
+
+
+def load_aox_attempt_authority_slot_claim(
+    path: Path,
+    *,
+    plan: Mapping[str, object],
+    consumption: Mapping[str, object],
+    plan_path: Path,
+    ordinal: int,
+    campaign_root: Path,
+) -> dict[str, Any]:
+    expected_path = attempt_authority_slot_claim_path(plan_path, ordinal)
+    try:
+        metadata = path.lstat()
+        content = path.read_bytes()
+        value = json.loads(content)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CutoverEvidenceError(
+            "attempt_authority_slot_claim_unreadable",
+            "formal slot claim is not readable canonical JSON",
+        ) from exc
+    if not all(
+        (
+            path == expected_path,
+            stat.S_ISREG(metadata.st_mode),
+            not stat.S_ISLNK(metadata.st_mode),
+            stat.S_IMODE(metadata.st_mode) & 0o077 == 0,
+            isinstance(value, dict),
+            isinstance(value, dict) and content == canonical_json_bytes(value) + b"\n",
+        )
+    ):
+        raise CutoverEvidenceError(
+            "attempt_authority_slot_claim_invalid",
+            "formal slot claim must be its exact private canonical sibling",
+        )
+    return validate_aox_attempt_authority_slot_claim(
+        value,
+        plan=plan,
+        consumption=consumption,
+        plan_path=plan_path,
+        ordinal=ordinal,
+        campaign_root=campaign_root,
+    )
+
+
 def validate_aox_attempt_authority_consumption(
     receipt: Mapping[str, object],
     *,
@@ -661,14 +852,19 @@ __all__ = [
     "AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID",
     "AOX_ATTEMPT_AUTHORITY_GRANTOR_REF",
     "AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID",
+    "AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID",
     "attempt_admission_arguments",
     "attempt_authority_consumption_path",
+    "attempt_authority_slot_claim_path",
     "authority_grant_payload",
     "build_aox_attempt_authority_plan",
+    "claim_aox_attempt_authority_slot",
     "consume_aox_attempt_authority_plan",
     "load_aox_attempt_authority_plan",
     "load_aox_attempt_authority_consumption",
+    "load_aox_attempt_authority_slot_claim",
     "publish_aox_attempt_authority_plan",
     "validate_aox_attempt_authority_consumption",
     "validate_aox_attempt_authority_plan",
+    "validate_aox_attempt_authority_slot_claim",
 ]

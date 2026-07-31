@@ -1278,7 +1278,8 @@ current `aox_blank_world_runtime_config@4` 把 Codex tester、public Host API/CL
 chain、policy-free supervised Host 与 MICU identity 封入 config digest，并强制 automatic
 drain/approval/rollover 全为 false。`preflight` 在任何 root 前验证 exact consumed slot、clean
 identity、committed pin、full architecture qualification、runtime config 与 plan/consumption；
-全部通过后才创建该 slot 的 private root并原子封存 `aox_attempt_preflight@1`，其状态明确为
+post-r68 addendum进一步要求先 atomic claim exact slot；全部通过后才创建该 slot 的 private
+root并原子封存 `aox_attempt_preflight@2`，其状态明确为
 `preflight_complete_host_not_started`。preflight 本身不启动 Host/session/attempt 或外部 effect。
 
 `serve-attempt` 只用 exact preflight 启动固定 loopback production Host/process group，关闭
@@ -1309,6 +1310,53 @@ bundle 只证明一般 controlled failure，却没有闭合
 `artifact_blob_digest_mismatch`，campaign reducer 必须以
 `fault_contract_unproven` 保持 NO-GO。该 Phase 2 只运行 non-live verification、更新规格/文档
 并提交本地 commit；不启动下一 rNN、live、MICU、provider、HPC 或 Chrome。
+
+### 2026-08-01 post-r68 / pre-r69 deletion-first actor and closure repair
+
+上一版 public receipt sequence错误地要求 Codex conductor 代替 agent 提交
+`attempt.create`、selected-chain mutations与 close，并代替 Host 调用 admission/closure
+finalizer。这不是 public orchestration proof，而是 actor ownership的伪造要求。本 repair
+从 bundle validator删除整条伪 conductor sequence；一旦 receipt chain出现
+`scientific-attempt-commands`、admission finalizer或 closure finalizer，立即以
+`public_conductor_actor_boundary_invalid` fail closed。合法 chain 只包含 session create、entry
+message、authority grant、explicit bounded drain/status、pending approval/resolve、exact fault
+capability与最终 workspace/events/export reads。每个 drain必须在下一 drain或 final reads前有
+terminal command status，CLI JSON stdout显式 flush；process exit与空 drain仍不是业务终态。
+
+formal slot allocation新增 `aox_attempt_authority_slot_claim@1`。preflight在创建任何 root前对
+plan sibling执行 mode-private atomic no-replace publish；claim闭合 campaign、plan/
+consumption、ordinal、attempt/session/task/lane/envelope/request与 campaign-root identity。
+claim被复制到 attempt evidence并进入 `aox_attempt_preflight@2` 与 bundle source attestations；
+preflight失败后的 slot保持已消费，不能换 root重放。
+
+Host public export升级为 `aox_closed_attempt_evidence@2`。新的
+`aox_public_product_closure@1`直接从 real repositories与完整 durable event replay生成，并由
+offline finalizer对照 final public workspace/events：session只能有 exact research/execution/
+reporting三任务，三项 assigned identity唯一，每项恰有一个 assigned-agent-authored
+`task_finish`。positive还必须让三任务 completed，闭合 source-linked report/draft与 final
+assistant answer；因此 execution task projection不再冒充 report handoff或整场 closure。
+
+fault槽新增单一 public `reference-byte-flip` capability。Host只接受 active authority-bound
+fault attempt及 exact derived `aox_hmm/AOX_ref21.fasta` contract artifact，在零 consumer前先
+持久化 immutable claim，再对 sealed file byte offset 0执行一次 XOR flip、fsync并恢复 mode，
+最后持久化 pre/post digest、source contract、authority与 idempotency receipt。完整
+`aox_fault_negative_state_closure@1`还要证明唯一 `bio_tools.mafft` consumer以
+`artifact_blob_digest_mismatch`失败、execution非成功、reporter未完成、无 ready/published
+report/draft、无 alternate consumer与 post-fault fixed deliverable，并闭合 conversation/final
+failure/events。
+
+campaign reducer不再只看三个按顺序输入的 bundle。它要求同一 non-empty campaign_id与
+plan_digest、ordinal严格为 1/2/3，并要求 attempt/session/task/lane/envelope/selection/root/
+receipt-chain identities全部三项唯一；两个 positive各自必须有 exact三任务、source-linked
+report、final answer和17 deliverables，fault必须携带完整 negative closure。production
+reachability scenario也不再用 source-level `inspect`：它通过
+`ProductionCompositionFactory`、public FastAPI route、真实 file-backed SQLite写读和 typed
+negative route证明当前 composition。
+
+该 repair只运行 non-live tests并更新
+`docs/v3/aox-r-series-codex-goal.md`。r68 authority/state不可复用；r69或任何 live/MICU/
+provider/HPC/Chrome action仍需新的 clean commit、full admission、pin、fresh authority、fresh
+roots与用户对 exact plan的独立批准。
 
 ## Risks / Trade-offs
 

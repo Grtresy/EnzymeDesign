@@ -46,6 +46,21 @@ def _architecture_qualification() -> dict[str, str]:
     )
 
 
+def test_cli_json_handoff_is_flushed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    def capture(value: str, *, flush: bool) -> None:
+        observed.update(value=value, flush=flush)
+
+    monkeypatch.setattr("builtins.print", capture)
+    cli._print({"status": "host_ready"})
+
+    assert observed["flush"] is True
+    assert json.loads(str(observed["value"])) == {"status": "host_ready"}
+
+
 @pytest.fixture(autouse=True)
 def _verified_architecture_qualification(
     monkeypatch: pytest.MonkeyPatch,

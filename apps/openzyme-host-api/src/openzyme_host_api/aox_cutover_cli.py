@@ -21,6 +21,7 @@ from .aox_architecture_qualification import (
     verify_aox_architecture_qualification_report,
 )
 from .aox_attempt_authority import build_aox_attempt_authority_plan
+from .aox_attempt_authority import claim_aox_attempt_authority_slot
 from .aox_attempt_authority import consume_aox_attempt_authority_plan
 from .aox_attempt_authority import attempt_authority_consumption_path
 from .aox_attempt_authority import load_aox_attempt_authority_plan
@@ -28,6 +29,7 @@ from .aox_attempt_authority import load_aox_attempt_authority_consumption
 from .aox_attempt_authority import publish_aox_attempt_authority_plan
 from .aox_attempt_preflight import build_attempt_preflight_receipt
 from .aox_attempt_preflight import publish_attempt_preflight_receipt
+from .aox_attempt_preflight import publish_attempt_slot_claim_evidence
 from .aox_diagnostic_authority import build_aox_diagnostic_authority_plan
 from .aox_diagnostic_authority import consume_aox_diagnostic_authority_plan
 from .aox_diagnostic_authority import (
@@ -108,7 +110,8 @@ def _print(payload: object) -> None:
             payload,
             ensure_ascii=False,
             sort_keys=True,
-        )
+        ),
+        flush=True,
     )
 
 
@@ -485,12 +488,23 @@ def _preflight(args: argparse.Namespace) -> int:
             "aox_preflight_config_drift",
             "AOX preflight configuration differs from the pinned identity",
         )
+    slot_claim = claim_aox_attempt_authority_slot(
+        plan=plan,
+        consumption=consumption,
+        plan_path=plan_path,
+        ordinal=args.slot_ordinal,
+        campaign_root=args.campaign_root,
+    )
     roots = create_blank_world_roots(
         args.campaign_root,
         attempt_kind=str(slot["attempt_kind"]),
         attempt_id=str(slot["attempt_id"]),
         allowed_prerequisites=prerequisites,
         architecture_qualification=architecture_qualification,
+    )
+    slot_claim_path = publish_attempt_slot_claim_evidence(
+        slot_claim,
+        roots=roots,
     )
     receipt = build_attempt_preflight_receipt(
         identity=identity,
@@ -500,6 +514,7 @@ def _preflight(args: argparse.Namespace) -> int:
         authority_plan=plan,
         authority_consumption=consumption,
         slot=slot,
+        slot_claim=slot_claim,
         roots=roots,
     )
     receipt_path = publish_attempt_preflight_receipt(receipt, roots=roots)
@@ -516,6 +531,8 @@ def _preflight(args: argparse.Namespace) -> int:
             "proof": roots.proof,
             "preflight_receipt": str(receipt_path),
             "preflight_receipt_digest": receipt["receipt_digest"],
+            "slot_claim": str(slot_claim_path),
+            "slot_claim_digest": slot_claim["claim_digest"],
             "local_paths": {
                 key: str(path) for key, path in roots.local_paths().items()
             },

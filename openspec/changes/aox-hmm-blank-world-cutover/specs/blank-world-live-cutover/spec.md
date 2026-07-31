@@ -530,9 +530,13 @@ task state, attempt state, report state or campaign decision.
 ### Requirement: Authority-bound public conductor production reachability
 After an exact plan has been consumed, preflight SHALL first validate the clean
 launch identity, committed pin pair, current full architecture qualification,
-runtime configuration, exact plan/consumption binding and unused slot. Only after
-all validation succeeds MAY it create that slot's one fresh private root and seal
-`aox_attempt_preflight@1`; the receipt MUST state that Host was not started and MUST
+runtime configuration, exact plan/consumption binding and unused slot. Preflight
+MUST then atomically publish one mode-private no-replace
+`aox_attempt_authority_slot_claim@1` sibling before any root creation. The claim
+MUST bind campaign, plan/consumption, exact ordinal, attempt/session/task/lane/
+envelope/request and campaign-root identity. Only after that claim succeeds MAY it
+create that slot's one fresh private root, copy the exact claim into its evidence
+root and seal `aox_attempt_preflight@2`; the receipt MUST state that Host was not started and MUST
 be rejected when rebound, replayed, symlinked, drifted or reused after any
 session/attempt state exists.
 
@@ -550,6 +554,15 @@ finalization receipt and read every declared sealed file through the artifact
 boundary. Cross-session, open-attempt, wrong-selection, missing receipt, artifact
 scope/type/size/digest drift and path substitution MUST fail closed.
 
+The export SHALL be `aox_closed_attempt_evidence@2` and contain one
+`aox_public_product_closure@1` derived from canonical repositories plus the complete
+ordered durable event replay. It MUST prove exactly the research, execution and
+reporting tasks, unique assigned agent identities and exactly one assigned-agent-
+authored finish per task. A positive closure MUST prove all three completed, one
+source-linked report/draft and the final assistant answer. A fault closure MUST carry
+the full `aox_fault_negative_state_closure@1`. Final public workspace/events and the
+sealed export MUST reproduce those same facts.
+
 The thin Host CLI SHALL be able to append every public response, including non-2xx
 responses, as canonical JSONL `openzyme_public_api_receipt@2`. Each record is the
 exact closed object `schema_id`, `sequence`, `method`, `route`, `status_code`,
@@ -559,6 +572,23 @@ plus exact skill/task/lane semantics. The chain MUST be continuous, mode-private
 single-linked, locked, fully written and fsynced. A requested final response MAY
 be sealed once as `openzyme_public_host_response@1` only when it reproduces the
 same semantic digest.
+
+The receipt chain SHALL attest only actions owned by the Codex conductor: session
+creation, entry message, authority grant, explicit bounded drain and status reads,
+pending approval reads/resolutions, the exact fault capability and final canonical
+reads. It MUST reject any conductor receipt for agent-owned
+`scientific-attempt-commands` or Host-owned admission/closure finalization. Agent and
+Host transitions SHALL be established only by canonical control, workspace, events
+and export. Every bounded drain MUST have a later terminal command-status read before
+the next drain or final reads, and CLI JSON handoff MUST be flushed.
+
+For the formal fault slot, the public Host SHALL expose only the authority-bound exact
+`AOX_ref21.fasta` byte-zero flip capability. It MUST validate the active fault attempt,
+exact derived selection contract and sealed bytes, require zero existing consumers,
+persist an immutable one-use claim before mutation, flip exactly one bit without size
+change, fsync and restore the file mode, and persist a source/authority/idempotency-
+bound receipt. A conflicting retry, rebound artifact, prior consumer, stale bytes or
+wrong contract MUST fail closed.
 
 One `finalize-and-seal` command SHALL prevalidate the exact identity, preflight,
 startup/retirement receipts, complete public receipt chain, sealed final
@@ -571,11 +601,14 @@ verifier. Any missing/extra/non-2xx/discontinuous command, identity drift,
 noncanonical business closure, invalid task/report/finalization state, symlink,
 source drift or partial output MUST leave no sealed bundle.
 
-Executable architecture qualification SHALL prove these public production
-commands/routes/callers are reachable and prove deleted `AttemptRunner`, legacy
-emitter, test builder, browser helper and automatic driver surfaces are absent.
-Test fixtures MAY construct evidence only from the tests package and MUST NOT be a
-production caller.
+Executable architecture qualification SHALL prove the retained composition by
+constructing the production FastAPI application through the real composition factory,
+writing and rereading file-backed SQLite through public routes, and observing typed
+fail-closed behavior from the exact fault/export routes before an attempt exists. It
+MUST NOT substitute source inspection for production reachability. Deleted
+`AttemptRunner`, legacy emitter, test builder, browser helper and automatic driver
+surfaces SHALL remain absent. Test fixtures MAY construct evidence only from the tests
+package and MUST NOT be a production caller.
 
 #### Scenario: Preflight before Host startup
 - **WHEN** one consumed exact slot and every pinned/current qualification input agree
@@ -590,7 +623,7 @@ production caller.
 - **THEN** finalization fails before destination creation and none of those facts can be relabelled as a closed attempt or campaign decision
 
 ### Requirement: Three-attempt GO campaign
-Local Live cutover SHALL be GO only after one formal acceptance campaign produces two consecutive independent positive attempts on the same exact-seven launch identity, followed by one `derived_required_artifact_blob_byte_flip@2` attempt that fails closed. The fault MUST traverse the real exact-14 NCBI `proteins.fasta` through `aox_hmm_reference_set_selection@1` to derived `AOX_ref21.fasta`, flip one byte before its pending MAFFT consumer, and terminate that consumer with exact `artifact_blob_digest_mismatch`. Positive attempts MUST use different clean roots and MUST each publish a report and pass offline evidence verification. Diagnostic live runs, implementation completion, and non-live test completion MUST NOT be reported as Live completion before all three fresh formal bundles and the sealed reducer decision exist.
+Local Live cutover SHALL be GO only after one formal acceptance campaign and one exact authority plan produce ordinal 1, 2 and 3 in that order: two consecutive independent positive attempts on the same exact-seven launch identity, followed by one `derived_required_artifact_blob_byte_flip@2` attempt that fails closed. Every attempt/session/task/lane/envelope/selection/root/receipt-chain identity MUST be non-empty and unique across the three slots. The fault MUST traverse the real exact-14 NCBI `proteins.fasta` through `aox_hmm_reference_set_selection@1` to derived `AOX_ref21.fasta`, consume the authority-bound public capability before its unique pending MAFFT consumer, and terminate that consumer with exact `artifact_blob_digest_mismatch`. Positive attempts MUST use different clean roots and MUST each prove exact three-task completion, publish a source-linked report, preserve a final answer and pass offline evidence verification. Diagnostic live runs, implementation completion, and non-live test completion MUST NOT be reported as Live completion before all three fresh formal bundles and the sealed reducer decision exist.
 
 #### Scenario: Campaign reaches GO
 - **WHEN** attempts one and two independently satisfy every positive criterion and attempt three seals `aox_fault_negative_state_closure@1` proving execution failed/blocked/cancelled, reporting did not complete or publish, no ready/published report or draft exists, no alternate target consumer succeeded, no downstream fixed deliverable exists, durable events/conversation/final failure agree, and all fault-attempt MICU usage is attributed to this campaign

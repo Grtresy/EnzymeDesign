@@ -862,13 +862,14 @@ def test_v3_closed_attempt_evidence_export_is_public_and_exact(
             selection_id=selection_id,
         )
         return {
-            "schema_id": "aox_closed_attempt_evidence@1",
+            "schema_id": "aox_closed_attempt_evidence@2",
             "session_id": session_id,
             "attempt_id": attempt_id,
             "selection_id": selection_id,
             "scientific_attempt_control": {},
             "finalization_receipt": None,
             "deliverables": [],
+            "product_closure": {},
             "export_digest": "sha256:" + "a" * 64,
         }
 
@@ -888,12 +889,79 @@ def test_v3_closed_attempt_evidence_export_is_public_and_exact(
         "attempt_id": "attempt_exact",
         "selection_id": "selection_exact",
     }
-    assert response.json()["schema_id"] == "aox_closed_attempt_evidence@1"
+    assert response.json()["schema_id"] == "aox_closed_attempt_evidence@2"
     missing_session = client.get(
         "/v3/sessions/sess_other/scientific-attempts/attempt_exact/"
         "selections/selection_exact/evidence"
     )
     assert missing_session.status_code == 404
+
+
+def test_v3_exact_aox_fault_capability_is_public_and_closed(
+    monkeypatch,
+) -> None:
+    client, _ = _build_client(monkeypatch)
+    session_id = "sess_exact_aox_fault"
+    assert (
+        client.post(
+            "/v3/sessions",
+            json={
+                "session_id": session_id,
+                "project_id": "proj_exact_aox_fault",
+                "objective": "Exercise the exact fault capability",
+            },
+        ).status_code
+        == 200
+    )
+    captured: dict[str, str] = {}
+
+    def inject_exact(
+        self,
+        *,
+        session_id: str,
+        attempt_id: str,
+        artifact_id: str,
+        actor_ref: str,
+        idempotency_key: str,
+    ) -> dict[str, object]:
+        del self
+        captured.update(
+            session_id=session_id,
+            attempt_id=attempt_id,
+            artifact_id=artifact_id,
+            actor_ref=actor_ref,
+            idempotency_key=idempotency_key,
+        )
+        return {
+            "schema_id": "aox_fault_injection_receipt@1",
+            "injection_id": "derived_required_artifact_blob_byte_flip@2",
+        }
+
+    monkeypatch.setattr(V3HostApiService, "inject_aox_reference_fault", inject_exact)
+    response = client.post(
+        f"/v3/sessions/{session_id}/aox-fault-injections/reference-byte-flip",
+        headers={"Idempotency-Key": "fault-once"},
+        json={"attempt_id": "attempt_fault", "artifact_id": "artifact_ref21"},
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "session_id": session_id,
+        "attempt_id": "attempt_fault",
+        "artifact_id": "artifact_ref21",
+        "actor_ref": "user:local-dev",
+        "idempotency_key": "fault-once",
+    }
+    malformed = client.post(
+        f"/v3/sessions/{session_id}/aox-fault-injections/reference-byte-flip",
+        headers={"Idempotency-Key": "fault-arbitrary"},
+        json={
+            "attempt_id": "attempt_fault",
+            "artifact_id": "artifact_ref21",
+            "byte_offset": 7,
+        },
+    )
+    assert malformed.status_code == 422
 
 
 def test_v3_event_stream_can_use_stable_generic_envelope(monkeypatch) -> None:

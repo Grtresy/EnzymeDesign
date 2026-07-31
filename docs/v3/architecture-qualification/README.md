@@ -62,11 +62,13 @@ plan/consumption/root/decision，以及已退役 closure-stage raw run class、a
 和 historical evidence 都不能被 formal publisher/consumer/blank-world
 root/verifier/reducer 接纳，即使伪造相同 plan digest。该 negative gate 使用 frozen
 literals，不依赖或恢复已删除的 closure-stage production modules。
-当前 `aox_r68_public_conductor_reachability@1` scenario 还执行 source-level production
-composition audit：它要求 exact preflight、policy-free `serve-attempt`、public CLI
-receipt/sealed response、closed-attempt export、single `finalize-and-seal`、offline verify/decide
-均存在 production caller，并要求 generic `AttemptRunner`、legacy emitter、test builder、
-browser helper、automatic run command与旧 driver config在 production surface 中不存在。
+当前 `aox_r68_public_conductor_reachability@1` scenario 已由
+`aox_post_r68_public_composition_qualification@1` observation收口为真实 production
+composition qualification：场景通过 `ProductionCompositionFactory` 建立 public FastAPI
+application 与 file-backed SQLite，实际创建 session、发送 message、读取 workspace/events，
+再从独立 composition读取持久化 session/message/events；未开始的 exact fault capability 与
+closed export 必须通过同一 public route返回 typed fail-closed。场景同时检查 public CLI 暴露
+exact fault command，而不是靠 `inspect`/source 字符串猜测 production caller。
 每个场景都有 finite step、tick、state/event、effect 与
 wall-clock budget。skip、xfail、missing collection、timeout、budget exhaustion 或证据不完整
 只能得到 `violated|unproven`，不能得到 pass。

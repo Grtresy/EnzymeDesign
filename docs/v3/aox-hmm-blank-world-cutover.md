@@ -1,6 +1,6 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r67 are permanent NO-GO evidence. r68 is different: its authority was consumed, but the test stopped before root, Host, session or attempt creation because the required public export/startup/sealing path was not production-reachable. It is recorded as **prelaunch blocked**, not as a canonical r68 NO-GO. Phase 2 deletes the unreachable runner/emitter/driver/browser chain and installs the exact public Codex-conductor production path described below. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, a diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior authority, root, effect or evidence.
+Status: r43-r67 are permanent NO-GO evidence. r68 is different: its authority was consumed, but the test stopped before root, Host, session or attempt creation because the required public export/startup/sealing path was not production-reachable. It is recorded as **prelaunch blocked**, not as a canonical r68 NO-GO. The r68 and post-r68 deletion-first repairs remove unreachable/pseudo-conductor requirements and install the exact public Codex-conductor production path described below. Local live cutover remains **NO-GO**: this implementation does not authorize r69 or any next rNN, a diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior authority, root, effect or evidence.
 
 Historical incident and pre-r68 command/observer/driver/browser sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract; in particular, every older `run-live`, `run-diagnostic-live`, observer, barrier, rollover, no-wakeup, `chrome-once` and browser-helper instruction is retired even where a historical section called it current at that time. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined by the r68 public-conductor section below, [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
@@ -2847,24 +2847,39 @@ supervision schemas, MICU identity, and three false automatic-policy flags.
 
 The only positive production path is now:
 
-1. exact consumed-slot `preflight`, which validates every authority/pin/qualification/config input
-   before creating the unique root and seals `preflight_complete_host_not_started`;
+1. an atomic private no-replace claim of exact plan slot 1, 2 or 3 before any root exists, followed by
+   consumed-slot `preflight`, which validates every authority/pin/qualification/config/root binding,
+   copies the claim into evidence and seals `aox_attempt_preflight@2` with
+   `preflight_complete_host_not_started`;
 2. policy-free `serve-attempt`, which starts the fixed loopback Host and proves local retirement but
    sends no business command;
-3. explicit Codex calls through public Host CLI/API, each appended as
-   `openzyme_public_api_receipt@2`, with final workspace/events/evidence responses sealed once;
-4. public exact closed-attempt/selection export, including revalidation and artifact-boundary reads
-   of the 17-deliverable receipt for a formal positive;
+3. explicit Codex calls through public Host CLI/API, each conductor-owned request appended as
+   `openzyme_public_api_receipt@2`, with every bounded drain followed by command settlement and final
+   workspace/events/evidence responses sealed once; CLI JSON handoffs are flushed;
+4. public exact closed-attempt/selection export `aox_closed_attempt_evidence@2`, whose canonical
+   control/events/product closure proves agent-owned scientific writes and Host-owned finalization,
+   including artifact-boundary reads of the 17-deliverable receipt for a formal positive;
 5. one source-bound `finalize-and-seal` that prevalidates every source, atomically installs profile
    `aox_public_conductor_bundle@1` as `aox_blank_world_attempt_bundle@3`, and supports independent
    network-free reconstruction;
 6. the unchanged offline verifier and exact-three reducer as the only GO authority.
 
-Production reachability qualification asserts both sides: all five retained commands/routes have
-production callers, and the deleted runner/emitter/browser/automatic surfaces are absent. The new
-fault reducer deliberately returns `fault_contract_unproven` unless the third bundle proves the exact
-`derived_required_artifact_blob_byte_flip@2` lineage and terminal `artifact_blob_digest_mismatch`;
-a generic controlled failure cannot turn this repair into GO.
+The receipt chain MUST NOT contain `scientific-attempt-commands`, admission finalization or closure
+finalization requests: those are agent/Host actors, not Codex actions. Positive product closure fixes
+exactly the research, execution and reporting tasks, unique assigned agents, one owner-authored finish
+per task, one source-linked report/draft, the final assistant answer and three completed statuses.
+The public fault capability alone may consume the fault slot: it binds authority and the exact derived
+`AOX_ref21.fasta`, flips byte zero once, and persists its claim/receipt before the unique pending MAFFT
+consumer. `aox_fault_negative_state_closure@1` then proves exact
+`artifact_blob_digest_mismatch`, no successful alternate, no positive report/draft and no downstream
+fixed deliverable.
+
+Production reachability qualification uses the real `ProductionCompositionFactory`, FastAPI public
+routes and file-backed SQLite persistence rather than source inspection. The campaign reducer requires
+one campaign and plan, exact ordinal order 1/2/3, unique attempt/session/task/lane/envelope/selection/
+root/receipt-chain identities, two exact positive closures and one full fault closure. A generic
+controlled failure remains `fault_contract_unproven`; it cannot turn this repair into GO. The next
+operator/Codex session starts from [the current r-series goal](aox-r-series-codex-goal.md).
 
 r59 remains the latest numbered/formal live fact. It is a failed campaign whose
 exact-three plan is consumed and whose later slots cannot be reused. The later

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
 from pathlib import Path
 
 import pytest
@@ -13,12 +12,12 @@ from openzyme_host_api import aox_cutover_launch
 from openzyme_host_api import aox_diagnostic_run
 from openzyme_host_api import aox_host_supervision
 from openzyme_host_api import aox_public_conductor_bundle
-from openzyme_host_api import app as host_app
 from openzyme_host_api.v3_service import V3HostApiService
 from openzyme_host_api.architecture_qualification import canonical_json_bytes
 from openzyme_host_cli import cli as host_cli
 from openzyme_host_cli.client import HostApiClient
 
+from ..composition import ProductionCompositionFactory
 from ..execution_evidence import record_effect_ledger_snapshot
 from ..execution_evidence import record_execution_observation_digest
 from ..external_ports import ExternalEffectLedger
@@ -32,7 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parents[5]
     family="evidence-projection",
     selections=("full", "premerge_subset"),
 )
-def test_aox_automatic_run_surfaces_are_retired() -> None:
+def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
     parser = aox_cutover_cli.build_parser()
     subcommands = parser._subparsers._group_actions[0].choices
     required_conductor_commands = {
@@ -68,6 +67,7 @@ def test_aox_automatic_run_surfaces_are_retired() -> None:
     assert "events" in session_commands
     assert "pending" in approval_commands
     assert "export-evidence" in scientific_commands
+    assert "inject-aox-reference-fault" in scientific_commands
     assert {"receipt_chain", "seal_response"}.issubset(global_options)
     assert hasattr(HostApiClient, "export_v3_closed_scientific_attempt_evidence")
     assert hasattr(V3HostApiService, "export_closed_aox_attempt_evidence")
@@ -77,9 +77,61 @@ def test_aox_automatic_run_surfaces_are_retired() -> None:
         aox_public_conductor_bundle.finalize_and_seal_public_conductor_bundle
     )
     assert callable(aox_public_conductor_bundle.verify_public_conductor_bundle)
-    route_source = inspect.getsource(host_app.create_app)
-    assert "selections/{selection_id}/evidence" in route_source
-    assert "export_v3_closed_scientific_attempt_evidence" in route_source
+    factory = ProductionCompositionFactory.create(tmp_path / "aox-composition")
+    composition = factory.build()
+    with composition as running:
+        running.stop_durable_supervisor()
+        client = running.client
+        assert client is not None
+        session_id = "sess_aox_production_composition"
+        created = client.post(
+            "/v3/sessions",
+            json={
+                "session_id": session_id,
+                "project_id": "aox-blank-world-cutover",
+                "objective": "Qualify public Host and SQLite composition",
+                "title": "AOX composition qualification",
+            },
+        )
+        posted = client.post(
+            f"/v3/sessions/{session_id}/messages",
+            headers={"Idempotency-Key": "aox-composition-message"},
+            json={
+                "message": "Qualify canonical public composition only.",
+                "skill_keys": [],
+            },
+        )
+        workspace = client.get(f"/v3/sessions/{session_id}/workspace")
+        events = client.get(f"/v3/sessions/{session_id}/events?replay=1&after_cursor=0")
+        fault_rejection = client.post(
+            f"/v3/sessions/{session_id}/aox-fault-injections/reference-byte-flip",
+            headers={"Idempotency-Key": "aox-composition-no-attempt"},
+            json={
+                "attempt_id": "fault-not-admitted",
+                "artifact_id": "artifact-not-admitted",
+            },
+        )
+        export_rejection = client.get(
+            f"/v3/sessions/{session_id}/scientific-attempts/not-closed/"
+            "selections/not-sealed/evidence"
+        )
+    assert created.status_code == 200
+    assert posted.status_code == 200
+    assert workspace.status_code == 200
+    assert events.status_code == 200
+    assert fault_rejection.status_code == 409
+    assert export_rejection.status_code == 409
+    with composition.repository_provider.read() as reader:
+        persisted_session = reader.repositories.sessions.get(session_id)
+        persisted_messages = reader.repositories.inbox.list_by_session(session_id)
+        persisted_events = reader.repositories.durable_events.list_by_session(
+            session_id,
+            after_cursor=0,
+            limit=1_000,
+        )
+    assert persisted_session is not None
+    assert any(item.message_type == "user_message" for item in persisted_messages)
+    assert persisted_events
 
     retired_paths = (
         "apps/openzyme-host-api/src/openzyme_host_api/aox_cutover_live.py",
@@ -107,6 +159,9 @@ def test_aox_automatic_run_surfaces_are_retired() -> None:
             "events": "events" in session_commands,
             "pending_approvals": "pending" in approval_commands,
             "closed_attempt_export": "export-evidence" in scientific_commands,
+            "exact_fault_capability": (
+                "inject-aox-reference-fault" in scientific_commands
+            ),
             "receipt_chain": "receipt_chain" in global_options,
             "sealed_response": "seal_response" in global_options,
         },
@@ -141,7 +196,17 @@ def test_aox_automatic_run_surfaces_are_retired() -> None:
             openzyme_core,
             "RuntimeBarrierProjectionService",
         ),
-        "schema_id": "aox_r68_public_conductor_reachability@1",
+        "production_composition": {
+            "file_backed_sqlite": composition.repository_provider.database_path.endswith(
+                "aox-composition.sqlite3"
+            ),
+            "session_persisted": persisted_session is not None,
+            "message_persisted": bool(persisted_messages),
+            "events_persisted": bool(persisted_events),
+            "fault_route_fail_closed": fault_rejection.status_code == 409,
+            "export_route_fail_closed": export_rejection.status_code == 409,
+        },
+        "schema_id": "aox_post_r68_public_composition_qualification@1",
     }
     record_execution_observation_digest(
         "sha256:" + hashlib.sha256(canonical_json_bytes(observation)).hexdigest()

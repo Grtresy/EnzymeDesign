@@ -1115,11 +1115,12 @@ verification。
 
 ```text
 fresh exact plan/consumption
+  -> atomic one-use slot claim（先于任何 root）
   -> preflight 验证全部 identity 后才创建唯一 private root
   -> policy-free supervised loopback Host
   -> Codex 逐步调用 public message/drain/status/approval/read APIs
-  -> append-only openzyme_public_api_receipt@2 chain
-  -> Host public closed-attempt/selection evidence export
+  -> append-only conductor-owned openzyme_public_api_receipt@2 chain
+  -> Host public canonical control/events/product-closure export
   -> single source-bound finalize-and-seal
   -> network-free attempt verifier
   -> exact-three campaign reducer
@@ -1137,6 +1138,37 @@ snapshots，然后 no-replace 封存 profile `aox_public_conductor_bundle@1` 的
 必须被 reducer 记录为 `fault_contract_unproven` NO-GO。任何下一 rNN 仍需在 repair commit
 上 fresh full admission、pin、authority、roots 与单独批准；本 Phase 2 不启动 live、MICU、
 provider、HPC 或 Chrome。
+
+### 9.3 post-r68 / pre-r69 deletion-first closure
+
+public receipt chain 不再伪装 Codex conductor 发出了 agent-owned scientific mutation 或
+Host-owned admission/closure finalization。`scientific-attempt-commands`、admission finalizer 和
+closure finalizer 一旦出现在 conductor receipt 中，offline finalizer 必须以
+`public_conductor_actor_boundary_invalid` 拒绝。receipt 只闭合 session create、entry message、
+authority grant、显式 bounded drain/status、pending approval/resolve、fault capability 与最终
+workspace/events/export reads；每个 drain 必须在下一 drain 或最终读取前得到 terminal command
+status，CLI handoff 使用 flushed JSON stdout。
+
+agent 与 Host 的真实转换由 `aox_closed_attempt_evidence@2` 证明。其
+`aox_public_product_closure@1` 必须与最终 public workspace 和完整 event replay 一致，并固定
+exact research/execution/reporting 三任务、唯一 owner identity、每任务唯一 owner-authored
+`task_finish`、source-linked report/draft、最终 assistant answer 与正向三任务 completed。
+fault 槽只能通过 authority-bound public byte-flip capability 在 exact derived
+`aox_hmm/AOX_ref21.fasta` 的 byte 0 产生一次同尺寸 digest 变化；
+`aox_fault_negative_state_closure@1` 必须闭合唯一 MAFFT consumer 的
+`artifact_blob_digest_mismatch`、非成功 task/report/draft/deliverable/conversation/events 状态。
+
+formal plan 的每个 ordinal 在 root 创建前以 private no-replace sibling 原子 claim；claim 绑定
+campaign、plan/consumption、ordinal、attempt/session/task/lane/envelope 与 campaign-root
+identity，并进入 `aox_attempt_preflight@2` 及 sealed source set。campaign reducer 只接收同一
+campaign/plan 的 exact ordinal `1/2/3`，并拒绝任何 attempt/session/task/lane/envelope/
+selection/root/receipt-chain identity collision。production reachability 不再扫描 source 名称；
+资格场景通过真实 `ProductionCompositionFactory`、public FastAPI routes 与 file-backed SQLite
+写读证明 composition，并对未开始的 fault/export 路径验证 typed fail-closed。
+
+下一轮测试必须使用 [新版 r-series Codex goal](v3/aox-r-series-codex-goal.md)，从本 repair
+commit 重新 full admission、pin、fresh authority 与 fresh roots；r68 consumed state 不可复用。
+本 Phase 2 不启动 r69、live、MICU、provider、HPC 或 Chrome。
 
 ---
 

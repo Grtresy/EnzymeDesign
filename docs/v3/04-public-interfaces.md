@@ -570,7 +570,7 @@ architecture qualification 继续以 raw historical run-class/attempt-id literal
 不能满足 formal publisher、bundle verifier 或 reducer。不得把旧 schema 解释为隐藏
 operator endpoint。
 
-### 9.1 r68 public receipt 与 closed-attempt export
+### 9.1 post-r68 public receipt 与 closed-attempt export
 
 public Host CLI 的全局 `--receipt-chain PATH` 会为每次请求（包括 non-2xx）追加一条
 canonical JSONL `openzyme_public_api_receipt@2`。record 是 exact closed object：
@@ -588,11 +588,28 @@ source-bound public facts。
 closed evidence route 只导出 exact session 中已 closed attempt 的 exact sealed selection。
 formal positive 还必须存在且通过 persisted `aox_final_deliverable_validation_receipt@1`；
 Host 经 `ArtifactBoundaryService.read_sealed_file()` 核对 artifact scope、kind、size、digest后
-才把 bytes 编码进 `aox_closed_attempt_evidence@1`。open attempt、wrong selection、cross-session、
-缺失 receipt 或任一 artifact drift 全部 fail closed。
+才把 bytes 编码进 `aox_closed_attempt_evidence@2`。该 export 还包含
+`aox_public_product_closure@1`：exact 三任务及唯一 owner finish、完整 event replay、conversation/
+final answer、source-linked report，或 fault 的完整 negative state。open attempt、wrong
+selection、cross-session、缺失 receipt、task/report/event drift 或任一 artifact drift 全部 fail
+closed。
 
-AOX cutover shell 新增三个彼此分离的 production seams：`preflight` 只在所有 authority/pin/
-qualification/config validation 通过后创建 exact root并报告 Host 未启动；`serve-attempt`
+receipt chain 只记录 Codex conductor 自己调用的 public surface。agent-owned
+`scientific-attempt-commands` 与 Host-owned admission/closure finalizer 不得由 conductor 代发或
+伪造 receipt；出现即以 `public_conductor_actor_boundary_invalid` 拒绝。真实 scientific
+transition 只由 closed control、workspace、events 与 export 证明。每个 exact bounded drain
+必须在下一 drain 或最终读取前轮询到对应 command settlement；stdout JSON handoff 必须 flush。
+
+fault 槽新增唯一 public capability：
+`POST /v3/sessions/{session_id}/aox-fault-injections/reference-byte-flip`。request 只接受 exact
+`attempt_id` 与 `artifact_id`，并要求 `Idempotency-Key`；Host 验证 active fault authority、
+AOX reference selection contract、sealed bytes 与零既有 consumer 后，在 byte offset 0 做一次
+同尺寸 bit flip，持久化 source-bound claim/receipt。任意重绑、重复不同 key、错误 artifact、
+已消费或 drift 均 fail closed。
+
+AOX cutover shell 保留三个彼此分离的 production seams：`preflight` 先对 exact ordinal执行
+private atomic one-use slot claim，再在所有 authority/pin/qualification/config validation 通过后
+创建 exact root、复制 claim、封存 `aox_attempt_preflight@2` 并报告 Host 未启动；`serve-attempt`
 只启动/退休 fixed loopback Host，不发 message/drain/approval；`finalize-and-seal` 只从 exact
 public receipts和 sealed source responses重建并原子封存 `@3` bundle。它们都不能自动判断
 业务 terminal 或声明 GO。

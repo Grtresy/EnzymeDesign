@@ -9,11 +9,14 @@ import pytest
 
 from openzyme_core import MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID
 from openzyme_host_api import aox_public_conductor_bundle as conductor_bundle
-from openzyme_host_api.aox_attempt_authority import attempt_admission_arguments
+from openzyme_host_api.aox_attempt_authority import (
+    AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID,
+)
 from openzyme_host_api.aox_attempt_authority import authority_grant_payload
 from openzyme_host_api.aox_attempt_preflight import build_attempt_preflight_receipt
 from openzyme_host_api.aox_attempt_preflight import load_attempt_preflight_receipt
 from openzyme_host_api.aox_attempt_preflight import publish_attempt_preflight_receipt
+from openzyme_host_api.aox_attempt_preflight import publish_attempt_slot_claim_evidence
 from openzyme_host_api.aox_cutover_evidence import BlankWorldRoots
 from openzyme_host_api.aox_cutover_evidence import CutoverEvidenceError
 from openzyme_host_api.aox_cutover_evidence import canonical_digest
@@ -168,12 +171,13 @@ def _receipt(
 def _receipt_chain(
     slot: dict[str, object],
     control: dict[str, object],
+    *,
+    fault_artifact_id: str | None = None,
 ) -> list[dict[str, object]]:
     session_id = str(slot["session_id"])
     attempt_id = str(slot["attempt_id"])
     selection = dict(control["selection"])
     selection_id = str(selection["selection_id"])
-    command_route = f"/v3/sessions/{session_id}/scientific-attempt-commands"
     records = [
         _receipt(
             1,
@@ -200,36 +204,6 @@ def _receipt_chain(
         _receipt(
             3,
             "POST",
-            f"/v3/sessions/{session_id}/scientific-attempt-authorizations",
-            authority_grant_payload(slot),
-        ),
-        _receipt(
-            4,
-            "POST",
-            command_route,
-            {
-                "command": "attempt.create",
-                "arguments": attempt_admission_arguments(slot),
-            },
-        ),
-        _receipt(
-            5,
-            "POST",
-            f"/v3/sessions/{session_id}/scientific-attempt-admissions/finalize",
-            {"admission_request_id": "admission_request_aox"},
-        ),
-        _receipt(
-            6,
-            "POST",
-            command_route,
-            {
-                "command": "scientific.selection.begin",
-                "arguments": {"attempt_id": attempt_id},
-            },
-        ),
-        _receipt(
-            7,
-            "POST",
             f"/v3/sessions/{session_id}/runtime/drain",
             {
                 "max_signals": 1,
@@ -239,77 +213,54 @@ def _receipt_chain(
             status_code=202,
         ),
         _receipt(
-            8,
+            4,
             "GET",
             f"/v3/sessions/{session_id}/runtime/commands/runtime_command_aox",
             {},
         ),
         _receipt(
-            9,
+            5,
             "POST",
-            command_route,
-            {
-                "command": "scientific.operation.disposition",
-                "arguments": {
-                    "selection_id": selection_id,
-                    "operation_id": "operation_failed",
-                    "kind": "failed",
-                    "reason_code": "typed_failure",
-                    "replacement_operation_id": None,
-                },
-            },
-        ),
-        _receipt(
-            10,
-            "POST",
-            command_route,
-            {
-                "command": "scientific.selection.seal",
-                "arguments": {
-                    "selection_id": selection_id,
-                    "expected_universe_digest": selection[
-                        "operation_universe_digest"
-                    ],
-                },
-            },
-        ),
-        _receipt(
-            11,
-            "POST",
-            command_route,
-            {
-                "command": "scientific.attempt.close",
-                "arguments": {
-                    "attempt_id": attempt_id,
-                    "selection_id": selection_id,
-                },
-            },
-        ),
-        _receipt(
-            12,
-            "POST",
-            f"/v3/sessions/{session_id}/scientific-attempt-closures/finalize",
-            {"closure_request_id": "closure_request_aox"},
-        ),
-        _receipt(13, "GET", f"/v3/sessions/{session_id}/workspace", {}),
-        _receipt(
-            14,
-            "GET",
-            f"/v3/sessions/{session_id}/events?replay=1&after_cursor=0",
-            {"replay": True, "after_cursor": 0},
-        ),
-        _receipt(
-            15,
-            "GET",
-            f"/v3/sessions/{session_id}/scientific-attempts/{attempt_id}/"
-            f"selections/{selection_id}/evidence",
-            {},
+            f"/v3/sessions/{session_id}/scientific-attempt-authorizations",
+            authority_grant_payload(slot),
         ),
     ]
+    if fault_artifact_id is not None:
+        records.append(
+            _receipt(
+                len(records) + 1,
+                "POST",
+                f"/v3/sessions/{session_id}/aox-fault-injections/reference-byte-flip",
+                {"attempt_id": attempt_id, "artifact_id": fault_artifact_id},
+            )
+        )
+    records.extend(
+        [
+            _receipt(
+                len(records) + 1,
+                "GET",
+                f"/v3/sessions/{session_id}/workspace",
+                {},
+            ),
+            _receipt(
+                len(records) + 2,
+                "GET",
+                f"/v3/sessions/{session_id}/events?replay=1&after_cursor=0",
+                {"replay": True, "after_cursor": 0},
+            ),
+            _receipt(
+                len(records) + 3,
+                "GET",
+                f"/v3/sessions/{session_id}/scientific-attempts/{attempt_id}/"
+                f"selections/{selection_id}/evidence",
+                {},
+            ),
+        ]
+    )
     return records
 
 
-def test_public_receipts_reproduce_exact_authority_and_selected_chain() -> None:
+def test_public_receipts_cover_only_conductor_owned_control_and_final_reads() -> None:
     slot = _slot()
     control = _control(slot)
 
@@ -326,22 +277,22 @@ def test_public_receipts_reproduce_exact_authority_and_selected_chain() -> None:
     ("mutation", "expected_code"),
     [
         (
-            lambda chain: chain[4]["request"].update(
-                {"admission_request_id": "other"}
-            ),
+            lambda chain: chain[4]["request"].update({"task_id": "other"}),
             "public_conductor_command_chain_invalid",
         ),
         (
-            lambda chain: chain[8]["request"]["arguments"].update(
-                {"selection_id": "other"}
+            lambda chain: chain.append(
+                _receipt(
+                    len(chain) + 1,
+                    "POST",
+                    "/v3/sessions/sess_aox/scientific-attempt-commands",
+                    {"command": "scientific.selection.begin", "arguments": {}},
+                ),
             ),
-            "public_conductor_selected_chain_request_invalid",
+            "public_conductor_actor_boundary_invalid",
         ),
         (
-            lambda chain: chain.insert(
-                12,
-                chain.pop(12),
-            ),
+            lambda chain: chain[-1].update({"sequence": 4}),
             "public_conductor_command_order_invalid",
         ),
     ],
@@ -353,10 +304,7 @@ def test_public_receipts_reject_source_mix_and_order_drift(
     slot = _slot()
     control = _control(slot)
     chain = _receipt_chain(slot, control)
-    if expected_code == "public_conductor_command_order_invalid":
-        chain[12]["sequence"] = 10
-    else:
-        mutation(chain)
+    mutation(chain)
 
     with pytest.raises(CutoverEvidenceError) as error:
         _validate_receipt_chain(
@@ -367,6 +315,69 @@ def test_public_receipts_reject_source_mix_and_order_drift(
         )
 
     assert error.value.code == expected_code
+
+
+def test_public_receipts_require_settled_status_after_each_bounded_drain() -> None:
+    slot = _slot()
+    control = _control(slot)
+    chain = _receipt_chain(slot, control)
+    chain[2], chain[3] = chain[3], chain[2]
+    for sequence, receipt in enumerate(chain, start=1):
+        receipt["sequence"] = sequence
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        _validate_receipt_chain(
+            chain,
+            slot=slot,
+            identity={"workflow_ref": "workflow:aox@1.0.0#sha256:" + "c" * 64},
+            control=control,
+        )
+
+    assert error.value.code == "public_conductor_approval_chain_invalid"
+
+
+def test_public_receipts_bind_explicit_approved_decision() -> None:
+    slot = _slot()
+    control = _control(slot)
+    control["operation_universe"]["occurrences"][0]["approval_id"] = "approval:aox"
+    chain = _receipt_chain(slot, control)
+    chain.insert(
+        4,
+        _receipt(
+            0,
+            "GET",
+            f"/v3/sessions/{slot['session_id']}/pending-approvals",
+            {},
+        ),
+    )
+    chain.insert(
+        6,
+        _receipt(
+            0,
+            "POST",
+            "/v3/approvals/approval:aox/resolve",
+            {"decision": "approved"},
+        ),
+    )
+    for sequence, receipt in enumerate(chain, start=1):
+        receipt["sequence"] = sequence
+
+    _validate_receipt_chain(
+        chain,
+        slot=slot,
+        identity={"workflow_ref": "workflow:aox@1.0.0#sha256:" + "c" * 64},
+        control=control,
+    )
+
+    chain[6]["request"] = {"decision": "rejected"}
+    with pytest.raises(CutoverEvidenceError) as error:
+        _validate_receipt_chain(
+            chain,
+            slot=slot,
+            identity={"workflow_ref": "workflow:aox@1.0.0#sha256:" + "c" * 64},
+            control=control,
+        )
+    assert error.value.code == "public_conductor_approval_chain_invalid"
 
 
 def test_public_receipt_loader_rejects_failed_or_resealed_records(
@@ -483,6 +494,29 @@ def _preflight_fixture(
         "slots": [slot],
     }
     consumption = {"plan_digest": plan["plan_digest"], "status": "consumed"}
+    claim_payload = {
+        "schema_id": AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID,
+        "run_class": "formal_acceptance",
+        "campaign_id": plan["campaign_id"],
+        "plan_digest": plan["plan_digest"],
+        "consumption_digest": canonical_digest(consumption),
+        "ordinal": slot["ordinal"],
+        "attempt_kind": slot["attempt_kind"],
+        "attempt_id": slot["attempt_id"],
+        "session_id": slot["session_id"],
+        "task_id": slot["task_id"],
+        "lane_id": slot["lane_id"],
+        "envelope_id": slot["envelope_id"],
+        "request_digest": slot["request_digest"],
+        "campaign_root_identity": "sha256:" + "9" * 64,
+        "claim_file": "authority.json.slot-1.claimed.json",
+        "claimed_at": "2026-07-31T00:00:00+00:00",
+    }
+    slot_claim = {
+        **claim_payload,
+        "claim_digest": canonical_digest(claim_payload),
+    }
+    publish_attempt_slot_claim_evidence(slot_claim, roots=roots)
     receipt = build_attempt_preflight_receipt(
         identity=identity,
         allowed_prerequisites=prerequisites,
@@ -491,6 +525,7 @@ def _preflight_fixture(
         authority_plan=plan,
         authority_consumption=consumption,
         slot=slot,
+        slot_claim=slot_claim,
         roots=roots,
     )
     path = publish_attempt_preflight_receipt(receipt, roots=roots)
@@ -654,37 +689,68 @@ def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(
     ]
     selection_id = dict(control["selection"])["selection_id"]
     export_payload = {
-        "schema_id": "aox_closed_attempt_evidence@1",
+        "schema_id": "aox_closed_attempt_evidence@2",
         "session_id": slot["session_id"],
         "attempt_id": slot["attempt_id"],
         "selection_id": selection_id,
         "scientific_attempt_control": control,
         "finalization_receipt": None,
         "deliverables": [],
+        "product_closure": {
+            "tasks": [],
+            "final_answer": None,
+            "fault_negative_state_closure": {
+                "injection_receipt": {
+                    "target_artifact_id": "artifact_aox_ref21",
+                }
+            },
+        },
     }
     closed_export = {
         **export_payload,
         "export_digest": canonical_digest(export_payload),
     }
-    receipts = _receipt_chain(slot, control)
-    for index, response in ((12, workspace), (13, events), (14, closed_export)):
+    receipts = _receipt_chain(
+        slot,
+        control,
+        fault_artifact_id="artifact_aox_ref21",
+    )
+    for index, response in (
+        (-3, workspace),
+        (-2, events),
+        (-1, closed_export),
+    ):
         receipts[index]["response_semantic_digest"] = canonical_digest(response)
     receipt_path = preflight_path.parent / "public-api-receipts.jsonl"
     receipt_path.write_bytes(
         b"".join(canonical_json_bytes(item) + b"\n" for item in receipts)
     )
+    receipt_path.chmod(0o600)
     workspace_path = preflight_path.parent / "workspace-response.json"
     events_path = preflight_path.parent / "events-response.json"
     evidence_path = preflight_path.parent / "evidence-response.json"
-    _seal_response(workspace_path, receipt=receipts[12], response=workspace)
-    _seal_response(events_path, receipt=receipts[13], response=events)
-    _seal_response(evidence_path, receipt=receipts[14], response=closed_export)
+    _seal_response(workspace_path, receipt=receipts[-3], response=workspace)
+    _seal_response(events_path, receipt=receipts[-2], response=events)
+    _seal_response(evidence_path, receipt=receipts[-1], response=closed_export)
     ledger_before = preflight_path.parent / "micu-before.json"
     ledger_after = preflight_path.parent / "micu-after.json"
     _write_canonical(ledger_before, {"sequence": 1})
     _write_canonical(ledger_after, {"sequence": 2})
 
     monkeypatch.setattr(conductor_bundle, "_validate_control", lambda **_: None)
+    monkeypatch.setattr(
+        conductor_bundle,
+        "_validate_closed_export",
+        lambda *_, **__: (
+            {},
+            None,
+            {
+                "injection_id": "derived_required_artifact_blob_byte_flip@2",
+                "error_code": "artifact_blob_digest_mismatch",
+            },
+            {"operations": [], "artifacts": [], "scientific_checks": {}},
+        ),
+    )
     monkeypatch.setattr(
         conductor_bundle,
         "_validate_ledger_transition",
@@ -748,6 +814,7 @@ def test_campaign_reducer_keeps_unproven_public_fault_contract_no_go(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     records: list[SimpleNamespace] = []
+    payloads: list[dict[str, object]] = []
     ledger_states = ({"state": 0}, {"state": 1}, {"state": 2}, {"state": 3})
     for index, kind in enumerate(("positive", "positive", "fault")):
         attempt_id = f"{kind}-{index}"
@@ -759,6 +826,22 @@ def test_campaign_reducer_keeps_unproven_public_fault_contract_no_go(
                 "public_api_receipt_chain_digest": "sha256:"
                 + str(index + 7) * 64
             },
+            "authority": {
+                "campaign_id": "aox_campaign_test",
+                "plan_digest": "sha256:" + "f" * 64,
+                "slot_claim_digest": "sha256:" + str(index + 4) * 64,
+                "slot": {
+                    "ordinal": index + 1,
+                    "attempt_id": attempt_id,
+                    "session_id": f"session-{index}",
+                    "task_id": f"task-{index}",
+                    "lane_id": f"lane-{index}",
+                    "envelope_id": f"envelope-{index}",
+                },
+            },
+            "scientific_attempt_control": {
+                "selection": {"selection_id": f"selection-{index}"}
+            },
             "micu_ledger": {
                 "before": ledger_states[index],
                 "after": ledger_states[index + 1],
@@ -767,7 +850,20 @@ def test_campaign_reducer_keeps_unproven_public_fault_contract_no_go(
                 "cutover_eligible": kind == "positive",
                 "status": "passed" if kind == "positive" else "controlled_failure",
             },
-            "report": {"status": "published" if kind == "positive" else "withheld"},
+            "report": {
+                "status": "published" if kind == "positive" else "withheld",
+                "report_id": f"report-{index}" if kind == "positive" else None,
+                "primary_artifact_id": (
+                    f"pubmed-{index}" if kind == "positive" else None
+                ),
+            },
+            "tasks": [
+                {"status": "completed" if kind == "positive" else "blocked"}
+                for _ in range(3)
+            ],
+            "final_answer": (
+                {"message_id": f"message-{index}"} if kind == "positive" else None
+            ),
             "deliverables": [{} for _ in range(17)] if kind == "positive" else [],
             "fault_injection": (
                 None
@@ -775,9 +871,16 @@ def test_campaign_reducer_keeps_unproven_public_fault_contract_no_go(
                 else {
                     "operation_id": "operation_failed",
                     "error_code": "sandbox_exec_nonzero",
+                    "negative_state_closure": {
+                        "schema_id": "aox_fault_negative_state_closure@1",
+                        "successful_alternate_consumer_ids": [],
+                        "post_fault_final_deliverable_paths": [],
+                        "complete_final_deliverable_set_present": False,
+                    },
                 }
             ),
         }
+        payloads.append(payload)
         bundle_path = tmp_path / f"bundle-{index}.json"
         _write_canonical(
             bundle_path,
@@ -816,6 +919,45 @@ def test_campaign_reducer_keeps_unproven_public_fault_contract_no_go(
 
     assert decision["decision"] == "NO-GO"
     assert decision["blocker"]["code"] == "fault_contract_unproven"
+
+    payloads[1]["authority"]["plan_digest"] = "sha256:" + "e" * 64
+    _write_canonical(
+        records[1].bundle_path,
+        {"payload": payloads[1], "bundle_digest": records[1].bundle_digest},
+    )
+    plan_drift = conductor_bundle.evaluate_public_conductor_campaign(
+        records,
+        decided_at="2026-07-31T00:02:01+00:00",
+    )
+    assert plan_drift["blocker"]["code"] == "campaign_authority_plan_drift"
+
+    payloads[1]["authority"]["plan_digest"] = "sha256:" + "f" * 64
+    payloads[1]["authority"]["slot_claim_digest"] = payloads[0]["authority"][
+        "slot_claim_digest"
+    ]
+    _write_canonical(
+        records[1].bundle_path,
+        {"payload": payloads[1], "bundle_digest": records[1].bundle_digest},
+    )
+    claim_collision = conductor_bundle.evaluate_public_conductor_campaign(
+        records,
+        decided_at="2026-07-31T00:02:02+00:00",
+    )
+    assert claim_collision["blocker"]["code"] == "campaign_slot_claim_collision"
+
+    payloads[1]["authority"]["slot_claim_digest"] = "sha256:" + "5" * 64
+    payloads[1]["authority"]["slot"]["attempt_id"] = payloads[0]["authority"]["slot"][
+        "attempt_id"
+    ]
+    _write_canonical(
+        records[1].bundle_path,
+        {"payload": payloads[1], "bundle_digest": records[1].bundle_digest},
+    )
+    identity_collision = conductor_bundle.evaluate_public_conductor_campaign(
+        records,
+        decided_at="2026-07-31T00:02:03+00:00",
+    )
+    assert identity_collision["blocker"]["code"] == ("campaign_slot_identity_collision")
 
 
 def test_artifact_reader_rejects_intermediate_symlink(tmp_path: Path) -> None:

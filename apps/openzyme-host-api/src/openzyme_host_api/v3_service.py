@@ -88,6 +88,9 @@ from openzyme_runtime import record_failure_observation
 from openzyme_runtime import sanitize_public_diagnostic_text
 
 from .aox_bundle_finalizer import validate_persisted_aox_finalization_receipt
+from .aox_fault_injection import inject_authority_bound_aox_reference_byte_flip
+from .aox_public_product_closure import AoxPublicProductClosureError
+from .aox_public_product_closure import build_aox_public_product_closure
 
 
 def _new_id(prefix: str) -> str:
@@ -680,6 +683,39 @@ class V3HostApiService:
             selection_id=selection_id,
         )
         attempt = dict(control["attempt"])
+        events: list[dict[str, Any]] = []
+        after_cursor = 0
+        while True:
+            page = self.event_store.list(
+                session_id,
+                after_cursor=after_cursor,
+                limit=1_000,
+            )
+            events.extend(page)
+            if len(events) > 100_000:
+                raise ScientificAttemptError(
+                    "attempt_evidence_event_export_too_large",
+                    "closed AOX public event export exceeds its bounded limit",
+                )
+            if len(page) < 1_000:
+                break
+            after_cursor = int(page[-1]["cursor"])
+        try:
+            product_closure = build_aox_public_product_closure(
+                self.repositories,
+                session_id=session_id,
+                attempt_id=attempt_id,
+                attempt_kind=(
+                    "fault"
+                    if attempt.get("scope") == ScientificAttemptScope.FAULT.value
+                    else "positive"
+                ),
+                execution_task_id=str(attempt["task_id"]),
+                events=events,
+                latest_event_cursor=(0 if not events else int(events[-1]["cursor"])),
+            )
+        except AoxPublicProductClosureError as exc:
+            raise ScientificAttemptError(exc.error_code, str(exc)) from exc
         finalization: dict[str, object] | None = None
         deliverables: list[dict[str, object]] = []
         if attempt.get("scope") == ScientificAttemptScope.FORMAL.value:
@@ -725,15 +761,41 @@ class V3HostApiService:
                     }
                 )
         payload: dict[str, Any] = {
-            "schema_id": "aox_closed_attempt_evidence@1",
+            "schema_id": "aox_closed_attempt_evidence@2",
             "session_id": session_id,
             "attempt_id": attempt_id,
             "selection_id": selection_id,
             "scientific_attempt_control": control,
             "finalization_receipt": finalization,
             "deliverables": deliverables,
+            "product_closure": product_closure,
         }
         return {**payload, "export_digest": canonical_digest(payload)}
+
+    def inject_aox_reference_fault(
+        self,
+        *,
+        session_id: str,
+        attempt_id: str,
+        artifact_id: str,
+        actor_ref: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        with self.operation_lock:
+            with MutationScopeService(self.repositories).writer_turn(
+                session_id=session_id,
+                owner_kind=MutationWriterKind.ARTIFACT_PUBLISHER,
+                owner_ref=f"aox-fault-capability:{attempt_id}",
+            ):
+                return inject_authority_bound_aox_reference_byte_flip(
+                    self.repositories,
+                    session_id=session_id,
+                    attempt_id=attempt_id,
+                    artifact_id=artifact_id,
+                    actor_ref=actor_ref,
+                    idempotency_key=idempotency_key,
+                    blob_root=self.artifact_blob_root,
+                )
 
     def grant_scientific_attempt_authorization(
         self,

@@ -292,19 +292,24 @@ SQLite/root sync 或 TERM/KILL 解释为 task/operation/campaign terminal。该�
 的产品 ownership；different UID/cgroup 与 remote-handle/MICU crash reconciliation 仍是
 独立 hardening。
 
-r68 将这个 shell 收窄为 `aox_supervised_host_receipt@1` production seam。它只能从 exact
-`aox_attempt_preflight@1` 启动固定 loopback Host child，使用独立 process group，关闭
+r68 将这个 shell 收窄为 `aox_supervised_host_receipt@1` production seam。post-r68 contract
+只能从 exact `aox_attempt_preflight@2` 启动固定 loopback Host child，使用独立 process group，关闭
 background runtime，并封存 startup 与 terminal supervision receipts。它不接受 arbitrary
 callable/pickled runner，不发送 message、runtime drain或 approval，不执行 scope rollover，
 也不根据 workspace/task/attempt/report state决定退出。parent 的 TERM/KILL 只描述 local
 process retirement；未知 remote effect仍由 Host canonical reconciliation处理。
 
-preflight receipt 绑定 exact authority consumption/slot、clean identity、current full
+preflight 前必须以 mode-private no-replace sibling原子 claim exact ordinal；claim 绑定同一
+campaign/plan/consumption、attempt/session/task/lane/envelope 与 campaign-root identity，任何
+创建 root 前后的重放都 fail closed。preflight receipt 绑定该 claim、exact authority
+consumption/slot、clean identity、current full
 architecture qualification、config digest、plan、fresh root proof，且必须证明 root 中尚无
 session/attempt。supervisor 对 root/process epoch、startup、exit、settled process group、零
 local mutation writer、SQLite checkpoint/integrity 与 root fsync做 closed validation；任一
 settlement 无法证明都生成 fatal receipt并 fail closed，但不会把它改写成业务 task/attempt
-terminal。
+terminal。operator CLI 的 JSON handoff使用 flush；每个 runtime drain保持 exact bounded
+command并由独立 status read确认 settlement，不能把 stdout、process exit或空 drain解释为业务
+完成。
 
 ## 10. Executable qualification 与 AOX admission
 

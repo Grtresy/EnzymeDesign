@@ -17,7 +17,8 @@ from typing import Any
 
 from openzyme_pipeline import aox_finalization
 
-from .aox_attempt_authority import attempt_admission_arguments, authority_grant_payload
+from .aox_attempt_authority import authority_grant_payload
+from .aox_attempt_preflight import ATTEMPT_SLOT_CLAIM_FILENAME
 from .aox_attempt_preflight import load_attempt_preflight_receipt
 from .aox_bundle_finalizer import (
     AoxBundleFinalizationError,
@@ -49,6 +50,8 @@ from .aox_host_supervision import (
     validate_supervised_host_receipt,
 )
 from .aox_selected_chain_evidence import _verify_selected_chain_control
+from .aox_public_product_closure import AoxPublicProductClosureError
+from .aox_public_product_closure import validate_aox_public_product_closure
 
 
 PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID = "aox_public_conductor_bundle@1"
@@ -70,35 +73,62 @@ PUBLIC_CONDUCTOR_MESSAGE = (
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _ANY = object()
 _RECEIPT_FIELDS = {
-    "schema_id", "sequence", "method", "route", "status_code", "request",
-    "request_digest", "response_digest", "response_semantic_digest",
+    "schema_id",
+    "sequence",
+    "method",
+    "route",
+    "status_code",
+    "request",
+    "request_digest",
+    "response_digest",
+    "response_semantic_digest",
 }
 _RESPONSE_FIELDS = {
-    "schema_id", "receipt", "response", "response_semantic_digest",
+    "schema_id",
+    "receipt",
+    "response",
+    "response_semantic_digest",
     "envelope_digest",
 }
 _FINALIZATION_FIELDS = {
-    "schema_id", "status", "receipt_id", "receipt_digest", "bundle_digest",
-    "session_id", "execution_task_id", "agent_id", "attempt_id", "selection_id",
-    "sandbox_workspace_id", "sandbox_run_id", "source_snapshot_artifact_id",
-    "source_tree_digest", "artifacts", "calculation_receipts",
-    "validation_metadata", "validation",
+    "schema_id",
+    "status",
+    "receipt_id",
+    "receipt_digest",
+    "bundle_digest",
+    "session_id",
+    "execution_task_id",
+    "agent_id",
+    "attempt_id",
+    "selection_id",
+    "sandbox_workspace_id",
+    "sandbox_run_id",
+    "source_snapshot_artifact_id",
+    "source_tree_digest",
+    "artifacts",
+    "calculation_receipts",
+    "validation_metadata",
+    "validation",
 }
 _SOURCE_NAMES = {
-    "identity.json", "preflight.json", "host-startup.json",
-    "host-supervision.json", "public-api-receipts.jsonl",
-    "workspace-response.json", "events-response.json", "evidence-response.json",
-    "micu-before.json", "micu-after.json",
+    "identity.json",
+    "preflight.json",
+    "host-startup.json",
+    "host-supervision.json",
+    "public-api-receipts.jsonl",
+    "workspace-response.json",
+    "events-response.json",
+    "evidence-response.json",
+    "slot-claim.json",
+    "micu-before.json",
+    "micu-after.json",
 }
-
 
 def _content_digest(content: bytes) -> str:
     return "sha256:" + hashlib.sha256(content).hexdigest()
 
-
 def _fail(code: str, message: str, *, identity: str) -> None:
     raise CutoverEvidenceError(code, message, details={"identity": identity})
-
 
 def _safe_relative_path(value: str) -> str:
     path = PurePosixPath(value)
@@ -112,7 +142,6 @@ def _safe_relative_path(value: str) -> str:
     )):
         _fail("public_conductor_artifact_path_invalid", "unsafe artifact path", identity="deliverables.relative_path")
     return value
-
 
 def _read_bound_artifact_file(
     artifact_root: Path, relative_path: str, *, identity: str
@@ -146,7 +175,6 @@ def _read_bound_artifact_file(
         _fail("public_conductor_artifact_identity_drift", "artifact identity changed", identity=identity)
     return path, b"".join(chunks)
 
-
 def _load_canonical_object(
     path: Path, *, identity: str
 ) -> tuple[dict[str, Any], bytes]:
@@ -167,7 +195,6 @@ def _load_canonical_object(
         _fail("public_conductor_source_noncanonical", "source is not canonical JSON", identity=identity)
     return dict(value), content
 
-
 def _load_receipt_chain(path: Path) -> tuple[list[dict[str, Any]], bytes]:
     try:
         metadata, content = path.lstat(), path.read_bytes()
@@ -177,11 +204,20 @@ def _load_receipt_chain(path: Path) -> tuple[list[dict[str, Any]], bytes]:
             "public Host receipt chain is unreadable",
             details={"identity": "receipt_chain"},
         ) from exc
-    if not all((
-        stat.S_ISREG(metadata.st_mode), not stat.S_ISLNK(metadata.st_mode),
-        bool(content), content.endswith(b"\n"),
-    )):
-        _fail("public_receipt_chain_invalid", "receipt chain is not complete JSONL", identity="receipt_chain")
+    if not all(
+        (
+            stat.S_ISREG(metadata.st_mode),
+            not stat.S_ISLNK(metadata.st_mode),
+            stat.S_IMODE(metadata.st_mode) & 0o077 == 0,
+            bool(content),
+            content.endswith(b"\n"),
+        )
+    ):
+        _fail(
+            "public_receipt_chain_invalid",
+            "receipt chain is not complete JSONL",
+            identity="receipt_chain",
+        )
     records: list[dict[str, Any]] = []
     for sequence, line in enumerate(content.splitlines(), 1):
         try:
@@ -192,23 +228,33 @@ def _load_receipt_chain(path: Path) -> tuple[list[dict[str, Any]], bytes]:
                 "public Host receipt chain contains invalid JSONL",
                 details={"identity": f"receipt_chain[{sequence}]"},
             ) from exc
-        valid = isinstance(raw, dict) and all((
-            set(raw) == _RECEIPT_FIELDS,
-            raw.get("schema_id") == PUBLIC_API_RECEIPT_SCHEMA_ID,
-            raw.get("sequence") == sequence,
-            canonical_json_bytes(raw) == line,
-            raw.get("request_digest") == canonical_digest(raw.get("request")),
-            type(raw.get("status_code")) is int,
-            200 <= int(raw.get("status_code") or 0) < 300,
-            all(_DIGEST.fullmatch(str(raw.get(name) or "")) for name in (
-                "request_digest", "response_digest", "response_semantic_digest"
-            )),
-        ))
+        valid = isinstance(raw, dict) and all(
+            (
+                set(raw) == _RECEIPT_FIELDS,
+                raw.get("schema_id") == PUBLIC_API_RECEIPT_SCHEMA_ID,
+                raw.get("sequence") == sequence,
+                canonical_json_bytes(raw) == line,
+                raw.get("request_digest") == canonical_digest(raw.get("request")),
+                type(raw.get("status_code")) is int,
+                200 <= int(raw.get("status_code") or 0) < 300,
+                all(
+                    _DIGEST.fullmatch(str(raw.get(name) or ""))
+                    for name in (
+                        "request_digest",
+                        "response_digest",
+                        "response_semantic_digest",
+                    )
+                ),
+            )
+        )
         if not valid:
-            _fail("public_receipt_chain_invalid", "receipt chain is not successful and closed", identity=f"receipt_chain[{sequence}]")
+            _fail(
+                "public_receipt_chain_invalid",
+                "receipt chain is not successful and closed",
+                identity=f"receipt_chain[{sequence}]",
+            )
         records.append(dict(raw))
     return records, content
-
 
 def _load_response_envelope(
     path: Path, *, identity: str, receipts: Sequence[Mapping[str, Any]]
@@ -227,7 +273,6 @@ def _load_response_envelope(
     ))):
         _fail("public_response_binding_invalid", "response does not bind one receipt", identity=identity)
     return value, content
-
 
 def _validate_startup(
     startup: Mapping[str, Any], *, preflight: Mapping[str, Any]
@@ -264,7 +309,6 @@ def _validate_startup(
     )):
         _fail("host_startup_receipt_invalid", "Host startup does not bind preflight", identity="host_startup")
     return value
-
 
 def _validate_control_slot_binding(
     *, slot: Mapping[str, Any], control: Mapping[str, Any]
@@ -318,28 +362,34 @@ def _validate_control_slot_binding(
     if not valid:
         _fail("public_conductor_control_slot_mismatch", "closed control differs from authority", identity="closed_evidence.scientific_attempt_control")
 
-
 def _validate_receipt_chain(
     receipts: Sequence[Mapping[str, Any]],
     *,
     slot: Mapping[str, Any],
     identity: Mapping[str, str],
     control: Mapping[str, Any],
+    product_closure: Mapping[str, Any] | None = None,
+    final_receipts: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> None:
     records = [dict(item) for item in receipts]
     if [item.get("sequence") for item in records] != list(range(1, len(records) + 1)):
-        _fail("public_conductor_command_order_invalid", "command sequence is discontinuous", identity="receipt_chain")
+        _fail(
+            "public_conductor_command_order_invalid",
+            "command sequence is discontinuous",
+            identity="receipt_chain",
+        )
     _validate_control_slot_binding(slot=slot, control=control)
     session_id, attempt_id = str(slot["session_id"]), str(slot["attempt_id"])
     selection = dict(control.get("selection") or {})
     selection_id = str(selection.get("selection_id") or "")
-    command_route = f"/v3/sessions/{session_id}/scientific-attempt-commands"
     routes = {
         "grant": f"/v3/sessions/{session_id}/scientific-attempt-authorizations",
-        "admission": f"/v3/sessions/{session_id}/scientific-attempt-admissions/finalize",
-        "closure": f"/v3/sessions/{session_id}/scientific-attempt-closures/finalize",
         "drain": f"/v3/sessions/{session_id}/runtime/drain",
         "pending": f"/v3/sessions/{session_id}/pending-approvals",
+        "inspect": f"/v3/sessions/{session_id}/scientific-attempts",
+        "fault": (
+            f"/v3/sessions/{session_id}/aox-fault-injections/reference-byte-flip"
+        ),
         "workspace": f"/v3/sessions/{session_id}/workspace",
         "events": f"/v3/sessions/{session_id}/events?replay=1&after_cursor=0",
         "export": (
@@ -347,143 +397,226 @@ def _validate_receipt_chain(
             f"selections/{selection_id}/evidence"
         ),
     }
+    forbidden_actor_routes = {
+        f"/v3/sessions/{session_id}/scientific-attempt-commands",
+        f"/v3/sessions/{session_id}/scientific-attempt-admissions/finalize",
+        f"/v3/sessions/{session_id}/scientific-attempt-closures/finalize",
+    }
+    if any(item.get("route") in forbidden_actor_routes for item in records):
+        _fail(
+            "public_conductor_actor_boundary_invalid",
+            "Codex conductor receipts must not claim agent mutations or Host finalizers",
+            identity="receipt_chain",
+        )
     remaining = list(records)
 
     def consume(
         method: str, route: str, request: object = _ANY, *, code: str
     ) -> dict[str, Any]:
         matches = [
-            item for item in remaining
-            if item.get("method") == method and item.get("route") == route
+            item
+            for item in remaining
+            if item.get("method") == method
+            and item.get("route") == route
             and (request is _ANY or item.get("request") == request)
         ]
         if len(matches) != 1:
-            _fail(code, "public command chain differs from its sealed control", identity="receipt_chain")
+            _fail(
+                code,
+                "public command chain differs from its sealed control",
+                identity="receipt_chain",
+            )
         remaining.remove(matches[0])
         return matches[0]
 
     core_code = "public_conductor_command_chain_invalid"
     milestones = [
-        consume("POST", "/v3/sessions", {
-            "session_id": session_id, "project_id": "aox-blank-world-cutover",
-            "objective": PUBLIC_CONDUCTOR_OBJECTIVE, "title": PUBLIC_CONDUCTOR_TITLE,
-        }, code=core_code),
-        consume("POST", f"/v3/sessions/{session_id}/messages", {
-            "message_digest": _content_digest(PUBLIC_CONDUCTOR_MESSAGE.encode()),
-            "skill_keys": [identity["workflow_ref"]], "task_id": None, "lane_id": None,
-        }, code=core_code),
+        consume(
+            "POST",
+            "/v3/sessions",
+            {
+                "session_id": session_id,
+                "project_id": "aox-blank-world-cutover",
+                "objective": PUBLIC_CONDUCTOR_OBJECTIVE,
+                "title": PUBLIC_CONDUCTOR_TITLE,
+            },
+            code=core_code,
+        ),
+        consume(
+            "POST",
+            f"/v3/sessions/{session_id}/messages",
+            {
+                "message_digest": _content_digest(PUBLIC_CONDUCTOR_MESSAGE.encode()),
+                "skill_keys": [identity["workflow_ref"]],
+                "task_id": None,
+                "lane_id": None,
+            },
+            code=core_code,
+        ),
         consume("POST", routes["grant"], authority_grant_payload(slot), code=core_code),
-        consume("POST", command_route, {
-            "command": "attempt.create", "arguments": attempt_admission_arguments(slot)
-        }, code=core_code),
-        consume("POST", routes["admission"], {
-            "admission_request_id": dict(control.get("admission_request") or {}).get(
-                "admission_request_id"
-            )
-        }, code=core_code),
     ]
-    selected_code = "public_conductor_selected_chain_request_invalid"
-    begin = consume("POST", command_route, {
-        "command": "scientific.selection.begin", "arguments": {"attempt_id": attempt_id}
-    }, code=selected_code)
-    dynamic: list[dict[str, Any]] = []
-    for item in control.get("dispositions") or []:
-        if isinstance(item, dict):
-            dynamic.append(consume("POST", command_route, {
-                "command": "scientific.operation.disposition",
-                "arguments": {key: item.get(key) for key in (
-                    "selection_id", "operation_id", "kind", "reason_code",
-                    "replacement_operation_id",
-                )},
-            }, code=selected_code))
-    for item in control.get("adoptions") or []:
-        if isinstance(item, dict):
-            dynamic.append(consume("POST", command_route, {
-                "command": "scientific.operation.adopt",
-                "arguments": {key: item.get(key) for key in (
-                    "selection_id", "operation_id", "workflow_role", "reason_code"
-                )},
-            }, code=selected_code))
-    for item in control.get("materializations") or []:
-        if isinstance(item, dict):
-            dynamic.append(consume("POST", command_route, {
-                "command": "scientific.artifact.materialize",
-                "arguments": {
-                    "selection_id": item.get("selection_id"),
-                    "adoption_id": item.get("adoption_id"),
-                    "source_artifact_id": item.get("source_artifact_id"),
-                    "target_sandbox_run_id": item.get("target_sandbox_run_id"),
-                    "target": item.get("target_path"),
-                },
-            }, code=selected_code))
-    seal = consume("POST", command_route, {
-        "command": "scientific.selection.seal",
-        "arguments": {
-            "selection_id": selection_id,
-            "expected_universe_digest": selection.get("operation_universe_digest"),
-        },
-    }, code=selected_code)
-    close = consume("POST", command_route, {
-        "command": "scientific.attempt.close",
-        "arguments": {"attempt_id": attempt_id, "selection_id": selection_id},
-    }, code=selected_code)
-    closure = consume("POST", routes["closure"], {
-        "closure_request_id": dict(control.get("closure_request") or {}).get(
-            "closure_request_id"
-        )
-    }, code=core_code)
-    final = {
-        name: consume("GET", routes[name], request, code="public_conductor_command_order_invalid")
-        for name, request in (
-            ("workspace", {}), ("events", {"replay": True, "after_cursor": 0}),
-            ("export", {}),
-        )
-    }
     approval_ids = {
         str(item["approval_id"])
-        for item in dict(control.get("operation_universe") or {}).get("occurrences") or []
+        for item in dict(control.get("operation_universe") or {}).get("occurrences")
+        or []
         if isinstance(item, dict) and item.get("approval_id") is not None
     }
     approvals = [
-        consume("POST", f"/v3/approvals/{approval_id}/resolve", code="public_conductor_approval_chain_invalid")
+        consume(
+            "POST",
+            f"/v3/approvals/{approval_id}/resolve",
+            {"decision": "approved"},
+            code="public_conductor_approval_chain_invalid",
+        )
         for approval_id in sorted(approval_ids)
     ]
     drain_request = {
-        "max_signals": 1, "max_steps_per_agent": 8,
+        "max_signals": 1,
+        "max_steps_per_agent": 8,
         "auto_enqueue_ready_tasks": False,
     }
-    drains = [item for item in remaining if (
-        item.get("method"), item.get("route"), item.get("request")
-    ) == ("POST", routes["drain"], drain_request)]
-    statuses = [item for item in remaining if (
-        item.get("method") == "GET" and item.get("request") == {}
-        and re.fullmatch(
-            rf"/v3/sessions/{re.escape(session_id)}/runtime/commands/[^/]+",
-            str(item.get("route") or ""),
+    drains = [
+        item
+        for item in remaining
+        if (item.get("method"), item.get("route"), item.get("request"))
+        == ("POST", routes["drain"], drain_request)
+    ]
+    statuses = [
+        item
+        for item in remaining
+        if (
+            item.get("method") == "GET"
+            and item.get("request") == {}
+            and re.fullmatch(
+                rf"/v3/sessions/{re.escape(session_id)}/runtime/commands/[^/]+",
+                str(item.get("route") or ""),
+            )
         )
-    )]
-    pending = [item for item in remaining if (
-        item.get("method"), item.get("route"), item.get("request")
-    ) == ("GET", routes["pending"], {})]
-    for item in (*drains, *statuses, *pending):
-        remaining.remove(item)
-    if not drains or not statuses or remaining or (
-        approvals and (not pending or min(item["sequence"] for item in approvals)
-                       <= min(item["sequence"] for item in pending))
+    ]
+    pending = [
+        item
+        for item in remaining
+        if (item.get("method"), item.get("route"), item.get("request"))
+        == ("GET", routes["pending"], {})
+    ]
+    observational = [
+        item
+        for item in remaining
+        if (
+            item.get("method") == "GET"
+            and item.get("request") == {}
+            and item.get("route") == routes["inspect"]
+        )
+    ]
+    closure_value = dict(product_closure or {})
+    negative = dict(closure_value.get("fault_negative_state_closure") or {})
+    injection = dict(negative.get("injection_receipt") or {})
+    if slot.get("attempt_kind") == "fault":
+        consume(
+            "POST",
+            routes["fault"],
+            {
+                "attempt_id": attempt_id,
+                "artifact_id": injection.get("target_artifact_id"),
+            },
+            code="public_conductor_fault_capability_invalid",
+        )
+    final_candidates = {
+        name: [
+            item
+            for item in remaining
+            if item.get("method") == "GET"
+            and item.get("route") == routes[name]
+            and item.get("request") == request
+        ]
+        for name, request in (
+            ("workspace", {}),
+            ("events", {"replay": True, "after_cursor": 0}),
+            ("export", {}),
+        )
+    }
+    final: dict[str, dict[str, Any]] = {}
+    for name, candidates in final_candidates.items():
+        if not candidates:
+            _fail(
+                "public_conductor_command_order_invalid",
+                "public conductor lacks its final canonical reads",
+                identity="receipt_chain",
+            )
+        bound = None if final_receipts is None else final_receipts.get(name)
+        selected = (
+            max(candidates, key=lambda item: int(item["sequence"]))
+            if bound is None
+            else next((item for item in candidates if item == dict(bound)), None)
+        )
+        if selected is None or selected != max(
+            candidates, key=lambda item: int(item["sequence"])
+        ):
+            _fail(
+                "public_conductor_command_order_invalid",
+                "sealed response is not the final canonical read",
+                identity=f"receipt_chain.{name}",
+            )
+        final[name] = selected
+    for item in (
+        *drains,
+        *statuses,
+        *pending,
+        *observational,
+        *(item for items in final_candidates.values() for item in items),
     ):
-        _fail("public_conductor_approval_chain_invalid", "drain or approval chain is incomplete", identity="receipt_chain")
-    order = [item["sequence"] for item in (*milestones, begin, seal, close, closure)]
-    dynamic_ordered = all(
-        begin["sequence"] < item["sequence"] < seal["sequence"] for item in dynamic
+        remaining.remove(item)
+    ordered_drains = sorted(drains, key=lambda item: int(item["sequence"]))
+    bounded_handoffs = all(
+        any(
+            int(drain["sequence"]) < int(status["sequence"]) < upper_bound
+            for status in statuses
+        )
+        for index, drain in enumerate(ordered_drains)
+        for upper_bound in (
+            int(ordered_drains[index + 1]["sequence"])
+            if index + 1 < len(ordered_drains)
+            else min(int(item["sequence"]) for item in final.values()),
+        )
     )
+    if (
+        not drains
+        or not bounded_handoffs
+        or remaining
+        or (
+            approvals
+            and (
+                not pending
+                or min(item["sequence"] for item in approvals)
+                <= min(item["sequence"] for item in pending)
+            )
+        )
+    ):
+        _fail(
+            "public_conductor_approval_chain_invalid",
+            "drain or approval chain is incomplete",
+            identity="receipt_chain",
+        )
+    if slot.get("attempt_kind") != "fault" and any(
+        item.get("route") == routes["fault"] for item in records
+    ):
+        _fail(
+            "public_conductor_fault_capability_invalid",
+            "positive attempt must not consume the fault capability",
+            identity="receipt_chain",
+        )
+    order = [item["sequence"] for item in milestones]
     last_mutation = max(
         item["sequence"] for item in records if item.get("method") in {"POST", "PATCH"}
     )
-    if order != sorted(set(order)) or not dynamic_ordered or any(
+    if order != sorted(set(order)) or any(
         item["sequence"] <= last_mutation for item in final.values()
     ):
-        _fail("public_conductor_command_order_invalid", "command/read order is not closed", identity="receipt_chain")
-
+        _fail(
+            "public_conductor_command_order_invalid",
+            "command/read order is not closed",
+            identity="receipt_chain",
+        )
 
 def _control_projection(
     control: Mapping[str, Any], *, attempt_kind: str,
@@ -520,7 +653,6 @@ def _control_projection(
         }}},
     }
 
-
 def _validate_control(
     control: Mapping[str, Any], *, attempt_kind: str,
     receipts: Sequence[Mapping[str, Any]], supervision: Mapping[str, Any]
@@ -534,37 +666,6 @@ def _validate_control(
         issue = issues[0]
         _fail(issue.code, issue.message, identity=issue.identity)
     return projection
-
-
-def _workspace_task(workspace: Mapping[str, Any], task_id: str) -> dict[str, Any] | None:
-    for item in dict(workspace.get("task_board") or {}).get("items") or []:
-        task = item.get("task") if isinstance(item, dict) else None
-        if isinstance(task, dict) and task.get("task_id") == task_id:
-            return dict(task)
-    return None
-
-
-def _typed_fault_failure(workspace: Mapping[str, Any]) -> dict[str, Any] | None:
-    failures = [
-        dict(item)
-        for item in dict(workspace.get("scientific_evidence") or {}).get("operations") or []
-        if isinstance(item, dict) and item.get("status") in {"failed", "terminal_failed"}
-        and isinstance(item.get("error_code"), str) and item.get("error_code")
-    ]
-    if not failures:
-        return None
-    first = min(failures, key=lambda item: (
-        int(item.get("state_version") or 0), str(item.get("operation_id") or "")
-    ))
-    details = dict(first.get("details") or {})
-    return {
-        "injection_id": first.get("injection_id") or details.get("fault_id"),
-        "operation_id": first.get("operation_id"), "error_code": first.get("error_code"),
-        "effect_certainty": first.get("effect_certainty"),
-        "retry_eligibility": first.get("retry_eligibility"),
-        "failure_digest": canonical_digest(first),
-    }
-
 
 def _validate_finalization(
     receipt: Mapping[str, Any], deliverables: Sequence[Mapping[str, Any]],
@@ -672,28 +773,51 @@ def _validate_finalization(
         _fail("aox_finalization_receipt_bundle_drift", "finalization bundle drifted", identity="closed_evidence.finalization_receipt.bundle_digest")
     return contents, validation
 
-
 def _validate_closed_export(
-    export: Mapping[str, Any], *, slot: Mapping[str, Any], workspace: Mapping[str, Any],
-    receipts: Sequence[Mapping[str, Any]], supervision: Mapping[str, Any]
-) -> tuple[dict[str, bytes], dict[str, Any] | None, dict[str, Any] | None, dict[str, Any]]:
+    export: Mapping[str, Any],
+    *,
+    slot: Mapping[str, Any],
+    workspace: Mapping[str, Any],
+    events: Sequence[Mapping[str, Any]],
+    receipts: Sequence[Mapping[str, Any]],
+    supervision: Mapping[str, Any],
+) -> tuple[
+    dict[str, bytes], dict[str, Any] | None, dict[str, Any] | None, dict[str, Any]
+]:
     value = dict(export)
     control = value.get("scientific_attempt_control")
     payload = {key: item for key, item in value.items() if key != "export_digest"}
     fields = {
-        "schema_id", "session_id", "attempt_id", "selection_id",
-        "scientific_attempt_control", "finalization_receipt", "deliverables",
+        "schema_id",
+        "session_id",
+        "attempt_id",
+        "selection_id",
+        "scientific_attempt_control",
+        "finalization_receipt",
+        "deliverables",
+        "product_closure",
         "export_digest",
     }
-    if not (isinstance(control, dict) and all((
-        set(value) == fields, value.get("schema_id") == "aox_closed_attempt_evidence@1",
-        value.get("session_id") == slot.get("session_id"),
-        value.get("attempt_id") == slot.get("attempt_id"),
-        value.get("selection_id") == dict(control.get("selection") or {}).get("selection_id"),
-        value.get("export_digest") == canonical_digest(payload),
-        isinstance(value.get("deliverables"), list),
-    ))):
-        _fail("aox_closed_attempt_export_invalid", "closed export does not bind authority", identity="closed_evidence")
+    if not (
+        isinstance(control, dict)
+        and all(
+            (
+                set(value) == fields,
+                value.get("schema_id") == "aox_closed_attempt_evidence@2",
+                value.get("session_id") == slot.get("session_id"),
+                value.get("attempt_id") == slot.get("attempt_id"),
+                value.get("selection_id")
+                == dict(control.get("selection") or {}).get("selection_id"),
+                value.get("export_digest") == canonical_digest(payload),
+                isinstance(value.get("deliverables"), list),
+            )
+        )
+    ):
+        _fail(
+            "aox_closed_attempt_export_invalid",
+            "closed export does not bind authority",
+            identity="closed_evidence",
+        )
     _validate_control_slot_binding(slot=slot, control=control)
     kind = str(slot["attempt_kind"])
     projection = _validate_control(
@@ -706,38 +830,72 @@ def _validate_closed_export(
             receipts=receipts,
             supervision=supervision,
         )
-    task = _workspace_task(workspace, str(slot["task_id"]))
-    finalization, deliverables = value.get("finalization_receipt"), value["deliverables"]
+    product_closure = value.get("product_closure")
+    if not isinstance(product_closure, dict):
+        _fail(
+            "aox_public_product_closure_invalid",
+            "closed export lacks its typed product closure",
+            identity="closed_evidence.product_closure",
+        )
+    try:
+        validate_aox_public_product_closure(
+            product_closure,
+            session_id=str(slot["session_id"]),
+            attempt_id=str(slot["attempt_id"]),
+            attempt_kind=kind,
+            execution_task_id=str(slot["task_id"]),
+            workspace=workspace,
+            events=events,
+        )
+    except AoxPublicProductClosureError as exc:
+        _fail(
+            exc.error_code,
+            str(exc),
+            identity="closed_evidence.product_closure",
+        )
+    finalization, deliverables = (
+        value.get("finalization_receipt"),
+        value["deliverables"],
+    )
     if kind == "positive":
-        reports = [item for item in workspace.get("reports") or [] if (
-            isinstance(item, dict) and item.get("task_id") == slot.get("task_id")
-            and item.get("status") == "ready"
-        )]
-        drafts = [item for item in workspace.get("report_drafts") or [] if (
-            isinstance(item, dict) and item.get("task_id") == slot.get("task_id")
-            and item.get("status") == "published"
-        )]
-        if not all((
-            task is not None and task.get("status") == "completed",
-            len(reports) == 1, len(drafts) == 1, isinstance(finalization, dict),
-        )):
-            _fail("positive_product_closure_invalid", "positive closure is incomplete", identity="workspace")
+        if not isinstance(finalization, dict):
+            _fail(
+                "positive_product_closure_invalid",
+                "positive closure is incomplete",
+                identity="workspace",
+            )
         contents, validation = _validate_finalization(
             finalization, deliverables, control=control
         )
         return contents, validation, None, projection
-    failure = _typed_fault_failure(workspace)
     if kind != "fault":
-        _fail("public_conductor_attempt_kind_invalid", "attempt kind is unsupported", identity="slot.attempt_kind")
-    ready_report = any(
-        isinstance(item, dict) and item.get("task_id") == slot.get("task_id")
-        and item.get("status") == "ready" for item in workspace.get("reports") or []
-    )
-    if (finalization is not None or deliverables or failure is None or ready_report
-            or (task is not None and task.get("status") == "completed")):
-        _fail("fault_product_closure_invalid", "fault did not fail closed", identity="workspace.scientific_evidence")
+        _fail(
+            "public_conductor_attempt_kind_invalid",
+            "attempt kind is unsupported",
+            identity="slot.attempt_kind",
+        )
+    negative = dict(product_closure.get("fault_negative_state_closure") or {})
+    injection = dict(negative.get("injection_receipt") or {})
+    consumers = negative.get("consumer_states")
+    if (
+        finalization is not None
+        or deliverables
+        or not (isinstance(consumers, list) and len(consumers) == 1)
+    ):
+        _fail(
+            "fault_product_closure_invalid",
+            "fault did not fail closed",
+            identity="workspace.scientific_evidence",
+        )
+    consumer = dict(consumers[0])
+    failure = {
+        **injection,
+        "operation_id": consumer.get("operation_id"),
+        "error_code": consumer.get("failure_code"),
+        "failure_digest": canonical_digest(consumer),
+        "negative_state_closure": negative,
+    }
     return {}, None, failure, projection
-
 
 def _validate_events(events: object, *, session_id: str) -> list[dict[str, Any]]:
     if not isinstance(events, list) or not all(isinstance(item, dict) for item in events):
@@ -750,22 +908,47 @@ def _validate_events(events: object, *, session_id: str) -> list[dict[str, Any]]
         _fail("public_event_replay_invalid", "event replay is not ordered", identity="events_response")
     return records
 
-
 def _source_payload(
-    *, identity_path: Path, preflight_path: Path, receipt_chain_path: Path,
-    workspace_response_path: Path, event_response_path: Path,
-    evidence_response_path: Path, ledger_before_path: Path,
-    ledger_after_path: Path, sealed_at: str,
+    *,
+    identity_path: Path,
+    preflight_path: Path,
+    receipt_chain_path: Path,
+    workspace_response_path: Path,
+    event_response_path: Path,
+    evidence_response_path: Path,
+    ledger_before_path: Path,
+    ledger_after_path: Path,
+    sealed_at: str,
 ) -> tuple[dict[str, Any], dict[str, bytes]]:
-    identity_value, identity_bytes = _load_canonical_object(identity_path, identity="identity")
+    identity_value, identity_bytes = _load_canonical_object(
+        identity_path, identity="identity"
+    )
     identity = _normalize_identity(identity_value)
     preflight = load_attempt_preflight_receipt(preflight_path)
     preflight_value, preflight_bytes = _load_canonical_object(
         preflight_path, identity="preflight"
     )
-    if preflight_value != preflight or preflight.get("identity_digest") != canonical_digest(identity):
-        _fail("public_conductor_preflight_identity_mismatch", "preflight identity drifted", identity="preflight.identity_digest")
+    if preflight_value != preflight or preflight.get(
+        "identity_digest"
+    ) != canonical_digest(identity):
+        _fail(
+            "public_conductor_preflight_identity_mismatch",
+            "preflight identity drifted",
+            identity="preflight.identity_digest",
+        )
     slot = dict(preflight["slot"])
+    slot_claim_path = preflight_path.parent / ATTEMPT_SLOT_CLAIM_FILENAME
+    slot_claim, slot_claim_bytes = _load_canonical_object(
+        slot_claim_path,
+        identity="slot_claim",
+    )
+    slot_claim_mode = stat.S_IMODE(slot_claim_path.lstat().st_mode)
+    if slot_claim != preflight.get("slot_claim") or slot_claim_mode & 0o077:
+        _fail(
+            "attempt_authority_slot_claim_invalid",
+            "preflight slot claim source is missing, public, or drifted",
+            identity="slot_claim",
+        )
     startup_value, startup_bytes = _load_canonical_object(
         preflight_path.parent / HOST_STARTUP_FILENAME, identity="host_startup"
     )
@@ -774,7 +957,8 @@ def _source_payload(
         preflight_path.parent / HOST_SUPERVISION_FILENAME, identity="host_supervision"
     )
     supervision = validate_supervised_host_receipt(
-        supervision_value, attempt_id=str(slot["attempt_id"]),
+        supervision_value,
+        attempt_id=str(slot["attempt_id"]),
         attempt_kind=str(slot["attempt_kind"]),
         attempt_authority_id=str(slot["envelope_id"]),
         attempt_authority_request_digest=str(slot["request_digest"]),
@@ -784,16 +968,25 @@ def _source_payload(
         "host_startup_receipt_digest": startup.get("receipt_digest"),
         "process_epoch": startup.get("process_epoch"),
         "timeout_seconds": startup.get("timeout_seconds"),
-        "session_id": slot.get("session_id"), "task_id": slot.get("task_id"),
-        "lane_id": slot.get("lane_id"), "campaign_id": preflight.get("campaign_id"),
+        "session_id": slot.get("session_id"),
+        "task_id": slot.get("task_id"),
+        "lane_id": slot.get("lane_id"),
+        "campaign_id": preflight.get("campaign_id"),
     }
     if any(supervision.get(key) != item for key, item in supervision_bindings.items()):
-        _fail("host_supervision_source_mismatch", "Host supervision source drifted", identity="host_supervision")
+        _fail(
+            "host_supervision_source_mismatch",
+            "Host supervision source drifted",
+            identity="host_supervision",
+        )
     receipts, receipt_bytes = _load_receipt_chain(receipt_chain_path)
     envelopes = {
-        name: _load_response_envelope(path, identity=f"{name}_response", receipts=receipts)
+        name: _load_response_envelope(
+            path, identity=f"{name}_response", receipts=receipts
+        )
         for name, path in (
-            ("workspace", workspace_response_path), ("events", event_response_path),
+            ("workspace", workspace_response_path),
+            ("events", event_response_path),
             ("evidence", evidence_response_path),
         )
     }
@@ -803,19 +996,22 @@ def _source_payload(
     ) != slot.get("session_id"):
         _fail(
             "public_workspace_identity_mismatch",
-            "final workspace differs from the authority session", identity="workspace_response",
+            "final workspace differs from the authority session",
+            identity="workspace_response",
         )
     events = _validate_events(
         envelopes["events"][0].get("response"), session_id=str(slot["session_id"])
     )
     closed = envelopes["evidence"][0].get("response")
-    control = closed.get("scientific_attempt_control") if isinstance(closed, dict) else None
+    control = (
+        closed.get("scientific_attempt_control") if isinstance(closed, dict) else None
+    )
     if not isinstance(closed, dict) or not isinstance(control, dict):
         _fail(
             "scientific_attempt_control_missing",
-            "closed-attempt export lacks canonical control", identity="evidence_response",
+            "closed-attempt export lacks canonical control",
+            identity="evidence_response",
         )
-    _validate_receipt_chain(receipts, slot=slot, identity=identity, control=control)
     selection_id = dict(control.get("selection") or {}).get("selection_id")
     expected_routes = {
         "workspace": f"/v3/sessions/{slot['session_id']}/workspace",
@@ -830,90 +1026,156 @@ def _source_payload(
         for name, route in expected_routes.items()
     ):
         _fail(
-            "public_response_route_mismatch", "sealed public response uses the wrong route",
+            "public_response_route_mismatch",
+            "sealed public response uses the wrong route",
             identity="public_response.receipt.route",
         )
-    contents, validation, fault, projection = _validate_closed_export(
-        closed, slot=slot, workspace=workspace, receipts=receipts, supervision=supervision
+    product_closure = closed.get("product_closure")
+    _validate_receipt_chain(
+        receipts,
+        slot=slot,
+        identity=identity,
+        control=control,
+        product_closure=(
+            dict(product_closure) if isinstance(product_closure, dict) else None
+        ),
+        final_receipts={
+            "workspace": dict(envelopes["workspace"][0]["receipt"]),
+            "events": dict(envelopes["events"][0]["receipt"]),
+            "export": dict(envelopes["evidence"][0]["receipt"]),
+        },
     )
-    before, before_bytes = _load_canonical_object(ledger_before_path, identity="micu_before")
-    after, after_bytes = _load_canonical_object(ledger_after_path, identity="micu_after")
+    contents, validation, fault, projection = _validate_closed_export(
+        closed,
+        slot=slot,
+        workspace=workspace,
+        events=events,
+        receipts=receipts,
+        supervision=supervision,
+    )
+    before, before_bytes = _load_canonical_object(
+        ledger_before_path, identity="micu_before"
+    )
+    after, after_bytes = _load_canonical_object(
+        ledger_after_path, identity="micu_after"
+    )
     _validate_ledger_transition(before, after)
     config = dict(preflight.get("effective_config") or {})
-    if (config.get("schema_id") != "aox_blank_world_runtime_config@4"
-            or dict(config.get("conductor") or {}).get("orchestration_owner")
-            != "codex_tester"):
+    if (
+        config.get("schema_id") != "aox_blank_world_runtime_config@4"
+        or dict(config.get("conductor") or {}).get("orchestration_owner")
+        != "codex_tester"
+    ):
         _fail(
             "public_conductor_effective_config_invalid",
             "preflight lacks the current public-conductor config",
             identity="preflight.effective_config",
         )
     source_bytes = {
-        "identity.json": identity_bytes, "preflight.json": preflight_bytes,
-        "host-startup.json": startup_bytes, "host-supervision.json": supervision_bytes,
+        "identity.json": identity_bytes,
+        "preflight.json": preflight_bytes,
+        "slot-claim.json": slot_claim_bytes,
+        "host-startup.json": startup_bytes,
+        "host-supervision.json": supervision_bytes,
         "public-api-receipts.jsonl": receipt_bytes,
         "workspace-response.json": envelopes["workspace"][1],
         "events-response.json": envelopes["events"][1],
         "evidence-response.json": envelopes["evidence"][1],
-        "micu-before.json": before_bytes, "micu-after.json": after_bytes,
+        "micu-before.json": before_bytes,
+        "micu-after.json": after_bytes,
     }
-    attestations = [{
-        "name": name,
-        "relative_path": f"{PUBLIC_CONDUCTOR_ATTESTATION_DIR}/attestations/{name}",
-        "content_digest": _content_digest(content),
-    } for name, content in sorted(source_bytes.items())]
-    deliverables = [{
-        "relative_path": path,
-        "sealed_relative_path": f"{PUBLIC_CONDUCTOR_ATTESTATION_DIR}/deliverables/{path}",
-        "content_digest": _content_digest(content),
-    } for path, content in sorted(contents.items())]
+    attestations = [
+        {
+            "name": name,
+            "relative_path": f"{PUBLIC_CONDUCTOR_ATTESTATION_DIR}/attestations/{name}",
+            "content_digest": _content_digest(content),
+        }
+        for name, content in sorted(source_bytes.items())
+    ]
+    deliverables = [
+        {
+            "relative_path": path,
+            "sealed_relative_path": f"{PUBLIC_CONDUCTOR_ATTESTATION_DIR}/deliverables/{path}",
+            "content_digest": _content_digest(content),
+        }
+        for path, content in sorted(contents.items())
+    ]
     kind = str(slot["attempt_kind"])
+    closure = dict(closed.get("product_closure") or {})
+    source_linked_report = dict(closure.get("source_linked_report") or {})
     payload = {
         "schema_id": ATTEMPT_BUNDLE_SCHEMA_ID_V3,
         "bundle_profile": PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID,
-        "attempt_id": slot["attempt_id"], "attempt_kind": kind, "sealed_at": sealed_at,
+        "attempt_id": slot["attempt_id"],
+        "attempt_kind": kind,
+        "sealed_at": sealed_at,
         "identity": {**identity, "identity_digest": canonical_digest(identity)},
         "clean_world": dict(preflight["root_proof"]),
         "micu_ledger": {"before": before, "after": after},
         "authority": {
-            "campaign_id": preflight["campaign_id"], "plan_digest": preflight["plan_digest"],
+            "campaign_id": preflight["campaign_id"],
+            "plan_digest": preflight["plan_digest"],
             "consumption_digest": preflight["consumption_digest"],
-            "preflight_receipt_digest": preflight["receipt_digest"], "slot": slot,
+            "slot_claim_digest": slot_claim["claim_digest"],
+            "preflight_receipt_digest": preflight["receipt_digest"],
+            "slot": slot,
         },
         "effective_config": config,
         "product_path": {
-            "host_startup": startup, "attempt_supervision": supervision,
+            "host_startup": startup,
+            "attempt_supervision": supervision,
             "public_api_receipts": receipts,
             "public_api_receipt_chain_digest": _content_digest(receipt_bytes),
-            "final_workspace_response_digest": envelopes["workspace"][0]["envelope_digest"],
+            "final_workspace_response_digest": envelopes["workspace"][0][
+                "envelope_digest"
+            ],
             "final_event_response_digest": envelopes["events"][0]["envelope_digest"],
-            "closed_evidence_response_digest": envelopes["evidence"][0]["envelope_digest"],
+            "closed_evidence_response_digest": envelopes["evidence"][0][
+                "envelope_digest"
+            ],
         },
         "scientific_attempt_control": control,
-        "operations": projection["operations"], "artifacts": projection["artifacts"],
+        "operations": projection["operations"],
+        "artifacts": projection["artifacts"],
         "scientific_checks": {
             **projection["scientific_checks"],
             "finalization_receipt": closed.get("finalization_receipt"),
         },
-        "attestations": attestations, "deliverables": deliverables,
+        "attestations": attestations,
+        "deliverables": deliverables,
         "report": {
             "status": "published" if kind == "positive" else "withheld",
             "cutover_eligible": kind == "positive",
             "workspace_digest": canonical_digest(workspace),
+            "report_id": source_linked_report.get("report_id"),
+            "draft_id": source_linked_report.get("draft_id"),
+            "content_ref": source_linked_report.get("content_ref"),
+            "primary_artifact_id": source_linked_report.get("primary_artifact_id"),
+            "primary_artifact_digest": source_linked_report.get(
+                "primary_artifact_digest"
+            ),
+            "source_ref_ids": source_linked_report.get("source_ref_ids", []),
         },
         "scientific_outcome": {
             "cutover_eligible": kind == "positive",
             "status": "passed" if kind == "positive" else "controlled_failure",
             "failure_code": None if fault is None else fault["error_code"],
-            "validation_digest": None if validation is None else canonical_digest(validation),
+            "validation_digest": None
+            if validation is None
+            else canonical_digest(validation),
         },
-        "fault_injection": fault, "event_count": len(events),
+        "tasks": closure.get("tasks"),
+        "final_answer": closure.get("final_answer"),
+        "product_closure_digest": closure.get("closure_digest"),
+        "fault_injection": fault,
+        "event_count": len(events),
         "event_stream_digest": canonical_digest(events),
     }
     files = {f"attestations/{name}": content for name, content in source_bytes.items()}
-    files.update({f"deliverables/{path}": content for path, content in contents.items()})
+    files.update(
+        {f"deliverables/{path}": content for path, content in contents.items()}
+    )
     return payload, files
-
 
 def _fsync_directory(path: Path) -> None:
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
@@ -921,7 +1183,6 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
-
 
 def finalize_and_seal_public_conductor_bundle(
     *, identity_path: Path, preflight_path: Path, receipt_chain_path: Path,
@@ -990,7 +1251,6 @@ def finalize_and_seal_public_conductor_bundle(
     )
     return destination, bundle_digest
 
-
 def verify_public_conductor_bundle(
     bundle_path: Path, *, artifact_root: Path
 ) -> VerificationResult:
@@ -1000,16 +1260,22 @@ def verify_public_conductor_bundle(
         envelope, _ = _load_canonical_object(bundle_path, identity="bundle")
         payload = envelope.get("payload")
         if not isinstance(payload, dict):
-            _fail("bundle_envelope_invalid", "bundle payload is malformed", identity="bundle")
+            _fail(
+                "bundle_envelope_invalid",
+                "bundle payload is malformed",
+                identity="bundle",
+            )
         attempt_id = str(payload.get("attempt_id") or "") or None
         attempt_kind = str(payload.get("attempt_kind") or "") or None
         declared_digest = str(envelope.get("bundle_digest") or "") or None
-        if not all((
-            set(envelope) == {"payload", "bundle_digest"},
-            payload.get("schema_id") == ATTEMPT_BUNDLE_SCHEMA_ID_V3,
-            payload.get("bundle_profile") == PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID,
-            declared_digest == canonical_digest(payload),
-        )):
+        if not all(
+            (
+                set(envelope) == {"payload", "bundle_digest"},
+                payload.get("schema_id") == ATTEMPT_BUNDLE_SCHEMA_ID_V3,
+                payload.get("bundle_profile") == PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID,
+                declared_digest == canonical_digest(payload),
+            )
+        ):
             _fail(
                 "bundle_digest_mismatch",
                 "public conductor bundle schema or digest does not reproduce",
@@ -1018,11 +1284,14 @@ def verify_public_conductor_bundle(
         sources: dict[str, Path] = {}
         for raw in payload.get("attestations") or []:
             if not isinstance(raw, dict) or set(raw) != {
-                "name", "relative_path", "content_digest"
+                "name",
+                "relative_path",
+                "content_digest",
             }:
                 _fail(
                     "public_conductor_attestation_invalid",
-                    "source attestation is malformed", identity="attestations",
+                    "source attestation is malformed",
+                    identity="attestations",
                 )
             name = str(raw["name"])
             path, content = _read_bound_artifact_file(
@@ -1031,13 +1300,15 @@ def verify_public_conductor_bundle(
             if name in sources or _content_digest(content) != raw.get("content_digest"):
                 _fail(
                     "public_conductor_attestation_digest_mismatch",
-                    "source attestation is duplicated or drifted", identity=name,
+                    "source attestation is duplicated or drifted",
+                    identity=name,
                 )
             sources[name] = path
         if set(sources) != _SOURCE_NAMES:
             _fail(
                 "public_conductor_attestation_invalid",
-                "source attestation set is incomplete", identity="attestations",
+                "source attestation set is incomplete",
+                identity="attestations",
             )
         source_preflight, _ = _load_canonical_object(
             sources["preflight.json"], identity="preflight"
@@ -1052,11 +1323,13 @@ def verify_public_conductor_bundle(
                 (root / name).mkdir(mode=0o700)
             reconstructed = {
                 "preflight": evidence / "aox-attempt-preflight.json",
+                "slot_claim": evidence / ATTEMPT_SLOT_CLAIM_FILENAME,
                 "startup": evidence / HOST_STARTUP_FILENAME,
                 "supervision": evidence / HOST_SUPERVISION_FILENAME,
             }
             for source_name, destination in (
                 ("preflight.json", reconstructed["preflight"]),
+                ("slot-claim.json", reconstructed["slot_claim"]),
                 ("host-startup.json", reconstructed["startup"]),
                 ("host-supervision.json", reconstructed["supervision"]),
             ):
@@ -1076,16 +1349,19 @@ def verify_public_conductor_bundle(
         if rebuilt != payload:
             _fail(
                 "public_conductor_bundle_source_mismatch",
-                "bundle differs from exact source reconstruction", identity="bundle.payload",
+                "bundle differs from exact source reconstruction",
+                identity="bundle.payload",
             )
         for raw in payload.get("deliverables") or []:
             if not isinstance(raw, dict):
                 _fail(
-                    "aox_closed_deliverable_invalid", "sealed deliverable is malformed",
+                    "aox_closed_deliverable_invalid",
+                    "sealed deliverable is malformed",
                     identity="deliverables",
                 )
             _, content = _read_bound_artifact_file(
-                artifact_root, str(raw.get("sealed_relative_path") or ""),
+                artifact_root,
+                str(raw.get("sealed_relative_path") or ""),
                 identity=str(raw.get("relative_path") or "deliverables"),
             )
             if _content_digest(content) != raw.get("content_digest"):
@@ -1095,20 +1371,28 @@ def verify_public_conductor_bundle(
                     identity=str(raw.get("relative_path") or "deliverables"),
                 )
     except CutoverEvidenceError as exc:
-        issues.append(VerificationIssue(
-            code=exc.code, identity=str(exc.details.get("identity") or "bundle"),
-            message=str(exc),
-        ))
+        issues.append(
+            VerificationIssue(
+                code=exc.code,
+                identity=str(exc.details.get("identity") or "bundle"),
+                message=str(exc),
+            )
+        )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-        issues.append(VerificationIssue(
-            code="bundle_unreadable", identity="bundle",
-            message=f"public conductor bundle is unreadable: {type(exc).__name__}",
-        ))
+        issues.append(
+            VerificationIssue(
+                code="bundle_unreadable",
+                identity="bundle",
+                message=f"public conductor bundle is unreadable: {type(exc).__name__}",
+            )
+        )
     return VerificationResult(
-        passed=not issues, bundle_digest=declared_digest, attempt_id=attempt_id,
-        attempt_kind=attempt_kind, issues=tuple(issues),
+        passed=not issues,
+        bundle_digest=declared_digest,
+        attempt_id=attempt_id,
+        attempt_kind=attempt_kind,
+        issues=tuple(issues),
     )
-
 
 def evaluate_public_conductor_campaign(
     records: Sequence[Any], *, decided_at: str | None = None
@@ -1121,7 +1405,8 @@ def evaluate_public_conductor_campaign(
 
     if len(records) != 3:
         block(
-            "campaign_attempt_count", "campaign.attempts",
+            "campaign_attempt_count",
+            "campaign.attempts",
             "campaign requires two positives followed by one fault",
         )
     expected = ("positive", "positive", "fault")
@@ -1137,22 +1422,28 @@ def evaluate_public_conductor_campaign(
             payloads.append(dict(raw) if isinstance(raw, dict) else {})
         except CutoverEvidenceError:
             payloads.append({})
-        if not all((
-            verification.passed, verification.attempt_id == record.attempt_id,
-            verification.attempt_kind == record.attempt_kind,
-            verification.bundle_digest == record.bundle_digest,
-            record.verification.passed,
-            record.verification.bundle_digest == verification.bundle_digest,
-        )):
+        if not all(
+            (
+                verification.passed,
+                verification.attempt_id == record.attempt_id,
+                verification.attempt_kind == record.attempt_kind,
+                verification.bundle_digest == record.bundle_digest,
+                record.verification.passed,
+                record.verification.bundle_digest == verification.bundle_digest,
+            )
+        ):
             issue = verification.issues[0] if verification.issues else None
             block(
-                "attempt_verification_failed", str(record.attempt_id),
-                "offline verification failed" if issue is None
+                "attempt_verification_failed",
+                str(record.attempt_id),
+                "offline verification failed"
+                if issue is None
                 else f"{issue.code}: {issue.identity}",
             )
         if index < 3 and record.attempt_kind != expected[index]:
             block(
-                "campaign_attempt_order", f"campaign.attempts[{index}]",
+                "campaign_attempt_order",
+                f"campaign.attempts[{index}]",
                 f"expected {expected[index]}, got {record.attempt_kind}",
             )
     if len(payloads) == 3 and all(payloads):
@@ -1165,19 +1456,91 @@ def evaluate_public_conductor_campaign(
             for payload in payloads
         ]
         chains = [
-            str(dict(payload.get("product_path") or {}).get(
-                "public_api_receipt_chain_digest"
-            ) or "") for payload in payloads
+            str(
+                dict(payload.get("product_path") or {}).get(
+                    "public_api_receipt_chain_digest"
+                )
+                or ""
+            )
+            for payload in payloads
         ]
+        authorities = [dict(payload.get("authority") or {}) for payload in payloads]
+        slots = [dict(authority.get("slot") or {}) for authority in authorities]
+        campaigns = {
+            str(authority.get("campaign_id") or "") for authority in authorities
+        }
+        plans = {str(authority.get("plan_digest") or "") for authority in authorities}
+        slot_claim_digests = [
+            str(authority.get("slot_claim_digest") or "")
+            for authority in authorities
+        ]
+        ordinals = [slot.get("ordinal") for slot in slots]
         if len(identities) != 1 or "" in identities:
             block(
-                "campaign_identity_drift", "campaign.identity",
+                "campaign_identity_drift",
+                "campaign.identity",
                 "all attempts must use one pinned identity",
             )
         if len(set(roots)) != 3 or "" in roots or len(set(chains)) != 3 or "" in chains:
             block(
-                "campaign_attempts_not_independent", "campaign.attempts",
+                "campaign_attempts_not_independent",
+                "campaign.attempts",
                 "attempt roots and receipt chains must be independent",
+            )
+        if len(campaigns) != 1 or "" in campaigns or len(plans) != 1 or "" in plans:
+            block(
+                "campaign_authority_plan_drift",
+                "campaign.authority",
+                "all attempts must bind one campaign and one three-slot authority plan",
+            )
+        if len(set(slot_claim_digests)) != 3 or any(
+            _DIGEST.fullmatch(item) is None for item in slot_claim_digests
+        ):
+            block(
+                "campaign_slot_claim_collision",
+                "campaign.authority.slot_claims",
+                "campaign slots must carry three unique atomic claim digests",
+            )
+        if ordinals != [1, 2, 3]:
+            block(
+                "campaign_slot_order_invalid",
+                "campaign.authority.slots",
+                "campaign attempts must consume exact authority ordinals 1, 2, and 3",
+            )
+        identity_fields = (
+            "attempt_id",
+            "session_id",
+            "task_id",
+            "lane_id",
+            "envelope_id",
+        )
+        if any(
+            len({str(slot.get(field) or "") for slot in slots}) != 3
+            or any(not str(slot.get(field) or "") for slot in slots)
+            for field in identity_fields
+        ):
+            block(
+                "campaign_slot_identity_collision",
+                "campaign.authority.slots",
+                "campaign slots must carry unique attempt/session/task/lane/envelope identities",
+            )
+        selection_ids = [
+            str(
+                dict(
+                    dict(payload.get("scientific_attempt_control") or {}).get(
+                        "selection"
+                    )
+                    or {}
+                ).get("selection_id")
+                or ""
+            )
+            for payload in payloads
+        ]
+        if len(set(selection_ids)) != 3 or "" in selection_ids:
+            block(
+                "campaign_selection_identity_collision",
+                "campaign.attempts",
+                "campaign attempts must have unique sealed selection identities",
             )
         if any(
             dict(payloads[index].get("micu_ledger") or {}).get("after")
@@ -1185,35 +1548,73 @@ def evaluate_public_conductor_campaign(
             for index in range(2)
         ):
             block(
-                "campaign_micu_ledger_discontinuity", "campaign.attempts",
+                "campaign_micu_ledger_discontinuity",
+                "campaign.attempts",
                 "MICU ledger snapshots are not continuous",
             )
         for index, payload in enumerate(payloads[:2]):
-            if not all((
-                dict(payload.get("scientific_outcome") or {}).get("cutover_eligible") is True,
-                dict(payload.get("report") or {}).get("status") == "published",
-                len(payload.get("deliverables") or []) == len(S15_AOX_HMM_FIXED_DELIVERABLES),
-            )):
+            tasks = payload.get("tasks")
+            if not all(
+                (
+                    dict(payload.get("scientific_outcome") or {}).get(
+                        "cutover_eligible"
+                    )
+                    is True,
+                    dict(payload.get("report") or {}).get("status") == "published",
+                    bool(dict(payload.get("report") or {}).get("report_id")),
+                    bool(dict(payload.get("report") or {}).get("primary_artifact_id")),
+                    isinstance(tasks, list) and len(tasks) == 3,
+                    isinstance(tasks, list)
+                    and all(
+                        isinstance(item, dict) and item.get("status") == "completed"
+                        for item in tasks
+                    ),
+                    isinstance(payload.get("final_answer"), dict),
+                    len(payload.get("deliverables") or [])
+                    == len(S15_AOX_HMM_FIXED_DELIVERABLES),
+                )
+            ):
                 block(
-                    "positive_not_cutover_eligible", f"campaign.attempts[{index}]",
+                    "positive_not_cutover_eligible",
+                    f"campaign.attempts[{index}]",
                     "positive lacks its report or 17-deliverable closure",
                 )
         fault, injection = payloads[2], payloads[2].get("fault_injection")
-        if not all((
-            dict(fault.get("scientific_outcome") or {}).get("cutover_eligible") is False,
-            dict(fault.get("scientific_outcome") or {}).get("status") == "controlled_failure",
-            fault.get("deliverables") == [], isinstance(injection, dict),
-        )):
+        negative = (
+            dict(injection.get("negative_state_closure") or {})
+            if isinstance(injection, dict)
+            else {}
+        )
+        if not all(
+            (
+                dict(fault.get("scientific_outcome") or {}).get("cutover_eligible")
+                is False,
+                dict(fault.get("scientific_outcome") or {}).get("status")
+                == "controlled_failure",
+                fault.get("deliverables") == [],
+                isinstance(injection, dict),
+                negative.get("schema_id") == "aox_fault_negative_state_closure@1",
+                negative.get("successful_alternate_consumer_ids") == [],
+                negative.get("post_fault_final_deliverable_paths") == [],
+                negative.get("complete_final_deliverable_set_present") is False,
+            )
+        ):
             block(
-                "fault_not_fail_closed", "campaign.attempts[2]",
+                "fault_not_fail_closed",
+                "campaign.attempts[2]",
                 "fault attempt did not preserve fail-closed state",
             )
-        elif not all((
-            injection.get("injection_id") == FAULT_ARTIFACT_BYTE_FLIP_ID,
-            injection.get("error_code") == "artifact_blob_digest_mismatch",
-        )):
+        elif not all(
+            (
+                injection.get("injection_id") == FAULT_ARTIFACT_BYTE_FLIP_ID,
+                injection.get("error_code") == "artifact_blob_digest_mismatch",
+                injection.get("target_relative_path") == "aox_hmm/AOX_ref21.fasta",
+                injection.get("expected_consumer_tool_id") == "bio_tools.mafft",
+            )
+        ):
             block(
-                "fault_contract_unproven", "campaign.attempts[2].fault_injection",
+                "fault_contract_unproven",
+                "campaign.attempts[2].fault_injection",
                 "fault bundle does not prove the required derived byte flip",
             )
     blocker = blockers[0] if blockers else None
@@ -1227,10 +1628,13 @@ def evaluate_public_conductor_campaign(
     }
     return {**decision, "decision_digest": canonical_digest(decision)}
 
-
 __all__ = [
-    "PUBLIC_CONDUCTOR_BUNDLE_FILENAME", "PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID",
-    "PUBLIC_CONDUCTOR_MESSAGE", "PUBLIC_CONDUCTOR_OBJECTIVE", "PUBLIC_CONDUCTOR_TITLE",
-    "evaluate_public_conductor_campaign", "finalize_and_seal_public_conductor_bundle",
+    "PUBLIC_CONDUCTOR_BUNDLE_FILENAME",
+    "PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID",
+    "PUBLIC_CONDUCTOR_MESSAGE",
+    "PUBLIC_CONDUCTOR_OBJECTIVE",
+    "PUBLIC_CONDUCTOR_TITLE",
+    "evaluate_public_conductor_campaign",
+    "finalize_and_seal_public_conductor_bundle",
     "verify_public_conductor_bundle",
 ]

@@ -1664,6 +1664,22 @@ provider、HPC 或 Chrome。正式恢复必须从 repair commit 重新 full admi
 authority和fresh roots，并重新取得 exact plan批准。第三槽 fault 若不能证明既定 byte-flip
 contract，reducer 必须以 `fault_contract_unproven` 保持 NO-GO。
 
+### post-r68 / pre-r69 actor、closure 与 composition repair
+
+current receipt chain只证明 Codex conductor自己的 session/message/grant、bounded drain/status、
+approval、exact fault capability与 final reads；它不再要求或允许 Codex代发 agent-owned
+scientific mutations或 Host finalizers。真实 task/selection/attempt/report/final-answer转换由
+`aox_closed_attempt_evidence@2` 的 canonical control、完整 events与
+`aox_public_product_closure@1` 证明。positive固定 exact三任务、唯一 owner finish、
+source-linked report与 final answer；fault固定 public authority-bound `AOX_ref21.fasta` byte-zero
+flip以及完整 `aox_fault_negative_state_closure@1`。
+
+每个 formal slot在 root前 atomic one-use claim并进入 `aox_attempt_preflight@2`。reducer只接受
+同一 campaign/plan的 exact ordinal 1/2/3和全部 attempt identities唯一。production
+qualification通过真实 FastAPI/file-SQLite composition写读而非 source inspection。下一轮使用
+[新版 Codex goal](../aox-r-series-codex-goal.md)，仍须 fresh clean commit/full admission/pin/
+authority/roots与独立用户批准；本 repair不启动 r69或任何 live effect。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

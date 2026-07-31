@@ -222,6 +222,13 @@ class ScientificAttemptCommandRequest(BaseModel):
     arguments: dict[str, Any]
 
 
+class InjectAoxReferenceFaultRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attempt_id: str = Field(min_length=1, max_length=300)
+    artifact_id: str = Field(min_length=1, max_length=300)
+
+
 class FinalizeScientificAttemptAdmissionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1927,6 +1934,42 @@ def create_app(
                     payload.command,
                     dict(payload.arguments),
                     session_id=session_id,
+                    actor_ref=principal.principal_id,
+                    idempotency_key=idempotency_key,
+                )
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.post("/v3/sessions/{session_id}/aox-fault-injections/reference-byte-flip")
+    def inject_v3_aox_reference_fault(
+        session_id: str,
+        payload: InjectAoxReferenceFaultRequest,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        """Consume the exact authority-bound AOX_ref21 byte-flip capability."""
+
+        try:
+            principal = _request_principal(request)
+            if security.shared and not principal.has_role("operator", "admin"):
+                raise HTTPException(
+                    status_code=403,
+                    detail="operator role is required",
+                )
+            # The file mutation crosses a durable claim/receipt boundary.  A
+            # connection scope lets each repository save commit independently,
+            # so a post-claim file or receipt failure cannot roll the claim back.
+            with dependencies.v3_service_scope(mode="connection") as service:
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=session_id,
+                )
+                return service.inject_aox_reference_fault(
+                    session_id=session_id,
+                    attempt_id=payload.attempt_id,
+                    artifact_id=payload.artifact_id,
                     actor_ref=principal.principal_id,
                     idempotency_key=idempotency_key,
                 )

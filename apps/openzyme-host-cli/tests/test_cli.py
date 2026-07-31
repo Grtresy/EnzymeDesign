@@ -542,6 +542,35 @@ def test_cli_exports_and_seals_closed_attempt_evidence(
     assert envelope["response"] == []
 
 
+def test_cli_reaches_exact_aox_reference_fault_capability() -> None:
+    session = FakeSession()
+
+    exit_code = run_cli(
+        [
+            "--session-id",
+            "sess_001",
+            "scientific",
+            "inject-aox-reference-fault",
+            "--attempt-id",
+            "attempt_fault",
+            "--artifact-id",
+            "artifact_ref21",
+            "--idempotency-key",
+            "fault-once",
+        ],
+        session=session,
+        stdout=StringIO(),
+        stderr=StringIO(),
+    )
+
+    assert exit_code == 0
+    assert session.calls[-1] == (
+        "POST",
+        "/v3/sessions/sess_001/aox-fault-injections/reference-byte-flip",
+        {"attempt_id": "attempt_fault", "artifact_id": "artifact_ref21"},
+    )
+
+
 def test_cli_reaches_public_events_and_pending_approvals() -> None:
     session = FakeSession()
 

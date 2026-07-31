@@ -212,6 +212,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     scientific_execute.add_argument("--arguments-json", required=True)
     scientific_execute.add_argument("--idempotency-key", required=True)
+    scientific_fault = scientific_sub.add_parser(
+        "inject-aox-reference-fault",
+        help="Consume the exact authority-bound AOX_ref21 byte-flip capability",
+    )
+    scientific_fault.add_argument(
+        "--session-id",
+        dest="command_session_id",
+        help="Session ID override",
+    )
+    scientific_fault.add_argument("--attempt-id", required=True)
+    scientific_fault.add_argument("--artifact-id", required=True)
+    scientific_fault.add_argument("--idempotency-key", required=True)
     scientific_finalize_admission = scientific_sub.add_parser(
         "finalize-admission",
         help="Host-finalize an admission request after its writer turn retires",
@@ -518,6 +530,13 @@ def run_cli(
                     session_id,
                     command=args.command,
                     arguments=arguments,
+                    idempotency_key=args.idempotency_key,
+                )
+            elif args.scientific_command == "inject-aox-reference-fault":
+                payload = client.inject_v3_aox_reference_fault(
+                    session_id,
+                    attempt_id=args.attempt_id,
+                    artifact_id=args.artifact_id,
                     idempotency_key=args.idempotency_key,
                 )
             elif args.scientific_command == "finalize-admission":

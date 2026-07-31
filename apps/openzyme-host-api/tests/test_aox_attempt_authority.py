@@ -17,14 +17,19 @@ from openzyme_host_api.aox_attempt_authority import attempt_admission_arguments
 from openzyme_host_api.aox_attempt_authority import (
     attempt_authority_consumption_path,
 )
+from openzyme_host_api.aox_attempt_authority import attempt_authority_slot_claim_path
 from openzyme_host_api.aox_attempt_authority import (
     build_aox_attempt_authority_plan,
 )
 from openzyme_host_api.aox_attempt_authority import (
     consume_aox_attempt_authority_plan,
 )
+from openzyme_host_api.aox_attempt_authority import claim_aox_attempt_authority_slot
 from openzyme_host_api.aox_attempt_authority import (
     load_aox_attempt_authority_plan,
+)
+from openzyme_host_api.aox_attempt_authority import (
+    load_aox_attempt_authority_slot_claim,
 )
 from openzyme_host_api.aox_attempt_authority import (
     publish_aox_attempt_authority_plan,
@@ -250,3 +255,63 @@ def test_private_authority_file_has_one_deterministic_consumption_target(
             path=consumption_path,
         )
     assert reused.value.code == "attempt_authority_publish_target_invalid"
+
+
+def test_authority_slots_are_atomically_claimed_once_across_campaign_roots(
+    tmp_path: Path,
+) -> None:
+    plan, identity, prerequisites, qualification = _plan()
+    plan_path = tmp_path / "authority.json"
+    publish_aox_attempt_authority_plan(plan, plan_path)
+    loaded = load_aox_attempt_authority_plan(
+        plan_path,
+        identity=identity,
+        allowed_prerequisites=prerequisites,
+        architecture_qualification=qualification,
+    )
+    consumption = consume_aox_attempt_authority_plan(
+        loaded,
+        plan_path=plan_path,
+        path=attempt_authority_consumption_path(plan_path),
+    )
+
+    first = claim_aox_attempt_authority_slot(
+        plan=loaded,
+        consumption=consumption,
+        plan_path=plan_path,
+        ordinal=1,
+        campaign_root=tmp_path / "campaign-a",
+    )
+    first_path = attempt_authority_slot_claim_path(plan_path, 1)
+    assert stat.S_IMODE(first_path.stat().st_mode) == 0o400
+    assert (
+        load_aox_attempt_authority_slot_claim(
+            first_path,
+            plan=loaded,
+            consumption=consumption,
+            plan_path=plan_path,
+            ordinal=1,
+            campaign_root=tmp_path / "campaign-a",
+        )
+        == first
+    )
+
+    with pytest.raises(CutoverEvidenceError) as reused:
+        claim_aox_attempt_authority_slot(
+            plan=loaded,
+            consumption=consumption,
+            plan_path=plan_path,
+            ordinal=1,
+            campaign_root=tmp_path / "campaign-b",
+        )
+    assert reused.value.code == "attempt_authority_publish_target_invalid"
+
+    second = claim_aox_attempt_authority_slot(
+        plan=loaded,
+        consumption=consumption,
+        plan_path=plan_path,
+        ordinal=2,
+        campaign_root=tmp_path / "campaign-b",
+    )
+    assert second["ordinal"] == 2
+    assert second["attempt_id"] != first["attempt_id"]

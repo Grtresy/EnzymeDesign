@@ -220,6 +220,21 @@ class HostApiClient:
             idempotency_key=idempotency_key,
         )
 
+    def inject_v3_aox_reference_fault(
+        self,
+        session_id: str,
+        *,
+        attempt_id: str,
+        artifact_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            f"/v3/sessions/{session_id}/aox-fault-injections/reference-byte-flip",
+            json_body={"attempt_id": attempt_id, "artifact_id": artifact_id},
+            idempotency_key=idempotency_key,
+        )
+
     def finalize_v3_scientific_attempt_closure(
         self,
         session_id: str,
