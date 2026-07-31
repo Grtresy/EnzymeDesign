@@ -249,25 +249,20 @@ Receipt 是 private bounded evidence，可离线重算 receipt、writer proof、
 snapshot digests。Sealed generation 不可重开；后续合法工作必须创建显式链接的新 generation。
 Seal/closure failure只产生 authority blocker，不改变 task 或自动选择替代 plan。
 
-## 8. Bounded runtime barrier
+## 8. Public runtime facts，不设 AOX observer
 
-operator/campaign 只能通过 `RuntimeBarrierProjectionService` 读取运行时是否仍在变化。该投影在
-一个 read scope 中读取现有 task、operation/execution、continuation、sandbox run、runtime
-command/signal、session lease、engine invocation 与 mutation writer；输出固定 blocker enum、
-有界计数、exact durable-suspension task ids 和 `ready` fact。达到 record bound、scope/observer
-identity 不精确或任一 owner仍 active 时一律 non-ready。
+r67 起不再存在 `RuntimeBarrierProjectionService`、Core observer-writer 或 AOX runtime
+observer。Codex 测试员通过 public runtime-command status、pending approval、workspace、
+events 与 canonical wake facts观察世界，并显式决定是否再发一个 bounded drain。Host
+projection 只呈现 canonical rows；它不返回替 campaign 作业务判断的 `ready`、不登记
+synthetic writer，也不把空队列、无 wakeup、HTTP terminal 或 child exit折叠成 task、attempt
+或 campaign terminal。
 
-Barrier 不持久化 row、不 acquire authority、不 drain/dispatch、不 resolve approval、不退休
-writer，也不写 task/campaign 状态。AOX driver 只消费该通用事实；scientific completion、失败、
-deadline 与 evidence reducer 仍属于 AOX policy。重复读取必须保持所有 canonical row version 与
-authority record 不变。
-
-该通用 projection 也不会替 consumer 建立 observer identity。需要排除自身 writer 的 consumer
-必须在每一次 projection 外显式建立 exact bounded observer，并保证其在返回或异常时退休。
-AOX formal 的完整 session observation 与 terminal-command attached-writer settlement 因而
-共用同一个 observer lifecycle 入口；drain coordinator 必须携带 exact purpose 与 attempt
-authority，不能从 command terminal 推断 identity，也不能让窄 boolean 检查直接绕过该入口。
-observer 不得跨 sleep、approval read、下一次 drain 或任何外部调用。
+mutation scope/writer、operation/execution、continuation、sandbox run、session lease 与
+external-effect ownership 仍由各自 Host service 独占验证。closure finalizer 必须以短事务
+原子提交 attempt scope seal、immutable closure 与 post-attempt child scope；public reader
+只能看到提交前态或提交后态。缺失/多重 scope、active writer、unknown effect 或 identity
+drift 继续 typed fail closed，不能由 conductor 盲重试、私有读库或 observer exclusion 绕过。
 
 ## 9. Feature gates 与回滚边界
 
@@ -290,12 +285,12 @@ admission，让旧 process 按 frozen policy drain/reconcile，再启动 disable
 完整操作步骤与 SQL audit 见
 [runtime-hpc-reliability-operations.md](runtime-hpc-reliability-operations.md)。
 
-AOX numbered `run-live` 的 complete-attempt harness 已在产品 runtime 之外增加
-local POSIX `spawn`/process-group supervisor。它只在 matching quiescence、SQLite/root
-sync、zero exit 与 empty group 后交付 child result；否则 bounded TERM/KILL 并写
-parent-owned fatal evidence，不读取 ledger-after、不封 normal bundle，也不把进程退出解释为
-task/operation terminal。该边界不改变本文件的产品 ownership；different UID/cgroup 与
-remote-handle/MICU crash reconciliation 仍是独立 hardening。
+AOX 保留的 local POSIX `spawn`/process-group supervisor 是 policy-free evidence shell。
+它只证明 exact child/process-group 已退休并封存 bounded supervision evidence；它不启动
+session、不发 drain、不读业务 terminal、不交付“成功”结果，也不把 zero exit、empty group、
+SQLite/root sync 或 TERM/KILL 解释为 task/operation/campaign terminal。该边界不改变本文件
+的产品 ownership；different UID/cgroup 与 remote-handle/MICU crash reconciliation 仍是
+独立 hardening。
 
 ## 10. Executable qualification 与 AOX admission
 
@@ -304,10 +299,11 @@ runtime-command、controlled-operation、continuation、sandbox authority、rest
 operator retirement、boundary scale 与 evidence projection。它不证明 distributed writer、真实
 SSH/HPC/provider availability 或 remote cancellation。
 
-AOX `pin`、`preflight`、`run-live` 在任何 runner bootstrap、root 或外部 effect 前必须用当前
-checkout pure verifier 接受同一 clean/full/zero-P0 report，并把其 commit/digest-bound receipt
-贯穿 pin/root/launch/bundle/offline verifier。通过只解除 architecture blocker；不会自动恢复
-`rxx`、修改 owner policy、重放 operation 或放宽 scientific/live gate。
+AOX `pin`、`preflight`、authority mint/consumption 在任何 runner bootstrap、root 或外部
+effect 前必须用当前 checkout pure verifier接受同一 clean/full/zero-P0 report，并把其
+commit/digest-bound receipt贯穿 pin/root/launch/bundle/offline verifier。它们都不会自动
+启动或 drive session。通过只解除 architecture blocker；不会自动恢复 `rxx`、修改 owner
+policy、重放 operation 或放宽 scientific/live gate。
 
 ## 11. 明确延后
 

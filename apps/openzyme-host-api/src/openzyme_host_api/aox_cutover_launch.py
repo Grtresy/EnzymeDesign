@@ -159,7 +159,7 @@ class AoxCutoverLaunchError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class AoxCutoverDriverConfig:
-    approval_mode: Literal["auto", "chrome-once"] = "auto"
+    approval_mode: Literal["public-explicit", "chrome-once"] = "public-explicit"
     timeout_seconds: float = AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS
     max_drains: int = 120
     max_signals_per_drain: int = AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN
@@ -426,9 +426,7 @@ def _probe_aox_sandbox_scientific_backend(
             "AOX sandbox capability probe requires the selected immutable image identity",
         )
     resolved_root = repo_root.resolve()
-    sdk_src = (
-        resolved_root / "packages" / "openzyme-pipeline" / "src"
-    ).resolve()
+    sdk_src = (resolved_root / "packages" / "openzyme-pipeline" / "src").resolve()
     expected_sdk_src = resolved_root / "packages" / "openzyme-pipeline" / "src"
     if (
         sdk_src != expected_sdk_src
@@ -557,10 +555,10 @@ def _probe_aox_sandbox_scientific_backend(
             "aox_launch_sandbox_scientific_backend_invalid",
             "AOX sandbox scientific backend probe returned malformed evidence",
         ) from exc
-    if completed.stdout != canonical_stdout or not isinstance(payload, dict) or set(
-        payload
-    ) != (
-        _AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_FIELDS
+    if (
+        completed.stdout != canonical_stdout
+        or not isinstance(payload, dict)
+        or set(payload) != (_AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_FIELDS)
     ):
         raise AoxCutoverLaunchError(
             "aox_launch_sandbox_scientific_backend_invalid",
@@ -832,10 +830,10 @@ def _purpose_policy_projection(settings: OpenZymeSettings) -> dict[str, object]:
 
 
 def _validate_driver(driver: AoxCutoverDriverConfig) -> None:
-    if driver.approval_mode not in {"auto", "chrome-once"}:
+    if driver.approval_mode not in {"public-explicit", "chrome-once"}:
         raise AoxCutoverLaunchError(
             "aox_launch_approval_mode_invalid",
-            "AOX cutover approval mode must be auto or chrome-once",
+            "AOX cutover approval mode must be public-explicit or chrome-once",
         )
     if driver.browser_observation_mode != "chrome_devtools_mcp_file_handoff":
         raise AoxCutoverLaunchError(
@@ -888,9 +886,7 @@ def _validate_driver(driver: AoxCutoverDriverConfig) -> None:
             "aox_launch_signal_fence_invalid",
             "AOX cutover must inspect durable state after every single runtime signal",
             details={
-                "expected_max_signals_per_drain": (
-                    AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN
-                ),
+                "expected_max_signals_per_drain": (AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN),
                 "observed_max_signals_per_drain": driver.max_signals_per_drain,
             },
         )
@@ -1085,9 +1081,7 @@ def build_aox_cutover_effective_config(
             "ncbi_identity_digest": _ncbi_identity_digest(effective),
         },
         "reliability": {
-            "shadow_observability": (
-                effective.reliability.shadow_observability.value
-            ),
+            "shadow_observability": (effective.reliability.shadow_observability.value),
             "controlled_operation_owner_policy": (
                 effective.reliability.controlled_operation_owner_policy.value
             ),
@@ -1100,17 +1094,13 @@ def build_aox_cutover_effective_config(
             "mutation_closure_mode": (
                 effective.reliability.mutation_closure_mode.value
             ),
-            "shadow_max_observations": (
-                effective.reliability.shadow_max_observations
-            ),
+            "shadow_max_observations": (effective.reliability.shadow_max_observations),
         },
         "scientific_workflow_contract": {
             "schema_id": AOX_SELECTED_CHAIN_CONTRACT_V2.schema_id,
             "contract_id": AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_ID,
             "workflow_id": AOX_SELECTED_CHAIN_WORKFLOW_ID,
-            "workflow_contract_digest": (
-                AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
-            ),
+            "workflow_contract_digest": (AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST),
         },
         "tracing": {
             "enabled": effective.tracing.enabled,
@@ -1310,9 +1300,7 @@ def attest_aox_toolchain_image_digests(
     discovery receipt, or Slurm metadata is accepted as an image identity.
     """
 
-    expected_contracts = _runner_expectations_by_tool_id(
-        runner_contract_expectations
-    )
+    expected_contracts = _runner_expectations_by_tool_id(runner_contract_expectations)
     input_sequences = _pin_fixture(repo_root, "input_sequences.fasta")
     model_alignment = _pin_fixture(repo_root, "msa.sto")
     search_targets = _pin_fixture(repo_root, "search_targets.fasta")
@@ -1428,9 +1416,7 @@ def attest_aox_toolchain_image_digests(
             identity=f"toolchain_runtime_identity.{tool_id}.image_digest",
         )
         contract = get_hpc_tool_contract(tool_id)
-        expected_output_paths = {
-            output.path for output in contract.expected_outputs
-        }
+        expected_output_paths = {output.path for output in contract.expected_outputs}
         raw_artifacts = result.get("artifacts")
         if (
             not isinstance(raw_artifacts, Mapping)
@@ -1533,9 +1519,9 @@ def pin_aox_cutover_launch(
         settings=effective_config.settings,
         toolchain_image_digests=toolchain_image_digests,
     )
-    # Deliberately go back through the exact run-live launch gate after the SSH
-    # attestations.  This catches checkout/config/runtime drift caused during
-    # bootstrap and proves the generated declarations require no operator guess.
+    # Re-run the declaration gate after the SSH attestations. This catches
+    # checkout/config/runtime drift during bootstrap without starting or driving
+    # a Host session.
     snapshot = prepare_aox_cutover_launch(
         settings=settings,
         driver=driver,

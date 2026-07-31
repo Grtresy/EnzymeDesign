@@ -14,7 +14,6 @@ from openzyme_core import HarnessInput
 from openzyme_core import HarnessStatus
 from openzyme_core import HarnessStep
 from openzyme_core import ScientificAttemptService
-from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import TaskBoardService
 from openzyme_core import TaskFinishCommand
 from openzyme_core import ToolRegistry
@@ -67,7 +66,6 @@ from openzyme_host_api.aox_scientific_contract import (
 from openzyme_host_api.aox_scientific_contract import (
     AOX_SELECTED_CHAIN_WORKFLOW_ID,
 )
-from openzyme_host_api.aox_cutover_live import LiveAoxAttemptRunner
 from openzyme_host_api.v3_service import V3EventStore
 from openzyme_host_api.v3_service import V3HostApiService
 from openzyme_runtime import ToolInvocation
@@ -342,9 +340,7 @@ def test_cutover_policy_rejects_ambiguous_receipt_evidence() -> None:
     )
 
     assert result is not None
-    assert result.error_code == (
-        "aox_finalization_receipt_evidence_ambiguous"
-    )
+    assert result.error_code == ("aox_finalization_receipt_evidence_ambiguous")
     assert result.details["effect_certainty"] == "no_effect"
 
 
@@ -369,9 +365,7 @@ def test_cutover_policy_rejects_ambiguous_receipt_evidence() -> None:
             arguments={
                 "task_id": AOX_REPORT_TASK_ID,
                 "status": "completed",
-                "evidence_refs": [
-                    f"document:{FINALIZATION_RECEIPT_ID}"
-                ],
+                "evidence_refs": [f"document:{FINALIZATION_RECEIPT_ID}"],
             },
             task_id=AOX_REPORT_TASK_ID,
         ),
@@ -550,14 +544,12 @@ def test_cutover_policy_leaves_sealed_attempt_lifecycle_to_core() -> None:
         ToolInvocation(
             call_id="call_completed_after_seal",
             tool_name="task.finish",
-                arguments={
-                    "task_id": EXECUTION_TASK_ID,
-                    "status": "completed",
-                    "summary": "Sealed the positive scientific selection.",
-                    "evidence_refs": [
-                        f"document:{FINALIZATION_RECEIPT_ID}"
-                    ],
-                },
+            arguments={
+                "task_id": EXECUTION_TASK_ID,
+                "status": "completed",
+                "summary": "Sealed the positive scientific selection.",
+                "evidence_refs": [f"document:{FINALIZATION_RECEIPT_ID}"],
+            },
             task_id=EXECUTION_TASK_ID,
         ),
     )
@@ -812,10 +804,10 @@ def test_cutover_policy_does_not_require_final_response_on_close() -> None:
         call_id="call_close_without_response",
         tool_name="scientific.attempt.close",
         arguments={
-                "attempt_id": "attempt_001",
-                "selection_id": "selection_001",
-                "finalization_receipt_id": FINALIZATION_RECEIPT_ID,
-                "idempotency_key": "close:without-response",
+            "attempt_id": "attempt_001",
+            "selection_id": "selection_001",
+            "finalization_receipt_id": FINALIZATION_RECEIPT_ID,
+            "idempotency_key": "close:without-response",
         },
     )
 
@@ -1698,42 +1690,15 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
     assert persisted_attempt is not None
     assert persisted_attempt.status.value == "active"
 
-    database_path = tmp_path / "host-closed-attempt.sqlite3"
-    file_connection = connect_sqlite(str(database_path))
-    repositories.tasks.connection.backup(file_connection)
-    file_connection.close()
-    provider = SQLiteRepositoryProvider(str(database_path))
-    observer_runner = object.__new__(LiveAoxAttemptRunner)
-    with observer_runner._runtime_barrier_observer(
-        provider,
-        session_id=SESSION_ID,
-        purpose="formal",
-        attempt_authority={"attempt_id": attempt.attempt_id},
-    ):
-        pass
-    closed = LiveAoxAttemptRunner._closed_formal_attempt_control(
-        SimpleNamespace(),
-        provider,
-        session_id=SESSION_ID,
-        authority={
-            "attempt_id": "repository-barrier",
-            "envelope_id": authority.envelope_id,
-            "task_id": EXECUTION_TASK_ID,
-            "lane_id": lane.lane_id,
-        },
+    assert (
+        repositories.scientific_attempt_closures.get_by_attempt(attempt.attempt_id)
+        == closure
     )
-
-    assert closed is not None
-    control, scope_projection = closed
-    assert control["attempt"]["status"] == "closed"
-    assert control["closure"]["closure_id"] == closure.closure_id
-    assert scope_projection["state"] == "sealed"
-    with provider.read() as reader:
-        scopes = reader.repositories.mutation_scopes.list_by_session(SESSION_ID)
-        assert [
-            writer
-            for scope in scopes
-            for writer in reader.repositories.mutation_writers.list_active(
-                scope.scope_id
-            )
-        ] == []
+    scopes = repositories.mutation_scopes.list_by_session(SESSION_ID)
+    assert [scope.state.value for scope in scopes].count("open") == 1
+    assert any(scope.state.value == "sealed" for scope in scopes)
+    assert [
+        writer
+        for scope in scopes
+        for writer in repositories.mutation_writers.list_active(scope.scope_id)
+    ] == []

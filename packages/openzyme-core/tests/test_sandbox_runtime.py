@@ -366,8 +366,7 @@ def test_control_socket_registers_nested_artifact_publisher_writer(
             "session_id": "sess_artifact_writer",
             "owner_kind": MutationWriterKind.ARTIFACT_PUBLISHER,
             "owner_ref": (
-                "sandbox-artifact-publisher:srun_artifact_writer:"
-                "artifacts.register"
+                "sandbox-artifact-publisher:srun_artifact_writer:artifacts.register"
             ),
             "process_epoch": 1,
         },
@@ -2082,8 +2081,48 @@ def test_sandbox_exec_tool_registers_exact_process_writer(
     assert int(observed[0]["process_epoch"]) > 0
 
 
-def test_sandbox_exec_stage_ref_rejection_seals_exact_local_failure_chain(
+@pytest.mark.parametrize(
+    ("source", "expected_error_code"),
+    (
+        (
+            "from openzyme_pipeline import bio_tools\n"
+            "from openzyme_pipeline.hpc import HpcWorkspace\n"
+            "bio_tools.hmmbuild(\n"
+            "    alignment={\n"
+            "        'artifact_id': 'artifact_alignment',\n"
+            f"        'artifact_digest': '{_digest_text('alignment')}',\n"
+            "    },\n"
+            "    placement=HpcWorkspace(\n"
+            "        hpc_workspace_id='hpcws_exact',\n"
+            "        label='aox_hmm',\n"
+            "        normalized_label='aox_hmm',\n"
+            "    ),\n"
+            "    expected_outputs=[{'path': 'outputs/model.hmm'}],\n"
+            ")\n",
+            "hpc_stage_ref_required",
+        ),
+        (
+            "from openzyme_pipeline import bio\n"
+            "bio.ncbi_fetch_proteins(\n"
+            "    accessions=['AAB57849.1'],\n"
+            "    output_dir='aox_hmm/ncbi_fetch',\n"
+            ")\n",
+            "provider_output_path_invalid",
+        ),
+        (
+            "from openzyme_pipeline import bio\n"
+            "bio.ncbi_fetch_proteins(\n"
+            "    accessions=['AAB57849.1'],\n"
+            "    output_dir='/workspace/output//ncbi_fetch',\n"
+            ")\n",
+            "provider_output_path_invalid",
+        ),
+    ),
+)
+def test_sandbox_exec_pre_admission_rejection_seals_exact_local_failure_chain(
     tmp_path: Path,
+    source: str,
+    expected_error_code: str,
 ) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
@@ -2107,22 +2146,7 @@ def test_sandbox_exec_stage_ref_rejection_seals_exact_local_failure_chain(
         sandbox_workspace_id=workspace.sandbox_workspace_id,
         actor_ref=agent.agent_id,
         path="/workspace/src/invalid_stage_ref.py",
-        content=(
-            "from openzyme_pipeline import bio_tools\n"
-            "from openzyme_pipeline.hpc import HpcWorkspace\n"
-            "bio_tools.hmmbuild(\n"
-            "    alignment={\n"
-            "        'artifact_id': 'artifact_alignment',\n"
-            f"        'artifact_digest': '{_digest_text('alignment')}',\n"
-            "    },\n"
-            "    placement=HpcWorkspace(\n"
-            "        hpc_workspace_id='hpcws_exact',\n"
-            "        label='aox_hmm',\n"
-            "        normalized_label='aox_hmm',\n"
-            "    ),\n"
-            "    expected_outputs=[{'path': 'outputs/model.hmm'}],\n"
-            ")\n"
-        ),
+        content=source,
         create_dirs=True,
         task_id=task.task_id,
     )
@@ -2156,9 +2180,7 @@ def test_sandbox_exec_stage_ref_rejection_seals_exact_local_failure_chain(
     assert repositories.controlled_operations.list_by_run(run.sandbox_run_id) == []
     assert repositories.approvals.list_by_session(session.session_id) == []
     assert (
-        repositories.controlled_operation_executions.list_by_session(
-            session.session_id
-        )
+        repositories.controlled_operation_executions.list_by_session(session.session_id)
         == []
     )
     assert repositories.continuation_states.list_by_session(session.session_id) == []
@@ -2176,11 +2198,12 @@ def test_sandbox_exec_stage_ref_rejection_seals_exact_local_failure_chain(
     assert len(causes) == len(wrappers) == 1
     cause = causes[0]
     wrapper = wrappers[0]
-    assert cause.error_code == "hpc_stage_ref_required"
+    assert cause.error_code == expected_error_code
     assert cause.failure_class is FailureClass.VALIDATION
     assert cause.recoverability is FailureRecoverability.AGENT_CAN_REPLAN
     assert cause.effect_certainty is ExternalEffectCertainty.NO_EFFECT
     assert cause.retry_eligibility is RetryEligibility.SAME_PHASE_SAFE
+    assert cause.facts["error_code"] == expected_error_code
     assert cause.facts["operation_admitted"] is False
     assert cause.facts["external_dispatch_started"] is False
     assert cause.facts["originating_signal_id"] == "signal_stage_ref_origin"
@@ -2196,8 +2219,13 @@ def test_sandbox_exec_stage_ref_rejection_seals_exact_local_failure_chain(
     assert result.details["causal_failure_id"] == cause.failure_id
 
 
+@pytest.mark.parametrize(
+    "cause_error_code",
+    ["hpc_stage_ref_required", "provider_output_path_invalid"],
+)
 def test_engine_completed_wake_projects_exact_local_sandbox_cause(
     tmp_path: Path,
+    cause_error_code: str,
 ) -> None:
     repositories = _build_repositories()
     session, agent, workspace, _ = _seed_workspace(repositories, tmp_path)
@@ -2309,10 +2337,11 @@ def test_engine_completed_wake_projects_exact_local_sandbox_cause(
         effect_certainty=ExternalEffectCertainty.NO_EFFECT,
         retry_eligibility=RetryEligibility.SAME_PHASE_SAFE,
         actor_kind=FailureActorKind.HARNESS,
-        error_code="hpc_stage_ref_required",
+        error_code=cause_error_code,
         safe_summary="The Host rejected a non-stage ref before admission.",
         facts={
             "schema_version": "sandbox_control_failure@1",
+            "error_code": cause_error_code,
             "sandbox_run_id": run.sandbox_run_id,
             "sandbox_workspace_id": run.sandbox_workspace_id,
             "source_snapshot_artifact_id": run.source_snapshot_artifact_id,
@@ -2375,12 +2404,10 @@ def test_engine_completed_wake_projects_exact_local_sandbox_cause(
     assert projected.facts["wrapper_failure_id"] == wrapper.failure_id
     assert projected.facts["wrapper_error_code"] == "sandbox_exec_nonzero"
     assert projected.facts["causal_failure_id"] == cause.failure_id
-    assert projected.facts["error_code"] == "hpc_stage_ref_required"
+    assert projected.facts["error_code"] == cause_error_code
     assert projected.facts["effect_certainty"] == "no_effect"
     assert projected.facts["operation_admitted"] is False
-    assert "Do not automatically replay an effect" in (
-        projected.render_instructions()
-    )
+    assert "Do not automatically replay an effect" in (projected.render_instructions())
 
 
 def test_sandbox_exec_marks_run_and_workspace_when_output_exceeds_disk_quota(
@@ -2628,9 +2655,7 @@ def test_legacy_approval_is_not_visible_before_its_continuation(
 
     observer_connection = connect_sqlite(str(database_path), check_same_thread=False)
     observer = CoreRepositories.from_connection(observer_connection)
-    premature_approvals = observer.approvals.list_pending_by_session(
-        session.session_id
-    )
+    premature_approvals = observer.approvals.list_pending_by_session(session.session_id)
     allow_approval_save_to_return.set()
 
     pending = _wait_for_pending_approval(observer, session.session_id)
@@ -2850,7 +2875,7 @@ def test_sandbox_exec_durable_route_admits_once_and_never_calls_legacy_adapter(
         content=(
             "import json\n"
             "from openzyme_pipeline.client import call, canonical_digest\n"
-            "params = {'accessions': ['AAB57849.1']}\n"
+            "params = {'accessions': ['AAB57849.1'], 'output_dir': '/workspace/output/ncbi'}\n"
             "result = call('s10.controlled_operation', {\n"
             "    'schema_version': 's12.adapter_envelope.v1',\n"
             "    'route_policy_id': 'bio.ncbi_fetch_proteins.provider:v1',\n"
@@ -2859,7 +2884,7 @@ def test_sandbox_exec_durable_route_admits_once_and_never_calls_legacy_adapter(
             "    'idempotency_key': 'durable_provider_001',\n"
             "    'params_digest': canonical_digest(params),\n"
             "    'params': params,\n"
-            "    'expected_outputs': {'kind': 'fasta'},\n"
+            "    'expected_outputs': {'kind': 'fasta', 'output_dir': '/workspace/output/ncbi'},\n"
             "    'resource_estimate': {'requests': 1},\n"
             "})\n"
             "print(json.dumps(result, sort_keys=True))\n"
@@ -3049,9 +3074,7 @@ def test_file_backed_attached_continuation_fetch_uses_process_authority_after_tu
                     "fetch_ref_id": "fetch_alignment_after_continuation",
                     "run_id": params["run_id"],
                     "declared_output_path": "bio_tools/mafft/alignment.fasta",
-                    "registered_artifact_id": (
-                        "artifact_alignment_after_continuation"
-                    ),
+                    "registered_artifact_id": ("artifact_alignment_after_continuation"),
                     "output_digest": "sha256:alignment-after-continuation",
                 }
             ],
@@ -3229,7 +3252,7 @@ def test_sandbox_exec_durable_route_without_exact_adapter_fails_closed(
         content=(
             "import json\n"
             "from openzyme_pipeline.client import PipelineSdkError, call, canonical_digest\n"
-            "params = {'accessions': ['AAB57849.1']}\n"
+            "params = {'accessions': ['AAB57849.1'], 'output_dir': '/workspace/output/ncbi'}\n"
             "try:\n"
             "    call('s10.controlled_operation', {\n"
             "        'schema_version': 's12.adapter_envelope.v1',\n"
@@ -3239,7 +3262,7 @@ def test_sandbox_exec_durable_route_without_exact_adapter_fails_closed(
             "        'idempotency_key': 'durable_missing_adapter_001',\n"
             "        'params_digest': canonical_digest(params),\n"
             "        'params': params,\n"
-            "        'expected_outputs': {'kind': 'fasta'},\n"
+            "        'expected_outputs': {'kind': 'fasta', 'output_dir': '/workspace/output/ncbi'},\n"
             "        'resource_estimate': {'requests': 1},\n"
             "    })\n"
             "except PipelineSdkError as exc:\n"
@@ -3690,7 +3713,7 @@ def test_sandbox_exec_s12_adapter_envelopes_separate_approval_and_host_result(
         content=(
             "import json\n"
             "from openzyme_pipeline.client import call, canonical_digest\n"
-            "adapter_params = {'accessions': ['AAB57849.1']}\n"
+            "adapter_params = {'accessions': ['AAB57849.1'], 'output_dir': '/workspace/output/ncbi'}\n"
             "result = call('s10.controlled_operation', {\n"
             "    'schema_version': 's12.adapter_envelope.v1',\n"
             "    'route_policy_id': 'bio.ncbi_fetch_proteins.provider:v1',\n"
@@ -3699,7 +3722,7 @@ def test_sandbox_exec_s12_adapter_envelopes_separate_approval_and_host_result(
             "    'idempotency_key': 's12_provider_001',\n"
             "    'params_digest': canonical_digest(adapter_params),\n"
             "    'params': adapter_params,\n"
-            "    'expected_outputs': {'kind': 'fasta', 'storage_uri': '/private/out.fasta'},\n"
+            "    'expected_outputs': {'kind': 'fasta', 'output_dir': '/workspace/output/ncbi', 'storage_uri': '/private/out.fasta'},\n"
             "    'planned_fetch_intent': {'remote_path': '/private/provider/fetch'},\n"
             "    'resource_estimate': {'requests': 1},\n"
             "    '_host_validated_result_reuse': True,\n"
@@ -3739,7 +3762,10 @@ def test_sandbox_exec_s12_adapter_envelopes_separate_approval_and_host_result(
     assert approval_envelope["route_policy_id"] == "bio.ncbi_fetch_proteins.provider:v1"
     assert approval_envelope["selected_backend"] == "provider_http"
     assert approval_envelope["provider_config_digest"] == "provider_config:ncbi:v1"
-    assert approval_envelope["expected_outputs"] == {"kind": "fasta"}
+    assert approval_envelope["expected_outputs"] == {
+        "kind": "fasta",
+        "output_dir": "/workspace/output/ncbi",
+    }
     assert approval_envelope["planned_fetch_intent"] == {}
     assert "storage_uri" not in json.dumps(approval_envelope, sort_keys=True)
     assert "remote_path" not in json.dumps(approval_envelope, sort_keys=True)
@@ -3853,7 +3879,7 @@ def test_sandbox_exec_preserves_typed_adapter_failure_for_pipeline_sdk(
         content=(
             "import json\n"
             "from openzyme_pipeline.client import PipelineSdkError, call, canonical_digest\n"
-            "params = {'accessions': ['AAB57849.1']}\n"
+            "params = {'accessions': ['AAB57849.1'], 'output_dir': '/workspace/output/ncbi'}\n"
             "try:\n"
             "    call('s10.controlled_operation', {\n"
             "        'schema_version': 's12.adapter_envelope.v1',\n"
@@ -3863,7 +3889,7 @@ def test_sandbox_exec_preserves_typed_adapter_failure_for_pipeline_sdk(
             "        'idempotency_key': 'typed_adapter_failure_001',\n"
             "        'params_digest': canonical_digest(params),\n"
             "        'params': params,\n"
-            "        'expected_outputs': {'kind': 'fasta'},\n"
+            "        'expected_outputs': {'kind': 'fasta', 'output_dir': '/workspace/output/ncbi'},\n"
             "        'resource_estimate': {'requests': 1},\n"
             "    })\n"
             "except PipelineSdkError as exc:\n"
@@ -3995,7 +4021,7 @@ def test_sandbox_exec_s12_rejects_unsuccessful_or_inconsistent_host_result(
         content=(
             "import json\n"
             "from openzyme_pipeline.client import PipelineSdkError, call, canonical_digest\n"
-            "params = {'accessions': ['P12345']}\n"
+            "params = {'accessions': ['P12345'], 'output_dir': '/workspace/output/uniprot'}\n"
             "base = {\n"
             "    'schema_version': 's12.adapter_envelope.v1',\n"
             "    'route_policy_id': 'bio.uniprot_fetch.provider:v1',\n"
@@ -4003,7 +4029,7 @@ def test_sandbox_exec_s12_rejects_unsuccessful_or_inconsistent_host_result(
             "    'function_name': 'uniprot_fetch',\n"
             "    'params_digest': canonical_digest(params),\n"
             "    'params': params,\n"
-            "    'expected_outputs': {'kind': 'fasta'},\n"
+            "    'expected_outputs': {'kind': 'fasta', 'output_dir': '/workspace/output/uniprot'},\n"
             "    'resource_estimate': {'requests': 1},\n"
             "}\n"
             "errors = []\n"
@@ -4574,9 +4600,7 @@ def test_sandbox_exec_public_bio_tools_hpc_run_can_fetch_declared_outputs(
             "registered_artifact_ids": list(
                 payload["fetch"]["registered_artifact_ids"]
             ),
-            "output_artifact_ids": list(
-                payload["fetch"]["registered_artifact_ids"]
-            ),
+            "output_artifact_ids": list(payload["fetch"]["registered_artifact_ids"]),
         },
     )
     projection_server._record_hpc_fetch_result(  # noqa: SLF001
@@ -4610,8 +4634,7 @@ def test_sandbox_exec_public_bio_tools_hpc_run_can_fetch_declared_outputs(
             membership_drifted_fetch,
         )
     assert (
-        membership_drift_error.value.error_code
-        == "durable_hpc_fetch_projection_drift"
+        membership_drift_error.value.error_code == "durable_hpc_fetch_projection_drift"
     )
     drifted_fetch = {**dict(payload["fetch"]), "run_id": "run_drifted"}
     with pytest.raises(SandboxRuntimeError) as drift_error:
@@ -5318,7 +5341,7 @@ def test_sandbox_exec_s12_reuses_only_host_persisted_result_without_second_execu
         content=(
             "import json\n"
             "from openzyme_pipeline.client import PipelineSdkError, call, canonical_digest\n"
-            "adapter_params = {'accessions': ['P12345']}\n"
+            "adapter_params = {'accessions': ['P12345'], 'output_dir': '/workspace/output/uniprot'}\n"
             "base = {\n"
             "    'schema_version': 's12.adapter_envelope.v1',\n"
             "    'route_policy_id': 'bio.uniprot_fetch.provider:v1',\n"
@@ -5326,7 +5349,7 @@ def test_sandbox_exec_s12_reuses_only_host_persisted_result_without_second_execu
             "    'function_name': 'uniprot_fetch',\n"
             "    'params_digest': canonical_digest(adapter_params),\n"
             "    'params': adapter_params,\n"
-            "    'expected_outputs': {'kind': 'fasta'},\n"
+            "    'expected_outputs': {'kind': 'fasta', 'output_dir': '/workspace/output/uniprot'},\n"
             "    'resource_estimate': {'requests': 1},\n"
             "}\n"
             "first = call(\n"
@@ -5338,7 +5361,7 @@ def test_sandbox_exec_s12_reuses_only_host_persisted_result_without_second_execu
             "    dict(base, idempotency_key='s12_reuse_b'),\n"
             ")\n"
             "try:\n"
-            "    changed_params = {'accessions': ['Q99999']}\n"
+            "    changed_params = {'accessions': ['Q99999'], 'output_dir': '/workspace/output/uniprot'}\n"
             "    call(\n"
             "        's10.controlled_operation',\n"
             "        dict(\n"
@@ -5458,7 +5481,7 @@ def test_sandbox_exec_s12_untrusted_legacy_result_requires_fresh_approval(
             "import json\n"
             "import time\n"
             "from openzyme_pipeline.client import call, canonical_digest\n"
-            "adapter_params = {'accessions': ['P12345']}\n"
+            "adapter_params = {'accessions': ['P12345'], 'output_dir': '/workspace/output/uniprot'}\n"
             "base = {\n"
             "    'schema_version': 's12.adapter_envelope.v1',\n"
             "    'route_policy_id': 'bio.uniprot_fetch.provider:v1',\n"
@@ -5466,7 +5489,7 @@ def test_sandbox_exec_s12_untrusted_legacy_result_requires_fresh_approval(
             "    'function_name': 'uniprot_fetch',\n"
             "    'params_digest': canonical_digest(adapter_params),\n"
             "    'params': adapter_params,\n"
-            "    'expected_outputs': {'kind': 'fasta'},\n"
+            "    'expected_outputs': {'kind': 'fasta', 'output_dir': '/workspace/output/uniprot'},\n"
             "    'resource_estimate': {'requests': 1},\n"
             "}\n"
             "first = call(\n"

@@ -18,9 +18,7 @@ from .aox_scientific_contract import AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_ID
 from .aox_scientific_contract import AOX_SELECTED_CHAIN_WORKFLOW_ID
 
 
-AOX_BLANK_WORLD_RUNTIME_CONFIG_LEGACY_SCHEMA_ID = (
-    "aox_blank_world_runtime_config@1"
-)
+AOX_BLANK_WORLD_RUNTIME_CONFIG_LEGACY_SCHEMA_ID = "aox_blank_world_runtime_config@1"
 AOX_BLANK_WORLD_RUNTIME_CONFIG_V2_SCHEMA_ID = "aox_blank_world_runtime_config@2"
 AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID = "aox_blank_world_runtime_config@3"
 AOX_RUNNER_CONTRACT_EXPECTATIONS_SCHEMA_ID = "aox_runner_contract_expectations@1"
@@ -848,18 +846,12 @@ def normalize_aox_blank_world_runtime_config(
         )
         owner_policy = _string(
             reliability["controlled_operation_owner_policy"],
-            path=(
-                "effective_config.reliability."
-                "controlled_operation_owner_policy"
-            ),
+            path=("effective_config.reliability.controlled_operation_owner_policy"),
             allowed=frozenset({"route_allowlist_v1", "durable_only_v1"}),
         )
         durable_routes = _string_list(
             reliability["durable_execution_route_allowlist"],
-            path=(
-                "effective_config.reliability."
-                "durable_execution_route_allowlist"
-            ),
+            path=("effective_config.reliability.durable_execution_route_allowlist"),
         )
         if durable_routes != sorted(durable_routes):
             raise AoxRuntimeConfigSchemaError(
@@ -932,9 +924,7 @@ def normalize_aox_blank_world_runtime_config(
             "schema_id": AOX_SELECTED_CHAIN_CONTRACT_V2.schema_id,
             "contract_id": AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_ID,
             "workflow_id": AOX_SELECTED_CHAIN_WORKFLOW_ID,
-            "workflow_contract_digest": (
-                AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
-            ),
+            "workflow_contract_digest": (AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST),
         }
         mismatched_contract_fields = sorted(
             key
@@ -959,7 +949,7 @@ def normalize_aox_blank_world_runtime_config(
     approval_mode = _string(
         driver["approval_mode"],
         path="effective_config.driver.approval_mode",
-        allowed=frozenset({"auto", "chrome-once"}),
+        allowed=frozenset({"public-explicit", "chrome-once"}),
     )
     observation_mode = _string(
         driver["browser_observation_mode"],
@@ -1029,8 +1019,7 @@ def normalize_aox_blank_world_runtime_config(
         "browser_observation_submission_timeout_seconds": _number(
             driver["browser_observation_submission_timeout_seconds"],
             path=(
-                "effective_config.driver."
-                "browser_observation_submission_timeout_seconds"
+                "effective_config.driver.browser_observation_submission_timeout_seconds"
             ),
             minimum=0.0,
             minimum_inclusive=False,

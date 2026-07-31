@@ -9,18 +9,19 @@ import re
 import stat
 import tempfile
 import time
+import zlib
 
 from openzyme_runtime import REPO_ROOT
 
-from .aox_cutover_live import BROWSER_OBSERVATION_MODE
-from .aox_cutover_live import BROWSER_OBSERVATION_RECEIPT_SCHEMA_ID
-from .aox_cutover_live import MANUAL_APPROVAL_HANDOFF_SCHEMA_ID
-from .aox_cutover_live import _browser_screenshot_png
-from .aox_cutover_live import _strict_json_object
-from .aox_cutover_live import canonical_digest
+from .aox_cutover_evidence import canonical_digest
 
 
+BROWSER_OBSERVATION_RECEIPT_SCHEMA_ID = "aox_browser_observation_receipt@2"
+BROWSER_OBSERVATION_MODE = "chrome_devtools_mcp_file_handoff"
 BROWSER_OBSERVATION_CAPTURE_SCHEMA_ID = "aox_browser_observation_capture@1"
+MANUAL_APPROVAL_HANDOFF_SCHEMA_ID = "aox_manual_approval_handoff@1"
+_MAX_BROWSER_SCREENSHOT_BASE64_CHARS = 64 * 1024 * 1024
+_MAX_BROWSER_SCREENSHOT_DECODED_BYTES = 64 * 1024 * 1024
 _SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CAPTURE_FIELDS = frozenset(
     {
@@ -95,6 +96,127 @@ class BrowserObservationReceiptError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.details = {} if details is None else dict(details)
+
+
+def _strict_json_object(content: str) -> dict[str, object]:
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"non-finite JSON constant is forbidden: {value}")
+
+    def pairs_hook(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+
+    parsed = json.loads(
+        content,
+        parse_constant=reject_constant,
+        object_pairs_hook=pairs_hook,
+    )
+    if not isinstance(parsed, dict):
+        raise ValueError("JSON receipt must be an object")
+    return dict(parsed)
+
+
+def _browser_screenshot_png(
+    encoded: object,
+) -> tuple[bytes, int, int] | None:
+    if (
+        not isinstance(encoded, str)
+        or not encoded
+        or len(encoded) > _MAX_BROWSER_SCREENSHOT_BASE64_CHARS
+    ):
+        return None
+    try:
+        content = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError):
+        return None
+    if len(content) < 45 or content[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    offset = 8
+    ihdr: bytes | None = None
+    idat_parts: list[bytes] = []
+    seen_iend = False
+    seen_non_idat_after_idat = False
+    while offset < len(content):
+        if offset + 12 > len(content):
+            return None
+        length = int.from_bytes(content[offset : offset + 4], "big")
+        chunk_type = content[offset + 4 : offset + 8]
+        chunk_end = offset + 12 + length
+        if chunk_end > len(content):
+            return None
+        data = content[offset + 8 : offset + 8 + length]
+        expected_crc = int.from_bytes(content[offset + 8 + length : chunk_end], "big")
+        if zlib.crc32(chunk_type + data) & 0xFFFFFFFF != expected_crc:
+            return None
+        if chunk_type == b"IHDR":
+            if ihdr is not None or offset != 8 or length != 13:
+                return None
+            ihdr = data
+        elif chunk_type == b"IDAT":
+            if ihdr is None or seen_iend or seen_non_idat_after_idat:
+                return None
+            idat_parts.append(data)
+        elif chunk_type == b"IEND":
+            if ihdr is None or not idat_parts or seen_iend or length != 0:
+                return None
+            seen_iend = True
+            if chunk_end != len(content):
+                return None
+        elif idat_parts:
+            seen_non_idat_after_idat = True
+        offset = chunk_end
+    if ihdr is None or not idat_parts or not seen_iend:
+        return None
+    width = int.from_bytes(ihdr[0:4], "big")
+    height = int.from_bytes(ihdr[4:8], "big")
+    bit_depth, color_type, compression, filter_method, interlace = ihdr[8:13]
+    channels_by_color_type = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
+    valid_depths = {
+        0: {1, 2, 4, 8, 16},
+        2: {8, 16},
+        3: {1, 2, 4, 8},
+        4: {8, 16},
+        6: {8, 16},
+    }
+    if (
+        width <= 0
+        or height <= 0
+        or width > 16_384
+        or height > 16_384
+        or color_type not in channels_by_color_type
+        or bit_depth not in valid_depths[color_type]
+        or compression != 0
+        or filter_method != 0
+        or interlace != 0
+    ):
+        return None
+    row_bytes = (width * channels_by_color_type[color_type] * bit_depth + 7) // 8
+    expected_decoded_size = height * (1 + row_bytes)
+    if expected_decoded_size > _MAX_BROWSER_SCREENSHOT_DECODED_BYTES:
+        return None
+    try:
+        decompressor = zlib.decompressobj()
+        pixels = decompressor.decompress(
+            b"".join(idat_parts), expected_decoded_size + 1
+        )
+    except zlib.error:
+        return None
+    if (
+        len(pixels) != expected_decoded_size
+        or not decompressor.eof
+        or decompressor.unused_data
+        or decompressor.unconsumed_tail
+        or any(
+            pixels[row * (1 + row_bytes)] not in {0, 1, 2, 3, 4}
+            for row in range(height)
+        )
+    ):
+        return None
+    return content, width, height
 
 
 def load_json_object(path: Path, *, label: str) -> dict[str, object]:

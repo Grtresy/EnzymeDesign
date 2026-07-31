@@ -21,33 +21,33 @@ Each cutover attempt SHALL create unique empty SQLite, artifact/blob, sandbox wo
 - **AND** process stdout/stderr is captured as bytes; complete over-limit stdio MAY persist only in the attempt-scoped Host-private command-log boundary, whose run directory and stream file use no-replace/no-follow private `0700`/`0600` creation, while public records retain only a sanitized summary, raw-byte digest/size, truncation marker, and opaque ref without read authority
 
 ### Requirement: Canonical launch and prerequisite identity
-`run-live` SHALL resolve a canonical clean launch snapshot before constructing the attempt runner, campaign, or any attempt root. The launch identity MUST be the exact seven-field closed object `git_commit`, `config_digest`, `workflow_ref`, `scoring_contract_digest`, `scoring_implementation_digest`, `image_digest`, and `sdk_digest`; each value MUST be derived from the actual clean canonical checkout, digest-pinned workflow/scoring implementation, sandbox runtime preflight, and Pipeline SDK source tree rather than trusted from caller declarations.
+The retained preflight and authority-consumption shell SHALL resolve a canonical clean launch snapshot before a separately approved public Codex conductor creates any attempt root. The launch identity MUST be the exact seven-field closed object `git_commit`, `config_digest`, `workflow_ref`, `scoring_contract_digest`, `scoring_implementation_digest`, `image_digest`, and `sdk_digest`; each value MUST be derived from the actual clean canonical checkout, digest-pinned workflow/scoring implementation, sandbox runtime preflight, and Pipeline SDK source tree rather than trusted from caller declarations. No retained shell SHALL construct or automatically drive an attempt runner or campaign.
 
 Every initial identity resolution and inter-attempt launch guard SHALL execute `aox_sandbox_scientific_backend_probe@1` before pin runner attestation, attempt-root creation, or any MICU/provider/runner effect. The probe MUST copy the exact Pipeline SDK to a temporary tree, normalize directory/file modes to `0755`/`0644`, recompute and match its source-tree digest, and mount it read-only into the selected immutable image under no-pull, no-network, bounded CPU/memory/pids execution. It MUST run the real `biopython_trace_guarded_numpy_gotoh@1` import, exact Biopython `1.87` and NumPy `2.4.4` checks, Gotoh configuration, IEEE-754 binary64 verification, and frozen numeric examples, returning only the exact canonical closed `aox_sandbox_scientific_backend_probe@1` projection. Missing dependencies, nonzero exit, timeout, image/SDK mismatch, version/algorithm/numeric drift, or malformed/open/noncanonical projection MUST fail launch without runtime installation, Host-package substitution, or alternate backend. This gate MUST NOT expand the exact-seven identity or exact-nine prerequisite object and MUST NOT be represented as a reproducible dependency manifest, SBOM, or supply-chain attestation.
 
-`config_digest` MUST be the canonical digest of a sealed safe `aox_blank_world_runtime_config@3` preimage covering the effective trusted-Host/single-process-SQLite profile, HPC runner-config digest, runner-owned manifest bytes digest, the closed exact-AOX tool-to-adapter/template/runner-contract expectation map, provider limits, MICU model/policy/bounds, research/tracing/test opt-ins, driver/Chrome bounds, fixed cumulative 500M ceiling, existing ledger identity, the complete reliability projection that determines controlled-operation ownership/durable route admission/command drain/generic mutation closure/bounded shadow observation, and the exact active `aox_blank_world_selected_chain@2` schema/contract/workflow/digest identity. The selected-chain digest MUST cover the complete formal/fault/probe role-to-SDK-operation-signature mapping used by admission, inspection/readiness, validation, and the bundle verifier. The reliability projection MUST prove `durable_async_v1` ownership for every AOX provider/HPC route, `command_v1`, and `generic_v1` before pin contacts the runner or run-live creates a campaign/attempt root. Frozen `aox_blank_world_runtime_config@1` and `@2` evidence MAY remain readable for historical offline verification, but neither historical config nor `aox_blank_world_selected_chain@1` MAY be emitted or admitted for a new live launch. Summary, reservation and campaign startup MUST NOT reinterpret a stored ceiling. An explicit operator migration MAY change only the exact legacy fixed 100M policy to 500M transactionally; it MUST preserve all prior usage, be idempotent at 500M, reject any other stored limit, and never reset the ledger. The preimage MUST NOT expose credentials, NCBI email, or Host/runner/ledger paths. Binding the runner map and selected-chain identity MUST NOT add a tenth prerequisite field.
+`config_digest` MUST be the canonical digest of a sealed safe `aox_blank_world_runtime_config@3` preimage covering the effective trusted-Host/single-process-SQLite profile, HPC runner-config digest, runner-owned manifest bytes digest, the closed exact-AOX tool-to-adapter/template/runner-contract expectation map, provider limits, MICU model/policy/bounds, research/tracing/test opt-ins, public-conductor/Chrome bounds, fixed cumulative 500M ceiling, existing ledger identity, the complete reliability projection that determines controlled-operation ownership/durable route admission/command drain/generic mutation closure/bounded shadow observation, and the exact active `aox_blank_world_selected_chain@2` schema/contract/workflow/digest identity. The selected-chain digest MUST cover the complete formal/fault/probe role-to-SDK-operation-signature mapping used by admission, inspection/readiness, validation, and the bundle verifier. The reliability projection MUST prove `durable_async_v1` ownership for every AOX provider/HPC route, `command_v1`, and `generic_v1` before pin contacts the runner or a public conductor creates an attempt root. Frozen `aox_blank_world_runtime_config@1` and `@2` evidence MAY remain readable for historical offline verification, but neither historical config nor `aox_blank_world_selected_chain@1` MAY be emitted or admitted for a new live launch. Summary, reservation and campaign startup MUST NOT reinterpret a stored ceiling. An explicit operator migration MAY change only the exact legacy fixed 100M policy to 500M transactionally; it MUST preserve all prior usage, be idempotent at 500M, reject any other stored limit, and never reset the ledger. The preimage MUST NOT expose credentials, NCBI email, or Host/runner/ledger paths. Binding the runner map and selected-chain identity MUST NOT add a tenth prerequisite field.
 
 Blank-world live against MICU or another OpenAI-compatible endpoint MUST explicitly configure `context_window_tokens` no greater than `200000`; it MUST NOT infer a larger window from a model name when the endpoint has not proved that capability.
 
 Allowed prerequisites MUST contain exactly `git_commit`, `config_digest`, `workflow_ref`, `image_digest`, `sdk_digest`, `toolchain_image_digests`, `credential_slots`, `ncbi_identity`, and `prompt_accessions`. The first five MUST equal the launch identity. `toolchain_image_digests` MUST contain exactly `mafft_7.525.hpc_apptainer_sif:v1`, `hmmer_3.4.hmmbuild.hpc_apptainer_sif:v1`, `hmmer_3.4.hmmalign.hpc_apptainer_sif:v1`, and `cdhit_4.8.1.hpc_apptainer_sif:v1`, with hmmbuild and hmmalign bound to identical HMMER SIF bytes. `credential_slots` MUST contain only boolean `llm`, `ncbi`, `semantic_scholar`, and `tavily` availability, with LLM and NCBI ready; `ncbi_identity` MUST be opaque; and `prompt_accessions` MUST equal the formal exact-14 plus fixed probe NCBI/UniProt sets.
 
-`pin` SHALL be the canonical supported operator bootstrap for a `run-live` declaration pair. It MUST use the production compiler and trusted Host's forced-SSH runner to execute deterministic non-scientific MAFFT, CD-HIT, hmmbuild, and chained hmmalign payloads, deriving all four toolchain image digests only from runner-issued same-shell runtime identities. Its writer MUST publish the exact-seven and exact-nine canonical JSON payloads with mode `0600` in one existing real transaction directory outside the checkout whose two payload targets and fixed marker target do not yet exist, fsync both payloads, and last-publish one exact closed `.aox-cutover-pin-commit.json` marker binding both basenames and canonical payload digests. `run-live` MUST validate that committed pair before settings, launch/campaign construction, or root creation; a pre-marker crash MAY leave orphan payloads, but those payloads MUST NOT be consumable. Because the marker is unsigned, its acceptance proves only pair integrity and consistency, not producer provenance, directory-wide freshness, or consumer-time file mode; trusted operation, independent actual-launch recomputation, and runner-issued identities on the live operations remain mandatory.
+`pin` SHALL be the canonical supported operator bootstrap for a reviewable authority declaration pair. It MUST use the production compiler and trusted Host's forced-SSH runner to execute deterministic non-scientific MAFFT, CD-HIT, hmmbuild, and chained hmmalign payloads, deriving all four toolchain image digests only from runner-issued same-shell runtime identities. Its writer MUST publish the exact-seven and exact-nine canonical JSON payloads with mode `0600` in one existing real transaction directory outside the checkout whose two payload targets and fixed marker target do not yet exist, fsync both payloads, and last-publish one exact closed `.aox-cutover-pin-commit.json` marker binding both basenames and canonical payload digests. Authority consumption MUST validate that committed pair before producing its receipt; a pre-marker crash MAY leave orphan payloads, but those payloads MUST NOT be consumable. Because the marker is unsigned, its acceptance proves only pair integrity and consistency, not producer provenance, directory-wide freshness, or consumer-time file mode; trusted operation, an explicit preflight before any root, and runner-issued identities on later live operations remain mandatory.
 
 #### Scenario: Pin and resolve the actual clean launch
-- **WHEN** an operator invokes `pin` and then invokes `run-live` with its committed identity/prerequisite pair under the exact same effective driver settings
-- **THEN** pin obtains the four runner-issued direct-SSH toolchain identities, publishes the payloads and marker as one consumer-visible transaction, and the launcher independently computes the exact-seven actual identity and safe effective-config preimage before root creation, requires field-for-field equality, and seals the same config preimage/digest into attempt launch evidence
+- **WHEN** an operator invokes `pin`, authorizes an exact plan, consumes it through the matching policy-free command, and a separately approved conductor performs preflight under the exact same effective settings
+- **THEN** pin obtains the four runner-issued direct-SSH toolchain identities, publishes the payloads and marker as one consumer-visible transaction, and preflight independently computes the exact-seven actual identity and safe effective-config preimage before root creation, requires field-for-field equality, and makes that same config preimage/digest available for later attempt launch evidence without starting an attempt
 
 #### Scenario: Reject an uncommitted or drifted pin transaction
 - **WHEN** the two declarations are cross-directory, symlinked, missing their fixed marker, have an open or malformed marker, or no longer match its bound basenames/digests
-- **THEN** `run-live` fails before reading effective settings, constructing launch/campaign state, or creating an attempt root; an orphan payload from a pre-marker crash is never reinterpreted as committed input
+- **THEN** authority consumption or preflight fails before constructing launch/session state or creating an attempt root; an orphan payload from a pre-marker crash is never reinterpreted as committed input
 
 #### Scenario: Reject launch or inter-attempt drift
 - **WHEN** the checkout is dirty, a declared field is missing/extra/malformed, or checkout/workflow/scoring/image/SDK/effective configuration differs initially or before a later attempt
-- **THEN** launch or the per-attempt guard fails before creating that attempt root or contacting a model, provider, or runner, and the campaign emits safe evidence-backed NO-GO driver failure rather than continuing
+- **THEN** preflight or the conductor's explicit per-attempt admission check fails before creating that attempt root or contacting a model, provider, or runner; no automatic driver continues or emits a substitute campaign state
 
 #### Scenario: Reject an immutable image without the frozen AOX backend
 - **WHEN** the selected immutable image is present but lacks Biopython, exposes a wrong Biopython/NumPy/algorithm/numeric behavior, or its canonical capability receipt or copied SDK identity drifts
-- **THEN** pin or run-live fails before runner attestation, attempt-root creation, and MICU/provider/runner effects; the launcher does not install packages, use Host imports, or continue with a fallback backend
+- **THEN** pin or preflight fails before runner attestation, attempt-root creation, and MICU/provider/runner effects; the shell does not install packages, use Host imports, or continue with a fallback backend
 
 #### Scenario: Reject an open prerequisite object
 - **WHEN** prerequisites omit an exact-nine field, include an unknown/private/scientific field, disagree with the launch identity, use the wrong toolchain-key set or HMMER digests, or expose a credential value
@@ -62,8 +62,8 @@ Allowed prerequisites MUST contain exactly `git_commit`, `config_digest`, `workf
 - **THEN** launch fails before constructing the campaign or making a MICU call
 
 #### Scenario: Reject an unpinned or ineligible reliability configuration
-- **WHEN** the effective owner policy leaves any AOX provider/HPC route on legacy ownership, runtime drain is not `command_v1`, mutation closure is not `generic_v1`, or any of those fields drift between pin and run-live
-- **THEN** pin fails before forced-SSH attestation, or run-live fails before campaign/attempt-root creation, and the reliability preimage participates in the canonical config digest
+- **WHEN** the effective owner policy leaves any AOX provider/HPC route on legacy ownership, runtime drain is not `command_v1`, mutation closure is not `generic_v1`, or any of those fields drift between pin, consumption and preflight
+- **THEN** pin fails before forced-SSH attestation, or consumption/preflight fails before session/attempt-root creation, and the reliability preimage participates in the canonical config digest
 
 ### Requirement: One-message canonical product path
 A positive attempt SHALL begin with one user message through `POST /v3/sessions/{session_id}/messages` and SHALL progress only through resident master/teammate turns, durable signals, canonical delegation, approvals, persistent sandbox execution, Host-supervised providers/HPC, artifact registration, task business exits, and `report.publish`.
@@ -173,28 +173,24 @@ Before any next provider invocation for the same conversation, the conversation 
 - **WHEN** one eligible call creates a task and a later eligible call in the same provider response binds that new task to a lane
 - **THEN** the later call resolves its references only after the create result is durable and dispatches normally, while overflow pre-persistence does not reject the batch against stale pre-response state
 
-### Requirement: Formal runtime observation preserves scientific-attempt scope rollover
-The AOX formal driver SHALL project each runtime barrier while exactly one root `attempt_driver` writer whose owner ref starts with `aox-attempt-driver:` is active on the session's exact open mutation scope. That writer SHALL exist only for the bounded barrier snapshot and SHALL retire before the Host finalizes an admission or closure transition. It MUST NOT span a runtime drain, provider/HPC dispatch, approval wait, or the pre-attempt-session-to-attempt scope rollover. The barrier SHALL exclude only that exact observer writer; every other active root or child writer MUST remain a blocker. A missing/ambiguous open scope, missing exact observer identity, or failed observer retirement SHALL fail closed and MUST NOT be interpreted as runtime idle.
+### Requirement: Host-owned lifecycle facts without an AOX runtime observer
+The product runtime MUST NOT expose an AOX runtime observer, a generic
+runtime-barrier/observer-writer service, or an AOX-specific projection that derives
+business completion, failure, idleness, recovery authority, or the next runtime
+command. Host-finalized mutation-scope transitions SHALL remain atomic and Host
+repositories SHALL remain the canonical authority for tasks, attempts, reports,
+approvals, leases, fencing, effect certainty, continuations and isolation. Public
+workspace, event, pending-approval and runtime-command reads SHALL expose bounded
+canonical facts without creating an observer writer or excluding another writer
+from safety checks.
 
-Both the complete semantic session observation and the terminal-runtime-command check for attached mutation writers SHALL use the same bounded observer lifecycle entry. The drain coordinator MUST carry the exact session purpose and attempt authority into that entry and MUST NOT call an AOX runtime-barrier projection directly on a formal path. The observer SHALL retire before the coordinator sleeps, reads approvals again, returns the drain result, starts another drain, or propagates an error.
+#### Scenario: Observe state only through public facts
+- **WHEN** a Codex test conductor needs to decide whether to send another message, issue one explicit runtime drain, resolve an approved operation, or stop
+- **THEN** it reads the public Host API/CLI projections and makes that test decision outside product runtime; no AOX service registers an observer writer, polls until terminal, or writes a business state on the conductor's behalf
 
-Host-finalized mutation-scope rollover SHALL be externally atomic. Sealing the admitted attempt scope, committing the immutable scientific-attempt closure, and opening its unique post-attempt session scope MUST occur inside one short local write transaction. A concurrent runtime barrier may observe the pre-transition attempt scope or the post-transition session scope, but MUST NOT observe a committed zero-open-scope intermediate state. The driver MUST NOT hide a non-atomic transition through blind retry or reinterpret a genuinely missing scope as idle.
-
-#### Scenario: Observe the pre-attempt scope without blocking rollover
-- **WHEN** a formal session has one open pre-attempt session scope and the driver projects runtime settlement before the agent requests `attempt.create`
-- **THEN** the driver registers one exact root AOX observer writer, reads the barrier while that writer is active, retires it on return, and leaves no active writer that could prevent the Host from sealing the pre-attempt scope and opening the admitted attempt scope
-
-#### Scenario: Keep another writer visible to the barrier
-- **WHEN** a sandbox process, runtime command, continuation, event publisher, or another writer remains active during the same formal barrier snapshot
-- **THEN** only the exact AOX observer writer is excluded, the other writer keeps the barrier non-ready, and the driver neither rolls the scope nor reports quiescence
-
-#### Scenario: Settle a terminal runtime command through the same observer
-- **WHEN** a formal runtime command is terminal and the drain coordinator checks whether an attached mutation writer remains
-- **THEN** it creates and retires the same exact bounded AOX observer around that writer-only projection, waits while any other root or child writer remains, and never performs a direct formal barrier read without observer identity
-
-#### Scenario: Close an attempt without an observable scope gap
-- **WHEN** the Host finalizes a sealed selected chain while the cutover driver concurrently performs its post-drain runtime observation
-- **THEN** the closure, attempt-scope seal, and unique post-attempt-scope open commit atomically, so the observer sees exactly one open scope before or after the transition and never fails on a transient zero-scope window
+#### Scenario: Preserve atomic attempt scope transitions
+- **WHEN** Host admits or closes a scientific attempt while another public read occurs
+- **THEN** the transition remains atomic under Host mutation authority, the read observes a canonical before-or-after state, and neither missing wakeups nor runtime idleness is converted into task completion
 
 ### Requirement: Exact scientific callable and artifact-selection map
 The formal executor SHALL use the installed versioned callables `openzyme_pipeline.aox_reference.select_hmm_reference_set`, `select_scoring_reference`, `assemble_scoring_input`, `openzyme_pipeline.aox_hmmer.parse_and_filter_csv`, `openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions`, `openzyme_pipeline.aox_motif.score_aligned_fasta`, and `openzyme_pipeline.aox_similarity.build_similarity_graph` with their canonical serializers. It MUST NOT approximate or locally reimplement a pinned calculation.
@@ -410,7 +406,7 @@ The campaign SHALL use `aox_known_positive_probe@2` / `probe_id="independent_glo
 ### Requirement: Artifact-derived healthy-empty closure
 The verifier SHALL derive the reached formal branch from sealed raw/parsed HMMER, score-filter, UniProt join, motif-score, and candidate artifacts. It SHALL require the exact operation set for that branch, reject extra or hidden failed formal operations, and use isolated probe coverage for required capabilities that the formal branch correctly omits. Within one verifier invocation it SHALL recompute the similarity graph exactly once from sealed candidate FASTA and CD-HIT membership, then compare node bytes, edge bytes, and manifest closure against that same invocation-local result. This MUST NOT create cross-invocation or cross-attempt cache authority; recomputation failure remains fail closed.
 
-The live campaign SHALL enforce the same closed operation surface and exact attempt authority before each approval. A known terminal occurrence whose execution proves `no_effect` MAY remain in the same authorized formal attempt when the agent explicitly records a legal `failed`, `superseded`, or `abandoned` disposition; a later same-attempt operation MAY satisfy the same reached role and be selected only through the complete selected-chain contract. The driver SHALL NOT treat the mere existence of a second same-method occurrence or a known closed no-effect failure as automatic attempt disqualification. It SHALL reject later external work when any prior occurrence has unknown or dispatch-in-doubt effect, an active or reconcile-required execution/process/writer/continuation, missing attempt binding or disposition authority, cross-attempt reuse, or an authority/resource/permission breach. Provider-internal bounded retries that remain inside one durable controlled operation are not additional operations.
+The live campaign SHALL enforce the same closed operation surface and exact attempt authority before each approval. A known terminal occurrence whose execution proves `no_effect` MAY remain in the same authorized formal attempt when the agent explicitly records a legal `failed`, `superseded`, or `abandoned` disposition; a later same-attempt operation MAY satisfy the same reached role and be selected only through the complete selected-chain contract. Host admission and the offline verifier SHALL NOT treat the mere existence of a second same-method occurrence or a known closed no-effect failure as automatic attempt disqualification. They SHALL reject later external work or eligibility when any prior occurrence has unknown or dispatch-in-doubt effect, an active or reconcile-required execution/process/writer/continuation, missing attempt binding or disposition authority, cross-attempt reuse, or an authority/resource/permission breach. Provider-internal bounded retries that remain inside one durable controlled operation are not additional operations.
 
 #### Scenario: Replace a known no-effect occurrence in the same attempt
 - **WHEN** one formal controlled operation terminates with a known no-effect execution and a later operation in the same authorized attempt legally satisfies the same workflow role
@@ -499,7 +495,7 @@ Every one of the 17 normalized AOX deliverable paths SHALL retain the exact kind
 - **THEN** offline verification fails and the evidence cannot contribute to GO
 
 ### Requirement: Sealed and offline-verifiable evidence bundle
-Each formal acceptance attempt SHALL generate a canonical evidence payload and digest covering the exact-seven launch identity, effective-config preimage, exact-nine prerequisites, provider and runner-attested toolchain identities, clean-root proof, public driver receipts, approvals, operations, input/output artifact digests, task/report identities, final answer, warnings, degradation, and scientific outcome. An offline verifier SHALL recompute the bundle and all reachable sealed artifact digests without contacting external providers.
+Each formal acceptance attempt SHALL generate a canonical evidence payload and digest covering the exact-seven launch identity, effective-config preimage, exact-nine prerequisites, provider and runner-attested toolchain identities, clean-root proof, public conductor receipts, approvals, operations, input/output artifact digests, task/report identities, final answer, warnings, degradation, and scientific outcome. An offline verifier SHALL recompute the bundle and all reachable sealed artifact digests without contacting external providers.
 
 #### Scenario: Verify an untampered attempt
 - **WHEN** the verifier receives a completed attempt bundle and its authorized artifact root
@@ -513,31 +509,23 @@ Each formal acceptance attempt SHALL generate a canonical evidence payload and d
 - **WHEN** a sandbox provider operation fails after its request draft exists
 - **THEN** its sealed request/observation/error diagnostic artifacts retain the original canonical failure and safe refs without retry or replay, remain outside the fixed 17 normalized deliverables, and cannot make the attempt or provider operation successful
 
-### Requirement: Diagnostic live runs are disjoint from formal acceptance
-AOX live execution SHALL expose two explicit, closed, and non-interchangeable run classes:
-
-1. A **diagnostic live run** executes at most one positive-shaped blank-world path under a distinct one-use diagnostic authority plan, diagnostic campaign/root namespace, and diagnostic decision schema. It MAY exercise real MICU, provider, HPC, approval, sandbox, selected-chain, report, and browser behavior within its exact authority, but every output MUST remain `acceptance_eligible=false`. It MUST NOT emit `aox_blank_world_attempt_bundle@3`, MUST NOT emit or enter `aox_blank_world_campaign_decision@1`, and MUST NOT consume any slot from a formal exact-three authority plan.
-2. A **formal acceptance campaign** is the existing exact-three `positive, positive, fault` campaign. It alone MAY emit `aox_blank_world_attempt_bundle@3` and enter the GO reducer. Its authority, roots, effects, artifacts, reports, browser receipts, bundles, and decision MUST be fresh and disjoint from every diagnostic run.
-
-Diagnostic and acceptance plans SHALL use different schema identifiers and validators. Their consumption receipts SHALL bind the exact plan class and deterministic sibling target before any root, MICU, provider, HPC, or browser action. A launcher, collector, verifier, or reducer MUST reject cross-class plan use, ambiguous mode, diagnostic-root input, diagnostic receipt promotion, and any attempt to adopt or copy diagnostic state or bytes into formal acceptance, even when content digests happen to match.
-
-The existing `run-live` command SHALL remain formal-acceptance-only until a separately named diagnostic command, one-slot authority builder/consumer, append-only diagnostic receipt, and cross-mode negative verification are implemented. Before that implementation is complete, an operator MUST NOT relabel an ordinary failed `run-live` campaign as a diagnostic run or start another numbered acceptance campaign merely to diagnose framework readiness.
-
-#### Scenario: Diagnose without consuming an acceptance slot
-- **WHEN** an operator separately approves and consumes one diagnostic authority plan
-- **THEN** the runner creates one fresh diagnostic root, records all reached real effects and the smallest blocker or completed product-path facts in a diagnostic-only receipt, and leaves every formal exact-three authority plan absent and unconsumed
+### Requirement: Diagnostic evidence remains disjoint after automatic runner deletion
+Diagnostic and formal authorities, roots and sealed evidence SHALL remain schema- and
+identity-disjoint, and every diagnostic decision SHALL remain
+`acceptance_eligible=false`. The runtime MUST NOT expose `run-live`,
+`run-diagnostic-live`, an AOX automatic runner, or a command that consumes authority
+and then drives a session until a derived terminal state. Authority mint/consume,
+pin, preflight, process supervision and evidence verification MAY remain independent
+operator shells, but they MUST NOT choose the next message, drain, approval, retry,
+task state, attempt state, report state or campaign decision.
 
 #### Scenario: Reject promotion of diagnostic evidence
-- **WHEN** a diagnostic run completes the whole positive-shaped product path or produces bytes identical to a later formal attempt
-- **THEN** its receipt remains non-cutover, no `@3` attempt bundle is created from it, the formal collector and campaign reducer reject it, and the later acceptance attempt must independently obtain fresh authority, roots, effects, artifacts, report, browser proof, and closure
+- **WHEN** historical diagnostic authority, state, effects, bytes or a diagnostic decision are presented to a formal verifier or reducer
+- **THEN** they remain non-cutover and cannot satisfy or weaken any formal slot, even when their content digests match later formal content
 
-#### Scenario: Preserve the unchanged formal GO gate
-- **WHEN** an operator starts a formal acceptance campaign after any number of diagnostic runs
-- **THEN** the campaign still requires two independent positive `@3` bundles followed by one controlled-fault bundle on one exact launch identity, and no diagnostic success or failure satisfies, replaces, or weakens any of those three slots
-
-#### Scenario: Fail closed before the diagnostic command exists
-- **WHEN** the implementation exposes only the existing formal `authorize` and `run-live` commands
-- **THEN** those commands continue to require the exact-three acceptance plan, and the system reports the diagnostic/acceptance split as not yet implemented instead of silently treating a formal plan or campaign as diagnostic
+#### Scenario: Do not expose an automatic AOX run command
+- **WHEN** an operator inspects the AOX cutover CLI after r67
+- **THEN** it exposes declaration, authority, preflight, evidence verification and campaign reduction commands but no command that starts and automatically drives a live AOX session
 
 ### Requirement: Three-attempt GO campaign
 Local Live cutover SHALL be GO only after one formal acceptance campaign produces two consecutive independent positive attempts on the same exact-seven launch identity, followed by one `derived_required_artifact_blob_byte_flip@2` attempt that fails closed. The fault MUST traverse the real exact-14 NCBI `proteins.fasta` through `aox_hmm_reference_set_selection@1` to derived `AOX_ref21.fasta`, flip one byte before its pending MAFFT consumer, and terminate that consumer with exact `artifact_blob_digest_mismatch`. Positive attempts MUST use different clean roots and MUST each publish a report and pass offline evidence verification. Diagnostic live runs, implementation completion, and non-live test completion MUST NOT be reported as Live completion before all three fresh formal bundles and the sealed reducer decision exist.
@@ -550,164 +538,72 @@ Local Live cutover SHALL be GO only after one formal acceptance campaign produce
 - **WHEN** either positive attempt is degraded below required quorum, incomplete, unverifiable, or scientifically invalid
 - **THEN** the campaign remains NO-GO and reports the smallest evidence-backed blocker without weakening thresholds
 
-### Requirement: Canonical approval UI proof
-For a GO-eligible campaign, `chrome-once` SHALL expose only positive 1's first formal approval through the digest-pinned Web UI served by the process-isolated attempt child's loopback Host. Neither the parent supervisor nor the driver SHALL call that approval's resolve route; the driver MUST capture the durable-event cursor before the drain that may emit the handoff and reconstruct resolution/continuation from that cursor. The browser-approval deadline MUST start independently at handoff and MUST remain bounded by the total attempt deadline; the outer supervision deadline MUST be deterministically derived from the pinned session and browser bounds. A browser user SHALL resolve the canonical card, and the same blocked controlled operation MUST resume with identical approval, operation digest, sandbox run/workspace, and continuation identity. UI, workspace projection, ordered event replay, report, and evidence identities MUST agree, a bounded post-completion observation window SHALL remain available, and the browser console MUST contain no application error. The dynamic handoff SHALL expose the sealed logical page, child Host process, served UI digest, receipt schema identifier, not-before, exact target, and expected page state. Under the trusted-operator contract, the final target MUST remain absent throughout the hold. The stable operator helper MUST derive the exact raw 23-field receipt from a closed Chrome capture and publish it only after not-before through a mode-`0600` sibling temp, file fsync, atomic no-replace install, and parent-directory fsync without adding Host acceptance timing; a separate positive finite submission timeout bound into `config_digest` SHALL govern acceptance without shortening the hold.
+### Requirement: Public-only Codex test conductor and canonical approval proof
+AOX live test orchestration SHALL be performed by a Codex test conductor outside
+the product runtime. The conductor SHALL use only the public Host API/CLI for
+session creation, one entry message, explicit bounded runtime drains, compact
+pending-approval reads, approval resolution, workspace reads and event replay.
+It MUST NOT read or write SQLite directly, call provider/runner/HPC internals,
+forge receipts, bypass approval, synthesize wakeups, infer task completion from
+runtime idleness, or continue through an automatic drive-until-terminal,
+no-wakeup, rollover or recovery policy. Each next public action SHALL be an
+explicit test decision within the approved authority.
 
-For the browser-resolution verdict, the consumer SHALL accept only a canonical
-`approval.resolved` command event whose payload carries the closed field
-`decision=approved|rejected`. An activity-backfill projection echo that reuses
-the same event type but carries ApprovalRequest `status` without `decision`
-MUST be ignored and MUST NOT count as either approval or rejection. A canonical
-`decision=rejected` MUST fail closed immediately; absence of any canonical
-closed decision before the bounded approval deadline MUST also fail closed.
+Host SHALL retain canonical authority for task/attempt/report state, approval,
+leases and fencing, unknown/external effect classification, sandbox/provider/HPC
+admission, continuations, artifact catalog truth and isolation. Runtime drains
+remain explicit commands and MUST NOT write business terminal state merely
+because a command is idle, bounded, exhausted or has no wakeup. Canonical wake
+facts and failed ToolResults expose source-bound constraints to the agent and
+conductor without selecting retry, repair, stop or success.
 
-Every campaign attempt SHALL run its canonical loopback HTTP Host inside one fresh process-isolated child that owns the complete attempt roots. The live CLI SHALL use the same bounded supervisor wrapper for positive and fault attempts and SHALL require its exact retirement receipt before `ledger_after` or bundle publication. Ordinary `AoxCutoverCampaign` construction SHALL require process supervision by default; only the explicitly named `AoxCutoverCampaign.for_non_live_test(...)` fixture seam MAY omit it, and that seam SHALL NOT be a numbered campaign entry. The cutover effective config and every runtime-drain receipt SHALL fix `max_signals_per_drain=max_signals=1`. After each drain response, the driver MUST inspect durable controlled-operation, task, and sandbox-run terminal state before it may issue another drain; a terminal failure MUST stop the attempt while any later wakeup remains queued and MUST NOT be consumed to create a replacement task or operation. Serial approvals emitted inside that single claimed agent turn remain coordinated by the same drain. While the current supervised sandbox synchronously waits inside a drain, the cutover driver SHALL keep exactly one bounded drain request in flight and SHALL coordinate every serial pending approval from `GET /v3/sessions/{session_id}/pending-approvals` plus the unique approval resolve route. The compact read MUST derive from the same durable Approval/ControlledOperation/SandboxRun rows as `workspace.pending_approvals`, MUST contain no artifact/activity/report/capability projection, and MUST fail closed on response/session/approval identity drift. The driver MUST NOT poll the composite workspace while an ordinary auto-approval operation remains in flight; it MAY read workspace once to bind the Chrome handoff and MUST read it after the drain retires for the final semantic snapshot. Probe and non-Chrome approvals MAY be approved automatically, but positive 1's first formal approval SHALL remain browser-only.
+For a GO-eligible campaign, positive 1's reserved browser approval SHALL still be
+resolved through the digest-pinned Web UI and bound to the same approval,
+operation, sandbox continuation, Host process and durable-event identities. The
+sealed browser receipt and post-hold observation SHALL remain independently
+verifiable. No policy-free shell may auto-approve that reserved operation. Other
+approvals may be resolved only by an explicit conductor action permitted by the
+approved test plan.
 
-A teammate step-budget exhaustion is not by itself one of those business terminal
-failures. If the exact teammate signal is terminal failed with canonical
-`agent_turn_budget_exhausted`, its task remains nonterminal with unchanged business
-failure fields, and exactly one source-bound pending master wakeup is durable,
-Core SHALL form one immutable typed handoff settlement under the exact session
-runtime authority while the original signal remains unreplayed. Any master or
-teammate max-step outcome SHALL end the bounded scheduler batch after the current
-claim wave; a source-created successor MUST remain a separate turn even when the
-runtime command permits `max_signals > 1`. Missing or ambiguous closure, a
-cancelled/duplicate wakeup, identity drift, ordinary runtime failure, or master
-max-step remains a failed scheduler command. An explicit task/operation/sandbox
-failure with unknown effect, unsafe recovery, probe scope, missing selected-attempt
-binding, or explicit failed/blocked/cancelled task independently stops the AOX
-attempt after the drain returns, even when its signal and scheduler settlement
-completed normally. AOX SHALL retain `max_signals=1` as a pinned
-campaign/observation identity rather than relying on it as the only same-command
-successor barrier.
+The append-only evidence shell MAY seal public API receipts, the final public
+workspace snapshot, full event replay, process-supervision retirement receipt,
+artifact roots and MICU snapshots. It MUST preserve request/response semantic
+digests and typed failures, but MUST NOT label the business state or campaign
+decision. The offline attempt verifier alone determines whether a bundle satisfies
+its positive/fault contract, and the offline campaign reducer alone derives GO or
+NO-GO from two independent verified positive bundles followed by one verified
+fault bundle.
 
-An exact selected-formal controlled-operation failure with
-`controlled_effect/agent_can_replan/no_effect/terminal`, or an exact selected-formal
-sandbox-local chain whose Host-sealed pre-admission cause is
-`hpc_stage_ref_required/validation/agent_can_replan/no_effect` and whose terminal
-run wrapper is `sandbox_exec_nonzero/runtime/agent_can_replan/terminal_known`, is
-not itself a business terminal. Host SHALL preserve the source-bound cause, wrapper,
-failed ToolResult, originating continuation or signal, and canonical owner wake.
-The driver SHALL use the ordinary pinned bounded-drain loop; it MUST NOT synthesize
-a special wake, override the drain limit, or grant a one-shot exception. The
-existing owner may replan under the usual runtime authority, and later drains may
-continue only while canonical work remains. Complete selected-chain closure plus
-the explicit task/report state determines success; exact disposed failure history
-from that same selected chain MUST NOT poison a recovered or closed attempt.
-Malformed, ambiguous, cross-source, cross-attempt, retryable, dispatch-in-doubt, or
-probe failure remains fail-closed.
+Provider and runner calls that fail before operation admission SHALL be rejected by
+Host pre-admission validation and sealed as source-bound typed `no_effect` facts.
+The terminal SandboxRun wrapper, failed ToolResult and canonical owner wake SHALL
+retain the same cause binding. Missing, duplicate, cross-source, cross-attempt or
+unknown-effect bindings remain fail-closed, but neither Host nor the shell may turn
+a safe failure into an automatic retry or a business terminal.
 
-A successful `attempt.create` or `scientific.attempt.close` is not an ordinary
-teammate completion or budget-replan handoff. Core MUST NOT queue the generic
-teammate-to-master successor for that result. After the requesting writer
-retires, Host finalization SHALL commit exactly one source-bound owner wake for
-the admitted attempt, immutable closure, or typed transition failure. Whether
-the owner is master or teammate, runtime SHALL supply the same bounded canonical
-facts as ephemeral model context without persisting a conversation message.
+#### Scenario: Conduct one bounded public step
+- **WHEN** the Codex tester has read the current public workspace, event replay, pending approvals and the receipt for the preceding command
+- **THEN** it may choose one authorized public message, drain, approval resolution or stop action; the repository contains no AOX loop that chooses or repeats that action automatically
 
-The post-drain durable failure observation and failure evidence SHALL share one
-current-task-exit projection. Historical exact exits across resume cycles remain
-history; the latest exact exit matching current status and actor supplies the
-current failure reference. Contradictory same-time current bindings fail closed.
-Actionable operation, current-task, and sandbox candidates SHALL be ordered by
-normalized causal time and stable identity rather than read category. Task facts
-and evidence refs SHALL be bounded with total count, canonical digest, and
-truncation markers, and failure evidence MUST consume that same projection
-without a second task-board reread.
-
-Once coordination fails, the driver MUST preserve that original blocker, MUST reject every unresolved approval that is already visible or becomes visible before the existing attempt deadline solely to release the worker, and MUST NOT approve cleanup or continue scientific execution. Transient compact-control/resolve failures MUST retain only safe secondary diagnostics and MUST be retried with the same idempotency key until drain retirement or that deadline. After a successful drain worker reaches terminal, the coordinator MUST complete at least one compact pending-approval GET known to have begun after that response before concluding that no new `waiting_approval` exists, then bind the returned composite workspace. A drain-thread exception MUST retain the stable command-failure taxonomy; only approval coordination or cleanup exceptions MAY become coordination failures. Client-request completion or timeout MUST NOT be treated as server-handler completion: the loopback boundary SHALL track every server-side mutation lifetime, initiate server shutdown, and wait through server retirement until all mutations become idle before leaving the Host context. Mutation handlers MUST NOT return while a detached writer can still change attempt state.
-
-Canonical sandbox control-socket workers MUST be non-daemon and MUST NOT return from startup failure or stop while their worker is alive; a finite cooperative grace MAY precede a fail-stop join, and socket removal MUST follow worker retirement. Every core or compatibility Podman sandbox invocation SHALL bind an exact Host-private container lease using a random name, protected CID file outside the mounted sandbox root, run-id label and sandbox-root-digest label. Normal, nonzero and timeout paths MUST retire the exact CID before stopping the control worker; name drift MUST NOT bypass CID lookup, and return requires stable repeated absence of both CID and name after `kill`, `wait` and `rm`. Invalid CID, identity ambiguity or lifecycle command failure MUST remain fail-stop rather than release mutable state. Attempt evidence, artifact/SQLite collection and MICU-after observation SHALL occur only after the child Host context has exited and the parent has proved the lifecycle chain, zero exit and empty process group; an unretired handler, control worker, container or descendant MUST trigger bounded fatal retirement rather than race mutable state. Fatal supervision MUST write only parent-owned non-eligible evidence outside the attempt root, MUST leave external outcome unknown, and MUST NOT claim ledger-after, SQLite closure, artifact completeness or a business terminal state. Receipt sequence SHALL be reserved at request start, finalized by the exact response, and sealed only as a contiguous chain with no in-flight or failed reservation, so invocation order remains canonical even when control responses finish before the drain response. A transport or response-normalization failure SHALL preserve its original blocker in non-eligible failure evidence while its missing response leaves the receipt chain explicitly unsealable; it MUST NOT be rewritten as a successful response or eligible chain. These internal coordination requirements MUST NOT be represented as an asynchronous product drain or restart-safe continuation; process supervision remains a harness lifecycle boundary only.
-
-For the AOX HMM-capable path, the Host SHALL preserve the strict observed hierarchy `EBI HMMER polling 3300s < sandbox.exec 3600s < formal session/public request 7200s`. S09 SHALL keep the ordinary `sandbox.exec` default at `120s`, expose a finite `3600s` maximum under `s09.exec_policy.v2`, and require exact `3600s` only for a command whose source may reach `bio.hmmer_search`; short inspection/repair commands MAY use less. Pin/run SHALL reject a driver timeout below `7200s` before attempt-root creation or real I/O. Before resolving a HMMER approval, the driver SHALL bind the operation to its canonical `SandboxRun` and reject a missing/drifted policy before provider dispatch. A timeout at any layer remains a non-eligible failure and SHALL NOT trigger hidden replay.
-
-#### Scenario: Reject an undersized HMM-capable command before provider dispatch
-- **WHEN** a pending `bio.hmmer_search` operation belongs to a sandbox run whose timeout is not exactly `3600s` or whose policy is not `s09.exec_policy.v2`
-- **THEN** the campaign fails closed with a stable timeout-hierarchy blocker before resolving approval or dispatching EBI HMMER, and it does not create a replacement operation
-
-The selected-session Web UI SHALL treat `workspace.pending_approvals` as canonical and SHALL supplement event-triggered refresh with a low-frequency, read-only workspace reconciliation. Reconciliation MUST be single-flight per active request generation and MUST share session/version freshness with event refresh. A session change, workspace mutation, or applied SSE reducer update MUST abort or invalidate the older generation; its response and `finally` MUST NOT overwrite or clear a newer generation, and a hung old-session read MUST NOT starve the newly selected session. Reconciliation MUST NOT resolve approval, advance runtime, or create a second truth store.
-
-The sealed `aox_browser_approval_receipt@2` SHALL record mode/channel/Host process, session/approval/operation/sandbox identities, exact pre/post workspace semantic preimages and public response bindings, ordered closed resolution/continuation durable-event records and replay bindings, authenticated actor, continuation id, post-operation status, and proof that the driver did not use the resolve route. Positive 1 SHALL also seal `aox_browser_observation_receipt@2`, binding the live challenge, page/Host/UI-dist identity, Host-held completion-window timing, terminal page state, DevTools transcript, console-entry digest with `application_error_count=0`, and a digest-bound structurally valid decodable PNG. The current Host SHALL reject a final target observed at any bounded hold poll or whose final mtime predates the hold end, then require a non-symlink regular file with identical bytes and stat identity across two reads. This proves a fresh stable post-hold final file within the trusted boundary; it MUST NOT be represented as proof of continuous absence between polls or operator atomic-install/fsync provenance. The driver SHALL seal a closed ordered `public_api_receipts` list whose items contain exactly `sequence`, `method`, `route`, `status_code`, `request_digest`, `response_digest`, and `response_semantic_digest`, plus its canonical digest, so the offline verifier can recompute route/query/request/response semantics and detect a driver shortcut. Bundle-level `aox_public_final_workspace_snapshot@1` and `aox_public_final_event_replay@1` artifacts SHALL preserve the final read-only workspace and full `replay=true,after_cursor=0` event semantic preimages without writing them back into product state; controlled-fault closure lists MUST equal those public task/report/draft/conversation/event/consumer projections exactly.
-
-#### Scenario: Resume approval in Chrome
-- **WHEN** `chrome-once` positive 1 reaches its first pending formal controlled-operation approval and the operator approves it in the attempt-child Web UI
-- **THEN** the same operation id/digest and sandbox continuation continue to terminal state, no replacement operation is silently opened, and the final UI state matches workspace/events/report/evidence projections
-
-#### Scenario: Distinguish command decision from activity projection
-- **WHEN** replay contains an `approval.resolved` activity projection with `status` but no `decision`, followed by a canonical command event with a closed decision
-- **THEN** the projection echo is ignored, `approved` is accepted only from the canonical command event, and an explicit canonical `rejected` decision still fails closed
-
-#### Scenario: Verify the driver receipt chain offline
-- **WHEN** the offline verifier reads a Chrome-gated attempt bundle
-- **THEN** it recomputes the canonical seven-field public-receipt-list digest and response semantics, requires contiguous sequence and canonical public routes with exactly one entry message, rejects any driver POST to the Chrome-reserved resolve route, cross-checks the approval receipt against sealed durable events and the terminal controlled operation, verifies the challenged post-hold clean-console/page/screenshot observation, and validates the final workspace/full-event semantic preimages
-
-#### Scenario: Coordinate serial approvals within one blocked drain
-- **WHEN** one live sandbox turn requests multiple controlled-operation approvals in sequence before its drain can return
-- **THEN** the driver resolves each approval exactly once under the fixed browser/auto policy, never opens a second concurrent drain, joins the original worker, and seals request-start order rather than response-completion order
-
-#### Scenario: Stop on an unsafe or unbound failure
-- **WHEN** the claimed turn commits an explicit failed/blocked/cancelled task, a probe failure, an unknown or unsafe effect, or a controlled/sandbox failure that does not close to the exact current selected formal attempt and owner
-- **THEN** the driver preserves the earliest typed failure, creates no replacement task or controlled operation, and does not reinterpret an unrelated queued wake as recovery authority
-
-#### Scenario: Continue through ordinary bounded selected-chain recovery
-- **WHEN** one selected formal controlled operation or sandbox-local run has an exact terminal no-effect failure, its task remains business-nonterminal, and a canonical source-bound owner wake or other ordinary selected-chain work remains
-- **THEN** the pinned `max_signals=1` drain loop may consume that existing work over ordinary bounded commands without a handoff-specific limit or override, while creating no signal/task/operation/attempt/approval/authority and never retrying or replaying the failed effect automatically
-
-#### Scenario: Reject an unsafe controlled-operation handoff
-- **WHEN** the candidate failure or owner wake is missing, duplicated, mismatched, claimed, cancelled, previously consumed, cross-attempt, nonterminal, retryable, dispatch-in-doubt, or not proven no-effect
-- **THEN** the driver returns the original failed observation without replacement work or special drain authority
+#### Scenario: Preserve canonical Host safety
+- **WHEN** a public command encounters an active lease, stale fence, pending approval, unknown effect, external effect, unretired writer or isolation violation
+- **THEN** Host fails or suspends according to the canonical typed contract, and neither Codex nor an evidence/process shell can override that result
 
 #### Scenario: Preserve a Host-local pre-admission causal chain
-- **WHEN** a sandbox calls `bio_tools.hmmbuild` with a fetched artifact descriptor that is not the exact `hpc_stage_ref` returned by `ws.stage_artifact`
-- **THEN** Host admits no controlled operation or external dispatch, seals `hpc_stage_ref_required/no_effect` against the exact control request, seals `sandbox_exec_nonzero` against the terminal run with the local cause id, returns a failed ToolResult carrying the wrapper observation, and projects the same cause through the canonical owner wake
+- **WHEN** a sandbox provider or HPC request carries an invalid Host-owned output/stage authority
+- **THEN** no controlled operation or external dispatch is admitted, Host seals the exact `no_effect` cause, the non-completed sandbox run returns a failed ToolResult, and canonical wake facts retain the same source-bound cause and wrapper
 
-#### Scenario: Ignore disposed selected-chain history only after exact closure
-- **WHEN** an exact selected formal no-effect failure has a valid owner handoff and later selected-chain work reaches immutable attempt closure with complete business task/report state
-- **THEN** the old cause and wrapper remain queryable evidence but do not make the closed attempt fail; an explicit current failed/blocked/cancelled task or a malformed binding remains terminal
+#### Scenario: Verify browser approval without an automatic driver
+- **WHEN** positive 1 reaches its reserved formal approval
+- **THEN** the conductor hands the canonical public approval to the browser user, later collects public workspace/events and the challenged observation receipt, and the offline verifier rejects any automatic resolve, identity drift, stale receipt or missing continuation
 
-#### Scenario: Preserve one runner-to-Host causal fact
-- **WHEN** a sealed runner attempt terminates before dispatch with `transport_connect_failed/no_effect`
-- **THEN** closed runner metadata, execution adapter, Host durable observation, controlled-operation execution, continuation failure, runtime observation, and failure evidence preserve that exact safe error/effect pair rather than replacing it with a generic Host failure
+#### Scenario: Keep process supervision non-authoritative
+- **WHEN** an attempt Host or sandbox child exits, times out or requires forced retirement
+- **THEN** process supervision proves only the bounded local lifecycle and root-read gate; it does not claim remote-effect cancellation, SQLite/business closure, artifact completeness or GO
 
-#### Scenario: Merge formal and probe operation facts
-- **WHEN** probe operations completed and later formal operations include a failure
-- **THEN** diagnostic and failure evidence consume one bounded canonical operation projection with explicit `probe` or `formal` scope, total count, digest, and truncation metadata instead of exposing only the successful probe subset
-
-#### Scenario: Continue only through the Host-finalized transition owner wake
-- **WHEN** the claimed teammate successfully requests attempt admission or closure and retires its writer turn
-- **THEN** no generic master successor is queued, Host finalization creates exactly one source-bound owner wake, and a later drain gives that owner the bounded canonical transition facts
-
-#### Scenario: Preserve current task cause across resume history
-- **WHEN** a task has older exact blocked exits, resumes, and later blocks again while another operation or sandbox failure is also visible
-- **THEN** observation selects the exact current exit and the earliest normalized causal candidate, preserves the task wrapper separately, and failure evidence consumes the identical bounded task projection
-
-#### Scenario: Continue through a closed budget-replan handoff
-- **WHEN** the one teammate signal claimed by a drain exhausts its step budget, the exact signal/observation/task facts close, and one source-bound master wakeup remains queued without a controlled-operation, task, or sandbox terminal failure
-- **THEN** Core emits the immutable typed handoff, the original signal remains failed and unreplayed, the current scheduler batch stops after its claim wave, the driver performs its post-drain durable observation, and only a later drain may claim the independent master replan turn
-
-#### Scenario: Fail closed on an incomplete budget handoff
-- **WHEN** the budget observation or unique source-bound master wakeup is missing, mismatched, duplicated, cancelled, or belongs to the master signal itself
-- **THEN** the runtime command remains failed and the cutover driver does not consume another signal
-
-#### Scenario: Fail closed when a later approval follows coordinator failure
-- **WHEN** public coordination fails and another approval becomes durable after the old short cleanup interval, including after a transient cleanup read failure
-- **THEN** the original blocker remains authoritative, the later approval is rejected through the idempotent public route before the attempt deadline, no scientific continuation is approved, and the drain worker retires before evidence collection
-
-#### Scenario: Reconcile a pending approval without an immediate event
-- **WHEN** a pending approval is committed while the synchronous drain still prevents `approval.requested` from reaching the UI event stream
-- **THEN** the selected-session read reconciliation displays the canonical approval without an overlapping request, and any response from a previously selected session is discarded
-
-#### Scenario: Reject a stale read after newer public state
-- **WHEN** an older workspace GET remains in flight while a message/approval mutation, SSE reducer, or session switch supplies newer public state
-- **THEN** the old generation is aborted or invalidated, cannot overwrite the newer state or clear a newer request, and cannot starve reconciliation for the selected session
-
-#### Scenario: Observe an approval published with the drain response
-- **WHEN** a bounded drain response and its final `waiting_approval` projection become visible across the coordinator's last pre-response workspace read
-- **THEN** the required post-response workspace GET observes and resolves that approval, while a genuine drain exception remains `runtime_drain_command_failed`
-
-#### Scenario: Reject automatic or cross-process substitution
-- **WHEN** the campaign uses `auto`, serves a different UI/Host process, lacks ordered resolution/continuation evidence, or resumes a different operation/sandbox identity
-- **THEN** the attempt lacks canonical Chrome proof and the campaign remains NO-GO
+#### Scenario: Derive GO only offline
+- **WHEN** the conductor has stopped and sealed three fresh formal bundles
+- **THEN** each bundle is checked without live I/O and only the campaign reducer may emit GO; conductor prose, an implementation commit, diagnostic evidence, process exit and Host task labels cannot substitute for the verified reducer inputs
 
 ### Requirement: Atomic AOX final deliverable finalization
 The exact 17 normalized AOX deliverables SHALL enter the artifact catalog only

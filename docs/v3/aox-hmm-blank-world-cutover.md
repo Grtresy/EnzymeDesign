@@ -1,8 +1,8 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r62 exposed cross-layer architecture-verification, workflow-binding, lifecycle handoff and typed recovery gaps after earlier runtime/HPC and authority work. r48 through r62 are permanent NO-GO evidence; r60-r62 are diagnostic-only and always `acceptance_eligible=false`. The executable architecture-qualification gate and diagnostic/formal run-class split are implemented, but every tracked correction invalidates the preceding receipt until the new clean HEAD passes full admission again. r59 produced a valid healthy-empty scientific result, sealed selection and published report under the historical master-only closure contract. r62 later completed 13 formal operations, three canonical tasks and report publication, but the same split ownership rejected executor close, the master omitted duplicated close, and the open attempt was flattened through drain exhaustion into `scientific_attempt_control_missing`. Phase 2 now collapses the forward lifecycle to the exact attempt-task canonical assignee, removes active co-terminal response machinery, and bounds an unchanged open-attempt/no-wakeup state. Local Live cutover stays **NO-GO**: implementation completion does not authorize another diagnostic or formal run, and one later separately approved formal acceptance campaign must still seal two real positive attempts plus one controlled fault attempt on one commit/config identity. Existing `authorize` and `run-live` remain formal-acceptance-only; diagnostic uses separately approved `authorize-diagnostic` and `run-diagnostic-live`.
+Status: r43-r67 are permanent NO-GO evidence. r67 proved that the AOX-specific runtime observer and automatic drive-until-terminal/no-wakeup/rollover chain were themselves an unreliable policy layer, so Phase 2 deletes that layer and both runnable automatic live commands. A Codex test conductor may coordinate a future separately approved campaign only through public Host API/CLI calls; Host remains the sole owner of canonical state, approval, fencing, typed effect and isolation, while the offline attempt verifier and campaign reducer remain the sole GO authority. Local live cutover remains **NO-GO**: this implementation does not authorize r68, a diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior authority, root, effect or evidence.
 
-Historical r14-r59 incident sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
+Historical incident and pre-r67 command/observer/driver sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract; in particular, every older `run-live`, `run-diagnostic-live`, observer, barrier, rollover and no-wakeup instruction is retired. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined in [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
 This document describes the operator/evidence boundary implemented by `openzyme_host_api.aox_cutover_evidence`. It does not turn the historical S15 fixture into live evidence and does not authorize seeded state, cached scientific outputs, the reference notebook, or copied reference results as attempt inputs.
 
@@ -2974,12 +2974,42 @@ failure chain. Host pre-admission `hpc_stage_ref_required/no_effect` is the
 earliest cause, terminal `sandbox_exec_nonzero` is its source-bound wrapper, and
 the failed ToolResult plus owner wake preserve both. Formal local and controlled
 failures now share selected-chain recovery semantics; disposed exact history
-does not poison a recovered/closed attempt. The driver has no one-shot handoff
-or drain override and converges through ordinary bounded drains plus complete
-closure/business state. This is also a local non-live correction.
+does not poison a recovered/closed attempt. Its historical driver had no
+one-shot handoff or drain override. This is also a local non-live correction.
 
-These corrections do not authorize `preflight`, any retired closure-stage
-operation, `run-diagnostic-live`, `run-live`, a numbered root, provider/MICU call, HPC
-job, browser campaign or formal attempt. Formal acceptance requires a
-different separately approved exact-three plan after a fresh clean full
-admission and pin. No r59, r60, r61 or r62 consumed plan is authority.
+r67 is permanently sealed as diagnostic NO-GO under diagnostic id
+`aox_diagnostic_8c2ce426355c001253b86c1c`, attempt
+`diagnostic-positive-5dfdd0686e9174a975ff85b18404e85d` and decision
+`sha256:d9356b0bdd25885f19e2452773dfac03bfa09e39562ed4c00c8fca9828ef480b`.
+The initial agent-supplied provider `output_dir` was invalid; after the agent
+corrected it, the exact NCBI operation completed, but the historical observer
+continued to treat failed history as a campaign stop. The sealed run charged
+`3,903,566` tokens across `81` attempts. None of those facts is acceptance
+evidence or reusable authority.
+
+The r67 deletion-first contract removes `aox_runtime_observation`, Core
+`runtime_barrier`/observer-writer, `AoxCutoverCampaign`, diagnostic/live runner
+policy and the `run-live`/`run-diagnostic-live` commands. The remaining shell is
+policy-free: qualification, pin, preflight, exact authority consumption,
+process retirement and evidence sealing/verification. `consume-authority` and
+`consume-diagnostic-authority` consume exact source-bound plans without
+executing an attempt. A Codex conductor must explicitly use public `/v3`
+message, runtime-drain, pending-approval, workspace and event surfaces; it may
+not call repositories, observers or private runner helpers, and it may not
+interpret an empty drain, no wakeup or child exit as business completion.
+
+Provider output-path validation now occurs inside the Host before controlled
+operation admission. `provider_output_path_invalid/no_effect` and
+`hpc_stage_ref_required/no_effect` are sealed against the exact sandbox request,
+return a failed ToolResult, retain `sandbox_exec_nonzero` only as the outer
+wrapper, and feed the same canonical wake-facts projection. The SDK preserves
+the caller value instead of throwing an untyped pre-Host exception. No
+operation admission or external dispatch occurs for either pre-admission
+failure.
+
+These corrections do not authorize `preflight`, authority consumption, a
+numbered root, provider/MICU call, HPC job, browser campaign or formal attempt.
+There is no production automatic live command. Formal acceptance still
+requires a future separately approved exact-three plan after a fresh clean full
+admission and pin, public-only Codex coordination, three eligible bundles and a
+sealed offline reducer decision. No prior consumed plan is authority.

@@ -1215,6 +1215,48 @@ replay-safe no-wakeup observation收敛。
 r67、live authority/root、MICU、provider、HPC 或 Chrome。r66 consumed state 不得成为
 任何后继 admission、selection、closure 或 campaign evidence。
 
+### 2026-07-31 r67 deletion-first test-conductor correction
+
+r67 diagnostic authority、plan、root、SQLite、MICU usage、provider effects、sealed evidence 与
+decision 永久 **NO-GO**。其 diagnostic id 是
+`aox_diagnostic_8c2ce426355c001253b86c1c`，attempt id 是
+`diagnostic-positive-5dfdd0686e9174a975ff85b18404e85d`，decision digest 是
+`sha256:d9356b0bdd25885f19e2452773dfac03bfa09e39562ed4c00c8fca9828ef480b`。
+旧 observer 把一个可由 agent 在同一业务任务内修正的 sandbox-local request 错标为
+`sandbox_run_failure_binding_invalid`：executor 首先把相对 `output_dir` 交给 provider SDK，
+SDK 在 Host admission 前抛出裸 `ValueError`；agent 随后修正 request，正式 NCBI operation
+成功完成，但 AOX observer 仍把 failed history 解释成 attempt terminal。该次诊断从账本
+增加 `3,903,566` charged tokens 与 `81` attempts；这些是整次诊断消耗，不能全部归因于
+单一 observer 错标。r67 不得被重标、续跑、replay、adopt 或作为后继 authority/evidence。
+
+纠正采用 deletion-first，而不是继续扩张 observer 的 failure taxonomy。删除
+`aox_runtime_observation`、Core `runtime_barrier` / observer-writer 与 live runner 内建的
+drive-until-terminal、two-empty-drain/no-wakeup、automatic approval、scope-rollover retry 和
+business-terminal reducer；删除 `run-live` 与 `run-diagnostic-live` runnable commands。
+authority、pin、preflight、process supervision、append-only evidence、bundle verifier 与
+campaign reducer 保持独立 shell，但这些 shell 不读取业务状态来决定下一步、不发送下一条
+message/drain、不批准 operation、不改写 task/attempt/report，也不声明 GO。
+
+后继测试由 Codex 测试员作为外部 test conductor 完成。它只能通过 public Host API/CLI
+创建 session、投递 message、显式 drain、读取 workspace/events/pending approvals，并在用户
+授权范围内 resolve approval；每一步是否继续由测试员根据 public facts 显式决定，不形成
+仓库内 automatic policy loop。Host 仍独占 canonical task/attempt/report state、approval、
+lease/fencing、unknown-effect/external-effect、sandbox/provider/HPC admission 与隔离边界。
+Codex 不得直接写 SQLite、伪造 receipt、绕过 approval、把 runtime idle 当成 task terminal，
+或自行声明 GO。只有离线 verifier 验证每个 sealed bundle，campaign reducer 再依据两次独立
+positive 与一次 fault bundle 产生 GO/NO-GO。
+
+Host pre-admission 继续收口 typed causal evidence。provider output-dir / stage-ref 等
+authority-bearing validation 不由 sandbox SDK 以裸异常提前吞掉；Host 在 operation admission
+与 external dispatch 前封存 source-bound `no_effect` cause。terminal SandboxRun、failed
+ToolResult 与 canonical `ENGINE_COMPLETED` owner wake 继续绑定同一 cause/wrapper。该证据只向
+agent/测试员呈现真实约束，Host 不据此替 agent 选择 retry、repair、stop 或业务终态。
+
+本 Phase 2 只授权 local deletion、Host typed-failure correction、spec/docs、全部 non-live
+verification 与本地 commit；不授权 r68、新 live authority/root、MICU、provider、HPC 或
+Chrome。删除后必须以 source audit 证明生产代码净减少，且不得留下 observer/automatic
+driver 的别名、兼容入口或隐藏 fallback。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

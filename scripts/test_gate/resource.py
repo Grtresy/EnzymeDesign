@@ -267,12 +267,6 @@ INITIAL_RESOURCE_ENTRY_SPECS: tuple[ResourceEntrySpec, ...] = (
         sqlite="none",
     ),
     _parallel_temp_root_entry(
-        entry_id="host_api_aox_runtime_observation_temp_root",
-        module_path="apps/openzyme-host-api/tests/test_aox_runtime_observation.py",
-        fixture_paths=_HOST_FIXTURES,
-        sqlite="test_temp_root_only",
-    ),
-    _parallel_temp_root_entry(
         entry_id="host_api_foundation_worker_local",
         module_path="apps/openzyme-host-api/tests/test_foundation.py",
         fixture_paths=_HOST_FIXTURES,
@@ -348,12 +342,6 @@ INITIAL_RESOURCE_ENTRY_SPECS: tuple[ResourceEntrySpec, ...] = (
         fixture_paths=_ROOT_FIXTURES,
         filesystem="immutable_packaged_migration_read",
         sqlite="memory_only",
-    ),
-    _parallel_temp_root_entry(
-        entry_id="core_runtime_barrier_temp_root",
-        module_path="packages/openzyme-core/tests/test_runtime_barrier.py",
-        fixture_paths=_ROOT_FIXTURES,
-        sqlite="test_temp_root_only",
     ),
     _parallel_temp_root_entry(
         entry_id="core_runtime_consistency_worker_local",

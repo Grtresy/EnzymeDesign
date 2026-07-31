@@ -33,7 +33,6 @@ from openzyme_host_api.aox_diagnostic_authority import (
     publish_aox_diagnostic_authority_plan,
 )
 from openzyme_host_api.aox_cutover_launch import AoxCutoverLaunchError
-from openzyme_host_api.aox_live_run_class import AoxLiveRunClass
 from openzyme_runtime import OpenZymeSettings
 
 
@@ -58,35 +57,32 @@ def _verified_architecture_qualification(
     )
 
 
-def _run_live_args(tmp_path: Path):
+def _consume_authority_args(tmp_path: Path):
     identity_path = tmp_path / "identity.json"
     prerequisite_path = tmp_path / "prerequisites.json"
     authority_plan_path = tmp_path / "attempt-authority.json"
+    identity = {"declared": "identity"}
+    prerequisites = {"declared": "prerequisites"}
     cli._write_pin_outputs_atomic_no_replace(
         identity_target=identity_path,
         prerequisites_target=prerequisite_path,
-        identity={"declared": "identity"},
-        prerequisites={"declared": "prerequisites"},
+        identity=identity,
+        prerequisites=prerequisites,
         architecture_qualification=_architecture_qualification(),
     )
     authority_plan = build_aox_attempt_authority_plan(
-        identity={"declared": "identity"},
-        allowed_prerequisites={"declared": "prerequisites"},
+        identity=identity,
+        allowed_prerequisites=prerequisites,
         architecture_qualification=_architecture_qualification(),
         expires_at="2099-01-01T00:00:00+00:00",
         max_micu_per_attempt=1,
         max_cost_microunits_per_attempt=1,
         max_wall_time_seconds_per_attempt=1,
     )
-    publish_aox_attempt_authority_plan(
-        authority_plan,
-        authority_plan_path,
-    )
+    publish_aox_attempt_authority_plan(authority_plan, authority_plan_path)
     return cli.build_parser().parse_args(
         [
-            "run-live",
-            "--campaign-root",
-            str(tmp_path / "campaign"),
+            "consume-authority",
             "--identity",
             str(identity_path),
             "--allowed-prerequisites",
@@ -97,17 +93,11 @@ def _run_live_args(tmp_path: Path):
             str(authority_plan_path),
             "--attempt-authority-consumption",
             str(attempt_authority_consumption_path(authority_plan_path)),
-            "--ledger-path",
-            str(tmp_path / "ledger.sqlite3"),
-            "--approval-mode",
-            "chrome-once",
-            "--browser-completion-hold-seconds",
-            "0",
         ]
     )
 
 
-def _run_diagnostic_live_args(tmp_path: Path):
+def _consume_diagnostic_authority_args(tmp_path: Path):
     identity_path = tmp_path / "diagnostic-identity.json"
     prerequisite_path = tmp_path / "diagnostic-prerequisites.json"
     authority_plan_path = tmp_path / "diagnostic-authority.json"
@@ -129,15 +119,10 @@ def _run_diagnostic_live_args(tmp_path: Path):
         max_cost_microunits=1,
         max_wall_time_seconds=1,
     )
-    publish_aox_diagnostic_authority_plan(
-        authority_plan,
-        authority_plan_path,
-    )
+    publish_aox_diagnostic_authority_plan(authority_plan, authority_plan_path)
     return cli.build_parser().parse_args(
         [
-            "run-diagnostic-live",
-            "--diagnostic-root",
-            str(tmp_path / str(authority_plan["root_namespace"])),
+            "consume-diagnostic-authority",
             "--identity",
             str(identity_path),
             "--allowed-prerequisites",
@@ -148,12 +133,6 @@ def _run_diagnostic_live_args(tmp_path: Path):
             str(authority_plan_path),
             "--diagnostic-authority-consumption",
             str(diagnostic_authority_consumption_path(authority_plan_path)),
-            "--ledger-path",
-            str(tmp_path / "diagnostic-ledger.sqlite3"),
-            "--approval-mode",
-            "chrome-once",
-            "--browser-completion-hold-seconds",
-            "0",
         ]
     )
 
@@ -248,9 +227,7 @@ def test_preflight_rejects_architecture_report_before_attempt_root(
     monkeypatch.setattr(
         cli,
         "create_blank_world_roots",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError((args, kwargs))
-        ),
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError((args, kwargs))),
     )
 
     with pytest.raises(AoxArchitectureQualificationError):
@@ -259,294 +236,64 @@ def test_preflight_rejects_architecture_report_before_attempt_root(
     assert not args.campaign_root.exists()
 
 
-def test_run_live_rejects_architecture_report_before_pin_or_settings(
+def test_consume_authority_rejects_architecture_report_before_pin(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    args = _run_live_args(tmp_path)
+    args = _consume_authority_args(tmp_path)
     monkeypatch.setattr(
         cli,
         "verify_aox_architecture_qualification_report",
         _reject_architecture_qualification,
     )
-    monkeypatch.setattr(
-        cli,
-        "_load_pinned_declarations",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError((args, kwargs))
-        ),
-    )
-    monkeypatch.setattr(
-        OpenZymeSettings,
-        "from_env",
-        classmethod(lambda cls: (_ for _ in ()).throw(AssertionError(cls))),
-    )
 
     with pytest.raises(AoxArchitectureQualificationError):
-        cli._run_live(args)
+        cli._consume_authority(args)
 
-    assert not args.campaign_root.exists()
+    assert not args.attempt_authority_consumption.exists()
 
 
-def test_cli_contract_rejects_missing_report_and_bypass_flags(tmp_path: Path) -> None:
+def test_automatic_live_commands_are_absent() -> None:
     parser = cli.build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(
-            [
-                "pin",
-                "--identity-output",
-                str(tmp_path / "identity.json"),
-                "--allowed-prerequisites-output",
-                str(tmp_path / "prerequisites.json"),
-            ]
-        )
-    with pytest.raises(SystemExit):
-        parser.parse_args(
-            [
-                "run-live",
-                "--campaign-root",
-                str(tmp_path / "campaign"),
-                "--identity",
-                str(tmp_path / "identity.json"),
-                "--allowed-prerequisites",
-                str(tmp_path / "prerequisites.json"),
-                "--architecture-qualification-report",
-                str(tmp_path / "qualification.json"),
-                "--force",
-            ]
-        )
+    subcommands = parser._subparsers._group_actions[0].choices
+
+    assert "run-live" not in subcommands
+    assert "run-diagnostic-live" not in subcommands
+    assert "consume-authority" in subcommands
+    assert "consume-diagnostic-authority" in subcommands
 
 
-def test_run_live_fails_launch_validation_before_campaign_root_creation(
+def test_consume_authority_only_seals_consumption_receipt(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    args = _run_live_args(tmp_path)
-    monkeypatch.setattr(
-        OpenZymeSettings,
-        "from_env",
-        classmethod(lambda cls: SimpleNamespace()),
-    )
-
-    def reject_launch(**kwargs):
-        del kwargs
-        raise AoxCutoverLaunchError(
-            "aox_launch_worktree_dirty",
-            "dirty checkout",
-        )
-
-    monkeypatch.setattr(cli, "prepare_aox_cutover_launch", reject_launch)
-
-    with pytest.raises(AoxCutoverLaunchError) as error:
-        cli._run_live(args)
-
-    assert error.value.code == "aox_launch_worktree_dirty"
-    assert not args.campaign_root.exists()
-    assert args.attempt_authority_consumption.is_file()
-
-
-def test_run_live_passes_canonical_launch_snapshot_to_runner_and_campaign(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    args = _run_live_args(tmp_path)
-    raw_settings = SimpleNamespace(name="raw")
-    effective_settings = SimpleNamespace(name="effective")
-    launch_identity = {"declared": "identity"}
-    launch_prerequisites = {"declared": "prerequisites"}
-    launch_config = {"schema_id": "aox_blank_world_runtime_config@3"}
+    args = _consume_authority_args(tmp_path)
 
-    def launch_guard() -> None:
-        return None
-
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        OpenZymeSettings,
-        "from_env",
-        classmethod(lambda cls: raw_settings),
-    )
-
-    def prepare_launch(**kwargs):
-        captured["prepare"] = kwargs
-        return SimpleNamespace(
-            effective_settings=effective_settings,
-            effective_config=launch_config,
-            identity=launch_identity,
-            allowed_prerequisites=launch_prerequisites,
-            architecture_qualification=_architecture_qualification(),
-            assert_unchanged=launch_guard,
-        )
-
-    class FakeRunner:
-        def __init__(self, **kwargs) -> None:
-            captured["runner"] = kwargs
-
-    class FakeSupervisor:
-        def __init__(self, **kwargs) -> None:
-            captured["supervisor"] = kwargs
-
-    class FakeCampaign:
-        def __init__(self, **kwargs) -> None:
-            captured["campaign"] = kwargs
-
-        def run(self):
-            return (), {
-                "decision": "NO-GO",
-                "blockers": [],
-                "driver_failure_kind": "attempt_supervision_fatal",
-            }
-
-    monkeypatch.setattr(cli, "prepare_aox_cutover_launch", prepare_launch)
-    monkeypatch.setattr(cli, "AoxCutoverCampaign", FakeCampaign)
-    monkeypatch.setattr(
-        cli,
-        "safe_micu_ledger_snapshot",
-        lambda path: (_ for _ in ()).throw(
-            AssertionError(f"fatal supervision must not reread {path}")
-        ),
-    )
-    monkeypatch.setattr(
-        "openzyme_host_api.aox_cutover_live.LiveAoxAttemptRunner",
-        FakeRunner,
-    )
-    monkeypatch.setattr(
-        "openzyme_host_api.aox_attempt_supervision.ProcessIsolatedAttemptRunner",
-        FakeSupervisor,
-    )
-
-    result = cli._run_live(args)
-
-    assert result == 2
-    assert captured["prepare"]["settings"] is raw_settings
-    assert captured["prepare"]["driver"].approval_mode == "chrome-once"
-    assert captured["prepare"]["driver"].timeout_seconds == 7_200.0
-    assert captured["runner"]["settings"] is effective_settings
-    assert captured["runner"]["effective_config"] is launch_config
-    assert captured["supervisor"]["runner"].__class__ is FakeRunner
-    assert captured["supervisor"]["ledger_path"] == args.ledger_path
-    assert captured["supervisor"]["timeout_seconds"] == 15_000.0
-    assert captured["campaign"]["identity"] is launch_identity
-    assert captured["campaign"]["allowed_prerequisites"] is launch_prerequisites
-    assert captured["campaign"]["architecture_qualification"] == (
-        _architecture_qualification()
-    )
-    assert captured["campaign"]["launch_guard"] is launch_guard
-    assert len(captured["campaign"]["attempt_authority_slots"]) == 3
-    assert captured["campaign"]["positive_runner"].__class__ is FakeSupervisor
-    assert captured["campaign"]["positive_runner"] is captured["campaign"][
-        "fault_runner"
-    ]
-    assert "_allow_unisolated_non_live_test_runner" not in captured["campaign"]
-    output = json.loads(capsys.readouterr().out)
-    assert output["decision"]["decision"] == "NO-GO"
-    assert output["micu_ledger"] == {
-        "status": "not_claimed",
-        "reason": "attempt_supervision_fatal",
-    }
-
-
-def test_diagnostic_commands_are_explicit_and_not_formal_mode_flags(
-    tmp_path: Path,
-) -> None:
-    diagnostic = _run_diagnostic_live_args(tmp_path)
-
-    assert diagnostic.command == "run-diagnostic-live"
-    assert diagnostic.handler is cli._run_diagnostic_live
-    assert not hasattr(diagnostic, "attempt_authority_plan")
-    assert diagnostic.diagnostic_authority_plan.name == (
-        "diagnostic-authority.json"
-    )
-    assert diagnostic.diagnostic_root.name.startswith("aox-diagnostic-")
-
-    parser = cli.build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(
-            [
-                "run-live",
-                "--diagnostic",
-                "--campaign-root",
-                str(tmp_path / "formal"),
-            ]
-        )
-    for retired_command in (
-        "authorize-closure-stage-diagnostic",
-        "run-closure-stage-diagnostic-live",
-    ):
-        with pytest.raises(SystemExit):
-            parser.parse_args([retired_command])
-
-
-def test_run_diagnostic_live_consumes_only_diagnostic_plan_before_root(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    args = _run_diagnostic_live_args(tmp_path)
-    launch = SimpleNamespace(
-        effective_settings=SimpleNamespace(name="effective"),
-        effective_config={"schema_id": "aox_blank_world_runtime_config@3"},
-        identity={"git_commit": "a" * 40},
-        allowed_prerequisites={"git_commit": "a" * 40},
-        architecture_qualification=_architecture_qualification(),
-        assert_unchanged=lambda: None,
-    )
-    captured: dict[str, object] = {}
-    fake_runner = object()
-
-    monkeypatch.setattr(
-        cli,
-        "_prepare_live_execution",
-        lambda parsed, **kwargs: (
-            launch,
-            _architecture_qualification(),
-            parsed.ledger_path,
-        ),
-    )
-
-    def build_runner(parsed, **kwargs):
-        captured["runner_args"] = parsed
-        captured["runner_kwargs"] = kwargs
-        return fake_runner
-
-    class FakeDiagnosticRun:
-        def __init__(self, **kwargs: object) -> None:
-            captured["diagnostic"] = kwargs
-
-        def run(self) -> dict[str, object]:
-            return {
-                "schema_id": "aox_blank_world_diagnostic_decision@1",
-                "status": "completed_product_path",
-                "acceptance_eligible": False,
-            }
-
-    monkeypatch.setattr(cli, "_build_supervised_live_runner", build_runner)
-    monkeypatch.setattr(cli, "AoxDiagnosticRun", FakeDiagnosticRun)
-    monkeypatch.setattr(
-        cli,
-        "safe_micu_ledger_snapshot",
-        lambda path: {"ledger": path.name},
-    )
-
-    result = cli._run_diagnostic_live(args)
+    result = cli._consume_authority(args)
 
     assert result == 0
-    assert captured["runner_kwargs"]["run_class"] is (
-        AoxLiveRunClass.DIAGNOSTIC
-    )
-    diagnostic = captured["diagnostic"]
-    assert diagnostic["runner"] is fake_runner
-    assert diagnostic["diagnostic_root"] == args.diagnostic_root
-    assert diagnostic["authority_plan"]["run_class"] == (
-        AoxLiveRunClass.DIAGNOSTIC.value
-    )
-    assert diagnostic["authority_consumption"]["run_class"] == (
-        AoxLiveRunClass.DIAGNOSTIC.value
-    )
-    assert args.diagnostic_authority_consumption.is_file()
-    assert not args.diagnostic_root.exists()
+    assert args.attempt_authority_consumption.is_file()
+    assert not (tmp_path / "campaign").exists()
     output = json.loads(capsys.readouterr().out)
-    assert output["decision"]["acceptance_eligible"] is False
+    assert output["status"] == "consumed_without_execution"
+    assert output["schema_id"] == "aox_attempt_authority_consume_receipt@1"
+
+
+def test_consume_diagnostic_authority_only_seals_consumption_receipt(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = _consume_diagnostic_authority_args(tmp_path)
+
+    result = cli._consume_diagnostic_authority(args)
+
+    assert result == 0
+    assert args.diagnostic_authority_consumption.is_file()
+    assert not tuple(tmp_path.glob("aox-diagnostic-*"))
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "consumed_without_execution"
+    assert output["acceptance_eligible"] is False
+    assert output["schema_id"] == ("aox_diagnostic_authority_consume_receipt@1")
 
 
 def test_pin_uses_same_driver_bounds_and_writes_safe_no_replace_json(
@@ -703,35 +450,26 @@ def test_pin_staging_failure_cleans_already_staged_temporary(
     assert not list(tmp_path.iterdir())
 
 
-def test_run_live_rejects_uncommitted_or_tampered_pin_before_launch(
+def test_consume_authority_rejects_uncommitted_or_tampered_pin(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    args = _run_live_args(tmp_path)
+    args = _consume_authority_args(tmp_path)
     marker = tmp_path / cli._PIN_COMMIT_BASENAME
     marker.unlink()
-    called = False
-
-    def fail_if_called(**kwargs: object) -> object:
-        nonlocal called
-        called = True
-        raise AssertionError(kwargs)
-
-    monkeypatch.setattr(cli, "prepare_aox_cutover_launch", fail_if_called)
 
     with pytest.raises(AoxCutoverLaunchError) as error:
-        cli._run_live(args)
+        cli._consume_authority(args)
 
     assert error.value.code == "aox_launch_pin_commit_invalid"
-    assert called is False
+    assert not args.attempt_authority_consumption.exists()
 
     marker.write_text("{malformed", encoding="utf-8")
 
     with pytest.raises(AoxCutoverLaunchError) as error:
-        cli._run_live(args)
+        cli._consume_authority(args)
 
     assert error.value.code == "aox_launch_pin_commit_invalid"
-    assert called is False
+    assert not args.attempt_authority_consumption.exists()
 
     marker_payload = cli._pin_commit_payload(
         identity_target=args.identity,
@@ -744,10 +482,10 @@ def test_run_live_rejects_uncommitted_or_tampered_pin_before_launch(
     marker.write_text(json.dumps(marker_payload), encoding="utf-8")
 
     with pytest.raises(AoxCutoverLaunchError) as error:
-        cli._run_live(args)
+        cli._consume_authority(args)
 
     assert error.value.code == "aox_launch_pin_commit_invalid"
-    assert called is False
+    assert not args.attempt_authority_consumption.exists()
 
 
 def test_pin_rejects_outputs_in_different_transaction_directories(

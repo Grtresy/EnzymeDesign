@@ -331,8 +331,25 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   修正记录：SDK 保留 exact request，Host 在 operation admission 前封存 local cause，
   SandboxRun 封存 source-bound wrapper，failed ToolResult 与 canonical owner wake 复用
   同一 chain。AOX local/controlled formal failure 统一按 selected-chain disposition 判断，
-  删除 one-shot handoff 与 drain override；ordinary bounded drains、完整 closure 与显式
-  task state 收敛。Harness 不自动 retry/replay，也不从历史 failure 推断当前业务终态。
+  删除 one-shot handoff 与 drain override。r67 又删除整个 AOX automatic convergence
+  reducer；public conductor 逐次请求 bounded drain，Host facts 与 offline verifier 分别承担
+  canonical truth 和 eligibility。Harness 不自动 retry/replay，也不从历史 failure 推断当前
+  业务终态。
+
+- [x] AOX observer/driver 是否仍是 safety mechanism，还是把测试策略写进 Harness 的重复控制面。
+
+  证据：r67 的首个 provider request 使用 malformed `output_dir`；agent 在同 turn 修正后，
+  exact NCBI operation 已完成，但旧 observer 继续扫描 failed history并终止测试。该轮永久
+  NO-GO，decision 为
+  `sha256:d9356b0bdd25885f19e2452773dfac03bfa09e39562ed4c00c8fca9828ef480b`，
+  共计 `3,903,566` charged tokens / `81` attempts。observer 既不拥有 Host canonical
+  state，也不能替 offline verifier判定 eligibility，却重复实现 continue/stop/rollover policy。
+
+  修正记录：删除 AOX runtime observer、Core runtime-barrier/observer-writer、automatic
+  drive-until-terminal/no-wakeup/scope-rollover chain 及 runnable live commands。Codex 测试员
+  仅通过 public Host API/CLI 编排；Host 保留 state/approval/fencing/effect/isolation authority，
+  process supervisor 只证明进程退休，offline verifier/reducer 仍是唯一 GO 权威。保留
+  authority/pin/preflight/evidence shell，但它们不做业务判断。
 
 - [x] Lane 与 session lease 是否只是历史复杂度，应随 recovery machine 一并删除。
 

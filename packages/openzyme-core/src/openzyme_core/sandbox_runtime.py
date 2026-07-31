@@ -107,6 +107,9 @@ EXEC_POLICY_VERSION = "s09.exec_policy.v2"
 S10_SUPERVISED_RPC_SCHEMA = "s10.supervised_rpc.v1"
 S12_ADAPTER_ENVELOPE_SCHEMA = "s12.adapter_envelope.v1"
 S12_HOST_RESULT_ORIGIN = "host_adapter_executor"
+_HOST_PRE_ADMISSION_NO_EFFECT_CODES = frozenset(
+    {"hpc_stage_ref_required", "provider_output_path_invalid"}
+)
 _CONTROL_SOCKET_START_ATTEMPTS = 100
 _CONTROL_SOCKET_START_POLL_SECONDS = 0.01
 _CONTROL_SOCKET_STOP_GRACE_SECONDS = 2.0
@@ -1114,14 +1117,15 @@ class _ControlSocketServer:
     ) -> None:
         """Seal the exact no-effect S12 validation cause before process exit.
 
-        This intentionally recognizes only the Host-owned stage-ref rejection.
-        Other exceptions may occur after admission or dispatch and therefore
-        cannot inherit a synthetic no-effect classification.
+        This recognizes only closed Host-owned validations proven to run before
+        operation admission or external dispatch. Other exceptions cannot
+        inherit a synthetic no-effect classification.
         """
 
         if (
             str(request.get("method") or "") != "s10.controlled_operation"
-            or getattr(exc, "error_code", None) != "hpc_stage_ref_required"
+            or getattr(exc, "error_code", None)
+            not in _HOST_PRE_ADMISSION_NO_EFFECT_CODES
         ):
             return
         idempotency_key = str(params.get("idempotency_key") or "")
@@ -1135,8 +1139,10 @@ class _ControlSocketServer:
         if existing is not None:
             return
 
+        error_code = str(getattr(exc, "error_code"))
         request_digest = _json_digest(params)
         request_id_digest = _json_digest(str(request.get("id") or ""))
+        stage_ref_failure = error_code == "hpc_stage_ref_required"
         record_failure_observation(
             self.repositories,
             session_id=self.session_id,
@@ -1152,17 +1158,25 @@ class _ControlSocketServer:
             effect_certainty=ExternalEffectCertainty.NO_EFFECT,
             retry_eligibility=RetryEligibility.SAME_PHASE_SAFE,
             actor_kind=FailureActorKind.HARNESS,
-            error_code="hpc_stage_ref_required",
+            error_code=error_code,
             safe_summary=(
                 "The Host rejected an HPC operation input before operation "
                 "admission because it was not an exact staged artifact reference."
+                if stage_ref_failure
+                else "The Host rejected a provider output path before operation "
+                "admission because it was noncanonical or did not match the "
+                "declared output authority."
             ),
             safe_hint=(
                 "Call ws.stage_artifact(...) for the exact artifact, then pass "
                 "the returned hpc_stage_ref object to the bio_tools operation."
+                if stage_ref_failure
+                else "Pass a canonical absolute output_dir below /workspace/output, "
+                "for example /workspace/output/bio/ncbi."
             ),
             facts={
                 "schema_version": "sandbox_control_failure@1",
+                "error_code": error_code,
                 "sandbox_run_id": self.sandbox_run_id,
                 "sandbox_workspace_id": self.sandbox_workspace_id,
                 "source_snapshot_artifact_id": self.source_snapshot_artifact_id,
@@ -1385,9 +1399,7 @@ class _ControlSocketServer:
                     agent_id=self.agent_id,
                     task_id=self.task_id,
                     lane_id=self.lane_id,
-                    source_snapshot_artifact_id=(
-                        self.source_snapshot_artifact_id
-                    ),
+                    source_snapshot_artifact_id=(self.source_snapshot_artifact_id),
                     source_tree_digest=self.source_tree_digest,
                     params=dict(params),
                 )
@@ -1676,9 +1688,7 @@ class _ControlSocketServer:
                 ),
                 "output_artifact_ids": sorted(
                     str(value)
-                    for value in list(
-                        adapter_result.get("output_artifact_ids") or []
-                    )
+                    for value in list(adapter_result.get("output_artifact_ids") or [])
                 ),
             }
             observed_projection = {
@@ -1806,9 +1816,7 @@ class _ControlSocketServer:
                 "result": self._wait_for_durable_execution(operation),
             }
 
-        with self.repositories.atomic(
-            prefix="legacy_controlled_operation_admission"
-        ):
+        with self.repositories.atomic(prefix="legacy_controlled_operation_admission"):
             operation = self._create_operation(
                 envelope,
                 operation_digest=operation_digest,
@@ -1819,10 +1827,7 @@ class _ControlSocketServer:
             operation = replace(
                 operation, approval_id=approval.approval_id, updated_at=utc_now_iso()
             )
-            if (
-                operation.adapter_envelope_schema_version
-                == S12_ADAPTER_ENVELOPE_SCHEMA
-            ):
+            if operation.adapter_envelope_schema_version == S12_ADAPTER_ENVELOPE_SCHEMA:
                 operation = replace(
                     operation,
                     adapter_approval_envelope=self._adapter_approval_envelope(
@@ -2304,6 +2309,12 @@ class _ControlSocketServer:
             "expected_outputs", params.get("expected_outputs_summary") or {}
         )
         expected_outputs_summary = self._expected_outputs_summary(expected_outputs)
+        self._validate_provider_output_authority(
+            sdk_module=sdk_module,
+            function_name=function_name,
+            adapter_params=adapter_params or {},
+            expected_outputs=expected_outputs_summary,
+        )
         resource_estimate = params.get("resource_estimate") or {}
         if not isinstance(resource_estimate, dict):
             raise SandboxRuntimeError(
@@ -2398,6 +2409,50 @@ class _ControlSocketServer:
             "adapter_result": {},
             "adapter_params": adapter_params,
         }
+
+    def _validate_provider_output_authority(
+        self,
+        *,
+        sdk_module: str,
+        function_name: str,
+        adapter_params: dict[str, Any],
+        expected_outputs: dict[str, Any],
+    ) -> None:
+        if (sdk_module, function_name) not in {
+            ("bio", "ncbi_fetch_proteins"),
+            ("bio", "uniprot_fetch"),
+            ("bio", "hmmer_search"),
+        }:
+            return
+        raw = adapter_params.get("output_dir")
+        invalid = (
+            not isinstance(raw, str)
+            or not raw
+            or raw != raw.strip()
+            or any(character in raw for character in ("\\", "\n", "\r", "\0"))
+        )
+        path = PurePosixPath(raw) if isinstance(raw, str) else PurePosixPath(".")
+        parts = path.parts
+        if (
+            invalid
+            or not path.is_absolute()
+            or str(path) != raw
+            or len(parts) < 4
+            or parts[:3] != ("/", "workspace", "output")
+            or any(part in {"", ".", ".."} for part in parts[3:])
+            or expected_outputs.get("output_dir") != raw
+        ):
+            raise SandboxRuntimeError(
+                "provider_output_path_invalid",
+                "Provider output_dir must be a canonical absolute path below "
+                "/workspace/output and match the declared output authority.",
+                stage="host.controlled_operation.input_validation",
+                retryable=False,
+                hint=(
+                    "Pass output_dir='/workspace/output/<provider-directory>' "
+                    "without traversal or aliases."
+                ),
+            )
 
     def _route_policy(self, route_policy_id: str) -> dict[str, Any]:
         if not route_policy_id:
@@ -4344,20 +4399,17 @@ class SandboxRuntimeService:
                 source_ref=finished.sandbox_run_id,
             )
             if (
-                failure.error_code == "hpc_stage_ref_required"
+                failure.error_code in _HOST_PRE_ADMISSION_NO_EFFECT_CODES
                 and failure.task_id == finished.task_id
                 and failure.lane_id == finished.lane_id
                 and failure.agent_id == finished.agent_id
                 and failure.failure_class is FailureClass.VALIDATION
-                and failure.recoverability
-                is FailureRecoverability.AGENT_CAN_REPLAN
+                and failure.recoverability is FailureRecoverability.AGENT_CAN_REPLAN
                 and failure.effect_certainty is ExternalEffectCertainty.NO_EFFECT
-                and failure.retry_eligibility
-                is RetryEligibility.SAME_PHASE_SAFE
+                and failure.retry_eligibility is RetryEligibility.SAME_PHASE_SAFE
                 and dict(failure.facts).get("schema_version")
                 == "sandbox_control_failure@1"
-                and dict(failure.facts).get("sandbox_run_id")
-                == finished.sandbox_run_id
+                and dict(failure.facts).get("sandbox_run_id") == finished.sandbox_run_id
                 and dict(failure.facts).get("sandbox_workspace_id")
                 == finished.sandbox_workspace_id
                 and dict(failure.facts).get("source_snapshot_artifact_id")
@@ -4373,8 +4425,7 @@ class SandboxRuntimeService:
         exact_cause = (
             local_causes[0]
             if (
-                finished.error_code == "sandbox_exec_nonzero"
-                and len(local_causes) == 1
+                finished.error_code == "sandbox_exec_nonzero" and len(local_causes) == 1
             )
             else None
         )
@@ -4406,10 +4457,8 @@ class SandboxRuntimeService:
             "ended_at": finished.ended_at,
         }
         local_cause_ids = sorted(failure.failure_id for failure in local_causes)
-        attempt_id = (
-            self.repositories.scientific_attempt_bindings.attempt_for_run(
-                finished.sandbox_run_id
-            )
+        attempt_id = self.repositories.scientific_attempt_bindings.attempt_for_run(
+            finished.sandbox_run_id
         )
         record_failure_observation(
             self.repositories,
@@ -4467,10 +4516,7 @@ class SandboxRuntimeService:
                     *(
                         []
                         if finished.source_snapshot_artifact_id is None
-                        else [
-                            "artifact:"
-                            f"{finished.source_snapshot_artifact_id}"
-                        ]
+                        else [f"artifact:{finished.source_snapshot_artifact_id}"]
                     ),
                     *(
                         []
@@ -5634,8 +5680,7 @@ def _terminal_sandbox_run_tool_result(
             and failure.task_id == run.task_id
             and failure.lane_id == run.lane_id
             and failure.agent_id == run.agent_id
-            and dict(failure.facts).get("schema_version")
-            == "sandbox_run_failure@1"
+            and dict(failure.facts).get("schema_version") == "sandbox_run_failure@1"
         )
     ]
     if len(exact) != 1:
@@ -5669,9 +5714,7 @@ def _terminal_sandbox_run_tool_result(
             "recoverability": failure.recoverability.value,
             "effect_certainty": failure.effect_certainty.value,
             "retry_eligibility": failure.retry_eligibility.value,
-            "causal_failure_id": dict(failure.facts).get(
-                "causal_failure_id"
-            ),
+            "causal_failure_id": dict(failure.facts).get("causal_failure_id"),
         },
         failure_observation=failure.to_dict(),
     )

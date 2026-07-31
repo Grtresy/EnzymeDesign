@@ -330,14 +330,12 @@ observation 必须返回 exact closed evidence，不得继续等待 row mutation
 replay-safe runtime drain 只能证明本次没有可处理 signal/event/output，不是 semantic
 progress，也不能替代 terminal convergence。
 
-AOX bounded driver 连续看到两份 validated v2
-`processed_signal_count=0/replay_safe=true` outcome 时，还必须比较去除 timestamp、lease、
-event 与 command-id noise 的 canonical work fingerprint，并确认没有 pending/claimed
-signal、pending approval、active invocation/continuation、working agent 或 in-flight writer。只有两次
-fingerprint 相同才 typed fail-fast；ready work 关联 actionable failure 时为
-`formal_agent_recovery_unresolved`，product-ready 但 exact attempt 仍 open 时为
-`scientific_attempt_open_no_wakeup`，否则为 `formal_runtime_stalled_no_wakeup`。单次 empty
-或任何 wake source 均不能触发，也不会启用 ready-task auto-enqueue。
+AOX 不再有 bounded driver 或 two-empty/no-wakeup reducer。Codex 测试员只经 public Host
+API/CLI 查看一次 command outcome、pending approval、workspace 与 events，再显式决定下一次
+message/drain/approval action。Harness 不生成 campaign-level继续/停止判断，不注册 observer，
+也不把 empty outcome、无 wake source 或达到 operator 自定观察次数写成 task、attempt 或
+campaign terminal。Host 的 canonical lifecycle/effect/isolation checks 与 offline
+bundle/campaign verifier 仍独立 fail closed。
 
 historical closure-stage isolated live loop 已退役；current runtime 不提供从冻结 SQLite
 重建 fresh executor signal 的 authority、CLI 或 fallback。sealed historical evidence 只
@@ -352,15 +350,15 @@ validation failure 会作为 model-readable no-effect observation 返回。runti
 terminal、sandbox success、17 个可见路径或 healthy-empty prose 都不自动生成 receipt、
 业务完成、报告、closure 或终答。
 
-AOX formal runtime 对 exact selected attempt 的 controlled-operation no-effect failure 与
-sandbox-local `hpc_stage_ref_required -> sandbox_exec_nonzero` chain 使用同一观察合同。
+AOX formal evidence 对 exact selected attempt 的 controlled-operation no-effect failure 与
+sandbox-local `hpc_stage_ref_required|provider_output_path_invalid -> sandbox_exec_nonzero`
+chain 使用同一 canonical wake/evidence contract。
 绑定的 task 仍为 business-nonterminal 且 canonical owner handoff 闭合时，失败只作为
 replan evidence；probe、unsafe/unknown effect、retryable/dispatch-in-doubt、binding drift
 或显式 task terminal failure 仍立即停止。
 
-driver 不维护 per-source one-shot consumption，也不通过 `max_signals_override` 临时扩大
-command。每次 drain 固定 `max_signals=1`；existing owner wake 与后续 selected-chain work
-在普通 bounded commands 中推进。immutable closure 出现后，同一 selected chain 的 exact
-disposed safe history 不再 poisoning terminal observation，但 task/report/closure 仍须完整。
-若 work 未闭合且不存在 wake source，沿用两次相同 replay-safe zero-signal observation
-有限失败。
+public conductor 不维护 per-source one-shot consumption，也不通过 private override 扩大
+command；每次请求都受 Host public DTO 和 bounded scheduler contract 约束。immutable closure
+出现后，同一 selected chain 的 exact disposed safe history仍可查询但不污染 offline
+eligibility；task/report/closure 仍须完整。work 未闭合且不存在 wake source时，conductor
+只能报告当前 public facts并停止或请求新 authority，不能由 Harness 合成业务失败。

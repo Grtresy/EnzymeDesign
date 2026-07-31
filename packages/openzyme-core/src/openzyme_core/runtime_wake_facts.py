@@ -28,6 +28,11 @@ from .scientific_attempt_lifecycle import (
 from .scientific_attempt_lifecycle import ScientificAttemptLifecycleResolver
 
 
+_HOST_LOCAL_PRE_ADMISSION_CODES = frozenset(
+    {"hpc_stage_ref_required", "provider_output_path_invalid"}
+)
+
+
 class CanonicalWakeFactsReason(StrEnum):
     SIGNAL_NOT_CLAIMED = "signal_not_claimed"
     SOURCE_RECORD_MISSING = "source_record_missing"
@@ -182,11 +187,7 @@ class CanonicalWakeFactsProjector:
             source_kind="sandbox_control_request",
             source_ref=run.sandbox_run_id,
         )
-        if (
-            cause is None
-            or len(local_causes) != 1
-            or local_causes[0] != cause
-        ):
+        if cause is None or len(local_causes) != 1 or local_causes[0] != cause:
             self._invalid(CanonicalWakeFactsReason.CONTROL_BINDING_INVALID)
         assert cause is not None
         cause_facts = dict(cause.facts)
@@ -219,45 +220,38 @@ class CanonicalWakeFactsProjector:
             or wrapper.lane_id != run.lane_id
             or wrapper.agent_id != run.agent_id
             or wrapper.failure_class is not FailureClass.RUNTIME
-            or wrapper.recoverability
-            is not FailureRecoverability.AGENT_CAN_REPLAN
-            or wrapper.effect_certainty
-            is not ExternalEffectCertainty.TERMINAL_KNOWN
+            or wrapper.recoverability is not FailureRecoverability.AGENT_CAN_REPLAN
+            or wrapper.effect_certainty is not ExternalEffectCertainty.TERMINAL_KNOWN
             or wrapper.retry_eligibility is not RetryEligibility.TERMINAL
             or wrapper.error_code != run.error_code
             or wrapper_facts.get("schema_version") != "sandbox_run_failure@1"
             or wrapper_facts.get("sandbox_run_id") != run.sandbox_run_id
-            or wrapper_facts.get("sandbox_workspace_id")
-            != run.sandbox_workspace_id
+            or wrapper_facts.get("sandbox_workspace_id") != run.sandbox_workspace_id
             or wrapper_facts.get("source_snapshot_artifact_id")
             != run.source_snapshot_artifact_id
-            or wrapper_facts.get("source_tree_digest")
-            != run.source_tree_digest
+            or wrapper_facts.get("source_tree_digest") != run.source_tree_digest
             or wrapper_facts.get("local_cause_count") != 1
             or wrapper_facts.get("causal_error_code")
-            != "hpc_stage_ref_required"
-            or wrapper_facts.get("causal_source_version")
-            != cause.source_version
+            not in _HOST_LOCAL_PRE_ADMISSION_CODES
+            or wrapper_facts.get("causal_source_version") != cause.source_version
             or cause.source_kind != "sandbox_control_request"
             or cause.source_ref != run.sandbox_run_id
             or cause.task_id != run.task_id
             or cause.lane_id != run.lane_id
             or cause.agent_id != run.agent_id
             or cause.failure_class is not FailureClass.VALIDATION
-            or cause.recoverability
-            is not FailureRecoverability.AGENT_CAN_REPLAN
+            or cause.recoverability is not FailureRecoverability.AGENT_CAN_REPLAN
             or cause.effect_certainty is not ExternalEffectCertainty.NO_EFFECT
             or cause.retry_eligibility is not RetryEligibility.SAME_PHASE_SAFE
-            or cause.error_code != "hpc_stage_ref_required"
-            or cause_facts.get("schema_version")
-            != "sandbox_control_failure@1"
+            or cause.error_code not in _HOST_LOCAL_PRE_ADMISSION_CODES
+            or wrapper_facts.get("causal_error_code") != cause.error_code
+            or cause_facts.get("schema_version") != "sandbox_control_failure@1"
+            or cause_facts.get("error_code") != cause.error_code
             or cause_facts.get("sandbox_run_id") != run.sandbox_run_id
-            or cause_facts.get("sandbox_workspace_id")
-            != run.sandbox_workspace_id
+            or cause_facts.get("sandbox_workspace_id") != run.sandbox_workspace_id
             or cause_facts.get("source_snapshot_artifact_id")
             != run.source_snapshot_artifact_id
-            or cause_facts.get("source_tree_digest")
-            != run.source_tree_digest
+            or cause_facts.get("source_tree_digest") != run.source_tree_digest
             or cause_facts.get("operation_admitted") is not False
             or cause_facts.get("external_dispatch_started") is not False
         ):
@@ -284,17 +278,13 @@ class CanonicalWakeFactsProjector:
                 "sandbox_run_id": run.sandbox_run_id,
                 "sandbox_workspace_id": run.sandbox_workspace_id,
                 "attempt_id": wrapper_facts.get("attempt_id"),
-                "source_snapshot_artifact_id": (
-                    run.source_snapshot_artifact_id
-                ),
+                "source_snapshot_artifact_id": (run.source_snapshot_artifact_id),
                 "source_tree_digest": run.source_tree_digest,
                 "wrapper_failure_id": wrapper.failure_id,
                 "wrapper_error_code": wrapper.error_code,
                 "wrapper_recoverability": wrapper.recoverability.value,
                 "wrapper_effect_certainty": wrapper.effect_certainty.value,
-                "wrapper_retry_eligibility": (
-                    wrapper.retry_eligibility.value
-                ),
+                "wrapper_retry_eligibility": (wrapper.retry_eligibility.value),
                 "causal_failure_id": cause.failure_id,
                 "error_code": cause.error_code,
                 "failure_class": cause.failure_class.value,
@@ -334,17 +324,13 @@ class CanonicalWakeFactsProjector:
             or attempt.campaign_id != request.campaign_id
             or attempt.workflow_id != request.workflow_id
             or attempt.scope is not request.scope
-            or attempt.workflow_contract_digest
-            != request.workflow_contract_digest
-            or attempt.requested_effect_classes
-            != request.requested_effect_classes
+            or attempt.workflow_contract_digest != request.workflow_contract_digest
+            or attempt.requested_effect_classes != request.requested_effect_classes
             or attempt.provider != request.provider
             or attempt.hpc_target != request.hpc_target
             or attempt.reserved_micu != request.reserved_micu
-            or attempt.reserved_cost_microunits
-            != request.reserved_cost_microunits
-            or attempt.reserved_wall_time_seconds
-            != request.reserved_wall_time_seconds
+            or attempt.reserved_cost_microunits != request.reserved_cost_microunits
+            or attempt.reserved_wall_time_seconds != request.reserved_wall_time_seconds
             or attempt.created_by != request.actor_ref
             or attempt.idempotency_key != request.idempotency_key
             or attempt.request_digest != request.request_digest
@@ -377,18 +363,12 @@ class CanonicalWakeFactsProjector:
                 "record_status": attempt.status.value,
                 "lifecycle_phase": lifecycle.phase.value,
                 "workflow_contract_digest": attempt.workflow_contract_digest,
-                "requested_effect_classes": list(
-                    attempt.requested_effect_classes
-                ),
+                "requested_effect_classes": list(attempt.requested_effect_classes),
                 "provider": attempt.provider,
                 "hpc_target": attempt.hpc_target,
                 "reserved_micu": attempt.reserved_micu,
-                "reserved_cost_microunits": (
-                    attempt.reserved_cost_microunits
-                ),
-                "reserved_wall_time_seconds": (
-                    attempt.reserved_wall_time_seconds
-                ),
+                "reserved_cost_microunits": (attempt.reserved_cost_microunits),
+                "reserved_wall_time_seconds": (attempt.reserved_wall_time_seconds),
                 "request_digest": attempt.request_digest,
                 "actor_ref": request.actor_ref,
                 "created_at": attempt.created_at,
@@ -455,19 +435,13 @@ class CanonicalWakeFactsProjector:
                 "workflow_id": attempt.workflow_id,
                 "lifecycle_phase": lifecycle.phase.value,
                 "closure_digest": closure.closure_digest,
-                "operation_universe_digest": (
-                    closure.operation_universe_digest
-                ),
+                "operation_universe_digest": (closure.operation_universe_digest),
                 "disposition_digest": closure.disposition_digest,
                 "adoption_digest": closure.adoption_digest,
                 "materialization_digest": closure.materialization_digest,
-                "authority_consumption_digest": (
-                    closure.authority_consumption_digest
-                ),
+                "authority_consumption_digest": (closure.authority_consumption_digest),
                 "quiescence_receipt_id": closure.quiescence_receipt_id,
-                "quiescence_receipt_digest": (
-                    closure.quiescence_receipt_digest
-                ),
+                "quiescence_receipt_digest": (closure.quiescence_receipt_digest),
                 "actor_ref": request.actor_ref,
                 "created_at": closure.created_at,
             },
@@ -562,9 +536,7 @@ class CanonicalWakeFactsProjector:
     @staticmethod
     def _require_claimed(signal: AgentRuntimeSignal) -> None:
         if signal.status is not AgentRuntimeSignalStatus.CLAIMED:
-            raise CanonicalWakeFactsError(
-                CanonicalWakeFactsReason.SIGNAL_NOT_CLAIMED
-            )
+            raise CanonicalWakeFactsError(CanonicalWakeFactsReason.SIGNAL_NOT_CLAIMED)
 
     @staticmethod
     def _invalid(reason: CanonicalWakeFactsReason) -> None:

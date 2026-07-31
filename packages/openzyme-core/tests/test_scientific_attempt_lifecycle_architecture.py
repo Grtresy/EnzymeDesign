@@ -9,12 +9,10 @@ LIFECYCLE_DECISION_MODULES = (
     "packages/openzyme-core/src/openzyme_core/scientific_attempts.py",
     "packages/openzyme-core/src/openzyme_core/agent_runtime.py",
     "packages/openzyme-core/src/openzyme_core/runtime_consistency.py",
-    "apps/openzyme-host-api/src/openzyme_host_api/aox_cutover_live.py",
     "apps/openzyme-host-api/src/openzyme_host_api/aox_cutover_tool_policy.py",
 )
 ATTEMPT_REPOSITORY_MODULE = (
-    "packages/openzyme-core/src/openzyme_core/"
-    "scientific_attempt_repositories.py"
+    "packages/openzyme-core/src/openzyme_core/scientific_attempt_repositories.py"
 )
 
 
@@ -38,9 +36,7 @@ def test_business_lifecycle_decisions_do_not_read_raw_attempt_status() -> None:
                 and node.attr == "status"
                 and (variable := _attempt_variable(node)) is not None
             ):
-                violations.append(
-                    f"{relative_path}:{node.lineno}:{variable}.status"
-                )
+                violations.append(f"{relative_path}:{node.lineno}:{variable}.status")
 
     assert violations == []
 

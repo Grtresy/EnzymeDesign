@@ -12,9 +12,6 @@ from openzyme_host_api.aox_architecture_qualification import (
     build_architecture_qualification_receipt,
 )
 from openzyme_host_api import aox_attempt_supervision as supervision
-from openzyme_host_api.aox_attempt_authority import (
-    build_aox_attempt_authority_plan,
-)
 from openzyme_host_api.aox_attempt_supervision import AttemptRootAccessError
 from openzyme_host_api.aox_attempt_supervision import AttemptRootAccessGate
 from openzyme_host_api.aox_attempt_supervision import AttemptSupervisionFatalError
@@ -23,7 +20,6 @@ from openzyme_host_api.aox_attempt_supervision import ProcessIsolatedAttemptRunn
 from openzyme_host_api.aox_attempt_supervision import (
     validate_attempt_supervision_receipt,
 )
-from openzyme_host_api.aox_cutover_evidence import AoxCutoverCampaign
 from openzyme_host_api.aox_cutover_evidence import AttemptRunContext
 from openzyme_host_api.aox_cutover_evidence import BlankWorldRoots
 from openzyme_host_api.aox_cutover_evidence import CutoverEvidenceError
@@ -56,18 +52,6 @@ from aox_attempt_supervision_spawn_fixtures import (  # noqa: E402
 from aox_attempt_supervision_spawn_fixtures import (  # noqa: E402
     TruncatedRunner as _TruncatedRunner,
 )
-
-
-class _FatalRunner:
-    def __init__(self, code: str) -> None:
-        self.code = code
-
-    def __call__(self, context: AttemptRunContext) -> dict[str, object]:
-        del context
-        raise AttemptSupervisionFatalError(
-            self.code,
-            fatal_evidence_digest="sha256:" + "f" * 64,
-        )
 
 
 def _attempt_authority(
@@ -167,24 +151,6 @@ def _architecture_qualification() -> dict[str, str]:
         profile_id="local_single_process_file_sqlite@1",
         source_commit=_campaign_identity()["git_commit"],
     )
-
-
-def _formal_authority_slot() -> dict[str, object]:
-    plan = build_aox_attempt_authority_plan(
-        identity=_campaign_identity(),
-        allowed_prerequisites={},
-        architecture_qualification=_architecture_qualification(),
-        issued_at="2026-07-23T00:00:00+00:00",
-        expires_at="2099-01-01T00:00:00+00:00",
-        max_micu_per_attempt=10_000,
-        max_cost_microunits_per_attempt=20_000,
-        max_wall_time_seconds_per_attempt=3_600,
-    )
-    slots = plan["slots"]
-    assert isinstance(slots, list)
-    slot = slots[0]
-    assert isinstance(slot, dict)
-    return dict(slot)
 
 
 def _supervisor(
@@ -292,9 +258,7 @@ def test_normal_child_result_requires_sqlite_and_process_retirement(
         product_path["attempt_supervision"],
         attempt_id=context.roots.attempt_id,
         attempt_kind=context.roots.attempt_kind,
-        attempt_authority_id=str(
-            context.attempt_authority["envelope_id"]
-        ),
+        attempt_authority_id=str(context.attempt_authority["envelope_id"]),
         attempt_authority_request_digest=str(
             context.attempt_authority["request_digest"]
         ),
@@ -450,9 +414,7 @@ def test_supervision_receipt_rejects_unknown_fields(tmp_path: Path) -> None:
             receipt,
             attempt_id=context.roots.attempt_id,
             attempt_kind=context.roots.attempt_kind,
-            attempt_authority_id=str(
-                context.attempt_authority["envelope_id"]
-            ),
+            attempt_authority_id=str(context.attempt_authority["envelope_id"]),
             attempt_authority_request_digest=str(
                 context.attempt_authority["request_digest"]
             ),
@@ -530,93 +492,16 @@ def test_legacy_receipts_are_explicit_offline_only(
             ),
         )
 
-    assert validate_attempt_supervision_receipt(
-        receipt,
-        attempt_id="positive-legacy",
-        attempt_kind="positive",
-        attempt_authority_id=authority_id if with_authority else None,
-        attempt_authority_request_digest=(
-            authority_digest if with_authority else None
-        ),
-        allow_legacy=True,
-    ) == receipt
-
-
-def test_campaign_propagates_supervision_fatal_without_attempt_bundle(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    authority = _formal_authority_slot()
-    context = _attempt_context(
-        tmp_path,
-        attempt_id=str(authority["attempt_id"]),
+    assert (
+        validate_attempt_supervision_receipt(
+            receipt,
+            attempt_id="positive-legacy",
+            attempt_kind="positive",
+            attempt_authority_id=authority_id if with_authority else None,
+            attempt_authority_request_digest=(
+                authority_digest if with_authority else None
+            ),
+            allow_legacy=True,
+        )
+        == receipt
     )
-    monkeypatch.setattr(
-        "openzyme_host_api.aox_cutover_evidence.create_blank_world_roots",
-        lambda *args, **kwargs: context.roots,
-    )
-    monkeypatch.setattr(
-        "openzyme_host_api.aox_cutover_evidence.safe_micu_ledger_snapshot",
-        lambda path: {},
-    )
-    campaign = AoxCutoverCampaign(
-        campaign_root=tmp_path / "campaign",
-        identity=_campaign_identity(),
-        ledger_path=tmp_path / "ledger.sqlite3",
-        positive_runner=_FatalRunner("attempt_child_timeout"),
-        fault_runner=_FatalRunner("attempt_child_timeout"),
-        allowed_prerequisites={},
-        architecture_qualification=_architecture_qualification(),
-        attempt_authority_slots=(authority,),
-    )
-
-    records, decision = campaign.run()
-
-    assert records == ()
-    assert decision["decision"] == "NO-GO"
-    assert decision["blocker"]["code"] == "attempt_child_timeout"
-    assert decision["driver_failure_kind"] == "attempt_supervision_fatal"
-    assert not list((tmp_path / "campaign").glob("*/evidence/attempt-bundle.json"))
-
-
-def test_campaign_requires_supervision_by_default_before_ledger_after(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    authority = _formal_authority_slot()
-    context = _attempt_context(
-        tmp_path,
-        attempt_id=str(authority["attempt_id"]),
-    )
-    snapshots = 0
-
-    def snapshot(path: Path) -> dict[str, object]:
-        nonlocal snapshots
-        del path
-        snapshots += 1
-        return {}
-
-    monkeypatch.setattr(
-        "openzyme_host_api.aox_cutover_evidence.safe_micu_ledger_snapshot",
-        snapshot,
-    )
-    monkeypatch.setattr(
-        "openzyme_host_api.aox_cutover_evidence.create_blank_world_roots",
-        lambda *args, **kwargs: context.roots,
-    )
-    campaign = AoxCutoverCampaign(
-        campaign_root=tmp_path / "campaign",
-        identity=_campaign_identity(),
-        ledger_path=tmp_path / "ledger.sqlite3",
-        positive_runner=_ReturningRunner(create_sqlite=False),
-        fault_runner=_ReturningRunner(create_sqlite=False),
-        allowed_prerequisites={},
-        architecture_qualification=_architecture_qualification(),
-        attempt_authority_slots=(authority,),
-    )
-
-    records, decision = campaign.run()
-
-    assert records == ()
-    assert snapshots == 1
-    assert decision["blocker"]["code"] == "attempt_supervision_receipt_missing"

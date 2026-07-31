@@ -16,14 +16,18 @@ from openzyme_host_api import aox_browser_observation
 from openzyme_host_api.aox_browser_observation import (
     BROWSER_OBSERVATION_CAPTURE_SCHEMA_ID,
 )
+from openzyme_host_api.aox_browser_observation import BROWSER_OBSERVATION_MODE
+from openzyme_host_api.aox_browser_observation import (
+    BROWSER_OBSERVATION_RECEIPT_SCHEMA_ID,
+)
 from openzyme_host_api.aox_browser_observation import BrowserObservationReceiptError
 from openzyme_host_api.aox_browser_observation import build_browser_observation_receipt
+from openzyme_host_api.aox_browser_observation import canonical_digest
 from openzyme_host_api.aox_browser_observation import load_json_object
-from openzyme_host_api.aox_browser_observation import publish_browser_observation_receipt
-from openzyme_host_api.aox_cutover_live import BROWSER_OBSERVATION_MODE
-from openzyme_host_api.aox_cutover_live import BROWSER_OBSERVATION_RECEIPT_SCHEMA_ID
-from openzyme_host_api.aox_cutover_live import MANUAL_APPROVAL_HANDOFF_SCHEMA_ID
-from openzyme_host_api.aox_cutover_live import canonical_digest
+from openzyme_host_api.aox_browser_observation import MANUAL_APPROVAL_HANDOFF_SCHEMA_ID
+from openzyme_host_api.aox_browser_observation import (
+    publish_browser_observation_receipt,
+)
 
 
 def _digest(value: str) -> str:
@@ -144,7 +148,8 @@ def test_builder_derives_exact_raw_receipt_from_handoff_and_chrome_capture(
     assert receipt["screenshot_width"] == 1
     assert receipt["screenshot_height"] == 1
     assert [
-        item["method"] for item in receipt["devtools_transcript"]  # type: ignore[index]
+        item["method"]
+        for item in receipt["devtools_transcript"]  # type: ignore[index]
     ] == ["list_console_messages", "evaluate_script", "take_screenshot"]
     assert "host_observation_ready_at_unix_ns" not in receipt
 
@@ -346,6 +351,9 @@ def test_browser_receipt_cli_publishes_challenged_target(
     assert output["raw_receipt_field_count"] == 23
     target = Path(str(handoff["browser_observation_receipt_path"]))
     assert len(json.loads(target.read_text(encoding="utf-8"))) == 23
-    assert base64.b64decode(
-        json.loads(target.read_text(encoding="utf-8"))["screenshot_png_base64"]
-    ) == _png()
+    assert (
+        base64.b64decode(
+            json.loads(target.read_text(encoding="utf-8"))["screenshot_png_base64"]
+        )
+        == _png()
+    )

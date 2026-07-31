@@ -1607,9 +1607,38 @@ immutable closure 后，exact disposed safe history 保持可查询但不再 poi
 attempt。
 
 旧 AOX one-shot handoff、per-source consumption 与 `max_signals_override` 已删除。
-driver 始终以 `max_signals=1` ordinary bounded drains 推进 existing canonical work；
-complete selected-chain closure、显式 task/report state 或两次相同 replay-safe no-wakeup
-observation决定收敛。该 Phase 2 不启动 r67/live/MICU/provider/HPC/Chrome。
+该 r66 correction 当时仍由 driver 以 ordinary bounded drains推进；r67 deletion-first
+进一步退役整个 automatic convergence policy。该 Phase 2 未启动 r67/live/MICU/provider/
+HPC/Chrome。
+
+## r67 observer poisoning / deletion-first Phase 2
+
+r67 diagnostic id `aox_diagnostic_8c2ce426355c001253b86c1c`，attempt
+`diagnostic-positive-5dfdd0686e9174a975ff85b18404e85d`，consumed authority
+`sha256:a6f5b08afd184799f90c927eb34ba95e8d3917313c6943c5fbeb5cde84a2161e`
+与 decision
+`sha256:d9356b0bdd25885f19e2452773dfac03bfa09e39562ed4c00c8fca9828ef480b`
+永久 **NO-GO**。agent 最初提交 malformed provider `output_dir`，旧 SDK 在 Host 前抛出
+bare validation；agent 同 turn 改正后 exact NCBI operation成功。旧 observer仍把早期
+failed history当成当前 campaign stop，证明其 business-policy projection 不可靠。本轮累计
+`3,903,566` charged tokens 与 `81` attempts；这些数字描述 sealed diagnostic成本，不给
+任何 artifact、effect 或 plan adoption 权威。
+
+Phase 2 删除 `aox_runtime_observation.py`、Core `runtime_barrier.py`、observer-writer、
+`AoxCutoverCampaign`/diagnostic-live runner、drive-until-terminal、two-empty/no-wakeup、
+scope-rollover retry 以及 `run-live` / `run-diagnostic-live`。保留 qualification、pin、
+preflight、exact authority consumption、local process supervision 与 evidence verifier；
+这些 shell 不读取业务状态来自动继续或停止。Codex 测试员未来若获单独批准，只能通过
+public Host message/runtime-drain/command-status/pending-approval/workspace/events/approval
+surface逐步编排，不能调用 private repository、observer 或 runner core。
+
+Host 继续独占 canonical state、approval、fencing、unknown/external effect、mutation scope
+与 sandbox/process isolation。provider output path 现在由 Host pre-admission验证；
+`provider_output_path_invalid/no_effect` 与 `hpc_stage_ref_required/no_effect` 都封存 exact
+request-bound cause，在零 operation admission/零 external dispatch 下返回 failed ToolResult，
+并由 `sandbox_exec_nonzero` wrapper 与 canonical wake facts保留 causal chain。最终 GO 只能
+来自三个 eligible `@3` bundle 的 offline campaign reducer。本 slice 不启动 r68、live、
+MICU、provider、HPC 或 Chrome。
 
 ## 当前实施状态的表述规则
 

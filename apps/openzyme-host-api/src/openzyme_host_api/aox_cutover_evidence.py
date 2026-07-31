@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 import base64
 import binascii
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -11,7 +11,7 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import re
-from typing import Any, Protocol, Self
+from typing import Any, Protocol
 from urllib.parse import urlsplit
 from uuid import uuid4
 import zlib
@@ -31,10 +31,7 @@ from .aox_cutover_runtime_config import AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID
 from .aox_cutover_runtime_config import AoxRuntimeConfigSchemaError
 from .aox_cutover_runtime_config import normalize_aox_blank_world_runtime_config
 from .aox_live_run_class import AoxLiveRunClass
-from .aox_live_run_class import authority_root_ref
-from .aox_live_run_class import authority_run_class
 from .aox_live_run_class import DIAGNOSTIC_RUN_POLICY
-from .aox_live_run_class import policy_for_run_class
 
 
 ATTEMPT_BUNDLE_SCHEMA_ID_V2 = "aox_blank_world_attempt_bundle@2"
@@ -701,14 +698,6 @@ class AttemptRunRecord:
     artifact_root: Path
     bundle_digest: str
     verification: VerificationResult
-
-
-@dataclass(frozen=True, slots=True)
-class AttemptExecution:
-    roots: BlankWorldRoots
-    ledger_before: dict[str, Any]
-    ledger_after: dict[str, Any]
-    evidence: dict[str, Any]
 
 
 class AttemptRunner(Protocol):
@@ -2789,489 +2778,6 @@ def _append_independence_blockers(
             return
 
 
-def execute_aox_attempt(
-    *,
-    campaign_root: Path,
-    identity: Mapping[str, object],
-    ledger_path: Path,
-    runner: AttemptRunner,
-    allowed_prerequisites: Mapping[str, object],
-    architecture_qualification: Mapping[str, object],
-    number: int,
-    kind: str,
-    authority: Mapping[str, object] | None,
-    run_class: AoxLiveRunClass,
-    launch_guard: Callable[[], None] | None = None,
-    allow_unisolated_non_live_test_runner: bool = False,
-) -> AttemptExecution:
-    """Execute one attempt; run-class collectors own all evidence schemas."""
-
-    normalized_run_class = AoxLiveRunClass(run_class)
-    if launch_guard is not None:
-        launch_guard()
-    normalized_authority: dict[str, Any] | None = None
-    if allow_unisolated_non_live_test_runner:
-        normalized_authority = (
-            dict(authority) if isinstance(authority, Mapping) else None
-        )
-    else:
-        if not isinstance(authority, Mapping):
-            raise CutoverEvidenceError(
-                "authorization_required",
-                "production AOX attempt requires an exact durable authority slot",
-                details={"identity": f"attempt_authority_slots[{number - 1}]"},
-            )
-        normalized_authority = dict(authority)
-        try:
-            observed_run_class = authority_run_class(normalized_authority)
-        except ValueError as exc:
-            raise CutoverEvidenceError(
-                "attempt_authority_run_class_invalid",
-                "AOX authority carries an ambiguous run class",
-            ) from exc
-        policy = policy_for_run_class(normalized_run_class)
-        attempt_id = str(normalized_authority.get("attempt_id") or "")
-        (
-            expected_session_id,
-            expected_task_id,
-            expected_lane_id,
-            expected_root_ref,
-        ) = policy.identities(attempt_id)
-        request = normalized_authority.get("authority_request")
-        request_campaign_id = (
-            None if not isinstance(request, dict) else request.get("campaign_id")
-        )
-        if (
-            observed_run_class is not normalized_run_class
-            or normalized_authority.get("ordinal") != number
-            or normalized_authority.get("attempt_kind") != kind
-            or policy.attempt_id_pattern.fullmatch(attempt_id) is None
-            or normalized_authority.get("session_id") != expected_session_id
-            or normalized_authority.get("task_id") != expected_task_id
-            or normalized_authority.get("lane_id") != expected_lane_id
-            or normalized_authority.get("scope")
-            != ("fault" if kind == "fault" else "formal")
-            or not isinstance(
-                normalized_authority.get("envelope_id"),
-                str,
-            )
-            or not isinstance(request, dict)
-            or request.get("session_id") != expected_session_id
-            or request.get("task_id") != expected_task_id
-            or request.get("root_ref") != expected_root_ref
-            or not isinstance(request_campaign_id, str)
-            or policy.campaign_id_pattern.fullmatch(request_campaign_id) is None
-        ):
-            raise CutoverEvidenceError(
-                "attempt_authority_slot_identity_invalid",
-                "production authority slot does not match the run class",
-                details={"identity": f"attempt_authority_slots[{number - 1}]"},
-            )
-    roots = create_blank_world_roots(
-        campaign_root,
-        attempt_kind=kind,
-        allowed_prerequisites=allowed_prerequisites,
-        architecture_qualification=architecture_qualification,
-        attempt_id=(
-            None
-            if normalized_authority is None
-            else str(normalized_authority["attempt_id"])
-        ),
-        run_class=normalized_run_class,
-        diagnostic_id=(
-            None
-            if normalized_run_class is AoxLiveRunClass.FORMAL_ACCEPTANCE
-            or normalized_authority is None
-            else str(
-                dict(normalized_authority["authority_request"]).get("campaign_id") or ""
-            )
-        ),
-    )
-    before = safe_micu_ledger_snapshot(ledger_path)
-    context = AttemptRunContext(
-        roots=roots,
-        identity=_normalize_identity(identity),
-        ledger_before=before,
-        attempt_number=number,
-        attempt_authority=normalized_authority,
-    )
-    try:
-        evidence = runner(context)
-    except Exception as exc:
-        if getattr(exc, "attempt_supervision_fatal", False) is True:
-            raise
-        evidence = _campaign_runner_failure_evidence(
-            roots,
-            failure_type=type(exc).__name__,
-            attempt_kind=kind,
-        )
-    if not allow_unisolated_non_live_test_runner:
-        from .aox_attempt_supervision import (
-            validate_attempt_supervision_receipt,
-        )
-
-        assert normalized_authority is not None
-        validate_attempt_supervision_receipt(
-            dict(evidence.get("product_path") or {}).get("attempt_supervision"),
-            attempt_id=roots.attempt_id,
-            attempt_kind=kind,
-            attempt_authority_id=str(normalized_authority["envelope_id"]),
-            attempt_authority_request_digest=str(
-                normalized_authority["request_digest"]
-            ),
-        )
-    after = safe_micu_ledger_snapshot(ledger_path)
-    if not allow_unisolated_non_live_test_runner:
-        control = evidence.get("scientific_attempt_control")
-        if normalized_run_class is AoxLiveRunClass.FORMAL_ACCEPTANCE and not isinstance(
-            control, dict
-        ):
-            raise CutoverEvidenceError(
-                "scientific_attempt_control_missing",
-                "production AOX runner did not return closed selected-chain evidence",
-                details={"identity": "scientific_attempt_control"},
-            )
-        assert normalized_authority is not None
-        if isinstance(control, dict):
-            control_authority = control.get("attempt_authority")
-            if (
-                not isinstance(control_authority, dict)
-                or control_authority.get("envelope_id")
-                != normalized_authority["envelope_id"]
-                or control_authority.get("root_ref")
-                != authority_root_ref(normalized_authority)
-            ):
-                raise CutoverEvidenceError(
-                    "scientific_attempt_authority_mismatch",
-                    "runner evidence did not consume the exact run-class authority",
-                    details={
-                        "identity": ("scientific_attempt_control.attempt_authority")
-                    },
-                )
-    return AttemptExecution(
-        roots=roots,
-        ledger_before=before,
-        ledger_after=after,
-        evidence=dict(evidence),
-    )
-
-
-@dataclass(slots=True)
-class AoxCutoverCampaign:
-    campaign_root: Path
-    identity: Mapping[str, object]
-    ledger_path: Path
-    positive_runner: AttemptRunner
-    fault_runner: AttemptRunner
-    allowed_prerequisites: Mapping[str, object]
-    architecture_qualification: Mapping[str, object]
-    launch_guard: Callable[[], None] | None = None
-    attempt_authority_slots: tuple[Mapping[str, object], ...] = ()
-    _allow_unisolated_non_live_test_runner: bool = dataclass_field(
-        default=False,
-        init=False,
-        repr=False,
-    )
-
-    @classmethod
-    def for_non_live_test(
-        cls,
-        *,
-        campaign_root: Path,
-        identity: Mapping[str, object],
-        ledger_path: Path,
-        positive_runner: AttemptRunner,
-        fault_runner: AttemptRunner,
-        allowed_prerequisites: Mapping[str, object],
-        architecture_qualification: Mapping[str, object],
-        launch_guard: Callable[[], None] | None = None,
-    ) -> Self:
-        """Construct a fixture campaign that intentionally omits OS supervision."""
-        campaign = cls(
-            campaign_root=campaign_root,
-            identity=identity,
-            ledger_path=ledger_path,
-            positive_runner=positive_runner,
-            fault_runner=fault_runner,
-            allowed_prerequisites=allowed_prerequisites,
-            architecture_qualification=architecture_qualification,
-            launch_guard=launch_guard,
-        )
-        campaign._allow_unisolated_non_live_test_runner = True
-        return campaign
-
-    def run(self) -> tuple[tuple[AttemptRunRecord, ...], dict[str, Any]]:
-        assert_formal_campaign_root(self.campaign_root)
-        records: list[AttemptRunRecord] = []
-        try:
-            for number, kind in enumerate(("positive", "positive", "fault"), start=1):
-                record, cutover_eligible = self._run_attempt(
-                    number=number,
-                    kind=kind,
-                )
-                records.append(record)
-                if kind == "positive" and (
-                    not record.verification.passed or not cutover_eligible
-                ):
-                    break
-        except Exception as exc:
-            decision = _campaign_driver_failure_decision(
-                records,
-                failure=exc,
-                campaign_root=self.campaign_root,
-            )
-            seal_campaign_decision(
-                decision,
-                self.campaign_root / "campaign-decision.json",
-            )
-            return tuple(records), decision
-        decision = evaluate_campaign(records)
-        decision_path = self.campaign_root / "campaign-decision.json"
-        seal_campaign_decision(decision, decision_path)
-        return tuple(records), decision
-
-    def _run_attempt(
-        self,
-        *,
-        number: int,
-        kind: str,
-    ) -> tuple[AttemptRunRecord, bool]:
-        runner = self.positive_runner if kind == "positive" else self.fault_runner
-        raw_authority = (
-            None
-            if number > len(self.attempt_authority_slots)
-            else self.attempt_authority_slots[number - 1]
-        )
-        execution = execute_aox_attempt(
-            campaign_root=self.campaign_root,
-            identity=self.identity,
-            ledger_path=self.ledger_path,
-            runner=runner,
-            allowed_prerequisites=self.allowed_prerequisites,
-            architecture_qualification=self.architecture_qualification,
-            number=number,
-            kind=kind,
-            authority=raw_authority,
-            run_class=AoxLiveRunClass.FORMAL_ACCEPTANCE,
-            launch_guard=self.launch_guard,
-            allow_unisolated_non_live_test_runner=(
-                self._allow_unisolated_non_live_test_runner
-            ),
-        )
-        roots = execution.roots
-        evidence = execution.evidence
-        if self._allow_unisolated_non_live_test_runner:
-            payload = build_attempt_bundle(
-                attempt_id=roots.attempt_id,
-                attempt_kind=kind,
-                identity=self.identity,
-                clean_world=roots.proof,
-                ledger_before=execution.ledger_before,
-                ledger_after=execution.ledger_after,
-                artifact_root=roots.artifact_root,
-                evidence=evidence,
-            )
-        else:
-            control = evidence.get("scientific_attempt_control")
-            assert isinstance(control, dict)
-            from .aox_selected_chain_evidence import (
-                build_selected_chain_attempt_bundle,
-            )
-
-            payload = build_selected_chain_attempt_bundle(
-                attempt_id=roots.attempt_id,
-                attempt_kind=kind,
-                identity=self.identity,
-                clean_world=roots.proof,
-                ledger_before=execution.ledger_before,
-                ledger_after=execution.ledger_after,
-                artifact_root=roots.artifact_root,
-                evidence=evidence,
-                scientific_attempt_control=control,
-            )
-        bundle_path = roots.evidence_root / "attempt-bundle.json"
-        bundle_digest = seal_attempt_bundle(payload, bundle_path)
-        verification = verify_attempt_bundle(
-            bundle_path,
-            artifact_root=roots.artifact_root,
-        )
-        return (
-            AttemptRunRecord(
-                attempt_id=roots.attempt_id,
-                attempt_kind=kind,
-                bundle_path=bundle_path,
-                artifact_root=roots.artifact_root,
-                bundle_digest=bundle_digest,
-                verification=verification,
-            ),
-            dict(payload.get("scientific_outcome") or {}).get("cutover_eligible")
-            is True,
-        )
-
-
-def _campaign_driver_failure_decision(
-    records: Sequence[AttemptRunRecord],
-    *,
-    failure: Exception,
-    campaign_root: Path,
-) -> dict[str, Any]:
-    driver_failure_kind = (
-        "attempt_supervision_fatal"
-        if getattr(failure, "attempt_supervision_fatal", False) is True
-        else "campaign_driver_failure"
-    )
-    candidate_code = getattr(failure, "code", None)
-    failure_code = (
-        candidate_code
-        if isinstance(candidate_code, str)
-        and _ERROR_CODE_PATTERN.fullmatch(candidate_code) is not None
-        else "campaign_driver_failed"
-    )
-    failure_payload = {
-        "schema_id": "aox_campaign_driver_failure@1",
-        "failure_code": failure_code,
-        "failure_type": type(failure).__name__,
-        "driver_failure_kind": driver_failure_kind,
-        "completed_attempt_digests": [record.bundle_digest for record in records],
-    }
-    failure_digest = canonical_digest(failure_payload)
-    _write_append_only_bytes(
-        campaign_root / "campaign-driver-failure.json",
-        canonical_json_bytes(
-            {"payload": failure_payload, "failure_digest": failure_digest}
-        )
-        + b"\n",
-        error_code="campaign_driver_failure_append_only",
-        error_message="campaign driver failure evidence already exists",
-    )
-    decision_payload = {
-        "schema_id": CAMPAIGN_DECISION_SCHEMA_ID,
-        "decided_at": datetime.now(UTC).isoformat(),
-        "decision": "NO-GO",
-        "attempt_digests": [record.bundle_digest for record in records],
-        "attempt_ids": [record.attempt_id for record in records],
-        "blocker": {
-            "code": failure_code,
-            "identity": "campaign.driver",
-            "message": "campaign driver failed before a qualifying attempt could be sealed",
-        },
-        "driver_failure_digest": failure_digest,
-        "driver_failure_kind": driver_failure_kind,
-    }
-    return {
-        **decision_payload,
-        "decision_digest": canonical_digest(decision_payload),
-    }
-
-
-def _campaign_runner_failure_evidence(
-    roots: BlankWorldRoots,
-    *,
-    failure_type: str,
-    attempt_kind: str,
-) -> dict[str, Any]:
-    artifact_root = roots.artifact_root
-    relative_path = "formal/campaign-driver-failure.json"
-    content = (
-        canonical_json_bytes(
-            {
-                "schema_id": "aox_campaign_driver_failure@1",
-                "status": "failed",
-                "failure_type": failure_type,
-            }
-        )
-        + b"\n"
-    )
-    target = _resolve_artifact_path(artifact_root, relative_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(content)
-    content_digest = _sha256(content)
-    return {
-        "provider_identities": [],
-        "engine_invocations": [],
-        "toolchain_identities": [],
-        "known_positive_probe": {
-            "probe_id": "probe_not_completed",
-            "status": "failed",
-            "bounded": True,
-            "formal_data_isolated": True,
-            "artifact_ids": [],
-            "checks": [
-                {
-                    "check_id": "required_provider_probe",
-                    "category": "provider",
-                    "status": "failed",
-                },
-                {
-                    "check_id": "required_hpc_probe",
-                    "category": "hpc",
-                    "status": "failed",
-                },
-            ],
-        },
-        "product_path": {
-            "entry_message_count": 0,
-            "canonical_api_only": True,
-            "participant_roles": [],
-            "launch_receipt": {
-                "architecture_qualification": roots.proof["architecture_qualification"],
-                "hpc_workspace_label": roots.hpc_workspace_label,
-                "root_identity": roots.proof["root_identity"],
-                "schema_id": AOX_LAUNCH_RECEIPT_SCHEMA_ID,
-            },
-        },
-        "approvals": [],
-        "operations": [],
-        "tasks": [],
-        "artifacts": [
-            {
-                "artifact_id": "art_campaign_driver_failure",
-                "relative_path": relative_path,
-                "scope": "formal",
-                "origin": "report",
-                "kind": "failure_evidence",
-                "provenance": {
-                    "producer": "aox_cutover_campaign",
-                    "failure_type": failure_type,
-                },
-            }
-        ],
-        "report": {
-            "report_id": "report_campaign_driver_failure",
-            "status": "failed_evidence",
-            "cutover_eligible": False,
-            "content_artifact_id": "art_campaign_driver_failure",
-            "content_digest": content_digest,
-            "artifact_ids": ["art_campaign_driver_failure"],
-            "source_ref_ids": [],
-            "claim_source_links": [],
-        },
-        "final_answer": {
-            "message_id": "campaign_driver_failure",
-            "content": "The blank-world attempt failed before product-path completion.",
-        },
-        "scientific_checks": {},
-        "warnings": [],
-        "degradations": ["required_product_path_unavailable"],
-        "scientific_outcome": {
-            "status": "failed",
-            "failure_code": "campaign_runner_failed",
-            "failure_type": failure_type,
-            "cutover_eligible": False,
-        },
-        "fault_injection": (
-            None
-            if attempt_kind == "positive"
-            else {
-                "fault_id": FAULT_ARTIFACT_BYTE_FLIP_ID,
-                "reached_target_seam": False,
-                "expected_failure_observed": False,
-                "failure_code": "campaign_runner_failed",
-            }
-        ),
-    }
-
-
 def _normalize_identity(identity: Mapping[str, object]) -> dict[str, str]:
     actual_keys = set(identity)
     if actual_keys != set(_IDENTITY_FIELDS):
@@ -4772,7 +4278,7 @@ def _validate_required_live_chain(
     browser_approval = launch_receipt.get("browser_approval_receipt")
     browser_observation = launch_receipt.get("browser_observation_receipt")
     if (
-        approval_mode not in {"auto", "chrome-once"}
+        approval_mode not in {"public-explicit", "chrome-once"}
         or not isinstance(campaign_attempt_number, int)
         or isinstance(campaign_attempt_number, bool)
         or campaign_attempt_number <= 0
@@ -4780,7 +4286,7 @@ def _validate_required_live_chain(
     ):
         raise CutoverEvidenceError(
             "campaign_launch_attestation_invalid",
-            "eligible AOX evidence lacks the exact campaign driver launch attestation",
+            "eligible AOX evidence lacks the exact public conductor launch attestation",
             details={"identity": "product_path.launch_receipt"},
         )
     public_api_receipts = _validate_public_api_receipts(
@@ -6908,9 +6414,7 @@ def _validate_attempt_semantics(
             details={"identity": "operations"},
         )
     tasks = [dict(item) for item in payload.get("tasks") or []]
-    eligible_positive = (
-        kind == "positive" and outcome.get("cutover_eligible") is True
-    )
+    eligible_positive = kind == "positive" and outcome.get("cutover_eligible") is True
     if eligible_positive:
         allowed_task_statuses = {"completed", "failed", "cancelled"}
         allowed_business_exits = {
@@ -7666,9 +7170,7 @@ def _verify_unified_final_deliverables(
         return
     receipt = dict(receipt_value)
     receipt_without_digest = dict(receipt)
-    declared_receipt_digest = receipt_without_digest.pop(
-        "receipt_digest", None
-    )
+    declared_receipt_digest = receipt_without_digest.pop("receipt_digest", None)
     control = payload.get("scientific_attempt_control")
     control_payload = control if isinstance(control, dict) else {}
     attempt = dict(control_payload.get("attempt") or {})
@@ -7676,8 +7178,7 @@ def _verify_unified_final_deliverables(
     validation_metadata = receipt.get("validation_metadata")
     receipt_artifacts = receipt.get("artifacts")
     if (
-        receipt.get("schema_id")
-        != aox_finalization.FINALIZATION_RECEIPT_SCHEMA_ID
+        receipt.get("schema_id") != aox_finalization.FINALIZATION_RECEIPT_SCHEMA_ID
         or receipt.get("status") != "passed"
         or declared_receipt_digest != canonical_digest(receipt_without_digest)
         or receipt.get("attempt_id") != attempt.get("attempt_id")
@@ -7687,8 +7188,7 @@ def _verify_unified_final_deliverables(
         or not isinstance(validation_metadata, dict)
         or set(validation_metadata) != S15_AOX_HMM_FIXED_DELIVERABLES
         or not all(
-            isinstance(metadata, dict)
-            for metadata in validation_metadata.values()
+            isinstance(metadata, dict) for metadata in validation_metadata.values()
         )
         or not isinstance(receipt_artifacts, list)
     ):
@@ -7743,9 +7243,7 @@ def _verify_unified_final_deliverables(
                 VerificationIssue(
                     code="aox_finalization_artifact_unreadable",
                     identity=f"artifact:{path}",
-                    message=(
-                        "atomic finalization deliverable is not readable UTF-8"
-                    ),
+                    message=("atomic finalization deliverable is not readable UTF-8"),
                 )
             )
     if unreadable:
@@ -7753,10 +7251,7 @@ def _verify_unified_final_deliverables(
     validation = validate_aox_final_artifacts(
         set(records_by_path),
         artifact_text,
-        {
-            str(path): dict(metadata)
-            for path, metadata in validation_metadata.items()
-        },
+        {str(path): dict(metadata) for path, metadata in validation_metadata.items()},
     )
     if validation.get("passed") is not True:
         earliest = validation.get("earliest_error")
@@ -7782,8 +7277,7 @@ def _verify_unified_final_deliverables(
                 code="aox_finalization_receipt_validation_drift",
                 identity="scientific_checks.finalization_receipt.validation",
                 message=(
-                    "offline validator result differs from the live/eval "
-                    "receipt result"
+                    "offline validator result differs from the live/eval receipt result"
                 ),
                 expected=canonical_digest(receipt.get("validation")),
                 actual=canonical_digest(validation),
@@ -7833,13 +7327,10 @@ def _verify_unified_final_deliverables(
         )
         return
     calculations_by_id = {
-        str(item.get("calculation_id") or ""): dict(item)
-        for item in calculations
+        str(item.get("calculation_id") or ""): dict(item) for item in calculations
     }
     candidate = calculations_by_id.get(aox_candidate.CALCULATION_ID)
-    finalizer = calculations_by_id.get(
-        aox_finalization.FINALIZATION_CALCULATION_ID
-    )
+    finalizer = calculations_by_id.get(aox_finalization.FINALIZATION_CALCULATION_ID)
     receipt_refs_by_path = {
         str(item.get("relative_path") or ""): dict(item)
         for item in receipt_artifacts
@@ -7856,54 +7347,42 @@ def _verify_unified_final_deliverables(
         if (
             len(calculations_by_id) != len(calculations)
             or candidate is None
-            or finalizer
-            != aox_finalization.finalization_calculation_receipt()
+            or finalizer != aox_finalization.finalization_calculation_receipt()
         ):
             raise ValueError("calculation receipt cardinality drifted")
         aox_candidate.validate_calculation_receipt(candidate)
-        expected_conditional = required_aox_conditional_output_paths(
-            validation
-        )
+        expected_conditional = required_aox_conditional_output_paths(validation)
         if conditional_ids != set(expected_conditional):
             raise ValueError("conditional calculation set drifted")
         if (
             candidate.get("target_input_digest")
-            != receipt_refs_by_path["aox_hmm/target.fasta"].get(
+            != receipt_refs_by_path["aox_hmm/target.fasta"].get("content_digest")
+            or candidate.get("scoring_input_digest")
+            != receipt_refs_by_path["aox_hmm/scored_ref_plus_hits.csv"].get(
                 "content_digest"
             )
-            or candidate.get("scoring_input_digest")
-            != receipt_refs_by_path[
-                "aox_hmm/scored_ref_plus_hits.csv"
-            ].get("content_digest")
             or candidate.get("output_digest")
             != receipt_refs_by_path["aox_hmm/AOX_candidates.fasta"].get(
                 "content_digest"
             )
-            or candidate.get("candidate_count")
-            != validation.get("candidate_count")
+            or candidate.get("candidate_count") != validation.get("candidate_count")
         ):
             raise ValueError("candidate receipt artifact binding drifted")
         for calculation_id, path in expected_conditional.items():
             calculation_receipt = calculations_by_id[calculation_id]
-            aox_finalization.validate_conditional_receipt(
-                calculation_receipt
-            )
-            if calculation_receipt.get(
-                "output_digest"
-            ) != receipt_refs_by_path[path].get("content_digest"):
+            aox_finalization.validate_conditional_receipt(calculation_receipt)
+            if calculation_receipt.get("output_digest") != receipt_refs_by_path[
+                path
+            ].get("content_digest"):
                 raise ValueError("conditional output binding drifted")
-            source_calculation = calculation_receipt.get(
-                "source_calculation"
-            )
+            source_calculation = calculation_receipt.get("source_calculation")
             if (
-                calculation_id
-                == aox_finalization.EMPTY_MEMBERSHIP_CALCULATION_ID
+                calculation_id == aox_finalization.EMPTY_MEMBERSHIP_CALCULATION_ID
                 and source_calculation != candidate
             ):
                 raise ValueError("empty membership source drifted")
             if (
-                calculation_id
-                == aox_finalization.UPSTREAM_EMPTY_CALCULATION_ID
+                calculation_id == aox_finalization.UPSTREAM_EMPTY_CALCULATION_ID
                 and isinstance(source_calculation, dict)
                 and source_calculation.get("output_digest")
                 != receipt_refs_by_path[
@@ -7918,15 +7397,13 @@ def _verify_unified_final_deliverables(
             ):
                 source_id = source_calculation.get("calculation_id")
                 if (
-                    source_id
-                    == aox_finalization.UPSTREAM_EMPTY_CALCULATION_ID
+                    source_id == aox_finalization.UPSTREAM_EMPTY_CALCULATION_ID
                     and source_calculation
                     != calculations_by_id.get(
                         aox_finalization.UPSTREAM_EMPTY_CALCULATION_ID
                     )
                 ) or (
-                    source_id
-                    != aox_finalization.UPSTREAM_EMPTY_CALCULATION_ID
+                    source_id != aox_finalization.UPSTREAM_EMPTY_CALCULATION_ID
                     and source_calculation.get("output_digest")
                     != receipt_refs_by_path["aox_hmm/target.fasta"].get(
                         "content_digest"
@@ -11902,7 +11379,6 @@ def _write_append_only_bytes(
 
 
 __all__ = [
-    "AoxCutoverCampaign",
     "AOX_LAUNCH_RECEIPT_SCHEMA_ID",
     "AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID",
     "AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS",

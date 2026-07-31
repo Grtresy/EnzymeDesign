@@ -546,18 +546,21 @@ receipt-bound execution task 已经 `completed`。缺失、
 source-snapshot implementation substitute 都返回 no-effect typed precondition failure，
 不得产生 attempt closure、execution completed 或 report handoff。
 
-AOX `authorize` 只发布 reviewable one-use exact-three formal plan，不创建 root；
-`run-live` 仍是唯一正式 acceptance command。独立 `authorize-diagnostic` 只发布
-`aox_diagnostic_attempt_authority_plan@1` 的单 positive-shaped slot，
-`run-diagnostic-live` 只接受该 schema 和 deterministic
-`<plan>.diagnostic-consumed.json`。两类 launcher 都在 live launch construction、root、
-MICU/provider/HPC/browser action 前 no-replace 消费各自 plan；consumption receipt 显式绑定
-run class、plan schema/digest 和 sibling filename。diagnostic root 使用
-`aox-diagnostic-*` namespace 与 append-only
-`aox_blank_world_diagnostic_decision@1`，所有 eligibility 字段固定 false；该 command
-不生成 `aox_blank_world_attempt_bundle@3`，也不调用 campaign reducer。missing/ambiguous
-run class、复制后错误 sibling、identity/qualification/resource drift、重复消费、跨类
-plan/receipt/root 或相同 digest reuse 均在 effect/root 前拒绝。
+AOX `authorize` 只发布 reviewable one-use exact-three formal plan，不创建 root；独立
+`authorize-diagnostic` 只发布永远 non-eligible 的单槽 diagnostic plan。r67 已删除
+`run-live` 与 `run-diagnostic-live`。`consume-authority` / `consume-diagnostic-authority`
+只验证并以 atomic no-replace sibling 消费 exact plan，生成 source-bound receipt 后停止，
+不创建 Host/session/root、不读取 credential，也不触发 MICU/provider/HPC/Chrome。
+
+未来经单独批准的测试只能由 Codex conductor 使用 public surface 编排：发送
+`POST /v3/sessions/{session_id}/messages`，逐次提交
+`POST /v3/sessions/{session_id}/runtime/drain`，轮询 exact command status，读取
+`GET /pending-approvals`、workspace 与 replayable events，并通过 public approval resolve
+处理人工决策。conductor 不调用 private repository/service/runner helper，也不注册 AOX
+observer；空 drain、无 wakeup、command terminal 和 child exit 都不是业务终态。
+Host canonical state、approval、fencing、unknown/external effect 与隔离不因此下放。
+最终 GO 只能来自 sealed `aox_blank_world_attempt_bundle@3` 的 offline verifier 和 exact-three
+campaign reducer。
 
 r59 closure-stage authority/reconstruction/live/CLI 已退役，public/CLI surface 不再包含
 `authorize-closure-stage-diagnostic` 或 `run-closure-stage-diagnostic-live`。historical

@@ -25,8 +25,6 @@ from openzyme_host_api.aox_attempt_supervision import supervision_contract_diges
 from openzyme_core.workflow_knowledge import default_workflow_registry
 import openzyme_host_api.aox_cutover_evidence as cutover_evidence
 from openzyme_host_api.aox_cutover_cli import main as cutover_cli_main
-from openzyme_host_api.aox_cutover_launch import AoxCutoverLaunchError
-from openzyme_host_api.aox_cutover_evidence import AoxCutoverCampaign
 from openzyme_host_api.aox_cutover_evidence import (
     AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID,
 )
@@ -64,23 +62,6 @@ from openzyme_host_api.aox_cutover_evidence import (
 from openzyme_host_api.aox_cutover_evidence import verify_sealed_source_tree_envelope
 from openzyme_host_api.aox_cutover_evidence import verify_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import build_attempt_bundle
-from openzyme_host_api.aox_diagnostic_authority import (
-    build_aox_diagnostic_authority_plan,
-)
-from openzyme_host_api.aox_diagnostic_authority import (
-    consume_aox_diagnostic_authority_plan,
-)
-from openzyme_host_api.aox_diagnostic_authority import (
-    diagnostic_authority_consumption_path,
-)
-from openzyme_host_api.aox_diagnostic_authority import (
-    publish_aox_diagnostic_authority_plan,
-)
-from openzyme_host_api.aox_diagnostic_run import (
-    AOX_DIAGNOSTIC_DECISION_FILENAME,
-)
-from openzyme_host_api.aox_diagnostic_run import AoxDiagnosticRun
-from openzyme_host_api.aox_live_run_class import AoxLiveRunClass
 from openzyme_host_api.aox_scientific_contract import (
     AOX_SELECTED_CHAIN_CONTRACT_V2,
 )
@@ -116,7 +97,6 @@ from openzyme_pipeline import aox_reference
 from openzyme_pipeline import aox_sequence_join
 from openzyme_pipeline import aox_similarity
 from openzyme_runtime import DEFAULT_PROVIDER_LIMITS
-from openzyme_runtime import LiveMicuTokenLedger
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -126,13 +106,9 @@ GOLDEN_ALIGNMENT = (
 )
 AOX_POST_UNIPROT_FILTER_ID = aox_sequence_join.CONTRACT_ID
 AOX_POST_UNIPROT_FILTER_CONTRACT_DIGEST = aox_sequence_join.CONTRACT_DIGEST
-AOX_UPSTREAM_EMPTY_MATERIALIZATION_ID = (
-    aox_finalization.UPSTREAM_EMPTY_CALCULATION_ID
-)
+AOX_UPSTREAM_EMPTY_MATERIALIZATION_ID = aox_finalization.UPSTREAM_EMPTY_CALCULATION_ID
 AOX_UPSTREAM_EMPTY_MATERIALIZATION_CONTRACT_DIGEST = (
-    aox_finalization.CALCULATION_CONTRACT_DIGESTS[
-        AOX_UPSTREAM_EMPTY_MATERIALIZATION_ID
-    ]
+    aox_finalization.CALCULATION_CONTRACT_DIGESTS[AOX_UPSTREAM_EMPTY_MATERIALIZATION_ID]
 )
 AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_ID = (
     aox_finalization.REFERENCE_ONLY_ALIGNMENT_CALCULATION_ID
@@ -143,14 +119,10 @@ AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_CONTRACT_DIGEST = (
     ]
 )
 AOX_EMPTY_MEMBERSHIP_ID = aox_finalization.EMPTY_MEMBERSHIP_CALCULATION_ID
-AOX_EMPTY_MEMBERSHIP_CONTRACT_DIGEST = (
-    aox_finalization.CALCULATION_CONTRACT_DIGESTS[
-        AOX_EMPTY_MEMBERSHIP_ID
-    ]
-)
-AOX_DELIVERABLE_NORMALIZATION_ID = (
-    aox_finalization.FINALIZATION_CALCULATION_ID
-)
+AOX_EMPTY_MEMBERSHIP_CONTRACT_DIGEST = aox_finalization.CALCULATION_CONTRACT_DIGESTS[
+    AOX_EMPTY_MEMBERSHIP_ID
+]
+AOX_DELIVERABLE_NORMALIZATION_ID = aox_finalization.FINALIZATION_CALCULATION_ID
 
 
 def _digest(value: str) -> str:
@@ -262,7 +234,7 @@ def _effective_config(
         },
         "driver": {
             "scenario": "aox_blank_world_cutover",
-            "approval_mode": "auto",
+            "approval_mode": "public-explicit",
             "browser_observation_mode": "chrome_devtools_mcp_file_handoff",
             "timeout_seconds": 7_200.0,
             "max_drains": 120,
@@ -868,11 +840,9 @@ def _refresh_sandbox_calculation_identity(operation: dict[str, object]) -> None:
         calculation_contract_digest = aox_candidate.CONTRACT_DIGEST
         calculation_implementation_digest = aox_candidate.IMPLEMENTATION_DIGEST
     elif calculation_id == AOX_DELIVERABLE_NORMALIZATION_ID:
-        calculation_contract_digest = (
-            aox_finalization.CALCULATION_CONTRACT_DIGESTS[
-                AOX_DELIVERABLE_NORMALIZATION_ID
-            ]
-        )
+        calculation_contract_digest = aox_finalization.CALCULATION_CONTRACT_DIGESTS[
+            AOX_DELIVERABLE_NORMALIZATION_ID
+        ]
         calculation_implementation_digest = aox_finalization.IMPLEMENTATION_DIGEST
     material = {
         "schema_version": "openzyme_sandbox_calculation_receipt@1",
@@ -3514,7 +3484,9 @@ def _valid_evidence(
                 "root_identity": clean_world["root_identity"],
                 "hpc_workspace_label": clean_world["hpc_workspace_label"],
                 "campaign_attempt_number": 3 if attempt_kind == "fault" else 1,
-                "approval_mode": ("chrome-once" if attempt_kind == "fault" else "auto"),
+                "approval_mode": (
+                    "chrome-once" if attempt_kind == "fault" else "public-explicit"
+                ),
                 "browser_approval_receipt": None,
                 "browser_observation_receipt": None,
                 "public_api_receipt_digest": canonical_digest(_public_api_receipts()),
@@ -9777,389 +9749,6 @@ def test_product_receipt_bytes_are_parsed_and_bound_offline(tmp_path: Path) -> N
     assert any(issue.code == "product_receipt_mismatch" for issue in result.issues)
 
 
-def test_diagnostic_shared_execution_uses_fresh_file_sqlite_without_bundle(
-    tmp_path: Path,
-) -> None:
-    identity = _identity()
-    prerequisites = _allowed_prerequisites(identity)
-    qualification = _architecture_qualification(identity)
-    plan = build_aox_diagnostic_authority_plan(
-        identity=identity,
-        allowed_prerequisites=prerequisites,
-        architecture_qualification=qualification,
-        issued_at="2026-07-23T00:00:00+00:00",
-        expires_at="2099-01-01T00:00:00+00:00",
-        max_micu=10_000,
-        max_cost_microunits=20_000,
-        max_wall_time_seconds=3_600,
-    )
-    plan_path = tmp_path / "diagnostic-authority.json"
-    publish_aox_diagnostic_authority_plan(plan, plan_path)
-    consumption = consume_aox_diagnostic_authority_plan(
-        plan,
-        plan_path=plan_path,
-        path=diagnostic_authority_consumption_path(plan_path),
-    )
-    diagnostic_root = tmp_path / str(plan["root_namespace"])
-
-    def runner(context):
-        connection = connect_sqlite(str(context.roots.sqlite_path))
-        try:
-            apply_sqlite_migrations(connection)
-        finally:
-            connection.close()
-        return {
-            "run_class": AoxLiveRunClass.DIAGNOSTIC.value,
-            "acceptance_eligible": False,
-            "diagnostic_observation": {
-                "product_path_completed": True,
-                "raw_facts": {
-                    "operation_status_counts": {"completed": 0},
-                    "task_status_counts": {"completed": 0},
-                },
-            },
-            "scientific_outcome": {
-                "status": "completed",
-                "cutover_eligible": False,
-            },
-            "report": {
-                "status": "published",
-                "cutover_eligible": False,
-            },
-            "approvals": [],
-            "operations": [],
-            "artifacts": [],
-        }
-
-    diagnostic = AoxDiagnosticRun.for_non_live_test(
-        diagnostic_root=diagnostic_root,
-        identity=identity,
-        ledger_path=tmp_path / "diagnostic-ledger.sqlite3",
-        runner=runner,
-        allowed_prerequisites=prerequisites,
-        architecture_qualification=qualification,
-        authority_plan=plan,
-        authority_consumption=consumption,
-        authority_plan_path=plan_path,
-    )
-
-    decision = diagnostic.run()
-
-    slot = plan["slot"]
-    assert isinstance(slot, dict)
-    attempt_root = diagnostic_root / str(slot["attempt_id"])
-    assert (attempt_root / "control-plane.sqlite3").is_file()
-    assert decision["acceptance_eligible"] is False
-    assert decision["status"] == "blocked"
-    assert decision["blocker"] == {
-        "code": "scientific_attempt_control_missing",
-        "identity": "diagnostic.runner",
-    }
-    assert decision["observations"]["product_path_completed"] is False
-    assert decision["observations"]["raw_facts"] == {
-        "operation_status_counts": {"completed": 0},
-        "task_status_counts": {"completed": 0},
-    }
-    assert decision["micu_ledger"]["before"] == decision["micu_ledger"]["after"]
-    assert (diagnostic_root / AOX_DIAGNOSTIC_DECISION_FILENAME).is_file()
-    assert not tuple(diagnostic_root.rglob("attempt-bundle.json"))
-    assert not tuple(diagnostic_root.rglob("campaign-decision.json"))
-
-
-@pytest.mark.parametrize(
-    ("approval_mode", "expected_decision", "expected_record_count"),
-    (("chrome-once", "GO", 3), ("auto", "NO-GO", 2)),
-)
-def test_campaign_derives_go_only_with_required_chrome_proof(
-    tmp_path: Path,
-    approval_mode: str,
-    expected_decision: str,
-    expected_record_count: int,
-) -> None:
-    ledger_path = tmp_path / "persistent-ledger.sqlite3"
-    ledger = LiveMicuTokenLedger(ledger_path, hard_limit_tokens=500_000_000)
-    ledger_identity = safe_micu_ledger_snapshot(ledger_path)["ledger_identity_digest"]
-    campaign_config = _effective_config(str(ledger_identity))
-    if approval_mode == "chrome-once":
-        campaign_config["driver"]["approval_mode"] = "chrome-once"
-        campaign_config["driver"]["ui_dist_digest"] = _digest("ui-dist")
-    campaign_identity = _identity(str(ledger_identity))
-    campaign_identity["config_digest"] = canonical_digest(campaign_config)
-    invocation_count = 0
-
-    def charge_micu() -> None:
-        nonlocal invocation_count
-        invocation_count += 1
-        reservation = ledger.reserve_attempt(
-            scenario="aox_blank_world_cutover",
-            purpose="positive_e2e",
-            kind="tool_calling",
-            model="micu-live",
-            attempt=invocation_count,
-            estimated_input_tokens=2,
-            reserved_output_tokens=2,
-        )
-        ledger.reconcile_success(
-            reservation,
-            {"input_tokens": 2, "output_tokens": 2},
-        )
-
-    def positive_runner(context):
-        charge_micu()
-        evidence = _valid_evidence(
-            context.roots.artifact_root,
-            attempt_kind="positive",
-            clean_world=context.roots.proof,
-            run_suffix=context.roots.attempt_id,
-            effective_config=campaign_config,
-        )
-        if approval_mode == "chrome-once" and context.attempt_number == 1:
-            browser_receipt = _browser_approval_receipt(evidence)
-            _attach_browser_receipt_artifacts(
-                evidence,
-                artifact_root=context.roots.artifact_root,
-                browser_receipt=browser_receipt,
-            )
-        launch = evidence["product_path"]["launch_receipt"]
-        launch["campaign_attempt_number"] = context.attempt_number
-        launch["approval_mode"] = approval_mode
-        if not (approval_mode == "chrome-once" and context.attempt_number == 1):
-            launch["browser_approval_receipt"] = None
-            launch["browser_observation_receipt"] = None
-        return evidence
-
-    def fault_runner(context):
-        charge_micu()
-        evidence = _valid_evidence(
-            context.roots.artifact_root,
-            attempt_kind="fault",
-            clean_world=context.roots.proof,
-            run_suffix=context.roots.attempt_id,
-            effective_config=campaign_config,
-        )
-        launch = evidence["product_path"]["launch_receipt"]
-        launch["campaign_attempt_number"] = context.attempt_number
-        launch["approval_mode"] = approval_mode
-        launch["browser_approval_receipt"] = None
-        launch["browser_observation_receipt"] = None
-        return evidence
-
-    campaign = AoxCutoverCampaign.for_non_live_test(
-        campaign_root=tmp_path / "campaign",
-        identity=campaign_identity,
-        ledger_path=ledger_path,
-        positive_runner=positive_runner,
-        fault_runner=fault_runner,
-        allowed_prerequisites=_allowed_prerequisites(campaign_identity),
-        architecture_qualification=_architecture_qualification(campaign_identity),
-    )
-
-    records, decision = campaign.run()
-
-    assert len(records) == expected_record_count
-    assert all(record.verification.passed for record in records)
-    assert (
-        len({record.artifact_root.parent.name for record in records})
-        == expected_record_count
-    )
-    assert decision["decision"] == expected_decision
-    assert decision["attempt_digests"] == [record.bundle_digest for record in records]
-    assert decision["decision_digest"] == canonical_digest(
-        {key: value for key, value in decision.items() if key != "decision_digest"}
-    )
-    if approval_mode == "auto":
-        assert decision["blocker"]["code"] == "fault_launch_attestation_invalid"
-
-
-def test_campaign_rejects_reused_positive_runtime_receipts(tmp_path: Path) -> None:
-    ledger_path = tmp_path / "persistent-ledger.sqlite3"
-    ledger = LiveMicuTokenLedger(ledger_path, hard_limit_tokens=500_000_000)
-    ledger_identity = safe_micu_ledger_snapshot(ledger_path)["ledger_identity_digest"]
-    campaign_config = _effective_config(str(ledger_identity))
-    campaign_config["driver"]["approval_mode"] = "chrome-once"
-    campaign_config["driver"]["ui_dist_digest"] = _digest("ui-dist")
-    campaign_identity = _identity(str(ledger_identity))
-    campaign_identity["config_digest"] = canonical_digest(campaign_config)
-    invocation_count = 0
-
-    def charge_micu() -> None:
-        nonlocal invocation_count
-        invocation_count += 1
-        reservation = ledger.reserve_attempt(
-            scenario="aox_blank_world_cutover",
-            purpose="positive_e2e",
-            kind="tool_calling",
-            model="micu-live",
-            attempt=invocation_count,
-            estimated_input_tokens=1,
-            reserved_output_tokens=1,
-        )
-        ledger.reconcile_success(
-            reservation,
-            {"input_tokens": 1, "output_tokens": 1},
-        )
-
-    def positive_runner(context):
-        charge_micu()
-        evidence = _valid_evidence(
-            context.roots.artifact_root,
-            attempt_kind="positive",
-            clean_world=context.roots.proof,
-            effective_config=campaign_config,
-        )
-        if context.attempt_number == 1:
-            browser_receipt = _browser_approval_receipt(evidence)
-            _attach_browser_receipt_artifacts(
-                evidence,
-                artifact_root=context.roots.artifact_root,
-                browser_receipt=browser_receipt,
-            )
-        launch = evidence["product_path"]["launch_receipt"]
-        launch["campaign_attempt_number"] = context.attempt_number
-        launch["approval_mode"] = "chrome-once"
-        if context.attempt_number != 1:
-            launch["browser_approval_receipt"] = None
-            launch["browser_observation_receipt"] = None
-        return evidence
-
-    def fault_runner(context):
-        charge_micu()
-        evidence = _valid_evidence(
-            context.roots.artifact_root,
-            attempt_kind="fault",
-            clean_world=context.roots.proof,
-            run_suffix=context.roots.attempt_id,
-            effective_config=campaign_config,
-        )
-        launch = evidence["product_path"]["launch_receipt"]
-        launch["campaign_attempt_number"] = context.attempt_number
-        launch["approval_mode"] = "chrome-once"
-        launch["browser_approval_receipt"] = None
-        launch["browser_observation_receipt"] = None
-        return evidence
-
-    campaign = AoxCutoverCampaign.for_non_live_test(
-        campaign_root=tmp_path / "campaign",
-        identity=campaign_identity,
-        ledger_path=ledger_path,
-        positive_runner=positive_runner,
-        fault_runner=fault_runner,
-        allowed_prerequisites=_allowed_prerequisites(campaign_identity),
-        architecture_qualification=_architecture_qualification(campaign_identity),
-    )
-
-    records, decision = campaign.run()
-
-    assert len(records) == 3
-    assert all(record.verification.passed for record in records)
-    assert decision["decision"] == "NO-GO"
-    assert decision["blocker"]["code"] == "campaign_positive_not_independent"
-
-
-def test_campaign_launch_guard_fails_before_attempt_roots_or_runner_call(
-    tmp_path: Path,
-) -> None:
-    campaign_root = tmp_path / "campaign"
-    guard_calls = 0
-    runner_calls = 0
-
-    def launch_guard() -> None:
-        nonlocal guard_calls
-        guard_calls += 1
-        raise AoxCutoverLaunchError(
-            "aox_launch_snapshot_drift",
-            "private launch detail must not enter sealed evidence",
-        )
-
-    def runner(context):
-        nonlocal runner_calls
-        runner_calls += 1
-        raise AssertionError(f"runner must not receive {context!r}")
-
-    campaign = AoxCutoverCampaign(
-        campaign_root=campaign_root,
-        identity=_identity(),
-        ledger_path=tmp_path / "persistent-ledger.sqlite3",
-        positive_runner=runner,
-        fault_runner=runner,
-        allowed_prerequisites=_allowed_prerequisites(),
-        architecture_qualification=_architecture_qualification(),
-        launch_guard=launch_guard,
-    )
-
-    records, decision = campaign.run()
-
-    assert records == ()
-    assert guard_calls == 1
-    assert runner_calls == 0
-    assert decision["decision"] == "NO-GO"
-    assert decision["blocker"]["code"] == "aox_launch_snapshot_drift"
-    assert not (tmp_path / "persistent-ledger.sqlite3").exists()
-    assert campaign_root.is_dir()
-    assert all(not path.is_dir() for path in campaign_root.iterdir())
-    failure = json.loads(
-        (campaign_root / "campaign-driver-failure.json").read_text(encoding="utf-8")
-    )
-    assert failure["payload"]["failure_code"] == "aox_launch_snapshot_drift"
-    assert "private launch detail" not in json.dumps(failure, sort_keys=True)
-
-
-def test_fault_runner_exception_is_sealed_and_campaign_stays_no_go(
-    tmp_path: Path,
-) -> None:
-    ledger_path = tmp_path / "persistent-ledger.sqlite3"
-    ledger = LiveMicuTokenLedger(ledger_path, hard_limit_tokens=500_000_000)
-    ledger_identity = safe_micu_ledger_snapshot(ledger_path)["ledger_identity_digest"]
-    campaign_identity = _identity(str(ledger_identity))
-    campaign_config = _effective_config(str(ledger_identity))
-    invocation_count = 0
-
-    def positive_runner(context):
-        nonlocal invocation_count
-        invocation_count += 1
-        reservation = ledger.reserve_attempt(
-            scenario="aox_blank_world_cutover",
-            purpose="positive_e2e",
-            kind="tool_calling",
-            model="micu-live",
-            attempt=invocation_count,
-            estimated_input_tokens=1,
-            reserved_output_tokens=1,
-        )
-        ledger.reconcile_success(
-            reservation,
-            {"input_tokens": 1, "output_tokens": 1},
-        )
-        return _valid_evidence(
-            context.roots.artifact_root,
-            attempt_kind="positive",
-            clean_world=context.roots.proof,
-            run_suffix=context.roots.attempt_id,
-            effective_config=campaign_config,
-        )
-
-    def fault_runner(context):
-        del context
-        raise RuntimeError("private fault runner detail")
-
-    campaign = AoxCutoverCampaign.for_non_live_test(
-        campaign_root=tmp_path / "campaign",
-        identity=campaign_identity,
-        ledger_path=ledger_path,
-        positive_runner=positive_runner,
-        fault_runner=fault_runner,
-        allowed_prerequisites=_allowed_prerequisites(campaign_identity),
-        architecture_qualification=_architecture_qualification(campaign_identity),
-    )
-
-    records, decision = campaign.run()
-
-    assert len(records) == 3
-    assert records[-1].verification.passed is True
-    assert decision["decision"] == "NO-GO"
-    assert decision["blocker"]["code"] == "fault_not_fail_closed"
-
-
 def test_campaign_remains_no_go_for_missing_or_unverified_attempt() -> None:
     failed = AttemptRunRecord(
         attempt_id="positive-failed",
@@ -10180,34 +9769,6 @@ def test_campaign_remains_no_go_for_missing_or_unverified_attempt() -> None:
 
     assert decision["decision"] == "NO-GO"
     assert decision["blocker"]["code"] == "attempt_verification_failed"
-
-
-def test_campaign_runner_failure_is_sealed_as_safe_no_go_evidence(
-    tmp_path: Path,
-) -> None:
-    def failing_runner(context):
-        del context
-        raise RuntimeError("private /tmp/detail and api_key=must-not-project")
-
-    campaign = AoxCutoverCampaign.for_non_live_test(
-        campaign_root=tmp_path / "campaign",
-        identity=_identity(),
-        ledger_path=tmp_path / "persistent-ledger.sqlite3",
-        positive_runner=failing_runner,
-        fault_runner=failing_runner,
-        allowed_prerequisites=_allowed_prerequisites(),
-        architecture_qualification=_architecture_qualification(),
-    )
-
-    records, decision = campaign.run()
-
-    assert len(records) == 1
-    assert records[0].verification.passed is True
-    assert decision["decision"] == "NO-GO"
-    assert decision["blocker"]["code"] == "campaign_runner_failed"
-    serialized = records[0].bundle_path.read_text(encoding="utf-8")
-    assert "must-not-project" not in serialized
-    assert str(tmp_path) not in serialized
 
 
 def test_campaign_decision_is_digest_checked_and_append_only(tmp_path: Path) -> None:

@@ -302,43 +302,19 @@ effect/route allowlist、attempt count、MICU/cost/wall-time、expiry 与 policy
 唤醒原 assignee，runtime 在 provider 前从 canonical attempt/request/lifecycle 重建 facts，
 不能仅把旧 task prose 交给 fresh teammate。
 
-formal scientific attempt 的 runtime barrier observer 也必须服从 rollover：AOX driver
-只在一次 barrier snapshot 内，于当前唯一 open scope 上登记 exact root
-`aox-attempt-driver:*` writer，snapshot 结束即退休。它不得跨 runtime drain、
-admission/closure finalizer、外部 dispatch 或 approval wait；barrier 只排除这个 exact
-observer，其他 active writer 仍阻止 ready。长期 outer writer 会阻塞
-pre-attempt-session → attempt scope rollover，缺失 observer 则必须 fail closed，二者都
-不能用 runtime idle 推断替代。
+r67 起，AOX 不再拥有 runtime observer、Core runtime barrier/observer-writer 或任何
+drive-until-terminal/no-wakeup/scope-rollover policy。Codex 测试员只通过 public Host
+API/CLI 明确发送 message、一次一次执行 bounded drain、处理 pending approval，并读取
+workspace/events/receipt；每个动作的继续、停止或重计划都由测试员根据 public facts 决定，
+Harness 不代替它作业务判断。删除 observer 不删除 Host authority：mutation scope、writer
+fence、attempt transition、approval、unknown/external effect 与 sandbox/process isolation
+继续由 canonical service 原子验证和持久化。
 
-完整 session runtime observation 与 terminal runtime command 后的 attached-writer
-settlement 是同一 barrier 合同的两个消费面，必须共用一个 bounded observer context。
-drain coordinator 显式下传 `purpose + attempt_authority`；formal 路径不得直接调用
-runtime-barrier projection。observer 必须在返回、异常、sleep、下一次 compact approval
-read 或下一次 drain 前退休，不能因为窄检查只返回 boolean 就绕过 identity 与 rollover
-约束。
-
-session-scoped writer admission 必须在一个 `BEGIN IMMEDIATE`/owning atomic
-transaction 中完成 scope 列表、唯一 open-scope cardinality、parent authority 校验、
-writer row 注册与 write authority 形成。scope selection 与 registration 之间不得留下
-freeze/finalizer 可插入的 TOCTOU 窗口。没有任何 mutation scope 的旧 session 保持
-untracked compatibility；已有 scope 但零 open、注册时 scope 已关闭或出现多重 open
-scope，则分别返回 typed `zero_open_scope`、
-`scope_closed_during_registration`、`ambiguous_open_scopes`，且 ambiguous 永不进入
-rollover retry。
-
-terminal command 与 closure finalizer 可以在同一时段收敛：command 已 terminal 后，
-exact attempt scope 可能已提交为 `freezing|quiescent`，因此 writer admission 正常关闭，
-而 post-attempt scope 尚未对 reader 可见。driver 只在
-`mutation_writer_admission_closed + allowed typed admission reason + exact formal
-authority` 同时成立时调用 Core 的 monotonic rollover projector。projector 严格绑定
-session/envelope/task/lane/campaign/workflow/scope/root：它只接受
-`closure_requested + freezing|quiescent|sealed + zero open/zero competitor` 的 pending
-前态，或 `closed + sealed attempt + deterministic open session child` 的 committed 后态。
-pending 在原 command deadline 内等待；若 observer 异常形成后 finalizer 已提交 post
-scope，则后态直接重建一次短 barrier。两者都不发下一次 drain、不重开 scope、不重试
-agent/tool。deadline 到期返回
-`scientific_attempt_scope_rollover_stalled`。parent-scope mismatch、缺失/多重 attempt、
-任意 open/竞争 scope 仍保留原 observer identity failure。
+`ScientificAttemptService.finalize_closure_request()` 独占 attempt scope seal、immutable
+closure 与唯一 post-attempt child scope 的短事务。public consumer 只会看到提交前态或
+提交后态；真正的 missing/ambiguous scope、active writer、identity mismatch 或未退休
+external effect 继续 fail closed。测试编排器不得注册 synthetic observer、调用 private
+repository helper、盲重试 rollover，或把空 drain、无 wakeup、进程退出解释成业务终态。
 
 Host 从 exact attempt scope 导出完整 operation/run occurrence universe。agent 使用
 CAS-protected selection revision，把每项显式标为 `adopted`、`superseded`、`failed` 或
@@ -349,8 +325,8 @@ positive/probe/fault reuse 禁止。closure 需同时验证 sealed selection、e
 authorization consumption 和 materialization lineage，但 closure 仍不是 task terminal。
 attempt closure 的 scope transition 还必须在一个短本地 write transaction 中原子提交：
 attempt scope seal、immutable closure 与唯一 post-attempt session scope open 对并发
-runtime barrier 只能呈现前态或后态，不能暴露 committed 零 open scope 中间态；真正
-missing/ambiguous scope 继续 fail closed，不能以 driver blind retry 掩盖 non-atomic
+public reader 只能看到前态或后态，不能暴露 committed 零 open scope 中间态；真正
+missing/ambiguous scope 继续 fail closed，不能以 conductor blind retry 掩盖 non-atomic
 finalizer。当前该事务由 Core 的 `ScientificAttemptService.finalize_closure_request()`
 直接拥有，而不是依赖某个 Host caller 恰好选择 write scope；两个并发 finalizer 通过同一
 `BEGIN IMMEDIATE`/savepoint 语义串行化并只留下一个规范 child scope。Host 的 admission
@@ -448,22 +424,21 @@ report delegation/publication/completion 均重新验证该 receipt 的 exact
 attempt/selection/task/agent/run/source/calculation/artifact bindings；report handoff
 还必须等待 receipt-bound execution task 已完成。
 
-r66 将 sandbox-local pre-admission failure 纳入同一 canonical causal projection。
-`openzyme_pipeline` SDK 保留 caller 的 exact stage descriptor，由 Host 在
-ControlledOperation admission 前验证并封存 `hpc_stage_ref_required/no_effect`；
+r66/r67 将 sandbox-local pre-admission failure 纳入同一 canonical causal projection。
+`openzyme_pipeline` SDK 保留 caller 的 exact stage descriptor/provider output authority，
+由 Host 在 ControlledOperation admission 前验证并封存
+`hpc_stage_ref_required|provider_output_path_invalid/no_effect`；
 terminal SandboxRun 再以 source-bound `sandbox_exec_nonzero` 包装该唯一 cause。
 `sandbox.exec` 返回 failed ToolResult，`ENGINE_COMPLETED` wake facts 继续投影相同
 cause/wrapper。该路径证明 operation 未 admit、external dispatch 未开始；missing、
 ambiguous、cross-source 或 cross-attempt binding 均 fail closed。
 
-formal observer 对 exact selected attempt 的 local sandbox failure 与 controlled-operation
-failure采用同一 policy：`agent_can_replan/no_effect`、business-nonterminal task 与 canonical
-owner handoff 完整时，它们是可保留的 nonbusiness history；probe、unsafe/unknown effect、
-显式 task failed/blocked/cancelled 或 identity drift 仍是 fatal。AOX 不再维护 one-shot
-handoff 或临时放大 drain limit；pinned `max_signals=1` ordinary bounded drains 推进 existing
-canonical work，complete selected-chain closure、task/report state 或两次相同 replay-safe
-no-wakeup observation决定收敛。已被同一 closed selected chain disposition 的 safe history
-保持可查询，但不继续 poisoning 业务终态。
+Host/canonical wake facts 与 offline evidence projection 对 exact selected attempt 的 local
+sandbox failure 和 controlled-operation failure 使用同一 source binding。safe disposed history
+保持可查询但不污染 closed selected-chain eligibility；probe、unsafe/unknown effect、显式
+task failed/blocked/cancelled 或 identity drift 仍由 Host/verifier fail closed。r67 已删除
+one-shot handoff、drain override 及整个 automatic observer/convergence policy；Codex conductor
+只能逐次调用 public bounded drain，不能从 no-wakeup或历史 failure 自动合成业务终态。
 
 首次消费的非 `rNN` closure-stage plan
 `sha256:81cc5ba229775fee8bdc327a14f00efe0a8e15c01ccf567749b5cc0e2457a7e4`
@@ -514,20 +489,11 @@ projector 的 committed 后态，且 terminal notification 应机械 settlement�
 
 formal acceptance 保留现有 exact-three `positive, positive, fault` authority 与全部 GO
 门槛。两类 plan 必须分别获得 operator 精确批准，内容 digest 相同也不产生复用权限。
-当前实现以 `AoxLiveRunClass` 和共享的单-attempt execution core 固化该边界：
-`authorize-diagnostic` 只生成
-`aox_diagnostic_attempt_authority_plan@1` 的单槽 plan，
-`run-diagnostic-live` 只消费其 `.diagnostic-consumed.json` sibling、创建
-`aox-diagnostic-*` root，并 append-only 封存
-`aox_blank_world_diagnostic_decision@1`。runner 会把所有
-`acceptance_eligible` / `cutover_eligible` 投影强制为 false；diagnostic collector
-不调用 selected-chain `@3` builder 或 campaign reducer。正式 `authorize` / `run-live`
-仍只接受原 exact-three plan，正式 consumption receipt 升级为显式绑定
-`run_class=formal_acceptance`、plan schema 和 deterministic filename 的
-`aox_live_attempt_authority_consumption@2`。两类 validator、publisher、consumer、
-slot identity、root ancestry、collector 和 verifier 均互拒；移除 run-class 字段或伪造相同
-digest 也不能跨类。实现完成不等于 live 获批，任何 diagnostic 与后继 formal campaign
-仍须分别取得 operator 精确授权。
+`authorize-diagnostic` 只生成永久 non-eligible 单槽 plan；`authorize` 只生成 exact-three
+formal plan。`consume-diagnostic-authority` 与 `consume-authority` 仅验证 deterministic
+sibling 并原子消费 exact plan，生成 source-bound receipt 后停止，不创建 root/session或执行
+attempt。两类 validator、publisher、slot identity 与 verifier 仍互拒。实现完成不等于 live
+获批，任何后继 campaign 仍须取得精确授权并由 public-only Codex conductor编排。
 
 ---
 
@@ -840,15 +806,11 @@ trace/activity/consistency/event/workspace projection。公开 `runtime_command_
 settlement；不得先序列化再解释、按对象 identity 分类、重扫 mutable signal/task/failure/agent
 repository，或把 task business status 反向映射成 scheduler failure。
 
-AOX bounded driver 只从经过 v2 validator 的 command outcome 读取
-`processed_signal_count` 与 `replay_safe`。两个连续 command 都是 replay-safe、零 signal，
-且 timestamp/lease/event/command-id-independent 的 canonical work fingerprint 不变，同时
-不存在 pending/claimed signal、pending approval、active invocation/continuation、working agent 或
-in-flight mutation writer 时，driver 立即停止无证据空转。若 ready unfinished work 仍绑定
-actionable recovery observation，typed blocker 是 `formal_agent_recovery_unresolved`；
-否则是 `formal_runtime_stalled_no_wakeup`。单次 empty observation、任何实际 progress 或
-eligible wake source 都会重置确认；driver 不 auto-enqueue、不制造 successor，也不改变
-`runtime/drain` 或 task semantics。
+r67 删除 AOX bounded driver、work fingerprint 与 two-empty/no-wakeup reducer。每个 public
+runtime command 仍返回 validator-backed `processed_signal_count`、`replay_safe` 与 typed
+projection outcome，但 Host 不跨 command推导继续/停止或业务 terminal。Codex conductor
+显式决定是否提交下一条 command；它不能 auto-enqueue、制造 successor 或改变
+`runtime/drain` / task semantics。
 
 scheduler layer 的 `completed` 表示 bounded batch 已完成结算，不表示每个 signal、task
 或业务目标成功。teammate max-step 只有在 exact failed signal、同 attempt 的 canonical
@@ -927,6 +889,7 @@ V3 execution 的目标主路径是 executor-owned persistent sandbox workspace�
 - Host-supervised bio provider 不得把按记录线性增长的 identity map 塞进单个 FASTA Artifact 的 inline metadata。NCBI/UniProt 的完整逐序列 identity 记录保存在同一 provider result 的独立 canonical `metadata.json` Artifact；FASTA Artifact 只以 `sequence_digest_count`、exact canonical `sequence_digest_index_digest` 与 `canonical_sequence_digest_index@1` 替代线性 map，并继续保留固定 database/retrieval/release/identity/validation provenance。该 index 对 NCBI 使用产出 FASTA 的 requested accession，对 UniProt 只使用产出 FASTA 的 active primary accession；typed inactive identity 不计入。digest preimage 是按 key 排序、`indent=2`、ASCII-safe escape、末尾一个 LF 的 UTF-8 JSON object，count 同时等于 object member 与 FASTA record 数。它只是 bounded catalog summary，不是 cutover eligibility 输入；formal UniProt 的既有 raw→parsed metadata→FASTA 科学闭包仍须独立验证，其他 provider 路径继续依赖各自 byte-Artifact/operation contract 而不能把该摘要当作 raw normalization 证明。Host 在写入任何 provider draft 前必须对整组 draft 完成 path 合法性、组内重复、既有 catalog digest 冲突和 registration metadata transport 预检；这关闭已知的 conflict/oversized-metadata partial write，但 ArtifactBoundary 的逐件 validation/seal/catalog commit 仍非跨件事务，不能据此宣称 set-level atomicity
 - `bio.uniprot_fetch` 的 route policy id 保持 `bio.uniprot_fetch.provider:v1`，provider config 更新为 `provider_config:uniprot:v3`，identity contract 更新为 `uniprot_primary_sequence_identity@2`。一次 SDK 调用、一个 controlled operation 和一次 approval 最多承载 `100000` 个 accession；Host 固定拆成每 query 最多 `100` 个 accession，`batch_size` 仍只控制 UniProt response page 的 `size`（上限 `100`），`Link: rel=next` page cap 按 query 独立计算。每个 response page 与生成它的 exact query accession slice/digest 绑定；返回另一个 query 中的 requested identity 也属于 cross-query swap，必须 `provider_identity_mismatch`。next link 只允许 exact `https://rest.uniprot.org[:443]/uniprotkb/search` 且无 userinfo/fragment；malformed/off-origin 以 `provider_schema_drift` 停止，public diagnostic 只保留 link digest 和固定 expected endpoint。active sequence records 与 typed inactive records 必须对 complete requested set 形成 exact 互斥分区；inactive 仅在 primary accession 精确等于 producing query 中的 requested accession 时接受，并形成 `inactiveReasonType=DELETED|MERGED` 的判别联合。`DELETED` 保留非空 canonical deleted reason，`MERGED` 保留非空、去重的 `mergeDemergeTo` replacement-target annotations；两者都保留 UniParc id、release/retrieval 与 response/record digests，固定 `identity_replaced=false`，无 sequence/audit，且不得跟随、抓取或使用 replacement、UniParc、HMMER sequence。unknown、`DEMERGED`、malformed inactive、active 缺 sequence、完全无返回或 partition 不闭合均 fail closed。approval 前 SDK 投影 accession/query batch 数（默认 `100` query cap 下当前完整 `37772` 对应 `378`）只是透明预测，不是实际 limit 或 approval authority；Host 注入的 provider config 可收紧 cap，并在 HTTP 前作最终校验。把 canonical estimate/actual limits 从 route policy+Host config 重建并绑定 approval/config identity 的大改仅记录在 [Host-authoritative controlled-operation resource estimate and limit snapshot](v3/architecture-proposals/host-authoritative-controlled-operation-resource-estimate-and-limit-snapshot.md)，本 Goal 不实施。transcript 继续绑定 query/page 坐标、accession range/count/digest 与 response digest；HTTP failure 只增补 query-batch index/count/start/count/digest 和 completed/requested page 坐标，不回显 raw URL、accession list 或 cursor。duplicate detection 用 frequency-map 线性扫描并只对 duplicate keys 稳定排序。所有 query/page 仍属于同一 operation，不得拆成重复 approval。当前输入已是 primary UniProt accession；切换 async ID Mapping 所需的 durable job handle、submit/poll/result resume、幂等与 evidence/verifier schema 迁移不在本 Goal 内
 - `bio.hmmer_search` 的 route policy id 保持 `bio.hmmer_search.provider:v1`，provider config 更新为 `provider_config:ebi_hmmer:v3`。它保留 v2 的无缺口 materialization：result `page_size` 默认与上限均为 `1000`；poll URL 显式携带 `page=1&page_size=<configured>`，terminal poll payload 只提供 status 与 `result.stats.nreported` closure，即使 body 含 hits 也不作 result page；result materialization 永远从同一 page size 的显式 `page=1` 开始，再逐页读到稳定 `page_count`。v3 另把 EBI/Celery `RETRY` 识别为同一 accepted job 的非终态，继续轮询原 job id，绝不重新 submit；poll deadline 为 `3300s`，在 `3600s` sandbox 上限内覆盖 provider 默认 30 分钟首次 retry 边界并保留 300 秒 retirement 余量。deadline 后仍为非终态映射为 retryable `provider_timeout`；`FAILURE`、未知状态、跨页 `page_count` 漂移、非截断 raw hit count 不等于 terminal `nreported`、或 SUCCESS empty 不是 `nreported=0/page_count=0/hits=[]` 均 fail closed。这一修复不改 `max_hits`、provider order 或 parsed-hit schema
+- provider output authority 必须由 Host 在 ControlledOperation admission 前验证。SDK 保留 caller 的 exact `output_dir`；Host 只接受 canonical `/workspace/output` descendant，拒绝 alias、traversal、backslash/control character 以及与 declared `expected_outputs` 不一致的值，并封存 `provider_output_path_invalid/no_effect`。该失败不创建 operation、不 dispatch provider，仍返回 failed ToolResult；terminal SandboxRun 的 `sandbox_exec_nonzero` 只能作为 source-bound wrapper，canonical wake facts 保留 earliest typed cause
 - sandbox provider operation 已建立 request draft 后遇到 `PipelineSdkFailure` 时，Host 通过同一 sandbox artifact boundary 登记 `provider_request.json` / `provider_observation.json` / `provider_error.json` 三件 diagnostic artifact，然后以原 canonical code/stage/retryable 语义重抛，仅增补 safe artifact refs。这不是 provider success，不进入 AOX 17 件 normalized deliverable，也不授权 retry、operation replay 或 alternate provider
 - provider、artifact registration 与 HPC fetch 的 bounded response 允许在嵌套 provenance 中重复描述同一 artifact，但 executor 不应递归猜测 envelope。`openzyme_pipeline.artifacts.provider_file_ref`、`registered_artifact_ref` 与 `fetched_output_ref` 是按 response origin 互斥的 selector，不是可串联 pipeline：前者只读 provider manifest，中者只接受 exact `artifact_registration_response@2` 及其 bounded metadata/validation summary，后者只读 `fetch_refs`；summary 缺少原 logical metadata 字段不表示 catalog metadata 被截断或为空。durable provider 的 immutable result handle 保存完整 Host-verified S12 adapter envelope；唯一 transition service 的兼容投影把完整值写入 `adapter_result_envelope`，只把其中 exact object `bounded_summary` 写入 `result_summary`，保证 sandbox 看见与同步 executor 相同的 direct provider response。provider effect 已完成并登记完整 transcript、但 callback 因 execution fence/进程中断而丢失时，reconcile 只能从同一 operation/request 的 sealed `provider_request.json` 与 `provider_observation.json` 重建：Host 先核实际 bytes digest、strict JSON closed schema、route/provider/config/output-dir 与全 artifact metadata identity，再恢复原 provider summary、validation、warnings 和 `transcript_manifest`；不得用通用 recovered 摘要替换、再次请求 provider 或猜测 artifact。控制文档上限 `8 MiB`；完整 immutable durable result envelope 的 canonical JSON 上限与 core 统一为 `256 KiB`，inline `bounded_summary` 必须连同 envelope 其余字段一起落在该上限内。EBI HMMER 不得把全部 `candidate_accessions` 复制进 summary；候选身份真值只存在于 digest-bound `provider_parsed/parsed_hits.csv`，summary 只保留 count/schema/digest 与 transcript refs。任一 digest/schema/identity/size 漂移以 terminal-known failure fail closed；terminal-known observation 若自身不能通过 closed validation，则执行直接终结为 `recovery_failed`，不得重复 claim/reconcile 形成热循环。不存在该字段的 HPC run handle/failure envelope direct 投影，字段存在但畸形则 fail closed，不允许 SDK 递归猜测。attached process 恢复后的 `hpc.fetch_outputs` 必须使用 control-server 当前 repository 与 nested artifact-publisher mutation writer，不能重新进入已释放的 agent-turn runtime scope；durable HPC result 已冻结时只验证返回的 run/artifact/fetch refs 与 immutable adapter envelope 完全一致，不 raw save operation。兼容 `PodmanPipelineSandboxRunner` 的 run-local register 只能返回 `pipeline_provisional_registration_response@1(canonical=false)`，不得伪装成 durable catalog ref，registration selector 必须拒绝。provider/fetch selector 已返回 terminal canonical artifact ref，继续传给 registration selector 或构造 synthetic envelope 必须结构化 fail closed。三个 helper 均要求 exact-one artifact id/digest 并对 nested-only、重复或畸形投影 fail closed，不执行 I/O、fallback 或 operation replay。artifact boundary 的 source authority 是 control socket/controlled operation 所属当前 run 的 Host-owned snapshot，不能从 sandbox 参数自报，也不能因 workspace `last_command_summary` 尚指向上一命令而错绑旧 snapshot。AOX cutover 在 approval 前按 session/method 与 sandbox 历史检查 eligibility：同一 reached SDK method 的第二个 operation、已有 `failed|recovery_failed` operation 或 terminal failed sandbox run 均在 provider/runner dispatch 前停止该 attempt；checkpoint 只保留失败事实，不授权跨 run adoption。完整 cross-run effect adoption 仍只存在于对应架构提案
 - durable HPC fetch 的不变性校验对 `run_id` 和带 declared path/digest 的逐项 `fetch_refs` 做 exact comparison；`registered_artifact_ids` / `output_artifact_ids` 是 durable result artifact set，必须成员唯一并在按 artifact id 规范化排序后比较完整集合。declared-output 顺序与 canonical artifact-set 顺序不同不是 identity drift，但任一成员、run、path 或 digest 变化仍 fail closed。runner terminal raw result 已携带 `mcp_hpc_toolchain_runtime_identity@1` 时，durable route 必须按 execution mode、catalog tool id、closed identifiers 与 SHA-256 字段重新验证并把 safe exact-eight-field identity 投影进 immutable result envelope；private SIF path 等 extra field 不得泄露。已存在但畸形/错绑的 identity 是 terminal-known `durable_hpc_toolchain_runtime_identity_invalid`，不得降为可重复 reconcile；缺失 identity 也不得从 toolchain id、pin 或 artifact metadata 推断，AOX collector 继续以 `toolchain_image_identity_missing` fail closed
@@ -1107,6 +1070,30 @@ Live gate 解释：
 - `seeded_live_smoke` 是辅助回归支持，不是 blank-world cutover proof
 - reporter/report publication 的验收必须检查 task board、delegation、inbox、runtime drain、workspace `report_drafts` / `reports` 和相关 events
 - 缺少 live provider/HPC 配置时，应报告为 gate prerequisite missing，不得计为通过
+
+### 9.1 r67 deletion-first 测试编排边界
+
+r67 diagnostic id `aox_diagnostic_8c2ce426355c001253b86c1c`、attempt
+`diagnostic-positive-5dfdd0686e9174a975ff85b18404e85d` 与 decision
+`sha256:d9356b0bdd25885f19e2452773dfac03bfa09e39562ed4c00c8fca9828ef480b`
+永久 **NO-GO**；其 `3,903,566` charged tokens、`81` attempts、authority、root、effects
+与 evidence 均不可复用。它证明旧 AOX observer 会把已纠正的 pre-admission 失败历史再次
+提升为 campaign stop，因此不能继续承担测试编排。
+
+现行架构删除 AOX runtime observer、Core runtime-barrier/observer-writer、automatic
+drive-until-terminal/no-wakeup/scope-rollover chain、`run-live` 与
+`run-diagnostic-live`。本节之前仍提及这些符号的 r14-r66 incident/contract 条目仅用于
+解释历史 sealed evidence，全部由本节取代，不是当前 runnable operator contract。
+
+Codex 测试员是未来经单独批准 campaign 的唯一编排者，但只能调用 public Host API/CLI：
+message、bounded runtime drain、command status、pending approval、approval resolution、
+workspace 与 replayable events。保留的 authority/pin/preflight/process-supervision/evidence
+shell 不作业务判断；authority consumption 只原子消费 exact plan，不启动 attempt。
+Host 继续独占 canonical state、approval、fencing、unknown/external effect 与隔离边界；
+task/attempt/report terminal 只能来自 canonical write contract。进程退休、空 drain、无 wakeup
+和 ToolResult 都不是业务终态。最终 GO 仍只由 sealed attempt bundle offline verifier 与
+exact-three campaign reducer产生。本 Phase 2 不授权 r68、live、MICU、provider、HPC 或
+Chrome。
 
 ---
 

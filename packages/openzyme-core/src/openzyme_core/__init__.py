@@ -119,14 +119,6 @@ from .report_drafts import register_report_draft_tools
 from .runtime_consistency import RuntimeConsistencyService
 from .runtime_consistency import RuntimeConsistencyWarning
 from .runtime_consistency import RuntimeStateAudit
-from .runtime_barrier import DEFAULT_RUNTIME_BARRIER_RECORD_LIMIT
-from .runtime_barrier import MAX_RUNTIME_BARRIER_RECORD_LIMIT
-from .runtime_barrier import RUNTIME_BARRIER_SCHEMA_VERSION
-from .runtime_barrier import RuntimeBarrierBlockerCode
-from .runtime_barrier import RuntimeBarrierCounts
-from .runtime_barrier import RuntimeBarrierObserverWriter
-from .runtime_barrier import RuntimeBarrierProjection
-from .runtime_barrier import RuntimeBarrierProjectionService
 from .sandbox_workspace import SandboxWorkspaceService
 from .sandbox_workspace import derive_sandbox_workspace_id
 from .sandbox_workspace import normalize_immutable_image_id
@@ -534,14 +526,6 @@ __all__ = [
     "RuntimeConsistencyService",
     "RuntimeConsistencyWarning",
     "RuntimeStateAudit",
-    "DEFAULT_RUNTIME_BARRIER_RECORD_LIMIT",
-    "MAX_RUNTIME_BARRIER_RECORD_LIMIT",
-    "RUNTIME_BARRIER_SCHEMA_VERSION",
-    "RuntimeBarrierBlockerCode",
-    "RuntimeBarrierCounts",
-    "RuntimeBarrierObserverWriter",
-    "RuntimeBarrierProjection",
-    "RuntimeBarrierProjectionService",
     "SandboxImageRecordRepository",
     "ContinuationDeliveryHostAuthority",
     "DurableExecutionHostAuthority",

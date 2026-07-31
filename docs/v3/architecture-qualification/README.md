@@ -121,11 +121,12 @@ verifier 才是 authority。
 
 ## AOX admission and evidence binding
 
-AOX `pin`、`preflight`、`run-live` 与 `run-diagnostic-live` 必须显式接收
-`--architecture-qualification-report`。验证先于 live settings、pin runner attestation、
-attempt-root、sandbox runtime probe 以及任何 provider/runner/Chrome/MICU 调用。不存在
-force、debug、environment、legacy 或 pass-boolean bypass。closure-stage authorize/run
-commands 已退役，不能通过 qualification report 恢复。
+AOX `pin`、`preflight`、`authorize`、`authorize-diagnostic` 及两个 policy-free authority
+consumption commands 必须显式接收 `--architecture-qualification-report`。验证先于 live
+settings、pin runner attestation、attempt-root、sandbox runtime probe 以及任何
+provider/runner/Chrome/MICU 调用。不存在 force、debug、environment、legacy 或
+pass-boolean bypass。`run-live`、`run-diagnostic-live` 与 closure-stage commands 已退役，
+不能通过 qualification report 恢复。
 
 pin transaction marker 是 `aox_cutover_pin_commit@2`，public pin receipt 是
 `aox_cutover_pin_receipt@2`，blank-world root proof 是
@@ -138,13 +139,13 @@ production `aox_blank_world_attempt_bundle@3`。历史
 profile 与 source commit。collector/offline verifier 拒绝 missing、changed、mismatched 或
 unknown-version receipt。
 
-正式 `authorize` / `run-live` 继续独占 exact-three formal acceptance；独立
-`authorize-diagnostic` / `run-diagnostic-live` 使用单槽
-`aox_diagnostic_attempt_authority_plan@1`、diagnostic-only consumption/root proof 和
-`aox_blank_world_diagnostic_decision@1`。两类 plan 都先以当前 qualification 与 committed
-declarations 验证并消费 deterministic sibling，随后才能构造 live launch/root。diagnostic
-decision 永久 `acceptance_eligible=false`，不能生成 `@3` 或进入 reducer。该 non-live
-qualification scenario 证明结构边界，不批准真实 diagnostic 或 formal campaign。
+正式 `authorize` 只发布 exact-three formal plan；独立 `authorize-diagnostic` 使用单槽
+`aox_diagnostic_attempt_authority_plan@1`。`consume-authority` 与
+`consume-diagnostic-authority` 只以当前 qualification/committed declarations 验证并消费
+deterministic sibling，然后停止，不构造 live launch/root。未来单独批准的 Codex conductor
+只经 public Host API/CLI编排；diagnostic decision 永久 `acceptance_eligible=false`，不能
+生成 `@3` 或进入 reducer。该 non-live qualification scenario 证明结构边界，不批准真实
+diagnostic 或 formal campaign。
 
 historical `aox_closure_stage_*` plan/consumption/root/source/parity/live/decision schemas
 只保留离线读取与 formal non-adoption。blank-world root factory、formal publisher 和

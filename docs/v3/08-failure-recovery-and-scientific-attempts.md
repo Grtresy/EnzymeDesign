@@ -85,15 +85,11 @@ exception 才能报告 count `0`；旧 `@1` receipt 只读，不回填推导值�
 直接聚合 Core typed settlement，不做 typed-to-dict-to-classifier 往返，不依赖对象 identity，
 也不重扫 mutable signal/task/failure/agent/wakeup repository。
 
-AOX bounded consumer 只接受经 validator 验证的 v2 command outcome。连续两个 outcome
-必须同时满足 `processed_signal_count=0`、`replay_safe=true`、canonical work fingerprint
-一致，并证明 pending/claimed signal、pending approval、active invocation/continuation、working agent 与
-mutation writer 均不存在，才是 no-wakeup stall。ready unfinished work 若仍绑定 actionable
-failure，返回 `formal_agent_recovery_unresolved`；否则返回
-`formal_runtime_stalled_no_wakeup`。fingerprint 排除 timestamp、lease/fence、event/cursor
-和 command id，单次 empty 或任一 semantic/wakeup progress 都重置确认；该 diagnostic 不
-auto-enqueue 或创造 recovery work。前一个 error code 是历史 AOX diagnostic 名称，只表示
-ready work 仍关联 failure facts，不表示存在 turn recovery obligation。
+historical AOX bounded consumer 曾把连续两个 v2 command outcome 和 work fingerprint
+合成为 no-wakeup stall；r67 删除该 consumer及其 campaign error taxonomy。current Host
+仍严格保存每个 explicit command 的 typed core/projection outcome，但不跨 command 推导
+业务终态。Codex conductor 从 public facts显式决定下一步；旧 no-wakeup error code 只在
+sealed historical evidence 中读取，不触发 auto-enqueue、recovery work 或 task mutation。
 
 同一个 provider response 中的多个 tool call 作为有序 batch 结算。若某个已 dispatch call
 触发 explicit `runtime_suspended` approval、成功的 `task.finish` /
@@ -181,7 +177,7 @@ evidence refs 使用 deterministic prefix、total count、canonical digest 和 t
 marker；整个 prompt context 有硬界。agent 仍可自主选择继续 attempt、修复、改道、
 reconcile、请求 authority 或显式结束 task。
 
-AOX observer 若看到 owner-authored terminal `task.finish`，应从 immutable finish document
+AOX offline evidence projector 若看到 owner-authored terminal `task.finish`，应从 immutable finish document
 的 `failure_ref` 解析 exact `FailureObservation`，而不是依赖仅在 `failed` row 上复制的
 task failure fields。outer `task_blocked` / `task_failed` 是 wrapper；sealed diagnostic 与
 failure evidence 的首要 blocker 使用最早 typed error code，同时保留 wrapper、cause 的
@@ -195,38 +191,20 @@ repository/category 顺序。observation 与 failure evidence 共用这份 bound
 task/evidence 总数、digest、truncation 明示，不再二次读取 task board。非 eligible
 evidence可以记录未终态 task，但绝不能因此获得 cutover eligibility。
 
-AOX formal runtime barrier 不能用一个跨 session drive 的长期 outer writer 包住上述
-rollover，否则 pre-attempt scope 永远无法证明 writer 已退休。campaign driver 在每次
-barrier snapshot 前，必须只在当前唯一 open scope 上登记一个 root
-`aox-attempt-driver:<outer-attempt-id>:formal` observer writer；barrier 读取期间只排除
-这个 exact writer，并继续统计所有其他 root/child writer。snapshot 返回或失败后
-observer 立即退休，不能跨 runtime drain、admission/closure finalizer、provider/HPC
-dispatch 或 approval wait。缺 scope、多 scope、observer identity 缺失或 retirement
-失败均 fail closed，不能解释成 idle 或 quiescent。
-
-完整 session observation 与 terminal runtime command 的 attached-writer settlement 都会
-读取该 barrier，因此必须走同一个 bounded observer context。drain coordinator 显式传递
-`purpose + attempt_authority`，不得在 formal 路径直接调用 writer-only projection。
-observer 必须早于 sleep、下一次 compact approval read、下一次 drain、return 或 error
-propagation 退休。
-
-terminal runtime command 可以先于 closure finalizer 完成。此时 exact attempt scope
-可能已提交 `freezing|quiescent`，writer admission 按设计关闭，而 post-attempt scope
-尚未 open。`MutationWriterTurnFactory` 的
-`mutation_writer_admission_closed` 在这里不是 observer identity 损坏。driver 仅当
-formal authority envelope 精确解析到唯一 attempt、该 exact attempt scope 为
-`freezing|quiescent|sealed`、session 为 zero open 且没有 competing nonterminal scope
-时，在当前 command 原 deadline 内等待 rollover 后重新形成短 observer barrier。它不
-admit 新 drain、不重开 scope、不重试 agent/tool；超时 typed fail
-`scientific_attempt_scope_rollover_stalled`。parent mismatch、缺失/多重 attempt、
-任意 open/竞争 scope 仍立即保留原 fail-closed error。
+r67 删除 AOX formal runtime barrier、observer-writer 与 rollover projector。attempt
+scope 的 closure transition 由 `ScientificAttemptService` 在一个短事务中原子提交，
+terminal runtime command 不再尝试观察、等待或修复该 transition。Codex 测试员只能从
+public Host API/CLI 读取 command、workspace、event、approval 与 wake facts，并逐次决定
+是否提交下一个 bounded command；它不得建立 private observer、直接读 repository、重开
+scope 或把无 signal/no wakeup 当作 attempt terminal。缺 scope、多 scope、active writer、
+parent/authority mismatch 与 unknown effect 仍由 Host typed fail closed。
 
 AOX 使用更窄的 `aox_live_attempt_authority_plan@1`：
 
 - plan 精确包含 `positive, positive, fault` 三个槽；
 - 每槽绑定预声明 attempt/session/task/lane/root、exact operator grantor、同一 identity 和
   qualification、`max_attempts=1`、effect/route/resource/expiry policy；
-- `run-live` 只能把 plan 消费到 deterministic sibling
+- `consume-authority` 只能把 plan 消费到 deterministic sibling
   `<plan-name>.consumed.json`，并且必须在创建任何 attempt root 前通过 atomic no-replace
   完成一次性消费；current receipt 是
   `aox_live_attempt_authority_consumption@2`，显式绑定
@@ -657,11 +635,12 @@ repair、选择其他合法 operation、请求 authority 或显式终结 task；
 replay、重开 task 或合成 plan。
 
 selected attempt 达到 immutable closure 后，同一 chain 中已 disposition 的 exact safe
-failure仍保留为 sealed evidence，但 observer 不再把它当作当前 fatal。显式
+failure仍保留为 sealed evidence，但 offline verifier 不再把它当作当前 fatal。显式
 failed/blocked/cancelled task、probe failure、unsafe/unknown effect、retryable、
 dispatch-in-doubt、missing/duplicate/cross-source/cross-attempt binding 继续 fail closed。
-AOX one-shot handoff 与 drain override 已删除；ordinary pinned bounded drains、complete
-selected-chain closure 和显式业务状态共同决定收敛。
+AOX one-shot handoff、drain override 与 automatic convergence reducer 均已删除；Codex
+conductor 逐次发起 public bounded drain，Host canonical closure 与显式业务状态提供事实，
+最终 eligibility 只由 sealed bundle verifier/campaign reducer 判定。
 
 lifecycle repair `c3c560dd6ede54958398fb3e55d5cd62cc956ad1` 后的 fresh successor
 plan `sha256:47ebfa37d653fa51c61eb304b3df620033d57f99aee6a3fcc88ae2e396b861ab`

@@ -1,33 +1,22 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field as dataclass_field
-from datetime import UTC, datetime
+from collections.abc import Mapping
+from datetime import datetime
 import os
 from pathlib import Path
 import re
-from typing import Any, Self
+from typing import Any
 from uuid import uuid4
 
-from .aox_cutover_evidence import AttemptExecution
-from .aox_cutover_evidence import AttemptRunner
 from .aox_cutover_evidence import canonical_digest
 from .aox_cutover_evidence import canonical_json_bytes
 from .aox_cutover_evidence import CutoverEvidenceError
 from .aox_cutover_evidence import DIAGNOSTIC_ROOT_PROOF_SCHEMA_ID
-from .aox_cutover_evidence import execute_aox_attempt
-from .aox_cutover_evidence import initialize_diagnostic_root
 from .aox_diagnostic_authority import (
     AOX_DIAGNOSTIC_AUTHORITY_CONSUMPTION_SCHEMA_ID,
 )
 from .aox_diagnostic_authority import (
     AOX_DIAGNOSTIC_AUTHORITY_PLAN_SCHEMA_ID,
-)
-from .aox_diagnostic_authority import (
-    validate_aox_diagnostic_authority_consumption,
-)
-from .aox_diagnostic_authority import (
-    validate_aox_diagnostic_authority_plan,
 )
 from .aox_live_run_class import AoxLiveRunClass
 from .aox_live_run_class import DIAGNOSTIC_RUN_POLICY
@@ -57,129 +46,6 @@ _DECISION_FIELDS = frozenset(
         "decision_digest",
     }
 )
-
-
-def _safe_failure_code(failure: Exception) -> str:
-    candidate = getattr(failure, "code", None)
-    if (
-        isinstance(candidate, str)
-        and _ERROR_CODE_PATTERN.fullmatch(candidate) is not None
-    ):
-        return candidate
-    return "diagnostic_runner_failed"
-
-
-def _diagnostic_decision(
-    *,
-    plan: Mapping[str, object],
-    consumption: Mapping[str, object],
-    root_marker: Mapping[str, object],
-    execution: AttemptExecution | None,
-    failure: Exception | None,
-) -> dict[str, Any]:
-    slot = dict(plan["slot"])
-    evidence = {} if execution is None else execution.evidence
-    diagnostic_observation = dict(evidence.get("diagnostic_observation") or {})
-    control = evidence.get("scientific_attempt_control")
-    observed_product_path_completed = (
-        diagnostic_observation.get("product_path_completed") is True
-    )
-    product_path_completed = bool(
-        observed_product_path_completed and isinstance(control, dict)
-    )
-    outcome = dict(evidence.get("scientific_outcome") or {})
-    report = dict(evidence.get("report") or {})
-    blocker_code: str | None
-    if failure is not None:
-        blocker_code = _safe_failure_code(failure)
-    elif observed_product_path_completed and not isinstance(control, dict):
-        blocker_code = "scientific_attempt_control_missing"
-    elif product_path_completed:
-        blocker_code = None
-    else:
-        raw_code = (
-            outcome.get("blocker_code")
-            or outcome.get("failure_code")
-            or "diagnostic_product_path_incomplete"
-        )
-        blocker_code = (
-            str(raw_code)
-            if _ERROR_CODE_PATTERN.fullmatch(str(raw_code)) is not None
-            else "diagnostic_product_path_incomplete"
-        )
-    root_proof = {} if execution is None else execution.roots.proof
-    decision_payload = {
-        "schema_id": AOX_DIAGNOSTIC_DECISION_SCHEMA_ID,
-        "run_class": AoxLiveRunClass.DIAGNOSTIC.value,
-        "acceptance_eligible": False,
-        "diagnostic_id": plan["diagnostic_id"],
-        "attempt_id": slot["attempt_id"],
-        "attempt_kind": "positive",
-        "decided_at": datetime.now(UTC).isoformat(),
-        "status": (
-            "failed"
-            if failure is not None
-            else "completed_product_path"
-            if product_path_completed
-            else "blocked"
-        ),
-        "blocker": (
-            None
-            if blocker_code is None
-            else {
-                "code": blocker_code,
-                "identity": "diagnostic.runner",
-            }
-        ),
-        "authority": {
-            "plan_schema_id": AOX_DIAGNOSTIC_AUTHORITY_PLAN_SCHEMA_ID,
-            "consumption_schema_id": (AOX_DIAGNOSTIC_AUTHORITY_CONSUMPTION_SCHEMA_ID),
-            "plan_digest": plan["plan_digest"],
-            "consumption_digest": canonical_digest(dict(consumption)),
-            "envelope_id": slot["envelope_id"],
-            "request_digest": slot["request_digest"],
-        },
-        "root": {
-            "proof_schema_id": (
-                None if execution is None else root_proof.get("schema_id")
-            ),
-            "root_namespace": plan["root_namespace"],
-            "root_marker_digest": canonical_digest(dict(root_marker)),
-            "root_identity": (
-                None if execution is None else root_proof.get("root_identity")
-            ),
-        },
-        "micu_ledger": (
-            {
-                "status": "not_claimed",
-                "reason": ("diagnostic_runner_failed_before_settled_snapshot"),
-            }
-            if execution is None
-            else {
-                "before": execution.ledger_before,
-                "after": execution.ledger_after,
-            }
-        ),
-        "observations": {
-            "product_path_completed": product_path_completed,
-            "scientific_status": outcome.get("status"),
-            "report_status": report.get("status"),
-            "approval_count": len(evidence.get("approvals") or []),
-            "operation_count": len(evidence.get("operations") or []),
-            "artifact_count": len(evidence.get("artifacts") or []),
-            "evidence_digest": (
-                None if execution is None else canonical_digest(evidence)
-            ),
-            "scientific_attempt_control_digest": (
-                canonical_digest(control) if isinstance(control, dict) else None
-            ),
-            "raw_facts": dict(diagnostic_observation.get("raw_facts") or {}),
-        },
-    }
-    return {
-        **decision_payload,
-        "decision_digest": canonical_digest(decision_payload),
-    }
 
 
 def validate_aox_diagnostic_decision(
@@ -409,111 +275,9 @@ def seal_aox_diagnostic_decision(
     return str(normalized["decision_digest"])
 
 
-@dataclass(slots=True)
-class AoxDiagnosticRun:
-    diagnostic_root: Path
-    identity: Mapping[str, object]
-    ledger_path: Path
-    runner: AttemptRunner
-    allowed_prerequisites: Mapping[str, object]
-    architecture_qualification: Mapping[str, object]
-    authority_plan: Mapping[str, object]
-    authority_consumption: Mapping[str, object]
-    authority_plan_path: Path
-    launch_guard: Callable[[], None] | None = None
-    _allow_unisolated_non_live_test_runner: bool = dataclass_field(
-        default=False,
-        init=False,
-        repr=False,
-    )
-
-    @classmethod
-    def for_non_live_test(
-        cls,
-        *,
-        diagnostic_root: Path,
-        identity: Mapping[str, object],
-        ledger_path: Path,
-        runner: AttemptRunner,
-        allowed_prerequisites: Mapping[str, object],
-        architecture_qualification: Mapping[str, object],
-        authority_plan: Mapping[str, object],
-        authority_consumption: Mapping[str, object],
-        authority_plan_path: Path,
-        launch_guard: Callable[[], None] | None = None,
-    ) -> Self:
-        run = cls(
-            diagnostic_root=diagnostic_root,
-            identity=identity,
-            ledger_path=ledger_path,
-            runner=runner,
-            allowed_prerequisites=allowed_prerequisites,
-            architecture_qualification=architecture_qualification,
-            authority_plan=authority_plan,
-            authority_consumption=authority_consumption,
-            authority_plan_path=authority_plan_path,
-            launch_guard=launch_guard,
-        )
-        run._allow_unisolated_non_live_test_runner = True
-        return run
-
-    def run(self) -> dict[str, Any]:
-        plan = validate_aox_diagnostic_authority_plan(
-            self.authority_plan,
-            identity=self.identity,
-            allowed_prerequisites=self.allowed_prerequisites,
-            architecture_qualification=self.architecture_qualification,
-        )
-        consumption = validate_aox_diagnostic_authority_consumption(
-            self.authority_consumption,
-            plan=plan,
-            plan_path=self.authority_plan_path,
-        )
-        root_marker = initialize_diagnostic_root(
-            self.diagnostic_root,
-            root_namespace=str(plan["root_namespace"]),
-            plan_digest=str(plan["plan_digest"]),
-            diagnostic_id=str(plan["diagnostic_id"]),
-        )
-        execution: AttemptExecution | None = None
-        failure: Exception | None = None
-        try:
-            execution = execute_aox_attempt(
-                campaign_root=self.diagnostic_root,
-                identity=self.identity,
-                ledger_path=self.ledger_path,
-                runner=self.runner,
-                allowed_prerequisites=self.allowed_prerequisites,
-                architecture_qualification=self.architecture_qualification,
-                number=1,
-                kind="positive",
-                authority=dict(plan["slot"]),
-                run_class=AoxLiveRunClass.DIAGNOSTIC,
-                launch_guard=self.launch_guard,
-                allow_unisolated_non_live_test_runner=(
-                    self._allow_unisolated_non_live_test_runner
-                ),
-            )
-        except Exception as exc:  # noqa: BLE001 - sealed diagnostic boundary
-            failure = exc
-        decision = _diagnostic_decision(
-            plan=plan,
-            consumption=consumption,
-            root_marker=root_marker,
-            execution=execution,
-            failure=failure,
-        )
-        seal_aox_diagnostic_decision(
-            decision,
-            self.diagnostic_root / AOX_DIAGNOSTIC_DECISION_FILENAME,
-        )
-        return decision
-
-
 __all__ = [
     "AOX_DIAGNOSTIC_DECISION_FILENAME",
     "AOX_DIAGNOSTIC_DECISION_SCHEMA_ID",
-    "AoxDiagnosticRun",
     "seal_aox_diagnostic_decision",
     "validate_aox_diagnostic_decision",
 ]

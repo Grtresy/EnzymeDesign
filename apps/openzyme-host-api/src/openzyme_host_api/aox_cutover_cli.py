@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping
 import hashlib
 import json
 import os
@@ -38,9 +37,7 @@ from .aox_diagnostic_authority import (
 )
 from .aox_diagnostic_authority import load_aox_diagnostic_authority_plan
 from .aox_diagnostic_authority import publish_aox_diagnostic_authority_plan
-from .aox_diagnostic_run import AoxDiagnosticRun
 from .aox_cutover_evidence import AttemptRunRecord
-from .aox_cutover_evidence import AoxCutoverCampaign
 from .aox_cutover_evidence import create_blank_world_roots
 from .aox_cutover_evidence import CutoverEvidenceError
 from .aox_cutover_evidence import evaluate_campaign
@@ -49,9 +46,7 @@ from .aox_cutover_evidence import seal_campaign_decision
 from .aox_cutover_evidence import verify_attempt_bundle
 from .aox_cutover_launch import AoxCutoverDriverConfig
 from .aox_cutover_launch import AoxCutoverLaunchError
-from .aox_cutover_launch import AoxCutoverLaunchSnapshot
 from .aox_cutover_launch import pin_aox_cutover_launch
-from .aox_cutover_launch import prepare_aox_cutover_launch
 from .aox_cutover_runtime_config import AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS
 from .aox_cutover_runtime_config import AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN
 from .aox_live_run_class import AoxLiveRunClass
@@ -112,7 +107,7 @@ def _print(payload: object) -> None:
     )
 
 
-def _driver_from_args(args: argparse.Namespace) -> AoxCutoverDriverConfig:
+def _conductor_config_from_args(args: argparse.Namespace) -> AoxCutoverDriverConfig:
     return AoxCutoverDriverConfig(
         approval_mode=args.approval_mode,
         timeout_seconds=args.timeout_seconds,
@@ -393,16 +388,13 @@ def _load_pinned_declarations(
     if (
         identity_target == prerequisites_target
         or identity_target.parent != prerequisites_target.parent
-        or _PIN_COMMIT_BASENAME
-        in {identity_target.name, prerequisites_target.name}
+        or _PIN_COMMIT_BASENAME in {identity_target.name, prerequisites_target.name}
     ):
         raise AoxCutoverLaunchError(
             "aox_launch_pin_commit_invalid",
             "AOX pinned declarations do not form one committed transaction",
         )
-    commit_target = _existing_pin_target(
-        identity_target.parent / _PIN_COMMIT_BASENAME
-    )
+    commit_target = _existing_pin_target(identity_target.parent / _PIN_COMMIT_BASENAME)
     try:
         identity = _json_object(identity_target)
         prerequisites = _json_object(prerequisites_target)
@@ -437,10 +429,8 @@ def _load_pinned_declarations(
 def _pin(args: argparse.Namespace) -> int:
     from openzyme_runtime import OpenZymeSettings
 
-    earliest_architecture_qualification = (
-        verify_aox_architecture_qualification_report(
-            args.architecture_qualification_report,
-        )
+    earliest_architecture_qualification = verify_aox_architecture_qualification_report(
+        args.architecture_qualification_report,
     )
     identity_target, prerequisites_target = _pin_output_targets(
         args.identity_output,
@@ -454,7 +444,7 @@ def _pin(args: argparse.Namespace) -> int:
     )
     launch = pin_aox_cutover_launch(
         settings=settings,
-        driver=_driver_from_args(args),
+        driver=_conductor_config_from_args(args),
         ledger_path=ledger_path,
         architecture_qualification_report=args.architecture_qualification_report,
     )
@@ -555,11 +545,9 @@ def _authorize(args: argparse.Namespace) -> int:
     current_qualification = verify_aox_architecture_qualification_report(
         args.architecture_qualification_report,
     )
-    identity, prerequisites, pinned_qualification = (
-        _load_pinned_declarations(
-            args.identity,
-            args.allowed_prerequisites,
-        )
+    identity, prerequisites, pinned_qualification = _load_pinned_declarations(
+        args.identity,
+        args.allowed_prerequisites,
     )
     qualification = require_matching_architecture_qualification_receipt(
         pinned_qualification,
@@ -572,12 +560,8 @@ def _authorize(args: argparse.Namespace) -> int:
         architecture_qualification=qualification,
         expires_at=args.expires_at,
         max_micu_per_attempt=args.max_micu_per_attempt,
-        max_cost_microunits_per_attempt=(
-            args.max_cost_microunits_per_attempt
-        ),
-        max_wall_time_seconds_per_attempt=(
-            args.max_wall_time_seconds_per_attempt
-        ),
+        max_cost_microunits_per_attempt=(args.max_cost_microunits_per_attempt),
+        max_wall_time_seconds_per_attempt=(args.max_wall_time_seconds_per_attempt),
     )
     publish_aox_attempt_authority_plan(plan, target)
     _print(
@@ -587,9 +571,7 @@ def _authorize(args: argparse.Namespace) -> int:
             "output_file": target.name,
             "campaign_id": plan["campaign_id"],
             "plan_digest": plan["plan_digest"],
-            "attempt_ids": [
-                slot["attempt_id"] for slot in plan["slots"]
-            ],
+            "attempt_ids": [slot["attempt_id"] for slot in plan["slots"]],
         }
     )
     return 0
@@ -599,11 +581,9 @@ def _authorize_diagnostic(args: argparse.Namespace) -> int:
     current_qualification = verify_aox_architecture_qualification_report(
         args.architecture_qualification_report,
     )
-    identity, prerequisites, pinned_qualification = (
-        _load_pinned_declarations(
-            args.identity,
-            args.allowed_prerequisites,
-        )
+    identity, prerequisites, pinned_qualification = _load_pinned_declarations(
+        args.identity,
+        args.allowed_prerequisites,
     )
     qualification = require_matching_architecture_qualification_receipt(
         pinned_qualification,
@@ -636,13 +616,11 @@ def _authorize_diagnostic(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_live_declarations(
+def _load_authority_declarations(
     args: argparse.Namespace,
 ) -> tuple[dict[str, object], dict[str, object], dict[str, str]]:
-    earliest_architecture_qualification = (
-        verify_aox_architecture_qualification_report(
-            args.architecture_qualification_report,
-        )
+    earliest_architecture_qualification = verify_aox_architecture_qualification_report(
+        args.architecture_qualification_report,
     )
     identity, prerequisites, pinned_architecture_qualification = (
         _load_pinned_declarations(
@@ -657,259 +635,90 @@ def _load_live_declarations(
     return identity, prerequisites, pinned_architecture_qualification
 
 
-def _prepare_live_execution(
-    args: argparse.Namespace,
-    *,
-    identity: Mapping[str, object],
-    prerequisites: Mapping[str, object],
-    pinned_architecture_qualification: Mapping[str, object],
-) -> tuple[AoxCutoverLaunchSnapshot, dict[str, str], Path]:
-    from openzyme_runtime import OpenZymeSettings
-
-    settings = OpenZymeSettings.from_env()
-    ledger_path = (
-        Path(settings.test.live_llm.token_ledger_path)
-        if args.ledger_path is None
-        else args.ledger_path
+def _consume_authority(args: argparse.Namespace) -> int:
+    identity, prerequisites, architecture_qualification = _load_authority_declarations(
+        args
     )
-    driver = _driver_from_args(args)
-    launch = prepare_aox_cutover_launch(
-        settings=settings,
-        driver=driver,
-        ledger_path=ledger_path,
-        declared_identity=identity,
-        declared_prerequisites=prerequisites,
-        architecture_qualification_report=args.architecture_qualification_report,
-    )
-    architecture_qualification = require_matching_architecture_qualification_receipt(
-        pinned_architecture_qualification,
-        launch.architecture_qualification,
-    )
-    return launch, architecture_qualification, ledger_path
-
-
-def _build_supervised_live_runner(
-    args: argparse.Namespace,
-    *,
-    launch: AoxCutoverLaunchSnapshot,
-    ledger_path: Path,
-    run_class: AoxLiveRunClass,
-):
-    from .aox_cutover_live import LiveAoxAttemptRunner
-    from .aox_attempt_supervision import DEFAULT_KILL_GRACE_SECONDS
-    from .aox_attempt_supervision import DEFAULT_TERM_GRACE_SECONDS
-    from .aox_attempt_supervision import ProcessIsolatedAttemptRunner
-    from .aox_attempt_supervision import (
-        derive_live_attempt_supervision_timeout_seconds,
-    )
-
-    live_runner = LiveAoxAttemptRunner(
-        settings=launch.effective_settings,
-        ledger_path=ledger_path,
-        run_class=run_class,
-        effective_config=launch.effective_config,
-        approval_mode=args.approval_mode,
-        timeout_seconds=args.timeout_seconds,
-        max_drains=args.max_drains,
-        max_signals_per_drain=args.max_signals_per_drain,
-        max_steps_per_agent=args.max_steps_per_agent,
-        browser_poll_interval_seconds=args.browser_poll_interval_seconds,
-        browser_approval_timeout_seconds=args.browser_approval_timeout_seconds,
-        browser_completion_hold_seconds=args.browser_completion_hold_seconds,
-        browser_observation_submission_timeout_seconds=(
-            args.browser_observation_submission_timeout_seconds
-        ),
-        browser_observation_receipt_path=args.browser_observation_receipt,
-    )
-    return ProcessIsolatedAttemptRunner(
-        runner=live_runner,
-        ledger_path=ledger_path,
-        timeout_seconds=derive_live_attempt_supervision_timeout_seconds(
-            attempt_timeout_seconds=args.timeout_seconds,
-            browser_approval_timeout_seconds=args.browser_approval_timeout_seconds,
-            browser_completion_hold_seconds=args.browser_completion_hold_seconds,
-            browser_observation_submission_timeout_seconds=(
-                args.browser_observation_submission_timeout_seconds
-            ),
-        ),
-        term_grace_seconds=DEFAULT_TERM_GRACE_SECONDS,
-        kill_grace_seconds=DEFAULT_KILL_GRACE_SECONDS,
-    )
-
-
-def _run_live(args: argparse.Namespace) -> int:
-    identity, prerequisites, architecture_qualification = (
-        _load_live_declarations(args)
-    )
-    authority_plan = load_aox_attempt_authority_plan(
+    plan = load_aox_attempt_authority_plan(
         args.attempt_authority_plan,
         identity=identity,
         allowed_prerequisites=prerequisites,
         architecture_qualification=architecture_qualification,
     )
-    consumption_target = _pin_output_target(
-        args.attempt_authority_consumption
-    )
-    authority_plan_path = args.attempt_authority_plan.expanduser().resolve(
-        strict=True
-    )
-    expected_consumption_target = attempt_authority_consumption_path(
-        authority_plan_path
-    )
-    if consumption_target != expected_consumption_target:
+    plan_path = args.attempt_authority_plan.expanduser().resolve(strict=True)
+    target = _pin_output_target(args.attempt_authority_consumption)
+    expected_target = attempt_authority_consumption_path(plan_path)
+    if target != expected_target:
         raise CutoverEvidenceError(
             "attempt_authority_consumption_target_mismatch",
-            "authority consumption must use the one deterministic sibling target",
-            details={"expected_file": expected_consumption_target.name},
+            "authority consumption must use the deterministic sibling target",
+            details={"expected_file": expected_target.name},
         )
-    consume_aox_attempt_authority_plan(
-        authority_plan,
-        plan_path=authority_plan_path,
-        path=consumption_target,
-    )
-    launch, architecture_qualification, ledger_path = (
-        _prepare_live_execution(
-            args,
-            identity=identity,
-            prerequisites=prerequisites,
-            pinned_architecture_qualification=architecture_qualification,
-        )
-    )
-    runner = _build_supervised_live_runner(
-        args,
-        launch=launch,
-        ledger_path=ledger_path,
-        run_class=AoxLiveRunClass.FORMAL_ACCEPTANCE,
-    )
-    campaign = AoxCutoverCampaign(
-        campaign_root=args.campaign_root,
-        identity=launch.identity,
-        ledger_path=ledger_path,
-        positive_runner=runner,
-        fault_runner=runner,
-        allowed_prerequisites=launch.allowed_prerequisites,
-        architecture_qualification=architecture_qualification,
-        launch_guard=launch.assert_unchanged,
-        attempt_authority_slots=tuple(authority_plan["slots"]),
-    )
-    records, decision = campaign.run()
-    ledger_projection = (
-        {
-            "status": "not_claimed",
-            "reason": "attempt_supervision_fatal",
-        }
-        if decision.get("driver_failure_kind") == "attempt_supervision_fatal"
-        else safe_micu_ledger_snapshot(ledger_path)
+    receipt = consume_aox_attempt_authority_plan(
+        plan,
+        plan_path=plan_path,
+        path=target,
     )
     _print(
         {
-            "decision": decision,
-            "attempts": [
-                {
-                    "attempt_id": record.attempt_id,
-                    "attempt_kind": record.attempt_kind,
-                    "bundle_path": str(record.bundle_path),
-                    "artifact_root": str(record.artifact_root),
-                    "bundle_digest": record.bundle_digest,
-                    "verification": record.verification.to_dict(),
-                }
-                for record in records
-            ],
-            "micu_ledger": ledger_projection,
+            "schema_id": "aox_attempt_authority_consume_receipt@1",
+            "status": "consumed_without_execution",
+            "campaign_id": plan["campaign_id"],
+            "plan_digest": plan["plan_digest"],
+            "consumption_digest": _canonical_digest(receipt),
+            "output_file": target.name,
         }
     )
-    return 0 if decision["decision"] == "GO" else 2
+    return 0
 
 
-def _run_diagnostic_live(args: argparse.Namespace) -> int:
-    identity, prerequisites, architecture_qualification = (
-        _load_live_declarations(args)
+def _consume_diagnostic_authority(args: argparse.Namespace) -> int:
+    identity, prerequisites, architecture_qualification = _load_authority_declarations(
+        args
     )
-    authority_plan = load_aox_diagnostic_authority_plan(
+    plan = load_aox_diagnostic_authority_plan(
         args.diagnostic_authority_plan,
         identity=identity,
         allowed_prerequisites=prerequisites,
         architecture_qualification=architecture_qualification,
     )
-    diagnostic_root = _pin_output_target(args.diagnostic_root)
-    if diagnostic_root.name != authority_plan["root_namespace"]:
-        raise CutoverEvidenceError(
-            "diagnostic_root_target_mismatch",
-            "diagnostic root must equal the plan-bound fresh namespace",
-            details={"expected_name": authority_plan["root_namespace"]},
-        )
-    consumption_target = _pin_output_target(
-        args.diagnostic_authority_consumption
-    )
-    authority_plan_path = args.diagnostic_authority_plan.expanduser().resolve(
-        strict=True
-    )
-    expected_consumption_target = diagnostic_authority_consumption_path(
-        authority_plan_path
-    )
-    if consumption_target != expected_consumption_target:
+    plan_path = args.diagnostic_authority_plan.expanduser().resolve(strict=True)
+    target = _pin_output_target(args.diagnostic_authority_consumption)
+    expected_target = diagnostic_authority_consumption_path(plan_path)
+    if target != expected_target:
         raise CutoverEvidenceError(
             "diagnostic_authority_consumption_target_mismatch",
-            "diagnostic consumption must use its deterministic sibling target",
-            details={"expected_file": expected_consumption_target.name},
+            "diagnostic consumption must use the deterministic sibling target",
+            details={"expected_file": expected_target.name},
         )
-    authority_consumption = consume_aox_diagnostic_authority_plan(
-        authority_plan,
-        plan_path=authority_plan_path,
-        path=consumption_target,
-    )
-    launch, architecture_qualification, ledger_path = (
-        _prepare_live_execution(
-            args,
-            identity=identity,
-            prerequisites=prerequisites,
-            pinned_architecture_qualification=architecture_qualification,
-        )
-    )
-    runner = _build_supervised_live_runner(
-        args,
-        launch=launch,
-        ledger_path=ledger_path,
-        run_class=AoxLiveRunClass.DIAGNOSTIC,
-    )
-    diagnostic = AoxDiagnosticRun(
-        diagnostic_root=diagnostic_root,
-        identity=launch.identity,
-        ledger_path=ledger_path,
-        runner=runner,
-        allowed_prerequisites=launch.allowed_prerequisites,
-        architecture_qualification=architecture_qualification,
-        authority_plan=authority_plan,
-        authority_consumption=authority_consumption,
-        authority_plan_path=authority_plan_path,
-        launch_guard=launch.assert_unchanged,
-    )
-    decision = diagnostic.run()
-    ledger_projection = (
-        {
-            "status": "not_claimed",
-            "reason": "diagnostic_runner_failed_before_settled_snapshot",
-        }
-        if decision["status"] == "failed"
-        else safe_micu_ledger_snapshot(ledger_path)
+    receipt = consume_aox_diagnostic_authority_plan(
+        plan,
+        plan_path=plan_path,
+        path=target,
     )
     _print(
         {
-            "decision": decision,
-            "micu_ledger": ledger_projection,
+            "schema_id": "aox_diagnostic_authority_consume_receipt@1",
+            "status": "consumed_without_execution",
+            "run_class": AoxLiveRunClass.DIAGNOSTIC.value,
+            "acceptance_eligible": False,
+            "diagnostic_id": plan["diagnostic_id"],
+            "plan_digest": plan["plan_digest"],
+            "consumption_digest": _canonical_digest(receipt),
+            "output_file": target.name,
         }
     )
-    return 0 if decision["status"] == "completed_product_path" else 2
+    return 0
 
 
-def _add_driver_arguments(parser: argparse.ArgumentParser) -> None:
+def _add_conductor_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--approval-mode",
-        choices=("auto", "chrome-once"),
-        default="auto",
+        choices=("public-explicit", "chrome-once"),
+        default="public-explicit",
         help=(
-            "chrome-once exposes positive 1 through the attempt-child loopback Host "
-            "and waits for the first formal approval from the Web UI"
+            "public-explicit reserves every approval for an explicit public Host "
+            "API/CLI action; chrome-once additionally reserves positive 1 for UI proof"
         ),
     )
     parser.add_argument(
@@ -1002,7 +811,7 @@ def build_parser() -> argparse.ArgumentParser:
             "persistent MICU ledger; defaults to the exact configured live-LLM ledger"
         ),
     )
-    _add_driver_arguments(pin)
+    _add_conductor_arguments(pin)
     pin.set_defaults(handler=_pin)
 
     authorize = subparsers.add_parser(
@@ -1163,117 +972,43 @@ def build_parser() -> argparse.ArgumentParser:
     )
     browser_receipt.set_defaults(handler=_browser_receipt)
 
-    run_live = subparsers.add_parser(
-        "run-live",
+    consume_authority = subparsers.add_parser(
+        "consume-authority",
         help=(
-            "run the real public Host campaign in one supervised spawn child per "
-            "attempt; any missing product or retirement receipt is NO-GO"
+            "consume one exact formal authority plan without creating roots or "
+            "starting any Host, runtime, provider, HPC, MICU, or browser action"
         ),
     )
-    run_live.add_argument("--campaign-root", required=True, type=Path)
-    run_live.add_argument(
-        "--identity",
-        required=True,
-        type=Path,
-        help="digest-pinned campaign identity JSON",
+    consume_authority.add_argument("--identity", required=True, type=Path)
+    consume_authority.add_argument(
+        "--architecture-qualification-report", required=True, type=Path
     )
-    run_live.add_argument(
-        "--architecture-qualification-report",
-        required=True,
-        type=Path,
-        help="current clean-commit full architecture admission report",
+    consume_authority.add_argument("--allowed-prerequisites", required=True, type=Path)
+    consume_authority.add_argument("--attempt-authority-plan", required=True, type=Path)
+    consume_authority.add_argument(
+        "--attempt-authority-consumption", required=True, type=Path
     )
-    run_live.add_argument(
-        "--allowed-prerequisites",
-        required=True,
-        type=Path,
-        help="closed blank-world prerequisite JSON",
-    )
-    run_live.add_argument(
-        "--attempt-authority-plan",
-        required=True,
-        type=Path,
-        help=(
-            "private canonical three-slot plan produced by authorize; it is "
-            "consumed exactly once before any attempt root"
-        ),
-    )
-    run_live.add_argument(
-        "--attempt-authority-consumption",
-        required=True,
-        type=Path,
-        help=(
-            "exact absent append-only sibling '<authority-plan-name>.consumed.json'; "
-            "publishing it consumes the plan before root creation"
-        ),
-    )
-    run_live.add_argument(
-        "--ledger-path",
-        type=Path,
-        help=(
-            "persistent MICU ledger; defaults to the exact configured live-LLM ledger"
-        ),
-    )
-    run_live.add_argument(
-        "--browser-observation-receipt",
-        type=Path,
-        help=(
-            "append-only Chrome DevTools MCP observation JSON written in response "
-            "to the live handoff challenge; required by chrome-once positive 1"
-        ),
-    )
-    _add_driver_arguments(run_live)
-    run_live.set_defaults(handler=_run_live)
+    consume_authority.set_defaults(handler=_consume_authority)
 
-    run_diagnostic_live = subparsers.add_parser(
-        "run-diagnostic-live",
+    consume_diagnostic = subparsers.add_parser(
+        "consume-diagnostic-authority",
         help=(
-            "run at most one positive-shaped path under a disjoint diagnostic "
-            "authority and emit only a non-acceptance diagnostic decision"
+            "consume one exact diagnostic authority without creating roots or "
+            "starting any live action"
         ),
     )
-    run_diagnostic_live.add_argument(
-        "--diagnostic-root",
-        required=True,
-        type=Path,
-        help="exact fresh root namespace predeclared by authorize-diagnostic",
+    consume_diagnostic.add_argument("--identity", required=True, type=Path)
+    consume_diagnostic.add_argument(
+        "--architecture-qualification-report", required=True, type=Path
     )
-    run_diagnostic_live.add_argument("--identity", required=True, type=Path)
-    run_diagnostic_live.add_argument(
-        "--architecture-qualification-report",
-        required=True,
-        type=Path,
+    consume_diagnostic.add_argument("--allowed-prerequisites", required=True, type=Path)
+    consume_diagnostic.add_argument(
+        "--diagnostic-authority-plan", required=True, type=Path
     )
-    run_diagnostic_live.add_argument(
-        "--allowed-prerequisites",
-        required=True,
-        type=Path,
+    consume_diagnostic.add_argument(
+        "--diagnostic-authority-consumption", required=True, type=Path
     )
-    run_diagnostic_live.add_argument(
-        "--diagnostic-authority-plan",
-        required=True,
-        type=Path,
-        help="private canonical one-slot plan from authorize-diagnostic",
-    )
-    run_diagnostic_live.add_argument(
-        "--diagnostic-authority-consumption",
-        required=True,
-        type=Path,
-        help=(
-            "exact absent append-only sibling "
-            "'<plan>.diagnostic-consumed.json'"
-        ),
-    )
-    run_diagnostic_live.add_argument("--ledger-path", type=Path)
-    run_diagnostic_live.add_argument(
-        "--browser-observation-receipt",
-        type=Path,
-        help=(
-            "append-only Chrome observation JSON for the single diagnostic path"
-        ),
-    )
-    _add_driver_arguments(run_diagnostic_live)
-    run_diagnostic_live.set_defaults(handler=_run_diagnostic_live)
+    consume_diagnostic.set_defaults(handler=_consume_diagnostic_authority)
 
     return parser
 
@@ -1325,8 +1060,8 @@ def main(argv: list[str] | None = None) -> int:
                         in {
                             "authorize",
                             "authorize-diagnostic",
-                            "run-live",
-                            "run-diagnostic-live",
+                            "consume-authority",
+                            "consume-diagnostic-authority",
                         }
                         else "aox_cutover_evidence_failure@1"
                     ),

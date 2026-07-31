@@ -576,14 +576,25 @@ AOX 新 production evidence 读取这些对象生成 `aox_blank_world_attempt_bu
 ### 7.1 Sandbox-local pre-admission failure chain
 
 Host control validation 也是 canonical failure source。sandbox SDK 不在 RPC 前丢弃 malformed
-HPC stage descriptor；Host 在 ControlledOperation admission 之前写 immutable
+HPC stage descriptor 或 provider output authority；Host 在 ControlledOperation admission 之前写 immutable
 `FailureObservation(source_kind="sandbox_control_request")`，以
 `hpc_stage_ref_required/validation/agent_can_replan/no_effect` 绑定 exact
 session/workspace/source tree/agent/task/lane/origin signal、request digest 与 idempotency
-digest，并证明 operation 未 admit、external dispatch 未开始。
+digest，并证明 operation 未 admit、external dispatch 未开始。provider route 对非 canonical
+`/workspace/output` descendant、path alias/traversal 或与 declared expected output 不一致的
+caller value使用 `provider_output_path_invalid`，具有相同的 no-effect source binding。
 
 terminal non-completed SandboxRun 另写
 `FailureObservation(source_kind="sandbox_run")`。当且仅当它有一个 exact local cause 时，
 `sandbox_exec_nonzero/runtime/agent_can_replan/terminal_known` wrapper 绑定该 cause、
 selected scientific attempt 与 owner continuation。cause 与 wrapper 都是 append-only truth；
 wrapper 不覆盖 earliest cause，也不把 no-effect validation 改成业务终态。
+
+### 7.2 AOX public-only test conductor
+
+AOX 不再把 observer、barrier 或 automatic campaign driver 存入 control plane。测试员通过
+public message/runtime-drain/approval/workspace/event commands推进；Host 仍独占上述 canonical
+objects 与 mutation/external-effect authority。public command receipt 只证明一次请求的结果，
+空 drain、无 wakeup 或进程退出不创建 task/attempt/campaign terminal。sealed attempt bundle
+与 campaign decision 是 checkout 外 evidence，由 offline verifier/reducer 判定 eligibility，
+不能回写或替代 control-plane truth。

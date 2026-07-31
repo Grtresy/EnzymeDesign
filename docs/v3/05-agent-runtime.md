@@ -447,21 +447,17 @@ processed”。core receipt 直接消费 `AgentRuntimeOutcomeSettlement`，不�
 typed-to-dict-to-classifier 往返，也不重扫 mutable repository。runtime consistency 对新
 max-step observation 按结构化 error code 分类；旧自由文本匹配只用于 frozen historical rows。
 
-AOX live consumer 进一步把 validated `runtime_command_outcome@2` 作为 bounded progress
-输入。连续两次 `processed_signal_count=0 && replay_safe=true` 只有在 canonical work
-fingerprint 也相同，且 pending/claimed signal、pending approval、active invocation/continuation、working
-agent 与 mutation writer 全部为空时，才构成 no-wakeup proof。ready task 若仍关联
-actionable failure，返回 `formal_agent_recovery_unresolved`；否则返回
-`formal_runtime_stalled_no_wakeup`。单次 empty、semantic state 变化或任一 wake source
-都会重置确认，generic max-drains 仍保留为其他未收敛路径的最终 finite bound。前一个 error
-code 是历史 AOX diagnostic 名称，只表示“ready work 仍绑定 failure facts”，不指向已删除的
-turn recovery obligation 或 synthetic wakeup。
+historical AOX live consumer 曾将多个 `runtime_command_outcome@2` 合成为
+two-empty/no-wakeup verdict；r67 已删除该 consumer、work fingerprint 与 max-drains
+campaign policy。current runtime 只返回每个 explicit command 的 canonical bounded
+outcome。是否再发 command 由 public Codex conductor决定，absence of work不产生 Harness
+failure或业务终态；旧 error code 只在 sealed historical evidence 中读取。
 
 ## 11. Sandbox terminal wake facts
 
 `sandbox.exec` 的 non-completed run 必须返回 failed ToolResult，不能把 process exit
 包装成 success。若 terminal run 的唯一 Host-local pre-admission cause 是 exact
-`hpc_stage_ref_required/no_effect`，run observation 以
+`hpc_stage_ref_required/no_effect` 或 `provider_output_path_invalid/no_effect`，run observation 以
 `sandbox_exec_nonzero/agent_can_replan/terminal_known` source-bound wrapper 引用它。
 
 `ENGINE_COMPLETED` signal claim 时，canonical wake-facts projector 从 signal source
@@ -470,3 +466,9 @@ ephemeral fact set。session/task/lane/agent/workspace/source tree、origin sign
 continuation、attempt、request/idempotency digest 或 cause cardinality 任一漂移均 fail
 closed。该 projection 只呈现已发生的 no-effect failure，不创建 recovery work、retry
 operation 或规定 agent 下一步。
+
+AOX-specific runtime observer、Core runtime barrier/observer-writer 与 automatic
+drive-until-terminal/no-wakeup policy 已删除。Codex 测试员逐次调用 public Host runtime
+command；scheduler 仍只执行请求中的 bounded batch，不自行追逐业务终态。command terminal、
+zero-signal result 或 absence of wakeup 不会写 task/attempt terminal，也不会生成 synthetic
+recovery signal。
