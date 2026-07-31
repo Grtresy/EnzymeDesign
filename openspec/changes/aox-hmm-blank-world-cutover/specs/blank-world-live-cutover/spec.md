@@ -25,7 +25,7 @@ The retained preflight and authority-consumption shell SHALL resolve a canonical
 
 Every initial identity resolution and inter-attempt launch guard SHALL execute `aox_sandbox_scientific_backend_probe@1` before pin runner attestation, attempt-root creation, or any MICU/provider/runner effect. The probe MUST copy the exact Pipeline SDK to a temporary tree, normalize directory/file modes to `0755`/`0644`, recompute and match its source-tree digest, and mount it read-only into the selected immutable image under no-pull, no-network, bounded CPU/memory/pids execution. It MUST run the real `biopython_trace_guarded_numpy_gotoh@1` import, exact Biopython `1.87` and NumPy `2.4.4` checks, Gotoh configuration, IEEE-754 binary64 verification, and frozen numeric examples, returning only the exact canonical closed `aox_sandbox_scientific_backend_probe@1` projection. Missing dependencies, nonzero exit, timeout, image/SDK mismatch, version/algorithm/numeric drift, or malformed/open/noncanonical projection MUST fail launch without runtime installation, Host-package substitution, or alternate backend. This gate MUST NOT expand the exact-seven identity or exact-nine prerequisite object and MUST NOT be represented as a reproducible dependency manifest, SBOM, or supply-chain attestation.
 
-`config_digest` MUST be the canonical digest of a sealed safe `aox_blank_world_runtime_config@3` preimage covering the effective trusted-Host/single-process-SQLite profile, HPC runner-config digest, runner-owned manifest bytes digest, the closed exact-AOX tool-to-adapter/template/runner-contract expectation map, provider limits, MICU model/policy/bounds, research/tracing/test opt-ins, public-conductor/Chrome bounds, fixed cumulative 500M ceiling, existing ledger identity, the complete reliability projection that determines controlled-operation ownership/durable route admission/command drain/generic mutation closure/bounded shadow observation, and the exact active `aox_blank_world_selected_chain@2` schema/contract/workflow/digest identity. The selected-chain digest MUST cover the complete formal/fault/probe role-to-SDK-operation-signature mapping used by admission, inspection/readiness, validation, and the bundle verifier. The reliability projection MUST prove `durable_async_v1` ownership for every AOX provider/HPC route, `command_v1`, and `generic_v1` before pin contacts the runner or a public conductor creates an attempt root. Frozen `aox_blank_world_runtime_config@1` and `@2` evidence MAY remain readable for historical offline verification, but neither historical config nor `aox_blank_world_selected_chain@1` MAY be emitted or admitted for a new live launch. Summary, reservation and campaign startup MUST NOT reinterpret a stored ceiling. An explicit operator migration MAY change only the exact legacy fixed 100M policy to 500M transactionally; it MUST preserve all prior usage, be idempotent at 500M, reject any other stored limit, and never reset the ledger. The preimage MUST NOT expose credentials, NCBI email, or Host/runner/ledger paths. Binding the runner map and selected-chain identity MUST NOT add a tenth prerequisite field.
+`config_digest` MUST be the canonical digest of a sealed safe `aox_blank_world_runtime_config@4` preimage covering the effective trusted-Host/single-process-SQLite profile, HPC runner-config digest, runner-owned manifest bytes digest, the closed exact-AOX tool-to-adapter/template/runner-contract expectation map, provider limits, MICU model/policy/bounds, research/tracing/test opt-ins, fixed cumulative 500M ceiling, existing ledger identity, the complete reliability projection that determines controlled-operation ownership/durable route admission/command drain/generic mutation closure, and the exact active `aox_blank_world_selected_chain@2` schema/contract/workflow/digest identity. Its closed `conductor` object MUST bind `codex_tester`, public Host API/CLI, `openzyme_public_api_receipt_chain@1`, `aox_supervised_host_receipt@1`, the exact MICU ledger identity/ceiling, and `automatic_runtime_drain=false`, `automatic_approval=false`, `automatic_rollover=false`. The selected-chain digest MUST cover the complete formal/fault/probe role-to-SDK-operation-signature mapping used by admission, inspection/readiness, validation, and the bundle verifier. The reliability projection MUST prove `durable_async_v1` ownership for every AOX provider/HPC route, `command_v1`, and `generic_v1` before pin contacts the runner or a public conductor creates an attempt root. Frozen `aox_blank_world_runtime_config@1`, `@2`, and `@3` evidence MAY remain readable only for historical offline verification; none MAY be emitted or admitted for a new launch, and historical driver/browser fields MUST NOT be projected into `@4`. Summary, reservation and campaign startup MUST NOT reinterpret a stored ceiling. An explicit operator migration MAY change only the exact legacy fixed 100M policy to 500M transactionally; it MUST preserve all prior usage, be idempotent at 500M, reject any other stored limit, and never reset the ledger. The preimage MUST NOT expose credentials, NCBI email, or Host/runner/ledger paths. Binding the runner map and selected-chain identity MUST NOT add a tenth prerequisite field.
 
 Blank-world live against MICU or another OpenAI-compatible endpoint MUST explicitly configure `context_window_tokens` no greater than `200000`; it MUST NOT infer a larger window from a model name when the endpoint has not proved that capability.
 
@@ -524,8 +524,70 @@ task state, attempt state, report state or campaign decision.
 - **THEN** they remain non-cutover and cannot satisfy or weaken any formal slot, even when their content digests match later formal content
 
 #### Scenario: Do not expose an automatic AOX run command
-- **WHEN** an operator inspects the AOX cutover CLI after r67
-- **THEN** it exposes declaration, authority, preflight, evidence verification and campaign reduction commands but no command that starts and automatically drives a live AOX session
+- **WHEN** an operator inspects the AOX cutover CLI after r68
+- **THEN** it exposes declaration, authority, exact preflight, policy-free Host supervision, source-bound finalize-and-seal, evidence verification and campaign reduction commands but no command that automatically drives a live AOX session
+
+### Requirement: Authority-bound public conductor production reachability
+After an exact plan has been consumed, preflight SHALL first validate the clean
+launch identity, committed pin pair, current full architecture qualification,
+runtime configuration, exact plan/consumption binding and unused slot. Only after
+all validation succeeds MAY it create that slot's one fresh private root and seal
+`aox_attempt_preflight@1`; the receipt MUST state that Host was not started and MUST
+be rejected when rebound, replayed, symlinked, drifted or reused after any
+session/attempt state exists.
+
+`serve-attempt` MAY start only the fixed loopback production Host in one local
+process group using that exact preflight receipt. It MUST disable background
+runtime and MUST NOT send a message, drain runtime, resolve approval, retry,
+roll over a scope, inspect business terminal state or derive a campaign result.
+Startup and retirement receipts MUST bind the same root/process epoch; local
+retirement does not prove remote-effect cancellation or business closure.
+
+The public Host SHALL export one exact closed attempt and sealed selection through
+`GET /v3/sessions/{session_id}/scientific-attempts/{attempt_id}/selections/{selection_id}/evidence`.
+Formal positive export MUST revalidate the persisted source-bound 17-deliverable
+finalization receipt and read every declared sealed file through the artifact
+boundary. Cross-session, open-attempt, wrong-selection, missing receipt, artifact
+scope/type/size/digest drift and path substitution MUST fail closed.
+
+The thin Host CLI SHALL be able to append every public response, including non-2xx
+responses, as canonical JSONL `openzyme_public_api_receipt@2`. Each record is the
+exact closed object `schema_id`, `sequence`, `method`, `route`, `status_code`,
+`request`, `request_digest`, `response_digest`, and
+`response_semantic_digest`; message text SHALL be represented only by its digest
+plus exact skill/task/lane semantics. The chain MUST be continuous, mode-private,
+single-linked, locked, fully written and fsynced. A requested final response MAY
+be sealed once as `openzyme_public_host_response@1` only when it reproduces the
+same semantic digest.
+
+One `finalize-and-seal` command SHALL prevalidate the exact identity, preflight,
+startup/retirement receipts, complete public receipt chain, sealed final
+workspace/event/evidence responses, source attestations and MICU snapshots before
+creating any output. It SHALL reconstruct one source-bound
+`aox_blank_world_attempt_bundle@3` with profile
+`aox_public_conductor_bundle@1`, install it atomically without replacement, and
+make the sealed source set independently reconstructable by the network-free
+verifier. Any missing/extra/non-2xx/discontinuous command, identity drift,
+noncanonical business closure, invalid task/report/finalization state, symlink,
+source drift or partial output MUST leave no sealed bundle.
+
+Executable architecture qualification SHALL prove these public production
+commands/routes/callers are reachable and prove deleted `AttemptRunner`, legacy
+emitter, test builder, browser helper and automatic driver surfaces are absent.
+Test fixtures MAY construct evidence only from the tests package and MUST NOT be a
+production caller.
+
+#### Scenario: Preflight before Host startup
+- **WHEN** one consumed exact slot and every pinned/current qualification input agree
+- **THEN** preflight creates only that slot's fresh root and immutable receipt, reports `preflight_complete_host_not_started`, and performs no Host, session, attempt, MICU, provider, runner, HPC or browser action
+
+#### Scenario: Seal an exact public positive
+- **WHEN** a policy-free Host has retired and the public chain proves one canonically closed positive attempt with the exact selected chain, passed 17-deliverable receipt, completed task board, published report, full events and final reads
+- **THEN** the single finalizer seals one source-reconstructable `@3` bundle and the offline verifier reproduces it without SQLite, provider, runner or network access
+
+#### Scenario: Reject an incomplete or substituted conductor chain
+- **WHEN** a command is missing, duplicated, non-2xx, semantically drifted, privately substituted, test-built, cross-authority, cross-root, cross-attempt or followed by partial output
+- **THEN** finalization fails before destination creation and none of those facts can be relabelled as a closed attempt or campaign decision
 
 ### Requirement: Three-attempt GO campaign
 Local Live cutover SHALL be GO only after one formal acceptance campaign produces two consecutive independent positive attempts on the same exact-seven launch identity, followed by one `derived_required_artifact_blob_byte_flip@2` attempt that fails closed. The fault MUST traverse the real exact-14 NCBI `proteins.fasta` through `aox_hmm_reference_set_selection@1` to derived `AOX_ref21.fasta`, flip one byte before its pending MAFFT consumer, and terminate that consumer with exact `artifact_blob_digest_mismatch`. Positive attempts MUST use different clean roots and MUST each publish a report and pass offline evidence verification. Diagnostic live runs, implementation completion, and non-live test completion MUST NOT be reported as Live completion before all three fresh formal bundles and the sealed reducer decision exist.
@@ -557,15 +619,16 @@ because a command is idle, bounded, exhausted or has no wakeup. Canonical wake
 facts and failed ToolResults expose source-bound constraints to the agent and
 conductor without selecting retry, repair, stop or success.
 
-For a GO-eligible campaign, positive 1's reserved browser approval SHALL still be
-resolved through the digest-pinned Web UI and bound to the same approval,
-operation, sandbox continuation, Host process and durable-event identities. The
-sealed browser receipt and post-hold observation SHALL remain independently
-verifiable. No policy-free shell may auto-approve that reserved operation. Other
-approvals may be resolved only by an explicit conductor action permitted by the
-approved test plan.
+Every approval SHALL be resolved only by an explicit conductor action through the
+public Host API/CLI when the approved test plan authorizes that exact action. The
+receipt chain, final workspace, event replay and closed-attempt export MUST bind
+the same approval, operation, sandbox continuation and Host process identities.
+No policy-free shell may auto-approve an operation, and no browser-specific helper,
+screen observation or private resolve call is required or accepted as a GO
+substitute.
 
-The append-only evidence shell MAY seal public API receipts, the final public
+The append-only evidence shell MAY seal canonical `openzyme_public_api_receipt@2`
+records, the final public
 workspace snapshot, full event replay, process-supervision retirement receipt,
 artifact roots and MICU snapshots. It MUST preserve request/response semantic
 digests and typed failures, but MUST NOT label the business state or campaign
@@ -593,9 +656,9 @@ a safe failure into an automatic retry or a business terminal.
 - **WHEN** a sandbox provider or HPC request carries an invalid Host-owned output/stage authority
 - **THEN** no controlled operation or external dispatch is admitted, Host seals the exact `no_effect` cause, the non-completed sandbox run returns a failed ToolResult, and canonical wake facts retain the same source-bound cause and wrapper
 
-#### Scenario: Verify browser approval without an automatic driver
-- **WHEN** positive 1 reaches its reserved formal approval
-- **THEN** the conductor hands the canonical public approval to the browser user, later collects public workspace/events and the challenged observation receipt, and the offline verifier rejects any automatic resolve, identity drift, stale receipt or missing continuation
+#### Scenario: Verify explicit public approval without an automatic driver
+- **WHEN** an attempt reaches a formal approval covered by the exact approved test plan
+- **THEN** the conductor resolves that approval once through the public Host API/CLI, seals the command receipt and later public reads, and the offline verifier rejects automatic resolution, identity drift, stale receipt or missing same-operation continuation
 
 #### Scenario: Keep process supervision non-authoritative
 - **WHEN** an attempt Host or sandbox child exits, times out or requires forced retirement

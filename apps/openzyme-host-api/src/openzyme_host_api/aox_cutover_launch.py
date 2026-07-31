@@ -14,7 +14,6 @@ import shutil
 import subprocess
 import tempfile
 from typing import Any
-from typing import Literal
 from typing import Protocol
 from urllib.parse import urlsplit
 from urllib.parse import urlunsplit
@@ -46,8 +45,6 @@ from .aox_architecture_qualification import (
 from .aox_cutover_runtime_config import (
     AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID,
 )
-from .aox_cutover_runtime_config import AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS
-from .aox_cutover_runtime_config import AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN
 from .aox_cutover_runtime_config import AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS
 from .aox_cutover_runtime_config import AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
 from .aox_cutover_runtime_config import AoxRuntimeConfigSchemaError
@@ -155,23 +152,6 @@ class AoxCutoverLaunchError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.details = {} if details is None else dict(details)
-
-
-@dataclass(frozen=True, slots=True)
-class AoxCutoverDriverConfig:
-    approval_mode: Literal["public-explicit", "chrome-once"] = "public-explicit"
-    timeout_seconds: float = AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS
-    max_drains: int = 120
-    max_signals_per_drain: int = AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN
-    max_steps_per_agent: int = 16
-    browser_poll_interval_seconds: float = 0.5
-    browser_approval_timeout_seconds: float = 300.0
-    browser_completion_hold_seconds: float = 60.0
-    browser_observation_submission_timeout_seconds: float = 180.0
-    browser_observation_mode: str = "chrome_devtools_mcp_file_handoff"
-    ui_dist_dir: Path = field(
-        default_factory=lambda: REPO_ROOT / "apps" / "openzyme-web-ui" / "dist"
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -829,102 +809,40 @@ def _purpose_policy_projection(settings: OpenZymeSettings) -> dict[str, object]:
     }
 
 
-def _validate_driver(driver: AoxCutoverDriverConfig) -> None:
-    if driver.approval_mode not in {"public-explicit", "chrome-once"}:
-        raise AoxCutoverLaunchError(
-            "aox_launch_approval_mode_invalid",
-            "AOX cutover approval mode must be public-explicit or chrome-once",
-        )
-    if driver.browser_observation_mode != "chrome_devtools_mcp_file_handoff":
-        raise AoxCutoverLaunchError(
-            "aox_launch_browser_observation_mode_invalid",
-            "AOX cutover requires the closed Chrome DevTools MCP observation handoff",
-        )
-    integer_values = {
-        "max_drains": driver.max_drains,
-        "max_signals_per_drain": driver.max_signals_per_drain,
-        "max_steps_per_agent": driver.max_steps_per_agent,
-    }
-    numeric_values = {
-        "timeout_seconds": driver.timeout_seconds,
-        "browser_poll_interval_seconds": driver.browser_poll_interval_seconds,
-        "browser_approval_timeout_seconds": (driver.browser_approval_timeout_seconds),
-        "browser_observation_submission_timeout_seconds": (
-            driver.browser_observation_submission_timeout_seconds
-        ),
-    }
-    invalid = sorted(
-        key
-        for key, value in integer_values.items()
-        if type(value) is not int or value <= 0
-    )
-    invalid.extend(
-        key
-        for key, value in numeric_values.items()
-        if type(value) not in {int, float}
-        or not math.isfinite(float(value))
-        or value <= 0
-    )
+def validate_aox_authority_wall_time(value: object) -> float:
     if (
-        type(driver.browser_completion_hold_seconds) not in {int, float}
-        or not math.isfinite(float(driver.browser_completion_hold_seconds))
-        or driver.browser_completion_hold_seconds < 0
-        or (
-            driver.approval_mode == "chrome-once"
-            and driver.browser_completion_hold_seconds <= 0
-        )
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or float(value) < AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS
     ):
-        invalid.append("browser_completion_hold_seconds")
-    if invalid:
         raise AoxCutoverLaunchError(
-            "aox_launch_driver_bounds_invalid",
-            "AOX cutover driver bounds must be positive and finite",
-            details={"fields": invalid},
+            "aox_authority_wall_time_invalid",
+            "AOX authority wall time is below the sealed operation hierarchy",
         )
-    if driver.max_signals_per_drain != AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN:
-        raise AoxCutoverLaunchError(
-            "aox_launch_signal_fence_invalid",
-            "AOX cutover must inspect durable state after every single runtime signal",
-            details={
-                "expected_max_signals_per_drain": (AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN),
-                "observed_max_signals_per_drain": driver.max_signals_per_drain,
-            },
-        )
-
+    timeout_seconds = float(value)
     hmmer_poll_timeout_seconds = float(
         BioProviderHttpConfig.from_env().hmmer_poll_timeout_seconds
     )
-    timeout_hierarchy_valid = (
+    if not (
         hmmer_poll_timeout_seconds < AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
         and AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS == EXEC_MAX_TIMEOUT_SECONDS
         and EXEC_MAX_TIMEOUT_SECONDS < AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS
-        and AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS <= driver.timeout_seconds
-    )
-    if not timeout_hierarchy_valid:
+        and AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS <= timeout_seconds
+    ):
         raise AoxCutoverLaunchError(
             "aox_launch_timeout_hierarchy_invalid",
-            "AOX cutover timeout policy is incompatible with the sealed HMM-capable hierarchy",
-            details={
-                "hmmer_poll_timeout_seconds": hmmer_poll_timeout_seconds,
-                "sandbox_exec_timeout_seconds": (
-                    AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
-                ),
-                "sandbox_exec_max_timeout_seconds": EXEC_MAX_TIMEOUT_SECONDS,
-                "minimum_timeout_seconds": AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS,
-                "timeout_seconds": float(driver.timeout_seconds),
-            },
+            "AOX authority is incompatible with the sealed HMM operation hierarchy",
         )
+    return timeout_seconds
 
 
 def build_aox_cutover_effective_config(
     settings: OpenZymeSettings,
     *,
-    driver: AoxCutoverDriverConfig,
     ledger_path: Path,
     repo_root: Path = REPO_ROOT,
-    source_tree_digest: Callable[[Path], str] = immutable_source_tree_digest,
 ) -> AoxCutoverEffectiveConfig:
-    _validate_driver(driver)
     effective = resolve_configured_foundation_settings(settings)
     resolved_root = repo_root.resolve()
     resolved_ledger = ledger_path.expanduser().resolve()
@@ -1004,22 +922,6 @@ def build_aox_cutover_effective_config(
             ),
         ),
     )
-    ui_dist_digest: str | None = None
-    if driver.approval_mode == "chrome-once":
-        ui_root = driver.ui_dist_dir.resolve()
-        if (
-            driver.ui_dist_dir.is_symlink()
-            or not (ui_root / "index.html").is_file()
-            or any(path.is_symlink() for path in ui_root.rglob("*"))
-        ):
-            raise AoxCutoverLaunchError(
-                "aox_launch_ui_dist_invalid",
-                "Chrome-observed cutover requires a complete symlink-free built UI dist",
-            )
-        ui_dist_digest = _require_digest(
-            source_tree_digest(ui_root),
-            identity="driver.ui_dist_digest",
-        )
     slots = _credential_slots(effective)
     endpoint = _safe_provider_endpoint(effective.llm.base_url)
     payload: dict[str, object] = {
@@ -1116,23 +1018,15 @@ def build_aox_cutover_effective_config(
             "quality_eval": effective.test.enable_quality_eval,
             "upload_langsmith": effective.test.upload_langsmith,
         },
-        "driver": {
+        "conductor": {
             "scenario": MICU_SCENARIO,
-            "approval_mode": driver.approval_mode,
-            "browser_observation_mode": driver.browser_observation_mode,
-            "timeout_seconds": driver.timeout_seconds,
-            "max_drains": driver.max_drains,
-            "max_signals_per_drain": driver.max_signals_per_drain,
-            "max_steps_per_agent": driver.max_steps_per_agent,
-            "browser_poll_interval_seconds": driver.browser_poll_interval_seconds,
-            "browser_approval_timeout_seconds": (
-                driver.browser_approval_timeout_seconds
-            ),
-            "browser_completion_hold_seconds": (driver.browser_completion_hold_seconds),
-            "browser_observation_submission_timeout_seconds": (
-                driver.browser_observation_submission_timeout_seconds
-            ),
-            "ui_dist_digest": ui_dist_digest,
+            "orchestration_owner": "codex_tester",
+            "public_command_surface": "host_api_cli_v3",
+            "receipt_chain_schema_id": "openzyme_public_api_receipt_chain@1",
+            "supervised_host_schema_id": "aox_supervised_host_receipt@1",
+            "automatic_runtime_drain": False,
+            "automatic_approval": False,
+            "automatic_rollover": False,
             "micu_hard_limit_tokens": LIVE_MICU_TOKEN_HARD_LIMIT,
             "micu_ledger_identity_digest": _canonical_digest(
                 {"ledger_path": str(resolved_ledger)}
@@ -1460,7 +1354,6 @@ def attest_aox_toolchain_image_digests(
 def pin_aox_cutover_launch(
     *,
     settings: OpenZymeSettings,
-    driver: AoxCutoverDriverConfig,
     ledger_path: Path,
     architecture_qualification_report: Path,
     repo_root: Path = REPO_ROOT,
@@ -1478,10 +1371,8 @@ def pin_aox_cutover_launch(
     )
     effective_config = build_aox_cutover_effective_config(
         settings,
-        driver=driver,
         ledger_path=ledger_path,
         repo_root=resolved_root,
-        source_tree_digest=probes.source_tree_digest,
     )
     actual_identity = _resolve_actual_identity(
         repo_root=resolved_root,
@@ -1524,7 +1415,6 @@ def pin_aox_cutover_launch(
     # a Host session.
     snapshot = prepare_aox_cutover_launch(
         settings=settings,
-        driver=driver,
         ledger_path=ledger_path,
         declared_identity=actual_identity,
         declared_prerequisites=prerequisites,
@@ -1554,7 +1444,6 @@ def _mismatched_fields(
 def prepare_aox_cutover_launch(
     *,
     settings: OpenZymeSettings,
-    driver: AoxCutoverDriverConfig,
     ledger_path: Path,
     declared_identity: Mapping[str, object],
     declared_prerequisites: Mapping[str, object],
@@ -1574,10 +1463,8 @@ def prepare_aox_cutover_launch(
     )
     effective_config = build_aox_cutover_effective_config(
         settings,
-        driver=driver,
         ledger_path=ledger_path,
         repo_root=resolved_root,
-        source_tree_digest=probes.source_tree_digest,
     )
     actual_identity = _resolve_actual_identity(
         repo_root=resolved_root,
@@ -1634,10 +1521,8 @@ def prepare_aox_cutover_launch(
             )
         current_config = build_aox_cutover_effective_config(
             settings,
-            driver=driver,
             ledger_path=ledger_path,
             repo_root=resolved_root,
-            source_tree_digest=probes.source_tree_digest,
         )
         current_identity = _resolve_actual_identity(
             repo_root=resolved_root,
@@ -1666,7 +1551,6 @@ def prepare_aox_cutover_launch(
 __all__ = [
     "ALLOWED_PREREQUISITE_FIELDS",
     "AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_SCHEMA_ID",
-    "AoxCutoverDriverConfig",
     "AoxCutoverEffectiveConfig",
     "AoxCutoverLaunchError",
     "AoxCutoverLaunchProbes",
@@ -1684,4 +1568,5 @@ __all__ = [
     "prepare_aox_cutover_launch",
     "validate_aox_cutover_allowed_prerequisites",
     "validate_aox_cutover_identity",
+    "validate_aox_authority_wall_time",
 ]

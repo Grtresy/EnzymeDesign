@@ -1257,6 +1257,59 @@ verification 与本地 commit；不授权 r68、新 live authority/root、MICU�
 Chrome。删除后必须以 source audit 证明生产代码净减少，且不得留下 observer/automatic
 driver 的别名、兼容入口或隐藏 fallback。
 
+### 2026-07-31 r68 prelaunch-blocked public-conductor production repair
+
+r68 的 exact authority 已消费，但旧 production surface 无法从 public `/v3` 导出 closed
+attempt/quiescence evidence，也没有可调用的 production Host startup/supervision 与 `@3`
+sealing 入口。因此测试在 root、Host、session 与 scientific attempt 创建前停止。该事实只记为
+**prelaunch blocked**，不是 canonical r68 NO-GO：不存在可供 verifier 判断的 r68 attempt，
+也不存在 attempt bundle 或 reducer decision。authority consumption 不可撤销或复用；截至
+该停止点没有 Host/provider/HPC/Chrome effect，MICU 仍为
+`128,190,632 / 500,000,000`。任何后继测试都必须基于本 repair commit 重新完成 full
+admission、pin、fresh authority 与 fresh roots，并取得对新 exact plan 的独立批准。
+
+repair 继续采用 deletion-first。失去 production caller 的 generic `AttemptRunner`、legacy
+`@2` emitter、从 production module 暴露给 tests 的 evidence builder、旧 driver config/write
+path、browser observation helper 与 runnable automatic contract 全部删除；历史 `@1..@3`
+runtime config、legacy supervision/evidence receipt 只保留 closed read-only verifier，不得成为
+current launch caller。test evidence fixture 移入 tests package，production composition 禁止引用。
+
+current `aox_blank_world_runtime_config@4` 把 Codex tester、public Host API/CLI、receipt
+chain、policy-free supervised Host 与 MICU identity 封入 config digest，并强制 automatic
+drain/approval/rollover 全为 false。`preflight` 在任何 root 前验证 exact consumed slot、clean
+identity、committed pin、full architecture qualification、runtime config 与 plan/consumption；
+全部通过后才创建该 slot 的 private root并原子封存 `aox_attempt_preflight@1`，其状态明确为
+`preflight_complete_host_not_started`。preflight 本身不启动 Host/session/attempt 或外部 effect。
+
+`serve-attempt` 只用 exact preflight 启动固定 loopback production Host/process group，关闭
+background runtime，不发送 message/drain、不中断或批准业务操作、不做 rollover/terminal
+判断。startup 与 supervision receipt 证明 exact local process epoch、root fsync、SQLite
+checkpoint/integrity 与全部 local writer 退休；不证明 remote cancellation、业务成功或 GO。
+
+thin Host CLI 通过全局 `--receipt-chain` 为每次 public request 追加 exact closed
+`openzyme_public_api_receipt@2`，包括 non-2xx；`--seal-response` 以
+`openzyme_public_host_response@1` no-replace 封存最后 workspace/events/evidence response。
+message receipt只保留 message digest 与 skill/task/lane semantics。Host 新增 exact closed
+attempt/selection evidence GET；Core export 要求 session、closed attempt 与 sealed selection
+一致，formal positive 还必须重验 persisted 17-deliverable validation receipt，并经 artifact
+boundary 读取每个 sealed file。
+
+唯一 current builder 是 `finalize-and-seal`：它在输出前完整验证 identity/preflight、固定
+startup/supervision siblings、连续 public receipt chain、final workspace/event/evidence sealed
+responses、source attestations 与 MICU snapshots，随后才以 no-replace 原子安装 profile
+`aox_public_conductor_bundle@1` 的 `aox_blank_world_attempt_bundle@3`。offline verifier只从
+封存 source attestations 在 private temporary topology 中重建 payload并比较 exact bytes；
+不读 live SQLite，不接触 provider/runner/network。production reachability qualification同时
+证明 public route/CLI/finalizer/verifier/reducer 有 production caller，且已删除 runner/emitter/
+browser/automatic surfaces 不可达。
+
+本 repair 只闭合 positive production reachability，不降低 formal fault contract。若第三个
+bundle 只证明一般 controlled failure，却没有闭合
+`derived_required_artifact_blob_byte_flip@2`、exact derived `AOX_ref21.fasta` consumer 与
+`artifact_blob_digest_mismatch`，campaign reducer 必须以
+`fault_contract_unproven` 保持 NO-GO。该 Phase 2 只运行 non-live verification、更新规格/文档
+并提交本地 commit；不启动下一 rNN、live、MICU、provider、HPC 或 Chrome。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

@@ -31,6 +31,7 @@ V3 公共接口以 harness-first 语义为唯一主线。
 - `POST /v3/approvals/{approval_id}/resolve`
 - `POST /v3/sessions/{session_id}/runtime/drain`（operator/debug durable command admission）
 - `GET /v3/sessions/{session_id}/runtime/commands/{command_id}`
+- `GET /v3/sessions/{session_id}/scientific-attempts/{attempt_id}/selections/{selection_id}/evidence`（closed-attempt exact export）
 
 Public JSON contract 由 Host API 的 request/response DTO 双向校验。未知请求字段、空 mutation、越界长度和非法 enum 返回 `422`，不得被静默忽略；response 顶层 shape 与 event envelope 同样经过 schema 校验，防止内部字段偶然泄漏或调用方依赖未声明字段。所有 JSON 错误统一为 `{"error":{"code","message","hint?","details?"}}`；调用方必须按稳定 `code` 分支，不能解析异常字符串。
 
@@ -568,3 +569,30 @@ SQLite rows 与 `aox_closure_stage_*` sealed evidence schemas 只供离线兼容
 architecture qualification 继续以 raw historical run-class/attempt-id literals 证明它们
 不能满足 formal publisher、bundle verifier 或 reducer。不得把旧 schema 解释为隐藏
 operator endpoint。
+
+### 9.1 r68 public receipt 与 closed-attempt export
+
+public Host CLI 的全局 `--receipt-chain PATH` 会为每次请求（包括 non-2xx）追加一条
+canonical JSONL `openzyme_public_api_receipt@2`。record 是 exact closed object：
+`schema_id`、`sequence`、`method`、`route`、`status_code`、`request`、
+`request_digest`、`response_digest`、`response_semantic_digest`。message request 不保存 raw
+message，只保存 message bytes digest 与 exact skill/task/lane semantics；event replay request
+保存 `replay=true` 与 `after_cursor`。chain 必须 sequence 连续、mode-private、single-link、
+non-symlink、locked、full-write并 fsync。
+
+`--seal-response PATH` 必须与同次 `--receipt-chain` 一起使用；它只在 response semantic
+digest 与 receipt一致时，以 no-replace `openzyme_public_host_response@1` 封存 exact semantic
+response。该机制不把 CLI 输出提升为 canonical state，只为 offline reconstruction 提供
+source-bound public facts。
+
+closed evidence route 只导出 exact session 中已 closed attempt 的 exact sealed selection。
+formal positive 还必须存在且通过 persisted `aox_final_deliverable_validation_receipt@1`；
+Host 经 `ArtifactBoundaryService.read_sealed_file()` 核对 artifact scope、kind、size、digest后
+才把 bytes 编码进 `aox_closed_attempt_evidence@1`。open attempt、wrong selection、cross-session、
+缺失 receipt 或任一 artifact drift 全部 fail closed。
+
+AOX cutover shell 新增三个彼此分离的 production seams：`preflight` 只在所有 authority/pin/
+qualification/config validation 通过后创建 exact root并报告 Host 未启动；`serve-attempt`
+只启动/退休 fixed loopback Host，不发 message/drain/approval；`finalize-and-seal` 只从 exact
+public receipts和 sealed source responses重建并原子封存 `@3` bundle。它们都不能自动判断
+业务 terminal 或声明 GO。

@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+from pathlib import Path
 from typing import Any
 from typing import Protocol
 from uuid import uuid4
 
 import httpx
+
+from .receipts import append_public_api_receipt
+from .receipts import parse_sse_events
 
 
 class ResponseProtocol(Protocol):
@@ -57,11 +61,14 @@ class HostApiClient:
         *,
         auth_token: str | None = None,
         session: SessionProtocol | None = None,
+        receipt_chain: Path | None = None,
     ) -> None:
         self._owns_session = session is None
         self._session = session or httpx.Client(base_url=base_url.rstrip("/"), timeout=30.0)
         self._base_url = base_url.rstrip("/")
         self._auth_token = auth_token
+        self._receipt_chain = receipt_chain
+        self.last_receipt: dict[str, Any] | None = None
 
     def close(self) -> None:
         if self._owns_session:
@@ -74,6 +81,7 @@ class HostApiClient:
         *,
         json_body: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
+        event_stream: bool = False,
     ) -> Any:
         headers: dict[str, str] = {}
         if self._auth_token:
@@ -88,9 +96,18 @@ class HostApiClient:
             response = self._session.patch(path, json=json_body, headers=headers)
         else:
             response = self._session.post(path, json=json_body, headers=headers)
+        self.last_receipt = None
+        if self._receipt_chain is not None:
+            self.last_receipt = append_public_api_receipt(
+                self._receipt_chain,
+                method=method,
+                route=path,
+                request_body=json_body,
+                response=response,
+            )
         if response.status_code >= 400:
             raise HostApiError(response.status_code, _normalize_error_text(response))
-        return response.json()
+        return parse_sse_events(response.text) if event_stream else response.json()
 
     def create_v3_session(
         self,
@@ -109,6 +126,19 @@ class HostApiClient:
 
     def get_v3_workspace(self, session_id: str) -> dict[str, Any]:
         return self._request_json("GET", f"/v3/sessions/{session_id}/workspace")
+
+    def get_v3_events(self, session_id: str, *, after_cursor: int) -> list[dict[str, Any]]:
+        return self._request_json(
+            "GET",
+            f"/v3/sessions/{session_id}/events?replay=1&after_cursor={after_cursor}",
+            event_stream=True,
+        )
+
+    def get_v3_pending_approvals(self, session_id: str) -> dict[str, Any]:
+        return self._request_json(
+            "GET",
+            f"/v3/sessions/{session_id}/pending-approvals",
+        )
 
     def get_v3_runtime_health(self) -> dict[str, Any]:
         return self._request_json("GET", "/v3/runtime/health")
@@ -146,6 +176,19 @@ class HostApiClient:
         return self._request_json(
             "GET",
             f"/v3/sessions/{session_id}/scientific-attempts",
+        )
+
+    def export_v3_closed_scientific_attempt_evidence(
+        self,
+        session_id: str,
+        *,
+        attempt_id: str,
+        selection_id: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "GET",
+            f"/v3/sessions/{session_id}/scientific-attempts/{attempt_id}/"
+            f"selections/{selection_id}/evidence",
         )
 
     def grant_v3_scientific_attempt_authorization(
@@ -208,12 +251,15 @@ class HostApiClient:
         message: str,
         task_id: str | None = None,
         lane_id: str | None = None,
+        skill_keys: list[str] | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"message": message}
         if task_id:
             body["task_id"] = task_id
         if lane_id:
             body["lane_id"] = lane_id
+        if skill_keys:
+            body["skill_keys"] = list(skill_keys)
         return self._request_json("POST", f"/v3/sessions/{session_id}/messages", json_body=body)
 
     def create_v3_task(self, payload: dict[str, Any]) -> dict[str, Any]:

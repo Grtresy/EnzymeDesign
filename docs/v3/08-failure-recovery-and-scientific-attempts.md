@@ -746,3 +746,23 @@ empty-string 或其他不精确映射。failed decision
 和 fatal
 `sha256:d1885f6eee9bf169c098d03afff7172d47d613af6bddd90c22573fa8146f58c2`
 永久 non-acceptance；原 plan、target、MICU/evidence 不可复用。
+
+## 14. r68 closed-attempt export 与 evidence finalization
+
+r68 authority consumption发生后，测试在 root/session/attempt 前因 public evidence/startup/
+sealing production reachability 缺失而停止。没有 attempt 就没有 canonical attempt failure
+或 NO-GO verdict；因此它是 `prelaunch blocked`，不是 `scientific_attempt` terminal，也不能
+生成 synthetic closure。该 consumption 永久不可复用。
+
+current Core `export_closed_attempt_evidence()` 只接受 exact session、closed attempt 与 sealed
+selection。Host public service在此基础上重验 formal positive 的 persisted source-bound
+17-deliverable validation receipt，并通过 artifact boundary读取 exact sealed files。错误
+session/selection、open/closing attempt、缺失 finalization、artifact scope/kind/size/digest drift
+都返回 typed public error；export 不回填、不修复、不替 agent 选择 disposition。
+
+Codex conductor 的 append-only public receipt chain保留每个 command的 request/response
+semantic digest与 non-2xx failure。单一 `finalize-and-seal` 只有在 exact command sequence、
+startup/retirement、workspace/events/export、task/report/closure/finalization 与 MICU source
+binding全部预验证后才创建 output；任一失败保持零 partial bundle。offline verifier从 sealed
+attestations重建 exact payload，不依赖 live repository。一般 safe failure仍不能替代 formal
+byte-flip fault：缺少 exact fault lineage时 reducer输出 `fault_contract_unproven` NO-GO。

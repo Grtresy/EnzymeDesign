@@ -1,16 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
-
 from openzyme_host_api import aox_diagnostic_run
 from openzyme_host_api.aox_cutover_evidence import canonical_digest
-from openzyme_host_api.aox_cutover_evidence import CutoverEvidenceError
 from openzyme_host_api.aox_diagnostic_run import (
     AOX_DIAGNOSTIC_DECISION_SCHEMA_ID,
 )
-from openzyme_host_api.aox_diagnostic_run import seal_aox_diagnostic_decision
 from openzyme_host_api.aox_diagnostic_run import validate_aox_diagnostic_decision
 
 
@@ -59,20 +53,11 @@ def _sealed_no_go_decision() -> dict[str, object]:
     return {**payload, "decision_digest": canonical_digest(payload)}
 
 
-def test_historical_diagnostic_decision_remains_append_only_non_acceptance(
-    tmp_path: Path,
-) -> None:
+def test_historical_diagnostic_decision_remains_read_only_non_acceptance() -> None:
     decision = _sealed_no_go_decision()
-    destination = tmp_path / "diagnostic-decision.json"
 
-    digest = seal_aox_diagnostic_decision(decision, destination)
-
-    assert digest == decision["decision_digest"]
     assert validate_aox_diagnostic_decision(decision) == decision
-    assert destination.stat().st_mode & 0o222 == 0
-    with pytest.raises(CutoverEvidenceError) as error:
-        seal_aox_diagnostic_decision(decision, destination)
-    assert error.value.code == "diagnostic_decision_append_only"
+    assert not hasattr(aox_diagnostic_run, "seal_aox_diagnostic_decision")
 
 
 def test_automatic_diagnostic_runner_is_retired() -> None:

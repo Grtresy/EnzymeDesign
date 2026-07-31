@@ -1,7 +1,8 @@
 # V3 可执行架构资格验证
 
 状态：deterministic qualification 与 AOX admission integration 已实现；每个 tracked
-correction 都会使前一份 report 失效。r48-r51 已永久 NO-GO，后继 numbered campaign 必须先在
+correction 都会使前一份 report 失效。r43-r67 已永久 NO-GO；r68 在 root/session/attempt 前
+prelaunch blocked，后继 numbered campaign 必须先在
 新的 clean commit 上生成并独立验证 fresh full admission report。
 
 ## Authority boundary
@@ -61,6 +62,11 @@ plan/consumption/root/decision，以及已退役 closure-stage raw run class、a
 和 historical evidence 都不能被 formal publisher/consumer/blank-world
 root/verifier/reducer 接纳，即使伪造相同 plan digest。该 negative gate 使用 frozen
 literals，不依赖或恢复已删除的 closure-stage production modules。
+当前 `aox_r68_public_conductor_reachability@1` scenario 还执行 source-level production
+composition audit：它要求 exact preflight、policy-free `serve-attempt`、public CLI
+receipt/sealed response、closed-attempt export、single `finalize-and-seal`、offline verify/decide
+均存在 production caller，并要求 generic `AttemptRunner`、legacy emitter、test builder、
+browser helper、automatic run command与旧 driver config在 production surface 中不存在。
 每个场景都有 finite step、tick、state/event、effect 与
 wall-clock budget。skip、xfail、missing collection、timeout、budget exhaustion 或证据不完整
 只能得到 `violated|unproven`，不能得到 pass。
@@ -161,7 +167,8 @@ verification 仍须独立通过，campaign 也必须由 operator 另行显式启
 AOX admission scenario 还执行 selected-chain contract closure：active registry 必须能以
 `for_new_attempt=true` 精确解析 `aox_blank_world_selected_chain@2`，historical `@1`
 必须返回 read-only rejection；new launch config schema 必须是
-`aox_blank_world_runtime_config@3`。sandbox scientific backend probe 还必须从实际复制的
+`aox_blank_world_runtime_config@4`，其 conductor flags 必须证明 automatic drain/approval/
+rollover 全为 false；historical `@1..@3` 只允许 read-only verification。sandbox scientific backend probe 还必须从实际复制的
 SDK 读取 `aox_exact_calculation_manifest@1`，证明 candidate/conditional-empty/finalization
 exact callables、contract/implementation digests 与 fixed 17 path digest 都已安装；source
 snapshot 或 workflow prose 不能替代该证明。该 scenario source 与当前 source commit/test manifest

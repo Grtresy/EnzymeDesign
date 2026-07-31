@@ -832,6 +832,70 @@ def test_v3_scientific_attempt_authority_and_command_surface(
     assert malformed.json()["error"]["code"] == "invalid_request"
 
 
+def test_v3_closed_attempt_evidence_export_is_public_and_exact(
+    monkeypatch,
+) -> None:
+    client, _ = _build_client(monkeypatch)
+    session_id = "sess_closed_evidence"
+    created = client.post(
+        "/v3/sessions",
+        json={
+            "session_id": session_id,
+            "project_id": "proj_closed_evidence",
+            "objective": "Export one exact closed attempt",
+        },
+    )
+    assert created.status_code == 200
+    captured: dict[str, str] = {}
+
+    def export_exact(
+        self,
+        *,
+        session_id: str,
+        attempt_id: str,
+        selection_id: str,
+    ) -> dict[str, object]:
+        del self
+        captured.update(
+            session_id=session_id,
+            attempt_id=attempt_id,
+            selection_id=selection_id,
+        )
+        return {
+            "schema_id": "aox_closed_attempt_evidence@1",
+            "session_id": session_id,
+            "attempt_id": attempt_id,
+            "selection_id": selection_id,
+            "scientific_attempt_control": {},
+            "finalization_receipt": None,
+            "deliverables": [],
+            "export_digest": "sha256:" + "a" * 64,
+        }
+
+    monkeypatch.setattr(
+        V3HostApiService,
+        "export_closed_aox_attempt_evidence",
+        export_exact,
+    )
+    response = client.get(
+        f"/v3/sessions/{session_id}/scientific-attempts/attempt_exact/"
+        "selections/selection_exact/evidence"
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "session_id": session_id,
+        "attempt_id": "attempt_exact",
+        "selection_id": "selection_exact",
+    }
+    assert response.json()["schema_id"] == "aox_closed_attempt_evidence@1"
+    missing_session = client.get(
+        "/v3/sessions/sess_other/scientific-attempts/attempt_exact/"
+        "selections/selection_exact/evidence"
+    )
+    assert missing_session.status_code == 404
+
+
 def test_v3_event_stream_can_use_stable_generic_envelope(monkeypatch) -> None:
     client, _ = _build_client(monkeypatch)
     created = client.post(

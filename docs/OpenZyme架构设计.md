@@ -922,6 +922,7 @@ V3 execution 的目标主路径是 executor-owned persistent sandbox workspace�
 - blank-world live attempt 由 Host composition 注入彼此独立的 SQLite、sandbox workspace、sealed blob/artifact 和 HPC workspace roots；execution pipeline、provider artifactization、HPC fetch 与 source snapshot 必须贯穿同一 attempt-scoped root identity，任何局部共享 `/tmp` fallback 都使该 attempt 不具备 cutover 资格。public proof 仅包含 root digest/空目录证明，不暴露 Host 或远端路径
 - 现行 AOX attempt collector 的单文件 no-replace/seal 不等于 evidence archive 的 transaction，也没有统一证明 final `artifacts/` 实际文件集与 declared inventory exact equality。两阶段 private staging→验证→commit、artifact-root 全闭包、failure atomicity、crash recovery 和 schema migration 的完整方案单独记录在 [transactional attempt evidence collection and root closure](v3/architecture-proposals/transactional-attempt-evidence-collection-and-root-closure.md)，当前 Goal 不实施；在该迁移落地前不得用提案语义补强已封存 bundle 或 GO 结论
 - blank-world campaign 的 fresh SQLite 不继承 sandbox image registry 状态；在首个 session/model/provider 调用前，campaign 必须把 public runtime health 返回的 canonical immutable image / Pipeline SDK digests 与 pinned campaign identity 逐字段比对，完全一致后才在该 attempt 内登记 digest-pinned、cutover-grade image row。预存 row、缺失、格式非法或 digest 漂移必须在产生外部副作用前 fail closed；public preflight identity 同时进入 sealed launch receipt并由 offline verifier 对照 campaign image/SDK identity
+- **r68 current-contract supersession**：下列仍以 `run-live`、automatic driver、observer/barrier、`chrome-once` 或 browser helper 表述的 AOX 条目只解释 r14-r67 sealed evidence，已由 9.2 的 public-conductor chain 取代，不是当前 runnable operator contract。current config 为 `aox_blank_world_runtime_config@4`，current Host supervision/receipt/export/finalizer 只经 exact preflight 与 public API/CLI；不得从以下历史条目恢复已删除 surface。
 - AOX/HMM `pin`、`preflight` 与 `run-live` 的共同最前置 operator boundary 必须显式接收 architecture qualification report，并在 settings、pin runner、attempt root、sandbox probe、provider/runner/Chrome/MICU 之前用当前 checkout 的 pure verifier 重算。只有当前 clean HEAD 的 full selection、当前 registry/test manifest/runner/verifier、全部 invariant satisfied 且零 open P0 的 admission report 可生成 `aox_architecture_qualification_receipt@1`。receipt 贯穿 `aox_cutover_pin_commit@2`、`aox_cutover_pin_receipt@2`、`aox_blank_world_root_proof@2`、`aox_blank_world_launch_receipt@2` 与 production `aox_blank_world_attempt_bundle@3` 并由 offline verifier 闭合；历史 `aox_blank_world_attempt_bundle@2` 只由冻结 verifier 读取，不得升级。missing、diagnostic/subset、dirty/stale/tampered/unknown-profile/open-P0 或 receipt drift 均 fail closed，不存在 force/debug/env/legacy/pass-boolean bypass。资格报告是 checkout 外 operator admission evidence，不是 control-plane 或 scientific truth；exact-nine prerequisites 不扩张，通过也不创建 attempt、不启动 numbered live campaign。无 attempt 的准备边界止于 canonical `pin`：它只执行 deterministic non-scientific runner attestation 并在 checkout 外提交 declaration pair；CLI `preflight` 会创建 blank-world attempt root，是需要另行 operator 授权的第一次 campaign mutation，不能被当作普通 readiness probe
 - AOX/HMM `pin` 是 `run-live` 的 canonical supported operator bootstrap：它在 clean checkout 上使用 production compiler 和受信 Host 的 forced-SSH runner 执行四个 deterministic non-scientific MAFFT/hmmbuild/hmmalign/CD-HIT payload，只从 runner 签发的 same-shell runtime identity 得到 toolchain image digests。writer 将 exact-seven identity 与 exact-nine prerequisites 以 `0600` canonical JSON 发布在 checkout 外同一 existing real transaction directory，三个 reserved targets 初始必须不存在；Host 在两个 payload 落盘后最后发布闭集 `.aox-cutover-pin-commit.json`，用 basename 和 canonical payload digest 形成单一 consumer-visible commit point。marker 前 crash 留下的 orphan payload 不可消费；`run-live` 必须在读取 settings、构造 launch/campaign 或创建 root 前拒绝 marker 缺失、symlink、跨目录、开放/畸形字段或 digest drift。该无签名 marker 只证明 committed pair 完整性/一致性，不证明 producer provenance、目录整体 freshness 或消费时 file mode；真实运行仍依赖 trusted operator、actual launch recomputation 与每个 operation 的 runner-issued identity fail-closed
 - AOX/HMM `run-live` 在构造 runner/campaign 或 attempt root 前必须从 clean checkout、digest-pinned workflow registry、`aox_motif_rule_score@1`、实际 Podman runtime preflight 与 Pipeline SDK tree 重算 canonical 七字段 identity；已提交的 pin declaration 只用于精确比较，不是真值来源。identity 解析还必须以 selected immutable image、复制后统一为目录 `0755`/文件 `0644` 且重算 digest 相等的 exact SDK tree，在 `--pull=never`、无网络、只读、限额容器内执行 `aox_sandbox_scientific_backend_probe@1`：真实导入并运行 `biopython_trace_guarded_numpy_gotoh@1` 的 Biopython `1.87`、NumPy `2.4.4`、Gotoh/IEEE-754/numeric preflight；缺包、版本/算法/数值/schema drift 必须在 pin runner attestation、attempt root、MICU/provider/runner effect 前失败。该有界 capability gate 不扩张 exact-seven/exact-nine，也不冒充 deferred reproducible dependency manifest、SBOM 或供应链 attestation。`config_digest` 必须来自 safe `aox_blank_world_runtime_config@3` preimage，绑定 trusted local Host/single-process SQLite、HPC runner config digest、runner-owned manifest bytes digest及 exact AOX `tool_id` 到 adapter/template/runner-contract digest 的闭集 expectation map、effective MICU/research/tracing/test opt-in、driver/Chrome bounds、controlled-operation owner policy、durable route allowlist、command drain、generic mutation closure、bounded shadow observation、完整 `aox_blank_world_selected_chain@2` identity 与既有累计 500M ledger identity，但不投影 credential、NCBI email 或私有路径。pin 在 forced-SSH attestation 前、run-live 在 campaign/attempt root 前必须证明全部 AOX provider/HPC route 使用 `durable_async_v1`、drain 为 `command_v1` 且 closure 为 `generic_v1`；旧 config `@1/@2` 和 selected-chain `@1` 只允许 frozen evidence 离线复核，不得启动新的 live campaign。100M→500M 只能由 operator 显式执行 exact fixed-policy migration，保留全部历史 usage，caller-selected lower limit 不被抬高，普通 summary/reserve/run-live 不自动迁移。MICU/OpenAI-compatible blank-world live 必须显式声明 `context_window_tokens` 且不大于 `200000`，不得按模型名继承第三方 endpoint 未证实的百万级 context。每个 attempt root 前重新校验 checkout/config drift，exact-nine prerequisite 顶层 schema 不因此扩张
@@ -1094,6 +1095,48 @@ task/attempt/report terminal 只能来自 canonical write contract。进程退�
 和 ToolResult 都不是业务终态。最终 GO 仍只由 sealed attempt bundle offline verifier 与
 exact-three campaign reducer产生。本 Phase 2 不授权 r68、live、MICU、provider、HPC 或
 Chrome。
+
+### 9.2 r68 prelaunch blocked 与 public conductor 正向生产路径
+
+r68 的 exact authority 已消费，但旧 public `/v3` 无法导出 formal `@3` 所需的 closed
+attempt evidence，Host startup/supervision 与 bundle builder 也没有 production caller。
+Codex 测试员因此在 root、Host、session、attempt 全部尚未创建时停止。该状态是
+**prelaunch blocked**，不是 canonical r68 NO-GO；没有 r68 attempt/bundle/decision 可供
+verifier 或 reducer 判定。authority 不可复用；截至停止点没有 Host/provider/HPC/Chrome
+effect，MICU 保持 `128,190,632 / 500,000,000`。
+
+现行 repair 删除 generic `AttemptRunner`、legacy `@2` emitter、production module 中的
+test-only evidence builder、陈旧 driver contract 与 browser helper。current runtime config
+升级为 `aox_blank_world_runtime_config@4`：Codex tester 只使用 public Host API/CLI，且
+automatic drain/approval/rollover 全为 false；旧 `@1..@3` 仅供历史 evidence read-only
+verification。
+
+正向 production chain 固定为：
+
+```text
+fresh exact plan/consumption
+  -> preflight 验证全部 identity 后才创建唯一 private root
+  -> policy-free supervised loopback Host
+  -> Codex 逐步调用 public message/drain/status/approval/read APIs
+  -> append-only openzyme_public_api_receipt@2 chain
+  -> Host public closed-attempt/selection evidence export
+  -> single source-bound finalize-and-seal
+  -> network-free attempt verifier
+  -> exact-three campaign reducer
+```
+
+`serve-attempt` 只监督固定 Host process group，不发送业务命令或判断 terminal；Host 继续独占
+canonical state、approval、fencing、effect、quiescence 与隔离。closed evidence export 要求
+exact session/closed attempt/sealed selection，positive 还要重验 source-bound 17-deliverable
+receipt并经 artifact boundary读取 sealed bytes。finalizer 在任何输出前闭合 identity、
+preflight、startup/retirement、public receipt chain、final workspace/events/evidence 与 MICU
+snapshots，然后 no-replace 封存 profile `aox_public_conductor_bundle@1` 的 `@3` bundle。
+
+本 repair 只证明正向生产可达性，不改变 fault criterion。不能证明 exact
+`derived_required_artifact_blob_byte_flip@2` 与 `artifact_blob_digest_mismatch` 的 fault bundle
+必须被 reducer 记录为 `fault_contract_unproven` NO-GO。任何下一 rNN 仍需在 repair commit
+上 fresh full admission、pin、authority、roots 与单独批准；本 Phase 2 不启动 live、MICU、
+provider、HPC 或 Chrome。
 
 ---
 

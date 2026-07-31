@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 import sys
 from typing import Any
 from typing import TextIO
@@ -15,6 +16,8 @@ from .renderers import render_v3_command_result
 from .renderers import render_v3_runtime_command
 from .renderers import render_v3_runtime_health
 from .renderers import render_v3_workspace
+from .receipts import PublicReceiptError
+from .receipts import seal_public_response
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -27,6 +30,16 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("text", "json"),
         default=None,
         help="Output format",
+    )
+    parser.add_argument(
+        "--receipt-chain",
+        type=Path,
+        help="append each public Host response to one canonical receipt chain",
+    )
+    parser.add_argument(
+        "--seal-response",
+        type=Path,
+        help="publish this command response once with its receipt binding",
     )
 
     subparsers = parser.add_subparsers(dest="resource", required=True)
@@ -45,6 +58,22 @@ def _build_parser() -> argparse.ArgumentParser:
     session_message.add_argument("--message", required=True, help="User message")
     session_message.add_argument("--task-id", help="Focused task ID")
     session_message.add_argument("--lane-id", help="Focused lane ID")
+    session_message.add_argument(
+        "--skill-key",
+        action="append",
+        default=[],
+        help="Workflow skill key; repeat for multiple exact keys",
+    )
+    session_events = session_sub.add_parser(
+        "events",
+        help="Replay the durable public event stream once",
+    )
+    session_events.add_argument(
+        "--session-id",
+        dest="command_session_id",
+        help="Session ID override",
+    )
+    session_events.add_argument("--after-cursor", type=int, default=0)
 
     tasks = subparsers.add_parser("tasks", help="Task board commands")
     task_sub = tasks.add_subparsers(dest="tasks_command", required=True)
@@ -84,6 +113,15 @@ def _build_parser() -> argparse.ArgumentParser:
     approval_resolve = approval_sub.add_parser("resolve", help="Resolve a V3 approval")
     approval_resolve.add_argument("--approval-id", required=True)
     approval_resolve.add_argument("--decision", choices=("approved", "rejected"), required=True)
+    approval_pending = approval_sub.add_parser(
+        "pending",
+        help="List pending approvals for one session",
+    )
+    approval_pending.add_argument(
+        "--session-id",
+        dest="command_session_id",
+        help="Session ID override",
+    )
 
     runtime = subparsers.add_parser("runtime", help="Runtime commands")
     runtime_sub = runtime.add_subparsers(dest="runtime_command", required=True)
@@ -128,6 +166,17 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="command_session_id",
         help="Session ID override",
     )
+    scientific_export = scientific_sub.add_parser(
+        "export-evidence",
+        help="Export one exact closed attempt/selection evidence receipt",
+    )
+    scientific_export.add_argument(
+        "--session-id",
+        dest="command_session_id",
+        help="Session ID override",
+    )
+    scientific_export.add_argument("--attempt-id", required=True)
+    scientific_export.add_argument("--selection-id", required=True)
     scientific_authorize = scientific_sub.add_parser(
         "authorize",
         help="Grant a durable bounded attempt envelope",
@@ -210,6 +259,28 @@ def _format_output(output_format: str, payload: Any, text_renderer) -> str:
     return render_json(payload) if output_format == "json" else text_renderer(payload)
 
 
+def _emit_response(
+    *,
+    args: argparse.Namespace,
+    client: HostApiClient,
+    payload: object,
+    rendered: str,
+    stdout: TextIO,
+) -> int:
+    if args.seal_response is not None:
+        if client.last_receipt is None:
+            raise PublicReceiptError(
+                "--seal-response requires --receipt-chain for the same request"
+            )
+        seal_public_response(
+            args.seal_response,
+            receipt=client.last_receipt,
+            response=payload,
+        )
+    stdout.write(rendered + "\n")
+    return 0
+
+
 def run_cli(
     argv: list[str] | None = None,
     *,
@@ -226,6 +297,7 @@ def run_cli(
         config.base_url,
         auth_token=config.auth_token,
         session=session,
+        receipt_chain=args.receipt_chain,
     )
     try:
         if args.resource == "sessions":
@@ -240,25 +312,48 @@ def run_cli(
                     title=args.title,
                     session_id=getattr(args, "command_session_id", None) or args.session_id,
                 )
-                stdout.write(_format_output(config.output_format, payload, render_v3_command_result) + "\n")
-                return 0
+                return _emit_response(
+                    args=args,
+                    client=client,
+                    payload=payload,
+                    rendered=_format_output(
+                        config.output_format,
+                        payload,
+                        render_v3_command_result,
+                    ),
+                    stdout=stdout,
+                )
             session_id = _require_value(
                 getattr(args, "command_session_id", None) or args.session_id,
                 "--session-id",
             )
             if args.sessions_command == "show":
                 payload = client.get_v3_workspace(session_id)
-                stdout.write(_format_output(config.output_format, payload, render_v3_workspace) + "\n")
-                return 0
+                renderer = render_v3_workspace
             if args.sessions_command == "message":
                 payload = client.post_v3_message(
                     session_id,
                     message=args.message,
                     task_id=args.task_id,
                     lane_id=args.lane_id,
+                    skill_keys=args.skill_key,
                 )
-                stdout.write(_format_output(config.output_format, payload, render_v3_command_result) + "\n")
-                return 0
+                renderer = render_v3_command_result
+            if args.sessions_command == "events":
+                if args.after_cursor < 0:
+                    raise ValueError("--after-cursor must be non-negative")
+                payload = client.get_v3_events(
+                    session_id,
+                    after_cursor=args.after_cursor,
+                )
+                renderer = render_json
+            return _emit_response(
+                args=args,
+                client=client,
+                payload=payload,
+                rendered=_format_output(config.output_format, payload, renderer),
+                stdout=stdout,
+            )
 
         if args.resource == "tasks":
             if args.tasks_command == "create":
@@ -278,16 +373,34 @@ def run_cli(
                 if args.lane_id:
                     payload_body["lane_id"] = args.lane_id
                 payload = client.create_v3_task(payload_body)
-                stdout.write(_format_output(config.output_format, payload, render_v3_command_result) + "\n")
-                return 0
+                return _emit_response(
+                    args=args,
+                    client=client,
+                    payload=payload,
+                    rendered=_format_output(
+                        config.output_format,
+                        payload,
+                        render_v3_command_result,
+                    ),
+                    stdout=stdout,
+                )
             payload_body = {}
             for field in ("status", "subject", "description", "priority", "lane_id"):
                 value = getattr(args, field)
                 if value is not None:
                     payload_body[field] = value
             payload = client.update_v3_task(args.task_id, payload_body)
-            stdout.write(_format_output(config.output_format, payload, render_v3_command_result) + "\n")
-            return 0
+            return _emit_response(
+                args=args,
+                client=client,
+                payload=payload,
+                rendered=_format_output(
+                    config.output_format,
+                    payload,
+                    render_v3_command_result,
+                ),
+                stdout=stdout,
+            )
 
         if args.resource == "lanes":
             if args.lanes_command == "create":
@@ -311,13 +424,34 @@ def run_cli(
                 payload = client.keep_v3_lane(args.lane_id)
             else:
                 payload = client.remove_v3_lane(args.lane_id)
-            stdout.write(_format_output(config.output_format, payload, render_v3_command_result) + "\n")
-            return 0
+            return _emit_response(
+                args=args,
+                client=client,
+                payload=payload,
+                rendered=_format_output(
+                    config.output_format,
+                    payload,
+                    render_v3_command_result,
+                ),
+                stdout=stdout,
+            )
 
         if args.resource == "approvals":
-            payload = client.resolve_v3_approval(args.approval_id, args.decision)
-            stdout.write(_format_output(config.output_format, payload, render_v3_command_result) + "\n")
-            return 0
+            if args.approvals_command == "pending":
+                session_id = _require_value(
+                    getattr(args, "command_session_id", None) or args.session_id,
+                    "--session-id",
+                )
+                payload = client.get_v3_pending_approvals(session_id)
+            else:
+                payload = client.resolve_v3_approval(args.approval_id, args.decision)
+            return _emit_response(
+                args=args,
+                client=client,
+                payload=payload,
+                rendered=render_json(payload),
+                stdout=stdout,
+            )
         if args.resource == "runtime":
             if args.runtime_command == "health":
                 payload = client.get_v3_runtime_health()
@@ -347,11 +481,13 @@ def run_cli(
                         args.command_id,
                     )
                 renderer = render_v3_runtime_command
-            stdout.write(
-                _format_output(config.output_format, payload, renderer)
-                + "\n"
+            return _emit_response(
+                args=args,
+                client=client,
+                payload=payload,
+                rendered=_format_output(config.output_format, payload, renderer),
+                stdout=stdout,
             )
-            return 0
         if args.resource == "scientific":
             session_id = _require_value(
                 getattr(args, "command_session_id", None) or args.session_id,
@@ -359,6 +495,12 @@ def run_cli(
             )
             if args.scientific_command == "inspect":
                 payload = client.get_v3_scientific_attempts(session_id)
+            elif args.scientific_command == "export-evidence":
+                payload = client.export_v3_closed_scientific_attempt_evidence(
+                    session_id,
+                    attempt_id=args.attempt_id,
+                    selection_id=args.selection_id,
+                )
             elif args.scientific_command == "authorize":
                 request_payload = json.loads(args.payload_json)
                 if not isinstance(request_payload, dict):
@@ -388,10 +530,15 @@ def run_cli(
                     session_id,
                     closure_request_id=args.closure_request_id,
                 )
-            stdout.write(render_json(payload) + "\n")
-            return 0
+            return _emit_response(
+                args=args,
+                client=client,
+                payload=payload,
+                rendered=render_json(payload),
+                stdout=stdout,
+            )
         raise ValueError(f"unsupported resource: {args.resource}")
-    except (HostApiError, json.JSONDecodeError, ValueError) as exc:
+    except (HostApiError, PublicReceiptError, json.JSONDecodeError, OSError, ValueError) as exc:
         stderr.write(f"{exc}\n")
         return 2
     finally:

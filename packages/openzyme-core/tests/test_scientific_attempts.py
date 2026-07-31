@@ -3705,7 +3705,11 @@ def test_known_failed_occurrence_can_be_disposed_without_poisoning_chain() -> No
     assert closed_mutation.details["attempt_id"] == attempt.attempt_id
     assert closed_mutation.details["recoverability"] == ("agent_can_replan")
     assert closed_mutation.details["retry_eligibility"] == "terminal"
-    evidence = service.export_closed_attempt_evidence(attempt.attempt_id)
+    evidence = service.export_closed_attempt_evidence(
+        attempt.attempt_id,
+        session_id=attempt.session_id,
+        selection_id=selection.selection_id,
+    )
     assert evidence["schema_id"] == "scientific_attempt_evidence@1"
     assert evidence["attempt"]["status"] == "closed"
     assert evidence["evidence_digest"] == canonical_digest(

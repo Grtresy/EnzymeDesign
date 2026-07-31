@@ -14,6 +14,10 @@
 
 现行运营者/证据合同见 [../aox-hmm-blank-world-cutover.md](../aox-hmm-blank-world-cutover.md)，领域 SOP 见 [../execution-pipeline-docs/aox-hmm-live.md](../execution-pipeline-docs/aox-hmm-live.md)。本文保留 S15 命名，用于解释历史证据为何不再可用以及当前的替代验收面。
 
+本文在 r68 小节之前仍出现的 `run-live`、automatic driver/observer、`chrome-once` 与
+browser-receipt 操作说明，均是当时合同的历史记录；r68 public-conductor 小节已整体取代
+这些 runnable surface。不得按旧段落启动命令、恢复 browser gate 或复用任何旧 authority。
+
 ## 现行 product-path 边界
 
 正向 attempt 只允许从一次
@@ -1640,10 +1644,30 @@ request-bound cause，在零 operation admission/零 external dispatch 下返回
 来自三个 eligible `@3` bundle 的 offline campaign reducer。本 slice 不启动 r68、live、
 MICU、provider、HPC 或 Chrome。
 
+## r68 public-conductor prelaunch blocked / repair Phase 2
+
+r68 exact authority 已消费，但 Codex 在任何 root、Host、session 或 scientific attempt 创建前
+发现三项 production reachability 缺口：closed-attempt evidence 只存在 private service，
+`aox_blank_world_attempt_bundle@3` builder 没有 production caller，CLI 没有 policy-free Host
+startup/supervision 与 finalize-and-seal 入口。测试因此停止；这是 **prelaunch blocked**，
+不是 canonical r68 NO-GO。没有 r68 attempt、bundle 或 decision；authority 不可复用。停止时
+没有 Host/provider/HPC/Chrome effect，MICU 保持 `128,190,632 / 500,000,000`。
+
+repair 删除 generic `AttemptRunner`、legacy `@2` emitter、test-only production builder、旧
+driver contract 与 browser helper；新增 exact authority-bound preflight、无业务策略的 fixed
+loopback Host supervisor、public Host CLI append-only receipt/sealed response、exact closed-attempt
+public export及单一 source-bound `@3` finalize-and-seal。Codex 仍必须逐步显式决定每个 public
+message/drain/approval/stop，Host 仍掌管 canonical state、fencing、effect、quiescence 与隔离。
+
+此 Phase 2 只运行 non-live verification并提交 repair。没有启动下一 rNN、live、MICU、
+provider、HPC 或 Chrome。正式恢复必须从 repair commit 重新 full admission、pin、fresh
+authority和fresh roots，并重新取得 exact plan批准。第三槽 fault 若不能证明既定 byte-flip
+contract，reducer 必须以 `fault_contract_unproven` 保持 NO-GO。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；
-- provider/HPC/Chrome preflight 是当前外部状态证据，不得用旧日志或本地 fixture 替代；
+- provider/HPC 与 public Host conductor preflight 是当前外部/生产可达状态证据，不得用旧日志或本地 fixture 替代；
 - 实现中尚未被当前 validator 实际接受的 schema/contract 只能写为 target/pending，不能因为文档已定义而声称 completed；
 - 直到两个 positive bundle、一个 fault bundle 和 sealed campaign decision 真实存在，所有文档、UI 和交付结论保持 **NO-GO**。
 

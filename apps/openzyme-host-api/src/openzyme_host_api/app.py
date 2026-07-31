@@ -1848,6 +1848,35 @@ def create_app(
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
+    @app.get(
+        "/v3/sessions/{session_id}/scientific-attempts/{attempt_id}/"
+        "selections/{selection_id}/evidence"
+    )
+    def export_v3_closed_scientific_attempt_evidence(
+        session_id: str,
+        attempt_id: str,
+        selection_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        """Export the exact closed attempt receipt through the public Host boundary."""
+
+        try:
+            principal = _request_principal(request)
+            with dependencies.v3_service_scope(mode="read") as service:
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=session_id,
+                )
+                return service.export_closed_aox_attempt_evidence(
+                    session_id=session_id,
+                    attempt_id=attempt_id,
+                    selection_id=selection_id,
+                )
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
     @app.post("/v3/sessions/{session_id}/scientific-attempt-authorizations")
     def grant_v3_scientific_attempt_authorization(
         session_id: str,

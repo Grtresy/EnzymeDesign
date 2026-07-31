@@ -20,16 +20,14 @@ from .aox_architecture_qualification import (
 from .aox_architecture_qualification import (
     verify_aox_architecture_qualification_report,
 )
-from .aox_browser_observation import BrowserObservationReceiptError
-from .aox_browser_observation import build_browser_observation_receipt
-from .aox_browser_observation import load_json_object
-from .aox_browser_observation import load_screenshot_png
-from .aox_browser_observation import publish_browser_observation_receipt
 from .aox_attempt_authority import build_aox_attempt_authority_plan
 from .aox_attempt_authority import consume_aox_attempt_authority_plan
 from .aox_attempt_authority import attempt_authority_consumption_path
 from .aox_attempt_authority import load_aox_attempt_authority_plan
+from .aox_attempt_authority import load_aox_attempt_authority_consumption
 from .aox_attempt_authority import publish_aox_attempt_authority_plan
+from .aox_attempt_preflight import build_attempt_preflight_receipt
+from .aox_attempt_preflight import publish_attempt_preflight_receipt
 from .aox_diagnostic_authority import build_aox_diagnostic_authority_plan
 from .aox_diagnostic_authority import consume_aox_diagnostic_authority_plan
 from .aox_diagnostic_authority import (
@@ -44,12 +42,19 @@ from .aox_cutover_evidence import evaluate_campaign
 from .aox_cutover_evidence import safe_micu_ledger_snapshot
 from .aox_cutover_evidence import seal_campaign_decision
 from .aox_cutover_evidence import verify_attempt_bundle
-from .aox_cutover_launch import AoxCutoverDriverConfig
 from .aox_cutover_launch import AoxCutoverLaunchError
+from .aox_cutover_launch import build_aox_cutover_effective_config
 from .aox_cutover_launch import pin_aox_cutover_launch
-from .aox_cutover_runtime_config import AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS
-from .aox_cutover_runtime_config import AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN
+from .aox_cutover_launch import validate_aox_authority_wall_time
 from .aox_live_run_class import AoxLiveRunClass
+from .aox_host_supervision import DEFAULT_KILL_GRACE_SECONDS
+from .aox_host_supervision import DEFAULT_STARTUP_TIMEOUT_SECONDS
+from .aox_host_supervision import DEFAULT_TERM_GRACE_SECONDS
+from .aox_host_supervision import HostSupervisionError
+from .aox_host_supervision import supervised_attempt_host
+from .aox_public_conductor_bundle import (
+    finalize_and_seal_public_conductor_bundle,
+)
 
 
 _PIN_COMMIT_BASENAME = ".aox-cutover-pin-commit.json"
@@ -105,48 +110,6 @@ def _print(payload: object) -> None:
             sort_keys=True,
         )
     )
-
-
-def _conductor_config_from_args(args: argparse.Namespace) -> AoxCutoverDriverConfig:
-    return AoxCutoverDriverConfig(
-        approval_mode=args.approval_mode,
-        timeout_seconds=args.timeout_seconds,
-        max_drains=args.max_drains,
-        max_signals_per_drain=args.max_signals_per_drain,
-        max_steps_per_agent=args.max_steps_per_agent,
-        browser_poll_interval_seconds=args.browser_poll_interval_seconds,
-        browser_approval_timeout_seconds=args.browser_approval_timeout_seconds,
-        browser_completion_hold_seconds=args.browser_completion_hold_seconds,
-        browser_observation_submission_timeout_seconds=(
-            args.browser_observation_submission_timeout_seconds
-        ),
-    )
-
-
-def _browser_receipt(args: argparse.Namespace) -> int:
-    handoff = load_json_object(args.handoff, label="browser handoff")
-    capture = load_json_object(args.capture, label="Chrome capture")
-    receipt = build_browser_observation_receipt(
-        handoff=handoff,
-        capture=capture,
-        screenshot_png=load_screenshot_png(args.screenshot),
-    )
-    target = publish_browser_observation_receipt(
-        handoff=handoff,
-        receipt=receipt,
-        output=args.output,
-        poll_interval_seconds=args.poll_interval_seconds,
-    )
-    _print(
-        {
-            "schema_id": "aox_browser_observation_publish_receipt@1",
-            "status": "published",
-            "output_file": target.name,
-            "raw_receipt_digest": _canonical_digest(receipt),
-            "raw_receipt_field_count": len(receipt),
-        }
-    )
-    return 0
 
 
 def _pin_output_target(path: Path) -> Path:
@@ -444,7 +407,6 @@ def _pin(args: argparse.Namespace) -> int:
     )
     launch = pin_aox_cutover_launch(
         settings=settings,
-        driver=_conductor_config_from_args(args),
         ledger_path=ledger_path,
         architecture_qualification_report=args.architecture_qualification_report,
     )
@@ -481,20 +443,79 @@ def _pin(args: argparse.Namespace) -> int:
 
 
 def _preflight(args: argparse.Namespace) -> int:
-    architecture_qualification = verify_aox_architecture_qualification_report(
+    current_qualification = verify_aox_architecture_qualification_report(
         args.architecture_qualification_report,
     )
-    prerequisites = _json_object(args.allowed_prerequisites)
-    roots = create_blank_world_roots(
-        args.campaign_root,
-        attempt_kind=args.attempt_kind,
-        attempt_id=args.attempt_id,
+    identity, prerequisites, pinned_qualification = _load_pinned_declarations(
+        args.identity,
+        args.allowed_prerequisites,
+    )
+    architecture_qualification = require_matching_architecture_qualification_receipt(
+        pinned_qualification,
+        current_qualification,
+    )
+    plan_path = args.attempt_authority_plan.expanduser().resolve(strict=True)
+    plan = load_aox_attempt_authority_plan(
+        plan_path,
+        identity=identity,
         allowed_prerequisites=prerequisites,
         architecture_qualification=architecture_qualification,
     )
+    consumption_path = args.attempt_authority_consumption.expanduser().resolve(
+        strict=True
+    )
+    consumption = load_aox_attempt_authority_consumption(
+        consumption_path,
+        plan=plan,
+        plan_path=plan_path,
+    )
+    slot = dict(plan["slots"][args.slot_ordinal - 1])
+    validate_aox_authority_wall_time(
+        dict(slot["authority_request"])["max_wall_time_seconds"]
+    )
+    from openzyme_runtime import OpenZymeSettings
+
+    settings = OpenZymeSettings.from_env()
+    effective_config = build_aox_cutover_effective_config(
+        settings,
+        ledger_path=Path(settings.test.live_llm.token_ledger_path),
+    )
+    if effective_config.digest != identity.get("config_digest"):
+        raise AoxCutoverLaunchError(
+            "aox_preflight_config_drift",
+            "AOX preflight configuration differs from the pinned identity",
+        )
+    roots = create_blank_world_roots(
+        args.campaign_root,
+        attempt_kind=str(slot["attempt_kind"]),
+        attempt_id=str(slot["attempt_id"]),
+        allowed_prerequisites=prerequisites,
+        architecture_qualification=architecture_qualification,
+    )
+    receipt = build_attempt_preflight_receipt(
+        identity=identity,
+        allowed_prerequisites=prerequisites,
+        architecture_qualification=architecture_qualification,
+        effective_config=effective_config.payload,
+        authority_plan=plan,
+        authority_consumption=consumption,
+        slot=slot,
+        roots=roots,
+    )
+    receipt_path = publish_attempt_preflight_receipt(receipt, roots=roots)
     _print(
         {
+            "schema_id": "aox_attempt_preflight_publish_receipt@1",
+            "status": "preflight_complete_host_not_started",
+            "attempt_id": slot["attempt_id"],
+            "attempt_kind": slot["attempt_kind"],
+            "session_id": slot["session_id"],
+            "task_id": slot["task_id"],
+            "lane_id": slot["lane_id"],
+            "envelope_id": slot["envelope_id"],
             "proof": roots.proof,
+            "preflight_receipt": str(receipt_path),
+            "preflight_receipt_digest": receipt["receipt_digest"],
             "local_paths": {
                 key: str(path) for key, path in roots.local_paths().items()
             },
@@ -510,6 +531,70 @@ def _verify(args: argparse.Namespace) -> int:
     )
     _print(result.to_dict())
     return 0 if result.passed else 2
+
+
+def _serve_attempt(args: argparse.Namespace) -> int:
+    with supervised_attempt_host(
+        args.preflight_receipt,
+        startup_timeout_seconds=args.startup_timeout_seconds,
+        term_grace_seconds=args.term_grace_seconds,
+        kill_grace_seconds=args.kill_grace_seconds,
+    ) as lease:
+        _print(
+            {
+                "schema_id": "aox_supervised_host_handoff@1",
+                "status": "ready_for_public_host_cli",
+                **lease.startup_receipt,
+                "startup_receipt_file": str(
+                    args.preflight_receipt.parent / "aox-host-startup.json"
+                ),
+            }
+        )
+        try:
+            lease.wait()
+        except KeyboardInterrupt:
+            lease.shutdown_reason = "operator_stop"
+    receipt = lease.supervision_receipt
+    if receipt is None:
+        raise HostSupervisionError(
+            "host_supervision_receipt_missing",
+            "supervised Host retired without a terminal receipt",
+        )
+    _print(
+        {
+            "schema_id": "aox_supervised_host_retirement@1",
+            "status": "retired",
+            "attempt_id": receipt["attempt_id"],
+            "shutdown_reason": receipt["shutdown_reason"],
+            "receipt_digest": receipt["receipt_digest"],
+            "supervision_receipt_file": str(
+                args.preflight_receipt.parent / "aox-host-supervision.json"
+            ),
+        }
+    )
+    return 0
+
+
+def _finalize_and_seal(args: argparse.Namespace) -> int:
+    bundle_path, bundle_digest = finalize_and_seal_public_conductor_bundle(
+        identity_path=args.identity,
+        preflight_path=args.preflight_receipt,
+        receipt_chain_path=args.receipt_chain,
+        workspace_response_path=args.workspace_response,
+        event_response_path=args.event_response,
+        evidence_response_path=args.evidence_response,
+        ledger_before_path=args.ledger_before,
+        ledger_after_path=args.ledger_after,
+    )
+    _print(
+        {
+            "schema_id": "aox_public_conductor_finalize_receipt@1",
+            "status": "sealed_for_offline_verification",
+            "bundle_file": str(bundle_path),
+            "bundle_digest": bundle_digest,
+        }
+    )
+    return 0
 
 
 def _decide(args: argparse.Namespace) -> int:
@@ -537,7 +622,23 @@ def _decide(args: argparse.Namespace) -> int:
 
 
 def _ledger(args: argparse.Namespace) -> int:
-    _print(safe_micu_ledger_snapshot(args.path))
+    snapshot = safe_micu_ledger_snapshot(args.path)
+    if args.output is not None:
+        target = _pin_output_target(args.output)
+        from .aox_authority_storage import publish_private_canonical_authority
+
+        publish_private_canonical_authority(
+            target,
+            json.dumps(
+                snapshot,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+            + b"\n",
+        )
+    _print(snapshot)
     return 0
 
 
@@ -711,66 +812,11 @@ def _consume_diagnostic_authority(args: argparse.Namespace) -> int:
     return 0
 
 
-def _add_conductor_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--approval-mode",
-        choices=("public-explicit", "chrome-once"),
-        default="public-explicit",
-        help=(
-            "public-explicit reserves every approval for an explicit public Host "
-            "API/CLI action; chrome-once additionally reserves positive 1 for UI proof"
-        ),
-    )
-    parser.add_argument(
-        "--browser-poll-interval-seconds",
-        type=float,
-        default=0.5,
-        help="bounded Host polling interval for the Chrome approval/observation path",
-    )
-    parser.add_argument(
-        "--browser-approval-timeout-seconds",
-        type=float,
-        default=300.0,
-        help=(
-            "independent Chrome approval deadline measured from the emitted handoff; "
-            "it never extends the total attempt deadline"
-        ),
-    )
-    parser.add_argument(
-        "--browser-completion-hold-seconds",
-        type=float,
-        default=60.0,
-        help="bounded UI observation window after the Chrome-gated positive completes",
-    )
-    parser.add_argument(
-        "--browser-observation-submission-timeout-seconds",
-        type=float,
-        default=180.0,
-        help=(
-            "positive finite deadline for atomically submitting the challenged "
-            "DevTools observation after the Host-held completion window"
-        ),
-    )
-    parser.add_argument(
-        "--timeout-seconds",
-        type=float,
-        default=AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS,
-        help=(
-            "per-session AOX deadline; the launch gate rejects values below the "
-            "sealed long-operation hierarchy"
-        ),
-    )
-    parser.add_argument("--max-drains", type=int, default=120)
-    parser.add_argument(
-        "--max-signals-per-drain",
-        type=int,
-        default=AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN,
-        help=(
-            "must remain 1 so cutover inspects durable terminal state between "
-            "agent signals"
-        ),
-    )
-    parser.add_argument("--max-steps-per-agent", type=int, default=16)
+def _required_path_arguments(
+    parser: argparse.ArgumentParser, *names: str
+) -> None:
+    for name in names:
+        parser.add_argument(f"--{name.replace('_', '-')}", required=True, type=Path)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -811,7 +857,6 @@ def build_parser() -> argparse.ArgumentParser:
             "persistent MICU ledger; defaults to the exact configured live-LLM ledger"
         ),
     )
-    _add_conductor_arguments(pin)
     pin.set_defaults(handler=_pin)
 
     authorize = subparsers.add_parser(
@@ -886,30 +931,71 @@ def build_parser() -> argparse.ArgumentParser:
 
     preflight = subparsers.add_parser(
         "preflight",
-        help="create one unique empty attempt root and emit its local launch paths",
+        help=(
+            "validate one consumed authority slot, create its exact fresh root, "
+            "and seal a prelaunch receipt"
+        ),
     )
-    preflight.add_argument("--campaign-root", required=True, type=Path)
-    preflight.add_argument(
-        "--attempt-kind",
-        required=True,
-        choices=("positive", "fault"),
+    _required_path_arguments(
+        preflight,
+        "campaign_root",
+        "identity",
+        "allowed_prerequisites",
+        "architecture_qualification_report",
+        "attempt_authority_plan",
+        "attempt_authority_consumption",
     )
-    preflight.add_argument("--attempt-id")
-    preflight.add_argument("--allowed-prerequisites", required=True, type=Path)
     preflight.add_argument(
-        "--architecture-qualification-report",
+        "--slot-ordinal",
         required=True,
-        type=Path,
-        help="current clean-commit full architecture admission report",
+        type=int,
+        choices=(1, 2, 3),
     )
     preflight.set_defaults(handler=_preflight)
+
+    serve_attempt = subparsers.add_parser(
+        "serve-attempt",
+        help=(
+            "start one authority-bound loopback Host without driving messages, "
+            "approvals, drains, rollover, or terminal policy"
+        ),
+    )
+    _required_path_arguments(serve_attempt, "preflight_receipt")
+    for name, default in (
+        ("startup_timeout_seconds", DEFAULT_STARTUP_TIMEOUT_SECONDS),
+        ("term_grace_seconds", DEFAULT_TERM_GRACE_SECONDS),
+        ("kill_grace_seconds", DEFAULT_KILL_GRACE_SECONDS),
+    ):
+        serve_attempt.add_argument(
+            f"--{name.replace('_', '-')}", type=float, default=default
+        )
+    serve_attempt.set_defaults(handler=_serve_attempt)
+
+    finalize_and_seal = subparsers.add_parser(
+        "finalize-and-seal",
+        help=(
+            "atomically prevalidate the authority-bound public Host receipt "
+            "chain and seal one source-reconstructable @3 attempt bundle"
+        ),
+    )
+    _required_path_arguments(
+        finalize_and_seal,
+        "identity",
+        "preflight_receipt",
+        "receipt_chain",
+        "workspace_response",
+        "event_response",
+        "evidence_response",
+        "ledger_before",
+        "ledger_after",
+    )
+    finalize_and_seal.set_defaults(handler=_finalize_and_seal)
 
     verify = subparsers.add_parser(
         "verify",
         help="verify one sealed attempt without network access",
     )
-    verify.add_argument("--bundle", required=True, type=Path)
-    verify.add_argument("--artifact-root", required=True, type=Path)
+    _required_path_arguments(verify, "bundle", "artifact_root")
     verify.set_defaults(handler=_verify)
 
     decide = subparsers.add_parser(
@@ -932,45 +1018,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="read a safe cumulative MICU ledger snapshot without resetting it",
     )
     ledger.add_argument("--path", required=True, type=Path)
-    ledger.set_defaults(handler=_ledger)
-
-    browser_receipt = subparsers.add_parser(
-        "browser-receipt",
-        help=(
-            "build and durably publish the exact challenged Chrome observation "
-            "receipt after its Host-held not-before time"
-        ),
-    )
-    browser_receipt.add_argument(
-        "--handoff",
-        required=True,
-        type=Path,
-        help="ready_for_completion_observation operator-record JSON",
-    )
-    browser_receipt.add_argument(
-        "--capture",
-        required=True,
-        type=Path,
-        help="trusted Chrome MCP capture JSON",
-    )
-    browser_receipt.add_argument(
-        "--screenshot",
-        required=True,
-        type=Path,
-        help="PNG written by the challenged Chrome page target",
-    )
-    browser_receipt.add_argument(
+    ledger.add_argument(
         "--output",
         type=Path,
-        help="must equal the exact receipt target carried by the handoff",
+        help="publish this cumulative snapshot once as private canonical JSON",
     )
-    browser_receipt.add_argument(
-        "--poll-interval-seconds",
-        type=float,
-        default=0.05,
-        help="bounded target-absence poll interval while waiting for not-before",
-    )
-    browser_receipt.set_defaults(handler=_browser_receipt)
+    ledger.set_defaults(handler=_ledger)
 
     consume_authority = subparsers.add_parser(
         "consume-authority",
@@ -1019,11 +1072,14 @@ def main(argv: list[str] | None = None) -> int:
     handler = args.handler
     try:
         return int(handler(args))
-    except BrowserObservationReceiptError as exc:
+    except (AoxArchitectureQualificationError, AoxCutoverLaunchError) as exc:
+        # Launch failures can wrap SSH/provider/config exceptions whose repr may
+        # contain private locators or credentials.  The operator boundary gets
+        # only the stable public code; Python's chained traceback stays closed.
         print(
             json.dumps(
                 {
-                    "schema_id": "aox_browser_observation_builder_failure@1",
+                    "schema_id": "aox_cutover_launch_failure@1",
                     "status": "failed",
                     "failure_code": exc.code,
                 },
@@ -1033,14 +1089,11 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    except (AoxArchitectureQualificationError, AoxCutoverLaunchError) as exc:
-        # Launch failures can wrap SSH/provider/config exceptions whose repr may
-        # contain private locators or credentials.  The operator boundary gets
-        # only the stable public code; Python's chained traceback stays closed.
+    except HostSupervisionError as exc:
         print(
             json.dumps(
                 {
-                    "schema_id": "aox_cutover_launch_failure@1",
+                    "schema_id": "aox_supervised_host_failure@1",
                     "status": "failed",
                     "failure_code": exc.code,
                 },

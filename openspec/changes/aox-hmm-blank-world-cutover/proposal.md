@@ -13,6 +13,7 @@ OpenZyme V3 已经具备严格的 artifact、sandbox、approval、provider 与 H
 - **BREAKING**：退役已完成但与 current close contract 永久不相容的 closure-stage live diagnostic/authority/reconstruction/CLI 产品链；保留 migration `035`、历史 SQLite rows、封存 evidence 的只读验证和 formal non-adoption gate。
 - **BREAKING**：把 sandbox-local pre-admission failure 纳入 canonical typed causal chain：Host 在 operation admission 前封存 `hpc_stage_ref_required|provider_output_path_invalid/no_effect`，terminal run 封存 source-bound `sandbox_exec_nonzero` wrapper，failed ToolResult、`ENGINE_COMPLETED` wake 与 offline formal evidence 复用同一 cause；不由 SDK 裸异常或 automatic observer 覆盖 earliest typed failure。
 - **BREAKING**：删除 AOX runtime observer、Core runtime-barrier/observer-writer，以及 `run-live` / `run-diagnostic-live` 内置的 drive-until-terminal、no-wakeup 与 scope-rollover policy chain。Codex 测试员只经 public Host API/CLI 编排 message、drain、approval 与只读检查；Host 继续独占 canonical state、approval、fencing、typed effect 与隔离边界，进程监督只证明本地进程退休，offline bundle verifier 与 campaign reducer 是唯一 GO 权威。
+- **BREAKING**：删除失去 production caller 的 generic `AttemptRunner`、legacy `@2` emitter、test-only production evidence builder、陈旧 driver contract 与 browser helper；以 exact authority-bound preflight、无编排策略的 supervised Host、可封存 public CLI receipt chain、closed-attempt evidence public export 和单一 source-bound `aox_blank_world_attempt_bundle@3` finalize-and-seal 路径补齐 Codex conductor 的 production reachability。r68 authority 已消费但没有 root/session/attempt，只记录为 prelaunch blocked，不改写为 canonical NO-GO。
 - **BREAKING**：在 r56 暴露首个 eligible result 前的 framework defect 后，将单 positive、永久 non-cutover 的 diagnostic live run 与 exact-three formal acceptance campaign 拆成 schema/authority/root/evidence 互斥的两类；diagnostic 不生成 `@3` bundle、不进入 reducer，也不降低或替代正式 GO 门槛。
 - 以同一 commit/config 下两次独立正向 live E2E 和一次故障注入作为 local Live cutover GO 门槛，并同步修正旧 S15 历史结论、UI/approval 验收与稳定架构文档。
 
@@ -31,6 +32,6 @@ OpenZyme V3 已经具备严格的 artifact、sandbox、approval、provider 与 H
 ## Impact
 
 - 影响 `packages/openzyme-{research,runtime,core,engines,pipeline,tools,execution}` 的科学合同、provider adapter、执行与 artifact evidence。
-- 影响 `apps/openzyme-host-api` 的 foundation、eval/live gate、统一 AOX final validator/finalizer、Host typed failure、证据聚合、API projection，以及 Web UI 的 approval/report/evidence 呈现；删除 closure-stage runnable CLI surface、AOX runtime observer、automatic live driver 与 one-shot AOX recovery path。
+- 影响 `apps/openzyme-host-api` 的 foundation、eval/live gate、统一 AOX final validator/finalizer、Host typed failure、证据聚合、closed-attempt public export、policy-free Host supervision、API projection，以及 public CLI 的 approval/report/evidence receipt 呈现；删除 closure-stage runnable CLI surface、AOX runtime observer、automatic live driver、browser helper 与 one-shot AOX recovery path。
 - 影响 AOX/HMM workflow pack、S15 文档、主架构文档、live pytest markers 与 policy-free authority/evidence 命令。
 - 真实运行继续依赖现有 MICU 500M 持久账本（历史 usage 不重置）、NCBI identity、UniProt/EBI/PubMed 网络能力、可信 Host-only HPC runner 和 immutable sandbox/toolchain identity。

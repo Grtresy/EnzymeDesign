@@ -88,12 +88,18 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
             "preflight",
             "--campaign-root",
             str(campaign_root),
-            "--attempt-kind",
-            "positive",
+            "--identity",
+            str(tmp_path / "identity.json"),
             "--allowed-prerequisites",
             str(tmp_path / "allowed-prerequisites.json"),
             "--architecture-qualification-report",
             str(tmp_path / "qualification-report.json"),
+            "--attempt-authority-plan",
+            str(tmp_path / "attempt-authority.json"),
+            "--attempt-authority-consumption",
+            str(tmp_path / "attempt-authority-consumption.json"),
+            "--slot-ordinal",
+            "1",
         ]
     )
 
@@ -147,7 +153,7 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
         "sha256:ab9898f52fc9fd1f1dc8b6498d368ba68d2e658c1ebc819cb76f73b7737de922"
     )
     assert AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID == (
-        "aox_blank_world_runtime_config@3"
+        "aox_blank_world_runtime_config@4"
     )
     with pytest.raises(ScientificWorkflowContractError) as historical_error:
         AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY.resolve(

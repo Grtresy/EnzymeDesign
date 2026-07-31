@@ -1168,6 +1168,49 @@ class ArtifactBoundaryService:
             reused=reused,
         )
 
+    def read_sealed_file(
+        self,
+        *,
+        session_id: str,
+        artifact_id: str,
+        max_bytes: int = 64 * 1024 * 1024,
+    ) -> tuple[bytes, str]:
+        """Read one digest-verified file without exposing its Host locator."""
+
+        if max_bytes <= 0:
+            raise ArtifactBoundaryError(
+                "artifact_export_bound_invalid",
+                "artifact export bound must be positive",
+            )
+        artifact = self.repositories.artifacts.get(artifact_id)
+        if artifact is None or artifact.session_id != session_id:
+            raise ArtifactBoundaryError(
+                "artifact_scope_forbidden",
+                "artifact is not available in this session",
+            )
+        source, expected_digest, summary = self._verify_artifact_blob(artifact)
+        if summary.get("type") != "file" or not source.is_file():
+            raise ArtifactBoundaryError(
+                "artifact_export_type_invalid",
+                "public evidence export accepts only sealed file artifacts",
+            )
+        size = source.stat().st_size
+        if size > max_bytes:
+            raise ArtifactBoundaryError(
+                "artifact_export_too_large",
+                "sealed artifact exceeds the bounded public evidence export",
+                details={"artifact_id": artifact_id, "max_bytes": max_bytes},
+            )
+        content = source.read_bytes()
+        observed_digest = "sha256:" + hashlib.sha256(content).hexdigest()
+        if len(content) != size or observed_digest != expected_digest:
+            raise ArtifactBoundaryError(
+                "artifact_blob_digest_mismatch",
+                "artifact changed while public evidence was exported",
+                details={"artifact_id": artifact_id},
+            )
+        return content, expected_digest
+
     def register(
         self,
         *,

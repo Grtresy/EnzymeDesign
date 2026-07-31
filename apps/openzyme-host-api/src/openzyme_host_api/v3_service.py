@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import datetime
 from datetime import timedelta
 from contextlib import contextmanager
+import base64
 import json
 from pathlib import Path
 import threading
@@ -85,6 +86,8 @@ from openzyme_domain import TaskStatus
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import record_failure_observation
 from openzyme_runtime import sanitize_public_diagnostic_text
+
+from .aox_bundle_finalizer import validate_persisted_aox_finalization_receipt
 
 
 def _new_id(prefix: str) -> str:
@@ -661,6 +664,76 @@ class V3HostApiService:
                 blob_store_root=self.artifact_blob_root,
             ),
         )
+
+    def export_closed_aox_attempt_evidence(
+        self,
+        *,
+        session_id: str,
+        attempt_id: str,
+        selection_id: str,
+    ) -> dict[str, Any]:
+        """Project the complete source-bound AOX closure through the Host API."""
+
+        control = self.scientific_attempt_control().export_closed_attempt_evidence(
+            attempt_id,
+            session_id=session_id,
+            selection_id=selection_id,
+        )
+        attempt = dict(control["attempt"])
+        finalization: dict[str, object] | None = None
+        deliverables: list[dict[str, object]] = []
+        if attempt.get("scope") == ScientificAttemptScope.FORMAL.value:
+            finalization = validate_persisted_aox_finalization_receipt(
+                self.repositories,
+                session_id=session_id,
+                execution_task_id=str(attempt["task_id"]),
+                attempt_id=attempt_id,
+                selection_id=selection_id,
+            )
+            boundary = ArtifactBoundaryService(
+                self.repositories,
+                workspace_root=self.sandbox_workspace_root,
+                blob_store_root=self.artifact_blob_root,
+            )
+            total_size = 0
+            for raw_ref in sorted(
+                finalization["artifacts"],
+                key=lambda item: str(item["relative_path"]),
+            ):
+                ref = dict(raw_ref)
+                content, content_digest = boundary.read_sealed_file(
+                    session_id=session_id,
+                    artifact_id=str(ref["artifact_id"]),
+                )
+                total_size += len(content)
+                if total_size > 256 * 1024 * 1024:
+                    raise ScientificAttemptError(
+                        "attempt_evidence_export_too_large",
+                        "closed AOX deliverables exceed the public export bound",
+                    )
+                if content_digest != ref.get("content_digest"):
+                    raise ScientificAttemptError(
+                        "attempt_evidence_artifact_digest_mismatch",
+                        "closed AOX artifact differs from its finalization receipt",
+                    )
+                deliverables.append(
+                    {
+                        "artifact_id": ref["artifact_id"],
+                        "relative_path": ref["relative_path"],
+                        "content_digest": content_digest,
+                        "content_base64": base64.b64encode(content).decode("ascii"),
+                    }
+                )
+        payload: dict[str, Any] = {
+            "schema_id": "aox_closed_attempt_evidence@1",
+            "session_id": session_id,
+            "attempt_id": attempt_id,
+            "selection_id": selection_id,
+            "scientific_attempt_control": control,
+            "finalization_receipt": finalization,
+            "deliverables": deliverables,
+        }
+        return {**payload, "export_digest": canonical_digest(payload)}
 
     def grant_scientific_attempt_authorization(
         self,

@@ -10,6 +10,26 @@ This app exposes the V3 Host-side API surface for:
 - message ingress and durable command-based `runtime/drain`
 - task board, lane, approval, and debug endpoints
 - V3 session events consumed by the Web UI
+- exact closed scientific-attempt/selection evidence export for a public offline conductor
+
+## AOX public conductor boundary
+
+The current AOX production path has no automatic run command. `openzyme-aox-cutover preflight`
+validates one exact consumed authority slot before creating its private root;
+`serve-attempt` starts only the fixed loopback production Host and does not send messages, drains or
+approvals; `finalize-and-seal` consumes exact public CLI receipts plus sealed final responses and
+atomically creates one source-reconstructable `aox_blank_world_attempt_bundle@3`.
+
+The public evidence route is:
+
+```text
+GET /v3/sessions/{session_id}/scientific-attempts/{attempt_id}/selections/{selection_id}/evidence
+```
+
+It accepts only a closed attempt and exact sealed selection. Formal positive export revalidates the
+persisted 17-deliverable finalization receipt and reads each sealed file through the artifact
+boundary. None of these shells chooses the next Codex action or derives GO; the network-free verifier
+and exact-three campaign reducer retain that authority.
 
 ## Runtime Drain Contract
 

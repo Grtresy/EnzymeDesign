@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from io import StringIO
+import json
+from pathlib import Path
 
 from openzyme_host_cli.cli import run_cli
 from openzyme_runtime import reset_settings_cache
@@ -496,6 +498,80 @@ def test_cli_scientific_finalizes_admission_after_agent_writer_retires() -> None
         "POST",
         "/v3/sessions/sess_001/scientific-attempt-admissions/finalize",
         {"admission_request_id": "attempt_admission_request_001"},
+    )
+
+
+def test_cli_exports_and_seals_closed_attempt_evidence(
+    tmp_path: Path,
+) -> None:
+    session = FakeSession()
+    receipt_chain = tmp_path / "public-api-receipts.jsonl"
+    sealed_response = tmp_path / "evidence-response.json"
+
+    exit_code = run_cli(
+        [
+            "--session-id",
+            "sess_001",
+            "--receipt-chain",
+            str(receipt_chain),
+            "--seal-response",
+            str(sealed_response),
+            "scientific",
+            "export-evidence",
+            "--attempt-id",
+            "attempt_001",
+            "--selection-id",
+            "selection_001",
+        ],
+        session=session,
+        stdout=StringIO(),
+        stderr=StringIO(),
+    )
+
+    assert exit_code == 0
+    assert session.calls[-1] == (
+        "GET",
+        "/v3/sessions/sess_001/scientific-attempts/attempt_001/"
+        "selections/selection_001/evidence",
+        None,
+    )
+    receipt = json.loads(receipt_chain.read_text(encoding="utf-8"))
+    envelope = json.loads(sealed_response.read_text(encoding="utf-8"))
+    assert receipt["request"] == {}
+    assert envelope["receipt"] == receipt
+    assert envelope["response"] == []
+
+
+def test_cli_reaches_public_events_and_pending_approvals() -> None:
+    session = FakeSession()
+
+    assert (
+        run_cli(
+            ["--session-id", "sess_001", "sessions", "events"],
+            session=session,
+            stdout=StringIO(),
+            stderr=StringIO(),
+        )
+        == 0
+    )
+    assert session.calls[-1] == (
+        "GET",
+        "/v3/sessions/sess_001/events?replay=1&after_cursor=0",
+        None,
+    )
+    assert (
+        run_cli(
+            ["--session-id", "sess_001", "approvals", "pending"],
+            session=session,
+            stdout=StringIO(),
+            stderr=StringIO(),
+        )
+        == 0
+    )
+    assert session.calls[-1] == (
+        "GET",
+        "/v3/sessions/sess_001/pending-approvals",
+        None,
     )
 
 

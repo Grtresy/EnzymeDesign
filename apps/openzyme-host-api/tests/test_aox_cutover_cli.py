@@ -149,24 +149,6 @@ def _pin_args(tmp_path: Path):
             str(tmp_path / "architecture-qualification.json"),
             "--ledger-path",
             str(tmp_path / "ledger.sqlite3"),
-            "--approval-mode",
-            "chrome-once",
-            "--browser-poll-interval-seconds",
-            "0.25",
-            "--browser-approval-timeout-seconds",
-            "301",
-            "--browser-completion-hold-seconds",
-            "61",
-            "--browser-observation-submission-timeout-seconds",
-            "181",
-            "--timeout-seconds",
-            "7201",
-            "--max-drains",
-            "121",
-            "--max-signals-per-drain",
-            "1",
-            "--max-steps-per-agent",
-            "17",
         ]
     )
 
@@ -211,12 +193,18 @@ def test_preflight_rejects_architecture_report_before_attempt_root(
             "preflight",
             "--campaign-root",
             str(tmp_path / "campaign"),
-            "--attempt-kind",
-            "positive",
+            "--identity",
+            str(tmp_path / "identity.json"),
             "--allowed-prerequisites",
             str(tmp_path / "prerequisites.json"),
             "--architecture-qualification-report",
             str(tmp_path / "qualification.json"),
+            "--attempt-authority-plan",
+            str(tmp_path / "authority.json"),
+            "--attempt-authority-consumption",
+            str(tmp_path / "authority.json.consumed.json"),
+            "--slot-ordinal",
+            "1",
         ]
     )
     monkeypatch.setattr(
@@ -296,7 +284,7 @@ def test_consume_diagnostic_authority_only_seals_consumption_receipt(
     assert output["schema_id"] == ("aox_diagnostic_authority_consume_receipt@1")
 
 
-def test_pin_uses_same_driver_bounds_and_writes_safe_no_replace_json(
+def test_pin_uses_policy_free_conductor_and_writes_safe_no_replace_json(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -330,16 +318,9 @@ def test_pin_uses_same_driver_bounds_and_writes_safe_no_replace_json(
 
     assert cli._pin(args) == 0
 
-    driver = captured["driver"]
-    assert driver.approval_mode == "chrome-once"
-    assert driver.browser_poll_interval_seconds == 0.25
-    assert driver.browser_approval_timeout_seconds == 301.0
-    assert driver.browser_completion_hold_seconds == 61.0
-    assert driver.browser_observation_submission_timeout_seconds == 181.0
-    assert driver.timeout_seconds == 7201.0
-    assert driver.max_drains == 121
-    assert driver.max_signals_per_drain == 1
-    assert driver.max_steps_per_agent == 17
+    assert "driver" not in captured
+    assert captured["settings"] is raw_settings
+    assert captured["ledger_path"] == args.ledger_path
     assert json.loads(args.identity_output.read_text(encoding="utf-8")) == identity
     assert (
         json.loads(args.allowed_prerequisites_output.read_text(encoding="utf-8"))

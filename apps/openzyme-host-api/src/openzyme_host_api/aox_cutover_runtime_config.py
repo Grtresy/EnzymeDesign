@@ -20,7 +20,8 @@ from .aox_scientific_contract import AOX_SELECTED_CHAIN_WORKFLOW_ID
 
 AOX_BLANK_WORLD_RUNTIME_CONFIG_LEGACY_SCHEMA_ID = "aox_blank_world_runtime_config@1"
 AOX_BLANK_WORLD_RUNTIME_CONFIG_V2_SCHEMA_ID = "aox_blank_world_runtime_config@2"
-AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID = "aox_blank_world_runtime_config@3"
+AOX_BLANK_WORLD_RUNTIME_CONFIG_V3_SCHEMA_ID = "aox_blank_world_runtime_config@3"
+AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID = "aox_blank_world_runtime_config@4"
 AOX_RUNNER_CONTRACT_EXPECTATIONS_SCHEMA_ID = "aox_runner_contract_expectations@1"
 AOX_BROWSER_OBSERVATION_MODE = "chrome_devtools_mcp_file_handoff"
 AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS = 3_600
@@ -56,7 +57,10 @@ _LEGACY_TOP_LEVEL_FIELDS = frozenset(
     }
 )
 _V2_TOP_LEVEL_FIELDS = _LEGACY_TOP_LEVEL_FIELDS | {"reliability"}
-_TOP_LEVEL_FIELDS = _V2_TOP_LEVEL_FIELDS | {"scientific_workflow_contract"}
+_V3_TOP_LEVEL_FIELDS = _V2_TOP_LEVEL_FIELDS | {"scientific_workflow_contract"}
+_TOP_LEVEL_FIELDS = (
+    _V3_TOP_LEVEL_FIELDS - {"driver"}
+) | {"conductor"}
 _HOST_FIELDS = frozenset(
     {
         "deployment_profile",
@@ -171,6 +175,20 @@ _DRIVER_FIELDS = frozenset(
         "browser_completion_hold_seconds",
         "browser_observation_submission_timeout_seconds",
         "ui_dist_digest",
+        "micu_hard_limit_tokens",
+        "micu_ledger_identity_digest",
+    }
+)
+_CONDUCTOR_FIELDS = frozenset(
+    {
+        "scenario",
+        "orchestration_owner",
+        "public_command_surface",
+        "receipt_chain_schema_id",
+        "supervised_host_schema_id",
+        "automatic_runtime_drain",
+        "automatic_approval",
+        "automatic_rollover",
         "micu_hard_limit_tokens",
         "micu_ledger_identity_digest",
     }
@@ -505,10 +523,9 @@ def normalize_aox_blank_world_runtime_config(
 
     Numeric duration/ratio fields are normalized to finite JSON floats. All objects
     use exact field allowlists; no caller-provided field is silently discarded.
-    Historical ``@1`` and ``@2`` remain readable solely so frozen evidence can
-    be reverified. New launch configuration is always emitted as ``@3`` and
-    additionally binds the complete active selected-chain ``@2`` contract
-    identity into the launch config digest before any attempt root is created.
+    Historical ``@1`` through ``@3`` remain readable solely so frozen evidence
+    can be reverified. New launch configuration is emitted as ``@4`` and binds
+    the public Codex-conductor shell without any automatic drive policy.
     """
 
     if not isinstance(value, Mapping):
@@ -516,6 +533,8 @@ def normalize_aox_blank_world_runtime_config(
     raw_schema_id = value.get("schema_id")
     if raw_schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID:
         top_level_fields = _TOP_LEVEL_FIELDS
+    elif raw_schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_V3_SCHEMA_ID:
+        top_level_fields = _V3_TOP_LEVEL_FIELDS
     elif raw_schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_V2_SCHEMA_ID:
         top_level_fields = _V2_TOP_LEVEL_FIELDS
     elif raw_schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_LEGACY_SCHEMA_ID:
@@ -837,6 +856,7 @@ def normalize_aox_blank_world_runtime_config(
     normalized_reliability: dict[str, object] | None = None
     if schema_id in {
         AOX_BLANK_WORLD_RUNTIME_CONFIG_V2_SCHEMA_ID,
+        AOX_BLANK_WORLD_RUNTIME_CONFIG_V3_SCHEMA_ID,
         AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID,
     }:
         reliability = _closed_object(
@@ -893,7 +913,10 @@ def normalize_aox_blank_world_runtime_config(
         }
 
     normalized_scientific_workflow_contract: dict[str, str] | None = None
-    if schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID:
+    if schema_id in {
+        AOX_BLANK_WORLD_RUNTIME_CONFIG_V3_SCHEMA_ID,
+        AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID,
+    }:
         scientific_workflow_contract = _closed_object(
             root["scientific_workflow_contract"],
             fields=_SCIENTIFIC_WORKFLOW_CONTRACT_FIELDS,
@@ -938,99 +961,168 @@ def normalize_aox_blank_world_runtime_config(
                 unexpected=frozenset(mismatched_contract_fields),
             )
 
-    driver = _closed_object(
-        root["driver"], fields=_DRIVER_FIELDS, path="effective_config.driver"
-    )
-    scenario = _string(driver["scenario"], path="effective_config.driver.scenario")
-    if scenario != "aox_blank_world_cutover":
-        raise AoxRuntimeConfigSchemaError(
-            "effective_config.driver.scenario", "uses an unsupported scenario"
+    normalized_driver: dict[str, object] | None = None
+    normalized_conductor: dict[str, object] | None = None
+    if schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID:
+        conductor = _closed_object(
+            root["conductor"],
+            fields=_CONDUCTOR_FIELDS,
+            path="effective_config.conductor",
         )
-    approval_mode = _string(
-        driver["approval_mode"],
-        path="effective_config.driver.approval_mode",
-        allowed=frozenset({"public-explicit", "chrome-once"}),
-    )
-    observation_mode = _string(
-        driver["browser_observation_mode"],
-        path="effective_config.driver.browser_observation_mode",
-    )
-    if observation_mode != AOX_BROWSER_OBSERVATION_MODE:
-        raise AoxRuntimeConfigSchemaError(
-            "effective_config.driver.browser_observation_mode",
-            "uses an unsupported browser observation channel",
-        )
-    ui_dist_digest = _optional_digest(
-        driver["ui_dist_digest"], path="effective_config.driver.ui_dist_digest"
-    )
-    if (approval_mode == "chrome-once") != (ui_dist_digest is not None):
-        raise AoxRuntimeConfigSchemaError(
-            "effective_config.driver.ui_dist_digest",
-            "must be present only for chrome-once approval",
-        )
-    hard_limit = _integer(
-        driver["micu_hard_limit_tokens"],
-        path="effective_config.driver.micu_hard_limit_tokens",
-        minimum=LIVE_MICU_TOKEN_HARD_LIMIT,
-        maximum=LIVE_MICU_TOKEN_HARD_LIMIT,
-    )
-    normalized_driver = {
-        "scenario": scenario,
-        "approval_mode": approval_mode,
-        "browser_observation_mode": observation_mode,
-        "timeout_seconds": _number(
-            driver["timeout_seconds"],
-            path="effective_config.driver.timeout_seconds",
-            minimum=AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS,
-        ),
-        "max_drains": _integer(
-            driver["max_drains"],
-            path="effective_config.driver.max_drains",
-            minimum=1,
-        ),
-        "max_signals_per_drain": _integer(
-            driver["max_signals_per_drain"],
-            path="effective_config.driver.max_signals_per_drain",
-            minimum=1,
-            maximum=AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN,
-        ),
-        "max_steps_per_agent": _integer(
-            driver["max_steps_per_agent"],
-            path="effective_config.driver.max_steps_per_agent",
-            minimum=1,
-        ),
-        "browser_poll_interval_seconds": _number(
-            driver["browser_poll_interval_seconds"],
-            path="effective_config.driver.browser_poll_interval_seconds",
-            minimum=0.0,
-            minimum_inclusive=False,
-        ),
-        "browser_approval_timeout_seconds": _number(
-            driver["browser_approval_timeout_seconds"],
-            path="effective_config.driver.browser_approval_timeout_seconds",
-            minimum=0.0,
-            minimum_inclusive=False,
-        ),
-        "browser_completion_hold_seconds": _number(
-            driver["browser_completion_hold_seconds"],
-            path="effective_config.driver.browser_completion_hold_seconds",
-            minimum=0.0,
-        ),
-        "browser_observation_submission_timeout_seconds": _number(
-            driver["browser_observation_submission_timeout_seconds"],
-            path=(
-                "effective_config.driver.browser_observation_submission_timeout_seconds"
+        normalized_conductor = {
+            "scenario": _string(
+                conductor["scenario"],
+                path="effective_config.conductor.scenario",
+                allowed=frozenset({"aox_blank_world_cutover"}),
             ),
-            minimum=0.0,
-            minimum_inclusive=False,
-        ),
-        "ui_dist_digest": ui_dist_digest,
-        "micu_hard_limit_tokens": hard_limit,
-        "micu_ledger_identity_digest": _digest(
-            driver["micu_ledger_identity_digest"],
-            path="effective_config.driver.micu_ledger_identity_digest",
-        ),
-    }
+            "orchestration_owner": _string(
+                conductor["orchestration_owner"],
+                path="effective_config.conductor.orchestration_owner",
+                allowed=frozenset({"codex_tester"}),
+            ),
+            "public_command_surface": _string(
+                conductor["public_command_surface"],
+                path="effective_config.conductor.public_command_surface",
+                allowed=frozenset({"host_api_cli_v3"}),
+            ),
+            "receipt_chain_schema_id": _string(
+                conductor["receipt_chain_schema_id"],
+                path="effective_config.conductor.receipt_chain_schema_id",
+                allowed=frozenset({"openzyme_public_api_receipt_chain@1"}),
+            ),
+            "supervised_host_schema_id": _string(
+                conductor["supervised_host_schema_id"],
+                path="effective_config.conductor.supervised_host_schema_id",
+                allowed=frozenset({"aox_supervised_host_receipt@1"}),
+            ),
+            "automatic_runtime_drain": _boolean(
+                conductor["automatic_runtime_drain"],
+                path="effective_config.conductor.automatic_runtime_drain",
+            ),
+            "automatic_approval": _boolean(
+                conductor["automatic_approval"],
+                path="effective_config.conductor.automatic_approval",
+            ),
+            "automatic_rollover": _boolean(
+                conductor["automatic_rollover"],
+                path="effective_config.conductor.automatic_rollover",
+            ),
+            "micu_hard_limit_tokens": _integer(
+                conductor["micu_hard_limit_tokens"],
+                path="effective_config.conductor.micu_hard_limit_tokens",
+                minimum=LIVE_MICU_TOKEN_HARD_LIMIT,
+                maximum=LIVE_MICU_TOKEN_HARD_LIMIT,
+            ),
+            "micu_ledger_identity_digest": _digest(
+                conductor["micu_ledger_identity_digest"],
+                path="effective_config.conductor.micu_ledger_identity_digest",
+            ),
+        }
+        if any(
+            normalized_conductor[field] is not False
+            for field in (
+                "automatic_runtime_drain",
+                "automatic_approval",
+                "automatic_rollover",
+            )
+        ):
+            raise AoxRuntimeConfigSchemaError(
+                "effective_config.conductor",
+                "must not contain automatic orchestration policy",
+            )
+    else:
+        driver = _closed_object(
+            root["driver"], fields=_DRIVER_FIELDS, path="effective_config.driver"
+        )
+        scenario = _string(driver["scenario"], path="effective_config.driver.scenario")
+        if scenario != "aox_blank_world_cutover":
+            raise AoxRuntimeConfigSchemaError(
+                "effective_config.driver.scenario", "uses an unsupported scenario"
+            )
+        approval_mode = _string(
+            driver["approval_mode"],
+            path="effective_config.driver.approval_mode",
+            allowed=frozenset({"public-explicit", "chrome-once"}),
+        )
+        observation_mode = _string(
+            driver["browser_observation_mode"],
+            path="effective_config.driver.browser_observation_mode",
+        )
+        if observation_mode != AOX_BROWSER_OBSERVATION_MODE:
+            raise AoxRuntimeConfigSchemaError(
+                "effective_config.driver.browser_observation_mode",
+                "uses an unsupported browser observation channel",
+            )
+        ui_dist_digest = _optional_digest(
+            driver["ui_dist_digest"], path="effective_config.driver.ui_dist_digest"
+        )
+        if (approval_mode == "chrome-once") != (ui_dist_digest is not None):
+            raise AoxRuntimeConfigSchemaError(
+                "effective_config.driver.ui_dist_digest",
+                "must be present only for chrome-once approval",
+            )
+        hard_limit = _integer(
+            driver["micu_hard_limit_tokens"],
+            path="effective_config.driver.micu_hard_limit_tokens",
+            minimum=LIVE_MICU_TOKEN_HARD_LIMIT,
+            maximum=LIVE_MICU_TOKEN_HARD_LIMIT,
+        )
+        normalized_driver = {
+            "scenario": scenario,
+            "approval_mode": approval_mode,
+            "browser_observation_mode": observation_mode,
+            "timeout_seconds": _number(
+                driver["timeout_seconds"],
+                path="effective_config.driver.timeout_seconds",
+                minimum=AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS,
+            ),
+            "max_drains": _integer(
+                driver["max_drains"], path="effective_config.driver.max_drains", minimum=1
+            ),
+            "max_signals_per_drain": _integer(
+                driver["max_signals_per_drain"],
+                path="effective_config.driver.max_signals_per_drain",
+                minimum=1,
+                maximum=AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN,
+            ),
+            "max_steps_per_agent": _integer(
+                driver["max_steps_per_agent"],
+                path="effective_config.driver.max_steps_per_agent",
+                minimum=1,
+            ),
+            "browser_poll_interval_seconds": _number(
+                driver["browser_poll_interval_seconds"],
+                path="effective_config.driver.browser_poll_interval_seconds",
+                minimum=0.0,
+                minimum_inclusive=False,
+            ),
+            "browser_approval_timeout_seconds": _number(
+                driver["browser_approval_timeout_seconds"],
+                path="effective_config.driver.browser_approval_timeout_seconds",
+                minimum=0.0,
+                minimum_inclusive=False,
+            ),
+            "browser_completion_hold_seconds": _number(
+                driver["browser_completion_hold_seconds"],
+                path="effective_config.driver.browser_completion_hold_seconds",
+                minimum=0.0,
+            ),
+            "browser_observation_submission_timeout_seconds": _number(
+                driver["browser_observation_submission_timeout_seconds"],
+                path=(
+                    "effective_config.driver."
+                    "browser_observation_submission_timeout_seconds"
+                ),
+                minimum=0.0,
+                minimum_inclusive=False,
+            ),
+            "ui_dist_digest": ui_dist_digest,
+            "micu_hard_limit_tokens": hard_limit,
+            "micu_ledger_identity_digest": _digest(
+                driver["micu_ledger_identity_digest"],
+                path="effective_config.driver.micu_ledger_identity_digest",
+            ),
+        }
 
     normalized = {
         "schema_id": schema_id,
@@ -1041,8 +1133,11 @@ def normalize_aox_blank_world_runtime_config(
         "research": normalized_research,
         "tracing": normalized_tracing,
         "test_opt_in": normalized_test,
-        "driver": normalized_driver,
     }
+    if normalized_driver is not None:
+        normalized["driver"] = normalized_driver
+    if normalized_conductor is not None:
+        normalized["conductor"] = normalized_conductor
     if normalized_reliability is not None:
         normalized["reliability"] = normalized_reliability
     if normalized_scientific_workflow_contract is not None:
@@ -1056,6 +1151,7 @@ __all__ = [
     "AOX_BLANK_WORLD_RUNTIME_CONFIG_LEGACY_SCHEMA_ID",
     "AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID",
     "AOX_BLANK_WORLD_RUNTIME_CONFIG_V2_SCHEMA_ID",
+    "AOX_BLANK_WORLD_RUNTIME_CONFIG_V3_SCHEMA_ID",
     "AOX_BROWSER_OBSERVATION_MODE",
     "AOX_DURABLE_ROUTE_POLICY_IDS",
     "AoxRuntimeConfigSchemaError",

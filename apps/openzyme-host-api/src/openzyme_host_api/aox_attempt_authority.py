@@ -586,6 +586,41 @@ def validate_aox_attempt_authority_consumption(
     return normalized
 
 
+def load_aox_attempt_authority_consumption(
+    path: Path,
+    *,
+    plan: Mapping[str, object],
+    plan_path: Path,
+) -> dict[str, Any]:
+    expected_path = attempt_authority_consumption_path(plan_path)
+    try:
+        metadata = path.lstat()
+        content = path.read_bytes()
+        value = json.loads(content)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CutoverEvidenceError(
+            "attempt_authority_consumption_unreadable",
+            "formal authority consumption is not readable canonical JSON",
+        ) from exc
+    if (
+        path != expected_path
+        or stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) & 0o077
+        or not isinstance(value, dict)
+        or content != canonical_json_bytes(value) + b"\n"
+    ):
+        raise CutoverEvidenceError(
+            "attempt_authority_consumption_invalid",
+            "formal authority consumption must be its exact private canonical sibling",
+        )
+    return validate_aox_attempt_authority_consumption(
+        value,
+        plan=plan,
+        plan_path=plan_path,
+    )
+
+
 def authority_grant_payload(slot: Mapping[str, object]) -> dict[str, Any]:
     """Project the canonical request into the public Host grant payload."""
 
@@ -619,9 +654,6 @@ def attempt_admission_arguments(slot: Mapping[str, object]) -> dict[str, Any]:
         "reserved_wall_time_seconds": request["max_wall_time_seconds"],
         "provider": provider[0] if len(provider) == 1 else None,
         "hpc_target": hpc_targets[0] if len(hpc_targets) == 1 else None,
-        "idempotency_key": (
-            f"{request['campaign_id']}:attempt:{slot['ordinal']}"
-        ),
     }
 
 
@@ -635,6 +667,7 @@ __all__ = [
     "build_aox_attempt_authority_plan",
     "consume_aox_attempt_authority_plan",
     "load_aox_attempt_authority_plan",
+    "load_aox_attempt_authority_consumption",
     "publish_aox_attempt_authority_plan",
     "validate_aox_attempt_authority_consumption",
     "validate_aox_attempt_authority_plan",

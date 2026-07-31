@@ -15,13 +15,21 @@ from openzyme_core import MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID
 from openzyme_host_api.aox_architecture_qualification import (
     build_architecture_qualification_receipt,
 )
-from openzyme_host_api.aox_attempt_supervision import DEFAULT_KILL_GRACE_SECONDS
-from openzyme_host_api.aox_attempt_supervision import DEFAULT_TERM_GRACE_SECONDS
-from openzyme_host_api.aox_attempt_supervision import (
+from openzyme_host_api.aox_legacy_supervision_receipt import (
+    DEFAULT_KILL_GRACE_SECONDS,
+)
+from openzyme_host_api.aox_legacy_supervision_receipt import (
+    DEFAULT_TERM_GRACE_SECONDS,
+)
+from openzyme_host_api.aox_legacy_supervision_receipt import (
     derive_live_attempt_supervision_timeout_seconds,
 )
-from openzyme_host_api.aox_attempt_supervision import SUPERVISION_RECEIPT_SCHEMA_ID
-from openzyme_host_api.aox_attempt_supervision import supervision_contract_digest
+from openzyme_host_api.aox_legacy_supervision_receipt import (
+    SUPERVISION_RECEIPT_SCHEMA_ID,
+)
+from openzyme_host_api.aox_legacy_supervision_receipt import (
+    supervision_contract_digest,
+)
 from openzyme_core.workflow_knowledge import default_workflow_registry
 import openzyme_host_api.aox_cutover_evidence as cutover_evidence
 from openzyme_host_api.aox_cutover_cli import main as cutover_cli_main
@@ -33,7 +41,9 @@ from openzyme_host_api.aox_cutover_evidence import (
 )
 from openzyme_host_api.aox_cutover_evidence import AOX_TOOLCHAIN_RUNTIME_CONTRACTS
 from openzyme_host_api.aox_cutover_evidence import AttemptRunRecord
-from openzyme_host_api.aox_cutover_evidence import assert_public_safe_payload
+from openzyme_host_api.aox_cutover_evidence import (
+    _assert_public_safe as assert_public_safe_payload,
+)
 from openzyme_host_api.aox_cutover_evidence import aox_hpc_workspace_id
 from openzyme_host_api.aox_cutover_evidence import canonical_digest
 from openzyme_host_api.aox_cutover_evidence import canonical_json_bytes
@@ -42,7 +52,6 @@ from openzyme_host_api.aox_cutover_evidence import create_blank_world_roots
 from openzyme_host_api.aox_cutover_evidence import CutoverEvidenceError
 from openzyme_host_api.aox_cutover_evidence import evaluate_campaign
 from openzyme_host_api.aox_cutover_evidence import FAULT_ARTIFACT_BYTE_FLIP_ID
-from openzyme_host_api.aox_cutover_evidence import inject_artifact_byte_flip
 from openzyme_host_api.aox_cutover_evidence import KNOWN_POSITIVE_PROBE_ID
 from openzyme_host_api.aox_cutover_evidence import KNOWN_POSITIVE_PROBE_NCBI_ACCESSIONS
 from openzyme_host_api.aox_cutover_evidence import KNOWN_POSITIVE_PROBE_SCHEMA_ID
@@ -50,18 +59,11 @@ from openzyme_host_api.aox_cutover_evidence import (
     KNOWN_POSITIVE_PROBE_UNIPROT_ACCESSIONS,
 )
 from openzyme_host_api.aox_cutover_evidence import safe_micu_ledger_snapshot
-from openzyme_host_api.aox_cutover_evidence import project_formal_delegation_request
 from openzyme_host_api.aox_cutover_evidence import SEALED_SOURCE_TREE_SCHEMA_ID
-from openzyme_host_api.aox_cutover_evidence import seal_source_tree_envelope
 from openzyme_host_api.aox_cutover_evidence import seal_campaign_decision
-from openzyme_host_api.aox_cutover_evidence import seal_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import VerificationResult
-from openzyme_host_api.aox_cutover_evidence import (
-    typed_empty_artifact_validation_receipt,
-)
 from openzyme_host_api.aox_cutover_evidence import verify_sealed_source_tree_envelope
 from openzyme_host_api.aox_cutover_evidence import verify_attempt_bundle
-from openzyme_host_api.aox_cutover_evidence import build_attempt_bundle
 from openzyme_host_api.aox_scientific_contract import (
     AOX_SELECTED_CHAIN_CONTRACT_V2,
 )
@@ -80,9 +82,13 @@ from openzyme_host_api.aox_scientific_contract import (
 from openzyme_host_api.aox_selected_chain_evidence import (
     SCIENTIFIC_ATTEMPT_EVIDENCE_SCHEMA_ID,
 )
-from openzyme_host_api.aox_selected_chain_evidence import (
-    build_selected_chain_attempt_bundle,
-)
+from .aox_evidence_fixtures import build_attempt_bundle
+from .aox_evidence_fixtures import build_selected_chain_attempt_bundle
+from .aox_evidence_fixtures import inject_artifact_byte_flip
+from .aox_evidence_fixtures import project_formal_delegation_request
+from .aox_evidence_fixtures import seal_attempt_bundle
+from .aox_evidence_fixtures import seal_source_tree_envelope
+from .aox_evidence_fixtures import typed_empty_artifact_validation_receipt
 from openzyme_core import CoreRepositories
 from openzyme_core import MutationScopeService
 from openzyme_core import apply_sqlite_migrations
@@ -7913,7 +7919,7 @@ def test_public_safety_verifier_preserves_logical_paths_routes_and_query_free_ur
         "tokenUsage": 7,
     }
 
-    assert_public_safe_payload(payload)
+    assert_public_safe_payload(payload, identity="public_safety_fixture")
 
 
 @pytest.mark.parametrize(
@@ -7929,7 +7935,10 @@ def test_public_safety_verifier_rejects_explicit_private_root(
     private_path: str,
 ) -> None:
     with pytest.raises(CutoverEvidenceError) as error:
-        assert_public_safe_payload({"diagnostic": private_path})
+        assert_public_safe_payload(
+            {"diagnostic": private_path},
+            identity="public_safety_fixture",
+        )
 
     assert error.value.code == "public_projection_host_path"
 
@@ -7984,7 +7993,10 @@ def test_public_safety_verifier_rejects_sensitive_key_aliases(
     private_key: str,
 ) -> None:
     with pytest.raises(CutoverEvidenceError) as error:
-        assert_public_safe_payload({private_key: "opaque"})
+        assert_public_safe_payload(
+            {private_key: "opaque"},
+            identity="public_safety_fixture",
+        )
 
     assert error.value.code == "public_projection_sensitive_key"
 
@@ -8009,7 +8021,10 @@ def test_public_safety_verifier_rejects_sensitive_free_text(
     private_text: str,
 ) -> None:
     with pytest.raises(CutoverEvidenceError) as error:
-        assert_public_safe_payload({"diagnostic": private_text})
+        assert_public_safe_payload(
+            {"diagnostic": private_text},
+            identity="public_safety_fixture",
+        )
 
     assert error.value.code == "public_projection_secret_value"
 

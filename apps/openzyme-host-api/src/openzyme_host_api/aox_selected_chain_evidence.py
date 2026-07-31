@@ -16,10 +16,8 @@ from .aox_cutover_evidence import ATTEMPT_BUNDLE_SCHEMA_ID_V3
 from .aox_cutover_evidence import CutoverEvidenceError
 from .aox_cutover_evidence import VerificationIssue
 from .aox_cutover_evidence import VerificationResult
-from .aox_cutover_evidence import _assemble_attempt_bundle_payload
 from .aox_cutover_evidence import _assert_public_safe
 from .aox_cutover_evidence import _strict_json_loads
-from .aox_cutover_evidence import _validate_attempt_semantics
 from .aox_cutover_evidence import _validate_effective_config_attestation
 from .aox_cutover_evidence import (
     _verify_attempt_bundle_v2_with_current_supervision,
@@ -306,60 +304,6 @@ _CLOSURE_FIELDS = frozenset(
 )
 
 
-def build_selected_chain_attempt_bundle(
-    *,
-    attempt_id: str,
-    attempt_kind: str,
-    identity: Mapping[str, object],
-    clean_world: Mapping[str, object],
-    ledger_before: Mapping[str, object],
-    ledger_after: Mapping[str, object],
-    artifact_root: Path,
-    evidence: Mapping[str, object],
-    scientific_attempt_control: Mapping[str, object],
-    sealed_at: str | None = None,
-) -> dict[str, Any]:
-    """Build @3 while retaining and validating the exact current receipt."""
-
-    payload = _assemble_attempt_bundle_payload(
-        attempt_id=attempt_id,
-        attempt_kind=attempt_kind,
-        identity=identity,
-        clean_world=clean_world,
-        ledger_before=ledger_before,
-        ledger_after=ledger_after,
-        artifact_root=artifact_root,
-        evidence=evidence,
-        sealed_at=sealed_at,
-    )
-    _validate_attempt_semantics(
-        payload,
-        artifact_root=artifact_root,
-        current_supervision=True,
-    )
-    _assert_public_safe(payload, identity="attempt_bundle")
-    control = dict(scientific_attempt_control)
-    issues: list[VerificationIssue] = []
-    _verify_selected_chain_control(payload, control=control, issues=issues)
-    if issues:
-        first = issues[0]
-        raise CutoverEvidenceError(
-            first.code,
-            first.message,
-            details={"identity": first.identity},
-        )
-    selected_payload = {
-        **payload,
-        "schema_id": ATTEMPT_BUNDLE_SCHEMA_ID_V3,
-        "scientific_attempt_control": control,
-    }
-    _assert_public_safe(
-        selected_payload,
-        identity="selected_chain_attempt_bundle",
-    )
-    return selected_payload
-
-
 def verify_selected_chain_attempt_bundle(
     bundle_path: Path,
     *,
@@ -389,6 +333,13 @@ def verify_selected_chain_attempt_bundle(
     attempt_id = _text_or_none(payload.get("attempt_id"))
     attempt_kind = _text_or_none(payload.get("attempt_kind"))
     declared_digest = envelope.get("bundle_digest")
+    if payload.get("bundle_profile") == "aox_public_conductor_bundle@1":
+        from .aox_public_conductor_bundle import verify_public_conductor_bundle
+
+        return verify_public_conductor_bundle(
+            bundle_path,
+            artifact_root=artifact_root,
+        )
     if bundle_bytes != canonical_json_bytes(envelope) + b"\n":
         _issue(
             issues,
@@ -755,6 +706,10 @@ def _verify_authority_and_attempt(
         and item.get("route") == expected_grant_route
         and item.get("status_code") == 200
     ]
+    supervision = dict(
+        dict(payload.get("product_path") or {}).get("attempt_supervision") or {}
+    )
+    supervised_host = supervision.get("schema_id") == "aox_supervised_host_receipt@1"
     common_fields = ("session_id", "task_id", "campaign_id", "workflow_id")
     if (
         attempt.get("root_ref") != f"attempts/{payload.get('attempt_id')}"
@@ -777,6 +732,21 @@ def _verify_authority_and_attempt(
             for field in common_fields
         )
         or len(grant_receipts) != 1
+        or (
+            supervised_host
+            and (
+                supervision.get("attempt_id") != attempt.get("attempt_id")
+                or supervision.get("attempt_kind") != payload.get("attempt_kind")
+                or supervision.get("session_id") != attempt.get("session_id")
+                or supervision.get("task_id") != attempt.get("task_id")
+                or supervision.get("lane_id") != attempt.get("lane_id")
+                or supervision.get("campaign_id") != attempt.get("campaign_id")
+                or supervision.get("attempt_authority_id")
+                != authorization.get("envelope_id")
+                or supervision.get("attempt_authority_request_digest")
+                != authorization.get("request_digest")
+            )
+        )
     ):
         _issue(
             issues,
@@ -1576,6 +1546,5 @@ def _text_or_none(value: object) -> str | None:
 __all__ = [
     "SCIENTIFIC_ATTEMPT_EVIDENCE_SCHEMA_ID",
     "SCIENTIFIC_OPERATION_UNIVERSE_SCHEMA_ID",
-    "build_selected_chain_attempt_bundle",
     "verify_selected_chain_attempt_bundle",
 ]

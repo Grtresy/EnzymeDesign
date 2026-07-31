@@ -11,7 +11,7 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import re
-from typing import Any, Protocol
+from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
 import zlib
@@ -27,8 +27,8 @@ from .aox_architecture_qualification import AoxArchitectureQualificationError
 from .aox_architecture_qualification import (
     normalize_architecture_qualification_receipt,
 )
-from .aox_cutover_runtime_config import AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID
 from .aox_cutover_runtime_config import AoxRuntimeConfigSchemaError
+from .aox_cutover_runtime_config import AOX_BLANK_WORLD_RUNTIME_CONFIG_V3_SCHEMA_ID
 from .aox_cutover_runtime_config import normalize_aox_blank_world_runtime_config
 from .aox_live_run_class import AoxLiveRunClass
 from .aox_live_run_class import DIAGNOSTIC_RUN_POLICY
@@ -86,17 +86,6 @@ _ATTEMPT_ID_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,119}$")
 _ERROR_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 _EMPTY_RESULT_REASON_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 _DERIVATION_CONTRACT_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]*@[1-9][0-9]*$")
-_DELEGATION_REQUEST_PAYLOAD_KEYS = {
-    "task_id",
-    "instructions",
-    "role",
-    "agent_id",
-    "nickname",
-    "display_name",
-    "handle",
-    "workflow_refs",
-    "workflow_manifests",
-}
 _DELEGATION_REQUEST_PROJECTION_KEYS = {
     "schema_id",
     "document_id",
@@ -682,15 +671,6 @@ class _VerifiedSimilarityGraph:
 
 
 @dataclass(frozen=True, slots=True)
-class AttemptRunContext:
-    roots: BlankWorldRoots
-    identity: dict[str, str]
-    ledger_before: dict[str, Any]
-    attempt_number: int
-    attempt_authority: dict[str, Any] | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class AttemptRunRecord:
     attempt_id: str
     attempt_kind: str
@@ -698,11 +678,6 @@ class AttemptRunRecord:
     artifact_root: Path
     bundle_digest: str
     verification: VerificationResult
-
-
-class AttemptRunner(Protocol):
-    def __call__(self, context: AttemptRunContext) -> dict[str, Any]: ...
-
 
 def canonical_json_bytes(payload: object) -> bytes:
     _reject_non_finite(payload, identity="payload")
@@ -717,111 +692,6 @@ def canonical_json_bytes(payload: object) -> bytes:
 
 def canonical_digest(payload: object) -> str:
     return _sha256(canonical_json_bytes(payload))
-
-
-def project_formal_delegation_request(
-    payload: Mapping[str, object],
-    *,
-    document_id: str,
-) -> dict[str, object]:
-    """Close one durable delegation request into a public, offline receipt."""
-
-    request = dict(payload)
-    string_keys = (
-        "task_id",
-        "instructions",
-        "role",
-        "agent_id",
-        "nickname",
-        "display_name",
-        "handle",
-    )
-    if (
-        set(request) != _DELEGATION_REQUEST_PAYLOAD_KEYS
-        or not isinstance(document_id, str)
-        or not document_id
-        or any(
-            not isinstance(request.get(key), str) or not str(request[key])
-            for key in string_keys
-        )
-        or not isinstance(request.get("workflow_refs"), list)
-        or any(
-            not isinstance(item, str) or not item
-            for item in request.get("workflow_refs") or []
-        )
-        or not isinstance(request.get("workflow_manifests"), list)
-        or any(
-            not isinstance(item, dict)
-            for item in request.get("workflow_manifests") or []
-        )
-    ):
-        raise CutoverEvidenceError(
-            "delegation_request_projection_invalid",
-            "durable delegation request cannot be projected through the closed schema",
-        )
-    projection = {
-        "schema_id": FORMAL_DELEGATION_REQUEST_SCHEMA_ID,
-        "document_id": document_id,
-        "document_kind": "delegation_request",
-        "task_id": request["task_id"],
-        "instructions_digest": canonical_digest(request["instructions"]),
-        "role": request["role"],
-        "agent_id": request["agent_id"],
-        "nickname": request["nickname"],
-        "display_name": request["display_name"],
-        "handle": request["handle"],
-        "workflow_refs": list(request["workflow_refs"]),
-        "workflow_manifests": [dict(item) for item in request["workflow_manifests"]],
-    }
-    _assert_public_safe(projection, identity="formal_delegation_request")
-    return projection
-
-
-def typed_empty_artifact_validation_receipt(
-    *,
-    kind: str,
-    metadata: Mapping[str, object],
-) -> dict[str, object]:
-    """Reproduce a strict zero-record FASTA catalog registration receipt."""
-
-    catalog_metadata = dict(metadata)
-    raw_validation = catalog_metadata.get("validation")
-    validation = dict(raw_validation) if isinstance(raw_validation, dict) else {}
-    format_value = str(catalog_metadata.get("format") or "").lower()
-    profile = catalog_metadata.get("validation_profile")
-    reason = catalog_metadata.get("empty_result_reason")
-    derivation = catalog_metadata.get("derivation_contract_id")
-    expected_validation = {
-        "status": "passed",
-        "format": format_value,
-        "required_columns": [],
-        "validation_profile": "fasta_zero_records@1",
-        "empty_result_reason": reason,
-        "derivation_contract_id": derivation,
-    }
-    if (
-        kind != "sequence"
-        or format_value not in {"fa", "faa", "fasta"}
-        or profile != "fasta_zero_records@1"
-        or not isinstance(reason, str)
-        or _EMPTY_RESULT_REASON_PATTERN.fullmatch(reason) is None
-        or not isinstance(derivation, str)
-        or _DERIVATION_CONTRACT_PATTERN.fullmatch(derivation) is None
-        or validation != expected_validation
-    ):
-        raise CutoverEvidenceError(
-            "typed_empty_artifact_validation_invalid",
-            "zero-record FASTA catalog validation is missing or does not reproduce the strict profile",
-        )
-    return {
-        "schema_id": TYPED_EMPTY_ARTIFACT_VALIDATION_SCHEMA_ID,
-        "kind": kind,
-        "format": format_value,
-        "validation_profile": profile,
-        "empty_result_reason": reason,
-        "derivation_contract_id": derivation,
-        "catalog_validation_digest": canonical_digest(validation),
-    }
 
 
 def _safe_source_tree_relative_path(value: object) -> str:
@@ -849,93 +719,6 @@ def _source_tree_digest(file_entries: list[dict[str, object]]) -> str:
     return _sha256(
         json.dumps(file_entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
     )
-
-
-def seal_source_tree_envelope(
-    source_root: Path,
-    *,
-    expected_source_tree_digest: str,
-) -> bytes:
-    """Encode one immutable source snapshot as canonical self-verifying JSON."""
-
-    if (
-        source_root.is_symlink()
-        or not source_root.is_dir()
-        or _DIGEST_PATTERN.fullmatch(expected_source_tree_digest) is None
-    ):
-        raise CutoverEvidenceError(
-            "sealed_source_tree_root_invalid",
-            "source snapshot must be a real directory with a canonical tree digest",
-        )
-    files: list[dict[str, object]] = []
-    for source in sorted(
-        source_root.rglob("*"),
-        key=lambda item: item.relative_to(source_root).as_posix(),
-    ):
-        relative_path = _safe_source_tree_relative_path(
-            source.relative_to(source_root).as_posix()
-        )
-        if source.is_symlink():
-            raise CutoverEvidenceError(
-                "sealed_source_tree_entry_invalid",
-                "source snapshot contains a symbolic link",
-                details={"relative_path": relative_path},
-            )
-        if source.is_dir():
-            continue
-        if not source.is_file():
-            raise CutoverEvidenceError(
-                "sealed_source_tree_entry_invalid",
-                "source snapshot contains a non-regular entry",
-                details={"relative_path": relative_path},
-            )
-        content = source.read_bytes()
-        try:
-            source_text = content.decode("utf-8")
-        except UnicodeDecodeError:
-            source_text = None
-        if source_text is not None:
-            _assert_public_safe(
-                source_text,
-                identity=f"sealed_source_tree:{relative_path}",
-            )
-        files.append(
-            {
-                "relative_path": relative_path,
-                "size_bytes": len(content),
-                "content_digest": _sha256(content),
-                "content_base64": base64.b64encode(content).decode("ascii"),
-            }
-        )
-    if not files:
-        raise CutoverEvidenceError(
-            "sealed_source_tree_empty",
-            "source snapshot contains no regular files",
-        )
-    tree_material = [
-        {
-            "relative_path": str(item["relative_path"]),
-            "content_digest": str(item["content_digest"]),
-            "size_bytes": int(item["size_bytes"]),
-        }
-        for item in files
-    ]
-    actual_source_tree_digest = _source_tree_digest(tree_material)
-    if actual_source_tree_digest != expected_source_tree_digest:
-        raise CutoverEvidenceError(
-            "sealed_source_tree_digest_mismatch",
-            "source snapshot files do not reproduce the catalog tree digest",
-            details={
-                "expected": expected_source_tree_digest,
-                "actual": actual_source_tree_digest,
-            },
-        )
-    envelope = {
-        "schema_id": SEALED_SOURCE_TREE_SCHEMA_ID,
-        "source_tree_digest": actual_source_tree_digest,
-        "files": files,
-    }
-    return canonical_json_bytes(envelope) + b"\n"
 
 
 def verify_sealed_source_tree_envelope(
@@ -1610,62 +1393,6 @@ def assert_formal_campaign_root(campaign_root: Path) -> None:
         )
 
 
-def initialize_diagnostic_root(
-    diagnostic_root: Path,
-    *,
-    root_namespace: str,
-    plan_digest: str,
-    diagnostic_id: str,
-) -> dict[str, Any]:
-    requested = diagnostic_root.expanduser()
-    parent = requested.parent
-    parent_in_diagnostic_namespace = any(
-        (candidate / DIAGNOSTIC_ROOT_MARKER_FILENAME).exists()
-        or (candidate / DIAGNOSTIC_ROOT_MARKER_FILENAME).is_symlink()
-        for candidate in (parent, *parent.parents)
-    )
-    if (
-        requested.name != root_namespace
-        or not root_namespace.startswith(
-            DIAGNOSTIC_RUN_POLICY.root_namespace_prefix or ""
-        )
-        or requested.exists()
-        or requested.is_symlink()
-        or not parent.is_dir()
-        or parent.is_symlink()
-        or parent_in_diagnostic_namespace
-    ):
-        raise CutoverEvidenceError(
-            "diagnostic_root_target_invalid",
-            "diagnostic root must be its exact fresh plan-bound namespace",
-            details={"expected_name": root_namespace},
-        )
-    try:
-        requested.mkdir(mode=0o700)
-    except FileExistsError as exc:
-        raise CutoverEvidenceError(
-            "diagnostic_root_target_invalid",
-            "diagnostic root must remain absent until authority consumption",
-            details={"expected_name": root_namespace},
-        ) from exc
-    marker_payload = {
-        "schema_id": DIAGNOSTIC_ROOT_MARKER_SCHEMA_ID,
-        "run_class": AoxLiveRunClass.DIAGNOSTIC.value,
-        "acceptance_eligible": False,
-        "diagnostic_id": diagnostic_id,
-        "root_namespace": root_namespace,
-        "plan_digest": plan_digest,
-        "created_at": datetime.now(UTC).isoformat(),
-    }
-    _write_append_only_bytes(
-        requested / DIAGNOSTIC_ROOT_MARKER_FILENAME,
-        canonical_json_bytes(marker_payload) + b"\n",
-        error_code="diagnostic_root_marker_append_only",
-        error_message="diagnostic root marker already exists",
-    )
-    return marker_payload
-
-
 def create_blank_world_roots(
     campaign_root: Path,
     *,
@@ -1898,100 +1625,6 @@ def safe_micu_ledger_snapshot(path: Path) -> dict[str, Any]:
     _validate_ledger_snapshot(summary, snapshot_name="snapshot")
     _assert_public_safe(summary, identity="micu_ledger_snapshot")
     return summary
-
-
-def _assemble_attempt_bundle_payload(
-    *,
-    attempt_id: str,
-    attempt_kind: str,
-    identity: Mapping[str, object],
-    clean_world: Mapping[str, object],
-    ledger_before: Mapping[str, object],
-    ledger_after: Mapping[str, object],
-    artifact_root: Path,
-    evidence: Mapping[str, object],
-    sealed_at: str | None = None,
-) -> dict[str, Any]:
-    normalized_identity = _normalize_identity(identity)
-    before = dict(ledger_before)
-    after = dict(ledger_after)
-    _validate_ledger_transition(before, after)
-    payload: dict[str, Any] = {
-        "schema_id": ATTEMPT_BUNDLE_SCHEMA_ID,
-        "attempt_id": attempt_id,
-        "attempt_kind": attempt_kind,
-        "sealed_at": sealed_at or datetime.now(UTC).isoformat(),
-        "identity": {
-            **normalized_identity,
-            "identity_digest": canonical_digest(normalized_identity),
-        },
-        "clean_world": dict(clean_world),
-        "micu_ledger": {"before": before, "after": after},
-        "provider_identities": _list_of_dicts(evidence, "provider_identities"),
-        "engine_invocations": _list_of_dicts(evidence, "engine_invocations"),
-        "toolchain_identities": _list_of_dicts(evidence, "toolchain_identities"),
-        "known_positive_probe": dict(evidence.get("known_positive_probe") or {}),
-        "product_path": dict(evidence.get("product_path") or {}),
-        "approvals": _list_of_dicts(evidence, "approvals"),
-        "operations": _list_of_dicts(evidence, "operations"),
-        "tasks": _list_of_dicts(evidence, "tasks"),
-        "artifacts": _list_of_dicts(evidence, "artifacts"),
-        "report": dict(evidence.get("report") or {}),
-        "final_answer": dict(evidence.get("final_answer") or {}),
-        "scientific_checks": dict(evidence.get("scientific_checks") or {}),
-        "warnings": list(evidence.get("warnings") or []),
-        "degradations": list(evidence.get("degradations") or []),
-        "scientific_outcome": dict(evidence.get("scientific_outcome") or {}),
-        "fault_injection": (
-            None
-            if evidence.get("fault_injection") is None
-            else dict(evidence.get("fault_injection") or {})
-        ),
-    }
-    _normalize_artifacts(payload, artifact_root=artifact_root)
-    _normalize_record_digests(payload)
-    return payload
-
-
-def build_attempt_bundle(
-    *,
-    attempt_id: str,
-    attempt_kind: str,
-    identity: Mapping[str, object],
-    clean_world: Mapping[str, object],
-    ledger_before: Mapping[str, object],
-    ledger_after: Mapping[str, object],
-    artifact_root: Path,
-    evidence: Mapping[str, object],
-    sealed_at: str | None = None,
-) -> dict[str, Any]:
-    payload = _assemble_attempt_bundle_payload(
-        attempt_id=attempt_id,
-        attempt_kind=attempt_kind,
-        identity=identity,
-        clean_world=clean_world,
-        ledger_before=ledger_before,
-        ledger_after=ledger_after,
-        artifact_root=artifact_root,
-        evidence=evidence,
-        sealed_at=sealed_at,
-    )
-    _validate_attempt_semantics(payload, artifact_root=artifact_root)
-    _assert_public_safe(payload, identity="attempt_bundle")
-    return payload
-
-
-def seal_attempt_bundle(payload: Mapping[str, object], destination: Path) -> str:
-    normalized = dict(payload)
-    bundle_digest = canonical_digest(normalized)
-    envelope = {"payload": normalized, "bundle_digest": bundle_digest}
-    _write_append_only_bytes(
-        destination,
-        canonical_json_bytes(envelope) + b"\n",
-        error_code="attempt_bundle_append_only",
-        error_message="attempt bundle already exists and cannot be overwritten",
-    )
-    return bundle_digest
 
 
 def seal_campaign_decision(
@@ -2298,42 +1931,6 @@ def verify_attempt_bundle(
     )
 
 
-def inject_artifact_byte_flip(
-    artifact_root: Path,
-    *,
-    relative_path: str,
-    byte_offset: int = 0,
-) -> dict[str, Any]:
-    target = _resolve_artifact_path(artifact_root, relative_path)
-    content = target.read_bytes()
-    if not content:
-        raise CutoverEvidenceError(
-            "fault_target_empty",
-            "byte-flip fault target must be a non-empty sealed artifact",
-            details={"relative_path": relative_path},
-        )
-    if byte_offset < 0 or byte_offset >= len(content):
-        raise CutoverEvidenceError(
-            "fault_offset_invalid",
-            "byte-flip offset is outside the target artifact",
-            details={"byte_offset": byte_offset, "size_bytes": len(content)},
-        )
-    before_digest = _sha256(content)
-    mutated = bytearray(content)
-    mutated[byte_offset] ^= 1
-    target.chmod(0o600)
-    target.write_bytes(bytes(mutated))
-    target.chmod(0o444)
-    return {
-        "fault_id": FAULT_ARTIFACT_BYTE_FLIP_ID,
-        "relative_path": relative_path,
-        "byte_offset": byte_offset,
-        "before_digest": before_digest,
-        "after_digest": _sha256(bytes(mutated)),
-        "reached_target_seam": True,
-    }
-
-
 def _report_publish_receipt_is_valid(report: Mapping[str, Any]) -> bool:
     from openzyme_core import is_published_report_link
     from openzyme_core import is_published_report_status
@@ -2474,6 +2071,19 @@ def evaluate_campaign(
     *,
     decided_at: str | None = None,
 ) -> dict[str, Any]:
+    if any(
+        _read_bundle_payload(record.bundle_path).get("bundle_profile")
+        == "aox_public_conductor_bundle@1"
+        for record in records
+    ):
+        from .aox_public_conductor_bundle import (
+            evaluate_public_conductor_campaign,
+        )
+
+        return evaluate_public_conductor_campaign(
+            records,
+            decided_at=decided_at,
+        )
     blockers: list[dict[str, str]] = []
     expected_kinds = ("positive", "positive", "fault")
     payloads: list[dict[str, Any] | None] = []
@@ -2827,85 +2437,6 @@ def _normalize_identity(identity: Mapping[str, object]) -> dict[str, str]:
     return normalized
 
 
-def _normalize_artifacts(payload: dict[str, Any], *, artifact_root: Path) -> None:
-    artifacts = list(payload["artifacts"])
-    seen_ids: set[str] = set()
-    normalized: list[dict[str, Any]] = []
-    for index, raw in enumerate(artifacts):
-        record = dict(raw)
-        artifact_id = str(record.get("artifact_id") or "").strip()
-        relative_path = str(record.get("relative_path") or "").strip()
-        if not artifact_id or artifact_id in seen_ids:
-            raise CutoverEvidenceError(
-                "artifact_identity_invalid",
-                "artifact ids must be non-empty and unique",
-                details={"identity": f"artifacts[{index}]"},
-            )
-        seen_ids.add(artifact_id)
-        path = _resolve_artifact_path(artifact_root, relative_path)
-        if not path.is_file() or path.is_symlink():
-            raise CutoverEvidenceError(
-                "artifact_file_invalid",
-                "attempt bundle artifacts must be sealed regular files",
-                details={"identity": artifact_id},
-            )
-        provenance = dict(record.get("provenance") or {})
-        record["artifact_id"] = artifact_id
-        record["relative_path"] = PurePosixPath(relative_path).as_posix()
-        record["scope"] = str(record.get("scope") or "formal")
-        record["origin"] = str(record.get("origin") or "operation")
-        record["size_bytes"] = path.stat().st_size
-        record["content_digest"] = _sha256(path.read_bytes())
-        record["provenance"] = provenance
-        record["provenance_digest"] = canonical_digest(provenance)
-        normalized.append(record)
-    payload["artifacts"] = sorted(normalized, key=lambda item: item["artifact_id"])
-
-
-def _normalize_record_digests(payload: dict[str, Any]) -> None:
-    for collection, identity_key, digest_key in (
-        ("provider_identities", "provider_record_id", "record_digest"),
-        ("engine_invocations", "invocation_id", "record_digest"),
-        ("toolchain_identities", "toolchain_record_id", "record_digest"),
-        ("approvals", "approval_id", "record_digest"),
-        ("operations", "operation_id", "record_digest"),
-        ("tasks", "task_id", "record_digest"),
-    ):
-        records = []
-        seen_identities: set[str] = set()
-        for raw in payload[collection]:
-            record = dict(raw)
-            record_identity = str(record.get(identity_key) or "").strip()
-            if not record_identity or record_identity in seen_identities:
-                raise CutoverEvidenceError(
-                    "record_identity_invalid",
-                    f"{collection} records require unique non-empty {identity_key}",
-                    details={"identity": collection},
-                )
-            seen_identities.add(record_identity)
-            digest_payload = {
-                key: value for key, value in record.items() if key != digest_key
-            }
-            record[digest_key] = canonical_digest(digest_payload)
-            records.append(record)
-        payload[collection] = sorted(records, key=lambda item: str(item[identity_key]))
-    probe = dict(payload["known_positive_probe"])
-    probe.setdefault("schema_id", KNOWN_POSITIVE_PROBE_SCHEMA_ID)
-    probe["record_digest"] = canonical_digest(
-        {key: value for key, value in probe.items() if key != "record_digest"}
-    )
-    payload["known_positive_probe"] = probe
-    report = dict(payload["report"])
-    report["record_digest"] = canonical_digest(
-        {key: value for key, value in report.items() if key != "record_digest"}
-    )
-    payload["report"] = report
-    final_answer = dict(payload["final_answer"])
-    content = str(final_answer.get("content") or "")
-    final_answer["content_digest"] = _sha256(content.encode("utf-8"))
-    payload["final_answer"] = final_answer
-
-
 def _validate_clean_world_proof(payload: Mapping[str, Any]) -> None:
     clean_world = dict(payload.get("clean_world") or {})
     expected_root_names = {
@@ -3027,16 +2558,17 @@ def _validate_effective_config_attestation(payload: Mapping[str, Any]) -> None:
             "sealed effective configuration is not in canonical normalized form",
             details={"identity": "product_path.launch_receipt.effective_config"},
         )
+    # Observer-era @3 remains read-only verifiable with its sealed @3 runtime
+    # preimage. Current @4 production bundles dispatch to the public-conductor
+    # verifier before reaching this historical compatibility path.
     if (
         payload.get("schema_id") == ATTEMPT_BUNDLE_SCHEMA_ID_V3
-        and config.get("schema_id") != AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID
+        and payload.get("bundle_profile") is None
+        and config.get("schema_id") != AOX_BLANK_WORLD_RUNTIME_CONFIG_V3_SCHEMA_ID
     ):
         raise CutoverEvidenceError(
             "effective_config_attestation_invalid",
-            (
-                "new selected-chain evidence requires the active runtime "
-                "configuration contract"
-            ),
+            "observer-era @3 evidence requires its exact historical @3 config",
             details={"identity": "product_path.launch_receipt.effective_config"},
         )
     config_digest = canonical_digest(config)
@@ -4594,16 +4126,37 @@ def _public_api_route_is_canonical(method: str, route: str) -> bool:
             return False
         return (
             method == "GET"
-            and segments[3] in {"workspace", "events", "pending-approvals"}
+            and segments[3]
+            in {
+                "workspace",
+                "events",
+                "pending-approvals",
+                "scientific-attempts",
+            }
         ) or (
             method == "POST"
-            and segments[3] in {"messages", "scientific-attempt-authorizations"}
+            and segments[3]
+            in {
+                "messages",
+                "scientific-attempt-authorizations",
+                "scientific-attempt-commands",
+            }
         )
     if len(segments) == 5 and segments[:2] == ["v3", "sessions"]:
-        return (
+        return bool(
             _ATTEMPT_ID_PATTERN.fullmatch(segments[2]) is not None
-            and method == "POST"
-            and segments[3:] == ["runtime", "drain"]
+            and (
+                (method == "POST" and segments[3:] == ["runtime", "drain"])
+                or (
+                    method == "POST"
+                    and segments[3]
+                    in {
+                        "scientific-attempt-admissions",
+                        "scientific-attempt-closures",
+                    }
+                    and segments[4] == "finalize"
+                )
+            )
         )
     if len(segments) == 6 and segments[:2] == ["v3", "sessions"]:
         return (
@@ -4617,6 +4170,16 @@ def _public_api_route_is_canonical(method: str, route: str) -> bool:
             _ATTEMPT_ID_PATTERN.fullmatch(segments[2]) is not None
             and method == "POST"
             and segments[3] == "resolve"
+        )
+    if len(segments) == 8 and segments[:2] == ["v3", "sessions"]:
+        return bool(
+            method == "GET"
+            and _ATTEMPT_ID_PATTERN.fullmatch(segments[2]) is not None
+            and segments[3] == "scientific-attempts"
+            and segments[4]
+            and segments[5] == "selections"
+            and segments[6]
+            and segments[7] == "evidence"
         )
     return False
 
@@ -6231,16 +5794,41 @@ def _validate_attempt_semantics(
     supervision_required = (
         kind == "positive" and outcome_for_config.get("cutover_eligible") is True
     ) or (kind == "fault" and fault_for_config.get("reached_target_seam") is True)
-    if supervision_required or supervision_receipt is not None:
-        from .aox_attempt_supervision import DEFAULT_KILL_GRACE_SECONDS
-        from .aox_attempt_supervision import DEFAULT_TERM_GRACE_SECONDS
-        from .aox_attempt_supervision import (
+    from .aox_host_supervision import HOST_SUPERVISION_RECEIPT_SCHEMA_ID
+    from .aox_host_supervision import validate_supervised_host_receipt
+
+    supervised_host_receipt = bool(
+        isinstance(supervision_receipt, Mapping)
+        and supervision_receipt.get("schema_id")
+        == HOST_SUPERVISION_RECEIPT_SCHEMA_ID
+    )
+    if supervised_host_receipt:
+        assert isinstance(supervision_receipt, Mapping)
+        validate_supervised_host_receipt(
+            dict(supervision_receipt),
+            attempt_id=str(payload.get("attempt_id") or ""),
+            attempt_kind=str(kind),
+            attempt_authority_id=str(
+                supervision_receipt.get("attempt_authority_id") or ""
+            ),
+            attempt_authority_request_digest=str(
+                supervision_receipt.get("attempt_authority_request_digest") or ""
+            ),
+        )
+    if (supervision_required or supervision_receipt is not None) and not (
+        supervised_host_receipt
+    ):
+        from .aox_legacy_supervision_receipt import DEFAULT_KILL_GRACE_SECONDS
+        from .aox_legacy_supervision_receipt import DEFAULT_TERM_GRACE_SECONDS
+        from .aox_legacy_supervision_receipt import (
             derive_live_attempt_supervision_timeout_seconds,
         )
-        from .aox_attempt_supervision import SUPERVISION_SCHEMA_ID
-        from .aox_attempt_supervision import SUPERVISION_SCHEMA_ID_V1
-        from .aox_attempt_supervision import supervision_contract_digest
-        from .aox_attempt_supervision import validate_attempt_supervision_receipt
+        from .aox_legacy_supervision_receipt import SUPERVISION_SCHEMA_ID
+        from .aox_legacy_supervision_receipt import SUPERVISION_SCHEMA_ID_V1
+        from .aox_legacy_supervision_receipt import supervision_contract_digest
+        from .aox_legacy_supervision_receipt import (
+            validate_attempt_supervision_receipt,
+        )
 
         expected_supervision_contract_digest: str | None = None
         if supervision_required:
@@ -11253,16 +10841,6 @@ def _assert_public_safe(payload: object, *, identity: str) -> None:
             )
 
 
-def assert_public_safe_payload(
-    payload: object,
-    *,
-    identity: str = "public_payload",
-) -> None:
-    """Reject private locators, credentials, and Host paths without rewriting."""
-
-    _assert_public_safe(payload, identity=identity)
-
-
 def _preloaded_science(root: Path) -> list[str]:
     if not root.is_dir():
         return [root.name]
@@ -11291,19 +10869,6 @@ def _reject_non_finite(payload: object, *, identity: str) -> None:
     elif isinstance(payload, (list, tuple)):
         for index, value in enumerate(payload):
             _reject_non_finite(value, identity=f"{identity}[{index}]")
-
-
-def _list_of_dicts(mapping: Mapping[str, object], key: str) -> list[dict[str, Any]]:
-    values = mapping.get(key) or []
-    if not isinstance(values, list) or not all(
-        isinstance(value, dict) for value in values
-    ):
-        raise CutoverEvidenceError(
-            "bundle_collection_invalid",
-            f"{key} must be an array of objects",
-            details={"identity": key},
-        )
-    return [dict(value) for value in values]
 
 
 def _read_bundle_payload(path: Path) -> dict[str, Any]:
@@ -11385,31 +10950,24 @@ __all__ = [
     "ATTEMPT_BUNDLE_SCHEMA_ID",
     "ATTEMPT_BUNDLE_SCHEMA_ID_V2",
     "ATTEMPT_BUNDLE_SCHEMA_ID_V3",
-    "AttemptRunContext",
     "AttemptRunRecord",
     "BlankWorldRoots",
     "BLANK_WORLD_ROOT_PROOF_SCHEMA_ID",
     "CAMPAIGN_DECISION_SCHEMA_ID",
     "canonical_digest",
     "canonical_json_bytes",
-    "build_attempt_bundle",
     "create_blank_world_roots",
     "CutoverEvidenceError",
     "evaluate_campaign",
     "FAULT_ARTIFACT_BYTE_FLIP_ID",
     "FORMAL_DELEGATION_REQUEST_SCHEMA_ID",
-    "inject_artifact_byte_flip",
     "KNOWN_POSITIVE_PROBE_SCHEMA_ID",
-    "project_formal_delegation_request",
     "safe_micu_ledger_snapshot",
     "SEALED_SOURCE_TREE_SCHEMA_ID",
-    "seal_source_tree_envelope",
     "seal_campaign_decision",
-    "seal_attempt_bundle",
     "VerificationIssue",
     "VerificationResult",
     "TYPED_EMPTY_ARTIFACT_VALIDATION_SCHEMA_ID",
-    "typed_empty_artifact_validation_receipt",
     "verify_sealed_source_tree_envelope",
     "verify_attempt_bundle",
 ]

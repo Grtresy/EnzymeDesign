@@ -2408,10 +2408,18 @@ class ScientificAttemptService:
     def export_closed_attempt_evidence(
         self,
         attempt_id: str,
+        *,
+        session_id: str,
+        selection_id: str,
     ) -> dict[str, Any]:
-        """Export the exact closed control-plane evidence without private targets."""
+        """Export one exact session-bound closed selection without private targets."""
 
         attempt = self._require_attempt(attempt_id)
+        if attempt.session_id != session_id:
+            raise ScientificAttemptError(
+                "attempt_evidence_session_mismatch",
+                "scientific attempt evidence is not bound to this session",
+            )
         lifecycle = self._resolve_attempt_lifecycle(attempt)
         authority = self.repositories.scientific_attempt_authorizations.get(
             attempt.envelope_id
@@ -2431,6 +2439,7 @@ class ScientificAttemptService:
             or closure_request is None
             or selection is None
             or selection.state is not ScientificSelectionState.SEALED
+            or selection.selection_id != selection_id
             or closure.selection_id != selection.selection_id
         ):
             raise ScientificAttemptError(

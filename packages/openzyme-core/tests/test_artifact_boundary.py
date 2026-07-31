@@ -332,6 +332,52 @@ def test_materialize_copies_authorized_artifact_into_workspace_input(tmp_path: P
     assert conflict.value.error_code == "artifact_materialization_conflict"
 
 
+def test_read_sealed_file_is_session_bound_bounded_and_digest_verified(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, _, workspace_root = _seed_workspace(repositories, tmp_path)
+    artifact = _save_input_artifact(
+        repositories,
+        tmp_path,
+        session_id=session.session_id,
+    )
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        blob_store_root=tmp_path / "blobs",
+    )
+
+    content, digest = service.read_sealed_file(
+        session_id=session.session_id,
+        artifact_id=artifact.artifact_id,
+    )
+    assert content == b">seq\nMSEQ\n"
+    assert digest == _digest(">seq\nMSEQ\n")
+
+    with pytest.raises(ArtifactBoundaryError) as scope_error:
+        service.read_sealed_file(
+            session_id="sess_other",
+            artifact_id=artifact.artifact_id,
+        )
+    assert scope_error.value.error_code == "artifact_scope_forbidden"
+    with pytest.raises(ArtifactBoundaryError) as bound_error:
+        service.read_sealed_file(
+            session_id=session.session_id,
+            artifact_id=artifact.artifact_id,
+            max_bytes=1,
+        )
+    assert bound_error.value.error_code == "artifact_export_too_large"
+
+    Path(artifact.storage_uri).write_text(">seq\nTAMPERED\n", encoding="utf-8")
+    with pytest.raises(ArtifactBoundaryError) as digest_error:
+        service.read_sealed_file(
+            session_id=session.session_id,
+            artifact_id=artifact.artifact_id,
+        )
+    assert digest_error.value.error_code == "artifact_blob_digest_mismatch"
+
+
 def test_materialize_rejects_cross_session_artifact_and_escape_target(tmp_path: Path) -> None:
     repositories = _build_repositories()
     session, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
