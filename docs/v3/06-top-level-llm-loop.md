@@ -351,3 +351,16 @@ source-bound finalization receipt。后续 `scientific.attempt.close`、executio
 validation failure 会作为 model-readable no-effect observation 返回。runtime idle、drain
 terminal、sandbox success、17 个可见路径或 healthy-empty prose 都不自动生成 receipt、
 业务完成、报告、closure 或终答。
+
+AOX formal runtime 对 exact selected attempt 的 controlled-operation no-effect failure 与
+sandbox-local `hpc_stage_ref_required -> sandbox_exec_nonzero` chain 使用同一观察合同。
+绑定的 task 仍为 business-nonterminal 且 canonical owner handoff 闭合时，失败只作为
+replan evidence；probe、unsafe/unknown effect、retryable/dispatch-in-doubt、binding drift
+或显式 task terminal failure 仍立即停止。
+
+driver 不维护 per-source one-shot consumption，也不通过 `max_signals_override` 临时扩大
+command。每次 drain 固定 `max_signals=1`；existing owner wake 与后续 selected-chain work
+在普通 bounded commands 中推进。immutable closure 出现后，同一 selected chain 的 exact
+disposed safe history 不再 poisoning terminal observation，但 task/report/closure 仍须完整。
+若 work 未闭合且不存在 wake source，沿用两次相同 replay-safe zero-signal observation
+有限失败。

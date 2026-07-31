@@ -39,6 +39,9 @@ from openzyme_domain import ContinuationStateStatus
 from openzyme_domain import ContinuationDeliveryState
 from openzyme_domain import ContinuationResumeStrategy
 from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import FailureActorKind
+from openzyme_domain import FailureClass
+from openzyme_domain import FailureRecoverability
 from openzyme_domain import FileAuditEntry
 from openzyme_domain import MutationWriterKind
 from openzyme_domain import SandboxImageCompatibility
@@ -50,6 +53,7 @@ from openzyme_domain import RetryEligibility
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import immutable_source_tree_digest
 from openzyme_runtime import PodmanContainerLease
+from openzyme_runtime import record_failure_observation
 from openzyme_runtime import S12_ROUTE_POLICIES
 from openzyme_runtime import safe_public_machine_identifier
 from openzyme_runtime import sanitize_public_diagnostic_payload
@@ -1094,7 +1098,94 @@ class _ControlSocketServer:
                 "control socket only supports supervised sandbox calls",
             )
         except Exception as exc:
+            self._record_pre_admission_control_failure(
+                request=request,
+                params=dict(request.get("params") or {}),
+                exc=exc,
+            )
             return self._error_response(request_id=request.get("id"), exc=exc)
+
+    def _record_pre_admission_control_failure(
+        self,
+        *,
+        request: dict[str, Any],
+        params: dict[str, Any],
+        exc: Exception,
+    ) -> None:
+        """Seal the exact no-effect S12 validation cause before process exit.
+
+        This intentionally recognizes only the Host-owned stage-ref rejection.
+        Other exceptions may occur after admission or dispatch and therefore
+        cannot inherit a synthetic no-effect classification.
+        """
+
+        if (
+            str(request.get("method") or "") != "s10.controlled_operation"
+            or getattr(exc, "error_code", None) != "hpc_stage_ref_required"
+        ):
+            return
+        idempotency_key = str(params.get("idempotency_key") or "")
+        if not idempotency_key:
+            return
+        existing = self.repositories.controlled_operations.find_by_idempotency_key(
+            session_id=self.session_id,
+            sandbox_run_id=self.sandbox_run_id,
+            idempotency_key=idempotency_key,
+        )
+        if existing is not None:
+            return
+
+        request_digest = _json_digest(params)
+        request_id_digest = _json_digest(str(request.get("id") or ""))
+        record_failure_observation(
+            self.repositories,
+            session_id=self.session_id,
+            task_id=self.task_id,
+            lane_id=self.lane_id,
+            agent_id=self.agent_id,
+            source_kind="sandbox_control_request",
+            source_ref=self.sandbox_run_id,
+            source_version=f"request:{request_digest}",
+            phase="control_validation",
+            failure_class=FailureClass.VALIDATION,
+            recoverability=FailureRecoverability.AGENT_CAN_REPLAN,
+            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+            retry_eligibility=RetryEligibility.SAME_PHASE_SAFE,
+            actor_kind=FailureActorKind.HARNESS,
+            error_code="hpc_stage_ref_required",
+            safe_summary=(
+                "The Host rejected an HPC operation input before operation "
+                "admission because it was not an exact staged artifact reference."
+            ),
+            safe_hint=(
+                "Call ws.stage_artifact(...) for the exact artifact, then pass "
+                "the returned hpc_stage_ref object to the bio_tools operation."
+            ),
+            facts={
+                "schema_version": "sandbox_control_failure@1",
+                "sandbox_run_id": self.sandbox_run_id,
+                "sandbox_workspace_id": self.sandbox_workspace_id,
+                "source_snapshot_artifact_id": self.source_snapshot_artifact_id,
+                "source_tree_digest": self.source_tree_digest,
+                "originating_signal_id": self.originating_signal_id,
+                "originating_tool_call_id": self.originating_tool_call_id,
+                "originating_invocation_id": self.originating_invocation_id,
+                "method": "s10.controlled_operation",
+                "request_digest": request_digest,
+                "request_id_digest": request_id_digest,
+                "idempotency_key_digest": _json_digest(idempotency_key),
+                "sdk_module": str(params.get("sdk_module") or ""),
+                "function_name": str(params.get("function_name") or ""),
+                "operation_admitted": False,
+                "external_dispatch_started": False,
+                "sdk_retryable": False,
+            },
+            evidence_refs=(
+                f"sandbox-run:{self.sandbox_run_id}",
+                f"artifact:{self.source_snapshot_artifact_id}",
+            ),
+            private_diagnostic=exc,
+        )
 
     def _handle_transport_smoke(
         self, request: dict[str, Any], params: dict[str, Any]
@@ -2376,6 +2467,12 @@ class _ControlSocketServer:
                 raise SandboxRuntimeError(
                     "hpc_stage_ref_required",
                     "HPC route operations require S11 hpc_stage_ref entries",
+                    stage="host.controlled_operation.input_validation",
+                    retryable=False,
+                    hint=(
+                        "Stage the exact artifact with ws.stage_artifact(...) and "
+                        "pass the returned hpc_stage_ref object unchanged."
+                    ),
                 )
             if str(item.get("hpc_workspace_id") or "") != hpc_workspace_id:
                 raise SandboxRuntimeError(
@@ -2391,6 +2488,12 @@ class _ControlSocketServer:
                 raise SandboxRuntimeError(
                     "hpc_stage_ref_required",
                     "HPC stage refs must include stage_ref_id, artifact_id, and artifact_digest",
+                    stage="host.controlled_operation.input_validation",
+                    retryable=False,
+                    hint=(
+                        "Stage the exact artifact with ws.stage_artifact(...) and "
+                        "pass the returned hpc_stage_ref object unchanged."
+                    ),
                 )
             workspace_path = str(item.get("workspace_relative_path") or "")
             if workspace_path:
@@ -4184,6 +4287,7 @@ class SandboxRuntimeService:
             updated_at=ended_at,
         )
         self.repositories.sandbox_runs.save(finished)
+        self._record_terminal_run_failure(finished)
         if workspace is not None:
             self._refresh_workspace_summary(
                 workspace,
@@ -4213,6 +4317,169 @@ class SandboxRuntimeService:
                 },
             )
         return finished
+
+    def _record_terminal_run_failure(
+        self,
+        finished: SandboxRunRecord,
+    ) -> None:
+        if (
+            not finished.status.is_terminal
+            or finished.status is SandboxRunStatus.COMPLETED
+        ):
+            return
+
+        operations = self.repositories.controlled_operations.list_by_run(
+            finished.sandbox_run_id
+        )
+        admitted_idempotency_digests = {
+            _json_digest(operation.idempotency_key)
+            for operation in operations
+            if operation.idempotency_key
+        }
+        local_causes = [
+            failure
+            for failure in self.repositories.failure_observations.list_by_source(
+                session_id=finished.session_id,
+                source_kind="sandbox_control_request",
+                source_ref=finished.sandbox_run_id,
+            )
+            if (
+                failure.error_code == "hpc_stage_ref_required"
+                and failure.task_id == finished.task_id
+                and failure.lane_id == finished.lane_id
+                and failure.agent_id == finished.agent_id
+                and failure.failure_class is FailureClass.VALIDATION
+                and failure.recoverability
+                is FailureRecoverability.AGENT_CAN_REPLAN
+                and failure.effect_certainty is ExternalEffectCertainty.NO_EFFECT
+                and failure.retry_eligibility
+                is RetryEligibility.SAME_PHASE_SAFE
+                and dict(failure.facts).get("schema_version")
+                == "sandbox_control_failure@1"
+                and dict(failure.facts).get("sandbox_run_id")
+                == finished.sandbox_run_id
+                and dict(failure.facts).get("sandbox_workspace_id")
+                == finished.sandbox_workspace_id
+                and dict(failure.facts).get("source_snapshot_artifact_id")
+                == finished.source_snapshot_artifact_id
+                and dict(failure.facts).get("source_tree_digest")
+                == finished.source_tree_digest
+                and dict(failure.facts).get("operation_admitted") is False
+                and dict(failure.facts).get("external_dispatch_started") is False
+                and dict(failure.facts).get("idempotency_key_digest")
+                not in admitted_idempotency_digests
+            )
+        ]
+        exact_cause = (
+            local_causes[0]
+            if (
+                finished.error_code == "sandbox_exec_nonzero"
+                and len(local_causes) == 1
+            )
+            else None
+        )
+        owner_wake_continuation_ids = sorted(
+            continuation.continuation_id
+            for continuation in (
+                self.repositories.continuation_states.list_by_session(
+                    finished.session_id
+                )
+            )
+            if (
+                continuation.sandbox_run_id == finished.sandbox_run_id
+                and continuation.status is ContinuationStateStatus.COMPLETED
+                and continuation.originating_agent_id == finished.agent_id
+                and continuation.originating_task_id == finished.task_id
+                and continuation.originating_lane_id == finished.lane_id
+            )
+        )
+        terminal_material = {
+            "sandbox_run_id": finished.sandbox_run_id,
+            "sandbox_workspace_id": finished.sandbox_workspace_id,
+            "status": finished.status.value,
+            "error_code": finished.error_code,
+            "exit_code": finished.exit_code,
+            "argv_digest": finished.argv_digest,
+            "env_digest": finished.env_digest,
+            "source_snapshot_artifact_id": finished.source_snapshot_artifact_id,
+            "source_tree_digest": finished.source_tree_digest,
+            "ended_at": finished.ended_at,
+        }
+        local_cause_ids = sorted(failure.failure_id for failure in local_causes)
+        attempt_id = (
+            self.repositories.scientific_attempt_bindings.attempt_for_run(
+                finished.sandbox_run_id
+            )
+        )
+        record_failure_observation(
+            self.repositories,
+            session_id=finished.session_id,
+            task_id=finished.task_id,
+            lane_id=finished.lane_id,
+            agent_id=finished.agent_id,
+            source_kind="sandbox_run",
+            source_ref=finished.sandbox_run_id,
+            source_version=f"terminal:{_json_digest(terminal_material)}",
+            phase="sandbox_execution",
+            failure_class=FailureClass.RUNTIME,
+            recoverability=(
+                FailureRecoverability.AGENT_CAN_REPLAN
+                if exact_cause is not None
+                else FailureRecoverability.TERMINAL
+            ),
+            effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+            retry_eligibility=RetryEligibility.TERMINAL,
+            actor_kind=FailureActorKind.HARNESS,
+            error_code=finished.error_code or "sandbox_run_failed",
+            safe_summary=(
+                "The sandbox process reached a known terminal non-success exit."
+            ),
+            safe_hint=(
+                "Repair the exact staged-artifact input and choose a new bounded "
+                "sandbox execution; do not treat this run as completed."
+                if exact_cause is not None
+                else "Inspect the exact terminal run facts before choosing a replan."
+            ),
+            facts={
+                "schema_version": "sandbox_run_failure@1",
+                **terminal_material,
+                "task_id": finished.task_id,
+                "lane_id": finished.lane_id,
+                "agent_id": finished.agent_id,
+                "attempt_id": attempt_id,
+                "local_cause_count": len(local_causes),
+                "local_cause_ids_digest": _json_digest(local_cause_ids),
+                "causal_failure_id": (
+                    None if exact_cause is None else exact_cause.failure_id
+                ),
+                "causal_error_code": (
+                    None if exact_cause is None else exact_cause.error_code
+                ),
+                "causal_source_version": (
+                    None if exact_cause is None else exact_cause.source_version
+                ),
+                "owner_wake_continuation_ids": owner_wake_continuation_ids,
+                "controlled_operation_count": len(operations),
+            },
+            evidence_refs=tuple(
+                [
+                    f"sandbox-run:{finished.sandbox_run_id}",
+                    *(
+                        []
+                        if finished.source_snapshot_artifact_id is None
+                        else [
+                            "artifact:"
+                            f"{finished.source_snapshot_artifact_id}"
+                        ]
+                    ),
+                    *(
+                        []
+                        if exact_cause is None
+                        else [f"failure:{exact_cause.failure_id}"]
+                    ),
+                ]
+            ),
+        )
 
     def _write_logs(
         self,
@@ -5347,6 +5614,69 @@ def _tool_error(invocation: ToolInvocation, exc: SandboxRuntimeError) -> ToolRes
     )
 
 
+def _terminal_sandbox_run_tool_result(
+    invocation: ToolInvocation,
+    run: SandboxRunRecord,
+    repositories: CoreRepositories,
+) -> ToolResult | None:
+    if run.status is SandboxRunStatus.COMPLETED:
+        return None
+    failures = repositories.failure_observations.list_by_source(
+        session_id=run.session_id,
+        source_kind="sandbox_run",
+        source_ref=run.sandbox_run_id,
+    )
+    exact = [
+        failure
+        for failure in failures
+        if (
+            failure.error_code == (run.error_code or "sandbox_run_failed")
+            and failure.task_id == run.task_id
+            and failure.lane_id == run.lane_id
+            and failure.agent_id == run.agent_id
+            and dict(failure.facts).get("schema_version")
+            == "sandbox_run_failure@1"
+        )
+    ]
+    if len(exact) != 1:
+        return _tool_error(
+            invocation,
+            SandboxRuntimeError(
+                "sandbox_run_failure_binding_invalid",
+                "terminal sandbox run lacks one exact typed failure observation",
+                details={"sandbox_run_id": run.sandbox_run_id},
+                retryable=False,
+            ),
+        )
+    failure = exact[0]
+    result = run.to_dict()
+    return ToolResult(
+        call_id=invocation.call_id,
+        tool_name=invocation.tool_name,
+        ok=False,
+        content=json.dumps(result, sort_keys=True),
+        task_id=invocation.task_id,
+        lane_id=invocation.lane_id,
+        status=run.status.value,
+        summary=failure.safe_summary,
+        error_code=failure.error_code,
+        hint=failure.safe_hint,
+        details={
+            "sandbox_run_id": run.sandbox_run_id,
+            "status": run.status.value,
+            "exit_code": run.exit_code,
+            "error_code": failure.error_code,
+            "recoverability": failure.recoverability.value,
+            "effect_certainty": failure.effect_certainty.value,
+            "retry_eligibility": failure.retry_eligibility.value,
+            "causal_failure_id": dict(failure.facts).get(
+                "causal_failure_id"
+            ),
+        },
+        failure_observation=failure.to_dict(),
+    )
+
+
 def register_sandbox_runtime_tools(
     registry: ToolRegistry,
     *,
@@ -5536,6 +5866,13 @@ def register_sandbox_runtime_tools(
                 terminal_action="runtime_suspended",
                 terminates_turn=True,
             )
+        failed_result = _terminal_sandbox_run_tool_result(
+            invocation,
+            run,
+            context.repositories,
+        )
+        if failed_result is not None:
+            return failed_result
         return _tool_success(
             invocation,
             result,

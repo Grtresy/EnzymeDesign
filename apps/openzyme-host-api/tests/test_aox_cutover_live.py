@@ -23,6 +23,7 @@ import pytest
 
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
+from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import ArtifactKind
@@ -7368,19 +7369,20 @@ def test_r64_historical_sqlite_preserves_typed_operation_and_exact_handoff(
     observation = AoxRuntimeObservationService(reopened).observe_session(
         session_id=session.session_id,
         purpose="formal",
+        formal_attempt_id=attempt.attempt_id,
     )
-    authority_projection = {
-        "attempt_id": attempt.attempt_id,
-        "session_id": session.session_id,
-        "task_id": task.task_id,
-        "lane_id": lane.lane_id,
-        "scope": "formal",
-    }
+    probe_observation = AoxRuntimeObservationService(reopened).observe_session(
+        session_id=session.session_id,
+        purpose="probe",
+    )
 
-    assert observation.state == "failed"
-    assert observation.blocker_code == "transport_connect_failed"
-    assert observation.causal_failure is not None
-    assert observation.causal_failure["effect_certainty"] == "no_effect"
+    assert observation.state == "incomplete"
+    assert observation.blocker_code is None
+    assert observation.causal_failure is None
+    assert probe_observation.state == "failed"
+    assert probe_observation.blocker_code == "transport_connect_failed"
+    assert probe_observation.causal_failure is not None
+    assert probe_observation.causal_failure["effect_certainty"] == "no_effect"
     assert observation.operation_fact_count == 1
     assert observation.operation_facts_digest.startswith("sha256:")
     operation_fact = observation.operation_facts[0]
@@ -7388,16 +7390,7 @@ def test_r64_historical_sqlite_preserves_typed_operation_and_exact_handoff(
     assert operation_fact["attempt_id"] == attempt.attempt_id
     assert operation_fact["execution_error_code"] == "transport_connect_failed"
     assert operation_fact["effect_certainty"] == "no_effect"
-    assert (
-        live.LiveAoxAttemptRunner._recoverable_controlled_operation_handoff_source(
-            reopened,
-            session_id=session.session_id,
-            purpose="formal",
-            attempt_authority=authority_projection,
-            observation=observation,
-        )
-        == continuation.continuation_id
-    )
+    assert probe_observation.operation_facts[0]["scope"] == "probe"
 
     with reopened.write() as scope:
         repositories = scope.repositories
@@ -7407,22 +7400,25 @@ def test_r64_historical_sqlite_preserves_typed_operation_and_exact_handoff(
             owner_ref="fixture:r64-replayed-signal",
         ):
             repositories.runtime_signals.save(
-                replace(signal, attempt_count=1)
+                replace(
+                    signal,
+                    status=AgentRuntimeSignalStatus.COMPLETED,
+                    attempt_count=1,
+                    completed_at=now,
+                )
             )
 
-    assert (
-        live.LiveAoxAttemptRunner._recoverable_controlled_operation_handoff_source(
-            reopened,
-            session_id=session.session_id,
-            purpose="formal",
-            attempt_authority=authority_projection,
-            observation=observation,
-        )
-        is None
+    replayed = AoxRuntimeObservationService(reopened).observe_session(
+        session_id=session.session_id,
+        purpose="formal",
+        formal_attempt_id=attempt.attempt_id,
     )
+    assert replayed.state == "incomplete"
+    assert replayed.blocker_code is None
+    assert replayed.causal_failure is None
 
 
-def test_recoverable_controlled_failure_consumes_only_one_later_drain(
+def test_runtime_driver_uses_uniform_bounded_drains_without_failure_handoff(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7432,8 +7428,6 @@ def test_recoverable_controlled_failure_consumes_only_one_later_drain(
         max_drains=4,
     )
     drain_numbers: list[int] = []
-    drain_signal_limits: list[int | None] = []
-    handoff_checks: list[int] = []
 
     class Api:
         @staticmethod
@@ -7455,7 +7449,7 @@ def test_recoverable_controlled_failure_consumes_only_one_later_drain(
     def coordinate(self, _api, _provider, **kwargs):  # type: ignore[no-untyped-def]
         del self
         drain_numbers.append(int(kwargs["drain_number"]))
-        drain_signal_limits.append(kwargs["max_signals_override"])
+        assert "max_signals_override" not in kwargs
         return live._DrainCoordinationResult(
             workspace={},
             workspace_response_binding={},
@@ -7464,7 +7458,7 @@ def test_recoverable_controlled_failure_consumes_only_one_later_drain(
             fault_receipt=None,
         )
 
-    observation = SimpleNamespace(
+    failed_observation = SimpleNamespace(
         state="failed",
         blocker_code="transport_connect_failed",
         wrapper_code=None,
@@ -7482,6 +7476,18 @@ def test_recoverable_controlled_failure_consumes_only_one_later_drain(
         operation_fact_count=0,
         operation_facts_digest=_digest("empty-operation-facts"),
         operation_facts_truncated=False,
+    )
+    observations = iter(
+        (
+            SimpleNamespace(
+                **{
+                    **vars(failed_observation),
+                    "state": "incomplete",
+                    "blocker_code": None,
+                }
+            ),
+            failed_observation,
+        )
     )
 
     monkeypatch.setattr(
@@ -7502,17 +7508,7 @@ def test_recoverable_controlled_failure_consumes_only_one_later_drain(
     monkeypatch.setattr(
         live.LiveAoxAttemptRunner,
         "_observe_session_runtime",
-        lambda *_args, **_kwargs: observation,
-    )
-
-    def handoff(*_args, **_kwargs):  # type: ignore[no-untyped-def]
-        handoff_checks.append(1)
-        return "srun_r64:op_r64_hmmalign"
-
-    monkeypatch.setattr(
-        live.LiveAoxAttemptRunner,
-        "_recoverable_controlled_operation_handoff_source",
-        staticmethod(handoff),
+        lambda *_args, **_kwargs: next(observations),
     )
 
     result, fault = runner._run_session_scoped(
@@ -7538,8 +7534,7 @@ def test_recoverable_controlled_failure_consumes_only_one_later_drain(
     assert result.blocker_code == "transport_connect_failed"
     assert result.drain_count == 2
     assert drain_numbers == [1, 2]
-    assert drain_signal_limits == [None, 1]
-    assert handoff_checks == [1]
+    assert runner.max_signals_per_drain == 1
 
 
 def test_failure_operation_projection_merges_probe_and_formal_canonical_facts() -> (

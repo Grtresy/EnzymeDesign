@@ -456,3 +456,17 @@ actionable failure，返回 `formal_agent_recovery_unresolved`；否则返回
 都会重置确认，generic max-drains 仍保留为其他未收敛路径的最终 finite bound。前一个 error
 code 是历史 AOX diagnostic 名称，只表示“ready work 仍绑定 failure facts”，不指向已删除的
 turn recovery obligation 或 synthetic wakeup。
+
+## 11. Sandbox terminal wake facts
+
+`sandbox.exec` 的 non-completed run 必须返回 failed ToolResult，不能把 process exit
+包装成 success。若 terminal run 的唯一 Host-local pre-admission cause 是 exact
+`hpc_stage_ref_required/no_effect`，run observation 以
+`sandbox_exec_nonzero/agent_can_replan/terminal_known` source-bound wrapper 引用它。
+
+`ENGINE_COMPLETED` signal claim 时，canonical wake-facts projector 从 signal source
+continuation、SandboxRun、run-attempt binding、wrapper 与 local cause 重建一个 bounded
+ephemeral fact set。session/task/lane/agent/workspace/source tree、origin signal、
+continuation、attempt、request/idempotency digest 或 cause cardinality 任一漂移均 fail
+closed。该 projection 只呈现已发生的 no-effect failure，不创建 recovery work、retry
+operation 或规定 agent 下一步。

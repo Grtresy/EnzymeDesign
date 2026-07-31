@@ -5,7 +5,6 @@ from typing import Any
 import pytest
 
 from openzyme_pipeline import bio_tools
-from openzyme_pipeline.client import PipelineSdkError
 from openzyme_pipeline.hpc import HpcWorkspace
 
 
@@ -71,7 +70,7 @@ def test_mafft_binds_exact_hpc_stage_ref(monkeypatch: pytest.MonkeyPatch) -> Non
     assert envelope["input_artifact_digests"] == [ARTIFACT_DIGEST]
 
 
-def test_mafft_rejects_handwritten_artifact_ref_before_host_rpc(
+def test_mafft_forwards_handwritten_artifact_ref_for_host_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured = _capture_controlled_operation(monkeypatch)
@@ -81,50 +80,42 @@ def test_mafft_rejects_handwritten_artifact_ref_before_host_rpc(
         "workspace_path": "aox_hmm/AOX_ref21.fasta",
     }
 
-    with pytest.raises(PipelineSdkError) as exc_info:
-        bio_tools.mafft(
-            input_fasta=handwritten_ref,
-            placement=_workspace(),
-            expected_outputs=[
-                {"path": "bio_tools/mafft/alignment.fasta", "format": "fasta"}
-            ],
-        )
+    result = bio_tools.mafft(
+        input_fasta=handwritten_ref,
+        placement=_workspace(),
+        expected_outputs=[
+            {"path": "bio_tools/mafft/alignment.fasta", "format": "fasta"}
+        ],
+    )
 
-    error = exc_info.value
-    assert error.error_code == "hpc_stage_ref_required"
-    assert error.stage == "bio_tools.input_validation"
-    assert error.retryable is False
-    assert "exact object returned by ws.stage_artifact(...)" in error.message
-    assert "do not hand-write" in error.message
-    assert "error_code=hpc_stage_ref_required" in str(error)
-    assert "ws.stage_artifact(...)" in str(error)
-    assert error.hint is not None
-    assert "pass staged directly to bio_tools.mafft" in error.hint
-    assert error.details == {
-        "function_name": "mafft",
-        "input_index": 0,
-        "expected_kind": "hpc_stage_ref",
-        "missing_fields": ["kind", "stage_ref_id", "hpc_workspace_id"],
-    }
-    assert captured == []
+    assert result == {"operation_id": "op_test"}
+    assert len(captured) == 1
+    assert captured[0]["stage_refs"] == [handwritten_ref]
+    assert captured[0]["input_artifact_ids"] == ["art_sequences"]
+    assert captured[0]["input_artifact_digests"] == [ARTIFACT_DIGEST]
 
 
-def test_hmmalign_identifies_invalid_second_hpc_input(
+def test_hmmalign_forwards_each_input_for_single_host_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured = _capture_controlled_operation(monkeypatch)
+    hmm = _stage_ref(artifact_id="art_hmm")
+    fasta = {"artifact_id": "art_fasta", "artifact_digest": ARTIFACT_DIGEST}
 
-    with pytest.raises(PipelineSdkError) as exc_info:
-        bio_tools.hmmalign(
-            hmm=_stage_ref(artifact_id="art_hmm"),
-            fasta={"artifact_id": "art_fasta", "artifact_digest": ARTIFACT_DIGEST},
-            placement=_workspace(),
-            expected_outputs=[
-                {"path": "bio_tools/hmmalign/aligned.fasta", "format": "fasta"}
-            ],
-        )
+    result = bio_tools.hmmalign(
+        hmm=hmm,
+        fasta=fasta,
+        placement=_workspace(),
+        expected_outputs=[
+            {"path": "bio_tools/hmmalign/aligned.fasta", "format": "fasta"}
+        ],
+    )
 
-    assert exc_info.value.error_code == "hpc_stage_ref_required"
-    assert exc_info.value.details["function_name"] == "hmmalign"
-    assert exc_info.value.details["input_index"] == 1
-    assert captured == []
+    assert result == {"operation_id": "op_test"}
+    assert len(captured) == 1
+    assert captured[0]["stage_refs"] == [hmm, fasta]
+    assert captured[0]["input_artifact_ids"] == ["art_hmm", "art_fasta"]
+    assert captured[0]["input_artifact_digests"] == [
+        ARTIFACT_DIGEST,
+        ARTIFACT_DIGEST,
+    ]

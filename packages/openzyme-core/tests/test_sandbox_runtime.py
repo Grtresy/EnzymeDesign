@@ -45,14 +45,21 @@ from openzyme_core.sandbox_runtime import EXEC_MAX_TIMEOUT_SECONDS
 from openzyme_core.sandbox_runtime import EXEC_POLICY_VERSION
 from openzyme_core.sandbox_runtime import _sanitize_toolchain_runtime_identity
 from openzyme_core.sandbox_runtime import _structured_adapter_message
+from openzyme_core.sandbox_runtime import _terminal_sandbox_run_tool_result
 from openzyme_core.sandbox_runtime import _tool_success
 from openzyme_core.sandbox_runtime import _ControlSocketServer
 from openzyme_core.sandbox_runtime import register_sandbox_runtime_tools
+from openzyme_core.runtime_wake_facts import CanonicalWakeFactsProjector
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
+from openzyme_domain import AgentRuntimeSignal
 from openzyme_domain import AgentRuntimeSignalReason
+from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
+from openzyme_domain import ContinuationDeliveryState
+from openzyme_domain import ContinuationResumeStrategy
+from openzyme_domain import ContinuationState
 from openzyme_domain import ContinuationStateStatus
 from openzyme_domain import ControlledOperation
 from openzyme_domain import ControlledOperationDispatchRequest
@@ -74,6 +81,9 @@ from openzyme_domain import SessionStatus
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
 from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import FailureActorKind
+from openzyme_domain import FailureClass
+from openzyme_domain import FailureRecoverability
 from openzyme_domain import MutationWriterKind
 from openzyme_domain import RetryEligibility
 from openzyme_runtime import PodmanContainerLease
@@ -81,6 +91,7 @@ from openzyme_runtime import ControlledOperationOwnerPolicy
 from openzyme_runtime import ReliabilityRefactorSettings
 from openzyme_runtime import ReliabilityShadowObserver
 from openzyme_runtime import ShadowObservabilityMode
+from openzyme_runtime import record_failure_observation
 
 
 def _build_repositories() -> CoreRepositories:
@@ -2000,14 +2011,16 @@ def test_sandbox_exec_snapshots_source_and_allows_output_registration(
 
 def test_sandbox_exec_tool_registers_exact_process_writer(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    _service(
+    service = _service(
         repositories,
         workspace_root=workspace_root,
         log_root=tmp_path / "logs",
-    ).write_file(
+    )
+    service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
         actor_ref=agent.agent_id,
@@ -2022,6 +2035,20 @@ def test_sandbox_exec_tool_registers_exact_process_writer(
         observed.append(dict(kwargs))
         yield None
 
+    original_exec_command = SandboxRuntimeService.exec_command
+
+    def exec_command_local(
+        service: SandboxRuntimeService,
+        **kwargs: object,
+    ) -> SandboxRunRecord:
+        service.execution_backend = "local"
+        return original_exec_command(service, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        SandboxRuntimeService,
+        "exec_command",
+        exec_command_local,
+    )
     registry = ToolRegistry()
     register_sandbox_runtime_tools(registry, agent_id=agent.agent_id)
     context = SessionRuntimeContext(
@@ -2053,6 +2080,307 @@ def test_sandbox_exec_tool_registers_exact_process_writer(
     assert observed[0]["owner_ref"] == "sandbox-exec:cadbd77f7f1a86e3"
     assert isinstance(observed[0]["process_epoch"], int)
     assert int(observed[0]["process_epoch"]) > 0
+
+
+def test_sandbox_exec_stage_ref_rejection_seals_exact_local_failure_chain(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    task = Task.create(
+        task_id="task_stage_ref_repair",
+        session_id=session.session_id,
+        subject="Repair the exact staged input",
+        description="Keep pre-admission evidence source-bound.",
+        status=TaskStatus.IN_PROGRESS,
+        kind="execution",
+        assigned_ref=agent.agent_id,
+    )
+    repositories.tasks.seed_fixture(task)
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/invalid_stage_ref.py",
+        content=(
+            "from openzyme_pipeline import bio_tools\n"
+            "from openzyme_pipeline.hpc import HpcWorkspace\n"
+            "bio_tools.hmmbuild(\n"
+            "    alignment={\n"
+            "        'artifact_id': 'artifact_alignment',\n"
+            f"        'artifact_digest': '{_digest_text('alignment')}',\n"
+            "    },\n"
+            "    placement=HpcWorkspace(\n"
+            "        hpc_workspace_id='hpcws_exact',\n"
+            "        label='aox_hmm',\n"
+            "        normalized_label='aox_hmm',\n"
+            "    ),\n"
+            "    expected_outputs=[{'path': 'outputs/model.hmm'}],\n"
+            ")\n"
+        ),
+        create_dirs=True,
+        task_id=task.task_id,
+    )
+    run = service.exec_command(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=["python", "src/invalid_stage_ref.py"],
+        task_id=task.task_id,
+        originating_signal_id="signal_stage_ref_origin",
+        originating_tool_call_id="call_invalid_stage_ref",
+    )
+    result = _terminal_sandbox_run_tool_result(
+        ToolInvocation(
+            call_id="call_invalid_stage_ref",
+            tool_name="sandbox.exec",
+            task_id=task.task_id,
+            arguments={},
+        ),
+        run,
+        repositories,
+    )
+
+    assert result is not None
+    assert result.ok is False
+    assert result.error_code == "sandbox_exec_nonzero"
+    assert result.failure_observation is not None
+    runs = repositories.sandbox_runs.list_by_session(session.session_id)
+    assert runs == [run]
+    assert run.status is SandboxRunStatus.FAILED
+    assert repositories.controlled_operations.list_by_run(run.sandbox_run_id) == []
+    assert repositories.approvals.list_by_session(session.session_id) == []
+    assert (
+        repositories.controlled_operation_executions.list_by_session(
+            session.session_id
+        )
+        == []
+    )
+    assert repositories.continuation_states.list_by_session(session.session_id) == []
+
+    causes = repositories.failure_observations.list_by_source(
+        session_id=session.session_id,
+        source_kind="sandbox_control_request",
+        source_ref=run.sandbox_run_id,
+    )
+    wrappers = repositories.failure_observations.list_by_source(
+        session_id=session.session_id,
+        source_kind="sandbox_run",
+        source_ref=run.sandbox_run_id,
+    )
+    assert len(causes) == len(wrappers) == 1
+    cause = causes[0]
+    wrapper = wrappers[0]
+    assert cause.error_code == "hpc_stage_ref_required"
+    assert cause.failure_class is FailureClass.VALIDATION
+    assert cause.recoverability is FailureRecoverability.AGENT_CAN_REPLAN
+    assert cause.effect_certainty is ExternalEffectCertainty.NO_EFFECT
+    assert cause.retry_eligibility is RetryEligibility.SAME_PHASE_SAFE
+    assert cause.facts["operation_admitted"] is False
+    assert cause.facts["external_dispatch_started"] is False
+    assert cause.facts["originating_signal_id"] == "signal_stage_ref_origin"
+    assert wrapper.error_code == "sandbox_exec_nonzero"
+    assert wrapper.failure_class is FailureClass.RUNTIME
+    assert wrapper.recoverability is FailureRecoverability.AGENT_CAN_REPLAN
+    assert wrapper.effect_certainty is ExternalEffectCertainty.TERMINAL_KNOWN
+    assert wrapper.retry_eligibility is RetryEligibility.TERMINAL
+    assert wrapper.facts["causal_failure_id"] == cause.failure_id
+    assert wrapper.facts["causal_error_code"] == cause.error_code
+    assert result.failure_observation["failure_id"] == wrapper.failure_id
+    assert result.details is not None
+    assert result.details["causal_failure_id"] == cause.failure_id
+
+
+def test_engine_completed_wake_projects_exact_local_sandbox_cause(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, _ = _seed_workspace(repositories, tmp_path)
+    now = "2026-07-31T02:11:43+00:00"
+    task = Task.create(
+        task_id="task_local_wake",
+        session_id=session.session_id,
+        subject="Repair local AOX input",
+        description="Wake from the exact staged-artifact validation cause.",
+        status=TaskStatus.IN_PROGRESS,
+        kind="execution",
+        assigned_ref=agent.agent_id,
+    )
+    repositories.tasks.seed_fixture(task)
+    run = SandboxRunRecord(
+        sandbox_run_id="srun_local_wake",
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        task_id=task.task_id,
+        lane_id=None,
+        argv=("python", "src/aox_run.py"),
+        argv_digest=_digest_text("local-wake-argv"),
+        cwd="/workspace",
+        env_digest=_digest_text("local-wake-env"),
+        status=SandboxRunStatus.FAILED,
+        source_snapshot_artifact_id=None,
+        source_tree_digest=_digest_text("local-wake-source"),
+        exit_code=1,
+        error_code="sandbox_exec_nonzero",
+        created_at=now,
+        updated_at=now,
+        started_at=now,
+        ended_at=now,
+    )
+    repositories.sandbox_runs.save(run)
+    approval = ApprovalRequest(
+        approval_id="approval_local_wake",
+        session_id=session.session_id,
+        task_id=task.task_id,
+        lane_id=None,
+        kind="sdk_controlled_operation",
+        requested_action="Run the prior completed alignment.",
+        status=ApprovalRequestStatus.APPROVED,
+        request_ref="operation_local_wake",
+        resolution_ref="user:approved",
+        created_at=now,
+        resolved_at=now,
+    )
+    repositories.approvals.save(approval)
+    operation = ControlledOperation(
+        operation_id="operation_local_wake",
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        sandbox_run_id=run.sandbox_run_id,
+        task_id=task.task_id,
+        lane_id=None,
+        logical_operation_key="bio_tools.mafft:local-wake",
+        operation_digest=_digest_text("local-wake-operation"),
+        params_digest=_digest_text("local-wake-params"),
+        backend_category="hpc_runner",
+        status=ControlledOperationStatus.COMPLETED,
+        approval_id=approval.approval_id,
+        approval_state="approved",
+        sdk_module="bio_tools",
+        function_name="mafft",
+        created_at=now,
+        updated_at=now,
+    )
+    repositories.controlled_operations.save(operation)
+    continuation = ContinuationState(
+        continuation_id="srun_local_wake:operation_local_wake",
+        session_id=session.session_id,
+        operation_id=operation.operation_id,
+        sandbox_run_id=run.sandbox_run_id,
+        approval_id=approval.approval_id,
+        status=ContinuationStateStatus.COMPLETED,
+        originating_signal_id="signal_origin_local_wake",
+        originating_agent_id=agent.agent_id,
+        originating_task_id=task.task_id,
+        originating_lane_id=None,
+        originating_tool_call_id="call_local_wake",
+        originating_invocation_id="invocation_local_wake",
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        sandbox_runtime_identity=_digest_text("local-wake-runtime"),
+        process_epoch=1,
+        resume_strategy=ContinuationResumeStrategy.JOURNALED_SDK_CALL_BOUNDARY,
+        delivery_state=ContinuationDeliveryState.DELIVERED,
+        delivery_generation=1,
+        delivery_result_digest=_digest_text("local-wake-delivery"),
+        state_version=2,
+        completed_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    repositories.continuation_states.save(continuation)
+    cause = record_failure_observation(
+        repositories,
+        session_id=session.session_id,
+        task_id=task.task_id,
+        lane_id=None,
+        agent_id=agent.agent_id,
+        source_kind="sandbox_control_request",
+        source_ref=run.sandbox_run_id,
+        source_version="request:" + _digest_text("local-wake-request"),
+        phase="control_validation",
+        failure_class=FailureClass.VALIDATION,
+        recoverability=FailureRecoverability.AGENT_CAN_REPLAN,
+        effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+        retry_eligibility=RetryEligibility.SAME_PHASE_SAFE,
+        actor_kind=FailureActorKind.HARNESS,
+        error_code="hpc_stage_ref_required",
+        safe_summary="The Host rejected a non-stage ref before admission.",
+        facts={
+            "schema_version": "sandbox_control_failure@1",
+            "sandbox_run_id": run.sandbox_run_id,
+            "sandbox_workspace_id": run.sandbox_workspace_id,
+            "source_snapshot_artifact_id": run.source_snapshot_artifact_id,
+            "source_tree_digest": run.source_tree_digest,
+            "operation_admitted": False,
+            "external_dispatch_started": False,
+        },
+    )
+    wrapper = record_failure_observation(
+        repositories,
+        session_id=session.session_id,
+        task_id=task.task_id,
+        lane_id=None,
+        agent_id=agent.agent_id,
+        source_kind="sandbox_run",
+        source_ref=run.sandbox_run_id,
+        source_version="terminal:" + _digest_text("local-wake-terminal"),
+        phase="sandbox_execution",
+        failure_class=FailureClass.RUNTIME,
+        recoverability=FailureRecoverability.AGENT_CAN_REPLAN,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+        retry_eligibility=RetryEligibility.TERMINAL,
+        actor_kind=FailureActorKind.HARNESS,
+        error_code="sandbox_exec_nonzero",
+        safe_summary="The sandbox process reached a known nonzero exit.",
+        facts={
+            "schema_version": "sandbox_run_failure@1",
+            "sandbox_run_id": run.sandbox_run_id,
+            "sandbox_workspace_id": run.sandbox_workspace_id,
+            "source_snapshot_artifact_id": run.source_snapshot_artifact_id,
+            "source_tree_digest": run.source_tree_digest,
+            "local_cause_count": 1,
+            "causal_failure_id": cause.failure_id,
+            "causal_error_code": cause.error_code,
+            "causal_source_version": cause.source_version,
+            "owner_wake_continuation_ids": [continuation.continuation_id],
+            "attempt_id": None,
+        },
+    )
+    signal = AgentRuntimeSignal(
+        signal_id="signal_local_wake",
+        session_id=session.session_id,
+        agent_id=agent.agent_id,
+        task_id=task.task_id,
+        lane_id=None,
+        correlation_id=continuation.continuation_id,
+        reason=AgentRuntimeSignalReason.ENGINE_COMPLETED,
+        source_ref=continuation.continuation_id,
+        status=AgentRuntimeSignalStatus.CLAIMED,
+        created_at=now,
+        claimed_at=now,
+        claimed_by="runtime:test",
+    )
+    repositories.runtime_signals.save(signal)
+
+    projected = CanonicalWakeFactsProjector(repositories).project(signal)
+
+    assert projected is not None
+    assert projected.source_kind == "sandbox_run_failure"
+    assert projected.facts["wrapper_failure_id"] == wrapper.failure_id
+    assert projected.facts["wrapper_error_code"] == "sandbox_exec_nonzero"
+    assert projected.facts["causal_failure_id"] == cause.failure_id
+    assert projected.facts["error_code"] == "hpc_stage_ref_required"
+    assert projected.facts["effect_certainty"] == "no_effect"
+    assert projected.facts["operation_admitted"] is False
+    assert "Do not automatically replay an effect" in (
+        projected.render_instructions()
+    )
 
 
 def test_sandbox_exec_marks_run_and_workspace_when_output_exceeds_disk_quota(

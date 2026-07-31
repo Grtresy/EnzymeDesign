@@ -572,3 +572,18 @@ closed attempt 仍只是一份 task 可引用 evidence，不能机械完成 task
 
 AOX 新 production evidence 读取这些对象生成 `aox_blank_world_attempt_bundle@3`。历史
 `@2` rows/bundles 不回填、不升级、不跨 attempt adoption。
+
+### 7.1 Sandbox-local pre-admission failure chain
+
+Host control validation 也是 canonical failure source。sandbox SDK 不在 RPC 前丢弃 malformed
+HPC stage descriptor；Host 在 ControlledOperation admission 之前写 immutable
+`FailureObservation(source_kind="sandbox_control_request")`，以
+`hpc_stage_ref_required/validation/agent_can_replan/no_effect` 绑定 exact
+session/workspace/source tree/agent/task/lane/origin signal、request digest 与 idempotency
+digest，并证明 operation 未 admit、external dispatch 未开始。
+
+terminal non-completed SandboxRun 另写
+`FailureObservation(source_kind="sandbox_run")`。当且仅当它有一个 exact local cause 时，
+`sandbox_exec_nonzero/runtime/agent_can_replan/terminal_known` wrapper 绑定该 cause、
+selected scientific attempt 与 owner continuation。cause 与 wrapper 都是 append-only truth；
+wrapper 不覆盖 earliest cause，也不把 no-effect validation 改成业务终态。

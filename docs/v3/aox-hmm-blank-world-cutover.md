@@ -768,10 +768,12 @@ code-path reconstruction plus a deterministic regression showed that cleanup
 could mask an earlier coordination blocker. The next pin therefore adds these
 small harness corrections without changing scientific acceptance:
 
-- supervised `bio_tools.*` rejects a malformed input locally with
-  `hpc_stage_ref_required` and directs the agent to pass the exact
-  `ws.stage_artifact(...)` return value; the Host remains authoritative for
-  workspace ownership, artifact authorization and complete S11/S12 binding;
+- supervised `bio_tools.*` preserves the exact malformed descriptor for the
+  Host canonical pre-admission validator. Host rejects it with source-bound
+  `hpc_stage_ref_required/no_effect` before operation admission or external
+  dispatch, directs the agent to pass the exact `ws.stage_artifact(...)`
+  return value, and later binds the terminal `sandbox_exec_nonzero` run wrapper
+  to that cause;
 - the live prompt fixes one canonical research/execution/report task-id family.
   Every master wake reconciles that set: it may create a missing canonical
   member and advance an existing member, but cannot invent another/suffixed
@@ -2768,6 +2770,48 @@ handoff all fail with no effect unless this exact receipt is present and valid.
 This implementation does not authorize r66, any live attempt, MICU/provider/HPC
 traffic or browser activity.
 
+## r66 source-bound sandbox failure and selected-chain recovery
+
+r66 is a permanent diagnostic **NO-GO**. Its authority, plan, root, SQLite,
+provider/HPC effects and sealed decision remain historical and cannot be
+retried or adopted. In the formal run, the executor passed the fetched MAFFT
+artifact descriptor directly to `bio_tools.hmmbuild` instead of first using
+`ws.stage_artifact(...)`. The exact earliest cause was therefore
+`hpc_stage_ref_required/no_effect` at Host control pre-admission. No
+ControlledOperation or external dispatch was admitted. The sandbox process
+then exited 1 and supplied the outer `sandbox_exec_nonzero` wrapper.
+
+The forward contract preserves that pair as one source-bound typed causal
+chain. The SDK forwards the exact caller descriptor; Host seals the local
+validation cause before admission with request/idempotency digests and exact
+session, workspace, source-tree, agent, task, lane and originating-signal
+bindings. The terminal SandboxRun seals its wrapper against the unique cause
+and selected scientific attempt. `sandbox.exec` returns a failed ToolResult,
+and canonical `ENGINE_COMPLETED` wake facts project the same wrapper and cause
+to the owner. Missing, duplicate, cross-source, cross-attempt or malformed
+bindings fail closed.
+
+AOX now treats an exact selected-formal local chain and an exact
+`controlled_effect/agent_can_replan/no_effect/terminal` controlled-operation
+failure consistently. While the bound task is business-nonterminal and the
+exact owner handoff remains valid, the failure is recovery-safe evidence, not a
+business terminal. Probe, unsafe/unknown-effect, retryable, dispatch-in-doubt,
+unbound, or explicit failed/blocked/cancelled task state remains fatal. Once the
+same selected chain reaches immutable closure, its exact disposed safe history
+remains queryable but does not poison the closed attempt.
+
+The AOX one-shot handoff helper, per-source consumption state and
+`max_signals_override` are removed. Every command keeps the pinned
+`max_signals=1`; ordinary bounded drains may advance existing canonical owner
+wakes and subsequent selected-chain work. Complete selected-chain closure,
+explicit business task/report state, or the existing double
+replay-safe-no-wakeup proof determines convergence. Harness creates no recovery
+work, retries no effect and does not prescribe the repair strategy.
+
+This Phase 2 is local and non-live. It does not authorize r67, a fresh
+authority/root, MICU/provider/HPC traffic, Chrome, preflight or any campaign
+action.
+
 ## Current acceptance boundary
 
 Offline unit/eval success proves implementation behavior only. Local Live cutover becomes GO only after the real public product path also demonstrates:
@@ -2909,14 +2953,13 @@ projection whenever an exact reservation exists. One canonical bounded
 operation-facts projection joins operation, unique execution, continuation,
 scientific-attempt binding, and exact failure records; explicit `probe|formal`
 scope plus count/digest/truncation metadata is shared by session observation,
-diagnostic facts, and failure evidence. A failed observation still stops by
-default. Exactly one later drain is allowed only for the already queued,
-pending, unclaimed, zero-attempt owner signal when its source, correlation,
-agent, task, lane, current formal attempt, terminal no-effect execution,
-delivered continuation, typed terminal failure, and business-nonterminal task
-all agree. The exception creates no work or authority, retries or replays no
-effect, cannot repeat for the same source, and fails closed on every drift.
-It does not rerun or revise r64 and does not authorize r65.
+diagnostic facts, and failure evidence. The r64 implementation initially
+admitted only one later exact owner drain; r66 supersedes that AOX-local
+one-shot policy. Current behavior treats an exact selected-formal
+no-effect/agent-can-replan chain as nonbusiness history and advances only
+existing canonical work through ordinary pinned bounded drains. It creates no
+work or authority, retries or replays no effect, and fails closed on identity,
+effect or attempt drift. Neither correction reruns or revises r64.
 
 r65 retires the entire completed closure-stage authority/reconstruction/live/CLI
 chain and installs exact candidate, conditional-empty and finalization
@@ -2925,6 +2968,15 @@ calculations. Atomic draft prevalidation plus a persisted source-bound
 completion and report handoff; unified validation preserves the earliest typed
 cause across live/eval/offline consumers. This is a local non-live correction,
 not a new attempt.
+
+r66 permanently seals its diagnostic NO-GO and adds a canonical local sandbox
+failure chain. Host pre-admission `hpc_stage_ref_required/no_effect` is the
+earliest cause, terminal `sandbox_exec_nonzero` is its source-bound wrapper, and
+the failed ToolResult plus owner wake preserve both. Formal local and controlled
+failures now share selected-chain recovery semantics; disposed exact history
+does not poison a recovered/closed attempt. The driver has no one-shot handoff
+or drain override and converges through ordinary bounded drains plus complete
+closure/business state. This is also a local non-live correction.
 
 These corrections do not authorize `preflight`, any retired closure-stage
 operation, `run-diagnostic-live`, `run-live`, a numbered root, provider/MICU call, HPC

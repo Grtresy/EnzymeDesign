@@ -574,11 +574,28 @@ claim wave; a source-created successor MUST remain a separate turn even when the
 runtime command permits `max_signals > 1`. Missing or ambiguous closure, a
 cancelled/duplicate wakeup, identity drift, ordinary runtime failure, or master
 max-step remains a failed scheduler command. An explicit task/operation/sandbox
-failure independently stops the AOX attempt after the drain returns, even when its
-signal and scheduler settlement completed normally. AOX SHALL retain
-`max_signals=1` as a pinned campaign/observation identity rather than relying on it
-as the only same-command successor barrier. The driver SHALL first perform the same
-durable operation/task/sandbox observation, then MAY issue one later drain.
+failure with unknown effect, unsafe recovery, probe scope, missing selected-attempt
+binding, or explicit failed/blocked/cancelled task independently stops the AOX
+attempt after the drain returns, even when its signal and scheduler settlement
+completed normally. AOX SHALL retain `max_signals=1` as a pinned
+campaign/observation identity rather than relying on it as the only same-command
+successor barrier.
+
+An exact selected-formal controlled-operation failure with
+`controlled_effect/agent_can_replan/no_effect/terminal`, or an exact selected-formal
+sandbox-local chain whose Host-sealed pre-admission cause is
+`hpc_stage_ref_required/validation/agent_can_replan/no_effect` and whose terminal
+run wrapper is `sandbox_exec_nonzero/runtime/agent_can_replan/terminal_known`, is
+not itself a business terminal. Host SHALL preserve the source-bound cause, wrapper,
+failed ToolResult, originating continuation or signal, and canonical owner wake.
+The driver SHALL use the ordinary pinned bounded-drain loop; it MUST NOT synthesize
+a special wake, override the drain limit, or grant a one-shot exception. The
+existing owner may replan under the usual runtime authority, and later drains may
+continue only while canonical work remains. Complete selected-chain closure plus
+the explicit task/report state determines success; exact disposed failure history
+from that same selected chain MUST NOT poison a recovered or closed attempt.
+Malformed, ambiguous, cross-source, cross-attempt, retryable, dispatch-in-doubt, or
+probe failure remains fail-closed.
 
 A successful `attempt.create` or `scientific.attempt.close` is not an ordinary
 teammate completion or budget-replan handoff. Core MUST NOT queue the generic
@@ -628,17 +645,25 @@ The sealed `aox_browser_approval_receipt@2` SHALL record mode/channel/Host proce
 - **WHEN** one live sandbox turn requests multiple controlled-operation approvals in sequence before its drain can return
 - **THEN** the driver resolves each approval exactly once under the fixed browser/auto policy, never opens a second concurrent drain, joins the original worker, and seals request-start order rather than response-completion order
 
-#### Scenario: Stop before a failed turn's unrelated queued wakeup
-- **WHEN** the one signal claimed by a drain commits a failed sandbox run or explicit task finish, or a controlled-operation failure lacks the exact recoverable owner-handoff contract
-- **THEN** the drain returns, the driver preserves that first failure, issues no later drain for the session, creates no replacement task or controlled operation, and seals any queued wakeup only as failure evidence
+#### Scenario: Stop on an unsafe or unbound failure
+- **WHEN** the claimed turn commits an explicit failed/blocked/cancelled task, a probe failure, an unknown or unsafe effect, or a controlled/sandbox failure that does not close to the exact current selected formal attempt and owner
+- **THEN** the driver preserves the earliest typed failure, creates no replacement task or controlled operation, and does not reinterpret an unrelated queued wake as recovery authority
 
-#### Scenario: Continue once through an exact recoverable controlled-operation handoff
-- **WHEN** one formal operation has an exact terminal execution and continuation whose canonical failure is `controlled_effect/agent_can_replan/no_effect/terminal`, its task remains business-nonterminal, and exactly one unclaimed zero-attempt `engine_completed` signal binds the same source, correlation, owner, task, lane, and current scientific attempt
-- **THEN** the driver preserves the failure, issues exactly one later bounded drain that may claim only that existing owner wake, creates no signal/task/operation/attempt/approval/authority, and leaves the agent free to replan without retrying or replaying the failed effect
+#### Scenario: Continue through ordinary bounded selected-chain recovery
+- **WHEN** one selected formal controlled operation or sandbox-local run has an exact terminal no-effect failure, its task remains business-nonterminal, and a canonical source-bound owner wake or other ordinary selected-chain work remains
+- **THEN** the pinned `max_signals=1` drain loop may consume that existing work over ordinary bounded commands without a handoff-specific limit or override, while creating no signal/task/operation/attempt/approval/authority and never retrying or replaying the failed effect automatically
 
 #### Scenario: Reject an unsafe controlled-operation handoff
 - **WHEN** the candidate failure or owner wake is missing, duplicated, mismatched, claimed, cancelled, previously consumed, cross-attempt, nonterminal, retryable, dispatch-in-doubt, or not proven no-effect
-- **THEN** the driver returns the original failed observation without another drain or replacement work
+- **THEN** the driver returns the original failed observation without replacement work or special drain authority
+
+#### Scenario: Preserve a Host-local pre-admission causal chain
+- **WHEN** a sandbox calls `bio_tools.hmmbuild` with a fetched artifact descriptor that is not the exact `hpc_stage_ref` returned by `ws.stage_artifact`
+- **THEN** Host admits no controlled operation or external dispatch, seals `hpc_stage_ref_required/no_effect` against the exact control request, seals `sandbox_exec_nonzero` against the terminal run with the local cause id, returns a failed ToolResult carrying the wrapper observation, and projects the same cause through the canonical owner wake
+
+#### Scenario: Ignore disposed selected-chain history only after exact closure
+- **WHEN** an exact selected formal no-effect failure has a valid owner handoff and later selected-chain work reaches immutable attempt closure with complete business task/report state
+- **THEN** the old cause and wrapper remain queryable evidence but do not make the closed attempt fail; an explicit current failed/blocked/cancelled task or a malformed binding remains terminal
 
 #### Scenario: Preserve one runner-to-Host causal fact
 - **WHEN** a sealed runner attempt terminates before dispatch with `transport_connect_failed/no_effect`

@@ -8,7 +8,13 @@ from typing import Any
 from openzyme_domain import AgentRuntimeSignal
 from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import AgentRuntimeSignalStatus
+from openzyme_domain import ContinuationStateStatus
+from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import FailureClass
 from openzyme_domain import FailureObservation
+from openzyme_domain import FailureRecoverability
+from openzyme_domain import RetryEligibility
+from openzyme_domain import SandboxRunStatus
 from openzyme_domain import ScientificAttempt
 from openzyme_domain import ScientificAttemptClosure
 from openzyme_domain import ScientificAttemptLifecyclePhase
@@ -108,6 +114,8 @@ class CanonicalWakeFactsProjector:
         self,
         signal: AgentRuntimeSignal,
     ) -> CanonicalWakeFacts | None:
+        if signal.reason is AgentRuntimeSignalReason.ENGINE_COMPLETED:
+            return self._sandbox_run_failure_facts(signal)
         if signal.reason is not AgentRuntimeSignalReason.MANUAL_RESUME:
             return None
         source_ref = str(signal.source_ref or "").strip()
@@ -129,6 +137,175 @@ class CanonicalWakeFactsProjector:
         if self._has_orphan_transition_event(signal.session_id, source_ref):
             self._invalid(CanonicalWakeFactsReason.SOURCE_RECORD_MISSING)
         return None
+
+    def _sandbox_run_failure_facts(
+        self,
+        signal: AgentRuntimeSignal,
+    ) -> CanonicalWakeFacts | None:
+        source_ref = str(signal.source_ref or "").strip()
+        if not source_ref:
+            return None
+        continuation = self.repositories.continuation_states.get(source_ref)
+        if continuation is None:
+            return None
+        wrappers = self.repositories.failure_observations.list_by_source(
+            session_id=signal.session_id,
+            source_kind="sandbox_run",
+            source_ref=continuation.sandbox_run_id,
+        )
+        if not wrappers:
+            return None
+        self._require_claimed(signal)
+        if len(wrappers) != 1:
+            self._invalid(CanonicalWakeFactsReason.CONTROL_BINDING_INVALID)
+        wrapper = wrappers[0]
+        run = self.repositories.sandbox_runs.get(continuation.sandbox_run_id)
+        if run is None:
+            self._invalid(CanonicalWakeFactsReason.SOURCE_RECORD_MISSING)
+        assert run is not None
+        wrapper_facts = dict(wrapper.facts)
+        cause_id = str(wrapper_facts.get("causal_failure_id") or "")
+        if not cause_id:
+            if wrapper_facts.get("local_cause_count") in {None, 0}:
+                # A generic terminal sandbox wrapper is not a local validation
+                # projection.  Preserve the existing continuation failure path
+                # for controlled-operation outcomes on the same run.
+                return None
+            self._invalid(CanonicalWakeFactsReason.CONTROL_BINDING_INVALID)
+        cause = (
+            None
+            if not cause_id
+            else self.repositories.failure_observations.get(cause_id)
+        )
+        local_causes = self.repositories.failure_observations.list_by_source(
+            session_id=signal.session_id,
+            source_kind="sandbox_control_request",
+            source_ref=run.sandbox_run_id,
+        )
+        if (
+            cause is None
+            or len(local_causes) != 1
+            or local_causes[0] != cause
+        ):
+            self._invalid(CanonicalWakeFactsReason.CONTROL_BINDING_INVALID)
+        assert cause is not None
+        cause_facts = dict(cause.facts)
+        owner_wakes = wrapper_facts.get("owner_wake_continuation_ids")
+        if not isinstance(owner_wakes, list):
+            self._invalid(CanonicalWakeFactsReason.CONTROL_BINDING_INVALID)
+        if (
+            signal.source_ref != continuation.continuation_id
+            or run.task_id is None
+            or continuation.originating_agent_id is None
+            or continuation.originating_task_id is None
+            or signal.correlation_id != continuation.continuation_id
+            or signal.session_id != continuation.session_id
+            or signal.agent_id != continuation.originating_agent_id
+            or signal.task_id != continuation.originating_task_id
+            or signal.lane_id != continuation.originating_lane_id
+            or continuation.status is not ContinuationStateStatus.COMPLETED
+            or continuation.sandbox_run_id != run.sandbox_run_id
+            or continuation.session_id != run.session_id
+            or continuation.sandbox_workspace_id != run.sandbox_workspace_id
+            or continuation.originating_agent_id != run.agent_id
+            or continuation.originating_task_id != run.task_id
+            or continuation.originating_lane_id != run.lane_id
+            or continuation.continuation_id not in owner_wakes
+            or run.status is not SandboxRunStatus.FAILED
+            or run.error_code != "sandbox_exec_nonzero"
+            or wrapper.source_kind != "sandbox_run"
+            or wrapper.source_ref != run.sandbox_run_id
+            or wrapper.task_id != run.task_id
+            or wrapper.lane_id != run.lane_id
+            or wrapper.agent_id != run.agent_id
+            or wrapper.failure_class is not FailureClass.RUNTIME
+            or wrapper.recoverability
+            is not FailureRecoverability.AGENT_CAN_REPLAN
+            or wrapper.effect_certainty
+            is not ExternalEffectCertainty.TERMINAL_KNOWN
+            or wrapper.retry_eligibility is not RetryEligibility.TERMINAL
+            or wrapper.error_code != run.error_code
+            or wrapper_facts.get("schema_version") != "sandbox_run_failure@1"
+            or wrapper_facts.get("sandbox_run_id") != run.sandbox_run_id
+            or wrapper_facts.get("sandbox_workspace_id")
+            != run.sandbox_workspace_id
+            or wrapper_facts.get("source_snapshot_artifact_id")
+            != run.source_snapshot_artifact_id
+            or wrapper_facts.get("source_tree_digest")
+            != run.source_tree_digest
+            or wrapper_facts.get("local_cause_count") != 1
+            or wrapper_facts.get("causal_error_code")
+            != "hpc_stage_ref_required"
+            or wrapper_facts.get("causal_source_version")
+            != cause.source_version
+            or cause.source_kind != "sandbox_control_request"
+            or cause.source_ref != run.sandbox_run_id
+            or cause.task_id != run.task_id
+            or cause.lane_id != run.lane_id
+            or cause.agent_id != run.agent_id
+            or cause.failure_class is not FailureClass.VALIDATION
+            or cause.recoverability
+            is not FailureRecoverability.AGENT_CAN_REPLAN
+            or cause.effect_certainty is not ExternalEffectCertainty.NO_EFFECT
+            or cause.retry_eligibility is not RetryEligibility.SAME_PHASE_SAFE
+            or cause.error_code != "hpc_stage_ref_required"
+            or cause_facts.get("schema_version")
+            != "sandbox_control_failure@1"
+            or cause_facts.get("sandbox_run_id") != run.sandbox_run_id
+            or cause_facts.get("sandbox_workspace_id")
+            != run.sandbox_workspace_id
+            or cause_facts.get("source_snapshot_artifact_id")
+            != run.source_snapshot_artifact_id
+            or cause_facts.get("source_tree_digest")
+            != run.source_tree_digest
+            or cause_facts.get("operation_admitted") is not False
+            or cause_facts.get("external_dispatch_started") is not False
+        ):
+            self._invalid(CanonicalWakeFactsReason.CONTROL_BINDING_INVALID)
+        task = self._task(
+            signal,
+            session_id=run.session_id,
+            task_id=run.task_id,
+            lane_id=run.lane_id,
+            actor_ref=run.agent_id,
+        )
+        return CanonicalWakeFacts(
+            source_kind="sandbox_run_failure",
+            task=task,
+            facts={
+                "schema_version": "canonical_wake_facts@1",
+                "source_kind": "sandbox_run_failure",
+                "session_id": run.session_id,
+                "task_id": run.task_id,
+                "lane_id": run.lane_id,
+                "agent_id": run.agent_id,
+                "continuation_id": continuation.continuation_id,
+                "operation_id": continuation.operation_id,
+                "sandbox_run_id": run.sandbox_run_id,
+                "sandbox_workspace_id": run.sandbox_workspace_id,
+                "attempt_id": wrapper_facts.get("attempt_id"),
+                "source_snapshot_artifact_id": (
+                    run.source_snapshot_artifact_id
+                ),
+                "source_tree_digest": run.source_tree_digest,
+                "wrapper_failure_id": wrapper.failure_id,
+                "wrapper_error_code": wrapper.error_code,
+                "wrapper_recoverability": wrapper.recoverability.value,
+                "wrapper_effect_certainty": wrapper.effect_certainty.value,
+                "wrapper_retry_eligibility": (
+                    wrapper.retry_eligibility.value
+                ),
+                "causal_failure_id": cause.failure_id,
+                "error_code": cause.error_code,
+                "failure_class": cause.failure_class.value,
+                "recoverability": cause.recoverability.value,
+                "effect_certainty": cause.effect_certainty.value,
+                "retry_eligibility": cause.retry_eligibility.value,
+                "operation_admitted": False,
+                "external_dispatch_started": False,
+                "created_at": wrapper.created_at,
+            },
+        )
 
     def _attempt_facts(
         self,

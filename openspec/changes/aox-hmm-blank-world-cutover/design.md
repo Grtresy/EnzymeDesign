@@ -1174,6 +1174,47 @@ calculation receipt、finalization receipt 或 campaign evidence。归档该完�
 本地 commit；不授权 r66、live authority/root、MICU、provider、HPC 或 Chrome。后继 live
 仍需 fresh clean commit 上的新 exact plan 与用户单独批准。
 
+### 2026-07-31 r66 source-bound local failure and bounded selected-chain recovery correction
+
+r66 的 fresh diagnostic authority、plan、root、SQLite、provider/HPC effects、sealed
+evidence 与 decision 永久 **NO-GO**，不得重试、重标或复用。formal executor 从
+`bio.fetch_sequences` 取得 MAFFT artifact 后，没有先调用 `ws.stage_artifact(...)`，而把
+fetched descriptor 直接传给 `bio_tools.hmmbuild`。因此 exact causal failure 是 Host
+control pre-admission validation 的 `hpc_stage_ref_required/no_effect`；没有
+ControlledOperation 被 admit，也没有 runner/HPC/external dispatch。sandbox process 随后
+以 exit 1 结束并形成外层 `sandbox_exec_nonzero`。旧实现既未把两者持久化为
+FailureObservation，也把 run 的 failed exit 返回成 successful ToolResult；formal observer
+因而只能看到 generic failed history，无法区分安全可重规划的本地拒绝与业务终态。
+
+forward contract 不再由 sandbox SDK 本地吞掉 malformed stage descriptor。SDK 保留 exact
+caller request，Host 是唯一 canonical pre-admission validator：它在 operation admission
+之前封存 source-bound `hpc_stage_ref_required` cause，固定
+session/workspace/source-tree/agent/task/lane/origin signal、request digest 与 idempotency
+digest，并证明 `operation_admitted=false`、`external_dispatch_started=false`。terminal
+SandboxRun 再封存 `sandbox_exec_nonzero` wrapper，绑定唯一 local cause、selected attempt
+和 canonical continuation identities。`sandbox.exec` 对 non-completed run 返回 failed
+ToolResult，Core 的 `ENGINE_COMPLETED` wake-facts projector 重建同一 wrapper/cause；missing、
+duplicate、cross-source、cross-attempt 或 malformed binding 全部 fail closed。
+
+AOX formal observation 对 controlled-operation failure 与 local sandbox failure 使用同一个
+selected-chain policy。只有 exact current formal attempt、business-nonterminal task、
+`agent_can_replan/no_effect` cause 以及 exact owner handoff 闭合时，该 failure 才是
+nonblocking history；probe、unknown-effect、retryable、dispatch-in-doubt、unbound 或显式
+task failed/blocked/cancelled 仍立即 fatal。immutable closure 形成后，同一 selected chain
+中已 disposition 的 exact safe failure 保留为 evidence，但不继续 poisoning closed
+attempt；business task/report/closure 事实仍必须完整。
+
+旧 AOX `_recoverable_controlled_operation_handoff_source`、per-source one-shot bookkeeping
+与 `max_signals_override` 删除。driver 始终使用 pinned `max_signals=1` ordinary bounded
+drain；Harness 不合成 wake、不扩大 authority、不自动 retry/replay，也不规定 agent 的修复
+策略。existing canonical owner wake 和后续 selected-chain work 可以在多个 bounded command
+中前进；最终只由 complete selected-chain closure、显式 business task state，或两次相同
+replay-safe no-wakeup observation收敛。
+
+本 Phase 2 只授权 local code/spec/docs、non-live verification 与本地 commit；不授权
+r67、live authority/root、MICU、provider、HPC 或 Chrome。r66 consumed state 不得成为
+任何后继 admission、selection、closure 或 campaign evidence。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

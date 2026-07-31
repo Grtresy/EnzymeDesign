@@ -640,6 +640,29 @@ inventory 的 before/after digest 分别保持
 该 consumed plan、failed decision 与 fatal 都不可重试或改写；其 runnable successor
 contract 已于 r65 退役。
 
+## 13. r66 local sandbox cause 与 selected-chain disposition
+
+r66 永久 diagnostic NO-GO。其 formal sandbox 在 `bio_tools.hmmbuild` 输入上缺少 exact
+`ws.stage_artifact` ref；canonical earliest cause 是 Host pre-admission
+`hpc_stage_ref_required/validation/agent_can_replan/no_effect`，terminal run 的外层事实是
+`sandbox_exec_nonzero/runtime/agent_can_replan/terminal_known`。两者分别绑定 control request
+与 SandboxRun，wrapper 明确引用唯一 cause；没有 ControlledOperation admission、runner/HPC
+dispatch 或 unknown external effect。
+
+`FailureObservation` 不是业务状态。AOX 只有在 cause/wrapper、current selected formal
+attempt、business-nonterminal task 与 exact canonical owner handoff 全闭合时，才把该 chain
+视为可重规划 history。controlled-operation 的 exact
+`controlled_effect/agent_can_replan/no_effect/terminal` failure 使用同一规则。agent 可自由
+repair、选择其他合法 operation、请求 authority 或显式终结 task；Harness 不自动重试、
+replay、重开 task 或合成 plan。
+
+selected attempt 达到 immutable closure 后，同一 chain 中已 disposition 的 exact safe
+failure仍保留为 sealed evidence，但 observer 不再把它当作当前 fatal。显式
+failed/blocked/cancelled task、probe failure、unsafe/unknown effect、retryable、
+dispatch-in-doubt、missing/duplicate/cross-source/cross-attempt binding 继续 fail closed。
+AOX one-shot handoff 与 drain override 已删除；ordinary pinned bounded drains、complete
+selected-chain closure 和显式业务状态共同决定收敛。
+
 lifecycle repair `c3c560dd6ede54958398fb3e55d5cd62cc956ad1` 后的 fresh successor
 plan `sha256:47ebfa37d653fa51c61eb304b3df620033d57f99aee6a3fcc88ae2e396b861ab`
 也已永久消费。它在 closure 前暴露另一条链：executor-scoped auto compaction 曾把 workflow

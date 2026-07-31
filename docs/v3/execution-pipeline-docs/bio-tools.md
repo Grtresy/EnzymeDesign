@@ -101,11 +101,16 @@ hits = bio.hmmer_search(
 In supervised sandbox mode, every HPC input passed to `bio_tools.*` must be the
 exact `hpc_stage_ref` object returned by `ws.stage_artifact(...)`. Pass that
 return value directly, as the examples above do. Do not hand-write or
-reconstruct an artifact/digest/path dictionary: the SDK rejects malformed
-ad-hoc descriptors before the Host RPC with
-`PipelineSdkError(error_code="hpc_stage_ref_required")` and directs the caller
-back to `ws.stage_artifact(...)`. The Host remains the authority for workspace
-ownership, artifact authorization, and complete S11/S12 binding validation.
+reconstruct an artifact/digest/path dictionary. The SDK forwards the caller's
+exact descriptor so the Host can remain the single canonical pre-admission
+validator. Before creating a controlled operation or starting external
+dispatch, Host rejects a malformed descriptor with
+`hpc_stage_ref_required/no_effect`, directs the caller back to
+`ws.stage_artifact(...)`, and seals a source-bound failure observation. A
+terminal sandbox process then preserves that cause beneath its
+`sandbox_exec_nonzero` run wrapper; neither record means an HPC operation was
+admitted. Host also remains authoritative for workspace ownership, artifact
+authorization, and complete S11/S12 binding validation.
 
 Functions:
 

@@ -1582,6 +1582,35 @@ draft 做零写入预校验，使用统一 live/eval/offline validator 保留 ea
 attempt close、execution completed、report delegation/publication/completion 与 report
 handoff 都必须重新验证该 receipt。该 Phase 2 不启动 r66/live/MICU/provider/HPC/Chrome。
 
+## r66 source-bound local failure / bounded selected-chain Phase 2
+
+r66 是永久 diagnostic **NO-GO**。其 consumed plan、authority、root、SQLite、provider/HPC
+effects、sealed evidence 与 decision 不得重试、重标或复用。formal executor 将 fetched
+MAFFT artifact descriptor 直接传给 `bio_tools.hmmbuild`，没有先调用
+`ws.stage_artifact(...)`。earliest typed cause 因而是 Host control pre-admission
+`hpc_stage_ref_required/no_effect`；没有 ControlledOperation admission 或 external
+dispatch。sandbox exit 1 的 `sandbox_exec_nonzero` 是外层 run wrapper，不得覆盖该 cause。
+
+Phase 2 让 SDK 保留 exact caller descriptor，由 Host 在 admission 前封存
+`sandbox_control_failure@1`，再由 terminal run 封存
+`sandbox_run_failure@1` wrapper。两者 source-bound 到 exact
+session/workspace/source-tree/agent/task/lane/origin signal/request/idempotency/attempt；
+`sandbox.exec` 返回 failed ToolResult，canonical `ENGINE_COMPLETED` wake 投影同一
+cause/wrapper。missing、duplicate、ambiguous、cross-source 或 cross-attempt evidence
+均 fail closed。
+
+formal observer 只在 exact selected attempt、business-nonterminal task、
+`agent_can_replan/no_effect` 与 canonical owner handoff 闭合时把 local/controlled failure
+视为 nonbusiness recovery history；probe、unsafe/unknown effect、retryable、
+dispatch-in-doubt、显式 task failed/blocked/cancelled 仍 fatal。selected chain 完成
+immutable closure 后，exact disposed safe history 保持可查询但不再 poisoning closed
+attempt。
+
+旧 AOX one-shot handoff、per-source consumption 与 `max_signals_override` 已删除。
+driver 始终以 `max_signals=1` ordinary bounded drains 推进 existing canonical work；
+complete selected-chain closure、显式 task/report state 或两次相同 replay-safe no-wakeup
+observation决定收敛。该 Phase 2 不启动 r67/live/MICU/provider/HPC/Chrome。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

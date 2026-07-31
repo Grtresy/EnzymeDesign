@@ -319,6 +319,21 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   选择 actionable candidate，并把同一 bounded task/evidence facts 交给 failure evidence。
   ordinary teammate completion 与 max-step budget-replan master wake 不变。
 
+- [x] Sandbox-local pre-admission failure 是否被 SDK 丢弃，或被 generic process exit
+  覆盖成错误业务终态。
+
+  证据：r66 formal executor 直接把 fetched MAFFT descriptor 交给
+  `bio_tools.hmmbuild`；缺少 exact `ws.stage_artifact` ref 的
+  `hpc_stage_ref_required/no_effect` 在旧 SDK/Host boundary 没有 durable observation，
+  随后的 `sandbox_exec_nonzero` 又被 successful ToolResult 与 AOX failed-history scan
+  分别掩盖/放大。
+
+  修正记录：SDK 保留 exact request，Host 在 operation admission 前封存 local cause，
+  SandboxRun 封存 source-bound wrapper，failed ToolResult 与 canonical owner wake 复用
+  同一 chain。AOX local/controlled formal failure 统一按 selected-chain disposition 判断，
+  删除 one-shot handoff 与 drain override；ordinary bounded drains、完整 closure 与显式
+  task state 收敛。Harness 不自动 retry/replay，也不从历史 failure 推断当前业务终态。
+
 - [x] Lane 与 session lease 是否只是历史复杂度，应随 recovery machine 一并删除。
 
   证据：Lane symbols 仍有 105 个 Python 文件消费者，覆盖 Host/CLI API、cwd/branch、

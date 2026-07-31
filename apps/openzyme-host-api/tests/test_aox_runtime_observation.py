@@ -16,6 +16,9 @@ from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import AgentRuntimeSignal
+from openzyme_domain import AgentRuntimeSignalReason
+from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import FailureActorKind
 from openzyme_domain import FailureClass
 from openzyme_domain import FailureObservation
@@ -215,10 +218,12 @@ def test_formal_product_readiness_waits_for_closed_attempt(
         ),
         engine_documents=records(),
         failure_observations=records(),
+        runtime_signals=records(),
         controlled_operation_executions=records(),
         continuation_states=records(),
         scientific_attempt_bindings=SimpleNamespace(
-            attempt_for_operation=lambda _operation_id: None
+            attempt_for_operation=lambda _operation_id: None,
+            attempt_for_run=lambda _sandbox_run_id: None,
         ),
     )
 
@@ -792,10 +797,12 @@ def test_actionable_failures_are_ordered_by_causal_time_not_category(
         ),
         engine_documents=records((finish,)),
         failure_observations=records((failure,)),
+        runtime_signals=records(),
         controlled_operation_executions=records(),
         continuation_states=records(),
         scientific_attempt_bindings=SimpleNamespace(
-            attempt_for_operation=lambda _operation_id: None
+            attempt_for_operation=lambda _operation_id: None,
+            attempt_for_run=lambda _sandbox_run_id: None,
         ),
     )
 
@@ -867,10 +874,12 @@ def test_failure_task_projection_is_bounded_with_digest_metadata(
         agents=records(),
         engine_documents=records(),
         failure_observations=records(),
+        runtime_signals=records(),
         controlled_operation_executions=records(),
         continuation_states=records(),
         scientific_attempt_bindings=SimpleNamespace(
-            attempt_for_operation=lambda _operation_id: None
+            attempt_for_operation=lambda _operation_id: None,
+            attempt_for_run=lambda _sandbox_run_id: None,
         ),
     )
 
@@ -916,6 +925,211 @@ def test_failure_task_projection_is_bounded_with_digest_metadata(
     assert observation.task_facts[-1]["task_id"] == "task_bound_255"
 
 
+def test_formal_local_failure_requires_exact_owner_handoff_and_does_not_poison_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempt_id = "attempt_r66_formal"
+    task = Task.create(
+        task_id="task_r66_execution",
+        session_id=SESSION_ID,
+        subject="Repair r66 stage ref",
+        description="Recover from the exact local no-effect validation cause.",
+        status=TaskStatus.IN_PROGRESS,
+        kind="execution",
+        assigned_ref="agent:executor:r66",
+    )
+    run = SimpleNamespace(
+        sandbox_run_id="srun_r66",
+        session_id=SESSION_ID,
+        sandbox_workspace_id="workspace_r66",
+        agent_id="agent:executor:r66",
+        task_id=task.task_id,
+        lane_id=None,
+        status=SimpleNamespace(value="failed", is_terminal=True),
+        error_code="sandbox_exec_nonzero",
+        source_snapshot_artifact_id="artifact_r66_source",
+        source_tree_digest="sha256:" + "6" * 64,
+        updated_at="2026-07-31T02:11:43+00:00",
+    )
+    continuation_id = "srun_r66:operation_mafft"
+    cause = FailureObservation(
+        failure_id="failure_r66_stage_ref",
+        session_id=SESSION_ID,
+        task_id=task.task_id,
+        lane_id=None,
+        agent_id="agent:executor:r66",
+        source_kind="sandbox_control_request",
+        source_ref=run.sandbox_run_id,
+        source_version="request:sha256:" + "1" * 64,
+        phase="control_validation",
+        failure_class=FailureClass.VALIDATION,
+        recoverability=FailureRecoverability.AGENT_CAN_REPLAN,
+        effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+        retry_eligibility=RetryEligibility.SAME_PHASE_SAFE,
+        actor_kind=FailureActorKind.HARNESS,
+        error_code="hpc_stage_ref_required",
+        safe_summary="The Host rejected a non-stage ref before admission.",
+        facts={
+            "schema_version": "sandbox_control_failure@1",
+            "sandbox_run_id": run.sandbox_run_id,
+            "sandbox_workspace_id": run.sandbox_workspace_id,
+            "source_snapshot_artifact_id": run.source_snapshot_artifact_id,
+            "source_tree_digest": run.source_tree_digest,
+            "originating_signal_id": "signal_r66_origin",
+            "operation_admitted": False,
+            "external_dispatch_started": False,
+        },
+        likely_causes=(),
+        evidence_refs=(),
+        created_at="2026-07-31T02:11:42+00:00",
+    )
+    wrapper = FailureObservation(
+        failure_id="failure_r66_sandbox",
+        session_id=SESSION_ID,
+        task_id=task.task_id,
+        lane_id=None,
+        agent_id="agent:executor:r66",
+        source_kind="sandbox_run",
+        source_ref=run.sandbox_run_id,
+        source_version="terminal:sha256:" + "2" * 64,
+        phase="sandbox_execution",
+        failure_class=FailureClass.RUNTIME,
+        recoverability=FailureRecoverability.AGENT_CAN_REPLAN,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+        retry_eligibility=RetryEligibility.TERMINAL,
+        actor_kind=FailureActorKind.HARNESS,
+        error_code="sandbox_exec_nonzero",
+        safe_summary="The sandbox process reached a known nonzero exit.",
+        facts={
+            "schema_version": "sandbox_run_failure@1",
+            "sandbox_run_id": run.sandbox_run_id,
+            "sandbox_workspace_id": run.sandbox_workspace_id,
+            "source_snapshot_artifact_id": run.source_snapshot_artifact_id,
+            "source_tree_digest": run.source_tree_digest,
+            "attempt_id": attempt_id,
+            "local_cause_count": 1,
+            "causal_failure_id": cause.failure_id,
+            "causal_error_code": cause.error_code,
+            "causal_source_version": cause.source_version,
+            "owner_wake_continuation_ids": [continuation_id],
+        },
+        likely_causes=(),
+        evidence_refs=(f"failure:{cause.failure_id}",),
+        created_at="2026-07-31T02:11:43+00:00",
+    )
+    continuation = SimpleNamespace(
+        continuation_id=continuation_id,
+        sandbox_run_id=run.sandbox_run_id,
+        session_id=SESSION_ID,
+        originating_agent_id="agent:executor:r66",
+        originating_task_id=task.task_id,
+        originating_lane_id=None,
+    )
+    pending_signal = AgentRuntimeSignal(
+        signal_id="signal_r66_owner_wake",
+        session_id=SESSION_ID,
+        agent_id="agent:executor:r66",
+        task_id=task.task_id,
+        lane_id=None,
+        correlation_id=continuation_id,
+        reason=AgentRuntimeSignalReason.ENGINE_COMPLETED,
+        source_ref=continuation_id,
+        status=AgentRuntimeSignalStatus.PENDING,
+        created_at="2026-07-31T02:11:43+00:00",
+    )
+
+    def records(items: tuple[object, ...] = ()):
+        return SimpleNamespace(list_by_session=lambda _session_id: items)
+
+    repositories = SimpleNamespace(
+        controlled_operations=records(),
+        tasks=records((task,)),
+        sandbox_runs=records((run,)),
+        artifacts=records(),
+        reports=records(),
+        report_drafts=records(),
+        agents=records(),
+        engine_documents=records(),
+        failure_observations=records((cause, wrapper)),
+        runtime_signals=records((pending_signal,)),
+        controlled_operation_executions=records(),
+        continuation_states=records((continuation,)),
+        scientific_attempt_bindings=SimpleNamespace(
+            attempt_for_operation=lambda _operation_id: None,
+            attempt_for_run=lambda _sandbox_run_id: attempt_id,
+        ),
+    )
+
+    @contextmanager
+    def read_scope():
+        yield SimpleNamespace(repositories=repositories)
+
+    barrier = RuntimeBarrierProjection(
+        session_id=SESSION_ID,
+        task_id=None,
+        ready=False,
+        blocker_codes=(),
+        counts=RuntimeBarrierCounts(),
+        active_durable_suspension_task_ids=(),
+        observer_writer_id="writer_r66_observer",
+        record_limit=10_000,
+        observed_record_count=4,
+        records_truncated=False,
+        latest_runtime_command_status=None,
+    )
+    monkeypatch.setattr(
+        "openzyme_host_api.aox_runtime_observation."
+        "RuntimeBarrierProjectionService.project",
+        lambda *_args, **_kwargs: barrier,
+    )
+    monkeypatch.setattr(
+        "openzyme_host_api.aox_runtime_observation.build_conversation_projection",
+        lambda *_args, **_kwargs: (),
+    )
+    observer = AoxRuntimeObservationService(
+        SimpleNamespace(read=read_scope)  # type: ignore[arg-type]
+    )
+
+    formal = observer.observe_session(
+        session_id=SESSION_ID,
+        purpose="formal",
+        formal_attempt_id=attempt_id,
+    )
+    probe = observer.observe_session(
+        session_id=SESSION_ID,
+        purpose="probe",
+    )
+
+    assert formal.state == "incomplete"
+    assert formal.blocker_code is None
+    assert formal.causal_failure is None
+    assert probe.state == "failed"
+    assert probe.blocker_code == "hpc_stage_ref_required"
+    assert probe.wrapper_code == "sandbox_exec_nonzero"
+    assert probe.causal_failure is not None
+    assert probe.causal_failure["failure_id"] == cause.failure_id
+    assert probe.causal_failure["wrapper_failure_id"] == wrapper.failure_id
+
+    repositories.runtime_signals = records()
+    missing_wake = observer.observe_session(
+        session_id=SESSION_ID,
+        purpose="formal",
+        formal_attempt_id=attempt_id,
+    )
+    closed = observer.observe_session(
+        session_id=SESSION_ID,
+        purpose="formal",
+        formal_attempt_id=attempt_id,
+        formal_attempt_closed=True,
+    )
+    assert missing_wake.state == "failed"
+    assert missing_wake.blocker_code == "hpc_stage_ref_required"
+    assert missing_wake.wrapper_code == "sandbox_exec_nonzero"
+    assert closed.state == "incomplete"
+    assert closed.blocker_code is None
+    assert closed.causal_failure is None
+
+
 def test_campaign_driver_does_not_reintroduce_direct_runtime_database_helpers() -> None:
     source = Path(aox_cutover_live.__file__).read_text(encoding="utf-8")
 
@@ -923,3 +1137,5 @@ def test_campaign_driver_does_not_reintroduce_direct_runtime_database_helpers() 
     assert "def _session_has_inflight_mutation_writers" not in source
     assert "def _session_state" not in source
     assert "def _failure_task_facts" not in source
+    assert "def _recoverable_controlled_operation_handoff_source" not in source
+    assert "max_signals_override" not in source

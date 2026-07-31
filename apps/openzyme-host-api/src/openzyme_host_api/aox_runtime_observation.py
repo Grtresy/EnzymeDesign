@@ -171,6 +171,7 @@ class AoxRuntimeObservationService:
         session_id: str,
         purpose: Literal["probe", "formal"],
         formal_attempt_closed: bool = False,
+        formal_attempt_id: str | None = None,
     ) -> AoxSessionRuntimeObservation:
         with self.provider.read() as scope:
             repositories = scope.repositories
@@ -201,6 +202,9 @@ class AoxRuntimeObservationService:
             failure_records = repositories.failure_observations.list_by_session(
                 session_id
             )
+            runtime_signals = repositories.runtime_signals.list_by_session(
+                session_id
+            )
             failures = {
                 failure.failure_id: failure
                 for failure in failure_records
@@ -212,6 +216,14 @@ class AoxRuntimeObservationService:
                     )
                 )
                 for operation in operations
+            }
+            run_attempt_bindings = {
+                run.sandbox_run_id: (
+                    repositories.scientific_attempt_bindings.attempt_for_run(
+                        run.sandbox_run_id
+                    )
+                )
+                for run in sandbox_runs
             }
             messages = build_conversation_projection(repositories, session_id)
 
@@ -230,9 +242,17 @@ class AoxRuntimeObservationService:
             failures=failures,
         )
         actionable_failure = _earliest_actionable_failure(
+            purpose=purpose,
+            formal_attempt_id=formal_attempt_id,
+            formal_attempt_closed=formal_attempt_closed,
             operation_projection=operation_projection,
             task_projection=task_projection,
             sandbox_runs=sandbox_runs,
+            failures=failure_records,
+            continuations=continuations,
+            runtime_signals=runtime_signals,
+            run_attempt_bindings=run_attempt_bindings,
+            tasks=tasks,
             active_suspension_task_ids=frozenset(
                 barrier.active_durable_suspension_task_ids
             ),
@@ -420,6 +440,10 @@ def _causal_timestamp(value: object, *, identity: str) -> datetime:
 def _project_causal_failure(failure: object) -> dict[str, object]:
     return {
         "failure_id": failure.failure_id,
+        "session_id": failure.session_id,
+        "task_id": failure.task_id,
+        "lane_id": failure.lane_id,
+        "agent_id": failure.agent_id,
         "error_code": failure.error_code,
         "failure_class": failure.failure_class.value,
         "recoverability": failure.recoverability.value,
@@ -876,17 +900,343 @@ def _project_current_task_exits(
     )
 
 
+def _status_value(record: object) -> str:
+    status = getattr(record, "status", None)
+    return str(getattr(status, "value", status) or "")
+
+
+def _task_accepts_replan(task: object | None) -> bool:
+    return task is not None and _status_value(task) in {"todo", "in_progress"}
+
+
+def _exact_continuation_handoff_state(
+    *,
+    continuation_id: str,
+    session_id: str,
+    agent_id: str,
+    task_id: str,
+    lane_id: str | None,
+    runtime_signals: list[object],
+) -> Literal["active", "terminal"] | None:
+    matches = [
+        signal
+        for signal in runtime_signals
+        if (
+            getattr(signal, "session_id", None) == session_id
+            and getattr(signal, "agent_id", None) == agent_id
+            and getattr(signal, "task_id", None) == task_id
+            and getattr(signal, "lane_id", None) == lane_id
+            and str(getattr(getattr(signal, "reason", None), "value", ""))
+            == "engine_completed"
+            and getattr(signal, "source_ref", None) == continuation_id
+            and getattr(signal, "correlation_id", None) == continuation_id
+        )
+    ]
+    if len(matches) != 1:
+        return None
+    signal = matches[0]
+    if bool(getattr(getattr(signal, "status", None), "is_terminal", False)):
+        return "terminal"
+    if _status_value(signal) not in {"pending", "claimed"}:
+        return None
+    active = [
+        item
+        for item in runtime_signals
+        if _status_value(item) in {"pending", "claimed"}
+    ]
+    return "active" if active == [signal] else None
+
+
+def _exact_originating_signal_handoff_state(
+    *,
+    signal_id: str,
+    session_id: str,
+    agent_id: str,
+    task_id: str,
+    lane_id: str | None,
+    runtime_signals: list[object],
+) -> Literal["active", "terminal"] | None:
+    matches = [
+        signal
+        for signal in runtime_signals
+        if (
+            getattr(signal, "signal_id", None) == signal_id
+            and getattr(signal, "session_id", None) == session_id
+            and getattr(signal, "agent_id", None) == agent_id
+            and getattr(signal, "task_id", None) == task_id
+            and getattr(signal, "lane_id", None) == lane_id
+        )
+    ]
+    if len(matches) != 1:
+        return None
+    signal = matches[0]
+    if bool(getattr(getattr(signal, "status", None), "is_terminal", False)):
+        return "terminal"
+    if _status_value(signal) not in {"pending", "claimed"}:
+        return None
+    active = [
+        item
+        for item in runtime_signals
+        if _status_value(item) in {"pending", "claimed"}
+    ]
+    return "active" if active == [signal] else None
+
+
+def _controlled_failure_is_selected_recoverable_history(
+    *,
+    operation: _OperationProjection,
+    purpose: Literal["probe", "formal"],
+    formal_attempt_id: str | None,
+    formal_attempt_closed: bool,
+    runtime_signals: list[object],
+    tasks_by_id: dict[str, object],
+) -> bool:
+    failure = operation.causal_failure
+    task_id = str(operation.fact.get("task_id") or "")
+    continuation_id = str(operation.fact.get("continuation_id") or "")
+    agent_id = str(operation.fact.get("originating_agent_id") or "")
+    if (
+        purpose != "formal"
+        or not formal_attempt_id
+        or operation.fact.get("attempt_id") != formal_attempt_id
+        or failure is None
+        or failure.get("failure_class") != "controlled_effect"
+        or failure.get("recoverability") != "agent_can_replan"
+        or failure.get("effect_certainty") != "no_effect"
+        or failure.get("retry_eligibility") != "terminal"
+        or failure.get("source_kind") != "continuation"
+        or not task_id
+        or not continuation_id
+        or not agent_id
+        or tasks_by_id.get(task_id) is None
+        or (
+            not formal_attempt_closed
+            and not _task_accepts_replan(tasks_by_id.get(task_id))
+        )
+    ):
+        return False
+    if formal_attempt_closed:
+        return True
+    return (
+        _exact_continuation_handoff_state(
+            continuation_id=continuation_id,
+            session_id=str(failure.get("session_id") or ""),
+            agent_id=agent_id,
+            task_id=task_id,
+            lane_id=operation.fact.get("lane_id"),  # type: ignore[arg-type]
+            runtime_signals=runtime_signals,
+        )
+        is not None
+    )
+
+
+def _exact_local_run_failure_chain(
+    *,
+    sandbox_run: object,
+    failures: list[object],
+) -> tuple[object, object] | None:
+    run_id = str(getattr(sandbox_run, "sandbox_run_id", "") or "")
+    wrappers = [
+        failure
+        for failure in failures
+        if (
+            getattr(failure, "source_kind", None) == "sandbox_run"
+            and getattr(failure, "source_ref", None) == run_id
+        )
+    ]
+    if len(wrappers) != 1:
+        return None
+    wrapper = wrappers[0]
+    wrapper_facts = dict(getattr(wrapper, "facts", None) or {})
+    cause_id = str(wrapper_facts.get("causal_failure_id") or "")
+    causes = [
+        failure
+        for failure in failures
+        if (
+            getattr(failure, "failure_id", None) == cause_id
+            and getattr(failure, "source_kind", None)
+            == "sandbox_control_request"
+            and getattr(failure, "source_ref", None) == run_id
+        )
+    ]
+    if len(causes) != 1:
+        return None
+    cause = causes[0]
+    cause_facts = dict(getattr(cause, "facts", None) or {})
+    if (
+        getattr(sandbox_run, "error_code", None) != "sandbox_exec_nonzero"
+        or getattr(wrapper, "error_code", None) != "sandbox_exec_nonzero"
+        or getattr(wrapper, "task_id", None) != getattr(sandbox_run, "task_id", None)
+        or getattr(wrapper, "lane_id", None) != getattr(sandbox_run, "lane_id", None)
+        or getattr(wrapper, "agent_id", None)
+        != getattr(sandbox_run, "agent_id", None)
+        or getattr(getattr(wrapper, "failure_class", None), "value", None)
+        != "runtime"
+        or getattr(getattr(wrapper, "recoverability", None), "value", None)
+        != "agent_can_replan"
+        or getattr(getattr(wrapper, "effect_certainty", None), "value", None)
+        != "terminal_known"
+        or getattr(getattr(wrapper, "retry_eligibility", None), "value", None)
+        != "terminal"
+        or wrapper_facts.get("schema_version") != "sandbox_run_failure@1"
+        or wrapper_facts.get("sandbox_run_id") != run_id
+        or wrapper_facts.get("sandbox_workspace_id")
+        != getattr(sandbox_run, "sandbox_workspace_id", None)
+        or wrapper_facts.get("source_snapshot_artifact_id")
+        != getattr(sandbox_run, "source_snapshot_artifact_id", None)
+        or wrapper_facts.get("source_tree_digest")
+        != getattr(sandbox_run, "source_tree_digest", None)
+        or wrapper_facts.get("local_cause_count") != 1
+        or wrapper_facts.get("causal_error_code") != "hpc_stage_ref_required"
+        or wrapper_facts.get("causal_source_version")
+        != getattr(cause, "source_version", None)
+        or getattr(cause, "task_id", None) != getattr(sandbox_run, "task_id", None)
+        or getattr(cause, "lane_id", None) != getattr(sandbox_run, "lane_id", None)
+        or getattr(cause, "agent_id", None) != getattr(sandbox_run, "agent_id", None)
+        or getattr(getattr(cause, "failure_class", None), "value", None)
+        != "validation"
+        or getattr(getattr(cause, "recoverability", None), "value", None)
+        != "agent_can_replan"
+        or getattr(getattr(cause, "effect_certainty", None), "value", None)
+        != "no_effect"
+        or getattr(getattr(cause, "retry_eligibility", None), "value", None)
+        != "same_phase_safe"
+        or getattr(cause, "error_code", None) != "hpc_stage_ref_required"
+        or cause_facts.get("schema_version") != "sandbox_control_failure@1"
+        or cause_facts.get("sandbox_run_id") != run_id
+        or cause_facts.get("sandbox_workspace_id")
+        != getattr(sandbox_run, "sandbox_workspace_id", None)
+        or cause_facts.get("source_snapshot_artifact_id")
+        != getattr(sandbox_run, "source_snapshot_artifact_id", None)
+        or cause_facts.get("source_tree_digest")
+        != getattr(sandbox_run, "source_tree_digest", None)
+        or cause_facts.get("operation_admitted") is not False
+        or cause_facts.get("external_dispatch_started") is not False
+    ):
+        return None
+    return wrapper, cause
+
+
+def _local_failure_has_selected_owner_handoff(
+    *,
+    sandbox_run: object,
+    wrapper: object,
+    cause: object,
+    formal_attempt_id: str,
+    formal_attempt_closed: bool,
+    run_attempt_bindings: dict[str, str | None],
+    continuations: list[object],
+    runtime_signals: list[object],
+    tasks_by_id: dict[str, object],
+) -> bool:
+    run_id = str(getattr(sandbox_run, "sandbox_run_id", "") or "")
+    task_id = str(getattr(sandbox_run, "task_id", "") or "")
+    agent_id = str(getattr(sandbox_run, "agent_id", "") or "")
+    lane_id = getattr(sandbox_run, "lane_id", None)
+    wrapper_facts = dict(getattr(wrapper, "facts", None) or {})
+    cause_facts = dict(getattr(cause, "facts", None) or {})
+    if (
+        run_attempt_bindings.get(run_id) != formal_attempt_id
+        or wrapper_facts.get("attempt_id") != formal_attempt_id
+        or not task_id
+        or not agent_id
+        or tasks_by_id.get(task_id) is None
+        or (
+            not formal_attempt_closed
+            and not _task_accepts_replan(tasks_by_id.get(task_id))
+        )
+    ):
+        return False
+    if formal_attempt_closed:
+        return True
+
+    owner_refs = wrapper_facts.get("owner_wake_continuation_ids")
+    if isinstance(owner_refs, list):
+        for continuation_id in owner_refs:
+            continuation_matches = [
+                continuation
+                for continuation in continuations
+                if (
+                    getattr(continuation, "continuation_id", None)
+                    == continuation_id
+                    and getattr(continuation, "sandbox_run_id", None) == run_id
+                    and getattr(continuation, "session_id", None)
+                    == getattr(sandbox_run, "session_id", None)
+                    and getattr(continuation, "originating_agent_id", None)
+                    == agent_id
+                    and getattr(continuation, "originating_task_id", None)
+                    == task_id
+                    and getattr(continuation, "originating_lane_id", None)
+                    == lane_id
+                )
+            ]
+            if len(continuation_matches) != 1:
+                continue
+            if (
+                _exact_continuation_handoff_state(
+                    continuation_id=str(continuation_id),
+                    session_id=str(getattr(sandbox_run, "session_id", "") or ""),
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    lane_id=lane_id,
+                    runtime_signals=runtime_signals,
+                )
+                is not None
+            ):
+                return True
+
+    originating_signal_id = str(
+        cause_facts.get("originating_signal_id") or ""
+    )
+    return bool(
+        originating_signal_id
+        and _exact_originating_signal_handoff_state(
+            signal_id=originating_signal_id,
+            session_id=str(getattr(sandbox_run, "session_id", "") or ""),
+            agent_id=agent_id,
+            task_id=task_id,
+            lane_id=lane_id,
+            runtime_signals=runtime_signals,
+        )
+        is not None
+    )
+
+
 def _earliest_actionable_failure(
     *,
+    purpose: Literal["probe", "formal"],
+    formal_attempt_id: str | None,
+    formal_attempt_closed: bool,
     operation_projection: _OperationFactProjection,
     task_projection: _TaskFactProjection,
     sandbox_runs: list[object],
+    failures: list[object],
+    continuations: list[object],
+    runtime_signals: list[object],
+    run_attempt_bindings: dict[str, str | None],
+    tasks: list[object],
     active_suspension_task_ids: frozenset[str],
 ) -> _ActionableFailureCandidate | None:
     candidates: list[_ActionableFailureCandidate] = []
+    tasks_by_id = {
+        str(getattr(task, "task_id", "") or ""): task for task in tasks
+    }
+    recoverable_controlled_run_ids: set[str] = set()
     for operation in operation_projection.operations:
         status = str(operation.fact.get("status") or "")
         if status not in _FAILED_OPERATION_STATUSES:
+            continue
+        if _controlled_failure_is_selected_recoverable_history(
+            operation=operation,
+            purpose=purpose,
+            formal_attempt_id=formal_attempt_id,
+            formal_attempt_closed=formal_attempt_closed,
+            runtime_signals=runtime_signals,
+            tasks_by_id=tasks_by_id,
+        ):
+            recoverable_controlled_run_ids.add(
+                str(operation.fact.get("sandbox_run_id") or "")
+            )
             continue
         projection_error_code = operation.fact.get("projection_error_code")
         causal_failure = operation.causal_failure
@@ -953,6 +1303,59 @@ def _earliest_actionable_failure(
         sandbox_run_id = str(
             getattr(sandbox_run, "sandbox_run_id", "") or ""
         )
+        if (
+            sandbox_run_id in recoverable_controlled_run_ids
+            and getattr(sandbox_run, "error_code", None)
+            == "sandbox_exec_nonzero"
+        ):
+            continue
+        local_chain = _exact_local_run_failure_chain(
+            sandbox_run=sandbox_run,
+            failures=failures,
+        )
+        if local_chain is not None:
+            wrapper, cause = local_chain
+            if (
+                purpose == "formal"
+                and formal_attempt_id
+                and _local_failure_has_selected_owner_handoff(
+                    sandbox_run=sandbox_run,
+                    wrapper=wrapper,
+                    cause=cause,
+                    formal_attempt_id=formal_attempt_id,
+                    formal_attempt_closed=formal_attempt_closed,
+                    run_attempt_bindings=run_attempt_bindings,
+                    continuations=continuations,
+                    runtime_signals=runtime_signals,
+                    tasks_by_id=tasks_by_id,
+                )
+            ):
+                continue
+            projected_cause = {
+                **_project_causal_failure(cause),
+                "sandbox_run_id": sandbox_run_id,
+                "wrapper_failure_id": getattr(wrapper, "failure_id", None),
+                "wrapper_error_code": getattr(wrapper, "error_code", None),
+                "attempt_id": run_attempt_bindings.get(sandbox_run_id),
+            }
+            candidates.append(
+                _ActionableFailureCandidate(
+                    occurred_at=str(getattr(cause, "created_at", "") or ""),
+                    stable_id=f"sandbox:{sandbox_run_id}",
+                    blocker_code="hpc_stage_ref_required",
+                    wrapper_code="sandbox_exec_nonzero",
+                    causal_failure=projected_cause,
+                )
+            )
+            continue
+        wrapper_count = sum(
+            1
+            for failure in failures
+            if (
+                getattr(failure, "source_kind", None) == "sandbox_run"
+                and getattr(failure, "source_ref", None) == sandbox_run_id
+            )
+        )
         candidates.append(
             _ActionableFailureCandidate(
                 occurred_at=str(
@@ -960,8 +1363,12 @@ def _earliest_actionable_failure(
                 ),
                 stable_id=f"sandbox:{sandbox_run_id}",
                 blocker_code=(
-                    str(getattr(sandbox_run, "error_code", "") or "")
-                    or "sandbox_run_failed"
+                    "sandbox_run_failure_binding_invalid"
+                    if wrapper_count
+                    else (
+                        str(getattr(sandbox_run, "error_code", "") or "")
+                        or "sandbox_run_failed"
+                    )
                 ),
             )
         )

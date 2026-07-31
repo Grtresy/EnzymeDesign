@@ -30,8 +30,6 @@ from openzyme_core import MutationScopeService
 from openzyme_core import MutationWriterAdmissionReason
 from openzyme_core import MutationWriterTurnFactory
 from openzyme_core import ScientificAttemptError
-from openzyme_core import ScientificAttemptLifecycleIntegrityError
-from openzyme_core import ScientificAttemptLifecycleResolver
 from openzyme_core import ScientificAttemptScopeRolloverEnvelope
 from openzyme_core import ScientificAttemptScopeRolloverIntegrityError
 from openzyme_core import ScientificAttemptScopeRolloverPhase
@@ -2356,6 +2354,11 @@ class LiveAoxAttemptRunner:
                 session_id=session_id,
                 purpose=purpose,
                 formal_attempt_closed=formal_attempt_closed,
+                formal_attempt_id=(
+                    None
+                    if attempt_authority is None
+                    else str(attempt_authority["attempt_id"])
+                ),
             ),
         )
 
@@ -3017,7 +3020,6 @@ class LiveAoxAttemptRunner:
         last_operation_fact_count = 0
         last_operation_facts_digest = canonical_digest([])
         last_operation_facts_truncated = False
-        controlled_failure_handoff_source_ref: str | None = None
         for drain_number in range(1, self.max_drains + 1):
             if time.monotonic() - started > self.timeout_seconds:
                 break
@@ -3051,11 +3053,6 @@ class LiveAoxAttemptRunner:
                 fault_blob_root=fault_blob_root,
                 fault_receipt=fault_receipt,
                 attempt_authority=attempt_authority,
-                max_signals_override=(
-                    1
-                    if controlled_failure_handoff_source_ref is not None
-                    else None
-                ),
             )
             last_workspace = coordination.workspace
             last_workspace_response_binding = coordination.workspace_response_binding
@@ -3146,23 +3143,6 @@ class LiveAoxAttemptRunner:
                         receipt=fault_receipt,
                     ):
                         continue
-                if (
-                    state == "failed"
-                    and controlled_failure_handoff_source_ref is None
-                    and (
-                        handoff_source_ref
-                        := self._recoverable_controlled_operation_handoff_source(
-                            provider,
-                            session_id=session_id,
-                            purpose=purpose,
-                            attempt_authority=attempt_authority,
-                            observation=observation,
-                        )
-                    )
-                    is not None
-                ):
-                    controlled_failure_handoff_source_ref = handoff_source_ref
-                    continue
                 return (
                     SessionDriveResult(
                         session_id=session_id,
@@ -3336,205 +3316,6 @@ class LiveAoxAttemptRunner:
             ),
             fault_receipt,
         )
-
-    @staticmethod
-    def _recoverable_controlled_operation_handoff_source(
-        provider: SQLiteRepositoryProvider,
-        *,
-        session_id: str,
-        purpose: Literal["probe", "formal"],
-        attempt_authority: Mapping[str, object] | None,
-        observation: AoxSessionRuntimeObservation,
-    ) -> str | None:
-        causal_failure = observation.causal_failure
-        if (
-            purpose != "formal"
-            or attempt_authority is None
-            or attempt_authority.get("scope") != "formal"
-            or observation.state != "failed"
-            or causal_failure is None
-            or causal_failure.get("failure_class") != "controlled_effect"
-            or causal_failure.get("recoverability") != "agent_can_replan"
-            or causal_failure.get("effect_certainty") != "no_effect"
-            or causal_failure.get("retry_eligibility") != "terminal"
-            or causal_failure.get("source_kind") != "continuation"
-            or observation.barrier.counts.active_mutation_writers != 0
-        ):
-            return None
-        attempt_id = str(attempt_authority.get("attempt_id") or "")
-        operation_id = str(causal_failure.get("operation_id") or "")
-        execution_id = str(causal_failure.get("execution_id") or "")
-        continuation_id = str(causal_failure.get("continuation_id") or "")
-        failure_id = str(causal_failure.get("failure_id") or "")
-        if not all(
-            (attempt_id, operation_id, execution_id, continuation_id, failure_id)
-        ):
-            return None
-
-        matching_facts = [
-            fact
-            for fact in observation.operation_facts
-            if fact.get("operation_id") == operation_id
-        ]
-        if (
-            len(matching_facts) != 1
-            or matching_facts[0].get("scope") != "formal"
-            or matching_facts[0].get("attempt_id") != attempt_id
-            or matching_facts[0].get("execution_id") != execution_id
-            or matching_facts[0].get("continuation_id") != continuation_id
-            or matching_facts[0].get("failure_ref") != failure_id
-            or matching_facts[0].get("projection_error_code") is not None
-        ):
-            return None
-
-        with provider.read() as scope:
-            repositories = scope.repositories
-            operation = repositories.controlled_operations.get(operation_id)
-            execution = repositories.controlled_operation_executions.get(
-                execution_id
-            )
-            continuation = repositories.continuation_states.get(continuation_id)
-            attempt = repositories.scientific_attempts.get(attempt_id)
-            try:
-                attempt_lifecycle = (
-                    None
-                    if attempt is None
-                    else ScientificAttemptLifecycleResolver(
-                        repositories
-                    ).resolve(attempt)
-                )
-            except ScientificAttemptLifecycleIntegrityError:
-                return None
-            task_id = str(attempt_authority.get("task_id") or "")
-            lane_id = str(attempt_authority.get("lane_id") or "")
-            task = repositories.tasks.get(task_id)
-            bound_attempt_id = (
-                repositories.scientific_attempt_bindings.attempt_for_operation(
-                    operation_id
-                )
-            )
-            failures = repositories.failure_observations.list_by_source(
-                session_id=session_id,
-                source_kind="continuation",
-                source_ref=continuation_id,
-            )
-            signals = repositories.runtime_signals.list_by_session(session_id)
-            active_signals = [
-                signal
-                for signal in signals
-                if str(getattr(signal.status, "value", signal.status))
-                in {"pending", "claimed"}
-            ]
-            pending_approvals = (
-                repositories.approvals.list_pending_by_session(session_id)
-            )
-            active_invocations = repositories.invocations.list_active_by_session(
-                session_id
-            )
-            active_executions = [
-                item
-                for item in (
-                    repositories.controlled_operation_executions.list_by_session(
-                        session_id
-                    )
-                )
-                if not item.lifecycle_state.is_terminal
-            ]
-            active_continuations = [
-                item
-                for item in repositories.continuation_states.list_by_session(
-                    session_id
-                )
-                if not item.status.is_terminal
-            ]
-
-        if (
-            operation is None
-            or execution is None
-            or continuation is None
-            or attempt is None
-            or attempt_lifecycle is None
-            or task is None
-            or len(failures) != 1
-            or len(active_signals) != 1
-            or pending_approvals
-            or active_invocations
-            or active_executions
-            or active_continuations
-        ):
-            return None
-        failure = failures[0]
-        signal = active_signals[0]
-        expected_failure_facts = {
-            "continuation_id": continuation_id,
-            "operation_id": operation_id,
-            "execution_id": execution_id,
-            "terminal_outcome": "failed",
-        }
-        expected_source_version = (
-            f"execution:{execution_id}:{execution.state_version}"
-        )
-        task_status = str(getattr(task.status, "value", task.status))
-        if (
-            operation.session_id != session_id
-            or operation.task_id != task_id
-            or operation.lane_id != lane_id
-            or operation.status.value != "failed"
-            or operation.error_code != causal_failure.get("error_code")
-            or execution.operation_id != operation_id
-            or execution.session_id != session_id
-            or execution.task_id != task_id
-            or execution.lane_id != lane_id
-            or execution.lifecycle_state.value != "terminal"
-            or execution.terminal_outcome is None
-            or execution.terminal_outcome.value != "failed"
-            or execution.effect_certainty is not ExternalEffectCertainty.NO_EFFECT
-            or execution.retry_eligibility is not RetryEligibility.TERMINAL
-            or execution.error_code != causal_failure.get("error_code")
-            or continuation.operation_id != operation_id
-            or continuation.session_id != session_id
-            or continuation.sandbox_run_id != operation.sandbox_run_id
-            or continuation.status.value != "completed"
-            or continuation.delivery_state.value != "delivered"
-            or continuation.originating_task_id != task_id
-            or continuation.originating_lane_id != lane_id
-            or not continuation.originating_agent_id
-            or attempt.session_id != session_id
-            or attempt.task_id != task_id
-            or attempt.lane_id != lane_id
-            or attempt.scope.value != "formal"
-            or attempt_lifecycle.effective_status.value != "active"
-            or attempt.created_by != continuation.originating_agent_id
-            or bound_attempt_id != attempt_id
-            or task.assigned_ref != continuation.originating_agent_id
-            or task_status not in {"todo", "in_progress"}
-            or failure.failure_id != failure_id
-            or failure.source_version != expected_source_version
-            or failure.task_id != task_id
-            or failure.lane_id != lane_id
-            or failure.agent_id != continuation.originating_agent_id
-            or failure.failure_class.value != "controlled_effect"
-            or failure.recoverability.value != "agent_can_replan"
-            or failure.effect_certainty.value != "no_effect"
-            or failure.retry_eligibility.value != "terminal"
-            or failure.error_code != execution.error_code
-            or dict(failure.facts) != expected_failure_facts
-            or signal.status.value != "pending"
-            or signal.reason.value != "engine_completed"
-            or signal.source_ref != continuation_id
-            or signal.correlation_id != continuation_id
-            or signal.agent_id != continuation.originating_agent_id
-            or signal.task_id != task_id
-            or signal.lane_id != lane_id
-            or signal.attempt_count != 0
-            or signal.claimed_at is not None
-            or signal.claimed_by is not None
-            or signal.claim_expires_at is not None
-            or signal.session_lease_token is not None
-            or signal.session_fencing_token is not None
-        ):
-            return None
-        return continuation_id
 
     def _grant_formal_attempt_authority_if_ready(
         self,
@@ -3801,15 +3582,10 @@ class LiveAoxAttemptRunner:
         fault_blob_root: Path | None,
         fault_receipt: FaultInjectionReceipt | None,
         attempt_authority: Mapping[str, object] | None = None,
-        max_signals_override: int | None = None,
     ) -> _DrainCoordinationResult:
         """Admit one bounded runtime command and coordinate its durable approvals."""
 
-        max_signals = (
-            self.max_signals_per_drain
-            if max_signals_override is None
-            else max_signals_override
-        )
+        max_signals = self.max_signals_per_drain
         if isinstance(max_signals, bool) or max_signals < 1:
             raise ValueError("runtime drain max_signals must be a positive integer")
         drain_errors: list[Exception] = []
