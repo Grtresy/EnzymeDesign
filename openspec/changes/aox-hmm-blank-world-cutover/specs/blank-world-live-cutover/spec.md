@@ -513,11 +513,12 @@ Each formal acceptance attempt SHALL generate a canonical evidence payload and d
 Diagnostic and formal authorities, roots and sealed evidence SHALL remain schema- and
 identity-disjoint, and every diagnostic decision SHALL remain
 `acceptance_eligible=false`. The runtime MUST NOT expose `run-live`,
-`run-diagnostic-live`, an AOX automatic runner, or a command that consumes authority
-and then drives a session until a derived terminal state. Authority mint/consume,
-pin, preflight, process supervision and evidence verification MAY remain independent
-operator shells, but they MUST NOT choose the next message, drain, approval, retry,
-task state, attempt state, report state or campaign decision.
+`run-diagnostic-live`, an AOX automatic runner, a diagnostic authority mint/consume
+command, or any command that consumes authority and then drives a session until a
+derived terminal state. Formal authority declaration/consumption, pin, preflight,
+process supervision and evidence verification MAY remain independent operator shells,
+but they MUST NOT choose the next message, drain, approval, retry, task state, attempt
+state, report state or campaign decision.
 
 #### Scenario: Reject promotion of diagnostic evidence
 - **WHEN** historical diagnostic authority, state, effects, bytes or a diagnostic decision are presented to a formal verifier or reducer
@@ -532,13 +533,26 @@ After an exact plan has been consumed, preflight SHALL first validate the clean
 launch identity, committed pin pair, current full architecture qualification,
 runtime configuration, exact plan/consumption binding and unused slot. Preflight
 MUST then atomically publish one mode-private no-replace
-`aox_attempt_authority_slot_claim@1` sibling before any root creation. The claim
-MUST bind campaign, plan/consumption, exact ordinal, attempt/session/task/lane/
-envelope/request and campaign-root identity. Only after that claim succeeds MAY it
+`aox_attempt_authority_slot_claim@2` sibling before any root creation. The claim
+MUST bind campaign, plan/consumption, exact ordinal, session/task/envelope/root/
+request, campaign-root identity and a deterministic source-derived `launch_id`. It
+MUST NOT contain or imply an attempt id, lane id or admission idempotency key. Only
+after that claim succeeds MAY it
 create that slot's one fresh private root, copy the exact claim into its evidence
-root and seal `aox_attempt_preflight@2`; the receipt MUST state that Host was not started and MUST
+root and seal `aox_attempt_preflight@3`; the receipt MUST state that Host was not started and MUST
 be rejected when rebound, replayed, symlinked, drifted or reused after any
 session/attempt state exists.
+
+Within the session the assigned executor SHALL create a real lane and bind its
+canonical execution task using ordinary lane tools before invoking
+`attempt.create`. The tool SHALL accept only the authority envelope and one
+idempotency key; task focus, lane, campaign, workflow contract, scope, resources,
+effect classes and private routes SHALL be derived from canonical Host state. Both
+request persistence and Host finalization MUST revalidate the exact current task
+assignee. The Host SHALL generate the admission and attempt identities only at
+finalization and deliver those late-bound facts through the canonical owner wake.
+Wrong actor, reassignment, absent/foreign lane, ambiguous authority or legacy
+caller-supplied identity fields MUST create no attempt and consume no effect.
 
 `serve-attempt` MAY start only the fixed loopback production Host in one local
 process group using that exact preflight receipt. It MUST disable background
@@ -595,7 +609,7 @@ startup/retirement receipts, complete public receipt chain, sealed final
 workspace/event/evidence responses, source attestations and MICU snapshots before
 creating any output. It SHALL reconstruct one source-bound
 `aox_blank_world_attempt_bundle@3` with profile
-`aox_public_conductor_bundle@1`, install it atomically without replacement, and
+`aox_public_conductor_bundle@2`, install it atomically without replacement, and
 make the sealed source set independently reconstructable by the network-free
 verifier. Any missing/extra/non-2xx/discontinuous command, identity drift,
 noncanonical business closure, invalid task/report/finalization state, symlink,
@@ -603,9 +617,13 @@ source drift or partial output MUST leave no sealed bundle.
 
 Executable architecture qualification SHALL prove the retained composition by
 constructing the production FastAPI application through the real composition factory,
-writing and rereading file-backed SQLite through public routes, and observing typed
-fail-closed behavior from the exact fault/export routes before an attempt exists. It
-MUST NOT substitute source inspection for production reachability. Deleted
+composing its actual route registry, and writing/rereading file-backed SQLite through
+the production V3 service plus canonical lane/scientific tool handlers. It SHALL prove
+one assignee-bound late-created attempt, wrong-actor no-effect, reassignment-before-
+finalizer rejection, and typed fault/export failure before a matching closed attempt.
+It MUST NOT substitute source inspection for production reachability. Deleted
+diagnostic authority mint/consume, public scientific mutation/finalizer routes and
+CLI, Core `create_attempt` compatibility, private admission argument projection,
 `AttemptRunner`, legacy emitter, test builder, browser helper and automatic driver
 surfaces SHALL remain absent. Test fixtures MAY construct evidence only from the tests
 package and MUST NOT be a production caller.
@@ -623,7 +641,7 @@ package and MUST NOT be a production caller.
 - **THEN** finalization fails before destination creation and none of those facts can be relabelled as a closed attempt or campaign decision
 
 ### Requirement: Three-attempt GO campaign
-Local Live cutover SHALL be GO only after one formal acceptance campaign and one exact authority plan produce ordinal 1, 2 and 3 in that order: two consecutive independent positive attempts on the same exact-seven launch identity, followed by one `derived_required_artifact_blob_byte_flip@2` attempt that fails closed. Every attempt/session/task/lane/envelope/selection/root/receipt-chain identity MUST be non-empty and unique across the three slots. The fault MUST traverse the real exact-14 NCBI `proteins.fasta` through `aox_hmm_reference_set_selection@1` to derived `AOX_ref21.fasta`, consume the authority-bound public capability before its unique pending MAFFT consumer, and terminate that consumer with exact `artifact_blob_digest_mismatch`. Positive attempts MUST use different clean roots and MUST each prove exact three-task completion, publish a source-linked report, preserve a final answer and pass offline evidence verification. Diagnostic live runs, implementation completion, and non-live test completion MUST NOT be reported as Live completion before all three fresh formal bundles and the sealed reducer decision exist.
+Local Live cutover SHALL be GO only after one formal acceptance campaign and one exact authority plan produce ordinal 1, 2 and 3 in that order: two consecutive independent positive attempts on the same exact-seven launch identity, followed by one `derived_required_artifact_blob_byte_flip@2` attempt that fails closed. Every session/task/envelope/root/receipt-chain launch identity MUST be non-empty and unique across the three slots; after Host finalization, every canonical attempt/lane/admission-request/admission-idempotency/selection identity MUST independently be non-empty and unique across the three real control graphs. No outer launch artifact may supply those late-bound control identities. The fault MUST traverse the real exact-14 NCBI `proteins.fasta` through `aox_hmm_reference_set_selection@1` to derived `AOX_ref21.fasta`, consume the authority-bound public capability before its unique pending MAFFT consumer, and terminate that consumer with exact `artifact_blob_digest_mismatch`. Positive attempts MUST use different clean roots and MUST each prove exact three-task completion, publish a source-linked report, preserve a final answer and pass offline evidence verification. Diagnostic live runs, implementation completion, and non-live test completion MUST NOT be reported as Live completion before all three fresh formal bundles and the sealed reducer decision exist.
 
 #### Scenario: Campaign reaches GO
 - **WHEN** attempts one and two independently satisfy every positive criterion and attempt three seals `aox_fault_negative_state_closure@1` proving execution failed/blocked/cancelled, reporting did not complete or publish, no ready/published report or draft exists, no alternate target consumer succeeded, no downstream fixed deliverable exists, durable events/conversation/final failure agree, and all fault-attempt MICU usage is attributed to this campaign

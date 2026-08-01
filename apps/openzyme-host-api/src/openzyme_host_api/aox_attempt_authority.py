@@ -5,6 +5,7 @@ from datetime import UTC
 from datetime import datetime
 import json
 from pathlib import Path
+import re
 import secrets
 import stat
 from typing import Any
@@ -17,16 +18,17 @@ from .aox_cutover_evidence import canonical_json_bytes
 from .aox_cutover_evidence import CutoverEvidenceError
 from .aox_live_run_class import AoxLiveRunClass
 from .aox_live_run_class import FORMAL_ACCEPTANCE_RUN_POLICY
-from .aox_scientific_contract import (
-    AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST,
-)
 from .aox_scientific_contract import AOX_SELECTED_CHAIN_WORKFLOW_ID
 
 
-AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID = "aox_live_attempt_authority_plan@1"
-AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID = "aox_live_attempt_authority_consumption@2"
-AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID = "aox_attempt_authority_slot_claim@1"
+AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID = "aox_live_attempt_authority_plan@2"
+AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID = "aox_live_attempt_authority_consumption@3"
+AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID = "aox_attempt_authority_slot_claim@2"
 AOX_ATTEMPT_AUTHORITY_GRANTOR_REF = "user:local-dev"
+
+_LEGACY_PLAN_SCHEMA_ID = "aox_live_attempt_authority_plan@1"
+_LEGACY_CONSUMPTION_SCHEMA_ID = "aox_live_attempt_authority_consumption@2"
+_LEGACY_SLOT_CLAIM_SCHEMA_ID = "aox_attempt_authority_slot_claim@1"
 
 _PLAN_FIELDS = frozenset(
     {
@@ -45,6 +47,19 @@ _SLOT_FIELDS = frozenset(
     {
         "ordinal",
         "attempt_kind",
+        "session_id",
+        "task_id",
+        "root_ref",
+        "scope",
+        "authority_request",
+        "envelope_id",
+        "request_digest",
+    }
+)
+_LEGACY_SLOT_FIELDS = frozenset(
+    {
+        "ordinal",
+        "attempt_kind",
         "attempt_id",
         "session_id",
         "task_id",
@@ -57,6 +72,7 @@ _SLOT_FIELDS = frozenset(
 )
 _ATTEMPT_ID_PATTERN = FORMAL_ACCEPTANCE_RUN_POLICY.attempt_id_pattern
 _CAMPAIGN_ID_PATTERN = FORMAL_ACCEPTANCE_RUN_POLICY.campaign_id_pattern
+_CONTROL_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")
 
 
 def _utc_now() -> str:
@@ -167,9 +183,11 @@ def build_aox_attempt_authority_plan(
         ("positive", "positive", "fault"),
         start=1,
     ):
-        attempt_id = f"{attempt_kind}-{secrets.token_hex(16)}"
-        session_id, task_id, lane_id, root_ref = (
-            FORMAL_ACCEPTANCE_RUN_POLICY.identities(attempt_id)
+        launch_nonce = secrets.token_hex(16)
+        session_id = f"sess_aox_formal_{launch_nonce}"
+        task_id = f"task_aox_execution_{launch_nonce}"
+        root_ref = (
+            f"formal-slots/{campaign_id}/{ordinal}/{launch_nonce}"
         )
         scope = "fault" if attempt_kind == "fault" else "formal"
         authority_arguments = {
@@ -198,10 +216,9 @@ def build_aox_attempt_authority_plan(
             {
                 "ordinal": ordinal,
                 "attempt_kind": attempt_kind,
-                "attempt_id": attempt_id,
                 "session_id": session_id,
                 "task_id": task_id,
-                "lane_id": lane_id,
+                "root_ref": root_ref,
                 "scope": scope,
                 "authority_request": request,
                 "envelope_id": envelope_id,
@@ -229,16 +246,25 @@ def validate_aox_attempt_authority_plan(
     architecture_qualification: Mapping[str, object],
 ) -> dict[str, Any]:
     normalized = dict(plan)
-    if (
-        set(normalized) != _PLAN_FIELDS
-        or normalized.get("schema_id")
-        != AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID
-    ):
+    schema_id = normalized.get("schema_id")
+    if set(normalized) != _PLAN_FIELDS or schema_id not in {
+        AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID,
+        _LEGACY_PLAN_SCHEMA_ID,
+    }:
         raise CutoverEvidenceError(
             "attempt_authority_plan_schema_invalid",
             "AOX attempt authority plan has an unsupported closed schema",
         )
-    expiry = _parse_future_timestamp(normalized.get("expires_at"))
+    legacy = schema_id == _LEGACY_PLAN_SCHEMA_ID
+    expiry = (
+        _parse_timestamp(
+            normalized.get("expires_at"),
+            code="attempt_authority_expiry_invalid",
+            label="expiry",
+        )
+        if legacy
+        else _parse_future_timestamp(normalized.get("expires_at"))
+    )
     issued = _parse_timestamp(
         normalized.get("issued_at"),
         code="attempt_authority_issued_at_invalid",
@@ -306,7 +332,7 @@ def validate_aox_attempt_authority_plan(
             "attempt_authority_plan_slots_invalid",
             "AOX authority plan must contain positive, positive, fault in order",
         )
-    seen_attempt_ids: set[str] = set()
+    seen_control_identities: set[tuple[str, ...]] = set()
     seen_envelope_ids: set[str] = set()
     resource_limits: tuple[int, int, int] | None = None
     expected_provider_token = (
@@ -316,34 +342,78 @@ def validate_aox_attempt_authority_plan(
         f"aox-hpc-routes@{expected_digests['identity_digest']}"
     )
     for ordinal, raw_slot in enumerate(slots, start=1):
-        if not isinstance(raw_slot, dict) or set(raw_slot) != _SLOT_FIELDS:
+        expected_slot_fields = _LEGACY_SLOT_FIELDS if legacy else _SLOT_FIELDS
+        if not isinstance(raw_slot, dict) or set(raw_slot) != expected_slot_fields:
             raise CutoverEvidenceError(
                 "attempt_authority_slot_schema_invalid",
                 "AOX authority slot has an unsupported closed schema",
                 details={"ordinal": ordinal},
             )
         slot = dict(raw_slot)
-        attempt_id = slot.get("attempt_id")
         attempt_kind = slot.get("attempt_kind")
-        (
-            expected_session_id,
-            expected_task_id,
-            expected_lane_id,
-            expected_root_ref,
-        ) = FORMAL_ACCEPTANCE_RUN_POLICY.identities(
-            "" if not isinstance(attempt_id, str) else attempt_id
-        )
         expected_scope = "fault" if attempt_kind == "fault" else "formal"
         request = slot.get("authority_request")
+        if legacy:
+            attempt_id = slot.get("attempt_id")
+            (
+                expected_session_id,
+                expected_task_id,
+                expected_lane_id,
+                expected_root_ref,
+            ) = FORMAL_ACCEPTANCE_RUN_POLICY.identities(
+                "" if not isinstance(attempt_id, str) else attempt_id
+            )
+            identity = (
+                str(attempt_id or ""),
+                str(slot.get("session_id") or ""),
+                str(slot.get("task_id") or ""),
+                str(slot.get("lane_id") or ""),
+            )
+            identity_valid = all(
+                (
+                    isinstance(attempt_id, str),
+                    isinstance(attempt_id, str)
+                    and _ATTEMPT_ID_PATTERN.fullmatch(attempt_id) is not None,
+                    slot.get("session_id") == expected_session_id,
+                    slot.get("task_id") == expected_task_id,
+                    slot.get("lane_id") == expected_lane_id,
+                )
+            )
+        else:
+            root_ref = slot.get("root_ref")
+            root_parts = str(root_ref or "").split("/")
+            launch_nonce = root_parts[-1] if len(root_parts) == 4 else ""
+            expected_root_ref = (
+                f"formal-slots/{campaign_id}/{ordinal}/{launch_nonce}"
+            )
+            identity = (
+                str(slot.get("session_id") or ""),
+                str(slot.get("task_id") or ""),
+                str(root_ref or ""),
+            )
+            identity_valid = all(
+                (
+                    re.fullmatch(r"[a-f0-9]{32}", launch_nonce) is not None,
+                    root_ref == expected_root_ref,
+                    slot.get("session_id")
+                    == f"sess_aox_formal_{launch_nonce}",
+                    slot.get("task_id")
+                    == f"task_aox_execution_{launch_nonce}",
+                    _CONTROL_ID_PATTERN.fullmatch(
+                        str(slot.get("session_id") or "")
+                    )
+                    is not None,
+                    _CONTROL_ID_PATTERN.fullmatch(
+                        str(slot.get("task_id") or "")
+                    )
+                    is not None,
+                )
+            )
         if (
             type(slot.get("ordinal")) is not int
             or slot.get("ordinal") != ordinal
-            or not isinstance(attempt_id, str)
-            or _ATTEMPT_ID_PATTERN.fullmatch(attempt_id) is None
-            or attempt_id in seen_attempt_ids
-            or slot.get("session_id") != expected_session_id
-            or slot.get("task_id") != expected_task_id
-            or slot.get("lane_id") != expected_lane_id
+            or not identity_valid
+            or identity in seen_control_identities
             or slot.get("scope") != expected_scope
             or not isinstance(request, dict)
         ):
@@ -352,7 +422,7 @@ def validate_aox_attempt_authority_plan(
                 "AOX authority slot identities do not reproduce",
                 details={"ordinal": ordinal},
             )
-        seen_attempt_ids.add(attempt_id)
+        seen_control_identities.add(identity)
         request_resources = (
             request.get("max_micu"),
             request.get("max_cost_microunits"),
@@ -552,7 +622,7 @@ def claim_aox_attempt_authority_slot(
     ordinal: int,
     campaign_root: Path,
 ) -> dict[str, Any]:
-    """Atomically consume one authority slot before any attempt root is created."""
+    """Atomically claim one launch slot without inventing attempt or lane truth."""
 
     slots = plan.get("slots")
     if (
@@ -581,6 +651,20 @@ def claim_aox_attempt_authority_slot(
     root_identity = canonical_digest(
         {"campaign_root": str(campaign_root.expanduser().absolute())}
     )
+    launch_id = (
+        "formal-slot-"
+        + canonical_digest(
+            {
+                "campaign_id": plan["campaign_id"],
+                "ordinal": ordinal,
+                "session_id": slot["session_id"],
+                "task_id": slot["task_id"],
+                "root_ref": slot["root_ref"],
+                "envelope_id": slot["envelope_id"],
+                "campaign_root_identity": root_identity,
+            }
+        ).removeprefix("sha256:")[:24]
+    )
     payload: dict[str, Any] = {
         "schema_id": AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID,
         "run_class": AoxLiveRunClass.FORMAL_ACCEPTANCE.value,
@@ -589,10 +673,10 @@ def claim_aox_attempt_authority_slot(
         "consumption_digest": canonical_digest(dict(consumption)),
         "ordinal": ordinal,
         "attempt_kind": slot["attempt_kind"],
-        "attempt_id": slot["attempt_id"],
+        "launch_id": launch_id,
         "session_id": slot["session_id"],
         "task_id": slot["task_id"],
-        "lane_id": slot["lane_id"],
+        "root_ref": slot["root_ref"],
         "envelope_id": slot["envelope_id"],
         "request_digest": slot["request_digest"],
         "campaign_root_identity": root_identity,
@@ -625,7 +709,7 @@ def validate_aox_attempt_authority_slot_claim(
     )
     payload = {key: value for key, value in normalized.items() if key != "claim_digest"}
     expected_path = attempt_authority_slot_claim_path(plan_path, ordinal)
-    expected_fields = {
+    current_fields = {
         "schema_id",
         "run_class",
         "campaign_id",
@@ -633,10 +717,10 @@ def validate_aox_attempt_authority_slot_claim(
         "consumption_digest",
         "ordinal",
         "attempt_kind",
-        "attempt_id",
+        "launch_id",
         "session_id",
         "task_id",
-        "lane_id",
+        "root_ref",
         "envelope_id",
         "request_digest",
         "campaign_root_identity",
@@ -644,16 +728,28 @@ def validate_aox_attempt_authority_slot_claim(
         "claimed_at",
         "claim_digest",
     }
+    legacy_fields = (current_fields - {"launch_id", "root_ref"}) | {
+        "attempt_id",
+        "lane_id",
+    }
+    legacy = normalized.get("schema_id") == _LEGACY_SLOT_CLAIM_SCHEMA_ID
+    schema_pair_valid = (
+        legacy and plan.get("schema_id") == _LEGACY_PLAN_SCHEMA_ID
+    ) or (
+        not legacy
+        and normalized.get("schema_id")
+        == AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID
+        and plan.get("schema_id") == AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID
+    )
+    expected_fields = legacy_fields if legacy else current_fields
     expected_bindings = {
         "campaign_id": plan.get("campaign_id"),
         "plan_digest": plan.get("plan_digest"),
         "consumption_digest": canonical_digest(dict(consumption)),
         "ordinal": ordinal,
         "attempt_kind": slot.get("attempt_kind"),
-        "attempt_id": slot.get("attempt_id"),
         "session_id": slot.get("session_id"),
         "task_id": slot.get("task_id"),
-        "lane_id": slot.get("lane_id"),
         "envelope_id": slot.get("envelope_id"),
         "request_digest": slot.get("request_digest"),
         "campaign_root_identity": canonical_digest(
@@ -661,10 +757,43 @@ def validate_aox_attempt_authority_slot_claim(
         ),
         "claim_file": expected_path.name,
     }
+    if legacy:
+        expected_bindings.update(
+            {
+                "attempt_id": slot.get("attempt_id"),
+                "lane_id": slot.get("lane_id"),
+            }
+        )
+    else:
+        expected_bindings.update(
+            {
+                "launch_id": (
+                    "formal-slot-"
+                    + canonical_digest(
+                        {
+                            "campaign_id": plan.get("campaign_id"),
+                            "ordinal": ordinal,
+                            "session_id": slot.get("session_id"),
+                            "task_id": slot.get("task_id"),
+                            "root_ref": slot.get("root_ref"),
+                            "envelope_id": slot.get("envelope_id"),
+                            "campaign_root_identity": canonical_digest(
+                                {
+                                    "campaign_root": str(
+                                        campaign_root.expanduser().absolute()
+                                    )
+                                }
+                            ),
+                        }
+                    ).removeprefix("sha256:")[:24]
+                ),
+                "root_ref": slot.get("root_ref"),
+            }
+        )
     if not all(
         (
             set(normalized) == expected_fields,
-            normalized.get("schema_id") == AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID,
+            schema_pair_valid,
             normalized.get("run_class") == AoxLiveRunClass.FORMAL_ACCEPTANCE.value,
             all(
                 normalized.get(key) == value for key, value in expected_bindings.items()
@@ -735,8 +864,15 @@ def validate_aox_attempt_authority_consumption(
 ) -> dict[str, Any]:
     normalized = dict(receipt)
     expected_path = attempt_authority_consumption_path(plan_path)
+    plan_schema_id = plan.get("schema_id")
+    expected_receipt_schema = (
+        _LEGACY_CONSUMPTION_SCHEMA_ID
+        if plan_schema_id == _LEGACY_PLAN_SCHEMA_ID
+        else AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID
+    )
     if (
-        plan.get("schema_id") != AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID
+        plan_schema_id
+        not in {AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID, _LEGACY_PLAN_SCHEMA_ID}
         or not isinstance(plan.get("slots"), list)
         or len(plan["slots"]) != 3
     ):
@@ -755,12 +891,10 @@ def validate_aox_attempt_authority_consumption(
             "consumption_file",
             "consumed_at",
         }
-        or normalized.get("schema_id")
-        != AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID
+        or normalized.get("schema_id") != expected_receipt_schema
         or normalized.get("run_class")
         != AoxLiveRunClass.FORMAL_ACCEPTANCE.value
-        or normalized.get("plan_schema_id")
-        != AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID
+        or normalized.get("plan_schema_id") != plan_schema_id
         or normalized.get("plan_digest") != plan.get("plan_digest")
         or normalized.get("campaign_id") != plan.get("campaign_id")
         or normalized.get("consumption_file") != expected_path.name
@@ -823,37 +957,11 @@ def authority_grant_payload(slot: Mapping[str, object]) -> dict[str, Any]:
     return request
 
 
-def attempt_admission_arguments(slot: Mapping[str, object]) -> dict[str, Any]:
-    request = dict(slot["authority_request"])
-    provider = list(request["allowed_providers"])
-    hpc_targets = list(request["allowed_hpc_targets"])
-    return {
-        "envelope_id": slot["envelope_id"],
-        "task_id": slot["task_id"],
-        "lane_id": slot["lane_id"],
-        "campaign_id": request["campaign_id"],
-        "workflow_id": request["workflow_id"],
-        "scope": slot["scope"],
-        "workflow_contract_digest": (
-            AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
-        ),
-        "requested_effect_classes": list(
-            request["allowed_effect_classes"]
-        ),
-        "reserved_micu": request["max_micu"],
-        "reserved_cost_microunits": request["max_cost_microunits"],
-        "reserved_wall_time_seconds": request["max_wall_time_seconds"],
-        "provider": provider[0] if len(provider) == 1 else None,
-        "hpc_target": hpc_targets[0] if len(hpc_targets) == 1 else None,
-    }
-
-
 __all__ = [
     "AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID",
     "AOX_ATTEMPT_AUTHORITY_GRANTOR_REF",
     "AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID",
     "AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID",
-    "attempt_admission_arguments",
     "attempt_authority_consumption_path",
     "attempt_authority_slot_claim_path",
     "authority_grant_payload",

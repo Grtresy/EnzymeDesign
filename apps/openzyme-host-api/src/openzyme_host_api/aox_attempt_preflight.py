@@ -19,7 +19,7 @@ from .aox_cutover_evidence import (
 from .aox_live_run_class import AoxLiveRunClass
 
 
-ATTEMPT_PREFLIGHT_SCHEMA_ID = "aox_attempt_preflight@2"
+ATTEMPT_PREFLIGHT_SCHEMA_ID = "aox_attempt_preflight@3"
 ATTEMPT_PREFLIGHT_FILENAME = "aox-attempt-preflight.json"
 ATTEMPT_SLOT_CLAIM_FILENAME = "aox-attempt-slot-claim.json"
 _PREFLIGHT_FIELDS = {
@@ -39,7 +39,7 @@ _PREFLIGHT_FIELDS = {
     "receipt_digest",
 }
 _ROOT_PROOF_FIELDS = {
-    "schema_id", "architecture_qualification", "attempt_id", "attempt_kind",
+    "schema_id", "architecture_qualification", "launch_id", "attempt_kind",
     "root_identity", "root_names", "initial_entries", "sqlite_preexisting",
     "provider_cache_mode", "evidence_cache_reuse", "hpc_workspace_label",
     "allowed_prerequisite_digest", "allowed_prerequisites",
@@ -72,7 +72,6 @@ def build_attempt_preflight_receipt(
         (
             isinstance(slots, list),
             isinstance(slots, list) and dict(slot) in slots,
-            slot.get("attempt_id") == roots.attempt_id,
             slot.get("attempt_kind") == roots.attempt_kind,
             authority_consumption.get("plan_digest")
             == authority_plan.get("plan_digest"),
@@ -86,14 +85,15 @@ def build_attempt_preflight_receipt(
             slot_claim.get("consumption_digest")
             == canonical_digest(dict(authority_consumption)),
             slot_claim.get("ordinal") == slot.get("ordinal"),
+            slot_claim.get("launch_id") == roots.launch_id,
+            roots.proof.get("launch_id") == roots.launch_id,
             all(
                 slot_claim.get(key) == slot.get(key)
                 for key in (
                     "attempt_kind",
-                    "attempt_id",
                     "session_id",
                     "task_id",
-                    "lane_id",
+                    "root_ref",
                     "envelope_id",
                     "request_digest",
                 )
@@ -181,7 +181,7 @@ def load_attempt_preflight_receipt(
         value.get("root_proof"),
         value.get("slot_claim"),
     )
-    attempt_root = path.parent.parent
+    launch_root = path.parent.parent
     payload = {key: item for key, item in value.items() if key != "receipt_digest"}
     structural = all(
         (
@@ -219,7 +219,9 @@ def load_attempt_preflight_receipt(
             bool(proof.get("hpc_workspace_label")),
             str(proof.get("root_identity") or "").startswith("sha256:"),
             value.get("receipt_digest") == canonical_digest(payload),
-            slot.get("attempt_id") == attempt_root.name == proof.get("attempt_id"),
+            slot_claim.get("launch_id")
+            == launch_root.name
+            == proof.get("launch_id"),
             slot.get("attempt_kind") == proof.get("attempt_kind"),
             value.get("allowed_prerequisite_digest")
             == proof.get("allowed_prerequisite_digest"),
@@ -236,10 +238,9 @@ def load_attempt_preflight_receipt(
                 slot_claim.get(key) == slot.get(key)
                 for key in (
                     "attempt_kind",
-                    "attempt_id",
                     "session_id",
                     "task_id",
-                    "lane_id",
+                    "root_ref",
                     "envelope_id",
                     "request_digest",
                 )
@@ -252,23 +253,23 @@ def load_attempt_preflight_receipt(
     )
     if not proof_valid:
         _reject("attempt_preflight_identity_mismatch", "preflight identity does not reproduce")
-    resolved_attempt = attempt_root.resolve(strict=True)
-    metadata = attempt_root.lstat()
+    resolved_launch = launch_root.resolve(strict=True)
+    metadata = launch_root.lstat()
     if not all((
         stat.S_ISDIR(metadata.st_mode),
-        not attempt_root.is_symlink(),
+        not launch_root.is_symlink(),
         stat.S_IMODE(metadata.st_mode) & 0o077 == 0,
-        resolved_attempt == attempt_root,
+        resolved_launch == launch_root,
     )):
-        _reject("attempt_preflight_root_invalid", "attempt root is not one private real directory")
-    roots = {kind: attempt_root / name for kind, name in _ROOT_NAMES.items()}
+        _reject("attempt_preflight_root_invalid", "launch root is not one private real directory")
+    roots = {kind: launch_root / name for kind, name in _ROOT_NAMES.items()}
     for kind, root in roots.items():
         metadata, resolved = root.lstat(), root.resolve(strict=True)
         if not all((
             stat.S_ISDIR(metadata.st_mode),
             not root.is_symlink(),
             stat.S_IMODE(metadata.st_mode) & 0o077 == 0,
-            resolved_attempt in resolved.parents,
+            resolved_launch in resolved.parents,
         )):
             _reject("attempt_preflight_root_invalid", "root topology drifted", root_kind=kind)
     if require_unstarted:
@@ -279,7 +280,7 @@ def load_attempt_preflight_receipt(
         }
         evidence_entries = sorted(item.name for item in roots["evidence"].iterdir())
         if (
-            (attempt_root / "control-plane.sqlite3").exists()
+            (launch_root / "control-plane.sqlite3").exists()
             or nonempty
             or (
                 evidence_entries

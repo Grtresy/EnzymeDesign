@@ -135,6 +135,15 @@ def _digest(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
 
 
+def _launch_id(value: str) -> str:
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return f"formal-slot-{digest[:24]}"
+
+
+def _fixture_artifact_root(tmp_path: Path, *, attempt_kind: str) -> Path:
+    return tmp_path / "campaign" / _launch_id(f"{attempt_kind}-one") / "artifacts"
+
+
 def _digest_bytes(value: bytes) -> str:
     return f"sha256:{hashlib.sha256(value).hexdigest()}"
 
@@ -474,7 +483,7 @@ def _public_api_receipts(
     ]
 
 
-def test_public_api_receipt_route_accepts_compact_pending_approval_read() -> None:
+def test_public_api_receipt_routes_reject_retired_current_mutations() -> None:
     route = "/v3/sessions/sess_aox_live/pending-approvals"
 
     assert cutover_evidence._public_api_route_is_canonical("GET", route)
@@ -485,6 +494,23 @@ def test_public_api_receipt_route_accepts_compact_pending_approval_read() -> Non
     command_route = "/v3/sessions/sess_aox_live/runtime/commands/runtime_command_001"
     assert cutover_evidence._public_api_route_is_canonical("GET", command_route)
     assert not cutover_evidence._public_api_route_is_canonical("POST", command_route)
+    retired_routes = (
+        "/v3/sessions/sess_aox_live/scientific-attempt-commands",
+        "/v3/sessions/sess_aox_live/scientific-attempt-admissions/finalize",
+        "/v3/sessions/sess_aox_live/scientific-attempt-closures/finalize",
+    )
+    assert all(
+        not cutover_evidence._public_api_route_is_canonical("POST", retired)
+        for retired in retired_routes
+    )
+    assert all(
+        cutover_evidence._public_api_route_is_canonical(
+            "POST",
+            retired,
+            allow_legacy_scientific_mutations=True,
+        )
+        for retired in retired_routes
+    )
 
 
 def _ledger_snapshot(
@@ -2080,6 +2106,7 @@ def _mutation_scope_projection(
 def _valid_evidence(
     artifact_root: Path,
     *,
+    attempt_id: str,
     attempt_kind: str,
     clean_world: dict[str, object],
     run_suffix: str | None = None,
@@ -2109,7 +2136,7 @@ def _valid_evidence(
     supervision_receipt = {
         "schema_id": "aox_live_attempt_supervision_receipt@1",
         "mode": "process_isolated_spawn",
-        "attempt_id": clean_world["attempt_id"],
+        "attempt_id": attempt_id,
         "attempt_kind": attempt_kind,
         "campaign_id": _digest("campaign-supervision"),
         "process_epoch": "a" * 32,
@@ -4667,12 +4694,13 @@ def _build_bundle(
     roots = create_blank_world_roots(
         tmp_path / "campaign",
         attempt_kind=attempt_kind,
-        attempt_id=f"{attempt_kind}-one",
+        launch_id=_launch_id(f"{attempt_kind}-one"),
         allowed_prerequisites=_allowed_prerequisites(identity),
         architecture_qualification=_architecture_qualification(identity),
     )
     evidence = _valid_evidence(
         roots.artifact_root,
+        attempt_id=f"{attempt_kind}-one",
         attempt_kind=attempt_kind,
         clean_world=roots.proof,
         scientific_branch=scientific_branch,
@@ -4681,7 +4709,7 @@ def _build_bundle(
     if mutate_evidence is not None:
         mutate_evidence(evidence)
     payload = build_attempt_bundle(
-        attempt_id=roots.attempt_id,
+        attempt_id=f"{attempt_kind}-one",
         attempt_kind=attempt_kind,
         identity=identity,
         clean_world=roots.proof,
@@ -5814,7 +5842,7 @@ def test_blank_world_preflight_creates_unique_empty_roots_without_public_paths(
     roots = create_blank_world_roots(
         tmp_path / "campaign",
         attempt_kind="positive",
-        attempt_id="positive-clean",
+        launch_id=_launch_id("positive-clean"),
         allowed_prerequisites=_allowed_prerequisites(),
         architecture_qualification=_architecture_qualification(),
     )
@@ -5832,7 +5860,8 @@ def test_blank_world_preflight_creates_unique_empty_roots_without_public_paths(
 
 
 def test_blank_world_preflight_rejects_preloaded_science(tmp_path: Path) -> None:
-    attempt_root = tmp_path / "campaign" / "positive-preloaded"
+    launch_id = _launch_id("positive-preloaded")
+    attempt_root = tmp_path / "campaign" / launch_id
     attempt_root.mkdir(parents=True)
     (attempt_root / "AOX_candidates.fasta").write_text(">old\nMOLD\n", encoding="utf-8")
 
@@ -5840,7 +5869,7 @@ def test_blank_world_preflight_rejects_preloaded_science(tmp_path: Path) -> None
         create_blank_world_roots(
             tmp_path / "campaign",
             attempt_kind="positive",
-            attempt_id="positive-preloaded",
+            launch_id=launch_id,
             allowed_prerequisites=_allowed_prerequisites(),
             architecture_qualification=_architecture_qualification(),
         )
@@ -5856,7 +5885,7 @@ def test_blank_world_preflight_rejects_science_in_allowed_prerequisites(
         create_blank_world_roots(
             tmp_path / "campaign",
             attempt_kind="positive",
-            attempt_id="positive-prerequisite",
+            launch_id=_launch_id("positive-prerequisite"),
             allowed_prerequisites={"alignment_fasta": ">cached\nMPEPTIDE\n"},
             architecture_qualification=_architecture_qualification(),
         )
@@ -6672,7 +6701,7 @@ def test_reference_chain_rejects_rebound_incomplete_ncbi_provider_set(
     tmp_path: Path,
     scientific_branch: str,
 ) -> None:
-    artifact_root = tmp_path / "campaign" / "positive-one" / "artifacts"
+    artifact_root = _fixture_artifact_root(tmp_path, attempt_kind="positive")
 
     def drop_coordinate_reference(evidence: dict[str, object]) -> None:
         artifact = next(
@@ -6794,7 +6823,7 @@ def _wrap_ncbi_response_as_raw_envelope(
 def test_provider_response_digest_can_be_recomputed_from_raw_byte_envelope(
     tmp_path: Path,
 ) -> None:
-    artifact_root = tmp_path / "campaign" / "positive-one" / "artifacts"
+    artifact_root = _fixture_artifact_root(tmp_path, attempt_kind="positive")
 
     def wrap_ncbi_response(evidence: dict[str, object]) -> None:
         _wrap_ncbi_response_as_raw_envelope(
@@ -6815,7 +6844,7 @@ def test_provider_response_digest_can_be_recomputed_from_raw_byte_envelope(
 def test_provider_raw_envelope_validates_all_responses_before_digest_match(
     tmp_path: Path,
 ) -> None:
-    artifact_root = tmp_path / "campaign" / "positive-one" / "artifacts"
+    artifact_root = _fixture_artifact_root(tmp_path, attempt_kind="positive")
 
     def add_malformed_tail(evidence: dict[str, object]) -> None:
         _wrap_ncbi_response_as_raw_envelope(
@@ -6980,7 +7009,7 @@ def test_fault_consumer_runner_expectation_is_closed_over_effective_config(
 
 
 def test_fault_final_assistant_must_bind_exact_failure_code(tmp_path: Path) -> None:
-    artifact_root = tmp_path / "campaign" / "fault-one" / "artifacts"
+    artifact_root = _fixture_artifact_root(tmp_path, attempt_kind="fault")
 
     def replace_with_success(evidence: dict[str, object]) -> None:
         success = "The AOX/HMM workflow is complete and ready for live cutover."
@@ -7014,7 +7043,7 @@ def test_fault_final_assistant_must_bind_exact_failure_code(tmp_path: Path) -> N
 
 
 def test_fault_ready_draft_is_not_negative_state_closure(tmp_path: Path) -> None:
-    artifact_root = tmp_path / "campaign" / "fault-one" / "artifacts"
+    artifact_root = _fixture_artifact_root(tmp_path, attempt_kind="fault")
 
     def add_ready_draft(evidence: dict[str, object]) -> None:
         def mutate_closure(closure: dict[str, object]) -> None:
@@ -7048,7 +7077,7 @@ def test_fault_ready_draft_is_not_negative_state_closure(tmp_path: Path) -> None
 
 
 def test_fault_execution_task_cannot_complete(tmp_path: Path) -> None:
-    artifact_root = tmp_path / "campaign" / "fault-one" / "artifacts"
+    artifact_root = _fixture_artifact_root(tmp_path, attempt_kind="fault")
 
     def complete_execution(evidence: dict[str, object]) -> None:
         task = next(item for item in evidence["tasks"] if item["role"] == "executor")
@@ -7083,7 +7112,7 @@ def test_fault_execution_task_cannot_complete(tmp_path: Path) -> None:
 
 
 def test_fault_alternate_target_consumer_cannot_succeed(tmp_path: Path) -> None:
-    artifact_root = tmp_path / "campaign" / "fault-one" / "artifacts"
+    artifact_root = _fixture_artifact_root(tmp_path, attempt_kind="fault")
 
     def add_successful_consumer(evidence: dict[str, object]) -> None:
         fault = evidence["fault_injection"]
@@ -7210,7 +7239,7 @@ def test_fault_unlisted_or_downstream_deliverable_is_rejected(tmp_path: Path) ->
 
 
 def test_fault_declared_downstream_deliverable_is_rejected(tmp_path: Path) -> None:
-    artifact_root = tmp_path / "campaign" / "fault-one" / "artifacts"
+    artifact_root = _fixture_artifact_root(tmp_path, attempt_kind="fault")
 
     def add_downstream_deliverable(evidence: dict[str, object]) -> None:
         _write_artifact(
@@ -7629,12 +7658,13 @@ def test_scoring_is_recomputed_not_trusted_from_declared_digest(tmp_path: Path) 
     roots = create_blank_world_roots(
         tmp_path / "campaign",
         attempt_kind="positive",
-        attempt_id="positive-wrong-score",
+        launch_id=_launch_id("positive-wrong-score"),
         allowed_prerequisites=_allowed_prerequisites(),
         architecture_qualification=_architecture_qualification(),
     )
     evidence = _valid_evidence(
         roots.artifact_root,
+        attempt_id="positive-wrong-score",
         attempt_kind="positive",
         clean_world=roots.proof,
     )
@@ -7644,7 +7674,7 @@ def test_scoring_is_recomputed_not_trusted_from_declared_digest(tmp_path: Path) 
         encoding="utf-8",
     )
     payload = build_attempt_bundle(
-        attempt_id=roots.attempt_id,
+        attempt_id="positive-wrong-score",
         attempt_kind="positive",
         identity=_identity(),
         clean_world=roots.proof,
@@ -7693,12 +7723,13 @@ def test_similarity_graph_is_recomputed_from_candidate_and_membership_bytes(
     roots = create_blank_world_roots(
         tmp_path / "campaign",
         attempt_kind="positive",
-        attempt_id="positive-wrong-graph",
+        launch_id=_launch_id("positive-wrong-graph"),
         allowed_prerequisites=_allowed_prerequisites(),
         architecture_qualification=_architecture_qualification(),
     )
     evidence = _valid_evidence(
         roots.artifact_root,
+        attempt_id="positive-wrong-graph",
         attempt_kind="positive",
         clean_world=roots.proof,
     )
@@ -7708,7 +7739,7 @@ def test_similarity_graph_is_recomputed_from_candidate_and_membership_bytes(
         encoding="utf-8",
     )
     payload = build_attempt_bundle(
-        attempt_id=roots.attempt_id,
+        attempt_id="positive-wrong-graph",
         attempt_kind="positive",
         identity=_identity(),
         clean_world=roots.proof,
@@ -7787,12 +7818,13 @@ def test_bundle_rejects_artifact_symlink_even_when_target_stays_in_root(
     roots = create_blank_world_roots(
         tmp_path / "campaign",
         attempt_kind="positive",
-        attempt_id="positive-symlink",
+        launch_id=_launch_id("positive-symlink"),
         allowed_prerequisites=_allowed_prerequisites(),
         architecture_qualification=_architecture_qualification(),
     )
     evidence = _valid_evidence(
         roots.artifact_root,
+        attempt_id="positive-symlink",
         attempt_kind="positive",
         clean_world=roots.proof,
     )
@@ -7803,7 +7835,7 @@ def test_bundle_rejects_artifact_symlink_even_when_target_stays_in_root(
 
     with pytest.raises(CutoverEvidenceError) as error:
         build_attempt_bundle(
-            attempt_id=roots.attempt_id,
+            attempt_id="positive-symlink",
             attempt_kind="positive",
             identity=_identity(),
             clean_world=roots.proof,
@@ -8146,7 +8178,7 @@ def test_known_positive_probe_rejects_raw_provider_body_digest_tamper(
     tmp_path: Path,
     provider: str,
 ) -> None:
-    artifact_root = tmp_path / "campaign" / "positive-one" / "artifacts"
+    artifact_root = _fixture_artifact_root(tmp_path, attempt_kind="positive")
 
     def tamper_raw_body(evidence: dict[str, object]) -> None:
         probe = evidence["known_positive_probe"]

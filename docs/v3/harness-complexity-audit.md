@@ -351,6 +351,21 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   process supervisor 只证明进程退休，offline verifier/reducer 仍是唯一 GO 权威。保留
   authority/pin/preflight/evidence shell，但它们不做业务判断。
 
+- [x] Formal launch plan 是否在 canonical objects 存在前预造 attempt/lane/admission shadow truth。
+
+  证据：r69 outer plan预声明attempt/lane，Codex又通过public generic scientific command代发
+  `attempt.create`；真实execution task没有lane，Host正确返回
+  `attempt_lane_scope_invalid/no_effect`。该轮已消费authority/root/session、provider与MICU，
+  但SQLite没有admission request或attempt。预声明identity没有帮助agent满足真实isolation，反而
+  让receipt/bundle把尚不存在的control当成truth。
+
+  修正记录：plan/claim/root proof/preflight/supervision只绑定campaign/ordinal/session/task/
+  envelope/root与launch id；删除public scientific mutation/finalizer、diagnostic authority与
+  Core compatibility入口。executor通过canonical lane tools建立lane，current assignee使用极小
+  `attempt.create`，Host finalizer二次校验assignee并late-bind canonical attempt。qualification
+  以production composition/file-SQLite覆盖positive、wrong actor、reassignment、legacy route和
+  deleted surface。Harness不替agent选择lane或scientific action，只拒绝不真实的binding。
+
 - [x] Lane 与 session lease 是否只是历史复杂度，应随 recovery machine 一并删除。
 
   证据：Lane symbols 仍有 105 个 Python 文件消费者，覆盖 Host/CLI API、cwd/branch、

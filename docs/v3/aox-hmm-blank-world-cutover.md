@@ -1,8 +1,8 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r67 are permanent NO-GO evidence. r68 is different: its authority was consumed, but the test stopped before root, Host, session or attempt creation because the required public export/startup/sealing path was not production-reachable. It is recorded as **prelaunch blocked**, not as a canonical r68 NO-GO. The r68 and post-r68 deletion-first repairs remove unreachable/pseudo-conductor requirements and install the exact public Codex-conductor production path described below. Local live cutover remains **NO-GO**: this implementation does not authorize r69 or any next rNN, a diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior authority, root, effect or evidence.
+Status: r43-r67 are permanent NO-GO evidence. r68 is authority-consumed prelaunch blocked before root/Host/session/attempt. r69 is authority/root/session/provider/MICU-consumed pre-admission blocked before an admission request or scientific attempt; neither is a canonical NO-GO, and neither state is reusable. The post-r69 deletion-first repair separates launch identity from Host late-bound scientific control as described below. Local live cutover remains **NO-GO**: this implementation does not authorize r70 or any next rNN, a diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
 
-Historical incident and pre-r68 command/observer/driver/browser sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract; in particular, every older `run-live`, `run-diagnostic-live`, observer, barrier, rollover, no-wakeup, `chrome-once` and browser-helper instruction is retired even where a historical section called it current at that time. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, scientific-attempt selection and qualification semantics are defined by the r68 public-conductor section below, [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
+Historical incident and pre-r70 command/observer/driver/browser/diagnostic-authority/public-finalizer sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract; in particular, every older `run-live`, `run-diagnostic-live`, diagnostic authority command, observer, barrier, rollover, no-wakeup, public generic scientific mutation/finalizer, `chrome-once` and browser-helper instruction is retired even where a historical section called it current at that time. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, late-bound scientific-attempt selection and qualification semantics are defined by the post-r69 section below, [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
 This document describes the operator/evidence boundary implemented by `openzyme_host_api.aox_cutover_evidence`. It does not turn the historical S15 fixture into live evidence and does not authorize seeded state, cached scientific outputs, the reference notebook, or copied reference results as attempt inputs.
 
@@ -2849,7 +2849,7 @@ The only positive production path is now:
 
 1. an atomic private no-replace claim of exact plan slot 1, 2 or 3 before any root exists, followed by
    consumed-slot `preflight`, which validates every authority/pin/qualification/config/root binding,
-   copies the claim into evidence and seals `aox_attempt_preflight@2` with
+   copies the claim into evidence and seals `aox_attempt_preflight@3` with
    `preflight_complete_host_not_started`;
 2. policy-free `serve-attempt`, which starts the fixed loopback Host and proves local retirement but
    sends no business command;
@@ -2860,7 +2860,7 @@ The only positive production path is now:
    control/events/product closure proves agent-owned scientific writes and Host-owned finalization,
    including artifact-boundary reads of the 17-deliverable receipt for a formal positive;
 5. one source-bound `finalize-and-seal` that prevalidates every source, atomically installs profile
-   `aox_public_conductor_bundle@1` as `aox_blank_world_attempt_bundle@3`, and supports independent
+   `aox_public_conductor_bundle@2` as `aox_blank_world_attempt_bundle@3`, and supports independent
    network-free reconstruction;
 6. the unchanged offline verifier and exact-three reducer as the only GO authority.
 
@@ -2880,6 +2880,50 @@ one campaign and plan, exact ordinal order 1/2/3, unique attempt/session/task/la
 root/receipt-chain identities, two exact positive closures and one full fault closure. A generic
 controlled failure remains `fault_contract_unproven`; it cannot turn this repair into GO. The next
 operator/Codex session starts from [the current r-series goal](aox-r-series-codex-goal.md).
+
+## r69 pre-admission blocked and post-r69 late-bound control
+
+r69 ran on clean commit `b0ed3ea767fb44c892a14f90f59a50a96d2aa58f` with campaign
+`aox_campaign_2a57780d6663d57da38621d6`. It consumed formal authority, its slot/root, a Host
+session, three PubMed requests and `512,357` MICU, taking the cumulative ledger to
+`128,702,989 / 500,000,000`. The execution task had no canonical lane. The old public generic
+scientific command therefore returned `attempt_lane_scope_invalid/no_effect` from `attempt.create`.
+There was no admission request, attempt, selection, closure, bundle or reducer decision. This is
+consumed **pre-admission blocked**, not a canonical r69 NO-GO. Every r69 plan, slot, root, session,
+provider effect, receipt and MICU attribution is sealed and non-reusable; no later implementation may
+backfill an r69 attempt identity.
+
+Current launch evidence is `aox_live_attempt_authority_plan@2`, consumption `@3`, slot claim `@2`,
+root proof `@3`, preflight `@3`, and Host startup/supervision `@2`. These schemas bind campaign,
+ordinal, session, task, envelope/root, campaign-root identity and a source-derived `launch_id`. They
+MUST NOT contain or derive an attempt id, lane id, admission request id or admission idempotency key.
+Legacy plans, claims, roots and receipts remain readable only by their frozen compatibility branches
+and cannot be paired with a current launch or promoted into formal acceptance.
+
+After session creation, the assigned executor uses canonical `lane.create` and `lane.bind_task` tools.
+Only then may the current task assignee call agent tool
+`attempt.create(envelope_id,idempotency_key)`. The Host derives campaign, workflow contract, scope,
+resources, effect classes and private provider/HPC routes from durable authority plus canonical
+task/lane state. It checks the assignee when recording the request and again when finalizing; only the
+Host finalizer generates the canonical admission and attempt identities. The source-bound owner wake
+then presents those late-bound facts to the executor. Wrong actor, reassignment, missing/foreign lane,
+ambiguous authority or caller-supplied legacy identities fail before attempt creation and external
+effect.
+
+The diagnostic authority mint/consume module and commands, public `scientific-attempt-commands`,
+public admission/closure finalizer API/CLI/client, Core `create_attempt` compatibility and private
+admission-arguments projector are deleted. Agent-owned selection/adoption/seal/close still occur
+through Harness tools; Host-owned transition finalization remains internal after bounded writer
+retirement. Codex uses only public coordination and inspect/workspace/events/export. Profile
+`aox_public_conductor_bundle@2` binds the authority slot to the real control graph and only then
+late-binds attempt/lane/admission/idempotency/selection identities. The reducer separately requires
+three unique launch identities and three unique sets of actual control identities.
+
+Production qualification composes the actual FastAPI route registry, file-backed SQLite, production
+V3 service, canonical lane handlers and scientific tools. It proves assignee-bound positive admission,
+wrong-actor no-effect, reassignment-before-finalizer rejection, legacy-route absence and typed
+fault/export failures. This repair runs no r70/live/MICU/provider/HPC/Chrome action and does not alter
+the offline verifier/reducer as the sole GO authority.
 
 r59 remains the latest numbered/formal live fact. It is a failed campaign whose
 exact-three plan is consumed and whose later slots cannot be reused. The later

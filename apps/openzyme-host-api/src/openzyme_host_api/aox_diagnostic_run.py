@@ -13,13 +13,15 @@ from .aox_cutover_evidence import (
     canonical_digest,
     canonical_json_bytes,
 )
-from .aox_diagnostic_authority import (
-    AOX_DIAGNOSTIC_AUTHORITY_CONSUMPTION_SCHEMA_ID,
-    AOX_DIAGNOSTIC_AUTHORITY_PLAN_SCHEMA_ID,
-)
 from .aox_live_run_class import AoxLiveRunClass, DIAGNOSTIC_RUN_POLICY
 
 
+AOX_DIAGNOSTIC_AUTHORITY_PLAN_SCHEMA_ID = (
+    "aox_diagnostic_attempt_authority_plan@1"
+)
+AOX_DIAGNOSTIC_AUTHORITY_CONSUMPTION_SCHEMA_ID = (
+    "aox_diagnostic_attempt_authority_consumption@1"
+)
 AOX_DIAGNOSTIC_DECISION_SCHEMA_ID = "aox_blank_world_diagnostic_decision@2"
 AOX_DIAGNOSTIC_DECISION_FILENAME = "diagnostic-decision.json"
 _SCHEMAS = {AOX_DIAGNOSTIC_DECISION_SCHEMA_ID, "aox_blank_world_diagnostic_decision@1"}

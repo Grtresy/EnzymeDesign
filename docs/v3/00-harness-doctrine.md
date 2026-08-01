@@ -190,3 +190,10 @@ agent 仍可在新 turn replan。runtime command 也必须区分已经发生的 
 projection 成败：projection error 不能把真实 processed count 改写为零。known terminal
 no-effect occurrence 可留在同一 authorized attempt 并被显式处置；unknown effect、active
 owner、authority/resource breach 与 cross-attempt reuse 仍 fail closed。
+
+launch capability也不能成为第二套产品真状态。formal plan可以预声明session/task/envelope/root
+并一次性claim launch，但不得预造scientific attempt、lane或admission identity。真实lane由agent
+经canonical tools建立；真实attempt只在current task assignee请求且Host finalizer复核后生成。
+Harness向agent呈现missing lane、wrong actor、assignment drift与authority ambiguity等typed
+约束，但不替agent建lane、选择调用时机或决定科学后继。外部Codex conductor只读回这些canonical
+facts，不能通过public mutation/finalizer route模拟agent/Host。

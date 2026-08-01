@@ -386,60 +386,116 @@ class ScientificAttemptService:
         ):
             return self.repositories.scientific_attempt_authorizations.add(record)
 
-    def create_attempt(
+    def request_authorized_attempt_admission(
         self,
         *,
         envelope_id: str,
         session_id: str,
         task_id: str,
-        lane_id: str,
-        campaign_id: str,
-        workflow_id: str,
-        scope: ScientificAttemptScope | str,
-        workflow_contract_digest: str,
-        requested_effect_classes: tuple[str, ...],
-        reserved_micu: int,
-        reserved_cost_microunits: int,
-        reserved_wall_time_seconds: int,
         actor_ref: str,
         idempotency_key: str,
-        provider: str | None = None,
-        hpc_target: str | None = None,
-    ) -> ScientificAttempt:
-        """Compatibility Host entrypoint for callers outside a mutation writer.
+    ) -> ScientificAttemptAdmissionRequest:
+        """Derive one exact admission solely from canonical Host authority.
 
-        Agent tools use ``request_attempt_admission``.  A Host caller with no
-        active writer may use this convenience method, which persists the same
-        immutable request and immediately runs the post-writer finalizer.
+        The assignee chooses when to request an attempt.  The Host owns every
+        control identity and resource field, including the lane already bound
+        to the canonical task.  Ambiguous authority is rejected rather than
+        converted into an agent-side plan.
         """
 
-        if current_mutation_write_authority() is not None:
+        actor = self._require_actor(actor_ref)
+        authority = self.repositories.scientific_attempt_authorizations.get(
+            envelope_id
+        )
+        if authority is None:
             raise ScientificAttemptError(
-                "attempt_admission_writer_still_active",
-                "attempt admission must be finalized after the requesting writer retires",
-                hint="Record an attempt admission request and let the Host finalize it.",
+                "authorization_required",
+                "a durable attempt authorization envelope is required",
+                hint="Ask the user or operator for an exact attempt authorization.",
+            )
+        self._require_admission_task_owner(
+            session_id=session_id,
+            task_id=task_id,
+            actor_ref=actor,
+        )
+        task = self.repositories.tasks.get(task_id)
+        lane_id = None if task is None else task.lane_id
+        lane = None if lane_id is None else self.repositories.lanes.get(lane_id)
+        if (
+            not lane_id
+            or lane is None
+            or lane.session_id != session_id
+        ):
+            raise ScientificAttemptError(
+                "attempt_lane_scope_invalid",
+                (
+                    "the canonical task must be bound to a real session lane "
+                    "before attempt.create"
+                ),
+                hint="Create a lane and bind the current task with canonical lane tools.",
+                details={"task_id": task_id, "mutation_applied": False},
                 retryable=True,
             )
-        request = self.request_attempt_admission(
-            envelope_id=envelope_id,
+        if len(authority.allowed_scopes) != 1:
+            raise ScientificAttemptError(
+                "authorization_scope_ambiguous",
+                "attempt.create requires one exact authorized scientific scope",
+                details={"mutation_applied": False},
+            )
+        contracts = tuple(
+            contract
+            for contract in (
+                ()
+                if self.workflow_contract_registry is None
+                else self.workflow_contract_registry.contracts
+            )
+            if contract.workflow_id == authority.workflow_id
+        )
+        if len(contracts) != 1:
+            raise ScientificAttemptError(
+                "workflow_contract_ambiguous",
+                "Host authority does not resolve to one current workflow contract",
+                details={"mutation_applied": False},
+            )
+
+        def exact_optional(values: tuple[str, ...], *, code: str) -> str | None:
+            if len(values) > 1:
+                raise ScientificAttemptError(
+                    code,
+                    "attempt authority carries more than one private route choice",
+                    details={"mutation_applied": False},
+                )
+            return values[0] if values else None
+
+        return self.request_attempt_admission(
+            envelope_id=authority.envelope_id,
             session_id=session_id,
             task_id=task_id,
             lane_id=lane_id,
-            campaign_id=campaign_id,
-            workflow_id=workflow_id,
-            scope=scope,
-            workflow_contract_digest=workflow_contract_digest,
-            requested_effect_classes=requested_effect_classes,
-            reserved_micu=reserved_micu,
-            reserved_cost_microunits=reserved_cost_microunits,
-            reserved_wall_time_seconds=reserved_wall_time_seconds,
-            actor_ref=actor_ref,
+            campaign_id=authority.campaign_id,
+            workflow_id=authority.workflow_id,
+            scope=authority.allowed_scopes[0],
+            workflow_contract_digest=contracts[0].digest,
+            requested_effect_classes=authority.allowed_effect_classes,
+            reserved_micu=authority.max_micu - authority.reserved_micu,
+            reserved_cost_microunits=(
+                authority.max_cost_microunits
+                - authority.reserved_cost_microunits
+            ),
+            reserved_wall_time_seconds=(
+                authority.max_wall_time_seconds
+                - authority.reserved_wall_time_seconds
+            ),
+            provider=exact_optional(
+                authority.allowed_providers,
+                code="authorization_provider_ambiguous",
+            ),
+            hpc_target=exact_optional(
+                authority.allowed_hpc_targets,
+                code="authorization_hpc_target_ambiguous",
+            ),
+            actor_ref=actor,
             idempotency_key=idempotency_key,
-            provider=provider,
-            hpc_target=hpc_target,
-        )
-        return self.finalize_attempt_admission(
-            admission_request_id=request.admission_request_id
         )
 
     def request_attempt_admission(
@@ -469,6 +525,11 @@ class ScientificAttemptService:
         )
         normalized_effects = _normalized_unique(requested_effect_classes)
         actor = self._require_actor(actor_ref)
+        self._require_admission_task_owner(
+            session_id=session_id,
+            task_id=task_id,
+            actor_ref=actor,
+        )
         request = {
             "command": "attempt.create",
             "envelope_id": envelope_id,
@@ -590,6 +651,11 @@ class ScientificAttemptService:
                 "attempt_admission_request_missing",
                 "scientific attempt admission request does not exist",
             )
+        self._require_admission_task_owner(
+            session_id=admission.session_id,
+            task_id=admission.task_id,
+            actor_ref=admission.actor_ref,
+        )
         existing = self.repositories.scientific_attempts.get_by_admission_request(
             admission_request_id
         )
@@ -3530,6 +3596,35 @@ class ScientificAttemptService:
                 details={
                     "attempt_id": attempt.attempt_id,
                     "task_id": attempt.task_id,
+                    "assigned_ref": None if task is None else task.assigned_ref,
+                    "actor_ref": actor_ref,
+                    "mutation_applied": False,
+                },
+                retryable=True,
+            )
+
+    def _require_admission_task_owner(
+        self,
+        *,
+        session_id: str,
+        task_id: str,
+        actor_ref: str,
+    ) -> None:
+        task = self.repositories.tasks.get(task_id)
+        if (
+            task is None
+            or task.session_id != session_id
+            or task.assigned_ref != actor_ref
+        ):
+            raise ScientificAttemptError(
+                "attempt_admission_actor_not_owner",
+                (
+                    "attempt.create and its Host finalizer require the current "
+                    "assignee of the canonical task"
+                ),
+                hint="Inspect the task assignment and use its canonical assignee.",
+                details={
+                    "task_id": task_id,
                     "assigned_ref": None if task is None else task.assigned_ref,
                     "actor_ref": actor_ref,
                     "mutation_applied": False,

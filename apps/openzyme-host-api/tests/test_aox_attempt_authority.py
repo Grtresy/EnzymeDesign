@@ -13,7 +13,6 @@ from openzyme_host_api.aox_attempt_authority import (
 from openzyme_host_api.aox_attempt_authority import (
     AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID,
 )
-from openzyme_host_api.aox_attempt_authority import attempt_admission_arguments
 from openzyme_host_api.aox_attempt_authority import (
     attempt_authority_consumption_path,
 )
@@ -37,12 +36,17 @@ from openzyme_host_api.aox_attempt_authority import (
 from openzyme_host_api.aox_attempt_authority import (
     validate_aox_attempt_authority_plan,
 )
+from openzyme_host_api.aox_attempt_authority import (
+    validate_aox_attempt_authority_consumption,
+)
+from openzyme_host_api.aox_attempt_authority import (
+    validate_aox_attempt_authority_slot_claim,
+)
 from openzyme_host_api.aox_live_run_class import AoxLiveRunClass
+from openzyme_host_api.aox_live_run_class import FORMAL_ACCEPTANCE_RUN_POLICY
+from openzyme_host_api.aox_scientific_contract import AOX_SELECTED_CHAIN_WORKFLOW_ID
 from openzyme_host_api.aox_cutover_evidence import canonical_digest
 from openzyme_host_api.aox_cutover_evidence import CutoverEvidenceError
-from openzyme_host_api.aox_scientific_contract import (
-    AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST,
-)
 
 
 def _declarations() -> tuple[
@@ -108,7 +112,79 @@ def _reseal_slot_and_plan(
     )
 
 
-def test_authority_plan_binds_three_one_use_attempt_slots() -> None:
+def _legacy_plan() -> tuple[
+    dict[str, object],
+    dict[str, object],
+    dict[str, object],
+    dict[str, object],
+]:
+    identity, prerequisites, qualification = _declarations()
+    identity_digest = canonical_digest(identity)
+    campaign_id = "aox_campaign_" + "1" * 24
+    slots: list[dict[str, object]] = []
+    for ordinal, attempt_kind in enumerate(
+        ("positive", "positive", "fault"),
+        start=1,
+    ):
+        attempt_id = f"{attempt_kind}-{ordinal:032x}"
+        session_id, task_id, lane_id, root_ref = (
+            FORMAL_ACCEPTANCE_RUN_POLICY.identities(attempt_id)
+        )
+        scope = "fault" if attempt_kind == "fault" else "formal"
+        envelope_id, request_digest, request = (
+            scientific_attempt_authorization_identity(
+                session_id=session_id,
+                task_id=task_id,
+                campaign_id=campaign_id,
+                workflow_id=AOX_SELECTED_CHAIN_WORKFLOW_ID,
+                root_ref=root_ref,
+                grantor_kind="operator",
+                grantor_ref="user:local-dev",
+                allowed_scopes=(scope,),
+                allowed_effect_classes=("hpc", "provider"),
+                allowed_providers=(f"aox-provider-routes@{identity_digest}",),
+                allowed_hpc_targets=(f"aox-hpc-routes@{identity_digest}",),
+                max_attempts=1,
+                max_micu=10_000,
+                max_cost_microunits=20_000,
+                max_wall_time_seconds=3_600,
+                expires_at="2099-01-01T00:00:00+00:00",
+                idempotency_key=f"{campaign_id}:authority:{ordinal}",
+            )
+        )
+        slots.append(
+            {
+                "ordinal": ordinal,
+                "attempt_kind": attempt_kind,
+                "attempt_id": attempt_id,
+                "session_id": session_id,
+                "task_id": task_id,
+                "lane_id": lane_id,
+                "scope": scope,
+                "authority_request": request,
+                "envelope_id": envelope_id,
+                "request_digest": request_digest,
+            }
+        )
+    payload: dict[str, object] = {
+        "schema_id": "aox_live_attempt_authority_plan@1",
+        "campaign_id": campaign_id,
+        "identity_digest": identity_digest,
+        "allowed_prerequisite_digest": canonical_digest(prerequisites),
+        "architecture_qualification_digest": canonical_digest(qualification),
+        "issued_at": "2026-07-23T00:00:00+00:00",
+        "expires_at": "2099-01-01T00:00:00+00:00",
+        "slots": slots,
+    }
+    return (
+        {**payload, "plan_digest": canonical_digest(payload)},
+        identity,
+        prerequisites,
+        qualification,
+    )
+
+
+def test_authority_plan_binds_three_one_use_launch_slots() -> None:
     plan, identity, prerequisites, qualification = _plan()
 
     validated = validate_aox_attempt_authority_plan(
@@ -126,18 +202,19 @@ def test_authority_plan_binds_three_one_use_attempt_slots() -> None:
         "fault",
     ]
     assert [slot["ordinal"] for slot in slots] == [1, 2, 3]
-    assert len({slot["attempt_id"] for slot in slots}) == 3
+    assert len({slot["session_id"] for slot in slots}) == 3
+    assert len({slot["task_id"] for slot in slots}) == 3
+    assert len({slot["root_ref"] for slot in slots}) == 3
     assert len({slot["envelope_id"] for slot in slots}) == 3
     for slot in slots:
+        assert "attempt_id" not in slot
+        assert "lane_id" not in slot
         request = slot["authority_request"]
         assert request["max_attempts"] == 1
         assert request["allowed_effect_classes"] == ["hpc", "provider"]
-        assert request["root_ref"] == f"attempts/{slot['attempt_id']}"
-        admission = attempt_admission_arguments(slot)
-        assert admission["envelope_id"] == slot["envelope_id"]
-        assert (
-            admission["workflow_contract_digest"]
-            == AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
+        assert request["root_ref"] == slot["root_ref"]
+        assert str(slot["root_ref"]).startswith(
+            f"formal-slots/{plan['campaign_id']}/{slot['ordinal']}/"
         )
 
 
@@ -314,4 +391,86 @@ def test_authority_slots_are_atomically_claimed_once_across_campaign_roots(
         campaign_root=tmp_path / "campaign-b",
     )
     assert second["ordinal"] == 2
-    assert second["attempt_id"] != first["attempt_id"]
+    assert second["launch_id"] != first["launch_id"]
+    assert second["root_ref"] != first["root_ref"]
+    assert "attempt_id" not in first
+    assert "lane_id" not in first
+
+
+def test_legacy_launch_schemas_are_readable_but_cannot_be_reemitted(
+    tmp_path: Path,
+) -> None:
+    plan, identity, prerequisites, qualification = _legacy_plan()
+    plan_path = tmp_path / "legacy-authority.json"
+    validated = validate_aox_attempt_authority_plan(
+        plan,
+        identity=identity,
+        allowed_prerequisites=prerequisites,
+        architecture_qualification=qualification,
+    )
+    consumption = {
+        "schema_id": "aox_live_attempt_authority_consumption@2",
+        "run_class": AoxLiveRunClass.FORMAL_ACCEPTANCE.value,
+        "plan_schema_id": "aox_live_attempt_authority_plan@1",
+        "plan_digest": plan["plan_digest"],
+        "campaign_id": plan["campaign_id"],
+        "consumption_file": attempt_authority_consumption_path(plan_path).name,
+        "consumed_at": "2026-07-23T00:00:01+00:00",
+    }
+    validated_consumption = validate_aox_attempt_authority_consumption(
+        consumption,
+        plan=validated,
+        plan_path=plan_path,
+    )
+    slot = validated["slots"][0]
+    campaign_root = tmp_path / "legacy-campaign"
+    claim_payload = {
+        "schema_id": "aox_attempt_authority_slot_claim@1",
+        "run_class": AoxLiveRunClass.FORMAL_ACCEPTANCE.value,
+        "campaign_id": plan["campaign_id"],
+        "plan_digest": plan["plan_digest"],
+        "consumption_digest": canonical_digest(consumption),
+        "ordinal": 1,
+        "attempt_kind": slot["attempt_kind"],
+        "attempt_id": slot["attempt_id"],
+        "session_id": slot["session_id"],
+        "task_id": slot["task_id"],
+        "lane_id": slot["lane_id"],
+        "envelope_id": slot["envelope_id"],
+        "request_digest": slot["request_digest"],
+        "campaign_root_identity": canonical_digest(
+            {"campaign_root": str(campaign_root.absolute())}
+        ),
+        "claim_file": attempt_authority_slot_claim_path(plan_path, 1).name,
+        "claimed_at": "2026-07-23T00:00:02+00:00",
+    }
+    claim = {**claim_payload, "claim_digest": canonical_digest(claim_payload)}
+
+    assert validated_consumption == consumption
+    assert (
+        validate_aox_attempt_authority_slot_claim(
+            claim,
+            plan=validated,
+            consumption=consumption,
+            plan_path=plan_path,
+            ordinal=1,
+            campaign_root=campaign_root,
+        )
+        == claim
+    )
+    with pytest.raises(CutoverEvidenceError) as consume_legacy:
+        consume_aox_attempt_authority_plan(
+            validated,
+            plan_path=plan_path,
+            path=attempt_authority_consumption_path(plan_path),
+        )
+    assert consume_legacy.value.code == "attempt_authority_plan_class_mismatch"
+    with pytest.raises(CutoverEvidenceError) as claim_legacy:
+        claim_aox_attempt_authority_slot(
+            plan=validated,
+            consumption=consumption,
+            plan_path=plan_path,
+            ordinal=1,
+            campaign_root=campaign_root,
+        )
+    assert claim_legacy.value.code == "attempt_authority_slot_claim_invalid"

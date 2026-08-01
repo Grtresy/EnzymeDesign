@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from openzyme_domain import ScientificAttemptScope
 from openzyme_domain import ScientificOperationDispositionKind
 
 from .artifact_boundary import ArtifactBoundaryService
@@ -196,37 +195,15 @@ def register_scientific_attempt_tools(registry: ToolRegistry) -> None:
         invocation: ToolInvocation,
     ) -> ToolResult:
         arguments = invocation.arguments
-        task_id = str(arguments.get("task_id") or invocation.task_id or "")
-        lane_id = str(arguments.get("lane_id") or invocation.lane_id or "")
+        task_id = str(
+            context.restore_focus.task_id or invocation.task_id or ""
+        )
         return _execute(
             invocation,
-            lambda: _service(context).request_attempt_admission(
+            lambda: _service(context).request_authorized_attempt_admission(
                 envelope_id=str(arguments["envelope_id"]),
                 session_id=context.snapshot.session.session_id,
                 task_id=task_id,
-                lane_id=lane_id,
-                campaign_id=str(arguments["campaign_id"]),
-                workflow_id=str(arguments["workflow_id"]),
-                scope=ScientificAttemptScope(str(arguments["scope"])),
-                workflow_contract_digest=str(arguments["workflow_contract_digest"]),
-                requested_effect_classes=tuple(
-                    str(item) for item in arguments.get("requested_effect_classes", ())
-                ),
-                reserved_micu=arguments.get("reserved_micu", 0),
-                reserved_cost_microunits=arguments.get("reserved_cost_microunits", 0),
-                reserved_wall_time_seconds=arguments.get(
-                    "reserved_wall_time_seconds", 0
-                ),
-                provider=(
-                    None
-                    if arguments.get("provider") is None
-                    else str(arguments["provider"])
-                ),
-                hpc_target=(
-                    None
-                    if arguments.get("hpc_target") is None
-                    else str(arguments["hpc_target"])
-                ),
                 actor_ref=_actor(context),
                 idempotency_key=str(arguments["idempotency_key"]),
             ),

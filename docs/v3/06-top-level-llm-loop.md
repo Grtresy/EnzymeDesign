@@ -362,3 +362,17 @@ command；每次请求都受 Host public DTO 和 bounded scheduler contract 约�
 出现后，同一 selected chain 的 exact disposed safe history仍可查询但不污染 offline
 eligibility；task/report/closure 仍须完整。work 未闭合且不存在 wake source时，conductor
 只能报告当前 public facts并停止或请求新 authority，不能由 Harness 合成业务失败。
+
+## 12. AOX launch 与 agent control 的分界
+
+formal claim/preflight/supervision只建立一次launch slot和local Host process，不建立scientific
+attempt。entry message之后，top-level/master可创建exact execution task并delegation；真正的
+executor在自己的bounded turn中使用`lane.create`/`lane.bind_task`，再调用极小
+`attempt.create(envelope_id,idempotency_key)`。Codex conductor不能通过public generic
+scientific mutation route绕过agent，也不能调用Host finalizer；这些public surfaces已删除。
+
+Host finalization产生的owner wake是唯一把canonical late-bound attempt facts送回模型的路径。
+top-level loop不得把slot `launch_id`、root name、outer task id、command terminal或process exit
+提升为attempt/lane/admission truth。后续inspect/export/bundle只消费repository中的真实control
+graph。这样outer conductor负责何时提供世界变化，agent负责策略性scientific actions，Host
+负责authority、identity、fencing与effect truth。

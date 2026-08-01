@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from openzyme_core import MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID
+from openzyme_host_api import aox_cutover_evidence as cutover_evidence
 from openzyme_host_api import aox_public_conductor_bundle as conductor_bundle
 from openzyme_host_api.aox_attempt_authority import (
     AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID,
@@ -41,13 +42,14 @@ def _digest_bytes(content: bytes) -> str:
 
 def _slot() -> dict[str, object]:
     campaign_id = "aox_campaign_test"
+    root_ref = f"formal-slots/{campaign_id}/1/fixture"
     request = {
         "command": "scientific.attempt.authorize",
         "session_id": "sess_aox",
         "task_id": "task_aox",
         "campaign_id": campaign_id,
         "workflow_id": "aox_blank_world",
-        "root_ref": "attempts/positive-aox",
+        "root_ref": root_ref,
         "grantor_kind": "operator",
         "grantor_ref": "operator:aox-cutover",
         "allowed_scopes": ["formal"],
@@ -64,10 +66,9 @@ def _slot() -> dict[str, object]:
     return {
         "ordinal": 1,
         "attempt_kind": "positive",
-        "attempt_id": "positive-aox",
         "session_id": "sess_aox",
         "task_id": "task_aox",
-        "lane_id": "lane_aox",
+        "root_ref": root_ref,
         "scope": "formal",
         "authority_request": request,
         "envelope_id": "attempt_authority_aox",
@@ -83,7 +84,10 @@ def _control(slot: dict[str, object]) -> dict[str, object]:
         "campaign_id": request["campaign_id"],
         "workflow_id": request["workflow_id"],
     }
-    admission_key = f"{request['campaign_id']}:attempt:{slot['ordinal']}"
+    attempt_id = f"{slot['attempt_kind']}-aox"
+    lane_id = f"lane-{slot['attempt_kind']}-aox"
+    admission_key = f"agent-attempt-{slot['attempt_kind']}"
+    actor_ref = "agent:executor"
     selection_id = "selection_aox"
     closure_request_id = "closure_request_aox"
     return {
@@ -92,27 +96,31 @@ def _control(slot: dict[str, object]) -> dict[str, object]:
             "envelope_id": slot["envelope_id"],
             "root_ref": request["root_ref"],
             "idempotency_key": request["idempotency_key"],
+            "request_digest": slot["request_digest"],
         },
         "admission_request": {
             **shared,
             "admission_request_id": "admission_request_aox",
             "envelope_id": slot["envelope_id"],
-            "lane_id": slot["lane_id"],
+            "lane_id": lane_id,
             "scope": slot["scope"],
             "idempotency_key": admission_key,
+            "actor_ref": actor_ref,
         },
         "attempt": {
             **shared,
-            "attempt_id": slot["attempt_id"],
+            "attempt_id": attempt_id,
             "admission_request_id": "admission_request_aox",
             "envelope_id": slot["envelope_id"],
-            "lane_id": slot["lane_id"],
+            "lane_id": lane_id,
+            "root_ref": request["root_ref"],
             "scope": slot["scope"],
             "idempotency_key": admission_key,
+            "created_by": actor_ref,
         },
         "selection": {
             "selection_id": selection_id,
-            "attempt_id": slot["attempt_id"],
+            "attempt_id": attempt_id,
             "operation_universe_digest": "sha256:" + "b" * 64,
         },
         "operation_universe": {
@@ -136,12 +144,12 @@ def _control(slot: dict[str, object]) -> dict[str, object]:
         "materializations": [],
         "closure_request": {
             "closure_request_id": closure_request_id,
-            "attempt_id": slot["attempt_id"],
+            "attempt_id": attempt_id,
             "selection_id": selection_id,
         },
         "closure": {
             "closure_request_id": closure_request_id,
-            "attempt_id": slot["attempt_id"],
+            "attempt_id": attempt_id,
             "selection_id": selection_id,
         },
     }
@@ -175,7 +183,7 @@ def _receipt_chain(
     fault_artifact_id: str | None = None,
 ) -> list[dict[str, object]]:
     session_id = str(slot["session_id"])
-    attempt_id = str(slot["attempt_id"])
+    attempt_id = str(dict(control["attempt"])["attempt_id"])
     selection = dict(control["selection"])
     selection_id = str(selection["selection_id"])
     records = [
@@ -416,7 +424,8 @@ def _preflight_fixture(
     slot: dict[str, object] | None = None,
 ) -> tuple[Path, dict[str, object], Path]:
     slot = _slot() if slot is None else slot
-    attempt_root = tmp_path / str(slot["attempt_id"])
+    launch_id = "formal-slot-" + "f" * 24
+    attempt_root = tmp_path / launch_id
     roots_by_name = {
         name: attempt_root / directory
         for name, directory in (
@@ -448,8 +457,8 @@ def _preflight_fixture(
     prerequisites = {"config_digest": canonical_digest(effective_config)}
     qualification = {"schema_id": "qualification@1"}
     proof = {
-        "schema_id": "aox_blank_world_root_proof@2",
-        "attempt_id": slot["attempt_id"],
+        "schema_id": "aox_blank_world_root_proof@3",
+        "launch_id": launch_id,
         "attempt_kind": slot["attempt_kind"],
         "root_identity": "sha256:" + "e" * 64,
         "root_names": {
@@ -476,7 +485,7 @@ def _preflight_fixture(
         "architecture_qualification": qualification,
     }
     roots = BlankWorldRoots(
-        attempt_id=str(slot["attempt_id"]),
+        launch_id=launch_id,
         attempt_kind=str(slot["attempt_kind"]),
         attempt_root=attempt_root,
         sqlite_path=attempt_root / "control-plane.sqlite3",
@@ -502,10 +511,10 @@ def _preflight_fixture(
         "consumption_digest": canonical_digest(consumption),
         "ordinal": slot["ordinal"],
         "attempt_kind": slot["attempt_kind"],
-        "attempt_id": slot["attempt_id"],
+        "launch_id": launch_id,
         "session_id": slot["session_id"],
         "task_id": slot["task_id"],
-        "lane_id": slot["lane_id"],
+        "root_ref": slot["root_ref"],
         "envelope_id": slot["envelope_id"],
         "request_digest": slot["request_digest"],
         "campaign_root_identity": "sha256:" + "9" * 64,
@@ -568,11 +577,9 @@ def _fault_slot() -> dict[str, object]:
     slot = deepcopy(_slot())
     slot.update(
         attempt_kind="fault",
-        attempt_id="fault-aox",
         scope="fault",
     )
     request = dict(slot["authority_request"])
-    request["root_ref"] = "attempts/fault-aox"
     request["allowed_scopes"] = ["fault"]
     slot["authority_request"] = request
     return slot
@@ -585,13 +592,13 @@ def _startup_receipt(
     slot = dict(preflight["slot"])
     timeout = dict(slot["authority_request"])["max_wall_time_seconds"]
     payload = {
-        "schema_id": "aox_supervised_host_startup@1",
+        "schema_id": "aox_supervised_host_startup@2",
         "base_url": "http://127.0.0.1:41234",
-        "attempt_id": slot["attempt_id"],
+        "launch_id": dict(preflight["slot_claim"])["launch_id"],
         "attempt_kind": slot["attempt_kind"],
         "session_id": slot["session_id"],
         "task_id": slot["task_id"],
-        "lane_id": slot["lane_id"],
+        "root_ref": slot["root_ref"],
         "attempt_authority_id": slot["envelope_id"],
         "attempt_authority_request_digest": slot["request_digest"],
         "campaign_id": preflight["campaign_id"],
@@ -614,11 +621,11 @@ def _bound_supervision_receipt(
     slot = dict(preflight["slot"])
     receipt = _supervision_receipt()
     receipt.update(
-        attempt_id=slot["attempt_id"],
+        launch_id=dict(preflight["slot_claim"])["launch_id"],
         attempt_kind=slot["attempt_kind"],
         session_id=slot["session_id"],
         task_id=slot["task_id"],
-        lane_id=slot["lane_id"],
+        root_ref=slot["root_ref"],
         attempt_authority_id=slot["envelope_id"],
         attempt_authority_request_digest=slot["request_digest"],
         campaign_id=preflight["campaign_id"],
@@ -691,7 +698,7 @@ def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(
     export_payload = {
         "schema_id": "aox_closed_attempt_evidence@2",
         "session_id": slot["session_id"],
-        "attempt_id": slot["attempt_id"],
+        "attempt_id": dict(control["attempt"])["attempt_id"],
         "selection_id": selection_id,
         "scientific_attempt_control": control,
         "finalization_receipt": None,
@@ -774,8 +781,13 @@ def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(
         bundle_path,
         artifact_root=artifact_root,
     )
+    generic_verification = cutover_evidence.verify_attempt_bundle(
+        bundle_path,
+        artifact_root=artifact_root,
+    )
 
     assert verification.passed is True
+    assert generic_verification == verification
     assert verification.bundle_digest == bundle_digest
     assert verification.attempt_kind == "fault"
     with pytest.raises(CutoverEvidenceError) as append_only_error:
@@ -820,6 +832,7 @@ def test_campaign_reducer_keeps_unproven_public_fault_contract_no_go(
         attempt_id = f"{kind}-{index}"
         bundle_digest = "sha256:" + str(index + 1) * 64
         payload = {
+            "bundle_profile": conductor_bundle.PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID,
             "identity": {"identity_digest": "sha256:" + "a" * 64},
             "clean_world": {"root_identity": "sha256:" + str(index + 4) * 64},
             "product_path": {
@@ -832,15 +845,22 @@ def test_campaign_reducer_keeps_unproven_public_fault_contract_no_go(
                 "slot_claim_digest": "sha256:" + str(index + 4) * 64,
                 "slot": {
                     "ordinal": index + 1,
-                    "attempt_id": attempt_id,
                     "session_id": f"session-{index}",
                     "task_id": f"task-{index}",
-                    "lane_id": f"lane-{index}",
                     "envelope_id": f"envelope-{index}",
+                    "root_ref": f"formal-slots/aox_campaign_test/{index + 1}/root",
                 },
             },
             "scientific_attempt_control": {
-                "selection": {"selection_id": f"selection-{index}"}
+                "attempt": {
+                    "attempt_id": attempt_id,
+                    "lane_id": f"lane-{index}",
+                },
+                "admission_request": {
+                    "admission_request_id": f"admission-{index}",
+                    "idempotency_key": f"agent-key-{index}",
+                },
+                "selection": {"selection_id": f"selection-{index}"},
             },
             "micu_ledger": {
                 "before": ledger_states[index],
@@ -912,7 +932,7 @@ def test_campaign_reducer_keeps_unproven_public_fault_contract_no_go(
         lambda path, *, artifact_root: by_path[path],
     )
 
-    decision = conductor_bundle.evaluate_public_conductor_campaign(
+    decision = cutover_evidence.evaluate_campaign(
         records,
         decided_at="2026-07-31T00:02:00+00:00",
     )
@@ -946,9 +966,9 @@ def test_campaign_reducer_keeps_unproven_public_fault_contract_no_go(
     assert claim_collision["blocker"]["code"] == "campaign_slot_claim_collision"
 
     payloads[1]["authority"]["slot_claim_digest"] = "sha256:" + "5" * 64
-    payloads[1]["authority"]["slot"]["attempt_id"] = payloads[0]["authority"]["slot"][
-        "attempt_id"
-    ]
+    payloads[1]["authority"]["slot"]["root_ref"] = payloads[0]["authority"][
+        "slot"
+    ]["root_ref"]
     _write_canonical(
         records[1].bundle_path,
         {"payload": payloads[1], "bundle_digest": records[1].bundle_digest},
@@ -981,11 +1001,11 @@ def _supervision_receipt() -> dict[str, object]:
     payload = {
         "schema_id": HOST_SUPERVISION_RECEIPT_SCHEMA_ID,
         "mode": "policy_free_public_host",
-        "attempt_id": "positive-aox",
+        "launch_id": "formal-slot-" + "f" * 24,
         "attempt_kind": "positive",
         "session_id": "sess_aox",
         "task_id": "task_aox",
-        "lane_id": "lane_aox",
+        "root_ref": "formal-slots/aox_campaign_test/1/fixture",
         "attempt_authority_id": "attempt_authority_aox",
         "attempt_authority_request_digest": "sha256:" + "a" * 64,
         "campaign_id": "aox_campaign_test",
@@ -1026,8 +1046,12 @@ def test_policy_free_supervision_receipt_accepts_campaign_id_and_rejects_writers
 
     assert validate_supervised_host_receipt(
         receipt,
-        attempt_id="positive-aox",
+        launch_id="formal-slot-" + "f" * 24,
         attempt_kind="positive",
+        session_id="sess_aox",
+        task_id="task_aox",
+        root_ref="formal-slots/aox_campaign_test/1/fixture",
+        campaign_id="aox_campaign_test",
         attempt_authority_id="attempt_authority_aox",
         attempt_authority_request_digest="sha256:" + "a" * 64,
     ) == receipt
@@ -1039,8 +1063,12 @@ def test_policy_free_supervision_receipt_accepts_campaign_id_and_rejects_writers
     with pytest.raises(CutoverEvidenceError) as error:
         validate_supervised_host_receipt(
             tampered,
-            attempt_id="positive-aox",
+            launch_id="formal-slot-" + "f" * 24,
             attempt_kind="positive",
+            session_id="sess_aox",
+            task_id="task_aox",
+            root_ref="formal-slots/aox_campaign_test/1/fixture",
+            campaign_id="aox_campaign_test",
             attempt_authority_id="attempt_authority_aox",
             attempt_authority_request_digest="sha256:" + "a" * 64,
         )

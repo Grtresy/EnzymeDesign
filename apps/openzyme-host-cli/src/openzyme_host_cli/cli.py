@@ -188,30 +188,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     scientific_authorize.add_argument("--payload-json", required=True)
     scientific_authorize.add_argument("--idempotency-key", required=True)
-    scientific_execute = scientific_sub.add_parser(
-        "command",
-        help="Execute one actor-bound selected-chain command",
-    )
-    scientific_execute.add_argument(
-        "--session-id",
-        dest="command_session_id",
-        help="Session ID override",
-    )
-    scientific_execute.add_argument(
-        "--command",
-        required=True,
-        choices=(
-            "attempt.create",
-            "scientific.selection.begin",
-            "scientific.operation.disposition",
-            "scientific.operation.adopt",
-            "scientific.artifact.materialize",
-            "scientific.selection.seal",
-            "scientific.attempt.close",
-        ),
-    )
-    scientific_execute.add_argument("--arguments-json", required=True)
-    scientific_execute.add_argument("--idempotency-key", required=True)
     scientific_fault = scientific_sub.add_parser(
         "inject-aox-reference-fault",
         help="Consume the exact authority-bound AOX_ref21 byte-flip capability",
@@ -224,30 +200,6 @@ def _build_parser() -> argparse.ArgumentParser:
     scientific_fault.add_argument("--attempt-id", required=True)
     scientific_fault.add_argument("--artifact-id", required=True)
     scientific_fault.add_argument("--idempotency-key", required=True)
-    scientific_finalize_admission = scientific_sub.add_parser(
-        "finalize-admission",
-        help="Host-finalize an admission request after its writer turn retires",
-    )
-    scientific_finalize_admission.add_argument(
-        "--session-id",
-        dest="command_session_id",
-        help="Session ID override",
-    )
-    scientific_finalize_admission.add_argument(
-        "--admission-request-id",
-        required=True,
-    )
-    scientific_finalize = scientific_sub.add_parser(
-        "finalize",
-        help="Host-finalize a closure request after all attempt writers retire",
-    )
-    scientific_finalize.add_argument(
-        "--session-id",
-        dest="command_session_id",
-        help="Session ID override",
-    )
-    scientific_finalize.add_argument("--closure-request-id", required=True)
-
     return parser
 
 
@@ -522,16 +474,6 @@ def run_cli(
                     request_payload,
                     idempotency_key=args.idempotency_key,
                 )
-            elif args.scientific_command == "command":
-                arguments = json.loads(args.arguments_json)
-                if not isinstance(arguments, dict):
-                    raise ValueError("--arguments-json must decode to an object")
-                payload = client.execute_v3_scientific_attempt_command(
-                    session_id,
-                    command=args.command,
-                    arguments=arguments,
-                    idempotency_key=args.idempotency_key,
-                )
             elif args.scientific_command == "inject-aox-reference-fault":
                 payload = client.inject_v3_aox_reference_fault(
                     session_id,
@@ -539,15 +481,9 @@ def run_cli(
                     artifact_id=args.artifact_id,
                     idempotency_key=args.idempotency_key,
                 )
-            elif args.scientific_command == "finalize-admission":
-                payload = client.finalize_v3_scientific_attempt_admission(
-                    session_id,
-                    admission_request_id=args.admission_request_id,
-                )
             else:
-                payload = client.finalize_v3_scientific_attempt_closure(
-                    session_id,
-                    closure_request_id=args.closure_request_id,
+                raise ValueError(
+                    f"unsupported scientific command: {args.scientific_command}"
                 )
             return _emit_response(
                 args=args,

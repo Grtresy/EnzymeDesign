@@ -54,7 +54,7 @@ from .aox_public_product_closure import AoxPublicProductClosureError
 from .aox_public_product_closure import validate_aox_public_product_closure
 
 
-PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID = "aox_public_conductor_bundle@1"
+PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID = "aox_public_conductor_bundle@2"
 PUBLIC_API_RECEIPT_SCHEMA_ID = "openzyme_public_api_receipt@2"
 PUBLIC_RESPONSE_ENVELOPE_SCHEMA_ID = "openzyme_public_host_response@1"
 PUBLIC_CONDUCTOR_ATTESTATION_DIR = "aox-public-conductor"
@@ -278,18 +278,21 @@ def _validate_startup(
     startup: Mapping[str, Any], *, preflight: Mapping[str, Any]
 ) -> dict[str, Any]:
     value, slot = dict(startup), dict(preflight["slot"])
+    slot_claim = dict(preflight["slot_claim"])
     request = dict(slot.get("authority_request") or {})
     fields = {
-        "schema_id", "base_url", "attempt_id", "attempt_kind", "session_id",
-        "task_id", "lane_id", "attempt_authority_id",
+        "schema_id", "base_url", "launch_id", "attempt_kind", "session_id",
+        "task_id", "root_ref", "attempt_authority_id",
         "attempt_authority_request_digest", "campaign_id",
         "preflight_receipt_digest", "process_epoch", "child_pid", "child_pgid",
         "child_start_time_ticks", "timeout_seconds", "started_at", "receipt_digest",
     }
     bindings = {
-        "attempt_id": slot.get("attempt_id"), "attempt_kind": slot.get("attempt_kind"),
+        "launch_id": slot_claim.get("launch_id"),
+        "attempt_kind": slot.get("attempt_kind"),
         "session_id": slot.get("session_id"), "task_id": slot.get("task_id"),
-        "lane_id": slot.get("lane_id"), "attempt_authority_id": slot.get("envelope_id"),
+        "root_ref": slot.get("root_ref"),
+        "attempt_authority_id": slot.get("envelope_id"),
         "attempt_authority_request_digest": slot.get("request_digest"),
         "campaign_id": preflight.get("campaign_id"),
         "preflight_receipt_digest": preflight.get("receipt_digest"),
@@ -312,7 +315,7 @@ def _validate_startup(
 
 def _validate_control_slot_binding(
     *, slot: Mapping[str, Any], control: Mapping[str, Any]
-) -> None:
+) -> dict[str, str]:
     parts = {
         name: dict(control.get(name) or {})
         for name in (
@@ -325,42 +328,58 @@ def _validate_control_slot_binding(
         "session_id": slot.get("session_id"), "task_id": slot.get("task_id"),
         "campaign_id": request.get("campaign_id"), "workflow_id": request.get("workflow_id"),
     }
-    admission_key = f"{request.get('campaign_id')}:attempt:{slot.get('ordinal')}"
     expected = {
         "attempt_authority": {
             **shared, "envelope_id": slot.get("envelope_id"),
             "root_ref": request.get("root_ref"),
             "idempotency_key": request.get("idempotency_key"),
+            "request_digest": slot.get("request_digest"),
         },
         "admission_request": {
             **shared, "envelope_id": slot.get("envelope_id"),
-            "lane_id": slot.get("lane_id"), "scope": slot.get("scope"),
-            "idempotency_key": admission_key,
+            "scope": slot.get("scope"),
         },
         "attempt": {
-            **shared, "attempt_id": slot.get("attempt_id"),
-            "envelope_id": slot.get("envelope_id"), "lane_id": slot.get("lane_id"),
-            "scope": slot.get("scope"), "idempotency_key": admission_key,
+            **shared, "envelope_id": slot.get("envelope_id"),
+            "root_ref": request.get("root_ref"), "scope": slot.get("scope"),
         },
     }
     selection, admission, attempt = (
         parts[name] for name in ("selection", "admission_request", "attempt")
     )
     closure_request, closure = parts["closure_request"], parts["closure"]
+    attempt_id = str(attempt.get("attempt_id") or "")
+    lane_id = str(attempt.get("lane_id") or "")
+    admission_id = str(admission.get("admission_request_id") or "")
+    admission_key = str(admission.get("idempotency_key") or "")
+    selection_id = str(selection.get("selection_id") or "")
     valid = all(
         all(parts[name].get(key) == item for key, item in bindings.items())
         for name, bindings in expected.items()
     ) and all((
-        attempt.get("admission_request_id") == admission.get("admission_request_id"),
-        selection.get("attempt_id") == slot.get("attempt_id"),
-        closure_request.get("attempt_id") == slot.get("attempt_id"),
-        closure_request.get("selection_id") == selection.get("selection_id"),
-        closure.get("attempt_id") == slot.get("attempt_id"),
-        closure.get("selection_id") == selection.get("selection_id"),
+        bool(attempt_id), bool(lane_id), bool(admission_id), bool(admission_key),
+        bool(selection_id),
+        attempt.get("admission_request_id") == admission_id,
+        attempt.get("lane_id") == admission.get("lane_id") == lane_id,
+        attempt.get("idempotency_key") == admission_key,
+        admission.get("actor_ref") == attempt.get("created_by"),
+        bool(admission.get("actor_ref")),
+        selection.get("attempt_id") == attempt_id,
+        closure_request.get("attempt_id") == attempt_id,
+        closure_request.get("selection_id") == selection_id,
+        closure.get("attempt_id") == attempt_id,
+        closure.get("selection_id") == selection_id,
         closure.get("closure_request_id") == closure_request.get("closure_request_id"),
     ))
     if not valid:
         _fail("public_conductor_control_slot_mismatch", "closed control differs from authority", identity="closed_evidence.scientific_attempt_control")
+    return {
+        "attempt_id": attempt_id,
+        "lane_id": lane_id,
+        "admission_request_id": admission_id,
+        "admission_idempotency_key": admission_key,
+        "selection_id": selection_id,
+    }
 
 def _validate_receipt_chain(
     receipts: Sequence[Mapping[str, Any]],
@@ -378,10 +397,9 @@ def _validate_receipt_chain(
             "command sequence is discontinuous",
             identity="receipt_chain",
         )
-    _validate_control_slot_binding(slot=slot, control=control)
-    session_id, attempt_id = str(slot["session_id"]), str(slot["attempt_id"])
-    selection = dict(control.get("selection") or {})
-    selection_id = str(selection.get("selection_id") or "")
+    actual = _validate_control_slot_binding(slot=slot, control=control)
+    session_id, attempt_id = str(slot["session_id"]), actual["attempt_id"]
+    selection_id = actual["selection_id"]
     routes = {
         "grant": f"/v3/sessions/{session_id}/scientific-attempt-authorizations",
         "drain": f"/v3/sessions/{session_id}/runtime/drain",
@@ -786,6 +804,11 @@ def _validate_closed_export(
 ]:
     value = dict(export)
     control = value.get("scientific_attempt_control")
+    actual = (
+        _validate_control_slot_binding(slot=slot, control=control)
+        if isinstance(control, dict)
+        else {}
+    )
     payload = {key: item for key, item in value.items() if key != "export_digest"}
     fields = {
         "schema_id",
@@ -805,7 +828,7 @@ def _validate_closed_export(
                 set(value) == fields,
                 value.get("schema_id") == "aox_closed_attempt_evidence@2",
                 value.get("session_id") == slot.get("session_id"),
-                value.get("attempt_id") == slot.get("attempt_id"),
+                value.get("attempt_id") == actual.get("attempt_id"),
                 value.get("selection_id")
                 == dict(control.get("selection") or {}).get("selection_id"),
                 value.get("export_digest") == canonical_digest(payload),
@@ -841,7 +864,7 @@ def _validate_closed_export(
         validate_aox_public_product_closure(
             product_closure,
             session_id=str(slot["session_id"]),
-            attempt_id=str(slot["attempt_id"]),
+            attempt_id=str(actual["attempt_id"]),
             attempt_kind=kind,
             execution_task_id=str(slot["task_id"]),
             workspace=workspace,
@@ -958,8 +981,12 @@ def _source_payload(
     )
     supervision = validate_supervised_host_receipt(
         supervision_value,
-        attempt_id=str(slot["attempt_id"]),
+        launch_id=str(preflight["slot_claim"]["launch_id"]),
         attempt_kind=str(slot["attempt_kind"]),
+        session_id=str(slot["session_id"]),
+        task_id=str(slot["task_id"]),
+        root_ref=str(slot["root_ref"]),
+        campaign_id=str(preflight["campaign_id"]),
         attempt_authority_id=str(slot["envelope_id"]),
         attempt_authority_request_digest=str(slot["request_digest"]),
     )
@@ -970,7 +997,7 @@ def _source_payload(
         "timeout_seconds": startup.get("timeout_seconds"),
         "session_id": slot.get("session_id"),
         "task_id": slot.get("task_id"),
-        "lane_id": slot.get("lane_id"),
+        "root_ref": slot.get("root_ref"),
         "campaign_id": preflight.get("campaign_id"),
     }
     if any(supervision.get(key) != item for key, item in supervision_bindings.items()):
@@ -1012,12 +1039,13 @@ def _source_payload(
             "closed-attempt export lacks canonical control",
             identity="evidence_response",
         )
-    selection_id = dict(control.get("selection") or {}).get("selection_id")
+    actual = _validate_control_slot_binding(slot=slot, control=control)
+    selection_id = actual["selection_id"]
     expected_routes = {
         "workspace": f"/v3/sessions/{slot['session_id']}/workspace",
         "events": f"/v3/sessions/{slot['session_id']}/events?replay=1&after_cursor=0",
         "evidence": (
-            f"/v3/sessions/{slot['session_id']}/scientific-attempts/{slot['attempt_id']}/"
+            f"/v3/sessions/{slot['session_id']}/scientific-attempts/{actual['attempt_id']}/"
             f"selections/{selection_id}/evidence"
         ),
     }
@@ -1106,7 +1134,7 @@ def _source_payload(
     payload = {
         "schema_id": ATTEMPT_BUNDLE_SCHEMA_ID_V3,
         "bundle_profile": PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID,
-        "attempt_id": slot["attempt_id"],
+        "attempt_id": actual["attempt_id"],
         "attempt_kind": kind,
         "sealed_at": sealed_at,
         "identity": {**identity, "identity_digest": canonical_digest(identity)},
@@ -1313,9 +1341,9 @@ def verify_public_conductor_bundle(
         source_preflight, _ = _load_canonical_object(
             sources["preflight.json"], identity="preflight"
         )
-        source_slot = dict(source_preflight.get("slot") or {})
         with tempfile.TemporaryDirectory(prefix="openzyme-aox-public-verify-") as raw:
-            root = Path(raw) / str(source_slot.get("attempt_id") or "attempt")
+            source_claim = dict(source_preflight.get("slot_claim") or {})
+            root = Path(raw) / str(source_claim.get("launch_id") or "launch")
             evidence = root / "evidence"
             root.mkdir(mode=0o700)
             evidence.mkdir(mode=0o700)
@@ -1507,40 +1535,66 @@ def evaluate_public_conductor_campaign(
                 "campaign.authority.slots",
                 "campaign attempts must consume exact authority ordinals 1, 2, and 3",
             )
-        identity_fields = (
-            "attempt_id",
+        slot_identity_fields = (
             "session_id",
             "task_id",
-            "lane_id",
             "envelope_id",
+            "root_ref",
         )
         if any(
             len({str(slot.get(field) or "") for slot in slots}) != 3
             or any(not str(slot.get(field) or "") for slot in slots)
-            for field in identity_fields
+            for field in slot_identity_fields
         ):
             block(
                 "campaign_slot_identity_collision",
                 "campaign.authority.slots",
-                "campaign slots must carry unique attempt/session/task/lane/envelope identities",
+                "campaign slots must carry unique session/task/envelope/root identities",
             )
-        selection_ids = [
-            str(
-                dict(
-                    dict(payload.get("scientific_attempt_control") or {}).get(
-                        "selection"
-                    )
-                    or {}
-                ).get("selection_id")
-                or ""
-            )
+        controls = [
+            dict(payload.get("scientific_attempt_control") or {})
             for payload in payloads
         ]
-        if len(set(selection_ids)) != 3 or "" in selection_ids:
+        actual_identities = {
+            "attempt_id": [
+                str(dict(control.get("attempt") or {}).get("attempt_id") or "")
+                for control in controls
+            ],
+            "lane_id": [
+                str(dict(control.get("attempt") or {}).get("lane_id") or "")
+                for control in controls
+            ],
+            "admission_request_id": [
+                str(
+                    dict(control.get("admission_request") or {}).get(
+                        "admission_request_id"
+                    )
+                    or ""
+                )
+                for control in controls
+            ],
+            "admission_idempotency_key": [
+                str(
+                    dict(control.get("admission_request") or {}).get(
+                        "idempotency_key"
+                    )
+                    or ""
+                )
+                for control in controls
+            ],
+            "selection_id": [
+                str(dict(control.get("selection") or {}).get("selection_id") or "")
+                for control in controls
+            ],
+        }
+        if any(
+            len(set(values)) != 3 or "" in values
+            for values in actual_identities.values()
+        ):
             block(
-                "campaign_selection_identity_collision",
+                "campaign_control_identity_collision",
                 "campaign.attempts",
-                "campaign attempts must have unique sealed selection identities",
+                "campaign attempts must have unique canonical control identities",
             )
         if any(
             dict(payloads[index].get("micu_ledger") or {}).get("after")

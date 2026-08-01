@@ -113,9 +113,6 @@ from openzyme_engines.execution import ExecutionStartResult
 from openzyme_host_api.aox_scientific_contract import (
     AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY,
 )
-from openzyme_host_api.aox_scientific_contract import (
-    AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST,
-)
 from openzyme_host_api.v3_service import V3EventStore
 from openzyme_host_api.v3_service import V3HostApiService
 
@@ -629,7 +626,7 @@ def test_v3_public_contract_rejects_unknown_and_client_owned_actor_fields(
         assert error["details"]
 
 
-def test_v3_scientific_attempt_authority_and_command_surface(
+def test_v3_scientific_attempt_authority_and_read_only_surface(
     monkeypatch,
 ) -> None:
     client, _ = _build_client(monkeypatch)
@@ -691,73 +688,36 @@ def test_v3_scientific_attempt_authority_and_command_surface(
         },
     )
     assert authorization.status_code == 200, authorization.text
-    envelope_id = authorization.json()["record"]["envelope_id"]
+    assert authorization.json()["record"]["status"] == "active"
 
-    created = client.post(
+    retired_command = client.post(
         f"/v3/sessions/{session_id}/scientific-attempt-commands",
         headers={"Idempotency-Key": "attempt-scientific"},
         json={
             "command": "attempt.create",
-            "arguments": {
-                "envelope_id": envelope_id,
-                "task_id": "task_scientific_surface",
-                "lane_id": "lane_scientific_surface",
-                "campaign_id": "campaign_scientific_surface",
-                "workflow_id": "aox_blank_world",
-                "scope": "formal",
-                "workflow_contract_digest": (
-                    AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
-                ),
-                "requested_effect_classes": ["provider", "hpc"],
-                "reserved_micu": 10,
-                "reserved_cost_microunits": 1000,
-                "reserved_wall_time_seconds": 600,
-                "provider": "openai",
-                "hpc_target": "hpc:approved",
-            },
+            "arguments": {},
         },
     )
-    assert created.status_code == 200, created.text
-    assert created.json()["record"]["scope"] == "formal"
-    admission_request_id = created.json()["record"]["admission_request_id"]
-    assert created.json()["scientific_attempts"]["attempts"] == []
-
-    finalized = client.post(
+    retired_admission_finalizer = client.post(
         f"/v3/sessions/{session_id}/scientific-attempt-admissions/finalize",
         headers={"Idempotency-Key": "finalize-attempt-scientific"},
-        json={"admission_request_id": admission_request_id},
+        json={"admission_request_id": "legacy"},
     )
-    assert finalized.status_code == 200, finalized.text
-    attempt_id = finalized.json()["record"]["attempt_id"]
-    assert finalized.json()["record"]["admission_request_id"] == (
-        admission_request_id
+    retired_closure_finalizer = client.post(
+        f"/v3/sessions/{session_id}/scientific-attempt-closures/finalize",
+        headers={"Idempotency-Key": "finalize-closure-scientific"},
+        json={"closure_request_id": "legacy"},
     )
+    assert retired_command.status_code == 404
+    assert retired_admission_finalizer.status_code == 404
+    assert retired_closure_finalizer.status_code == 404
 
-    inspected = client.get(
-        f"/v3/sessions/{session_id}/scientific-attempts"
-    )
+    inspected = client.get(f"/v3/sessions/{session_id}/scientific-attempts")
     workspace = client.get(f"/v3/sessions/{session_id}/workspace")
     assert inspected.status_code == 200
-    assert inspected.json()["authorizations"][0]["attempts"]["remaining"] == 1
-    assert len(inspected.json()["attempts"]) == 1
-    assert inspected.json()["attempts"][0]["status"] == "active"
-    assert inspected.json()["attempts"][0]["record_status"] == "active"
-    assert inspected.json()["attempts"][0]["effective_status"] == "active"
-    assert inspected.json()["attempts"][0]["lifecycle_phase"] == "open"
-    assert (
-        inspected.json()["attempts"][0]["accepts_scientific_mutation"]
-        is True
-    )
-    assert (
-        workspace.json()["scientific_attempts"]["attempts"][0]["attempt_id"]
-        == attempt_id
-    )
-    assert (
-        workspace.json()["scientific_attempts"]["attempts"][0][
-            "lifecycle_phase"
-        ]
-        == "open"
-    )
+    assert inspected.json()["authorizations"][0]["attempts"]["remaining"] == 2
+    assert inspected.json()["admission_request_count"] == 0
+    assert inspected.json()["attempts"] == []
     assert "allowed_providers" not in json.dumps(inspected.json())
     assert (
         workspace.json()["scientific_attempts"]["schema_id"]
@@ -767,70 +727,14 @@ def test_v3_scientific_attempt_authority_and_command_surface(
         workspace.json()["scientific_attempts"]
     )
 
-    begun = client.post(
-        f"/v3/sessions/{session_id}/scientific-attempt-commands",
-        headers={"Idempotency-Key": "selection-scientific-surface"},
-        json={
-            "command": "scientific.selection.begin",
-            "arguments": {"attempt_id": attempt_id},
-        },
-    )
-    assert begun.status_code == 200, begun.text
-    selection_id = begun.json()["record"]["selection_id"]
-    detailed = client.get(
-        f"/v3/sessions/{session_id}/scientific-attempts",
-        params={
-            "attempt_id": attempt_id,
-            "selection_id": selection_id,
-            "limit": 1,
-        },
-    )
-    assert detailed.status_code == 200, detailed.text
-    assert detailed.json()["schema_id"] == (
-        "scientific_selection_inspection@1"
-    )
-    assert detailed.json()["attempt"]["status"] == "active"
-    assert detailed.json()["attempt"]["record_status"] == "active"
-    assert detailed.json()["attempt"]["effective_status"] == "active"
-    assert detailed.json()["attempt"]["lifecycle_phase"] == "open"
-    assert detailed.json()["attempt"]["accepts_scientific_mutation"] is True
-    assert detailed.json()["head"]["selection_id"] == selection_id
-    assert detailed.json()["contract"]["contract_id"] == (
-        "aox_blank_world_selected_chain@2"
-    )
-    assert detailed.json()["occurrences"] == []
-    detailed_text = json.dumps(detailed.json(), sort_keys=True)
-    for forbidden in (
-        "recommended_actions",
-        "lease_token",
-        "fencing_token",
-        "credentials",
-        "allowed_hpc_targets",
-        "allowed_providers",
-        "root_ref",
-    ):
-        assert forbidden not in detailed_text
-
     incomplete_filter = client.get(
         f"/v3/sessions/{session_id}/scientific-attempts",
-        params={"attempt_id": attempt_id},
+        params={"attempt_id": "not-publicly-created"},
     )
     assert incomplete_filter.status_code == 409
     assert incomplete_filter.json()["error"]["code"] == (
         "scientific_inspection_filter_incomplete"
     )
-
-    malformed = client.post(
-        f"/v3/sessions/{session_id}/scientific-attempt-commands",
-        headers={"Idempotency-Key": "bad-scientific-command"},
-        json={
-            "command": "scientific.selection.begin",
-            "arguments": {"unexpected": True},
-        },
-    )
-    assert malformed.status_code == 400
-    assert malformed.json()["error"]["code"] == "invalid_request"
-
 
 def test_v3_closed_attempt_evidence_export_is_public_and_exact(
     monkeypatch,
@@ -2942,39 +2846,23 @@ def test_scientific_transition_finalizer_reports_nonretryable_host_failure(
         idempotency_key="grant-scientific-finalizer",
     )
     envelope_id = granted["record"]["envelope_id"]
-    command = {
-        "envelope_id": envelope_id,
-        "task_id": task_id,
-        "lane_id": lane_id,
-        "campaign_id": "campaign_scientific_finalizer",
-        "workflow_id": "aox_blank_world",
-        "scope": "formal",
-        "workflow_contract_digest": (
-            AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
-        ),
-        "requested_effect_classes": ["provider", "hpc"],
-        "reserved_micu": 10,
-        "reserved_cost_microunits": 100,
-        "reserved_wall_time_seconds": 60,
-        "provider": "provider:test",
-        "hpc_target": "hpc:test",
-    }
-    first = service.execute_scientific_attempt_command(
-        "attempt.create",
-        command,
+    control = service.scientific_attempt_control()
+    first = control.request_authorized_attempt_admission(
+        envelope_id=envelope_id,
         session_id=session_id,
+        task_id=task_id,
         actor_ref=agent_id,
         idempotency_key="attempt-request-first",
     )
-    first_request_id = first["record"]["admission_request_id"]
-    second = service.execute_scientific_attempt_command(
-        "attempt.create",
-        command,
+    first_request_id = first.admission_request_id
+    second = control.request_authorized_attempt_admission(
+        envelope_id=envelope_id,
         session_id=session_id,
+        task_id=task_id,
         actor_ref=agent_id,
         idempotency_key="attempt-request-second",
     )
-    second_request_id = second["record"]["admission_request_id"]
+    second_request_id = second.admission_request_id
 
     with monkeypatch.context() as patch:
         patch.setattr(

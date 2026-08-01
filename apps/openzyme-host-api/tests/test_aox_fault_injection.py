@@ -11,6 +11,8 @@ from openzyme_core import MutationScopeService
 from openzyme_core import ScientificAttemptError
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
+from openzyme_domain import AgentMember
+from openzyme_domain import AgentMemberStatus
 from openzyme_domain import ArtifactKind
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import MutationWriterKind
@@ -23,9 +25,6 @@ from openzyme_host_api.aox_public_product_closure import (
 )
 from openzyme_host_api.aox_scientific_contract import (
     AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY,
-)
-from openzyme_host_api.aox_scientific_contract import (
-    AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST,
 )
 from openzyme_host_api.v3_service import V3EventStore
 from openzyme_host_api.v3_service import V3HostApiService
@@ -54,6 +53,7 @@ def _fault_service(
     session_id = "sess_aox_exact_fault"
     lane_id = "lane_aox_exact_fault"
     task_id = "task_aox_exact_fault"
+    actor_ref = "agent:aox-exact-fault-executor"
     service.create_session(
         project_id="aox-fault",
         objective="Prove one exact byte flip",
@@ -74,8 +74,26 @@ def _fault_service(
             "subject": "AOX fault",
             "kind": "execution",
             "lane_id": lane_id,
+            "assigned_ref": actor_ref,
         }
     )
+    now = "2026-08-01T00:00:00+00:00"
+    repositories.agents.save(
+        AgentMember(
+            agent_id=actor_ref,
+            session_id=session_id,
+            lane_id=lane_id,
+            task_id=task_id,
+            name="AOX exact fault executor",
+            role="executor",
+            status=AgentMemberStatus.ACTIVE,
+            parent_agent_id="agent:master",
+            created_at=now,
+            updated_at=now,
+            runtime_state="idle",
+        )
+    )
+    service.claim_lane(lane_id, claimed_ref=actor_ref)
     grant = service.grant_scientific_attempt_authorization(
         {
             "task_id": task_id,
@@ -98,32 +116,19 @@ def _fault_service(
         idempotency_key="grant-aox-exact-fault",
     )
     envelope_id = str(grant["record"]["envelope_id"])
-    admission = service.execute_scientific_attempt_command(
-        "attempt.create",
-        {
-            "envelope_id": envelope_id,
-            "task_id": task_id,
-            "lane_id": lane_id,
-            "campaign_id": "campaign_aox_exact_fault",
-            "workflow_id": "aox_blank_world",
-            "scope": "fault",
-            "workflow_contract_digest": AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST,
-            "requested_effect_classes": ["provider", "hpc"],
-            "reserved_micu": 100,
-            "reserved_cost_microunits": 1_000,
-            "reserved_wall_time_seconds": 600,
-            "provider": "provider:pinned",
-            "hpc_target": "hpc:pinned",
-        },
+    admission = service.scientific_attempt_control().request_authorized_attempt_admission(
+        envelope_id=envelope_id,
         session_id=session_id,
-        actor_ref="user:local-dev",
+        task_id=task_id,
+        actor_ref=actor_ref,
         idempotency_key="create-aox-exact-fault",
     )
-    attempt = service.finalize_scientific_attempt_admission(
-        session_id=session_id,
-        admission_request_id=str(admission["record"]["admission_request_id"]),
-    )["record"]
-    return service, repositories, session_id, str(attempt["attempt_id"]), blob_root
+    assert repositories.scientific_attempts.list_by_session(session_id) == []
+    service.finalize_pending_scientific_transitions(session_id=session_id)
+    attempt = repositories.scientific_attempts.list_by_session(session_id)[0]
+    assert attempt.admission_request_id == admission.admission_request_id
+    assert attempt.created_by == actor_ref
+    return service, repositories, session_id, attempt.attempt_id, blob_root
 
 
 def _register_fault_target(

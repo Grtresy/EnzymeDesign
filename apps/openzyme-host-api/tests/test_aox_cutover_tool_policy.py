@@ -1166,7 +1166,7 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
         expires_at="2026-08-01T00:00:00+00:00",
         idempotency_key="grant:repository-backed",
     )
-    attempt = scientific.create_attempt(
+    admission = scientific.request_attempt_admission(
         envelope_id=authority.envelope_id,
         session_id=SESSION_ID,
         task_id=EXECUTION_TASK_ID,
@@ -1181,6 +1181,9 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
         reserved_wall_time_seconds=30,
         actor_ref="agent_executor",
         idempotency_key="attempt:repository-backed",
+    )
+    attempt = scientific.finalize_attempt_admission(
+        admission_request_id=admission.admission_request_id
     )
 
     run = SandboxRunRecord(
@@ -1614,14 +1617,20 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
             scientific.mutation_scopes.writer_turn(**arguments)
         ),
     )
-    finalized = host_service.finalize_scientific_attempt_closure(
-        session_id=SESSION_ID,
-        closure_request_id=request.closure_request_id,
+    finalized_closure, transition_events = (
+        host_service._finalize_scientific_transition_with_delivery(
+            transition_kind="closure",
+            session_id=SESSION_ID,
+            request_id=request.closure_request_id,
+        )
     )
-    closure = repositories.scientific_attempt_closures.get(
-        finalized["record"]["closure_id"]
-    )
+    closure = repositories.scientific_attempt_closures.get(finalized_closure.closure_id)
     assert closure is not None
+    assert any(
+        event["event_type"] == "scientific.attempt.closed"
+        and event["payload"]["record_id"] == closure.closure_id
+        for event in transition_events
+    )
     assert closure.attempt_id == attempt.attempt_id
     assert closure.actor_ref == "agent_executor"
     closure_signals = [

@@ -45,8 +45,8 @@ from .app import HostApiDependencies, create_app
 from .foundation import build_configured_foundation
 
 
-HOST_STARTUP_SCHEMA_ID = "aox_supervised_host_startup@1"
-HOST_SUPERVISION_RECEIPT_SCHEMA_ID = "aox_supervised_host_receipt@1"
+HOST_STARTUP_SCHEMA_ID = "aox_supervised_host_startup@2"
+HOST_SUPERVISION_RECEIPT_SCHEMA_ID = "aox_supervised_host_receipt@2"
 HOST_SUPERVISION_FATAL_SCHEMA_ID = "aox_supervised_host_fatal@1"
 HOST_STARTUP_FILENAME = "aox-host-startup.json"
 HOST_SUPERVISION_FILENAME = "aox-host-supervision.json"
@@ -68,8 +68,8 @@ _CONTRACT = {
     ],
 }
 _RECEIPT_FIELDS = {
-    "schema_id", "mode", "attempt_id", "attempt_kind", "session_id", "task_id",
-    "lane_id", "attempt_authority_id", "attempt_authority_request_digest",
+    "schema_id", "mode", "launch_id", "attempt_kind", "session_id", "task_id",
+    "root_ref", "attempt_authority_id", "attempt_authority_request_digest",
     "campaign_id", "preflight_receipt_digest", "host_startup_receipt_digest",
     "process_epoch", "shutdown_reason", "child_exit_code", "local_state_settled",
     "descendant_retirement_proven", "parent_snapshot_revalidated",
@@ -456,9 +456,11 @@ class SupervisedHostLease:
             parent.get(field) == settlement.get(field) for field in mutation_fields
         )
         if not revalidated:
+            slot_claim = dict(self.preflight["slot_claim"])
             failure = {
                 "schema_id": HOST_SUPERVISION_FATAL_SCHEMA_ID,
-                "attempt_id": slot.get("attempt_id"), "attempt_kind": slot.get("attempt_kind"),
+                "launch_id": slot_claim.get("launch_id"),
+                "attempt_kind": slot.get("attempt_kind"),
                 "attempt_authority_id": slot.get("envelope_id"),
                 "attempt_authority_request_digest": slot.get("request_digest"),
                 "preflight_receipt_digest": self.preflight["receipt_digest"],
@@ -476,11 +478,12 @@ class SupervisedHostLease:
             raise HostSupervisionError(
                 "host_local_settlement_unproven", "supervised Host retirement is unproven"
             )
+        slot_claim = dict(self.preflight["slot_claim"])
         receipt_payload = {
             "schema_id": HOST_SUPERVISION_RECEIPT_SCHEMA_ID,
-            "mode": "policy_free_public_host", "attempt_id": slot["attempt_id"],
+            "mode": "policy_free_public_host", "launch_id": slot_claim["launch_id"],
             "attempt_kind": slot["attempt_kind"], "session_id": slot["session_id"],
-            "task_id": slot["task_id"], "lane_id": slot["lane_id"],
+            "task_id": slot["task_id"], "root_ref": slot["root_ref"],
             "attempt_authority_id": slot["envelope_id"],
             "attempt_authority_request_digest": slot["request_digest"],
             "campaign_id": self.preflight["campaign_id"],
@@ -539,7 +542,7 @@ def supervised_attempt_host(
     epoch = uuid4().hex
     process = spawn.Process(
         target=_host_child_main, args=(str(path), child, epoch, startup_timeout_seconds),
-        name=f"aox-host-{slot['attempt_id']}",
+        name=f"aox-host-{preflight['slot_claim']['launch_id']}",
     )
     process.start()
     child.close()
@@ -563,11 +566,12 @@ def supervised_attempt_host(
             raise HostSupervisionError(
                 "host_process_identity_unproven", "Host readiness has the wrong identity"
             )
+        slot_claim = dict(preflight["slot_claim"])
         startup_payload = {
             "schema_id": HOST_STARTUP_SCHEMA_ID, "base_url": ready["base_url"],
-            "attempt_id": slot["attempt_id"], "attempt_kind": slot["attempt_kind"],
+            "launch_id": slot_claim["launch_id"], "attempt_kind": slot["attempt_kind"],
             "session_id": slot["session_id"], "task_id": slot["task_id"],
-            "lane_id": slot["lane_id"], "attempt_authority_id": slot["envelope_id"],
+            "root_ref": slot["root_ref"], "attempt_authority_id": slot["envelope_id"],
             "attempt_authority_request_digest": slot["request_digest"],
             "campaign_id": preflight["campaign_id"],
             "preflight_receipt_digest": preflight["receipt_digest"],
@@ -603,7 +607,8 @@ def supervised_attempt_host(
 
 
 def validate_supervised_host_receipt(
-    receipt: object, *, attempt_id: str, attempt_kind: str,
+    receipt: object, *, launch_id: str, attempt_kind: str,
+    session_id: str, task_id: str, root_ref: str, campaign_id: str,
     attempt_authority_id: str, attempt_authority_request_digest: str,
 ) -> dict[str, Any]:
     if not isinstance(receipt, dict):
@@ -626,10 +631,15 @@ def validate_supervised_host_receipt(
         set(value) == _RECEIPT_FIELDS,
         value.get("schema_id") == HOST_SUPERVISION_RECEIPT_SCHEMA_ID,
         value.get("mode") == "policy_free_public_host",
-        value.get("attempt_id") == attempt_id, value.get("attempt_kind") == attempt_kind,
+        value.get("launch_id") == launch_id,
+        value.get("attempt_kind") == attempt_kind,
+        value.get("session_id") == session_id,
+        value.get("task_id") == task_id,
+        value.get("root_ref") == root_ref,
+        value.get("campaign_id") == campaign_id,
         value.get("attempt_authority_id") == attempt_authority_id,
         value.get("attempt_authority_request_digest") == attempt_authority_request_digest,
-        bool(value.get("campaign_id")), bool(value.get("process_epoch")),
+        bool(value.get("process_epoch")),
         all(_DIGEST.fullmatch(str(value.get(name) or "")) for name in (
             "attempt_authority_request_digest", "preflight_receipt_digest",
             "host_startup_receipt_digest", "mutation_authority_snapshot_digest",

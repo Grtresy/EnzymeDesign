@@ -1358,6 +1358,51 @@ negative route证明当前 composition。
 provider/HPC/Chrome action仍需新的 clean commit、full admission、pin、fresh authority、fresh
 roots与用户对 exact plan的独立批准。
 
+### 2026-08-01 post-r69 / pre-r70 late-bound admission repair
+
+r69 在旧 clean commit `b0ed3ea767fb44c892a14f90f59a50a96d2aa58f` 上消费了 campaign
+`aox_campaign_2a57780d6663d57da38621d6` 的 authority、slot/root、Host session、三次 PubMed
+provider request与 `512,357` MICU。累计账本到达
+`128,702,989 / 500,000,000`，剩余 `371,297,011`。但是 execution task 尚未绑定真实 lane，
+public `attempt.create` 因 `attempt_lane_scope_invalid/no_effect` 返回 409；SQLite 中没有 admission
+request、scientific attempt 或 closure，测试在 bundle/reducer 前停止。这是 consumed
+**pre-admission blocked**，不是 canonical r69 NO-GO。r69 的 plan、slot、root、session、provider
+effect、receipt 与 MICU attribution全部只读封存且不可复用；没有 r69 attempt identity可以被后续
+repair“补上”。
+
+该 defect 暴露出 outer formal plan 在 agent 尚未建立 canonical control objects 时预造
+`attempt_id`、`lane_id` 与 admission idempotency key，形成 shadow truth。current
+`aox_live_attempt_authority_plan@2`、`aox_attempt_authority_slot_claim@2`、
+`aox_blank_world_root_proof@3`、`aox_attempt_preflight@3` 与 Host startup/supervision `@2` 删除这些
+字段，只闭合 campaign、ordinal、session、task、envelope/root、campaign-root identity 与从上述
+source确定性派生的 `launch_id`。legacy plan/claim/root proof仍可按原 schema离线读取，但不得与
+current schema配对或进入新 launch。
+
+executor 先使用 canonical `lane.create` 与 `lane.bind_task` 建立真实 lane；`attempt.create` 的
+公开 tool schema只接收 `envelope_id` 与 agent选择的 `idempotency_key`，task来自当前 focus。
+Core 从 durable authority、task、lane与唯一 workflow contract推导 campaign/scope/resources/
+effect/private route，并在 request write与 Host finalization两端都要求 actor仍是该 task的 current
+assignee。wrong actor、reassignment、missing/foreign lane、ambiguous scope/workflow/provider/HPC
+route均在 attempt创建前 fail closed。Host finalizer生成 canonical admission/attempt id，成功后
+通过 canonical owner wake把 late-bound facts交还 executor；outer plan、preflight和supervisor
+不得猜测或覆盖它们。
+
+public `scientific-attempt-commands` 与 admission/closure finalizer routes、对应 thin CLI/client、
+dead `ScientificAttemptService.create_attempt` convenience、private
+`attempt_admission_arguments`、diagnostic authority mint/consume module及命令全部删除。agent继续
+通过自己的 Harness tools执行 selection/adoption/seal/close，Host继续在 bounded writer退休后
+内部 finalize；Codex conductor仅从 public inspect/workspace/events/closed export读取结果。
+`aox_public_conductor_bundle@2` 先用 slot authority绑定真实 control graph，再 late-bind
+attempt/lane/admission/idempotency/selection identities；campaign reducer分别强制三个 launch
+slot identity与五类真实 control identity唯一。
+
+production qualification通过 real `HostApiDependencies/create_app()` route composition、真实
+file-backed SQLite、production V3 service和 canonical lane/scientific tool handlers证明正向可达，
+并覆盖 wrong actor、finalizer前 reassignment、legacy public routes、diagnostic commands、deleted
+modules与 fault/export fail-closed。历史 SQLite migration/rows与 sealed evidence不改写，formal
+non-adoption gate继续是唯一兼容入口。该 Phase 2只运行 non-live验证、同步文档并提交本地 commit；
+不启动 r70、live、MICU、provider、HPC或Chrome。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

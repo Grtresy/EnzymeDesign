@@ -205,21 +205,6 @@ class HostApiClient:
             idempotency_key=idempotency_key,
         )
 
-    def execute_v3_scientific_attempt_command(
-        self,
-        session_id: str,
-        *,
-        command: str,
-        arguments: dict[str, Any],
-        idempotency_key: str,
-    ) -> dict[str, Any]:
-        return self._request_json(
-            "POST",
-            f"/v3/sessions/{session_id}/scientific-attempt-commands",
-            json_body={"command": command, "arguments": arguments},
-            idempotency_key=idempotency_key,
-        )
-
     def inject_v3_aox_reference_fault(
         self,
         session_id: str,
@@ -233,30 +218,6 @@ class HostApiClient:
             f"/v3/sessions/{session_id}/aox-fault-injections/reference-byte-flip",
             json_body={"attempt_id": attempt_id, "artifact_id": artifact_id},
             idempotency_key=idempotency_key,
-        )
-
-    def finalize_v3_scientific_attempt_closure(
-        self,
-        session_id: str,
-        *,
-        closure_request_id: str,
-    ) -> dict[str, Any]:
-        return self._request_json(
-            "POST",
-            f"/v3/sessions/{session_id}/scientific-attempt-closures/finalize",
-            json_body={"closure_request_id": closure_request_id},
-        )
-
-    def finalize_v3_scientific_attempt_admission(
-        self,
-        session_id: str,
-        *,
-        admission_request_id: str,
-    ) -> dict[str, Any]:
-        return self._request_json(
-            "POST",
-            f"/v3/sessions/{session_id}/scientific-attempt-admissions/finalize",
-            json_body={"admission_request_id": admission_request_id},
         )
 
     def post_v3_message(

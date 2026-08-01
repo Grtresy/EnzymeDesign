@@ -287,7 +287,7 @@ def _grant_and_create(
     attempt_key: str = "attempt-1",
 ) -> object:
     authority = _grant(service, max_attempts=max_attempts)
-    return service.create_attempt(
+    request = service.request_attempt_admission(
         envelope_id=authority.envelope_id,
         session_id="sess_scientific",
         task_id="task_scientific",
@@ -304,6 +304,9 @@ def _grant_and_create(
         hpc_target="hpc:approved",
         actor_ref="agent:scientist",
         idempotency_key=attempt_key,
+    )
+    return service.finalize_attempt_admission(
+        admission_request_id=request.admission_request_id
     )
 
 
@@ -1733,7 +1736,7 @@ def test_historical_split_adoption_records_remain_exactly_readable() -> None:
 def test_authorization_is_atomic_bounded_and_idempotent() -> None:
     repositories, service = _world()
     attempt = _grant_and_create(service, max_attempts=2)
-    replay = service.create_attempt(
+    replay_request = service.request_attempt_admission(
         envelope_id=attempt.envelope_id,
         session_id=attempt.session_id,
         task_id=attempt.task_id,
@@ -1751,6 +1754,9 @@ def test_authorization_is_atomic_bounded_and_idempotent() -> None:
         actor_ref=attempt.created_by,
         idempotency_key=attempt.idempotency_key,
     )
+    replay = service.finalize_attempt_admission(
+        admission_request_id=replay_request.admission_request_id
+    )
     assert replay.attempt_id == attempt.attempt_id
     authority = repositories.scientific_attempt_authorizations.get(attempt.envelope_id)
     assert authority is not None
@@ -1758,7 +1764,7 @@ def test_authorization_is_atomic_bounded_and_idempotent() -> None:
     assert authority.reserved_micu == 10
 
     with pytest.raises(ScientificAttemptError, match="not authorized") as forbidden:
-        service.create_attempt(
+        service.request_attempt_admission(
             envelope_id=attempt.envelope_id,
             session_id=attempt.session_id,
             task_id=attempt.task_id,
@@ -1911,6 +1917,81 @@ def test_agent_requests_admission_then_host_rolls_scope_after_writer_retires() -
     assert attempt_scope is not None
     assert attempt_scope.state is MutationScopeState.OPEN
     assert attempt_scope.parent_scope_id == session_scope.scope_id
+
+
+def test_authorized_attempt_create_derives_exact_canonical_control_fields() -> None:
+    _, service = _world()
+    authority = _grant(service, max_attempts=1)
+
+    request = service.request_authorized_attempt_admission(
+        envelope_id=authority.envelope_id,
+        session_id=authority.session_id,
+        task_id=authority.task_id,
+        actor_ref="agent:scientist",
+        idempotency_key="agent-derived-admission",
+    )
+
+    assert request.lane_id == "lane_scientific"
+    assert request.campaign_id == authority.campaign_id
+    assert request.workflow_id == authority.workflow_id
+    assert request.scope is ScientificAttemptScope.FORMAL
+    assert request.workflow_contract_digest == TEST_WORKFLOW_CONTRACT.digest
+    assert request.requested_effect_classes == authority.allowed_effect_classes
+    assert request.reserved_micu == authority.max_micu
+    assert request.reserved_cost_microunits == authority.max_cost_microunits
+    assert request.reserved_wall_time_seconds == authority.max_wall_time_seconds
+    assert request.provider == "openai"
+    assert request.hpc_target == "hpc:approved"
+
+    attempt = service.finalize_attempt_admission(
+        admission_request_id=request.admission_request_id
+    )
+    assert attempt.attempt_id.startswith("attempt_")
+    assert attempt.lane_id == "lane_scientific"
+    assert attempt.idempotency_key == "agent-derived-admission"
+
+
+def test_attempt_admission_requires_current_assignee_at_request_and_finalize() -> None:
+    repositories, service = _world()
+    authority = _grant(service, max_attempts=1)
+
+    with pytest.raises(ScientificAttemptError) as wrong_actor:
+        service.request_authorized_attempt_admission(
+            envelope_id=authority.envelope_id,
+            session_id=authority.session_id,
+            task_id=authority.task_id,
+            actor_ref="agent:other",
+            idempotency_key="wrong-owner",
+        )
+    assert wrong_actor.value.error_code == "attempt_admission_actor_not_owner"
+    assert (
+        repositories.scientific_attempt_admission_requests.list_by_session(
+            authority.session_id
+        )
+        == []
+    )
+
+    request = service.request_authorized_attempt_admission(
+        envelope_id=authority.envelope_id,
+        session_id=authority.session_id,
+        task_id=authority.task_id,
+        actor_ref="agent:scientist",
+        idempotency_key="owner-before-reassignment",
+    )
+    task = repositories.tasks.get(authority.task_id)
+    assert task is not None
+    repositories.tasks.seed_fixture(replace(task, assigned_ref="agent:other"))
+
+    with pytest.raises(ScientificAttemptError) as reassigned:
+        service.finalize_attempt_admission(
+            admission_request_id=request.admission_request_id
+        )
+    assert reassigned.value.error_code == "attempt_admission_actor_not_owner"
+    persisted = repositories.scientific_attempt_authorizations.get(
+        authority.envelope_id
+    )
+    assert persisted is not None and persisted.consumed_attempts == 0
+    assert repositories.scientific_attempts.list_by_session(authority.session_id) == []
 
 
 def test_concurrent_admission_finalizers_consume_one_envelope_slot(
@@ -2841,7 +2922,7 @@ def test_exact_admission_wake_reaches_master_as_ephemeral_context(
         )
     )
     authority = _grant(service)
-    attempt = service.create_attempt(
+    admission = service.request_attempt_admission(
         envelope_id=authority.envelope_id,
         session_id=task.session_id,
         task_id=task.task_id,
@@ -2858,6 +2939,9 @@ def test_exact_admission_wake_reaches_master_as_ephemeral_context(
         hpc_target="hpc:approved",
         actor_ref="agent:master",
         idempotency_key="attempt-master-canonical-wake",
+    )
+    attempt = service.finalize_attempt_admission(
+        admission_request_id=admission.admission_request_id
     )
     captured_inputs: list[object] = []
 
@@ -3876,18 +3960,6 @@ def test_successful_attempt_create_is_a_non_business_terminal_handoff() -> None:
                 tool_name="attempt.create",
                 arguments={
                     "envelope_id": authority.envelope_id,
-                    "task_id": "task_scientific",
-                    "lane_id": "lane_scientific",
-                    "campaign_id": "campaign_aox",
-                    "workflow_id": "aox_blank_world",
-                    "scope": "formal",
-                    "workflow_contract_digest": TEST_WORKFLOW_CONTRACT.digest,
-                    "requested_effect_classes": ["provider", "hpc"],
-                    "reserved_micu": 10,
-                    "reserved_cost_microunits": 1_000,
-                    "reserved_wall_time_seconds": 600,
-                    "provider": "openai",
-                    "hpc_target": "hpc:approved",
                     "idempotency_key": "attempt-create-handoff",
                 },
                 task_id="task_scientific",
@@ -5021,7 +5093,7 @@ def test_missing_disposition_and_unknown_effect_fail_closed() -> None:
         receipt_id=issued.receipt.receipt_id,
     )
     with pytest.raises(ScientificAttemptError) as blocked:
-        service.create_attempt(
+        service.request_attempt_admission(
             envelope_id=attempt.envelope_id,
             session_id=attempt.session_id,
             task_id=attempt.task_id,

@@ -2,7 +2,8 @@
 
 状态：deterministic qualification 与 AOX admission integration 已实现；每个 tracked
 correction 都会使前一份 report 失效。r43-r67 已永久 NO-GO；r68 在 root/session/attempt 前
-prelaunch blocked，后继 numbered campaign 必须先在
+prelaunch blocked；r69 在authority/root/session/provider/MICU已消费但attempt创建前
+pre-admission blocked。二者均非canonical NO-GO且全部state不可复用。后继 numbered campaign 必须先在
 新的 clean commit 上生成并独立验证 fresh full admission report。
 
 ## Authority boundary
@@ -62,13 +63,16 @@ plan/consumption/root/decision，以及已退役 closure-stage raw run class、a
 和 historical evidence 都不能被 formal publisher/consumer/blank-world
 root/verifier/reducer 接纳，即使伪造相同 plan digest。该 negative gate 使用 frozen
 literals，不依赖或恢复已删除的 closure-stage production modules。
-当前 `aox_r68_public_conductor_reachability@1` scenario 已由
-`aox_post_r68_public_composition_qualification@1` observation收口为真实 production
-composition qualification：场景通过 `ProductionCompositionFactory` 建立 public FastAPI
-application 与 file-backed SQLite，实际创建 session、发送 message、读取 workspace/events，
-再从独立 composition读取持久化 session/message/events；未开始的 exact fault capability 与
-closed export 必须通过同一 public route返回 typed fail-closed。场景同时检查 public CLI 暴露
-exact fault command，而不是靠 `inspect`/source 字符串猜测 production caller。
+当前 `evidence-projection.aox-run-class-disjoint-closure` scenario 以
+`aox_post_r69_late_bound_composition_qualification@1` observation收口真实 production
+composition：场景通过`HostApiDependencies/create_app()`组成actual FastAPI route registry，
+使用file-backed SQLite、production V3 service与真实`lane.create`、`task.create`、
+`lane.bind_task`、`attempt.create` tool handlers建立session/message/task/lane/admission。
+wrong actor先被`attempt_admission_actor_not_owner`拒绝；current assignee request写入后仍无
+attempt，Host internal finalizer才生成late-bound identity，独立reader再证明持久化。fault与
+closed export在不匹配状态typed fail closed。场景还检查diagnostic authority、public generic
+scientific mutation/finalizer、automatic runner/observer及其CLI/client/dead Core入口确实缺席，
+而非靠一个source symbol宣称positive reachability。
 每个场景都有 finite step、tick、state/event、effect 与
 wall-clock budget。skip、xfail、missing collection、timeout、budget exhaustion 或证据不完整
 只能得到 `violated|unproven`，不能得到 pass。
@@ -129,16 +133,16 @@ verifier 才是 authority。
 
 ## AOX admission and evidence binding
 
-AOX `pin`、`preflight`、`authorize`、`authorize-diagnostic` 及两个 policy-free authority
-consumption commands 必须显式接收 `--architecture-qualification-report`。验证先于 live
+AOX `pin`、`preflight`、formal `authorize` 与 `consume-authority` 必须显式接收
+`--architecture-qualification-report`。验证先于 live
 settings、pin runner attestation、attempt-root、sandbox runtime probe 以及任何
 provider/runner/Chrome/MICU 调用。不存在 force、debug、environment、legacy 或
-pass-boolean bypass。`run-live`、`run-diagnostic-live` 与 closure-stage commands 已退役，
-不能通过 qualification report 恢复。
+pass-boolean bypass。diagnostic authority mint/consume、`run-live`、`run-diagnostic-live` 与
+closure-stage commands 已退役，不能通过 qualification report 恢复。
 
 pin transaction marker 是 `aox_cutover_pin_commit@2`，public pin receipt 是
 `aox_cutover_pin_receipt@2`，blank-world root proof 是
-`aox_blank_world_root_proof@2`，launch receipt 是
+current `aox_blank_world_root_proof@3`，launch receipt 是
 `aox_blank_world_launch_receipt@2`，attempt bundle 是
 production `aox_blank_world_attempt_bundle@3`。历史
 `aox_blank_world_attempt_bundle@2` 只由冻结 verifier 读取，不得自动升级。新 bundle 与
@@ -147,13 +151,11 @@ production `aox_blank_world_attempt_bundle@3`。历史
 profile 与 source commit。collector/offline verifier 拒绝 missing、changed、mismatched 或
 unknown-version receipt。
 
-正式 `authorize` 只发布 exact-three formal plan；独立 `authorize-diagnostic` 使用单槽
-`aox_diagnostic_attempt_authority_plan@1`。`consume-authority` 与
-`consume-diagnostic-authority` 只以当前 qualification/committed declarations 验证并消费
-deterministic sibling，然后停止，不构造 live launch/root。未来单独批准的 Codex conductor
-只经 public Host API/CLI编排；diagnostic decision 永久 `acceptance_eligible=false`，不能
-生成 `@3` 或进入 reducer。该 non-live qualification scenario 证明结构边界，不批准真实
-diagnostic 或 formal campaign。
+正式 `authorize` 只发布 exact-three `aox_live_attempt_authority_plan@2`，
+`consume-authority`发布绑定它的consumption `@3`并停止，不构造live launch/root。
+historical single-slot diagnostic plan/consumption仍永久`acceptance_eligible=false`，但current
+product无mint/consume命令。未来单独批准的Codex conductor只经public Host API/CLI编排；该
+non-live qualification scenario证明结构边界，不批准真实diagnostic或formal campaign。
 
 historical `aox_closure_stage_*` plan/consumption/root/source/parity/live/decision schemas
 只保留离线读取与 formal non-adoption。blank-world root factory、formal publisher 和

@@ -204,41 +204,11 @@ class GrantScientificAttemptAuthorizationRequest(BaseModel):
     policy_digest: str | None = Field(default=None, max_length=200)
 
 
-ScientificCommandName = Literal[
-    "attempt.create",
-    "scientific.selection.begin",
-    "scientific.operation.disposition",
-    "scientific.operation.adopt",
-    "scientific.artifact.materialize",
-    "scientific.selection.seal",
-    "scientific.attempt.close",
-]
-
-
-class ScientificAttemptCommandRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    command: ScientificCommandName
-    arguments: dict[str, Any]
-
-
 class InjectAoxReferenceFaultRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     attempt_id: str = Field(min_length=1, max_length=300)
     artifact_id: str = Field(min_length=1, max_length=300)
-
-
-class FinalizeScientificAttemptAdmissionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    admission_request_id: str = Field(min_length=1, max_length=300)
-
-
-class FinalizeScientificAttemptClosureRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    closure_request_id: str = Field(min_length=1, max_length=300)
 
 
 class ApiErrorDetail(BaseModel):
@@ -1914,32 +1884,6 @@ def create_app(
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
-    @app.post("/v3/sessions/{session_id}/scientific-attempt-commands")
-    def execute_v3_scientific_attempt_command(
-        session_id: str,
-        payload: ScientificAttemptCommandRequest,
-        request: Request,
-        idempotency_key: str = Header(alias="Idempotency-Key"),
-    ) -> dict[str, Any]:
-        try:
-            principal = _request_principal(request)
-            with dependencies.v3_service_scope(mode="write") as service:
-                _require_session_access(
-                    service,
-                    principal=principal,
-                    security=security,
-                    session_id=session_id,
-                )
-                return service.execute_scientific_attempt_command(
-                    payload.command,
-                    dict(payload.arguments),
-                    session_id=session_id,
-                    actor_ref=principal.principal_id,
-                    idempotency_key=idempotency_key,
-                )
-        except Exception as exc:  # pragma: no cover - normalized below
-            raise _as_http_error(exc) from exc
-
     @app.post("/v3/sessions/{session_id}/aox-fault-injections/reference-byte-flip")
     def inject_v3_aox_reference_fault(
         session_id: str,
@@ -1972,60 +1916,6 @@ def create_app(
                     artifact_id=payload.artifact_id,
                     actor_ref=principal.principal_id,
                     idempotency_key=idempotency_key,
-                )
-        except Exception as exc:  # pragma: no cover - normalized below
-            raise _as_http_error(exc) from exc
-
-    @app.post("/v3/sessions/{session_id}/scientific-attempt-admissions/finalize")
-    def finalize_v3_scientific_attempt_admission(
-        session_id: str,
-        payload: FinalizeScientificAttemptAdmissionRequest,
-        request: Request,
-    ) -> dict[str, Any]:
-        try:
-            principal = _request_principal(request)
-            if security.shared and not principal.has_role("operator", "admin"):
-                raise HTTPException(
-                    status_code=403,
-                    detail="operator role is required",
-                )
-            with dependencies.v3_service_scope(mode="write") as service:
-                _require_session_access(
-                    service,
-                    principal=principal,
-                    security=security,
-                    session_id=session_id,
-                )
-                return service.finalize_scientific_attempt_admission(
-                    session_id=session_id,
-                    admission_request_id=payload.admission_request_id,
-                )
-        except Exception as exc:  # pragma: no cover - normalized below
-            raise _as_http_error(exc) from exc
-
-    @app.post("/v3/sessions/{session_id}/scientific-attempt-closures/finalize")
-    def finalize_v3_scientific_attempt_closure(
-        session_id: str,
-        payload: FinalizeScientificAttemptClosureRequest,
-        request: Request,
-    ) -> dict[str, Any]:
-        try:
-            principal = _request_principal(request)
-            if security.shared and not principal.has_role("operator", "admin"):
-                raise HTTPException(
-                    status_code=403,
-                    detail="operator role is required",
-                )
-            with dependencies.v3_service_scope(mode="write") as service:
-                _require_session_access(
-                    service,
-                    principal=principal,
-                    security=security,
-                    session_id=session_id,
-                )
-                return service.finalize_scientific_attempt_closure(
-                    session_id=session_id,
-                    closure_request_id=payload.closure_request_id,
                 )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc

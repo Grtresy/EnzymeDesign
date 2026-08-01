@@ -333,7 +333,9 @@ def verify_selected_chain_attempt_bundle(
     attempt_id = _text_or_none(payload.get("attempt_id"))
     attempt_kind = _text_or_none(payload.get("attempt_kind"))
     declared_digest = envelope.get("bundle_digest")
-    if payload.get("bundle_profile") == "aox_public_conductor_bundle@1":
+    from .aox_public_conductor_bundle import PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID
+
+    if payload.get("bundle_profile") == PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID:
         from .aox_public_conductor_bundle import verify_public_conductor_bundle
 
         return verify_public_conductor_bundle(
@@ -709,10 +711,12 @@ def _verify_authority_and_attempt(
     supervision = dict(
         dict(payload.get("product_path") or {}).get("attempt_supervision") or {}
     )
-    supervised_host = supervision.get("schema_id") == "aox_supervised_host_receipt@1"
+    legacy_supervised_host = (
+        supervision.get("schema_id") == "aox_supervised_host_receipt@1"
+    )
     common_fields = ("session_id", "task_id", "campaign_id", "workflow_id")
     if (
-        attempt.get("root_ref") != f"attempts/{payload.get('attempt_id')}"
+        not attempt.get("root_ref")
         or authorization.get("root_ref") != attempt.get("root_ref")
         or attempt.get("scope") != expected_scope
         or attempt.get("workflow_id") != AOX_SELECTED_CHAIN_WORKFLOW_ID
@@ -733,7 +737,7 @@ def _verify_authority_and_attempt(
         )
         or len(grant_receipts) != 1
         or (
-            supervised_host
+            legacy_supervised_host
             and (
                 supervision.get("attempt_id") != attempt.get("attempt_id")
                 or supervision.get("attempt_kind") != payload.get("attempt_kind")

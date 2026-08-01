@@ -43,7 +43,8 @@ CAMPAIGN_DECISION_SCHEMA_ID = "aox_blank_world_campaign_decision@1"
 DIAGNOSTIC_ROOT_MARKER_SCHEMA_ID = "aox_diagnostic_root_marker@1"
 DIAGNOSTIC_ROOT_MARKER_FILENAME = ".aox-diagnostic-root.json"
 DIAGNOSTIC_ROOT_PROOF_SCHEMA_ID = "aox_diagnostic_root_proof@1"
-BLANK_WORLD_ROOT_PROOF_SCHEMA_ID = "aox_blank_world_root_proof@2"
+BLANK_WORLD_ROOT_PROOF_SCHEMA_ID = "aox_blank_world_root_proof@3"
+_LEGACY_BLANK_WORLD_ROOT_PROOF_SCHEMA_ID = "aox_blank_world_root_proof@2"
 AOX_LAUNCH_RECEIPT_SCHEMA_ID = "aox_blank_world_launch_receipt@2"
 SEALED_SOURCE_TREE_SCHEMA_ID = "openzyme_sealed_source_tree@1"
 FORMAL_DELEGATION_REQUEST_SCHEMA_ID = "aox_formal_delegation_request@1"
@@ -448,17 +449,20 @@ _BLANK_WORLD_ROOT_PROOF_KEYS = {
     "allowed_prerequisite_digest",
     "allowed_prerequisites",
     "architecture_qualification",
-    "attempt_id",
     "attempt_kind",
     "evidence_cache_reuse",
     "hpc_workspace_label",
     "initial_entries",
+    "launch_id",
     "provider_cache_mode",
     "root_identity",
     "root_names",
     "schema_id",
     "sqlite_preexisting",
 }
+_LEGACY_BLANK_WORLD_ROOT_PROOF_KEYS = (
+    _BLANK_WORLD_ROOT_PROOF_KEYS - {"launch_id"}
+) | {"attempt_id"}
 AOX_TOOLCHAIN_RUNTIME_CONTRACTS: dict[str, dict[str, str]] = {
     "mafft": {
         "toolchain_id": "mafft_7.525.hpc_apptainer_sif:v1",
@@ -588,7 +592,7 @@ def _normalize_architecture_qualification(
 
 @dataclass(frozen=True, slots=True)
 class BlankWorldRoots:
-    attempt_id: str
+    launch_id: str
     attempt_kind: str
     attempt_root: Path
     sqlite_path: Path
@@ -1396,58 +1400,24 @@ def assert_formal_campaign_root(campaign_root: Path) -> None:
 def create_blank_world_roots(
     campaign_root: Path,
     *,
+    launch_id: str,
     attempt_kind: str,
     allowed_prerequisites: Mapping[str, object],
     architecture_qualification: Mapping[str, object],
-    attempt_id: str | None = None,
-    run_class: AoxLiveRunClass = AoxLiveRunClass.FORMAL_ACCEPTANCE,
-    diagnostic_id: str | None = None,
 ) -> BlankWorldRoots:
-    if str(run_class) == "closure_stage_diagnostic":
-        raise CutoverEvidenceError(
-            "closure_stage_live_run_class_retired",
-            (
-                "historical closure-stage diagnostic identities are frozen "
-                "evidence and cannot create or satisfy a current run"
-            ),
-        )
-    try:
-        normalized_run_class = AoxLiveRunClass(run_class)
-    except ValueError as exc:
-        raise CutoverEvidenceError(
-            "aox_live_run_class_invalid",
-            "blank-world roots require one explicit supported run class",
-        ) from exc
     if attempt_kind not in {"positive", "fault"}:
         raise CutoverEvidenceError(
             "attempt_kind_invalid",
             "blank-world attempt kind must be positive or fault",
             details={"attempt_kind": attempt_kind},
         )
-    identifier = attempt_id or f"{attempt_kind}-{uuid4().hex}"
-    if _ATTEMPT_ID_PATTERN.fullmatch(identifier) is None:
+    if re.fullmatch(r"formal-slot-[a-f0-9]{24}", launch_id) is None:
         raise CutoverEvidenceError(
-            "attempt_id_invalid",
-            "attempt id must be a short path-safe identifier",
-            details={"attempt_id": identifier},
+            "launch_id_invalid",
+            "blank-world roots require an exact claimed formal launch id",
+            details={"launch_id": launch_id},
         )
-    if normalized_run_class is AoxLiveRunClass.FORMAL_ACCEPTANCE:
-        assert_formal_campaign_root(campaign_root)
-        if DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(
-            identifier
-        ) or re.fullmatch(r"closure-stage-[a-f0-9]{32}", identifier):
-            raise CutoverEvidenceError(
-                "formal_campaign_diagnostic_attempt_forbidden",
-                "formal acceptance rejects diagnostic attempt identities",
-            )
-    elif normalized_run_class is AoxLiveRunClass.DIAGNOSTIC and (
-        attempt_kind != "positive"
-        or DIAGNOSTIC_RUN_POLICY.attempt_id_pattern.fullmatch(identifier) is None
-    ):
-        raise CutoverEvidenceError(
-            "diagnostic_attempt_identity_invalid",
-            "diagnostic execution permits exactly one diagnostic positive identity",
-        )
+    assert_formal_campaign_root(campaign_root)
     prerequisites = normalize_aox_cutover_prerequisites(allowed_prerequisites)
     qualification = _normalize_architecture_qualification(
         architecture_qualification,
@@ -1455,31 +1425,7 @@ def create_blank_world_roots(
     )
     base = campaign_root.resolve()
     base.mkdir(parents=True, exist_ok=True)
-    if normalized_run_class is AoxLiveRunClass.DIAGNOSTIC:
-        marker_path = base / DIAGNOSTIC_ROOT_MARKER_FILENAME
-        try:
-            marker_content = marker_path.read_bytes()
-            marker = json.loads(marker_content)
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise CutoverEvidenceError(
-                "diagnostic_root_marker_invalid",
-                "diagnostic root lacks its canonical append-only marker",
-            ) from exc
-        if (
-            not isinstance(marker, dict)
-            or marker_content != canonical_json_bytes(marker) + b"\n"
-            or marker.get("schema_id") != DIAGNOSTIC_ROOT_MARKER_SCHEMA_ID
-            or marker.get("run_class") != AoxLiveRunClass.DIAGNOSTIC.value
-            or marker.get("acceptance_eligible") is not False
-            or marker.get("root_namespace") != base.name
-            or marker.get("diagnostic_id") != diagnostic_id
-            or base.name != str(diagnostic_id).replace("_", "-")
-        ):
-            raise CutoverEvidenceError(
-                "diagnostic_root_marker_invalid",
-                "diagnostic root marker does not bind the diagnostic run class",
-            )
-    attempt_root = base / identifier
+    attempt_root = base / launch_id
     if attempt_root.exists():
         preloaded = _preloaded_science(attempt_root)
         if preloaded:
@@ -1490,8 +1436,8 @@ def create_blank_world_roots(
             )
         raise CutoverEvidenceError(
             "attempt_root_not_new",
-            "every cutover attempt must use a newly created root",
-            details={"attempt_id": identifier},
+            "every formal launch must use a newly created root",
+            details={"launch_id": launch_id},
         )
     attempt_root.mkdir(mode=0o700)
     if attempt_root.is_symlink():
@@ -1512,30 +1458,22 @@ def create_blank_world_roots(
         path.mkdir(mode=0o700)
         roots[root_kind] = path
     sqlite_path = attempt_root / "control-plane.sqlite3"
-    hpc_workspace_label = (
-        "aox-cutover-"
-        if normalized_run_class is AoxLiveRunClass.FORMAL_ACCEPTANCE
-        else "aox-diagnostic-"
-    ) + uuid4().hex
+    hpc_workspace_label = "aox-cutover-" + uuid4().hex
     prerequisite_digest = canonical_digest(prerequisites)
     root_identity = canonical_digest(
         {
-            "attempt_id": identifier,
+            "launch_id": launch_id,
             "attempt_kind": attempt_kind,
-            "run_class": normalized_run_class.value,
+            "run_class": AoxLiveRunClass.FORMAL_ACCEPTANCE.value,
             "nonce": uuid4().hex,
             "root_names": root_names,
             "hpc_workspace_label": hpc_workspace_label,
         }
     )
     proof = {
-        "schema_id": (
-            BLANK_WORLD_ROOT_PROOF_SCHEMA_ID
-            if normalized_run_class is AoxLiveRunClass.FORMAL_ACCEPTANCE
-            else DIAGNOSTIC_ROOT_PROOF_SCHEMA_ID
-        ),
+        "schema_id": BLANK_WORLD_ROOT_PROOF_SCHEMA_ID,
         "architecture_qualification": qualification,
-        "attempt_id": identifier,
+        "launch_id": launch_id,
         "attempt_kind": attempt_kind,
         "root_identity": root_identity,
         "root_names": root_names,
@@ -1550,21 +1488,13 @@ def create_blank_world_roots(
         "allowed_prerequisite_digest": prerequisite_digest,
         "allowed_prerequisites": prerequisites,
     }
-    if normalized_run_class is AoxLiveRunClass.DIAGNOSTIC:
-        proof.update(
-            {
-                "run_class": AoxLiveRunClass.DIAGNOSTIC.value,
-                "acceptance_eligible": False,
-                "diagnostic_root_marker_digest": canonical_digest(marker),
-            }
-        )
     validate_blank_world_roots(
         attempt_root=attempt_root,
         sqlite_path=sqlite_path,
         roots=roots,
     )
     return BlankWorldRoots(
-        attempt_id=identifier,
+        launch_id=launch_id,
         attempt_kind=attempt_kind,
         attempt_root=attempt_root,
         sqlite_path=sqlite_path,
@@ -2071,9 +2001,11 @@ def evaluate_campaign(
     *,
     decided_at: str | None = None,
 ) -> dict[str, Any]:
+    from .aox_public_conductor_bundle import PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID
+
     if any(
         _read_bundle_payload(record.bundle_path).get("bundle_profile")
-        == "aox_public_conductor_bundle@1"
+        == PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID
         for record in records
     ):
         from .aox_public_conductor_bundle import (
@@ -2439,6 +2371,8 @@ def _normalize_identity(identity: Mapping[str, object]) -> dict[str, str]:
 
 def _validate_clean_world_proof(payload: Mapping[str, Any]) -> None:
     clean_world = dict(payload.get("clean_world") or {})
+    schema_id = clean_world.get("schema_id")
+    legacy = schema_id == _LEGACY_BLANK_WORLD_ROOT_PROOF_SCHEMA_ID
     expected_root_names = {
         "artifact": "artifacts",
         "blob": "blobs",
@@ -2467,10 +2401,30 @@ def _validate_clean_world_proof(payload: Mapping[str, Any]) -> None:
         expected_source_commit=str(bundle_identity.get("git_commit") or ""),
     )
     if (
-        set(clean_world) != _BLANK_WORLD_ROOT_PROOF_KEYS
-        or clean_world.get("schema_id") != BLANK_WORLD_ROOT_PROOF_SCHEMA_ID
+        set(clean_world)
+        != (
+            _LEGACY_BLANK_WORLD_ROOT_PROOF_KEYS
+            if legacy
+            else _BLANK_WORLD_ROOT_PROOF_KEYS
+        )
+        or schema_id
+        not in {
+            BLANK_WORLD_ROOT_PROOF_SCHEMA_ID,
+            _LEGACY_BLANK_WORLD_ROOT_PROOF_SCHEMA_ID,
+        }
         or clean_world.get("architecture_qualification") != architecture_qualification
-        or clean_world.get("attempt_id") != payload.get("attempt_id")
+        or (
+            legacy
+            and clean_world.get("attempt_id") != payload.get("attempt_id")
+        )
+        or (
+            not legacy
+            and re.fullmatch(
+                r"formal-slot-[a-f0-9]{24}",
+                str(clean_world.get("launch_id") or ""),
+            )
+            is None
+        )
         or clean_world.get("attempt_kind") != payload.get("attempt_kind")
         or clean_world.get("root_names") != expected_root_names
         or clean_world.get("initial_entries") != expected_initial_entries
@@ -4110,7 +4064,12 @@ def _event_replay_route_semantics(
     return match.group("path"), int(match.group("cursor"))
 
 
-def _public_api_route_is_canonical(method: str, route: str) -> bool:
+def _public_api_route_is_canonical(
+    method: str,
+    route: str,
+    *,
+    allow_legacy_scientific_mutations: bool = False,
+) -> bool:
     event_semantics = _event_replay_route_semantics(route)
     if event_semantics is not None:
         return method == "GET"
@@ -4136,11 +4095,15 @@ def _public_api_route_is_canonical(method: str, route: str) -> bool:
         ) or (
             method == "POST"
             and segments[3]
-            in {
-                "messages",
-                "scientific-attempt-authorizations",
-                "scientific-attempt-commands",
-            }
+            in (
+                {
+                    "messages",
+                    "scientific-attempt-authorizations",
+                    "scientific-attempt-commands",
+                }
+                if allow_legacy_scientific_mutations
+                else {"messages", "scientific-attempt-authorizations"}
+            )
         )
     if len(segments) == 5 and segments[:2] == ["v3", "sessions"]:
         return bool(
@@ -4148,7 +4111,8 @@ def _public_api_route_is_canonical(method: str, route: str) -> bool:
             and (
                 (method == "POST" and segments[3:] == ["runtime", "drain"])
                 or (
-                    method == "POST"
+                    allow_legacy_scientific_mutations
+                    and method == "POST"
                     and segments[3]
                     in {
                         "scientific-attempt-admissions",
@@ -4288,7 +4252,13 @@ def _validate_public_api_receipts(
             and isinstance(status_code, int)
             and not isinstance(status_code, bool)
             and 200 <= status_code < 300
-            and _public_api_route_is_canonical(method, route)
+            and _public_api_route_is_canonical(
+                method,
+                route,
+                allow_legacy_scientific_mutations=(
+                    payload.get("schema_id") == ATTEMPT_BUNDLE_SCHEMA_ID_V2
+                ),
+            )
             and _DIGEST_PATTERN.fullmatch(str(receipt.get("request_digest") or ""))
             is not None
             and _DIGEST_PATTERN.fullmatch(str(receipt.get("response_digest") or ""))
@@ -5804,10 +5774,20 @@ def _validate_attempt_semantics(
     )
     if supervised_host_receipt:
         assert isinstance(supervision_receipt, Mapping)
+        authority_slot = dict(
+            dict(payload.get("authority") or {}).get("slot") or {}
+        )
+        clean_world = dict(payload.get("clean_world") or {})
         validate_supervised_host_receipt(
             dict(supervision_receipt),
-            attempt_id=str(payload.get("attempt_id") or ""),
+            launch_id=str(clean_world.get("launch_id") or ""),
             attempt_kind=str(kind),
+            session_id=str(authority_slot.get("session_id") or ""),
+            task_id=str(authority_slot.get("task_id") or ""),
+            root_ref=str(authority_slot.get("root_ref") or ""),
+            campaign_id=str(
+                dict(payload.get("authority") or {}).get("campaign_id") or ""
+            ),
             attempt_authority_id=str(
                 supervision_receipt.get("attempt_authority_id") or ""
             ),

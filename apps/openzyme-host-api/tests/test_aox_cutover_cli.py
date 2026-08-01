@@ -23,15 +23,6 @@ from openzyme_host_api.aox_attempt_authority import (
 from openzyme_host_api.aox_attempt_authority import (
     publish_aox_attempt_authority_plan,
 )
-from openzyme_host_api.aox_diagnostic_authority import (
-    build_aox_diagnostic_authority_plan,
-)
-from openzyme_host_api.aox_diagnostic_authority import (
-    diagnostic_authority_consumption_path,
-)
-from openzyme_host_api.aox_diagnostic_authority import (
-    publish_aox_diagnostic_authority_plan,
-)
 from openzyme_host_api.aox_cutover_launch import AoxCutoverLaunchError
 from openzyme_runtime import OpenZymeSettings
 
@@ -108,46 +99,6 @@ def _consume_authority_args(tmp_path: Path):
             str(authority_plan_path),
             "--attempt-authority-consumption",
             str(attempt_authority_consumption_path(authority_plan_path)),
-        ]
-    )
-
-
-def _consume_diagnostic_authority_args(tmp_path: Path):
-    identity_path = tmp_path / "diagnostic-identity.json"
-    prerequisite_path = tmp_path / "diagnostic-prerequisites.json"
-    authority_plan_path = tmp_path / "diagnostic-authority.json"
-    identity = {"git_commit": "a" * 40}
-    prerequisites = {"git_commit": "a" * 40}
-    cli._write_pin_outputs_atomic_no_replace(
-        identity_target=identity_path,
-        prerequisites_target=prerequisite_path,
-        identity=identity,
-        prerequisites=prerequisites,
-        architecture_qualification=_architecture_qualification(),
-    )
-    authority_plan = build_aox_diagnostic_authority_plan(
-        identity=identity,
-        allowed_prerequisites=prerequisites,
-        architecture_qualification=_architecture_qualification(),
-        expires_at="2099-01-01T00:00:00+00:00",
-        max_micu=1,
-        max_cost_microunits=1,
-        max_wall_time_seconds=1,
-    )
-    publish_aox_diagnostic_authority_plan(authority_plan, authority_plan_path)
-    return cli.build_parser().parse_args(
-        [
-            "consume-diagnostic-authority",
-            "--identity",
-            str(identity_path),
-            "--allowed-prerequisites",
-            str(prerequisite_path),
-            "--architecture-qualification-report",
-            str(tmp_path / "architecture-qualification.json"),
-            "--diagnostic-authority-plan",
-            str(authority_plan_path),
-            "--diagnostic-authority-consumption",
-            str(diagnostic_authority_consumption_path(authority_plan_path)),
         ]
     )
 
@@ -263,7 +214,8 @@ def test_automatic_live_commands_are_absent() -> None:
     assert "run-live" not in subcommands
     assert "run-diagnostic-live" not in subcommands
     assert "consume-authority" in subcommands
-    assert "consume-diagnostic-authority" in subcommands
+    assert "authorize-diagnostic" not in subcommands
+    assert "consume-diagnostic-authority" not in subcommands
 
 
 def test_consume_authority_only_seals_consumption_receipt(
@@ -280,23 +232,6 @@ def test_consume_authority_only_seals_consumption_receipt(
     output = json.loads(capsys.readouterr().out)
     assert output["status"] == "consumed_without_execution"
     assert output["schema_id"] == "aox_attempt_authority_consume_receipt@1"
-
-
-def test_consume_diagnostic_authority_only_seals_consumption_receipt(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    args = _consume_diagnostic_authority_args(tmp_path)
-
-    result = cli._consume_diagnostic_authority(args)
-
-    assert result == 0
-    assert args.diagnostic_authority_consumption.is_file()
-    assert not tuple(tmp_path.glob("aox-diagnostic-*"))
-    output = json.loads(capsys.readouterr().out)
-    assert output["status"] == "consumed_without_execution"
-    assert output["acceptance_eligible"] is False
-    assert output["schema_id"] == ("aox_diagnostic_authority_consume_receipt@1")
 
 
 def test_pin_uses_policy_free_conductor_and_writes_safe_no_replace_json(

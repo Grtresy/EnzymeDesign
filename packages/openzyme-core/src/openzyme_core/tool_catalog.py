@@ -474,55 +474,22 @@ def scientific_attempt_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         ToolDescriptor(
             tool_name="attempt.create",
             description=(
-                "Request one fresh scientific attempt within an existing durable "
-                "authorization envelope. The Host checks count, resources, effect "
-                "classes, provider/HPC target, expiry, and unresolved effects, then "
-                "finalizes the exact attempt scope after this writer turn retires. "
+                "Request one fresh scientific attempt from an existing durable "
+                "authorization envelope after creating a canonical lane and binding "
+                "the current task. The Host derives task, lane, campaign, workflow, "
+                "scope, resources, effect classes, and private routes from canonical "
+                "state, then finalizes the exact attempt after this writer turn retires. "
                 "A successful request ends the current bounded turn without changing "
                 "business task status; the Host resumes the teammate with canonical "
-                "attempt facts. It never silently shrinks the requested plan."
+                "late-bound attempt facts."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "envelope_id": {"type": "string"},
-                    "task_id": {"type": "string"},
-                    "lane_id": {"type": "string"},
-                    "campaign_id": {"type": "string"},
-                    "workflow_id": {"type": "string"},
-                    "scope": {
-                        "type": "string",
-                        "enum": ["formal", "probe", "fault"],
-                    },
-                    "workflow_contract_digest": {"type": "string"},
-                    "requested_effect_classes": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                        "uniqueItems": True,
-                    },
-                    "reserved_micu": {"type": "integer", "minimum": 0},
-                    "reserved_cost_microunits": {
-                        "type": "integer",
-                        "minimum": 0,
-                    },
-                    "reserved_wall_time_seconds": {
-                        "type": "integer",
-                        "minimum": 0,
-                    },
-                    "provider": {"type": ["string", "null"]},
-                    "hpc_target": {"type": ["string", "null"]},
                     "idempotency_key": idempotency,
                 },
-                "required": [
-                    "envelope_id",
-                    "campaign_id",
-                    "workflow_id",
-                    "scope",
-                    "workflow_contract_digest",
-                    "requested_effect_classes",
-                    "idempotency_key",
-                ],
+                "required": ["envelope_id", "idempotency_key"],
                 "additionalProperties": False,
             },
         ),

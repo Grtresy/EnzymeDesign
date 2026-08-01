@@ -150,11 +150,16 @@ effect/adoption policy 与 same-attempt reuse policy。validator、inspection/re
 bundle verifier 都消费这个 registry object；unknown digest、近似版本或 historical-only
 contract 不得 fallback 到 prompt、静态 enum 或 Host 私有 callable。
 
-agent 的 `attempt.create` 只写 admission request。successful ToolResult 标记
+agent 的 `attempt.create` closed input只有 exact `envelope_id` 与 agent选择的
+`idempotency_key`；task来自current focus。调用前executor必须通过canonical lane tools为该
+task建立真实lane。Host从durable authority、task/lane与唯一current workflow contract推导
+campaign、scope、resources、effect classes与private routes，不接受caller-supplied
+attempt/lane/campaign/resource shadow truth。`attempt.create` 只写 admission request。successful ToolResult 标记
 `terminal_action="attempt.create"` 与 `terminates_turn=true`，作为非业务终态 bounded
 handoff 立即结束当前 writer turn；它不要求 agent 同轮再叙述、inspect 或
 `task.finish`。writer 退休后，Host finalizer 才在新的短 authority slice 中原子校验和消费
-envelope、打开 attempt scope，再以 exact attempt id 唤醒原 agent。fresh prompt 的
+envelope，并再次要求request actor仍是task current assignee，随后打开 attempt scope、生成
+late-bound canonical attempt id并唤醒原agent。fresh prompt 的
 canonical admission facts明确 attempt 已提交、request/envelope/session/task/lane/campaign/
 workflow/scope/effect/resource identity 与当前 lifecycle，避免模型从旧 task prose重复
 `attempt.create`。这样不会让同一 writer 既申请又自批 authority。非 retryable finalizer
@@ -199,16 +204,19 @@ public Host API/CLI 读取 command、workspace、event、approval 与 wake facts
 scope 或把无 signal/no wakeup 当作 attempt terminal。缺 scope、多 scope、active writer、
 parent/authority mismatch 与 unknown effect 仍由 Host typed fail closed。
 
-AOX 使用更窄的 `aox_live_attempt_authority_plan@1`：
+AOX 使用更窄的 `aox_live_attempt_authority_plan@2`：
 
 - plan 精确包含 `positive, positive, fault` 三个槽；
-- 每槽绑定预声明 attempt/session/task/lane/root、exact operator grantor、同一 identity 和
+- 每槽绑定预声明 session/task/envelope/root、exact operator grantor、同一 launch identity 和
   qualification、`max_attempts=1`、effect/route/resource/expiry policy；
 - `consume-authority` 只能把 plan 消费到 deterministic sibling
   `<plan-name>.consumed.json`，并且必须在创建任何 attempt root 前通过 atomic no-replace
   完成一次性消费；current receipt 是
-  `aox_live_attempt_authority_consumption@2`，显式绑定
+  `aox_live_attempt_authority_consumption@3`，显式绑定
   `run_class=formal_acceptance`、formal plan schema/digest 与 sibling filename；
+- `aox_attempt_authority_slot_claim@2` 在root前闭合ordinal/session/task/envelope/root与
+  source-derived `launch_id`，但不包含attempt/lane/admission identity；这些只能由真实Host
+  control graph在finalization后提供；
 - 复制 plan 文件不能获得新的 campaign authority；当前信任边界要求 operator 保护原 plan
   与其 deterministic consumption sibling，并以 durable in-attempt envelope 证明每槽消费。
 
@@ -427,7 +435,8 @@ r56 触发后，AOX target contract 先将 live execution 分为两个不可互�
 内容 digest 相同也不得 adoption、copy、upgrade 或参与 reducer。formal attempt 仍需 fresh
 authority、blank roots 与全部真实 effect。
 
-该拆分现已作为显式命令和闭集 schema 落地。`authorize-diagnostic` 生成
+以下命令描述只解释r56-r67的历史sealed evidence，不是current runnable contract。当时
+`authorize-diagnostic` 生成
 `aox_diagnostic_attempt_authority_plan@1` 的唯一单槽；`run-diagnostic-live` 只消费
 `aox_diagnostic_attempt_authority_consumption@1`，创建 plan-bound
 `aox-diagnostic-*` root marker / `aox_diagnostic_root_proof@1`，并只封存 append-only
@@ -435,6 +444,8 @@ authority、blank roots 与全部真实 effect。
 execution core，正式与诊断 runner 不复制 product path；collector 边界则完全分离：
 formal 独占 selected-chain `@3` builder/reducer，diagnostic 对所有嵌套
 `acceptance_eligible|cutover_eligible` 强制 false，只投影 completed/blocker、计数与 digest。
+post-r69 current product已删除diagnostic authority mint/consume module与CLI；历史schema、
+SQLite rows、decision和上述formal non-adoption规则保持只读。
 
 r59 之后曾增加 `closure_stage_diagnostic` 作为第三个 schema-disjoint 类别，而不是上述
 full-path diagnostic 的参数模式。它当时只能以只读 immutable source qualifier 限定 r59
@@ -780,5 +791,27 @@ conversation/final failure/events一致。一般 safe failure仍不能替代该�
 reducer输出 `fault_contract_unproven` 或更早的 typed NO-GO blocker。
 
 formal slot claim 在 root 前以 atomic no-replace 消费 ordinal；`@3` reducer只接受同一
-campaign/plan、顺序 exact 1/2/3、且 attempt/session/task/lane/envelope/selection/root/receipt
-identities全部唯一的两个 positive 与一个 fault bundle。
+campaign/plan与顺序exact 1/2/3。session/task/envelope/root/receipt launch identities必须
+各自唯一；Host late-bound attempt/lane/admission-request/admission-idempotency/selection
+identities再独立要求各自唯一。outer launch evidence不能替代后者。
+
+## 15. r69 pre-admission blocked 与 source-bound late binding
+
+r69消费了formal authority/root/session、三次PubMed provider request与`512,357` MICU后，
+execution task仍没有真实lane；`attempt.create`以
+`attempt_lane_scope_invalid/no_effect`停止。没有admission request、attempt、selection、closure、
+bundle或reducer decision，因此它是pre-admission blocked而非canonical NO-GO。其全部launch
+state/effect/receipt不可复用，也不得在repair后为旧session补建attempt。
+
+current admission把三个不同authority层次分开：outer slot claim只拥有launch；executor通过
+lane tools建立task isolation；task current assignee决定何时调用极小`attempt.create`。Core在
+request persistence和Host finalization两端检查same actor/current assignment，finalizer才消费
+authority并late-bind canonical admission/attempt identity。assignee漂移返回
+`attempt_admission_actor_not_owner`且保留零attempt/no-effect；missing lane返回
+`attempt_lane_scope_invalid`。这些typed cause必须通过ordinary ToolResult/system observation与
+canonical wake呈现，不能由public Codex finalizer、outer plan id或silent fallback覆盖。
+
+public closed export和bundle只在真实control存在后解析attempt/lane/admission/idempotency/
+selection identity。campaign reducer先验证三个slot的session/task/envelope/root唯一，再独立
+验证三份真实control identity唯一；旧plan/claim中的speculative IDs只在legacy verifier分支
+可读，永远不能满足current launch或GO。

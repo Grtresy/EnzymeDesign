@@ -4,6 +4,7 @@ from io import StringIO
 import json
 from pathlib import Path
 
+from openzyme_host_cli.cli import _build_parser
 from openzyme_host_cli.cli import run_cli
 from openzyme_runtime import reset_settings_cache
 
@@ -418,7 +419,7 @@ def test_cli_runtime_status_preserves_historical_v1_uncertainty() -> None:
     assert "Replay safe: unknown for historical @1 receipt" in rendered
 
 
-def test_cli_scientific_inspect_and_actor_bound_command() -> None:
+def test_cli_scientific_inspect_remains_and_mutation_finalizers_are_retired() -> None:
     session = FakeSession()
     stdout = StringIO()
     assert (
@@ -441,64 +442,14 @@ def test_cli_scientific_inspect_and_actor_bound_command() -> None:
         None,
     )
 
-    stdout = StringIO()
-    assert (
-        run_cli(
-            [
-                "--session-id",
-                "sess_001",
-                "scientific",
-                "command",
-                "--command",
-                "scientific.attempt.close",
-                "--arguments-json",
-                '{"attempt_id":"attempt_001","selection_id":"selection_001"}',
-                "--idempotency-key",
-                "close-001",
-            ],
-            session=session,
-            stdout=stdout,
-            stderr=StringIO(),
-        )
-        == 0
-    )
-    assert session.calls[-1] == (
-        "POST",
-        "/v3/sessions/sess_001/scientific-attempt-commands",
-        {
-            "command": "scientific.attempt.close",
-            "arguments": {
-                "attempt_id": "attempt_001",
-                "selection_id": "selection_001",
-            },
-        },
-    )
-    assert session.last_headers["Idempotency-Key"] == "close-001"
-
-
-def test_cli_scientific_finalizes_admission_after_agent_writer_retires() -> None:
-    session = FakeSession()
-
-    exit_code = run_cli(
-        [
-            "--session-id",
-            "sess_001",
-            "scientific",
-            "finalize-admission",
-            "--admission-request-id",
-            "attempt_admission_request_001",
-        ],
-        session=session,
-        stdout=StringIO(),
-        stderr=StringIO(),
-    )
-
-    assert exit_code == 0
-    assert session.calls[-1] == (
-        "POST",
-        "/v3/sessions/sess_001/scientific-attempt-admissions/finalize",
-        {"admission_request_id": "attempt_admission_request_001"},
-    )
+    parser = _build_parser()
+    resources = parser._subparsers._group_actions[0].choices
+    scientific = resources["scientific"]._subparsers._group_actions[0].choices
+    assert "inspect" in scientific
+    assert "export-evidence" in scientific
+    assert "command" not in scientific
+    assert "finalize-admission" not in scientific
+    assert "finalize" not in scientific
 
 
 def test_cli_exports_and_seals_closed_attempt_evidence(

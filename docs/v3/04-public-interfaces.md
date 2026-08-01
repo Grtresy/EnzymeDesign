@@ -462,7 +462,7 @@ closure，不能信任 report 中的 pass boolean。它不进入 `/v3` workspace
 
 AOX 对外命令显式接收 report path，并只把 closed
 `aox_architecture_qualification_receipt@1` 写入 `aox_cutover_pin_commit@2`、
-`aox_cutover_pin_receipt@2`、`aox_blank_world_root_proof@2`、
+`aox_cutover_pin_receipt@2`、current `aox_blank_world_root_proof@3`、
 `aox_blank_world_launch_receipt@2` 与新 production
 `aox_blank_world_attempt_bundle@3`。历史 `@2` bundle 只进入 frozen verifier。public/offline consumer 必须
 拒绝 missing、unknown-version、digest/source mismatch 或 drift；receipt 不暴露 Host path、
@@ -478,8 +478,10 @@ agent hypothesis 或 failure-recovery disposition；历史 SQLite 表不是 API 
 Web UI/CLI 可以显示 error 与候选原因，但不能把 observation 解释为 retry approval、已执行
 recovery 或 task terminal。
 
-Host API 提供 scientific-attempt authorization、command、finalization 和 read projection。
-authority request 使用 strict DTO；actor/grantor 等身份来自受控边界。`attempt.create` 和
+Host public API 提供 scientific-attempt authorization、read projection、closed evidence
+export 与唯一 exact fault capability；不再提供 generic scientific mutation 或 transition
+finalizer route/CLI。authority request 使用 strict DTO；actor/grantor 等身份来自受控边界。
+`attempt.create` 和
 `scientific.attempt.close` 返回 request/intention，最终 admission/closure 由 Host 在原
 writer 连同该 provider batch 的未 dispatch call settlement 全部退休后执行。successful
 ToolResult 分别标记 `terminal_action="attempt.create"` /
@@ -547,11 +549,12 @@ receipt-bound execution task 已经 `completed`。缺失、
 source-snapshot implementation substitute 都返回 no-effect typed precondition failure，
 不得产生 attempt closure、execution completed 或 report handoff。
 
-AOX `authorize` 只发布 reviewable one-use exact-three formal plan，不创建 root；独立
-`authorize-diagnostic` 只发布永远 non-eligible 的单槽 diagnostic plan。r67 已删除
-`run-live` 与 `run-diagnostic-live`。`consume-authority` / `consume-diagnostic-authority`
-只验证并以 atomic no-replace sibling 消费 exact plan，生成 source-bound receipt 后停止，
-不创建 Host/session/root、不读取 credential，也不触发 MICU/provider/HPC/Chrome。
+AOX `authorize` 只发布 reviewable one-use exact-three formal plan，不创建 root；
+`consume-authority` 只验证并以 atomic no-replace sibling消费 exact formal plan，生成
+source-bound receipt后停止，不创建Host/session/root、不读取credential，也不触发
+MICU/provider/HPC/Chrome。`authorize-diagnostic`、`consume-diagnostic-authority`、`run-live`
+与`run-diagnostic-live`均已删除；历史 diagnostic plan/consumption只供 sealed evidence与
+formal non-adoption离线验证，不是隐藏 operator surface。
 
 未来经单独批准的测试只能由 Codex conductor 使用 public surface 编排：发送
 `POST /v3/sessions/{session_id}/messages`，逐次提交
@@ -609,7 +612,28 @@ AOX reference selection contract、sealed bytes 与零既有 consumer 后，在 
 
 AOX cutover shell 保留三个彼此分离的 production seams：`preflight` 先对 exact ordinal执行
 private atomic one-use slot claim，再在所有 authority/pin/qualification/config validation 通过后
-创建 exact root、复制 claim、封存 `aox_attempt_preflight@2` 并报告 Host 未启动；`serve-attempt`
+创建 exact root、复制 claim、封存 `aox_attempt_preflight@3` 并报告 Host 未启动；`serve-attempt`
 只启动/退休 fixed loopback Host，不发 message/drain/approval；`finalize-and-seal` 只从 exact
 public receipts和 sealed source responses重建并原子封存 `@3` bundle。它们都不能自动判断
 业务 terminal 或声明 GO。
+
+### 9.2 post-r69 late-bound scientific admission
+
+formal `aox_live_attempt_authority_plan@2`、consumption `@3`、slot claim `@2`、root proof
+`@3`、preflight `@3` 与 Host startup/supervision `@2` 是 launch evidence，不是 scientific
+control。它们绑定 campaign/ordinal/session/task/envelope/root 与 `launch_id`，不得出现
+`attempt_id`、`lane_id`、admission request id或admission idempotency key。legacy schema可由
+offline verifier只读，但不能与 current schema混合、重新发布或进入新 bundle。
+
+真实 lane由executor经 `lane.create`、`lane.bind_task`建立。agent tool
+`attempt.create` 的 closed schema只有 `envelope_id` 与 `idempotency_key`；task来自当前 focus，
+Host从canonical task/lane、durable authority与唯一 workflow contract推导其余 admission。
+request write与Host internal finalizer都要求actor仍是current task assignee；成功 finalizer才
+创建canonical admission/attempt id，并通过source-bound owner wake交付late-bound facts。
+Codex不能通过public route代发这项mutation，也不能public调用finalizer。
+
+public inspect/export与`aox_public_conductor_bundle@2`先验证slot authority对真实control graph的
+binding，再读取实际 attempt/lane/admission/idempotency/selection identity。wrong actor、
+reassignment、missing/foreign lane、caller-supplied legacy identity或cross-control graft均须在
+无新attempt、无外部effect状态fail closed。r69正是在attempt创建前因missing lane停止；其
+已消费root/session/provider/MICU/receipt不获得任何补写或复用权威。

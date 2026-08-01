@@ -1674,11 +1674,32 @@ scientific mutations或 Host finalizers。真实 task/selection/attempt/report/f
 source-linked report与 final answer；fault固定 public authority-bound `AOX_ref21.fasta` byte-zero
 flip以及完整 `aox_fault_negative_state_closure@1`。
 
-每个 formal slot在 root前 atomic one-use claim并进入 `aox_attempt_preflight@2`。reducer只接受
+每个 formal slot在 root前 atomic one-use claim并进入 `aox_attempt_preflight@3`。reducer只接受
 同一 campaign/plan的 exact ordinal 1/2/3和全部 attempt identities唯一。production
 qualification通过真实 FastAPI/file-SQLite composition写读而非 source inspection。下一轮使用
 [新版 Codex goal](../aox-r-series-codex-goal.md)，仍须 fresh clean commit/full admission/pin/
 authority/roots与独立用户批准；本 repair不启动 r69或任何 live effect。
+
+### r69 pre-admission blocked / post-r69 pre-r70 repair
+
+r69在旧clean commit `b0ed3ea767fb44c892a14f90f59a50a96d2aa58f`上消费campaign
+`aox_campaign_2a57780d6663d57da38621d6` 的authority、slot/root、Host session、三次PubMed
+request与`512,357` MICU；累计`128,702,989 / 500,000,000`，剩余`371,297,011`。execution task
+没有canonical lane，`attempt.create`以`attempt_lane_scope_invalid/no_effect`返回409。数据库中
+没有admission request、attempt或closure，bundle/reducer没有运行。这是pre-admission blocked，
+不是canonical r69 NO-GO；全部r69 plan/slot/root/session/effect/receipt不可复用。
+
+post-r69 repair删除outer launch中的speculative attempt/lane/admission truth。current plan@2、
+consumption@3、claim@2、root proof@3、preflight@3和supervision@2只绑定launch。executor先用
+canonical lane tools建立真实lane，再由task current assignee调用极小`attempt.create`；Host从
+authority/task/lane/workflow contract推导exact request并在internal finalizer重验assignee后
+late-bind attempt id。public inspect/export/bundle@2/reducer只消费该真实control graph。
+
+diagnostic authority mint/consume、public scientific mutation/finalizer API/CLI、dead Core
+compatibility与private admission argument helper全部删除；历史SQLite/schema/evidence只读兼容和
+formal non-adoption保持。production qualification以真实FastAPI composition、file-SQLite、lane/
+scientific handlers覆盖positive reachability、wrong actor、reassignment/fencing与legacy negative
+controls。本repair只运行non-live gate并提交，不启动r70、live、MICU、provider、HPC或Chrome。
 
 ## 当前实施状态的表述规则
 

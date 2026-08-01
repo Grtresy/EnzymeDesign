@@ -472,3 +472,21 @@ drive-until-terminal/no-wakeup policy 已删除。Codex 测试员逐次调用 pu
 command；scheduler 仍只执行请求中的 bounded batch，不自行追逐业务终态。command terminal、
 zero-signal result 或 absence of wakeup 不会写 task/attempt terminal，也不会生成 synthetic
 recovery signal。
+
+## 12. Late-bound attempt admission handoff
+
+`attempt.create` 是agent-owned terminal turn action，不是Codex/public Host command。它只携带
+authority envelope与idempotency key；task从runtime focus读取，lane必须已由executor通过
+canonical lane tools绑定。Host不信任agent或outer launch plan提供的campaign、workflow、scope、
+resources、effect classes、provider/HPC route、lane或attempt identity，而从durable control state
+推导它们。
+
+admission request写入前与Host finalization时都重验same actor仍是task current assignee。
+successful ToolResult只证明request持久化并退休当前writer；canonical attempt尚不存在。
+finalizer在独立短authority slice内消费envelope、生成admission/attempt id，并原子提交transition
+event与source-bound owner wake。fresh owner turn从wake facts获得late-bound attempt/lane/
+admission facts；不得从旧task prose、slot claim、process receipt或public conductor receipt猜测。
+
+wrong actor、assignment drift或lane缺失分别以typed no-effect failure停止且不创建attempt。
+这让Harness忠实呈现ownership/isolation约束，同时保留executor决定何时建lane、何时请求attempt
+以及后续科学策略的自由。

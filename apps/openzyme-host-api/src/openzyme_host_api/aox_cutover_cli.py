@@ -30,13 +30,6 @@ from .aox_attempt_authority import publish_aox_attempt_authority_plan
 from .aox_attempt_preflight import build_attempt_preflight_receipt
 from .aox_attempt_preflight import publish_attempt_preflight_receipt
 from .aox_attempt_preflight import publish_attempt_slot_claim_evidence
-from .aox_diagnostic_authority import build_aox_diagnostic_authority_plan
-from .aox_diagnostic_authority import consume_aox_diagnostic_authority_plan
-from .aox_diagnostic_authority import (
-    diagnostic_authority_consumption_path,
-)
-from .aox_diagnostic_authority import load_aox_diagnostic_authority_plan
-from .aox_diagnostic_authority import publish_aox_diagnostic_authority_plan
 from .aox_cutover_evidence import AttemptRunRecord
 from .aox_cutover_evidence import create_blank_world_roots
 from .aox_cutover_evidence import CutoverEvidenceError
@@ -48,7 +41,6 @@ from .aox_cutover_launch import AoxCutoverLaunchError
 from .aox_cutover_launch import build_aox_cutover_effective_config
 from .aox_cutover_launch import pin_aox_cutover_launch
 from .aox_cutover_launch import validate_aox_authority_wall_time
-from .aox_live_run_class import AoxLiveRunClass
 from .aox_host_supervision import DEFAULT_KILL_GRACE_SECONDS
 from .aox_host_supervision import DEFAULT_STARTUP_TIMEOUT_SECONDS
 from .aox_host_supervision import DEFAULT_TERM_GRACE_SECONDS
@@ -497,8 +489,8 @@ def _preflight(args: argparse.Namespace) -> int:
     )
     roots = create_blank_world_roots(
         args.campaign_root,
+        launch_id=str(slot_claim["launch_id"]),
         attempt_kind=str(slot["attempt_kind"]),
-        attempt_id=str(slot["attempt_id"]),
         allowed_prerequisites=prerequisites,
         architecture_qualification=architecture_qualification,
     )
@@ -522,11 +514,11 @@ def _preflight(args: argparse.Namespace) -> int:
         {
             "schema_id": "aox_attempt_preflight_publish_receipt@1",
             "status": "preflight_complete_host_not_started",
-            "attempt_id": slot["attempt_id"],
+            "launch_id": slot_claim["launch_id"],
             "attempt_kind": slot["attempt_kind"],
             "session_id": slot["session_id"],
             "task_id": slot["task_id"],
-            "lane_id": slot["lane_id"],
+            "root_ref": slot["root_ref"],
             "envelope_id": slot["envelope_id"],
             "proof": roots.proof,
             "preflight_receipt": str(receipt_path),
@@ -689,46 +681,8 @@ def _authorize(args: argparse.Namespace) -> int:
             "output_file": target.name,
             "campaign_id": plan["campaign_id"],
             "plan_digest": plan["plan_digest"],
-            "attempt_ids": [slot["attempt_id"] for slot in plan["slots"]],
-        }
-    )
-    return 0
-
-
-def _authorize_diagnostic(args: argparse.Namespace) -> int:
-    current_qualification = verify_aox_architecture_qualification_report(
-        args.architecture_qualification_report,
-    )
-    identity, prerequisites, pinned_qualification = _load_pinned_declarations(
-        args.identity,
-        args.allowed_prerequisites,
-    )
-    qualification = require_matching_architecture_qualification_receipt(
-        pinned_qualification,
-        current_qualification,
-    )
-    target = _pin_output_target(args.output)
-    plan = build_aox_diagnostic_authority_plan(
-        identity=identity,
-        allowed_prerequisites=prerequisites,
-        architecture_qualification=qualification,
-        expires_at=args.expires_at,
-        max_micu=args.max_micu_per_attempt,
-        max_cost_microunits=args.max_cost_microunits_per_attempt,
-        max_wall_time_seconds=args.max_wall_time_seconds_per_attempt,
-    )
-    publish_aox_diagnostic_authority_plan(plan, target)
-    _print(
-        {
-            "schema_id": "aox_diagnostic_authority_publish_receipt@1",
-            "status": "published_not_consumed",
-            "run_class": AoxLiveRunClass.DIAGNOSTIC.value,
-            "acceptance_eligible": False,
-            "output_file": target.name,
-            "diagnostic_id": plan["diagnostic_id"],
-            "root_namespace": plan["root_namespace"],
-            "plan_digest": plan["plan_digest"],
-            "attempt_id": plan["slot"]["attempt_id"],
+            "session_ids": [slot["session_id"] for slot in plan["slots"]],
+            "root_refs": [slot["root_ref"] for slot in plan["slots"]],
         }
     )
     return 0
@@ -782,45 +736,6 @@ def _consume_authority(args: argparse.Namespace) -> int:
             "schema_id": "aox_attempt_authority_consume_receipt@1",
             "status": "consumed_without_execution",
             "campaign_id": plan["campaign_id"],
-            "plan_digest": plan["plan_digest"],
-            "consumption_digest": _canonical_digest(receipt),
-            "output_file": target.name,
-        }
-    )
-    return 0
-
-
-def _consume_diagnostic_authority(args: argparse.Namespace) -> int:
-    identity, prerequisites, architecture_qualification = _load_authority_declarations(
-        args
-    )
-    plan = load_aox_diagnostic_authority_plan(
-        args.diagnostic_authority_plan,
-        identity=identity,
-        allowed_prerequisites=prerequisites,
-        architecture_qualification=architecture_qualification,
-    )
-    plan_path = args.diagnostic_authority_plan.expanduser().resolve(strict=True)
-    target = _pin_output_target(args.diagnostic_authority_consumption)
-    expected_target = diagnostic_authority_consumption_path(plan_path)
-    if target != expected_target:
-        raise CutoverEvidenceError(
-            "diagnostic_authority_consumption_target_mismatch",
-            "diagnostic consumption must use the deterministic sibling target",
-            details={"expected_file": expected_target.name},
-        )
-    receipt = consume_aox_diagnostic_authority_plan(
-        plan,
-        plan_path=plan_path,
-        path=target,
-    )
-    _print(
-        {
-            "schema_id": "aox_diagnostic_authority_consume_receipt@1",
-            "status": "consumed_without_execution",
-            "run_class": AoxLiveRunClass.DIAGNOSTIC.value,
-            "acceptance_eligible": False,
-            "diagnostic_id": plan["diagnostic_id"],
             "plan_digest": plan["plan_digest"],
             "consumption_digest": _canonical_digest(receipt),
             "output_file": target.name,
@@ -908,43 +823,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
     )
     authorize.set_defaults(handler=_authorize)
-
-    authorize_diagnostic = subparsers.add_parser(
-        "authorize-diagnostic",
-        help=(
-            "publish one reviewable one-use diagnostic slot without creating "
-            "roots or starting live work"
-        ),
-    )
-    authorize_diagnostic.add_argument("--identity", required=True, type=Path)
-    authorize_diagnostic.add_argument(
-        "--allowed-prerequisites",
-        required=True,
-        type=Path,
-    )
-    authorize_diagnostic.add_argument(
-        "--architecture-qualification-report",
-        required=True,
-        type=Path,
-    )
-    authorize_diagnostic.add_argument("--output", required=True, type=Path)
-    authorize_diagnostic.add_argument("--expires-at", required=True)
-    authorize_diagnostic.add_argument(
-        "--max-micu-per-attempt",
-        required=True,
-        type=int,
-    )
-    authorize_diagnostic.add_argument(
-        "--max-cost-microunits-per-attempt",
-        required=True,
-        type=int,
-    )
-    authorize_diagnostic.add_argument(
-        "--max-wall-time-seconds-per-attempt",
-        required=True,
-        type=int,
-    )
-    authorize_diagnostic.set_defaults(handler=_authorize_diagnostic)
 
     preflight = subparsers.add_parser(
         "preflight",
@@ -1060,26 +938,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     consume_authority.set_defaults(handler=_consume_authority)
 
-    consume_diagnostic = subparsers.add_parser(
-        "consume-diagnostic-authority",
-        help=(
-            "consume one exact diagnostic authority without creating roots or "
-            "starting any live action"
-        ),
-    )
-    consume_diagnostic.add_argument("--identity", required=True, type=Path)
-    consume_diagnostic.add_argument(
-        "--architecture-qualification-report", required=True, type=Path
-    )
-    consume_diagnostic.add_argument("--allowed-prerequisites", required=True, type=Path)
-    consume_diagnostic.add_argument(
-        "--diagnostic-authority-plan", required=True, type=Path
-    )
-    consume_diagnostic.add_argument(
-        "--diagnostic-authority-consumption", required=True, type=Path
-    )
-    consume_diagnostic.set_defaults(handler=_consume_diagnostic_authority)
-
     return parser
 
 
@@ -1129,9 +987,7 @@ def main(argv: list[str] | None = None) -> int:
                         if args.command
                         in {
                             "authorize",
-                            "authorize-diagnostic",
                             "consume-authority",
-                            "consume-diagnostic-authority",
                         }
                         else "aox_cutover_evidence_failure@1"
                     ),

@@ -1,4 +1,4 @@
-# AOX r-series Codex 测试 goal（post-r68）
+# AOX r-series Codex 测试 goal（post-r69 / pre-r70）
 
 状态：paste-ready operator prompt。它定义 Codex 测试员的权限和停止条件，不构成任何
 diagnostic/formal live、MICU、provider、HPC 或 Chrome 授权。
@@ -12,11 +12,15 @@ authority plan 的 exact ordinal 1/2/3（positive 1、positive 2、fault）都�
 implementation green、单 attempt、diagnostic、conductor prose、Host task label、process exit、
 empty drain 或 generic controlled failure都不是 GO。
 
-当前不可变事实：r43-r67 是历史永久 NO-GO；r68 authority 已消费但 root/Host/session/attempt
-均未创建，只是 prelaunch blocked，不是 canonical r68 NO-GO。不得复用 r68 或更早的 plan、
-authority、root、SQLite、session、attempt、effect、artifact、report、receipt、browser state或
-MICU attribution。下一 rNN 必须从完成 repair 的 fresh clean commit 重新 full architecture
-admission、pin、mint/consume fresh exact authority并创建 fresh roots。
+当前不可变事实：r43-r67 是历史永久 NO-GO；r68 authority已消费但root/Host/session/attempt
+均未创建，是 prelaunch blocked。r69在旧 commit
+b0ed3ea767fb44c892a14f90f59a50a96d2aa58f 上消费 authority/root/session、三次PubMed effect与
+512,357 MICU，却因 execution task无canonical lane而在 attempt.create得到
+attempt_lane_scope_invalid/no_effect；没有 admission request、attempt、bundle或reducer decision。
+r69是pre-admission blocked，不是canonical NO-GO。不得复用r68/r69或更早的plan、slot、
+authority、root、SQLite、session、effect、artifact、report、receipt、browser state或MICU
+attribution。当前累计账本是128,702,989 / 500,000,000；下一rNN必须从完成repair的fresh clean
+commit重新full architecture admission、pin、mint/consume fresh exact authority并创建fresh roots。
 
 角色边界：Codex 是 repo 外 test conductor，只能通过 public Host API/CLI进行 session create、
 entry message、authority grant、explicit bounded runtime drain、command-status poll、pending
@@ -26,9 +30,9 @@ wakeup/receipt、恢复 AOX observer/barrier/automatic driver，或从 idle/no-w
 业务终态。Host继续独占 canonical task/attempt/report、approval、lease/fence、unknown/external
 effect、continuation、artifact catalog、sandbox与隔离；agent保留科学策略自由。
 
-receipt actor规则：openzyme_public_api_receipt@2只记录 Codex 自己的 public actions。不得由
-Codex调用或记录 agent-owned scientific-attempt-commands，也不得代替 Host调用 admission/
-closure finalizer。agent/Host的真实 mutation只由 closed scientific control、final workspace、
+receipt actor规则：openzyme_public_api_receipt@2只记录 Codex 自己的 public actions。current
+public API/CLI根本不提供scientific-attempt-commands或admission/closure finalizer；不得恢复、
+私调或伪造这些surface。agent/Host的真实 mutation只由 closed scientific control、final workspace、
 完整 replayable events与 aox_closed_attempt_evidence@2证明。每个 drain使用 exact bounded
 参数，并在下一 drain或最终读取前轮询该 runtime command到 terminal；CLI JSON handoff必须
 flush。
@@ -50,10 +54,20 @@ flush。
    fail closed并回到只读诊断。
 
 formal preflight规则：每个 ordinal在任何 root前必须 atomic no-replace claim一次，绑定同一
-campaign/plan/consumption、ordinal、attempt/session/task/lane/envelope/request和 campaign-root
-identity；claim进入 aox_attempt_preflight@2和 sealed bundle source。claim后失败会烧毁该 slot，
-不得换 root重试。三个 bundle必须属于同一 campaign/plan，ordinal严格 1/2/3，且 attempt/
-session/task/lane/envelope/selection/root/receipt-chain identities各自唯一。
+campaign/plan/consumption、ordinal、session/task/envelope/root/request、campaign-root identity
+与source-derived launch_id；claim进入 aox_attempt_preflight@3和sealed bundle source。claim、
+root proof、preflight与supervision不得包含或推导attempt_id、lane_id或admission idempotency。
+claim后失败会烧毁该slot，不得换root重试。三个bundle必须属于同一campaign/plan，ordinal严格
+1/2/3；session/task/envelope/root/receipt-chain launch identities各自唯一，Host实际创建的
+attempt/lane/admission-request/admission-idempotency/selection identities也各自唯一。
+
+scientific admission规则：execution teammate先调用canonical lane.create和lane.bind_task建立
+真实lane，然后由该task的current assignee通过agent tool调用
+attempt.create(envelope_id,idempotency_key)。不要让Codex conductor代发，也不要给tool补写
+campaign/scope/resource/lane/attempt等outer-plan字段。Host从authority/task/lane/current workflow
+contract推导exact admission，在finalizer再次检查assignee后才生成canonical attempt id，并用
+source-bound owner wake返回late-bound facts。wrong actor、reassignment、missing/foreign lane、
+ambiguous authority或legacy caller-supplied identity都必须在零attempt/零effect下停止。
 
 positive验收：session只有 exact research/execution/reporting三任务；owner identities唯一；每
 任务恰有一份 assigned-agent-authored task_finish；三任务均 completed；source-linked report与
