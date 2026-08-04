@@ -48,6 +48,9 @@ from .aox_host_supervision import (
     HOST_STARTUP_FILENAME,
     HOST_STARTUP_SCHEMA_ID,
     HOST_SUPERVISION_FILENAME,
+    HostSupervisionError,
+    supervised_host_sandbox_binding,
+    validate_supervised_host_sandbox_bootstrap,
     validate_supervised_host_receipt,
 )
 from .aox_selected_chain_evidence import _verify_selected_chain_control
@@ -314,7 +317,8 @@ def _validate_startup(
         "schema_id", "base_url", "launch_id", "attempt_kind", "session_id",
         "root_ref", "authority_policy_digest", "campaign_id",
         "preflight_receipt_digest", "process_epoch", "child_pid", "child_pgid",
-        "child_start_time_ticks", "timeout_seconds", "started_at", "receipt_digest",
+        "child_start_time_ticks", "timeout_seconds", "sandbox_bootstrap",
+        "started_at", "receipt_digest",
     }
     bindings = {
         "launch_id": slot_claim.get("launch_id"),
@@ -327,6 +331,16 @@ def _validate_startup(
         "timeout_seconds": policy.get("max_wall_time_seconds"),
     }
     payload = {key: item for key, item in value.items() if key != "receipt_digest"}
+    try:
+        validate_supervised_host_sandbox_bootstrap(
+            value.get("sandbox_bootstrap"), binding=supervised_host_sandbox_binding(preflight),
+        )
+    except (HostSupervisionError, KeyError, TypeError, ValueError) as exc:
+        raise CutoverEvidenceError(
+            "host_sandbox_bootstrap_receipt_invalid",
+            "Host startup does not bind one exact sandbox bootstrap",
+            details={"identity": "host_startup.sandbox_bootstrap"},
+        ) from exc
     if not all((
         set(value) == fields, value.get("schema_id") == HOST_STARTUP_SCHEMA_ID,
         str(value.get("base_url") or "").startswith("http://127.0.0.1:"),

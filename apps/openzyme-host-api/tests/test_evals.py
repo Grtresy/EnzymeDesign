@@ -37,7 +37,6 @@ from openzyme_host_api.evals import S15_ROUTE_POLICY_IDS
 from openzyme_host_api.evals import AOX_HMM_ACCESSIONS
 from openzyme_host_api.evals import AOX_NCBI_ACCESSIONS
 from openzyme_host_api.evals import _s15_aox_validate_final_artifacts
-from openzyme_host_api.evals import _s15_bootstrap_live_sandbox_image
 from openzyme_host_api.evals import _s15_build_evidence_bundle
 from openzyme_host_api.evals import _s15_event_text_has_legacy_execution_pipeline
 from openzyme_host_api.evals import _s15_live_prerequisite_report
@@ -1415,60 +1414,6 @@ def test_s15_live_prerequisite_report_requires_sandbox_image(monkeypatch) -> Non
     assert "sandbox_image" in missing_names
     assert image_check["status"] == "prerequisite_missing"
     assert image_check["error_code"] == "sandbox_image_missing"
-
-
-def test_s15_bootstrap_live_sandbox_image_registers_probe_digest(monkeypatch) -> None:
-    image_digest = "sha256:" + "b" * 64
-    monkeypatch.setenv("OPENZYME_NCBI_EMAIL", "dev@example.org")
-    monkeypatch.setattr(
-        "openzyme_host_api.evals.live_e2e_skip_reason", lambda settings: None
-    )
-    monkeypatch.setattr(
-        "openzyme_host_api.evals.live_llm_skip_reason", lambda settings: None
-    )
-    monkeypatch.setattr(
-        "openzyme_host_api.evals.live_tavily_skip_reason", lambda settings: None
-    )
-    monkeypatch.setattr(
-        "openzyme_host_api.evals.live_hpc_skip_reason", lambda settings: None
-    )
-    monkeypatch.setattr(
-        "openzyme_host_api.evals.shutil.which", lambda binary: "/usr/bin/podman"
-    )
-
-    def fake_run(args, **kwargs):
-        del kwargs
-        if args[:2] == ["podman", "info"]:
-            return subprocess.CompletedProcess(args, 0, stdout="true\n", stderr="")
-        if args[:3] == ["podman", "image", "exists"]:
-            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
-        if args[:3] == ["podman", "image", "inspect"]:
-            return subprocess.CompletedProcess(
-                args, 0, stdout=f"{image_digest}\n", stderr=""
-            )
-        raise AssertionError(f"unexpected command: {args}")
-
-    monkeypatch.setattr("openzyme_host_api.evals.subprocess.run", fake_run)
-    reset_settings_cache()
-    try:
-        report = _s15_live_prerequisite_report()
-    finally:
-        reset_settings_cache()
-    connection = connect_sqlite(":memory:")
-    apply_sqlite_migrations(connection)
-    repositories = CoreRepositories.from_connection(connection)
-
-    _s15_bootstrap_live_sandbox_image(repositories, report)
-
-    image = repositories.sandbox_images.get_default()
-    image_check = next(
-        check for check in report["checks"] if check["name"] == "sandbox_image"
-    )
-    assert report["status"] == "ok"
-    assert image_check["image_digest"] == image_digest
-    assert image is not None
-    assert image.image_digest == image_digest
-    assert image.compatibility is SandboxImageCompatibility.COMPATIBLE_NON_CUTOVER_GRADE
 
 
 def test_v3_live_eval_reports_s15_prerequisite_missing_without_fixture_fallback(

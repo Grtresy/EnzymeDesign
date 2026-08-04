@@ -1441,6 +1441,46 @@ SQLite 和 injected deterministic model/runtime完整组成；它不得直接调
 验证、同步 OpenSpec/架构/V3文档、qualification registry/resource manifest并提交本地 commit；
 不启动 r71、live、MICU、provider、HPC或Chrome。
 
+### 2026-08-04 r71 pre-attempt sandbox-bootstrap blocked / post-r71 fresh-Host repair
+
+r71 campaign `aox_campaign_0356c33b043b00e1ea64d08c` 已消费 authority、positive ordinal 1、
+root、session、三任务、late-bound scientific authorization 与 public receipt，并发生 9 次 model
+ledger attribution；MICU 从 `128,702,989` 增至 `129,139,238`，本轮增量 `436,249`。首个 execution
+task 在创建 scientific admission/attempt 前读取 `sandbox.workspace.status`，event cursor 74 返回
+typed `sandbox_image_missing`，因此没有 admission request、scientific attempt、provider、HPC、
+sandbox command或 browser effect。这是 authority-bound **pre-attempt sandbox-bootstrap blocked**，
+不是 canonical r71 NO-GO。r71 的 authority、slot、root、session、task、authorization、receipt、
+MICU attribution 与全部派生 identity 只读封存且不可复用；事后 inventory 只能证明检查时 image
+存在，不能反推 cursor 74 时的物理 image 存在性，稳定根因限定为
+`aox_supervised_host_sandbox_image_identity_not_registered`。
+
+repair 删除 `dev_web_ui` 与 eval live scenario 中直接探测 Podman、静默返回或直接写
+`sandbox_image_records` 的 ambient bootstrap。唯一正向路径属于 supervised Host child：它先创建
+一个 `PodmanPipelineSandboxRunner`，并在 foundation、listener、child-ready、session、model/provider
+之前对其 `preflight()` 的 exact six-field identity做 closed validation；`image_digest` 与
+`pipeline_sdk_digest` 必须 exact 匹配 authority-bound preflight，immutable ref、组合 digest 与
+当前 runner必须一致。完成 bootstrap 后，同一 runner instance注入 public runtime health与 execution，
+后续 identity drift直接 fail closed，不得换 runner或 mutable tag。
+
+fresh file SQLite transaction在任何业务 write 前同时证明 `sandbox_image_records`、`sessions` 与
+`sandbox_workspace_records` 的全表 row count 均为零，不能只检查 default ref。事务随后把 runtime
+image投影为一个 `repo@sha256` immutable、cutover-compatible Core `SandboxImageRecord`，使用 Core
+workspace manifest protocol（当前 `s07`）并与 Podman runtime protocol（当前 `s10`）保持显式分离；
+write 后必须在同一事务内 exact reread，任一失败整体 rollback。bootstrap receipt闭合 preflight、
+runtime identity、Core registry projection与 digest，并进入 child-ready、Host startup receipt和 bundle
+source attestation。它不执行 pull/build/install/tag，不允许 env/debug fallback，也不改变普通未 bootstrap
+Host 的 `sandbox_image_missing` 语义。
+
+production qualification只在 external sandbox port注入 deterministic runner，以 exact production
+bootstrap function、real `HostApiDependencies/create_app()`、public FastAPI/thin client 与 file SQLite
+证明 registry row 和 public ready status先于 session/model。executor从
+`scientific.attempt.inspect` 读取真实 envelope，自行调用 production lane tools创建/bind lane后再
+`attempt.create`；删除 model factory 的 envelope side channel与 master-side lane fixture。negative
+controls覆盖 missing/malformed/image/SDK/immutable/runtime mismatch、default/non-default preexisting
+row、duplicate、runner drift、receipt tamper与 transaction rollback。该 Phase 2只运行 non-live
+验证、同步 OpenSpec/架构/V3文档、qualification registry/P0/resource manifest并提交本地 commit；
+不启动下一 rNN、live、MICU、provider、HPC或Chrome。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

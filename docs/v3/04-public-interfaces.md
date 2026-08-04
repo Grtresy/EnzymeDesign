@@ -644,7 +644,7 @@ request write与Host internal finalizer都要求actor仍是current task assignee
 创建canonical admission/attempt id，并通过source-bound owner wake交付late-bound facts。
 Codex不能通过public route代发这项mutation，也不能public调用finalizer。
 
-public inspect/export与`aox_public_conductor_bundle@2`先验证slot authority对真实control graph的
+public inspect/export与`aox_public_conductor_bundle@3`先验证slot authority对真实control graph的
 binding，再读取实际 attempt/lane/admission/idempotency/selection identity。wrong actor、
 reassignment、missing/foreign lane、caller-supplied legacy identity或cross-control graft均须在
 无新attempt、无外部effect状态fail closed。r69正是在attempt创建前因missing lane停止；其
@@ -652,12 +652,12 @@ reassignment、missing/foreign lane、caller-supplied legacy identity或cross-co
 
 ### 9.3 current post-r70 late-bound task 与 terminal handoff
 
-当前没有r71。r70已消费authority/slot/root/session/receipt，但没有提交runtime drain，也没有
+在r70冻结时尚无r71。r70已消费authority/slot/root/session/receipt，但没有提交runtime drain，也没有
 Host scientific authorization、admission request或attempt；它是pre-runtime conductor blocked，
 不是canonical NO-GO，全部state不可复用。
 
 current launch schemas是formal plan `@3`、consumption `@4`、slot claim `@3`、root proof `@3`、
-preflight `@4`和Host startup/supervision `@3`。这些对象只闭合campaign/ordinal/attempt kind/
+preflight `@4`、Host startup `@4`和supervision `@3`。这些对象只闭合campaign/ordinal/attempt kind/
 session/root/authority policy与launch identity，不得包含task、prebuilt envelope/request、lane、
 attempt或admission identity。`aox_public_conductor_bundle@3`也必须从真实control late-bind这些
 identity，而不是从outer launch读取shadow truth。
@@ -675,3 +675,21 @@ projection各自在Host内部获取绑定exact command id的短writer authority�
 terminal response必须逐项复现唯一`runtime.command.finished` event；这项settlement只证明
 command closure，不改变task/attempt/report业务terminal。exact三任务仍按kind、agent role、
 assignee和owner-authored finish cardinality从canonical repositories/events导出。
+
+### 9.4 current post-r71 fresh supervised Host sandbox bootstrap
+
+r71已消费authority、positive slot、root、session、task、late-bound authorization、receipt与
+`436,249` MICU，但execution首次调用`sandbox.workspace.status`即得到`sandbox_image_missing`，
+scientific admission/attempt及provider/HPC/sandbox/browser effect均未发生。它是pre-attempt
+sandbox-bootstrap blocked，不是canonical NO-GO；全部r71状态不可补写或复用，当前也不预先命名
+下一rNN。
+
+formal supervised child必须在listener、child-ready、session、model/provider之前，以将注入
+public health和execution的同一个runner取得exact six-field closed runtime identity。它必须匹配
+authority-bound preflight的image/SDK digest，并在一个fresh SQLite transaction内证明完整
+`sandbox_image_records`、`sessions`和`sandbox_workspace_records`均为空，随后写入、重读唯一
+immutable Core image row。receipt `aox_supervised_host_sandbox_bootstrap@1`闭合preflight、runner
+identity、Core projection与digest，进入child-ready `@2`、startup `@4`和bundle source binding。
+任何missing/malformed/mismatch/preexisting/duplicate/drift/tamper/reread failure都在ready与外部effect
+前fail closed；不得pull/build/install/tag/fallback。普通Host仍保留`sandbox_image_missing`，Codex
+无SQLite mutation surface。

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 import time
 
@@ -20,6 +21,8 @@ from openzyme_host_cli import cli as host_cli
 from openzyme_host_cli.client import HostApiClient
 
 from ..composition import ProductionCompositionFactory
+from ..composition import QUALIFICATION_SANDBOX_IMAGE_DIGEST
+from ..composition import QUALIFICATION_SANDBOX_SDK_DIGEST
 from ..execution_evidence import record_effect_ledger_snapshot
 from ..execution_evidence import record_execution_observation_digest
 from ..external_ports import ExternalEffectLedger
@@ -28,9 +31,34 @@ from ..external_ports import ExternalEffectLedger
 REPO_ROOT = Path(__file__).resolve().parents[5]
 
 
+def _tool_message_payload(
+    messages: list[object], *, tool_name: str
+) -> dict[str, object]:
+    for message in reversed(messages):
+        name = (
+            message.get("name")
+            if isinstance(message, dict)
+            else getattr(message, "name", None)
+        )
+        if name != tool_name:
+            continue
+        content = (
+            message.get("content")
+            if isinstance(message, dict)
+            else getattr(message, "content", "")
+        )
+        try:
+            envelope = json.loads(str(content or ""))
+        except json.JSONDecodeError:
+            continue
+        payload = envelope.get("payload")
+        if isinstance(payload, dict):
+            return dict(payload)
+    return {}
+
+
 class _AoxPublicCompositionInvoker:
-    def __init__(self, factory: "_AoxPublicCompositionModelFactory", purpose: str) -> None:
-        self.factory = factory
+    def __init__(self, purpose: str) -> None:
         self.purpose = purpose
         self.calls = 0
 
@@ -41,7 +69,7 @@ class _AoxPublicCompositionInvoker:
         messages: list[object],
         tools: list[object],
     ) -> dict[str, object]:
-        del system_prompt, messages, tools
+        del system_prompt, tools
         self.calls += 1
         if self.purpose == "v3_harness_loop":
             if self.calls == 1:
@@ -70,35 +98,6 @@ class _AoxPublicCompositionInvoker:
                     "content": "",
                     "tool_calls": [
                         {
-                            "id": "create_executor_lane",
-                            "name": "lane.create",
-                            "args": {
-                                "lane_id": "model_executor_lane",
-                                "name": "Model-selected executor lane",
-                                "cwd": ".",
-                            },
-                        }
-                    ],
-                }
-            if self.calls == 3:
-                return {
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "bind_executor_lane",
-                            "name": "lane.bind_task",
-                            "args": {
-                                "lane_id": "model_executor_lane",
-                                "task_id": "model_execution_task",
-                            },
-                        }
-                    ],
-                }
-            if self.calls == 4:
-                return {
-                    "content": "",
-                    "tool_calls": [
-                        {
                             "id": f"delegate_{role}",
                             "name": "task.delegate",
                             "args": {
@@ -117,7 +116,64 @@ class _AoxPublicCompositionInvoker:
             return {"content": "Canonical task graph is ready.", "tool_calls": []}
         if self.purpose == "v3_teammate_loop:executor":
             if self.calls == 1:
-                assert self.factory.authority_envelope_id is not None
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "inspect_sandbox_workspace",
+                            "name": "sandbox.workspace.status",
+                            "args": {},
+                        }
+                    ],
+                }
+            if self.calls == 2:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "inspect_scientific_authority",
+                            "name": "scientific.attempt.inspect",
+                            "args": {"limit": 10},
+                        }
+                    ],
+                }
+            if self.calls == 3:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "create_executor_lane",
+                            "name": "lane.create",
+                            "args": {
+                                "lane_id": "model_executor_lane",
+                                "name": "Model-selected executor lane",
+                                "cwd": ".",
+                            },
+                        }
+                    ],
+                }
+            if self.calls == 4:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "bind_executor_lane",
+                            "name": "lane.bind_task",
+                            "args": {
+                                "lane_id": "model_executor_lane",
+                                "task_id": "model_execution_task",
+                            },
+                        }
+                    ],
+                }
+            if self.calls == 5:
+                inspection = _tool_message_payload(
+                    messages,
+                    tool_name="scientific.attempt.inspect",
+                )
+                authorizations = inspection.get("authorizations")
+                assert isinstance(authorizations, list) and len(authorizations) == 1
+                envelope_id = str(dict(authorizations[0])["envelope_id"])
                 return {
                     "content": "",
                     "tool_calls": [
@@ -125,7 +181,7 @@ class _AoxPublicCompositionInvoker:
                             "id": "create_late_bound_attempt",
                             "name": "attempt.create",
                             "args": {
-                                "envelope_id": self.factory.authority_envelope_id,
+                                "envelope_id": envelope_id,
                                 "idempotency_key": "model-selected-attempt-create",
                             },
                         }
@@ -137,12 +193,11 @@ class _AoxPublicCompositionInvoker:
 
 class _AoxPublicCompositionModelFactory:
     def __init__(self) -> None:
-        self.authority_envelope_id: str | None = None
         self.invokers: dict[str, _AoxPublicCompositionInvoker] = {}
 
     def create_tool_calling_invoker(self, *, purpose: str) -> _AoxPublicCompositionInvoker:
         if purpose not in self.invokers:
-            self.invokers[purpose] = _AoxPublicCompositionInvoker(self, purpose)
+            self.invokers[purpose] = _AoxPublicCompositionInvoker(purpose)
         return self.invokers[purpose]
 
 
@@ -229,7 +284,10 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
     assert callable(aox_public_conductor_bundle.verify_public_conductor_bundle)
     factory = ProductionCompositionFactory.create(tmp_path / "aox-composition")
     model_factory = _AoxPublicCompositionModelFactory()
-    composition = factory.build(model_factory=model_factory)
+    composition = factory.build(
+        model_factory=model_factory,
+        bootstrap_supervised_sandbox=True,
+    )
     public_routes = {
         (method, route.path)
         for route in composition.app.routes
@@ -276,6 +334,27 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
     with composition:
         assert composition.client is not None
         public = HostApiClient("http://testserver", session=composition.client)
+        runtime_health = public.get_v3_runtime_health()
+        sandbox_health = dict(dict(runtime_health["components"])["sandbox"])
+        sandbox_details = dict(sandbox_health["details"])
+        assert sandbox_health["status"] == "ready"
+        assert sandbox_details["image_digest"] == QUALIFICATION_SANDBOX_IMAGE_DIGEST
+        assert (
+            sandbox_details["pipeline_sdk_digest"]
+            == QUALIFICATION_SANDBOX_SDK_DIGEST
+        )
+        with composition.repository_provider.read() as reader:
+            bootstrap_image = reader.repositories.sandbox_images.get_default()
+            preexisting_session = reader.repositories.sessions.get(session_id)
+            preexisting_workspaces = (
+                reader.repositories.sandbox_workspaces.list_by_session(session_id)
+            )
+        assert bootstrap_image is not None
+        assert bootstrap_image.image_ref.endswith(
+            "@" + QUALIFICATION_SANDBOX_IMAGE_DIGEST
+        )
+        assert preexisting_session is None
+        assert not preexisting_workspaces
         created = public.create_v3_session(
             session_id=session_id,
             project_id="aox-blank-world-cutover",
@@ -329,10 +408,9 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
             idempotency_key=str(dict(slot["authority_policy"])["idempotency_key"]),
         )
         envelope_id = str(dict(authority["record"])["envelope_id"])
-        model_factory.authority_envelope_id = envelope_id
         post_authority_terminals: list[dict[str, object]] = []
         inspection: dict[str, object] = {}
-        for ordinal in range(1, 6):
+        for ordinal in range(1, 9):
             command = public.drain_v3_runtime(
                 session_id,
                 max_signals=1,
@@ -404,9 +482,16 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
             after_cursor=0,
             limit=1_000,
         )
+        sandbox_workspaces = reader.repositories.sandbox_workspaces.list_by_session(
+            session_id
+        )
     assert persisted_session is not None
     assert any(item.message_type == "user_message" for item in persisted_messages)
     assert persisted_events
+    assert len(sandbox_workspaces) == 1
+    assert sandbox_workspaces[0].status.value == "ready"
+    assert sandbox_workspaces[0].image_digest == QUALIFICATION_SANDBOX_IMAGE_DIGEST
+    assert not hasattr(model_factory, "authority_envelope_id")
 
     retired_paths = (
         "apps/openzyme-host-api/src/openzyme_host_api/aox_cutover_live.py",
@@ -483,6 +568,14 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
                 composition.repository_provider.database_path
             ).name
             == "control-plane.sqlite3",
+            "sandbox_bootstrap_receipt": bool(
+                composition.sandbox_bootstrap_receipt
+            ),
+            "sandbox_runtime_health": sandbox_health["status"],
+            "sandbox_workspace_status": sandbox_workspaces[0].status.value,
+            "executor_inspect_and_lane_calls": model_factory.invokers[
+                "v3_teammate_loop:executor"
+            ].calls,
             "session_persisted": persisted_session is not None,
             "message_persisted": bool(persisted_messages),
             "events_persisted": bool(persisted_events),
@@ -502,7 +595,7 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
             "fault_route_fail_closed": fault_rejection.status_code >= 400,
             "export_route_fail_closed": export_rejection.status_code >= 400,
         },
-        "schema_id": "aox_post_r70_public_terminal_composition_qualification@1",
+        "schema_id": "aox_post_r71_fresh_host_composition_qualification@1",
     }
     record_execution_observation_digest(
         "sha256:" + hashlib.sha256(canonical_json_bytes(observation)).hexdigest()

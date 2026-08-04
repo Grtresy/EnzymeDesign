@@ -874,7 +874,7 @@ V3 execution 的目标主路径是 executor-owned persistent sandbox workspace�
 - executor sandbox 运行在受控 rootless Podman 环境中，默认无网络、非 root、资源受限
 - 默认多个 executor 使用同一个 Host-configured sandbox base image digest，分别启动各自的 rootless container process 并挂载各自独立的 persistent sandbox workspace；image layer 可以共享，sandbox workspace 不共享
 - executor sandbox base image 由 Host-level image registry / bootstrap contract 管理，记录 `image_ref`、resolved `image_digest`、最低能力声明和 `sandbox_protocol_version`；缺失或不兼容返回结构化 image error，不自动换 image 或回退到旧 pipeline runner
-- `image_ref` 只是配置/发现入口，不能作为执行身份。Host 在 local startup、live/eval bootstrap 与 plan preflight 都必须把它解析为完整 `sha256:<64hex>` immutable image id；Podman `.Id` 的裸 64 位 hex 与带 `sha256:` 前缀形式只在此处做严格等价规范化，其他格式拒绝且不得写入 image registry。同时对实际注入 sandbox 的 `openzyme_pipeline` SDK source tree（排除 bytecode/cache/symlink）计算 digest；`runtime_identity_digest` 绑定 image id、SDK digest 与 sandbox protocol。正式执行前再次解析并逐字段比对，复制 SDK 后再次验 digest，Podman `run` 必须使用 immutable image id；任何 tag 漂移、SDK 漂移或 identity 缺失都在 sandbox/runner 前 fail-closed
+- `image_ref` 只是配置/发现入口，不能作为执行身份。Host preflight 必须把它解析为完整 `sha256:<64hex>` immutable image id；Podman `.Id` 的裸 64 位 hex 与带 `sha256:` 前缀形式只在此处做严格等价规范化，其他格式拒绝且不得写入 image registry。同时对实际注入 sandbox 的 `openzyme_pipeline` SDK source tree（排除 bytecode/cache/symlink）计算 digest；`runtime_identity_digest` 绑定 image id、SDK digest 与 sandbox protocol。只有 exact authority-bound formal supervised child 可在 fresh SQLite 上显式登记这一 identity；dev Web UI、eval/live fixture 与普通 Host 不得根据 ambient Podman 状态静默登记。正式执行前再次解析并逐字段比对，复制 SDK 后再次验 digest，Podman `run` 必须使用 immutable image id；任何 tag 漂移、SDK 漂移或 identity 缺失都在 sandbox/runner 前 fail-closed
 - 每个 executor 拥有独立 persistent sandbox workspace；`sandbox_workspace_id` 按 `session_id + canonical agent_id/member_id` 复用，`task_id` / `lane_id` 只是当前 focus metadata；持久化对象是 sandbox workspace volume、manifest、projection summary 和 canonical records，不是容器进程或 container id；容器可重启，sandbox workspace volume 保留，`sandbox_workspace_id` 进入 execution provenance
 - sandbox workspace root 是 Host composition 注入的 attempt/deployment-scoped 依赖，不是 workspace status、file service 或 exec service 可各自选择的默认值；同一 runtime context 中的 `sandbox.workspace.status`、显式/隐式 workspace lookup、file CRUD、source snapshot、Podman bind 与 recovery 必须解析到同一 root。显式 `sandbox_workspace_id` 仍须按当前 `session_id + agent_member_id` 校验 ownership，不能因 id 已知而绕过 actor 绑定
 - `sandbox.exec.argv` 是 direct exec-form 数组，不存在隐式 shell parsing；需要 shell 时必须由 agent 显式选择 `bash -lc`。明显把 heredoc 当作 Python argv 的请求应在 source snapshot、SandboxRun 和容器进程产生前以 typed tool error 拒绝并给出真实可行路径，Host 不静默改写为 shell，也不因此放宽真实 nonzero run 的 fail-closed 语义
@@ -921,7 +921,7 @@ V3 execution 的目标主路径是 executor-owned persistent sandbox workspace�
 - 对 HPC-heavy 流程，Host 维护独立的 HPC placement workspace；`hpc_workspace_id` 按 `sandbox_workspace_id + normalized_label` 复用，executor 通过 `hpc.workspace`、`stage_artifact` 和 `fetch_outputs` 声明文件流，Host supervisor 负责真实 staging/fetch 和 artifact registration，不能把该远端工作区描述成 sandbox workspace 的 mirror，也不能把 remote path 暴露给 executor
 - blank-world live attempt 由 Host composition 注入彼此独立的 SQLite、sandbox workspace、sealed blob/artifact 和 HPC workspace roots；execution pipeline、provider artifactization、HPC fetch 与 source snapshot 必须贯穿同一 attempt-scoped root identity，任何局部共享 `/tmp` fallback 都使该 attempt 不具备 cutover 资格。public proof 仅包含 root digest/空目录证明，不暴露 Host 或远端路径
 - 现行 AOX attempt collector 的单文件 no-replace/seal 不等于 evidence archive 的 transaction，也没有统一证明 final `artifacts/` 实际文件集与 declared inventory exact equality。两阶段 private staging→验证→commit、artifact-root 全闭包、failure atomicity、crash recovery 和 schema migration 的完整方案单独记录在 [transactional attempt evidence collection and root closure](v3/architecture-proposals/transactional-attempt-evidence-collection-and-root-closure.md)，当前 Goal 不实施；在该迁移落地前不得用提案语义补强已封存 bundle 或 GO 结论
-- blank-world campaign 的 fresh SQLite 不继承 sandbox image registry 状态；在首个 session/model/provider 调用前，campaign 必须把 public runtime health 返回的 canonical immutable image / Pipeline SDK digests 与 pinned campaign identity 逐字段比对，完全一致后才在该 attempt 内登记 digest-pinned、cutover-grade image row。预存 row、缺失、格式非法或 digest 漂移必须在产生外部副作用前 fail closed；public preflight identity 同时进入 sealed launch receipt并由 offline verifier 对照 campaign image/SDK identity
+- blank-world campaign 的 fresh SQLite 不继承 sandbox image registry 状态。supervised Host child 必须在 foundation/listener/child-ready/session/model/provider 前，通过将用于 health/execution 的同一个 runner取得 exact six-field runtime identity；它与 authority-bound preflight 的 image/SDK digest 完全一致后，才在一个 transaction 内证明 image/session/workspace 三个 registry 全空、写入并重读唯一 immutable cutover-grade Core image row。Core workspace manifest protocol与Podman runtime protocol分别保持typed version。预存任意 default/non-default row、缺失、格式非法、digest/runner漂移或重读失败均在外部副作用前rollback并fail closed；source-bound bootstrap receipt同时进入child-ready、Host startup与bundle。该路径不pull/build/install/tag/fallback，普通Host继续返回canonical `sandbox_image_missing`
 - **post-r69 current-contract supersession**：下列仍以 `run-live`、automatic driver、observer/barrier、`chrome-once`、browser helper、diagnostic authority、public scientific mutation/finalizer 或 outer-plan attempt/lane id 表述的 AOX 条目只解释 r14-r69 sealed evidence，不是当前 runnable operator contract。current config 为 `aox_blank_world_runtime_config@4`；formal launch 只经 exact claim/preflight 与 policy-free supervision，scientific mutation只经 agent tools，transition finalization只在 Host内部进行，Codex只使用 public inspect/export/coordination API/CLI。不得从以下历史条目恢复已删除 surface。
 - AOX/HMM `pin`、`preflight` 与 `run-live` 的共同最前置 operator boundary 必须显式接收 architecture qualification report，并在 settings、pin runner、attempt root、sandbox probe、provider/runner/Chrome/MICU 之前用当前 checkout 的 pure verifier 重算。只有当前 clean HEAD 的 full selection、当前 registry/test manifest/runner/verifier、全部 invariant satisfied 且零 open P0 的 admission report 可生成 `aox_architecture_qualification_receipt@1`。receipt 贯穿 `aox_cutover_pin_commit@2`、`aox_cutover_pin_receipt@2`、`aox_blank_world_root_proof@2`、`aox_blank_world_launch_receipt@2` 与 production `aox_blank_world_attempt_bundle@3` 并由 offline verifier 闭合；历史 `aox_blank_world_attempt_bundle@2` 只由冻结 verifier 读取，不得升级。missing、diagnostic/subset、dirty/stale/tampered/unknown-profile/open-P0 或 receipt drift 均 fail closed，不存在 force/debug/env/legacy/pass-boolean bypass。资格报告是 checkout 外 operator admission evidence，不是 control-plane 或 scientific truth；exact-nine prerequisites 不扩张，通过也不创建 attempt、不启动 numbered live campaign。无 attempt 的准备边界止于 canonical `pin`：它只执行 deterministic non-scientific runner attestation 并在 checkout 外提交 declaration pair；CLI `preflight` 会创建 blank-world attempt root，是需要另行 operator 授权的第一次 campaign mutation，不能被当作普通 readiness probe
 - AOX/HMM `pin` 是 `run-live` 的 canonical supported operator bootstrap：它在 clean checkout 上使用 production compiler 和受信 Host 的 forced-SSH runner 执行四个 deterministic non-scientific MAFFT/hmmbuild/hmmalign/CD-HIT payload，只从 runner 签发的 same-shell runtime identity 得到 toolchain image digests。writer 将 exact-seven identity 与 exact-nine prerequisites 以 `0600` canonical JSON 发布在 checkout 外同一 existing real transaction directory，三个 reserved targets 初始必须不存在；Host 在两个 payload 落盘后最后发布闭集 `.aox-cutover-pin-commit.json`，用 basename 和 canonical payload digest 形成单一 consumer-visible commit point。marker 前 crash 留下的 orphan payload 不可消费；`run-live` 必须在读取 settings、构造 launch/campaign 或创建 root 前拒绝 marker 缺失、symlink、跨目录、开放/畸形字段或 digest drift。该无签名 marker 只证明 committed pair 完整性/一致性，不证明 producer provenance、目录整体 freshness 或消费时 file mode；真实运行仍依赖 trusted operator、actual launch recomputation 与每个 operation 的 runner-issued identity fail-closed
@@ -1215,7 +1215,7 @@ inspect/workspace/events/export。历史 SQLite/schema/evidence继续只读，fo
 
 ### 9.5 r70 pre-runtime conductor blocked 与 post-r70 terminal handoff
 
-当前没有 r71。r70 已消费 formal authority、slot、root、session 与 public receipt，但首个
+在 r70 冻结时尚无 r71。r70 已消费 formal authority、slot、root、session 与 public receipt，但首个
 `runtime/drain` 从未提交；Host scientific authorization、admission request 与 scientific
 attempt 均未创建。因此 r70 是 **pre-runtime conductor blocked**，不是 canonical r70 NO-GO。
 r70 的 plan、claim、root、session、receipt 与全部派生状态不可复用，也不能在 repair 后补写
@@ -1260,6 +1260,29 @@ FastAPI应用、thin client、file SQLite与deterministic model/runtime composit
 只运行non-live验证、更新规格/文档/qualification资源并提交本地commit；不启动r71、live、MICU、
 provider、HPC或Chrome。下一fresh rNN仍需clean commit、full admission/pin、fresh authority和
 独立用户批准，GO只由offline verifier/reducer产生。
+
+### 9.6 r71 pre-attempt sandbox-bootstrap blocked 与 post-r71 fresh Host bootstrap
+
+r71 campaign `aox_campaign_0356c33b043b00e1ea64d08c` 已消费 authority、positive ordinal 1、
+root、session、三任务、late-bound scientific authorization、public receipt及9次model attribution；
+MICU从`128,702,989`增至`129,139,238`，增量`436,249`。execution task首次读取
+`sandbox.workspace.status`时，cursor 74返回typed `sandbox_image_missing`。Host尚未创建scientific
+admission request/attempt，也没有provider、HPC、sandbox command或browser effect。因此r71只封存为
+authority-bound **pre-attempt sandbox-bootstrap blocked**，不是canonical NO-GO；全部r71 authority、
+slot、root、session、task、authorization、receipt、MICU attribution与派生identity不可复用。事后
+观察到image存在不能反推cursor 74时的物理状态，durable根因限定为
+`aox_supervised_host_sandbox_image_identity_not_registered`。
+
+post-r71 contract删除dev/eval ambient registration，只保留一个Host-owned bootstrap：supervised
+child创建一个`PodmanPipelineSandboxRunner`，在任何ready/业务活动前把它的
+`configured_image_ref`、`immutable_image_ref`、`image_digest`、`pipeline_sdk_digest`、
+`sandbox_protocol_version`与`runtime_identity_digest`闭合到preflight，然后将同一实例注入public
+health与execution。fresh SQLite transaction检查完整image/session/workspace表均为零，写入并重读
+一个`repo@sha256` Core image record；任何duplicate/preexisting/mismatch/drift/tamper/reread failure
+都rollback。`aox_supervised_host_sandbox_bootstrap@1` receipt进入child-ready、startup `@4`及最终
+bundle source binding。Codex不写SQLite；executor只从public tool result读取真实envelope，自行
+`lane.create`/`lane.bind_task`后调用`attempt.create`。本repair只授权non-live验证、文档和本地提交，
+不启动下一rNN、live、MICU、provider、HPC或Chrome。
 
 ---
 

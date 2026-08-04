@@ -65,7 +65,6 @@ from openzyme_tools import CDHIT_MEMBERSHIP_COLUMNS
 from openzyme_tools import CDHIT_MEMBERSHIP_SCHEMA_ID
 from openzyme_tools import parse_execution_result
 
-
 _PIPELINE_WORKSPACE_DIRECTORIES = (
     "src",
     "input",
@@ -74,6 +73,31 @@ _PIPELINE_WORKSPACE_DIRECTORIES = (
     "logs",
     "manifest",
 )
+_SANDBOX_IDENTITY_FIELDS = frozenset(
+    "configured_image_ref immutable_image_ref image_digest pipeline_sdk_digest "
+    "sandbox_protocol_version runtime_identity_digest".split()
+)
+
+
+def validate_closed_sandbox_runtime_identity(
+    raw: object, *, configured_image_ref: str | None = None,
+    image_digest: str | None = None, sdk_digest: str | None = None,
+    protocol_version: str | None = None,
+) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        raise ValueError("missing")
+    if set(raw) != _SANDBOX_IDENTITY_FIELDS or any(not isinstance(value, str) for value in raw.values()):
+        raise ValueError("invalid")
+    identity = dict(raw)
+    components = {key: identity[key] for key in _SANDBOX_IDENTITY_FIELDS - {"runtime_identity_digest"}}
+    digest = "sha256:" + hashlib.sha256(json.dumps(components, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    if identity["immutable_image_ref"] != identity["image_digest"] or identity["runtime_identity_digest"] != digest:
+        raise ValueError("invalid")
+    expected = (("configured_image_ref", configured_image_ref), ("image_digest", image_digest),
+                ("pipeline_sdk_digest", sdk_digest), ("sandbox_protocol_version", protocol_version))
+    if any(value is not None and identity[key] != value for key, value in expected):
+        raise ValueError("mismatch")
+    return identity
 
 
 class _DuplicateJsonKey(ValueError):
@@ -5893,14 +5917,7 @@ class ExecutionEngine:
                 details={"sandbox_run_id": operation.sandbox_run_id},
             )
         runtime_identity = dict(sandbox_run.compatibility or {})
-        required_identity_fields = {
-            "configured_image_ref",
-            "immutable_image_ref",
-            "image_digest",
-            "pipeline_sdk_digest",
-            "sandbox_protocol_version",
-            "runtime_identity_digest",
-        }
+        required_identity_fields = _SANDBOX_IDENTITY_FIELDS
         missing_identity_fields = sorted(
             required_identity_fields - set(runtime_identity)
         )
@@ -7068,45 +7085,22 @@ class ExecutionEngine:
                 stage="sandbox_preflight",
                 retryable=False,
             )
-        identity = dict(getattr(preflight, "runtime_identity", None) or {})
-        required = {
-            "configured_image_ref",
-            "immutable_image_ref",
-            "image_digest",
-            "pipeline_sdk_digest",
-            "sandbox_protocol_version",
-        }
-        missing = sorted(required - set(identity))
-        if missing:
-            raise PipelineSdkFailure(
-                error_type="sandbox_runtime_identity_unavailable",
-                message="Sandbox preflight did not return a complete immutable runtime identity.",
-                hint="Resolve the image id and pipeline SDK tree digest before creating an execution plan.",
-                stage="sandbox_preflight",
-                retryable=False,
-                details={"missing_fields": missing},
+        try:
+            return validate_closed_sandbox_runtime_identity(
+                getattr(preflight, "runtime_identity", None)
             )
-        identity_without_digest = {key: str(identity[key]) for key in sorted(required)}
-        expected_digest = (
-            "sha256:"
-            + hashlib.sha256(
-                json.dumps(
-                    identity_without_digest, sort_keys=True, separators=(",", ":")
-                ).encode("utf-8")
-            ).hexdigest()
-        )
-        supplied_digest = str(
-            identity.get("runtime_identity_digest") or expected_digest
-        )
-        if supplied_digest != expected_digest:
+        except ValueError as exc:
             raise PipelineSdkFailure(
-                error_type="sandbox_runtime_identity_invalid",
-                message="Sandbox runtime identity digest does not match its immutable components.",
+                error_type=(
+                    "sandbox_runtime_identity_unavailable"
+                    if str(exc) == "missing"
+                    else "sandbox_runtime_identity_invalid"
+                ),
+                message="Sandbox preflight did not return one closed immutable runtime identity.",
                 hint="Re-resolve the image and SDK identities; do not reuse stale preflight metadata.",
                 stage="sandbox_preflight",
                 retryable=False,
-            )
-        return {**identity_without_digest, "runtime_identity_digest": expected_digest}
+            ) from exc
 
     def _handle_pipeline_sdk_call_in_owned_scope(
         self,
@@ -7937,14 +7931,7 @@ class ExecutionEngine:
     ) -> ArtifactBoundaryService:
         pipeline = dict(self._require_input_payload(invocation).get("pipeline") or {})
         runtime_identity = dict(pipeline.get("sandbox_runtime_identity") or {})
-        required_identity_fields = {
-            "configured_image_ref",
-            "immutable_image_ref",
-            "image_digest",
-            "pipeline_sdk_digest",
-            "sandbox_protocol_version",
-            "runtime_identity_digest",
-        }
+        required_identity_fields = _SANDBOX_IDENTITY_FIELDS
         missing_identity_fields = sorted(
             required_identity_fields - set(runtime_identity)
         )

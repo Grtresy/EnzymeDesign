@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-import shutil
-import subprocess
 
 import uvicorn
 
@@ -13,14 +11,8 @@ from .app import HostApiDependencies
 from .app import create_app
 from .foundation import build_configured_foundation
 from .foundation import build_local_eval_foundation
-from openzyme_core import CoreRepositories
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import SQLiteSchemaMismatchError
-from openzyme_core import normalize_immutable_image_id
-from openzyme_core import sandbox_image_record
-
-
-DEFAULT_SANDBOX_IMAGE_REF = "localhost/openzyme-pipeline-sandbox:dev"
 
 
 def _default_ui_dist() -> Path:
@@ -45,50 +37,6 @@ def _build_v3_repository_provider(
             f"--v3-sqlite-db path. Details: {exc}"
         )
         raise SystemExit(msg) from exc
-
-
-def _register_existing_sandbox_image(
-    repositories: CoreRepositories,
-    *,
-    image_ref: str = DEFAULT_SANDBOX_IMAGE_REF,
-    podman_binary: str = "podman",
-) -> None:
-    if shutil.which(podman_binary) is None:
-        return
-    try:
-        exists = subprocess.run(
-            [podman_binary, "image", "exists", image_ref],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return
-    if exists.returncode != 0:
-        return
-    try:
-        inspect = subprocess.run(
-            [podman_binary, "image", "inspect", image_ref, "--format", "{{.Id}}"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return
-    image_id = inspect.stdout.strip()
-    if inspect.returncode != 0 or not image_id:
-        return
-    try:
-        image_digest = normalize_immutable_image_id(image_id)
-    except ValueError as exc:
-        raise RuntimeError(
-            f"Podman returned an invalid immutable image ID for {image_ref!r}"
-        ) from exc
-    repositories.sandbox_images.save(
-        sandbox_image_record(image_ref=image_ref, image_digest=image_digest)
-    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -132,9 +80,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     foundation = foundation_builder()
     v3_repository_provider = _build_v3_repository_provider(args.v3_sqlite_db)
-    if not args.fixture_non_cutover:
-        with v3_repository_provider.write() as scope:
-            _register_existing_sandbox_image(scope.repositories)
     app = create_app(
         HostApiDependencies(
             foundation=foundation,

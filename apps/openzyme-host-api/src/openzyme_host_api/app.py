@@ -1507,16 +1507,10 @@ def create_app(
             ),
             "sandbox": RuntimeComponentHealth(
                 status=sandbox_status,
-                details={
-                    key: sandbox_identity[key]
-                    for key in (
-                        "image_digest",
-                        "pipeline_sdk_digest",
-                        "runtime_identity_digest",
-                        "sandbox_protocol_version",
-                    )
-                    if key in sandbox_identity
-                },
+                details={key: sandbox_identity[key] for key in (
+                    "configured_image_ref", "immutable_image_ref", "image_digest",
+                    "pipeline_sdk_digest", "runtime_identity_digest", "sandbox_protocol_version",
+                ) if key in sandbox_identity},
             ),
         }
         overall_status = (

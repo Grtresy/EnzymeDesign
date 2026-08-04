@@ -26,7 +26,12 @@ from openzyme_core import (
     MutationLocalSettlementError,
     SQLiteRepositoryProvider,
     project_mutation_local_settlement,
+    sandbox_image_record,
 )
+from openzyme_core.sandbox_workspace import DEFAULT_SANDBOX_IMAGE_REF
+from openzyme_domain import SandboxImageCompatibility
+from openzyme_engines import PodmanPipelineSandboxRunner
+from openzyme_engines.execution import validate_closed_sandbox_runtime_identity
 from openzyme_runtime import OpenZymeSettings
 
 from .aox_attempt_preflight import (
@@ -45,9 +50,12 @@ from .app import HostApiDependencies, create_app
 from .foundation import build_configured_foundation
 
 
-HOST_STARTUP_SCHEMA_ID = "aox_supervised_host_startup@3"
+HOST_STARTUP_SCHEMA_ID = "aox_supervised_host_startup@4"
 HOST_SUPERVISION_RECEIPT_SCHEMA_ID = "aox_supervised_host_receipt@3"
 HOST_SUPERVISION_FATAL_SCHEMA_ID = "aox_supervised_host_fatal@1"
+HOST_SANDBOX_BOOTSTRAP_SCHEMA_ID = "aox_supervised_host_sandbox_bootstrap@1"
+SandboxBootstrapBinding = tuple[str, str, str]
+_SANDBOX_BOOTSTRAP_FIELDS = {"schema_id", "preflight_receipt_digest", "runtime_identity", "registry_projection", "receipt_digest"}
 HOST_STARTUP_FILENAME = "aox-host-startup.json"
 HOST_SUPERVISION_FILENAME = "aox-host-supervision.json"
 HOST_SUPERVISION_FATAL_FILENAME = "aox-host-supervision-fatal.json"
@@ -86,6 +94,73 @@ class HostSupervisionError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         self.code = code
         super().__init__(message)
+
+
+def _validated_sandbox_runtime_identity(raw: object, binding: SandboxBootstrapBinding) -> dict[str, str]:
+    _, image_digest, sdk_digest = binding
+    try:
+        return validate_closed_sandbox_runtime_identity(
+            raw, configured_image_ref=DEFAULT_SANDBOX_IMAGE_REF, image_digest=image_digest,
+            sdk_digest=sdk_digest, protocol_version="s10",
+        )
+    except ValueError as exc:
+        code = str(exc) if str(exc) in {"missing", "invalid", "mismatch"} else "invalid"
+        raise HostSupervisionError(f"host_sandbox_runtime_identity_{code}", "sandbox identity rejected") from exc
+
+
+def supervised_host_sandbox_binding(preflight: Mapping[str, Any]) -> SandboxBootstrapBinding:
+    prerequisites = dict(dict(preflight["root_proof"])["allowed_prerequisites"])
+    return str(preflight["receipt_digest"]), str(prerequisites["image_digest"]), str(prerequisites["sdk_digest"])
+
+
+def _sandbox_registry_projection(identity: Mapping[str, str]) -> dict[str, str]:
+    return {"image_ref": DEFAULT_SANDBOX_IMAGE_REF.rsplit(":", 1)[0] + "@" + identity["image_digest"],
+            "image_digest": identity["image_digest"], "sandbox_protocol_version": "s07",
+            "manifest_schema_version": "s07.workspace_manifest.v1", "compatibility": SandboxImageCompatibility.COMPATIBLE.value}
+
+
+def validate_supervised_host_sandbox_bootstrap(receipt: object, *, binding: SandboxBootstrapBinding) -> dict[str, Any]:
+    if not isinstance(receipt, dict):
+        raise HostSupervisionError("host_sandbox_bootstrap_receipt_missing", "bootstrap receipt missing")
+    value = dict(receipt)
+    try:
+        identity = _validated_sandbox_runtime_identity(value.get("runtime_identity"), binding)
+    except HostSupervisionError as exc:
+        raise HostSupervisionError("host_sandbox_bootstrap_receipt_invalid", "bootstrap identity invalid") from exc
+    projection, preflight_receipt_digest = _sandbox_registry_projection(identity), binding[0]
+    payload = {key: item for key, item in value.items() if key != "receipt_digest"}
+    if (set(value) != _SANDBOX_BOOTSTRAP_FIELDS or value.get("schema_id") != HOST_SANDBOX_BOOTSTRAP_SCHEMA_ID
+            or value.get("preflight_receipt_digest") != preflight_receipt_digest
+            or _DIGEST.fullmatch(preflight_receipt_digest) is None
+            or value.get("registry_projection") != projection
+            or value.get("receipt_digest") != canonical_digest(payload)):
+        raise HostSupervisionError("host_sandbox_bootstrap_receipt_invalid", "bootstrap receipt invalid")
+    return value
+
+
+def bootstrap_supervised_host_sandbox_image(repository_provider: SQLiteRepositoryProvider, runner: object, *, binding: SandboxBootstrapBinding) -> dict[str, Any]:
+    preflight_receipt_digest = binding[0]
+    preflight = runner.preflight()
+    if not bool(getattr(preflight, "ok", False)):
+        raise HostSupervisionError("host_sandbox_runtime_identity_missing", "sandbox preflight failed")
+    identity = _validated_sandbox_runtime_identity(getattr(preflight, "runtime_identity", None), binding)
+    runner.pinned_runtime_identity = dict(identity)
+    repeated_preflight = runner.preflight()
+    if not bool(getattr(repeated_preflight, "ok", False)):
+        raise HostSupervisionError("host_sandbox_runtime_identity_drift", "sandbox preflight drifted")
+    _validated_sandbox_runtime_identity(getattr(repeated_preflight, "runtime_identity", None), binding)
+    projection = _sandbox_registry_projection(identity)
+    with repository_provider.write() as scope:
+        counts = tuple(scope.connection.execute("SELECT (SELECT COUNT(*) FROM sandbox_image_records), (SELECT COUNT(*) FROM sessions), (SELECT COUNT(*) FROM sandbox_workspace_records)").fetchone() or ())
+        if counts != (0, 0, 0):
+            raise HostSupervisionError("host_sandbox_bootstrap_registry_not_blank", "Host registries not blank")
+        record = sandbox_image_record(image_ref=projection["image_ref"], image_digest=identity["image_digest"])
+        scope.repositories.sandbox_images.save(record)
+        if scope.repositories.sandbox_images.get(projection["image_ref"]) != record:
+            raise HostSupervisionError("host_sandbox_bootstrap_reread_failed", "image reread failed")
+        payload = {"schema_id": HOST_SANDBOX_BOOTSTRAP_SCHEMA_ID, "preflight_receipt_digest": preflight_receipt_digest, "runtime_identity": identity, "registry_projection": projection}
+        receipt = {**payload, "receipt_digest": canonical_digest(payload)}
+    return receipt
 
 
 def host_supervision_contract_digest(
@@ -242,12 +317,17 @@ def _host_child_main(
             raise HostSupervisionError(
                 "host_effective_config_drift", "configured Host differs from preflight"
             )
+        repository_provider = SQLiteRepositoryProvider(str(root / "control-plane.sqlite3"))
+        sandbox_runner = PodmanPipelineSandboxRunner(workspace_root=root / "sandboxes")
+        sandbox_bootstrap = bootstrap_supervised_host_sandbox_image(
+            repository_provider, sandbox_runner, binding=supervised_host_sandbox_binding(preflight))
         dependencies = HostApiDependencies(
             foundation=build_configured_foundation(
                 settings=config.settings, token_scenario_override="aox_blank_world_cutover"
             ),
-            v3_repository_provider=SQLiteRepositoryProvider(str(root / "control-plane.sqlite3")),
+            v3_repository_provider=repository_provider,
             v3_background_runtime_enabled=False,
+            v3_pipeline_sandbox_runner=sandbox_runner,
             v3_tool_dispatch_precondition=AoxFinalizationToolPrecondition(
                 session_id=str(slot["session_id"]),
                 attempt_kind=str(slot["attempt_kind"]),
@@ -283,11 +363,12 @@ def _host_child_main(
                 raise HostSupervisionError("host_startup_timeout", "configured Host was not ready")
             time.sleep(0.01)
         _send_frame(connection, {
-            "schema_id": "aox_supervised_host_child_ready@1", "process_epoch": epoch,
+            "schema_id": "aox_supervised_host_child_ready@2", "process_epoch": epoch,
             "child_pid": os.getpid(), "child_pgid": os.getpgrp(),
             "child_start_time_ticks": _process_start_time_ticks(os.getpid()),
             "base_url": f"http://127.0.0.1:{port}",
             "preflight_receipt_digest": preflight["receipt_digest"],
+            "sandbox_bootstrap": sandbox_bootstrap,
         })
         while thread.is_alive():
             if not connection.poll(0.1):
@@ -549,10 +630,13 @@ def supervised_attempt_host(
     pgid: int | None = None
     try:
         ready = _receive_frame(parent, startup_timeout_seconds)
+        if ready.get("schema_id") == "aox_supervised_host_child_terminal@1" and ready.get("outcome") == "failed":
+            raise HostSupervisionError(
+                str(ready.get("failure_code") or "host_supervision_child_failed"), "supervised Host failed before child-ready")
         pgid, child_pid = int(ready.get("child_pgid") or 0), int(ready.get("child_pid") or 0)
         child_start = int(ready.get("child_start_time_ticks") or 0)
         if not all((
-            ready.get("schema_id") == "aox_supervised_host_child_ready@1",
+            ready.get("schema_id") == "aox_supervised_host_child_ready@2",
             ready.get("process_epoch") == epoch,
             ready.get("preflight_receipt_digest") == preflight["receipt_digest"],
             child_pid == process.pid, pgid == process.pid,
@@ -563,6 +647,8 @@ def supervised_attempt_host(
             raise HostSupervisionError(
                 "host_process_identity_unproven", "Host readiness has the wrong identity"
             )
+        sandbox_bootstrap = validate_supervised_host_sandbox_bootstrap(
+            ready.get("sandbox_bootstrap"), binding=supervised_host_sandbox_binding(preflight))
         slot_claim = dict(preflight["slot_claim"])
         startup_payload = {
             "schema_id": HOST_STARTUP_SCHEMA_ID, "base_url": ready["base_url"],
@@ -573,6 +659,7 @@ def supervised_attempt_host(
             "preflight_receipt_digest": preflight["receipt_digest"],
             "process_epoch": epoch, "child_pid": child_pid, "child_pgid": pgid,
             "child_start_time_ticks": child_start, "timeout_seconds": timeout,
+            "sandbox_bootstrap": sandbox_bootstrap,
             "started_at": datetime.now(UTC).isoformat(),
         }
         startup = {**startup_payload, "receipt_digest": canonical_digest(startup_payload)}

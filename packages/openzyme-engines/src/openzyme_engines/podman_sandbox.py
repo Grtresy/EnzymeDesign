@@ -99,6 +99,7 @@ class PodmanPipelineSandboxRunner:
     podman_binary: str = "podman"
     timeout_seconds: int = 120
     workspace_root: Path = Path(tempfile.gettempdir()) / "openzyme-podman-pipelines"
+    pinned_runtime_identity: dict[str, str] | None = None
 
     def _local_pipeline_sdk_src(self) -> Path | None:
         candidate = Path(__file__).resolve().parents[3] / "openzyme-pipeline" / "src"
@@ -171,11 +172,10 @@ class PodmanPipelineSandboxRunner:
         identity_digest = "sha256:" + hashlib.sha256(
             json.dumps(identity_without_digest, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
-        return PodmanSandboxPreflight(
-            True,
-            "podman sandbox is ready",
-            {**identity_without_digest, "runtime_identity_digest": identity_digest},
-        )
+        identity = {**identity_without_digest, "runtime_identity_digest": identity_digest}
+        if self.pinned_runtime_identity not in (None, identity):
+            return PodmanSandboxPreflight(False, "sandbox runtime identity drifted after Host bootstrap")
+        return PodmanSandboxPreflight(True, "podman sandbox is ready", identity)
 
     def run_pipeline(
         self,

@@ -1,8 +1,8 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r67 are permanent NO-GO evidence. r68 is authority-consumed prelaunch blocked before root/Host/session/attempt. r69 is authority/root/session/provider/MICU-consumed pre-admission blocked before an admission request or scientific attempt. r70 is authority/slot/root/session/receipt-consumed pre-runtime conductor blocked before any runtime drain, Host scientific authorization, admission request or scientific attempt. None of r68-r70 is a canonical NO-GO, and none of their state is reusable. There is currently no r71. The post-r70 deletion-first repair late-binds operator authority to the first uniquely exported canonical execution task and requires sealed terminal handoffs as described below. Local live cutover remains **NO-GO**: this implementation does not authorize r71 or any next rNN, a diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
+Status: r43-r67 are permanent NO-GO evidence. r68 is authority-consumed prelaunch blocked before root/Host/session/attempt. r69 is authority/root/session/provider/MICU-consumed pre-admission blocked before an admission request or scientific attempt. r70 is authority/slot/root/session/receipt-consumed pre-runtime conductor blocked before any runtime drain or scientific authorization/admission/attempt. r71 is authority/positive-slot/root/session/task/authorization/receipt/MICU-consumed pre-attempt sandbox-bootstrap blocked at typed `sandbox_image_missing`, before scientific admission/attempt/provider/HPC/sandbox/browser effect. None of r68-r71 is a canonical NO-GO, and none of their state is reusable. The post-r71 deletion-first repair gives one formal supervised Host child the only explicit fresh-SQLite sandbox identity bootstrap, using the same runner for bootstrap, public health and execution. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
 
-Historical incident and pre-r71 command/observer/driver/browser/diagnostic-authority/public-finalizer sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract; in particular, every older `run-live`, `run-diagnostic-live`, diagnostic authority command, observer, barrier, rollover, no-wakeup, public generic scientific mutation/finalizer, `chrome-once` and browser-helper instruction is retired even where a historical section called it current at that time. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, late-bound task/scientific-attempt selection and qualification semantics are defined by the post-r70 section below, [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
+Historical incident and older command/observer/driver/browser/diagnostic-authority/public-finalizer sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract; in particular, every older `run-live`, `run-diagnostic-live`, diagnostic authority command, observer, barrier, rollover, no-wakeup, public generic scientific mutation/finalizer, `chrome-once`, browser-helper and ambient dev/eval image-registration instruction is retired even where a historical section called it current at that time. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, late-bound task/scientific-attempt selection, fresh supervised Host bootstrap and qualification semantics are defined by the post-r70/post-r71 sections below, [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
 This document describes the operator/evidence boundary implemented by `openzyme_host_api.aox_cutover_evidence`. It does not turn the historical S15 fixture into live evidence and does not authorize seeded state, cached scientific outputs, the reference notebook, or copied reference results as attempt inputs.
 
@@ -2927,14 +2927,14 @@ the offline verifier/reducer as the sole GO authority.
 
 ## r70 pre-runtime conductor blocked and post-r70 late-bound task/terminal handoff
 
-There is currently no r71. r70 consumed its formal authority, slot, root, session and public receipt,
+At the r70 freeze point, r71 did not yet exist. r70 consumed its formal authority, slot, root, session and public receipt,
 but no `runtime/drain` command was submitted. The Host contains no r70 scientific authorization,
 admission request or scientific attempt. r70 is therefore consumed **pre-runtime conductor blocked**,
 not a canonical r70 NO-GO. Every r70 plan, claim, root, session, receipt and derived identity is sealed
 and non-reusable; no repair may backfill a task, grant, drain or attempt into that state.
 
 Current launch evidence is `aox_live_attempt_authority_plan@3`, consumption `@4`, slot claim `@3`,
-root proof `@3`, preflight `@4`, and Host startup/supervision `@3`. At the launch layer they bind only
+root proof `@3`, preflight `@4`, Host startup `@4`, and supervision `@3`. At the launch layer they bind only
 campaign/plan, ordinal, attempt kind, session, root, authority policy and deterministic launch identity.
 They MUST NOT contain a task id, prebuilt authorization envelope/request, lane, attempt or admission
 identity. Historical launch schemas and evidence remain read-only; they cannot be paired with these
@@ -2970,6 +2970,41 @@ attempt path. This repair runs only non-live verification, synchronizes OpenSpec
 qualification registry and resource manifest, and commits locally. It does not start r71, live, MICU,
 provider, HPC or Chrome work. Any future formal run needs a fresh clean commit, full admission/pin,
 fresh authority/root/session and separate user approval.
+
+## r71 pre-attempt sandbox-bootstrap blocked and post-r71 fresh-Host repair
+
+r71 campaign `aox_campaign_0356c33b043b00e1ea64d08c` consumed its authority, positive ordinal 1,
+root, session, three tasks, late-bound scientific authorization and public receipts. Nine model
+attributions moved MICU from `128,702,989` to `129,139,238` (`436,249` delta). The execution task's
+first `sandbox.workspace.status` returned typed `sandbox_image_missing` at event cursor 74. No
+scientific admission request or attempt exists, and no provider, HPC, sandbox command or browser effect
+occurred. r71 is therefore authority-bound **pre-attempt sandbox-bootstrap blocked**, not a canonical
+NO-GO. Every r71 identity, receipt and MICU attribution is sealed and non-reusable. A post-stop image
+inventory cannot prove physical image state at cursor 74; the durable defect is exactly
+`aox_supervised_host_sandbox_image_identity_not_registered`.
+
+The repair removes ambient Podman inspection/registration from dev Web UI and eval/live scenarios.
+The formal supervised child creates one `PodmanPipelineSandboxRunner` and, before foundation, listener,
+child-ready, session, model/provider or effect, validates its exact configured ref, immutable ref,
+image digest, Pipeline SDK digest, runtime protocol and recomputed identity digest against the
+authority-bound preflight. The exact same runner instance serves public runtime health and execution;
+post-bootstrap runner drift fails closed.
+
+One fresh file-SQLite transaction proves the complete image, session and sandbox-workspace registries
+have zero rows, writes one immutable `repo@sha256` cutover-compatible Core image record, and exactly
+rereads it before commit. Core workspace-manifest protocol `s07` and Podman runtime protocol `s10` stay
+separate. `aox_supervised_host_sandbox_bootstrap@1` binds preflight, runtime identity, Core projection
+and digest into child-ready `@2`, Host startup `@4` and the final bundle. Missing, malformed, mismatched,
+preexisting, duplicate, drifted, tampered or reread-failed state rolls back before ready or external
+effect. Bootstrap never pulls, builds, installs, retags or falls back, and ordinary Hosts continue to
+surface canonical `sandbox_image_missing`.
+
+Production qualification uses the real FastAPI application, thin public client and file SQLite. A
+deterministic sandbox runner exists only at the declared external port and enters the exact production
+bootstrap function. The executor obtains its real envelope through `scientific.attempt.inspect`, then
+uses production `lane.create`, `lane.bind_task` and `attempt.create`; there is no model envelope side
+channel or master-created lane fixture. This repair runs only non-live verification and local commit
+work. It does not start or name the next rNN, live, MICU, provider, HPC or Chrome action.
 
 r59 remains the latest numbered campaign with a canonical formal-attempt decision. It is a failed campaign whose
 exact-three plan is consumed and whose later slots cannot be reused. The later

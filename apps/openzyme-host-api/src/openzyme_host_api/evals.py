@@ -969,35 +969,6 @@ def _s15_sandbox_image_prerequisite(
     )
 
 
-def _s15_bootstrap_live_sandbox_image(
-    repositories: CoreRepositories,
-    prerequisite_report: dict[str, object],
-) -> None:
-    checks = prerequisite_report.get("checks")
-    if not isinstance(checks, list):
-        return
-    image_check = next(
-        (
-            check
-            for check in checks
-            if isinstance(check, dict) and check.get("name") == "sandbox_image"
-        ),
-        None,
-    )
-    if not isinstance(image_check, dict) or image_check.get("status") != "ok":
-        return
-    image_ref = str(image_check.get("image_ref") or DEFAULT_SANDBOX_IMAGE_REF)
-    image_digest = image_check.get("image_digest")
-    if not image_digest:
-        return
-    repositories.sandbox_images.save(
-        sandbox_image_record(
-            image_ref=image_ref,
-            image_digest=str(image_digest),
-        )
-    )
-
-
 def _s15_live_prerequisite_report() -> dict[str, object]:
     settings = get_settings()
     checks: list[dict[str, object]] = []
@@ -3622,8 +3593,6 @@ def _run_v3_aox_hmm_prompt_scenario(
         v3_repositories = repository_scopes.enter_context(
             v3_repository_provider.connection_scope()
         ).repositories
-        if scenario_class == "live" and prerequisite_report is not None:
-            _s15_bootstrap_live_sandbox_image(v3_repositories, prerequisite_report)
         if use_fixture_dependencies:
             fixture_image = _s15_sandbox_image_prerequisite()
             if fixture_image.get("status") != "ok":

@@ -4,8 +4,10 @@
 correction 都会使前一份 report 失效。r43-r67 已永久 NO-GO；r68 在 root/session/attempt 前
 prelaunch blocked；r69 在authority/root/session/provider/MICU已消费但attempt创建前
 pre-admission blocked；r70在authority/slot/root/session/receipt已消费但首个drain与Host
-scientific authorization/admission/attempt前pre-runtime conductor blocked。r68-r70均非canonical
-NO-GO且全部state不可复用；当前没有r71。后继 numbered campaign 必须先在
+scientific authorization/admission/attempt前pre-runtime conductor blocked；r71在authority/
+positive slot/root/session/task/authorization/receipt/MICU已消费后，以typed
+`sandbox_image_missing`停在scientific admission/attempt/provider/HPC前。r68-r71均非canonical
+NO-GO且全部state不可复用；当前不预先命名下一rNN。后继 numbered campaign 必须先在
 新的 clean commit 上生成并独立验证 fresh full admission report。
 
 ## Authority boundary
@@ -65,19 +67,26 @@ plan/consumption/root/decision，以及已退役 closure-stage raw run class、a
 和 historical evidence 都不能被 formal publisher/consumer/blank-world
 root/verifier/reducer 接纳，即使伪造相同 plan digest。该 negative gate 使用 frozen
 literals，不依赖或恢复已删除的 closure-stage production modules。
-当前 `evidence-projection.aox-run-class-disjoint-closure` scenario 以
-`aox_post_r70_public_terminal_composition_qualification@1` observation收口真实 production
+当前 `evidence-projection.aox-run-class-disjoint-closure` scenario 同时闭合
+`evidence-projection.aox-run-class-disjoint`与
+`evidence-projection.aox-fresh-host-sandbox-bootstrap`，并以
+`aox_post_r71_fresh_host_composition_qualification@1` observation收口真实 production
 composition：场景通过`HostApiDependencies/create_app()`组成actual FastAPI应用，以thin
 `HostApiClient`调用public route，使用file-backed SQLite和只注入agent边界的deterministic
-model/runtime建立session/message、首个bounded drain、sealed terminal、唯一execution-task
+model/runtime先调用production Host bootstrap，在session/model前证明全空registry、唯一immutable
+image row、source receipt与public ready status，再建立session/message、首个bounded drain、sealed terminal、唯一execution-task
 read与late-bound authority。execution assignee随后经production lane/scientific tool handler
-创建lane/admission；wrong task与wrong actor在零attempt状态被拒绝，Host internal finalizer才
+从`scientific.attempt.inspect`读取真实envelope并创建lane/admission；不存在model envelope side
+channel或master lane fixture。wrong task与wrong actor在零attempt状态被拒绝，Host internal finalizer才
 生成late-bound identity，独立reader再证明持久化。场景还证明terminal response与唯一
 `runtime.command.finished` exact一致，fault与closed export在不匹配状态typed fail closed，且
 不调用private service、不手工组装`ToolRegistry`、不直接写canonical truth或合成receipt。
 场景还检查diagnostic authority、public generic
 scientific mutation/finalizer、automatic runner/observer及其CLI/client/dead Core入口确实缺席，
 而非靠一个source symbol宣称positive reachability。
+fresh-Host invariant使用既有`admission-bypass`、`false-success`与`unverifiable-evidence` P0 trigger；
+本repair不伪造新的P0 closure sidecar记录，缺失/malformed/mismatch/preexisting/duplicate/drift/tamper/
+rollback controls必须由同一tracked scenario与focused tests实际为green。
 每个场景都有 finite step、tick、state/event、effect 与
 wall-clock budget。skip、xfail、missing collection、timeout、budget exhaustion 或证据不完整
 只能得到 `violated|unproven`，不能得到 pass。

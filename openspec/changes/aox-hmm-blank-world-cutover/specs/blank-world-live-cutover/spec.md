@@ -571,6 +571,30 @@ roll over a scope, inspect business terminal state or derive a campaign result.
 Startup and retirement receipts MUST bind the same root/process epoch; local
 retirement does not prove remote-effect cancellation or business closure.
 
+Before the supervised child constructs its foundation, opens a listener, emits
+child-ready, creates a session, invokes a model/provider or admits an effect, it
+MUST use the same injected production sandbox runner that public runtime health
+and execution will use to obtain one exact closed identity containing
+`configured_image_ref`, `immutable_image_ref`, `image_digest`,
+`pipeline_sdk_digest`, `sandbox_protocol_version` and
+`runtime_identity_digest`. The Host MUST validate the declared image and SDK
+digests from the authority-bound preflight, immutable/image equality and the
+recomputed runtime digest. The Podman runtime protocol identity and the Core
+workspace-manifest protocol are distinct typed fields and MUST NOT be projected
+as one version.
+
+The fresh file-backed SQLite transaction MUST prove that the complete sandbox
+image registry, session registry and sandbox-workspace registry are empty,
+including non-default image rows. It SHALL atomically write and reread exactly
+one digest-pinned, cutover-compatible Core image record and seal one
+source-bound sandbox-bootstrap receipt into child-ready, Host startup and the
+final source-attestation set. Missing, malformed, mismatched, preexisting,
+duplicate, drifting, tampered, write-failed or reread-failed state MUST stop
+before ready/session/model/MICU/provider/HPC. The bootstrap MUST NOT pull, build,
+install, retag or choose an alternate image, and Codex MUST NOT mutate SQLite to
+satisfy it. Ordinary Hosts without this explicit formal bootstrap SHALL retain
+the canonical `sandbox_image_missing` result.
+
 The public Host SHALL export one exact closed attempt and sealed selection through
 `GET /v3/sessions/{session_id}/scientific-attempts/{attempt_id}/selections/{selection_id}/evidence`.
 Formal positive export MUST revalidate the persisted source-bound 17-deliverable
@@ -638,6 +662,7 @@ using a deterministic model/runtime only as the injected agent boundary, calling
 public routes through the thin Host client, and writing/rereading file-backed SQLite
 through the production V3 service plus canonical lane/scientific tool handlers. It
 SHALL prove the first-message/bounded-drain/public-task-read/late-authority sequence,
+the exact fresh-Host sandbox bootstrap and public ready status before session/model,
 one assignee-bound late-created attempt, wrong-task and wrong-actor no-effect,
 reassignment-before-finalizer rejection, and typed fault/export failure before a
 matching closed attempt.
@@ -651,6 +676,14 @@ package and MUST NOT be a production caller.
 #### Scenario: Preflight before Host startup
 - **WHEN** one consumed exact slot and every pinned/current qualification input agree
 - **THEN** preflight creates only that slot's fresh root and immutable receipt, reports `preflight_complete_host_not_started`, and performs no Host, session, attempt, MICU, provider, runner, HPC or browser action
+
+#### Scenario: Bootstrap one fresh supervised Host image identity
+- **WHEN** the exact preflight image and SDK digests match one closed runner identity and the fresh SQLite image/session/workspace registries are completely empty
+- **THEN** the same runner instance atomically installs and rereads one immutable cutover-grade Core image record, public `sandbox.workspace.status` is ready before session/model work, and child-ready/startup/bundle bind the exact bootstrap receipt
+
+#### Scenario: Reject ambient or drifting sandbox bootstrap
+- **WHEN** runtime identity is missing, malformed, mismatched or changes, any default or non-default image/session/workspace row already exists, receipt bytes drift, or registration/reread fails
+- **THEN** supervised Host startup fails before ready/session/model/MICU/provider/HPC with no pull/build/install/tag/fallback and no partial registry commit
 
 #### Scenario: Seal an exact public positive
 - **WHEN** a policy-free Host has retired and the public chain proves one canonically closed positive attempt with the exact selected chain, passed 17-deliverable receipt, completed task board, published report, full events and final reads

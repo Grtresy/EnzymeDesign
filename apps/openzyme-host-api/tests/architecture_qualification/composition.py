@@ -22,6 +22,11 @@ from openzyme_host_api.durable_routes import HostProviderControlledOperationRout
 from openzyme_host_api.sandbox_host_gateway import ExecutionEngineSandboxHostGateway
 from openzyme_engines.execution import BioArtifactDraft
 from openzyme_engines.execution import BioSdkResult
+from openzyme_engines import PodmanSandboxPreflight
+from openzyme_host_api.aox_cutover_evidence import canonical_digest
+from openzyme_host_api.aox_host_supervision import (
+    bootstrap_supervised_host_sandbox_image,
+)
 from openzyme_runtime import ControlledOperationOwnerPolicy
 from openzyme_runtime import ExecutionSettings
 from openzyme_runtime import HostApiSettings
@@ -205,13 +210,31 @@ class QualificationLostCallbackProviderRouteAdapter:
         return self.inner.materialize(execution, request)
 
 
-@dataclass(frozen=True, slots=True)
+QUALIFICATION_SANDBOX_IMAGE_DIGEST = "sha256:" + "a" * 64
+QUALIFICATION_SANDBOX_SDK_DIGEST = "sha256:" + "b" * 64
+QUALIFICATION_SANDBOX_PREFLIGHT_DIGEST = "sha256:" + "c" * 64
+
+
+@dataclass(slots=True)
 class DeniedPipelineSandboxRunner:
     port: ControlledExternalPort
     qualification_fixture_non_cutover: bool = True
+    pinned_runtime_identity: dict[str, str] | None = None
 
-    def preflight(self) -> object:
-        return self.port.invoke("preflight", {})
+    def preflight(self) -> PodmanSandboxPreflight:
+        payload = {
+            "configured_image_ref": "localhost/openzyme-pipeline-sandbox:dev",
+            "immutable_image_ref": QUALIFICATION_SANDBOX_IMAGE_DIGEST,
+            "image_digest": QUALIFICATION_SANDBOX_IMAGE_DIGEST,
+            "pipeline_sdk_digest": QUALIFICATION_SANDBOX_SDK_DIGEST,
+            "sandbox_protocol_version": "s10",
+        }
+        identity = {**payload, "runtime_identity_digest": canonical_digest(payload)}
+        if self.pinned_runtime_identity is not None and (
+            identity != self.pinned_runtime_identity
+        ):
+            return PodmanSandboxPreflight(False, "qualification identity drifted")
+        return PodmanSandboxPreflight(True, "qualification identity ready", identity)
 
     def run_pipeline(self, **kwargs: object) -> object:
         return self.port.invoke("run_pipeline", kwargs)
@@ -393,6 +416,7 @@ class ProductionComposition:
     external_ports: dict[str, ControlledExternalPort]
     dependencies: HostApiDependencies
     app: FastAPI
+    sandbox_bootstrap_receipt: dict[str, object] | None = None
     _test_client_owner: TestClient | None = None
     client: TestClient | None = None
     retired: bool = False
@@ -510,11 +534,25 @@ class ProductionCompositionFactory:
             },
         )
 
-    def build(self, *, model_factory: object | None = None) -> ProductionComposition:
+    def build(
+        self,
+        *,
+        model_factory: object | None = None,
+        bootstrap_supervised_sandbox: bool = False,
+    ) -> ProductionComposition:
         provider = SQLiteRepositoryProvider(str(self.roots.database_path))
         runner_port = self.external_ports["runner.hpc"]
         bio_port = self.external_ports["bio.provider_http"]
         sandbox_port = self.external_ports["sandbox.container_process"]
+        sandbox_runner = DeniedPipelineSandboxRunner(sandbox_port)
+        sandbox_bootstrap_receipt = None
+        if bootstrap_supervised_sandbox:
+            sandbox_bootstrap_receipt = bootstrap_supervised_host_sandbox_image(
+                provider, sandbox_runner,
+                binding=(QUALIFICATION_SANDBOX_PREFLIGHT_DIGEST,
+                         QUALIFICATION_SANDBOX_IMAGE_DIGEST,
+                         QUALIFICATION_SANDBOX_SDK_DIGEST),
+            )
         foundation = _qualification_foundation(runner_port=runner_port)
         if model_factory is not None:
             foundation = replace(foundation, model_factory=model_factory)
@@ -537,7 +575,7 @@ class ProductionCompositionFactory:
                     adapter_policy_id="qualification_runner_adapter:v1",
                 ),
             },
-            v3_pipeline_sandbox_runner=DeniedPipelineSandboxRunner(sandbox_port),
+            v3_pipeline_sandbox_runner=sandbox_runner,
             v3_bio_adapter=DeniedBioAdapter(bio_port),
             v3_allow_bio_fixture_adapter=False,
             v3_sandbox_workspace_root=self.roots.sandbox_root,
@@ -570,6 +608,7 @@ class ProductionCompositionFactory:
             external_ports=self.external_ports,
             dependencies=dependencies,
             app=create_app(dependencies),
+            sandbox_bootstrap_receipt=sandbox_bootstrap_receipt,
         )
 
     def restart(self, retired: ProductionComposition) -> ProductionComposition:
@@ -659,6 +698,9 @@ __all__ = [
     "DeniedBioAdapter",
     "DeniedExecutionAdapter",
     "DeniedPipelineSandboxRunner",
+    "QUALIFICATION_SANDBOX_IMAGE_DIGEST",
+    "QUALIFICATION_SANDBOX_PREFLIGHT_DIGEST",
+    "QUALIFICATION_SANDBOX_SDK_DIGEST",
     "ProductionComposition",
     "ProductionCompositionFactory",
     "QualificationRoots",

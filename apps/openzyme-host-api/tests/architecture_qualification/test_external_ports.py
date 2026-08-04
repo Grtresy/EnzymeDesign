@@ -89,17 +89,18 @@ def test_unplanned_composition_ports_fail_closed_and_share_restart_ledger(
             fields=("sequence",),
             retrieved_at="2026-07-22T00:00:00Z",
         )
-    with pytest.raises(ControlledExternalPortError):
-        first.dependencies.v3_pipeline_sandbox_runner.preflight()
+    sandbox_preflight = first.dependencies.v3_pipeline_sandbox_runner.preflight()
+    assert sandbox_preflight.ok is True
+    assert sandbox_preflight.runtime_identity is not None
 
     with first:
         pass
     restarted = factory.restart(first)
     assert restarted.external_effect_ledger is first.external_effect_ledger
-    assert restarted.external_effect_ledger.count() == 3
+    assert restarted.external_effect_ledger.count() == 2
     assert restarted.external_effect_ledger.count(
         acceptance=EffectAcceptance.NOT_ACCEPTED
-    ) == 3
+    ) == 2
     assert restarted.external_effect_ledger.count(
         acceptance=EffectAcceptance.ACCEPTED
     ) == 0

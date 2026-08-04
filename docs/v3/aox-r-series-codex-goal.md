@@ -1,7 +1,7 @@
-# AOX r-series Codex 测试 goal（post-r70 / pre-r71）
+# AOX r-series Codex 测试 goal（post-r71 / pre-next-rNN）
 
 状态：paste-ready operator prompt。它定义 Codex 测试员的权限、证据顺序和停止条件，不构成
-任何 diagnostic/formal live、MICU、provider、HPC 或 Chrome 授权，也不预先创建或命名 r71。
+任何 diagnostic/formal live、MICU、provider、HPC 或 Chrome 授权，也不预先创建或命名下一rNN。
 
 ```text
 /goal
@@ -13,14 +13,16 @@ implementation green、单 attempt、diagnostic、conductor prose、Host task la
 empty drain、generic controlled failure或未封存 status digest都不是 GO。
 
 当前不可变事实：r43-r67 是历史永久 NO-GO；r68 是 authority-consumed prelaunch blocked；r69
-是 authority/root/session/provider/MICU-consumed pre-admission blocked。当前没有 r71。r70 已消费
-authority、slot、root、session和receipt，但首个 runtime drain 从未提交，Host scientific
-authorization、admission request与scientific attempt均未创建；它是 pre-runtime conductor
-blocked，不是canonical r70 NO-GO。r68/r69/r70及更早的plan、slot、authority、root、SQLite、
-session、task、envelope、effect、artifact、report、receipt、browser state和MICU attribution全部
+是 authority/root/session/provider/MICU-consumed pre-admission blocked；r70 是 authority/slot/root/
+session/receipt-consumed pre-runtime conductor blocked。r71 已消费 authority、positive ordinal 1、
+root、session、三任务、late-bound authorization、public receipt与 `436,249` MICU，但execution首次
+调用`sandbox.workspace.status`即以typed `sandbox_image_missing`停止；没有scientific admission/
+attempt/provider/HPC/sandbox/browser effect。它是pre-attempt sandbox-bootstrap blocked，不是
+canonical r71 NO-GO。r68/r69/r70/r71及更早的plan、slot、authority、root、SQLite、session、task、
+authorization/envelope、effect、artifact、report、receipt、browser state和MICU attribution全部
 不可复用，也不得通过补写task、grant、drain或attempt继续旧状态。下一fresh formal run只能在
 repair commit形成clean HEAD后重新full architecture admission、pin、fresh exact plan/consumption、
-fresh slot/root/session，并在事实可见后推导下一rNN；不能预先假定它就是r71。
+fresh slot/root/session，并在事实可见后推导下一rNN；不能预先命名。
 
 角色边界：Codex是产品runtime之外的test conductor，只能通过public Host API/CLI进行session
 create、entry message、explicit bounded drain、sealed command-status read、canonical workspace/task
@@ -48,10 +50,18 @@ fence、unknown/external effect、continuation、artifact catalog、sandbox和is
    诊断。
 
 formal launch规则：current aox_live_attempt_authority_plan@3、consumption@4、slot claim@3、
-root proof@3、preflight@4和Host startup/supervision@3只绑定consumed campaign、ordinal、attempt
+root proof@3、preflight@4、Host startup@4和supervision@3只绑定consumed campaign、ordinal、attempt
 kind、session、root、authority policy及deterministic launch identity。它们不得包含或推导task、
 authority envelope/request、lane、attempt、admission request或admission idempotency key。claim在
 root前atomic no-replace发布；claim后失败会烧毁该slot，不能换root、task或session重试。
+
+formal Host bootstrap规则：supervised child在foundation/listener/child-ready/session/model/provider
+之前，以将用于public health与execution的同一个runner取得exact six-field runtime identity，逐项
+匹配authority-bound preflight image/SDK digest，并在一个transaction内证明fresh SQLite的完整
+image/session/workspace registry均为空、写入并重读唯一immutable Core image row。source-bound
+bootstrap receipt必须进入child-ready/startup/bundle。任何missing/malformed/mismatch/preexisting/
+duplicate/drift/tamper/reread failure都在ready/MICU/effect前停止；不得pull/build/install/tag/fallback，
+Codex不得写SQLite。普通Host的`sandbox_image_missing`仍是canonical产品语义。
 
 首次late-bind顺序不可调整：
 

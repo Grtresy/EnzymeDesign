@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from openzyme_core import MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID
+from openzyme_core import sandbox_image_record
 from openzyme_host_api import aox_cutover_evidence as cutover_evidence
 from openzyme_host_api import aox_public_conductor_bundle as conductor_bundle
 from openzyme_host_api.aox_attempt_authority import (
@@ -23,6 +24,8 @@ from openzyme_host_api.aox_cutover_evidence import BlankWorldRoots
 from openzyme_host_api.aox_cutover_evidence import CutoverEvidenceError
 from openzyme_host_api.aox_cutover_evidence import canonical_digest
 from openzyme_host_api.aox_cutover_evidence import canonical_json_bytes
+from openzyme_host_api.aox_host_supervision import HOST_SANDBOX_BOOTSTRAP_SCHEMA_ID
+from openzyme_host_api.aox_host_supervision import HOST_STARTUP_SCHEMA_ID
 from openzyme_host_api.aox_host_supervision import HOST_SUPERVISION_RECEIPT_SCHEMA_ID
 from openzyme_host_api.aox_host_supervision import host_supervision_contract_digest
 from openzyme_host_api.aox_host_supervision import validate_supervised_host_receipt
@@ -673,7 +676,11 @@ def _preflight_fixture(
     }
     identity_path = tmp_path / "identity.json"
     identity_path.write_bytes(canonical_json_bytes(identity) + b"\n")
-    prerequisites = {"config_digest": canonical_digest(effective_config)}
+    prerequisites = {
+        "config_digest": canonical_digest(effective_config),
+        "image_digest": identity["image_digest"],
+        "sdk_digest": identity["sdk_digest"],
+    }
     qualification = {"schema_id": "qualification@1"}
     proof = {
         "schema_id": "aox_blank_world_root_proof@3",
@@ -809,8 +816,47 @@ def _startup_receipt(
 ) -> dict[str, object]:
     slot = dict(preflight["slot"])
     timeout = dict(slot["authority_policy"])["max_wall_time_seconds"]
+    prerequisites = dict(dict(preflight["root_proof"])["allowed_prerequisites"])
+    identity_payload = {
+        "configured_image_ref": "localhost/openzyme-pipeline-sandbox:dev",
+        "immutable_image_ref": prerequisites["image_digest"],
+        "image_digest": prerequisites["image_digest"],
+        "pipeline_sdk_digest": prerequisites["sdk_digest"],
+        "sandbox_protocol_version": "s10",
+    }
+    runtime_identity = {
+        **identity_payload,
+        "runtime_identity_digest": canonical_digest(identity_payload),
+    }
+    image_ref = (
+        "localhost/openzyme-pipeline-sandbox@" + str(prerequisites["image_digest"])
+    )
+    registry_record = sandbox_image_record(
+        image_ref=image_ref,
+        image_digest=str(prerequisites["image_digest"]),
+        now="2026-07-31T00:00:00+00:00",
+    ).to_dict()
+    bootstrap_payload = {
+        "schema_id": HOST_SANDBOX_BOOTSTRAP_SCHEMA_ID,
+        "preflight_receipt_digest": preflight["receipt_digest"],
+        "runtime_identity": runtime_identity,
+        "registry_projection": {
+            key: registry_record[key]
+            for key in (
+                "image_ref",
+                "image_digest",
+                "sandbox_protocol_version",
+                "manifest_schema_version",
+                "compatibility",
+            )
+        },
+    }
+    bootstrap = {
+        **bootstrap_payload,
+        "receipt_digest": canonical_digest(bootstrap_payload),
+    }
     payload = {
-        "schema_id": "aox_supervised_host_startup@3",
+        "schema_id": HOST_STARTUP_SCHEMA_ID,
         "base_url": "http://127.0.0.1:41234",
         "launch_id": dict(preflight["slot_claim"])["launch_id"],
         "attempt_kind": slot["attempt_kind"],
@@ -824,6 +870,7 @@ def _startup_receipt(
         "child_pgid": 1234,
         "child_start_time_ticks": 5678,
         "timeout_seconds": timeout,
+        "sandbox_bootstrap": bootstrap,
         "started_at": "2026-07-31T00:00:00+00:00",
     }
     return {**payload, "receipt_digest": canonical_digest(payload)}

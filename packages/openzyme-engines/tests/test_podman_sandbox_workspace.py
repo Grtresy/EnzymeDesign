@@ -13,6 +13,26 @@ from openzyme_engines import PodmanPipelineSandboxRunner
 from openzyme_engines.podman_sandbox import _ControlSocketServer
 
 
+def test_podman_runner_rejects_runtime_identity_drift_after_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = PodmanPipelineSandboxRunner()
+    image_digests = iter(("sha256:" + "a" * 64, "sha256:" + "b" * 64))
+    monkeypatch.setattr("openzyme_engines.podman_sandbox.shutil.which", lambda binary: binary)
+    monkeypatch.setattr("openzyme_engines.podman_sandbox.subprocess.run", lambda *args, **kwargs: SimpleNamespace())
+    monkeypatch.setattr(PodmanPipelineSandboxRunner, "_inspect_image_digest", lambda self: next(image_digests))
+    monkeypatch.setattr(PodmanPipelineSandboxRunner, "_pipeline_sdk_digest", lambda self: "sha256:" + "c" * 64)
+
+    initial = runner.preflight()
+    assert initial.ok is True
+    runner.pinned_runtime_identity = initial.runtime_identity
+
+    drifted = runner.preflight()
+    assert drifted.ok is False
+    assert drifted.runtime_identity is None
+    assert drifted.message == "sandbox runtime identity drifted after Host bootstrap"
+
+
 def test_podman_runner_rejects_symlink_sandbox_root_without_touching_target(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
