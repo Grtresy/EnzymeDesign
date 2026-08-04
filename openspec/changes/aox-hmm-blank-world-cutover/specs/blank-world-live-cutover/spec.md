@@ -781,6 +781,40 @@ a safe failure into an automatic retry or a business terminal.
 - **WHEN** the conductor has stopped and sealed three fresh formal bundles
 - **THEN** each bundle is checked without live I/O and only the campaign reducer may emit GO; conductor prose, an implementation commit, diagnostic evidence, process exit and Host task labels cannot substitute for the verified reducer inputs
 
+### Requirement: Prelive qualification handle continuity is deletion-first
+Before any new numbered AOX launch preparation, the Codex conductor SHALL issue at
+most one full architecture-qualification command for the canonical checkout. If the
+execution tool yields a `cell_id` or `session_id`, the conductor MUST resume only that
+exact handle until it returns a terminal result. It MUST NOT start an equivalent
+qualification command, create a recovery output, retry with another parent, or adopt
+a focused recheck while the original handle is unresolved. If the exact handle is no
+longer recoverable, the conductor SHALL perform only read-only process/output
+inventory, classify the prelive step as blocked, and stop without launching Host,
+live, MICU, provider, HPC, or Chrome work.
+
+The qualification owner SHALL validate the canonical checkout-external output target
+and any requested mainline sidecar before collection, harness self-tests, or scenario
+execution. It SHALL hold one canonical-checkout-bound kernel lock, acquired
+nonblockingly and shared across admission, diagnostic, and premerge modes and every
+output path. An invalid target MUST return
+`architecture_qualification_output_invalid`; an already-held checkout lock MUST
+return `architecture_qualification_run_active`. Lock loss on process death SHALL
+release admission without a recovery record, lock stealing, retry queue, observer, or
+product-state mutation. Final report and sidecar publication MUST revalidate the
+target, remain no-replace, and fsync their file and parent boundaries.
+
+#### Scenario: Reject duplicate qualification before work
+- **WHEN** one canonical checkout already has any qualification mode running and a second command targets the same or another output through the real path or a symlink alias
+- **THEN** the second command returns exact `architecture_qualification_run_active` before collection, harness, scenario, report, sidecar, Host, session, live or external work
+
+#### Scenario: Reject an invalid output before work
+- **WHEN** the requested output or sidecar is relative, noncanonical, existing, symlinked, inside the checkout, or has a missing/aliased parent
+- **THEN** the command returns exact `architecture_qualification_output_invalid` before collection, harness or scenario execution and creates no replacement/recovery output
+
+#### Scenario: Stop after losing the yielded handle
+- **WHEN** a qualification command yielded an execution handle but that exact handle can no longer be resumed
+- **THEN** the Codex conductor inspects only current processes and target existence, marks the prelive conductor blocked, and does not issue an equivalent command or adopt any partial/recheck/recovery state
+
 ### Requirement: Atomic AOX final deliverable finalization
 The exact 17 normalized AOX deliverables SHALL enter the artifact catalog only
 through one `aox_final_deliverable_bundle@1` Host finalization request. The request

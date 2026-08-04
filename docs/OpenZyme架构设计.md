@@ -1284,6 +1284,33 @@ bundle source binding。Codex不写SQLite；executor只从public tool result读�
 `lane.create`/`lane.bind_task`后调用`attempt.create`。本repair只授权non-live验证、文档和本地提交，
 不启动下一rNN、live、MICU、provider、HPC或Chrome。
 
+### 9.7 r72 prelive conductor blocked 与 qualification single-flight
+
+r72没有形成canonical scientific attempt bundle或campaign reducer decision。原full qualification
+返回yielded handle后，Codex在其未terminal时又对同output启动等价full command，随后又执行focused
+recheck；另一次recovery把不存在parent的路径作为output，重复跑完collection/harness/scenario后才在
+publication失败。这些full report、duplicate、recheck、recovery与stop facts只能封存为
+**prelive conductor blocked**，不是canonical r72 NO-GO，且全部不可复用或拼接。
+
+qualification现在有一个明确的repository/operator run-admission边界：任何pytest collection、
+harness self-test或scenario前，先校验primary output和optional mainline sidecar为checkout外、absolute、
+lexically canonical、target absent、parent existing real directory且无symlink/alias。失败只返回
+`architecture_qualification_output_invalid`，不会创建parent、启动matrix或选择alternate output。
+获得run admission后立即重验，final publication再重验并保留mkdir/file no-replace与file/directory/
+parent fsync，所以mid-run target race不能覆盖既有evidence。
+
+同一canonical checkout的全部`admission|diagnostic|premerge_subset`与任意output共享一个
+canonical-root device/inode key。runner在private per-UID trusted-local lock root中以
+`O_NOFOLLOW|O_CLOEXEC`打开inert regular file，并从collection前到report pure verification及mainline
+sidecar publication结束持有`flock(LOCK_EX|LOCK_NB)`。竞争者立即得到
+`architecture_qualification_run_active`；lock不记录business owner/lifecycle，不建立blocking wait、
+steal、observer、retry queue或recovery truth，fd close/process crash由kernel释放。
+
+Codex conductor收到yielded `cell_id|session_id`后只能恢复同一handle。handle unresolved时禁止等价
+command、focused recheck与recovery output；handle失联时只读检查process和原target后停止并记录prelive
+blocked。该correction不改变full matrix/bounded timeout、pure verifier、mainline sidecar non-adoption、
+live fail-closed或AOX offline verifier/reducer权威，也不授权下一rNN/live/MICU/provider/HPC/Chrome。
+
 ---
 
 ## 10. Legacy Boundary

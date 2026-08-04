@@ -104,6 +104,43 @@ A premerge subset MUST be identified as `premerge_subset` and MUST remain non-ad
 - **WHEN** only the P0-critical premerge subset passes
 - **THEN** its report identifies the partial selection and remains ineligible for architecture-qualified or AOX-live claims
 
+### Requirement: Qualification run admission is output-safe and checkout-single-flight
+Before pytest collection, harness self-tests, or scenario execution, the runner SHALL
+validate the primary output directory and any mainline sidecar target as absolute,
+lexically canonical, absent, outside the canonical checkout, and beneath an existing
+real non-aliased directory. Invalid output admission MUST fail with
+`architecture_qualification_output_invalid` and perform no qualification work.
+
+The runner SHALL acquire one kernel-held nonblocking exclusive single-flight lock for
+the canonical checkout before work. The lock identity MUST be independent of mode and
+output path, collide through checkout symlink aliases, remain held through report
+verification and sidecar publication, and release automatically when the owning file
+descriptor closes or the process exits. Contention MUST fail immediately with
+`architecture_qualification_run_active`. The lock file MUST be private, no-follow,
+regular and inert; it MUST NOT become durable run state, an owner record, a wait queue,
+an observer, a retry signal, or authority to recover/relaunch a command.
+
+Final report and sidecar publication MUST revalidate their targets and retain atomic
+no-replace file creation plus file/directory/parent fsync. A target appearing or parent
+drifting after admission MUST fail closed and MUST NOT authorize replacement or an
+alternate output.
+
+#### Scenario: Reject concurrent modes and outputs for one checkout
+- **WHEN** any qualification mode holds the checkout single-flight and another admission, diagnostic, or premerge command targets the same or a different output through the canonical path or a symlink alias
+- **THEN** the second command returns `architecture_qualification_run_active` before collection, harness, scenarios, report, sidecar or external work
+
+#### Scenario: Reject an invalid target before qualification work
+- **WHEN** an output/sidecar target is relative, noncanonical, existing, symlinked, inside the checkout, or has a missing/non-directory/aliased parent
+- **THEN** the runner returns `architecture_qualification_output_invalid`, runs no collection/harness/scenario, and creates no recovery target
+
+#### Scenario: Release only the kernel lease after crash
+- **WHEN** the qualification owner exits without application cleanup
+- **THEN** the kernel releases the lock so a later explicitly issued command can acquire it, while no persistent recovery/adoption fact or automatic relaunch is created
+
+#### Scenario: Preserve final no-replace under a mid-run race
+- **WHEN** a valid target appears or its parent drifts after prevalidation but before publication
+- **THEN** final revalidation/no-replace publication fails closed without overwriting, renaming, retrying, or adopting the conflicting target
+
 ### Requirement: Qualification reports are canonical, immutable, and independently verifiable
 The runner SHALL write a canonical `openzyme_v3_architecture_qualification_report@1` envelope containing a closed payload and a digest of the payload's canonical bytes. The payload MUST bind source identity, mode, profile, registry/test-manifest/runner/verifier digests, exact selection and command, scenario outcomes and budgets, observation/effect-ledger digests, invariant statuses, GAP taxonomy and priority, open/closed P0 refs, all rejection reasons, and admission eligibility.
 

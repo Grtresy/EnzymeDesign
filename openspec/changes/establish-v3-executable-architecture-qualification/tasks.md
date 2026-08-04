@@ -64,6 +64,7 @@
 - [x] 6.8 让 pure verifier 重新计算 schema、canonical bytes、digest、source/worktree、profile、registry、selection、implementation、invariant 与 P0 closure，而不是信任 report pass 字段
 - [x] 6.9 为 diagnostic dirty binding、subset 永不 admissible、admission clean/full/zero-P0 条件及所有 report/checkout tamper 路径补充测试
 - [x] 6.10 增加 `scripts/check-v3-architecture-qualification.sh`，固定 non-live 环境、显式输出目录和安全退出码，并验证它不会启动 AOX 或真实外部调用
+- [x] 6.11 在任何 collection/harness/scenario 前统一验证 canonical output directory 与 mainline sidecar，跨 admission/diagnostic/premerge 和任意 output 以 canonical-checkout-bound kernel `flock(LOCK_NB)` 实现 single-flight，分别返回 exact `architecture_qualification_output_invalid` / `architecture_qualification_run_active`，保留 final no-replace/fsync/pure-verifier/sidecar non-adoption，并覆盖 concurrent/cross-mode/symlink/invalid-parent/crash-release/mid-run-race/no-work-before-rejection。
 
 ## 7. Baseline GAP 与证据驱动 P0 闭环
 

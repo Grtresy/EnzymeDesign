@@ -1,20 +1,28 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
+import errno
+import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+from typing import Iterator
 from typing import Mapping
 from typing import Sequence
 
+from .architecture_qualification import ArchitectureQualificationOutputError
 from .architecture_qualification import ArchitectureQualificationReportError
+from .architecture_qualification import ArchitectureQualificationRunActiveError
+from .architecture_qualification import ArchitectureQualificationRunError
 from .architecture_qualification import CollectedQualificationScenario
 from .architecture_qualification import LoadedArchitectureQualificationReport
 from .architecture_qualification import ValidatedInvariantRegistry
@@ -25,6 +33,9 @@ from .architecture_qualification import canonical_json_document_bytes
 from .architecture_qualification import collect_architecture_source_identity
 from .architecture_qualification import load_invariant_registry
 from .architecture_qualification import publish_architecture_qualification_report
+from .architecture_qualification import (
+    validate_architecture_qualification_output_target,
+)
 from .architecture_qualification import verify_architecture_qualification_report
 
 
@@ -69,6 +80,10 @@ _LIVE_ENV_PARTS = (
     "RUN_AOX",
     "RUN_LIVE",
 )
+_QUALIFICATION_LOCK_ROOT_NAME = "openzyme-v3-architecture-qualification-locks"
+_QUALIFICATION_MODES = frozenset(
+    {"admission", "diagnostic", "premerge_subset"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +111,163 @@ class MainlineQualificationSidecarRequest:
     plan_digest: str
     source_identity_digest: str
     environment_digest: str
+
+
+def _secure_qualification_lock_root() -> Path:
+    try:
+        temporary_root = Path("/tmp").resolve(strict=True)
+    except OSError as exc:
+        raise ArchitectureQualificationRunError(
+            "qualification single-flight root is unavailable"
+        ) from exc
+    if not temporary_root.is_dir():
+        raise ArchitectureQualificationRunError(
+            "qualification single-flight root is not a directory"
+        )
+    lock_root = temporary_root / f"{_QUALIFICATION_LOCK_ROOT_NAME}-{os.getuid()}"
+    try:
+        os.mkdir(lock_root, mode=0o700)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise ArchitectureQualificationRunError(
+            "qualification single-flight directory could not be created"
+        ) from exc
+    try:
+        lock_root_stat = os.lstat(lock_root)
+    except OSError as exc:
+        raise ArchitectureQualificationRunError(
+            "qualification single-flight directory is unavailable"
+        ) from exc
+    lock_root_mode = stat.S_IMODE(lock_root_stat.st_mode)
+    if (
+        not stat.S_ISDIR(lock_root_stat.st_mode)
+        or lock_root_stat.st_uid != os.getuid()
+        or lock_root_mode & 0o700 != 0o700
+        or lock_root_mode & 0o077
+    ):
+        raise ArchitectureQualificationRunError(
+            "qualification single-flight directory is not private and canonical"
+        )
+    return lock_root
+
+
+def _qualification_lock_path(repo_root: Path) -> Path:
+    try:
+        canonical_root = repo_root.resolve(strict=True)
+        root_stat = canonical_root.stat()
+    except OSError as exc:
+        raise ArchitectureQualificationRunError(
+            "qualification checkout identity is unavailable"
+        ) from exc
+    if not canonical_root.is_dir():
+        raise ArchitectureQualificationRunError(
+            "qualification checkout identity is not a directory"
+        )
+    identity = f"{root_stat.st_dev}:{root_stat.st_ino}".encode("ascii")
+    return _secure_qualification_lock_root() / f"{hashlib.sha256(identity).hexdigest()}.lock"
+
+
+@contextmanager
+def _qualification_single_flight(repo_root: Path) -> Iterator[None]:
+    lock_path = _qualification_lock_path(repo_root)
+    required_flags = ("O_CLOEXEC", "O_NOFOLLOW")
+    if any(not hasattr(os, name) for name in required_flags):
+        raise ArchitectureQualificationRunError(
+            "qualification single-flight requires no-follow close-on-exec locks"
+        )
+    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise ArchitectureQualificationRunError(
+            "qualification single-flight lock is unavailable"
+        ) from exc
+    try:
+        opened_stat = os.fstat(descriptor)
+        opened_mode = stat.S_IMODE(opened_stat.st_mode)
+        if (
+            not stat.S_ISREG(opened_stat.st_mode)
+            or opened_stat.st_uid != os.getuid()
+            or opened_stat.st_nlink != 1
+            or opened_mode & 0o600 != 0o600
+            or opened_mode & 0o077
+        ):
+            raise ArchitectureQualificationRunError(
+                "qualification single-flight lock is not private and canonical"
+            )
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ArchitectureQualificationRunActiveError(
+                "architecture qualification is already active for this checkout"
+            ) from exc
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                raise ArchitectureQualificationRunActiveError(
+                    "architecture qualification is already active for this checkout"
+                ) from exc
+            raise ArchitectureQualificationRunError(
+                "qualification single-flight lock could not be acquired"
+            ) from exc
+        try:
+            named_stat = os.lstat(lock_path)
+        except OSError as exc:
+            raise ArchitectureQualificationRunError(
+                "qualification single-flight lock identity disappeared"
+            ) from exc
+        if (
+            named_stat.st_dev != opened_stat.st_dev
+            or named_stat.st_ino != opened_stat.st_ino
+            or not stat.S_ISREG(named_stat.st_mode)
+        ):
+            raise ArchitectureQualificationRunError(
+                "qualification single-flight lock identity drifted"
+            )
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _validate_mainline_sidecar_output_target(
+    *,
+    repo_root: Path,
+    request: MainlineQualificationSidecarRequest,
+) -> Path:
+    output_path = request.output_path
+    if not output_path.is_absolute():
+        raise ArchitectureQualificationOutputError(
+            "mainline qualification sidecar path must be absolute"
+        )
+    if Path(os.path.normpath(str(output_path))) != output_path:
+        raise ArchitectureQualificationOutputError(
+            "mainline qualification sidecar path must be lexically canonical"
+        )
+    if output_path.exists() or output_path.is_symlink():
+        raise ArchitectureQualificationOutputError(
+            "mainline qualification sidecar already exists"
+        )
+    try:
+        root = repo_root.resolve(strict=True)
+        parent = output_path.parent.resolve(strict=True)
+    except OSError as exc:
+        raise ArchitectureQualificationOutputError(
+            "mainline qualification sidecar parent is unavailable"
+        ) from exc
+    if output_path.parent.absolute() != parent or not parent.is_dir():
+        raise ArchitectureQualificationOutputError(
+            "mainline qualification sidecar parent aliases another directory"
+        )
+    candidate = parent / output_path.name
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        pass
+    else:
+        raise ArchitectureQualificationOutputError(
+            "mainline qualification sidecar must be outside the checkout"
+        )
+    return candidate
 
 
 def _sha256(content: bytes) -> str:
@@ -157,12 +329,12 @@ def mainline_sidecar_request_from_environment(
     output_text = values[MAINLINE_SIDECAR_OUTPUT_ENV]
     invocation_id = values[MAINLINE_INVOCATION_ID_ENV]
     if not isinstance(output_text, str) or not output_text:
-        raise ArchitectureQualificationReportError(
+        raise ArchitectureQualificationOutputError(
             "mainline qualification sidecar output path is invalid"
         )
     output_path = Path(output_text)
     if not output_path.is_absolute():
-        raise ArchitectureQualificationReportError(
+        raise ArchitectureQualificationOutputError(
             "mainline qualification sidecar output path must be absolute"
         )
     if not isinstance(invocation_id, str) or not invocation_id:
@@ -621,35 +793,11 @@ def _publish_mainline_sidecar(
     harness_records: Sequence[Mapping[str, object]],
     scenario_records: Sequence[Mapping[str, object]],
 ) -> Path:
-    output_path = request.output_path
-    try:
-        root = repo_root.resolve(strict=True)
-        parent = output_path.parent.resolve(strict=True)
-    except OSError as exc:
-        raise ArchitectureQualificationReportError(
-            "mainline qualification sidecar parent does not exist"
-        ) from exc
-    candidate = parent / output_path.name
-    if str(candidate) != str(output_path):
-        raise ArchitectureQualificationReportError(
-            "mainline qualification sidecar path aliases another location"
-        )
-    try:
-        inside_checkout = (
-            os.path.commonpath((str(root), str(candidate))) == str(root)
-        )
-    except ValueError as exc:
-        raise ArchitectureQualificationReportError(
-            "mainline qualification sidecar path cannot be compared"
-        ) from exc
-    if inside_checkout:
-        raise ArchitectureQualificationReportError(
-            "mainline qualification sidecar must be outside the checkout"
-        )
-    if output_path.exists() or output_path.is_symlink():
-        raise ArchitectureQualificationReportError(
-            "mainline qualification sidecar already exists"
-        )
+    output_path = _validate_mainline_sidecar_output_target(
+        repo_root=repo_root,
+        request=request,
+    )
+    parent = output_path.parent
     harness = [dict(item) for item in harness_records]
     scenarios = [dict(item) for item in scenario_records]
     harness.sort(key=lambda item: str(item["node_id"]))
@@ -696,7 +844,7 @@ def _publish_mainline_sidecar(
             handle.flush()
             os.fsync(handle.fileno())
     except FileExistsError as exc:
-        raise ArchitectureQualificationReportError(
+        raise ArchitectureQualificationOutputError(
             "mainline qualification sidecar already exists"
         ) from exc
     try:
@@ -706,13 +854,13 @@ def _publish_mainline_sidecar(
         finally:
             os.close(directory_descriptor)
     except OSError as exc:
-        raise ArchitectureQualificationReportError(
+        raise ArchitectureQualificationOutputError(
             "mainline qualification sidecar parent sync failed"
         ) from exc
     return output_path
 
 
-def run_qualification(
+def _run_qualification_locked(
     *,
     repo_root: Path,
     runner_path: Path,
@@ -721,7 +869,7 @@ def run_qualification(
     command: Sequence[str],
     mainline_sidecar: MainlineQualificationSidecarRequest | None = None,
 ) -> QualificationRunResult:
-    root = repo_root.resolve(strict=True)
+    root = repo_root
     registry = load_invariant_registry(repo_root=root)
     environment = non_live_environment()
     with tempfile.TemporaryDirectory(prefix="openzyme-architecture-qualification-") as raw:
@@ -860,6 +1008,49 @@ def run_qualification(
         process_exit_code=process_exit_code,
         mainline_sidecar_path=sidecar_path,
     )
+
+
+def run_qualification(
+    *,
+    repo_root: Path,
+    runner_path: Path,
+    mode: str,
+    output_directory: Path,
+    command: Sequence[str],
+    mainline_sidecar: MainlineQualificationSidecarRequest | None = None,
+) -> QualificationRunResult:
+    if mode not in _QUALIFICATION_MODES:
+        raise ArchitectureQualificationRunError(
+            "architecture qualification mode is invalid"
+        )
+    validated_output = validate_architecture_qualification_output_target(
+        output_directory=output_directory,
+        repo_root=repo_root,
+    )
+    root = validated_output.repo_root
+    if mainline_sidecar is not None:
+        _validate_mainline_sidecar_output_target(
+            repo_root=root,
+            request=mainline_sidecar,
+        )
+    with _qualification_single_flight(root):
+        validate_architecture_qualification_output_target(
+            output_directory=output_directory,
+            repo_root=root,
+        )
+        if mainline_sidecar is not None:
+            _validate_mainline_sidecar_output_target(
+                repo_root=root,
+                request=mainline_sidecar,
+            )
+        return _run_qualification_locked(
+            repo_root=root,
+            runner_path=runner_path,
+            mode=mode,
+            output_directory=output_directory,
+            command=command,
+            mainline_sidecar=mainline_sidecar,
+        )
 
 
 __all__ = [

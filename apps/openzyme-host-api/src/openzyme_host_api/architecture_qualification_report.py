@@ -12,6 +12,7 @@ import subprocess
 from typing import Any
 
 from .architecture_qualification import ArchitectureQualificationReportError
+from .architecture_qualification import ArchitectureQualificationOutputError
 from .architecture_qualification import ArchitectureQualificationVerification
 from .architecture_qualification import CollectedQualificationScenario
 from .architecture_qualification import LoadedArchitectureQualificationReport
@@ -20,6 +21,7 @@ from .architecture_qualification import QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID
 from .architecture_qualification import QUALIFICATION_REPORT_SCHEMA_ID
 from .architecture_qualification import ValidatedInvariantRegistry
 from .architecture_qualification import ValidatedTestManifest
+from .architecture_qualification import ValidatedQualificationOutputTarget
 from .architecture_qualification import build_test_manifest
 from .architecture_qualification import canonical_json_bytes
 from .architecture_qualification import canonical_json_document_bytes
@@ -179,6 +181,10 @@ _TEST_MANIFEST_SCENARIO_FIELDS = frozenset(
 
 def _error(message: str) -> ArchitectureQualificationReportError:
     return ArchitectureQualificationReportError(message)
+
+
+def _output_error(message: str) -> ArchitectureQualificationOutputError:
+    return ArchitectureQualificationOutputError(message)
 
 
 def _sha256(content: bytes) -> str:
@@ -1416,57 +1422,91 @@ def verify_report(
     )
 
 
-def publish_report(
-    report: LoadedArchitectureQualificationReport,
+def validate_output_target(
     *,
     output_directory: Path,
     repo_root: Path,
-) -> Path:
+) -> ValidatedQualificationOutputTarget:
     root = _canonical_repo_root(repo_root)
     if not output_directory.is_absolute():
-        raise _error("qualification output directory must be absolute")
+        raise _output_error("qualification output directory must be absolute")
     lexical = Path(os.path.normpath(str(output_directory)))
     if lexical != output_directory:
-        raise _error("qualification output directory must be lexically canonical")
+        raise _output_error(
+            "qualification output directory must be lexically canonical"
+        )
     if output_directory.exists() or output_directory.is_symlink():
-        raise _error("qualification output directory already exists")
+        raise _output_error("qualification output directory already exists")
     try:
         parent = output_directory.parent.resolve(strict=True)
     except OSError as exc:
-        raise _error("qualification output parent is unavailable") from exc
+        raise _output_error("qualification output parent is unavailable") from exc
     if output_directory.parent.absolute() != parent:
-        raise _error("qualification output parent aliases another directory")
+        raise _output_error(
+            "qualification output parent aliases another directory"
+        )
+    if not parent.is_dir():
+        raise _output_error("qualification output parent is not a directory")
     target_directory = parent / output_directory.name
     try:
         target_directory.relative_to(root)
     except ValueError:
         pass
     else:
-        raise _error("qualification output must remain outside the checkout")
+        raise _output_error("qualification output must remain outside the checkout")
+    return ValidatedQualificationOutputTarget(
+        repo_root=root,
+        parent=parent,
+        target_directory=target_directory,
+    )
+
+
+def publish_report(
+    report: LoadedArchitectureQualificationReport,
+    *,
+    output_directory: Path,
+    repo_root: Path,
+) -> Path:
+    validated = validate_output_target(
+        output_directory=output_directory,
+        repo_root=repo_root,
+    )
+    parent = validated.parent
+    target_directory = validated.target_directory
     content = canonical_json_document_bytes(report.envelope)
-    os.mkdir(target_directory, mode=0o700)
+    try:
+        os.mkdir(target_directory, mode=0o700)
+    except OSError as exc:
+        raise _output_error(
+            "qualification output directory could not be created without replacement"
+        ) from exc
     target = target_directory / "architecture-qualification-report.json"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
-    descriptor = os.open(target, flags, 0o600)
     try:
-        with os.fdopen(descriptor, "wb", closefd=False) as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-    finally:
-        os.close(descriptor)
-    directory_fd = os.open(target_directory, os.O_RDONLY)
-    try:
-        os.fsync(directory_fd)
-    finally:
-        os.close(directory_fd)
-    parent_fd = os.open(parent, os.O_RDONLY)
-    try:
-        os.fsync(parent_fd)
-    finally:
-        os.close(parent_fd)
+        descriptor = os.open(target, flags, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb", closefd=False) as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            os.close(descriptor)
+        directory_fd = os.open(target_directory, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        parent_fd = os.open(parent, os.O_RDONLY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+    except OSError as exc:
+        raise _output_error(
+            "qualification report publication could not be completed"
+        ) from exc
     return target
 
 
@@ -1476,5 +1516,6 @@ __all__ = [
     "load_report",
     "load_report_bytes",
     "publish_report",
+    "validate_output_target",
     "verify_report",
 ]

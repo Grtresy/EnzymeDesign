@@ -131,7 +131,13 @@ _SELECTIONS = frozenset({"full", "premerge_subset"})
 _STABLE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 
 
-class ArchitectureQualificationRegistryError(ValueError):
+class ArchitectureQualificationError(ValueError):
+    """Base class for stable architecture-qualification failures."""
+
+    code = "architecture_qualification_invalid"
+
+
+class ArchitectureQualificationRegistryError(ArchitectureQualificationError):
     """Stable fail-closed error for registry bytes or closure."""
 
     code = "architecture_qualification_registry_invalid"
@@ -140,22 +146,40 @@ class ArchitectureQualificationRegistryError(ValueError):
         super().__init__(message)
 
 
-class ArchitectureQualificationManifestError(ValueError):
+class ArchitectureQualificationManifestError(ArchitectureQualificationError):
     """Stable fail-closed error for pytest collection closure."""
 
     code = "architecture_qualification_test_manifest_invalid"
 
 
-class ArchitectureQualificationBoundaryError(ValueError):
+class ArchitectureQualificationBoundaryError(ArchitectureQualificationError):
     """Stable fail-closed error for a symbolic product limit relation."""
 
     code = "architecture_qualification_boundary_invalid"
 
 
-class ArchitectureQualificationReportError(ValueError):
-    """Stable fail-closed error for report bytes, identity, or publication."""
+class ArchitectureQualificationReportError(ArchitectureQualificationError):
+    """Stable fail-closed error for report bytes or identity."""
 
     code = "architecture_qualification_report_invalid"
+
+
+class ArchitectureQualificationOutputError(ArchitectureQualificationError):
+    """Stable fail-closed error for a qualification output target."""
+
+    code = "architecture_qualification_output_invalid"
+
+
+class ArchitectureQualificationRunError(ArchitectureQualificationError):
+    """Stable fail-closed error for qualification run admission."""
+
+    code = "architecture_qualification_run_invalid"
+
+
+class ArchitectureQualificationRunActiveError(ArchitectureQualificationRunError):
+    """The canonical checkout already has a kernel-held qualification run."""
+
+    code = "architecture_qualification_run_active"
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +195,13 @@ class ArchitectureQualificationVerification:
     payload_digest: str
     rejection_reasons: tuple[str, ...]
     source_commit: str
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedQualificationOutputTarget:
+    repo_root: Path
+    parent: Path
+    target_directory: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -1174,6 +1205,19 @@ def publish_architecture_qualification_report(
     )
 
 
+def validate_architecture_qualification_output_target(
+    *,
+    output_directory: Path,
+    repo_root: Path,
+) -> ValidatedQualificationOutputTarget:
+    from .architecture_qualification_report import validate_output_target
+
+    return validate_output_target(
+        output_directory=output_directory,
+        repo_root=repo_root,
+    )
+
+
 def verify_architecture_qualification_report(
     report: LoadedArchitectureQualificationReport | Path | bytes,
     *,
@@ -1190,10 +1234,14 @@ def verify_architecture_qualification_report(
 
 
 __all__ = [
+    "ArchitectureQualificationError",
     "ArchitectureQualificationBoundaryError",
     "ArchitectureQualificationManifestError",
+    "ArchitectureQualificationOutputError",
     "ArchitectureQualificationReportError",
     "ArchitectureQualificationRegistryError",
+    "ArchitectureQualificationRunActiveError",
+    "ArchitectureQualificationRunError",
     "ArchitectureQualificationVerification",
     "CollectedQualificationScenario",
     "LoadedArchitectureQualificationReport",
@@ -1208,6 +1256,7 @@ __all__ = [
     "ResolvedBoundaryRelation",
     "TEST_MANIFEST_SCHEMA_ID",
     "ValidatedInvariantRegistry",
+    "ValidatedQualificationOutputTarget",
     "ValidatedTestManifest",
     "build_architecture_qualification_report",
     "build_test_manifest",
@@ -1220,5 +1269,6 @@ __all__ = [
     "publish_architecture_qualification_report",
     "resolve_boundary_relation",
     "validate_invariant_registry_bytes",
+    "validate_architecture_qualification_output_target",
     "verify_architecture_qualification_report",
 ]

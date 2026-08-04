@@ -10,6 +10,7 @@ r43-r47 在 focused tests 与普通非 live gate 之后，仍连续暴露 wire s
 - 生成 machine-readable、commit-bound 的 baseline qualification report 和 human-readable GAP report。每个失败必须区分 product defect、test/harness defect、declared profile limitation 与 deferred enhancement，并关联 owner、invariant、最小复现和相关 proposal。
 - 定义 P0 晋级规则：任何可能制造错误成功、重复 external effect、authority 漂移、无界循环/写放大，或不可验证 canonical evidence 的缺口，都必须先有确定性 red test，再由独立 focused OpenSpec change 实施并回归；有界且诚实 fail-closed、只影响容量/可用性/通用化的缺口可以继续 deferred。
 - 增加架构资格 admission gate：AOX r48/live preflight 在当前 commit 对应的完整 qualification report 未通过、存在未关闭 P0，或 report/registry/test selection 漂移时保持拒绝；live 外部尝试不得被计作确定性架构验证，也不得用旧 GO、fixture 或归档 proposal 绕过。
+- 增加 pre-work run admission：在 collection/harness/scenario 前验证 canonical output/sidecar target，并以 canonical-checkout-bound kernel-held nonblocking single-flight 拒绝同 checkout 跨 mode/output 并发复入；保留 exact `run_active` / `output_invalid` typed failure，process crash 只释放 kernel lock，不触发 recovery/relaunch。
 - 同步 `docs/OpenZyme架构设计.md`、相关 `docs/v3/` 稳定文档、architecture proposal 生命周期索引和 AOX cutover 文档，明确 scoped AOX local GO 与 generic V3 architecture-qualified GO 的证明边界。
 - 本 change 不预先实现全部 proposed/deferred architecture proposal，不新增产品级真状态，不改变 agent 的任务拆解或科学策略，也不启动 r48/live。
 

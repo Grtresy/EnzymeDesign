@@ -13,7 +13,13 @@ import pytest
 from openzyme_host_api import architecture_qualification_runner as runner_module
 from openzyme_host_api import architecture_qualification_report as report_module
 from openzyme_host_api.architecture_qualification import (
+    ArchitectureQualificationOutputError,
+)
+from openzyme_host_api.architecture_qualification import (
     ArchitectureQualificationReportError,
+)
+from openzyme_host_api.architecture_qualification import (
+    ArchitectureQualificationRunActiveError,
 )
 from openzyme_host_api.architecture_qualification import CollectedQualificationScenario
 from openzyme_host_api.architecture_qualification import build_architecture_qualification_report
@@ -34,6 +40,12 @@ from openzyme_host_api.architecture_qualification import (
 )
 from openzyme_host_api.architecture_qualification import (
     verify_architecture_qualification_report,
+)
+from openzyme_host_api.architecture_qualification import (
+    validate_architecture_qualification_output_target,
+)
+from openzyme_host_api.architecture_qualification import (
+    ValidatedQualificationOutputTarget,
 )
 from openzyme_host_api.architecture_qualification_runner import non_live_environment
 from openzyme_host_api.architecture_qualification_runner import (
@@ -564,14 +576,14 @@ def test_report_publication_is_outside_checkout_no_replace_and_no_alias(
         repo_root=REPO_ROOT,
     )
     assert path.read_bytes() == canonical_json_document_bytes(report.envelope)
-    with pytest.raises(ArchitectureQualificationReportError, match="already exists"):
+    with pytest.raises(ArchitectureQualificationOutputError, match="already exists"):
         publish_architecture_qualification_report(
             report,
             output_directory=output,
             repo_root=REPO_ROOT,
         )
 
-    with pytest.raises(ArchitectureQualificationReportError, match="outside"):
+    with pytest.raises(ArchitectureQualificationOutputError, match="outside"):
         publish_architecture_qualification_report(
             report,
             output_directory=REPO_ROOT / ".qualification-must-not-be-created",
@@ -583,12 +595,236 @@ def test_report_publication_is_outside_checkout_no_replace_and_no_alias(
     real_parent.mkdir()
     alias_parent = tmp_path / "alias-parent"
     alias_parent.symlink_to(real_parent, target_is_directory=True)
-    with pytest.raises(ArchitectureQualificationReportError, match="aliases"):
+    with pytest.raises(ArchitectureQualificationOutputError, match="aliases"):
         publish_architecture_qualification_report(
             report,
             output_directory=alias_parent / "output",
             repo_root=REPO_ROOT,
         )
+
+    dangling_output = tmp_path / "dangling-output"
+    dangling_output.symlink_to(tmp_path / "missing-output")
+    with pytest.raises(ArchitectureQualificationOutputError, match="already exists"):
+        publish_architecture_qualification_report(
+            report,
+            output_directory=dangling_output,
+            repo_root=REPO_ROOT,
+        )
+
+
+def test_output_target_is_prevalidated_and_rechecked_for_mid_run_races(
+    tmp_path: Path,
+) -> None:
+    report = _build("diagnostic")
+    output = tmp_path / "qualification-output"
+    validated = validate_architecture_qualification_output_target(
+        output_directory=output,
+        repo_root=REPO_ROOT,
+    )
+    assert validated.target_directory == output
+
+    output.mkdir()
+    with pytest.raises(
+        ArchitectureQualificationOutputError,
+        match="already exists",
+    ):
+        publish_architecture_qualification_report(
+            report,
+            output_directory=output,
+            repo_root=REPO_ROOT,
+        )
+
+
+def test_output_rejection_performs_no_collection_harness_or_scenario_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invoked = False
+
+    def forbidden_run(**_kwargs: object) -> None:
+        nonlocal invoked
+        invoked = True
+        raise AssertionError("qualification work must not start")
+
+    monkeypatch.setattr(
+        runner_module,
+        "_run_qualification_locked",
+        forbidden_run,
+    )
+    with pytest.raises(
+        ArchitectureQualificationOutputError,
+        match="parent is unavailable",
+    ) as error:
+        runner_module.run_qualification(
+            repo_root=REPO_ROOT,
+            runner_path=RUNNER_PATH,
+            mode="diagnostic",
+            output_directory=tmp_path / "missing-parent" / "output",
+            command=("qualification", "diagnostic"),
+        )
+    assert error.value.code == "architecture_qualification_output_invalid"
+    assert invoked is False
+
+
+def test_checkout_single_flight_rejects_same_output_different_output_and_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    lock_root = tmp_path / "locks"
+    lock_root.mkdir(mode=0o700)
+    invoked = False
+
+    def validated_target(
+        *,
+        output_directory: Path,
+        repo_root: Path,
+    ) -> ValidatedQualificationOutputTarget:
+        assert repo_root.resolve(strict=True) == checkout
+        return ValidatedQualificationOutputTarget(
+            repo_root=checkout,
+            parent=output_directory.parent,
+            target_directory=output_directory,
+        )
+
+    def forbidden_run(**_kwargs: object) -> None:
+        nonlocal invoked
+        invoked = True
+        raise AssertionError("qualification work must not start")
+
+    monkeypatch.setattr(
+        runner_module,
+        "validate_architecture_qualification_output_target",
+        validated_target,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_run_qualification_locked",
+        forbidden_run,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_secure_qualification_lock_root",
+        lambda: lock_root,
+    )
+    cases = (
+        ("diagnostic", tmp_path / "same-output"),
+        ("diagnostic", tmp_path / "different-output"),
+        ("premerge_subset", tmp_path / "cross-mode-output"),
+    )
+    with runner_module._qualification_single_flight(checkout):  # noqa: SLF001
+        for mode, output in cases:
+            with pytest.raises(ArchitectureQualificationRunActiveError) as error:
+                runner_module.run_qualification(
+                    repo_root=checkout,
+                    runner_path=RUNNER_PATH,
+                    mode=mode,
+                    output_directory=output,
+                    command=("qualification", mode),
+                )
+            assert error.value.code == "architecture_qualification_run_active"
+    assert invoked is False
+
+
+def test_single_flight_collides_across_checkout_symlink_aliases_and_releases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    alias = tmp_path / "checkout-alias"
+    alias.symlink_to(checkout, target_is_directory=True)
+    lock_root = tmp_path / "locks"
+    lock_root.mkdir(mode=0o700)
+    monkeypatch.setattr(
+        runner_module,
+        "_secure_qualification_lock_root",
+        lambda: lock_root,
+    )
+
+    with runner_module._qualification_single_flight(checkout):  # noqa: SLF001
+        with pytest.raises(ArchitectureQualificationRunActiveError):
+            with runner_module._qualification_single_flight(alias):  # noqa: SLF001
+                raise AssertionError("aliased checkout must not acquire a second lock")
+
+    with runner_module._qualification_single_flight(alias):  # noqa: SLF001
+        pass
+
+
+def test_single_flight_kernel_lock_releases_after_process_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    lock_root = tmp_path / "locks"
+    lock_root.mkdir(mode=0o700)
+    monkeypatch.setattr(
+        runner_module,
+        "_secure_qualification_lock_root",
+        lambda: lock_root,
+    )
+    read_descriptor, write_descriptor = os.pipe()
+    child = os.fork()
+    if child == 0:
+        os.close(read_descriptor)
+        with runner_module._qualification_single_flight(checkout):  # noqa: SLF001
+            os.write(write_descriptor, b"1")
+            os._exit(73)
+    os.close(write_descriptor)
+    try:
+        assert os.read(read_descriptor, 1) == b"1"
+    finally:
+        os.close(read_descriptor)
+    waited, status = os.waitpid(child, 0)
+    assert waited == child
+    assert os.waitstatus_to_exitcode(status) == 73
+
+    with runner_module._qualification_single_flight(checkout):  # noqa: SLF001
+        pass
+
+
+def test_single_flight_is_kernel_visible_to_a_concurrent_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    lock_root = tmp_path / "locks"
+    lock_root.mkdir(mode=0o700)
+    monkeypatch.setattr(
+        runner_module,
+        "_secure_qualification_lock_root",
+        lambda: lock_root,
+    )
+    ready_read, ready_write = os.pipe()
+    release_read, release_write = os.pipe()
+    child = os.fork()
+    if child == 0:
+        os.close(ready_read)
+        os.close(release_write)
+        with runner_module._qualification_single_flight(checkout):  # noqa: SLF001
+            os.write(ready_write, b"1")
+            os.read(release_read, 1)
+        os._exit(0)
+    os.close(ready_write)
+    os.close(release_read)
+    try:
+        assert os.read(ready_read, 1) == b"1"
+        with pytest.raises(ArchitectureQualificationRunActiveError):
+            with runner_module._qualification_single_flight(checkout):  # noqa: SLF001
+                raise AssertionError("concurrent checkout lock must be rejected")
+    finally:
+        os.close(ready_read)
+        try:
+            os.write(release_write, b"1")
+        except BrokenPipeError:
+            pass
+        os.close(release_write)
+        waited, status = os.waitpid(child, 0)
+        assert waited == child
+        assert os.waitstatus_to_exitcode(status) == 0
 
 
 def test_non_live_environment_scrubs_credentials_and_live_opt_ins() -> None:
@@ -700,7 +936,7 @@ def test_mainline_private_sidecar_is_canonical_bound_and_no_replace(
         "tests/test_b.py::test_b",
     ]
     with pytest.raises(
-        ArchitectureQualificationReportError,
+        ArchitectureQualificationOutputError,
         match="already exists",
     ):
         runner_module._publish_mainline_sidecar(  # noqa: SLF001

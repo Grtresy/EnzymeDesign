@@ -1,6 +1,6 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r67 are permanent NO-GO evidence. r68 is authority-consumed prelaunch blocked before root/Host/session/attempt. r69 is authority/root/session/provider/MICU-consumed pre-admission blocked before an admission request or scientific attempt. r70 is authority/slot/root/session/receipt-consumed pre-runtime conductor blocked before any runtime drain or scientific authorization/admission/attempt. r71 is authority/positive-slot/root/session/task/authorization/receipt/MICU-consumed pre-attempt sandbox-bootstrap blocked at typed `sandbox_image_missing`, before scientific admission/attempt/provider/HPC/sandbox/browser effect. None of r68-r71 is a canonical NO-GO, and none of their state is reusable. The post-r71 deletion-first repair gives one formal supervised Host child the only explicit fresh-SQLite sandbox identity bootstrap, using the same runner for bootstrap, public health and execution. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
+Status: r43-r67 are permanent NO-GO evidence. r68 is authority-consumed prelaunch blocked before root/Host/session/attempt. r69 is authority/root/session/provider/MICU-consumed pre-admission blocked before an admission request or scientific attempt. r70 is authority/slot/root/session/receipt-consumed pre-runtime conductor blocked before any runtime drain or scientific authorization/admission/attempt. r71 is authority/positive-slot/root/session/task/authorization/receipt/MICU-consumed pre-attempt sandbox-bootstrap blocked at typed `sandbox_image_missing`, before scientific admission/attempt/provider/HPC/sandbox/browser effect. r72 is prelive conductor blocked after duplicate full-qualification concurrency polluted one output and an invalid-parent recovery reran work that could not publish. None of r68-r72 is a canonical NO-GO, and none of their state is reusable. The post-r71 repair gives one formal supervised Host child the only explicit fresh-SQLite sandbox identity bootstrap; the post-r72 repair gives qualification one canonical-checkout kernel single-flight and exact yielded-handle stop semantics. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
 
 Historical incident and older command/observer/driver/browser/diagnostic-authority/public-finalizer sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract; in particular, every older `run-live`, `run-diagnostic-live`, diagnostic authority command, observer, barrier, rollover, no-wakeup, public generic scientific mutation/finalizer, `chrome-once`, browser-helper and ambient dev/eval image-registration instruction is retired even where a historical section called it current at that time. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, late-bound task/scientific-attempt selection, fresh supervised Host bootstrap and qualification semantics are defined by the post-r70/post-r71 sections below, [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
@@ -3005,6 +3005,30 @@ bootstrap function. The executor obtains its real envelope through `scientific.a
 uses production `lane.create`, `lane.bind_task` and `attempt.create`; there is no model envelope side
 channel or master-created lane fixture. This repair runs only non-live verification and local commit
 work. It does not start or name the next rNN, live, MICU, provider, HPC or Chrome action.
+
+## r72 prelive qualification blocked and post-r72 single-flight repair
+
+r72 did not produce a canonical attempt bundle or reducer decision. One full architecture qualification
+continued behind a yielded execution handle, while Codex launched an equivalent full command against the same
+output before that handle was terminal. A later focused recheck could not repair that attribution. A further
+full recovery command used a target whose parent did not exist; it repeated collection, harness self-tests and
+the scenario matrix, then failed only at publication with `qualification output parent is unavailable`.
+The full report, duplicate result, focused recheck, invalid-parent recovery and stop report are mutually
+contaminated, permanently non-reusable prelive conductor facts. They are not canonical r72 NO-GO evidence.
+
+The forward qualification boundary validates the primary output and optional mainline sidecar before any
+collection, harness or scenario. Invalid absolute/canonical/existing/symlink/inside-checkout/parent facts return
+`architecture_qualification_output_invalid`. Every mode and output for one canonical checkout shares a private,
+kernel-held `flock(LOCK_EX|LOCK_NB)` keyed by the checkout root identity; contention returns
+`architecture_qualification_run_active` before work. The lock spans report verification and sidecar publication,
+releases on fd close/process crash, and creates no durable owner, queue, observer, retry or recovery authority.
+Final target revalidation, no-replace creation and fsync remain mandatory.
+
+Codex must resume only the exact yielded `cell_id` or `session_id`. An unresolved handle forbids equivalent
+commands, focused success patches and alternate recovery outputs. A lost handle permits only read-only process and
+original-target inventory, followed by a prelive blocked stop. This repair runs non-live validation and one clean,
+explicitly non-adoptable full diagnostic qualification only; it does not launch or name a successor rNN, consume
+authority, or contact live, MICU, provider, HPC or Chrome surfaces.
 
 r59 remains the latest numbered campaign with a canonical formal-attempt decision. It is a failed campaign whose
 exact-three plan is consumed and whose later slots cannot be reused. The later

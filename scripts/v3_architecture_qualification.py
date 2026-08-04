@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 from openzyme_host_api.architecture_qualification import (
-    ArchitectureQualificationReportError,
+    ArchitectureQualificationError,
 )
 from openzyme_host_api.architecture_qualification_runner import run_qualification
 from openzyme_host_api.architecture_qualification_runner import (
@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
             command=command,
             mainline_sidecar=mainline_sidecar,
         )
-    except ArchitectureQualificationReportError as exc:
+    except ArchitectureQualificationError as exc:
         print(
             json.dumps(
                 {

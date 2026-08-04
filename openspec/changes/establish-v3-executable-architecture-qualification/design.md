@@ -162,6 +162,28 @@ envelope 对 payload canonical bytes计算 digest；输出使用 caller提供的
 
 pure verifier 重新执行 closed schema、canonical bytes、payload digest、registry/test/implementation digest、profile、current HEAD/clean worktree和零P0检查。只检查 JSON 中的 `passed=true` 不构成验证。
 
+### 6a. Run admission 在 pytest 前持有 checkout single-flight（D6a）
+
+output contract 不再只属于 report publication 尾部。runner 先解析 canonical Git checkout，
+校验 primary output directory 与 optional mainline sidecar 均为 checkout 外、absolute、lexically
+canonical、target absent、parent existing real directory且无 alias；任何失败以
+`architecture_qualification_output_invalid` 在 collection/harness/scenario 前终止。获得 lock 后
+立即重验一次，final publication 再重验并保留 no-replace/fsync，关闭 admission 与 publication
+之间的 target race。
+
+single-flight identity 只取 canonical checkout root 的 local device/inode，不含 mode 或 output，
+因此 symlink/bind alias、`diagnostic|admission|premerge_subset` 和不同 output 都落到同一个 kernel
+lock。per-UID private `/tmp` lock root只保存 inert regular file；`O_NOFOLLOW|O_CLOEXEC`、owner/mode/
+link-count 检查后使用 `flock(LOCK_EX|LOCK_NB)`。fd 从 collection 持有到 report pure verification及
+mainline sidecar publication结束；正常 close与process crash都由kernel释放。竞争者只得到
+`architecture_qualification_run_active`，没有 blocking wait、steal、owner metadata、durable run
+row、automatic recovery或equivalent-command relaunch。
+
+该边界不改变 full matrix、scenario budget、report schema、pure verifier或sidecar non-adoption。
+如果一次工具调用返回 yielded execution handle，恢复/停止属于外部 Codex conductor合同：只能恢复
+exact handle；handle失联时只读停止，不能通过新 runner command规避single-flight或拼接partial
+evidence。
+
 ### 7. GAP taxonomy 与 P0 晋级不允许人工 waiver 制造 green（D7）
 
 每个非 satisfied invariant先分类：

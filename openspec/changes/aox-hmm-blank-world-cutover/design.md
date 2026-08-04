@@ -1481,6 +1481,37 @@ row、duplicate、runner drift、receipt tamper与 transaction rollback。该 Ph
 验证、同步 OpenSpec/架构/V3文档、qualification registry/P0/resource manifest并提交本地 commit；
 不启动下一 rNN、live、MICU、provider、HPC或Chrome。
 
+### 2026-08-05 r72 qualification single-flight and yielded-handle correction
+
+r72 没有形成 canonical attempt bundle 或 reducer decision。一次 full qualification 已在
+canonical checkout 上运行并最终发布 report，但 Codex 在原 yielded handle 未结算时又启动同
+output 的等价 full command；随后又运行 focused recheck，并以不存在 parent 的 recovery output
+启动第三次 full matrix。第三次直到 collection、harness 和 scenario 全部执行后才在 publication
+阶段返回 `qualification output parent is unavailable`。这些 report/recheck/recovery/stop facts
+相互污染，只能封存为 **prelive conductor blocked**，不是 canonical r72 NO-GO；全部 r72 state
+不可重跑、拼接、采纳或用于后继 admission。
+
+forward correction 删除 Codex automatic/bounded admission recovery、等价命令 relaunch 和
+lost-handle continuation。tool 返回 yielded `cell_id`/`session_id` 后只能恢复同一 handle；若该
+handle 失联，只允许只读检查 process 与 output target，然后停止。repository runner 在任何 pytest
+collection、harness self-test 或 scenario 前先验证 primary output 与 mainline sidecar 的 absolute、
+lexically canonical、existing real parent、no-symlink/no-alias、outside-checkout 和 absent target
+合同。invalid target 使用 `architecture_qualification_output_invalid`，不再晚期折叠为 report
+error。
+
+同一 canonical checkout 的 root inode identity 映射到 trusted-local private lock root 中一个
+inert regular lock file；runner 以 `O_NOFOLLOW|O_CLOEXEC` 打开并通过
+`flock(LOCK_EX|LOCK_NB)` 在 collection 到 report verification/sidecar publication 的整个区间持有。
+所有 mode 和 output 共用这一个 lock；竞争者立即得到
+`architecture_qualification_run_active`。fd close 或 process crash 由 kernel 自动释放，文件本身不
+记录 owner、business lifecycle 或 retry authority，也不允许 steal、wait queue、observer 或
+recovery policy。final publication 再次校验 target，并保留 mkdir/file `O_EXCL`、file/directory/
+parent fsync、pure verifier、mainline-private sidecar non-adoption 与 live fail-closed。
+
+本 Phase 2 只授权 local code/spec/docs、全部 non-live verification、一次 clean 且明确
+non-adoptable 的 full diagnostic qualification 与本地 commit；不授权下一 rNN、live、MICU、
+provider、HPC 或 Chrome。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

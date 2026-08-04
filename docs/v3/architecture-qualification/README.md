@@ -7,8 +7,10 @@ pre-admission blocked；r70在authority/slot/root/session/receipt已消费但首
 scientific authorization/admission/attempt前pre-runtime conductor blocked；r71在authority/
 positive slot/root/session/task/authorization/receipt/MICU已消费后，以typed
 `sandbox_image_missing`停在scientific admission/attempt/provider/HPC前。r68-r71均非canonical
-NO-GO且全部state不可复用；当前不预先命名下一rNN。后继 numbered campaign 必须先在
-新的 clean commit 上生成并独立验证 fresh full admission report。
+NO-GO且全部state不可复用。r72又因重复full qualification并发污染与不存在parent的recovery
+command停在prelive qualification，属于prelive conductor blocked而非canonical NO-GO；其full
+report、focused recheck、recovery与stop state同样不可复用。当前不预先命名下一rNN。后继
+numbered campaign 必须先在新的 clean commit 上生成并独立验证fresh full admission report。
 
 ## Authority boundary
 
@@ -95,6 +97,27 @@ wall-clock budget。skip、xfail、missing collection、timeout、budget exhaust
 
 输出目录必须是 checkout 外、caller 明确选择且尚不存在的绝对路径；publication 使用
 canonical bytes、append-only/no-replace 与 directory fsync。
+
+runner 在任何 pytest collection、harness self-test 或 scenario 前统一验证 primary output
+directory 与 optional mainline sidecar：路径必须 absolute、lexically canonical、target absent、
+parent 是 existing real non-aliased directory，且 target 位于 checkout 外。失败稳定返回
+`architecture_qualification_output_invalid`，不会先跑 matrix、创建 recovery parent 或换一个
+output。获得 run admission 后会立即重验，final publication 再重验并保持 mkdir/file
+no-replace、file/directory/parent fsync；mid-run target/parent race 不能覆盖既有 bytes。
+
+同一 canonical checkout 的所有 `diagnostic|premerge_subset|admission` 和所有 output 共用一个
+kernel-held nonblocking single-flight。lock key 由 canonical checkout root 的 local
+device/inode 组成，checkout symlink alias也会冲突；private per-UID lock file以 no-follow/
+close-on-exec方式打开并在 report pure verification及mainline sidecar publication结束前持续
+持有 `flock(LOCK_EX|LOCK_NB)`。竞争者立即得到
+`architecture_qualification_run_active`。lock file不记录owner或lifecycle，不产生wait/retry/
+observer/recovery authority；fd close或process crash由kernel释放。
+
+operator/Codex一次只能发出一条full command。若执行工具返回yielded `cell_id`或`session_id`，
+只能恢复该exact handle；不得在其未terminal时启动等价命令、focused recheck或另一个recovery
+output。exact handle失联时只允许只读检查process和target，然后把prelive step记为blocked并停止。
+这条停止规则不改变full matrix、bounded timeout、pure verifier、mainline sidecar non-adoption或
+live fail-closed。
 
 ```bash
 qualification_parent="$(mktemp -d /tmp/openzyme-v3-qualification.XXXXXX)"
