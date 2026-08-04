@@ -8,6 +8,7 @@ from typing import Protocol
 from uuid import uuid4
 
 import httpx
+from openzyme_runtime import sanitize_public_diagnostic_payload
 
 from .receipts import append_public_api_receipt
 from .receipts import parse_sse_events
@@ -31,16 +32,13 @@ class SessionProtocol(Protocol):
 class HostApiError(RuntimeError):
     status_code: int
     detail: str
+    response_payload: object
 
     def __str__(self) -> str:
         return f"Host API request failed ({self.status_code}): {self.detail}"
 
 
-def _normalize_error_text(response: ResponseProtocol) -> str:
-    try:
-        payload = response.json()
-    except Exception:
-        return response.text or f"status {response.status_code}"
+def _normalize_error_text(response: ResponseProtocol, payload: object) -> str:
     if isinstance(payload, dict) and "detail" in payload:
         detail = payload["detail"]
         if isinstance(detail, str):
@@ -52,6 +50,25 @@ def _normalize_error_text(response: ResponseProtocol) -> str:
         message = str(error.get("message") or f"status {response.status_code}")
         return f"{code}: {message}"
     return json.dumps(payload, ensure_ascii=True, sort_keys=True)
+
+
+def _public_response_payload(
+    response: ResponseProtocol,
+    *,
+    event_stream: bool,
+) -> object:
+    if event_stream:
+        payload: object = parse_sse_events(response.text)
+    else:
+        try:
+            payload = response.json()
+        except Exception:
+            payload = response.text or f"status {response.status_code}"
+    return (
+        sanitize_public_diagnostic_payload(payload)
+        if response.status_code >= 400
+        else payload
+    )
 
 
 class HostApiClient:
@@ -105,9 +122,14 @@ class HostApiClient:
                 request_body=json_body,
                 response=response,
             )
+        payload = _public_response_payload(response, event_stream=event_stream)
         if response.status_code >= 400:
-            raise HostApiError(response.status_code, _normalize_error_text(response))
-        return parse_sse_events(response.text) if event_stream else response.json()
+            raise HostApiError(
+                response.status_code,
+                _normalize_error_text(response, payload),
+                payload,
+            )
+        return payload
 
     def create_v3_session(
         self,

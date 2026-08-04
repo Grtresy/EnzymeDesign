@@ -359,12 +359,22 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   但SQLite没有admission request或attempt。预声明identity没有帮助agent满足真实isolation，反而
   让receipt/bundle把尚不存在的control当成truth。
 
-  修正记录：plan/claim/root proof/preflight/supervision只绑定campaign/ordinal/session/task/
-  envelope/root与launch id；删除public scientific mutation/finalizer、diagnostic authority与
-  Core compatibility入口。executor通过canonical lane tools建立lane，current assignee使用极小
-  `attempt.create`，Host finalizer二次校验assignee并late-bind canonical attempt。qualification
-  以production composition/file-SQLite覆盖positive、wrong actor、reassignment、legacy route和
-  deleted surface。Harness不替agent选择lane或scientific action，只拒绝不真实的binding。
+  追加证据：r70已消费authority/slot/root/session/receipt，却在首个runtime drain前停止；Host
+  没有scientific authorization/admission/attempt。把task/envelope继续放在outer launch会要求
+  conductor在entry message创建canonical task之前猜测control identity，因此r70只封存为
+  pre-runtime conductor blocked，全部state不可复用，当前没有r71。
+
+  修正记录：current plan/claim/root proof/preflight/supervision只绑定campaign/ordinal/session/
+  root/policy与launch id；task/envelope/request也从outer launch删除。Codex先封存entry message、
+  bounded drain admission、terminal status和唯一execution-task workspace read，随后才原子grant
+  authority。executor通过canonical lane tools建立lane，current assignee使用极小
+  `attempt.create`，Host finalizer二次校验assignee并late-bind canonical attempt。finalization
+  policy删除hidden exact `task.create` matcher，exact-three closure改从canonical kind/role/
+  assignee/finish cardinality计算。每个terminal response exact绑定
+  `runtime.command.finished`；digest-only status不是proof。qualification以real public FastAPI
+  client、production composition/file-SQLite和deterministic runtime覆盖positive、wrong task/
+  actor、reassignment、legacy route和deleted surface，不用private service/manual registry/
+  synthetic receipt。Harness不替agent选择task、lane或scientific action，只拒绝不真实的binding。
 
 - [x] Lane 与 session lease 是否只是历史复杂度，应随 recovery machine 一并删除。
 

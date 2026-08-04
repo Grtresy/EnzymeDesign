@@ -5783,16 +5783,12 @@ def _validate_attempt_semantics(
             launch_id=str(clean_world.get("launch_id") or ""),
             attempt_kind=str(kind),
             session_id=str(authority_slot.get("session_id") or ""),
-            task_id=str(authority_slot.get("task_id") or ""),
             root_ref=str(authority_slot.get("root_ref") or ""),
             campaign_id=str(
                 dict(payload.get("authority") or {}).get("campaign_id") or ""
             ),
-            attempt_authority_id=str(
-                supervision_receipt.get("attempt_authority_id") or ""
-            ),
-            attempt_authority_request_digest=str(
-                supervision_receipt.get("attempt_authority_request_digest") or ""
+            authority_policy_digest=str(
+                authority_slot.get("authority_policy_digest") or ""
             ),
         )
     if (supervision_required or supervision_receipt is not None) and not (

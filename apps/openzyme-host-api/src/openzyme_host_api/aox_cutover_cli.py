@@ -466,7 +466,7 @@ def _preflight(args: argparse.Namespace) -> int:
     )
     slot = dict(plan["slots"][args.slot_ordinal - 1])
     validate_aox_authority_wall_time(
-        dict(slot["authority_request"])["max_wall_time_seconds"]
+        dict(slot["authority_policy"])["max_wall_time_seconds"]
     )
     from openzyme_runtime import OpenZymeSettings
 
@@ -517,9 +517,8 @@ def _preflight(args: argparse.Namespace) -> int:
             "launch_id": slot_claim["launch_id"],
             "attempt_kind": slot["attempt_kind"],
             "session_id": slot["session_id"],
-            "task_id": slot["task_id"],
             "root_ref": slot["root_ref"],
-            "envelope_id": slot["envelope_id"],
+            "authority_policy_digest": slot["authority_policy_digest"],
             "proof": roots.proof,
             "preflight_receipt": str(receipt_path),
             "preflight_receipt_digest": receipt["receipt_digest"],
@@ -573,7 +572,7 @@ def _serve_attempt(args: argparse.Namespace) -> int:
         {
             "schema_id": "aox_supervised_host_retirement@1",
             "status": "retired",
-            "attempt_id": receipt["attempt_id"],
+            "launch_id": receipt["launch_id"],
             "shutdown_reason": receipt["shutdown_reason"],
             "receipt_digest": receipt["receipt_digest"],
             "supervision_receipt_file": str(
@@ -592,6 +591,7 @@ def _finalize_and_seal(args: argparse.Namespace) -> int:
         workspace_response_path=args.workspace_response,
         event_response_path=args.event_response,
         evidence_response_path=args.evidence_response,
+        handoff_response_paths=args.handoff_response,
         ledger_before_path=args.ledger_before,
         ledger_after_path=args.ledger_after,
     )
@@ -884,6 +884,16 @@ def build_parser() -> argparse.ArgumentParser:
         "ledger_before",
         "ledger_after",
     )
+    finalize_and_seal.add_argument(
+        "--handoff-response",
+        action="append",
+        required=True,
+        type=Path,
+        help=(
+            "sealed drain, terminal command-status, or pre-grant workspace "
+            "response; repeat for every bounded handoff"
+        ),
+    )
     finalize_and_seal.set_defaults(handler=_finalize_and_seal)
 
     verify = subparsers.add_parser(
@@ -1023,6 +1033,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-__all__ = ["build_parser", "main"]

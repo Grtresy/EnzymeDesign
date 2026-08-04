@@ -17,6 +17,7 @@ from typing import Any
 
 from openzyme_pipeline import aox_finalization
 
+from .aox_attempt_authority import authority_grant_identity
 from .aox_attempt_authority import authority_grant_payload
 from .aox_attempt_preflight import ATTEMPT_SLOT_CLAIM_FILENAME
 from .aox_attempt_preflight import load_attempt_preflight_receipt
@@ -54,7 +55,7 @@ from .aox_public_product_closure import AoxPublicProductClosureError
 from .aox_public_product_closure import validate_aox_public_product_closure
 
 
-PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID = "aox_public_conductor_bundle@2"
+PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID = "aox_public_conductor_bundle@3"
 PUBLIC_API_RECEIPT_SCHEMA_ID = "openzyme_public_api_receipt@2"
 PUBLIC_RESPONSE_ENVELOPE_SCHEMA_ID = "openzyme_public_host_response@1"
 PUBLIC_CONDUCTOR_ATTESTATION_DIR = "aox-public-conductor"
@@ -110,7 +111,7 @@ _FINALIZATION_FIELDS = {
     "validation_metadata",
     "validation",
 }
-_SOURCE_NAMES = {
+_STATIC_SOURCE_NAMES = {
     "identity.json",
     "preflight.json",
     "host-startup.json",
@@ -122,6 +123,17 @@ _SOURCE_NAMES = {
     "slot-claim.json",
     "micu-before.json",
     "micu-after.json",
+}
+_HANDOFF_SOURCE_NAME = re.compile(r"handoff-response-[0-9]{4}\.json")
+_MAX_RECEIPT_CHAIN_BYTES = 8 * 1024 * 1024
+_MAX_RECEIPT_RECORDS = 512
+_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+_MAX_HANDOFF_RESPONSES = 256
+_TERMINAL_RUNTIME_COMMAND_STATUSES = {
+    "completed",
+    "failed",
+    "locked",
+    "cancelled",
 }
 
 def _content_digest(content: bytes) -> str:
@@ -176,10 +188,17 @@ def _read_bound_artifact_file(
     return path, b"".join(chunks)
 
 def _load_canonical_object(
-    path: Path, *, identity: str
+    path: Path, *, identity: str, max_bytes: int | None = None
 ) -> tuple[dict[str, Any], bytes]:
     try:
-        metadata, content = path.lstat(), path.read_bytes()
+        metadata = path.lstat()
+        if max_bytes is not None and metadata.st_size > max_bytes:
+            _fail(
+                "public_conductor_source_too_large",
+                "public conductor source exceeds its byte bound",
+                identity=identity,
+            )
+        content = path.read_bytes()
         value = _strict_json_loads(content.decode())
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise CutoverEvidenceError(
@@ -211,6 +230,7 @@ def _load_receipt_chain(path: Path) -> tuple[list[dict[str, Any]], bytes]:
             stat.S_IMODE(metadata.st_mode) & 0o077 == 0,
             bool(content),
             content.endswith(b"\n"),
+            len(content) <= _MAX_RECEIPT_CHAIN_BYTES,
         )
     ):
         _fail(
@@ -220,6 +240,12 @@ def _load_receipt_chain(path: Path) -> tuple[list[dict[str, Any]], bytes]:
         )
     records: list[dict[str, Any]] = []
     for sequence, line in enumerate(content.splitlines(), 1):
+        if sequence > _MAX_RECEIPT_RECORDS:
+            _fail(
+                "public_receipt_chain_too_large",
+                "public Host receipt chain exceeds its record bound",
+                identity="receipt_chain",
+            )
         try:
             raw = _strict_json_loads(line.decode())
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
@@ -259,7 +285,11 @@ def _load_receipt_chain(path: Path) -> tuple[list[dict[str, Any]], bytes]:
 def _load_response_envelope(
     path: Path, *, identity: str, receipts: Sequence[Mapping[str, Any]]
 ) -> tuple[dict[str, Any], bytes]:
-    value, content = _load_canonical_object(path, identity=identity)
+    value, content = _load_canonical_object(
+        path,
+        identity=identity,
+        max_bytes=_MAX_RESPONSE_BYTES,
+    )
     receipt = value.get("receipt")
     payload = {key: item for key, item in value.items() if key != "envelope_digest"}
     if not (isinstance(receipt, dict) and all((
@@ -279,24 +309,22 @@ def _validate_startup(
 ) -> dict[str, Any]:
     value, slot = dict(startup), dict(preflight["slot"])
     slot_claim = dict(preflight["slot_claim"])
-    request = dict(slot.get("authority_request") or {})
+    policy = dict(slot.get("authority_policy") or {})
     fields = {
         "schema_id", "base_url", "launch_id", "attempt_kind", "session_id",
-        "task_id", "root_ref", "attempt_authority_id",
-        "attempt_authority_request_digest", "campaign_id",
+        "root_ref", "authority_policy_digest", "campaign_id",
         "preflight_receipt_digest", "process_epoch", "child_pid", "child_pgid",
         "child_start_time_ticks", "timeout_seconds", "started_at", "receipt_digest",
     }
     bindings = {
         "launch_id": slot_claim.get("launch_id"),
         "attempt_kind": slot.get("attempt_kind"),
-        "session_id": slot.get("session_id"), "task_id": slot.get("task_id"),
+        "session_id": slot.get("session_id"),
         "root_ref": slot.get("root_ref"),
-        "attempt_authority_id": slot.get("envelope_id"),
-        "attempt_authority_request_digest": slot.get("request_digest"),
+        "authority_policy_digest": slot.get("authority_policy_digest"),
         "campaign_id": preflight.get("campaign_id"),
         "preflight_receipt_digest": preflight.get("receipt_digest"),
-        "timeout_seconds": request.get("max_wall_time_seconds"),
+        "timeout_seconds": policy.get("max_wall_time_seconds"),
     }
     payload = {key: item for key, item in value.items() if key != "receipt_digest"}
     if not all((
@@ -314,7 +342,10 @@ def _validate_startup(
     return value
 
 def _validate_control_slot_binding(
-    *, slot: Mapping[str, Any], control: Mapping[str, Any]
+    *,
+    slot: Mapping[str, Any],
+    campaign_id: str,
+    control: Mapping[str, Any],
 ) -> dict[str, str]:
     parts = {
         name: dict(control.get(name) or {})
@@ -323,30 +354,49 @@ def _validate_control_slot_binding(
             "closure_request", "closure",
         )
     }
-    request = dict(slot.get("authority_request") or {})
+    policy = dict(slot.get("authority_policy") or {})
+    admission, attempt = (
+        parts[name] for name in ("admission_request", "attempt")
+    )
+    execution_task_id = str(attempt.get("task_id") or "")
+    try:
+        envelope_id, request_digest, _request = authority_grant_identity(
+            slot,
+            campaign_id=campaign_id,
+            task_id=execution_task_id,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CutoverEvidenceError(
+            "public_conductor_control_slot_mismatch",
+            "closed control cannot late-bind the consumed authority policy",
+            details={"identity": "closed_evidence.scientific_attempt_control"},
+        ) from exc
     shared = {
-        "session_id": slot.get("session_id"), "task_id": slot.get("task_id"),
-        "campaign_id": request.get("campaign_id"), "workflow_id": request.get("workflow_id"),
+        "session_id": slot.get("session_id"),
+        "task_id": execution_task_id,
+        "campaign_id": campaign_id,
+        "workflow_id": policy.get("workflow_id"),
     }
     expected = {
         "attempt_authority": {
-            **shared, "envelope_id": slot.get("envelope_id"),
-            "root_ref": request.get("root_ref"),
-            "idempotency_key": request.get("idempotency_key"),
-            "request_digest": slot.get("request_digest"),
+            **shared,
+            "envelope_id": envelope_id,
+            "root_ref": slot.get("root_ref"),
+            "idempotency_key": policy.get("idempotency_key"),
+            "request_digest": request_digest,
         },
         "admission_request": {
-            **shared, "envelope_id": slot.get("envelope_id"),
+            **shared, "envelope_id": envelope_id,
             "scope": slot.get("scope"),
         },
         "attempt": {
-            **shared, "envelope_id": slot.get("envelope_id"),
-            "root_ref": request.get("root_ref"), "scope": slot.get("scope"),
+            **shared,
+            "envelope_id": envelope_id,
+            "root_ref": slot.get("root_ref"),
+            "scope": slot.get("scope"),
         },
     }
-    selection, admission, attempt = (
-        parts[name] for name in ("selection", "admission_request", "attempt")
-    )
+    selection = parts["selection"]
     closure_request, closure = parts["closure_request"], parts["closure"]
     attempt_id = str(attempt.get("attempt_id") or "")
     lane_id = str(attempt.get("lane_id") or "")
@@ -357,6 +407,7 @@ def _validate_control_slot_binding(
         all(parts[name].get(key) == item for key, item in bindings.items())
         for name, bindings in expected.items()
     ) and all((
+        bool(execution_task_id),
         bool(attempt_id), bool(lane_id), bool(admission_id), bool(admission_key),
         bool(selection_id),
         attempt.get("admission_request_id") == admission_id,
@@ -379,14 +430,20 @@ def _validate_control_slot_binding(
         "admission_request_id": admission_id,
         "admission_idempotency_key": admission_key,
         "selection_id": selection_id,
+        "execution_task_id": execution_task_id,
+        "authority_envelope_id": envelope_id,
+        "authority_request_digest": request_digest,
     }
 
 def _validate_receipt_chain(
     receipts: Sequence[Mapping[str, Any]],
     *,
     slot: Mapping[str, Any],
+    campaign_id: str,
     identity: Mapping[str, str],
     control: Mapping[str, Any],
+    handoff_envelopes: Sequence[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]],
     product_closure: Mapping[str, Any] | None = None,
     final_receipts: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> None:
@@ -397,8 +454,13 @@ def _validate_receipt_chain(
             "command sequence is discontinuous",
             identity="receipt_chain",
         )
-    actual = _validate_control_slot_binding(slot=slot, control=control)
+    actual = _validate_control_slot_binding(
+        slot=slot,
+        campaign_id=campaign_id,
+        control=control,
+    )
     session_id, attempt_id = str(slot["session_id"]), actual["attempt_id"]
+    execution_task_id = actual["execution_task_id"]
     selection_id = actual["selection_id"]
     routes = {
         "grant": f"/v3/sessions/{session_id}/scientific-attempt-authorizations",
@@ -448,8 +510,7 @@ def _validate_receipt_chain(
         return matches[0]
 
     core_code = "public_conductor_command_chain_invalid"
-    milestones = [
-        consume(
+    session_receipt = consume(
             "POST",
             "/v3/sessions",
             {
@@ -459,8 +520,8 @@ def _validate_receipt_chain(
                 "title": PUBLIC_CONDUCTOR_TITLE,
             },
             code=core_code,
-        ),
-        consume(
+        )
+    message_receipt = consume(
             "POST",
             f"/v3/sessions/{session_id}/messages",
             {
@@ -470,9 +531,18 @@ def _validate_receipt_chain(
                 "lane_id": None,
             },
             code=core_code,
+        )
+    grant_receipt = consume(
+        "POST",
+        routes["grant"],
+        authority_grant_payload(
+            slot,
+            campaign_id=campaign_id,
+            task_id=execution_task_id,
         ),
-        consume("POST", routes["grant"], authority_grant_payload(slot), code=core_code),
-    ]
+        code=core_code,
+    )
+    milestones = [session_receipt, message_receipt, grant_receipt]
     approval_ids = {
         str(item["approval_id"])
         for item in dict(control.get("operation_universe") or {}).get("occurrences")
@@ -584,22 +654,200 @@ def _validate_receipt_chain(
         *(item for items in final_candidates.values() for item in items),
     ):
         remaining.remove(item)
-    ordered_drains = sorted(drains, key=lambda item: int(item["sequence"]))
-    bounded_handoffs = all(
-        any(
-            int(drain["sequence"]) < int(status["sequence"]) < upper_bound
-            for status in statuses
+    envelope_by_sequence: dict[int, dict[str, Any]] = {}
+    for raw_envelope in handoff_envelopes:
+        envelope = dict(raw_envelope)
+        receipt = envelope.get("receipt")
+        if not isinstance(receipt, dict):
+            _fail(
+                "public_terminal_handoff_invalid",
+                "terminal handoff lacks its bound receipt",
+                identity="handoff_responses",
+            )
+        sequence = receipt.get("sequence")
+        if (
+            type(sequence) is not int
+            or sequence in envelope_by_sequence
+            or sum(dict(item) == receipt for item in records) != 1
+            or envelope.get("response_semantic_digest")
+            != canonical_digest(envelope.get("response"))
+        ):
+            _fail(
+                "public_terminal_handoff_invalid",
+                "terminal handoff is duplicated or does not bind one receipt",
+                identity="handoff_responses",
+            )
+        envelope_by_sequence[int(sequence)] = envelope
+    if not envelope_by_sequence or len(envelope_by_sequence) > _MAX_HANDOFF_RESPONSES:
+        _fail(
+            "public_terminal_handoff_invalid",
+            "terminal handoff response cardinality is invalid",
+            identity="handoff_responses",
         )
-        for index, drain in enumerate(ordered_drains)
-        for upper_bound in (
+
+    ordered_drains = sorted(drains, key=lambda item: int(item["sequence"]))
+    command_handoffs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    used_handoff_sequences: set[int] = set()
+    for index, drain in enumerate(ordered_drains):
+        drain_sequence = int(drain["sequence"])
+        drain_envelope = envelope_by_sequence.get(drain_sequence)
+        drain_response = (
+            dict(drain_envelope.get("response") or {})
+            if isinstance(drain_envelope, dict)
+            else {}
+        )
+        command_id = str(drain_response.get("command_id") or "")
+        status_route = f"/v3/sessions/{session_id}/runtime/commands/{command_id}"
+        upper_bound = (
             int(ordered_drains[index + 1]["sequence"])
             if index + 1 < len(ordered_drains)
-            else min(int(item["sequence"]) for item in final.values()),
+            else min(int(item["sequence"]) for item in final.values())
         )
+        sealed_statuses = [
+            envelope_by_sequence[int(status["sequence"])]
+            for status in statuses
+            if int(status["sequence"]) in envelope_by_sequence
+            and drain_sequence < int(status["sequence"]) < upper_bound
+            and status.get("route") == status_route
+        ]
+        terminal_statuses = [
+            envelope
+            for envelope in sealed_statuses
+            if isinstance(envelope.get("response"), dict)
+            and envelope["response"].get("status")
+            in _TERMINAL_RUNTIME_COMMAND_STATUSES
+        ]
+        if not all(
+            (
+                drain_envelope is not None,
+                drain_response.get("schema_version") == "runtime_command_status@1",
+                drain_response.get("session_id") == session_id,
+                drain_response.get("command_type") == "runtime.drain",
+                bool(command_id),
+                drain_response.get("status_url") == status_route,
+                len(terminal_statuses) == 1,
+            )
+        ):
+            _fail(
+                "public_terminal_handoff_invalid",
+                "each bounded drain requires sealed admission and one sealed terminal status",
+                identity=f"receipt_chain[{drain_sequence}]",
+            )
+        terminal_envelope = terminal_statuses[0]
+        terminal_response = dict(terminal_envelope["response"])
+        terminal_receipt = dict(terminal_envelope["receipt"])
+        if not all(
+            (
+                terminal_response.get("schema_version") == "runtime_command_status@1",
+                terminal_response.get("session_id") == session_id,
+                terminal_response.get("command_id") == command_id,
+                terminal_response.get("command_type") == "runtime.drain",
+                terminal_response.get("status_url") == status_route,
+                bool(terminal_response.get("completed_at")),
+            )
+        ):
+            _fail(
+                "public_terminal_handoff_invalid",
+                "sealed terminal response does not reproduce its runtime command",
+                identity=f"runtime_command:{command_id}",
+            )
+        finished = [
+            event
+            for event in events
+            if event.get("event_type") == "runtime.command.finished"
+            and event.get("command_id") == command_id
+            and dict(event.get("payload") or {}).get("command_id") == command_id
+        ]
+        finished_payload = (
+            dict(finished[0].get("payload") or {})
+            if len(finished) == 1
+            else {}
+        )
+        terminal_event_projection = {
+            key: terminal_response.get(key)
+            for key in (
+                "command_id",
+                "command_type",
+                "status",
+                "completed_at",
+                "bounded_outcome_summary",
+                "error_code",
+                "safe_error_summary",
+                "safe_retry_hint",
+            )
+        }
+        if finished_payload != terminal_event_projection:
+            _fail(
+                "public_terminal_handoff_event_mismatch",
+                "sealed terminal response lacks its canonical finished event",
+                identity=f"runtime_command:{command_id}",
+            )
+        used_handoff_sequences.update(
+            {drain_sequence, int(terminal_receipt["sequence"])}
+        )
+        command_handoffs.append((drain, terminal_receipt))
+
+    first_drain, first_terminal = command_handoffs[0] if command_handoffs else ({}, {})
+    pregrant_workspace = [
+        envelope
+        for sequence, envelope in envelope_by_sequence.items()
+        if sequence not in used_handoff_sequences
+        and isinstance(envelope.get("receipt"), dict)
+        and envelope["receipt"].get("method") == "GET"
+        and envelope["receipt"].get("route") == routes["workspace"]
+        and int(first_terminal.get("sequence") or 0)
+        < sequence
+        < int(grant_receipt["sequence"])
+    ]
+    if len(pregrant_workspace) != 1:
+        _fail(
+            "public_task_late_binding_invalid",
+            "authority grant requires one sealed canonical pre-grant task read",
+            identity="handoff_responses",
+        )
+    task_workspace = pregrant_workspace[0].get("response")
+    task_items = (
+        dict(task_workspace.get("task_board") or {}).get("items")
+        if isinstance(task_workspace, dict)
+        else None
     )
+    execution_tasks = [
+        dict(item["task"])
+        for item in (task_items or [])
+        if isinstance(item, dict)
+        and isinstance(item.get("task"), dict)
+        and item["task"].get("kind") == "execution"
+    ]
+    if not all(
+        (
+            isinstance(task_workspace, dict),
+            isinstance(task_workspace, dict)
+            and dict(task_workspace.get("session") or {}).get("session_id")
+            == session_id,
+            len(execution_tasks) == 1,
+            execution_tasks[0].get("task_id") == execution_task_id,
+            int(session_receipt["sequence"])
+            < int(message_receipt["sequence"])
+            < int(first_drain.get("sequence") or 0)
+            < int(first_terminal.get("sequence") or 0)
+            < int(pregrant_workspace[0]["receipt"]["sequence"])
+            < int(grant_receipt["sequence"]),
+        )
+    ):
+        _fail(
+            "public_task_late_binding_invalid",
+            "operator authority did not late-bind the unique canonical execution task",
+            identity="handoff_responses",
+        )
+    used_handoff_sequences.add(int(pregrant_workspace[0]["receipt"]["sequence"]))
+    if set(envelope_by_sequence) != used_handoff_sequences:
+        _fail(
+            "public_terminal_handoff_invalid",
+            "handoff sources contain an unconsumed or policy-like response",
+            identity="handoff_responses",
+        )
     if (
         not drains
-        or not bounded_handoffs
         or remaining
         or (
             approvals
@@ -795,6 +1043,7 @@ def _validate_closed_export(
     export: Mapping[str, Any],
     *,
     slot: Mapping[str, Any],
+    campaign_id: str,
     workspace: Mapping[str, Any],
     events: Sequence[Mapping[str, Any]],
     receipts: Sequence[Mapping[str, Any]],
@@ -805,7 +1054,11 @@ def _validate_closed_export(
     value = dict(export)
     control = value.get("scientific_attempt_control")
     actual = (
-        _validate_control_slot_binding(slot=slot, control=control)
+        _validate_control_slot_binding(
+            slot=slot,
+            campaign_id=campaign_id,
+            control=control,
+        )
         if isinstance(control, dict)
         else {}
     )
@@ -841,7 +1094,11 @@ def _validate_closed_export(
             "closed export does not bind authority",
             identity="closed_evidence",
         )
-    _validate_control_slot_binding(slot=slot, control=control)
+    _validate_control_slot_binding(
+        slot=slot,
+        campaign_id=campaign_id,
+        control=control,
+    )
     kind = str(slot["attempt_kind"])
     projection = _validate_control(
         control=control, attempt_kind=kind, receipts=receipts, supervision=supervision
@@ -866,7 +1123,7 @@ def _validate_closed_export(
             session_id=str(slot["session_id"]),
             attempt_id=str(actual["attempt_id"]),
             attempt_kind=kind,
-            execution_task_id=str(slot["task_id"]),
+            execution_task_id=str(actual["execution_task_id"]),
             workspace=workspace,
             events=events,
         )
@@ -939,6 +1196,7 @@ def _source_payload(
     workspace_response_path: Path,
     event_response_path: Path,
     evidence_response_path: Path,
+    handoff_response_paths: Sequence[Path],
     ledger_before_path: Path,
     ledger_after_path: Path,
     sealed_at: str,
@@ -984,11 +1242,9 @@ def _source_payload(
         launch_id=str(preflight["slot_claim"]["launch_id"]),
         attempt_kind=str(slot["attempt_kind"]),
         session_id=str(slot["session_id"]),
-        task_id=str(slot["task_id"]),
         root_ref=str(slot["root_ref"]),
         campaign_id=str(preflight["campaign_id"]),
-        attempt_authority_id=str(slot["envelope_id"]),
-        attempt_authority_request_digest=str(slot["request_digest"]),
+        authority_policy_digest=str(slot["authority_policy_digest"]),
     )
     supervision_bindings = {
         "preflight_receipt_digest": preflight.get("receipt_digest"),
@@ -996,9 +1252,9 @@ def _source_payload(
         "process_epoch": startup.get("process_epoch"),
         "timeout_seconds": startup.get("timeout_seconds"),
         "session_id": slot.get("session_id"),
-        "task_id": slot.get("task_id"),
         "root_ref": slot.get("root_ref"),
         "campaign_id": preflight.get("campaign_id"),
+        "authority_policy_digest": slot.get("authority_policy_digest"),
     }
     if any(supervision.get(key) != item for key, item in supervision_bindings.items()):
         _fail(
@@ -1007,6 +1263,36 @@ def _source_payload(
             identity="host_supervision",
         )
     receipts, receipt_bytes = _load_receipt_chain(receipt_chain_path)
+    if not (1 <= len(handoff_response_paths) <= _MAX_HANDOFF_RESPONSES):
+        _fail(
+            "public_terminal_handoff_invalid",
+            "terminal handoff response cardinality is invalid",
+            identity="handoff_responses",
+        )
+    handoff_envelopes: list[dict[str, Any]] = []
+    handoff_source_bytes: dict[str, bytes] = {}
+    for path in handoff_response_paths:
+        envelope, content = _load_response_envelope(
+            path,
+            identity="handoff_response",
+            receipts=receipts,
+        )
+        sequence = dict(envelope["receipt"]).get("sequence")
+        if type(sequence) is not int:
+            _fail(
+                "public_terminal_handoff_invalid",
+                "terminal handoff source lacks a typed receipt sequence",
+                identity="handoff_responses",
+            )
+        name = f"handoff-response-{int(sequence):04d}.json"
+        if name in handoff_source_bytes:
+            _fail(
+                "public_terminal_handoff_invalid",
+                "terminal handoff source is duplicated",
+                identity="handoff_responses",
+            )
+        handoff_envelopes.append(envelope)
+        handoff_source_bytes[name] = content
     envelopes = {
         name: _load_response_envelope(
             path, identity=f"{name}_response", receipts=receipts
@@ -1039,7 +1325,11 @@ def _source_payload(
             "closed-attempt export lacks canonical control",
             identity="evidence_response",
         )
-    actual = _validate_control_slot_binding(slot=slot, control=control)
+    actual = _validate_control_slot_binding(
+        slot=slot,
+        campaign_id=str(preflight["campaign_id"]),
+        control=control,
+    )
     selection_id = actual["selection_id"]
     expected_routes = {
         "workspace": f"/v3/sessions/{slot['session_id']}/workspace",
@@ -1062,8 +1352,11 @@ def _source_payload(
     _validate_receipt_chain(
         receipts,
         slot=slot,
+        campaign_id=str(preflight["campaign_id"]),
         identity=identity,
         control=control,
+        handoff_envelopes=handoff_envelopes,
+        events=events,
         product_closure=(
             dict(product_closure) if isinstance(product_closure, dict) else None
         ),
@@ -1076,6 +1369,7 @@ def _source_payload(
     contents, validation, fault, projection = _validate_closed_export(
         closed,
         slot=slot,
+        campaign_id=str(preflight["campaign_id"]),
         workspace=workspace,
         events=events,
         receipts=receipts,
@@ -1112,6 +1406,7 @@ def _source_payload(
         "micu-before.json": before_bytes,
         "micu-after.json": after_bytes,
     }
+    source_bytes.update(handoff_source_bytes)
     attestations = [
         {
             "name": name,
@@ -1154,6 +1449,13 @@ def _source_payload(
             "attempt_supervision": supervision,
             "public_api_receipts": receipts,
             "public_api_receipt_chain_digest": _content_digest(receipt_bytes),
+            "terminal_handoff_response_digests": [
+                envelope["envelope_digest"]
+                for envelope in sorted(
+                    handoff_envelopes,
+                    key=lambda item: int(dict(item["receipt"])["sequence"]),
+                )
+            ],
             "final_workspace_response_digest": envelopes["workspace"][0][
                 "envelope_digest"
             ],
@@ -1215,7 +1517,8 @@ def _fsync_directory(path: Path) -> None:
 def finalize_and_seal_public_conductor_bundle(
     *, identity_path: Path, preflight_path: Path, receipt_chain_path: Path,
     workspace_response_path: Path, event_response_path: Path,
-    evidence_response_path: Path, ledger_before_path: Path,
+    evidence_response_path: Path, handoff_response_paths: Sequence[Path],
+    ledger_before_path: Path,
     ledger_after_path: Path, sealed_at: str | None = None,
 ) -> tuple[Path, str]:
     preflight_path = preflight_path.expanduser().resolve(strict=True)
@@ -1235,6 +1538,7 @@ def finalize_and_seal_public_conductor_bundle(
         workspace_response_path=workspace_response_path,
         event_response_path=event_response_path,
         evidence_response_path=evidence_response_path,
+        handoff_response_paths=handoff_response_paths,
         ledger_before_path=ledger_before_path, ledger_after_path=ledger_after_path,
         sealed_at=sealed_at or datetime.now(UTC).isoformat(),
     )
@@ -1332,7 +1636,12 @@ def verify_public_conductor_bundle(
                     identity=name,
                 )
             sources[name] = path
-        if set(sources) != _SOURCE_NAMES:
+        handoff_source_names = set(sources) - _STATIC_SOURCE_NAMES
+        if (
+            not _STATIC_SOURCE_NAMES.issubset(sources)
+            or not (1 <= len(handoff_source_names) <= _MAX_HANDOFF_RESPONSES)
+            or any(_HANDOFF_SOURCE_NAME.fullmatch(name) is None for name in handoff_source_names)
+        ):
             _fail(
                 "public_conductor_attestation_invalid",
                 "source attestation set is incomplete",
@@ -1370,6 +1679,9 @@ def verify_public_conductor_bundle(
                 workspace_response_path=sources["workspace-response.json"],
                 event_response_path=sources["events-response.json"],
                 evidence_response_path=sources["evidence-response.json"],
+                handoff_response_paths=[
+                    sources[name] for name in sorted(handoff_source_names)
+                ],
                 ledger_before_path=sources["micu-before.json"],
                 ledger_after_path=sources["micu-after.json"],
                 sealed_at=str(payload.get("sealed_at") or ""),
@@ -1537,9 +1849,8 @@ def evaluate_public_conductor_campaign(
             )
         slot_identity_fields = (
             "session_id",
-            "task_id",
-            "envelope_id",
             "root_ref",
+            "authority_policy_digest",
         )
         if any(
             len({str(slot.get(field) or "") for slot in slots}) != 3
@@ -1549,7 +1860,7 @@ def evaluate_public_conductor_campaign(
             block(
                 "campaign_slot_identity_collision",
                 "campaign.authority.slots",
-                "campaign slots must carry unique session/task/envelope/root identities",
+                "campaign slots must carry unique session/root/policy identities",
             )
         controls = [
             dict(payload.get("scientific_attempt_control") or {})
@@ -1584,6 +1895,17 @@ def evaluate_public_conductor_campaign(
             ],
             "selection_id": [
                 str(dict(control.get("selection") or {}).get("selection_id") or "")
+                for control in controls
+            ],
+            "execution_task_id": [
+                str(dict(control.get("attempt") or {}).get("task_id") or "")
+                for control in controls
+            ],
+            "authority_envelope_id": [
+                str(
+                    dict(control.get("attempt_authority") or {}).get("envelope_id")
+                    or ""
+                )
                 for control in controls
             ],
         }
@@ -1681,14 +2003,3 @@ def evaluate_public_conductor_campaign(
         "blocker": blocker,
     }
     return {**decision, "decision_digest": canonical_digest(decision)}
-
-__all__ = [
-    "PUBLIC_CONDUCTOR_BUNDLE_FILENAME",
-    "PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID",
-    "PUBLIC_CONDUCTOR_MESSAGE",
-    "PUBLIC_CONDUCTOR_OBJECTIVE",
-    "PUBLIC_CONDUCTOR_TITLE",
-    "evaluate_public_conductor_campaign",
-    "finalize_and_seal_public_conductor_bundle",
-    "verify_public_conductor_bundle",
-]

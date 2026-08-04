@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import UTC
-from datetime import datetime
+from datetime import UTC, datetime
 import json
 from pathlib import Path
 import re
@@ -13,110 +12,117 @@ from typing import Any
 from openzyme_core import scientific_attempt_authorization_identity
 
 from .aox_authority_storage import publish_private_canonical_authority
-from .aox_cutover_evidence import canonical_digest
-from .aox_cutover_evidence import canonical_json_bytes
+from .aox_cutover_evidence import canonical_digest, canonical_json_bytes
 from .aox_cutover_evidence import CutoverEvidenceError
-from .aox_live_run_class import AoxLiveRunClass
-from .aox_live_run_class import FORMAL_ACCEPTANCE_RUN_POLICY
+from .aox_live_run_class import AoxLiveRunClass, FORMAL_ACCEPTANCE_RUN_POLICY
 from .aox_scientific_contract import AOX_SELECTED_CHAIN_WORKFLOW_ID
 
 
-AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID = "aox_live_attempt_authority_plan@2"
-AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID = "aox_live_attempt_authority_consumption@3"
-AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID = "aox_attempt_authority_slot_claim@2"
+AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID = "aox_live_attempt_authority_plan@3"
+AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID = (
+    "aox_live_attempt_authority_consumption@4"
+)
+AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID = "aox_attempt_authority_slot_claim@3"
 AOX_ATTEMPT_AUTHORITY_GRANTOR_REF = "user:local-dev"
 
-_LEGACY_PLAN_SCHEMA_ID = "aox_live_attempt_authority_plan@1"
-_LEGACY_CONSUMPTION_SCHEMA_ID = "aox_live_attempt_authority_consumption@2"
-_LEGACY_SLOT_CLAIM_SCHEMA_ID = "aox_attempt_authority_slot_claim@1"
-
-_PLAN_FIELDS = frozenset(
-    {
-        "schema_id",
-        "campaign_id",
-        "identity_digest",
-        "allowed_prerequisite_digest",
-        "architecture_qualification_digest",
-        "issued_at",
-        "expires_at",
-        "slots",
-        "plan_digest",
-    }
+_PLAN_FIELDS = set(
+    "schema_id campaign_id identity_digest allowed_prerequisite_digest "
+    "architecture_qualification_digest issued_at expires_at slots plan_digest".split()
 )
-_SLOT_FIELDS = frozenset(
-    {
-        "ordinal",
-        "attempt_kind",
-        "session_id",
-        "task_id",
-        "root_ref",
-        "scope",
-        "authority_request",
-        "envelope_id",
-        "request_digest",
-    }
+_SLOT_FIELDS = set(
+    "ordinal attempt_kind session_id root_ref scope authority_policy "
+    "authority_policy_digest".split()
 )
-_LEGACY_SLOT_FIELDS = frozenset(
-    {
-        "ordinal",
-        "attempt_kind",
-        "attempt_id",
-        "session_id",
-        "task_id",
-        "lane_id",
-        "scope",
-        "authority_request",
-        "envelope_id",
-        "request_digest",
-    }
+_POLICY_FIELDS = set(
+    "workflow_id grantor_kind grantor_ref allowed_scopes allowed_effect_classes "
+    "allowed_providers allowed_hpc_targets max_attempts max_micu "
+    "max_cost_microunits max_wall_time_seconds expires_at idempotency_key".split()
 )
-_ATTEMPT_ID_PATTERN = FORMAL_ACCEPTANCE_RUN_POLICY.attempt_id_pattern
+_CONSUMPTION_FIELDS = set(
+    "schema_id run_class plan_schema_id plan_digest campaign_id consumption_file "
+    "consumed_at".split()
+)
+_CLAIM_FIELDS = set(
+    "schema_id run_class campaign_id plan_digest consumption_digest ordinal "
+    "attempt_kind launch_id session_id root_ref authority_policy_digest "
+    "campaign_root_identity claim_file claimed_at claim_digest".split()
+)
 _CAMPAIGN_ID_PATTERN = FORMAL_ACCEPTANCE_RUN_POLICY.campaign_id_pattern
 _CONTROL_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")
+
+
+def _reject(code: str, message: str, **details: object) -> None:
+    raise CutoverEvidenceError(code, message, details=details)
+
+
+def _require(value: object, code: str, message: str, **details: object) -> None:
+    if not value:
+        _reject(code, message, **details)
 
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _parse_timestamp(
-    value: object,
-    *,
-    code: str,
-    label: str,
-) -> datetime:
+def _timestamp(value: object, *, code: str, label: str) -> datetime:
     if not isinstance(value, str) or not value:
-        raise CutoverEvidenceError(
-            code,
-            f"attempt authority {label} must be a non-empty ISO-8601 timestamp",
-        )
+        _reject(code, f"attempt authority {label} must be an ISO-8601 timestamp")
     try:
         parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise CutoverEvidenceError(
-            code,
-            f"attempt authority {label} is not valid ISO-8601",
+            code, f"attempt authority {label} is not valid ISO-8601"
         ) from exc
     if parsed.tzinfo is None:
-        raise CutoverEvidenceError(
-            code,
-            f"attempt authority {label} must include a timezone",
-        )
+        _reject(code, f"attempt authority {label} must include a timezone")
     return parsed.astimezone(UTC)
 
 
-def _parse_future_timestamp(value: object) -> datetime:
-    parsed = _parse_timestamp(
-        value,
-        code="attempt_authority_expiry_invalid",
-        label="expiry",
+def _future_timestamp(value: object) -> datetime:
+    parsed = _timestamp(
+        value, code="attempt_authority_expiry_invalid", label="expiry"
     )
-    if parsed <= datetime.now(UTC):
-        raise CutoverEvidenceError(
-            "attempt_authority_expired",
-            "attempt authority plan has expired",
-        )
+    _require(
+        parsed > datetime.now(UTC),
+        "attempt_authority_expired",
+        "attempt authority plan has expired",
+    )
     return parsed
+
+
+def _load_private_canonical(path: Path, *, unreadable_code: str) -> dict[str, Any]:
+    try:
+        metadata, content = path.lstat(), path.read_bytes()
+        value = json.loads(content)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CutoverEvidenceError(
+            unreadable_code, "authority record is not readable canonical JSON"
+        ) from exc
+    _require(
+        stat.S_ISREG(metadata.st_mode)
+        and not stat.S_ISLNK(metadata.st_mode)
+        and stat.S_IMODE(metadata.st_mode) & 0o077 == 0
+        and isinstance(value, dict)
+        and content == canonical_json_bytes(value) + b"\n",
+        unreadable_code,
+        "authority record must be one private canonical file",
+    )
+    return dict(value)
+
+
+def _resource_limits(policy: Mapping[str, object], *, ordinal: int) -> tuple[int, int, int]:
+    resources = (
+        policy.get("max_micu"),
+        policy.get("max_cost_microunits"),
+        policy.get("max_wall_time_seconds"),
+    )
+    if any(type(value) is not int or value < 0 for value in resources):
+        _reject(
+            "attempt_authority_resource_invalid",
+            "attempt authority resources must be non-negative integers",
+            ordinal=ordinal,
+        )
+    return resources  # type: ignore[return-value]
 
 
 def build_aox_attempt_authority_plan(
@@ -130,78 +136,59 @@ def build_aox_attempt_authority_plan(
     max_wall_time_seconds_per_attempt: int,
     issued_at: str | None = None,
 ) -> dict[str, Any]:
-    """Build a reviewable three-slot grant without creating any attempt root."""
+    """Build three task-free slots without creating task or attempt truth."""
 
-    expiry = _parse_future_timestamp(expires_at)
+    expiry = _future_timestamp(expires_at)
     effective_issued_at = issued_at or _utc_now()
-    issued = _parse_timestamp(
+    issued = _timestamp(
         effective_issued_at,
         code="attempt_authority_issued_at_invalid",
         label="issued_at",
     )
-    if issued > expiry:
-        raise CutoverEvidenceError(
-            "attempt_authority_time_order_invalid",
-            "attempt authority issued_at must not follow expires_at",
-        )
-    if issued > datetime.now(UTC):
-        raise CutoverEvidenceError(
-            "attempt_authority_not_yet_valid",
-            "attempt authority issued_at is in the future",
-        )
-    resource_values = (
+    _require(
+        issued <= expiry,
+        "attempt_authority_time_order_invalid",
+        "attempt authority issued_at must not follow expires_at",
+    )
+    _require(
+        issued <= datetime.now(UTC),
+        "attempt_authority_not_yet_valid",
+        "attempt authority issued_at is in the future",
+    )
+    resources = (
         max_micu_per_attempt,
         max_cost_microunits_per_attempt,
         max_wall_time_seconds_per_attempt,
     )
-    if any(
-        type(value) is not int or value < 0
-        for value in resource_values
-    ):
-        raise CutoverEvidenceError(
+    if any(type(value) is not int or value < 0 for value in resources):
+        _reject(
             "attempt_authority_resource_invalid",
             "attempt authority resources must be non-negative integers",
         )
+
     identity_digest = canonical_digest(dict(identity))
     prerequisite_digest = canonical_digest(dict(allowed_prerequisites))
     qualification_digest = canonical_digest(dict(architecture_qualification))
-    campaign_id = (
-        "aox_campaign_"
-        + canonical_digest(
-            {
-                "identity_digest": identity_digest,
-                "allowed_prerequisite_digest": prerequisite_digest,
-                "architecture_qualification_digest": qualification_digest,
-                "nonce": secrets.token_hex(32),
-            }
-        ).removeprefix("sha256:")[:24]
-    )
-    provider_token = f"aox-provider-routes@{identity_digest}"
-    hpc_target_token = f"aox-hpc-routes@{identity_digest}"
+    campaign_id = "aox_campaign_" + canonical_digest(
+        {
+            "identity_digest": identity_digest,
+            "allowed_prerequisite_digest": prerequisite_digest,
+            "architecture_qualification_digest": qualification_digest,
+            "nonce": secrets.token_hex(32),
+        }
+    ).removeprefix("sha256:")[:24]
     slots: list[dict[str, Any]] = []
-    for ordinal, attempt_kind in enumerate(
-        ("positive", "positive", "fault"),
-        start=1,
-    ):
-        launch_nonce = secrets.token_hex(16)
-        session_id = f"sess_aox_formal_{launch_nonce}"
-        task_id = f"task_aox_execution_{launch_nonce}"
-        root_ref = (
-            f"formal-slots/{campaign_id}/{ordinal}/{launch_nonce}"
-        )
+    for ordinal, attempt_kind in enumerate(("positive", "positive", "fault"), 1):
+        nonce = secrets.token_hex(16)
         scope = "fault" if attempt_kind == "fault" else "formal"
-        authority_arguments = {
-            "session_id": session_id,
-            "task_id": task_id,
-            "campaign_id": campaign_id,
+        policy = {
             "workflow_id": AOX_SELECTED_CHAIN_WORKFLOW_ID,
-            "root_ref": root_ref,
             "grantor_kind": "operator",
             "grantor_ref": AOX_ATTEMPT_AUTHORITY_GRANTOR_REF,
-            "allowed_scopes": (scope,),
-            "allowed_effect_classes": ("hpc", "provider"),
-            "allowed_providers": (provider_token,),
-            "allowed_hpc_targets": (hpc_target_token,),
+            "allowed_scopes": [scope],
+            "allowed_effect_classes": ["hpc", "provider"],
+            "allowed_providers": [f"aox-provider-routes@{identity_digest}"],
+            "allowed_hpc_targets": [f"aox-hpc-routes@{identity_digest}"],
             "max_attempts": 1,
             "max_micu": max_micu_per_attempt,
             "max_cost_microunits": max_cost_microunits_per_attempt,
@@ -209,20 +196,15 @@ def build_aox_attempt_authority_plan(
             "expires_at": expires_at,
             "idempotency_key": f"{campaign_id}:authority:{ordinal}",
         }
-        envelope_id, request_digest, request = (
-            scientific_attempt_authorization_identity(**authority_arguments)
-        )
         slots.append(
             {
                 "ordinal": ordinal,
                 "attempt_kind": attempt_kind,
-                "session_id": session_id,
-                "task_id": task_id,
-                "root_ref": root_ref,
+                "session_id": f"sess_aox_formal_{nonce}",
+                "root_ref": f"formal-slots/{campaign_id}/{ordinal}/{nonce}",
                 "scope": scope,
-                "authority_request": request,
-                "envelope_id": envelope_id,
-                "request_digest": request_digest,
+                "authority_policy": policy,
+                "authority_policy_digest": canonical_digest(policy),
             }
         )
     payload: dict[str, Any] = {
@@ -246,48 +228,37 @@ def validate_aox_attempt_authority_plan(
     architecture_qualification: Mapping[str, object],
 ) -> dict[str, Any]:
     normalized = dict(plan)
-    schema_id = normalized.get("schema_id")
-    if set(normalized) != _PLAN_FIELDS or schema_id not in {
-        AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID,
-        _LEGACY_PLAN_SCHEMA_ID,
-    }:
-        raise CutoverEvidenceError(
+    if (
+        set(normalized) != _PLAN_FIELDS
+        or normalized.get("schema_id") != AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID
+    ):
+        _reject(
             "attempt_authority_plan_schema_invalid",
-            "AOX attempt authority plan has an unsupported closed schema",
+            "only the current task-free AOX authority plan is accepted",
         )
-    legacy = schema_id == _LEGACY_PLAN_SCHEMA_ID
-    expiry = (
-        _parse_timestamp(
-            normalized.get("expires_at"),
-            code="attempt_authority_expiry_invalid",
-            label="expiry",
-        )
-        if legacy
-        else _parse_future_timestamp(normalized.get("expires_at"))
-    )
-    issued = _parse_timestamp(
+    expiry = _future_timestamp(normalized.get("expires_at"))
+    issued = _timestamp(
         normalized.get("issued_at"),
         code="attempt_authority_issued_at_invalid",
         label="issued_at",
     )
-    if issued > expiry:
-        raise CutoverEvidenceError(
-            "attempt_authority_time_order_invalid",
-            "attempt authority issued_at must not follow expires_at",
-        )
-    if issued > datetime.now(UTC):
-        raise CutoverEvidenceError(
-            "attempt_authority_not_yet_valid",
-            "attempt authority issued_at is in the future",
-        )
+    _require(
+        issued <= expiry,
+        "attempt_authority_time_order_invalid",
+        "attempt authority issued_at must not follow expires_at",
+    )
+    _require(
+        issued <= datetime.now(UTC),
+        "attempt_authority_not_yet_valid",
+        "attempt authority issued_at is in the future",
+    )
     campaign_id = normalized.get("campaign_id")
-    if (
-        not isinstance(campaign_id, str)
-        or _CAMPAIGN_ID_PATTERN.fullmatch(campaign_id) is None
+    if not isinstance(campaign_id, str) or not _CAMPAIGN_ID_PATTERN.fullmatch(
+        campaign_id
     ):
-        raise CutoverEvidenceError(
+        _reject(
             "attempt_authority_campaign_id_invalid",
-            "AOX authority plan campaign id is malformed",
+            "AOX authority campaign id is malformed",
         )
     expected_digests = {
         "identity_digest": canonical_digest(dict(identity)),
@@ -298,206 +269,104 @@ def validate_aox_attempt_authority_plan(
             dict(architecture_qualification)
         ),
     }
+    expected_plan_digest = canonical_digest(
+        {key: value for key, value in normalized.items() if key != "plan_digest"}
+    )
     drift = {
         key: {"expected": expected, "actual": normalized.get(key)}
-        for key, expected in expected_digests.items()
+        for key, expected in {
+            **expected_digests,
+            "plan_digest": expected_plan_digest,
+        }.items()
         if normalized.get(key) != expected
     }
-    payload_without_digest = {
-        key: value
-        for key, value in normalized.items()
-        if key != "plan_digest"
-    }
-    if normalized.get("plan_digest") != canonical_digest(
-        payload_without_digest
-    ):
-        drift["plan_digest"] = {
-            "expected": canonical_digest(payload_without_digest),
-            "actual": normalized.get("plan_digest"),
-        }
     if drift:
-        raise CutoverEvidenceError(
+        _reject(
             "attempt_authority_plan_digest_mismatch",
-            "AOX attempt authority plan does not bind current launch declarations",
-            details={"drift": drift},
+            "AOX authority plan does not bind current launch declarations",
+            drift=drift,
         )
     slots = normalized.get("slots")
-    if (
-        not isinstance(slots, list)
-        or len(slots) != 3
-        or [item.get("attempt_kind") for item in slots if isinstance(item, dict)]
-        != ["positive", "positive", "fault"]
-    ):
-        raise CutoverEvidenceError(
+    if not isinstance(slots, list) or [
+        item.get("attempt_kind") if isinstance(item, dict) else None for item in slots
+    ] != ["positive", "positive", "fault"]:
+        _reject(
             "attempt_authority_plan_slots_invalid",
-            "AOX authority plan must contain positive, positive, fault in order",
+            "AOX authority requires positive, positive, fault in order",
         )
-    seen_control_identities: set[tuple[str, ...]] = set()
-    seen_envelope_ids: set[str] = set()
+
+    seen: set[tuple[str, str]] = set()
     resource_limits: tuple[int, int, int] | None = None
-    expected_provider_token = (
-        f"aox-provider-routes@{expected_digests['identity_digest']}"
-    )
-    expected_hpc_target_token = (
-        f"aox-hpc-routes@{expected_digests['identity_digest']}"
-    )
-    for ordinal, raw_slot in enumerate(slots, start=1):
-        expected_slot_fields = _LEGACY_SLOT_FIELDS if legacy else _SLOT_FIELDS
-        if not isinstance(raw_slot, dict) or set(raw_slot) != expected_slot_fields:
-            raise CutoverEvidenceError(
+    for ordinal, raw_slot in enumerate(slots, 1):
+        if not isinstance(raw_slot, dict) or set(raw_slot) != _SLOT_FIELDS:
+            _reject(
                 "attempt_authority_slot_schema_invalid",
-                "AOX authority slot has an unsupported closed schema",
-                details={"ordinal": ordinal},
+                "AOX authority slot is not the current closed schema",
+                ordinal=ordinal,
             )
         slot = dict(raw_slot)
-        attempt_kind = slot.get("attempt_kind")
-        expected_scope = "fault" if attempt_kind == "fault" else "formal"
-        request = slot.get("authority_request")
-        if legacy:
-            attempt_id = slot.get("attempt_id")
+        scope = "fault" if slot.get("attempt_kind") == "fault" else "formal"
+        root_ref = slot.get("root_ref")
+        root_parts = str(root_ref or "").split("/")
+        nonce = root_parts[-1] if len(root_parts) == 4 else ""
+        control_identity = (str(slot.get("session_id") or ""), str(root_ref or ""))
+        identity_valid = all(
             (
-                expected_session_id,
-                expected_task_id,
-                expected_lane_id,
-                expected_root_ref,
-            ) = FORMAL_ACCEPTANCE_RUN_POLICY.identities(
-                "" if not isinstance(attempt_id, str) else attempt_id
+                slot.get("ordinal") == ordinal,
+                re.fullmatch(r"[a-f0-9]{32}", nonce) is not None,
+                root_ref == f"formal-slots/{campaign_id}/{ordinal}/{nonce}",
+                slot.get("session_id") == f"sess_aox_formal_{nonce}",
+                _CONTROL_ID_PATTERN.fullmatch(control_identity[0]) is not None,
+                control_identity not in seen,
+                slot.get("scope") == scope,
             )
-            identity = (
-                str(attempt_id or ""),
-                str(slot.get("session_id") or ""),
-                str(slot.get("task_id") or ""),
-                str(slot.get("lane_id") or ""),
-            )
-            identity_valid = all(
-                (
-                    isinstance(attempt_id, str),
-                    isinstance(attempt_id, str)
-                    and _ATTEMPT_ID_PATTERN.fullmatch(attempt_id) is not None,
-                    slot.get("session_id") == expected_session_id,
-                    slot.get("task_id") == expected_task_id,
-                    slot.get("lane_id") == expected_lane_id,
-                )
-            )
-        else:
-            root_ref = slot.get("root_ref")
-            root_parts = str(root_ref or "").split("/")
-            launch_nonce = root_parts[-1] if len(root_parts) == 4 else ""
-            expected_root_ref = (
-                f"formal-slots/{campaign_id}/{ordinal}/{launch_nonce}"
-            )
-            identity = (
-                str(slot.get("session_id") or ""),
-                str(slot.get("task_id") or ""),
-                str(root_ref or ""),
-            )
-            identity_valid = all(
-                (
-                    re.fullmatch(r"[a-f0-9]{32}", launch_nonce) is not None,
-                    root_ref == expected_root_ref,
-                    slot.get("session_id")
-                    == f"sess_aox_formal_{launch_nonce}",
-                    slot.get("task_id")
-                    == f"task_aox_execution_{launch_nonce}",
-                    _CONTROL_ID_PATTERN.fullmatch(
-                        str(slot.get("session_id") or "")
-                    )
-                    is not None,
-                    _CONTROL_ID_PATTERN.fullmatch(
-                        str(slot.get("task_id") or "")
-                    )
-                    is not None,
-                )
-            )
-        if (
-            type(slot.get("ordinal")) is not int
-            or slot.get("ordinal") != ordinal
-            or not identity_valid
-            or identity in seen_control_identities
-            or slot.get("scope") != expected_scope
-            or not isinstance(request, dict)
-        ):
-            raise CutoverEvidenceError(
+        )
+        policy = slot.get("authority_policy")
+        if not identity_valid or not isinstance(policy, dict):
+            _reject(
                 "attempt_authority_slot_identity_invalid",
                 "AOX authority slot identities do not reproduce",
-                details={"ordinal": ordinal},
+                ordinal=ordinal,
             )
-        seen_control_identities.add(identity)
-        request_resources = (
-            request.get("max_micu"),
-            request.get("max_cost_microunits"),
-            request.get("max_wall_time_seconds"),
-        )
-        if any(
-            type(value) is not int or value < 0
-            for value in request_resources
-        ):
-            raise CutoverEvidenceError(
-                "attempt_authority_resource_invalid",
-                "attempt authority resources must be non-negative integers",
-                details={"ordinal": ordinal},
-            )
-        typed_resources = (
-            int(request_resources[0]),
-            int(request_resources[1]),
-            int(request_resources[2]),
-        )
+        seen.add(control_identity)
+        current_limits = _resource_limits(policy, ordinal=ordinal)
         if resource_limits is None:
-            resource_limits = typed_resources
-        elif typed_resources != resource_limits:
-            raise CutoverEvidenceError(
+            resource_limits = current_limits
+        elif current_limits != resource_limits:
+            _reject(
                 "attempt_authority_resource_mismatch",
-                "all AOX authority slots must carry identical resource ceilings",
-                details={"ordinal": ordinal},
+                "all authority slots must carry identical resource ceilings",
+                ordinal=ordinal,
             )
-        request_arguments = {
-            key: value
-            for key, value in request.items()
-            if key not in {"command", "policy_digest"}
+        expected_policy = {
+            "workflow_id": AOX_SELECTED_CHAIN_WORKFLOW_ID,
+            "grantor_kind": "operator",
+            "grantor_ref": AOX_ATTEMPT_AUTHORITY_GRANTOR_REF,
+            "allowed_scopes": [scope],
+            "allowed_effect_classes": ["hpc", "provider"],
+            "allowed_providers": [
+                f"aox-provider-routes@{expected_digests['identity_digest']}"
+            ],
+            "allowed_hpc_targets": [
+                f"aox-hpc-routes@{expected_digests['identity_digest']}"
+            ],
+            "max_attempts": 1,
+            "max_micu": policy.get("max_micu"),
+            "max_cost_microunits": policy.get("max_cost_microunits"),
+            "max_wall_time_seconds": policy.get("max_wall_time_seconds"),
+            "expires_at": normalized["expires_at"],
+            "idempotency_key": f"{campaign_id}:authority:{ordinal}",
         }
-        try:
-            envelope_id, request_digest, expected_request = (
-                scientific_attempt_authorization_identity(
-                    **request_arguments
-                )
-            )
-        except (TypeError, ValueError) as exc:
-            raise CutoverEvidenceError(
-                "attempt_authority_slot_request_invalid",
-                "AOX authority slot grant request is malformed",
-                details={"ordinal": ordinal},
-            ) from exc
         if (
-            request != expected_request
-            or request.get("session_id") != slot["session_id"]
-            or request.get("task_id") != slot["task_id"]
-            or request.get("campaign_id") != normalized["campaign_id"]
-            or request.get("workflow_id")
-            != AOX_SELECTED_CHAIN_WORKFLOW_ID
-            or request.get("root_ref") != expected_root_ref
-            or request.get("grantor_kind") != "operator"
-            or request.get("grantor_ref")
-            != AOX_ATTEMPT_AUTHORITY_GRANTOR_REF
-            or request.get("allowed_scopes") != [expected_scope]
-            or request.get("allowed_effect_classes") != ["hpc", "provider"]
-            or request.get("allowed_providers")
-            != [expected_provider_token]
-            or request.get("allowed_hpc_targets")
-            != [expected_hpc_target_token]
-            or request.get("max_attempts") != 1
-            or request.get("expires_at") != normalized["expires_at"]
-            or request.get("idempotency_key")
-            != f"{campaign_id}:authority:{ordinal}"
-            or slot.get("envelope_id") != envelope_id
-            or slot.get("request_digest") != request_digest
-            or envelope_id in seen_envelope_ids
+            set(policy) != _POLICY_FIELDS
+            or policy != expected_policy
+            or slot.get("authority_policy_digest") != canonical_digest(policy)
         ):
-            raise CutoverEvidenceError(
-                "attempt_authority_slot_request_mismatch",
-                "AOX authority slot does not reproduce its exact durable grant",
-                details={"ordinal": ordinal},
+            _reject(
+                "attempt_authority_slot_policy_mismatch",
+                "AOX authority slot does not reproduce its task-free policy",
+                ordinal=ordinal,
             )
-        seen_envelope_ids.add(envelope_id)
     return normalized
 
 
@@ -508,40 +377,11 @@ def load_aox_attempt_authority_plan(
     allowed_prerequisites: Mapping[str, object],
     architecture_qualification: Mapping[str, object],
 ) -> dict[str, Any]:
-    try:
-        metadata = path.lstat()
-    except OSError as exc:
-        raise CutoverEvidenceError(
-            "attempt_authority_plan_unreadable",
-            "authority plan is not a readable private regular file",
-        ) from exc
-    if (
-        stat.S_ISLNK(metadata.st_mode)
-        or not stat.S_ISREG(metadata.st_mode)
-        or stat.S_IMODE(metadata.st_mode) & 0o077
-    ):
-        raise CutoverEvidenceError(
-            "attempt_authority_plan_file_invalid",
-            "authority plan must be a private regular non-symlink file",
-        )
-    try:
-        content = path.read_bytes()
-        plan = json.loads(content)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise CutoverEvidenceError(
-            "attempt_authority_plan_unreadable",
-            "authority plan is not readable JSON",
-        ) from exc
-    if (
-        not isinstance(plan, dict)
-        or content != canonical_json_bytes(plan) + b"\n"
-    ):
-        raise CutoverEvidenceError(
-            "attempt_authority_plan_noncanonical",
-            "authority plan must use canonical JSON bytes",
-        )
+    value = _load_private_canonical(
+        path, unreadable_code="attempt_authority_plan_unreadable"
+    )
     return validate_aox_attempt_authority_plan(
-        plan,
+        value,
         identity=identity,
         allowed_prerequisites=allowed_prerequisites,
         architecture_qualification=architecture_qualification,
@@ -549,41 +389,49 @@ def load_aox_attempt_authority_plan(
 
 
 def publish_aox_attempt_authority_plan(
-    plan: Mapping[str, object],
-    path: Path,
+    plan: Mapping[str, object], path: Path
 ) -> None:
     if plan.get("schema_id") != AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID:
-        raise CutoverEvidenceError(
+        _reject(
             "attempt_authority_plan_class_mismatch",
-            "formal authority publisher rejects non-formal plans",
+            "formal publisher accepts only the current task-free plan",
         )
     publish_private_canonical_authority(
-        path,
-        canonical_json_bytes(dict(plan)) + b"\n",
+        path, canonical_json_bytes(dict(plan)) + b"\n"
     )
 
 
+def attempt_authority_consumption_path(plan_path: Path) -> Path:
+    return plan_path.with_name(f"{plan_path.name}.consumed.json")
+
+
+def attempt_authority_slot_claim_path(plan_path: Path, ordinal: int) -> Path:
+    if type(ordinal) is not int or ordinal not in {1, 2, 3}:
+        _reject(
+            "attempt_authority_slot_ordinal_invalid",
+            "formal authority ordinal must be exactly 1, 2, or 3",
+        )
+    return plan_path.with_name(f"{plan_path.name}.slot-{ordinal}.claimed.json")
+
+
 def consume_aox_attempt_authority_plan(
-    plan: Mapping[str, object],
-    *,
-    plan_path: Path,
-    path: Path,
+    plan: Mapping[str, object], *, plan_path: Path, path: Path
 ) -> dict[str, Any]:
     if (
         plan.get("schema_id") != AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID
         or not isinstance(plan.get("slots"), list)
         or len(plan["slots"]) != 3
     ):
-        raise CutoverEvidenceError(
+        _reject(
             "attempt_authority_plan_class_mismatch",
-            "formal authority consumption rejects non-formal plans",
+            "formal consumption accepts only the current three-slot plan",
         )
     expected_path = attempt_authority_consumption_path(plan_path)
     if path != expected_path:
-        raise CutoverEvidenceError(
+        _reject(
             "attempt_authority_consumption_target_mismatch",
-            "authority consumption must use the one deterministic sibling target",
-            details={"expected_file": expected_path.name},
+            "authority consumption must use its deterministic sibling target",
+            expected_file=expected_path.name,
         )
     receipt = {
         "schema_id": AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID,
@@ -594,24 +442,93 @@ def consume_aox_attempt_authority_plan(
         "consumption_file": path.name,
         "consumed_at": _utc_now(),
     }
-    publish_private_canonical_authority(
-        path,
-        canonical_json_bytes(receipt) + b"\n",
-    )
+    publish_private_canonical_authority(path, canonical_json_bytes(receipt) + b"\n")
     return receipt
 
 
-def attempt_authority_consumption_path(plan_path: Path) -> Path:
-    return plan_path.with_name(f"{plan_path.name}.consumed.json")
-
-
-def attempt_authority_slot_claim_path(plan_path: Path, ordinal: int) -> Path:
-    if type(ordinal) is not int or ordinal not in {1, 2, 3}:
-        raise CutoverEvidenceError(
-            "attempt_authority_slot_ordinal_invalid",
-            "formal authority slot ordinal must be exactly 1, 2, or 3",
+def load_aox_attempt_authority_consumption(
+    path: Path, *, plan: Mapping[str, object], plan_path: Path
+) -> dict[str, Any]:
+    if path != attempt_authority_consumption_path(plan_path):
+        _reject(
+            "attempt_authority_consumption_invalid",
+            "formal consumption must be its deterministic sibling",
         )
-    return plan_path.with_name(f"{plan_path.name}.slot-{ordinal}.claimed.json")
+    normalized = _load_private_canonical(
+        path, unreadable_code="attempt_authority_consumption_unreadable"
+    )
+    expected = {
+        "schema_id": AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID,
+        "run_class": AoxLiveRunClass.FORMAL_ACCEPTANCE.value,
+        "plan_schema_id": AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID,
+        "plan_digest": plan.get("plan_digest"),
+        "campaign_id": plan.get("campaign_id"),
+        "consumption_file": attempt_authority_consumption_path(plan_path).name,
+    }
+    if (
+        plan.get("schema_id") != AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID
+        or set(normalized) != _CONSUMPTION_FIELDS
+        or any(normalized.get(key) != value for key, value in expected.items())
+    ):
+        _reject(
+            "attempt_authority_consumption_invalid",
+            "formal consumption does not bind the current exact plan",
+        )
+    _timestamp(
+        normalized.get("consumed_at"),
+        code="attempt_authority_consumption_invalid",
+        label="consumed_at",
+    )
+    return normalized
+
+
+def _claim_identity(
+    *,
+    plan: Mapping[str, object],
+    slot: Mapping[str, object],
+    ordinal: int,
+    campaign_root: Path,
+) -> tuple[str, str]:
+    root_identity = canonical_digest(
+        {"campaign_root": str(campaign_root.expanduser().absolute())}
+    )
+    launch_id = "formal-slot-" + canonical_digest(
+        {
+            "campaign_id": plan.get("campaign_id"),
+            "ordinal": ordinal,
+            "session_id": slot.get("session_id"),
+            "root_ref": slot.get("root_ref"),
+            "authority_policy_digest": slot.get("authority_policy_digest"),
+            "campaign_root_identity": root_identity,
+        }
+    ).removeprefix("sha256:")[:24]
+    return launch_id, root_identity
+
+
+def _claim_payload(
+    *, plan: Mapping[str, object], consumption: Mapping[str, object],
+    slot: Mapping[str, object], plan_path: Path, ordinal: int,
+    campaign_root: Path, claimed_at: object,
+) -> dict[str, Any]:
+    launch_id, root_identity = _claim_identity(
+        plan=plan, slot=slot, ordinal=ordinal, campaign_root=campaign_root
+    )
+    return {
+        "schema_id": AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID,
+        "run_class": AoxLiveRunClass.FORMAL_ACCEPTANCE.value,
+        "campaign_id": plan.get("campaign_id"),
+        "plan_digest": plan.get("plan_digest"),
+        "consumption_digest": canonical_digest(dict(consumption)),
+        "ordinal": ordinal,
+        "attempt_kind": slot.get("attempt_kind"),
+        "launch_id": launch_id,
+        "session_id": slot.get("session_id"),
+        "root_ref": slot.get("root_ref"),
+        "authority_policy_digest": slot.get("authority_policy_digest"),
+        "campaign_root_identity": root_identity,
+        "claim_file": attempt_authority_slot_claim_path(plan_path, ordinal).name,
+        "claimed_at": claimed_at,
+    }
 
 
 def claim_aox_attempt_authority_slot(
@@ -622,7 +539,7 @@ def claim_aox_attempt_authority_slot(
     ordinal: int,
     campaign_root: Path,
 ) -> dict[str, Any]:
-    """Atomically claim one launch slot without inventing attempt or lane truth."""
+    """Atomically claim one task-free slot without inventing task truth."""
 
     slots = plan.get("slots")
     if (
@@ -631,186 +548,30 @@ def claim_aox_attempt_authority_slot(
         or len(slots) != 3
         or type(ordinal) is not int
         or ordinal not in {1, 2, 3}
+        or consumption.get("schema_id")
+        != AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID
+        or consumption.get("plan_digest") != plan.get("plan_digest")
     ):
-        raise CutoverEvidenceError(
+        _reject(
             "attempt_authority_slot_claim_invalid",
-            "formal slot claim requires one exact slot from a three-slot plan",
-        )
-    if consumption.get("plan_digest") != plan.get("plan_digest"):
-        raise CutoverEvidenceError(
-            "attempt_authority_slot_claim_invalid",
-            "formal slot claim consumption does not bind its plan",
+            "formal claim requires one current consumed three-slot plan",
         )
     slot = dict(slots[ordinal - 1])
     if slot.get("ordinal") != ordinal:
-        raise CutoverEvidenceError(
+        _reject(
             "attempt_authority_slot_claim_invalid",
             "formal slot ordinal does not reproduce its plan position",
         )
     claim_path = attempt_authority_slot_claim_path(plan_path, ordinal)
-    root_identity = canonical_digest(
-        {"campaign_root": str(campaign_root.expanduser().absolute())}
+    payload = _claim_payload(
+        plan=plan, consumption=consumption, slot=slot, plan_path=plan_path,
+        ordinal=ordinal, campaign_root=campaign_root, claimed_at=_utc_now(),
     )
-    launch_id = (
-        "formal-slot-"
-        + canonical_digest(
-            {
-                "campaign_id": plan["campaign_id"],
-                "ordinal": ordinal,
-                "session_id": slot["session_id"],
-                "task_id": slot["task_id"],
-                "root_ref": slot["root_ref"],
-                "envelope_id": slot["envelope_id"],
-                "campaign_root_identity": root_identity,
-            }
-        ).removeprefix("sha256:")[:24]
-    )
-    payload: dict[str, Any] = {
-        "schema_id": AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID,
-        "run_class": AoxLiveRunClass.FORMAL_ACCEPTANCE.value,
-        "campaign_id": plan["campaign_id"],
-        "plan_digest": plan["plan_digest"],
-        "consumption_digest": canonical_digest(dict(consumption)),
-        "ordinal": ordinal,
-        "attempt_kind": slot["attempt_kind"],
-        "launch_id": launch_id,
-        "session_id": slot["session_id"],
-        "task_id": slot["task_id"],
-        "root_ref": slot["root_ref"],
-        "envelope_id": slot["envelope_id"],
-        "request_digest": slot["request_digest"],
-        "campaign_root_identity": root_identity,
-        "claim_file": claim_path.name,
-        "claimed_at": _utc_now(),
-    }
     claim = {**payload, "claim_digest": canonical_digest(payload)}
     publish_private_canonical_authority(
-        claim_path,
-        canonical_json_bytes(claim) + b"\n",
+        claim_path, canonical_json_bytes(claim) + b"\n"
     )
     return claim
-
-
-def validate_aox_attempt_authority_slot_claim(
-    claim: Mapping[str, object],
-    *,
-    plan: Mapping[str, object],
-    consumption: Mapping[str, object],
-    plan_path: Path,
-    ordinal: int,
-    campaign_root: Path,
-) -> dict[str, Any]:
-    normalized = dict(claim)
-    slots = plan.get("slots")
-    slot = (
-        dict(slots[ordinal - 1])
-        if isinstance(slots, list) and len(slots) == 3 and ordinal in {1, 2, 3}
-        else {}
-    )
-    payload = {key: value for key, value in normalized.items() if key != "claim_digest"}
-    expected_path = attempt_authority_slot_claim_path(plan_path, ordinal)
-    current_fields = {
-        "schema_id",
-        "run_class",
-        "campaign_id",
-        "plan_digest",
-        "consumption_digest",
-        "ordinal",
-        "attempt_kind",
-        "launch_id",
-        "session_id",
-        "task_id",
-        "root_ref",
-        "envelope_id",
-        "request_digest",
-        "campaign_root_identity",
-        "claim_file",
-        "claimed_at",
-        "claim_digest",
-    }
-    legacy_fields = (current_fields - {"launch_id", "root_ref"}) | {
-        "attempt_id",
-        "lane_id",
-    }
-    legacy = normalized.get("schema_id") == _LEGACY_SLOT_CLAIM_SCHEMA_ID
-    schema_pair_valid = (
-        legacy and plan.get("schema_id") == _LEGACY_PLAN_SCHEMA_ID
-    ) or (
-        not legacy
-        and normalized.get("schema_id")
-        == AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID
-        and plan.get("schema_id") == AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID
-    )
-    expected_fields = legacy_fields if legacy else current_fields
-    expected_bindings = {
-        "campaign_id": plan.get("campaign_id"),
-        "plan_digest": plan.get("plan_digest"),
-        "consumption_digest": canonical_digest(dict(consumption)),
-        "ordinal": ordinal,
-        "attempt_kind": slot.get("attempt_kind"),
-        "session_id": slot.get("session_id"),
-        "task_id": slot.get("task_id"),
-        "envelope_id": slot.get("envelope_id"),
-        "request_digest": slot.get("request_digest"),
-        "campaign_root_identity": canonical_digest(
-            {"campaign_root": str(campaign_root.expanduser().absolute())}
-        ),
-        "claim_file": expected_path.name,
-    }
-    if legacy:
-        expected_bindings.update(
-            {
-                "attempt_id": slot.get("attempt_id"),
-                "lane_id": slot.get("lane_id"),
-            }
-        )
-    else:
-        expected_bindings.update(
-            {
-                "launch_id": (
-                    "formal-slot-"
-                    + canonical_digest(
-                        {
-                            "campaign_id": plan.get("campaign_id"),
-                            "ordinal": ordinal,
-                            "session_id": slot.get("session_id"),
-                            "task_id": slot.get("task_id"),
-                            "root_ref": slot.get("root_ref"),
-                            "envelope_id": slot.get("envelope_id"),
-                            "campaign_root_identity": canonical_digest(
-                                {
-                                    "campaign_root": str(
-                                        campaign_root.expanduser().absolute()
-                                    )
-                                }
-                            ),
-                        }
-                    ).removeprefix("sha256:")[:24]
-                ),
-                "root_ref": slot.get("root_ref"),
-            }
-        )
-    if not all(
-        (
-            set(normalized) == expected_fields,
-            schema_pair_valid,
-            normalized.get("run_class") == AoxLiveRunClass.FORMAL_ACCEPTANCE.value,
-            all(
-                normalized.get(key) == value for key, value in expected_bindings.items()
-            ),
-            normalized.get("claim_digest") == canonical_digest(payload),
-        )
-    ):
-        raise CutoverEvidenceError(
-            "attempt_authority_slot_claim_invalid",
-            "formal slot claim does not bind its exact plan slot and campaign root",
-        )
-    _parse_timestamp(
-        normalized.get("claimed_at"),
-        code="attempt_authority_slot_claim_invalid",
-        label="claimed_at",
-    )
-    return normalized
 
 
 def load_aox_attempt_authority_slot_claim(
@@ -822,157 +583,74 @@ def load_aox_attempt_authority_slot_claim(
     ordinal: int,
     campaign_root: Path,
 ) -> dict[str, Any]:
-    expected_path = attempt_authority_slot_claim_path(plan_path, ordinal)
-    try:
-        metadata = path.lstat()
-        content = path.read_bytes()
-        value = json.loads(content)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise CutoverEvidenceError(
-            "attempt_authority_slot_claim_unreadable",
-            "formal slot claim is not readable canonical JSON",
-        ) from exc
-    if not all(
-        (
-            path == expected_path,
-            stat.S_ISREG(metadata.st_mode),
-            not stat.S_ISLNK(metadata.st_mode),
-            stat.S_IMODE(metadata.st_mode) & 0o077 == 0,
-            isinstance(value, dict),
-            isinstance(value, dict) and content == canonical_json_bytes(value) + b"\n",
-        )
-    ):
-        raise CutoverEvidenceError(
+    if path != attempt_authority_slot_claim_path(plan_path, ordinal):
+        _reject(
             "attempt_authority_slot_claim_invalid",
-            "formal slot claim must be its exact private canonical sibling",
+            "formal claim must be its deterministic sibling",
         )
-    return validate_aox_attempt_authority_slot_claim(
-        value,
-        plan=plan,
-        consumption=consumption,
-        plan_path=plan_path,
-        ordinal=ordinal,
-        campaign_root=campaign_root,
+    normalized = _load_private_canonical(
+        path, unreadable_code="attempt_authority_slot_claim_unreadable"
     )
-
-
-def validate_aox_attempt_authority_consumption(
-    receipt: Mapping[str, object],
-    *,
-    plan: Mapping[str, object],
-    plan_path: Path,
-) -> dict[str, Any]:
-    normalized = dict(receipt)
-    expected_path = attempt_authority_consumption_path(plan_path)
-    plan_schema_id = plan.get("schema_id")
-    expected_receipt_schema = (
-        _LEGACY_CONSUMPTION_SCHEMA_ID
-        if plan_schema_id == _LEGACY_PLAN_SCHEMA_ID
-        else AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID
+    slots = plan.get("slots")
+    slot = (
+        dict(slots[ordinal - 1])
+        if isinstance(slots, list) and len(slots) == 3 and ordinal in {1, 2, 3}
+        else {}
     )
-    if (
-        plan_schema_id
-        not in {AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID, _LEGACY_PLAN_SCHEMA_ID}
-        or not isinstance(plan.get("slots"), list)
-        or len(plan["slots"]) != 3
-    ):
-        raise CutoverEvidenceError(
-            "attempt_authority_plan_class_mismatch",
-            "formal consumption validation rejects non-formal plans",
+    expected = _claim_payload(
+        plan=plan, consumption=consumption, slot=slot, plan_path=plan_path,
+        ordinal=ordinal, campaign_root=campaign_root,
+        claimed_at=normalized.get("claimed_at"),
+    )
+    payload = {
+        key: value for key, value in normalized.items() if key != "claim_digest"
+    }
+    valid = all(
+        (
+            plan.get("schema_id") == AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID,
+            consumption.get("schema_id")
+            == AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID,
+            set(normalized) == _CLAIM_FIELDS,
+            payload == expected,
+            normalized.get("claim_digest") == canonical_digest(payload),
         )
-    if (
-        set(normalized)
-        != {
-            "schema_id",
-            "run_class",
-            "plan_schema_id",
-            "plan_digest",
-            "campaign_id",
-            "consumption_file",
-            "consumed_at",
-        }
-        or normalized.get("schema_id") != expected_receipt_schema
-        or normalized.get("run_class")
-        != AoxLiveRunClass.FORMAL_ACCEPTANCE.value
-        or normalized.get("plan_schema_id") != plan_schema_id
-        or normalized.get("plan_digest") != plan.get("plan_digest")
-        or normalized.get("campaign_id") != plan.get("campaign_id")
-        or normalized.get("consumption_file") != expected_path.name
-    ):
-        raise CutoverEvidenceError(
-            "attempt_authority_consumption_invalid",
-            "formal consumption receipt does not bind its exact plan class",
+    )
+    if not valid:
+        _reject(
+            "attempt_authority_slot_claim_invalid",
+            "formal claim does not bind its current exact slot and campaign root",
         )
-    _parse_timestamp(
-        normalized.get("consumed_at"),
-        code="attempt_authority_consumption_invalid",
-        label="consumed_at",
+    _timestamp(
+        normalized.get("claimed_at"),
+        code="attempt_authority_slot_claim_invalid",
+        label="claimed_at",
     )
     return normalized
 
 
-def load_aox_attempt_authority_consumption(
-    path: Path,
-    *,
-    plan: Mapping[str, object],
-    plan_path: Path,
-) -> dict[str, Any]:
-    expected_path = attempt_authority_consumption_path(plan_path)
-    try:
-        metadata = path.lstat()
-        content = path.read_bytes()
-        value = json.loads(content)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise CutoverEvidenceError(
-            "attempt_authority_consumption_unreadable",
-            "formal authority consumption is not readable canonical JSON",
-        ) from exc
-    if (
-        path != expected_path
-        or stat.S_ISLNK(metadata.st_mode)
-        or not stat.S_ISREG(metadata.st_mode)
-        or stat.S_IMODE(metadata.st_mode) & 0o077
-        or not isinstance(value, dict)
-        or content != canonical_json_bytes(value) + b"\n"
-    ):
-        raise CutoverEvidenceError(
-            "attempt_authority_consumption_invalid",
-            "formal authority consumption must be its exact private canonical sibling",
-        )
-    return validate_aox_attempt_authority_consumption(
-        value,
-        plan=plan,
-        plan_path=plan_path,
+def authority_grant_identity(
+    slot: Mapping[str, object], *, campaign_id: str, task_id: str
+) -> tuple[str, str, dict[str, Any]]:
+    """Late-bind one consumed task-free slot to a canonical execution task."""
+
+    return scientific_attempt_authorization_identity(
+        session_id=str(slot["session_id"]),
+        task_id=task_id,
+        campaign_id=campaign_id,
+        root_ref=str(slot["root_ref"]),
+        **dict(slot["authority_policy"]),
     )
 
 
-def authority_grant_payload(slot: Mapping[str, object]) -> dict[str, Any]:
-    """Project the canonical request into the public Host grant payload."""
+def authority_grant_payload(
+    slot: Mapping[str, object], *, campaign_id: str, task_id: str
+) -> dict[str, Any]:
+    """Project a late-bound request into the public Host payload."""
 
-    request = dict(slot["authority_request"])
-    request.pop("command")
-    request.pop("session_id")
-    request.pop("grantor_ref")
-    request.pop("idempotency_key")
+    _, _, canonical_request = authority_grant_identity(
+        slot, campaign_id=campaign_id, task_id=task_id
+    )
+    request = dict(canonical_request)
+    for key in ("command", "session_id", "grantor_ref", "idempotency_key"):
+        request.pop(key)
     return request
-
-
-__all__ = [
-    "AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID",
-    "AOX_ATTEMPT_AUTHORITY_GRANTOR_REF",
-    "AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID",
-    "AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID",
-    "attempt_authority_consumption_path",
-    "attempt_authority_slot_claim_path",
-    "authority_grant_payload",
-    "build_aox_attempt_authority_plan",
-    "claim_aox_attempt_authority_slot",
-    "consume_aox_attempt_authority_plan",
-    "load_aox_attempt_authority_plan",
-    "load_aox_attempt_authority_consumption",
-    "load_aox_attempt_authority_slot_claim",
-    "publish_aox_attempt_authority_plan",
-    "validate_aox_attempt_authority_consumption",
-    "validate_aox_attempt_authority_plan",
-    "validate_aox_attempt_authority_slot_claim",
-]

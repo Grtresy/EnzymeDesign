@@ -10,8 +10,11 @@ from openzyme_core import RuntimeCommandExecutionResult
 from openzyme_core import RuntimeCommandWorker
 from openzyme_core import RuntimeDrainCoreReceipt
 from openzyme_core import RuntimeDrainProjectionOutcome
+from openzyme_core import MutationScopeService
+from openzyme_core import MutationWriterTurnFactory
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import connect_sqlite
+from openzyme_core import current_mutation_write_authority
 from openzyme_core import project_runtime_command
 from openzyme_core import runtime_command_pre_core_failure_summary
 from openzyme_core.runtime_drain_receipts import (
@@ -20,6 +23,8 @@ from openzyme_core.runtime_drain_receipts import (
 from openzyme_domain import RuntimeCommandRecord
 from openzyme_domain import RuntimeCommandStatus
 from openzyme_domain import RuntimeCommandType
+from openzyme_domain import MutationScopeKind
+from openzyme_domain import MutationWriterKind
 from openzyme_domain import Session
 
 
@@ -44,6 +49,17 @@ def _provider(tmp_path):  # type: ignore[no-untyped-def]
 def _repository_scope(provider):  # type: ignore[no-untyped-def]
     with provider.connection_scope() as scope:
         yield scope.repositories
+
+
+@contextmanager
+def _authority_aware_repository_scope(provider):  # type: ignore[no-untyped-def]
+    with provider.connection_scope() as scope:
+        authority = current_mutation_write_authority()
+        if authority is None:
+            yield scope.repositories
+        else:
+            with scope.repositories.mutation_write_authority(authority):
+                yield scope.repositories
 
 
 def _command(*, command_id: str = "command_001") -> RuntimeCommandRecord:
@@ -191,6 +207,58 @@ def test_runtime_command_worker_claims_executes_and_sanitizes_result(tmp_path) -
     )
     assert [event.event_type for event in events] == ["runtime.command.finished"]
     assert "secret-worker" not in str(events[0].payload)
+
+
+def test_runtime_command_late_binds_terminal_writer_when_execution_opens_scope(
+    tmp_path,  # type: ignore[no-untyped-def]
+) -> None:
+    provider = _provider(tmp_path)
+    command = _command(command_id="command_opens_mutation_scope")
+    with provider.write() as unit_of_work:
+        unit_of_work.repositories.runtime_commands.add(command)
+
+    def execute(claimed: RuntimeCommandRecord) -> RuntimeCommandExecutionResult:
+        with _authority_aware_repository_scope(provider) as repositories:
+            MutationScopeService(repositories).open_scope(
+                session_id=claimed.session_id,
+                scope_kind=MutationScopeKind.SESSION,
+                scope_ref="runtime-command-created-scope",
+            )
+        return RuntimeCommandExecutionResult(
+            status=RuntimeCommandStatus.COMPLETED,
+            bounded_outcome_summary=_completed_outcome_summary(
+                processed_signal_count=1,
+                suspended=False,
+            ),
+        )
+
+    writer_turns = MutationWriterTurnFactory(
+        repository_scope_factory=lambda: _authority_aware_repository_scope(provider)
+    )
+    outcome = RuntimeCommandWorker(
+        repository_scope_factory=lambda: _authority_aware_repository_scope(provider),
+        executor=execute,
+        worker_id="runtime-worker:late-terminal-writer",
+        clock=lambda: "2026-07-21T00:00:01+00:00",
+        mutation_writer_scope_factory=writer_turns.open,
+    ).run_once()
+
+    assert outcome.status == RuntimeCommandStatus.COMPLETED.value
+    with provider.read() as unit_of_work:
+        repositories = unit_of_work.repositories
+        stored = repositories.runtime_commands.get(command.command_id)
+        scopes = repositories.mutation_scopes.list_by_session(command.session_id)
+        writers = repositories.mutation_writers.list_all(scopes[0].scope_id)
+        events = repositories.durable_events.list_by_session(command.session_id)
+    assert stored is not None
+    assert stored.status is RuntimeCommandStatus.COMPLETED
+    assert [event.event_type for event in events] == ["runtime.command.finished"]
+    assert len(writers) == 1
+    assert writers[0].owner_kind is MutationWriterKind.RUNTIME_COMMAND
+    assert writers[0].owner_ref == (
+        f"runtime-command:{command.command_id}:terminal-settlement"
+    )
+    assert writers[0].state.is_terminal
 
 
 def test_runtime_command_worker_pre_core_exception_uses_v2_zero_receipt(

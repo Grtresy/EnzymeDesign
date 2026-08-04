@@ -52,10 +52,8 @@ from openzyme_domain import SessionReportStatus
 from openzyme_domain import SessionStatus
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
-from openzyme_host_api.aox_cutover_tool_policy import AOX_REPORT_TASK_ID
-from openzyme_host_api.aox_cutover_tool_policy import AOX_RESEARCH_TASK_ID
 from openzyme_host_api.aox_cutover_tool_policy import (
-    AoxCutoverFormalToolPrecondition,
+    AoxFinalizationToolPrecondition,
 )
 from openzyme_host_api.aox_scientific_contract import (
     AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY,
@@ -73,6 +71,8 @@ from openzyme_runtime import ToolInvocation
 
 SESSION_ID = "sess_formal_policy"
 EXECUTION_TASK_ID = "aox_execution_cutover_policy"
+AOX_RESEARCH_TASK_ID = "agent_owned_research_task"
+AOX_REPORT_TASK_ID = "agent_owned_reporting_task"
 FINAL_RESPONSE = "AOX formal workflow completed with a source-linked report."
 FINALIZATION_RECEIPT_ID = "aox_finalization_test_receipt"
 
@@ -257,10 +257,9 @@ def _close_invocation() -> ToolInvocation:
     )
 
 
-def _positive_policy() -> AoxCutoverFormalToolPrecondition:
-    return AoxCutoverFormalToolPrecondition(
+def _positive_policy() -> AoxFinalizationToolPrecondition:
+    return AoxFinalizationToolPrecondition(
         session_id=SESSION_ID,
-        execution_task_id=EXECUTION_TASK_ID,
         attempt_kind="positive",
     )
 
@@ -392,80 +391,49 @@ def test_cutover_policy_blocks_report_handoff_until_execution_completed(
     assert result.details["effect_certainty"] == "no_effect"
 
 
-def test_cutover_policy_rejects_noncanonical_task_creation_without_effect() -> None:
-    policy = _positive_policy()
+@pytest.mark.parametrize("existing_tasks", [(), _tasks()])
+def test_finalization_policy_never_intercepts_agent_owned_task_creation(
+    existing_tasks: tuple[SimpleNamespace, ...],
+) -> None:
     invocation = ToolInvocation(
-        call_id="call_task",
+        call_id="call_agent_owned_task",
         tool_name="task.create",
         arguments={
-            "task_id": f"{AOX_REPORT_TASK_ID}_retry",
-            "subject": "Replacement report",
-            "kind": "reporting",
-        },
-    )
-
-    result = policy(
-        _context(_repositories(tasks=())),
-        _step(),  # type: ignore[arg-type]
-        invocation,
-    )
-
-    assert result is not None
-    assert result.ok is False
-    assert result.error_code == "aox_cutover_task_set_violation"
-    assert result.details["effect_certainty"] == "no_effect"
-    assert result.details["retry_eligibility"] == "same_phase_safe"
-    assert result.details["expected_task_ids"] == sorted(
-        {
-            AOX_RESEARCH_TASK_ID,
-            EXECUTION_TASK_ID,
-            AOX_REPORT_TASK_ID,
-        }
-    )
-
-
-def test_cutover_policy_rejects_wrong_kind_for_canonical_task() -> None:
-    invocation = ToolInvocation(
-        call_id="call_wrong_kind",
-        tool_name="task.create",
-        arguments={
-            "task_id": AOX_RESEARCH_TASK_ID,
-            "subject": "Research",
+            "subject": "Agent-selected task identity",
             "kind": "execution",
         },
     )
 
     result = _positive_policy()(
-        _context(_repositories(tasks=())),
+        _context(_repositories(tasks=existing_tasks)),
         _step(),  # type: ignore[arg-type]
         invocation,
     )
 
-    assert result is not None
-    assert result.error_code == "aox_cutover_task_kind_violation"
-    assert result.details["expected_kind"] == "research"
+    assert result is None
 
 
-def test_cutover_policy_rejects_duplicate_canonical_task() -> None:
-    tasks = _tasks()
-    invocation = ToolInvocation(
-        call_id="call_duplicate",
-        tool_name="task.create",
-        arguments={
-            "task_id": AOX_RESEARCH_TASK_ID,
-            "subject": "Duplicate research",
-            "kind": "research",
-        },
-    )
+@pytest.mark.parametrize("tool_name", ["task.finish", "task.delegate"])
+def test_finalization_policy_leaves_research_strategy_unconstrained(
+    tool_name: str,
+) -> None:
+    research = _tasks()[:1]
+    arguments: dict[str, object] = {"task_id": AOX_RESEARCH_TASK_ID}
+    if tool_name == "task.finish":
+        arguments.update({"status": "completed", "evidence_refs": []})
 
     result = _positive_policy()(
-        _context(_repositories(tasks=tasks)),
-        _step(),  # type: ignore[arg-type]
-        invocation,
+        _context(_repositories(tasks=research)),
+        _step(actor_kind="teammate", agent_id="agent_researcher"),  # type: ignore[arg-type]
+        ToolInvocation(
+            call_id="call_agent_owned_research_progress",
+            tool_name=tool_name,
+            arguments=arguments,
+            task_id=AOX_RESEARCH_TASK_ID,
+        ),
     )
 
-    assert result is not None
-    assert result.error_code == "aox_cutover_task_already_exists"
+    assert result is None
 
 
 def test_cutover_policy_delegates_close_before_positive_task_exits_to_core() -> None:
@@ -596,9 +564,8 @@ def test_cutover_policy_leaves_preselection_execution_blockers_generic() -> None
 
 
 def test_cutover_policy_leaves_fault_execution_exits_generic() -> None:
-    policy = AoxCutoverFormalToolPrecondition(
+    policy = AoxFinalizationToolPrecondition(
         session_id=SESSION_ID,
-        execution_task_id=EXECUTION_TASK_ID,
         attempt_kind="fault",
     )
     result = policy(
@@ -622,7 +589,7 @@ def test_cutover_policy_leaves_fault_execution_exits_generic() -> None:
     assert result is None
 
 
-def test_cutover_policy_does_not_project_task_topology_into_close() -> None:
+def test_cutover_policy_requires_unique_task_kinds_only_at_finalization() -> None:
     extra_tasks = (
         *_tasks(),
         _record(
@@ -637,7 +604,8 @@ def test_cutover_policy_does_not_project_task_topology_into_close() -> None:
         _step(),  # type: ignore[arg-type]
         _close_invocation(),
     )
-    assert extra_result is None
+    assert extra_result is not None
+    assert extra_result.error_code == "aox_finalization_task_set_invalid"
 
     wrong_assignment = list(_tasks())
     wrong_assignment[1] = _record(
@@ -827,9 +795,8 @@ def test_cutover_policy_does_not_require_final_response_on_close() -> None:
 
 
 def test_cutover_policy_allows_closed_fault_without_success_report() -> None:
-    policy = AoxCutoverFormalToolPrecondition(
+    policy = AoxFinalizationToolPrecondition(
         session_id=SESSION_ID,
-        execution_task_id=EXECUTION_TASK_ID,
         attempt_kind="fault",
     )
     tasks = _tasks(
@@ -856,9 +823,8 @@ def test_cutover_policy_allows_closed_fault_without_success_report() -> None:
 
 
 def test_cutover_policy_does_not_project_fault_report_state_into_close() -> None:
-    policy = AoxCutoverFormalToolPrecondition(
+    policy = AoxFinalizationToolPrecondition(
         session_id=SESSION_ID,
-        execution_task_id=EXECUTION_TASK_ID,
         attempt_kind="fault",
     )
     tasks = _tasks(
@@ -1310,9 +1276,8 @@ def test_repository_backed_positive_close_retires_turn_and_host_observes_closure
         expected_universe_digest=universe.universe_digest,
     )
 
-    lifecycle_policy = AoxCutoverFormalToolPrecondition(
+    lifecycle_policy = AoxFinalizationToolPrecondition(
         session_id=SESSION_ID,
-        execution_task_id=EXECUTION_TASK_ID,
         attempt_kind="positive",
     )
     executor_step = _step(

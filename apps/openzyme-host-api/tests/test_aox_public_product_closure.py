@@ -7,14 +7,14 @@ import pytest
 
 from openzyme_core import canonical_digest
 from openzyme_pipeline import aox_reference
-from openzyme_host_api.aox_cutover_tool_policy import AOX_REPORT_TASK_ID
-from openzyme_host_api.aox_cutover_tool_policy import AOX_RESEARCH_TASK_ID
 from openzyme_host_api.aox_public_product_closure import (
     AoxPublicProductClosureError,
-)
-from openzyme_host_api.aox_public_product_closure import (
     validate_aox_public_product_closure,
 )
+
+
+AOX_RESEARCH_TASK_ID = "agent_owned_research_task"
+AOX_REPORT_TASK_ID = "agent_owned_reporting_task"
 
 
 def _content_digest(content: str) -> str:

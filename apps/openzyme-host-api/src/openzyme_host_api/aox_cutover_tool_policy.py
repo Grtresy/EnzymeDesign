@@ -15,9 +15,7 @@ from .aox_bundle_finalizer import (
     validate_persisted_aox_finalization_receipt,
 )
 
-AOX_CUTOVER_TOOL_PRECONDITION_ID = "aox_cutover_formal_tool_precondition@6"
-AOX_RESEARCH_TASK_ID = "aox_research_pubmed_evidence"
-AOX_REPORT_TASK_ID = "aox_final_source_linked_report"
+AOX_CUTOVER_TOOL_PRECONDITION_ID = "aox_finalization_tool_precondition@1"
 
 def _status_value(record: object) -> str:
     status = getattr(record, "status", None)
@@ -238,56 +236,22 @@ def _rejection(
 
 
 @dataclass(frozen=True, slots=True)
-class AoxCutoverFormalToolPrecondition:
-    """Fail-closed runtime guard for one authority-bound formal session.
+class AoxFinalizationToolPrecondition:
+    """Guard only receipt-bound terminal handoff for one formal session.
 
-    This guard does not choose task strategy or scientific operations. It
-    presents the pinned task identity, sealed-operation-universe, and durable
-    source-linked reporting constraints. Canonical scientific closure ownership
-    and lifecycle ordering are enforced by Core rather than duplicated here.
+    Task identities remain agent-owned and canonical.  This precondition never
+    observes or constrains ``task.create``; it derives the exact three-task set
+    from Host state only when a positive run attempts scientific/report closure.
     """
 
     session_id: str
-    execution_task_id: str
     attempt_kind: Literal["positive", "fault"]
-    research_task_id: str = AOX_RESEARCH_TASK_ID
-    report_task_id: str = AOX_REPORT_TASK_ID
 
     def __post_init__(self) -> None:
         if not self.session_id.strip():
             raise ValueError("formal cutover session_id must be non-empty")
-        if not all(
-            task_id.strip()
-            for task_id in (
-                self.research_task_id,
-                self.execution_task_id,
-                self.report_task_id,
-            )
-        ):
-            raise ValueError("formal cutover task ids must be non-empty")
-        if (
-            len(
-                {
-                    self.research_task_id,
-                    self.execution_task_id,
-                    self.report_task_id,
-                }
-            )
-            != 3
-        ):
-            raise ValueError("formal cutover execution task id must be role-distinct")
         if self.attempt_kind not in {"positive", "fault"}:
             raise ValueError("formal cutover attempt_kind must be positive or fault")
-
-    @property
-    def expected_task_contracts(
-        self,
-    ) -> dict[str, tuple[str, str]]:
-        return {
-            self.research_task_id: ("research", "researcher"),
-            self.execution_task_id: ("execution", "executor"),
-            self.report_task_id: ("reporting", "reporter"),
-        }
 
     def __call__(
         self,
@@ -295,18 +259,9 @@ class AoxCutoverFormalToolPrecondition:
         step_context: AgentStepContext,
         invocation: ToolInvocation,
     ) -> ToolResult | None:
-        if step_context.session_id != self.session_id:
+        if step_context.session_id != self.session_id or self.attempt_kind != "positive":
             return None
-        if invocation.tool_name == "task.create":
-            return self._check_task_create(context, invocation)
-        if self.attempt_kind == "positive":
-            finalization_result = self._check_finalization_gate(
-                context,
-                invocation,
-            )
-            if finalization_result is not None:
-                return finalization_result
-        return None
+        return self._check_finalization_gate(context, invocation)
 
     def _check_finalization_gate(
         self,
@@ -317,6 +272,36 @@ class AoxCutoverFormalToolPrecondition:
             invocation.arguments.get("task_id") or invocation.task_id or ""
         )
         requested_status = str(invocation.arguments.get("status") or "")
+        requested_task = context.repositories.tasks.get(requested_task_id)
+        requested_kind = getattr(requested_task, "kind", None)
+        potentially_terminal = invocation.tool_name in {
+            "scientific.attempt.close",
+            "report.publish",
+        } or (
+            invocation.tool_name == "task.finish"
+            and requested_status == "completed"
+            and requested_kind in {"execution", "reporting"}
+        ) or (
+            invocation.tool_name == "task.delegate" and requested_kind == "reporting"
+        )
+        if not potentially_terminal:
+            return None
+        tasks = context.repositories.tasks.list_by_session(self.session_id)
+        by_kind = {
+            kind: [task.task_id for task in tasks if task.kind == kind]
+            for kind in ("research", "execution", "reporting")
+        }
+        if len(tasks) != 3 or any(len(values) != 1 for values in by_kind.values()):
+            return _rejection(
+                invocation,
+                code="aox_finalization_task_set_invalid",
+                summary="AOX finalization requires exactly one task of each role.",
+                hint="Repair the agent-owned public task graph before terminal handoff.",
+                details={"task_count": len(tasks), "task_ids_by_kind": by_kind},
+            )
+        execution_task_id, report_task_id = (
+            by_kind[kind][0] for kind in ("execution", "reporting")
+        )
         requires_receipt = False
         receipt_id: str | None = None
         attempt_id: str | None = None
@@ -325,25 +310,17 @@ class AoxCutoverFormalToolPrecondition:
 
         if invocation.tool_name == "scientific.attempt.close":
             requires_receipt = True
-            receipt_id = str(
-                invocation.arguments.get("finalization_receipt_id") or ""
-            )
+            receipt_id = str(invocation.arguments.get("finalization_receipt_id") or "")
             attempt_id = str(invocation.arguments.get("attempt_id") or "")
-            selection_id = str(
-                invocation.arguments.get("selection_id") or ""
-            )
+            selection_id = str(invocation.arguments.get("selection_id") or "")
         elif (
             invocation.tool_name == "task.finish"
             and requested_status == "completed"
-            and requested_task_id
-            in {self.execution_task_id, self.report_task_id}
+            and requested_task_id in {execution_task_id, report_task_id}
         ):
             requires_receipt = True
             evidence_refs = tuple(
-                str(item)
-                for item in (
-                    invocation.arguments.get("evidence_refs") or []
-                )
+                str(item) for item in (invocation.arguments.get("evidence_refs") or [])
             )
             finalization_refs = sorted(
                 {
@@ -366,17 +343,12 @@ class AoxCutoverFormalToolPrecondition:
                     ),
                     details={
                         "task_id": requested_task_id,
-                        "observed_finalization_receipt_ids": (
-                            finalization_refs
-                        ),
+                        "observed_finalization_receipt_ids": finalization_refs,
                     },
                 )
             if finalization_refs:
                 receipt_id = finalization_refs[0]
-        elif (
-            invocation.tool_name == "task.delegate"
-            and requested_task_id == self.report_task_id
-        ):
+        elif invocation.tool_name == "task.delegate" and requested_task_id == report_task_id:
             requires_receipt = True
         elif invocation.tool_name == "report.publish":
             requires_receipt = True
@@ -398,7 +370,7 @@ class AoxCutoverFormalToolPrecondition:
                     "retry closure with finalization_receipt_id from its result."
                 ),
                 details={
-                    "execution_task_id": self.execution_task_id,
+                    "execution_task_id": execution_task_id,
                     "requested_attempt_id": attempt_id or None,
                     "requested_selection_id": selection_id or None,
                 },
@@ -407,7 +379,7 @@ class AoxCutoverFormalToolPrecondition:
             payload = validate_persisted_aox_finalization_receipt(
                 context.repositories,
                 session_id=self.session_id,
-                execution_task_id=self.execution_task_id,
+                execution_task_id=execution_task_id,
                 receipt_id=receipt_id,
                 attempt_id=attempt_id,
                 selection_id=selection_id,
@@ -418,10 +390,7 @@ class AoxCutoverFormalToolPrecondition:
                 code=exc.error_code,
                 summary=str(exc),
                 hint=exc.hint,
-                details={
-                    "execution_task_id": self.execution_task_id,
-                    **dict(exc.details),
-                },
+                details={"execution_task_id": execution_task_id, **dict(exc.details)},
             )
         persisted_receipt_id = str(payload["receipt_id"])
         if invocation.tool_name == "task.finish" and (
@@ -440,23 +409,18 @@ class AoxCutoverFormalToolPrecondition:
                 ),
                 details={
                     "task_id": requested_task_id,
-                    "required_evidence_ref": (
-                        f"document:{persisted_receipt_id}"
-                    ),
+                    "required_evidence_ref": f"document:{persisted_receipt_id}",
                     "observed_evidence_refs": list(evidence_refs),
                 },
             )
         report_progress = (
-            invocation.tool_name == "task.delegate"
-            and requested_task_id == self.report_task_id
+            invocation.tool_name == "task.delegate" and requested_task_id == report_task_id
         ) or invocation.tool_name == "report.publish" or (
             invocation.tool_name == "task.finish"
-            and requested_task_id == self.report_task_id
+            and requested_task_id == report_task_id
             and requested_status == "completed"
         )
-        execution_task = context.repositories.tasks.get(
-            self.execution_task_id
-        )
+        execution_task = context.repositories.tasks.get(execution_task_id)
         if report_progress and _status_value(execution_task) != "completed":
             return _rejection(
                 invocation,
@@ -471,81 +435,9 @@ class AoxCutoverFormalToolPrecondition:
                     "then retry report handoff."
                 ),
                 details={
-                    "execution_task_id": self.execution_task_id,
-                    "execution_task_status": _status_value(execution_task)
-                    or None,
+                    "execution_task_id": execution_task_id,
+                    "execution_task_status": _status_value(execution_task) or None,
                     "receipt_id": persisted_receipt_id,
                 },
             )
         return None
-
-    def _check_task_create(
-        self,
-        context: Any,
-        invocation: ToolInvocation,
-    ) -> ToolResult | None:
-        expected = self.expected_task_contracts
-        raw_task_id = invocation.arguments.get("task_id")
-        task_id = raw_task_id if isinstance(raw_task_id, str) else ""
-        if task_id not in expected:
-            return _rejection(
-                invocation,
-                code="aox_cutover_task_set_violation",
-                summary=(
-                    "AOX cutover task creation was rejected because the task "
-                    "id is outside the exact authority-bound task set."
-                ),
-                hint=(
-                    "Call task.list, then create only a missing task using one "
-                    "of expected_task_ids; advance an existing member instead "
-                    "of creating a suffixed or replacement task."
-                ),
-                details={
-                    "requested_task_id": task_id or None,
-                    "expected_task_ids": sorted(expected),
-                },
-            )
-        expected_kind, _ = expected[task_id]
-        requested_kind = str(invocation.arguments.get("kind") or "general")
-        if requested_kind != expected_kind:
-            return _rejection(
-                invocation,
-                code="aox_cutover_task_kind_violation",
-                summary=(
-                    "AOX cutover task creation was rejected because the "
-                    "canonical task id has the wrong task kind."
-                ),
-                hint=(
-                    f"Create {task_id!r} with kind={expected_kind!r}; do not "
-                    "change its role identity."
-                ),
-                details={
-                    "task_id": task_id,
-                    "requested_kind": requested_kind,
-                    "expected_kind": expected_kind,
-                },
-            )
-        if context.repositories.tasks.get(task_id) is not None:
-            return _rejection(
-                invocation,
-                code="aox_cutover_task_already_exists",
-                summary=(
-                    "AOX cutover task creation was rejected because that "
-                    "canonical task already exists."
-                ),
-                hint=(
-                    "Use task.get/task.update/task.delegate for the existing "
-                    "canonical task; do not create a replacement."
-                ),
-                details={"task_id": task_id},
-            )
-        return None
-
-
-__all__ = [
-    "AOX_CUTOVER_TOOL_PRECONDITION_ID",
-    "AOX_REPORT_TASK_ID",
-    "AOX_RESEARCH_TASK_ID",
-    "AoxCutoverFormalToolPrecondition",
-    "evaluate_aox_source_linked_report",
-]

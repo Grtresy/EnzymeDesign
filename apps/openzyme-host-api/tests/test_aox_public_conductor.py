@@ -14,6 +14,7 @@ from openzyme_host_api.aox_attempt_authority import (
     AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID,
 )
 from openzyme_host_api.aox_attempt_authority import authority_grant_payload
+from openzyme_host_api.aox_attempt_authority import authority_grant_identity
 from openzyme_host_api.aox_attempt_preflight import build_attempt_preflight_receipt
 from openzyme_host_api.aox_attempt_preflight import load_attempt_preflight_receipt
 from openzyme_host_api.aox_attempt_preflight import publish_attempt_preflight_receipt
@@ -43,13 +44,8 @@ def _digest_bytes(content: bytes) -> str:
 def _slot() -> dict[str, object]:
     campaign_id = "aox_campaign_test"
     root_ref = f"formal-slots/{campaign_id}/1/fixture"
-    request = {
-        "command": "scientific.attempt.authorize",
-        "session_id": "sess_aox",
-        "task_id": "task_aox",
-        "campaign_id": campaign_id,
+    policy = {
         "workflow_id": "aox_blank_world",
-        "root_ref": root_ref,
         "grantor_kind": "operator",
         "grantor_ref": "operator:aox-cutover",
         "allowed_scopes": ["formal"],
@@ -67,21 +63,25 @@ def _slot() -> dict[str, object]:
         "ordinal": 1,
         "attempt_kind": "positive",
         "session_id": "sess_aox",
-        "task_id": "task_aox",
         "root_ref": root_ref,
         "scope": "formal",
-        "authority_request": request,
-        "envelope_id": "attempt_authority_aox",
-        "request_digest": "sha256:" + "a" * 64,
+        "authority_policy": policy,
+        "authority_policy_digest": canonical_digest(policy),
     }
 
 
 def _control(slot: dict[str, object]) -> dict[str, object]:
-    request = dict(slot["authority_request"])
+    campaign_id = "aox_campaign_test"
+    task_id = "task_agent_owned_execution"
+    envelope_id, request_digest, request = authority_grant_identity(
+        slot,
+        campaign_id=campaign_id,
+        task_id=task_id,
+    )
     shared = {
         "session_id": slot["session_id"],
-        "task_id": slot["task_id"],
-        "campaign_id": request["campaign_id"],
+        "task_id": task_id,
+        "campaign_id": campaign_id,
         "workflow_id": request["workflow_id"],
     }
     attempt_id = f"{slot['attempt_kind']}-aox"
@@ -93,15 +93,15 @@ def _control(slot: dict[str, object]) -> dict[str, object]:
     return {
         "attempt_authority": {
             **shared,
-            "envelope_id": slot["envelope_id"],
+            "envelope_id": envelope_id,
             "root_ref": request["root_ref"],
             "idempotency_key": request["idempotency_key"],
-            "request_digest": slot["request_digest"],
+            "request_digest": request_digest,
         },
         "admission_request": {
             **shared,
             "admission_request_id": "admission_request_aox",
-            "envelope_id": slot["envelope_id"],
+            "envelope_id": envelope_id,
             "lane_id": lane_id,
             "scope": slot["scope"],
             "idempotency_key": admission_key,
@@ -111,7 +111,7 @@ def _control(slot: dict[str, object]) -> dict[str, object]:
             **shared,
             "attempt_id": attempt_id,
             "admission_request_id": "admission_request_aox",
-            "envelope_id": slot["envelope_id"],
+            "envelope_id": envelope_id,
             "lane_id": lane_id,
             "root_ref": request["root_ref"],
             "scope": slot["scope"],
@@ -228,9 +228,19 @@ def _receipt_chain(
         ),
         _receipt(
             5,
+            "GET",
+            f"/v3/sessions/{session_id}/workspace",
+            {},
+        ),
+        _receipt(
+            6,
             "POST",
             f"/v3/sessions/{session_id}/scientific-attempt-authorizations",
-            authority_grant_payload(slot),
+            authority_grant_payload(
+                slot,
+                campaign_id="aox_campaign_test",
+                task_id=str(dict(control["attempt"])["task_id"]),
+            ),
         ),
     ]
     if fault_artifact_id is not None:
@@ -268,24 +278,152 @@ def _receipt_chain(
     return records
 
 
+def _terminal_handoffs(
+    records: list[dict[str, object]],
+    *,
+    slot: dict[str, object],
+    control: dict[str, object],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    session_id = str(slot["session_id"])
+    command_id = "runtime_command_aox"
+    status_url = f"/v3/sessions/{session_id}/runtime/commands/{command_id}"
+    drain_receipt = next(
+        item
+        for item in records
+        if item["method"] == "POST"
+        and item["route"] == f"/v3/sessions/{session_id}/runtime/drain"
+    )
+    status_receipt = next(
+        item
+        for item in records
+        if item["method"] == "GET" and item["route"] == status_url
+    )
+    workspace_receipt = next(
+        item
+        for item in records
+        if item["method"] == "GET"
+        and item["route"] == f"/v3/sessions/{session_id}/workspace"
+    )
+    responses = (
+        (
+            drain_receipt,
+            {
+                "schema_version": "runtime_command_status@1",
+                "session_id": session_id,
+                "command_id": command_id,
+                "command_type": "runtime.drain",
+                "status": "accepted",
+                "status_url": status_url,
+                "accepted_at": "2026-08-04T00:00:00+00:00",
+                "started_at": None,
+                "completed_at": None,
+                "bounded_outcome_summary": None,
+                "error_code": None,
+                "safe_error_summary": None,
+                "safe_retry_hint": None,
+            },
+        ),
+        (
+            status_receipt,
+            {
+                "schema_version": "runtime_command_status@1",
+                "session_id": session_id,
+                "command_id": command_id,
+                "command_type": "runtime.drain",
+                "status": "completed",
+                "status_url": status_url,
+                "accepted_at": "2026-08-04T00:00:00+00:00",
+                "started_at": "2026-08-04T00:00:01+00:00",
+                "completed_at": "2026-08-04T00:00:02+00:00",
+                "bounded_outcome_summary": {},
+                "error_code": None,
+                "safe_error_summary": None,
+                "safe_retry_hint": None,
+            },
+        ),
+        (
+            workspace_receipt,
+            {
+                "session": {"session_id": session_id},
+                "task_board": {
+                    "items": [
+                        {
+                            "task": {
+                                "task_id": dict(control["attempt"])["task_id"],
+                                "kind": "execution",
+                            }
+                        }
+                    ]
+                },
+            },
+        ),
+    )
+    envelopes: list[dict[str, object]] = []
+    for receipt, response in responses:
+        receipt["response_semantic_digest"] = canonical_digest(response)
+        payload = {
+            "schema_id": PUBLIC_RESPONSE_ENVELOPE_SCHEMA_ID,
+            "receipt": receipt,
+            "response": response,
+            "response_semantic_digest": canonical_digest(response),
+        }
+        envelopes.append({**payload, "envelope_digest": canonical_digest(payload)})
+    events = [
+        {
+            "cursor": 1,
+            "session_id": session_id,
+            "event_type": "runtime.command.finished",
+            "command_id": command_id,
+            "payload": {
+                "command_id": command_id,
+                "command_type": "runtime.drain",
+                "status": "completed",
+                "completed_at": "2026-08-04T00:00:02+00:00",
+                "bounded_outcome_summary": {},
+                "error_code": None,
+                "safe_error_summary": None,
+                "safe_retry_hint": None,
+            },
+        }
+    ]
+    return envelopes, events
+
+
+def _validate_test_chain(
+    records: list[dict[str, object]],
+    *,
+    slot: dict[str, object],
+    control: dict[str, object],
+) -> None:
+    handoffs, events = _terminal_handoffs(records, slot=slot, control=control)
+    _validate_receipt_chain(
+        records,
+        slot=slot,
+        campaign_id="aox_campaign_test",
+        identity={"workflow_ref": "workflow:aox@1.0.0#sha256:" + "c" * 64},
+        control=control,
+        handoff_envelopes=handoffs,
+        events=events,
+    )
+
+
 def test_public_receipts_cover_only_conductor_owned_control_and_final_reads() -> None:
     slot = _slot()
     control = _control(slot)
 
-    _validate_control_slot_binding(slot=slot, control=control)
-    _validate_receipt_chain(
-        _receipt_chain(slot, control),
+    _validate_control_slot_binding(
         slot=slot,
-        identity={"workflow_ref": "workflow:aox@1.0.0#sha256:" + "c" * 64},
+        campaign_id="aox_campaign_test",
         control=control,
     )
+    _validate_test_chain(_receipt_chain(slot, control), slot=slot, control=control)
 
 
 @pytest.mark.parametrize(
     ("mutation", "expected_code"),
     [
         (
-            lambda chain: chain[4]["request"].update({"task_id": "other"}),
+            lambda chain: chain[5]["request"].update({"task_id": "other"}),
             "public_conductor_command_chain_invalid",
         ),
         (
@@ -315,12 +453,7 @@ def test_public_receipts_reject_source_mix_and_order_drift(
     mutation(chain)
 
     with pytest.raises(CutoverEvidenceError) as error:
-        _validate_receipt_chain(
-            chain,
-            slot=slot,
-            identity={"workflow_ref": "workflow:aox@1.0.0#sha256:" + "c" * 64},
-            control=control,
-        )
+        _validate_test_chain(chain, slot=slot, control=control)
 
     assert error.value.code == expected_code
 
@@ -334,14 +467,106 @@ def test_public_receipts_require_settled_status_after_each_bounded_drain() -> No
         receipt["sequence"] = sequence
 
     with pytest.raises(CutoverEvidenceError) as error:
+        _validate_test_chain(chain, slot=slot, control=control)
+
+    assert error.value.code == "public_terminal_handoff_invalid"
+
+
+def test_public_terminal_handoff_requires_exact_finished_event_projection() -> None:
+    slot = _slot()
+    control = _control(slot)
+    chain = _receipt_chain(slot, control)
+    handoffs, events = _terminal_handoffs(chain, slot=slot, control=control)
+    events[0]["payload"]["completed_at"] = "2026-08-04T00:00:03+00:00"
+
+    with pytest.raises(CutoverEvidenceError) as error:
         _validate_receipt_chain(
             chain,
             slot=slot,
+            campaign_id="aox_campaign_test",
             identity={"workflow_ref": "workflow:aox@1.0.0#sha256:" + "c" * 64},
             control=control,
+            handoff_envelopes=handoffs,
+            events=events,
         )
 
-    assert error.value.code == "public_conductor_approval_chain_invalid"
+    assert error.value.code == "public_terminal_handoff_event_mismatch"
+
+
+def test_public_terminal_handoff_rejects_unsealed_status_and_ambiguous_task() -> None:
+    slot = _slot()
+    control = _control(slot)
+    chain = _receipt_chain(slot, control)
+    handoffs, events = _terminal_handoffs(chain, slot=slot, control=control)
+
+    with pytest.raises(CutoverEvidenceError) as missing_status:
+        _validate_receipt_chain(
+            chain,
+            slot=slot,
+            campaign_id="aox_campaign_test",
+            identity={"workflow_ref": "workflow:aox@1.0.0#sha256:" + "c" * 64},
+            control=control,
+            handoff_envelopes=[handoffs[0], handoffs[2]],
+            events=events,
+        )
+    assert missing_status.value.code == "public_terminal_handoff_invalid"
+
+    task_board = handoffs[2]["response"]["task_board"]["items"]
+    task_board.append(
+        {"task": {"task_id": "second_execution_task", "kind": "execution"}}
+    )
+    handoffs[2]["receipt"]["response_semantic_digest"] = canonical_digest(
+        handoffs[2]["response"]
+    )
+    handoffs[2]["response_semantic_digest"] = canonical_digest(
+        handoffs[2]["response"]
+    )
+    handoffs[2]["envelope_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in handoffs[2].items()
+            if key != "envelope_digest"
+        }
+    )
+    with pytest.raises(CutoverEvidenceError) as ambiguous_task:
+        _validate_receipt_chain(
+            chain,
+            slot=slot,
+            campaign_id="aox_campaign_test",
+            identity={"workflow_ref": "workflow:aox@1.0.0#sha256:" + "c" * 64},
+            control=control,
+            handoff_envelopes=handoffs,
+            events=events,
+        )
+    assert ambiguous_task.value.code == "public_task_late_binding_invalid"
+
+
+def test_public_receipt_loader_enforces_record_and_byte_bounds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "bounded-receipts.jsonl"
+    records = [
+        _receipt(
+            sequence,
+            "GET",
+            "/v3/runtime/health",
+            {},
+        )
+        for sequence in range(1, 3)
+    ]
+    path.write_bytes(b"".join(canonical_json_bytes(item) + b"\n" for item in records))
+    path.chmod(0o600)
+    monkeypatch.setattr(conductor_bundle, "_MAX_RECEIPT_RECORDS", 1)
+
+    with pytest.raises(CutoverEvidenceError) as record_error:
+        _load_receipt_chain(path)
+    assert record_error.value.code == "public_receipt_chain_too_large"
+
+    monkeypatch.setattr(conductor_bundle, "_MAX_RECEIPT_CHAIN_BYTES", 1)
+    with pytest.raises(CutoverEvidenceError) as byte_error:
+        _load_receipt_chain(path)
+    assert byte_error.value.code == "public_receipt_chain_invalid"
 
 
 def test_public_receipts_bind_explicit_approved_decision() -> None:
@@ -370,21 +595,11 @@ def test_public_receipts_bind_explicit_approved_decision() -> None:
     for sequence, receipt in enumerate(chain, start=1):
         receipt["sequence"] = sequence
 
-    _validate_receipt_chain(
-        chain,
-        slot=slot,
-        identity={"workflow_ref": "workflow:aox@1.0.0#sha256:" + "c" * 64},
-        control=control,
-    )
+    _validate_test_chain(chain, slot=slot, control=control)
 
     chain[6]["request"] = {"decision": "rejected"}
     with pytest.raises(CutoverEvidenceError) as error:
-        _validate_receipt_chain(
-            chain,
-            slot=slot,
-            identity={"workflow_ref": "workflow:aox@1.0.0#sha256:" + "c" * 64},
-            control=control,
-        )
+        _validate_test_chain(chain, slot=slot, control=control)
     assert error.value.code == "public_conductor_approval_chain_invalid"
 
 
@@ -413,7 +628,11 @@ def test_closed_control_rejects_authority_slot_mix() -> None:
     control["attempt"]["task_id"] = "task_other"
 
     with pytest.raises(CutoverEvidenceError) as error:
-        _validate_control_slot_binding(slot=slot, control=control)
+        _validate_control_slot_binding(
+            slot=slot,
+            campaign_id="aox_campaign_test",
+            control=control,
+        )
 
     assert error.value.code == "public_conductor_control_slot_mismatch"
 
@@ -498,7 +717,7 @@ def _preflight_fixture(
         proof=proof,
     )
     plan = {
-        "campaign_id": dict(slot["authority_request"])["campaign_id"],
+        "campaign_id": "aox_campaign_test",
         "plan_digest": "sha256:" + "d" * 64,
         "slots": [slot],
     }
@@ -513,10 +732,8 @@ def _preflight_fixture(
         "attempt_kind": slot["attempt_kind"],
         "launch_id": launch_id,
         "session_id": slot["session_id"],
-        "task_id": slot["task_id"],
         "root_ref": slot["root_ref"],
-        "envelope_id": slot["envelope_id"],
-        "request_digest": slot["request_digest"],
+        "authority_policy_digest": slot["authority_policy_digest"],
         "campaign_root_identity": "sha256:" + "9" * 64,
         "claim_file": "authority.json.slot-1.claimed.json",
         "claimed_at": "2026-07-31T00:00:00+00:00",
@@ -579,9 +796,10 @@ def _fault_slot() -> dict[str, object]:
         attempt_kind="fault",
         scope="fault",
     )
-    request = dict(slot["authority_request"])
-    request["allowed_scopes"] = ["fault"]
-    slot["authority_request"] = request
+    policy = dict(slot["authority_policy"])
+    policy["allowed_scopes"] = ["fault"]
+    slot["authority_policy"] = policy
+    slot["authority_policy_digest"] = canonical_digest(policy)
     return slot
 
 
@@ -590,17 +808,15 @@ def _startup_receipt(
     preflight: dict[str, object],
 ) -> dict[str, object]:
     slot = dict(preflight["slot"])
-    timeout = dict(slot["authority_request"])["max_wall_time_seconds"]
+    timeout = dict(slot["authority_policy"])["max_wall_time_seconds"]
     payload = {
-        "schema_id": "aox_supervised_host_startup@2",
+        "schema_id": "aox_supervised_host_startup@3",
         "base_url": "http://127.0.0.1:41234",
         "launch_id": dict(preflight["slot_claim"])["launch_id"],
         "attempt_kind": slot["attempt_kind"],
         "session_id": slot["session_id"],
-        "task_id": slot["task_id"],
         "root_ref": slot["root_ref"],
-        "attempt_authority_id": slot["envelope_id"],
-        "attempt_authority_request_digest": slot["request_digest"],
+        "authority_policy_digest": slot["authority_policy_digest"],
         "campaign_id": preflight["campaign_id"],
         "preflight_receipt_digest": preflight["receipt_digest"],
         "process_epoch": "epoch-aox",
@@ -624,10 +840,8 @@ def _bound_supervision_receipt(
         launch_id=dict(preflight["slot_claim"])["launch_id"],
         attempt_kind=slot["attempt_kind"],
         session_id=slot["session_id"],
-        task_id=slot["task_id"],
         root_ref=slot["root_ref"],
-        attempt_authority_id=slot["envelope_id"],
-        attempt_authority_request_digest=slot["request_digest"],
+        authority_policy_digest=slot["authority_policy_digest"],
         campaign_id=preflight["campaign_id"],
         preflight_receipt_digest=preflight["receipt_digest"],
         host_startup_receipt_digest=startup["receipt_digest"],
@@ -666,7 +880,8 @@ def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(
             "items": [
                 {
                     "task": {
-                        "task_id": slot["task_id"],
+                        "task_id": dict(control["attempt"])["task_id"],
+                        "kind": "execution",
                         "status": "blocked",
                     }
                 }
@@ -687,13 +902,6 @@ def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(
             ]
         },
     }
-    events = [
-        {
-            "cursor": 1,
-            "session_id": slot["session_id"],
-            "event_type": "scientific.operation.failed",
-        }
-    ]
     selection_id = dict(control["selection"])["selection_id"]
     export_payload = {
         "schema_id": "aox_closed_attempt_evidence@2",
@@ -722,6 +930,18 @@ def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(
         control,
         fault_artifact_id="artifact_aox_ref21",
     )
+    handoffs, events = _terminal_handoffs(
+        receipts,
+        slot=slot,
+        control=control,
+    )
+    events.append(
+        {
+            "cursor": 2,
+            "session_id": slot["session_id"],
+            "event_type": "scientific.operation.failed",
+        }
+    )
     for index, response in (
         (-3, workspace),
         (-2, events),
@@ -739,6 +959,12 @@ def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(
     _seal_response(workspace_path, receipt=receipts[-3], response=workspace)
     _seal_response(events_path, receipt=receipts[-2], response=events)
     _seal_response(evidence_path, receipt=receipts[-1], response=closed_export)
+    handoff_paths: list[Path] = []
+    for envelope in handoffs:
+        sequence = int(dict(envelope["receipt"])["sequence"])
+        path = preflight_path.parent / f"handoff-{sequence:04d}.json"
+        _write_canonical(path, envelope)
+        handoff_paths.append(path)
     ledger_before = preflight_path.parent / "micu-before.json"
     ledger_after = preflight_path.parent / "micu-after.json"
     _write_canonical(ledger_before, {"sequence": 1})
@@ -771,6 +997,7 @@ def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(
             workspace_response_path=workspace_path,
             event_response_path=events_path,
             evidence_response_path=evidence_path,
+            handoff_response_paths=handoff_paths,
             ledger_before_path=ledger_before,
             ledger_after_path=ledger_after,
             sealed_at="2026-07-31T00:01:00+00:00",
@@ -798,6 +1025,7 @@ def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(
             workspace_response_path=workspace_path,
             event_response_path=events_path,
             evidence_response_path=evidence_path,
+            handoff_response_paths=handoff_paths,
             ledger_before_path=ledger_before,
             ledger_after_path=ledger_after,
         )
@@ -846,15 +1074,17 @@ def test_campaign_reducer_keeps_unproven_public_fault_contract_no_go(
                 "slot": {
                     "ordinal": index + 1,
                     "session_id": f"session-{index}",
-                    "task_id": f"task-{index}",
-                    "envelope_id": f"envelope-{index}",
                     "root_ref": f"formal-slots/aox_campaign_test/{index + 1}/root",
+                    "authority_policy_digest": "sha256:"
+                    + str(index + 4) * 64,
                 },
             },
             "scientific_attempt_control": {
+                "attempt_authority": {"envelope_id": f"envelope-{index}"},
                 "attempt": {
                     "attempt_id": attempt_id,
                     "lane_id": f"lane-{index}",
+                    "task_id": f"task-{index}",
                 },
                 "admission_request": {
                     "admission_request_id": f"admission-{index}",
@@ -1004,10 +1234,8 @@ def _supervision_receipt() -> dict[str, object]:
         "launch_id": "formal-slot-" + "f" * 24,
         "attempt_kind": "positive",
         "session_id": "sess_aox",
-        "task_id": "task_aox",
         "root_ref": "formal-slots/aox_campaign_test/1/fixture",
-        "attempt_authority_id": "attempt_authority_aox",
-        "attempt_authority_request_digest": "sha256:" + "a" * 64,
+        "authority_policy_digest": "sha256:" + "a" * 64,
         "campaign_id": "aox_campaign_test",
         "preflight_receipt_digest": "sha256:" + "b" * 64,
         "host_startup_receipt_digest": "sha256:" + "c" * 64,
@@ -1049,11 +1277,9 @@ def test_policy_free_supervision_receipt_accepts_campaign_id_and_rejects_writers
         launch_id="formal-slot-" + "f" * 24,
         attempt_kind="positive",
         session_id="sess_aox",
-        task_id="task_aox",
         root_ref="formal-slots/aox_campaign_test/1/fixture",
         campaign_id="aox_campaign_test",
-        attempt_authority_id="attempt_authority_aox",
-        attempt_authority_request_digest="sha256:" + "a" * 64,
+        authority_policy_digest="sha256:" + "a" * 64,
     ) == receipt
 
     tampered = deepcopy(receipt)
@@ -1066,10 +1292,8 @@ def test_policy_free_supervision_receipt_accepts_campaign_id_and_rejects_writers
             launch_id="formal-slot-" + "f" * 24,
             attempt_kind="positive",
             session_id="sess_aox",
-            task_id="task_aox",
             root_ref="formal-slots/aox_campaign_test/1/fixture",
             campaign_id="aox_campaign_test",
-            attempt_authority_id="attempt_authority_aox",
-            attempt_authority_request_digest="sha256:" + "a" * 64,
+            authority_policy_digest="sha256:" + "a" * 64,
         )
     assert error.value.code == "host_supervision_receipt_invalid"

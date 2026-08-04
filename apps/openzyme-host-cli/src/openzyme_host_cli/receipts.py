@@ -9,6 +9,8 @@ from pathlib import Path
 import stat
 from typing import Any
 
+from openzyme_runtime import sanitize_public_diagnostic_payload
+
 
 PUBLIC_API_RECEIPT_FIELDS = {
     "schema_id", "sequence", "method", "route", "status_code",
@@ -16,6 +18,9 @@ PUBLIC_API_RECEIPT_FIELDS = {
 }
 PUBLIC_API_RECEIPT_SCHEMA_ID = "openzyme_public_api_receipt@2"
 PUBLIC_RESPONSE_ENVELOPE_SCHEMA_ID = "openzyme_public_host_response@1"
+MAX_PUBLIC_RECEIPT_CHAIN_BYTES = 8 * 1024 * 1024
+MAX_PUBLIC_RECEIPT_RECORDS = 512
+MAX_PUBLIC_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
 class PublicReceiptError(ValueError):
@@ -118,11 +123,17 @@ def _request_semantics(
 
 def _response_semantics(route: str, response: Any) -> object:
     if "?replay=1&after_cursor=" in route:
-        return parse_sse_events(str(response.text))
-    try:
-        return response.json()
-    except Exception:
-        return str(response.text)
+        value: object = parse_sse_events(str(response.text))
+    else:
+        try:
+            value = response.json()
+        except Exception:
+            value = str(response.text)
+    return (
+        sanitize_public_diagnostic_payload(value)
+        if int(response.status_code) >= 400
+        else value
+    )
 
 
 def _secure_target(path: Path) -> tuple[Path, Path]:
@@ -152,6 +163,8 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _read_receipts(descriptor: int) -> list[dict[str, Any]]:
+    if os.fstat(descriptor).st_size > MAX_PUBLIC_RECEIPT_CHAIN_BYTES:
+        raise PublicReceiptError("public receipt chain exceeds its byte bound")
     os.lseek(descriptor, 0, os.SEEK_SET)
     chunks: list[bytes] = []
     while chunk := os.read(descriptor, 1024 * 1024):
@@ -161,6 +174,8 @@ def _read_receipts(descriptor: int) -> list[dict[str, Any]]:
         raise PublicReceiptError("public receipt chain has a truncated final record")
     records: list[dict[str, Any]] = []
     for sequence, line in enumerate(content.splitlines(), 1):
+        if sequence > MAX_PUBLIC_RECEIPT_RECORDS:
+            raise PublicReceiptError("public receipt chain exceeds its record bound")
         try:
             value = json.loads(line)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -191,7 +206,10 @@ def append_public_api_receipt(
             raise PublicReceiptError("public receipt chain must be one private regular file")
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         records = _read_receipts(descriptor)
+        current_size = os.fstat(descriptor).st_size
         raw = response.content if isinstance(getattr(response, "content", None), bytes) else str(response.text).encode()
+        if len(raw) > MAX_PUBLIC_RESPONSE_BYTES:
+            raise PublicReceiptError("Host response exceeds the public sealing bound")
         request = _request_semantics(method, route, request_body)
         receipt = {
             "schema_id": PUBLIC_API_RECEIPT_SCHEMA_ID,
@@ -206,7 +224,12 @@ def append_public_api_receipt(
                 _response_semantics(route, response)
             ),
         }
-        _write_all(descriptor, canonical_json_bytes(receipt) + b"\n")
+        record = canonical_json_bytes(receipt) + b"\n"
+        if len(records) >= MAX_PUBLIC_RECEIPT_RECORDS:
+            raise PublicReceiptError("public receipt chain exceeds its record bound")
+        if current_size + len(record) > MAX_PUBLIC_RECEIPT_CHAIN_BYTES:
+            raise PublicReceiptError("public receipt chain exceeds its byte bound")
+        _write_all(descriptor, record)
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
@@ -218,6 +241,9 @@ def seal_public_response(
     path: Path, *, receipt: Mapping[str, Any], response: object
 ) -> dict[str, Any]:
     normalized = _validate_receipt(receipt)
+    response_bytes = canonical_json_bytes(response)
+    if len(response_bytes) > MAX_PUBLIC_RESPONSE_BYTES:
+        raise PublicReceiptError("Host response exceeds the public sealing bound")
     digest = canonical_digest(response)
     if normalized["response_semantic_digest"] != digest:
         raise PublicReceiptError("sealed response does not reproduce its semantic digest")
@@ -240,11 +266,3 @@ def seal_public_response(
         os.close(descriptor)
     _fsync_directory(parent)
     return envelope
-
-
-__all__ = [
-    "PUBLIC_API_RECEIPT_FIELDS", "PUBLIC_API_RECEIPT_SCHEMA_ID",
-    "PUBLIC_RESPONSE_ENVELOPE_SCHEMA_ID", "PublicReceiptError",
-    "append_public_api_receipt", "canonical_digest", "parse_sse_events",
-    "seal_public_response",
-]

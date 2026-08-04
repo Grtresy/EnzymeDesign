@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
+from dataclasses import replace
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -509,13 +510,16 @@ class ProductionCompositionFactory:
             },
         )
 
-    def build(self) -> ProductionComposition:
+    def build(self, *, model_factory: object | None = None) -> ProductionComposition:
         provider = SQLiteRepositoryProvider(str(self.roots.database_path))
         runner_port = self.external_ports["runner.hpc"]
         bio_port = self.external_ports["bio.provider_http"]
         sandbox_port = self.external_ports["sandbox.container_process"]
+        foundation = _qualification_foundation(runner_port=runner_port)
+        if model_factory is not None:
+            foundation = replace(foundation, model_factory=model_factory)
         dependencies = HostApiDependencies(
-            foundation=_qualification_foundation(runner_port=runner_port),
+            foundation=foundation,
             v3_repository_provider=provider,
             v3_background_runtime_enabled=False,
             v3_durable_work_enabled=True,

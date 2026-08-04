@@ -57,6 +57,12 @@ POST 只在短 admission transaction 中验证 access、request digest 与幂等
 
 `V3DurableWorkSupervisor` 中的 `RuntimeCommandWorker` 独立 claim command，再调用统一 scheduler acquire session lease、claim `agent:master` 或 teammate signal 并运行 bounded batch。`auto_enqueue_ready_tasks` 默认关闭；只有请求明确为 `true` 时才扫描 ready unassigned tasks。command 在 batch completed/failed、session locked 或 work park 后即 terminal，approval/provider/HPC wall time 不属于 command lifetime。
 
+command开始时可能尚无mutation scope，而它处理的canonical transition会在同一bounded batch中
+打开scope。此时terminal command settlement与post-transition projection必须分别以exact
+`runtime-command:<command_id>` source获取短writer authority并在写后退休；不得复用空的initial
+admission，也不得演化为observer或业务terminal policy。公开terminal status与
+`runtime.command.finished` event使用同一closed safe projection。
+
 调用方通过 `GET /v3/sessions/{session_id}/runtime/commands/{command_id}` 查询相同闭集 DTO；command 必须属于 URL session。若 session lease 已被 background/manual/recovery owner 持有，worker 把 command 终结为 `locked` 并给出 safe retry hint，不暴露 owner identity，也不静默等待、创建 replacement command 或并发绕过 ownership。同一 idempotency key 与相同 normalized request 返回同一 command；相同 key 不同 digest 在任何 side effect 前冲突。旧同步 `V3CommandResult`/workspace response 已退休，public API 不提供 fallback。
 
 面向 harness tools、CLI/ops、测试与迁移调试的 control-plane secondary endpoints：
@@ -558,7 +564,8 @@ formal non-adoption离线验证，不是隐藏 operator surface。
 
 未来经单独批准的测试只能由 Codex conductor 使用 public surface 编排：发送
 `POST /v3/sessions/{session_id}/messages`，逐次提交
-`POST /v3/sessions/{session_id}/runtime/drain`，轮询 exact command status，读取
+`POST /v3/sessions/{session_id}/runtime/drain`，封存admission与exact terminal command status，
+读取canonical workspace中的唯一execution task后才late-bind scientific authorization，再读取
 `GET /pending-approvals`、workspace 与 replayable events，并通过 public approval resolve
 处理人工决策。conductor 不调用 private repository/service/runner helper，也不注册 AOX
 observer；空 drain、无 wakeup、command terminal 和 child exit 都不是业务终态。
@@ -586,7 +593,9 @@ non-symlink、locked、full-write并 fsync。
 `--seal-response PATH` 必须与同次 `--receipt-chain` 一起使用；它只在 response semantic
 digest 与 receipt一致时，以 no-replace `openzyme_public_host_response@1` 封存 exact semantic
 response。该机制不把 CLI 输出提升为 canonical state，只为 offline reconstruction 提供
-source-bound public facts。
+source-bound public facts。chain/record/response均有固定byte与cardinality上限；non-2xx payload
+在计算receipt/response semantic digest前递归脱敏，因此不会把Host path、secret或raw exception
+写进封存证据，且与2xx使用同一full-write/fsync/no-replace合同。
 
 closed evidence route 只导出 exact session 中已 closed attempt 的 exact sealed selection。
 formal positive 还必须存在且通过 persisted `aox_final_deliverable_validation_receipt@1`；
@@ -601,7 +610,10 @@ receipt chain 只记录 Codex conductor 自己调用的 public surface。agent-o
 `scientific-attempt-commands` 与 Host-owned admission/closure finalizer 不得由 conductor 代发或
 伪造 receipt；出现即以 `public_conductor_actor_boundary_invalid` 拒绝。真实 scientific
 transition 只由 closed control、workspace、events 与 export 证明。每个 exact bounded drain
-必须在下一 drain 或最终读取前轮询到对应 command settlement；stdout JSON handoff 必须 flush。
+必须封存HTTP 202 admission response，并在下一 drain 或最终读取前封存唯一terminal response；
+后者必须与唯一`runtime.command.finished` event在command identity/type、status、completion、
+bounded outcome及safe error/retry字段上exact相同。digest-only GET receipt、unsealed/synthetic或
+extra handoff都不是terminal proof；stdout JSON handoff 必须 flush。
 
 fault 槽新增唯一 public capability：
 `POST /v3/sessions/{session_id}/aox-fault-injections/reference-byte-flip`。request 只接受 exact
@@ -612,12 +624,12 @@ AOX reference selection contract、sealed bytes 与零既有 consumer 后，在 
 
 AOX cutover shell 保留三个彼此分离的 production seams：`preflight` 先对 exact ordinal执行
 private atomic one-use slot claim，再在所有 authority/pin/qualification/config validation 通过后
-创建 exact root、复制 claim、封存 `aox_attempt_preflight@3` 并报告 Host 未启动；`serve-attempt`
+创建 exact root、复制 claim、封存 `aox_attempt_preflight@4` 并报告 Host 未启动；`serve-attempt`
 只启动/退休 fixed loopback Host，不发 message/drain/approval；`finalize-and-seal` 只从 exact
 public receipts和 sealed source responses重建并原子封存 `@3` bundle。它们都不能自动判断
 业务 terminal 或声明 GO。
 
-### 9.2 post-r69 late-bound scientific admission
+### 9.2 historical post-r69 late-bound scientific admission
 
 formal `aox_live_attempt_authority_plan@2`、consumption `@3`、slot claim `@2`、root proof
 `@3`、preflight `@3` 与 Host startup/supervision `@2` 是 launch evidence，不是 scientific
@@ -637,3 +649,29 @@ binding，再读取实际 attempt/lane/admission/idempotency/selection identity�
 reassignment、missing/foreign lane、caller-supplied legacy identity或cross-control graft均须在
 无新attempt、无外部effect状态fail closed。r69正是在attempt创建前因missing lane停止；其
 已消费root/session/provider/MICU/receipt不获得任何补写或复用权威。
+
+### 9.3 current post-r70 late-bound task 与 terminal handoff
+
+当前没有r71。r70已消费authority/slot/root/session/receipt，但没有提交runtime drain，也没有
+Host scientific authorization、admission request或attempt；它是pre-runtime conductor blocked，
+不是canonical NO-GO，全部state不可复用。
+
+current launch schemas是formal plan `@3`、consumption `@4`、slot claim `@3`、root proof `@3`、
+preflight `@4`和Host startup/supervision `@3`。这些对象只闭合campaign/ordinal/attempt kind/
+session/root/authority policy与launch identity，不得包含task、prebuilt envelope/request、lane、
+attempt或admission identity。`aox_public_conductor_bundle@3`也必须从真实control late-bind这些
+identity，而不是从outer launch读取shadow truth。
+
+唯一public grant顺序是session create → entry message → bounded drain admission response
+（sealed）→ terminal status（sealed）→ canonical workspace（sealed）。workspace必须只有一个
+execution task；此后operator才可调用
+`POST /v3/sessions/{session_id}/scientific-attempt-authorizations`，并把slot authority原子绑定到
+该task。pre-grant、wrong-task、missing/ambiguous task或duplicate grant均不得创建authorization
+或effect。executor随后继续通过canonical lane tools与current-assignee `attempt.create`建立真实
+control graph；finalization policy不再隐藏匹配预定`task.create`。
+
+如果runtime command执行期间才创建mutation scope，terminal settlement与post-transition
+projection各自在Host内部获取绑定exact command id的短writer authority，写完立即退休。public
+terminal response必须逐项复现唯一`runtime.command.finished` event；这项settlement只证明
+command closure，不改变task/attempt/report业务terminal。exact三任务仍按kind、agent role、
+assignee和owner-authored finish cardinality从canonical repositories/events导出。

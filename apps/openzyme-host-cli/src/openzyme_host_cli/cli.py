@@ -493,7 +493,24 @@ def run_cli(
                 stdout=stdout,
             )
         raise ValueError(f"unsupported resource: {args.resource}")
-    except (HostApiError, PublicReceiptError, json.JSONDecodeError, OSError, ValueError) as exc:
+    except HostApiError as exc:
+        try:
+            if args.seal_response is not None:
+                if client.last_receipt is None:
+                    raise PublicReceiptError(
+                        "--seal-response requires --receipt-chain for the same request"
+                    )
+                seal_public_response(
+                    args.seal_response,
+                    receipt=client.last_receipt,
+                    response=exc.response_payload,
+                )
+        except (PublicReceiptError, OSError) as seal_error:
+            stderr.write(f"{seal_error}\n")
+            return 2
+        stderr.write(f"{exc}\n")
+        return 2
+    except (PublicReceiptError, json.JSONDecodeError, OSError, ValueError) as exc:
         stderr.write(f"{exc}\n")
         return 2
     finally:

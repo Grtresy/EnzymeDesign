@@ -1,8 +1,8 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r67 are permanent NO-GO evidence. r68 is authority-consumed prelaunch blocked before root/Host/session/attempt. r69 is authority/root/session/provider/MICU-consumed pre-admission blocked before an admission request or scientific attempt; neither is a canonical NO-GO, and neither state is reusable. The post-r69 deletion-first repair separates launch identity from Host late-bound scientific control as described below. Local live cutover remains **NO-GO**: this implementation does not authorize r70 or any next rNN, a diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
+Status: r43-r67 are permanent NO-GO evidence. r68 is authority-consumed prelaunch blocked before root/Host/session/attempt. r69 is authority/root/session/provider/MICU-consumed pre-admission blocked before an admission request or scientific attempt. r70 is authority/slot/root/session/receipt-consumed pre-runtime conductor blocked before any runtime drain, Host scientific authorization, admission request or scientific attempt. None of r68-r70 is a canonical NO-GO, and none of their state is reusable. There is currently no r71. The post-r70 deletion-first repair late-binds operator authority to the first uniquely exported canonical execution task and requires sealed terminal handoffs as described below. Local live cutover remains **NO-GO**: this implementation does not authorize r71 or any next rNN, a diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
 
-Historical incident and pre-r70 command/observer/driver/browser/diagnostic-authority/public-finalizer sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract; in particular, every older `run-live`, `run-diagnostic-live`, diagnostic authority command, observer, barrier, rollover, no-wakeup, public generic scientific mutation/finalizer, `chrome-once` and browser-helper instruction is retired even where a historical section called it current at that time. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, late-bound scientific-attempt selection and qualification semantics are defined by the post-r69 section below, [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
+Historical incident and pre-r71 command/observer/driver/browser/diagnostic-authority/public-finalizer sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract; in particular, every older `run-live`, `run-diagnostic-live`, diagnostic authority command, observer, barrier, rollover, no-wakeup, public generic scientific mutation/finalizer, `chrome-once` and browser-helper instruction is retired even where a historical section called it current at that time. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, late-bound task/scientific-attempt selection and qualification semantics are defined by the post-r70 section below, [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
 This document describes the operator/evidence boundary implemented by `openzyme_host_api.aox_cutover_evidence`. It does not turn the historical S15 fixture into live evidence and does not authorize seeded state, cached scientific outputs, the reference notebook, or copied reference results as attempt inputs.
 
@@ -2925,7 +2925,53 @@ wrong-actor no-effect, reassignment-before-finalizer rejection, legacy-route abs
 fault/export failures. This repair runs no r70/live/MICU/provider/HPC/Chrome action and does not alter
 the offline verifier/reducer as the sole GO authority.
 
-r59 remains the latest numbered/formal live fact. It is a failed campaign whose
+## r70 pre-runtime conductor blocked and post-r70 late-bound task/terminal handoff
+
+There is currently no r71. r70 consumed its formal authority, slot, root, session and public receipt,
+but no `runtime/drain` command was submitted. The Host contains no r70 scientific authorization,
+admission request or scientific attempt. r70 is therefore consumed **pre-runtime conductor blocked**,
+not a canonical r70 NO-GO. Every r70 plan, claim, root, session, receipt and derived identity is sealed
+and non-reusable; no repair may backfill a task, grant, drain or attempt into that state.
+
+Current launch evidence is `aox_live_attempt_authority_plan@3`, consumption `@4`, slot claim `@3`,
+root proof `@3`, preflight `@4`, and Host startup/supervision `@3`. At the launch layer they bind only
+campaign/plan, ordinal, attempt kind, session, root, authority policy and deterministic launch identity.
+They MUST NOT contain a task id, prebuilt authorization envelope/request, lane, attempt or admission
+identity. Historical launch schemas and evidence remain read-only; they cannot be paired with these
+current schemas or promoted into formal acceptance.
+
+The public Codex sequence is now exact: create the session, send the one entry message, submit one
+bounded drain, seal its admission response, seal its unique terminal status response, and seal a public
+canonical workspace read. That workspace MUST expose exactly one execution task. Only then may the
+operator atomically grant the formal scientific authorization to that real task. A speculative, absent,
+duplicate or different task produces no scientific authorization or effect. The task's current assignee
+then establishes the canonical lane and calls the minimal `attempt.create`; Host derives and late-binds
+the envelope/request/admission/attempt identities as before.
+
+Every bounded drain contributes two bounded handoffs to `aox_public_conductor_bundle@3`: its public
+admission response and exactly one later terminal response. The terminal response MUST reproduce the
+same command and exactly equal the unique `runtime.command.finished` event projection for command
+identity/type, status, completion time, bounded outcome and safe error/retry fields. A digest-only status
+GET, an unsealed or synthesized response, an extra handoff, or response/event drift is not terminal
+proof. Non-2xx thin-CLI responses are recursively sanitized and then sealed under the same canonical,
+bounded, flushed receipt semantics as successful responses.
+
+The final product closure derives exactly the research, execution and reporting tasks from canonical
+state and closes their task kind, agent role, unique assignee and exactly-one owner-authored finish
+cardinality. It does not use a hidden exact `task.create` matcher. Existing task scope, assignee/lane,
+approval/fencing, unknown/external effect, provenance/isolation, exact 17-deliverable finalization,
+Host process settlement and offline verifier/reducer authority remain unchanged.
+
+Production reachability uses the real public FastAPI application and thin Host client with file-backed
+SQLite plus an injected deterministic model/runtime. It MUST NOT call private service methods, manually
+compose a `ToolRegistry`, directly write canonical truth or synthesize public receipts. The qualification
+proves the message/drain/sealed-terminal/workspace/late-grant sequence and the real assignee-bound
+attempt path. This repair runs only non-live verification, synchronizes OpenSpec/architecture/V3 docs,
+qualification registry and resource manifest, and commits locally. It does not start r71, live, MICU,
+provider, HPC or Chrome work. Any future formal run needs a fresh clean commit, full admission/pin,
+fresh authority/root/session and separate user approval.
+
+r59 remains the latest numbered campaign with a canonical formal-attempt decision. It is a failed campaign whose
 exact-three plan is consumed and whose later slots cannot be reused. The later
 non-`rNN` closure-stage runs and r60 full-path diagnostic do not revise that
 verdict: all are permanently `acceptance_eligible=false`. r60 consumed diagnostic

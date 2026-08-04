@@ -3,7 +3,9 @@
 状态：deterministic qualification 与 AOX admission integration 已实现；每个 tracked
 correction 都会使前一份 report 失效。r43-r67 已永久 NO-GO；r68 在 root/session/attempt 前
 prelaunch blocked；r69 在authority/root/session/provider/MICU已消费但attempt创建前
-pre-admission blocked。二者均非canonical NO-GO且全部state不可复用。后继 numbered campaign 必须先在
+pre-admission blocked；r70在authority/slot/root/session/receipt已消费但首个drain与Host
+scientific authorization/admission/attempt前pre-runtime conductor blocked。r68-r70均非canonical
+NO-GO且全部state不可复用；当前没有r71。后继 numbered campaign 必须先在
 新的 clean commit 上生成并独立验证 fresh full admission report。
 
 ## Authority boundary
@@ -64,13 +66,16 @@ plan/consumption/root/decision，以及已退役 closure-stage raw run class、a
 root/verifier/reducer 接纳，即使伪造相同 plan digest。该 negative gate 使用 frozen
 literals，不依赖或恢复已删除的 closure-stage production modules。
 当前 `evidence-projection.aox-run-class-disjoint-closure` scenario 以
-`aox_post_r69_late_bound_composition_qualification@1` observation收口真实 production
-composition：场景通过`HostApiDependencies/create_app()`组成actual FastAPI route registry，
-使用file-backed SQLite、production V3 service与真实`lane.create`、`task.create`、
-`lane.bind_task`、`attempt.create` tool handlers建立session/message/task/lane/admission。
-wrong actor先被`attempt_admission_actor_not_owner`拒绝；current assignee request写入后仍无
-attempt，Host internal finalizer才生成late-bound identity，独立reader再证明持久化。fault与
-closed export在不匹配状态typed fail closed。场景还检查diagnostic authority、public generic
+`aox_post_r70_public_terminal_composition_qualification@1` observation收口真实 production
+composition：场景通过`HostApiDependencies/create_app()`组成actual FastAPI应用，以thin
+`HostApiClient`调用public route，使用file-backed SQLite和只注入agent边界的deterministic
+model/runtime建立session/message、首个bounded drain、sealed terminal、唯一execution-task
+read与late-bound authority。execution assignee随后经production lane/scientific tool handler
+创建lane/admission；wrong task与wrong actor在零attempt状态被拒绝，Host internal finalizer才
+生成late-bound identity，独立reader再证明持久化。场景还证明terminal response与唯一
+`runtime.command.finished` exact一致，fault与closed export在不匹配状态typed fail closed，且
+不调用private service、不手工组装`ToolRegistry`、不直接写canonical truth或合成receipt。
+场景还检查diagnostic authority、public generic
 scientific mutation/finalizer、automatic runner/observer及其CLI/client/dead Core入口确实缺席，
 而非靠一个source symbol宣称positive reachability。
 每个场景都有 finite step、tick、state/event、effect 与
@@ -151,8 +156,11 @@ production `aox_blank_world_attempt_bundle@3`。历史
 profile 与 source commit。collector/offline verifier 拒绝 missing、changed、mismatched 或
 unknown-version receipt。
 
-正式 `authorize` 只发布 exact-three `aox_live_attempt_authority_plan@2`，
-`consume-authority`发布绑定它的consumption `@3`并停止，不构造live launch/root。
+正式 `authorize` 只发布 exact-three `aox_live_attempt_authority_plan@3`，
+`consume-authority`发布绑定它的consumption `@4`并停止，不构造live launch/root。
+`aox_attempt_authority_slot_claim@3`、`aox_attempt_preflight@4`与Host supervision `@3`只闭合
+campaign/ordinal/session/root/policy；task与scientific authorization必须在首个public sealed
+drain/terminal/workspace read后late-bind。
 historical single-slot diagnostic plan/consumption仍永久`acceptance_eligible=false`，但current
 product无mint/consume命令。未来单独批准的Codex conductor只经public Host API/CLI编排；该
 non-live qualification scenario证明结构边界，不批准真实diagnostic或formal campaign。

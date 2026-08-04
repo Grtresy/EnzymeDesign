@@ -19,31 +19,20 @@ from .aox_cutover_evidence import (
 from .aox_live_run_class import AoxLiveRunClass
 
 
-ATTEMPT_PREFLIGHT_SCHEMA_ID = "aox_attempt_preflight@3"
+ATTEMPT_PREFLIGHT_SCHEMA_ID = "aox_attempt_preflight@4"
 ATTEMPT_PREFLIGHT_FILENAME = "aox-attempt-preflight.json"
 ATTEMPT_SLOT_CLAIM_FILENAME = "aox-attempt-slot-claim.json"
-_PREFLIGHT_FIELDS = {
-    "schema_id",
-    "run_class",
-    "campaign_id",
-    "plan_digest",
-    "consumption_digest",
-    "identity_digest",
-    "allowed_prerequisite_digest",
-    "architecture_qualification_digest",
-    "effective_config",
-    "slot",
-    "slot_claim",
-    "root_proof",
-    "created_at",
-    "receipt_digest",
-}
-_ROOT_PROOF_FIELDS = {
-    "schema_id", "architecture_qualification", "launch_id", "attempt_kind",
-    "root_identity", "root_names", "initial_entries", "sqlite_preexisting",
-    "provider_cache_mode", "evidence_cache_reuse", "hpc_workspace_label",
-    "allowed_prerequisite_digest", "allowed_prerequisites",
-}
+_PREFLIGHT_FIELDS = set(
+    "schema_id run_class campaign_id plan_digest consumption_digest identity_digest "
+    "allowed_prerequisite_digest architecture_qualification_digest effective_config "
+    "slot slot_claim root_proof created_at receipt_digest".split()
+)
+_ROOT_PROOF_FIELDS = set(
+    "schema_id architecture_qualification launch_id attempt_kind root_identity "
+    "root_names initial_entries sqlite_preexisting provider_cache_mode "
+    "evidence_cache_reuse hpc_workspace_label allowed_prerequisite_digest "
+    "allowed_prerequisites".split()
+)
 _ROOT_NAMES = {
     "artifact": "artifacts", "blob": "blobs", "sandbox": "sandboxes",
     "hpc": "hpc-workspace", "evidence": "evidence",
@@ -92,10 +81,8 @@ def build_attempt_preflight_receipt(
                 for key in (
                     "attempt_kind",
                     "session_id",
-                    "task_id",
                     "root_ref",
-                    "envelope_id",
-                    "request_digest",
+                    "authority_policy_digest",
                 )
             ),
             slot_claim.get("claim_digest")
@@ -205,6 +192,12 @@ def load_attempt_preflight_receipt(
         and isinstance(proof, dict)
         and isinstance(slot_claim, dict)
     )
+    binding_fields = (
+        "attempt_kind",
+        "session_id",
+        "root_ref",
+        "authority_policy_digest",
+    )
     proof_valid = all(
         (
             set(proof) == _ROOT_PROOF_FIELDS,
@@ -229,21 +222,15 @@ def load_attempt_preflight_receipt(
             == canonical_digest(dict(proof.get("architecture_qualification") or {})),
             canonical_digest(dict(value.get("effective_config") or {}))
             == dict(proof.get("allowed_prerequisites") or {}).get("config_digest"),
-            slot_claim.get("schema_id") == AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID,
+            slot_claim.get("schema_id")
+            == AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID,
             slot_claim.get("campaign_id") == value.get("campaign_id"),
             slot_claim.get("plan_digest") == value.get("plan_digest"),
             slot_claim.get("consumption_digest") == value.get("consumption_digest"),
             slot_claim.get("ordinal") == slot.get("ordinal"),
             all(
                 slot_claim.get(key) == slot.get(key)
-                for key in (
-                    "attempt_kind",
-                    "session_id",
-                    "task_id",
-                    "root_ref",
-                    "envelope_id",
-                    "request_digest",
-                )
+                for key in binding_fields
             ),
             slot_claim.get("claim_digest")
             == canonical_digest(
@@ -289,14 +276,3 @@ def load_attempt_preflight_receipt(
         ):
             _reject("attempt_preflight_already_started", "attempt root already started", nonempty_roots=nonempty)
     return value
-
-
-__all__ = [
-    "ATTEMPT_PREFLIGHT_FILENAME",
-    "ATTEMPT_PREFLIGHT_SCHEMA_ID",
-    "ATTEMPT_SLOT_CLAIM_FILENAME",
-    "build_attempt_preflight_receipt",
-    "load_attempt_preflight_receipt",
-    "publish_attempt_preflight_receipt",
-    "publish_attempt_slot_claim_evidence",
-]

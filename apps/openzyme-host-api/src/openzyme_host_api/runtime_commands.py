@@ -22,6 +22,7 @@ class RuntimeDrainService(Protocol):
         max_steps_per_agent: int,
         auto_enqueue_ready_tasks: bool,
         worker_id: str,
+        source_command_id: str | None = None,
     ) -> V3RuntimeDrainResult: ...
 
 
@@ -48,6 +49,7 @@ class HostRuntimeCommandExecutor:
                     max_steps_per_agent=command.max_steps_per_agent,
                     auto_enqueue_ready_tasks=command.auto_enqueue_ready_tasks,
                     worker_id=f"{self.worker_id}:scheduler",
+                    source_command_id=command.command_id,
                 )
         if not isinstance(result, V3RuntimeDrainResult):
             raise TypeError("runtime drain service returned an invalid result")

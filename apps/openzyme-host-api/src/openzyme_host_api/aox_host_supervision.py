@@ -40,13 +40,13 @@ from .aox_cutover_evidence import (
     canonical_json_bytes,
 )
 from .aox_cutover_launch import build_aox_cutover_effective_config
-from .aox_cutover_tool_policy import AoxCutoverFormalToolPrecondition
+from .aox_cutover_tool_policy import AoxFinalizationToolPrecondition
 from .app import HostApiDependencies, create_app
 from .foundation import build_configured_foundation
 
 
-HOST_STARTUP_SCHEMA_ID = "aox_supervised_host_startup@2"
-HOST_SUPERVISION_RECEIPT_SCHEMA_ID = "aox_supervised_host_receipt@2"
+HOST_STARTUP_SCHEMA_ID = "aox_supervised_host_startup@3"
+HOST_SUPERVISION_RECEIPT_SCHEMA_ID = "aox_supervised_host_receipt@3"
 HOST_SUPERVISION_FATAL_SCHEMA_ID = "aox_supervised_host_fatal@1"
 HOST_STARTUP_FILENAME = "aox-host-startup.json"
 HOST_SUPERVISION_FILENAME = "aox-host-supervision.json"
@@ -68,8 +68,8 @@ _CONTRACT = {
     ],
 }
 _RECEIPT_FIELDS = {
-    "schema_id", "mode", "launch_id", "attempt_kind", "session_id", "task_id",
-    "root_ref", "attempt_authority_id", "attempt_authority_request_digest",
+    "schema_id", "mode", "launch_id", "attempt_kind", "session_id",
+    "root_ref", "authority_policy_digest",
     "campaign_id", "preflight_receipt_digest", "host_startup_receipt_digest",
     "process_epoch", "shutdown_reason", "child_exit_code", "local_state_settled",
     "descendant_retirement_proven", "parent_snapshot_revalidated",
@@ -248,9 +248,8 @@ def _host_child_main(
             ),
             v3_repository_provider=SQLiteRepositoryProvider(str(root / "control-plane.sqlite3")),
             v3_background_runtime_enabled=False,
-            v3_tool_dispatch_precondition=AoxCutoverFormalToolPrecondition(
+            v3_tool_dispatch_precondition=AoxFinalizationToolPrecondition(
                 session_id=str(slot["session_id"]),
-                execution_task_id=str(slot["task_id"]),
                 attempt_kind=str(slot["attempt_kind"]),
             ),
             v3_sandbox_workspace_root=root / "sandboxes",
@@ -461,8 +460,7 @@ class SupervisedHostLease:
                 "schema_id": HOST_SUPERVISION_FATAL_SCHEMA_ID,
                 "launch_id": slot_claim.get("launch_id"),
                 "attempt_kind": slot.get("attempt_kind"),
-                "attempt_authority_id": slot.get("envelope_id"),
-                "attempt_authority_request_digest": slot.get("request_digest"),
+                "authority_policy_digest": slot.get("authority_policy_digest"),
                 "preflight_receipt_digest": self.preflight["receipt_digest"],
                 "process_epoch": self.process_epoch,
                 "failure_code": "host_local_settlement_unproven",
@@ -483,9 +481,8 @@ class SupervisedHostLease:
             "schema_id": HOST_SUPERVISION_RECEIPT_SCHEMA_ID,
             "mode": "policy_free_public_host", "launch_id": slot_claim["launch_id"],
             "attempt_kind": slot["attempt_kind"], "session_id": slot["session_id"],
-            "task_id": slot["task_id"], "root_ref": slot["root_ref"],
-            "attempt_authority_id": slot["envelope_id"],
-            "attempt_authority_request_digest": slot["request_digest"],
+            "root_ref": slot["root_ref"],
+            "authority_policy_digest": slot["authority_policy_digest"],
             "campaign_id": self.preflight["campaign_id"],
             "preflight_receipt_digest": self.preflight["receipt_digest"],
             "host_startup_receipt_digest": self.startup_receipt["receipt_digest"],
@@ -532,7 +529,7 @@ def supervised_attempt_host(
     path = preflight_path.expanduser().resolve(strict=True)
     preflight = load_attempt_preflight_receipt(path, require_unstarted=True)
     slot = dict(preflight["slot"])
-    timeout = float(dict(slot["authority_request"])["max_wall_time_seconds"])
+    timeout = float(dict(slot["authority_policy"])["max_wall_time_seconds"])
     host_supervision_contract_digest(
         timeout_seconds=timeout, startup_timeout_seconds=startup_timeout_seconds,
         term_grace_seconds=term_grace_seconds, kill_grace_seconds=kill_grace_seconds,
@@ -570,9 +567,8 @@ def supervised_attempt_host(
         startup_payload = {
             "schema_id": HOST_STARTUP_SCHEMA_ID, "base_url": ready["base_url"],
             "launch_id": slot_claim["launch_id"], "attempt_kind": slot["attempt_kind"],
-            "session_id": slot["session_id"], "task_id": slot["task_id"],
-            "root_ref": slot["root_ref"], "attempt_authority_id": slot["envelope_id"],
-            "attempt_authority_request_digest": slot["request_digest"],
+            "session_id": slot["session_id"], "root_ref": slot["root_ref"],
+            "authority_policy_digest": slot["authority_policy_digest"],
             "campaign_id": preflight["campaign_id"],
             "preflight_receipt_digest": preflight["receipt_digest"],
             "process_epoch": epoch, "child_pid": child_pid, "child_pgid": pgid,
@@ -608,8 +604,8 @@ def supervised_attempt_host(
 
 def validate_supervised_host_receipt(
     receipt: object, *, launch_id: str, attempt_kind: str,
-    session_id: str, task_id: str, root_ref: str, campaign_id: str,
-    attempt_authority_id: str, attempt_authority_request_digest: str,
+    session_id: str, root_ref: str, campaign_id: str,
+    authority_policy_digest: str,
 ) -> dict[str, Any]:
     if not isinstance(receipt, dict):
         raise CutoverEvidenceError(
@@ -634,14 +630,12 @@ def validate_supervised_host_receipt(
         value.get("launch_id") == launch_id,
         value.get("attempt_kind") == attempt_kind,
         value.get("session_id") == session_id,
-        value.get("task_id") == task_id,
         value.get("root_ref") == root_ref,
         value.get("campaign_id") == campaign_id,
-        value.get("attempt_authority_id") == attempt_authority_id,
-        value.get("attempt_authority_request_digest") == attempt_authority_request_digest,
+        value.get("authority_policy_digest") == authority_policy_digest,
         bool(value.get("process_epoch")),
         all(_DIGEST.fullmatch(str(value.get(name) or "")) for name in (
-            "attempt_authority_request_digest", "preflight_receipt_digest",
+            "authority_policy_digest", "preflight_receipt_digest",
             "host_startup_receipt_digest", "mutation_authority_snapshot_digest",
             "terminal_frame_digest", "supervisor_contract_digest", "receipt_digest",
         )),
@@ -670,13 +664,3 @@ def validate_supervised_host_receipt(
             details={"identity": "product_path.attempt_supervision"},
         )
     return value
-
-
-__all__ = [
-    "DEFAULT_KILL_GRACE_SECONDS", "DEFAULT_STARTUP_TIMEOUT_SECONDS",
-    "DEFAULT_TERM_GRACE_SECONDS", "HOST_STARTUP_FILENAME", "HOST_STARTUP_SCHEMA_ID",
-    "HOST_SUPERVISION_FATAL_FILENAME", "HOST_SUPERVISION_FILENAME",
-    "HOST_SUPERVISION_RECEIPT_SCHEMA_ID", "HostSupervisionError",
-    "SupervisedHostLease", "host_supervision_contract_digest",
-    "supervised_attempt_host", "validate_supervised_host_receipt",
-]

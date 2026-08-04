@@ -7,6 +7,7 @@ import stat
 
 import pytest
 
+from openzyme_host_cli import receipts
 from openzyme_host_cli.receipts import PublicReceiptError
 from openzyme_host_cli.receipts import append_public_api_receipt
 from openzyme_host_cli.receipts import canonical_digest
@@ -163,3 +164,77 @@ def test_event_response_seals_parsed_sse_semantics(tmp_path: Path) -> None:
     assert sealed["response_semantic_digest"] == receipt[
         "response_semantic_digest"
     ]
+
+
+def test_failed_response_receipt_and_seal_share_sanitized_semantics(
+    tmp_path: Path,
+) -> None:
+    chain = tmp_path / "receipts.jsonl"
+    response = _Response(
+        403,
+        {
+            "error": {
+                "code": "forbidden",
+                "message": "failed at /home/private/provider.json",
+                "details": {"api_key": "sk-private"},
+            }
+        },
+    )
+
+    receipt = append_public_api_receipt(
+        chain,
+        method="GET",
+        route="/v3/sessions/sess/workspace",
+        request_body=None,
+        response=response,
+    )
+    public_error = {
+        "error": {
+            "code": "forbidden",
+            "message": "failed at [redacted-host-path]",
+            "details": {},
+        }
+    }
+    sealed = seal_public_response(
+        tmp_path / "failed-response.json",
+        receipt=receipt,
+        response=public_error,
+    )
+
+    assert sealed["response"] == public_error
+    assert receipt["response_semantic_digest"] == canonical_digest(public_error)
+    assert "/home/private" not in chain.read_text(encoding="utf-8")
+    assert "sk-private" not in chain.read_text(encoding="utf-8")
+
+
+def test_receipt_and_response_bounds_fail_before_append_or_seal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chain = tmp_path / "bounded.jsonl"
+    monkeypatch.setattr(receipts, "MAX_PUBLIC_RECEIPT_RECORDS", 1)
+    first = append_public_api_receipt(
+        chain,
+        method="GET",
+        route="/v3/runtime/health",
+        request_body=None,
+        response=_Response(200, {"status": "ready"}),
+    )
+    original = chain.read_bytes()
+    with pytest.raises(PublicReceiptError, match="record bound"):
+        append_public_api_receipt(
+            chain,
+            method="GET",
+            route="/v3/runtime/health",
+            request_body=None,
+            response=_Response(200, {"status": "ready"}),
+        )
+    assert chain.read_bytes() == original
+
+    monkeypatch.setattr(receipts, "MAX_PUBLIC_RESPONSE_BYTES", 8)
+    with pytest.raises(PublicReceiptError, match="sealing bound"):
+        seal_public_response(
+            tmp_path / "oversized-response.json",
+            receipt=first,
+            response={"payload": "too large"},
+        )

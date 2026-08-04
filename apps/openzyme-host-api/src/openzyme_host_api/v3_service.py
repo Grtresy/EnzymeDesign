@@ -1557,22 +1557,27 @@ class V3HostApiService:
         core_receipt: RuntimeDrainCoreReceipt,
         outputs: tuple[str, ...],
         events: list[dict[str, Any]],
+        source_ref: str,
     ) -> V3RuntimeDrainResult:
         stage = "scientific_transitions"
         try:
             with self.operation_lock:
                 if current_mutation_write_authority() is None:
                     self.finalize_pending_scientific_transitions(session_id=session_id)
-                stage = "session_touch"
-                self._touch_session(session_id)
-                stage = "trace_events"
-                self._extend_with_trace_events(session_id, events)
-                stage = "activity_events"
-                self._extend_with_activity_events(session_id, events)
-                stage = "event_append"
-                self.event_store.append(session_id, events)
-                stage = "workspace"
-                workspace = self.workspace(session_id)
+                with self._runtime_projection_writer_scope(
+                    session_id=session_id,
+                    source_ref=source_ref,
+                ):
+                    stage = "session_touch"
+                    self._touch_session(session_id)
+                    stage = "trace_events"
+                    self._extend_with_trace_events(session_id, events)
+                    stage = "activity_events"
+                    self._extend_with_activity_events(session_id, events)
+                    stage = "event_append"
+                    self.event_store.append(session_id, events)
+                    stage = "workspace"
+                    workspace = self.workspace(session_id)
         except Exception as exc:
             return self._runtime_drain_projection_failure(
                 session_id=session_id,
@@ -1599,7 +1604,13 @@ class V3HostApiService:
         max_steps_per_agent: int = 8,
         auto_enqueue_ready_tasks: bool = False,
         worker_id: str = "host-api:runtime-drain",
+        source_command_id: str | None = None,
     ) -> V3RuntimeDrainResult:
+        source_ref = (
+            f"runtime-command:{source_command_id}"
+            if source_command_id is not None
+            else f"runtime-drain:{worker_id}"
+        )
         with self.operation_lock:
             if self.repositories.sessions.get(session_id) is None:
                 raise KeyError(f"session {session_id!r} does not exist")
@@ -1627,6 +1638,7 @@ class V3HostApiService:
                 outputs=(),
                 events=events,
                 core_receipt=core_receipt,
+                source_ref=source_ref,
             )
             if settled.projection_outcome.status == "failed":
                 return settled
@@ -1671,7 +1683,31 @@ class V3HostApiService:
             core_receipt=core_receipt,
             outputs=response_outputs,
             events=events,
+            source_ref=source_ref,
         )
+
+    @contextmanager
+    def _runtime_projection_writer_scope(
+        self,
+        *,
+        session_id: str,
+        source_ref: str,
+    ):  # type: ignore[no-untyped-def]
+        """Bind projection writes to the scope visible after a bounded drain."""
+
+        if self.mutation_writer_scope_factory is None:
+            yield
+            return
+        with self.mutation_writer_scope_factory(
+            session_id=session_id,
+            owner_kind=MutationWriterKind.RUNTIME_COMMAND,
+            owner_ref=f"{source_ref}:post-transition-projection",
+        ) as authority:
+            if authority is None:
+                yield
+            else:
+                with self.repositories.mutation_write_authority(authority):
+                    yield
 
     @staticmethod
     def _outcomes_include_scheduler_failure(

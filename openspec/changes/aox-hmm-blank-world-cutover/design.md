@@ -1403,6 +1403,44 @@ modules与 fault/export fail-closed。历史 SQLite migration/rows与 sealed evi
 non-adoption gate继续是唯一兼容入口。该 Phase 2只运行 non-live验证、同步文档并提交本地 commit；
 不启动 r70、live、MICU、provider、HPC或Chrome。
 
+### 2026-08-04 r70 pre-runtime blocked / post-r70 late-bound task and terminal handoff repair
+
+当前不存在 r71。r70 已消费 authority、slot、root、session 与 public receipt，但在提交首个
+runtime drain 前停止；Host 没有 scientific authorization、admission request 或 scientific
+attempt。这是 **pre-runtime conductor blocked**，不是 canonical r70 NO-GO。r70 的 plan、claim、
+root、session、receipt 与任何派生 identity 都只读封存且不可复用；repair 不得通过补写 drain、
+task、authority envelope 或 attempt 把 r70 续跑成 acceptance attempt。
+
+本轮 deletion-first repair 删除 current formal launch artifacts 中的 speculative task truth。
+`aox_live_attempt_authority_plan@3`、consumption `@4`、slot claim `@3`、root proof `@3`、preflight
+`@4` 与 Host startup/supervision `@3` 只闭合 consumed campaign、ordinal、attempt kind、session、
+root、authority policy 与 deterministic launch identity。它们不得携带 task、envelope/request、
+lane、attempt 或 admission identity，也不再通过 finalization policy 隐藏匹配 exact
+`task.create`。historical schema/evidence 继续只读，但不能进入 current launch。
+
+新的唯一正向顺序是 session create → entry message → bounded drain admission response → sealed
+terminal status → public canonical workspace。workspace 必须只含一个 execution task；operator
+authority 只能在此后原子 late-bind 到该真实 task。后续 executor 才能创建/bind lane，并由
+current assignee 调用 `attempt.create`。最终 product closure 按 task kind、agent role、assignee 与
+owner-authored finish cardinality闭合 exact research/execution/reporting 三任务；task scope、lane、
+approval/fencing、unknown/external effect、provenance/isolation、17-deliverable finalization、Host
+process settlement以及 offline verifier/reducer 的权威边界不变。
+
+public receipt 不再把 digest-only status GET 当作 terminal proof。每个 bounded drain 的 public
+admission response和唯一 terminal response都必须作为 bounded sealed handoff进入 bundle；terminal
+response的 command id/type、status、completed_at、bounded outcome与safe error/retry字段必须 exact
+复现唯一 `runtime.command.finished` event。CLI 对 non-2xx payload 先递归脱敏，再以相同 response
+semantic digest、链上限与封存合同落盘。Host 若 command执行期间才打开 mutation scope，terminal
+settlement与 post-transition projection只获得绑定 exact command id的短 writer authority，完成后
+必须退休；这不授予 observer、retry或业务 terminal policy。
+
+`aox_public_conductor_bundle@3` 只接受上述 late-bound task与 sealed terminal chain。production
+reachability qualification通过 real public FastAPI application、thin Host client、file-backed
+SQLite 和 injected deterministic model/runtime完整组成；它不得直接调用 private service、手工
+组装 `ToolRegistry`、写 canonical repository truth或合成 receipt。该 Phase 2只运行 non-live
+验证、同步 OpenSpec/架构/V3文档、qualification registry/resource manifest并提交本地 commit；
+不启动 r71、live、MICU、provider、HPC或Chrome。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

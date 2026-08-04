@@ -1701,6 +1701,30 @@ formal non-adoption保持。production qualification以真实FastAPI composition
 scientific handlers覆盖positive reachability、wrong actor、reassignment/fencing与legacy negative
 controls。本repair只运行non-live gate并提交，不启动r70、live、MICU、provider、HPC或Chrome。
 
+### r70 pre-runtime conductor blocked / post-r70 pre-r71 repair
+
+当前没有r71。r70已消费authority、slot、root、session与receipt，但没有提交首个runtime drain，
+Host中也没有r70 scientific authorization、admission request或scientific attempt。该状态是
+pre-runtime conductor blocked，不是canonical r70 NO-GO；全部r70 plan/claim/root/session/receipt与
+派生identity不可复用，repair后不得续写task、grant、drain或attempt。
+
+post-r70 repair把speculative task/envelope/request从current formal plan@3、consumption@4、claim@3、
+preflight@4、supervision@3与bundle launch slot删除。slot只绑定campaign/ordinal/session/root/policy。
+public conductor必须按message → bounded drain admission（sealed）→ terminal status（sealed）→
+canonical workspace的顺序得到唯一真实execution task，随后才原子grant Host scientific authority。
+executor再以canonical lane tools与current-assignee `attempt.create`建立真实control graph。
+
+每个drain的terminal response必须与唯一`runtime.command.finished` event在command/status/completion/
+bounded outcome/safe error字段上exact一致；digest-only GET、unsealed或synthetic response都不是
+terminal proof。CLI对non-2xx先递归sanitize，再按相同bounded receipt/response合同flush并封存。
+exact三任务从canonical task kind/agent role/assignee/owner finish cardinality推导，不再依靠hidden
+`task.create` matcher。
+
+production qualification通过real public FastAPI client、file SQLite与deterministic model/runtime
+composition闭合，不调用private service、不手工组装`ToolRegistry`、不写canonical shortcut或合成
+receipt。本repair只运行全部non-live gate、同步OpenSpec/architecture/V3/qualification资源并提交；
+不启动r71、live、MICU、provider、HPC或Chrome。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

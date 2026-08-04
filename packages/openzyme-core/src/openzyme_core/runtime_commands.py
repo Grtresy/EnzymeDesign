@@ -138,8 +138,15 @@ class RuntimeCommandWorker:
                 owner_ref=f"runtime-command:{candidate.command_id}",
             )
         )
-        with writer_scope:
-            outcome = self._run_candidate(candidate, now_iso=now)
+        with writer_scope as initial_writer_authority:
+            outcome = self._run_candidate(
+                candidate,
+                now_iso=now,
+                late_settlement_writer_required=(
+                    self.mutation_writer_scope_factory is not None
+                    and initial_writer_authority is None
+                ),
+            )
         if self.post_writer_finalizer is not None:
             self.post_writer_finalizer(candidate.session_id)
         return outcome
@@ -149,6 +156,7 @@ class RuntimeCommandWorker:
         candidate: RuntimeCommandRecord,
         *,
         now_iso: str,
+        late_settlement_writer_required: bool = False,
     ) -> RuntimeCommandWorkerOutcome:
         try:
             with self.repository_scope_factory() as repositories:
@@ -175,7 +183,10 @@ class RuntimeCommandWorker:
             raise
 
         if candidate.status is RuntimeCommandStatus.CLAIMED:
-            return self._finish_recovered_expired_claim(claimed)
+            return self._finish_recovered_expired_claim(
+                claimed,
+                late_settlement_writer_required=late_settlement_writer_required,
+            )
 
         try:
             result, captured = self._call_executor_with_heartbeat(claimed)
@@ -203,7 +214,13 @@ class RuntimeCommandWorker:
                 ),
             )
             try:
-                return self._finish(claimed, self._validated_result(failure))
+                return self._finish_with_settlement_writer(
+                    claimed,
+                    self._validated_result(failure),
+                    late_settlement_writer_required=(
+                        late_settlement_writer_required
+                    ),
+                )
             except OptimisticStateConflictError:
                 return RuntimeCommandWorkerOutcome(
                     command_id=claimed.command_id,
@@ -213,7 +230,11 @@ class RuntimeCommandWorker:
                     state_version=claimed.state_version,
                 )
         try:
-            return self._finish(captured, self._validated_result(result))
+            return self._finish_with_settlement_writer(
+                captured,
+                self._validated_result(result),
+                late_settlement_writer_required=late_settlement_writer_required,
+            )
         except OptimisticStateConflictError:
             return RuntimeCommandWorkerOutcome(
                 command_id=claimed.command_id,
@@ -230,6 +251,8 @@ class RuntimeCommandWorker:
     def _finish_recovered_expired_claim(
         self,
         claimed: RuntimeCommandRecord,
+        *,
+        late_settlement_writer_required: bool = False,
     ) -> RuntimeCommandWorkerOutcome:
         result = RuntimeCommandExecutionResult(
             status=RuntimeCommandStatus.FAILED,
@@ -245,7 +268,42 @@ class RuntimeCommandWorker:
                 "Inspect current session facts before submitting a new drain command."
             ),
         )
-        return self._finish(claimed, result, action="recovered_without_replay")
+        return self._finish_with_settlement_writer(
+            claimed,
+            result,
+            action="recovered_without_replay",
+            late_settlement_writer_required=late_settlement_writer_required,
+        )
+
+    def _finish_with_settlement_writer(
+        self,
+        claimed: RuntimeCommandRecord,
+        result: RuntimeCommandExecutionResult,
+        *,
+        action: str | None = None,
+        late_settlement_writer_required: bool,
+    ) -> RuntimeCommandWorkerOutcome:
+        """Settle a command under an authority that exists after execution.
+
+        A command can begin before any mutation scope exists and create the
+        session's first scientific-attempt scope during its scheduler batch.
+        The pre-execution writer admission then correctly yields no authority,
+        but the terminal command row and its public event are covered writes by
+        the time the batch returns.  Acquire one exact, source-bound writer for
+        that terminal settlement instead of leaving a completed batch claimed.
+        """
+
+        if (
+            not late_settlement_writer_required
+            or self.mutation_writer_scope_factory is None
+        ):
+            return self._finish(claimed, result, action=action)
+        with self.mutation_writer_scope_factory(
+            session_id=claimed.session_id,
+            owner_kind=MutationWriterKind.RUNTIME_COMMAND,
+            owner_ref=f"runtime-command:{claimed.command_id}:terminal-settlement",
+        ):
+            return self._finish(claimed, result, action=action)
 
     def _finish(
         self,

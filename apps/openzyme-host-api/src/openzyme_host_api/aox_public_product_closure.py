@@ -10,8 +10,6 @@ from openzyme_core import canonical_digest
 from openzyme_pipeline import aox_reference
 
 from .aox_cutover_evidence import FAULT_ARTIFACT_BYTE_FLIP_ID
-from .aox_cutover_tool_policy import AOX_REPORT_TASK_ID
-from .aox_cutover_tool_policy import AOX_RESEARCH_TASK_ID
 from .aox_cutover_tool_policy import evaluate_aox_source_linked_report
 from .aox_final_deliverable_validation import S15_AOX_HMM_FIXED_DELIVERABLES
 
@@ -47,19 +45,25 @@ def _task_receipts(
     session_id: str,
     execution_task_id: str,
 ) -> list[dict[str, Any]]:
-    expected = (
-        (AOX_RESEARCH_TASK_ID, "research", "researcher"),
-        (execution_task_id, "execution", "executor"),
-        (AOX_REPORT_TASK_ID, "reporting", "reporter"),
-    )
     tasks = repositories.tasks.list_by_session(session_id)
-    if len(tasks) != 3 or {task.task_id for task in tasks} != {
-        item[0] for item in expected
-    }:
+    by_kind = {
+        kind: [task for task in tasks if task.kind == kind]
+        for kind in ("research", "execution", "reporting")
+    }
+    if (
+        len(tasks) != 3
+        or any(len(values) != 1 for values in by_kind.values())
+        or by_kind["execution"][0].task_id != execution_task_id
+    ):
         _fail(
             "aox_exact_task_set_invalid",
             "AOX closure requires exactly its research, execution, and reporting tasks",
         )
+    expected = (
+        (by_kind["research"][0].task_id, "research", "researcher"),
+        (execution_task_id, "execution", "executor"),
+        (by_kind["reporting"][0].task_id, "reporting", "reporter"),
+    )
     agents = repositories.agents.list_by_session(session_id)
     agents_by_ref = {
         ref: agent
@@ -280,9 +284,7 @@ def _fault_negative_state_closure(
     execution = next(
         item for item in task_receipts if item["task_id"] == execution_task_id
     )
-    reporter = next(
-        item for item in task_receipts if item["task_id"] == AOX_REPORT_TASK_ID
-    )
+    reporter = next(item for item in task_receipts if item["role"] == "reporter")
     if not all(
         (
             execution["status"] in _FAULT_TERMINAL_TASK_STATUSES,
@@ -391,14 +393,13 @@ def build_aox_public_product_closure(
                 "aox_positive_task_closure_invalid",
                 "positive AOX closure requires all three tasks completed",
             )
-        reporter = next(
-            item for item in task_receipts if item["task_id"] == AOX_REPORT_TASK_ID
-        )
+        research = next(item for item in task_receipts if item["role"] == "researcher")
+        reporter = next(item for item in task_receipts if item["role"] == "reporter")
         evaluated = evaluate_aox_source_linked_report(
             repositories,
             session_id=session_id,
-            research_task_id=AOX_RESEARCH_TASK_ID,
-            report_task_id=AOX_REPORT_TASK_ID,
+            research_task_id=str(research["task_id"]),
+            report_task_id=str(reporter["task_id"]),
             reporter_evidence_refs=tuple(reporter["evidence_refs"]),
         )
         source_linked_report = {
@@ -485,18 +486,24 @@ def validate_aox_public_product_closure(
             "aox_public_product_closure_invalid",
             "public product closure schema, identity, or digest is invalid",
         )
-    expected_task_ids = [AOX_RESEARCH_TASK_ID, execution_task_id, AOX_REPORT_TASK_ID]
     tasks = value.get("tasks")
     if not (
         isinstance(tasks, list)
-        and [item.get("task_id") for item in tasks if isinstance(item, dict)]
-        == expected_task_ids
+        and len(tasks) == 3
+        and [item.get("kind") for item in tasks if isinstance(item, dict)]
+        == ["research", "execution", "reporting"]
+        and [item.get("role") for item in tasks if isinstance(item, dict)]
+        == ["researcher", "executor", "reporter"]
+        and tasks[1].get("task_id") == execution_task_id
+        and len({item.get("task_id") for item in tasks}) == 3
         and len({item.get("assigned_ref") for item in tasks}) == 3
     ):
         _fail(
             "aox_exact_task_closure_invalid",
             "public product closure does not contain exact unique three-task identities",
         )
+    expected_task_ids = [str(item["task_id"]) for item in tasks]
+    report_task_id = expected_task_ids[2]
     workspace_tasks = {
         str(task.get("task_id")): task
         for item in dict(workspace.get("task_board") or {}).get("items") or []
@@ -604,14 +611,14 @@ def validate_aox_public_product_closure(
                 isinstance(report, dict)
                 and any(
                     item.get("report_id") == report.get("report_id")
-                    and item.get("task_id") == AOX_REPORT_TASK_ID
+                    and item.get("task_id") == report_task_id
                     and item.get("status") in {"ready", "published"}
                     for item in value.get("report_states") or []
                 ),
                 isinstance(report, dict)
                 and any(
                     item.get("draft_id") == report.get("draft_id")
-                    and item.get("task_id") == AOX_REPORT_TASK_ID
+                    and item.get("task_id") == report_task_id
                     and item.get("status") == "published"
                     for item in value.get("draft_states") or []
                 ),
@@ -670,9 +677,7 @@ def validate_aox_public_product_closure(
         execution_task = next(
             item for item in tasks if item.get("task_id") == execution_task_id
         )
-        reporter_task = next(
-            item for item in tasks if item.get("task_id") == AOX_REPORT_TASK_ID
-        )
+        reporter_task = next(item for item in tasks if item.get("role") == "reporter")
         if not all(
             (
                 isinstance(negative, dict),
@@ -751,13 +756,3 @@ def validate_aox_public_product_closure(
                 "aox_fault_negative_state_closure_invalid",
                 "fault closure does not prove the exact byte flip and complete non-success state",
             )
-
-
-__all__ = [
-    "AoxPublicProductClosureError",
-    "FAULT_INJECTION_RECEIPT_DOCUMENT_KIND",
-    "FAULT_NEGATIVE_STATE_CLOSURE_SCHEMA_ID",
-    "PUBLIC_PRODUCT_CLOSURE_SCHEMA_ID",
-    "build_aox_public_product_closure",
-    "validate_aox_public_product_closure",
-]

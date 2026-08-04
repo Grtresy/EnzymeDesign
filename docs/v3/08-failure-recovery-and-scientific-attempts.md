@@ -204,21 +204,38 @@ public Host API/CLI 读取 command、workspace、event、approval 与 wake facts
 scope 或把无 signal/no wakeup 当作 attempt terminal。缺 scope、多 scope、active writer、
 parent/authority mismatch 与 unknown effect 仍由 Host typed fail closed。
 
-AOX 使用更窄的 `aox_live_attempt_authority_plan@2`：
+若一个runtime command在开始时没有可写scope，而该command中的canonical scientific transition
+随后打开了scope，terminal command settlement与post-transition projection必须各自重新取得绑定
+exact command id的短writer authority，并在写入command/event/projection后退休。它们不能复用
+启动时的空authority，也不能扩大成observer、retry、rollover或业务terminal判断；scope/parent/
+fence不匹配继续typed fail closed。
+
+AOX 使用更窄的 `aox_live_attempt_authority_plan@3`：
 
 - plan 精确包含 `positive, positive, fault` 三个槽；
-- 每槽绑定预声明 session/task/envelope/root、exact operator grantor、同一 launch identity 和
-  qualification、`max_attempts=1`、effect/route/resource/expiry policy；
+- 每槽只绑定预声明 session/root、同一 launch identity、qualification与exact operator
+  grantor/effect/route/resource/expiry policy；不包含task、authority envelope/request、lane、
+  attempt或admission identity；
 - `consume-authority` 只能把 plan 消费到 deterministic sibling
   `<plan-name>.consumed.json`，并且必须在创建任何 attempt root 前通过 atomic no-replace
   完成一次性消费；current receipt 是
-  `aox_live_attempt_authority_consumption@3`，显式绑定
+  `aox_live_attempt_authority_consumption@4`，显式绑定
   `run_class=formal_acceptance`、formal plan schema/digest 与 sibling filename；
-- `aox_attempt_authority_slot_claim@2` 在root前闭合ordinal/session/task/envelope/root与
-  source-derived `launch_id`，但不包含attempt/lane/admission identity；这些只能由真实Host
-  control graph在finalization后提供；
+- `aox_attempt_authority_slot_claim@3` 在root前闭合ordinal/session/root/authority-policy与
+  source-derived `launch_id`，但不包含task/envelope/attempt/lane/admission identity；
+- session entry message的首个bounded drain必须封存admission与terminal response；随后public
+  workspace必须唯一导出一个execution task。operator只能在此后把scientific authorization
+  原子grant给该真实task；提前、错误或ambiguous task grant均无authorization/no effect；
+- 每个terminal status必须exact复现同command的唯一`runtime.command.finished` event；
+  digest-only GET、未封存或synthetic handoff不是terminal proof；
 - 复制 plan 文件不能获得新的 campaign authority；当前信任边界要求 operator 保护原 plan
   与其 deterministic consumption sibling，并以 durable in-attempt envelope 证明每槽消费。
+
+r70在上述首个drain之前停止：authority/slot/root/session/receipt已消费，但没有runtime command、
+scientific authorization、admission或attempt。这是pre-runtime conductor blocked而不是canonical
+NO-GO，全部state不可复用；当前没有r71。post-r70 repair也删除finalization policy中的hidden
+exact `task.create` matcher。exact research/execution/reporting closure只从canonical task kind、
+agent role、current assignee与owner-authored finish cardinality计算。
 
 ## 5. Full occurrence universe 与 selected chain
 

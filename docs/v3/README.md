@@ -37,7 +37,7 @@ V3 的核心立场：
 AOX/HMM live cutover：
 
 - [aox-hmm-blank-world-cutover.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-hmm-blank-world-cutover.md)
-- [aox-r-series-codex-goal.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-r-series-codex-goal.md)：post-r69 / pre-r70 public-only Codex 测试员的 paste-ready goal；只读诊断、repair 批准与 live 批准严格分离。
+- [aox-r-series-codex-goal.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-r-series-codex-goal.md)：post-r70 / pre-r71 public-only Codex 测试员的 paste-ready goal；只读诊断、repair 批准与 live 批准严格分离。
 - [aox-closure-stage-live-diagnostic.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-closure-stage-live-diagnostic.md)：只读历史封存页。r65 已删除其 authority/reconstruction/live/CLI 可执行链；历史 SQLite/evidence 仍可离线核验，但永久不能进入 formal acceptance。
 - 新 production attempt 使用 selected-chain `aox_blank_world_attempt_bundle@3`；
   历史 `@2` verifier 与 r48-r59 NO-GO evidence 保持冻结。r56 后的 target contract
@@ -49,7 +49,7 @@ AOX/HMM live cutover：
   runnable command，只保留 read-only cross-mode negative gate。
   diagnostic 永久 `acceptance_eligible=false`，不能生成/进入
   `@3` bundle/reducer；current product surface 不含 `run-live` / `run-diagnostic-live`。
-- `pin` 与 `preflight` 均先要求当前 clean commit 的 full architecture qualification report；qualification 通过本身只解除架构阻断，不创建 attempt，也不自动恢复 numbered campaign。CLI `preflight` 先以 `aox_attempt_authority_slot_claim@2` claim exact slot，再创建 blank-world root；claim/preflight/supervision只绑定 launch，不预造 attempt/lane。r59 是永久 formal NO-GO，r60-r67 是永久 diagnostic NO-GO；r68 是 authority-consumed/attempt-unstarted prelaunch blocked，r69 是 authority/root/session/provider/MICU-consumed但 attempt-uncreated pre-admission blocked。两者都不是 canonical NO-GO，全部 state不可复用。executor必须先用 canonical lane tools绑定 execution task，再由 current assignee调用极小 `attempt.create`；Host内部 finalizer late-bind canonical attempt。public conductor receipt只证明Codex动作，agent/Host transition由 `aox_closed_attempt_evidence@2` canonical control/events/product closure证明。该实现及非-live gate不授权 r70或任何下一轮 live。
+- `pin` 与 `preflight` 均先要求当前 clean commit 的 full architecture qualification report；qualification 通过本身只解除架构阻断，不创建 attempt，也不自动恢复 numbered campaign。CLI `preflight` 先以 `aox_attempt_authority_slot_claim@3` claim exact slot，再创建 blank-world root；plan/claim/preflight/supervision只绑定 campaign/ordinal/session/root/policy，不预造 task/envelope/lane/attempt。r59 是永久 formal NO-GO，r60-r67 是永久 diagnostic NO-GO；r68 是 authority-consumed prelaunch blocked，r69 是 authority/root/session/provider/MICU-consumed pre-admission blocked，r70 是 authority/slot/root/session/receipt-consumed但 drain/Host scientific authorization/admission/attempt均未创建的 pre-runtime conductor blocked。r68-r70都不是 canonical NO-GO，全部state不可复用，当前没有r71。public conductor必须先封存message、bounded drain admission、terminal status与唯一execution-task workspace read，随后才能late-bind scientific authority；executor再通过canonical lane tools和current-assignee `attempt.create`建立真实control。每个terminal response必须exact绑定`runtime.command.finished`；agent/Host transition仍由`aox_closed_attempt_evidence@2` canonical control/events/product closure证明。该实现及non-live gate不授权r71或任何下一轮live。
 - closure-stage authority/reconstruction/live/CLI 已从 current product surface 退役。architecture qualification 只保留 historical run-class/attempt-id 的 formal non-adoption negative gate；不存在恢复旧 flow 的兼容命令。
 
 Execution pipeline SDK docs:

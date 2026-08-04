@@ -1213,6 +1213,54 @@ inspect/workspace/events/export。历史 SQLite/schema/evidence继续只读，fo
 不变。该 repair只授权 non-live验证、文档和本地提交，不启动 r70、live、MICU、provider、HPC
 或Chrome。
 
+### 9.5 r70 pre-runtime conductor blocked 与 post-r70 terminal handoff
+
+当前没有 r71。r70 已消费 formal authority、slot、root、session 与 public receipt，但首个
+`runtime/drain` 从未提交；Host scientific authorization、admission request 与 scientific
+attempt 均未创建。因此 r70 是 **pre-runtime conductor blocked**，不是 canonical r70 NO-GO。
+r70 的 plan、claim、root、session、receipt 与全部派生状态不可复用，也不能在 repair 后补写
+task、grant、drain 或 attempt。
+
+current launch contract进一步删除 pre-task shadow truth：
+
+```text
+formal plan@3 / consumption@4
+  -> slot claim@3(campaign, ordinal, session, root, authority policy)
+  -> root proof@3 / preflight@4 / Host supervision@3
+  -> public session create + entry message
+  -> bounded drain admission response（sealed）
+  -> terminal command status（sealed + runtime.command.finished exact binding）
+  -> public canonical workspace（exact one execution task）
+  -> operator scientific authority late-bound to that task
+  -> executor lane.create / lane.bind_task / attempt.create
+  -> Host late-bound admission/attempt + canonical owner wake
+  -> public inspect/export -> conductor bundle@3 -> offline verifier/reducer
+```
+
+plan、claim、root、preflight、supervision 与 bundle launch slot不得包含 speculative task、
+预生成 authority envelope/request、lane、attempt 或 admission identity；Host scientific
+authorization只能在 sealed workspace确定唯一真实execution task后原子创建。finalization
+precondition不再隐藏匹配 exact `task.create`，而是从 canonical task board按 kind、agent role、
+assignee和immutable owner finish cardinality闭合 exact research/execution/reporting三任务。
+task scope、lane owner、approval/fencing、unknown/external effect、provenance/isolation、exact
+17-deliverable finalization和Host process settlement边界不变。
+
+每个bounded drain的HTTP 202 admission response和唯一terminal status response都必须作为
+bounded sealed handoff进入 `aox_public_conductor_bundle@3`。terminal response必须与唯一
+`runtime.command.finished` event在command identity、status、completion、bounded outcome与safe
+error/retry字段上逐项相同；digest-only GET receipt、未封存status、synthetic response或多余
+handoff不构成terminal proof。thin CLI对non-2xx payload先递归脱敏，再用与2xx相同的canonical
+semantic digest、链大小/条数上限和fsync/no-replace封存合同记录。
+
+若runtime command开始时尚无mutation scope、执行期间由canonical transition打开scope，Host仅在
+terminal settlement与post-transition projection时获取绑定exact command id的短writer authority，
+完成后立即退休；这不是observer、retry或业务终态判断。production qualification通过real public
+FastAPI应用、thin client、file SQLite与deterministic model/runtime composition证明正向路径，
+禁止private service、手工`ToolRegistry`、直接canonical write或synthetic receipt自证。该repair
+只运行non-live验证、更新规格/文档/qualification资源并提交本地commit；不启动r71、live、MICU、
+provider、HPC或Chrome。下一fresh rNN仍需clean commit、full admission/pin、fresh authority和
+独立用户批准，GO只由offline verifier/reducer产生。
+
 ---
 
 ## 10. Legacy Boundary

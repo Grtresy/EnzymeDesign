@@ -533,26 +533,36 @@ After an exact plan has been consumed, preflight SHALL first validate the clean
 launch identity, committed pin pair, current full architecture qualification,
 runtime configuration, exact plan/consumption binding and unused slot. Preflight
 MUST then atomically publish one mode-private no-replace
-`aox_attempt_authority_slot_claim@2` sibling before any root creation. The claim
-MUST bind campaign, plan/consumption, exact ordinal, session/task/envelope/root/
-request, campaign-root identity and a deterministic source-derived `launch_id`. It
-MUST NOT contain or imply an attempt id, lane id or admission idempotency key. Only
+`aox_attempt_authority_slot_claim@3` sibling before any root creation. The claim
+MUST bind campaign, plan/consumption, exact ordinal, attempt kind, session, root,
+campaign-root identity, authority-policy digest and a deterministic source-derived
+`launch_id`. It MUST NOT contain or imply a task id, envelope/request identity,
+attempt id, lane id or admission idempotency key. Only
 after that claim succeeds MAY it
 create that slot's one fresh private root, copy the exact claim into its evidence
-root and seal `aox_attempt_preflight@3`; the receipt MUST state that Host was not started and MUST
+root and seal `aox_attempt_preflight@4`; the receipt MUST state that Host was not started and MUST
 be rejected when rebound, replayed, symlinked, drifted or reused after any
 session/attempt state exists.
 
-Within the session the assigned executor SHALL create a real lane and bind its
-canonical execution task using ordinary lane tools before invoking
-`attempt.create`. The tool SHALL accept only the authority envelope and one
-idempotency key; task focus, lane, campaign, workflow contract, scope, resources,
-effect classes and private routes SHALL be derived from canonical Host state. Both
-request persistence and Host finalization MUST revalidate the exact current task
-assignee. The Host SHALL generate the admission and attempt identities only at
-finalization and deliver those late-bound facts through the canonical owner wake.
-Wrong actor, reassignment, absent/foreign lane, ambiguous authority or legacy
-caller-supplied identity fields MUST create no attempt and consume no effect.
+Within the session, no operator authority MAY be granted to a speculative task.
+The Codex conductor SHALL first create the session, send the single entry message,
+submit one bounded drain, seal both its public admission response and its one public
+terminal status response, and then seal a public canonical workspace read. That read
+MUST contain exactly one execution task. Only then MAY the operator atomically grant
+the slot authority to that actual task, using the source-derived campaign and policy
+binding; a missing or ambiguous execution task, a pre-grant task id, a second grant,
+or a grant to any other task MUST create no scientific authorization or effect.
+
+The assigned executor SHALL create a real lane and bind that canonical execution
+task using ordinary lane tools before invoking `attempt.create`. The tool SHALL
+accept only the authority envelope and one idempotency key; task focus, lane,
+campaign, workflow contract, scope, resources, effect classes and private routes
+SHALL be derived from canonical Host state. Both request persistence and Host
+finalization MUST revalidate the exact current task assignee. The Host SHALL generate
+the admission and attempt identities only at finalization and deliver those
+late-bound facts through the canonical owner wake. Wrong actor, reassignment,
+absent/foreign lane, ambiguous authority or legacy caller-supplied identity fields
+MUST create no attempt and consume no effect.
 
 `serve-attempt` MAY start only the fixed loopback production Host in one local
 process group using that exact preflight receipt. It MUST disable background
@@ -588,13 +598,20 @@ be sealed once as `openzyme_public_host_response@1` only when it reproduces the
 same semantic digest.
 
 The receipt chain SHALL attest only actions owned by the Codex conductor: session
-creation, entry message, authority grant, explicit bounded drain and status reads,
+creation, entry message, explicit bounded drain and status reads, the sealed
+canonical task read, late-bound authority grant,
 pending approval reads/resolutions, the exact fault capability and final canonical
 reads. It MUST reject any conductor receipt for agent-owned
 `scientific-attempt-commands` or Host-owned admission/closure finalization. Agent and
 Host transitions SHALL be established only by canonical control, workspace, events
-and export. Every bounded drain MUST have a later terminal command-status read before
-the next drain or final reads, and CLI JSON handoff MUST be flushed.
+and export. Every bounded drain MUST seal its exact admission response and exactly
+one later terminal command-status response before the next drain or final reads.
+The terminal response MUST reproduce the same command and equal the unique canonical
+`runtime.command.finished` event projection for command id/type, status, completion
+time, bounded outcome and safe error/retry fields. A digest-only status receipt,
+unsealed GET, synthesized response, extra handoff, or status/event drift MUST fail
+closed. CLI JSON handoff MUST be flushed, recursively sanitized on non-2xx, bounded,
+and sealed with the same canonical response semantics as a successful request.
 
 For the formal fault slot, the public Host SHALL expose only the authority-bound exact
 `AOX_ref21.fasta` byte-zero flip capability. It MUST validate the active fault attempt,
@@ -609,7 +626,7 @@ startup/retirement receipts, complete public receipt chain, sealed final
 workspace/event/evidence responses, source attestations and MICU snapshots before
 creating any output. It SHALL reconstruct one source-bound
 `aox_blank_world_attempt_bundle@3` with profile
-`aox_public_conductor_bundle@2`, install it atomically without replacement, and
+`aox_public_conductor_bundle@3`, install it atomically without replacement, and
 make the sealed source set independently reconstructable by the network-free
 verifier. Any missing/extra/non-2xx/discontinuous command, identity drift,
 noncanonical business closure, invalid task/report/finalization state, symlink,
@@ -617,10 +634,13 @@ source drift or partial output MUST leave no sealed bundle.
 
 Executable architecture qualification SHALL prove the retained composition by
 constructing the production FastAPI application through the real composition factory,
-composing its actual route registry, and writing/rereading file-backed SQLite through
-the production V3 service plus canonical lane/scientific tool handlers. It SHALL prove
-one assignee-bound late-created attempt, wrong-actor no-effect, reassignment-before-
-finalizer rejection, and typed fault/export failure before a matching closed attempt.
+using a deterministic model/runtime only as the injected agent boundary, calling real
+public routes through the thin Host client, and writing/rereading file-backed SQLite
+through the production V3 service plus canonical lane/scientific tool handlers. It
+SHALL prove the first-message/bounded-drain/public-task-read/late-authority sequence,
+one assignee-bound late-created attempt, wrong-task and wrong-actor no-effect,
+reassignment-before-finalizer rejection, and typed fault/export failure before a
+matching closed attempt.
 It MUST NOT substitute source inspection for production reachability. Deleted
 diagnostic authority mint/consume, public scientific mutation/finalizer routes and
 CLI, Core `create_attempt` compatibility, private admission argument projection,
@@ -637,11 +657,19 @@ package and MUST NOT be a production caller.
 - **THEN** the single finalizer seals one source-reconstructable `@3` bundle and the offline verifier reproduces it without SQLite, provider, runner or network access
 
 #### Scenario: Reject an incomplete or substituted conductor chain
-- **WHEN** a command is missing, duplicated, non-2xx, semantically drifted, privately substituted, test-built, cross-authority, cross-root, cross-attempt or followed by partial output
+- **WHEN** a command or sealed handoff is missing, duplicated, unbounded, semantically drifted, digest-only, privately substituted, test-built, cross-authority, cross-root, cross-attempt or followed by partial output
 - **THEN** finalization fails before destination creation and none of those facts can be relabelled as a closed attempt or campaign decision
 
+#### Scenario: Bind the formal authority only to the canonical execution task
+- **WHEN** the first message has produced one sealed bounded drain, its sealed terminal status and a public workspace containing exactly one execution task
+- **THEN** the operator grant is accepted only for that task and any speculative, absent, duplicate or different task identity creates no scientific authorization or effect
+
+#### Scenario: Bind every terminal handoff to the durable event
+- **WHEN** a conductor submits a bounded drain and later reads its terminal status
+- **THEN** both public responses are sealed and the terminal response exactly reproduces the unique `runtime.command.finished` event projection; an unsealed or digest-only status GET is not terminal proof
+
 ### Requirement: Three-attempt GO campaign
-Local Live cutover SHALL be GO only after one formal acceptance campaign and one exact authority plan produce ordinal 1, 2 and 3 in that order: two consecutive independent positive attempts on the same exact-seven launch identity, followed by one `derived_required_artifact_blob_byte_flip@2` attempt that fails closed. Every session/task/envelope/root/receipt-chain launch identity MUST be non-empty and unique across the three slots; after Host finalization, every canonical attempt/lane/admission-request/admission-idempotency/selection identity MUST independently be non-empty and unique across the three real control graphs. No outer launch artifact may supply those late-bound control identities. The fault MUST traverse the real exact-14 NCBI `proteins.fasta` through `aox_hmm_reference_set_selection@1` to derived `AOX_ref21.fasta`, consume the authority-bound public capability before its unique pending MAFFT consumer, and terminate that consumer with exact `artifact_blob_digest_mismatch`. Positive attempts MUST use different clean roots and MUST each prove exact three-task completion, publish a source-linked report, preserve a final answer and pass offline evidence verification. Diagnostic live runs, implementation completion, and non-live test completion MUST NOT be reported as Live completion before all three fresh formal bundles and the sealed reducer decision exist.
+Local Live cutover SHALL be GO only after one formal acceptance campaign and one exact authority plan produce ordinal 1, 2 and 3 in that order: two consecutive independent positive attempts on the same exact-seven launch identity, followed by one `derived_required_artifact_blob_byte_flip@2` attempt that fails closed. Every session/root/authority-policy/receipt-chain launch identity MUST be non-empty and unique across the three slots; after the public task read and Host finalization, every canonical task/envelope/attempt/lane/admission-request/admission-idempotency/selection identity MUST independently be non-empty and unique across the three real control graphs. No outer launch artifact may supply those late-bound control identities. The fault MUST traverse the real exact-14 NCBI `proteins.fasta` through `aox_hmm_reference_set_selection@1` to derived `AOX_ref21.fasta`, consume the authority-bound public capability before its unique pending MAFFT consumer, and terminate that consumer with exact `artifact_blob_digest_mismatch`. Positive attempts MUST use different clean roots and MUST each prove exact three-task completion, publish a source-linked report, preserve a final answer and pass offline evidence verification. Diagnostic live runs, implementation completion, and non-live test completion MUST NOT be reported as Live completion before all three fresh formal bundles and the sealed reducer decision exist.
 
 #### Scenario: Campaign reaches GO
 - **WHEN** attempts one and two independently satisfy every positive criterion and attempt three seals `aox_fault_negative_state_closure@1` proving execution failed/blocked/cancelled, reporting did not complete or publish, no ready/published report or draft exists, no alternate target consumer succeeded, no downstream fixed deliverable exists, durable events/conversation/final failure agree, and all fault-attempt MICU usage is attributed to this campaign
@@ -654,8 +682,9 @@ Local Live cutover SHALL be GO only after one formal acceptance campaign and one
 ### Requirement: Public-only Codex test conductor and canonical approval proof
 AOX live test orchestration SHALL be performed by a Codex test conductor outside
 the product runtime. The conductor SHALL use only the public Host API/CLI for
-session creation, one entry message, explicit bounded runtime drains, compact
-pending-approval reads, approval resolution, workspace reads and event replay.
+session creation, one entry message, explicit bounded runtime drains, sealed terminal
+status reads, canonical task reads, late-bound authority grant, compact pending-
+approval reads, approval resolution, workspace reads and event replay.
 It MUST NOT read or write SQLite directly, call provider/runner/HPC internals,
 forge receipts, bypass approval, synthesize wakeups, infer task completion from
 runtime idleness, or continue through an automatic drive-until-terminal,

@@ -157,6 +157,24 @@ class FakeResponse:
         return self._payload
 
 
+class FailingSession(FakeSession):
+    def get(self, url: str, **kwargs):
+        if url.endswith("/scientific-attempts"):
+            self.last_headers = dict(kwargs.get("headers") or {})
+            self.calls.append(("GET", url, None))
+            return FakeResponse(
+                403,
+                {
+                    "error": {
+                        "code": "scientific_read_forbidden",
+                        "message": "denied at /home/private/control.sqlite3",
+                        "details": {"api_key": "sk-private"},
+                    }
+                },
+            )
+        return super().get(url, **kwargs)
+
+
 def build_v3_workspace() -> dict[str, object]:
     return {
         "session": {
@@ -491,6 +509,44 @@ def test_cli_exports_and_seals_closed_attempt_evidence(
     assert receipt["request"] == {}
     assert envelope["receipt"] == receipt
     assert envelope["response"] == []
+
+
+def test_cli_seals_sanitized_non_2xx_public_response(tmp_path: Path) -> None:
+    session = FailingSession()
+    receipt_chain = tmp_path / "failed-receipt.jsonl"
+    sealed_response = tmp_path / "failed-response.json"
+    stderr = StringIO()
+
+    exit_code = run_cli(
+        [
+            "--session-id",
+            "sess_001",
+            "--receipt-chain",
+            str(receipt_chain),
+            "--seal-response",
+            str(sealed_response),
+            "scientific",
+            "inspect",
+        ],
+        session=session,
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+
+    assert exit_code == 2
+    receipt = json.loads(receipt_chain.read_text(encoding="utf-8"))
+    envelope = json.loads(sealed_response.read_text(encoding="utf-8"))
+    assert receipt["status_code"] == 403
+    assert envelope["receipt"] == receipt
+    assert envelope["response"] == {
+        "error": {
+            "code": "scientific_read_forbidden",
+            "message": "denied at [redacted-host-path]",
+            "details": {},
+        }
+    }
+    assert "/home/private" not in stderr.getvalue()
+    assert "sk-private" not in stderr.getvalue()
 
 
 def test_cli_reaches_exact_aox_reference_fault_capability() -> None:
