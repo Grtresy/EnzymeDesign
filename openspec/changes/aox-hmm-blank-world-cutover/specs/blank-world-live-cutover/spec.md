@@ -886,3 +886,14 @@ The session workspace is a collection read model. Every Artifact occurrence in `
 #### Scenario: Coordinate approval after real-scale provider metadata
 - **WHEN** a formal session has tens of thousands of UniProt identities and one or more multi-megabyte canonical Artifact metadata objects while a controlled operation requests approval
 - **THEN** the compact pending-approval read remains independent of Artifact metadata size, repeated cutover polls do not GET the workspace, resolve preserves the same continuation identity, and the bounded final workspace exposes omission digests/hints without deleting or truncating the catalog metadata
+
+### Requirement: AOX current admission consumes source-causal qualification version two only
+AOX pin, preflight, launch, evidence and reducer paths MUST accept only a verified `openzyme_v3_architecture_qualification_report@2` and matching `aox_architecture_qualification_receipt@2`. The receipt MUST bind the exact report schema, lock-admission source identity digest and run-evidence digest. Report or receipt `@1` MAY remain readable only for frozen historical bundle compatibility and MUST NOT authorize a current campaign. A qualification terminal failure or lost conductor handle MUST NOT trigger an equivalent command relaunch, report adoption repair, or a new numbered r-series run.
+
+#### Scenario: Reject historical qualification at current preflight
+- **WHEN** a current pin, preflight or launch receives a structurally valid historical report/receipt `@1`
+- **THEN** it fails before root/session/effect creation with version unsupported and does not upgrade, reseal or adopt the evidence
+
+#### Scenario: Stop after one source-bound qualification failure
+- **WHEN** a fresh qualification report seals a source drift, collection failure, harness timeout or scenario execution failure
+- **THEN** the conductor preserves that terminal report, performs no equivalent relaunch or recovery adoption, and requests an independently approved repair before any fresh goal or rNN

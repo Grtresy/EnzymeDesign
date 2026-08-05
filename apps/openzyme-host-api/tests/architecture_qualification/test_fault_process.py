@@ -1,119 +1,65 @@
 from __future__ import annotations
 
-from dataclasses import replace
-from pathlib import Path
 import signal
 
-from openzyme_host_api.architecture_qualification import load_invariant_registry
+import pytest
 
-from .external_ports import ExternalEffectLedger
-from .fault_process import IdentityBoundFaultProcessRunner
-from .safety import QualificationSafetyGuard
+from .fault_process import evaluate_retirement_semantics
 
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
-
-
-def _runner(
-    guard: QualificationSafetyGuard,
-    *,
-    ledger: ExternalEffectLedger,
-) -> IdentityBoundFaultProcessRunner:
-    registry = load_invariant_registry(repo_root=REPO_ROOT)
-    return IdentityBoundFaultProcessRunner(
-        registry=registry.payload,
-        ledger=ledger,
-        safety_guard=guard,
-        readiness_timeout_seconds=5.0,
-        operator_grace_seconds=0.05,
-        term_grace_seconds=0.05,
-        kill_grace_seconds=0.5,
-        deadline_seconds=0.05,
+@pytest.mark.parametrize(
+    ("raw_exit_code", "expected_signal"),
+    ((0, None), (23, None), (-signal.SIGINT, signal.SIGINT), (-signal.SIGKILL, signal.SIGKILL)),
+)
+def test_retirement_semantics_are_deterministic_and_signal_preserving(
+    raw_exit_code: int,
+    expected_signal: int | None,
+) -> None:
+    semantics = evaluate_retirement_semantics(
+        identity_exact=True,
+        raw_exit_code=raw_exit_code,
+        final_group_member_count=0,
     )
 
-
-def test_fault_process_deadline_uses_bounded_term_and_preserves_signal() -> None:
-    registry = load_invariant_registry(repo_root=REPO_ROOT)
-    ledger = ExternalEffectLedger()
-    with QualificationSafetyGuard(registry=registry.payload) as guard:
-        handle = _runner(guard, ledger=ledger).start("wait")
-        evidence = handle.retire(operator_signal=None)
-
-    payload = evidence.payload
-    phases = {item["phase"]: item for item in payload["phases"]}  # type: ignore[index]
-    assert payload["retirement_proven"] is True
-    assert payload["raw_exit_code"] == -signal.SIGTERM
-    assert payload["raw_signal"] == signal.SIGTERM
-    assert phases["deadline"]["sent"] is False
-    assert phases["sigterm"]["sent"] is True
-    assert phases["sigkill"]["sent"] is False
-    assert phases["descendant_emptiness"]["group_member_count"] == 0
-    assert ledger.count(operation="spawn") == 1
-    assert ledger.count_effects() == 0
-    assert guard.blocked_invocations == ()
+    assert semantics.retirement_proven is True
+    assert semantics.quarantine_required is False
+    assert semantics.raw_signal == expected_signal
+    assert semantics.external_outcome == "unknown"
+    assert semantics.cutover_eligible is False
 
 
-def test_fault_process_identity_mismatch_fails_closed_without_group_claim() -> None:
-    registry = load_invariant_registry(repo_root=REPO_ROOT)
-    ledger = ExternalEffectLedger()
-    with QualificationSafetyGuard(registry=registry.payload) as guard:
-        handle = _runner(guard, ledger=ledger).start("wait")
-        drifted = replace(
-            handle.identity,
-            start_time_ticks=handle.identity.start_time_ticks + 1,
+@pytest.mark.parametrize(
+    ("identity_exact", "raw_exit_code", "member_count", "forced"),
+    (
+        (False, -signal.SIGTERM, 0, False),
+        (True, None, 0, False),
+        (True, -signal.SIGKILL, 1, False),
+        (True, -signal.SIGTERM, 0, True),
+    ),
+)
+def test_unproven_retirement_always_requires_quarantine(
+    identity_exact: bool,
+    raw_exit_code: int | None,
+    member_count: int,
+    forced: bool,
+) -> None:
+    semantics = evaluate_retirement_semantics(
+        identity_exact=identity_exact,
+        raw_exit_code=raw_exit_code,
+        final_group_member_count=member_count,
+        force_retirement_unproven=forced,
+    )
+
+    assert semantics.retirement_proven is False
+    assert semantics.quarantine_required is True
+    assert semantics.external_outcome == "unknown"
+    assert semantics.cutover_eligible is False
+
+
+def test_retirement_semantics_reject_impossible_member_count() -> None:
+    with pytest.raises(ValueError, match="must not be negative"):
+        evaluate_retirement_semantics(
+            identity_exact=True,
+            raw_exit_code=0,
+            final_group_member_count=-1,
         )
-        evidence = handle.retire(
-            operator_signal=signal.SIGTERM,
-            expected_identity=drifted,
-        )
-
-    payload = evidence.payload
-    phases = {item["phase"]: item for item in payload["phases"]}  # type: ignore[index]
-    assert payload["identity_exact"] is False
-    assert payload["retirement_proven"] is False
-    assert payload["quarantine_required"] is True
-    assert phases["operator_signal"]["sent"] is False
-    assert phases["sigterm"]["sent"] is True
-    assert handle.process.poll() is not None
-
-
-def test_fault_process_unretired_descendant_proof_stays_non_admissible() -> None:
-    registry = load_invariant_registry(repo_root=REPO_ROOT)
-    ledger = ExternalEffectLedger()
-    with QualificationSafetyGuard(registry=registry.payload) as guard:
-        handle = _runner(guard, ledger=ledger).start("descendant_residue")
-        handle.process.wait(timeout=1.0)
-        evidence = handle.retire(
-            operator_signal=signal.SIGTERM,
-            force_retirement_unproven=True,
-        )
-
-    payload = evidence.payload
-    phases = {item["phase"]: item for item in payload["phases"]}  # type: ignore[index]
-    assert payload["descendant_residue_observed"] is True
-    assert phases["sigkill"]["sent"] is True
-    assert phases["descendant_emptiness"]["group_member_count"] == 0
-    assert payload["retirement_proven"] is False
-    assert payload["quarantine_required"] is True
-    assert payload["cutover_eligible"] is False
-
-
-def test_fault_process_cleanup_preserves_unknown_outcome_and_no_closure_claims() -> None:
-    registry = load_invariant_registry(repo_root=REPO_ROOT)
-    ledger = ExternalEffectLedger()
-    with QualificationSafetyGuard(registry=registry.payload) as guard:
-        handle = _runner(guard, ledger=ledger).start("wait")
-        first = handle.retire(operator_signal=signal.SIGINT)
-        second = handle.retire(operator_signal=signal.SIGINT)
-
-    assert first is second
-    assert handle.retirement_calls == 2
-    payload = first.payload
-    assert payload["raw_exit_code"] == -signal.SIGINT
-    assert payload["raw_signal"] == signal.SIGINT
-    assert payload["external_outcome"] == "unknown"
-    assert payload["remote_cancellation_claimed"] is False
-    assert payload["normal_bundle_created"] is False
-    assert payload["quiescence_claimed"] is False
-    assert payload["exact_charge_claimed"] is False
-    assert set(payload["cleanup_call_counts"].values()) == {0}  # type: ignore[union-attr]

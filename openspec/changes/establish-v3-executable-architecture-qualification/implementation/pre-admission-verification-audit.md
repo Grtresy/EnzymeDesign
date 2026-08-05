@@ -25,7 +25,7 @@ resumed.
 | Complete cross-layer matrix | twelve stable scenario ids in `invariant-registry.json`; r43-r47, restart/fencing/concurrency/operator/boundary families |
 | Allowed and forbidden oracles | `oracles.py`, `observation.py`, `execution_evidence.py`, scenario-local effect/state/event assertions |
 | Process-isolated bounded faults | `fault_process.py`, `fault_process_child.py`, operator-retirement scenario and self-tests |
-| Distinct diagnostic/admission source authority | `architecture_qualification_runner.py`, `architecture_qualification_report.py`, `test_report_and_runner.py` |
+| Distinct diagnostic/admission source authority | `scripts/architecture_qualification_runner.py`, `architecture_qualification_report.py`, `test_report_and_runner.py` |
 | Canonical immutable pure-verifiable reports | report loader/publisher/verifier plus no-replace, canonical/tamper/source-drift tests |
 | GAP taxonomy | derived GAP/P0 reducer and baseline `implementation/baseline-gap-report.md` |
 | Evidence-driven P0 closure | frozen red/green evidence, two focused OpenSpec changes, canonical `p0-closures.json`, closure/reopen tests |

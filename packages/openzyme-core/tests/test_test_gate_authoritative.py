@@ -1136,9 +1136,7 @@ def test_receipt_verifier_rejects_unknown_schema_digest_and_duplicate_node(
 def test_same_invocation_qualification_sidecar_closes_qh_qs_and_report(
     tmp_path: Path,
 ) -> None:
-    from openzyme_host_api import (
-        architecture_qualification_runner as qualification_runner,
-    )
+    from scripts import architecture_qualification_runner as qualification_runner
 
     plan, _, _ = _plan_fixture(tmp_path)
     output_root = Path(plan["output_root"])

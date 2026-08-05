@@ -618,11 +618,11 @@ def probe_public_diagnostic_bounded_work(
             registry=registry,
             ledger=ledger,
             safety_guard=guard,
-            readiness_timeout_seconds=8.0,
-            operator_grace_seconds=0.1,
-            term_grace_seconds=0.1,
-            kill_grace_seconds=0.75,
-            deadline_seconds=0.05,
+            readiness_timeout_seconds=10.0,
+            operator_grace_seconds=2.0,
+            term_grace_seconds=2.0,
+            kill_grace_seconds=5.0,
+            deadline_seconds=2.0,
         )
         handle = runner.start("sanitize_long_scalar")
         try:

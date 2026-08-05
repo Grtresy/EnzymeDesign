@@ -9,18 +9,22 @@ from openzyme_runtime import REPO_ROOT
 
 from .architecture_qualification import ArchitectureQualificationReportError
 from .architecture_qualification import PROFILE_ID
+from .architecture_qualification import QUALIFICATION_REPORT_SCHEMA_ID
 from .architecture_qualification import canonical_json_bytes
 from .architecture_qualification_report import load_report
 from .architecture_qualification_report import verify_report
 
 
-ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID = (
+ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID_V1 = (
     "aox_architecture_qualification_receipt@1"
+)
+ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID = (
+    "aox_architecture_qualification_receipt@2"
 )
 ARCHITECTURE_QUALIFICATION_RUNNER_RELATIVE_PATH = Path(
     "scripts/v3_architecture_qualification.py"
 )
-ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS = frozenset(
+ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS_V1 = frozenset(
     {
         "profile_id",
         "receipt_digest",
@@ -29,6 +33,14 @@ ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS = frozenset(
         "schema_id",
         "source_commit",
         "test_manifest_digest",
+    }
+)
+ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS = frozenset(
+    set(ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS_V1)
+    | {
+        "report_schema_id",
+        "run_evidence_digest",
+        "source_identity_digest",
     }
 )
 
@@ -62,13 +74,19 @@ def _receipt_preimage(
     test_manifest_digest: str,
     profile_id: str,
     source_commit: str,
+    report_schema_id: str,
+    run_evidence_digest: str,
+    source_identity_digest: str,
 ) -> dict[str, str]:
     return {
         "profile_id": profile_id,
         "registry_digest": registry_digest,
         "report_payload_digest": report_payload_digest,
+        "report_schema_id": report_schema_id,
+        "run_evidence_digest": run_evidence_digest,
         "schema_id": ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID,
         "source_commit": source_commit,
+        "source_identity_digest": source_identity_digest,
         "test_manifest_digest": test_manifest_digest,
     }
 
@@ -80,6 +98,9 @@ def build_architecture_qualification_receipt(
     test_manifest_digest: str,
     profile_id: str,
     source_commit: str,
+    report_schema_id: str,
+    run_evidence_digest: str,
+    source_identity_digest: str,
 ) -> dict[str, str]:
     preimage = _receipt_preimage(
         report_payload_digest=report_payload_digest,
@@ -87,6 +108,9 @@ def build_architecture_qualification_receipt(
         test_manifest_digest=test_manifest_digest,
         profile_id=profile_id,
         source_commit=source_commit,
+        report_schema_id=report_schema_id,
+        run_evidence_digest=run_evidence_digest,
+        source_identity_digest=source_identity_digest,
     )
     return normalize_architecture_qualification_receipt(
         {
@@ -100,19 +124,35 @@ def normalize_architecture_qualification_receipt(
     receipt: Mapping[str, object],
     *,
     expected_source_commit: str | None = None,
+    allow_historical: bool = False,
 ) -> dict[str, str]:
+    schema_id = receipt.get("schema_id")
+    if schema_id == ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID:
+        expected_fields = ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS
+    elif schema_id == ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID_V1:
+        if not allow_historical:
+            raise AoxArchitectureQualificationError(
+                "aox_architecture_qualification_receipt_version_unsupported",
+                "historical architecture qualification receipts are read-only",
+            )
+        expected_fields = ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS_V1
+    else:
+        raise AoxArchitectureQualificationError(
+            "aox_architecture_qualification_receipt_version_unsupported",
+            "architecture qualification receipt schema is unsupported",
+        )
     fields = set(receipt)
-    if fields != ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS:
+    if fields != expected_fields:
         raise AoxArchitectureQualificationError(
             "aox_architecture_qualification_receipt_invalid",
             "architecture qualification receipt must use its exact closed schema",
             details={
-                "missing": sorted(ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS - fields),
-                "unexpected": sorted(fields - ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS),
+                "missing": sorted(expected_fields - fields),
+                "unexpected": sorted(fields - expected_fields),
             },
         )
     normalized: dict[str, str] = {}
-    for key in sorted(ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS):
+    for key in sorted(expected_fields):
         value = receipt[key]
         if not isinstance(value, str) or not value or value != value.strip():
             raise AoxArchitectureQualificationError(
@@ -121,22 +161,20 @@ def normalize_architecture_qualification_receipt(
                 details={"identity": f"architecture_qualification.{key}"},
             )
         normalized[key] = value
-    if normalized["schema_id"] != ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID:
-        raise AoxArchitectureQualificationError(
-            "aox_architecture_qualification_receipt_version_unsupported",
-            "architecture qualification receipt schema is unsupported",
-        )
     if normalized["profile_id"] != PROFILE_ID:
         raise AoxArchitectureQualificationError(
             "aox_architecture_qualification_profile_unsupported",
             "architecture qualification receipt profile is unsupported",
         )
-    for key in (
+    digest_keys = (
         "receipt_digest",
         "registry_digest",
         "report_payload_digest",
         "test_manifest_digest",
-    ):
+    )
+    if schema_id == ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID:
+        digest_keys += ("run_evidence_digest", "source_identity_digest")
+    for key in digest_keys:
         if _DIGEST_PATTERN.fullmatch(normalized[key]) is None:
             raise AoxArchitectureQualificationError(
                 "aox_architecture_qualification_receipt_invalid",
@@ -147,6 +185,14 @@ def normalize_architecture_qualification_receipt(
         raise AoxArchitectureQualificationError(
             "aox_architecture_qualification_receipt_invalid",
             "architecture qualification receipt requires a full lowercase commit",
+        )
+    if (
+        schema_id == ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID
+        and normalized["report_schema_id"] != QUALIFICATION_REPORT_SCHEMA_ID
+    ):
+        raise AoxArchitectureQualificationError(
+            "aox_architecture_qualification_report_version_unsupported",
+            "architecture qualification receipt does not bind the current report schema",
         )
     if (
         expected_source_commit is not None
@@ -183,6 +229,11 @@ def verify_aox_architecture_qualification_report(
     )
     try:
         loaded = load_report(report_path)
+        if loaded.envelope.get("schema_id") != QUALIFICATION_REPORT_SCHEMA_ID:
+            raise AoxArchitectureQualificationError(
+                "aox_architecture_qualification_report_version_unsupported",
+                "historical architecture qualification reports cannot enter current AOX admission",
+            )
         verification = verify_report(
             loaded,
             repo_root=resolved_root,
@@ -221,6 +272,11 @@ def verify_aox_architecture_qualification_report(
         test_manifest_digest=str(payload.get("test_manifest_digest") or ""),
         profile_id=str(profile.get("profile_id") or ""),
         source_commit=verification.source_commit,
+        report_schema_id=str(loaded.envelope["schema_id"]),
+        run_evidence_digest=str(payload.get("run_evidence_digest") or ""),
+        source_identity_digest=_sha256(
+            canonical_json_bytes(payload.get("source_identity"))
+        ),
     )
     return normalize_architecture_qualification_receipt(
         receipt,
@@ -244,7 +300,9 @@ def require_matching_architecture_qualification_receipt(
 
 __all__ = [
     "ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS",
+    "ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS_V1",
     "ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID",
+    "ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID_V1",
     "ARCHITECTURE_QUALIFICATION_RUNNER_RELATIVE_PATH",
     "AoxArchitectureQualificationError",
     "build_architecture_qualification_receipt",

@@ -1,6 +1,7 @@
-# AOX r-series Codex 测试 goal（post-r72 / pre-next-rNN）
+# AOX r-series Codex 测试 goal（post-r73 / pre-next-rNN）
 
-状态：paste-ready operator prompt。它定义 Codex 测试员的权限、证据顺序和停止条件，不构成
+状态：fresh paste-ready operator prompt。旧persistent goal与全部r73 conductor state已作废且不可
+resume/adopt。本页定义Codex测试员的权限、证据顺序和停止条件，不构成
 任何 diagnostic/formal live、MICU、provider、HPC 或 Chrome 授权，也不预先创建或命名下一rNN。
 
 ```text
@@ -30,6 +31,13 @@ recovery output再次运行full matrix；这些并发/重查/recovery/stop facts
 prelive conductor blocked，非canonical NO-GO；全部r72 report/recheck/recovery/stop state不可复用、
 拼接或采纳，不能据此继续旧slot或命名下一rNN。
 
+r73没有形成root、Host session、scientific attempt、canonical bundle或reducer decision。旧conductor
+以stale saved HEAD shadow truth错误丢弃首份实际绑定
+`789f1c177552ece953564932f9e29753179cb2fa`的report，并在terminal report后串行启动等价full
+admission；两次harness都达到bounded timeout，旧schema只留下digest与fallback GAP cascade。r73只
+封存为prelive conductor/qualification blocked，非canonical NO-GO。全部r73 report/reproduction/
+stop state及产生它们的persistent goal永久不可复用；本goal必须作为fresh goal启动，不能resume旧goal。
+
 角色边界：Codex是产品runtime之外的test conductor，只能通过public Host API/CLI进行session
 create、entry message、explicit bounded drain、sealed command-status read、canonical workspace/task
 read、late-bound scientific authorization grant、pending approval read/resolve、workspace/events/
@@ -39,7 +47,10 @@ AOX observer/barrier/automatic driver。Host独占canonical task/attempt/report�
 fence、unknown/external effect、continuation、artifact catalog、sandbox和isolation；agent保留科学
 策略自由。offline verifier/reducer是唯一GO权威。
 
-qualification与工具handle规则：同一canonical checkout一次只允许一条full qualification command。
+qualification与工具handle规则：Codex不得保存或声明conductor-owned `started_head`、drift、recovery或
+adoption truth。每次fresh阶段只读调用当前checkout的Git/source命令；qualification source真值仅来自
+runner在single-flight lock内封存的admission identity及phase revalidation。同一canonical checkout
+一次只允许一条full qualification command。
 在发命令前先选定一个existing real parent下、checkout外、absolute/canonical且不存在的output；不要
 创建parent或候补recovery path。runner若返回`architecture_qualification_output_invalid`，立即只读
 复核target并停止；若返回`architecture_qualification_run_active`，说明任意mode/output已有同checkout
@@ -50,6 +61,13 @@ run持有kernel lock，同样停止，不能等待后偷锁、换mode/output或r
 focused recheck、recovery admission或另一个output。若exact handle丢失、不可恢复或identity不再可信，
 只允许read-only检查当前process与原target是否存在，然后将本轮记为prelive conductor blocked并停止；
 不得把另一个process、report、sidecar或partial bytes冒充原handle的完成结果。
+
+只接受current `openzyme_v3_architecture_qualification_report@2`。report必须闭合lock-admission与
+terminal source、每阶段revalidation、`collection → harness → selected scenarios`的source-bound
+bounded process receipts、exact not-run identities和唯一earliest typed failure。历史report`@1`与
+`aox_architecture_qualification_receipt@1`只能作为冻结历史读取，不能进入current pin/preflight/
+launch/reducer。collection/harness/scenario/source-drift任一terminal failure出现后立即封存并停止；
+不得合成fallback result/GAP cascade、发起equivalent relaunch或把另一份成功报告adopt为修复。
 
 工作分三阶段，权限不能跨阶段推断：
 

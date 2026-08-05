@@ -18,7 +18,9 @@ from .architecture_qualification import CollectedQualificationScenario
 from .architecture_qualification import LoadedArchitectureQualificationReport
 from .architecture_qualification import PROFILE_ID
 from .architecture_qualification import QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID
+from .architecture_qualification import QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V1
 from .architecture_qualification import QUALIFICATION_REPORT_SCHEMA_ID
+from .architecture_qualification import QUALIFICATION_REPORT_SCHEMA_ID_V1
 from .architecture_qualification import ValidatedInvariantRegistry
 from .architecture_qualification import ValidatedTestManifest
 from .architecture_qualification import ValidatedQualificationOutputTarget
@@ -49,7 +51,7 @@ _GAP_CLASSIFICATIONS = frozenset(
     }
 )
 _REPORT_FIELDS = frozenset({"payload", "payload_digest", "schema_id"})
-_PAYLOAD_FIELDS = frozenset(
+_PAYLOAD_FIELDS_V1 = frozenset(
     {
         "admission_eligible",
         "aox_live_started",
@@ -70,6 +72,17 @@ _PAYLOAD_FIELDS = frozenset(
         "source_identity",
         "test_manifest",
         "test_manifest_digest",
+    }
+)
+_PAYLOAD_FIELDS = frozenset(
+    set(_PAYLOAD_FIELDS_V1)
+    | {
+        "not_run_scenario_ids",
+        "process_receipts",
+        "run_evidence_digest",
+        "run_failure",
+        "source_revalidations",
+        "terminal_source_identity",
     }
 )
 _SOURCE_FIELDS = frozenset(
@@ -175,6 +188,47 @@ _TEST_MANIFEST_SCENARIO_FIELDS = frozenset(
         "scenario_id",
         "selections",
         "source_files",
+    }
+)
+_SOURCE_REVALIDATION_FIELDS = frozenset(
+    {"matched_admission", "phase_id", "source_identity_digest"}
+)
+_PROCESS_RECEIPT_SCHEMA_ID = "openzyme_v3_qualification_process_receipt@1"
+_PROCESS_RECEIPT_FIELDS = frozenset(
+    {
+        "command",
+        "duration_milliseconds",
+        "error_code",
+        "exit_code",
+        "kill_sent",
+        "outcome",
+        "phase_id",
+        "receipt_digest",
+        "scenario_id",
+        "schema_id",
+        "source_identity_digest",
+        "stderr",
+        "stdout",
+        "term_sent",
+        "timed_out",
+    }
+)
+_PROCESS_STREAM_FIELDS = frozenset({"digest", "tail", "total_bytes"})
+_RUN_FAILURE_FIELDS = frozenset(
+    {
+        "cause_id",
+        "phase_id",
+        "process_receipt_digest",
+        "scenario_id",
+        "source_identity_digest",
+    }
+)
+_RUN_FAILURE_CAUSES = frozenset(
+    {
+        "architecture_qualification_collection_failed",
+        "architecture_qualification_harness_failed",
+        "architecture_qualification_scenario_execution_failed",
+        "architecture_qualification_source_drift",
     }
 )
 
@@ -495,6 +549,21 @@ def _implementation_identity(
     }
 
 
+def collect_implementation_identity(
+    *,
+    repo_root: Path,
+    runner_path: Path,
+    test_manifest: Mapping[str, object],
+) -> dict[str, object]:
+    """Capture the qualification implementation at lock admission."""
+
+    return _implementation_identity(
+        repo_root=repo_root,
+        runner_path=runner_path,
+        test_manifest=test_manifest,
+    )
+
+
 def _registry_records(
     registry: ValidatedInvariantRegistry,
 ) -> tuple[dict[str, Mapping[str, object]], dict[str, Mapping[str, object]]]:
@@ -675,6 +744,7 @@ def _normalize_scenario_results(
     *,
     registry: ValidatedInvariantRegistry,
     selection: Mapping[str, object],
+    not_run_scenario_ids: Sequence[str] = (),
 ) -> list[dict[str, object]]:
     scenarios, _ = _registry_records(registry)
     selected_ids = list(selection["scenario_ids"])
@@ -684,11 +754,16 @@ def _normalize_scenario_results(
         if scenario_id in by_id:
             raise _error(f"scenario result {scenario_id!r} is duplicated")
         by_id[scenario_id] = raw
-    if sorted(by_id) != selected_ids:
-        raise _error("scenario results do not equal the exact selected scenario set")
+    not_run = [str(item) for item in not_run_scenario_ids]
+    if not_run != sorted(set(not_run)):
+        raise _error("not-run scenario ids must be sorted and unique")
+    if sorted([*by_id, *not_run]) != selected_ids or set(by_id) & set(not_run):
+        raise _error(
+            "scenario results and not-run ids do not close the selected scenario set"
+        )
 
     normalized: list[dict[str, object]] = []
-    for scenario_id in selected_ids:
+    for scenario_id in sorted(by_id):
         raw = by_id[scenario_id]
         expected = scenarios[scenario_id]
         outcome = _text(raw.get("pytest_outcome"), label="pytest outcome")
@@ -884,6 +959,11 @@ def _rejection_and_eligibility(
     p0_records: Sequence[Mapping[str, object]],
     external_effects_real: bool,
     aox_live_started: bool,
+    not_run_scenario_ids: Sequence[str] = (),
+    run_failure: Mapping[str, object] | None = None,
+    source_stable: bool = True,
+    process_chain_complete: bool = True,
+    source_revalidation_complete: bool = True,
 ) -> tuple[list[str], bool]:
     reasons: list[str] = []
     if mode != "admission":
@@ -892,6 +972,16 @@ def _rejection_and_eligibility(
         reasons.append("selection_not_full")
     if source_identity["worktree_clean"] is not True:
         reasons.append("source_not_clean")
+    if not source_stable:
+        reasons.append("source_identity_not_stable")
+    if not process_chain_complete:
+        reasons.append("process_receipt_chain_not_complete")
+    if not source_revalidation_complete:
+        reasons.append("source_revalidation_chain_not_complete")
+    if run_failure is not None:
+        reasons.append(str(run_failure["cause_id"]))
+    if not_run_scenario_ids:
+        reasons.append("scenarios_not_run")
     if harness["outcome"] != "pass":
         reasons.append("qualification_harness_not_satisfied")
     if any(item["qualification_status"] != "satisfied" for item in scenario_results):
@@ -919,6 +1009,83 @@ def _profile(registry: ValidatedInvariantRegistry) -> dict[str, object]:
     }
 
 
+def _run_evidence_preimage(
+    *,
+    terminal_source_identity: Mapping[str, object],
+    source_revalidations: Sequence[Mapping[str, object]],
+    process_receipts: Sequence[Mapping[str, object]],
+    run_failure: Mapping[str, object] | None,
+    not_run_scenario_ids: Sequence[str],
+) -> dict[str, object]:
+    return {
+        "not_run_scenario_ids": [str(item) for item in not_run_scenario_ids],
+        "process_receipts": [dict(item) for item in process_receipts],
+        "run_failure": None if run_failure is None else dict(run_failure),
+        "source_revalidations": [dict(item) for item in source_revalidations],
+        "terminal_source_identity": dict(terminal_source_identity),
+    }
+
+
+def _expected_process_phases(selection: Mapping[str, object]) -> list[str]:
+    return [
+        "collection",
+        "harness",
+        *[
+            f"scenario:{scenario_id}"
+            for scenario_id in selection["scenario_ids"]
+        ],
+    ]
+
+
+def _process_chain_is_complete(
+    *,
+    selection: Mapping[str, object],
+    process_receipts: Sequence[Mapping[str, object]],
+    scenario_results: Sequence[Mapping[str, object]],
+) -> bool:
+    phases = [str(item["phase_id"]) for item in process_receipts]
+    if phases != _expected_process_phases(selection):
+        return False
+    if any(item["outcome"] != "pass" for item in process_receipts[:2]):
+        return False
+    results = {str(item["scenario_id"]): item for item in scenario_results}
+    expected_outcomes = {
+        "error": "error",
+        "fail": "fail",
+        "pass": "pass",
+        "skip": "pass",
+        "xfail": "pass",
+        "xpass": "fail",
+    }
+    return all(
+        receipt["scenario_id"] in results
+        and receipt["outcome"]
+        == expected_outcomes.get(
+            str(results[str(receipt["scenario_id"])]["pytest_outcome"]),
+            "error",
+        )
+        for receipt in process_receipts[2:]
+    )
+
+
+def _source_revalidation_chain_is_complete(
+    *,
+    selection: Mapping[str, object],
+    source_revalidations: Sequence[Mapping[str, object]],
+) -> bool:
+    phases = [str(item["phase_id"]) for item in source_revalidations]
+    expected = ["lock_admission", "before_collection", "after_collection", "after_harness"]
+    for scenario_id in selection["scenario_ids"]:
+        expected.extend(
+            [
+                f"before_scenario:{scenario_id}",
+                f"after_scenario:{scenario_id}",
+            ]
+        )
+    expected.append("pre_publication")
+    return phases == expected
+
+
 def build_report(
     *,
     repo_root: Path,
@@ -928,43 +1095,85 @@ def build_report(
     registry: ValidatedInvariantRegistry,
     test_manifest: ValidatedTestManifest,
     source_identity: Mapping[str, object],
+    terminal_source_identity: Mapping[str, object],
+    source_revalidations: Sequence[Mapping[str, object]],
+    process_receipts: Sequence[Mapping[str, object]],
+    run_failure: Mapping[str, object] | None,
+    not_run_scenario_ids: Sequence[str],
     harness_result: Mapping[str, object],
     scenario_results: Sequence[Mapping[str, object]],
+    implementation_identity: Mapping[str, object] | None = None,
 ) -> LoadedArchitectureQualificationReport:
     if mode not in _MODES:
         raise _error("qualification report mode is unknown")
     root = _canonical_repo_root(repo_root)
-    current_source = collect_source_identity(repo_root=root)
-    if dict(source_identity) != dict(current_source):
-        raise _error("source identity changed while the report was assembled")
+    admission_source = _validate_source(dict(source_identity))
+    terminal_source = _validate_source(dict(terminal_source_identity))
+    normalized_revalidations = _validate_source_revalidations(source_revalidations)
+    normalized_receipts = _validate_process_receipts(process_receipts)
+    normalized_failure = _validate_run_failure(run_failure)
+    normalized_not_run = _texts(
+        list(not_run_scenario_ids),
+        label="not-run scenario ids",
+    )
+    run_evidence_preimage = _run_evidence_preimage(
+        terminal_source_identity=terminal_source,
+        source_revalidations=normalized_revalidations,
+        process_receipts=normalized_receipts,
+        run_failure=normalized_failure,
+        not_run_scenario_ids=normalized_not_run,
+    )
+    admission_source_digest = _value_digest(admission_source)
+    source_stable = (
+        admission_source == terminal_source
+        and bool(normalized_revalidations)
+        and all(
+            item["matched_admission"] is True
+            and item["source_identity_digest"] == admission_source_digest
+            for item in normalized_revalidations
+        )
+    )
     harness = _validate_harness(dict(harness_result))
     selection = _selection(mode=mode, registry=registry)
     normalized_scenarios = _normalize_scenario_results(
         scenario_results,
         registry=registry,
         selection=selection,
+        not_run_scenario_ids=normalized_not_run,
+    )
+    process_chain_complete = _process_chain_is_complete(
+        selection=selection,
+        process_receipts=normalized_receipts,
+        scenario_results=normalized_scenarios,
+    )
+    source_revalidation_complete = _source_revalidation_chain_is_complete(
+        selection=selection,
+        source_revalidations=normalized_revalidations,
     )
     invariant_results = _invariant_results(
         registry=registry,
         scenario_results=normalized_scenarios,
     )
-    closed_p0_records = _load_p0_closure_records(
-        repo_root=root,
-        registry=registry,
-    )
-    gaps, p0_records = _gap_and_p0_records(
-        registry=registry,
-        invariant_results=invariant_results,
-        scenario_results=normalized_scenarios,
-        closed_p0_records=closed_p0_records,
-    )
+    if normalized_failure is None:
+        closed_p0_records = _load_p0_closure_records(
+            repo_root=root,
+            registry=registry,
+        )
+        gaps, p0_records = _gap_and_p0_records(
+            registry=registry,
+            invariant_results=invariant_results,
+            scenario_results=normalized_scenarios,
+            closed_p0_records=closed_p0_records,
+        )
+    else:
+        gaps, p0_records = [], []
     external_effects_real = any(
         bool(item["external_effects_real"]) for item in normalized_scenarios
     )
     aox_live_started = False
     rejection_reasons, admission_eligible = _rejection_and_eligibility(
         mode=mode,
-        source_identity=current_source,
+        source_identity=admission_source,
         selection=selection,
         harness=harness,
         scenario_results=normalized_scenarios,
@@ -972,6 +1181,11 @@ def build_report(
         p0_records=p0_records,
         external_effects_real=external_effects_real,
         aox_live_started=aox_live_started,
+        not_run_scenario_ids=normalized_not_run,
+        run_failure=normalized_failure,
+        source_stable=source_stable,
+        process_chain_complete=process_chain_complete,
+        source_revalidation_complete=source_revalidation_complete,
     )
     payload: dict[str, object] = {
         "admission_eligible": admission_eligible,
@@ -980,21 +1194,31 @@ def build_report(
         "external_effects_real": external_effects_real,
         "gaps": gaps,
         "harness": harness,
-        "implementation": _implementation_identity(
-            repo_root=root,
-            runner_path=runner_path,
-            test_manifest=test_manifest.payload,
+        "implementation": (
+            _implementation_identity(
+                repo_root=root,
+                runner_path=runner_path,
+                test_manifest=test_manifest.payload,
+            )
+            if implementation_identity is None
+            else _validate_implementation(dict(implementation_identity))
         ),
         "invariants": invariant_results,
         "mode": mode,
+        "not_run_scenario_ids": normalized_not_run,
         "p0_records": p0_records,
         "payload_schema_id": QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID,
         "profile": _profile(registry),
+        "process_receipts": normalized_receipts,
         "registry_digest": registry.registry_digest,
         "rejection_reasons": rejection_reasons,
+        "run_evidence_digest": _value_digest(run_evidence_preimage),
+        "run_failure": normalized_failure,
         "scenario_results": normalized_scenarios,
         "selection": selection,
-        "source_identity": dict(current_source),
+        "source_identity": dict(admission_source),
+        "source_revalidations": normalized_revalidations,
+        "terminal_source_identity": dict(terminal_source),
         "test_manifest": dict(test_manifest.payload),
         "test_manifest_digest": test_manifest.test_manifest_digest,
     }
@@ -1034,6 +1258,143 @@ def _validate_source(value: object) -> dict[str, Any]:
     ):
         raise _error("worktree_clean contradicts the bound source identity")
     return source
+
+
+def _validate_source_revalidations(
+    values: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    for index, value in enumerate(values):
+        if not isinstance(value, Mapping):
+            raise _error(f"source_revalidations[{index}] must be an object")
+        record = _object(
+            dict(value),
+            fields=_SOURCE_REVALIDATION_FIELDS,
+            label=f"source_revalidations[{index}]",
+        )
+        _text(record["phase_id"], label=f"source_revalidations[{index}].phase_id")
+        _digest(
+            record["source_identity_digest"],
+            label=f"source_revalidations[{index}].source_identity_digest",
+        )
+        _boolean(
+            record["matched_admission"],
+            label=f"source_revalidations[{index}].matched_admission",
+        )
+        normalized.append(dict(record))
+    phase_ids = [str(item["phase_id"]) for item in normalized]
+    if phase_ids != list(dict.fromkeys(phase_ids)):
+        raise _error("source revalidation phases must be unique and ordered")
+    return normalized
+
+
+def _validate_process_stream(value: object, *, label: str) -> dict[str, object]:
+    stream = _object(value, fields=_PROCESS_STREAM_FIELDS, label=label)
+    _digest(stream["digest"], label=f"{label}.digest")
+    _nonnegative_int(stream["total_bytes"], label=f"{label}.total_bytes")
+    _text(stream["tail"], label=f"{label}.tail", allow_empty=True)
+    return dict(stream)
+
+
+def _validate_process_receipts(
+    values: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    for index, value in enumerate(values):
+        if not isinstance(value, Mapping):
+            raise _error(f"process_receipts[{index}] must be an object")
+        receipt = _object(
+            dict(value),
+            fields=_PROCESS_RECEIPT_FIELDS,
+            label=f"process_receipts[{index}]",
+        )
+        if receipt["schema_id"] != _PROCESS_RECEIPT_SCHEMA_ID:
+            raise _error("qualification process receipt schema is unsupported")
+        _text(receipt["phase_id"], label=f"process_receipts[{index}].phase_id")
+        _optional_text(
+            receipt["scenario_id"],
+            label=f"process_receipts[{index}].scenario_id",
+        )
+        command = _texts(
+            receipt["command"],
+            label=f"process_receipts[{index}].command",
+            sorted_unique=False,
+        )
+        if not command:
+            raise _error("qualification process receipt command must not be empty")
+        outcome = _text(
+            receipt["outcome"],
+            label=f"process_receipts[{index}].outcome",
+        )
+        if outcome not in {"error", "fail", "pass", "timeout"}:
+            raise _error("qualification process receipt outcome is unknown")
+        _optional_int(
+            receipt["exit_code"],
+            label=f"process_receipts[{index}].exit_code",
+        )
+        _nonnegative_int(
+            receipt["duration_milliseconds"],
+            label=f"process_receipts[{index}].duration_milliseconds",
+        )
+        for key in ("timed_out", "term_sent", "kill_sent"):
+            _boolean(receipt[key], label=f"process_receipts[{index}].{key}")
+        _optional_text(
+            receipt["error_code"],
+            label=f"process_receipts[{index}].error_code",
+        )
+        _digest(
+            receipt["source_identity_digest"],
+            label=f"process_receipts[{index}].source_identity_digest",
+        )
+        _validate_process_stream(
+            receipt["stdout"],
+            label=f"process_receipts[{index}].stdout",
+        )
+        _validate_process_stream(
+            receipt["stderr"],
+            label=f"process_receipts[{index}].stderr",
+        )
+        receipt_digest = _digest(
+            receipt["receipt_digest"],
+            label=f"process_receipts[{index}].receipt_digest",
+        )
+        preimage = {key: receipt[key] for key in receipt if key != "receipt_digest"}
+        if receipt_digest != _value_digest(preimage):
+            raise _error("qualification process receipt digest drifted")
+        normalized.append(dict(receipt))
+    phase_ids = [str(item["phase_id"]) for item in normalized]
+    if phase_ids != list(dict.fromkeys(phase_ids)):
+        raise _error("qualification process receipt phases must be unique and ordered")
+    return normalized
+
+
+def _validate_run_failure(
+    value: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise _error("run_failure must be an object or null")
+    failure = _object(dict(value), fields=_RUN_FAILURE_FIELDS, label="run_failure")
+    cause_id = _text(failure["cause_id"], label="run_failure.cause_id")
+    if cause_id not in _RUN_FAILURE_CAUSES:
+        raise _error("qualification run failure cause is unsupported")
+    _text(failure["phase_id"], label="run_failure.phase_id")
+    _optional_text(
+        failure["process_receipt_digest"],
+        label="run_failure.process_receipt_digest",
+    )
+    if failure["process_receipt_digest"] is not None:
+        _digest(
+            failure["process_receipt_digest"],
+            label="run_failure.process_receipt_digest",
+        )
+    _optional_text(failure["scenario_id"], label="run_failure.scenario_id")
+    _digest(
+        failure["source_identity_digest"],
+        label="run_failure.source_identity_digest",
+    )
+    return dict(failure)
 
 
 def _validate_harness(value: object) -> dict[str, Any]:
@@ -1193,9 +1554,22 @@ def _validate_p0(value: object, *, index: int) -> dict[str, Any]:
     return record
 
 
-def _validate_payload(value: object) -> dict[str, Any]:
-    payload = _object(value, fields=_PAYLOAD_FIELDS, label="report payload")
-    if payload["payload_schema_id"] != QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID:
+def _validate_payload(
+    value: object,
+    *,
+    historical: bool = False,
+) -> dict[str, Any]:
+    payload = _object(
+        value,
+        fields=_PAYLOAD_FIELDS_V1 if historical else _PAYLOAD_FIELDS,
+        label="report payload",
+    )
+    expected_payload_schema = (
+        QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V1
+        if historical
+        else QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID
+    )
+    if payload["payload_schema_id"] != expected_payload_schema:
         raise _error("qualification payload schema is unsupported")
     mode = _text(payload["mode"], label="report mode")
     if mode not in _MODES:
@@ -1249,15 +1623,91 @@ def _validate_payload(value: object) -> dict[str, Any]:
     ]
     _validate_sorted_records(p0_records, key="p0_id", label="p0_records")
     _texts(payload["rejection_reasons"], label="rejection reasons")
+    if historical:
+        return payload
+
+    terminal_source = _validate_source(payload["terminal_source_identity"])
+    source_revalidations = _validate_source_revalidations(
+        _list(payload["source_revalidations"], label="source revalidations")
+    )
+    process_receipts = _validate_process_receipts(
+        _list(payload["process_receipts"], label="process receipts")
+    )
+    run_failure = _validate_run_failure(payload["run_failure"])
+    not_run_scenario_ids = _texts(
+        payload["not_run_scenario_ids"],
+        label="not-run scenario ids",
+    )
+    run_evidence_digest = _digest(
+        payload["run_evidence_digest"],
+        label="run evidence digest",
+    )
+    expected_run_evidence_digest = _value_digest(
+        _run_evidence_preimage(
+            terminal_source_identity=terminal_source,
+            source_revalidations=source_revalidations,
+            process_receipts=process_receipts,
+            run_failure=run_failure,
+            not_run_scenario_ids=not_run_scenario_ids,
+        )
+    )
+    if run_evidence_digest != expected_run_evidence_digest:
+        raise _error("qualification run evidence digest drifted")
+    admission_source_digest = _value_digest(payload["source_identity"])
+    if any(
+        receipt["source_identity_digest"] != admission_source_digest
+        for receipt in process_receipts
+    ):
+        raise _error("qualification process receipt source binding drifted")
+    receipt_digests = [str(item["receipt_digest"]) for item in process_receipts]
+    receipt_phases = [str(item["phase_id"]) for item in process_receipts]
+    expected_process_phases = _expected_process_phases(selection)
+    if receipt_phases != expected_process_phases[: len(receipt_phases)]:
+        raise _error("qualification process receipts are not a selected-chain prefix")
+    if run_failure is not None:
+        bound_receipt = run_failure["process_receipt_digest"]
+        if bound_receipt is not None and bound_receipt not in receipt_digests:
+            raise _error("qualification run failure receipt is not in the selected chain")
+        if bound_receipt is not None and receipt_digests[-1] != bound_receipt:
+            raise _error("qualification selected process chain continued after failure")
+    elif receipt_phases != expected_process_phases:
+        raise _error("qualification process chain ended without a typed failure")
+    if run_failure is None and not_run_scenario_ids:
+        raise _error("qualification not-run scenarios require a typed failure")
+    if run_failure is None and payload["harness"]["outcome"] != "pass":
+        raise _error("qualification harness failure requires a typed cause")
+    if run_failure is not None:
+        cause_id = run_failure["cause_id"]
+        if cause_id == "architecture_qualification_source_drift":
+            if not any(
+                item["matched_admission"] is False
+                and item["phase_id"] == run_failure["phase_id"]
+                and item["source_identity_digest"]
+                == run_failure["source_identity_digest"]
+                for item in source_revalidations
+            ):
+                raise _error("qualification source-drift cause is not phase-bound")
+        elif run_failure["source_identity_digest"] != admission_source_digest:
+            raise _error("qualification process failure source binding drifted")
+    selected_ids = set(selection["scenario_ids"])
+    observed_ids = {str(item["scenario_id"]) for item in scenario_results}
+    if observed_ids & set(not_run_scenario_ids) or (
+        observed_ids | set(not_run_scenario_ids)
+    ) != selected_ids:
+        raise _error("qualification scenario and not-run closure drifted")
     return payload
 
 
 def load_report_bytes(content: bytes) -> LoadedArchitectureQualificationReport:
     raw = _strict_json(content)
     envelope = _object(raw, fields=_REPORT_FIELDS, label="report envelope")
-    if envelope["schema_id"] != QUALIFICATION_REPORT_SCHEMA_ID:
+    if envelope["schema_id"] == QUALIFICATION_REPORT_SCHEMA_ID:
+        historical = False
+    elif envelope["schema_id"] == QUALIFICATION_REPORT_SCHEMA_ID_V1:
+        historical = True
+    else:
         raise _error("qualification report schema is unsupported")
-    payload = _validate_payload(envelope["payload"])
+    payload = _validate_payload(envelope["payload"], historical=historical)
     payload_digest = _digest(envelope["payload_digest"], label="payload digest")
     if payload_digest != _sha256(canonical_json_bytes(payload)):
         raise _error("qualification report payload digest drifted")
@@ -1331,11 +1781,15 @@ def verify_report(
         if isinstance(report, bytes)
         else load_report(report)
     )
+    if loaded.envelope["schema_id"] != QUALIFICATION_REPORT_SCHEMA_ID:
+        raise _error(
+            "historical qualification reports are read-only and not current admission evidence"
+        )
     root = _canonical_repo_root(repo_root)
     payload = loaded.payload
     current_source = collect_source_identity(repo_root=root)
-    if dict(payload["source_identity"]) != dict(current_source):
-        raise _error("qualification report source identity differs from checkout")
+    if dict(payload["terminal_source_identity"]) != dict(current_source):
+        raise _error("qualification terminal source identity differs from checkout")
     registry = load_invariant_registry(repo_root=root)
     if payload["registry_digest"] != registry.registry_digest:
         raise _error("qualification report registry digest differs from checkout")
@@ -1369,6 +1823,16 @@ def verify_report(
         raw_results,
         registry=registry,
         selection=selection,
+        not_run_scenario_ids=payload["not_run_scenario_ids"],
+    )
+    process_chain_complete = _process_chain_is_complete(
+        selection=selection,
+        process_receipts=payload["process_receipts"],
+        scenario_results=expected_scenarios,
+    )
+    source_revalidation_complete = _source_revalidation_chain_is_complete(
+        selection=selection,
+        source_revalidations=payload["source_revalidations"],
     )
     if payload["scenario_results"] != expected_scenarios:
         raise _error("qualification scenario status or budget closure drifted")
@@ -1382,12 +1846,15 @@ def verify_report(
         repo_root=root,
         registry=registry,
     )
-    expected_gaps, expected_p0 = _gap_and_p0_records(
-        registry=registry,
-        invariant_results=expected_invariants,
-        scenario_results=expected_scenarios,
-        closed_p0_records=closed_p0_records,
-    )
+    if payload["run_failure"] is None:
+        expected_gaps, expected_p0 = _gap_and_p0_records(
+            registry=registry,
+            invariant_results=expected_invariants,
+            scenario_results=expected_scenarios,
+            closed_p0_records=closed_p0_records,
+        )
+    else:
+        expected_gaps, expected_p0 = [], []
     if payload["gaps"] != expected_gaps:
         raise _error("qualification GAP taxonomy closure drifted")
     if payload["p0_records"] != expected_p0:
@@ -1399,9 +1866,25 @@ def verify_report(
         raise _error("qualification external-effect summary drifted")
     if payload["aox_live_started"] is not False:
         raise _error("qualification report cannot claim an AOX live start")
+    admission_source = payload["source_identity"]
+    admission_source_digest = _value_digest(admission_source)
+    source_stable = (
+        dict(admission_source) == dict(payload["terminal_source_identity"])
+        and bool(payload["source_revalidations"])
+        and all(
+            item["matched_admission"] is True
+            and item["source_identity_digest"] == admission_source_digest
+            for item in payload["source_revalidations"]
+            if isinstance(item, Mapping)
+        )
+        and len(payload["source_revalidations"])
+        == sum(
+            isinstance(item, Mapping) for item in payload["source_revalidations"]
+        )
+    )
     expected_rejections, expected_eligible = _rejection_and_eligibility(
         mode=mode,
-        source_identity=current_source,
+        source_identity=admission_source,
         selection=selection,
         harness=payload["harness"],
         scenario_results=expected_scenarios,
@@ -1409,6 +1892,11 @@ def verify_report(
         p0_records=expected_p0,
         external_effects_real=external_effects_real,
         aox_live_started=False,
+        not_run_scenario_ids=payload["not_run_scenario_ids"],
+        run_failure=payload["run_failure"],
+        source_stable=source_stable,
+        process_chain_complete=process_chain_complete,
+        source_revalidation_complete=source_revalidation_complete,
     )
     if payload["rejection_reasons"] != expected_rejections:
         raise _error("qualification rejection reasons drifted")
@@ -1418,7 +1906,7 @@ def verify_report(
         admission_eligible=expected_eligible,
         payload_digest=loaded.payload_digest,
         rejection_reasons=tuple(expected_rejections),
-        source_commit=str(current_source["commit"]),
+        source_commit=str(admission_source["commit"]),
     )
 
 
@@ -1512,6 +2000,7 @@ def publish_report(
 
 __all__ = [
     "build_report",
+    "collect_implementation_identity",
     "collect_source_identity",
     "load_report",
     "load_report_bytes",

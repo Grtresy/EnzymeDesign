@@ -19,9 +19,13 @@ REGISTRY_RELATIVE_PATH = Path(
 )
 PROFILE_ID = "local_single_process_file_sqlite@1"
 TEST_MANIFEST_SCHEMA_ID = "openzyme_v3_architecture_test_manifest@1"
-QUALIFICATION_REPORT_SCHEMA_ID = "openzyme_v3_architecture_qualification_report@1"
-QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID = (
+QUALIFICATION_REPORT_SCHEMA_ID_V1 = "openzyme_v3_architecture_qualification_report@1"
+QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V1 = (
     "openzyme_v3_architecture_qualification_payload@1"
+)
+QUALIFICATION_REPORT_SCHEMA_ID = "openzyme_v3_architecture_qualification_report@2"
+QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID = (
+    "openzyme_v3_architecture_qualification_payload@2"
 )
 
 REQUIRED_FAMILIES = (
@@ -1147,6 +1151,21 @@ def collect_architecture_source_identity(
     return collect_source_identity(repo_root=repo_root)
 
 
+def collect_architecture_qualification_implementation_identity(
+    *,
+    repo_root: Path,
+    runner_path: Path,
+    test_manifest: ValidatedTestManifest,
+) -> Mapping[str, object]:
+    from .architecture_qualification_report import collect_implementation_identity
+
+    return collect_implementation_identity(
+        repo_root=repo_root,
+        runner_path=runner_path,
+        test_manifest=test_manifest.payload,
+    )
+
+
 def build_architecture_qualification_report(
     *,
     repo_root: Path,
@@ -1156,8 +1175,14 @@ def build_architecture_qualification_report(
     registry: ValidatedInvariantRegistry,
     test_manifest: ValidatedTestManifest,
     source_identity: Mapping[str, object],
+    terminal_source_identity: Mapping[str, object],
+    source_revalidations: Sequence[Mapping[str, object]],
+    process_receipts: Sequence[Mapping[str, object]],
+    run_failure: Mapping[str, object] | None,
+    not_run_scenario_ids: Sequence[str],
     harness_result: Mapping[str, object],
     scenario_results: Sequence[Mapping[str, object]],
+    implementation_identity: Mapping[str, object] | None = None,
 ) -> LoadedArchitectureQualificationReport:
     from .architecture_qualification_report import build_report
 
@@ -1169,8 +1194,14 @@ def build_architecture_qualification_report(
         registry=registry,
         test_manifest=test_manifest,
         source_identity=source_identity,
+        terminal_source_identity=terminal_source_identity,
+        source_revalidations=source_revalidations,
+        process_receipts=process_receipts,
+        run_failure=run_failure,
+        not_run_scenario_ids=not_run_scenario_ids,
         harness_result=harness_result,
         scenario_results=scenario_results,
+        implementation_identity=implementation_identity,
     )
 
 
@@ -1247,7 +1278,9 @@ __all__ = [
     "LoadedArchitectureQualificationReport",
     "PROFILE_ID",
     "QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID",
+    "QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V1",
     "QUALIFICATION_REPORT_SCHEMA_ID",
+    "QUALIFICATION_REPORT_SCHEMA_ID_V1",
     "REGISTRY_ID",
     "REGISTRY_RELATIVE_PATH",
     "REGISTRY_SCHEMA_ID",
@@ -1263,6 +1296,7 @@ __all__ = [
     "canonical_json_bytes",
     "canonical_json_document_bytes",
     "collect_architecture_source_identity",
+    "collect_architecture_qualification_implementation_identity",
     "load_architecture_qualification_report",
     "load_architecture_qualification_report_bytes",
     "load_invariant_registry",

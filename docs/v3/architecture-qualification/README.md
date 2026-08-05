@@ -10,7 +10,10 @@ positive slot/root/session/task/authorization/receipt/MICU已消费后，以type
 NO-GO且全部state不可复用。r72又因重复full qualification并发污染与不存在parent的recovery
 command停在prelive qualification，属于prelive conductor blocked而非canonical NO-GO；其full
 report、focused recheck、recovery与stop state同样不可复用。当前不预先命名下一rNN。后继
-numbered campaign 必须先在新的 clean commit 上生成并独立验证fresh full admission report。
+numbered campaign 必须先在新的 clean commit 上生成并独立验证fresh full admission report。r73又因
+stale conductor HEAD shadow truth丢弃首份`789f1c1` report并串行重复full admission，且harness timeout
+只保留digest/GAP cascade而停在prelive conductor/qualification blocked；不是canonical NO-GO。全部
+r73 report/reproduction/stop state与旧persistent goal不可复用。
 
 ## Authority boundary
 
@@ -47,8 +50,11 @@ adversarial verifier、signed CI provenance 或真实 provider/HPC/Chrome availa
   把当前 red/unproven invariant 标记为 closed。
 - `apps/openzyme-host-api/tests/architecture_qualification/` 拥有 stable scenario id 和
   production-composition deterministic matrix。
-- `scripts/v3_architecture_qualification.py` 负责编排 collection、execution 与 report
-  publication；`scripts/check-v3-architecture-qualification.sh` 清除 live credential 并
+- `scripts/v3_architecture_qualification.py` 是thin repository CLI；
+  `scripts/architecture_qualification_runner.py`在产品无关`scripts/test_gate`包之外负责
+  qualification编排，并只通过`scripts/test_gate/runner.py`的单一bounded process owner执行
+  collection/harness/scenario。
+  `scripts/check-v3-architecture-qualification.sh` 清除 live credential 并
   禁止 live opt-in。
 - test-gate 的 `mainline_authoritative` runner 可以为同一 invocation 传入
   mainline-private sidecar request，记录 exact harness/scenario node outcomes，并绑定
@@ -56,9 +62,9 @@ adversarial verifier、signed CI provenance 或真实 provider/HPC/Chrome availa
   schema、publication、pure verifier、admission 和 AOX consumer 保持不变；sidecar 不是
   admission artifact，也不能跨 invocation 复用。
 - `openzyme_host_api.architecture_qualification_report` 不运行 pytest、不写产品状态，
-  只加载并验证 closed `openzyme_v3_architecture_qualification_report@1`。
+  生成/验证current closed `openzyme_v3_architecture_qualification_report@2`；历史`@1`仅只读加载。
 - `openzyme_host_api.aox_architecture_qualification` 生成 AOX launch/evidence 消费的
-  closed `aox_architecture_qualification_receipt@1`。
+  current closed `aox_architecture_qualification_receipt@2`；历史`@1`不得进入current admission。
 
 registry 闭合十个 family：wire contract、authority composition、identity semantics、
 reconciliation、bounded terminal convergence、restart/fencing、supervisor progress、
@@ -118,6 +124,25 @@ operator/Codex一次只能发出一条full command。若执行工具返回yielde
 output。exact handle失联时只允许只读检查process和target，然后把prelive step记为blocked并停止。
 这条停止规则不改变full matrix、bounded timeout、pure verifier、mainline sidecar non-adoption或
 live fail-closed。
+
+lock admission完成后立即采样唯一source identity。runner在collection前后、harness后、每个selected
+scenario前后及publication前重新采样，并封存phase、observed digest与是否匹配admission。每个实际
+process生成source-bound bounded receipt，包含safe command、outcome/exit、stdout/stderr digest、
+byte count与最多4 KiB tail、spawn error、timeout及TERM/KILL事实；不存在第二个Host-owned `Popen`
+executor或late source truth。
+
+process phases必须是`collection → harness → selected scenarios`的exact prefix。collection closure、
+harness、scenario evidence或source revalidation出现首个terminal failure后立即停止；`run_failure`
+保留该earliest typed cause，`not_run_scenario_ids`闭合余下selection。report不再为未执行scenario
+合成fallback result，也不把一次harness timeout扩张为全registry GAP/P0 cascade。健康current report
+必须闭合完整process/source chain，`run_evidence_digest`同时绑定terminal source、phase observations、
+receipts、earliest cause与not-run set。
+
+current report/payload schema为`@2`，AOX receipt也为`@2`并额外绑定report schema、source identity
+digest与run-evidence digest。历史report/receipt`@1`只允许frozen evidence reader显式只读；pure
+current verifier、pin、preflight、launch和reducer都返回version unsupported。operator-retirement
+eligibility/quarantine/unknown-effect由pure semantic calculation决定；suite仅保留一个秒级宽限的
+真实process-group containment probe，避免亚秒real-clock threshold成为业务policy。
 
 ```bash
 qualification_parent="$(mktemp -d /tmp/openzyme-v3-qualification.XXXXXX)"
@@ -185,8 +210,8 @@ production `aox_blank_world_attempt_bundle@3`。历史
 `aox_blank_world_attempt_bundle@2` 只由冻结 verifier 读取，不得自动升级。新 bundle 与
 其余 receipts 都绑定同一个 self-digesting
 `architecture_qualification` receipt：report payload、registry、test manifest、supported
-profile 与 source commit。collector/offline verifier 拒绝 missing、changed、mismatched 或
-unknown-version receipt。
+profile、source commit、report schema、source identity 与 run-evidence digest。collector/offline
+verifier拒绝missing、changed、mismatched或unknown-version receipt；历史`@1`仅为冻结bundle读取兼容。
 
 正式 `authorize` 只发布 exact-three `aox_live_attempt_authority_plan@3`，
 `consume-authority`发布绑定它的consumption `@4`并停止，不构造live launch/root。

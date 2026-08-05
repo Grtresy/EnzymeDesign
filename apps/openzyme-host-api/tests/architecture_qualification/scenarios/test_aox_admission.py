@@ -58,7 +58,10 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    loaded = SimpleNamespace(payload={})
+    loaded = SimpleNamespace(
+        envelope={"schema_id": "openzyme_v3_architecture_qualification_report@2"},
+        payload={},
+    )
     monkeypatch.setattr(qualification, "load_report", lambda path: loaded)
     monkeypatch.setattr(
         qualification,
@@ -116,6 +119,9 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
         test_manifest_digest=_digest("3"),
         profile_id="local_single_process_file_sqlite@1",
         source_commit="a" * 40,
+        report_schema_id="openzyme_v3_architecture_qualification_report@2",
+        run_evidence_digest=_digest("5"),
+        source_identity_digest=_digest("6"),
     )
     assert normalize_architecture_qualification_receipt(
         receipt,
@@ -134,6 +140,9 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
         test_manifest_digest=_digest("3"),
         profile_id="local_single_process_file_sqlite@1",
         source_commit="a" * 40,
+        report_schema_id="openzyme_v3_architecture_qualification_report@2",
+        run_evidence_digest=_digest("5"),
+        source_identity_digest=_digest("6"),
     )
     with pytest.raises(AoxArchitectureQualificationError) as mismatch_error:
         require_matching_architecture_qualification_receipt(receipt, different_report)

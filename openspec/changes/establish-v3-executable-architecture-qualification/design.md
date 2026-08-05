@@ -148,7 +148,7 @@ controlled adapter 证明的是 Host/harness 对外部事实的处理，不证�
 1. `diagnostic`：允许 dirty checkout，绑定 full HEAD、tracked diff digest、untracked source manifest和test implementation digest；用于建立 baseline/GAP，但固定 `admission_eligible=false`。
 2. `admission`：要求 canonical repo root、完全 clean worktree、full lowercase HEAD、完整场景集、零 skip/xfail/error/violation/unproven、零 open P0；只在该条件下输出 `admission_eligible=true`。
 
-runner 写 canonical `openzyme_v3_architecture_qualification_report@1` envelope，payload 至少包含：
+runner 写 canonical current `openzyme_v3_architecture_qualification_report@2` envelope，payload 至少包含：
 
 - source identity、mode、profile、registry/test-manifest/runner/verifier digest；
 - exact command和scenario/invariant set digest；
@@ -183,6 +183,33 @@ row、automatic recovery或equivalent-command relaunch。
 如果一次工具调用返回 yielded execution handle，恢复/停止属于外部 Codex conductor合同：只能恢复
 exact handle；handle失联时只读停止，不能通过新 runner command规避single-flight或拼接partial
 evidence。
+
+### 6b. Source-bound causal evidence 只由 repository test-gate 生成（D6b）
+
+qualification 的 pytest collection、harness self-test 与 scenario process 不属于 Host 产品能力。
+删除 `openzyme_host_api.architecture_qualification_runner`，repository CLI 只调用
+产品无关`scripts/test_gate`包之外的`scripts/architecture_qualification_runner.py`，而后者只能复用
+`scripts/test_gate/runner.py` 的 process-group owner；不得再出现第二个 `Popen`、临时输出 executor、
+late source sample 或 Host package 内无产品 caller 的 test runner。
+
+single-flight lock 获取并重验 output 后立即采样 admission source。collection 前后、harness 后、每个
+scenario 前后及 publication 前都重算 closed source identity，并把 observation digest、是否匹配
+admission 和 phase id 写入 report。每个实际 process 都封存 source-bound receipt：safe command、
+outcome/exit、bounded stdout/stderr digest/byte-count/tail、timeout、TERM/KILL 与 spawn error code。
+receipt phases 必须是 exact selected chain 的前缀；健康 run 必须闭合 collection、harness 和全部
+scenario，失败 run 必须只保留最早的 typed cause并在该点停止，禁止 equivalent relaunch、fallback
+scenario result或未运行 invariant 的 GAP/P0 cascade。
+
+current envelope/payload 为 `openzyme_v3_architecture_qualification_report@2` / `...payload@2`。
+`run_evidence_digest` 闭合 admission/terminal source、phase revalidation、process receipts、earliest
+failure 和 exact not-run ids。历史 `@1` loader 仅用于冻结 evidence 审计；pure current verifier与
+AOX admission拒绝它。AOX receipt相应升级为 `aox_architecture_qualification_receipt@2`，额外绑定
+report schema、source identity和run evidence digest；历史 receipt `@1` 只有 frozen bundle reader
+可显式选择只读兼容。
+
+operator-retirement 的 business claims不再由亚秒 wall-clock threshold决定。identity、exit/signal、
+final descendant count和forced-unproven输入一个纯函数，确定 retirement/quarantine/unknown-effect/
+non-cutover语义；真实时钟只保留一个使用秒级宽限的 bounded process-group containment probe。
 
 ### 7. GAP taxonomy 与 P0 晋级不允许人工 waiver 制造 green（D7）
 

@@ -255,6 +255,45 @@ class FaultProcessEvidence:
         return {**dict(self.payload), "evidence_digest": self.evidence_digest}
 
 
+@dataclass(frozen=True, slots=True)
+class RetirementSemantics:
+    cutover_eligible: bool
+    external_outcome: str
+    quarantine_required: bool
+    raw_signal: int | None
+    retirement_proven: bool
+
+
+def evaluate_retirement_semantics(
+    *,
+    identity_exact: bool,
+    raw_exit_code: int | None,
+    final_group_member_count: int,
+    force_retirement_unproven: bool = False,
+) -> RetirementSemantics:
+    """Purely derive claims from sealed process identity and containment facts."""
+
+    if final_group_member_count < 0:
+        raise ValueError("final group member count must not be negative")
+    retirement_proven = (
+        identity_exact
+        and raw_exit_code is not None
+        and final_group_member_count == 0
+        and not force_retirement_unproven
+    )
+    return RetirementSemantics(
+        cutover_eligible=False,
+        external_outcome="unknown",
+        quarantine_required=not retirement_proven,
+        raw_signal=(
+            -raw_exit_code
+            if isinstance(raw_exit_code, int) and raw_exit_code < 0
+            else None
+        ),
+        retirement_proven=retirement_proven,
+    )
+
+
 @dataclass(slots=True)
 class IdentityBoundFaultProcessHandle:
     process: subprocess.Popen[bytes]
@@ -399,11 +438,11 @@ class IdentityBoundFaultProcessHandle:
         if self.process.stderr is not None:
             self.process.stderr.close()
         raw_exit_code = self.process.returncode
-        retirement_proven = (
-            identity_exact
-            and raw_exit_code is not None
-            and not final_members
-            and not force_retirement_unproven
+        semantics = evaluate_retirement_semantics(
+            identity_exact=identity_exact,
+            raw_exit_code=raw_exit_code,
+            final_group_member_count=len(final_members),
+            force_retirement_unproven=force_retirement_unproven,
         )
         phases.append(
             {
@@ -423,10 +462,10 @@ class IdentityBoundFaultProcessHandle:
                 "runner": 0,
                 "scientific_retry": 0,
             },
-            "cutover_eligible": False,
+            "cutover_eligible": semantics.cutover_eligible,
             "descendant_residue_observed": descendant_residue_observed,
             "exact_charge_claimed": False,
-            "external_outcome": "unknown",
+            "external_outcome": semantics.external_outcome,
             "identity": self.identity.to_dict(),
             "identity_exact": identity_exact,
             "mode": self.mode,
@@ -436,17 +475,13 @@ class IdentityBoundFaultProcessHandle:
             ),
             "outcome": "fatal",
             "phases": phases,
-            "quarantine_required": not retirement_proven,
+            "quarantine_required": semantics.quarantine_required,
             "quiescence_claimed": False,
             "raw_exit_code": raw_exit_code,
-            "raw_signal": (
-                -raw_exit_code
-                if isinstance(raw_exit_code, int) and raw_exit_code < 0
-                else None
-            ),
+            "raw_signal": semantics.raw_signal,
             "ready_frame_digest": self.ready_frame_digest,
             "remote_cancellation_claimed": False,
-            "retirement_proven": retirement_proven,
+            "retirement_proven": semantics.retirement_proven,
             "schema_id": FAULT_EVIDENCE_SCHEMA_ID,
         }
         self._evidence = FaultProcessEvidence(
@@ -461,11 +496,11 @@ class IdentityBoundFaultProcessRunner:
     registry: Mapping[str, object]
     ledger: ExternalEffectLedger
     safety_guard: QualificationSafetyGuard
-    readiness_timeout_seconds: float = 8.0
-    operator_grace_seconds: float = 0.15
-    term_grace_seconds: float = 0.15
-    kill_grace_seconds: float = 0.5
-    deadline_seconds: float = 0.1
+    readiness_timeout_seconds: float = 10.0
+    operator_grace_seconds: float = 2.0
+    term_grace_seconds: float = 2.0
+    kill_grace_seconds: float = 5.0
+    deadline_seconds: float = 2.0
 
     def start(
         self,
@@ -553,5 +588,7 @@ __all__ = [
     "FaultProcessProtocolError",
     "IdentityBoundFaultProcessHandle",
     "IdentityBoundFaultProcessRunner",
+    "RetirementSemantics",
     "build_fault_ready_frame",
+    "evaluate_retirement_semantics",
 ]

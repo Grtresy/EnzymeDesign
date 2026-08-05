@@ -58,7 +58,7 @@
 - [x] 6.2 实现 source identity 收集，绑定 full HEAD、canonical repo root、tracked diff digest、untracked source manifest 与实现文件 digest
 - [x] 6.3 实现 pytest collection/execution 适配，将 pass/fail/skip/xfail/error/timeout 与 observation ledger 转换成 `satisfied | violated | unproven`
 - [x] 6.4 实现四类 GAP taxonomy、owner/reproducer/evidence/profile/change refs 与不可人工降级的 P0 recommendation 规则
-- [x] 6.5 实现 closed `openzyme_v3_architecture_qualification_report@1` payload/envelope、canonical bytes 与 payload digest
+- [x] 6.5 实现初始 closed `openzyme_v3_architecture_qualification_report@1` payload/envelope、canonical bytes 与 payload digest（现由 task 11 显式升级为current `@2`，`@1`仅保留只读兼容）
 - [x] 6.6 实现 checkout 外 caller-selected output、no-replace file creation、文件与目录 fsync、alias/inside-checkout/self-reference 拒绝
 - [x] 6.7 在 `openzyme_host_api.architecture_qualification` 实现无 pytest/fixture/product-state 依赖的 closed report loader、稳定错误与 pure verifier
 - [x] 6.8 让 pure verifier 重新计算 schema、canonical bytes、digest、source/worktree、profile、registry、selection、implementation、invariant 与 P0 closure，而不是信任 report pass 字段
@@ -114,3 +114,12 @@
 - [x] 10.7 用当前 checkout 的 pure verifier 独立验证 admission report，确认 exact clean commit、full selection、十个 family satisfied、零 open P0 与所有 digest 一致
 - [x] 10.8 验证 AOX 在缺失/错误 report 时仍于任何 effect 前 NO-GO，在 exact report 下仅变为可进入独立外部门禁且没有实际启动 r48/live
 - [x] 10.9 完成 requirement-by-requirement completion audit，确认 machine/admission evidence、GAP/P0 refs、文档、OpenSpec 状态与工作树一致后，才记录“允许另行恢复 AOX live campaign”结论
+
+## 11. post-r73 source 与 causal evidence deletion-first repair
+
+- [x] 11.1 将 r73 封存为 stale conductor HEAD shadow truth、错误丢弃首份 789f1c1 report、串行重复 full admission 及 qualification timeout 所致的 prelive conductor/qualification blocked（非 canonical NO-GO），并声明其 report/reproduction/stop state 与 persistent goal 全部不可复用
+- [x] 11.2 删除 Host production package 中无产品 caller 的 pytest qualification runner、duplicate process executor、late source sampling 与 fallback gap cascade；把 orchestration 移到 repository `scripts/` plane，并且仅通过 `scripts/test_gate/runner.py` 这一唯一 bounded process executor 执行
+- [x] 11.3 在 checkout lock admission 后封存 exact source identity，并在 collection、harness、scenario 与 publication phase 逐段 revalidate；用 source-bound bounded process receipts、fail-fast selected chain、earliest typed cause 与未执行场景闭包替代 digest-only timeout/cascade
+- [x] 11.4 显式升级 machine report 与 AOX qualification receipt 到 current `@2`，保留 historical `@1` closed read-only compatibility，但 current AOX admission 必须拒绝 `@1`、partial evidence、source drift 与 causal receipt drift
+- [x] 11.5 把 operator-retirement 的亚秒 real-clock policy 改为 deterministic semantic checks，并只保留一个宽限 bounded process-containment probe；补 source drift、phase fail-fast、partial run、receipt tamper 与 legacy-schema negative controls
+- [x] 11.6 同步 invariant registry、resource manifest、OpenSpec、主架构、`docs/v3/` 与 fresh Codex goal，运行全部 non-live gates 和一次明确 non-adoptable clean full diagnostic，证明 production code 净删除后提交本地 commit，且不启动下一 rNN/live/MICU/provider/HPC/Chrome

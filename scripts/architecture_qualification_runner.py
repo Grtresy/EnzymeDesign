@@ -9,34 +9,56 @@ import json
 import os
 from pathlib import Path
 import re
-import signal
 import stat
-import subprocess
 import sys
 import tempfile
-import time
 from typing import Iterator
 from typing import Mapping
 from typing import Sequence
 
-from .architecture_qualification import ArchitectureQualificationOutputError
-from .architecture_qualification import ArchitectureQualificationReportError
-from .architecture_qualification import ArchitectureQualificationRunActiveError
-from .architecture_qualification import ArchitectureQualificationRunError
-from .architecture_qualification import CollectedQualificationScenario
-from .architecture_qualification import LoadedArchitectureQualificationReport
-from .architecture_qualification import ValidatedInvariantRegistry
-from .architecture_qualification import build_architecture_qualification_report
-from .architecture_qualification import build_test_manifest
-from .architecture_qualification import canonical_json_bytes
-from .architecture_qualification import canonical_json_document_bytes
-from .architecture_qualification import collect_architecture_source_identity
-from .architecture_qualification import load_invariant_registry
-from .architecture_qualification import publish_architecture_qualification_report
-from .architecture_qualification import (
+from openzyme_host_api.architecture_qualification import (
+    ArchitectureQualificationError,
+)
+from openzyme_host_api.architecture_qualification import (
+    ArchitectureQualificationOutputError,
+)
+from openzyme_host_api.architecture_qualification import (
+    ArchitectureQualificationReportError,
+)
+from openzyme_host_api.architecture_qualification import (
+    ArchitectureQualificationRunActiveError,
+)
+from openzyme_host_api.architecture_qualification import ArchitectureQualificationRunError
+from openzyme_host_api.architecture_qualification import CollectedQualificationScenario
+from openzyme_host_api.architecture_qualification import (
+    LoadedArchitectureQualificationReport,
+)
+from openzyme_host_api.architecture_qualification import ValidatedInvariantRegistry
+from openzyme_host_api.architecture_qualification import (
+    build_architecture_qualification_report,
+)
+from openzyme_host_api.architecture_qualification import build_test_manifest
+from openzyme_host_api.architecture_qualification import canonical_json_bytes
+from openzyme_host_api.architecture_qualification import canonical_json_document_bytes
+from openzyme_host_api.architecture_qualification import (
+    collect_architecture_qualification_implementation_identity,
+)
+from openzyme_host_api.architecture_qualification import (
+    collect_architecture_source_identity,
+)
+from openzyme_host_api.architecture_qualification import load_invariant_registry
+from openzyme_host_api.architecture_qualification import (
+    publish_architecture_qualification_report,
+)
+from openzyme_host_api.architecture_qualification import (
     validate_architecture_qualification_output_target,
 )
-from .architecture_qualification import verify_architecture_qualification_report
+from openzyme_host_api.architecture_qualification import (
+    verify_architecture_qualification_report,
+)
+
+from scripts.test_gate.runner import ProcessResult
+from scripts.test_gate.runner import run_command
 
 
 COLLECTION_SCHEMA_ID = "openzyme_v3_architecture_pytest_collection@1"
@@ -92,8 +114,16 @@ class CommandExecution:
     duration_milliseconds: int
     exit_code: int | None
     outcome: str
+    error: str | None
+    kill_sent: bool
+    stderr_bytes: int
     stderr_digest: str
+    stderr_tail: str
+    stdout_bytes: int
     stdout_digest: str
+    stdout_tail: str
+    term_sent: bool
+    timed_out: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -371,69 +401,141 @@ def _execute(
     cwd: Path,
     environment: Mapping[str, str],
     timeout_seconds: float,
-) -> tuple[CommandExecution, bytes, bytes]:
-    started = time.monotonic()
-    try:
-        process = subprocess.Popen(
-            list(command),
-            cwd=cwd,
-            env=dict(environment),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
-    except OSError as exc:
-        error = str(exc).encode("utf-8", errors="replace")
-        return (
-            CommandExecution(
-                command=tuple(command),
-                duration_milliseconds=0,
-                exit_code=None,
-                outcome="error",
-                stderr_digest=_sha256(error),
-                stdout_digest=_sha256(b""),
-            ),
-            b"",
-            error,
-        )
-    outcome = "error"
-    try:
-        stdout, stderr = process.communicate(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
-        outcome = "timeout"
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            stdout, stderr = process.communicate(timeout=1.0)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            stdout, stderr = process.communicate()
-    else:
-        if process.returncode == 0:
-            outcome = "pass"
-        elif process.returncode == 1:
-            outcome = "fail"
-        else:
-            outcome = "error"
-    duration = max(0, round((time.monotonic() - started) * 1000))
-    return (
-        CommandExecution(
-            command=tuple(command),
-            duration_milliseconds=duration,
-            exit_code=process.returncode,
-            outcome=outcome,
-            stderr_digest=_sha256(stderr),
-            stdout_digest=_sha256(stdout),
-        ),
-        stdout,
-        stderr,
+) -> CommandExecution:
+    """Execute only through the repository test-gate process owner."""
+
+    result: ProcessResult = run_command(
+        command,
+        cwd=cwd,
+        environment=environment,
+        timeout_seconds=timeout_seconds,
+        termination_grace_seconds=5.0,
+        tail_bytes=4096,
     )
+    return CommandExecution(
+        command=result.argv,
+        duration_milliseconds=max(0, round(result.duration_ns / 1_000_000)),
+        error=result.error,
+        exit_code=result.exit_code,
+        kill_sent=result.kill_sent,
+        outcome=result.outcome,
+        stderr_bytes=result.stderr.total_bytes,
+        stderr_digest=result.stderr.digest,
+        stderr_tail=result.stderr.tail,
+        stdout_bytes=result.stdout.total_bytes,
+        stdout_digest=result.stdout.digest,
+        stdout_tail=result.stdout.tail,
+        term_sent=result.term_sent,
+        timed_out=result.timed_out,
+    )
+
+
+def _source_digest(source_identity: Mapping[str, object]) -> str:
+    return _sha256(canonical_json_bytes(source_identity))
+
+
+def _revalidate_source(
+    *,
+    repo_root: Path,
+    admission_source: Mapping[str, object],
+    phase_id: str,
+) -> tuple[Mapping[str, object], dict[str, object]]:
+    observed = collect_architecture_source_identity(repo_root=repo_root)
+    matched = dict(observed) == dict(admission_source)
+    return observed, {
+        "matched_admission": matched,
+        "phase_id": phase_id,
+        "source_identity_digest": _source_digest(observed),
+    }
+
+
+def _safe_process_text(
+    value: str,
+    *,
+    repo_root: Path,
+    temporary_root: Path,
+) -> str:
+    return value.replace(str(temporary_root), "<qualification-temp>").replace(
+        str(repo_root),
+        "<repo>",
+    )
+
+
+def _process_receipt(
+    *,
+    execution: CommandExecution,
+    phase_id: str,
+    scenario_id: str | None,
+    source_identity_digest: str,
+    repo_root: Path,
+    temporary_root: Path,
+) -> dict[str, object]:
+    preimage: dict[str, object] = {
+        "command": [
+            _safe_process_text(
+                item,
+                repo_root=repo_root,
+                temporary_root=temporary_root,
+            )
+            for item in execution.command
+        ],
+        "duration_milliseconds": execution.duration_milliseconds,
+        "error_code": (
+            None if execution.error is None else "qualification_process_spawn_failed"
+        ),
+        "exit_code": execution.exit_code,
+        "kill_sent": execution.kill_sent,
+        "outcome": execution.outcome,
+        "phase_id": phase_id,
+        "scenario_id": scenario_id,
+        "schema_id": "openzyme_v3_qualification_process_receipt@1",
+        "source_identity_digest": source_identity_digest,
+        "stderr": {
+            "digest": execution.stderr_digest,
+            "tail": _safe_process_text(
+                execution.stderr_tail,
+                repo_root=repo_root,
+                temporary_root=temporary_root,
+            ),
+            "total_bytes": execution.stderr_bytes,
+        },
+        "stdout": {
+            "digest": execution.stdout_digest,
+            "tail": _safe_process_text(
+                execution.stdout_tail,
+                repo_root=repo_root,
+                temporary_root=temporary_root,
+            ),
+            "total_bytes": execution.stdout_bytes,
+        },
+        "term_sent": execution.term_sent,
+        "timed_out": execution.timed_out,
+    }
+    return {
+        **preimage,
+        "receipt_digest": _sha256(canonical_json_bytes(preimage)),
+    }
+
+
+def _run_failure(
+    *,
+    cause_id: str,
+    phase_id: str,
+    source_identity: Mapping[str, object],
+    process_receipt: Mapping[str, object] | None = None,
+    scenario_id: str | None = None,
+) -> dict[str, object]:
+    return {
+        "cause_id": cause_id,
+        "phase_id": phase_id,
+        "process_receipt_digest": (
+            None
+            if process_receipt is None
+            else str(process_receipt["receipt_digest"])
+        ),
+        "scenario_id": scenario_id,
+        "source_identity_digest": _source_digest(source_identity),
+    }
 
 
 def _load_canonical_object(path: Path, *, schema_id: str) -> dict[str, object]:
@@ -525,7 +627,8 @@ def _collect_manifest(
     temporary_root: Path,
     environment: Mapping[str, str],
     registry: ValidatedInvariantRegistry,
-) -> tuple[object, CommandExecution]:
+    declared_manifest: object,
+) -> tuple[object, CommandExecution, bool]:
     output = temporary_root / "collection.json"
     command = (
         sys.executable,
@@ -540,55 +643,94 @@ def _collect_manifest(
     )
     collection_environment = dict(environment)
     collection_environment[_COLLECTION_OUTPUT_ENV] = str(output)
-    execution, _, _ = _execute(
+    execution = _execute(
         command,
         cwd=repo_root,
         environment=collection_environment,
         timeout_seconds=60.0,
     )
-    if execution.outcome != "pass" or not output.is_file():
-        raise ArchitectureQualificationReportError(
-            "qualification pytest collection closure failed"
-        )
-    payload = _load_canonical_object(output, schema_id=COLLECTION_SCHEMA_ID)
-    if set(payload) != {"scenarios", "schema_id"} or not isinstance(
-        payload["scenarios"], list
-    ):
-        raise ArchitectureQualificationReportError(
-            "qualification pytest collection payload is not closed"
-        )
-    collected: list[CollectedQualificationScenario] = []
-    for raw in payload["scenarios"]:
-        if not isinstance(raw, dict) or set(raw) != {
-            "family",
-            "node_id",
-            "scenario_id",
-            "selections",
-            "source_file",
-        }:
+    try:
+        if execution.outcome != "pass" or not output.is_file():
             raise ArchitectureQualificationReportError(
-                "qualification pytest collection scenario is not closed"
+                "qualification pytest collection closure failed"
             )
-        if not isinstance(raw["selections"], list):
+        payload = _load_canonical_object(output, schema_id=COLLECTION_SCHEMA_ID)
+        if set(payload) != {"scenarios", "schema_id"} or not isinstance(
+            payload["scenarios"], list
+        ):
             raise ArchitectureQualificationReportError(
-                "qualification pytest collection selections are invalid"
+                "qualification pytest collection payload is not closed"
             )
-        collected.append(
-            CollectedQualificationScenario(
-                scenario_id=str(raw["scenario_id"]),
-                family=str(raw["family"]),
-                node_id=str(raw["node_id"]),
-                source_file=str(raw["source_file"]),
-                selections=tuple(str(item) for item in raw["selections"]),
+        collected: list[CollectedQualificationScenario] = []
+        for raw in payload["scenarios"]:
+            if not isinstance(raw, dict) or set(raw) != {
+                "family",
+                "node_id",
+                "scenario_id",
+                "selections",
+                "source_file",
+            }:
+                raise ArchitectureQualificationReportError(
+                    "qualification pytest collection scenario is not closed"
+                )
+            if not isinstance(raw["selections"], list):
+                raise ArchitectureQualificationReportError(
+                    "qualification pytest collection selections are invalid"
+                )
+            collected.append(
+                CollectedQualificationScenario(
+                    scenario_id=str(raw["scenario_id"]),
+                    family=str(raw["family"]),
+                    node_id=str(raw["node_id"]),
+                    source_file=str(raw["source_file"]),
+                    selections=tuple(str(item) for item in raw["selections"]),
+                )
             )
-        )
-    return (
-        build_test_manifest(
+        collected_manifest = build_test_manifest(
             registry,
             collected_scenarios=tuple(collected),
             repo_root=repo_root,
-        ),
-        execution,
+        )
+        if collected_manifest != declared_manifest:
+            raise ArchitectureQualificationReportError(
+                "qualification pytest collection differs from the declared manifest"
+            )
+    except ArchitectureQualificationReportError:
+        return declared_manifest, execution, False
+    return collected_manifest, execution, True
+
+
+def _declared_manifest(
+    *,
+    registry: ValidatedInvariantRegistry,
+    repo_root: Path,
+) -> object:
+    raw_scenarios = registry.payload["scenarios"]
+    if not isinstance(raw_scenarios, list):
+        raise ArchitectureQualificationReportError(
+            "validated registry scenarios lost list identity"
+        )
+    collected = tuple(
+        CollectedQualificationScenario(
+            scenario_id=str(item["scenario_id"]),
+            family=str(item["family"]),
+            node_id=str(item["test_selector"]),
+            source_file=str(item["source_files"][0]),
+            selections=tuple(str(value) for value in item["selections"]),
+        )
+        for item in raw_scenarios
+        if isinstance(item, Mapping)
+        and isinstance(item.get("source_files"), list)
+        and len(item["source_files"]) == 1
+    )
+    if len(collected) != len(raw_scenarios):
+        raise ArchitectureQualificationReportError(
+            "declared qualification manifest is not reconstructable"
+        )
+    return build_test_manifest(
+        registry,
+        collected_scenarios=collected,
+        repo_root=repo_root,
     )
 
 
@@ -597,7 +739,7 @@ def _run_harness_self_tests(
     repo_root: Path,
     environment: Mapping[str, str],
     node_output: Path | None = None,
-) -> tuple[CommandExecution, list[dict[str, object]]]:
+) -> tuple[CommandExecution, list[dict[str, object]], bool]:
     command = (
         sys.executable,
         "-m",
@@ -612,43 +754,21 @@ def _run_harness_self_tests(
     execution_environment = dict(environment)
     if node_output is not None:
         execution_environment[_MAINLINE_NODE_OUTPUT_ENV] = str(node_output)
-    execution, _, _ = _execute(
+    execution = _execute(
         command,
         cwd=repo_root,
         environment=execution_environment,
         timeout_seconds=180.0,
     )
     if node_output is None:
-        return execution, []
+        return execution, [], execution.outcome == "pass"
     if not node_output.is_file():
-        raise ArchitectureQualificationReportError(
-            "mainline qualification harness node evidence is missing"
-        )
-    return execution, _load_mainline_node_records(node_output)
-
-
-def _fallback_scenario_result(
-    *,
-    scenario: Mapping[str, object],
-    execution: CommandExecution,
-) -> dict[str, object]:
-    failure_digests = sorted(
-        {execution.stdout_digest, execution.stderr_digest} - {_sha256(b"")}
-    )
-    return {
-        "duration_milliseconds": execution.duration_milliseconds,
-        "effect_ledger_digests": [],
-        "external_effects_real": False,
-        "failure_digests": failure_digests,
-        "family": scenario["family"],
-        "observation_digests": [],
-        "observed_p0_trigger_ids": [],
-        "pytest_outcome": (
-            "timeout" if execution.outcome == "timeout" else "error"
-        ),
-        "scenario_id": scenario["scenario_id"],
-        "test_selector": scenario["test_selector"],
-    }
+        return execution, [], False
+    try:
+        records = _load_mainline_node_records(node_output)
+    except ArchitectureQualificationReportError:
+        return execution, [], False
+    return execution, records, execution.outcome == "pass" and bool(records)
 
 
 def _run_scenario(
@@ -658,7 +778,7 @@ def _run_scenario(
     environment: Mapping[str, str],
     scenario: Mapping[str, object],
     node_output: Path | None = None,
-) -> tuple[dict[str, object], list[dict[str, object]]]:
+) -> tuple[dict[str, object] | None, list[dict[str, object]], CommandExecution]:
     scenario_id = str(scenario["scenario_id"])
     output = temporary_root / f"execution-{scenario_id}.json"
     command = (
@@ -680,39 +800,28 @@ def _run_scenario(
         raise ArchitectureQualificationReportError(
             "registered scenario budgets are invalid"
         )
-    execution, _, _ = _execute(
+    execution = _execute(
         command,
         cwd=repo_root,
         environment=execution_environment,
         timeout_seconds=float(budgets["deadline_seconds"]) + 15.0,
     )
-    if node_output is None:
-        node_records: list[dict[str, object]] = []
-    elif not node_output.is_file():
-        raise ArchitectureQualificationReportError(
-            f"mainline qualification scenario node evidence is missing: {scenario_id}"
-        )
-    else:
-        node_records = _load_mainline_node_records(node_output)
+    node_records: list[dict[str, object]] = []
+    if node_output is not None and node_output.is_file():
+        try:
+            node_records = _load_mainline_node_records(node_output)
+        except ArchitectureQualificationReportError:
+            return None, [], execution
     if execution.outcome == "timeout" or not output.is_file():
-        return (
-            _fallback_scenario_result(scenario=scenario, execution=execution),
-            node_records,
-        )
+        return None, node_records, execution
     try:
         payload = _load_canonical_object(output, schema_id=EXECUTION_SCHEMA_ID)
     except ArchitectureQualificationReportError:
-        return (
-            _fallback_scenario_result(scenario=scenario, execution=execution),
-            node_records,
-        )
+        return None, node_records, execution
     if set(payload) != {"records", "schema_id"} or not isinstance(
         payload["records"], list
     ) or len(payload["records"]) != 1:
-        return (
-            _fallback_scenario_result(scenario=scenario, execution=execution),
-            node_records,
-        )
+        return None, node_records, execution
     record = payload["records"][0]
     if not isinstance(record, dict) or set(record) != {
         "duration_milliseconds",
@@ -726,10 +835,7 @@ def _run_scenario(
         "scenario_id",
         "test_selector",
     }:
-        return (
-            _fallback_scenario_result(scenario=scenario, execution=execution),
-            node_records,
-        )
+        return None, node_records, execution
     expected_process_outcome = {
         "error": "error",
         "fail": "fail",
@@ -744,11 +850,12 @@ def _run_scenario(
         or record["test_selector"] != scenario["test_selector"]
         or execution.outcome != expected_process_outcome
     ):
-        return (
-            _fallback_scenario_result(scenario=scenario, execution=execution),
-            node_records,
-        )
-    return dict(record), node_records
+        return None, node_records, execution
+    if node_output is not None and [
+        str(item["node_id"]) for item in node_records
+    ] != [str(scenario["test_selector"])]:
+        return None, [], execution
+    return dict(record), node_records, execution
 
 
 def _qualification_evidence_is_green(payload: Mapping[str, object]) -> bool:
@@ -780,6 +887,8 @@ def _qualification_evidence_is_green(payload: Mapping[str, object]) -> bool:
         )
         and payload.get("external_effects_real") is False
         and payload.get("aox_live_started") is False
+        and payload.get("run_failure") is None
+        and payload.get("not_run_scenario_ids") == []
     )
 
 
@@ -867,61 +976,203 @@ def _run_qualification_locked(
     mode: str,
     output_directory: Path,
     command: Sequence[str],
+    admission_source: Mapping[str, object],
     mainline_sidecar: MainlineQualificationSidecarRequest | None = None,
 ) -> QualificationRunResult:
     root = repo_root
     registry = load_invariant_registry(repo_root=root)
+    test_manifest = _declared_manifest(registry=registry, repo_root=root)
+    implementation_identity = (
+        collect_architecture_qualification_implementation_identity(
+            repo_root=root,
+            runner_path=runner_path,
+            test_manifest=test_manifest,
+        )
+    )
     environment = non_live_environment()
+    selection_id = "premerge_subset" if mode == "premerge_subset" else "full"
+    raw_scenarios = registry.payload["scenarios"]
+    if not isinstance(raw_scenarios, list):
+        raise ArchitectureQualificationReportError(
+            "validated registry scenarios lost list identity"
+        )
+    selected = [
+        item
+        for item in raw_scenarios
+        if isinstance(item, Mapping) and selection_id in item["selections"]
+    ]
+    selected_ids = [str(item["scenario_id"]) for item in selected]
+    admission_source_digest = _source_digest(admission_source)
+    source_revalidations: list[dict[str, object]] = [
+        {
+            "matched_admission": True,
+            "phase_id": "lock_admission",
+            "source_identity_digest": admission_source_digest,
+        }
+    ]
+    process_receipts: list[dict[str, object]] = []
+    run_failure: dict[str, object] | None = None
+    scenario_results: list[dict[str, object]] = []
+    harness_node_records: list[dict[str, object]] = []
+    scenario_node_records: list[dict[str, object]] = []
+    empty_digest = _sha256(b"")
+    harness_result: dict[str, object] = {
+        "duration_milliseconds": 0,
+        "exit_code": None,
+        "outcome": "error",
+        "stderr_digest": empty_digest,
+        "stdout_digest": empty_digest,
+    }
+    terminal_source: Mapping[str, object] = admission_source
     with tempfile.TemporaryDirectory(prefix="openzyme-architecture-qualification-") as raw:
         temporary_root = Path(raw)
-        test_manifest, collection_execution = _collect_manifest(
+        observed, revalidation = _revalidate_source(
             repo_root=root,
-            temporary_root=temporary_root,
-            environment=environment,
-            registry=registry,
+            admission_source=admission_source,
+            phase_id="before_collection",
         )
-        harness_execution, harness_node_records = _run_harness_self_tests(
-            repo_root=root,
-            environment=environment,
-            node_output=(
-                None
-                if mainline_sidecar is None
-                else temporary_root / "mainline-harness-nodes.json"
-            ),
-        )
-        harness_result = {
-            "duration_milliseconds": (
-                collection_execution.duration_milliseconds
-                + harness_execution.duration_milliseconds
-            ),
-            "exit_code": harness_execution.exit_code,
-            "outcome": harness_execution.outcome,
-            "stderr_digest": _sha256(
-                (
-                    collection_execution.stderr_digest
-                    + harness_execution.stderr_digest
-                ).encode("ascii")
-            ),
-            "stdout_digest": _sha256(
-                (
-                    collection_execution.stdout_digest
-                    + harness_execution.stdout_digest
-                ).encode("ascii")
-            ),
-        }
-        selection_id = "premerge_subset" if mode == "premerge_subset" else "full"
-        raw_scenarios = registry.payload["scenarios"]
-        if not isinstance(raw_scenarios, list):
-            raise ArchitectureQualificationReportError(
-                "validated registry scenarios lost list identity"
+        source_revalidations.append(revalidation)
+        terminal_source = observed
+        if revalidation["matched_admission"] is not True:
+            run_failure = _run_failure(
+                cause_id="architecture_qualification_source_drift",
+                phase_id="before_collection",
+                source_identity=observed,
             )
-        selected = [
-            item
-            for item in raw_scenarios
-            if isinstance(item, Mapping) and selection_id in item["selections"]
-        ]
-        scenario_pairs = [
-            _run_scenario(
+
+        collection_execution: CommandExecution | None = None
+        if run_failure is None:
+            test_manifest, collection_execution, collection_closed = _collect_manifest(
+                repo_root=root,
+                temporary_root=temporary_root,
+                environment=environment,
+                registry=registry,
+                declared_manifest=test_manifest,
+            )
+            collection_receipt = _process_receipt(
+                execution=collection_execution,
+                phase_id="collection",
+                scenario_id=None,
+                source_identity_digest=admission_source_digest,
+                repo_root=root,
+                temporary_root=temporary_root,
+            )
+            process_receipts.append(collection_receipt)
+            harness_result = {
+                "duration_milliseconds": collection_execution.duration_milliseconds,
+                "exit_code": collection_execution.exit_code,
+                "outcome": collection_execution.outcome,
+                "stderr_digest": collection_execution.stderr_digest,
+                "stdout_digest": collection_execution.stdout_digest,
+            }
+            if not collection_closed:
+                run_failure = _run_failure(
+                    cause_id="architecture_qualification_collection_failed",
+                    phase_id="collection",
+                    source_identity=admission_source,
+                    process_receipt=collection_receipt,
+                )
+
+        if collection_execution is not None:
+            observed, revalidation = _revalidate_source(
+                repo_root=root,
+                admission_source=admission_source,
+                phase_id="after_collection",
+            )
+            source_revalidations.append(revalidation)
+            terminal_source = observed
+            if run_failure is None and revalidation["matched_admission"] is not True:
+                run_failure = _run_failure(
+                    cause_id="architecture_qualification_source_drift",
+                    phase_id="after_collection",
+                    source_identity=observed,
+                )
+
+        if run_failure is None:
+            harness_execution, harness_node_records, harness_closed = (
+                _run_harness_self_tests(
+                    repo_root=root,
+                    environment=environment,
+                    node_output=(
+                        None
+                        if mainline_sidecar is None
+                        else temporary_root / "mainline-harness-nodes.json"
+                    ),
+                )
+            )
+            harness_receipt = _process_receipt(
+                execution=harness_execution,
+                phase_id="harness",
+                scenario_id=None,
+                source_identity_digest=admission_source_digest,
+                repo_root=root,
+                temporary_root=temporary_root,
+            )
+            process_receipts.append(harness_receipt)
+            assert collection_execution is not None
+            harness_result = {
+                "duration_milliseconds": (
+                    collection_execution.duration_milliseconds
+                    + harness_execution.duration_milliseconds
+                ),
+                "exit_code": harness_execution.exit_code,
+                "outcome": harness_execution.outcome,
+                "stderr_digest": _sha256(
+                    (
+                        collection_execution.stderr_digest
+                        + harness_execution.stderr_digest
+                    ).encode("ascii")
+                ),
+                "stdout_digest": _sha256(
+                    (
+                        collection_execution.stdout_digest
+                        + harness_execution.stdout_digest
+                    ).encode("ascii")
+                ),
+            }
+            if not harness_closed:
+                run_failure = _run_failure(
+                    cause_id="architecture_qualification_harness_failed",
+                    phase_id="harness",
+                    source_identity=admission_source,
+                    process_receipt=harness_receipt,
+                )
+
+        if len(process_receipts) >= 2:
+            observed, revalidation = _revalidate_source(
+                repo_root=root,
+                admission_source=admission_source,
+                phase_id="after_harness",
+            )
+            source_revalidations.append(revalidation)
+            terminal_source = observed
+            if run_failure is None and revalidation["matched_admission"] is not True:
+                run_failure = _run_failure(
+                    cause_id="architecture_qualification_source_drift",
+                    phase_id="after_harness",
+                    source_identity=observed,
+                )
+
+        for scenario in selected:
+            if run_failure is not None:
+                break
+            scenario_id = str(scenario["scenario_id"])
+            observed, revalidation = _revalidate_source(
+                repo_root=root,
+                admission_source=admission_source,
+                phase_id=f"before_scenario:{scenario_id}",
+            )
+            source_revalidations.append(revalidation)
+            terminal_source = observed
+            if revalidation["matched_admission"] is not True:
+                run_failure = _run_failure(
+                    cause_id="architecture_qualification_source_drift",
+                    phase_id=f"before_scenario:{scenario_id}",
+                    scenario_id=scenario_id,
+                    source_identity=observed,
+                )
+                break
+            result, node_records, scenario_execution = _run_scenario(
                 repo_root=root,
                 temporary_root=temporary_root,
                 environment=environment,
@@ -929,37 +1180,61 @@ def _run_qualification_locked(
                 node_output=(
                     None
                     if mainline_sidecar is None
-                    else temporary_root
-                    / f"mainline-scenario-{scenario['scenario_id']}.json"
+                    else temporary_root / f"mainline-scenario-{scenario_id}.json"
                 ),
             )
-            for scenario in selected
-        ]
-        scenario_results = [result for result, _ in scenario_pairs]
-        scenario_node_records = [
-            node
-            for _, records in scenario_pairs
-            for node in records
-        ]
-        if mainline_sidecar is not None:
-            harness_ids = [
-                str(item["node_id"]) for item in harness_node_records
-            ]
-            scenario_ids = [
-                str(item["node_id"]) for item in scenario_node_records
-            ]
-            expected_scenario_ids = sorted(
-                str(item["test_selector"]) for item in selected
+            scenario_receipt = _process_receipt(
+                execution=scenario_execution,
+                phase_id=f"scenario:{scenario_id}",
+                scenario_id=scenario_id,
+                source_identity_digest=admission_source_digest,
+                repo_root=root,
+                temporary_root=temporary_root,
             )
-            if harness_ids != sorted(set(harness_ids)) or not harness_ids:
-                raise ArchitectureQualificationReportError(
-                    "mainline qualification harness node closure failed"
+            process_receipts.append(scenario_receipt)
+            if result is None:
+                run_failure = _run_failure(
+                    cause_id="architecture_qualification_scenario_execution_failed",
+                    phase_id=f"scenario:{scenario_id}",
+                    scenario_id=scenario_id,
+                    source_identity=admission_source,
+                    process_receipt=scenario_receipt,
                 )
-            if sorted(scenario_ids) != expected_scenario_ids:
-                raise ArchitectureQualificationReportError(
-                    "mainline qualification scenario node closure failed"
+                break
+            scenario_results.append(result)
+            scenario_node_records.extend(node_records)
+            observed, revalidation = _revalidate_source(
+                repo_root=root,
+                admission_source=admission_source,
+                phase_id=f"after_scenario:{scenario_id}",
+            )
+            source_revalidations.append(revalidation)
+            terminal_source = observed
+            if revalidation["matched_admission"] is not True:
+                run_failure = _run_failure(
+                    cause_id="architecture_qualification_source_drift",
+                    phase_id=f"after_scenario:{scenario_id}",
+                    scenario_id=scenario_id,
+                    source_identity=observed,
                 )
-    source_identity = collect_architecture_source_identity(repo_root=root)
+                break
+
+        observed, revalidation = _revalidate_source(
+            repo_root=root,
+            admission_source=admission_source,
+            phase_id="pre_publication",
+        )
+        source_revalidations.append(revalidation)
+        terminal_source = observed
+        if run_failure is None and revalidation["matched_admission"] is not True:
+            run_failure = _run_failure(
+                cause_id="architecture_qualification_source_drift",
+                phase_id="pre_publication",
+                source_identity=observed,
+            )
+
+    completed_scenario_ids = {str(item["scenario_id"]) for item in scenario_results}
+    not_run_scenario_ids = sorted(set(selected_ids) - completed_scenario_ids)
     report = build_architecture_qualification_report(
         repo_root=root,
         runner_path=runner_path,
@@ -967,31 +1242,40 @@ def _run_qualification_locked(
         command=command,
         registry=registry,
         test_manifest=test_manifest,
-        source_identity=source_identity,
+        source_identity=admission_source,
+        terminal_source_identity=terminal_source,
+        source_revalidations=source_revalidations,
+        process_receipts=process_receipts,
+        run_failure=run_failure,
+        not_run_scenario_ids=not_run_scenario_ids,
         harness_result=harness_result,
         scenario_results=scenario_results,
+        implementation_identity=implementation_identity,
     )
     report_path = publish_architecture_qualification_report(
         report,
         output_directory=output_directory,
         repo_root=root,
     )
-    verification = verify_architecture_qualification_report(
-        report_path,
-        repo_root=root,
-        runner_path=runner_path,
-    )
+    try:
+        verification = verify_architecture_qualification_report(
+            report_path,
+            repo_root=root,
+            runner_path=runner_path,
+        )
+    except ArchitectureQualificationError:
+        verification = None
     payload = report.payload
     qualification_green = _qualification_evidence_is_green(payload)
     process_exit_code = (
         0
-        if verification.admission_eligible
+        if verification is not None and verification.admission_eligible
         or (mode != "admission" and qualification_green)
         else 1
     )
     sidecar_path = (
         None
-        if mainline_sidecar is None
+        if mainline_sidecar is None or run_failure is not None or verification is None
         else _publish_mainline_sidecar(
             repo_root=root,
             request=mainline_sidecar,
@@ -1043,12 +1327,14 @@ def run_qualification(
                 repo_root=root,
                 request=mainline_sidecar,
             )
+        admission_source = collect_architecture_source_identity(repo_root=root)
         return _run_qualification_locked(
             repo_root=root,
             runner_path=runner_path,
             mode=mode,
             output_directory=output_directory,
             command=command,
+            admission_source=admission_source,
             mainline_sidecar=mainline_sidecar,
         )
 

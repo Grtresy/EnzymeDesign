@@ -1,6 +1,6 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r67 are permanent NO-GO evidence. r68 is authority-consumed prelaunch blocked before root/Host/session/attempt. r69 is authority/root/session/provider/MICU-consumed pre-admission blocked before an admission request or scientific attempt. r70 is authority/slot/root/session/receipt-consumed pre-runtime conductor blocked before any runtime drain or scientific authorization/admission/attempt. r71 is authority/positive-slot/root/session/task/authorization/receipt/MICU-consumed pre-attempt sandbox-bootstrap blocked at typed `sandbox_image_missing`, before scientific admission/attempt/provider/HPC/sandbox/browser effect. r72 is prelive conductor blocked after duplicate full-qualification concurrency polluted one output and an invalid-parent recovery reran work that could not publish. None of r68-r72 is a canonical NO-GO, and none of their state is reusable. The post-r71 repair gives one formal supervised Host child the only explicit fresh-SQLite sandbox identity bootstrap; the post-r72 repair gives qualification one canonical-checkout kernel single-flight and exact yielded-handle stop semantics. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
+Status: r43-r67 are permanent NO-GO evidence. r68 is authority-consumed prelaunch blocked before root/Host/session/attempt. r69 is authority/root/session/provider/MICU-consumed pre-admission blocked before an admission request or scientific attempt. r70 is authority/slot/root/session/receipt-consumed pre-runtime conductor blocked before any runtime drain or scientific authorization/admission/attempt. r71 is authority/positive-slot/root/session/task/authorization/receipt/MICU-consumed pre-attempt sandbox-bootstrap blocked at typed `sandbox_image_missing`, before scientific admission/attempt/provider/HPC/sandbox/browser effect. r72 is prelive conductor blocked after duplicate full-qualification concurrency polluted one output and an invalid-parent recovery reran work that could not publish. r73 is prelive conductor/qualification blocked after stale conductor HEAD shadow truth discarded the first `789f1c1` report, serially relaunched full admission, and the harness timeout retained only digest/cascade evidence. None of r68-r73 is a canonical NO-GO, and none of their state or the old persistent goal is reusable. The post-r71 repair gives one formal supervised Host child the only explicit fresh-SQLite sandbox identity bootstrap; the post-r72 repair gives qualification one canonical-checkout kernel single-flight and exact yielded-handle stop semantics; the post-r73 repair gives the repository test-gate one source-bound bounded executor and current causal-evidence report/receipt `@2`. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
 
 Historical incident and older command/observer/driver/browser/diagnostic-authority/public-finalizer sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract; in particular, every older `run-live`, `run-diagnostic-live`, diagnostic authority command, observer, barrier, rollover, no-wakeup, public generic scientific mutation/finalizer, `chrome-once`, browser-helper and ambient dev/eval image-registration instruction is retired even where a historical section called it current at that time. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, late-bound task/scientific-attempt selection, fresh supervised Host bootstrap and qualification semantics are defined by the post-r70/post-r71 sections below, [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
@@ -1994,8 +1994,9 @@ HEAD、`full` selection、当前 registry/test manifest/runner/verifier、全部
 且零 open P0 的 `admission` report 才被接受；missing、diagnostic、premerge subset、dirty、
 stale、tampered、未知 profile/schema 或 open-P0 report 一律 fail closed。
 
-验证成功只生成不可变的 `aox_architecture_qualification_receipt@1`，绑定 report payload、
-registry、test-manifest、profile 和 source commit digest。它不创建 attempt、不访问外部系统，
+验证成功只生成不可变的 `aox_architecture_qualification_receipt@2`，绑定current report schema/payload、
+registry、test-manifest、profile、source commit/identity和run-evidence digest。历史report/receipt`@1`
+只允许冻结reader只读加载，不得进入current admission。它不创建 attempt、不访问外部系统，
 也不授权任何 scientific input。force/debug/env/legacy/pass-boolean bypass 不存在；
 `allowed_prerequisites` 仍保持下述 exact-nine scientific schema。架构放行只解除一个
 deterministic blocker，不能自动启动 numbered live campaign 或替代 launch、availability、scientific、Chrome、
@@ -3029,6 +3030,37 @@ commands, focused success patches and alternate recovery outputs. A lost handle 
 original-target inventory, followed by a prelive blocked stop. This repair runs non-live validation and one clean,
 explicitly non-adoptable full diagnostic qualification only; it does not launch or name a successor rNN, consume
 authority, or contact live, MICU, provider, HPC or Chrome surfaces.
+
+## r73 prelive conductor/qualification blocked and post-r73 causal-evidence repair
+
+r73 created no root, Host session, scientific attempt, canonical bundle or reducer decision. The conductor treated a
+saved stale HEAD as truth, discarded the first report even though it actually bound
+`789f1c177552ece953564932f9e29753179cb2fa`, and serially relaunched equivalent full admission after a terminal
+report. Both harness runs reached the bounded timeout. The old report schema retained only output digests, then
+synthesized fallback results and a broad unproven GAP cascade for scenarios that never ran. All r73 reports,
+reproduction/stop state and the old persistent goal are permanently non-reusable. This is prelive
+conductor/qualification blocked, not canonical r73 NO-GO.
+
+The repair removes conductor-owned `started_head`, drift/recovery/adoption truth and equivalent relaunch. A fresh
+conductor reads current Git/source facts from the checkout and resumes only an exact yielded handle; after one
+terminal report it stops. The callerless pytest runner is deleted from the Host production package. The thin
+repository CLI enters `scripts/architecture_qualification_runner.py` outside the product-neutral
+`scripts/test_gate` package, and every collection/harness/scenario process is owned by the shared bounded
+`scripts/test_gate/runner.py` process-group executor.
+
+The lock-admission source identity is now immutable run input. Revalidation occurs before/after collection, after
+harness, before/after every selected scenario and before publication. Current report `@2` seals these observations,
+source-bound bounded process receipts, exact not-run identities and one earliest typed cause. A collection closure,
+harness timeout/failure, malformed scenario evidence or source drift stops immediately; no fallback scenario result,
+GAP/P0 cascade or equivalent process launch is allowed. Current AOX receipt `@2` also binds report schema, source
+identity and run-evidence digest. Historical report/receipt `@1` remain readable only by explicit frozen readers and
+cannot enter pin, preflight, launch or reducer admission.
+
+Operator-retirement eligibility and quarantine are now pure functions of exact identity, raw exit/signal, final
+process-group membership and forced-unproven state. The suite retains one generous seconds-scale real containment
+probe and no subsecond business timing policy. This repair runs only non-live verification, registry/resource/docs
+updates, one clean explicitly non-adoptable full diagnostic and a local commit. It does not launch or name a next
+rNN, consume authority, or contact live, MICU, provider, HPC or Chrome surfaces.
 
 r59 remains the latest numbered campaign with a canonical formal-attempt decision. It is a failed campaign whose
 exact-three plan is consumed and whose later slots cannot be reused. The later

@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
+import hashlib
 
 import pytest
 
@@ -10,6 +11,7 @@ from openzyme_host_api import aox_architecture_qualification as qualification
 from openzyme_host_api.aox_architecture_qualification import (
     AoxArchitectureQualificationError,
 )
+from openzyme_host_api.architecture_qualification import canonical_json_bytes
 from openzyme_host_api.aox_architecture_qualification import (
     build_architecture_qualification_receipt,
 )
@@ -28,6 +30,9 @@ def _receipt(*, payload_digit: str = "1") -> dict[str, str]:
         test_manifest_digest="sha256:" + "3" * 64,
         profile_id="local_single_process_file_sqlite@1",
         source_commit="a" * 40,
+        report_schema_id="openzyme_v3_architecture_qualification_report@2",
+        run_evidence_digest="sha256:" + "4" * 64,
+        source_identity_digest="sha256:" + "5" * 64,
     )
 
 
@@ -72,6 +77,33 @@ def test_pinned_receipt_requires_exact_verified_report_identity() -> None:
     assert error.value.code == "aox_architecture_qualification_receipt_mismatch"
 
 
+def test_historical_receipt_is_read_only_compatible() -> None:
+    preimage = {
+        "profile_id": "local_single_process_file_sqlite@1",
+        "registry_digest": "sha256:" + "2" * 64,
+        "report_payload_digest": "sha256:" + "1" * 64,
+        "schema_id": "aox_architecture_qualification_receipt@1",
+        "source_commit": "a" * 40,
+        "test_manifest_digest": "sha256:" + "3" * 64,
+    }
+    historical = {
+        **preimage,
+        "receipt_digest": (
+            f"sha256:{hashlib.sha256(canonical_json_bytes(preimage)).hexdigest()}"
+        ),
+    }
+
+    with pytest.raises(AoxArchitectureQualificationError) as current_error:
+        normalize_architecture_qualification_receipt(historical)
+    assert current_error.value.code == (
+        "aox_architecture_qualification_receipt_version_unsupported"
+    )
+    assert normalize_architecture_qualification_receipt(
+        historical,
+        allow_historical=True,
+    ) == historical
+
+
 def test_report_adapter_derives_receipt_only_from_verified_admission(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -79,10 +111,13 @@ def test_report_adapter_derives_receipt_only_from_verified_admission(
     report_path = tmp_path / "report.json"
     report_path.write_text("not consulted by loader double", encoding="utf-8")
     loaded = SimpleNamespace(
+        envelope={"schema_id": "openzyme_v3_architecture_qualification_report@2"},
         payload={
             "profile": {"profile_id": "local_single_process_file_sqlite@1"},
             "registry_digest": "sha256:" + "2" * 64,
             "test_manifest_digest": "sha256:" + "3" * 64,
+            "run_evidence_digest": "sha256:" + "4" * 64,
+            "source_identity": {"test": "source"},
         }
     )
     monkeypatch.setattr(qualification, "load_report", lambda path: loaded)
@@ -102,14 +137,18 @@ def test_report_adapter_derives_receipt_only_from_verified_admission(
         repo_root=tmp_path,
     )
 
-    assert receipt == _receipt()
+    assert receipt["report_payload_digest"] == _receipt()["report_payload_digest"]
+    assert receipt["run_evidence_digest"] == "sha256:" + "4" * 64
 
 
 def test_report_adapter_rejects_diagnostic_or_open_p0_report(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    loaded = SimpleNamespace(payload={})
+    loaded = SimpleNamespace(
+        envelope={"schema_id": "openzyme_v3_architecture_qualification_report@2"},
+        payload={},
+    )
     monkeypatch.setattr(qualification, "load_report", lambda path: loaded)
     monkeypatch.setattr(
         qualification,

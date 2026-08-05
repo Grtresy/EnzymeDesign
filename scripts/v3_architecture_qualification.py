@@ -6,16 +6,19 @@ import json
 from pathlib import Path
 import sys
 
-from openzyme_host_api.architecture_qualification import (
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from openzyme_host_api.architecture_qualification import (  # noqa: E402
     ArchitectureQualificationError,
 )
-from openzyme_host_api.architecture_qualification_runner import run_qualification
-from openzyme_host_api.architecture_qualification_runner import (
+from scripts.architecture_qualification_runner import run_qualification  # noqa: E402
+from scripts.architecture_qualification_runner import (  # noqa: E402
     mainline_sidecar_request_from_environment,
 )
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNNER_PATH = Path(__file__).resolve()
 
 

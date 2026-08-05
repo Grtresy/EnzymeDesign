@@ -581,6 +581,7 @@ def _normalize_architecture_qualification(
         return normalize_architecture_qualification_receipt(
             receipt,
             expected_source_commit=expected_source_commit,
+            allow_historical=True,
         )
     except AoxArchitectureQualificationError as exc:
         raise CutoverEvidenceError(

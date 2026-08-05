@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 
 import pytest
 
-from openzyme_host_api import architecture_qualification_runner as runner_module
 from openzyme_host_api import architecture_qualification_report as report_module
 from openzyme_host_api.architecture_qualification import (
     ArchitectureQualificationOutputError,
@@ -47,31 +49,39 @@ from openzyme_host_api.architecture_qualification import (
 from openzyme_host_api.architecture_qualification import (
     ValidatedQualificationOutputTarget,
 )
-from openzyme_host_api.architecture_qualification_runner import non_live_environment
-from openzyme_host_api.architecture_qualification_runner import (
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
+from scripts import architecture_qualification_runner as runner_module  # noqa: E402
+from scripts.architecture_qualification_runner import (  # noqa: E402
+    non_live_environment,
+)
+from scripts.architecture_qualification_runner import (  # noqa: E402
     MAINLINE_ENVIRONMENT_DIGEST_ENV,
 )
-from openzyme_host_api.architecture_qualification_runner import (
+from scripts.architecture_qualification_runner import (  # noqa: E402
     MAINLINE_INVOCATION_ID_ENV,
 )
-from openzyme_host_api.architecture_qualification_runner import (
+from scripts.architecture_qualification_runner import (  # noqa: E402
     MAINLINE_PLAN_DIGEST_ENV,
 )
-from openzyme_host_api.architecture_qualification_runner import (
+from scripts.architecture_qualification_runner import (  # noqa: E402
     MAINLINE_SIDECAR_OUTPUT_ENV,
 )
-from openzyme_host_api.architecture_qualification_runner import (
+from scripts.architecture_qualification_runner import (  # noqa: E402
     MAINLINE_SOURCE_DIGEST_ENV,
 )
-from openzyme_host_api.architecture_qualification_runner import (
+from scripts.architecture_qualification_runner import (  # noqa: E402
     MainlineQualificationSidecarRequest,
 )
-from openzyme_host_api.architecture_qualification_runner import (
+from scripts.architecture_qualification_runner import (  # noqa: E402
     mainline_sidecar_request_from_environment,
 )
 
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
+REPO_ROOT = REPOSITORY_ROOT
 RUNNER_PATH = REPO_ROOT / "scripts/v3_architecture_qualification.py"
 _EMPTY_DIGEST = f"sha256:{hashlib.sha256(b'').hexdigest()}"
 _EVIDENCE_DIGEST = f"sha256:{'a' * 64}"
@@ -129,6 +139,88 @@ def _harness_pass() -> dict[str, object]:
     }
 
 
+def _process_receipt(
+    phase_id: str,
+    *,
+    source_digest: str,
+    scenario_id: str | None = None,
+    outcome: str = "pass",
+    exit_code: int | None = 0,
+    timed_out: bool = False,
+) -> dict[str, object]:
+    preimage: dict[str, object] = {
+        "command": ["qualification-test", phase_id],
+        "duration_milliseconds": 1,
+        "error_code": None,
+        "exit_code": exit_code,
+        "kill_sent": False,
+        "outcome": outcome,
+        "phase_id": phase_id,
+        "scenario_id": scenario_id,
+        "schema_id": "openzyme_v3_qualification_process_receipt@1",
+        "source_identity_digest": source_digest,
+        "stderr": {"digest": _EMPTY_DIGEST, "tail": "", "total_bytes": 0},
+        "stdout": {"digest": _EMPTY_DIGEST, "tail": "", "total_bytes": 0},
+        "term_sent": False,
+        "timed_out": timed_out,
+    }
+    return {
+        **preimage,
+        "receipt_digest": (
+            f"sha256:{hashlib.sha256(canonical_json_bytes(preimage)).hexdigest()}"
+        ),
+    }
+
+
+def _run_evidence(
+    source: dict[str, object],
+    results: list[dict[str, object]],
+) -> dict[str, object]:
+    source_digest = (
+        f"sha256:{hashlib.sha256(canonical_json_bytes(source)).hexdigest()}"
+    )
+    process_receipts = [
+        _process_receipt("collection", source_digest=source_digest),
+        _process_receipt("harness", source_digest=source_digest),
+        *[
+            _process_receipt(
+                f"scenario:{item['scenario_id']}",
+                source_digest=source_digest,
+                scenario_id=str(item["scenario_id"]),
+            )
+            for item in results
+        ],
+    ]
+    source_revalidation_phases = [
+        "lock_admission",
+        "before_collection",
+        "after_collection",
+        "after_harness",
+    ]
+    for item in results:
+        source_revalidation_phases.extend(
+            [
+                f"before_scenario:{item['scenario_id']}",
+                f"after_scenario:{item['scenario_id']}",
+            ]
+        )
+    source_revalidation_phases.append("pre_publication")
+    return {
+        "not_run_scenario_ids": [],
+        "process_receipts": process_receipts,
+        "run_failure": None,
+        "source_revalidations": [
+            {
+                "matched_admission": True,
+                "phase_id": phase_id,
+                "source_identity_digest": source_digest,
+            }
+            for phase_id in source_revalidation_phases
+        ],
+        "terminal_source_identity": source,
+    }
+
+
 def _clean_source(source: dict[str, object]) -> dict[str, object]:
     return {
         **source,
@@ -160,6 +252,10 @@ def _build(mode: str, *, source: dict[str, object] | None = None):  # type: igno
         if source is None
         else source
     )
+    results = _pass_results(
+        registry,
+        selection_id="premerge_subset" if mode == "premerge_subset" else "full",
+    )
     report = build_architecture_qualification_report(
         repo_root=REPO_ROOT,
         runner_path=RUNNER_PATH,
@@ -168,11 +264,9 @@ def _build(mode: str, *, source: dict[str, object] | None = None):  # type: igno
         registry=registry,
         test_manifest=manifest,
         source_identity=actual_source,
+        **_run_evidence(actual_source, results),
         harness_result=_harness_pass(),
-        scenario_results=_pass_results(
-            registry,
-            selection_id="premerge_subset" if mode == "premerge_subset" else "full",
-        ),
+        scenario_results=results,
     )
     return report
 
@@ -437,6 +531,15 @@ def test_verifier_recomputes_every_bound_semantic_layer(mutation: str) -> None:
         "payload_digest": f"sha256:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}",
         "schema_id": report.envelope["schema_id"],
     }
+    if mutation == "selection":
+        with pytest.raises(
+            ArchitectureQualificationReportError,
+            match="selected-chain|scenario and not-run closure",
+        ):
+            load_architecture_qualification_report_bytes(
+                canonical_json_document_bytes(forged)
+            )
+        return
     loaded = load_architecture_qualification_report_bytes(
         canonical_json_document_bytes(forged)
     )
@@ -457,6 +560,116 @@ def test_report_loader_rejects_noncanonical_and_duplicate_json() -> None:
     duplicate = canonical.replace(b'{"payload":', b'{"payload":null,"payload":', 1)
     with pytest.raises(ArchitectureQualificationReportError, match="duplicate"):
         load_architecture_qualification_report_bytes(duplicate)
+
+
+def test_historical_report_is_readable_but_cannot_enter_current_verifier() -> None:
+    current = _build("diagnostic")
+    payload = {
+        key: value
+        for key, value in current.payload.items()
+        if key
+        not in {
+            "not_run_scenario_ids",
+            "process_receipts",
+            "run_evidence_digest",
+            "run_failure",
+            "source_revalidations",
+            "terminal_source_identity",
+        }
+    }
+    payload["payload_schema_id"] = (
+        "openzyme_v3_architecture_qualification_payload@1"
+    )
+    envelope = {
+        "payload": payload,
+        "payload_digest": (
+            f"sha256:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"
+        ),
+        "schema_id": "openzyme_v3_architecture_qualification_report@1",
+    }
+
+    loaded = load_architecture_qualification_report_bytes(
+        canonical_json_document_bytes(envelope)
+    )
+    assert loaded.envelope["schema_id"].endswith("@1")
+    with pytest.raises(ArchitectureQualificationReportError, match="read-only"):
+        verify_architecture_qualification_report(
+            loaded,
+            repo_root=REPO_ROOT,
+            runner_path=RUNNER_PATH,
+        )
+
+
+def test_harness_timeout_preserves_one_typed_cause_without_gap_cascade() -> None:
+    registry, manifest = _manifest()
+    source = dict(collect_architecture_source_identity(repo_root=REPO_ROOT))
+    source_digest = (
+        f"sha256:{hashlib.sha256(canonical_json_bytes(source)).hexdigest()}"
+    )
+    collection = _process_receipt("collection", source_digest=source_digest)
+    harness = _process_receipt(
+        "harness",
+        source_digest=source_digest,
+        outcome="timeout",
+        exit_code=-signal.SIGTERM,
+        timed_out=True,
+    )
+    selected_ids = sorted(
+        str(item["scenario_id"])
+        for item in registry.payload["scenarios"]  # type: ignore[union-attr]
+        if "full" in item["selections"]
+    )
+    failure = {
+        "cause_id": "architecture_qualification_harness_failed",
+        "phase_id": "harness",
+        "process_receipt_digest": harness["receipt_digest"],
+        "scenario_id": None,
+        "source_identity_digest": source_digest,
+    }
+    report = build_architecture_qualification_report(
+        repo_root=REPO_ROOT,
+        runner_path=RUNNER_PATH,
+        mode="diagnostic",
+        command=["qualification", "diagnostic"],
+        registry=registry,
+        test_manifest=manifest,
+        source_identity=source,
+        terminal_source_identity=source,
+        source_revalidations=[
+            {
+                "matched_admission": True,
+                "phase_id": phase_id,
+                "source_identity_digest": source_digest,
+            }
+            for phase_id in (
+                "lock_admission",
+                "before_collection",
+                "after_collection",
+                "after_harness",
+                "pre_publication",
+            )
+        ],
+        process_receipts=[collection, harness],
+        run_failure=failure,
+        not_run_scenario_ids=selected_ids,
+        harness_result={
+            "duration_milliseconds": 180_000,
+            "exit_code": -signal.SIGTERM,
+            "outcome": "timeout",
+            "stderr_digest": _EMPTY_DIGEST,
+            "stdout_digest": _EMPTY_DIGEST,
+        },
+        scenario_results=[],
+    )
+
+    assert report.payload["run_failure"] == failure
+    assert report.payload["gaps"] == []
+    assert report.payload["p0_records"] == []
+    assert report.payload["not_run_scenario_ids"] == selected_ids
+    assert report.payload["process_receipts"][-1]["timed_out"] is True  # type: ignore[index]
+    assert report.payload["rejection_reasons"].count(  # type: ignore[union-attr]
+        "architecture_qualification_harness_failed"
+    ) == 1
 
 
 def test_observed_trigger_reopens_closed_p0_without_waiver(
@@ -486,6 +699,7 @@ def test_observed_trigger_reopens_closed_p0_without_waiver(
         registry=registry,
         test_manifest=manifest,
         source_identity=source,
+        **_run_evidence(source, results),
         harness_result=_harness_pass(),
         scenario_results=results,
     )
@@ -664,6 +878,81 @@ def test_output_rejection_performs_no_collection_harness_or_scenario_work(
         )
     assert error.value.code == "architecture_qualification_output_invalid"
     assert invoked is False
+
+
+def test_qualification_execution_has_one_repository_process_owner() -> None:
+    legacy = (
+        REPO_ROOT
+        / "apps/openzyme-host-api/src/openzyme_host_api/"
+        "architecture_qualification_runner.py"
+    )
+    assert not legacy.exists()
+    assert "subprocess.Popen" not in inspect.getsource(runner_module)
+    assert runner_module.run_command.__module__ == "scripts.test_gate.runner"
+
+
+def test_harness_terminal_failure_is_source_bound_and_fail_fast(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = dict(collect_architecture_source_identity(repo_root=REPO_ROOT))
+    empty = runner_module.CommandExecution(
+        command=("qualification-test",),
+        duration_milliseconds=1,
+        error=None,
+        exit_code=0,
+        kill_sent=False,
+        outcome="pass",
+        stderr_bytes=0,
+        stderr_digest=_EMPTY_DIGEST,
+        stderr_tail="",
+        stdout_bytes=0,
+        stdout_digest=_EMPTY_DIGEST,
+        stdout_tail="",
+        term_sent=False,
+        timed_out=False,
+    )
+    timeout = replace(
+        empty,
+        duration_milliseconds=180_000,
+        exit_code=-signal.SIGTERM,
+        outcome="timeout",
+        term_sent=True,
+        timed_out=True,
+    )
+
+    monkeypatch.setattr(
+        runner_module,
+        "_collect_manifest",
+        lambda **kwargs: (kwargs["declared_manifest"], empty, True),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_run_harness_self_tests",
+        lambda **kwargs: (timeout, [], False),
+    )
+
+    def forbidden_scenario(**_kwargs: object) -> None:
+        raise AssertionError("scenario execution continued after terminal harness failure")
+
+    monkeypatch.setattr(runner_module, "_run_scenario", forbidden_scenario)
+    result = runner_module._run_qualification_locked(  # noqa: SLF001
+        repo_root=REPO_ROOT,
+        runner_path=RUNNER_PATH,
+        mode="diagnostic",
+        output_directory=tmp_path / "qualification-failure",
+        command=("qualification", "diagnostic"),
+        admission_source=source,
+    )
+
+    assert result.process_exit_code == 1
+    assert result.report.payload["run_failure"]["cause_id"] == (  # type: ignore[index]
+        "architecture_qualification_harness_failed"
+    )
+    assert result.report.payload["gaps"] == []
+    assert [
+        item["phase_id"] for item in result.report.payload["process_receipts"]  # type: ignore[union-attr]
+    ] == ["collection", "harness"]
 
 
 def test_checkout_single_flight_rejects_same_output_different_output_and_mode(

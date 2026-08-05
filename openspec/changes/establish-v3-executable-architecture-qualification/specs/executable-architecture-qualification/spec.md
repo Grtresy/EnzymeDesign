@@ -142,7 +142,7 @@ alternate output.
 - **THEN** final revalidation/no-replace publication fails closed without overwriting, renaming, retrying, or adopting the conflicting target
 
 ### Requirement: Qualification reports are canonical, immutable, and independently verifiable
-The runner SHALL write a canonical `openzyme_v3_architecture_qualification_report@1` envelope containing a closed payload and a digest of the payload's canonical bytes. The payload MUST bind source identity, mode, profile, registry/test-manifest/runner/verifier digests, exact selection and command, scenario outcomes and budgets, observation/effect-ledger digests, invariant statuses, GAP taxonomy and priority, open/closed P0 refs, all rejection reasons, and admission eligibility.
+The runner SHALL write a canonical current `openzyme_v3_architecture_qualification_report@2` envelope containing a closed payload and a digest of the payload's canonical bytes. The payload MUST bind lock-admission and terminal source identity, phase revalidations, source-bound bounded process receipts, earliest typed failure, exact not-run ids, mode, profile, registry/test-manifest/runner/verifier digests, exact selection and command, scenario outcomes and budgets, observation/effect-ledger digests, invariant statuses, GAP taxonomy and priority, open/closed P0 refs, all rejection reasons, and admission eligibility. Historical `@1` envelopes are read-only compatibility evidence and are never current admission evidence.
 
 Reports MUST be written with no-replace semantics to a caller-selected real directory outside the checkout and the directory MUST be fsynced. A pure verifier MUST revalidate closed schema, duplicate-key and finite-value rules, canonical bytes, payload digest, source/registry/test/implementation identity, full selection, invariant statuses, and P0 closure against the current checkout. A derived Markdown GAP report MAY be committed for review but MUST NOT be admission authority.
 
@@ -270,3 +270,28 @@ The first qualification schema SHALL claim only `local_single_process_file_sqlit
 #### Scenario: Reject a generic claim from a local report
 - **WHEN** a caller presents a local report as proof for shared, distributed, multi-process, or signed-attestation operation
 - **THEN** profile verification rejects the claim and requires a separately qualified profile
+
+### Requirement: Current qualification evidence binds source and the earliest process cause
+The repository test-gate SHALL be the only owner of qualification pytest process execution. It SHALL sample one admission source identity after acquiring the canonical-checkout single-flight, revalidate that identity at every declared phase, execute collection/harness/scenarios through the shared bounded process executor, and seal source-bound process receipts with bounded output and timeout/TERM/KILL facts. A terminal collection, harness, scenario-evidence, or source-drift failure MUST stop the selected chain at its earliest typed cause. The runner MUST NOT synthesize fallback scenario results, expand one harness failure into invariant GAP/P0 cascades, or relaunch an equivalent terminal command.
+
+#### Scenario: Preserve a harness timeout as the earliest cause
+- **WHEN** the bounded harness process times out after collection closes
+- **THEN** the current report binds the harness process receipt, exact not-run scenario identities and `architecture_qualification_harness_failed`, emits no fallback scenario results or derived GAP cascade, publishes fail-closed evidence, and starts no scenario process
+
+#### Scenario: Stop on source drift between phases
+- **WHEN** any phase revalidation differs from the lock-admission source identity
+- **THEN** the selected chain stops with `architecture_qualification_source_drift`, seals both identities and the completed process prefix, and cannot be admitted or resumed
+
+### Requirement: Report and AOX receipt version two are current-only admission evidence
+The current qualification envelope/payload SHALL use `openzyme_v3_architecture_qualification_report@2` and `openzyme_v3_architecture_qualification_payload@2`, including terminal source identity, phase revalidations, process receipts, earliest run failure, exact not-run scenario ids and a closed run-evidence digest. The current AOX receipt SHALL use `aox_architecture_qualification_receipt@2` and bind the report schema, source-identity digest and run-evidence digest. Historical report/receipt `@1` MAY be loaded only by explicit read-only compatibility paths and MUST NOT enter current pure admission, pin, preflight, launch or reducer decisions.
+
+#### Scenario: Read but do not adopt historical evidence
+- **WHEN** a frozen report or receipt using schema `@1` is inspected
+- **THEN** the historical loader validates its closed bytes for audit, while every current AOX admission consumer rejects it as version unsupported
+
+### Requirement: Operator-retirement claims are deterministic
+Retirement and quarantine claims SHALL be derived by a pure semantic calculation from exact process identity, raw exit/signal, final process-group membership and explicit forced-unproven state. Wall-clock thresholds MUST NOT decide business eligibility. The qualification suite MAY retain exactly one real process-group containment probe with generous bounded grace to prove the TERM/KILL mechanism.
+
+#### Scenario: Derive quarantine without timing races
+- **WHEN** identity is mismatched, exit is absent, descendants remain, or forced-unproven is true
+- **THEN** the pure semantic calculation deterministically requires quarantine, preserves unknown external outcome and refuses cutover regardless of machine timing

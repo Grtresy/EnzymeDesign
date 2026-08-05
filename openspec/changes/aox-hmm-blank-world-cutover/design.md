@@ -1512,6 +1512,36 @@ parent fsync、pure verifier、mainline-private sidecar non-adoption 与 live fa
 non-adoptable 的 full diagnostic qualification 与本地 commit；不授权下一 rNN、live、MICU、
 provider、HPC 或 Chrome。
 
+### 2026-08-05 r73 stale-conductor-source / qualification-causal-evidence correction
+
+r73 没有创建 root、session、scientific attempt 或 canonical bundle，也没有 reducer GO/NO-GO。
+Codex conductor 把外部保存的 stale HEAD 当成运行真值，错误丢弃了首份实际绑定
+`789f1c177552ece953564932f9e29753179cb2fa` 的 full report，随后在首个 terminal report 后串行启动
+等价 full admission。两次 run 的 qualification harness 都触及 bounded timeout；旧 `@1` report只保存
+stdout/stderr digest，并继续为未运行场景生成 fallback/unproven GAP cascade，丢失最早 process cause。
+因此 r73 只作为 **prelive conductor/qualification blocked** 封存，不是 canonical NO-GO；两份report、
+reproduction/stop state及旧 persistent goal全部不可复用。
+
+forward repair 删除 conductor-owned `started_head`、drift/recovery/adoption判断和terminal failure后的
+equivalent relaunch。fresh Codex goal要求每次从当前 checkout read-only推导 source/rNN；yielded handle
+只能恢复原 handle，terminal report一旦出现就停止，Codex不再在repository evidence之外维护HEAD truth。
+
+pytest orchestration从Host production package整体删除。`scripts/v3_architecture_qualification.py`仅进入
+产品无关`scripts/test_gate`包之外的repository `scripts/architecture_qualification_runner.py`，所有 process统一由
+`scripts/test_gate/runner.py` bounded process-group executor拥有。single-flight lock内第一份 source
+identity是admission真值；collection前后、harness后、scenario前后与publication前逐阶段复核。
+current report `@2`封存每个process的safe command、bounded output digest/bytes/tail、exit、timeout、
+TERM/KILL、source digest以及唯一earliest typed failure。collection/harness/scenario/source-drift任一
+terminal failure立即停止selected chain，not-run identities exact闭合，不生成fallback result或GAP
+cascade。AOX current receipt `@2`进一步绑定report schema、source identity与run-evidence digest；report/
+receipt `@1`只允许历史bundle reader显式只读，不能进入pin/preflight/run/reducer。
+
+operator-retirement的 eligibility/quarantine/unknown-effect由pure semantic calculation决定，不再依赖
+亚秒real-clock阈值。suite只保留一个秒级宽限的真实process-group containment probe，其余identity、
+exit/signal、descendant residue与forced-unproven组合均为deterministic checks。本 repair只运行non-live
+验证、同步registry/resource manifest/docs并在clean commit上生成一次明确non-adoptable full
+diagnostic；不启动下一rNN、live、MICU、provider、HPC或Chrome。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。
