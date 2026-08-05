@@ -59,7 +59,6 @@ from .foundation import resolve_configured_foundation_settings
 
 
 EFFECTIVE_CONFIG_SCHEMA_ID = AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID
-MICU_SCENARIO = "aox_blank_world_cutover"
 AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_SCHEMA_ID = (
     "aox_sandbox_scientific_backend_probe@2"
 )
@@ -1017,20 +1016,6 @@ def build_aox_cutover_effective_config(
             "live_e2e": effective.test.enable_live_e2e,
             "quality_eval": effective.test.enable_quality_eval,
             "upload_langsmith": effective.test.upload_langsmith,
-        },
-        "conductor": {
-            "scenario": MICU_SCENARIO,
-            "orchestration_owner": "codex_tester",
-            "public_command_surface": "host_api_cli_v3",
-            "receipt_chain_schema_id": "openzyme_public_api_receipt_chain@1",
-            "supervised_host_schema_id": "aox_supervised_host_receipt@1",
-            "automatic_runtime_drain": False,
-            "automatic_approval": False,
-            "automatic_rollover": False,
-            "micu_hard_limit_tokens": LIVE_MICU_TOKEN_HARD_LIMIT,
-            "micu_ledger_identity_digest": _canonical_digest(
-                {"ledger_path": str(resolved_ledger)}
-            ),
         },
     }
     try:

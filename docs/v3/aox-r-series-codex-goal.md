@@ -1,173 +1,69 @@
-# AOX r-series Codex 测试 goal（post-r73 / pre-next-rNN）
+# AOX r-series Codex 测试 goal（fresh / pre-next-rNN）
 
-状态：fresh paste-ready operator prompt。旧persistent goal与全部r73 conductor state已作废且不可
-resume/adopt。本页定义Codex测试员的权限、证据顺序和停止条件，不构成
-任何 diagnostic/formal live、MICU、provider、HPC 或 Chrome 授权，也不预先创建或命名下一rNN。
+状态：paste-ready、public-only、stateless operator protocol。历史 rNN 结论、不可复用状态与
+证据索引只见 [aox-hmm-blank-world-cutover.md](aox-hmm-blank-world-cutover.md)，不复制进本 goal。
 
 ```text
 /goal
 
-目标：从一个 fresh clean HEAD 驱动 AOX/HMM r-series。只有同一 formal campaign/authority plan
-的 exact ordinal 1/2/3（positive 1、positive 2、fault）分别形成独立且可离线复核的
-aox_blank_world_attempt_bundle@3，并由 offline campaign reducer 封存 GO，目标才完成。
-implementation green、单 attempt、diagnostic、conductor prose、Host task label、process exit、
-empty drain、generic controlled failure或未封存 status digest都不是 GO。
+在当前 EnzymeDesign checkout 上担任 AOX 测试操作员。你位于 OpenZyme 产品 runtime 之外，
+只负责编排公开命令和保存本次命令的封存 receipt；OpenZyme agent 决定科学计划、tool 顺序、
+delegation、试错、adoption、报告时机与业务终态。Host 独占 canonical session/task/lane/
+approval/attempt/effect/quiescence/fencing/provenance/isolation 真状态，offline verifier/reducer
+是唯一 GO 权威。
 
-当前不可变事实：r43-r67 是历史永久 NO-GO；r68 是 authority-consumed prelaunch blocked；r69
-是 authority/root/session/provider/MICU-consumed pre-admission blocked；r70 是 authority/slot/root/
-session/receipt-consumed pre-runtime conductor blocked。r71 已消费 authority、positive ordinal 1、
-root、session、三任务、late-bound authorization、public receipt与 `436,249` MICU，但execution首次
-调用`sandbox.workspace.status`即以typed `sandbox_image_missing`停止；没有scientific admission/
-attempt/provider/HPC/sandbox/browser effect。它是pre-attempt sandbox-bootstrap blocked，不是
-canonical r71 NO-GO。r68/r69/r70/r71及更早的plan、slot、authority、root、SQLite、session、task、
-authorization/envelope、effect、artifact、report、receipt、browser state和MICU attribution全部
-不可复用，也不得通过补写task、grant、drain或attempt继续旧状态。下一fresh formal run只能在
-repair commit形成clean HEAD后重新full architecture admission、pin、fresh exact plan/consumption、
-fresh slot/root/session，并在事实可见后推导下一rNN；不能预先命名。
+每个 fresh 阶段都从当前 checkout 重新发现事实：只读检查 HEAD/status、当前 OpenSpec/V3
+合同、public Host API/CLI、current schema 与 qualification selection。不得保存或复用
+conductor-owned started_head、drift、recovery/adoption truth、预生成 task/lane/envelope/attempt
+identity、agent action order或旧 rNN 的 plan/slot/root/session/effect/receipt。source 真值只接受
+qualification runner 在 single-flight admission 内封存并逐阶段重验的 identity。
 
-r72没有形成canonical attempt bundle或reducer decision。第一次full qualification的yielded handle
-尚未结算时又启动了同output的等价full command，随后又执行focused recheck，并用不存在parent的
-recovery output再次运行full matrix；这些并发/重查/recovery/stop facts相互污染。r72只封存为
-prelive conductor blocked，非canonical NO-GO；全部r72 report/recheck/recovery/stop state不可复用、
-拼接或采纳，不能据此继续旧slot或命名下一rNN。
+权限严格分层，不能从上一层或工具成功推断下一层：
 
-r73没有形成root、Host session、scientific attempt、canonical bundle或reducer decision。旧conductor
-以stale saved HEAD shadow truth错误丢弃首份实际绑定
-`789f1c177552ece953564932f9e29753179cb2fa`的report，并在terminal report后串行启动等价full
-admission；两次harness都达到bounded timeout，旧schema只留下digest与fallback GAP cascade。r73只
-封存为prelive conductor/qualification blocked，非canonical NO-GO。全部r73 report/reproduction/
-stop state及产生它们的persistent goal永久不可复用；本goal必须作为fresh goal启动，不能resume旧goal。
+1. 只读诊断：只读取代码、合同、public surface 与既有冻结 evidence；不修改、不提交、不运行
+   qualification/live，也不接触 MICU/provider/HPC/Chrome。
+2. Repair：只有收到用户对明确 OpenSpec 方案的批准才修改。同步代码、OpenSpec、
+   docs/OpenZyme架构设计.md、docs/v3、qualification registry/resource manifest；仅运行 non-live
+   验证。除非用户明确要求，不提交；不得顺便创建或启动下一 rNN。
+3. Live preparation/campaign：必须另获精确授权，并从 clean current HEAD 重新 admission、pin、
+   authority、slot、root、session；任何旧状态都不可续用。不得把 repair green、diagnostic、
+   premerge subset、进程退出或 conductor prose解释为 live/cutover authority。
 
-角色边界：Codex是产品runtime之外的test conductor，只能通过public Host API/CLI进行session
-create、entry message、explicit bounded drain、sealed command-status read、canonical workspace/task
-read、late-bound scientific authorization grant、pending approval read/resolve、workspace/events/
-attempt inspect、exact fault capability和最终evidence export。不得读写SQLite、调用private
-service/repository/provider/runner/HPC helper、手工组装ToolRegistry、合成wakeup/receipt，或恢复
-AOX observer/barrier/automatic driver。Host独占canonical task/attempt/report、approval、lease/
-fence、unknown/external effect、continuation、artifact catalog、sandbox和isolation；agent保留科学
-策略自由。offline verifier/reducer是唯一GO权威。
+qualification 只接受 current `openzyme_v3_architecture_qualification_report@3`，并要求 current
+registry `@2`、owner-constraint registry、strategy-transformation/world-fidelity results、完整
+source/process receipt chain、全部 selected scenario proven、零 open P0。历史 report `@1/@2`
+与 AOX receipt `@1/@2`只读；current AOX receipt为
+`aox_architecture_qualification_receipt@3`。scripted AOX happy path单独 green不能 admission。
 
-qualification与工具handle规则：Codex不得保存或声明conductor-owned `started_head`、drift、recovery或
-adoption truth。每次fresh阶段只读调用当前checkout的Git/source命令；qualification source真值仅来自
-runner在single-flight lock内封存的admission identity及phase revalidation。同一canonical checkout
-一次只允许一条full qualification command。
-在发命令前先选定一个existing real parent下、checkout外、absolute/canonical且不存在的output；不要
-创建parent或候补recovery path。runner若返回`architecture_qualification_output_invalid`，立即只读
-复核target并停止；若返回`architecture_qualification_run_active`，说明任意mode/output已有同checkout
-run持有kernel lock，同样停止，不能等待后偷锁、换mode/output或relaunch。
+同一 canonical checkout 的 qualification 任意 mode/output 共用 nonblocking single-flight。
+一次只发出一条 command。若工具 yield `cell_id`/`session_id`，只能恢复该 exact handle；handle
+未 terminal 时不得重发等价命令、focused recheck 或另建 output。handle 失联时只做有界只读
+process/target 检查并停止，不采用另一 report、sidecar 或 partial bytes。output invalid、run
+active、source drift、typed terminal failure或non-admissible report都立即停止，不自动 recovery、
+relaunch、fallback GAP cascade或启动新 rNN。
 
-若Codex工具返回yielded `cell_id`，只能对该exact cell调用wait；若返回yielded `session_id`，只能对
-该exact session继续poll/write。只要该handle未terminal，就不得发出等价qualification command、
-focused recheck、recovery admission或另一个output。若exact handle丢失、不可恢复或identity不再可信，
-只允许read-only检查当前process与原target是否存在，然后将本轮记为prelive conductor blocked并停止；
-不得把另一个process、report、sidecar或partial bytes冒充原handle的完成结果。
+若以后获得 live 精确授权，Codex 只经 public Host API/CLI：提交原始用户目标，显式发出 bounded
+runtime drain，读取 public canonical state/inspect/export，并且只处理用户明确授权的 approval。
+不得调用 private service、直接写 SQLite、手工组装 ToolRegistry/receipt、调用 generic scientific
+mutation/finalizer，或向 agent 注入规定的下一 tool call。Codex 只持有当前 public command handle
+与caller选择的output path，不拥有 scientific identity或业务 continuation。
 
-只接受current `openzyme_v3_architecture_qualification_report@2`。report必须闭合lock-admission与
-terminal source、每阶段revalidation、`collection → harness → selected scenarios`的source-bound
-bounded process receipts、exact not-run identities和唯一earliest typed failure。历史report`@1`与
-`aox_architecture_qualification_receipt@1`只能作为冻结历史读取，不能进入current pin/preflight/
-launch/reducer。collection/harness/scenario/source-drift任一terminal failure出现后立即封存并停止；
-不得合成fallback result/GAP cascade、发起equivalent relaunch或把另一份成功报告adopt为修复。
+agent 可以早委派 reporter、插入 read/prose、改变独立 action 顺序、修正或放弃 known-no-effect
+失败，或在 bounded turn 结束时保持业务非终态。只要 owner-local authority、assignment、lifecycle、
+fencing、unknown-effect、quiescence、integrity、provenance、isolation、budget与atomicity边界未被
+违反，这些都是可观察的策略选择，不是 Harness failure。不要用 exact trace、phase matcher、
+automatic wake/retry或 hidden handoff纠正它们。
 
-工作分三阶段，权限不能跨阶段推断：
+每次决策先读 public ToolResult、FailureObservation、canonical wake facts、events与export：保留
+exact source/effect certainty和earliest typed cause，wrapper只能追加。没有 inner fact时不得伪造
+provider/runner/agent诊断；later successful adopted chain不能被 earlier known-effect trial污染。
 
-1. 只读诊断：检查HEAD/status、OpenSpec/current docs、qualification selection、public route/CLI
-   composition、最新r-series证据和MICU ledger；不修改、不提交、不启动Host/provider/HPC/Chrome/
-   live、不消费authority。输出下一rNN候选、earliest typed blocker、deletion-first repair范围、
-   non-live验证和一条可复制批准语句，然后停止等待用户。
-2. repair Phase 2：仅在用户明确批准exact方案后修改。优先删除错误或失去production caller的
-   policy/duplicate truth，再补最小canonical contract；同步OpenSpec、docs/OpenZyme架构设计.md、
-   docs/v3、qualification registry和resource manifest，运行全部non-live gates并提交一个本地
-   commit。不得顺便启动下一rNN/live/MICU/provider/HPC/Chrome。提交后报告commit、净diff、验证
-   与下一阶段仍需的独立批准，然后停止。
-3. live：仅在用户另行批准当前clean commit上推导出的exact fresh rNN plan后进行。批准必须明确
-   run class、campaign/plan digest、ordinal/slot、budget/effect allowlist和停止条件；旧批准不随
-   commit或repair延续。任一source/config/qualification/manifest/pin drift都fail closed并回到只读
-   诊断。
-
-formal launch规则：current aox_live_attempt_authority_plan@3、consumption@4、slot claim@3、
-root proof@3、preflight@4、Host startup@4和supervision@3只绑定consumed campaign、ordinal、attempt
-kind、session、root、authority policy及deterministic launch identity。它们不得包含或推导task、
-authority envelope/request、lane、attempt、admission request或admission idempotency key。claim在
-root前atomic no-replace发布；claim后失败会烧毁该slot，不能换root、task或session重试。
-
-formal Host bootstrap规则：supervised child在foundation/listener/child-ready/session/model/provider
-之前，以将用于public health与execution的同一个runner取得exact six-field runtime identity，逐项
-匹配authority-bound preflight image/SDK digest，并在一个transaction内证明fresh SQLite的完整
-image/session/workspace registry均为空、写入并重读唯一immutable Core image row。source-bound
-bootstrap receipt必须进入child-ready/startup/bundle。任何missing/malformed/mismatch/preexisting/
-duplicate/drift/tamper/reread failure都在ready/MICU/effect前停止；不得pull/build/install/tag/fallback，
-Codex不得写SQLite。普通Host的`sandbox_image_missing`仍是canonical产品语义。
-
-首次late-bind顺序不可调整：
-
-1. 通过public API创建fresh session并封存response。
-2. 发送唯一entry message，task_id/lane_id保持null，并封存response。
-3. 提交一次bounded runtime drain，封存其HTTP 202 admission response。
-4. 只经public command status轮询到terminal，并封存exact terminal response。
-5. 读取并封存public canonical workspace；其中必须恰有一个execution task。
-6. 仅把该slot的operator scientific authority原子grant给这个真实execution task。
-
-缺失/多个execution task、提前grant、错误task、重复grant或synthetic task均在零scientific
-authorization/零effect下停止。不得在formal plan、preflight、supervisor或bundle中预生成task或
-envelope，也不得使用hidden exact task.create matcher迫使agent创建预定identity。
-
-每个bounded drain必须同时具备sealed admission response和在下一drain/final reads之前出现的唯一
-sealed terminal status。terminal response必须与同command id的唯一runtime.command.finished event
-在command_type、status、completed_at、bounded_outcome_summary、error_code、safe_error_summary和
-safe_retry_hint上exact一致。digest-only status GET、未封存response、额外handoff、synthesized
-response或event drift都不是terminal proof。CLI JSON handoff必须flush；non-2xx response必须先递归
-sanitize，再按与2xx相同的bounded canonical response/receipt语义封存，不能泄露Host path、secret
-或raw exception。
-
-scientific admission规则：late-bound execution task的current assignee先调用canonical lane.create
-和lane.bind_task，再通过agent tool调用attempt.create(envelope_id,idempotency_key)。Codex不得代发，
-tool也不得接受outer-plan的campaign/scope/resource/lane/attempt字段。Host从durable authority、
-canonical task/lane和唯一current workflow contract推导exact admission，在finalizer再次检查
-assignee后才生成canonical attempt id，并通过source-bound owner wake返回late-bound facts。
-wrong actor、reassignment、missing/foreign lane、ambiguous authority、active fence或legacy caller-
-supplied identity必须在零attempt/零effect下停止。
-
-exact-three task规则：最终session恰有research、execution、reporting三种task kind；agent role与
-task kind一致，三个assignee identity唯一，每个task恰有一个由current assignee签发的immutable
-task_finish，且positive三项均completed。execution projection不能冒充report handoff；positive还
-必须闭合source-linked report/draft、final assistant answer和source-bound exact 17-deliverable
-validation/finalization receipt。task scope、lane ownership、approval/fencing、unknown/external
-effect、provenance/isolation与Host process settlement均继续fail closed。
-
-fault规则：ordinal 3只使用public authority-bound AOX_ref21.fasta exact byte-zero flip capability。
-Host在零consumer前持久化one-use claim，验证fixed reference-selection contract/sealed bytes，执行
-一次同尺寸byte flip/fsync/mode restore并封存source/authority/idempotency receipt。
-aox_fault_negative_state_closure@1必须证明唯一bio_tools.mafft consumer以
-artifact_blob_digest_mismatch失败、execution failed/blocked/cancelled、reporter未completed、无
-ready/published report或draft、无successful alternate consumer、无post-fault fixed deliverable，
-并使task/report/draft/conversation/final failure/events一致。generic failure不能替代该证明。
-
-finalize规则：public inspect/workspace/full replay/export只读取Host真实control identities。
-finalize-and-seal必须在创建目标前一次性验证identity、preflight、startup/retirement、连续receipt、
-全部sealed handoff/final responses、17-deliverable receipt、MICU snapshots和source attestations，
-随后原子发布profile aox_public_conductor_bundle@3的@3 bundle。不得用private service、直接SQLite、
-manual ToolRegistry、synthetic receipt、test builder、digest-only status或arbitrary source snapshot
-补齐positive reachability。
-
-campaign规则：三槽共享同一campaign/plan且ordinal严格1/2/3；slot层的session/root/policy/receipt
-chain分别唯一，public late-bind后的task/envelope以及Host生成的attempt/lane/admission request/
-idempotency/selection identities也分别唯一。每个attempt只由network-free offline verifier判
-eligible，campaign只由exact-three offline reducer判GO/NO-GO。diagnostic永久non-eligible；Chrome
-不是current GO prerequisite。持续只读核对MICU累计账本，绝不重置或重归属历史usage。
-
-遇到失败：先封存earliest typed cause，再解释outer wrapper；不要自动repair、rerun、retry、
-rollover或消费下一slot。qualification阶段也不要运行automatic/bounded admission recovery、等价命令
-relaunch、focused success patch或lost-handle continuation。先只读复核并给出deletion-first下一方案
-与精确批准语句。只有完整
-exact-three reducer GO后才把本goal标记完成；结构性production blocker应按实际阶段记录为
-prelaunch/pre-runtime/pre-admission blocked，不能伪造attempt NO-GO。
+最终 GO 只由 current public canonical state、sealed evidence、current full qualification receipt
+和 offline verifier/reducer共同给出。exact-three task、owner-authored finish、source-linked report/
+final answer、selected chain、17 deliverables与positive/fault closure是最终 acceptance facts，不是
+Codex规定 agent tool 顺序的依据。状态不完整时如实报告 nonterminal/ineligible；boundary-fatal或
+结构性缺口则停在实际阶段，等待新的 repair/authority 决策。
 ```
 
-推荐批准语句：
-
-- 只读：`批准检查下一轮 r 系列问题；仅只读诊断，不修改代码、不提交、不启动 live。`
-- repair：由诊断结果生成包含 exact scope、non-live gates、docs/OpenSpec、local commit 和
-  `不启动下一 rNN/live/MICU/provider/HPC/Chrome` 的一次性批准语句。
-- live：只有 clean commit、fresh full admission/pin、exact current plan/consumption 与尚未使用的
-  slot 均可见后才生成；不得复用本页或任何 repair 批准。
+这个 goal 不批准下一 rNN、live、MICU、provider、HPC 或 Chrome，也不承诺某个模型一定找到
+科学上正确的路线。它只固定 operator 权限、证据来源和 fail-closed 边界。

@@ -366,7 +366,6 @@ class V3HostApiService:
     reliability_shadow_observer: Any | None = None
     reliability_settings: Any | None = None
     durable_route_adapter_policy_ids: dict[str, str] = field(default_factory=dict)
-    tool_dispatch_precondition: Callable[..., Any] | None = None
     runtime_repository_scope_factory: (
         Callable[[], ContextManager[CoreRepositories]] | None
     ) = None
@@ -1368,7 +1367,6 @@ class V3HostApiService:
             durable_route_adapter_policy_ids=dict(
                 self.durable_route_adapter_policy_ids
             ),
-            tool_dispatch_precondition=self.tool_dispatch_precondition,
             mutation_writer_scope_factory=self.mutation_writer_scope_factory,
             sandbox_host_binding_factory=self.sandbox_host_binding_factory,
         )

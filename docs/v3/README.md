@@ -37,7 +37,7 @@ V3 的核心立场：
 AOX/HMM live cutover：
 
 - [aox-hmm-blank-world-cutover.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-hmm-blank-world-cutover.md)
-- [aox-r-series-codex-goal.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-r-series-codex-goal.md)：post-r70 / pre-r71 public-only Codex 测试员的 paste-ready goal；只读诊断、repair 批准与 live 批准严格分离。
+- [aox-r-series-codex-goal.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-r-series-codex-goal.md)：fresh / pre-next-rNN public-only、stateless Codex operator goal；只读诊断、repair 批准与 live 批准严格分离，科学策略保留给 OpenZyme agents。
 - [aox-closure-stage-live-diagnostic.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-closure-stage-live-diagnostic.md)：只读历史封存页。r65 已删除其 authority/reconstruction/live/CLI 可执行链；历史 SQLite/evidence 仍可离线核验，但永久不能进入 formal acceptance。
 - 新 production attempt 使用 selected-chain `aox_blank_world_attempt_bundle@3`；
   历史 `@2` verifier 与 r48-r59 NO-GO evidence 保持冻结。r56 后的 target contract

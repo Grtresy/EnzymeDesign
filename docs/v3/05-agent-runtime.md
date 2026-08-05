@@ -319,28 +319,21 @@ digest 只基于公开 control-plane 元数据和模型可见 tool spec 计算�
 
 `ToolRouter` 是当前 step 的最终 tool boundary。它负责根据 runtime visibility 与 governance role scope 生成模型可见 catalog，也负责 dispatch 前的 `unknown_tool`、`tool_not_visible`、schema `required` 与 `enum` 校验。master 与 teammate driver 不应各自维护独立 descriptor map 作为最终可用性判断；它们只能做同-turn 参数补全这类产品语义辅助，然后把 tool invocation 交回 router validation。
 
-Host composition 可以为一个明确 session 注入
-`tool_dispatch_precondition`。Router 只在 schema/visibility 与 runtime write
-fence 通过后、mutation writer scope 和真实 handler 之前调用它；返回 `None`
-表示放行，返回 failed `ToolResult` 表示零业务 effect 拒绝。precondition
-必须给出结构化 `precondition_rejected=true`、`effect_certainty=no_effect`
-与 `retry_eligibility=same_phase_safe`，使失败作为 validation observation
-回到 agent；它不得返回成功结果、替代 handler、创建默认策略或影响未匹配
-session。master wake 与 delegated teammate turn 必须继承同一注入实例，避免
-通过角色切换绕过约束。
+Host composition 不得向 `ToolRouter` 注入 session/workflow-specific dispatch
+precondition。Router 完成 schema、visibility、governance 与 runtime write fence 后，直接把
+调用交给 owning runtime/domain handler；master 与 delegated teammate 共用的是 canonical
+owner semantics，不是同一条 phase policy。actor、assignment、scientific lifecycle、authority、
+fencing、unknown effect、quiescence、integrity、provenance、isolation、budget 与 atomicity
+仍在各自 owner 返回 source-bound typed rejection。
 
-AOX blank-world cutover 当前使用
-`aox_cutover_formal_tool_precondition@6`，只呈现 authority 已固定的局部 mutation
-约束：formal session 创建 task 时只能使用 exact research/execution/report id 与 kind；
-attempt close、execution completed、report delegation/publication/completion 必须引用
-persisted、source-bound 且重新验证通过的
-`aox_final_deliverable_validation_receipt@1`。缺失或 drifted receipt 在 handler 和
-mutation writer 前以 `no_effect` 拒绝。已退役的 closure-stage run class/attempt family
-仍被 formal non-adoption gate 拒绝，但没有 runnable authority/reconstruction/live
-special case。guard 不决定 close actor/order 或 assistant response；generic
-task/selection/report/closure verifier 仍独立 fail closed。需要 durable 变化时 agent 必须
-实际调用 domain tool；guard 不自动 delegate、auto-enqueue、完成 task、请求 closure 或
-选择 operation、selection、query、执行顺序和科学分支。
+AOX exact research/execution/report cardinality、owner-authored finish、source-linked report、
+final answer、selected chain 与 `aox_final_deliverable_validation_receipt@1` 完整性属于 public
+product-closure evaluator/offline verifier 的 final-state acceptance。它们不得在 generic
+`task.delegate`、`task.finish`、`report.publish` 或无关 tool dispatch 前充当策略 gate。
+agent 可以早委派 reporter、插入 prose/read、重排独立动作，或在 ordinary no-effect 后选择
+corrected call、alternate call、read、求助或 bounded turn end；Harness 只呈现真实 owner
+约束和最终 eligibility，不自动 delegate、auto-enqueue、retry、完成 task、请求 closure 或
+选择 operation/selection/query/科学分支。
 
 successful `attempt.create` 与 `scientific.attempt.close` 都是通用 scientific-transition
 terminal turn action，不是 AOX-specific prompt rule。handler 在 Core atomic boundary

@@ -7,10 +7,11 @@ from typing import Any
 from openzyme_core import CoreRepositories
 from openzyme_core import build_conversation_projection
 from openzyme_core import canonical_digest
+from openzyme_core import is_published_report_link
+from openzyme_core import is_published_report_status
 from openzyme_pipeline import aox_reference
 
 from .aox_cutover_evidence import FAULT_ARTIFACT_BYTE_FLIP_ID
-from .aox_cutover_tool_policy import evaluate_aox_source_linked_report
 from .aox_final_deliverable_validation import S15_AOX_HMM_FIXED_DELIVERABLES
 
 
@@ -37,6 +38,178 @@ def _fail(error_code: str, message: str) -> None:
 
 def _sha256(content: str) -> str:
     return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _status_value(record: object) -> str:
+    status = getattr(record, "status", None)
+    return str(getattr(status, "value", status) or "")
+
+
+def evaluate_aox_source_linked_report(
+    repositories: Any,
+    *,
+    session_id: str,
+    research_task_id: str,
+    report_task_id: str,
+    reporter_evidence_refs: tuple[str, ...],
+) -> dict[str, object]:
+    """Evaluate AOX report closure from canonical product state only.
+
+    The evaluator is deliberately owned by public product closure. It does not
+    run during tool dispatch and therefore cannot prescribe an agent's action
+    order. It only decides whether an already-produced state is admissible as
+    the source-linked positive result.
+    """
+
+    blocker_codes: list[str] = []
+    published_reports = [
+        report
+        for report in repositories.reports.list_by_session(session_id)
+        if is_published_report_status(report)
+    ]
+    published_drafts = [
+        draft
+        for draft in repositories.report_drafts.list_by_session(session_id)
+        if _status_value(draft) == "published"
+    ]
+    report = published_reports[0] if len(published_reports) == 1 else None
+    draft = published_drafts[0] if len(published_drafts) == 1 else None
+    if report is None:
+        blocker_codes.append("published_report_cardinality_invalid")
+    if draft is None:
+        blocker_codes.append("published_draft_cardinality_invalid")
+
+    if not (
+        report is not None
+        and draft is not None
+        and is_published_report_link(report, draft, task_id=report_task_id)
+    ):
+        blocker_codes.append("published_report_link_invalid")
+    content_ref = "" if draft is None else str(getattr(draft, "content_ref", "") or "")
+    content_document = (
+        None if not content_ref else repositories.engine_documents.get(content_ref)
+    )
+    content_payload = (
+        {}
+        if content_document is None
+        else dict(getattr(content_document, "payload", None) or {})
+    )
+    if (
+        content_document is None
+        or getattr(content_document, "document_kind", None) != "report_draft_content"
+        or getattr(content_document, "session_id", session_id) != session_id
+        or not str(content_payload.get("markdown") or "").strip()
+    ):
+        blocker_codes.append("published_report_content_invalid")
+    if report is not None and getattr(report, "artifact_id", None) is not None:
+        blocker_codes.append("published_report_artifact_invalid")
+
+    research_finish_documents = []
+    for document in repositories.engine_documents.list_by_session(session_id):
+        if getattr(document, "document_kind", None) != "task_finish":
+            continue
+        payload = dict(getattr(document, "payload", None) or {})
+        if payload.get("task_id") == research_task_id and payload.get("status") == "completed":
+            research_finish_documents.append(document)
+    research_finish = (
+        research_finish_documents[0]
+        if len(research_finish_documents) == 1
+        else None
+    )
+    if research_finish is None:
+        blocker_codes.append("research_finish_cardinality_invalid")
+    research_evidence_refs = tuple(
+        str(item)
+        for item in (
+            []
+            if research_finish is None
+            else dict(getattr(research_finish, "payload", None) or {}).get(
+                "evidence_refs"
+            )
+            or []
+        )
+    )
+    primary_artifact_refs = tuple(
+        item
+        for item in research_evidence_refs
+        if item.startswith("artifact:") and len(item) > len("artifact:")
+    )
+    primary_artifact_ref = (
+        primary_artifact_refs[0] if len(primary_artifact_refs) == 1 else ""
+    )
+    if len(primary_artifact_refs) != 1 or len(research_evidence_refs) != 1:
+        blocker_codes.append("primary_pubmed_receipt_invalid")
+    primary_artifact_id = primary_artifact_ref.removeprefix("artifact:")
+    primary_artifact = (
+        None if not primary_artifact_id else repositories.artifacts.get(primary_artifact_id)
+    )
+    metadata = (
+        {}
+        if primary_artifact is None
+        else dict(getattr(primary_artifact, "metadata", None) or {})
+    )
+    primary_artifact_digest = str(
+        metadata.get("content_digest") or metadata.get("sealed_digest") or ""
+    )
+    if (
+        primary_artifact is None
+        or getattr(primary_artifact, "session_id", None) != session_id
+        or getattr(primary_artifact, "task_id", None) != research_task_id
+        or metadata.get("provider") != "pubmed"
+        or metadata.get("cutover_eligible") is not True
+        or not primary_artifact_digest.startswith("sha256:")
+        or len(primary_artifact_digest) != 71
+        or any(
+            character not in "0123456789abcdef"
+            for character in primary_artifact_digest[7:]
+        )
+    ):
+        blocker_codes.append("primary_pubmed_artifact_invalid")
+
+    source_refs = [
+        source_ref
+        for source_ref in repositories.research_source_refs.list_by_session(session_id)
+        if getattr(source_ref, "evidence_artifact_id", None) == primary_artifact_id
+    ]
+    if not source_refs or any(
+        getattr(source_ref, "provider", None) != "pubmed"
+        or not str(getattr(source_ref, "pmid", "") or "").isdigit()
+        or getattr(source_ref, "task_id", None) != research_task_id
+        or not str(getattr(source_ref, "source_ref_id", "") or "").strip()
+        for source_ref in source_refs
+    ):
+        blocker_codes.append("primary_pubmed_source_refs_invalid")
+    source_ref_ids = tuple(
+        sorted(str(getattr(source_ref, "source_ref_id")) for source_ref in source_refs)
+    )
+
+    report_id = "" if report is None else str(getattr(report, "report_id", "") or "")
+    report_ref = f"report:{report_id}" if report_id else ""
+    required_evidence_refs = tuple(
+        item for item in (report_ref, primary_artifact_ref) if item
+    )
+    missing_evidence_refs = tuple(
+        item for item in required_evidence_refs if item not in reporter_evidence_refs
+    )
+    if len(required_evidence_refs) != 2 or missing_evidence_refs:
+        blocker_codes.append("report_finish_source_refs_missing")
+
+    unique_blockers = tuple(dict.fromkeys(blocker_codes))
+    return {
+        "ready": not unique_blockers,
+        "blocker_codes": unique_blockers,
+        "report_id": report_id or None,
+        "draft_id": (
+            None if draft is None else str(getattr(draft, "draft_id", "") or "") or None
+        ),
+        "content_ref": content_ref or None,
+        "primary_artifact_id": primary_artifact_id or None,
+        "primary_artifact_digest": primary_artifact_digest or None,
+        "source_ref_ids": source_ref_ids,
+        "required_evidence_refs": required_evidence_refs,
+        "observed_evidence_refs": reporter_evidence_refs,
+        "missing_evidence_refs": missing_evidence_refs,
+    }
 
 
 def _task_receipts(

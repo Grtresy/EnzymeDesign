@@ -5,7 +5,6 @@ import json
 import sqlite3
 
 import pytest
-import openzyme_core.teammates as teammates_module
 
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
@@ -28,7 +27,6 @@ from openzyme_domain import TaskStatus
 from openzyme_core import CoreRepositories
 from openzyme_core import DeepResearchTaskPlanner
 from openzyme_core import HarnessInput
-from openzyme_core import HarnessResult
 from openzyme_core import LlmConversationDriver
 from openzyme_core import HarnessStep
 from openzyme_core import HarnessStatus
@@ -2702,73 +2700,6 @@ def test_explicit_workflow_selection_propagates_through_delegation_to_teammate()
     assert tracking_registry.resolved_refs == [workflow_ref]
 
 
-def test_teammate_loop_inherits_tool_dispatch_precondition(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    repositories = _build_repositories()
-    session = _seed_session(repositories)
-    model_factory = FakeModelFactory({"content": "unused", "tool_calls": []})
-
-    def precondition(
-        _context: SessionRuntimeContext,
-        _step_context: object,
-        _invocation: ToolInvocation,
-    ) -> ToolResult | None:
-        return None
-
-    captured: dict[str, object] = {}
-
-    def capture_harness_call(
-        _repositories: CoreRepositories,
-        harness_input: HarnessInput,
-        **kwargs: object,
-    ) -> HarnessResult:
-        captured.update(kwargs)
-        return HarnessResult(
-            session_id=harness_input.session_id,
-            status=HarnessStatus.COMPLETED,
-            snapshot=SessionRuntimeSnapshot.load(
-                repositories,
-                session.session_id,
-            ),
-            events=(),
-            outputs=("captured",),
-            tool_results=(),
-        )
-
-    monkeypatch.setattr(
-        teammates_module,
-        "run_agent_harness_loop",
-        capture_harness_call,
-    )
-    parent_context = SessionRuntimeContext(
-        repositories=repositories,
-        event_sink=MemoryEventBus(),
-        snapshot=SessionRuntimeSnapshot.load(
-            repositories,
-            session.session_id,
-        ),
-        tool_registry=ToolRegistry(),
-        restore_focus=RestoreFocus(task_id="task_001"),
-        model_factory=model_factory,
-        tool_dispatch_precondition=precondition,
-    )
-
-    result = run_teammate_loop(
-        parent_context,
-        agent_id="agent:executor:dispatch-policy",
-        role="executor",
-        task_id="task_001",
-        lane_id=None,
-        correlation_id="corr_dispatch_policy",
-        instructions="Preserve the parent dispatch policy.",
-        max_steps=1,
-    )
-
-    assert result.status is HarnessStatus.COMPLETED
-    assert captured["tool_dispatch_precondition"] is precondition
-
-
 @pytest.mark.parametrize(
     ("role", "kind", "explicit_empty"),
     (
@@ -4410,82 +4341,6 @@ def test_failure_surface_is_observation_only_with_legacy_tables_idle() -> None:
         ).fetchone()[0]
         == 0
     )
-
-
-def test_router_tool_dispatch_precondition_rejects_without_running_handler() -> None:
-    repositories = _build_repositories()
-    session = _seed_session(repositories)
-    calls: list[str] = []
-
-    def reject_task_create(
-        _context: SessionRuntimeContext,
-        _step_context: object,
-        invocation: ToolInvocation,
-    ) -> ToolResult | None:
-        if invocation.tool_name != "task.create":
-            return None
-        calls.append(invocation.call_id)
-        return ToolResult(
-            call_id=invocation.call_id,
-            tool_name=invocation.tool_name,
-            ok=False,
-            content="The session permits only its authority-bound task set.",
-            status="precondition_failed",
-            error_code="test_task_set_violation",
-            hint="Use the existing canonical task.",
-            details={
-                "precondition_rejected": True,
-                "dispatched": False,
-                "effect_certainty": "no_effect",
-                "retry_eligibility": "same_phase_safe",
-            },
-        )
-
-    model_factory = FakeModelFactory(
-        [
-            {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_precondition",
-                        "name": "task.create",
-                        "args": {
-                            "task_id": "task_forbidden",
-                            "subject": "Forbidden",
-                            "kind": "general",
-                        },
-                    }
-                ],
-            },
-            {"content": "replanned", "tool_calls": []},
-        ]
-    )
-
-    result = run_agent_harness_loop(
-        repositories,
-        HarnessInput(
-            session_id=session.session_id,
-            message="use the canonical task set",
-            max_steps=2,
-            agent_id="agent:master",
-            actor_kind="master",
-            actor_role="master",
-        ),
-        driver=LlmConversationDriver(model_factory),
-        model_factory=model_factory,
-        tool_dispatch_precondition=reject_task_create,
-    )
-
-    assert result.status is HarnessStatus.COMPLETED
-    assert result.outputs == ("replanned",)
-    assert calls == ["call_precondition"]
-    assert repositories.tasks.get("task_forbidden") is None
-    rejection = result.tool_results[0]
-    assert rejection.error_code == "test_task_set_violation"
-    assert rejection.failure_observation is not None
-    assert rejection.failure_observation["effect_certainty"] == "no_effect"
-    assert rejection.failure_observation["retry_eligibility"] == "same_phase_safe"
-    assert rejection.failure_observation["failure_class"] == "validation"
 
 
 class FakeExecutionPipelineEngine:

@@ -41,6 +41,7 @@ def test_config_closes_profiles_deadlines_environments_and_resources() -> None:
     )
     assert set(config.pytest_contract.allowed_non_live_markers) == {
         "architecture_qualification_scenario",
+        "hypothesis",
         "parametrize",
         "podman",
         "skip",

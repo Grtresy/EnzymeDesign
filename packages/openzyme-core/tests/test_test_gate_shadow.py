@@ -238,7 +238,7 @@ def test_qualification_collection_closes_against_registry(tmp_path: Path) -> Non
                 "test_selector": "tests/test_b.py::test_b",
             },
         ],
-        "schema_id": "openzyme_v3_architecture_invariant_registry@1",
+        "schema_id": "openzyme_v3_architecture_invariant_registry@2",
     }
     collection = {
         "scenarios": [

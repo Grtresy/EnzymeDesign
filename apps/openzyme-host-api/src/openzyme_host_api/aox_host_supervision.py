@@ -45,7 +45,6 @@ from .aox_cutover_evidence import (
     canonical_json_bytes,
 )
 from .aox_cutover_launch import build_aox_cutover_effective_config
-from .aox_cutover_tool_policy import AoxFinalizationToolPrecondition
 from .app import HostApiDependencies, create_app
 from .foundation import build_configured_foundation
 
@@ -303,7 +302,7 @@ def _host_child_main(
 ) -> None:
     os.setsid()
     preflight = load_attempt_preflight_receipt(Path(preflight_path), require_unstarted=True)
-    slot, root = dict(preflight["slot"]), Path(preflight_path).parent.parent
+    root = Path(preflight_path).parent.parent
     server: uvicorn.Server | None = None
     thread: threading.Thread | None = None
     listener: socket.socket | None = None
@@ -328,10 +327,6 @@ def _host_child_main(
             v3_repository_provider=repository_provider,
             v3_background_runtime_enabled=False,
             v3_pipeline_sandbox_runner=sandbox_runner,
-            v3_tool_dispatch_precondition=AoxFinalizationToolPrecondition(
-                session_id=str(slot["session_id"]),
-                attempt_kind=str(slot["attempt_kind"]),
-            ),
             v3_sandbox_workspace_root=root / "sandboxes",
             v3_artifact_blob_root=root / "blobs",
         )

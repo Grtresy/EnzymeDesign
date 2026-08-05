@@ -123,28 +123,15 @@ def _effective(tmp_path: Path) -> launch.AoxCutoverEffectiveConfig:
     )
 
 
-def test_effective_config_is_deterministic_public_conductor_v4(tmp_path: Path) -> None:
+def test_effective_config_is_deterministic_policy_free_world_v5(tmp_path: Path) -> None:
     first = _effective(tmp_path)
     second = _effective(tmp_path)
 
     assert first.digest == second.digest
     assert first.payload == second.payload
-    assert first.payload["schema_id"] == "aox_blank_world_runtime_config@4"
+    assert first.payload["schema_id"] == "aox_blank_world_runtime_config@5"
     assert "driver" not in first.payload
-    assert first.payload["conductor"] == {
-        "scenario": "aox_blank_world_cutover",
-        "orchestration_owner": "codex_tester",
-        "public_command_surface": "host_api_cli_v3",
-        "receipt_chain_schema_id": "openzyme_public_api_receipt_chain@1",
-        "supervised_host_schema_id": "aox_supervised_host_receipt@1",
-        "automatic_runtime_drain": False,
-        "automatic_approval": False,
-        "automatic_rollover": False,
-        "micu_hard_limit_tokens": 500_000_000,
-        "micu_ledger_identity_digest": first.payload["conductor"][
-            "micu_ledger_identity_digest"
-        ],
-    }
+    assert "conductor" not in first.payload
     assert first.payload["host"]["background_runtime_enabled"] is False
     assert first.settings.llm.max_tokens == 1_024
     assert first.settings.llm.timeout == 45.0
@@ -165,23 +152,13 @@ def test_effective_config_is_public_and_does_not_embed_local_paths(tmp_path: Pat
     }
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    (
-        ("automatic_runtime_drain", True),
-        ("automatic_approval", True),
-        ("automatic_rollover", True),
-        ("orchestration_owner", "aox_observer"),
-        ("public_command_surface", "private_service"),
-    ),
-)
-def test_effective_config_rejects_conductor_policy_tamper(
+@pytest.mark.parametrize("field", ("conductor", "driver", "automatic_rollover"))
+def test_effective_config_rejects_runtime_policy_shadow_truth(
     tmp_path: Path,
     field: str,
-    value: object,
 ) -> None:
     payload = json.loads(json.dumps(_effective(tmp_path).payload))
-    payload["conductor"][field] = value
+    payload[field] = {}
 
     with pytest.raises(launch.AoxRuntimeConfigSchemaError) as error:
         launch.normalize_aox_blank_world_runtime_config(
@@ -189,14 +166,46 @@ def test_effective_config_rejects_conductor_policy_tamper(
             expected_runner_contracts=launch.AOX_TOOLCHAIN_RUNTIME_CONTRACTS,
         )
 
-    assert error.value.path.startswith("effective_config.conductor")
+    assert error.value.path == "effective_config"
 
 
 def test_effective_config_rejects_historical_driver_crossgrade(tmp_path: Path) -> None:
     payload = json.loads(json.dumps(_effective(tmp_path).payload))
     payload["schema_id"] = "aox_blank_world_runtime_config@3"
-    payload["driver"] = payload.pop("conductor")
+    payload["driver"] = {}
 
+    with pytest.raises(launch.AoxRuntimeConfigSchemaError):
+        launch.normalize_aox_blank_world_runtime_config(
+            payload,
+            expected_runner_contracts=launch.AOX_TOOLCHAIN_RUNTIME_CONTRACTS,
+        )
+
+
+def test_effective_config_v4_remains_explicit_read_only_compatible(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(json.dumps(_effective(tmp_path).payload))
+    payload["schema_id"] = "aox_blank_world_runtime_config@4"
+    payload["conductor"] = {
+        "scenario": "aox_blank_world_cutover",
+        "orchestration_owner": "codex_tester",
+        "public_command_surface": "host_api_cli_v3",
+        "receipt_chain_schema_id": "openzyme_public_api_receipt_chain@1",
+        "supervised_host_schema_id": "aox_supervised_host_receipt@1",
+        "automatic_runtime_drain": False,
+        "automatic_approval": False,
+        "automatic_rollover": False,
+        "micu_hard_limit_tokens": 500_000_000,
+        "micu_ledger_identity_digest": "sha256:" + "1" * 64,
+    }
+
+    normalized = launch.normalize_aox_blank_world_runtime_config(
+        payload,
+        expected_runner_contracts=launch.AOX_TOOLCHAIN_RUNTIME_CONTRACTS,
+    )
+
+    assert normalized == payload
+    payload["schema_id"] = "aox_blank_world_runtime_config@5"
     with pytest.raises(launch.AoxRuntimeConfigSchemaError):
         launch.normalize_aox_blank_world_runtime_config(
             payload,

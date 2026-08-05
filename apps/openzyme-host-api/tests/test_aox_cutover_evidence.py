@@ -297,9 +297,11 @@ def _architecture_qualification(
         test_manifest_digest=_digest("qualification-manifest"),
         profile_id="local_single_process_file_sqlite@1",
         source_commit=pinned["git_commit"],
-        report_schema_id="openzyme_v3_architecture_qualification_report@2",
+        report_schema_id="openzyme_v3_architecture_qualification_report@3",
         run_evidence_digest=_digest("qualification-run-evidence"),
         source_identity_digest=_digest("qualification-source"),
+        owner_constraint_registry_digest=_digest("owner-constraint-registry"),
+        transformation_results_digest=_digest("transformation-results"),
     )
 
 
@@ -5532,10 +5534,16 @@ def test_offline_verifier_rejects_qualification_receipt_drift(
                     profile_id="local_single_process_file_sqlite@1",
                     source_commit="a" * 40,
                     report_schema_id=(
-                        "openzyme_v3_architecture_qualification_report@2"
+                        "openzyme_v3_architecture_qualification_report@3"
                     ),
                     run_evidence_digest=_digest("qualification-run-evidence"),
                     source_identity_digest=_digest("qualification-source"),
+                    owner_constraint_registry_digest=_digest(
+                        "owner-constraint-registry"
+                    ),
+                    transformation_results_digest=_digest(
+                        "transformation-results"
+                    ),
                 )
             )
         elif tamper == "unknown_version":

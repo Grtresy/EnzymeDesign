@@ -151,6 +151,19 @@ file-backed SQLite、当前 worker/gateway/projection 与 deterministic controll
 authority、fencing、effect、evidence 与 bounded progress，不把某条固定 AOX workflow 写回通用
 harness。
 
+这里必须区分三类东西：canonical/domain owner 负责“世界实际上允许什么”，agent 负责“在允许
+范围内选择什么”，pure workflow acceptance 负责“最终事实是否满足某个 cutover 合同”。通用
+Harness/Router不得插入session-specific phase matcher；task cardinality、report timing、最终交付物
+完整性不能反向成为generic tool dispatch authority。owner与forbidden edge登记在
+`architecture-qualification/owner-constraint-registry.json`，但该registry只属于repository
+qualification plane，不进入产品运行时。
+
+current architecture admission除authority/effect等既有family外，还必须独立证明
+`strategy-neutrality`与`world-fidelity`：前者对read/prose、独立动作顺序、ordinary rejection
+后继和bounded turn做trace transformation，后者检查exact source/effect certainty、earliest typed
+cause、下一次决策前的public可见性和无synthetic fallback。单条scripted happy path只能证明
+reachability，不能证明Harness没有固定agent策略。
+
 ## 9. Failure observation 与 attempt doctrine
 
 Harness 的 fail closed 对象是不可违反的真实边界，不是“任何函数返回 false 就杀死 agent”。

@@ -661,10 +661,7 @@ def _preflight_fixture(
     attempt_root.mkdir(mode=0o700)
     for path in roots_by_name.values():
         path.mkdir(mode=0o700)
-    effective_config = {
-        "schema_id": "aox_blank_world_runtime_config@4",
-        "conductor": {"orchestration_owner": "codex_tester"},
-    }
+    effective_config = {"schema_id": "aox_blank_world_runtime_config@5"}
     identity = {
         "git_commit": "a" * 40,
         "config_digest": canonical_digest(effective_config),

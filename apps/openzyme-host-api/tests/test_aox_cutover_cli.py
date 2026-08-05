@@ -34,9 +34,11 @@ def _architecture_qualification() -> dict[str, str]:
         test_manifest_digest="sha256:" + "3" * 64,
         profile_id="local_single_process_file_sqlite@1",
         source_commit="a" * 40,
-        report_schema_id="openzyme_v3_architecture_qualification_report@2",
+        report_schema_id="openzyme_v3_architecture_qualification_report@3",
         run_evidence_digest="sha256:" + "4" * 64,
         source_identity_digest="sha256:" + "5" * 64,
+        owner_constraint_registry_digest="sha256:" + "6" * 64,
+        transformation_results_digest="sha256:" + "7" * 64,
     )
 
 

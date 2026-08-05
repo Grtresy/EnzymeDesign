@@ -462,18 +462,20 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 
 ## 8. Qualification report 与 AOX receipt
 
-`openzyme_v3_architecture_qualification_report@2` 是 checkout 外 canonical operator artifact，pure
+`openzyme_v3_architecture_qualification_report@3` 是 checkout 外 canonical operator artifact，pure
 verifier必须重算lock-admission/terminal source、phase revalidation、bounded process receipt、exact
-not-run set、earliest typed failure、registry、test manifest、implementation、selection、invariant与P0
-closure，不能信任report中的pass boolean。它不进入`/v3` workspace DTO。历史report`@1`只读可解析，
+not-run set、earliest typed failure、invariant registry `@2`、owner-constraint registry、
+strategy/world-fidelity transformation results、test manifest、implementation、selection、invariant与P0
+closure，不能信任report中的pass boolean。它不进入`/v3` workspace DTO。历史report`@1/@2`只读可解析，
 但不能进入current verifier或AOX admission。
 
 AOX 对外命令显式接收 report path，并只把 closed
-`aox_architecture_qualification_receipt@2` 写入 `aox_cutover_pin_commit@2`、
+`aox_architecture_qualification_receipt@3` 写入 `aox_cutover_pin_commit@2`、
 `aox_cutover_pin_receipt@2`、current `aox_blank_world_root_proof@3`、
 `aox_blank_world_launch_receipt@2` 与新 production
 `aox_blank_world_attempt_bundle@3`。历史 `@2` bundle 只进入 frozen verifier。public/offline consumer 必须
-拒绝missing、historical`@1`、unknown-version、report schema/run-evidence/source identity mismatch或drift；
+拒绝missing、historical`@1/@2`、unknown-version、report schema/run-evidence/source identity/
+owner-registry/transformation-results mismatch或drift；
 receipt不暴露Host path、credential、private authority，也不扩张exact-nine scientific prerequisites。
 
 ## 9. Failure 与 scientific-attempt public surface

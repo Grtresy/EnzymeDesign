@@ -1,10 +1,10 @@
-# Architecture invariant registry schema v1
+# Architecture invariant registry schema v2
 
 ## Identity and byte contract
 
-The only v1 registry path is
+The only current registry path is
 `docs/v3/architecture-qualification/invariant-registry.json`. Its top-level
-`schema_id` is `openzyme_v3_architecture_invariant_registry@1`, its `registry_id`
+`schema_id` is `openzyme_v3_architecture_invariant_registry@2`, its `registry_id`
 is `openzyme_v3_architecture_invariants`, and its only profile is
 `local_single_process_file_sqlite@1`.
 
@@ -40,9 +40,10 @@ The exact top-level fields are:
 | `schema_id` | Exact schema identity above. |
 | `registry_id` | Exact registry identity above. |
 | `profile` | Exact-six-field local profile object. |
-| `required_families` | Exact ten-family schema-v1 set. |
+| `required_families` | Exact twelve-family schema-v2 set. |
 | `required_scenario_ids` | Exact set of scenario records in this document. |
 | `implementation_files` | Readable, non-symlink, repository-relative files bound into implementation identity. |
+| `owner_constraint_registry` | Exact path/schema/id/content-digest binding for the closed owner/constraint registry. |
 | `external_ports` | Sorted closed port declarations. |
 | `p0_triggers` | Exact schema-v1 automatic P0 trigger declarations. |
 | `boundary_relations` | Symbolic owner and seam relations; never numeric duplicate truth. |
@@ -91,10 +92,21 @@ An invariant record contains exactly:
 - one `failure_class` from `boundary`, `integrity`, `liveness`, or `safety`;
 - non-empty `p0_trigger_ids` and `scenario_ids`.
 
-The exact v1 families are `authority-composition`, `boundary-scale`,
+The exact v2 families are `authority-composition`, `boundary-scale`,
 `bounded-terminal-convergence`, `evidence-projection`, `identity-semantics`,
 `operator-retirement`, `reconciliation`, `restart-fencing`,
-`supervisor-progress`, and `wire-contract`.
+`strategy-neutrality`, `supervisor-progress`, `wire-contract`, and `world-fidelity`.
+
+The owner registry binding has exactly `path`, `schema_id`, `registry_id`, and
+`content_digest`. It MUST resolve to the canonical
+`openzyme_v3_harness_owner_constraint_registry@1` bytes. Product code does not load
+this registry; it is repository qualification evidence that closes ownership,
+consumers, compatibility, error/effect semantics, and forbidden policy/fallback edges.
+
+`strategy-neutrality` scenarios compare bounded legal trace transformations rather
+than exact transcripts. `world-fidelity` scenarios bind the earliest typed cause,
+wrappers, source/effect identity, public visibility, and forbidden effects. A scripted
+reachability scenario cannot substitute for either family.
 
 A scenario record contains exactly:
 

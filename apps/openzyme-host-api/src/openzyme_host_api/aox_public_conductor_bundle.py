@@ -1398,13 +1398,13 @@ def _source_payload(
     _validate_ledger_transition(before, after)
     config = dict(preflight.get("effective_config") or {})
     if (
-        config.get("schema_id") != "aox_blank_world_runtime_config@4"
-        or dict(config.get("conductor") or {}).get("orchestration_owner")
-        != "codex_tester"
+        config.get("schema_id") != "aox_blank_world_runtime_config@5"
+        or "conductor" in config
+        or "driver" in config
     ):
         _fail(
             "public_conductor_effective_config_invalid",
-            "preflight lacks the current public-conductor config",
+            "preflight lacks the current policy-free world config",
             identity="preflight.effective_config",
         )
     source_bytes = {

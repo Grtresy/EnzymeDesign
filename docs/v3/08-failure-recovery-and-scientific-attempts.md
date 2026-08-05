@@ -484,7 +484,7 @@ acceptance，并记录零真实外部 effect，不加载已删除的 production 
 gate 通过不授权真实 diagnostic；full-path diagnostic plan 与后续 formal exact-three plan
 仍必须分别取得 operator 精确批准，普通失败的 `run-live` 也永远不能事后改称 diagnostic。
 
-## 9. r57 后的 formal tool precondition
+## 9. r57 后的 formal tool precondition（历史，current 已删除）
 
 r57 是第一轮真实 diagnostic-mode attempt。其 run-class 隔离正确，但在 exact-six probe
 和 exact-seven formal operation 完成后，executor 将 representative-only candidate FASTA
@@ -494,22 +494,19 @@ report task，并在 execution/report 未业务终结、零 report 时请求 att
 turn budget。该轮没有 fully settled diagnostic receipt，永久 NO-GO 且不可复用。
 
 forward correction 不把 report/task/conversation 状态并入 scientific-attempt 真状态，也
-不让 Host 推断业务终态。historical AOX precondition `@1`–`@4` 曾复制 exact board、
-master close、report publication 与 response handoff；Phase 2 `@5` 删除这些共终止 veto，
-r65 current `aox_cutover_formal_tool_precondition@6` 在其基础上保留：
-
-- `task.create` 的显式 id 与 kind 必须属于 authority-bound canonical
-  research/execution/report 闭集；
-- scientific operation 必须属于 exact session-scoped allowed universe；
-- report publication 仍必须满足 source-link guard。
-- attempt close、execution completed 与 report handoff 必须通过 exact persisted
-  source-bound final-deliverable validation receipt。
+不让 Host 推断业务终态。historical AOX precondition `@1`–`@6` 曾复制 exact board、
+master close、report publication、response handoff 与 finalization gate。current 已删除整个
+generic dispatch hook 和 AOX policy：task/report/scientific handler 只验证各自 actor、assignment、
+lifecycle、authority、fencing、unknown-effect、quiescence、integrity、provenance、isolation 与
+atomicity 边界。exact research/execution/report cardinality、source-linked report、final answer、
+selected chain 与 final-deliverable receipt 只由 public product-closure evaluator/offline verifier
+从最终 canonical facts 判断，不再拦截 generic agent 策略。
 
 scientific closure 的唯一 lifecycle owner 是 `ScientificAttempt.task_id` 当前
 `assigned_ref`。Core 在 closure request 和 Host finalization 两处验证该 assignee，同时
 保持 selection、operation、authority、provenance、writer 与 quiescence fail-closed
-controls。guard 不生成 task/report、不完成 task、不选择 selection/operation 或 retry，
-也不应用于 probe/其他 session。generic master recovery finish authority 不变，但
+controls。owner-local validation 不生成 task/report、不完成 task、不选择 selection/operation
+或 retry。generic master recovery finish authority 不变，但
 master 代写 researcher/executor/reporter exit 仍不满足 AOX final evidence collector 的
 owner-authored receipt 要求。
 
@@ -595,9 +592,10 @@ reopen/resume 合同；随后又把 `selection_active_writers` / `closure_ready=
 永久 NO-GO；MICU verified lower bound 为 `100,114,267 / 500,000,000`，全部 r59
 authority/root/state/effect/bytes 不可复用。
 
-`aox_cutover_formal_tool_precondition@3/@4` 是 r59 时期的 historical guard。current
-policy 是 `aox_cutover_formal_tool_precondition@6`，并以 exact typed finalization
-capability 取代“看到 sealed selection/17 paths 就完成或 handoff”的推断：
+`aox_cutover_formal_tool_precondition@3/@4/@6` 都是 historical guard，current 没有
+AOX dispatch policy。exact typed finalization capability 继续取代“看到 sealed selection/17
+paths 就完成或 handoff”的推断，但它由 artifact/scientific/report 各自 owner 和最终
+acceptance 共同消费：
 
 - `aox_motif_candidate_filter@1` 只消费 canonical target FASTA 与 canonical scoring CSV；
   conditional-empty outputs 只接受 installed source calculation 的 typed zero receipt；
@@ -612,14 +610,16 @@ capability 取代“看到 sealed selection/17 paths 就完成或 handoff”的�
 - `aox_final_deliverable_normalization_result@1` 只是 installed normalization
   calculation result，不是 Host validation receipt，也不能用于 terminal gate；
 - current attempt-task canonical assignee 调用
-  `scientific.attempt.close(finalization_receipt_id=...)`。execution
-  `task.finish(completed)` 必须引用 `document:<receipt_id>`；report delegation、publication、
-  completion 与 handoff 也必须通过同一 receipt gate，并等待 execution task 已完成。
+  `scientific.attempt.close(finalization_receipt_id=...)`，由scientific owner重验receipt。
+  generic execution `task.finish`与report delegation/publication/completion只服从各自domain
+  约束；AOX product-closure/offline verifier最终要求execution owner finish引用
+  `document:<receipt_id>`、report source linkage和完整handoff facts，但不把它们作为generic
+  dispatch phase gate。
 
 缺失、跨 attempt/selection/source、artifact/metadata drift 或 arbitrary source-snapshot
-implementation substitute 都以 `no_effect/same_phase_safe` 拒绝，不写错误 attempt
-closure、execution terminal 或 report handoff。policy 不生成 receipt、不自动完成 task、
-不自动委派或发布，也不选择科学路线。
+implementation substitute 在对应 mutation owner 以 source-bound typed no-effect 拒绝，不写
+错误 attempt closure、execution terminal 或 report handoff。最终 AOX ineligible 由 pure
+evaluator 表达；系统不生成 receipt、不自动完成 task、不自动委派或发布，也不选择科学路线。
 
 ## 12. r59 closure-stage logical fork（历史，已退役）
 

@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.test_gate.hypothesis_storage import (  # noqa: E402
+    configure_hypothesis_storage,
+)
+
+
 ENV_FILES = (".env", ".env.test")
+HYPOTHESIS_STORAGE_DIRECTORY = configure_hypothesis_storage(repo_root=REPO_ROOT)
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:

@@ -37,6 +37,7 @@ parallel_eligible_classes = [
 marker_expression = "not integration and not live_llm and not live_tavily and not live_hpc and not live_e2e and not quality_eval"
 allowed_non_live_markers = [
   "architecture_qualification_scenario",
+  "hypothesis",
   "parametrize",
   "podman",
   "skip",

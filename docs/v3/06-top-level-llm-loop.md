@@ -91,14 +91,14 @@ runtime governance 也是 router contract 的一部分。每个 `ToolRuntime` �
 
 模型返回 tool call 后，harness 不再以 driver 私有 descriptor map 作为最终 tool availability truth。`ToolRouter` 负责判断 tool 是否注册、当前 step 是否可见，以及 `required` / `enum` schema 是否满足；不可见工具返回 `ok=false/status=tool_not_visible` 的标准 tool result，未注册工具继续返回 `unknown_tool`。`task.delegate` 的缺参友好提示保留在 router validation 返回的 tool result envelope 中。master 与 teammate driver 都走同一 router validation/dispatch 路径。
 
-在少数由外部 authority 已经固定闭集的 session，Host 可把同一个
-`tool_dispatch_precondition` 注入 master 与 teammate runtime。它在 handler
-之前把违反闭集的 mutating call 转成 LLM 可读的 no-effect validation
-observation，agent 可在同 phase 修正；它不是 workflow planner，也不能从错误
-中猜测替代参数。当前 AOX formal session 用它阻止 suffixed/replacement task，
-并阻止在三项 task business exit 与 report/fault negative state 形成前请求
-scientific-attempt closure。未匹配 session（包括独立 probe）保持标准 tool
-语义。
+Host 不得把 session/workflow-specific `tool_dispatch_precondition` 注入 master 或 teammate
+runtime。Router 只拥有通用 schema、visibility、governance 与 writer-fence 边界，随后直接进入
+owning handler。外部 authority 固定的是 owner-local actor/assignment/lifecycle/effect/fencing/
+quiescence/integrity 等真实 mutation constraints，不是 tool 顺序、task cardinality、report
+handoff 或某个 phase。agent 对 ordinary no-effect observation 可以修正、换路、读取、解释、
+求助或结束 bounded turn；这些差异不能产生 recovery obligation、synthetic wake 或 Harness fatal。
+AOX exact-three、report/fault closure 与 deliverable completeness只在 final public product
+closure/offline verification中判定。
 
 role surface 由同一个 router 判定：master 即使注册了 engine runtimes，也不会直接看见 `deep_research.start` 或 `execution.pipeline.start`；researcher 可见 deep research runtime tools；executor 可见 execution compatibility runtime tools 与 sandbox-first 工具。provider adapter 只能消费 router 输出的 `ToolSpec`，不能绕回 engine descriptor 或 teammate descriptor 拼 schema。MICU 的 `task.create -> task_create` alias 只属于 provider request / LLM debug 层；workspace trace、tool invocation、tool result 和 runtime events 必须只出现 canonical dotted name。
 
@@ -181,12 +181,11 @@ observation facts 保留返回引用，但 observation 关系字段只绑定当�
 - assistant text 本身从不完成 task、委派 reporter、请求 scientific closure 或产生
   acceptance eligibility；它可以正常持久化，不再经过 session-scoped response veto。需要
   durable state change 时，agent 必须实际调用相应 domain tool。
-- historical AOX `aox_cutover_formal_tool_precondition@1`–`@5` 只用于解释旧 evidence；
-  current `@6` contract 检查 canonical task creation、report source-link、
-  session-scoped operation universe，以及 attempt close/execution completion/report
-  handoff 的 exact source-bound finalization receipt；scientific closure lifecycle
-  safety 仍由 Core owner 负责。
-  它不检查或拒绝 assistant response，不自动 delegate/auto-enqueue，也不规定 handoff 策略。
+- historical AOX `aox_cutover_formal_tool_precondition@1`–`@6` 只用于解释旧 evidence；
+  current runtime 没有该 policy 或 generic hook。canonical task/report/scientific mutation
+  分别由其 domain owner 校验，source-bound finalization receipt 与 exact AOX completeness
+  由 product-closure evaluator/offline verifier复核；它们不检查或拒绝 assistant response，
+  不自动 delegate/auto-enqueue，也不规定 handoff 策略。
 - 顶层模型和 teammate 需要能力用法说明时，默认通过 `docs.search` / `docs.read` 读取受控文档库，而不是通过 skill 文档把 execution 用法塞入上下文
 - 领域 SOP 不得由 prompt 关键词、task subject 或模型调用 `skill.load` 隐式激活。调用方只能通过结构化 `skill_keys` 传入完整 `workflow:<id>@<semver>#sha256:<manifest-digest>`；message admission 将去重后的选择绑定到 canonical user conversation document，scheduler 仅从 exact user-message signal source 恢复，不能由 drain/operator 或普通 inbox payload 注入。registry 在 provider call 前校验 manifest digest、固定 document version/digest，并在实际 teammate tool/capability surface 上验证 requirements。delegation payload 持久化同一 binding，teammate restore 时再次对照当前 registry，任何缺失或 drift 都 fail closed
 - workflow knowledge pack 只表达版本化知识、所需 capability/tool 与真实约束，不替 master/executor 选择步骤；普通用户文本即使包含 AOX、HMM、research 等词也不得改写 delegation 或隐藏可用工具

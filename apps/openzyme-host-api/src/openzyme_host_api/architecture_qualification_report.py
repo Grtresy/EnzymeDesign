@@ -19,8 +19,10 @@ from .architecture_qualification import LoadedArchitectureQualificationReport
 from .architecture_qualification import PROFILE_ID
 from .architecture_qualification import QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID
 from .architecture_qualification import QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V1
+from .architecture_qualification import QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V2
 from .architecture_qualification import QUALIFICATION_REPORT_SCHEMA_ID
 from .architecture_qualification import QUALIFICATION_REPORT_SCHEMA_ID_V1
+from .architecture_qualification import QUALIFICATION_REPORT_SCHEMA_ID_V2
 from .architecture_qualification import ValidatedInvariantRegistry
 from .architecture_qualification import ValidatedTestManifest
 from .architecture_qualification import ValidatedQualificationOutputTarget
@@ -74,7 +76,7 @@ _PAYLOAD_FIELDS_V1 = frozenset(
         "test_manifest_digest",
     }
 )
-_PAYLOAD_FIELDS = frozenset(
+_PAYLOAD_FIELDS_V2 = frozenset(
     set(_PAYLOAD_FIELDS_V1)
     | {
         "not_run_scenario_ids",
@@ -83,6 +85,13 @@ _PAYLOAD_FIELDS = frozenset(
         "run_failure",
         "source_revalidations",
         "terminal_source_identity",
+    }
+)
+_PAYLOAD_FIELDS = frozenset(
+    set(_PAYLOAD_FIELDS_V2)
+    | {
+        "owner_constraint_registry_digest",
+        "transformation_results_digest",
     }
 )
 _SOURCE_FIELDS = frozenset(
@@ -1086,6 +1095,38 @@ def _source_revalidation_chain_is_complete(
     return phases == expected
 
 
+_TRANSFORMATION_SCENARIO_IDS = frozenset(
+    {
+        "strategy-neutrality.public-action-permutations",
+        "world-fidelity.earliest-cause-visible",
+    }
+)
+
+
+def _transformation_results_digest(
+    scenario_results: Sequence[Mapping[str, object]],
+    *,
+    not_run_scenario_ids: Sequence[str],
+) -> str:
+    selected_results = [
+        dict(item)
+        for item in scenario_results
+        if str(item.get("scenario_id") or "") in _TRANSFORMATION_SCENARIO_IDS
+    ]
+    selected_not_run = sorted(
+        scenario_id
+        for scenario_id in not_run_scenario_ids
+        if scenario_id in _TRANSFORMATION_SCENARIO_IDS
+    )
+    return _value_digest(
+        {
+            "not_run_scenario_ids": selected_not_run,
+            "scenario_results": selected_results,
+            "scenario_set": sorted(_TRANSFORMATION_SCENARIO_IDS),
+        }
+    )
+
+
 def build_report(
     *,
     repo_root: Path,
@@ -1206,6 +1247,9 @@ def build_report(
         "invariants": invariant_results,
         "mode": mode,
         "not_run_scenario_ids": normalized_not_run,
+        "owner_constraint_registry_digest": (
+            registry.owner_constraint_registry_digest
+        ),
         "p0_records": p0_records,
         "payload_schema_id": QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID,
         "profile": _profile(registry),
@@ -1221,6 +1265,10 @@ def build_report(
         "terminal_source_identity": dict(terminal_source),
         "test_manifest": dict(test_manifest.payload),
         "test_manifest_digest": test_manifest.test_manifest_digest,
+        "transformation_results_digest": _transformation_results_digest(
+            normalized_scenarios,
+            not_run_scenario_ids=normalized_not_run,
+        ),
     }
     payload_digest = _sha256(canonical_json_bytes(payload))
     envelope = {
@@ -1557,16 +1605,25 @@ def _validate_p0(value: object, *, index: int) -> dict[str, Any]:
 def _validate_payload(
     value: object,
     *,
-    historical: bool = False,
+    schema_version: int = 3,
 ) -> dict[str, Any]:
+    payload_fields = (
+        _PAYLOAD_FIELDS_V1
+        if schema_version == 1
+        else _PAYLOAD_FIELDS_V2
+        if schema_version == 2
+        else _PAYLOAD_FIELDS
+    )
     payload = _object(
         value,
-        fields=_PAYLOAD_FIELDS_V1 if historical else _PAYLOAD_FIELDS,
+        fields=payload_fields,
         label="report payload",
     )
     expected_payload_schema = (
         QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V1
-        if historical
+        if schema_version == 1
+        else QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V2
+        if schema_version == 2
         else QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID
     )
     if payload["payload_schema_id"] != expected_payload_schema:
@@ -1623,7 +1680,7 @@ def _validate_payload(
     ]
     _validate_sorted_records(p0_records, key="p0_id", label="p0_records")
     _texts(payload["rejection_reasons"], label="rejection reasons")
-    if historical:
+    if schema_version == 1:
         return payload
 
     terminal_source = _validate_source(payload["terminal_source_identity"])
@@ -1653,6 +1710,21 @@ def _validate_payload(
     )
     if run_evidence_digest != expected_run_evidence_digest:
         raise _error("qualification run evidence digest drifted")
+    if schema_version == 3:
+        _digest(
+            payload["owner_constraint_registry_digest"],
+            label="owner constraint registry digest",
+        )
+        transformation_results_digest = _digest(
+            payload["transformation_results_digest"],
+            label="transformation results digest",
+        )
+        expected_transformation_results_digest = _transformation_results_digest(
+            scenario_results,
+            not_run_scenario_ids=not_run_scenario_ids,
+        )
+        if transformation_results_digest != expected_transformation_results_digest:
+            raise _error("qualification transformation results digest drifted")
     admission_source_digest = _value_digest(payload["source_identity"])
     if any(
         receipt["source_identity_digest"] != admission_source_digest
@@ -1702,12 +1774,14 @@ def load_report_bytes(content: bytes) -> LoadedArchitectureQualificationReport:
     raw = _strict_json(content)
     envelope = _object(raw, fields=_REPORT_FIELDS, label="report envelope")
     if envelope["schema_id"] == QUALIFICATION_REPORT_SCHEMA_ID:
-        historical = False
+        schema_version = 3
+    elif envelope["schema_id"] == QUALIFICATION_REPORT_SCHEMA_ID_V2:
+        schema_version = 2
     elif envelope["schema_id"] == QUALIFICATION_REPORT_SCHEMA_ID_V1:
-        historical = True
+        schema_version = 1
     else:
         raise _error("qualification report schema is unsupported")
-    payload = _validate_payload(envelope["payload"], historical=historical)
+    payload = _validate_payload(envelope["payload"], schema_version=schema_version)
     payload_digest = _digest(envelope["payload_digest"], label="payload digest")
     if payload_digest != _sha256(canonical_json_bytes(payload)):
         raise _error("qualification report payload digest drifted")
@@ -1793,6 +1867,11 @@ def verify_report(
     registry = load_invariant_registry(repo_root=root)
     if payload["registry_digest"] != registry.registry_digest:
         raise _error("qualification report registry digest differs from checkout")
+    if (
+        payload["owner_constraint_registry_digest"]
+        != registry.owner_constraint_registry_digest
+    ):
+        raise _error("qualification owner constraint registry digest differs from checkout")
     manifest = _manifest_from_bound_payload(
         payload["test_manifest"],
         registry=registry,
@@ -1836,6 +1915,11 @@ def verify_report(
     )
     if payload["scenario_results"] != expected_scenarios:
         raise _error("qualification scenario status or budget closure drifted")
+    if payload["transformation_results_digest"] != _transformation_results_digest(
+        expected_scenarios,
+        not_run_scenario_ids=payload["not_run_scenario_ids"],
+    ):
+        raise _error("qualification transformation result identity drifted")
     expected_invariants = _invariant_results(
         registry=registry,
         scenario_results=expected_scenarios,

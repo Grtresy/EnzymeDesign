@@ -18,8 +18,11 @@ from .architecture_qualification_report import verify_report
 ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID_V1 = (
     "aox_architecture_qualification_receipt@1"
 )
-ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID = (
+ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID_V2 = (
     "aox_architecture_qualification_receipt@2"
+)
+ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID = (
+    "aox_architecture_qualification_receipt@3"
 )
 ARCHITECTURE_QUALIFICATION_RUNNER_RELATIVE_PATH = Path(
     "scripts/v3_architecture_qualification.py"
@@ -35,12 +38,19 @@ ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS_V1 = frozenset(
         "test_manifest_digest",
     }
 )
-ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS = frozenset(
+ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS_V2 = frozenset(
     set(ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS_V1)
     | {
         "report_schema_id",
         "run_evidence_digest",
         "source_identity_digest",
+    }
+)
+ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS = frozenset(
+    set(ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS_V2)
+    | {
+        "owner_constraint_registry_digest",
+        "transformation_results_digest",
     }
 )
 
@@ -77,8 +87,11 @@ def _receipt_preimage(
     report_schema_id: str,
     run_evidence_digest: str,
     source_identity_digest: str,
+    owner_constraint_registry_digest: str,
+    transformation_results_digest: str,
 ) -> dict[str, str]:
     return {
+        "owner_constraint_registry_digest": owner_constraint_registry_digest,
         "profile_id": profile_id,
         "registry_digest": registry_digest,
         "report_payload_digest": report_payload_digest,
@@ -88,6 +101,7 @@ def _receipt_preimage(
         "source_commit": source_commit,
         "source_identity_digest": source_identity_digest,
         "test_manifest_digest": test_manifest_digest,
+        "transformation_results_digest": transformation_results_digest,
     }
 
 
@@ -101,6 +115,8 @@ def build_architecture_qualification_receipt(
     report_schema_id: str,
     run_evidence_digest: str,
     source_identity_digest: str,
+    owner_constraint_registry_digest: str,
+    transformation_results_digest: str,
 ) -> dict[str, str]:
     preimage = _receipt_preimage(
         report_payload_digest=report_payload_digest,
@@ -111,6 +127,8 @@ def build_architecture_qualification_receipt(
         report_schema_id=report_schema_id,
         run_evidence_digest=run_evidence_digest,
         source_identity_digest=source_identity_digest,
+        owner_constraint_registry_digest=owner_constraint_registry_digest,
+        transformation_results_digest=transformation_results_digest,
     )
     return normalize_architecture_qualification_receipt(
         {
@@ -129,6 +147,13 @@ def normalize_architecture_qualification_receipt(
     schema_id = receipt.get("schema_id")
     if schema_id == ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID:
         expected_fields = ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS
+    elif schema_id == ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID_V2:
+        if not allow_historical:
+            raise AoxArchitectureQualificationError(
+                "aox_architecture_qualification_receipt_version_unsupported",
+                "historical architecture qualification receipts are read-only",
+            )
+        expected_fields = ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS_V2
     elif schema_id == ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID_V1:
         if not allow_historical:
             raise AoxArchitectureQualificationError(
@@ -172,8 +197,16 @@ def normalize_architecture_qualification_receipt(
         "report_payload_digest",
         "test_manifest_digest",
     )
-    if schema_id == ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID:
+    if schema_id in {
+        ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID,
+        ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID_V2,
+    }:
         digest_keys += ("run_evidence_digest", "source_identity_digest")
+    if schema_id == ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID:
+        digest_keys += (
+            "owner_constraint_registry_digest",
+            "transformation_results_digest",
+        )
     for key in digest_keys:
         if _DIGEST_PATTERN.fullmatch(normalized[key]) is None:
             raise AoxArchitectureQualificationError(
@@ -277,6 +310,12 @@ def verify_aox_architecture_qualification_report(
         source_identity_digest=_sha256(
             canonical_json_bytes(payload.get("source_identity"))
         ),
+        owner_constraint_registry_digest=str(
+            payload.get("owner_constraint_registry_digest") or ""
+        ),
+        transformation_results_digest=str(
+            payload.get("transformation_results_digest") or ""
+        ),
     )
     return normalize_architecture_qualification_receipt(
         receipt,
@@ -303,6 +342,7 @@ __all__ = [
     "ARCHITECTURE_QUALIFICATION_RECEIPT_FIELDS_V1",
     "ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID",
     "ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID_V1",
+    "ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID_V2",
     "ARCHITECTURE_QUALIFICATION_RUNNER_RELATIVE_PATH",
     "AoxArchitectureQualificationError",
     "build_architecture_qualification_receipt",

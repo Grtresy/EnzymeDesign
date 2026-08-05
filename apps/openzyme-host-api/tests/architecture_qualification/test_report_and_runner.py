@@ -562,6 +562,44 @@ def test_report_loader_rejects_noncanonical_and_duplicate_json() -> None:
         load_architecture_qualification_report_bytes(duplicate)
 
 
+def test_current_report_binds_owner_registry_and_transformation_identity() -> None:
+    report = _build("diagnostic")
+    for field in (
+        "owner_constraint_registry_digest",
+        "transformation_results_digest",
+    ):
+        payload = deepcopy(report.payload)
+        payload[field] = _EVIDENCE_DIGEST
+        forged = {
+            "payload": payload,
+            "payload_digest": (
+                f"sha256:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"
+            ),
+            "schema_id": report.envelope["schema_id"],
+        }
+        if field == "transformation_results_digest":
+            with pytest.raises(
+                ArchitectureQualificationReportError,
+                match="transformation results digest",
+            ):
+                load_architecture_qualification_report_bytes(
+                    canonical_json_document_bytes(forged)
+                )
+            continue
+        loaded = load_architecture_qualification_report_bytes(
+            canonical_json_document_bytes(forged)
+        )
+        with pytest.raises(
+            ArchitectureQualificationReportError,
+            match="owner constraint registry digest",
+        ):
+            verify_architecture_qualification_report(
+                loaded,
+                repo_root=REPO_ROOT,
+                runner_path=RUNNER_PATH,
+            )
+
+
 def test_historical_report_is_readable_but_cannot_enter_current_verifier() -> None:
     current = _build("diagnostic")
     payload = {
@@ -570,11 +608,13 @@ def test_historical_report_is_readable_but_cannot_enter_current_verifier() -> No
         if key
         not in {
             "not_run_scenario_ids",
+            "owner_constraint_registry_digest",
             "process_receipts",
             "run_evidence_digest",
             "run_failure",
             "source_revalidations",
             "terminal_source_identity",
+            "transformation_results_digest",
         }
     }
     payload["payload_schema_id"] = (
@@ -592,6 +632,40 @@ def test_historical_report_is_readable_but_cannot_enter_current_verifier() -> No
         canonical_json_document_bytes(envelope)
     )
     assert loaded.envelope["schema_id"].endswith("@1")
+    with pytest.raises(ArchitectureQualificationReportError, match="read-only"):
+        verify_architecture_qualification_report(
+            loaded,
+            repo_root=REPO_ROOT,
+            runner_path=RUNNER_PATH,
+        )
+
+
+def test_v2_report_is_readable_but_cannot_enter_current_verifier() -> None:
+    current = _build("diagnostic")
+    payload = {
+        key: value
+        for key, value in current.payload.items()
+        if key
+        not in {
+            "owner_constraint_registry_digest",
+            "transformation_results_digest",
+        }
+    }
+    payload["payload_schema_id"] = (
+        "openzyme_v3_architecture_qualification_payload@2"
+    )
+    envelope = {
+        "payload": payload,
+        "payload_digest": (
+            f"sha256:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"
+        ),
+        "schema_id": "openzyme_v3_architecture_qualification_report@2",
+    }
+
+    loaded = load_architecture_qualification_report_bytes(
+        canonical_json_document_bytes(envelope)
+    )
+    assert loaded.envelope["schema_id"].endswith("@2")
     with pytest.raises(ArchitectureQualificationReportError, match="read-only"):
         verify_architecture_qualification_report(
             loaded,

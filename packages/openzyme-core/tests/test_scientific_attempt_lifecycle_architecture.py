@@ -9,7 +9,6 @@ LIFECYCLE_DECISION_MODULES = (
     "packages/openzyme-core/src/openzyme_core/scientific_attempts.py",
     "packages/openzyme-core/src/openzyme_core/agent_runtime.py",
     "packages/openzyme-core/src/openzyme_core/runtime_consistency.py",
-    "apps/openzyme-host-api/src/openzyme_host_api/aox_cutover_tool_policy.py",
 )
 ATTEMPT_REPOSITORY_MODULE = (
     "packages/openzyme-core/src/openzyme_core/scientific_attempt_repositories.py"

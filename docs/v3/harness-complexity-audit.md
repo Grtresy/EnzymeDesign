@@ -271,13 +271,13 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   fresh three-slot authority plan 在任何 root 前一次性消费。本轮只完成 non-live 验证，明确
   停在下一次编号 live attempt 之前。
 
-  追加修正记录：r57 证明 prompt-only 的 exact task set / close-last 约束仍可被同一 agent
-  turn 违反。Router 现提供 composition-injected `tool_dispatch_precondition`：它只把
-  authority 已固定的 session-local mutation 闭集作为 no-effect validation 呈现给 agent，
-  不运行 handler、不生成默认 task/report、也不选择科学 operation、task 终态或 retry。
-  AOX consumer 仅匹配其 authority-bound formal session；probe 与普通 V3 session 保持原语义。
+  历史修正记录：r57 证明 prompt-only 的 exact task set / close-last 约束仍可被同一 agent
+  turn 违反，当时曾加入 composition-injected `tool_dispatch_precondition`。后续 transformation
+  audit 证明这条 seam 本身会把某条 AOX trace 固化为 Harness policy；current 已整体删除。
+  Router 只保留通用 schema/visibility/governance/fence，真实 mutation constraints 回到各 domain
+  owner，AOX workflow completeness 回到 final product-closure/offline verifier。
 
-  post-r57 追加修正记录：precondition 只判断 close 是否可 dispatch，不能替代 turn
+  post-r57 历史修正记录：precondition 只判断 close 是否可 dispatch，不能替代 turn
   lifecycle。successful `scientific.attempt.close` 现复用通用 terminal action 与 ordered
   batch settlement，持久化 closure intent 后立即退休 requesting turn；同批后续 mutation
   不 dispatch，Host 只在外层 writer 连同 no-effect settlement 退休后 finalization。AOX
@@ -291,8 +291,9 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   认定“文本是否足以作为下一步策略”不是 safety invariant；Phase 2 进一步删除 companion
   text、closure-response repository/conversation transaction 与 scientific-specific
   settlement。current close handler 只接受 exact attempt-task canonical assignee，只写
-  immutable request；AOX `@5` 只拦截 canonical task/operation/report-source mutation；
-  final verifier 仍拒绝 task/report/selection/closure 不完整的 attempt。assistant prose
+  immutable request；AOX dispatch precondition `@1`–`@6` 已全部退为 historical，current
+  final verifier仍拒绝task/report/selection/closure不完整的attempt，但不再拦截generic task/
+  report strategy。assistant prose
   本身不会完成任何对象，也不再因 Harness 期待另一种策略而被丢弃。r58–r62 及
   closure-stage diagnostics 的历史 verdict、authority 与不可复用性不变。
 
@@ -375,6 +376,19 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   client、production composition/file-SQLite和deterministic runtime覆盖positive、wrong task/
   actor、reassignment、legacy route和deleted surface，不用private service/manual registry/
   synthetic receipt。Harness不替agent选择task、lane或scientific action，只拒绝不真实的binding。
+
+- [x] Generic dispatch hook 与 scripted happy path 是否把 AOX acceptance 反向写成 agent phase policy。
+
+  证据：即使删除 automatic observer/driver，composition-injected precondition 仍能在 owning
+  handler 前拒绝早 reporting delegation、不同 task order 或 incomplete-but-authorized action；
+  原有 AOX reachability scenario 只证明一条预写 trace 可达，无法对这种策略收窄报红。
+
+  修正记录：删除 `tool_dispatch_precondition` 全传播链与 AOX policy module，把 source-linked
+  report evaluator移到public product closure。新增closed owner/constraint registry、Core bounded
+  Hypothesis trace properties，以及 real FastAPI/file-SQLite 的 `strategy-neutrality` 和
+  `world-fidelity` qualification families；current report/AOX receipt `@3` 绑定 owner registry 与
+  transformation results。authority/effect/fence/quiescence等不可违反边界仍留在canonical owner，
+  exact-three/report/17-deliverable只作为最终eligibility，不固定agent tool序列。
 
 - [x] Lane 与 session lease 是否只是历史复杂度，应随 recovery machine 一并删除。
 

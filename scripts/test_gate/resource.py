@@ -105,8 +105,13 @@ def _common_audit(
     )
 
 
-_HOST_FIXTURES = ("conftest.py", "apps/openzyme-host-api/tests/conftest.py")
-_ROOT_FIXTURES = ("conftest.py",)
+_HYPOTHESIS_STORAGE_FIXTURE = "scripts/test_gate/hypothesis_storage.py"
+_HOST_FIXTURES = (
+    "conftest.py",
+    _HYPOTHESIS_STORAGE_FIXTURE,
+    "apps/openzyme-host-api/tests/conftest.py",
+)
+_ROOT_FIXTURES = ("conftest.py", _HYPOTHESIS_STORAGE_FIXTURE)
 _RESOURCE_PROOF_NODE = (
     "packages/openzyme-core/tests/test_test_gate_resource.py"
     "::test_initial_resource_entries_bind_exact_modules_and_safe_closure"
@@ -213,6 +218,19 @@ INITIAL_RESOURCE_ENTRY_SPECS: tuple[ResourceEntrySpec, ...] = (
         ),
     ),
     ResourceEntrySpec(
+        entry_id="core_harness_strategy_properties_worker_local",
+        module_path="packages/openzyme-core/tests/test_harness_strategy_properties.py",
+        resource_class="parallel_temp_root",
+        fixture_paths=_ROOT_FIXTURES,
+        proof_node_ids=(_RESOURCE_PROOF_NODE, _WORKER_PROOF_NODE),
+        audited_resources=_common_audit(
+            filesystem="none",
+            sqlite="memory_only",
+            environment="worker_process_local",
+            process="none",
+        ),
+    ),
+    ResourceEntrySpec(
         entry_id="core_reliability_repositories_temp_root",
         module_path="packages/openzyme-core/tests/test_reliability_repositories.py",
         resource_class="parallel_temp_root",
@@ -258,13 +276,6 @@ INITIAL_RESOURCE_ENTRY_SPECS: tuple[ResourceEntrySpec, ...] = (
         process="none_or_in_process_fake_runner",
         micu="test_temp_root_only",
         micu_evidence="ledger snapshots and writes use each test's tmp_path",
-    ),
-    _parallel_temp_root_entry(
-        entry_id="host_api_aox_cutover_tool_policy_worker_local",
-        module_path="apps/openzyme-host-api/tests/test_aox_cutover_tool_policy.py",
-        fixture_paths=_HOST_FIXTURES,
-        filesystem="immutable_checkout_read_or_test_temp_root",
-        sqlite="none",
     ),
     _parallel_temp_root_entry(
         entry_id="host_api_foundation_worker_local",

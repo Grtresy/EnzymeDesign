@@ -22,6 +22,7 @@ from .model import (
     seal_document,
     sha256_digest,
 )
+from .hypothesis_storage import configure_hypothesis_storage
 from .runner import TestGateRunnerError, publish_no_replace
 
 _PLUGIN_NAME = "openzyme-test-gate-observation"
@@ -168,6 +169,10 @@ def _activate_worker_allocation(allocation: Mapping[str, Any]) -> None:
             "PYTHONPYCACHEPREFIX": str(allocation["pycache_root"]),
             "OPENZYME_TEST_WORKER_ID": worker_id,
         }
+    )
+    configure_hypothesis_storage(
+        repo_root=Path(__file__).resolve().parents[2],
+        storage_path=Path(allocation["cache_root"]) / "hypothesis",
     )
     tempfile.tempdir = None
     sys.pycache_prefix = str(allocation["pycache_root"])

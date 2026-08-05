@@ -147,9 +147,71 @@ def assert_public_authority_absent(public_projection: object) -> None:
         raise AssertionError(f"public projection exposed private authority: {leaks!r}")
 
 
+def assert_strategy_neutrality_oracle(
+    observations: Mapping[str, Mapping[str, object]],
+) -> None:
+    """Require ordinary strategy transformations to preserve product meaning.
+
+    The oracle compares canonical outcomes, not exact action traces. A test may
+    reorder legal actions, insert reads or prose, continue after a typed safe
+    rejection, or split work across bounded turns without matching one script.
+    """
+
+    required = {
+        "baseline",
+        "bounded_turn_split",
+        "early_reporting_delegation",
+        "inserted_read_and_prose",
+        "reordered_safe_actions",
+        "safe_rejection_followup",
+    }
+    if set(observations) != required:
+        raise AssertionError("strategy transformation set is not closed")
+    baseline = _require_mapping(observations["baseline"], label="baseline")
+    expected = {
+        "business_outcome": baseline.get("business_outcome"),
+        "canonical_task_kinds": baseline.get("canonical_task_kinds"),
+        "composition_reachable": baseline.get("composition_reachable"),
+        "external_effect_count": baseline.get("external_effect_count"),
+    }
+    for name in sorted(observations):
+        observation = _require_mapping(observations[name], label=name)
+        if any(observation.get(key) != value for key, value in expected.items()):
+            raise AssertionError(f"{name} changed the canonical product outcome")
+        if observation.get("phase_veto_codes") not in ([], ()):
+            raise AssertionError(f"{name} was rejected by a strategy phase veto")
+        if observation.get("synthetic_reachability") is not False:
+            raise AssertionError(f"{name} used synthetic positive reachability")
+
+
+def assert_world_fidelity_oracle(observation: Mapping[str, object]) -> None:
+    """Require the original typed world fact to survive every public wrapper."""
+
+    earliest = observation.get("earliest_typed_cause")
+    if not isinstance(earliest, str) or not earliest:
+        raise AssertionError("earliest typed cause is absent")
+    if observation.get("sealed_terminal_cause") != earliest:
+        raise AssertionError("terminal sealing overwrote the earliest typed cause")
+    if observation.get("next_decision_visible_cause") != earliest:
+        raise AssertionError("the next agent decision could not see the typed cause")
+    wrapper_chain = observation.get("wrapper_chain")
+    if not isinstance(wrapper_chain, list) or not wrapper_chain:
+        raise AssertionError("typed wrapper chain is absent")
+    if any(not isinstance(item, str) or not item for item in wrapper_chain):
+        raise AssertionError("typed wrapper chain is malformed")
+    if observation.get("source_bound") is not True:
+        raise AssertionError("failure evidence is not source-bound")
+    if observation.get("automatic_recovery_count") != 0:
+        raise AssertionError("failure triggered automatic recovery work")
+    if observation.get("synthetic_fallback") is not False:
+        raise AssertionError("failure used a synthetic fallback")
+
+
 __all__ = [
     "PRIVATE_AUTHORITY_FIELDS",
     "assert_effect_ledger_oracle",
     "assert_operation_oracle",
     "assert_public_authority_absent",
+    "assert_strategy_neutrality_oracle",
+    "assert_world_fidelity_oracle",
 ]

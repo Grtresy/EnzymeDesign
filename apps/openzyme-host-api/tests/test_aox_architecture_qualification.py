@@ -30,9 +30,11 @@ def _receipt(*, payload_digit: str = "1") -> dict[str, str]:
         test_manifest_digest="sha256:" + "3" * 64,
         profile_id="local_single_process_file_sqlite@1",
         source_commit="a" * 40,
-        report_schema_id="openzyme_v3_architecture_qualification_report@2",
+        report_schema_id="openzyme_v3_architecture_qualification_report@3",
         run_evidence_digest="sha256:" + "4" * 64,
         source_identity_digest="sha256:" + "5" * 64,
+        owner_constraint_registry_digest="sha256:" + "6" * 64,
+        transformation_results_digest="sha256:" + "7" * 64,
     )
 
 
@@ -104,6 +106,32 @@ def test_historical_receipt_is_read_only_compatible() -> None:
     ) == historical
 
 
+def test_v2_receipt_is_read_only_compatible() -> None:
+    historical = deepcopy(_receipt())
+    historical.pop("owner_constraint_registry_digest")
+    historical.pop("transformation_results_digest")
+    historical["schema_id"] = "aox_architecture_qualification_receipt@2"
+    historical["report_schema_id"] = (
+        "openzyme_v3_architecture_qualification_report@2"
+    )
+    preimage = {
+        key: value for key, value in historical.items() if key != "receipt_digest"
+    }
+    historical["receipt_digest"] = (
+        f"sha256:{hashlib.sha256(canonical_json_bytes(preimage)).hexdigest()}"
+    )
+
+    with pytest.raises(AoxArchitectureQualificationError) as current_error:
+        normalize_architecture_qualification_receipt(historical)
+    assert current_error.value.code == (
+        "aox_architecture_qualification_receipt_version_unsupported"
+    )
+    assert normalize_architecture_qualification_receipt(
+        historical,
+        allow_historical=True,
+    ) == historical
+
+
 def test_report_adapter_derives_receipt_only_from_verified_admission(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -111,13 +139,15 @@ def test_report_adapter_derives_receipt_only_from_verified_admission(
     report_path = tmp_path / "report.json"
     report_path.write_text("not consulted by loader double", encoding="utf-8")
     loaded = SimpleNamespace(
-        envelope={"schema_id": "openzyme_v3_architecture_qualification_report@2"},
+        envelope={"schema_id": "openzyme_v3_architecture_qualification_report@3"},
         payload={
             "profile": {"profile_id": "local_single_process_file_sqlite@1"},
             "registry_digest": "sha256:" + "2" * 64,
             "test_manifest_digest": "sha256:" + "3" * 64,
             "run_evidence_digest": "sha256:" + "4" * 64,
             "source_identity": {"test": "source"},
+            "owner_constraint_registry_digest": "sha256:" + "6" * 64,
+            "transformation_results_digest": "sha256:" + "7" * 64,
         }
     )
     monkeypatch.setattr(qualification, "load_report", lambda path: loaded)
@@ -146,7 +176,7 @@ def test_report_adapter_rejects_diagnostic_or_open_p0_report(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     loaded = SimpleNamespace(
-        envelope={"schema_id": "openzyme_v3_architecture_qualification_report@2"},
+        envelope={"schema_id": "openzyme_v3_architecture_qualification_report@3"},
         payload={},
     )
     monkeypatch.setattr(qualification, "load_report", lambda path: loaded)

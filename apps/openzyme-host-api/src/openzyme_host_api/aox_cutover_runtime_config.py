@@ -21,7 +21,8 @@ from .aox_scientific_contract import AOX_SELECTED_CHAIN_WORKFLOW_ID
 AOX_BLANK_WORLD_RUNTIME_CONFIG_LEGACY_SCHEMA_ID = "aox_blank_world_runtime_config@1"
 AOX_BLANK_WORLD_RUNTIME_CONFIG_V2_SCHEMA_ID = "aox_blank_world_runtime_config@2"
 AOX_BLANK_WORLD_RUNTIME_CONFIG_V3_SCHEMA_ID = "aox_blank_world_runtime_config@3"
-AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID = "aox_blank_world_runtime_config@4"
+AOX_BLANK_WORLD_RUNTIME_CONFIG_V4_SCHEMA_ID = "aox_blank_world_runtime_config@4"
+AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID = "aox_blank_world_runtime_config@5"
 AOX_RUNNER_CONTRACT_EXPECTATIONS_SCHEMA_ID = "aox_runner_contract_expectations@1"
 AOX_BROWSER_OBSERVATION_MODE = "chrome_devtools_mcp_file_handoff"
 AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS = 3_600
@@ -58,9 +59,10 @@ _LEGACY_TOP_LEVEL_FIELDS = frozenset(
 )
 _V2_TOP_LEVEL_FIELDS = _LEGACY_TOP_LEVEL_FIELDS | {"reliability"}
 _V3_TOP_LEVEL_FIELDS = _V2_TOP_LEVEL_FIELDS | {"scientific_workflow_contract"}
-_TOP_LEVEL_FIELDS = (
+_V4_TOP_LEVEL_FIELDS = (
     _V3_TOP_LEVEL_FIELDS - {"driver"}
 ) | {"conductor"}
+_TOP_LEVEL_FIELDS = _V3_TOP_LEVEL_FIELDS - {"driver"}
 _HOST_FIELDS = frozenset(
     {
         "deployment_profile",
@@ -523,9 +525,10 @@ def normalize_aox_blank_world_runtime_config(
 
     Numeric duration/ratio fields are normalized to finite JSON floats. All objects
     use exact field allowlists; no caller-provided field is silently discarded.
-    Historical ``@1`` through ``@3`` remain readable solely so frozen evidence
-    can be reverified. New launch configuration is emitted as ``@4`` and binds
-    the public Codex-conductor shell without any automatic drive policy.
+    Historical ``@1`` through ``@4`` remain readable solely so frozen evidence
+    can be reverified. New launch configuration is emitted as ``@5`` and binds
+    only world constraints and capability contracts. It intentionally has no
+    driver/conductor policy object.
     """
 
     if not isinstance(value, Mapping):
@@ -533,6 +536,8 @@ def normalize_aox_blank_world_runtime_config(
     raw_schema_id = value.get("schema_id")
     if raw_schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID:
         top_level_fields = _TOP_LEVEL_FIELDS
+    elif raw_schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_V4_SCHEMA_ID:
+        top_level_fields = _V4_TOP_LEVEL_FIELDS
     elif raw_schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_V3_SCHEMA_ID:
         top_level_fields = _V3_TOP_LEVEL_FIELDS
     elif raw_schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_V2_SCHEMA_ID:
@@ -857,6 +862,7 @@ def normalize_aox_blank_world_runtime_config(
     if schema_id in {
         AOX_BLANK_WORLD_RUNTIME_CONFIG_V2_SCHEMA_ID,
         AOX_BLANK_WORLD_RUNTIME_CONFIG_V3_SCHEMA_ID,
+        AOX_BLANK_WORLD_RUNTIME_CONFIG_V4_SCHEMA_ID,
         AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID,
     }:
         reliability = _closed_object(
@@ -915,6 +921,7 @@ def normalize_aox_blank_world_runtime_config(
     normalized_scientific_workflow_contract: dict[str, str] | None = None
     if schema_id in {
         AOX_BLANK_WORLD_RUNTIME_CONFIG_V3_SCHEMA_ID,
+        AOX_BLANK_WORLD_RUNTIME_CONFIG_V4_SCHEMA_ID,
         AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID,
     }:
         scientific_workflow_contract = _closed_object(
@@ -963,7 +970,7 @@ def normalize_aox_blank_world_runtime_config(
 
     normalized_driver: dict[str, object] | None = None
     normalized_conductor: dict[str, object] | None = None
-    if schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID:
+    if schema_id == AOX_BLANK_WORLD_RUNTIME_CONFIG_V4_SCHEMA_ID:
         conductor = _closed_object(
             root["conductor"],
             fields=_CONDUCTOR_FIELDS,
@@ -1030,7 +1037,7 @@ def normalize_aox_blank_world_runtime_config(
                 "effective_config.conductor",
                 "must not contain automatic orchestration policy",
             )
-    else:
+    elif schema_id != AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID:
         driver = _closed_object(
             root["driver"], fields=_DRIVER_FIELDS, path="effective_config.driver"
         )
@@ -1152,6 +1159,7 @@ __all__ = [
     "AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID",
     "AOX_BLANK_WORLD_RUNTIME_CONFIG_V2_SCHEMA_ID",
     "AOX_BLANK_WORLD_RUNTIME_CONFIG_V3_SCHEMA_ID",
+    "AOX_BLANK_WORLD_RUNTIME_CONFIG_V4_SCHEMA_ID",
     "AOX_BROWSER_OBSERVATION_MODE",
     "AOX_DURABLE_ROUTE_POLICY_IDS",
     "AoxRuntimeConfigSchemaError",

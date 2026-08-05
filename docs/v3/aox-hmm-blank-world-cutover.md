@@ -1,6 +1,6 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r67 are permanent NO-GO evidence. r68 is authority-consumed prelaunch blocked before root/Host/session/attempt. r69 is authority/root/session/provider/MICU-consumed pre-admission blocked before an admission request or scientific attempt. r70 is authority/slot/root/session/receipt-consumed pre-runtime conductor blocked before any runtime drain or scientific authorization/admission/attempt. r71 is authority/positive-slot/root/session/task/authorization/receipt/MICU-consumed pre-attempt sandbox-bootstrap blocked at typed `sandbox_image_missing`, before scientific admission/attempt/provider/HPC/sandbox/browser effect. r72 is prelive conductor blocked after duplicate full-qualification concurrency polluted one output and an invalid-parent recovery reran work that could not publish. r73 is prelive conductor/qualification blocked after stale conductor HEAD shadow truth discarded the first `789f1c1` report, serially relaunched full admission, and the harness timeout retained only digest/cascade evidence. None of r68-r73 is a canonical NO-GO, and none of their state or the old persistent goal is reusable. The post-r71 repair gives one formal supervised Host child the only explicit fresh-SQLite sandbox identity bootstrap; the post-r72 repair gives qualification one canonical-checkout kernel single-flight and exact yielded-handle stop semantics; the post-r73 repair gives the repository test-gate one source-bound bounded executor and current causal-evidence report/receipt `@2`. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
+Status: r43-r67 are permanent NO-GO evidence. r68 is authority-consumed prelaunch blocked before root/Host/session/attempt. r69 is authority/root/session/provider/MICU-consumed pre-admission blocked before an admission request or scientific attempt. r70 is authority/slot/root/session/receipt-consumed pre-runtime conductor blocked before any runtime drain or scientific authorization/admission/attempt. r71 is authority/positive-slot/root/session/task/authorization/receipt/MICU-consumed pre-attempt sandbox-bootstrap blocked at typed `sandbox_image_missing`, before scientific admission/attempt/provider/HPC/sandbox/browser effect. r72 is prelive conductor blocked after duplicate full-qualification concurrency polluted one output and an invalid-parent recovery reran work that could not publish. r73 is prelive conductor/qualification blocked after stale conductor HEAD shadow truth discarded the first `789f1c1` report, serially relaunched full admission, and the harness timeout retained only digest/cascade evidence. None of r68-r73 is a canonical NO-GO, and none of their state or the old persistent goal is reusable. The post-r71 repair gives one formal supervised Host child the only explicit fresh-SQLite sandbox identity bootstrap; the post-r72 repair gives qualification one canonical-checkout kernel single-flight and exact yielded-handle stop semantics; the post-r73 repair gave the repository test-gate one source-bound bounded executor and causal-evidence report/receipt `@2`. The current strategy-neutral repair supersedes those emitters with report/receipt `@3`, removes the generic AOX dispatch-policy path and binds owner/world-fidelity transformation proof. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
 
 Historical incident and older command/observer/driver/browser/diagnostic-authority/public-finalizer sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract; in particular, every older `run-live`, `run-diagnostic-live`, diagnostic authority command, observer, barrier, rollover, no-wakeup, public generic scientific mutation/finalizer, `chrome-once`, browser-helper and ambient dev/eval image-registration instruction is retired even where a historical section called it current at that time. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, late-bound task/scientific-attempt selection, fresh supervised Host bootstrap and qualification semantics are defined by the post-r70/post-r71 sections below, [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
@@ -532,13 +532,13 @@ The forward inspection contract now reports `closure_request_ready` separately
 from `closure_finalization_ready`; legacy `closure_ready` is explicitly
 `host_finalization_after_request`. The requesting turn is itself an expected
 active writer, so that fact can block Host finalization while leaving
-agent-authored closure intent requestable. That r59-era `@3` policy is
-historical. Current `aox_cutover_formal_tool_precondition@6` additionally
-requires a persisted source-bound
-`aox_final_deliverable_validation_receipt@1` for attempt close, execution
-completion and every report handoff transition. Sealed selection, sandbox
-success or 17 visible paths alone are not readiness; missing or drifted receipt
-facts are rejected before mutation with no effect.
+agent-authored closure intent requestable. The r59-era `@3` and later `@6`
+dispatch policies are both historical; current runtime has no AOX precondition hook.
+Scientific close still requires its owning service to verify the persisted source-bound
+`aox_final_deliverable_validation_receipt@1`. Generic execution/report actions follow
+their own domain constraints, while the public product-closure evaluator/offline verifier
+requires the receipt and exact final facts for eligibility. Sealed selection, sandbox
+success or 17 visible paths alone are not acceptance proof.
 
 The repinned SOP digest is
 `sha256:2aff245ff633a33f1533e3d076ace08908ee7dcfbbf57b7d0207f576c2d8fa4e`
@@ -1994,8 +1994,9 @@ HEAD、`full` selection、当前 registry/test manifest/runner/verifier、全部
 且零 open P0 的 `admission` report 才被接受；missing、diagnostic、premerge subset、dirty、
 stale、tampered、未知 profile/schema 或 open-P0 report 一律 fail closed。
 
-验证成功只生成不可变的 `aox_architecture_qualification_receipt@2`，绑定current report schema/payload、
-registry、test-manifest、profile、source commit/identity和run-evidence digest。历史report/receipt`@1`
+验证成功只生成不可变的 `aox_architecture_qualification_receipt@3`，绑定current report schema/payload、
+invariant/owner registry、strategy/world-fidelity transformation results、test-manifest、profile、
+source commit/identity和run-evidence digest。历史report/receipt`@1/@2`
 只允许冻结reader只读加载，不得进入current admission。它不创建 attempt、不访问外部系统，
 也不授权任何 scientific input。force/debug/env/legacy/pass-boolean bypass 不存在；
 `allowed_prerequisites` 仍保持下述 exact-nine scientific schema。架构放行只解除一个
@@ -2841,10 +2842,11 @@ Host/provider/HPC/Chrome effect and MICU remained `128,190,632 / 500,000,000`. W
 bundle, this is prelaunch blocked evidence rather than a canonical r68 NO-GO. Its consumed authority
 cannot be reused.
 
-Phase 2 deletes `AttemptRunner`, the legacy `@2` emitter, test-only production builder, stale driver
-write contract and browser helper. Historical config/evidence readers remain read-only. Current
-`aox_blank_world_runtime_config@4` binds `codex_tester`, public Host API/CLI, receipt-chain and
-supervision schemas, MICU identity, and three false automatic-policy flags.
+Phase 2 deleted `AttemptRunner`, the legacy `@2` emitter, test-only production builder, stale driver
+write contract and browser helper. That stage emitted `aox_blank_world_runtime_config@4` with a
+conductor description. Current config is `@5` and contains no conductor/driver identity, public-command
+claims or `automatic_*` policy fields; `@1`-`@4` remain read-only historical evidence. Public-only Codex
+reachability and absence of automatic orchestration are qualification results, not Host config truth.
 
 The only positive production path is now:
 
@@ -3055,6 +3057,11 @@ harness timeout/failure, malformed scenario evidence or source drift stops immed
 GAP/P0 cascade or equivalent process launch is allowed. Current AOX receipt `@2` also binds report schema, source
 identity and run-evidence digest. Historical report/receipt `@1` remain readable only by explicit frozen readers and
 cannot enter pin, preflight, launch or reducer admission.
+
+Those `@2` schemas are now historical read-only input. Current report/AOX receipt are `@3`; they additionally bind
+the closed owner/constraint registry and exact strategy-neutrality/world-fidelity transformation results. Full
+admission requires those independent families, so the scripted AOX reachability witness cannot self-prove the
+current Harness contract.
 
 Operator-retirement eligibility and quarantine are now pure functions of exact identity, raw exit/signal, final
 process-group membership and forced-unproven state. The suite retains one generous seconds-scale real containment

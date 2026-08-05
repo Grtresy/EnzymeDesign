@@ -23,9 +23,22 @@ from openzyme_host_api.architecture_qualification import REQUIRED_FAMILIES
 from openzyme_host_api.architecture_qualification import REQUIRED_P0_TRIGGERS
 from openzyme_host_api.architecture_qualification import build_test_manifest
 from openzyme_host_api.architecture_qualification import canonical_json_document_bytes
+from openzyme_host_api.architecture_qualification import load_invariant_registry
 from openzyme_host_api.architecture_qualification import resolve_boundary_relation
 from openzyme_host_api.architecture_qualification import (
     validate_invariant_registry_bytes,
+)
+from openzyme_host_api.harness_owner_constraints import (
+    OWNER_CONSTRAINT_REGISTRY_ID,
+)
+from openzyme_host_api.harness_owner_constraints import (
+    OWNER_CONSTRAINT_REGISTRY_RELATIVE_PATH,
+)
+from openzyme_host_api.harness_owner_constraints import (
+    OWNER_CONSTRAINT_REGISTRY_SCHEMA_ID,
+)
+from openzyme_host_api.harness_owner_constraints import (
+    load_harness_owner_constraint_registry,
 )
 
 
@@ -43,6 +56,7 @@ IMPLEMENTATION_FILE = (
 
 
 def _valid_registry() -> dict[str, object]:
+    owner_registry = load_harness_owner_constraint_registry(REPO_ROOT)
     invariants: list[dict[str, object]] = []
     scenarios: list[dict[str, object]] = []
     for family in REQUIRED_FAMILIES:
@@ -121,6 +135,12 @@ def _valid_registry() -> dict[str, object]:
         ],
         "implementation_files": [IMPLEMENTATION_FILE],
         "invariants": invariants,
+        "owner_constraint_registry": {
+            "content_digest": owner_registry.registry_digest,
+            "path": OWNER_CONSTRAINT_REGISTRY_RELATIVE_PATH.as_posix(),
+            "registry_id": OWNER_CONSTRAINT_REGISTRY_ID,
+            "schema_id": OWNER_CONSTRAINT_REGISTRY_SCHEMA_ID,
+        },
         "p0_triggers": [
             {"description": trigger_id, "trigger_id": trigger_id}
             for trigger_id in REQUIRED_P0_TRIGGERS
@@ -159,6 +179,32 @@ def test_registry_accepts_canonical_closed_document() -> None:
         f"sha256:{hashlib.sha256(content).hexdigest()}"
     )
     assert tuple(validated.payload["required_families"]) == REQUIRED_FAMILIES
+
+
+def test_scripted_aox_reachability_alone_cannot_close_current_admission() -> None:
+    registry = load_invariant_registry(repo_root=REPO_ROOT)
+    scenarios = {
+        str(item["scenario_id"]): item
+        for item in registry.payload["scenarios"]
+    }
+
+    scripted_id = "evidence-projection.aox-run-class-disjoint-closure"
+    transformation_ids = {
+        "strategy-neutrality.public-action-permutations",
+        "world-fidelity.earliest-cause-visible",
+    }
+    assert scripted_id in scenarios
+    required_scenario_ids = registry.payload["required_scenario_ids"]
+    assert isinstance(required_scenario_ids, list)
+    assert transformation_ids <= set(required_scenario_ids)
+    assert all(
+        scenarios[scenario_id]["selections"] == ["full", "premerge_subset"]
+        for scenario_id in transformation_ids
+    )
+    assert {
+        str(scenarios[scenario_id]["family"])
+        for scenario_id in transformation_ids
+    } == {"strategy-neutrality", "world-fidelity"}
 
 
 @pytest.mark.parametrize(

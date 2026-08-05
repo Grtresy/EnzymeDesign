@@ -807,7 +807,6 @@ class AgentRuntimeService:
             durable_route_adapter_policy_ids=(
                 self.context.durable_route_adapter_policy_ids
             ),
-            tool_dispatch_precondition=(self.context.tool_dispatch_precondition),
             mutation_writer_scope_factory=(self.context.mutation_writer_scope_factory),
         )
         _require_consistent_harness_approval_wait(result)

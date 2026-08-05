@@ -34,7 +34,7 @@ ARCHITECTURE_COLLECTION_SCHEMA_ID = (
     "openzyme_v3_architecture_pytest_collection@1"
 )
 ARCHITECTURE_REGISTRY_SCHEMA_ID = (
-    "openzyme_v3_architecture_invariant_registry@1"
+    "openzyme_v3_architecture_invariant_registry@2"
 )
 ARCHITECTURE_REGISTRY_PATH = (
     "docs/v3/architecture-qualification/invariant-registry.json"

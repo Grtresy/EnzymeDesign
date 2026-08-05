@@ -554,6 +554,12 @@ approval/effect 或新增 campaign row。qualification report 与 AOX
 control plane 不以其存在推断 session/task 完成。AOX 只在独立 launch admission 边界验证 receipt，
 失败必须先于 root、sandbox、provider、runner、Chrome 与 MICU effect。
 
+qualification 的 owner/constraint registry 只登记 canonical owner、consumer 与 forbidden edge，
+不复制对象值也不在产品 runtime 读取。current strategy-neutrality/world-fidelity 场景可以通过
+public API、events、workspace 与 export 观察 trace 变换和 source-bound cause，但不能 seed 目标
+终态、调用 private service、直接写 SQLite 或让 report 反向决定 product mutation。scripted
+reachability 单独通过不构成 current admission。
+
 ## 7. Failure 与 scientific-attempt objects
 
 顶层 canonical objects：
@@ -590,11 +596,14 @@ terminal non-completed SandboxRun 另写
 selected scientific attempt 与 owner continuation。cause 与 wrapper 都是 append-only truth；
 wrapper 不覆盖 earliest cause，也不把 no-effect validation 改成业务终态。
 
-### 7.2 AOX public-only test conductor
+### 7.2 AOX public-only external operator
 
 AOX 不再把 observer、barrier 或 automatic campaign driver 存入 control plane。测试员通过
-public message/runtime-drain/approval/workspace/event commands推进；Host 仍独占上述 canonical
+public message/runtime-drain/approval/workspace/event commands推进；approval只在operator获得明确
+授权时解决。Host仍独占上述 canonical
 objects 与 mutation/external-effect authority。public command receipt 只证明一次请求的结果，
 空 drain、无 wakeup 或进程退出不创建 task/attempt/campaign terminal。sealed attempt bundle
 与 campaign decision 是 checkout 外 evidence，由 offline verifier/reducer 判定 eligibility，
-不能回写或替代 control-plane truth。
+不能回写或替代 control-plane truth。external operator不调用generic scientific mutation/
+finalizer，不保存agent action order，也不把incomplete canonical state纠正为规定的handoff；agent
+策略与pure final-state acceptance保持分离。

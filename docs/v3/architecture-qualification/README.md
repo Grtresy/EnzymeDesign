@@ -1,19 +1,11 @@
 # V3 可执行架构资格验证
 
 状态：deterministic qualification 与 AOX admission integration 已实现；每个 tracked
-correction 都会使前一份 report 失效。r43-r67 已永久 NO-GO；r68 在 root/session/attempt 前
-prelaunch blocked；r69 在authority/root/session/provider/MICU已消费但attempt创建前
-pre-admission blocked；r70在authority/slot/root/session/receipt已消费但首个drain与Host
-scientific authorization/admission/attempt前pre-runtime conductor blocked；r71在authority/
-positive slot/root/session/task/authorization/receipt/MICU已消费后，以typed
-`sandbox_image_missing`停在scientific admission/attempt/provider/HPC前。r68-r71均非canonical
-NO-GO且全部state不可复用。r72又因重复full qualification并发污染与不存在parent的recovery
-command停在prelive qualification，属于prelive conductor blocked而非canonical NO-GO；其full
-report、focused recheck、recovery与stop state同样不可复用。当前不预先命名下一rNN。后继
-numbered campaign 必须先在新的 clean commit 上生成并独立验证fresh full admission report。r73又因
-stale conductor HEAD shadow truth丢弃首份`789f1c1` report并串行重复full admission，且harness timeout
-只保留digest/GAP cascade而停在prelive conductor/qualification blocked；不是canonical NO-GO。全部
-r73 report/reproduction/stop state与旧persistent goal不可复用。
+correction 都会使前一份 report 失效。current admission 使用 invariant registry `@2`、
+owner/constraint registry、qualification report `@3` 与 AOX receipt `@3`，并强制消费独立的
+strategy-neutrality/world-fidelity proof。历史 rNN 结论和不可复用状态只见
+[aox-hmm-blank-world-cutover.md](../aox-hmm-blank-world-cutover.md)；本页不把它们复制为operator truth，
+也不预先命名下一 rNN。
 
 ## Authority boundary
 
@@ -43,7 +35,9 @@ adversarial verifier、signed CI provenance 或真实 provider/HPC/Chrome availa
 ## Canonical inputs and implementation
 
 - `invariant-registry.json` 是 closed canonical
-  `openzyme_v3_architecture_invariant_registry@1` authority。
+  `openzyme_v3_architecture_invariant_registry@2` authority，并绑定
+  `owner-constraint-registry.json` 的 current canonical digest。owner registry 只描述架构
+  ownership/consumer/forbidden edges，不进入 product runtime。
 - `registry-schema.md` 定义 byte、field、reference 与 selection closure。
 - `p0-closures.json` 是 canonical closed-P0 sidecar，绑定 baseline digest、原 red
   scenario、focused change 与 ancestor closure commit；pure verifier 会重算，不能人工
@@ -62,13 +56,16 @@ adversarial verifier、signed CI provenance 或真实 provider/HPC/Chrome availa
   schema、publication、pure verifier、admission 和 AOX consumer 保持不变；sidecar 不是
   admission artifact，也不能跨 invocation 复用。
 - `openzyme_host_api.architecture_qualification_report` 不运行 pytest、不写产品状态，
-  生成/验证current closed `openzyme_v3_architecture_qualification_report@2`；历史`@1`仅只读加载。
+  生成/验证current closed `openzyme_v3_architecture_qualification_report@3`；历史`@1/@2`仅只读加载。
 - `openzyme_host_api.aox_architecture_qualification` 生成 AOX launch/evidence 消费的
-  current closed `aox_architecture_qualification_receipt@2`；历史`@1`不得进入current admission。
+  current closed `aox_architecture_qualification_receipt@3`；历史`@1/@2`不得进入current admission。
 
-registry 闭合十个 family：wire contract、authority composition、identity semantics、
+registry 闭合十二个 family：wire contract、authority composition、identity semantics、
 reconciliation、bounded terminal convergence、restart/fencing、supervisor progress、
-operator retirement、boundary scale 与 evidence projection；AOX admission/receipt
+operator retirement、boundary scale、evidence projection、strategy neutrality 与 world fidelity。
+后两类分别通过合法trace transformations证明generic Harness不规定tool order/handoff，通过
+source-bound causal projection证明earliest typed cause在下一次decision前可见且无synthetic fallback。
+scripted AOX scenario只是一条reachability witness，不能独立满足current admission。AOX admission/receipt
 及 schema-disjoint run-class closure 场景归入 evidence projection。后者在零外部 effect
 下以真实 file-backed SQLite 证明 full-path diagnostic one-slot
 plan/consumption/root/decision，以及已退役 closure-stage raw run class、attempt-id family
@@ -138,8 +135,8 @@ harness、scenario evidence或source revalidation出现首个terminal failure后
 必须闭合完整process/source chain，`run_evidence_digest`同时绑定terminal source、phase observations、
 receipts、earliest cause与not-run set。
 
-current report/payload schema为`@2`，AOX receipt也为`@2`并额外绑定report schema、source identity
-digest与run-evidence digest。历史report/receipt`@1`只允许frozen evidence reader显式只读；pure
+current report/payload schema为`@3`，AOX receipt也为`@3`并额外绑定report schema、source identity、
+run-evidence、owner-registry与transformation-results digest。历史report/receipt`@1/@2`只允许frozen evidence reader显式只读；pure
 current verifier、pin、preflight、launch和reducer都返回version unsupported。operator-retirement
 eligibility/quarantine/unknown-effect由pure semantic calculation决定；suite仅保留一个秒级宽限的
 真实process-group containment probe，避免亚秒real-clock threshold成为业务policy。
@@ -236,8 +233,9 @@ verification 仍须独立通过，campaign 也必须由 operator 另行显式启
 AOX admission scenario 还执行 selected-chain contract closure：active registry 必须能以
 `for_new_attempt=true` 精确解析 `aox_blank_world_selected_chain@2`，historical `@1`
 必须返回 read-only rejection；new launch config schema 必须是
-`aox_blank_world_runtime_config@4`，其 conductor flags 必须证明 automatic drain/approval/
-rollover 全为 false；historical `@1..@3` 只允许 read-only verification。sandbox scientific backend probe 还必须从实际复制的
+`aox_blank_world_runtime_config@5`，且不存在 conductor/driver identity或`automatic_*` policy fields；
+historical `@1..@4` 只允许 read-only verification。absence of automatic orchestration由production
+reachability/static qualification证明，而不是sealed false flags。sandbox scientific backend probe 还必须从实际复制的
 SDK 读取 `aox_exact_calculation_manifest@1`，证明 candidate/conditional-empty/finalization
 exact callables、contract/implementation digests 与 fixed 17 path digest 都已安装；source
 snapshot 或 workflow prose 不能替代该证明。该 scenario source 与当前 source commit/test manifest

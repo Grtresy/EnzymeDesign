@@ -557,29 +557,6 @@ class ToolRouter:
                     )
                     raise
         try:
-            precondition = getattr(
-                self.dispatch_context,
-                "tool_dispatch_precondition",
-                None,
-            )
-            if callable(precondition):
-                precondition_result = precondition(
-                    self.dispatch_context,
-                    step_context,
-                    invocation,
-                )
-                if precondition_result is not None:
-                    if precondition_result.ok:
-                        raise ValueError(
-                            "tool dispatch precondition may return only a "
-                            "failed ToolResult or None"
-                        )
-                    return self._attach_failure_observation(
-                        step_context,
-                        invocation,
-                        sanitize_tool_result_diagnostics(precondition_result),
-                        governance=governance,
-                    )
             mutation_scope_factory = getattr(
                 self.dispatch_context,
                 "tool_mutation_writer_scope",

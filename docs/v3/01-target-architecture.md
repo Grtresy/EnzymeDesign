@@ -120,7 +120,7 @@ V3 里不再要求所有产品动作都投射为顶层 phase。
 - 注入 docs snippets、memory、tool results
 - 维护 teammate spawn / resume / shutdown seam
 - 为每个 agent 构建 focused restore context，并暴露 role-scoped tool surface
-- 决定何时调用 capability engines 或等待 agent team protocol 继续推进
+- 执行 agent 通过 typed tool/protocol 明确选择的 capability dispatch 或等待语义
 - 通过 tool-calling model 驱动顶层消息回合
 
 不负责：
@@ -128,6 +128,7 @@ V3 里不再要求所有产品动作都投射为顶层 phase。
 - 直接理解用户意图
 - 直接决定 task 的业务内容
 - 取代 master agent 做项目经理式编排
+- 以 session-specific phase、exact trace、自动 retry/wakeup 或 handoff matcher 限制 agent 策略
 
 - 直接成为业务记录存储层
 - 直接替代 external runner
@@ -146,7 +147,8 @@ Agent runtime / scheduler 负责让 master 与 teammate 都以“持久 agent �
 - 在 agent idle 时停止 LLM turn loop，只保留可恢复身份与 control-plane 状态
 - 将 user message、`protocol.send`、explicit delegation、显式 task auto-claim、background completion 转化为可审计的 wakeup event
 - 为被唤醒 agent 构建 focused restore context；master context 包含 conversation、task board、protocol threads 与 workspace evidence，teammate context 包含 identity、role、task/lane focus、unread inbox、protocol thread、workspace artifacts 与相关 memory
-- 执行 idle timeout、shutdown handshake、failure recovery 与重试策略
+- 执行 idle timeout、shutdown handshake，以及 owner 声明的 transport/runtime containment；
+  business recovery、alternate action 与是否重试仍由 agent 显式选择
 
 不负责：
 
@@ -379,9 +381,16 @@ OpenZyme 主线参考：
 
 ## 可执行架构资格的依赖方向
 
-稳定合同与当前产品实现是被验证对象；`invariant-registry.json`、production-composition 场景、
+稳定合同与当前产品实现是被验证对象；owner/constraint registry、`invariant-registry.json`、production-composition 场景、
 canonical report 和 pure verifier 依次位于其外侧。产品 runtime 不反向读取 qualification report
 来决定 task、agent 或 engine 行为。只有 AOX operator launch boundary 可消费当前 clean commit 的
 full/zero-P0 receipt，而且必须发生在任何 attempt root 或外部 effect 之前。首版只声明 trusted
 Host 的 `local_single_process_file_sqlite@1`，不得外推为 multi-process、multi-Host 或 distributed
 architecture guarantee。
+
+current registry必须把“约束owner”和“agent strategy”分开：actor、assignment、authority、effect、
+fence、quiescence、integrity、provenance、isolation、budget和atomicity由canonical owner执行；
+workflow task cardinality、report/source linkage和deliverable completeness由pure final-state
+acceptance判断。`strategy-neutrality`场景用合法trace transformation检查Harness没有固定tool顺序，
+`world-fidelity`场景检查source-bound earliest cause在下一次decision前真实可见。单条scripted
+reachability不构成这两类证明。

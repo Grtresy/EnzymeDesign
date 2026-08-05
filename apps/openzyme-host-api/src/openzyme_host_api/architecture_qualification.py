@@ -11,8 +11,13 @@ import re
 from typing import Mapping
 from typing import Sequence
 
+from .harness_owner_constraints import OWNER_CONSTRAINT_REGISTRY_ID
+from .harness_owner_constraints import OWNER_CONSTRAINT_REGISTRY_RELATIVE_PATH
+from .harness_owner_constraints import OWNER_CONSTRAINT_REGISTRY_SCHEMA_ID
+from .harness_owner_constraints import load_harness_owner_constraint_registry
 
-REGISTRY_SCHEMA_ID = "openzyme_v3_architecture_invariant_registry@1"
+
+REGISTRY_SCHEMA_ID = "openzyme_v3_architecture_invariant_registry@2"
 REGISTRY_ID = "openzyme_v3_architecture_invariants"
 REGISTRY_RELATIVE_PATH = Path(
     "docs/v3/architecture-qualification/invariant-registry.json"
@@ -23,9 +28,13 @@ QUALIFICATION_REPORT_SCHEMA_ID_V1 = "openzyme_v3_architecture_qualification_repo
 QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V1 = (
     "openzyme_v3_architecture_qualification_payload@1"
 )
-QUALIFICATION_REPORT_SCHEMA_ID = "openzyme_v3_architecture_qualification_report@2"
-QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID = (
+QUALIFICATION_REPORT_SCHEMA_ID_V2 = "openzyme_v3_architecture_qualification_report@2"
+QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V2 = (
     "openzyme_v3_architecture_qualification_payload@2"
+)
+QUALIFICATION_REPORT_SCHEMA_ID = "openzyme_v3_architecture_qualification_report@3"
+QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID = (
+    "openzyme_v3_architecture_qualification_payload@3"
 )
 
 REQUIRED_FAMILIES = (
@@ -37,8 +46,10 @@ REQUIRED_FAMILIES = (
     "operator-retirement",
     "reconciliation",
     "restart-fencing",
+    "strategy-neutrality",
     "supervisor-progress",
     "wire-contract",
+    "world-fidelity",
 )
 
 REQUIRED_P0_TRIGGERS = (
@@ -56,6 +67,7 @@ _TOP_LEVEL_FIELDS = frozenset(
         "external_ports",
         "implementation_files",
         "invariants",
+        "owner_constraint_registry",
         "p0_triggers",
         "profile",
         "registry_id",
@@ -64,6 +76,9 @@ _TOP_LEVEL_FIELDS = frozenset(
         "scenarios",
         "schema_id",
     }
+)
+_OWNER_CONSTRAINT_REGISTRY_FIELDS = frozenset(
+    {"content_digest", "path", "registry_id", "schema_id"}
 )
 _PROFILE_FIELDS = frozenset(
     {
@@ -212,6 +227,7 @@ class ValidatedQualificationOutputTarget:
 class ValidatedInvariantRegistry:
     payload: Mapping[str, object]
     registry_digest: str
+    owner_constraint_registry_digest: str
     source_path: Path | None = None
 
 
@@ -806,6 +822,28 @@ def validate_invariant_registry_bytes(
         raise ArchitectureQualificationRegistryError(
             f"registry.registry_id must be {REGISTRY_ID!r}"
         )
+    owner_binding = _object(
+        registry["owner_constraint_registry"],
+        label="owner_constraint_registry",
+        fields=_OWNER_CONSTRAINT_REGISTRY_FIELDS,
+    )
+    if owner_binding["path"] != OWNER_CONSTRAINT_REGISTRY_RELATIVE_PATH.as_posix():
+        raise ArchitectureQualificationRegistryError(
+            "owner_constraint_registry.path does not name the canonical registry"
+        )
+    if owner_binding["schema_id"] != OWNER_CONSTRAINT_REGISTRY_SCHEMA_ID:
+        raise ArchitectureQualificationRegistryError(
+            "owner_constraint_registry.schema_id is unsupported"
+        )
+    if owner_binding["registry_id"] != OWNER_CONSTRAINT_REGISTRY_ID:
+        raise ArchitectureQualificationRegistryError(
+            "owner_constraint_registry.registry_id is unsupported"
+        )
+    owner_registry = load_harness_owner_constraint_registry(root)
+    if owner_binding["content_digest"] != owner_registry.registry_digest:
+        raise ArchitectureQualificationRegistryError(
+            "owner_constraint_registry.content_digest differs from canonical bytes"
+        )
     _validate_profile(registry["profile"])
     required_families = _sorted_unique_texts(
         registry["required_families"],
@@ -815,7 +853,7 @@ def validate_invariant_registry_bytes(
     )
     if required_families != REQUIRED_FAMILIES:
         raise ArchitectureQualificationRegistryError(
-            "required_families must equal the exact schema-v1 family set"
+            "required_families must equal the exact schema-v2 family set"
         )
     _source_files(
         registry["implementation_files"],
@@ -859,6 +897,7 @@ def validate_invariant_registry_bytes(
     return ValidatedInvariantRegistry(
         payload=registry,
         registry_digest=digest,
+        owner_constraint_registry_digest=owner_registry.registry_digest,
         source_path=source_path,
     )
 
@@ -1279,8 +1318,10 @@ __all__ = [
     "PROFILE_ID",
     "QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID",
     "QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V1",
+    "QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V2",
     "QUALIFICATION_REPORT_SCHEMA_ID",
     "QUALIFICATION_REPORT_SCHEMA_ID_V1",
+    "QUALIFICATION_REPORT_SCHEMA_ID_V2",
     "REGISTRY_ID",
     "REGISTRY_RELATIVE_PATH",
     "REGISTRY_SCHEMA_ID",
