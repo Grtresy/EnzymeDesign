@@ -51,7 +51,13 @@ containers
 
 .opencode/
 
-.agents/
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/openzyme-validate-r-series/
+!.agents/skills/openzyme-validate-r-series/**
+!.agents/skills/openzyme-repair-r-series/
+!.agents/skills/openzyme-repair-r-series/**
 
 node_modules/
 

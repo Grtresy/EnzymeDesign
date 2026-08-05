@@ -1,0 +1,6 @@
+interface:
+  display_name: "OpenZyme R-Series Repair"
+  short_description: "Diagnose and repair AOX r-series failures safely"
+  default_prompt: "使用 $openzyme-repair-r-series 只读诊断最新 frozen AOX r-series failure，并在实施授权前停止。"
+policy:
+  allow_implicit_invocation: true

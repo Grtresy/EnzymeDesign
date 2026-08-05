@@ -1,0 +1,6 @@
+interface:
+  display_name: "OpenZyme R-Series Validation"
+  short_description: "Safely conduct public-only AOX r-series validation"
+  default_prompt: "使用 $openzyme-validate-r-series 对下一轮 fresh AOX r-series 做只读 readiness audit，并在第一个人工授权门停止。"
+policy:
+  allow_implicit_invocation: true
