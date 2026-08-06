@@ -700,15 +700,30 @@ identity、Core projection与digest，进入child-ready `@2`、startup `@4`和bu
 
 ### 9.5 当前启动失败回执
 
+`openzyme-aox-cutover check-config` 是无持久化、无外部副作用的公开配置预检。它使用与 `pin`
+相同的 production settings resolver、ledger identity resolution、effective-config builder 和 closed
+normalizer，只返回闭合 `aox_cutover_config_check@1`：`schema_id`、`status=valid`、
+`effective_config_schema_id` 与 `config_digest`。它不读取 qualification、不生成 identity/prerequisite/
+authority/state、不实例化 runner，也不接触 SSH/provider/MICU/Chrome。该回执不是 admission、pin 或
+runner availability 证明；`pin` 会重新计算配置。Codex conductor 不得用 private module import 替代它。
+
 `openzyme-aox-cutover` 的当前启动失败回执是闭合对象
-`aox_cutover_launch_failure@2`，必含 `schema_id`、`status` 与 `failure_code`。仅当失败源明确提供
-可公开的字段级原因时，回执才增加 `failure_details`；当前闭合 schema 失败只允许逻辑字段
-`identity` 以及可选的 `missing`、`unexpected`。配置值、Host/runner 路径、凭据、原始消息、异常表示和
-异常链始终留在私有边界。内部 `details` 的存在本身不构成公开许可。历史
-`aox_cutover_launch_failure@1` 只能作为冻结记录读取，不能冒充当前回执。
+`aox_cutover_launch_failure@3`，必含 `schema_id`、`status` 与 `failure_code`。仅当失败源明确提供
+可公开原因时，回执才增加 closed tagged-union `failure_details`。`kind=schema_field` 只允许逻辑字段
+`identity` 以及可选的 `missing`、`unexpected`；`kind=runner_attestation` 只允许 AOX `tool_id`、可选
+安全 `runner_run_id`、可选 `runner_attempt_receipt_digest`、`stage=runner_call|runner_result`、closed
+effect certainty 与可选安全 `runner_error_code`；code 只接受
+全大写执行码或全小写 source-causal code，不接受混合大小写或自由文本。配置值、
+Host/runner 路径、凭据、原始消息、异常表示和异常链始终留在私有边界。内部 `details` 的存在本身不
+构成公开许可。历史 `aox_cutover_launch_failure@1/@2` 只能作为冻结记录读取，不能冒充当前回执。
 
 AOX 有效配置中的 `research.mcp_enabled=true` 是 Host 权威能力投影，不读取
 `OPENZYME_RESEARCH_MCP_ENABLED`，也不再经过 `ResearchSettings.mcp_enabled`。若公开回执没有给出
 `failure_details`，操作员必须保留 `exact_identity_unproven`；源码检查可以形成或排除假设，却不能把
 假设升级为权威原因（canonical cause），更不能据此执行纠正后重试（corrected retry）、授权消费
 （authority consumption）或其他状态变更。
+
+`pin` 不是本地只读配置检查：它在 forced SSH runner 上执行四个 deterministic、non-scientific
+toolchain fixture，并可能创建 remote/local runner staging 和 output。它不启动正式科学 attempt 或
+Slurm workload，但准备授权必须明确覆盖这项真实 external effect。terminal pin failure 不自动重试；
+操作报告必须把实际 `pin_execution_count` 与持久 goal 的只读 `blocked_audit_count` 分开。

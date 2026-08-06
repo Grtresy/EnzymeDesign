@@ -35,12 +35,24 @@ source/process receipt chain、全部 selected scenario proven、零 open P0。�
 与 AOX receipt `@1/@2`只读；current AOX receipt为
 `aox_architecture_qualification_receipt@3`。scripted AOX happy path单独 green不能 admission。
 
+full admission 后、fresh pin 前，只运行 public `openzyme-aox-cutover check-config` 验证本次命令的
+完整有效配置。不得 import `openzyme_host_api.aox_cutover_launch`、private foundation/service、
+`OpenZymeSettings.from_env()` 或有效配置 builder 来自证；静态源码检查只能形成推论。
+`aox_cutover_config_check@1` 只证明本地 production 配置解析，不证明 qualification、runner 可达或
+pin。`pin` 会重新计算配置，并在 forced SSH runner 上执行四个 deterministic non-scientific fixture；
+这是需要 preparation 授权覆盖的真实 runner external effect，不得写成“未接触 HPC”。
+
 同一 canonical checkout 的 qualification 任意 mode/output 共用 nonblocking single-flight。
 一次只发出一条 command。若工具 yield `cell_id`/`session_id`，只能恢复该 exact handle；handle
 未 terminal 时不得重发等价命令、focused recheck 或另建 output。handle 失联时只做有界只读
 process/target 检查并停止，不采用另一 report、sidecar 或 partial bytes。output invalid、run
 active、source drift、typed terminal failure或non-admissible report都立即停止，不自动 recovery、
 relaunch、fallback GAP cascade或启动新 rNN。
+
+报告实际命令次数，不把 goal continuation 当作重新执行。至少分别记录
+`qualification_execution_count`、`config_check_execution_count`、`pin_execution_count`、
+`handle_resume_count` 与 `blocked_audit_count`；一次 terminal pin failure 后的只读 blocked audit 不得
+表述为多次 pin 失败。
 
 若以后获得 live 精确授权，Codex 只经 public Host API/CLI：提交原始用户目标，显式发出 bounded
 runtime drain，读取 public canonical state/inspect/export，并且只处理用户明确授权的 approval。

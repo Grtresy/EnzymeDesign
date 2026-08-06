@@ -1348,17 +1348,33 @@ ec69fd8 上的 `pin` 仅执行一次，公开回执只证明
 `OPENZYME_RESEARCH_MCP_ENABLED` 没有进入 AOX 的有效配置构造，不能据此推定本次根因。该状态属于
 prelaunch blocked，而非 canonical NO-GO；没有 root、session、attempt 或外部 effect，也没有重试权限。
 
-当前 `openzyme-aox-cutover` 以 `aox_cutover_launch_failure@2` 公开失败。稳定的
-`failure_code` 始终保留；只有失败源明确声明可公开的逻辑 schema 字段，才会通过
-`failure_details` 输出。内部 `details`、配置值、Host/runner 路径、凭据、消息与异常链不会自动越过
-公开边界。历史 `@1` 只作为冻结记录读取。无产品消费者的 `ResearchSettings.mcp_enabled` 已删除；
-AOX 的 `research.mcp_enabled=true` 继续由 Host 权威配置明确投影，避免并存的环境影子真值。
+当前 `openzyme-aox-cutover` 以 `aox_cutover_launch_failure@3` 公开失败。稳定的
+`failure_code` 始终保留；只有失败源明确声明可公开的 closed tagged-union 原因，才会通过
+`failure_details` 输出。`kind=schema_field` 只允许逻辑 schema 字段 `identity/missing/unexpected`；
+`kind=runner_attestation` 只允许 exact AOX `tool_id`、可选安全 run/attempt-receipt identity、
+`runner_call|runner_result`、closed effect certainty 与可选安全 `runner_error_code`。内部 `details`、
+配置值、Host/runner 路径、凭据、消息与
+异常链不会自动越过公开边界。历史 `@1/@2` 只作为冻结记录读取。无产品消费者的
+`ResearchSettings.mcp_enabled` 已删除；AOX 的 `research.mcp_enabled=true` 继续由 Host 权威配置
+明确投影，避免并存的环境影子真值。
 
 Codex 测试操作员可以自由检查当前代码、公开回执和封存状态，但必须区分三类信息：已经观测到的封存
 事实、依据当前源码得出的推论、尚未证实的假设。假设可以指导只读调查，却不能改写封存事实，也不能
 单独取得纠正后重试（corrected retry）、授权消费（authority consumption）或其他状态变更权限。公开
 证据未给出内部原因时，应如实保留不确定性并停在现有授权边界；这一规则约束的是证据与动作之间的关系，
 不规定 agent 的调查顺序。
+
+public `openzyme-aox-cutover check-config` 是 pin 前唯一可执行的配置闭合入口。它复用 production
+settings resolver、ledger identity、effective-config builder 与 closed normalizer，只返回
+`aox_cutover_config_check@1` 的 schema id 和 config digest；不读取 qualification，不写 state，不创建
+runner，也不产生 SSH/provider/MICU/Chrome effect。Codex 不得再直接 import Host private
+settings/builder/service 来自证配置。静态源码检查仍可帮助理解合同，但只属于推论。
+
+`pin` 与 `check-config` 的 effect 边界不同：`pin` 会通过 forced SSH 依次执行 MAFFT、CD-HIT、
+hmmbuild、hmmalign 的 deterministic non-scientific fixture，并产生真实 runner staging/output；因此准备
+授权必须如实覆盖 runner attestation，不能描述为“未接触 HPC”。一次 terminal pin failure 后立即停止；
+goal 为满足状态协议进行的后续只读审计不等于再次执行 pin，报告必须分开列出
+`pin_execution_count` 与 `blocked_audit_count`。
 
 ---
 

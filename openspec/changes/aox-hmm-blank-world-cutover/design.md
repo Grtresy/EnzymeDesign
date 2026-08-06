@@ -1564,6 +1564,34 @@ Research MCP；AOX 有效配置继续把这项 Host 权威能力投影为 `resea
 本次修复仅运行 non-live 验证，不启动下一 rNN、live、MICU、provider、HPC 或 Chrome，且未获明确要求
 时不提交。
 
+### 2026-08-06 公开配置预检与 runner 因果闭合
+
+后续 fresh preparation 证明了上一版验证 skill 仍把“仅使用公开接口”和“调用有效配置 builder”写在
+同一流程里。Codex 因而直接 import production 私有模块并把返回值当作配置闭合证明；真正的 `pin`
+随后只执行一次，在第一个 forced-SSH toolchain fixture 上以
+`aox_launch_toolchain_pin_execution_failed` 终止。旧公开回执丢弃了 runner 已经提供的安全
+`error_code` 与 effect certainty，于是无法区分 transport、payload、output validation 或 projection
+failure。该状态发生在 identity/prerequisite/plan/root/session/attempt 创建前，是 preplan blocked，
+不是 canonical NO-GO，也不能据 goal 的多次只读 blocked audit 写成多次 pin 失败。
+
+forward repair 新增 public `check-config`。它与 `pin` 共用 `OpenZymeSettings.from_env()`、ledger 解析、
+`build_aox_cutover_effective_config()` 和闭集 normalizer，只返回 current config schema id 与 digest；
+不接收 qualification report，不写文件，不创建 authority/state，也不实例化 runner。它是可重复的本地
+precheck，不是 admission、pin 或 external availability receipt；`pin` 必须重新计算配置。Codex skill
+禁止直接 import Host 私有 settings/builder/service，静态源码检查只可形成推论，不能代替该 public
+receipt。
+
+因为 `pin` 的 forced-SSH fixture 会真实连接 runner、执行四个非科学 deterministic payload 并产生
+runner staging/output，所以它不是“零 HPC 接触”的本地配置检查。准备授权必须明确覆盖这一真实但
+非正式科学 workload 的外部 effect。当前 launch failure 升级为 `@3`：schema branch 以
+`kind=schema_field` 保留 `identity/missing/unexpected`；runner branch 以
+`kind=runner_attestation` 保留安全 `tool_id`、可选 run/attempt-receipt identity、
+`runner_call|runner_result`、effect certainty 和可选
+machine `runner_error_code`。runner code 只接受全大写执行码或全小写 source-causal code，拒绝混合
+大小写与自由文本。任意路径、credential、原始消息、异常文本和未知字段继续被丢弃；
+没有 runner receipt 时 effect certainty 明确为 `unproven`。terminal `pin` failure 立即停止，不自动
+重试；报告分别记录 `pin_execution_count` 与 `blocked_audit_count`。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

@@ -1,6 +1,6 @@
 ---
 name: openzyme-validate-r-series
-description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZyme AOX/HMM R 系列验证，并在 pin 前从当前合同闭合完整启动配置。用户要求就绪审计、qualification/admission、精确授权计划、获批的 live rNN campaign、封存证据或 canonical GO/NO-GO 核验时使用。默认只读；不得用它诊断并实施系统性修复、修改代码或提交 commit。
+description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZyme AOX/HMM R 系列验证，并在 pin 前通过公开 check-config 闭合完整启动配置。用户要求就绪审计、qualification/admission、精确授权计划、获批的 live rNN campaign、封存证据或 canonical GO/NO-GO 核验时使用。默认只读；不得用它诊断并实施系统性修复、修改代码或提交 commit。
 ---
 
 # OpenZyme R 系列验证
@@ -45,13 +45,14 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZym
 
 ## 在 pin 前闭合启动配置
 
-把科学策略留给 OpenZyme agent，但把操作员启动配置视为必须如实呈现的外部约束。任何获批的全新 `pin` 之前，先完成下列不产生外部影响的准备；不得用 `pin` 本身试探配置：
+把科学策略留给 OpenZyme agent，把操作员启动配置交给产品公开入口闭合：
 
-1. 从公开 CLI 的真实设置入口、有效配置构建器、当前闭集 schema、操作说明、active OpenSpec 与当前合同追踪完整配置链。至少逐项核对普通 Host 默认值可能偏离 AOX 合同的可靠性（`reliability`）、live 开关、LLM 上限、execution/ledger 和凭据存在性字段；不要只检查上一次失败暴露的字段。
-2. 为每个相关字段确认当前来源、存在性、类型、合同允许集合与本次实际值。当前代码和合同优先于历史会话、记忆、示例命令及旧环境；敏感字段只记录可用性和安全身份，不读取或打印秘密值。
-3. 若任一普通 Host 默认值不属于当前 AOX 闭集 schema，禁止直接使用当前环境执行 `pin`。若用户已批准包含 `pin` 的准备阶段，可把从当前合同证明出的非敏感启动值作为该命令的临时环境整组原子应用；这不等于修改仓库、`.env`、用户 shell 或产品真状态。
-4. 同一完整启动配置必须用于 `pin` 以及后续所有会重算其 `config_digest` 的已授权公开命令。不得只修补公开失败字段、逐字段试跑、猜测未公开值，或在同一失败后发起纠正后重试（`corrected retry`）。
-5. 发出 `pin` 前先形成一份脱敏检查表，证明完整配置、设置来源、qualification HEAD、ledger 和输出目标相互一致。若无法在现有权限内证明，停在准备阶段阻塞并说明缺失证据；不要制造 Host failure code，也不要消费 live authority。
+1. full admission 通过后，使用同一 command-scoped launch profile 运行一次 public `openzyme-aox-cutover check-config`。它是 pin 前唯一可执行的配置闭合证明；保存 `aox_cutover_config_check@1`，并核对 current config schema 与 digest。
+2. 禁止 import 或执行 `openzyme_host_api.aox_cutover_launch`、private foundation/repository/service、`OpenZymeSettings.from_env()` 或 effective-config builder。可以只读检查源码和合同以理解字段来源，但结果只属于源码推论，不能冒充 product receipt。
+3. 非敏感、合同明确要求且已由 preparation 授权覆盖的 command-scoped 值可以整组原子传给 `check-config` 与随后 `pin`；不得写仓库、`.env` 或用户 shell，也不得逐字段试跑、猜测未公开值或在 terminal failure 后 corrected retry。秘密只以存在性或安全身份进入产品回执，不读取或打印值。
+4. `check-config` 只证明本地 production 配置解析，不证明 qualification、checkout identity、runner availability 或 pin。`pin` 必须在完全相同的 launch profile 下重新计算配置。
+5. `pin` 是首次真实 runner attestation：它通过 forced SSH 执行四个 deterministic non-scientific fixture，并可能创建 runner staging/output。把它如实列为 preparation 的 external effect；不得说成“没有接触 HPC”，也不得把它与正式 scientific/Slurm workload 混为一谈。
+6. 若 public check 失败，或无法证明 profile、ledger、qualification HEAD 与 output target 一致，立即停在准备阶段；不调用 private builder 补证，不运行 `pin`，不制造 Host failure code，也不消费 authority。
 
 ## 执行验证
 
@@ -63,6 +64,11 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZym
 6. 新出现的 manual approval 进入同一个单次授权门；不得自动批准。Runtime idle、no wakeup、zero-signal drain、tool success、child exit 或 process settlement都不自动构成业务终态。
 
 不要把 operation failure 自动升级成 campaign failure。保留 earliest source-bound typed cause、effect certainty 和 wrapper；只有 current canonical state 与 selected-chain contract 能决定是否仍具备继续资格。
+
+分别记录 `qualification_execution_count`、`config_check_execution_count`、`pin_execution_count`、
+`handle_resume_count` 和 `blocked_audit_count`。只有实际发出对应 public command 才增加 execution
+count；恢复 yielded handle 不增加 command count，goal continuation 的只读授权/状态复核只增加
+`blocked_audit_count`。不得把一次 pin 加两次 blocked audit 写成“三次 pin 失败”。
 
 ## 证据纪律
 
@@ -81,7 +87,7 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZym
 若失败或失去资格，立即停止新的 live action，不修改仓库，并报告：
 
 - exact HEAD、rNN、campaign/plan/authority 和真实 control identities；
-- earliest typed cause、outer wrappers、effect certainty 与 external effects；
+- earliest typed cause、outer wrappers、effect certainty、external effects 与分项命令/audit 次数；
 - MICU/cost/time delta、process settlement 和完成/未完成状态；
 - 哪些 state 永久不可复用；
 - failure 属于产品、Harness、supervision、provider、环境还是模型策略；

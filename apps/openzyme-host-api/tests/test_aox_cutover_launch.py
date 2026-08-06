@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from openzyme_host_api import aox_cutover_cli as cli
 from openzyme_host_api import aox_cutover_launch as launch
 from openzyme_pipeline import aox_motif
 from openzyme_runtime import ExecutionSettings
@@ -134,6 +135,42 @@ def test_effective_config_is_deterministic_policy_free_world_v5(tmp_path: Path) 
     assert first.payload["host"]["background_runtime_enabled"] is False
     assert first.settings.llm.max_tokens == 1_024
     assert first.settings.llm.timeout == 45.0
+
+
+def test_public_config_check_uses_real_effective_config_without_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    hpc_config = tmp_path / "hpc.toml"
+    hpc_config.write_text("[cluster]\nssh_target='test-host'\n", encoding="utf-8")
+    ledger = tmp_path / "micu.sqlite3"
+    settings = _settings(ledger_path=ledger, hpc_config_path=hpc_config)
+    monkeypatch.setattr(
+        cli.OpenZymeSettings,
+        "from_env",
+        classmethod(lambda cls: settings),
+    )
+    monkeypatch.setattr(
+        cli,
+        "pin_aox_cutover_launch",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError(kwargs)),
+    )
+    before = {path.name for path in tmp_path.iterdir()}
+    args = cli.build_parser().parse_args(
+        ["check-config", "--ledger-path", str(ledger)]
+    )
+
+    assert cli._check_config(args) == 0
+
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["schema_id"] == "aox_cutover_config_check@1"
+    assert receipt["status"] == "valid"
+    assert receipt["effective_config_schema_id"] == (
+        "aox_blank_world_runtime_config@5"
+    )
+    assert receipt["config_digest"].startswith("sha256:")
+    assert {path.name for path in tmp_path.iterdir()} == before
 
 
 def test_effective_config_is_public_and_does_not_embed_local_paths(tmp_path: Path) -> None:
@@ -278,7 +315,87 @@ def test_effective_config_maps_closed_schema_failure_to_launch_error(
 
     assert error.value.code == "aox_launch_effective_config_schema_invalid"
     assert error.value.details == {"identity": "effective_config.llm"}
-    assert error.value.public_details == {"identity": "effective_config.llm"}
+    assert error.value.public_details == {
+        "kind": "schema_field",
+        "identity": "effective_config.llm",
+    }
+
+
+@pytest.mark.parametrize(
+    "runner_error_code",
+    ["SSH_CONNECTION_TIMEOUT", "transport_connect_failed"],
+)
+def test_toolchain_pin_preserves_safe_runner_failure_cause(
+    tmp_path: Path,
+    runner_error_code: str,
+) -> None:
+    effective = _effective(tmp_path)
+    execution = effective.payload["execution"]
+    assert isinstance(execution, dict)
+    expectations = execution["aox_runner_contract_expectations"]
+    assert isinstance(expectations, dict)
+
+    class FailedRunner:
+        def call_tool(self, name: str, arguments: dict[str, object]) -> object:
+            assert name == "exec.run"
+            assert arguments["mode_override"] == "ssh"
+            return {
+                "run_id": "run_aox_pin_mafft",
+                "status": "failed",
+                "exit_code": 255,
+                "selected_mode": "ssh",
+                "error_code": runner_error_code,
+                "effect_certainty": "no_effect",
+                "runner_attempt_receipt_digest": "sha256:" + "b" * 64,
+            }
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch.attest_aox_toolchain_image_digests(
+            server=FailedRunner(),  # type: ignore[arg-type]
+            repo_root=launch.REPO_ROOT,
+            runner_contract_expectations=expectations,
+        )
+
+    assert error.value.code == "aox_launch_toolchain_pin_execution_failed"
+    assert error.value.public_details == {
+        "kind": "runner_attestation",
+        "tool_id": "bio_tools.mafft",
+        "stage": "runner_result",
+        "effect_certainty": "no_effect",
+        "runner_run_id": "run_aox_pin_mafft",
+        "runner_attempt_receipt_digest": "sha256:" + "b" * 64,
+        "runner_error_code": runner_error_code,
+    }
+
+
+def test_toolchain_pin_does_not_publish_unsealed_runner_exception_text(
+    tmp_path: Path,
+) -> None:
+    effective = _effective(tmp_path)
+    execution = effective.payload["execution"]
+    assert isinstance(execution, dict)
+    expectations = execution["aox_runner_contract_expectations"]
+    assert isinstance(expectations, dict)
+
+    class FailedRunner:
+        def call_tool(self, name: str, arguments: dict[str, object]) -> object:
+            del name, arguments
+            raise RuntimeError("private runner locator")
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch.attest_aox_toolchain_image_digests(
+            server=FailedRunner(),  # type: ignore[arg-type]
+            repo_root=launch.REPO_ROOT,
+            runner_contract_expectations=expectations,
+        )
+
+    assert error.value.public_details == {
+        "kind": "runner_attestation",
+        "tool_id": "bio_tools.mafft",
+        "stage": "runner_call",
+        "effect_certainty": "unproven",
+    }
+    assert "private runner locator" not in json.dumps(error.value.public_details)
 
 
 def test_effective_config_uses_canonical_host_mcp_capability(

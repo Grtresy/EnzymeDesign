@@ -138,6 +138,18 @@ _WORKFLOW_REF_PATTERN = re.compile(
     r"^workflow:[a-z0-9][a-z0-9._-]{0,127}"
     r"@[0-9]+\.[0-9]+\.[0-9]+#sha256:[0-9a-f]{64}$"
 )
+_PUBLIC_RUNNER_ERROR_CODE_PATTERN = re.compile(
+    r"(?:[A-Z][A-Z0-9_]{0,63}|[a-z][a-z0-9_]{0,95})"
+)
+_PUBLIC_RUNNER_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_PUBLIC_RUNNER_EFFECT_CERTAINTIES = frozenset(
+    {
+        "no_effect",
+        "dispatch_in_doubt",
+        "effect_known",
+        "terminal_known",
+    }
+)
 
 
 class AoxCutoverLaunchError(RuntimeError):
@@ -155,6 +167,52 @@ class AoxCutoverLaunchError(RuntimeError):
         self.public_details = (
             {} if public_details is None else dict(public_details)
         )
+
+
+def _toolchain_pin_public_failure_details(
+    *,
+    tool_id: str,
+    stage: str,
+    result: Mapping[str, object] | None = None,
+    exception: Exception | None = None,
+) -> dict[str, object]:
+    """Project only closed, source-bound runner facts across the public boundary."""
+
+    details: dict[str, object] = {
+        "kind": "runner_attestation",
+        "tool_id": tool_id,
+        "stage": stage,
+        "effect_certainty": "unproven",
+    }
+    if result is not None:
+        effect_certainty = result.get("effect_certainty")
+        if effect_certainty in _PUBLIC_RUNNER_EFFECT_CERTAINTIES:
+            details["effect_certainty"] = effect_certainty
+        runner_run_id = result.get("run_id")
+        if (
+            isinstance(runner_run_id, str)
+            and _PUBLIC_RUNNER_ID_PATTERN.fullmatch(runner_run_id) is not None
+        ):
+            details["runner_run_id"] = runner_run_id
+        runner_attempt_receipt_digest = result.get(
+            "runner_attempt_receipt_digest"
+        )
+        if (
+            isinstance(runner_attempt_receipt_digest, str)
+            and _DIGEST_PATTERN.fullmatch(runner_attempt_receipt_digest) is not None
+        ):
+            details["runner_attempt_receipt_digest"] = (
+                runner_attempt_receipt_digest
+            )
+        error_code = result.get("error_code")
+    else:
+        error_code = getattr(exception, "error_code", None)
+    if (
+        isinstance(error_code, str)
+        and _PUBLIC_RUNNER_ERROR_CODE_PATTERN.fullmatch(error_code) is not None
+    ):
+        details["runner_error_code"] = error_code
+    return details
 
 
 @dataclass(frozen=True, slots=True)
@@ -1033,7 +1091,7 @@ def build_aox_cutover_effective_config(
             "aox_launch_effective_config_schema_invalid",
             "AOX cutover effective configuration violates its closed schema",
             details=public_details,
-            public_details=public_details,
+            public_details={"kind": "schema_field", **public_details},
         ) from exc
     return AoxCutoverEffectiveConfig(
         settings=effective,
@@ -1251,6 +1309,11 @@ def attest_aox_toolchain_image_digests(
                     "tool_id": tool_id,
                     "failure_type": type(exc).__name__,
                 },
+                public_details=_toolchain_pin_public_failure_details(
+                    tool_id=tool_id,
+                    stage="runner_call",
+                    exception=exc,
+                ),
             ) from exc
         if (
             not isinstance(result, Mapping)
@@ -1264,6 +1327,11 @@ def attest_aox_toolchain_image_digests(
                 "aox_launch_toolchain_pin_execution_failed",
                 "AOX toolchain pin did not complete as an authoritative SSH run",
                 details={"tool_id": tool_id},
+                public_details=_toolchain_pin_public_failure_details(
+                    tool_id=tool_id,
+                    stage="runner_result",
+                    result=result if isinstance(result, Mapping) else None,
+                ),
             )
         runtime_identity = result.get("toolchain_runtime_identity")
         if (

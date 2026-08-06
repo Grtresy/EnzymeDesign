@@ -3272,3 +3272,37 @@ There is no production automatic live command. Formal acceptance still
 requires a future separately approved exact-three plan after a fresh clean full
 admission and pin, public-only Codex coordination, three eligible bundles and a
 sealed offline reducer decision. No prior consumed plan is authority.
+
+### 2026-08-06 preplan runner-attestation blocker and forward correction
+
+A fresh preparation on clean commit
+`63775e24b91f68b5c486a062e514ecc493d0b020` passed full admission and a
+conductor-built configuration precheck, then executed `pin` exactly once. The
+first forced-SSH runner attestation terminated as
+`aox_launch_toolchain_pin_execution_failed`; no identity, prerequisite, pin
+commit, authority plan, root, session or attempt was created. The public
+`aox_cutover_launch_failure@2` did not preserve the runner's safe cause, so the
+exact transport/tool/projection identity remains unproven. This is a preplan
+blocked preparation, not a canonical NO-GO. Later goal continuations were
+read-only blocked audits, not additional pin executions, and no state from that
+transaction is reusable.
+
+The forward contract adds side-effect-free public
+`openzyme-aox-cutover check-config`, backed by the same production settings and
+effective-config normalizer as `pin`. It emits only
+`aox_cutover_config_check@1` schema/digest facts and never creates a runner or
+state. Codex must not replace it with private Host imports. `pin` remains the
+first real external attestation: it executes four deterministic,
+non-scientific fixtures through forced SSH and may create runner staging and
+output, although it does not create a formal scientific attempt or Slurm
+workload.
+
+Current launch failures use `aox_cutover_launch_failure@3`. Its schema-field
+branch preserves only `kind=schema_field` plus safe logical field identities;
+its runner branch preserves only `kind=runner_attestation`, the exact AOX tool,
+optional safe run/attempt-receipt identity, call/result stage, closed effect
+certainty and an optional validated runner machine code. Paths, credentials,
+raw messages and exception chains remain
+private. A terminal pin failure stops the preparation without automatic retry,
+and reports must separate actual command execution counts from read-only goal
+audit counts.

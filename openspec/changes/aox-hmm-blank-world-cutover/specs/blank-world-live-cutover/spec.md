@@ -65,14 +65,28 @@ Allowed prerequisites MUST contain exactly `git_commit`, `config_digest`, `workf
 - **WHEN** the effective owner policy leaves any AOX provider/HPC route on legacy ownership, runtime drain is not `command_v1`, mutation closure is not `generic_v1`, or any of those fields drift between pin, consumption and preflight
 - **THEN** pin fails before forced-SSH attestation, or consumption/preflight fails before session/attempt-root creation, and the reliability preimage participates in the canonical config digest
 
-### Requirement: 可验证且脱敏的启动失败因果
-当前 `openzyme-aox-cutover` 启动命令 SHALL 以闭合的 `aox_cutover_launch_failure@2` 公开失败。该对象 MUST 包含 `schema_id`、`status` 与 `failure_code`；只有失败源明确标记为可公开时，才 MAY 增加 `failure_details`。`failure_details` 只能保留逻辑 schema 字段标识 `identity` 以及可选的 `missing`、`unexpected`，不得包含配置值、Host/runner 路径、凭据、原始消息、异常表示或异常链。内部 `details` 不得因存在而自动升级为公开证据。历史 `aox_cutover_launch_failure@1` 只可作为冻结记录读取，不得冒充当前失败 receipt。
+### Requirement: 可验证且脱敏的启动配置与失败因果
+`openzyme-aox-cutover check-config` SHALL 是无持久化和无外部副作用的公开配置预检。它 MUST 使用与 `pin` 相同的 production settings resolver、ledger identity resolution、effective-config builder 与 closed normalizer，并且成功时只返回闭合 `aox_cutover_config_check@1`：`schema_id`、`status=valid`、`effective_config_schema_id` 与 `config_digest`。它 MUST NOT 接收或生成 qualification、identity、prerequisite、authority 或 state，不得实例化 runner、连接 SSH、执行 fixture 或接触 provider/MICU/Chrome。该 receipt 只证明本次本地配置解析；`pin` MUST 重新计算配置，且该 receipt 不得冒充 admission、pin、runner availability 或 external-effect 证明。测试操作员不得直接 import private settings/builder/service 来替代该公开命令。
+
+当前 `openzyme-aox-cutover` 启动命令 SHALL 以闭合的 `aox_cutover_launch_failure@3` 公开失败。该对象 MUST 包含 `schema_id`、`status` 与 `failure_code`；只有失败源明确标记为可公开时，才 MAY 增加 closed tagged-union `failure_details`。schema branch MUST 使用 `kind=schema_field`，并只保留逻辑字段标识 `identity` 以及可选的 `missing`、`unexpected`。runner branch MUST 使用 `kind=runner_attestation`，并只保留 AOX contract `tool_id`、可选安全 `runner_run_id`、可选 `runner_attempt_receipt_digest`、`stage=runner_call|runner_result`、closed effect certainty 与可选的安全 machine `runner_error_code`；code 只能是全大写执行码或全小写 source-causal code，不接受混合大小写或自由文本。它不得包含配置值、Host/runner 路径、凭据、原始消息、异常表示或异常链。内部 `details` 不得因存在而自动升级为公开证据。历史 `aox_cutover_launch_failure@1/@2` 只可作为冻结记录读取，不得冒充当前失败 receipt。
 
 AOX 有效配置中的 `research.mcp_enabled=true` SHALL 来自 Host 的权威能力投影，不得从无产品消费者的 `OPENZYME_RESEARCH_MCP_ENABLED` 环境开关或 `ResearchSettings` 影子字段推导。Codex 测试操作员 MUST 区分封存观测、依据当前源码形成的推论与尚未证实的假设；没有公开内部事实时必须保留 `exact_identity_unproven`，不得仅凭假设请求或执行纠正后重试（corrected retry）、授权消费（authority consumption）或其他状态变更。
 
 #### Scenario: 保留字段级原因而不泄露配置值
 - **WHEN** 有效配置违反闭合 schema，且 schema 校验器给出安全的逻辑字段标识
-- **THEN** CLI 在解析实际身份、创建 attempt root 或产生 MICU/provider/runner effect 之前返回 `aox_cutover_launch_failure@2`，以 `failure_code=aox_launch_effective_config_schema_invalid` 保留外层原因，并只在 `failure_details` 中投影获准的字段标识
+- **THEN** `check-config` 或 `pin` 在解析实际身份、创建 attempt root 或产生 MICU/provider/runner effect 之前返回 `aox_cutover_launch_failure@3`，以 `failure_code=aox_launch_effective_config_schema_invalid` 保留外层原因，并只在 `failure_details.kind=schema_field` 中投影获准的字段标识
+
+#### Scenario: 公开预检不通过私有实现自证
+- **WHEN** Codex 准备一次 fresh pin 并需要证明当前启动配置可被 AOX 闭集接受
+- **THEN** 它调用 public `check-config` 并保存脱敏 receipt；不得 import 或执行 `openzyme_host_api.aox_cutover_launch`、private foundation/service 或 settings builder，且预检不产生 runner、provider、MICU、authority 或 repository effect
+
+#### Scenario: 保留 runner 最早类型化原因
+- **WHEN** forced-SSH toolchain pin 返回 terminal runner result，且其中有安全 `error_code` 与 effect certainty
+- **THEN** CLI 返回 `aox_cutover_launch_failure@3`，保留外层 `aox_launch_toolchain_pin_execution_failed`，并在 `failure_details.kind=runner_attestation` 中投影 exact tool、可用的 run/receipt identity、result stage、effect certainty 与同一 source-bound `runner_error_code`；不得把它压平为只有 digest 或 generic wrapper
+
+#### Scenario: runner 调用异常保持 effect 未证明
+- **WHEN** runner boundary 在返回闭合 result 前抛出异常
+- **THEN** CLI 只公开 exact tool、`stage=runner_call` 与 `effect_certainty=unproven`，仅在异常本身携带符合安全 machine-code schema 的 code 时公开该 code，且不输出异常类型、消息、路径或 chain
 
 #### Scenario: 内部详情不自动成为公开证据
 - **WHEN** 启动错误内部 `details` 含有私有值、路径、凭据或任意异常文本，但错误源没有明确提供 `public_details`
@@ -81,6 +95,10 @@ AOX 有效配置中的 `research.mcp_enabled=true` SHALL 来自 Host 的权威�
 #### Scenario: 未证明的假设不得授权纠正后重试
 - **WHEN** 冻结的公开失败只有外层 wrapper，源码检查只能缩小可能原因而不能证明精确身份
 - **THEN** 测试操作员报告已证明事实与不确定性并停在现有权限边界，不注入猜测的配置，不重试 `pin`，也不消费 authority
+
+#### Scenario: 区分一次命令与多次阻塞审计
+- **WHEN** 一次 `pin` terminal failure 后，持久 goal 为满足状态协议执行后续只读 blocked audit
+- **THEN** 报告分别给出 `pin_execution_count` 与 `blocked_audit_count`；只读 audit 不得被描述为另一轮 pin failure，也不得重新执行等价命令
 
 ### Requirement: One-message canonical product path
 A positive attempt SHALL begin with one user message through `POST /v3/sessions/{session_id}/messages` and SHALL progress only through resident master/teammate turns, durable signals, canonical delegation, approvals, persistent sandbox execution, Host-supervised providers/HPC, artifact registration, task business exits, and `report.publish`.

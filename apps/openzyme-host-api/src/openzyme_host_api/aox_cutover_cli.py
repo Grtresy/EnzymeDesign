@@ -9,6 +9,7 @@ import re
 import sys
 import tempfile
 
+from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime import REPO_ROOT
 
 from .aox_architecture_qualification import AoxArchitectureQualificationError
@@ -112,13 +113,94 @@ _PUBLIC_SCHEMA_PATH_PATTERN = re.compile(
     r"^effective_config(?:\.[A-Za-z0-9_-]+|\[[0-9]+\])*$"
 )
 _PUBLIC_SCHEMA_FIELD_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,255}$")
+_PUBLIC_RUNNER_TOOL_ID_PATTERN = re.compile(r"^[a-z][a-z0-9._-]{0,127}$")
+_PUBLIC_RUNNER_ERROR_CODE_PATTERN = re.compile(
+    r"(?:[A-Z][A-Z0-9_]{0,63}|[a-z][a-z0-9_]{0,95})"
+)
+_PUBLIC_RUNNER_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_PUBLIC_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
+_PUBLIC_RUNNER_STAGES = frozenset({"runner_call", "runner_result"})
+_PUBLIC_RUNNER_EFFECT_CERTAINTIES = frozenset(
+    {
+        "no_effect",
+        "dispatch_in_doubt",
+        "effect_known",
+        "terminal_known",
+        "unproven",
+    }
+)
 
 
 def _public_launch_failure_details(
     exc: AoxCutoverLaunchError,
 ) -> dict[str, object] | None:
     raw = exc.public_details
-    if not raw or not set(raw).issubset({"identity", "missing", "unexpected"}):
+    kind = raw.get("kind") if raw else None
+    if kind == "runner_attestation":
+        if not set(raw).issubset(
+            {
+                "kind",
+                "tool_id",
+                "stage",
+                "effect_certainty",
+                "runner_error_code",
+                "runner_run_id",
+                "runner_attempt_receipt_digest",
+            }
+        ):
+            return None
+        tool_id = raw.get("tool_id")
+        stage = raw.get("stage")
+        effect_certainty = raw.get("effect_certainty")
+        if (
+            not isinstance(tool_id, str)
+            or _PUBLIC_RUNNER_TOOL_ID_PATTERN.fullmatch(tool_id) is None
+            or stage not in _PUBLIC_RUNNER_STAGES
+            or effect_certainty not in _PUBLIC_RUNNER_EFFECT_CERTAINTIES
+        ):
+            return None
+        normalized_runner: dict[str, object] = {
+            "kind": kind,
+            "tool_id": tool_id,
+            "stage": stage,
+            "effect_certainty": effect_certainty,
+        }
+        if "runner_run_id" in raw:
+            runner_run_id = raw["runner_run_id"]
+            if (
+                not isinstance(runner_run_id, str)
+                or _PUBLIC_RUNNER_ID_PATTERN.fullmatch(runner_run_id) is None
+            ):
+                return None
+            normalized_runner["runner_run_id"] = runner_run_id
+        if "runner_attempt_receipt_digest" in raw:
+            runner_attempt_receipt_digest = raw[
+                "runner_attempt_receipt_digest"
+            ]
+            if (
+                not isinstance(runner_attempt_receipt_digest, str)
+                or _PUBLIC_DIGEST_PATTERN.fullmatch(
+                    runner_attempt_receipt_digest
+                )
+                is None
+            ):
+                return None
+            normalized_runner["runner_attempt_receipt_digest"] = (
+                runner_attempt_receipt_digest
+            )
+        if "runner_error_code" in raw:
+            runner_error_code = raw["runner_error_code"]
+            if (
+                not isinstance(runner_error_code, str)
+                or _PUBLIC_RUNNER_ERROR_CODE_PATTERN.fullmatch(runner_error_code)
+                is None
+            ):
+                return None
+            normalized_runner["runner_error_code"] = runner_error_code
+        return normalized_runner
+    if kind != "schema_field" or not set(raw).issubset(
+        {"kind", "identity", "missing", "unexpected"}
+    ):
         return None
     identity = raw.get("identity")
     if (
@@ -126,7 +208,7 @@ def _public_launch_failure_details(
         or _PUBLIC_SCHEMA_PATH_PATTERN.fullmatch(identity) is None
     ):
         return None
-    normalized: dict[str, object] = {"identity": identity}
+    normalized: dict[str, object] = {"kind": kind, "identity": identity}
     for key in ("missing", "unexpected"):
         if key not in raw:
             continue
@@ -143,6 +225,18 @@ def _public_launch_failure_details(
             return None
         normalized[key] = list(values)
     return normalized
+
+
+def _configured_settings_and_ledger(
+    ledger_path: Path | None,
+) -> tuple[OpenZymeSettings, Path]:
+    settings = OpenZymeSettings.from_env()
+    resolved_ledger = (
+        Path(settings.test.live_llm.token_ledger_path)
+        if ledger_path is None
+        else ledger_path
+    )
+    return settings, resolved_ledger
 
 
 def _pin_output_target(path: Path) -> Path:
@@ -422,8 +516,24 @@ def _load_pinned_declarations(
     return identity, prerequisites, dict(architecture_qualification)
 
 
+def _check_config(args: argparse.Namespace) -> int:
+    settings, ledger_path = _configured_settings_and_ledger(args.ledger_path)
+    effective_config = build_aox_cutover_effective_config(
+        settings,
+        ledger_path=ledger_path,
+    )
+    _print(
+        {
+            "schema_id": "aox_cutover_config_check@1",
+            "status": "valid",
+            "effective_config_schema_id": effective_config.payload["schema_id"],
+            "config_digest": effective_config.digest,
+        }
+    )
+    return 0
+
+
 def _pin(args: argparse.Namespace) -> int:
-    from openzyme_runtime import OpenZymeSettings
 
     earliest_architecture_qualification = verify_aox_architecture_qualification_report(
         args.architecture_qualification_report,
@@ -432,12 +542,7 @@ def _pin(args: argparse.Namespace) -> int:
         args.identity_output,
         args.allowed_prerequisites_output,
     )
-    settings = OpenZymeSettings.from_env()
-    ledger_path = (
-        Path(settings.test.live_llm.token_ledger_path)
-        if args.ledger_path is None
-        else args.ledger_path
-    )
+    settings, ledger_path = _configured_settings_and_ledger(args.ledger_path)
     launch = pin_aox_cutover_launch(
         settings=settings,
         ledger_path=ledger_path,
@@ -506,8 +611,6 @@ def _preflight(args: argparse.Namespace) -> int:
     validate_aox_authority_wall_time(
         dict(slot["authority_policy"])["max_wall_time_seconds"]
     )
-    from openzyme_runtime import OpenZymeSettings
-
     settings = OpenZymeSettings.from_env()
     effective_config = build_aox_cutover_effective_config(
         settings,
@@ -795,6 +898,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    check_config = subparsers.add_parser(
+        "check-config",
+        help=(
+            "validate the current AOX effective configuration locally without "
+            "runner attestation or persistent state"
+        ),
+    )
+    check_config.add_argument(
+        "--ledger-path",
+        type=Path,
+        help=(
+            "persistent MICU ledger identity; defaults to the configured live-LLM "
+            "ledger"
+        ),
+    )
+    check_config.set_defaults(handler=_check_config)
+
     pin = subparsers.add_parser(
         "pin",
         help=(
@@ -999,7 +1119,7 @@ def main(argv: list[str] | None = None) -> int:
         # 启动失败可能包裹含私有定位信息或凭据的异常。只有错误源明确标记为
         # 可公开的字段级详情才能越过操作员边界；异常链本身始终保持封闭。
         payload: dict[str, object] = {
-            "schema_id": "aox_cutover_launch_failure@2",
+            "schema_id": "aox_cutover_launch_failure@3",
             "status": "failed",
             "failure_code": exc.code,
         }

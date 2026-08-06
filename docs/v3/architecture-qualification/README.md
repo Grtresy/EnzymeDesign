@@ -199,6 +199,13 @@ provider/runner/Chrome/MICU 调用。不存在 force、debug、environment、leg
 pass-boolean bypass。diagnostic authority mint/consume、`run-live`、`run-diagnostic-live` 与
 closure-stage commands 已退役，不能通过 qualification report 恢复。
 
+qualification 不读取 deployment settings，也不证明 runner 当前可达。full admission 之后、`pin`
+之前，operator 只可通过 public `openzyme-aox-cutover check-config` 运行 production effective-config
+解析；该命令不接收 qualification report、不写 state、不连接 runner，只生成
+`aox_cutover_config_check@1`。它不能被 private builder import、静态源码检查或 pass boolean 替代，
+也不能冒充 admission/pin。随后 `pin` 的 forced-SSH deterministic fixture 是首次真实 runner effect，
+必须由准备授权明确覆盖。
+
 pin transaction marker 是 `aox_cutover_pin_commit@2`，public pin receipt 是
 `aox_cutover_pin_receipt@2`，blank-world root proof 是
 current `aox_blank_world_root_proof@3`，launch receipt 是

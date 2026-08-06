@@ -124,6 +124,16 @@ def _pin_args(tmp_path: Path):
     )
 
 
+def _check_config_args(tmp_path: Path):
+    return cli.build_parser().parse_args(
+        [
+            "check-config",
+            "--ledger-path",
+            str(tmp_path / "ledger.sqlite3"),
+        ]
+    )
+
+
 def _reject_architecture_qualification(path: Path) -> dict[str, str]:
     del path
     raise AoxArchitectureQualificationError(
@@ -218,6 +228,7 @@ def test_automatic_live_commands_are_absent() -> None:
 
     assert "run-live" not in subcommands
     assert "run-diagnostic-live" not in subcommands
+    assert "check-config" in subcommands
     assert "consume-authority" in subcommands
     assert "authorize-diagnostic" not in subcommands
     assert "consume-diagnostic-authority" not in subcommands
@@ -299,6 +310,53 @@ def test_pin_uses_policy_free_conductor_and_writes_safe_no_replace_json(
         json.loads(commit_path.read_text(encoding="utf-8"))
     )
     assert str(tmp_path) not in json.dumps(output, sort_keys=True)
+
+
+def test_check_config_uses_public_production_builder_without_runner_or_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = _check_config_args(tmp_path)
+    raw_settings = SimpleNamespace(
+        test=SimpleNamespace(
+            live_llm=SimpleNamespace(token_ledger_path=str(args.ledger_path))
+        )
+    )
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        OpenZymeSettings,
+        "from_env",
+        classmethod(lambda cls: raw_settings),
+    )
+
+    def build_config(settings: object, *, ledger_path: Path) -> SimpleNamespace:
+        observed.update(settings=settings, ledger_path=ledger_path)
+        return SimpleNamespace(
+            payload={"schema_id": "aox_blank_world_runtime_config@5"},
+            digest="sha256:" + "a" * 64,
+        )
+
+    monkeypatch.setattr(cli, "build_aox_cutover_effective_config", build_config)
+    monkeypatch.setattr(
+        cli,
+        "pin_aox_cutover_launch",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError(kwargs)),
+    )
+
+    assert cli._check_config(args) == 0
+
+    assert observed == {
+        "settings": raw_settings,
+        "ledger_path": args.ledger_path,
+    }
+    assert not list(tmp_path.iterdir())
+    assert json.loads(capsys.readouterr().out) == {
+        "schema_id": "aox_cutover_config_check@1",
+        "status": "valid",
+        "effective_config_schema_id": "aox_blank_world_runtime_config@5",
+        "config_digest": "sha256:" + "a" * 64,
+    }
 
 
 def test_pin_refuses_existing_output_before_runner_bootstrap(
@@ -467,6 +525,7 @@ def test_cli_redacts_chained_launch_failure(
                 "safe boundary message",
                 details={"private": private_value},
                 public_details={
+                    "kind": "schema_field",
                     "identity": "effective_config.llm",
                     "private": private_value,
                 },
@@ -491,7 +550,7 @@ def test_cli_redacts_chained_launch_failure(
     assert captured.out == ""
     assert private_value not in captured.err
     assert json.loads(captured.err) == {
-        "schema_id": "aox_cutover_launch_failure@2",
+        "schema_id": "aox_cutover_launch_failure@3",
         "status": "failed",
         "failure_code": "aox_launch_toolchain_pin_execution_failed",
     }
@@ -514,6 +573,7 @@ def test_cli_projects_only_explicit_public_launch_failure_details(
                 "private": private_value,
             },
             public_details={
+                "kind": "schema_field",
                 "identity": "effective_config.llm",
                 "missing": ["enabled"],
                 "unexpected": ["legacy_flag"],
@@ -539,15 +599,102 @@ def test_cli_projects_only_explicit_public_launch_failure_details(
     assert captured.out == ""
     assert private_value not in captured.err
     assert json.loads(captured.err) == {
-        "schema_id": "aox_cutover_launch_failure@2",
+        "schema_id": "aox_cutover_launch_failure@3",
         "status": "failed",
         "failure_code": "aox_launch_effective_config_schema_invalid",
         "failure_details": {
+            "kind": "schema_field",
             "identity": "effective_config.llm",
             "missing": ["enabled"],
             "unexpected": ["legacy_flag"],
         },
     }
+
+
+def test_cli_projects_only_closed_runner_attestation_details(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def reject_pin(**kwargs: object) -> object:
+        del kwargs
+        raise AoxCutoverLaunchError(
+            "aox_launch_toolchain_pin_execution_failed",
+            "safe boundary message",
+            details={"private": "runner-private-path"},
+            public_details={
+                "kind": "runner_attestation",
+                "tool_id": "bio_tools.mafft",
+                "stage": "runner_result",
+                "effect_certainty": "no_effect",
+                "runner_run_id": "run_aox_pin_mafft",
+                "runner_attempt_receipt_digest": "sha256:" + "b" * 64,
+                "runner_error_code": "SSH_CONNECTION_TIMEOUT",
+            },
+        )
+
+    monkeypatch.setattr(cli, "pin_aox_cutover_launch", reject_pin)
+
+    result = cli.main(
+        [
+            "pin",
+            "--identity-output",
+            str(tmp_path / "identity.json"),
+            "--allowed-prerequisites-output",
+            str(tmp_path / "prerequisites.json"),
+            "--architecture-qualification-report",
+            str(tmp_path / "architecture-qualification.json"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "runner-private-path" not in captured.err
+    assert json.loads(captured.err) == {
+        "schema_id": "aox_cutover_launch_failure@3",
+        "status": "failed",
+        "failure_code": "aox_launch_toolchain_pin_execution_failed",
+        "failure_details": {
+            "kind": "runner_attestation",
+            "tool_id": "bio_tools.mafft",
+            "stage": "runner_result",
+            "effect_certainty": "no_effect",
+            "runner_run_id": "run_aox_pin_mafft",
+            "runner_attempt_receipt_digest": "sha256:" + "b" * 64,
+            "runner_error_code": "SSH_CONNECTION_TIMEOUT",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("runner_error_code", "Private_Path"),
+        ("runner_run_id", "../../private"),
+        ("runner_attempt_receipt_digest", "sha256:not-a-digest"),
+    ],
+)
+def test_cli_rejects_unclosed_runner_attestation_details(
+    field: str,
+    value: str,
+) -> None:
+    details: dict[str, object] = {
+        "kind": "runner_attestation",
+        "tool_id": "bio_tools.mafft",
+        "stage": "runner_result",
+        "effect_certainty": "no_effect",
+        "runner_error_code": "transport_connect_failed",
+        "runner_run_id": "run_aox_pin_mafft",
+        "runner_attempt_receipt_digest": "sha256:" + "b" * 64,
+    }
+    details[field] = value
+    error = AoxCutoverLaunchError(
+        "aox_launch_toolchain_pin_execution_failed",
+        "safe boundary message",
+        public_details=details,
+    )
+
+    assert cli._public_launch_failure_details(error) is None
 
 
 def test_cli_redacts_unexpected_settings_failure(
