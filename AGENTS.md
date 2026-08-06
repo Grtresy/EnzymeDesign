@@ -75,6 +75,10 @@ V3 默认产品语义是 `session + task board + lane/workspace + approval + res
 - runner/HPC 不得使用 Host 本地 artifact path；输入必须经 artifact catalog 授权并 staging，输出必须来自 declared `expected_outputs`
 - reporter/report 验收要检查 task board、delegation、inbox、runtime drain、workspace `report_drafts` / `reports` 和 events，不能只看 tool 注册
 
+## 协作与表述规范
+
+面向用户的计划、诊断、实施说明、验证结果、提交说明，以及项目文档，默认使用准确、通顺、自然的中文。仅代码标识、schema id、命令、接口路径、固定状态名、需逐字引用的原始错误文本，以及无法安全翻译的专有名词保留英文；普通概念不作无必要的中英文拼接。首次出现且确有必要时，可用“中文释义（英文关键词）”建立对应关系，后文沿用中文。
+
 ## 提交与 Pull Request 规范
 
 近期提交历史以简短的 Conventional Commit 风格为主，如 `feat:`、`feat(scope):`。提交信息使用祈使句，必要时加作用域，例如：`fix(mcp-project-memory): reject stale workflow tokens`。

@@ -62,12 +62,6 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZym
 检查配置时只报告与判断相关的存在性、类型、来源和经过脱敏的字段标识。不得打印密钥、令牌、凭据、
 私有定位信息或其他机密值；内部 `details` 只有在产品公开契约明确投影后，才能作为公开事实使用。
 
-## 表述方式
-
-面向用户的说明以准确、流畅的中文为主。只有代码标识、schema id、命令、接口路径、固定状态名和无法
-安全翻译的专有名词保留英文；普通概念不采用中英文交错拼接。首次出现且确有必要时，可以用“中文释义
-（英文关键词）”建立对应关系，后文沿用中文。
-
 ## 裁决与移交
 
 只接受 current schema、current full qualification receipt、sealed public evidence 与 current offline verifier/reducer 结果。历史 report/receipt 仅按当前兼容合同读取，不能升级成 current admission 或 GO。

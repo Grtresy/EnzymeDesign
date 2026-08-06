@@ -60,9 +60,6 @@ automatic wake/retry或 hidden handoff纠正它们。
 provider、runner 或 agent 诊断，也不得仅凭假设请求或执行纠正后重试（corrected retry）、授权消费
 （authority consumption）或其他状态变更。后续成功采用的因果链不能被先前 known-effect 试探污染。
 
-面向用户的说明应使用准确、流畅的中文。只有代码标识、schema id、命令、接口路径、固定状态名和无法
-安全翻译的专有名词保留英文；普通概念不要采用中英文交错拼接。
-
 最终 GO 只由 current public canonical state、sealed evidence、current full qualification receipt
 和 offline verifier/reducer共同给出。exact-three task、owner-authored finish、source-linked report/
 final answer、selected chain、17 deliverables与positive/fault closure是最终 acceptance facts，不是
