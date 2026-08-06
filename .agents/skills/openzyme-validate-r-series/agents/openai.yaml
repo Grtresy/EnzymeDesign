@@ -1,6 +1,6 @@
 interface:
   display_name: "OpenZyme R 系列验证"
-  short_description: "以正确的本地执行边界准备并编排 AOX R 系列验证"
-  default_prompt: "使用 $openzyme-validate-r-series 从当前 checkout 准备一轮全新 AOX R 系列验证，以唯一一次具备本地 IPC 的完整 qualification 开始，并停在首个人工授权门。"
+  short_description: "按真实影响与既有授权编排 AOX R 系列验证"
+  default_prompt: "使用 $openzyme-validate-r-series 从当前 checkout 启动一轮全新 AOX R 系列验证。批准执行一次完整 preparation：按当前公开合同解析真实影响，并在 bounded non-scientific 范围内完成 full qualification、check-config、fresh pin 与 exact plan publication；平台执行许可通过工具机制处理，不重复索取同一业务授权。不得消费 live authority，计划发布后停在 exact plan 人工授权门。"
 policy:
   allow_implicit_invocation: true

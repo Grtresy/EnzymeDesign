@@ -35,6 +35,13 @@ canonical NO-GO 或确实无法封存的 evidence blocker。
    authority、slot、root、session；任何旧状态都不可续用。不得把 repair green、diagnostic、
    premerge subset、进程退出或 conductor prose解释为 live/cutover authority。
 
+业务授权按当前真实 operation、target、identity、effect class 与 bounds 的语义范围判断，不按固定
+措辞、fixture 数量或预设命令序列机械匹配。若一个动作明确落在本消息已经批准的阶段和影响闭集内，
+且没有实质漂移，则直接继续；命令所需的 sandbox 外或远程执行许可通过工具机制申请，不再要求用户
+复述同一业务授权。若当前事实无法证明覆盖，或 target、operation 性质、effect、预算、identity 发生
+实质变化，则报告确切差异并停在新的人工授权门。平台在命令启动前拒绝执行许可属于操作员执行环境
+blocker，不得改写为缺少业务授权。
+
 qualification 只接受 current `openzyme_v3_architecture_qualification_report@3`，并要求 current
 registry `@2`、owner-constraint registry、strategy-transformation/world-fidelity results、完整
 source/process receipt chain、全部 selected scenario proven、零 open P0。历史 report `@1/@2`
@@ -65,8 +72,11 @@ profile 的检查命令来试探。当前 `aox_blank_world_runtime_config@5` 要
 `OpenZymeSettings.from_env()` 或有效配置 builder 来自证；静态源码检查只能形成推论。
 `aox_cutover_config_check@1` 只证明本地 production 配置解析，不证明 qualification、runner 可达或
 pin。首次公开检查失败后不得补值或 corrected retry。`pin` 必须在完全相同的 profile 下重新计算配置，
-并在 forced SSH runner 上执行四个 deterministic non-scientific fixture；这是需要 preparation 授权
-覆盖的真实 runner external effect，不得写成“未接触 HPC”。
+并按当前 public contract、CLI 与配置解析实际 attestation 数量、runner target、operation 性质、
+staging/output 和 effect certainty；不得把历史 fixture 数量或 runner 形态固化成永久规则。若结果仍在
+已批准的 bounded non-scientific preparation 闭集内，则直接通过工具机制取得执行许可；若出现
+scientific/Slurm workload、未批准 target、范围扩大或无法证明的影响，则停在新的人工授权门。这始终是
+真实 runner external effect，不得写成“未接触 HPC”。
 
 同一 canonical checkout 的 qualification 任意 mode/output 共用 nonblocking single-flight。
 一次只发出一条 command。若工具 yield `cell_id`/`session_id`，只能恢复该 exact handle；handle

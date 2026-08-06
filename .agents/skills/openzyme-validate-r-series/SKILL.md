@@ -15,6 +15,19 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZym
 2. **Preparation/admission**：仅在用户明确批准对应准备范围后运行 current non-live qualification、pin、plan publication 或合同允许的其他准备动作；不得消费 live authority 或创建 attempt。
 3. **Live campaign**：仅在用户批准当前 exact plan、digest、预算、external effects 与 stop conditions 后执行批准范围内的 public 操作。该批准是本计划唯一的人工 live 授权；其后凡是与同一 plan/slot/authority 精确绑定、未超出预算和 effect 闭集的 Host pending approval，Codex 都应通过公开接口逐项显式裁决并继续，不再向用户重复询问。新出现的未绑定 effect、扩大预算、改变计划或身份漂移仍须停在新的人工授权门。
 
+按语义范围而不是固定措辞、fixture 数量或预设命令序列判断授权是否覆盖。每个外部动作前，先从当前
+public contract、配置与已封存 receipt 解析真实 operation、target、identity、effect class 和 bounds：
+
+- 若它们明确属于用户已批准阶段，且没有扩大 effect、预算或身份范围，则沿用该业务授权继续。命令需要
+  `sandbox_permissions=require_escalated` 或其他平台执行许可时，直接通过工具机制申请；不得把平台许可
+  重新表述为一轮 OpenZyme 业务审批，也不得要求用户复述已经给出的授权。
+- 若当前事实不足以证明覆盖，或实际 target、operation 性质、effect、预算、identity 相对批准范围发生
+  实质变化，则报告确切差异并停在新的人工授权门。不要为了避免询问而猜测、缩写或隐瞒真实影响。
+- 平台在命令启动前拒绝执行许可时，报告操作员执行环境 blocker；这不等于用户没有提供业务授权。
+
+这项覆盖判定只约束操作员能否发出动作，不规定 OpenZyme agent 的科学策略、task 分解、tool 顺序或
+下一步选择。
+
 到达下一人工授权门时只做一次能够证明 gate 的最小检查，报告 `workflow_status=blocked`、`blocked_on=manual_authorization`、所需批准和保持不变的 canonical state，然后立即停止。不要重复三次扫描、轮询或恢复来寻找同一授权。若 Codex 持久 goal 的状态工具要求多轮重复阻塞才能正式标记 `blocked`，后续 continuation 只确认没有新授权；不得重新运行 readiness、qualification、命令或 evidence 收集。
 
 ## 每轮重新发现当前事实
@@ -76,8 +89,9 @@ harness 绕过。
    defect。命令一旦实际启动，count 才变为 1；若 yield handle，只恢复该 exact handle。
 4. sandbox 外权限只修复 repository test-gate 所需的本地执行能力，不改变 report、source binding、
    single-flight、bounded process receipt、no-replace publication 或 pure verifier 权威。
-   `check-config` 仍在普通 sandbox 中执行；`pin` 的 forced-SSH runner attestation 是另一个明确的
-   preparation external-effect 边界，必须单独按当前授权和执行权限处理。
+   `check-config` 仍在普通 sandbox 中执行；`pin` 的 runner attestation 是独立于 qualification 的真实
+   preparation external-effect 边界。按当前事实执行上述授权覆盖判定；若已覆盖，直接通过工具机制取得
+   所需执行许可，不再请求同一业务授权。
 
 ## 在首次 check-config 前装配启动配置
 
@@ -90,7 +104,12 @@ harness 绕过。
 5. 使用完整 profile 只执行一次 public `openzyme-aox-cutover check-config`，保存 `aox_cutover_config_check@1` 并核对 current config schema 与 digest。禁止 import 或执行 `openzyme_host_api.aox_cutover_launch`、private foundation/repository/service、`OpenZymeSettings.from_env()` 或 effective-config builder 来替代该 receipt。
 6. `check-config` 只证明本地 production 配置解析，不证明 qualification、checkout identity、runner availability 或 pin。`pin` 必须在完全相同的环境映射、ledger identity 和 source identity 下重新计算配置；任一字段或 digest 漂移都停止。
 7. 若已经完整装配 profile 的首次 public check 失败，立即停在准备阶段；不逐字段补值、不 corrected retry、不调用 private builder 补证、不运行 `pin`，也不消费 authority。历史 attempt 的“不得注入变量”结论不能阻止新 preparation 在首次命令前装配配置，但仍禁止修补同一次 terminal failure。
-8. `pin` 是首次真实 runner attestation：它通过 forced SSH 执行四个 deterministic non-scientific fixture，并可能创建 runner staging/output。把它如实列为 preparation 的 external effect；不得说成“没有接触 HPC”，也不得把它与正式 scientific/Slurm workload 混为一谈。
+8. `pin` 是首次真实 runner attestation。执行前从当前 public contract、CLI 与配置解析本次 attestation
+   的实际数量、target、operation 性质、staging/output 和 effect certainty；不得把历史 fixture 数量或
+   runner 形态固化成永久规则。若解析结果仍是用户已批准的 bounded non-scientific preparation effect，
+   则直接执行；若出现 scientific/Slurm workload、未批准 target、范围扩大或无法证明的影响，则停在新的
+   人工授权门。无论是否已获授权，都要如实报告 runner external effect；不得说成“没有接触 HPC”，也
+   不得把 preparation attestation 与正式 scientific workload 混为一谈。
 
 ## 执行验证
 
