@@ -68,6 +68,8 @@ Allowed prerequisites MUST contain exactly `git_commit`, `config_digest`, `workf
 ### Requirement: 可验证且脱敏的启动配置与失败因果
 `openzyme-aox-cutover check-config` SHALL 是无持久化和无外部副作用的公开配置预检。它 MUST 使用与 `pin` 相同的 production settings resolver、ledger identity resolution、effective-config builder 与 closed normalizer，并且成功时只返回闭合 `aox_cutover_config_check@1`：`schema_id`、`status=valid`、`effective_config_schema_id` 与 `config_digest`。它 MUST NOT 接收或生成 qualification、identity、prerequisite、authority 或 state，不得实例化 runner、连接 SSH、执行 fixture 或接触 provider/MICU/Chrome。该 receipt 只证明本次本地配置解析；`pin` MUST 重新计算配置，且该 receipt 不得冒充 admission、pin、runner availability 或 external-effect 证明。测试操作员不得直接 import private settings/builder/service 来替代该公开命令。
 
+fresh preparation MUST 在首次 `check-config` 之前，从 current closed schema 与 operator contract 解析并原子装配完整 command-scoped launch profile。未经装配的 ambient environment 不得冒充该 profile；若普通 Host 默认值已由当前合同证明不合格，测试操作员不得先执行无 profile 的 public check 来试探。批准 fresh `pin` 的 preparation SHALL 覆盖把合同明确要求的非敏感值临时应用到首次 `check-config` 与随后 `pin`；两者 MUST 使用相同的环境映射、ledger identity 与 source identity。完整 profile 的首次 public check 失败后 MUST fail closed，不得逐字段补值或 corrected retry。当前 schema 变化时，测试操作员 MUST 在首次命令前重新推导 profile，不得机械复用历史取值。
+
 当前 `openzyme-aox-cutover` 启动命令 SHALL 以闭合的 `aox_cutover_launch_failure@3` 公开失败。该对象 MUST 包含 `schema_id`、`status` 与 `failure_code`；只有失败源明确标记为可公开时，才 MAY 增加 closed tagged-union `failure_details`。schema branch MUST 使用 `kind=schema_field`，并只保留逻辑字段标识 `identity` 以及可选的 `missing`、`unexpected`。runner branch MUST 使用 `kind=runner_attestation`，并只保留 AOX contract `tool_id`、可选安全 `runner_run_id`、可选 `runner_attempt_receipt_digest`、`stage=runner_call|runner_result`、closed effect certainty 与可选的安全 machine `runner_error_code`；code 只能是全大写执行码或全小写 source-causal code，不接受混合大小写或自由文本。它不得包含配置值、Host/runner 路径、凭据、原始消息、异常表示或异常链。内部 `details` 不得因存在而自动升级为公开证据。历史 `aox_cutover_launch_failure@1/@2` 只可作为冻结记录读取，不得冒充当前失败 receipt。
 
 AOX 有效配置中的 `research.mcp_enabled=true` SHALL 来自 Host 的权威能力投影，不得从无产品消费者的 `OPENZYME_RESEARCH_MCP_ENABLED` 环境开关或 `ResearchSettings` 影子字段推导。Codex 测试操作员 MUST 区分封存观测、依据当前源码形成的推论与尚未证实的假设；没有公开内部事实时必须保留 `exact_identity_unproven`，不得仅凭假设请求或执行纠正后重试（corrected retry）、授权消费（authority consumption）或其他状态变更。
@@ -79,6 +81,10 @@ AOX 有效配置中的 `research.mcp_enabled=true` SHALL 来自 Host 的权威�
 #### Scenario: 公开预检不通过私有实现自证
 - **WHEN** Codex 准备一次 fresh pin 并需要证明当前启动配置可被 AOX 闭集接受
 - **THEN** 它调用 public `check-config` 并保存脱敏 receipt；不得 import 或执行 `openzyme_host_api.aox_cutover_launch`、private foundation/service 或 settings builder，且预检不产生 runner、provider、MICU、authority 或 repository effect
+
+#### Scenario: 首次公开预检使用完整启动配置
+- **WHEN** current AOX closed schema 要求的非敏感 reliability policy 与普通 Host 默认值不同，且用户已经批准包含 fresh `pin` 的 preparation
+- **THEN** Codex 在发出任何检查命令前从 current contract 装配完整 command-scoped profile，只执行一次携带该 profile 的 public `check-config`，并把完全相同的 profile 用于随后 `pin`；它不得先运行无 profile 的检查来制造已知失败，也不得在 terminal failure 后补值重试
 
 #### Scenario: 保留 runner 最早类型化原因
 - **WHEN** forced-SSH toolchain pin 返回 terminal runner result，且其中有安全 `error_code` 与 effect certainty

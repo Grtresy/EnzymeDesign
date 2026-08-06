@@ -200,11 +200,15 @@ pass-boolean bypass。diagnostic authority mint/consume、`run-live`、`run-diag
 closure-stage commands 已退役，不能通过 qualification report 恢复。
 
 qualification 不读取 deployment settings，也不证明 runner 当前可达。full admission 之后、`pin`
-之前，operator 只可通过 public `openzyme-aox-cutover check-config` 运行 production effective-config
-解析；该命令不接收 qualification report、不写 state、不连接 runner，只生成
-`aox_cutover_config_check@1`。它不能被 private builder import、静态源码检查或 pass boolean 替代，
-也不能冒充 admission/pin。随后 `pin` 的 forced-SSH deterministic fixture 是首次真实 runner effect，
-必须由准备授权明确覆盖。
+之前，operator 必须先从当前 AOX 合同装配完整 command-scoped launch profile，再只通过 public
+`openzyme-aox-cutover check-config` 运行 production effective-config 解析。未经装配的 ambient
+environment 不是 profile；已知普通 Host 默认值不符合当前闭集时，不得用一条无 profile 的首次检查
+制造可预见失败。批准 fresh `pin` 的 preparation 覆盖把合同明确要求的非敏感值临时用于第一次检查和
+随后 `pin`，两者必须保持相同环境映射与 ledger identity。该命令不接收 qualification report、不写
+state、不连接 runner，只生成 `aox_cutover_config_check@1`。它不能被 private builder import、静态
+源码检查或 pass boolean 替代，也不能冒充 admission/pin。完整 profile 的首次检查失败后不得补值或
+corrected retry。随后 `pin` 的 forced-SSH deterministic fixture 是首次真实 runner effect，必须由
+准备授权明确覆盖。
 
 pin transaction marker 是 `aox_cutover_pin_commit@2`，public pin receipt 是
 `aox_cutover_pin_receipt@2`，blank-world root proof 是

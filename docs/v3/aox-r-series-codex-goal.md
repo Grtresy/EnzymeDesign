@@ -35,12 +35,20 @@ source/process receipt chain、全部 selected scenario proven、零 open P0。�
 与 AOX receipt `@1/@2`只读；current AOX receipt为
 `aox_architecture_qualification_receipt@3`。scripted AOX happy path单独 green不能 admission。
 
-full admission 后、fresh pin 前，只运行 public `openzyme-aox-cutover check-config` 验证本次命令的
-完整有效配置。不得 import `openzyme_host_api.aox_cutover_launch`、private foundation/service、
+full admission 后、fresh pin 前，先从当前闭集 schema、active OpenSpec 与稳定操作合同形成完整的
+command-scoped launch profile，再只运行一次 public `openzyme-aox-cutover check-config`。未经装配的
+ambient environment 不是 profile；当当前合同已明确普通 Host 默认值不合格时，不得先发出一条无
+profile 的检查命令来试探。当前 `aox_blank_world_runtime_config@5` 要求 reliability 使用
+`durable_only_v1`、`command_v1` 与 `generic_v1`；若 schema 变化，必须在首次命令前重新推导。
+批准 fresh `pin` 的 preparation 同时覆盖把这些非敏感操作员值临时、原子地用于第一次
+`check-config` 和随后 `pin`，不构成仓库、`.env`、用户 shell 或 canonical state 修改。
+
+不得 import `openzyme_host_api.aox_cutover_launch`、private foundation/service、
 `OpenZymeSettings.from_env()` 或有效配置 builder 来自证；静态源码检查只能形成推论。
 `aox_cutover_config_check@1` 只证明本地 production 配置解析，不证明 qualification、runner 可达或
-pin。`pin` 会重新计算配置，并在 forced SSH runner 上执行四个 deterministic non-scientific fixture；
-这是需要 preparation 授权覆盖的真实 runner external effect，不得写成“未接触 HPC”。
+pin。首次公开检查失败后不得补值或 corrected retry。`pin` 必须在完全相同的 profile 下重新计算配置，
+并在 forced SSH runner 上执行四个 deterministic non-scientific fixture；这是需要 preparation 授权
+覆盖的真实 runner external effect，不得写成“未接触 HPC”。
 
 同一 canonical checkout 的 qualification 任意 mode/output 共用 nonblocking single-flight。
 一次只发出一条 command。若工具 yield `cell_id`/`session_id`，只能恢复该 exact handle；handle

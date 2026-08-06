@@ -1,6 +1,6 @@
 interface:
   display_name: "OpenZyme R 系列验证"
-  short_description: "经公开配置预检与 Host 接口编排 AOX R 系列验证"
-  default_prompt: "使用 $openzyme-validate-r-series 从当前 checkout 准备一轮全新 AOX R 系列验证，通过公开配置预检后停在首个人工授权门。"
+  short_description: "先装配并公开预检配置，再编排 AOX R 系列验证"
+  default_prompt: "使用 $openzyme-validate-r-series 从当前 checkout 准备一轮全新 AOX R 系列验证，先按当前合同装配命令级配置并通过公开预检，再停在首个人工授权门。"
 policy:
   allow_implicit_invocation: true

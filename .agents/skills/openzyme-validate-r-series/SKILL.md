@@ -43,16 +43,18 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZym
 - Offline verifier/reducer 是唯一 GO 权威；Codex prose、exit code、局部 task label、fixture 或 process retirement 不能替代它。
 - 将模型的合法策略变化当作可观察行为；不得用 exact trace、phase matcher 或规定下一 tool call 的方式纠正 agent。
 
-## 在 pin 前闭合启动配置
+## 在首次 check-config 前装配启动配置
 
-把科学策略留给 OpenZyme agent，把操作员启动配置交给产品公开入口闭合：
+把科学策略留给 OpenZyme agent；操作员先从当前合同装配启动配置，再交给公开入口验证。不要把未经装配的 ambient environment 当成 launch profile：
 
-1. full admission 通过后，使用同一 command-scoped launch profile 运行一次 public `openzyme-aox-cutover check-config`。它是 pin 前唯一可执行的配置闭合证明；保存 `aox_cutover_config_check@1`，并核对 current config schema 与 digest。
-2. 禁止 import 或执行 `openzyme_host_api.aox_cutover_launch`、private foundation/repository/service、`OpenZymeSettings.from_env()` 或 effective-config builder。可以只读检查源码和合同以理解字段来源，但结果只属于源码推论，不能冒充 product receipt。
-3. 非敏感、合同明确要求且已由 preparation 授权覆盖的 command-scoped 值可以整组原子传给 `check-config` 与随后 `pin`；不得写仓库、`.env` 或用户 shell，也不得逐字段试跑、猜测未公开值或在 terminal failure 后 corrected retry。秘密只以存在性或安全身份进入产品回执，不读取或打印值。
-4. `check-config` 只证明本地 production 配置解析，不证明 qualification、checkout identity、runner availability 或 pin。`pin` 必须在完全相同的 launch profile 下重新计算配置。
-5. `pin` 是首次真实 runner attestation：它通过 forced SSH 执行四个 deterministic non-scientific fixture，并可能创建 runner staging/output。把它如实列为 preparation 的 external effect；不得说成“没有接触 HPC”，也不得把它与正式 scientific/Slurm workload 混为一谈。
-6. 若 public check 失败，或无法证明 profile、ledger、qualification HEAD 与 output target 一致，立即停在准备阶段；不调用 private builder 补证，不运行 `pin`，不制造 Host failure code，也不消费 authority。
+1. full admission 通过后、发出任何 `check-config` 之前，从公开 CLI、当前闭集 schema、active OpenSpec、稳定操作文档和设置字段定义追踪完整配置链。至少核对 reliability、live opt-in、LLM bounds、execution/ledger 和 credential availability；只读源码可以确定字段来源和合同要求，但不能执行 private builder 或把源码推论冒充 product receipt。
+2. 将 command-scoped launch profile 明确定义为本次命令的完整非敏感环境映射、敏感字段存在性、ledger identity 和 current contract/schema identity。它必须在第一次 public check 之前形成；“相关环境变量均未设置”只表示普通 Host 默认值，不表示 AOX profile 已经装配。
+3. 当前 `aox_blank_world_runtime_config@5` 的 reliability 闭合值为 `OPENZYME_RELIABILITY_CONTROLLED_OPERATION_OWNER_POLICY=durable_only_v1`、`OPENZYME_RELIABILITY_RUNTIME_DRAIN_CONTRACT=command_v1` 和 `OPENZYME_RELIABILITY_MUTATION_CLOSURE_MODE=generic_v1`。`durable_only_v1` 下空 route allowlist 合法；若当前 schema 或合同已变化，必须在第一次命令前按新合同重新推导，不能机械复用这里的版本和值。
+4. 用户批准包含 fresh `pin` 的 preparation 时，该批准覆盖把当前合同明确要求的非敏感值作为临时 command-scoped environment 整组原子传给第一次 `check-config` 和随后 `pin`；这不修改仓库、`.env`、用户 shell 或产品 canonical state。不得先执行一次无 profile 的 `check-config` 来试探已经由合同证明不合格的普通默认值。
+5. 使用完整 profile 只执行一次 public `openzyme-aox-cutover check-config`，保存 `aox_cutover_config_check@1` 并核对 current config schema 与 digest。禁止 import 或执行 `openzyme_host_api.aox_cutover_launch`、private foundation/repository/service、`OpenZymeSettings.from_env()` 或 effective-config builder 来替代该 receipt。
+6. `check-config` 只证明本地 production 配置解析，不证明 qualification、checkout identity、runner availability 或 pin。`pin` 必须在完全相同的环境映射、ledger identity 和 source identity 下重新计算配置；任一字段或 digest 漂移都停止。
+7. 若已经完整装配 profile 的首次 public check 失败，立即停在准备阶段；不逐字段补值、不 corrected retry、不调用 private builder 补证、不运行 `pin`，也不消费 authority。历史 attempt 的“不得注入变量”结论不能阻止新 preparation 在首次命令前装配配置，但仍禁止修补同一次 terminal failure。
+8. `pin` 是首次真实 runner attestation：它通过 forced SSH 执行四个 deterministic non-scientific fixture，并可能创建 runner staging/output。把它如实列为 preparation 的 external effect；不得说成“没有接触 HPC”，也不得把它与正式 scientific/Slurm workload 混为一谈。
 
 ## 执行验证
 

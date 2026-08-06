@@ -1581,6 +1581,13 @@ precheck，不是 admission、pin 或 external availability receipt；`pin` 必�
 禁止直接 import Host 私有 settings/builder/service，静态源码检查只可形成推论，不能代替该 public
 receipt。
 
+`bc16ef3` 后的首次真实使用暴露了 conductor 顺序缺口：skill 引用了未定义的 command-scoped
+launch profile，却先用未经装配的 ambient environment 执行 `check-config`，随后又正确地因 terminal
+failure 禁止补值重试。修复后的顺序是 current contract/schema discovery → 完整非敏感 profile 原子装配
+→ 首次且唯一的 public `check-config` → 在完全相同 profile 下执行 `pin`。fresh `pin` preparation
+授权覆盖首次命令前的 command-scoped 非敏感装配；它不修改仓库、`.env`、用户 shell 或 canonical
+state。若完整 profile 的首次检查仍失败，则继续 fail closed，不能逐字段 corrected retry。
+
 因为 `pin` 的 forced-SSH fixture 会真实连接 runner、执行四个非科学 deterministic payload 并产生
 runner staging/output，所以它不是“零 HPC 接触”的本地配置检查。准备授权必须明确覆盖这一真实但
 非正式科学 workload 的外部 effect。当前 launch failure 升级为 `@3`：schema branch 以

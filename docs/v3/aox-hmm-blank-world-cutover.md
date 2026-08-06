@@ -3291,8 +3291,17 @@ The forward contract adds side-effect-free public
 `openzyme-aox-cutover check-config`, backed by the same production settings and
 effective-config normalizer as `pin`. It emits only
 `aox_cutover_config_check@1` schema/digest facts and never creates a runner or
-state. Codex must not replace it with private Host imports. `pin` remains the
-first real external attestation: it executes four deterministic,
+state. Before its first invocation, Codex resolves the complete command-scoped
+launch profile from the current closed schema and operator contract; an unset
+ambient environment is not an assembled profile. For current
+`aox_blank_world_runtime_config@5`, the non-secret reliability vector is
+`durable_only_v1`, `command_v1`, and `generic_v1`. A preparation authorization
+that includes fresh `pin` covers applying those contract-required values
+atomically to the first `check-config` and the following `pin`; neither command
+may use a different environment mapping or ledger identity. Codex must not run
+an unprofiled check to discover an already-known default mismatch, replace the
+public check with private Host imports, or patch and retry after a terminal
+check failure. `pin` remains the first real external attestation: it executes four deterministic,
 non-scientific fixtures through forced SSH and may create runner staging and
 output, although it does not create a formal scientific attempt or Slurm
 workload.
