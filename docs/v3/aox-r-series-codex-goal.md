@@ -35,6 +35,18 @@ source/process receipt chain、全部 selected scenario proven、零 open P0。�
 与 AOX receipt `@1/@2`只读；current AOX receipt为
 `aox_architecture_qualification_receipt@3`。scripted AOX happy path单独 green不能 admission。
 
+完整 qualification 依赖 Starlette `TestClient`、AnyIO 与 asyncio 的本地跨线程 `socketpair` 唤醒，
+不是 Codex 普通命令 sandbox 内可可靠执行的纯文件检查。用户批准一次 current full qualification 时，
+同时批准把唯一公开命令 `./scripts/check-v3-architecture-qualification.sh admission <fresh-output>`
+第一次且仅一次以 `sandbox_permissions=require_escalated` 运行；权限范围只覆盖本地 IPC、正常包 cache
+和 non-live 子进程监督，不覆盖网络或任何 live effect。该升级调用只包含公开脚本、`admission` 与
+已生成的字面量 output path，不内联 environment、管道、重定向、命令串联或持久 prefix approval。
+发出前先只读闭合 clean HEAD、canonical checkout、fresh checkout 外 output 与 single-flight，并核对
+脚本仍固定 non-live 环境、清除 live credentials 且拒绝未声明外部端口；不得先在普通 sandbox 试跑，不得用替代
+`UV_CACHE_DIR`、raw pytest、`socketpair` 探针或另一个 output 绕过，也不得在 terminal 后等价重发。
+若平台在进程启动前拒绝该执行能力，则报告操作员环境 blocker、保持
+`qualification_execution_count=0` 并停止，不生成或猜测 qualification failure receipt。
+
 full admission 后、fresh pin 前，先从当前闭集 schema、active OpenSpec 与稳定操作合同形成完整的
 command-scoped launch profile，再只运行一次 public `openzyme-aox-cutover check-config`。未经装配的
 ambient environment 不是 profile；当当前合同已明确普通 Host 默认值不合格时，不得先发出一条无

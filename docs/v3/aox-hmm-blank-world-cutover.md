@@ -3315,3 +3315,25 @@ raw messages and exception chains remain
 private. A terminal pin failure stops the preparation without automatic retry,
 and reports must separate actual command execution counts from read-only goal
 audit counts.
+
+### 2026-08-06 qualification 本地执行能力闭合
+
+`d770f78` 上的一次 fresh preparation 在普通 Codex 命令 sandbox 内运行 full qualification。
+collection self-test 全部通过，但首个使用 Starlette `TestClient` 的 production-composition driver
+在 `TestClient.__enter__()` 等待，尚未进入 Host lifespan，也没有创建 session 或 canonical state。
+最小复现证明该 sandbox 拒绝本地 `socketpair.send()`；asyncio 的跨线程唤醒因此丢失，AnyIO portal
+永久等待，最终由 bounded executor 终止并只留下 `architecture_qualification_harness_failed`。
+同一最小 IPC 路径在 sandbox 外立即通过。该事件是 pre-admission operator-environment blocked，
+不是 product defect、canonical NO-GO 或可采纳的 qualification report；没有 pin、plan、authority、
+MICU、provider、runner、HPC 或 Chrome effect。
+
+forward contract 不修改 Host、TestClient、qualification runner、timeout 或 report schema。完整
+qualification 被明确视为需要本地 IPC 与正常包 cache 的 repository test-gate：用户批准一次 current
+full qualification 时，Codex 对唯一公开 script 的第一次实际调用直接使用窄范围
+`sandbox_permissions=require_escalated`。命令前只读闭合 canonical checkout、clean source、fresh
+checkout 外 output 与 single-flight；升级调用只包含公开 script、`admission` 与已生成的字面量 output
+path，不内联 environment、管道、重定向、命令串联或持久 prefix approval，并核对 script 仍固定
+non-live 环境、清除 live credentials 且拒绝未声明外部端口。不得先在普通 sandbox 试跑，不得以替代 cache、raw pytest、IPC
+探针、另一个 output 或 terminal 后等价重发恢复。平台若在进程启动前拒绝该能力，则执行次数保持为
+零，操作员在环境权限边界停止，不制造 product failure receipt。`check-config` 继续在普通 sandbox
+内运行；`pin` 的 forced-SSH attestation 仍是独立、明确授权的 external-effect 边界。

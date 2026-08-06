@@ -141,6 +141,25 @@ alternate output.
 - **WHEN** a valid target appears or its parent drifts after prevalidation but before publication
 - **THEN** final revalidation/no-replace publication fails closed without overwriting, renaming, retrying, or adopting the conflicting target
 
+### Requirement: Full qualification closes operator execution capability before its only command
+The repository full qualification SHALL be invoked only in an operator execution environment that permits the local cross-thread `socketpair` wakeups required by Starlette `TestClient`, AnyIO, and asyncio. Once the user authorizes one current full qualification, Codex MUST validate the canonical checkout, clean source, fresh checkout-external output, and single-flight before starting the one public repository command. Its first actual invocation MUST directly use narrowly scoped sandbox-external permission limited to local IPC, normal package cache, and non-live process supervision. That approval MUST NOT be treated as authorization for network access or any live effect.
+
+Codex MUST NOT first execute full qualification in an ordinary command sandbox, substitute `UV_CACHE_DIR`, run raw or focused pytest, probe local IPC, select a second output, or relaunch an equivalent terminal command. If the platform denies the required execution capability before process start, the operator MUST stop with zero qualification executions and MUST NOT create or infer a qualification report, product failure, or canonical decision.
+
+The sandbox-external invocation MUST contain only the public script, `admission`, and the already-created literal output path; it MUST NOT inline environment assignments, pipes, redirections, chained commands, or persistent prefix approval. Before invocation, Codex MUST confirm that the public script still fixes a non-live environment, scrubs live credentials, and denies undeclared external ports.
+
+#### Scenario: Start the sole qualification command in a capable environment
+- **WHEN** one current full qualification is authorized and pre-work source, output, and single-flight checks pass
+- **THEN** the first and only actual public repository command starts with sandbox-external permission scoped to local IPC, package cache, and non-live process supervision, without a preceding sandboxed qualification, raw pytest, or IPC probe
+
+#### Scenario: Stop before work when executor capability is unavailable
+- **WHEN** sandbox-external permission or required local cross-thread IPC is unavailable before process start
+- **THEN** qualification execution count remains zero, no report or product failure is emitted, and the operator does not change output, retry, or weaken the test gate
+
+#### Scenario: Preserve qualification evidence authority
+- **WHEN** the public qualification command runs in the capable environment
+- **THEN** source revalidation, bounded process receipts, checkout single-flight, no-replace publication, and the pure verifier remain unchanged and solely determine admission eligibility
+
 ### Requirement: Qualification reports are canonical, immutable, and independently verifiable
 The runner SHALL write a canonical current `openzyme_v3_architecture_qualification_report@2` envelope containing a closed payload and a digest of the payload's canonical bytes. The payload MUST bind lock-admission and terminal source identity, phase revalidations, source-bound bounded process receipts, earliest typed failure, exact not-run ids, mode, profile, registry/test-manifest/runner/verifier digests, exact selection and command, scenario outcomes and budgets, observation/effect-ledger digests, invariant statuses, GAP taxonomy and priority, open/closed P0 refs, all rejection reasons, and admission eligibility. Historical `@1` envelopes are read-only compatibility evidence and are never current admission evidence.
 

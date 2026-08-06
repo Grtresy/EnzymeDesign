@@ -164,6 +164,18 @@ canonical report 与 pure verifier；它只把 general eligible partition 固定
 `scripts/check-mainline-legacy.sh` 仅用于 rollback comparison，直接调用不会生成当前
 authority receipt，也不改变本页 admission/AOX 边界。
 
+完整 qualification 的 repository test-gate 会通过 Starlette `TestClient`、AnyIO 与 asyncio 使用
+本地跨线程 `socketpair`。Codex 普通命令 sandbox 可能拒绝该本地 IPC，使测试在 Host lifespan
+启动前等待；这属于操作员执行环境不满足，不是 qualification 或产品缺陷。获得 full admission
+授权后，操作员必须在发出命令前闭合 clean HEAD、canonical checkout、fresh checkout 外 output 与
+single-flight，并把下列唯一公开命令第一次且仅一次以
+`sandbox_permissions=require_escalated` 运行。该权限只覆盖本地 IPC、正常包 cache 与 non-live
+子进程监督，不覆盖网络或 live effect。升级调用只包含公开脚本、`admission` 与已生成的字面量 output
+path，不内联 environment、管道、重定向、命令串联或持久 prefix approval；发出前还必须核对脚本
+仍固定 non-live 环境、清除 live credentials 且拒绝未声明外部端口。不得先在普通 sandbox 试跑，不得以替代 `UV_CACHE_DIR`、
+raw pytest、`socketpair` 探针、另一个 output 或 terminal 后的等价重发充当恢复。若平台在进程启动前
+拒绝所需权限，应以操作员环境 blocker 停止，保持执行次数为零，不生成 qualification report。
+
 提交全部变更并确保 canonical checkout 完全 clean 后：
 
 ```bash

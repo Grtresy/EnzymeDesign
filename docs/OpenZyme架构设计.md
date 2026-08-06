@@ -1376,6 +1376,25 @@ hmmbuild、hmmalign 的 deterministic non-scientific fixture，并产生真实 r
 goal 为满足状态协议进行的后续只读审计不等于再次执行 pin，报告必须分开列出
 `pin_execution_count` 与 `blocked_audit_count`。
 
+### 9.10 qualification 本地执行能力边界
+
+完整 architecture qualification 是 repository test-gate，不是 Host 产品 runtime，但其真实
+production-composition 测试会通过 Starlette `TestClient`、AnyIO 与 asyncio 使用本地跨线程
+`socketpair`。如果 Codex 普通命令 sandbox 禁止这一本地 IPC，事件循环无法接收跨线程唤醒，测试会在
+Host lifespan 之前等待并最终表现为 harness timeout；该现象属于操作员执行环境不满足，不能归因于
+OpenZyme 产品，也不能通过延长 timeout、替换 uv cache、raw pytest 或修改 harness 修复。
+
+因此，一次获准的 current full qualification 对唯一公开
+`check-v3-architecture-qualification.sh admission` 命令使用窄范围 sandbox 外权限完成第一次且唯一的
+实际执行。命令前只读确认 clean canonical checkout、fresh checkout 外 output 与 single-flight；
+升级调用只包含公开 script、`admission` 与已生成的字面量 output path，不内联 environment、管道、
+重定向、命令串联或持久 prefix approval；发出前还要核对 script 的 non-live 环境清理与未声明外部
+端口拒绝仍然成立。若平台在进程启动前拒绝本地 IPC 权限，则以零次 qualification execution 停止，不生成 report 或产品
+failure code。该权限只承载本地 IPC、包 cache 与 non-live 子进程监督，不授权网络或任何 live effect，
+也不改变 source binding、bounded receipt、no-replace publication 与 pure verifier 权威。
+`check-config` 仍属于普通 sandbox 内的无副作用配置解析；`pin` 的 forced-SSH runner attestation 保持
+独立的 preparation external-effect 权限边界。
+
 ---
 
 ## 10. Legacy Boundary

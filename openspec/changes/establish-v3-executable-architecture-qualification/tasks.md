@@ -123,3 +123,7 @@
 - [x] 11.4 显式升级 machine report 与 AOX qualification receipt 到 current `@2`，保留 historical `@1` closed read-only compatibility，但 current AOX admission 必须拒绝 `@1`、partial evidence、source drift 与 causal receipt drift
 - [x] 11.5 把 operator-retirement 的亚秒 real-clock policy 改为 deterministic semantic checks，并只保留一个宽限 bounded process-containment probe；补 source drift、phase fail-fast、partial run、receipt tamper 与 legacy-schema negative controls
 - [x] 11.6 同步 invariant registry、resource manifest、OpenSpec、主架构、`docs/v3/` 与 fresh Codex goal，运行全部 non-live gates 和一次明确 non-adoptable clean full diagnostic，证明 production code 净删除后提交本地 commit，且不启动下一 rNN/live/MICU/provider/HPC/Chrome
+
+## 12. Codex qualification 执行环境合同
+
+- [x] 12.1 把 full qualification 对 Starlette/AnyIO/asyncio 本地 `socketpair` 的依赖纳入 operator contract；获准的一次 current full qualification 对唯一公开 repository script 第一次且仅一次使用只覆盖本地 IPC、正常包 cache 与 non-live process supervision 的窄范围 sandbox 外权限，禁止 sandbox 试跑、替代 cache、raw pytest/IPC 探针、改换 output 与等价重发；平台在进程启动前拒绝能力时保持零次执行并停止，不修改 runner/report/product code，同步 AOX skill、OpenSpec、主架构与 V3 文档并用 fresh 子代理前向验证。

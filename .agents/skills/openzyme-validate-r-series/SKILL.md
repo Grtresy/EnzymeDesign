@@ -1,6 +1,6 @@
 ---
 name: openzyme-validate-r-series
-description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZyme AOX/HMM R 系列验证，并在 pin 前通过公开 check-config 闭合完整启动配置。用户要求就绪审计、qualification/admission、精确授权计划、获批的 live rNN campaign、封存证据或 canonical GO/NO-GO 核验时使用。默认只读；不得用它诊断并实施系统性修复、修改代码或提交 commit。
+description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZyme AOX/HMM R 系列验证，以具备本地 IPC 的单次公开 qualification 完成 admission，并在 pin 前通过公开 check-config 闭合完整启动配置。用户要求就绪审计、qualification/admission、精确授权计划、获批的 live rNN campaign、封存证据或 canonical GO/NO-GO 核验时使用。默认只读；不得用它诊断并实施系统性修复、修改代码或提交 commit。
 ---
 
 # OpenZyme R 系列验证
@@ -43,6 +43,33 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZym
 - Offline verifier/reducer 是唯一 GO 权威；Codex prose、exit code、局部 task label、fixture 或 process retirement 不能替代它。
 - 将模型的合法策略变化当作可观察行为；不得用 exact trace、phase matcher 或规定下一 tool call 的方式纠正 agent。
 
+## 在唯一完整 qualification 前闭合执行环境
+
+完整 qualification 会通过 Starlette `TestClient`、AnyIO 与 asyncio 使用本地跨线程 IPC；asyncio
+依赖 `socketpair` 唤醒事件循环。Codex 的普通命令 sandbox 可能拒绝这一本地 IPC，使
+`TestClient.__enter__()` 在 Host lifespan 启动前永久等待，最终只留下误导性的 harness timeout。
+这是操作员执行环境能力，不是 OpenZyme 产品失败，也不能靠延长 timeout、移动 uv cache 或修改
+harness 绕过。
+
+1. 用户批准 preparation 中的一次 current full qualification 时，该批准同时覆盖：以仓库根目录为
+   exact working directory，把唯一公开命令
+   `./scripts/check-v3-architecture-qualification.sh admission <fresh-output>` 第一次且仅一次通过
+   `exec_command` 的 `sandbox_permissions=require_escalated` 执行。权限理由只限本地 IPC、正常包
+   cache 与 non-live 子进程监督；它不授权网络、live、MICU、provider、runner、HPC 或 Chrome。
+   该升级调用只能包含脚本、`admission` 和已生成的字面量 output path，不得内联 environment、管道、
+   重定向、命令串联或持久 prefix approval。
+2. 发出命令前，先只读确认 canonical checkout、clean HEAD、fresh checkout 外 output、当前 selection
+   与不存在并发 single-flight，并核对公开脚本仍固定 non-live 环境、清除 live credentials 且拒绝未声明
+   外部端口。随后直接执行上述命令；不得先在普通 sandbox 中试跑，不得设置替代 `UV_CACHE_DIR`、
+   调用 raw/focused pytest、运行 `socketpair` 试探、改换 output，或在失败后等价重发。
+3. 平台若在进程启动前拒绝 sandbox 外权限或无法提供本地 IPC，记录为操作员执行环境不可用，保持
+   `qualification_execution_count=0` 并停止；不得伪造 qualification failure code、report 或 product
+   defect。命令一旦实际启动，count 才变为 1；若 yield handle，只恢复该 exact handle。
+4. sandbox 外权限只修复 repository test-gate 所需的本地执行能力，不改变 report、source binding、
+   single-flight、bounded process receipt、no-replace publication 或 pure verifier 权威。
+   `check-config` 仍在普通 sandbox 中执行；`pin` 的 forced-SSH runner attestation 是另一个明确的
+   preparation external-effect 边界，必须单独按当前授权和执行权限处理。
+
 ## 在首次 check-config 前装配启动配置
 
 把科学策略留给 OpenZyme agent；操作员先从当前合同装配启动配置，再交给公开入口验证。不要把未经装配的 ambient environment 当成 launch profile：
@@ -59,7 +86,7 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZym
 ## 执行验证
 
 1. 先完成一次 bounded read-only readiness audit，确认 source identity、worktree、current contract、public reachability、冻结历史、预算、启动配置来源和待授权阶段。
-2. 只在当前授权允许时进入 preparation；在执行 `pin` 前完成完整启动配置检查，任何 source、identity、registry、config、output target 或 prerequisite drift 都立即停止。
+2. 只在当前授权允许时进入 preparation；按上述执行环境合同完成唯一 full qualification，并在执行 `pin` 前完成完整启动配置检查。任何 source、identity、registry、config、output target 或 prerequisite drift 都立即停止。
 3. 只在 exact live approval 有效时消费对应 one-use authority，并只经 public Host surface 建立 fresh state。
 4. 一次只发出一条 command。若命令 yield `cell_id` 或 `session_id`，只能恢复该 exact handle；handle 失联时做有界只读检查后停止，不重发等价命令、不换 output、不自动 recovery。
 5. 每个 bounded action 后先读取 public ToolResult、FailureObservation、canonical wake facts、events、workspace、pending approvals 与 export，再自行决定唯一下一步 public action或停止。

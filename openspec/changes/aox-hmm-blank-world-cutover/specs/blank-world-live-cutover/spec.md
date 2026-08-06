@@ -65,6 +65,34 @@ Allowed prerequisites MUST contain exactly `git_commit`, `config_digest`, `workf
 - **WHEN** the effective owner policy leaves any AOX provider/HPC route on legacy ownership, runtime drain is not `command_v1`, mutation closure is not `generic_v1`, or any of those fields drift between pin, consumption and preflight
 - **THEN** pin fails before forced-SSH attestation, or consumption/preflight fails before session/attempt-root creation, and the reliability preimage participates in the canonical config digest
 
+### Requirement: 完整 qualification 绑定具备本地 IPC 的单次执行环境
+获准的 current full qualification SHALL 通过唯一公开 repository script 执行，并且其第一次实际调用
+MUST 位于允许 Starlette `TestClient`、AnyIO 与 asyncio 本地跨线程 `socketpair` 唤醒的执行环境。
+Codex preparation approval SHALL 只把该命令所需的本地 IPC、正常包 cache 与 non-live process
+supervision 纳入窄范围 sandbox 外权限，不得据此取得网络、live、MICU、provider、runner、HPC 或
+Chrome 权限。升级调用 MUST 只包含公开 script、`admission` 与已生成的字面量 output path，不得内联
+environment、管道、重定向、命令串联或持久 prefix approval。命令前 MUST 只读确认 canonical
+checkout、clean source、fresh checkout 外 output 与 single-flight，并确认 script 仍固定 non-live
+环境、清除 live credentials 且拒绝未声明外部端口；命令启动后 MUST 继续服从 source-bound receipt、bounded execution、no-replace
+publication 与 pure verification。
+
+Codex MUST NOT 先在普通 command sandbox 运行 full qualification，不得以替代 `UV_CACHE_DIR`、
+raw/focused pytest、本地 IPC 探针、另一个 output 或 terminal 后的等价重发作为恢复。平台若在进程
+启动前拒绝所需执行能力，操作员 MUST 以 `qualification_execution_count=0` 停止，不得生成或猜测
+qualification failure code、report、product defect 或 canonical NO-GO。
+
+#### Scenario: 第一次且仅一次在正确执行环境运行 qualification
+- **WHEN** 用户已批准一次 current full qualification，且 canonical checkout、clean source、fresh output 与 single-flight 均已闭合
+- **THEN** Codex 对 `check-v3-architecture-qualification.sh admission` 的第一次实际调用直接使用只覆盖本地 IPC、包 cache 与 non-live 子进程监督的 sandbox 外权限，并且不先发出 sandboxed qualification、raw pytest 或 IPC 探针
+
+#### Scenario: 执行能力在进程启动前不可用
+- **WHEN** 平台拒绝 sandbox 外权限，或不能在命令启动前保证本地跨线程 IPC
+- **THEN** Codex 以零次 qualification execution 停止并报告 operator-environment blocker，不创建 report、不改换 output、不重发等价命令，也不把环境限制归因于 OpenZyme 产品
+
+#### Scenario: 保持 qualification、check-config 与 pin 的权限分离
+- **WHEN** full qualification 已在正确本地环境中完成
+- **THEN** 该权限不自动授权 `check-config` 之外的配置动作或 forced-SSH `pin`；`check-config` 仍为普通 sandbox 内无副作用解析，`pin` 仍要求其独立 preparation external-effect 授权
+
 ### Requirement: 可验证且脱敏的启动配置与失败因果
 `openzyme-aox-cutover check-config` SHALL 是无持久化和无外部副作用的公开配置预检。它 MUST 使用与 `pin` 相同的 production settings resolver、ledger identity resolution、effective-config builder 与 closed normalizer，并且成功时只返回闭合 `aox_cutover_config_check@1`：`schema_id`、`status=valid`、`effective_config_schema_id` 与 `config_digest`。它 MUST NOT 接收或生成 qualification、identity、prerequisite、authority 或 state，不得实例化 runner、连接 SSH、执行 fixture 或接触 provider/MICU/Chrome。该 receipt 只证明本次本地配置解析；`pin` MUST 重新计算配置，且该 receipt 不得冒充 admission、pin、runner availability 或 external-effect 证明。测试操作员不得直接 import private settings/builder/service 来替代该公开命令。
 

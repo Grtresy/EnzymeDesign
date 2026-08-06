@@ -211,6 +211,25 @@ operator-retirement 的 business claims不再由亚秒 wall-clock threshold决�
 final descendant count和forced-unproven输入一个纯函数，确定 retirement/quarantine/unknown-effect/
 non-cutover语义；真实时钟只保留一个使用秒级宽限的 bounded process-group containment probe。
 
+### 6c. Full qualification 在唯一命令前闭合本地执行能力（D6c）
+
+repository test-gate 的 production-composition tests 会通过 Starlette `TestClient`、AnyIO 与 asyncio
+使用本地跨线程 `socketpair` 唤醒。Codex 普通 command sandbox 若拒绝该 IPC，pytest 会在 Host
+lifespan 之前等待，直到 bounded executor 把它封装为 harness timeout。该限制属于 operator executor
+capability，不是 product、qualification scenario 或 Host startup failure。
+
+用户批准一次 current full qualification 时，Codex 必须在命令前只读确认 canonical checkout、clean
+source、fresh checkout 外 output 与 single-flight，然后对唯一公开 repository script 的第一次实际
+调用直接使用只覆盖本地 IPC、正常包 cache 与 non-live process supervision 的窄范围 sandbox 外
+权限。升级调用只包含公开 script、`admission` 与已生成的字面量 output path，不内联 environment、
+管道、重定向、命令串联或持久 prefix approval；发出前必须核对 script 仍固定 non-live 环境、清除
+live credentials 且拒绝未声明外部端口。禁止先在普通 sandbox 运行 full qualification，也禁止替代 `UV_CACHE_DIR`、raw/focused pytest、
+IPC 探针、改换 output 或 terminal 后等价重发。平台若在进程启动前拒绝该能力，则执行次数保持零并
+停止，不创建 report 或 product failure code。
+
+该执行环境合同不改变 runner、report schema、phase revalidation、source-bound process receipt、
+single-flight、no-replace/fsync publication 或 pure verifier，也不授权任何 network/live effect。
+
 ### 7. GAP taxonomy 与 P0 晋级不允许人工 waiver 制造 green（D7）
 
 每个非 satisfied invariant先分类：

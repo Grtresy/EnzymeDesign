@@ -1599,6 +1599,32 @@ machine `runner_error_code`。runner code 只接受全大写执行码或全小�
 没有 runner receipt 时 effect certainty 明确为 `unproven`。terminal `pin` failure 立即停止，不自动
 重试；报告分别记录 `pin_execution_count` 与 `blocked_audit_count`。
 
+### 2026-08-06 qualification 本地执行能力闭合
+
+`d770f78` 上的新 preparation 证明，Codex 普通命令 sandbox 不具备 full qualification 的完整本地
+执行能力。harness 的 collection tests 全部通过，首个 production-composition driver 却在
+Starlette `TestClient.__enter__()`、Host lifespan 之前等待。最小复现进一步证明
+`socketpair.send()` 在该 sandbox 内返回 `EPERM`，asyncio 跨线程唤醒被内部吞掉后 AnyIO portal
+无法继续；同一路径在 sandbox 外立即通过。因此 `architecture_qualification_harness_failed` 只是
+180 秒 supervisor timeout 的外层封装，不能作为产品、Host lifespan、SQLite、依赖版本或最近提交的
+因果证据。
+
+本修复不修改 qualification runner、TestClient、timeout、Host 或 report schema，而是把 executor
+capability 放在唯一命令 admission 之前。用户批准一次 current full qualification 时，该批准覆盖
+对 exact public repository script 使用窄范围 `sandbox_permissions=require_escalated`；理由只允许本地
+IPC、正常包 cache 与 non-live process supervision，不覆盖网络或 live effect。Codex 先只读闭合
+canonical checkout、clean source、fresh checkout 外 output 与 single-flight，然后第一次且仅一次启动
+script。升级调用只允许公开 script、`admission` 与已生成的字面量 output path，不内联 environment、
+管道、重定向、命令串联或持久 prefix approval，并在发出前核对 script 的 non-live 环境清理与未声明
+外部端口拒绝仍然成立。禁止普通 sandbox 试跑、替代 `UV_CACHE_DIR`、raw/focused pytest、`socketpair` probe、另一个
+output 或 terminal 后等价重发。平台若在进程启动前拒绝该能力，则 execution count 保持零，停止于
+operator environment boundary，不创建 product failure 或 qualification report。
+
+这一低自由度规则只约束脆弱的 repository test-gate 执行桥，不约束 OpenZyme agent 的科学策略。
+`check-config` 保持普通 sandbox 内的无副作用 production settings 解析；`pin` 继续作为独立授权的
+forced-SSH external effect。source binding、kernel single-flight、bounded process receipt、
+no-replace/fsync publication 与 pure verifier 均保持唯一权威。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。
