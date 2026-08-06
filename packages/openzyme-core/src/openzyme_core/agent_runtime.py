@@ -565,13 +565,22 @@ class AgentRuntimeService:
                 if not ok and completed.status is AgentRuntimeSignalStatus.PENDING
                 else final_status
             )
-            agent = self._update_agent(
+            task = self.context.repositories.tasks.get(task.task_id) or task
+            current_agent = (
                 self.context.repositories.agents.get(
                     agent.session_id,
                     agent.agent_id,
                 )
-                or agent,
+                or agent
+            )
+            agent = self._update_agent(
+                current_agent,
                 status=effective_final_status,
+                lane_id=(
+                    task.lane_id
+                    if task.assigned_ref == current_agent.agent_id
+                    else current_agent.lane_id
+                ),
                 runtime_state=effective_final_status.value,
                 last_active_at=utc_now_iso(),
                 idle_since=(
@@ -580,7 +589,6 @@ class AgentRuntimeService:
                     else None
                 ),
             )
-            task = self.context.repositories.tasks.get(task.task_id) or task
             if effective_final_status is AgentMemberStatus.IDLE:
                 self.context.emit(
                     "agent.idle",

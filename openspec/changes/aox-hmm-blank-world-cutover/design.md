@@ -1625,6 +1625,14 @@ operator environment boundary，不创建 product failure 或 qualification repo
 forced-SSH external effect。source binding、kernel single-flight、bounded process receipt、
 no-replace/fsync publication 与 pure verifier 均保持唯一权威。
 
+### 2026-08-06 late-bound lane 与 pre-attempt 正式失败闭合
+
+最近一次正式 slot 暴露了两个独立缺口。第一，execution assignee 在首次 turn 内通过公开工具创建并绑定了真实 lane，但源 runtime signal 按事实仍携带空 lane；旧 settlement 把历史 source snapshot 与 turn 结束时的 handoff identity 当成必须相等的同一字段，于是把合法的单调身份补全误判为 `budget_replan_identity_not_closed`。新 `AgentRuntimeOutcomeSettlement@2` 不改写源事实：`lane_id` 继续表示 source lane，`handoff_lane_id` 只允许从空值单调绑定到当前 task、agent 与唯一 durable successor 共同认可的 lane。已有非空 source lane 发生漂移仍然 fail closed，后续推进仍须由 Codex 发起显式 bounded drain，harness 不选择科学策略或自动循环。
+
+第二，已获批并消费的正式 slot 可能在 scientific attempt 创建前终止。attempt bundle 的定义要求真实 attempt，因此不得为这种情况伪造 bundle；但若直接把它降级成无编号 blocker，正式 rNN 又会失去可裁决终局。新增的 `aox_formal_slot_failure@1` 只接受 exact authority/preflight/slot、supervised Host retirement、退休前封存的最终 public workspace/events/terminal handoffs、MICU transition、零 attempt 证明与最早类型化原因。纯离线 verifier 从不可变 source 重新构造事实；验证通过后，独立的 failure reducer 只能产生 `aox_blank_world_campaign_failure_decision@1 / NO-GO`，其 attempt identities 与 digests 必须为空。缺少任一来源时保持 evidence blocker，不能由文字结论或 exit code 补足。
+
+rNN 只在 fresh pin 与 exact formal plan 发布后分配并冻结；此前失败报告 `rNN=none`。用户对该 exact plan 的一次批准覆盖同一 plan、slot、authority、预算和 effect 闭集内的公开 approval resolution 与显式继续动作，不覆盖身份漂移、预算扩大或新 effect。session 入口必须逐字使用当前公开的 objective、title 与 message，Host 退休前必须先封存所有最终读取。历史失败缺少 current receipt 或入口字节不匹配时不得追溯补造，只作为不可复用历史 blocker 保留。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

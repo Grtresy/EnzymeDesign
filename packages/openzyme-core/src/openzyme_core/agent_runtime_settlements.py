@@ -19,7 +19,7 @@ from openzyme_domain import Task
 from openzyme_domain import TaskStatus
 
 
-AGENT_RUNTIME_OUTCOME_SETTLEMENT_SCHEMA_VERSION = "agent_runtime_outcome_settlement@1"
+AGENT_RUNTIME_OUTCOME_SETTLEMENT_SCHEMA_VERSION = "agent_runtime_outcome_settlement@2"
 
 
 class AgentRuntimeSettlementDisposition(StrEnum):
@@ -58,6 +58,7 @@ class AgentRuntimeOutcomeSettlement:
     failure_observation_id: str | None = None
     failure_source_version: str | None = None
     failure_error_code: str | None = None
+    handoff_lane_id: str | None = None
     successor_signal_id: str | None = None
     successor_signal_status: AgentRuntimeSignalStatus | None = None
     successor_agent_id: str | None = None
@@ -91,6 +92,7 @@ class AgentRuntimeOutcomeSettlement:
             ("failure_observation_id", self.failure_observation_id),
             ("failure_source_version", self.failure_source_version),
             ("failure_error_code", self.failure_error_code),
+            ("handoff_lane_id", self.handoff_lane_id),
             ("successor_signal_id", self.successor_signal_id),
             ("successor_agent_id", self.successor_agent_id),
             ("successor_source_ref", self.successor_source_ref),
@@ -128,6 +130,7 @@ class AgentRuntimeOutcomeSettlement:
                 self.failure_observation_id,
                 self.failure_source_version,
                 self.failure_error_code,
+                self.handoff_lane_id,
                 self.successor_signal_id,
                 self.successor_signal_status,
                 self.successor_agent_id,
@@ -153,12 +156,16 @@ class AgentRuntimeOutcomeSettlement:
             or self.failure_observation_id is None
             or self.failure_source_version != f"attempt:{self.source_attempt_count}"
             or self.failure_error_code != AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
+            or self.handoff_lane_id != self.successor_lane_id
+            or (
+                self.lane_id is not None
+                and self.handoff_lane_id != self.lane_id
+            )
             or self.successor_signal_id is None
             or self.successor_signal_status is not AgentRuntimeSignalStatus.PENDING
             or self.successor_agent_id != "agent:master"
             or self.successor_source_ref != self.source_signal_id
             or self.successor_task_id != self.task_id
-            or self.successor_lane_id != self.lane_id
             or self.successor_correlation_id is None
         ):
             raise ValueError(
@@ -209,7 +216,10 @@ class AgentRuntimeOutcomeSettlement:
         if (
             source_signal.session_id != task.session_id
             or source_signal.task_id != task.task_id
-            or source_signal.lane_id != task.lane_id
+            or (
+                source_signal.lane_id is not None
+                and source_signal.lane_id != task.lane_id
+            )
             or source_signal.agent_id != agent.agent_id
             or agent.session_id != source_signal.session_id
             or agent.task_id != task.task_id
@@ -222,7 +232,7 @@ class AgentRuntimeOutcomeSettlement:
         if (
             failure.session_id != source_signal.session_id
             or failure.task_id != task.task_id
-            or failure.lane_id != task.lane_id
+            or failure.lane_id != source_signal.lane_id
             or failure.agent_id != agent.agent_id
             or failure.source_kind != "runtime_signal"
             or failure.source_ref != source_signal.signal_id
@@ -277,6 +287,7 @@ class AgentRuntimeOutcomeSettlement:
             failure_observation_id=failure.failure_id,
             failure_source_version=failure.source_version,
             failure_error_code=failure.error_code,
+            handoff_lane_id=task.lane_id,
             successor_signal_id=successor.signal_id,
             successor_signal_status=successor.status,
             successor_agent_id=successor.agent_id,
@@ -306,6 +317,7 @@ class AgentRuntimeOutcomeSettlement:
             "failure_observation_id": self.failure_observation_id,
             "failure_source_version": self.failure_source_version,
             "failure_error_code": self.failure_error_code,
+            "handoff_lane_id": self.handoff_lane_id,
             "successor_signal_id": self.successor_signal_id,
             "successor_signal_status": (
                 None

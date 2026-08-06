@@ -626,12 +626,15 @@ AOX reference selection contract、sealed bytes 与零既有 consumer 后，在 
 同尺寸 bit flip，持久化 source-bound claim/receipt。任意重绑、重复不同 key、错误 artifact、
 已消费或 drift 均 fail closed。
 
-AOX cutover shell 保留三个彼此分离的 production seams：`preflight` 先对 exact ordinal执行
+AOX cutover shell 保留彼此分离的 production seams：`preflight` 先对 exact ordinal执行
 private atomic one-use slot claim，再在所有 authority/pin/qualification/config validation 通过后
 创建 exact root、复制 claim、封存 `aox_attempt_preflight@4` 并报告 Host 未启动；`serve-attempt`
 只启动/退休 fixed loopback Host，不发 message/drain/approval；`finalize-and-seal` 只从 exact
-public receipts和 sealed source responses重建并原子封存 `@3` bundle。它们都不能自动判断
-业务 terminal 或声明 GO。
+public receipts和 sealed source responses重建并原子封存真实 attempt 的 `@3` bundle；
+`seal-slot-failure` 则只在 final public workspace 证明 attempt count 为零、Host 已可靠退休且全部
+source binding 闭合时封存 `aox_formal_slot_failure@1`。`verify-slot-failure` 纯读取重建该 receipt，
+`decide --slot-failure` 只能给出 source-bound canonical NO-GO，不能创建 attempt bundle。任何 seam
+都不能自动判断 agent 业务 terminal 或声明 GO。
 
 ### 9.2 historical post-r69 late-bound scientific admission
 
@@ -679,6 +682,13 @@ projection各自在Host内部获取绑定exact command id的短writer authority�
 terminal response必须逐项复现唯一`runtime.command.finished` event；这项settlement只证明
 command closure，不改变task/attempt/report业务terminal。exact三任务仍按kind、agent role、
 assignee和owner-authored finish cardinality从canonical repositories/events导出。
+
+teammate 在 source signal 创建后、同一 turn 内为真实 task 创建并绑定 lane 时，
+`AgentRuntimeOutcomeSettlement@2` 分开保存 source `lane_id` snapshot 与 current
+`handoff_lane_id`。只有 `None -> current lane` 的单调晚绑定可形成 budget-replan handoff；已有 lane
+漂移、task/agent/successor 不一致或非唯一 successor 均 fail closed。command `failed` 或
+`completed` 本身不决定 conductor 是否继续；Codex 必须读取 typed settlement、effect 与 canonical
+wake facts，并在停止前从仍可访问的 Host 封存最终 workspace/events/export。
 
 ### 9.4 current post-r71 fresh supervised Host sandbox bootstrap
 

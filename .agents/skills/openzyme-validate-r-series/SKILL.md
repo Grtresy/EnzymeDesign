@@ -13,7 +13,7 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZym
 
 1. **只读 audit**：读取代码、合同、public surface 与既有冻结 evidence；不运行 qualification，不写 admission/authority state，不启动 live。
 2. **Preparation/admission**：仅在用户明确批准对应准备范围后运行 current non-live qualification、pin、plan publication 或合同允许的其他准备动作；不得消费 live authority 或创建 attempt。
-3. **Live campaign**：仅在用户批准当前 exact plan、digest、预算、external effects 与 stop conditions 后执行批准范围内的 public 操作。
+3. **Live campaign**：仅在用户批准当前 exact plan、digest、预算、external effects 与 stop conditions 后执行批准范围内的 public 操作。该批准是本计划唯一的人工 live 授权；其后凡是与同一 plan/slot/authority 精确绑定、未超出预算和 effect 闭集的 Host pending approval，Codex 都应通过公开接口逐项显式裁决并继续，不再向用户重复询问。新出现的未绑定 effect、扩大预算、改变计划或身份漂移仍须停在新的人工授权门。
 
 到达下一人工授权门时只做一次能够证明 gate 的最小检查，报告 `workflow_status=blocked`、`blocked_on=manual_authorization`、所需批准和保持不变的 canonical state，然后立即停止。不要重复三次扫描、轮询或恢复来寻找同一授权。若 Codex 持久 goal 的状态工具要求多轮重复阻塞才能正式标记 `blocked`，后续 continuation 只确认没有新授权；不得重新运行 readiness、qualification、命令或 evidence 收集。
 
@@ -31,6 +31,15 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZym
 以当前代码、active OpenSpec 和 current-contract 文档为事实来源。历史 incident 只作为冻结证据，不能恢复其中已退役的 observer、driver、browser helper、private finalizer 或 CLI。
 
 动态解析 clean HEAD、worktree、最新 canonical rNN、current schemas、qualification selection、MICU ledger 和 public capabilities。不要硬编码或预生成 rNN、HEAD、task/lane/envelope/attempt identity、action order、schema version 或 command list。旧 campaign 的 plan、authority、slot、root、session、effect、receipt、bundle 和 decision 一律不可复用，除非当前合同明确把它们定义为只读兼容输入。
+
+### 分配并冻结 rNN
+
+`rNN` 是操作员对一次正式 rollout 的索引，不是 Host 产品身份。按以下边界处理：
+
+1. 只读解析冻结历史中最高的已占用编号；qualification、`check-config`、`pin` 或 plan publication 之前的失败均记为 `rNN=none`，不得提前占号。
+2. 只有 current full admission、fresh pin 和 exact formal authority plan 都已成功发布，且 campaign id、plan digest、三项预算、external-effect 闭集与停止条件均可审查时，才分配下一编号，并一次性冻结 `rNN -> HEAD + launch identity digest + campaign id + plan digest`。
+3. 向用户报告 exact plan 时必须同时报告该映射和可直接复制的唯一授权语句。收到批准后，同一映射贯穿三个 slot 或首个 canonical NO-GO；不得中途换号、复用旧状态或把一次 bounded command 当作新的 rNN。
+4. plan 尚未发布即发生 typed terminal failure 时，报告 `rNN=none` 和实际 preparation blocker。plan 已发布并获批后，若正式 slot 被消费，则该编号必须以可验证的 campaign GO、campaign NO-GO 或真实证据缺口结束，不能悄悄降级为无编号 blocker。
 
 历史失败、会话、记忆或示例中的操作建议只约束其原始来源、attempt 和证据边界，不能覆盖当前合同。尤其不得把某次“不要注入变量或重试”的结论扩大成禁止为本次全新准备装配当前合同要求的启动配置；也不得把旧环境取值直接复用为当前真值。
 
@@ -90,7 +99,16 @@ harness 绕过。
 3. 只在 exact live approval 有效时消费对应 one-use authority，并只经 public Host surface 建立 fresh state。
 4. 一次只发出一条 command。若命令 yield `cell_id` 或 `session_id`，只能恢复该 exact handle；handle 失联时做有界只读检查后停止，不重发等价命令、不换 output、不自动 recovery。
 5. 每个 bounded action 后先读取 public ToolResult、FailureObservation、canonical wake facts、events、workspace、pending approvals 与 export，再自行决定唯一下一步 public action或停止。
-6. 新出现的 manual approval 进入同一个单次授权门；不得自动批准。Runtime idle、no wakeup、zero-signal drain、tool success、child exit 或 process settlement都不自动构成业务终态。
+6. 首次 session 必须使用当前实现公开的 `PUBLIC_CONDUCTOR_OBJECTIVE`、`PUBLIC_CONDUCTOR_TITLE` 与 `PUBLIC_CONDUCTOR_MESSAGE` 精确值；不得把 objective 当作 entry message，也不得自行改写其字节。这个固定入口只界定测试目标，不规定 agent 的 task、tool、delegation 或科学策略。
+7. exact plan 已获批后，公开 pending approval 若与当前 slot authority、operation、effect class、provider/HPC target 和预算完全闭合，就由 Codex 显式 resolve 并继续；不闭合则停在人工授权门。Runtime idle、no wakeup、zero-signal drain、tool success、child exit 或 process settlement都不自动构成业务终态。
+
+### 区分 bounded command、业务继续资格与正式终局
+
+- `runtime.command.finished` 只封存一条 bounded command，不等于 task、attempt、slot 或 campaign 已终结。command 的 `failed` 也只是外层状态，必须继续检查 source-bound typed cause、effect certainty、task/attempt 状态和 canonical wake facts。
+- 若公开事实证明源 signal 以 `agent_turn_budget_exhausted/no_effect` 结束、业务 task 仍非终态、同一 task/assignee 只有一个 pending master successor，且 `agent_runtime_outcome_settlement@2` 把 source lane snapshot 与当前 `handoff_lane_id` 闭合，则这是合法的重新规划移交。Codex 可以在同一批准、剩余预算和同一 Host 生命周期内选择下一条显式 bounded drain；不得重放源 signal、合成 wakeup、规定 master 下一 tool call或把它实现成无条件 drive-until-terminal 循环。
+- 缺少唯一 successor、settlement 未闭合、identity/fencing/authority 漂移、effect 不明、预算或 wall time 用尽时停止继续发 command。停止前只要 Host 仍可访问，必须先封存 final workspace、完整相关 events、所有 bounded admission/terminal handoff，以及存在真实 attempt 时的 closed-attempt export；不得先退休 Host 再尝试读取这些公开事实。
+- Host 退休后，若 canonical workspace 证明 `scientific_attempts.attempt_count=0`，不得运行 `finalize-and-seal` 或伪造 `aox_blank_world_attempt_bundle@3`。应以 preflight、slot claim、Host startup/supervision、public receipt/response、MICU snapshots 和 earliest typed cause 运行 `seal-slot-failure`，再用 `verify-slot-failure` 与 `decide --slot-failure` 纯离线验证并封存 canonical NO-GO。
+- 若真实 attempt 已存在，只能走 closed-attempt public export、`finalize-and-seal`、`verify` 和常规三-attempt reducer。无法取得所需 final public read、Host settlement 或 source binding 时，如实报告 evidence blocker；不得把不可验证状态称为 canonical NO-GO。
 
 不要把 operation failure 自动升级成 campaign failure。保留 earliest source-bound typed cause、effect certainty 和 wrapper；只有 current canonical state 与 selected-chain contract 能决定是否仍具备继续资格。
 
@@ -122,4 +140,4 @@ count；恢复 yielded handle 不增加 command count，goal continuation 的只
 - failure 属于产品、Harness、supervision、provider、环境还是模型策略；
 - 交给 `openzyme-repair-r-series` 的 frozen evidence 入口。
 
-只有 current canonical GO 才表示 validation 成功。除此之外如实报告 nonterminal、ineligible 或 blocked，并停在真实边界。
+只有 current canonical GO 才表示 validation 成功；通过 verified formal-slot-failure reducer 得到的 current canonical NO-GO 是正式失败终局。除此之外如实报告 nonterminal、ineligible 或 blocked，并停在真实边界。

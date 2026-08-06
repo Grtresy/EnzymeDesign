@@ -758,6 +758,18 @@ package and MUST NOT be a production caller.
 - **WHEN** a policy-free Host has retired and the public chain proves one canonically closed positive attempt with the exact selected chain, passed 17-deliverable receipt, completed task board, published report, full events and final reads
 - **THEN** the single finalizer seals one source-reconstructable `@3` bundle and the offline verifier reproduces it without SQLite, provider, runner or network access
 
+#### Scenario: Preserve a same-turn late-bound lane handoff
+- **WHEN** a claimed execution task begins from a source runtime signal with no lane, the assignee creates and binds its canonical lane during that turn, and the bounded turn emits exactly one durable successor
+- **THEN** runtime settlement preserves the source signal's empty lane as historical evidence, records the task/agent/successor lane as the monotonic handoff lane, and permits the next explicit bounded drain under the same approved plan; any non-empty source-lane drift or multiple successor identities fails closed
+
+#### Scenario: Seal a consumed formal slot before attempt creation
+- **WHEN** one approved formal slot has been consumed, the supervised Host has settled, final public workspace/events/handoffs and MICU facts prove zero scientific attempts, and the earliest typed failure is source-bound
+- **THEN** the public finalizer seals a formal slot-failure artifact and the pure offline verifier/reducer emits canonical `NO-GO` without creating or relabelling an attempt bundle
+
+#### Scenario: Reject an unclosed pre-attempt failure
+- **WHEN** the final public reads, terminal handoff, supervision receipt, source digest, typed cause or zero-attempt proof is absent, mutable, substituted or inconsistent
+- **THEN** no formal failure decision is sealed, the state remains an evidence blocker, and neither prose nor process retirement may manufacture a campaign terminal state
+
 #### Scenario: Reject an incomplete or substituted conductor chain
 - **WHEN** a command or sealed handoff is missing, duplicated, unbounded, semantically drifted, digest-only, privately substituted, test-built, cross-authority, cross-root, cross-attempt or followed by partial output
 - **THEN** finalization fails before destination creation and none of those facts can be relabelled as a closed attempt or campaign decision
@@ -772,6 +784,8 @@ package and MUST NOT be a production caller.
 
 ### Requirement: Three-attempt GO campaign
 Local Live cutover SHALL be GO only after one formal acceptance campaign and one exact authority plan produce ordinal 1, 2 and 3 in that order: two consecutive independent positive attempts on the same exact-seven launch identity, followed by one `derived_required_artifact_blob_byte_flip@2` attempt that fails closed. Every session/root/authority-policy/receipt-chain launch identity MUST be non-empty and unique across the three slots; after the public task read and Host finalization, every canonical task/envelope/attempt/lane/admission-request/admission-idempotency/selection identity MUST independently be non-empty and unique across the three real control graphs. No outer launch artifact may supply those late-bound control identities. The fault MUST traverse the real exact-14 NCBI `proteins.fasta` through `aox_hmm_reference_set_selection@1` to derived `AOX_ref21.fasta`, consume the authority-bound public capability before its unique pending MAFFT consumer, and terminate that consumer with exact `artifact_blob_digest_mismatch`. Positive attempts MUST use different clean roots and MUST each prove exact three-task completion, publish a source-linked report, preserve a final answer and pass offline evidence verification. Diagnostic live runs, implementation completion, and non-live test completion MUST NOT be reported as Live completion before all three fresh formal bundles and the sealed reducer decision exist.
+
+A verified formal slot failure short-circuits the current campaign to `NO-GO`; it never weakens the exact three-attempt requirement for `GO` and never counts as a positive or controlled-fault attempt.
 
 #### Scenario: Campaign reaches GO
 - **WHEN** attempts one and two independently satisfy every positive criterion and attempt three seals `aox_fault_negative_state_closure@1` proving execution failed/blocked/cancelled, reporting did not complete or publish, no ready/published report or draft exists, no alternate target consumer succeeded, no downstream fixed deliverable exists, durable events/conversation/final failure agree, and all fault-attempt MICU usage is attributed to this campaign

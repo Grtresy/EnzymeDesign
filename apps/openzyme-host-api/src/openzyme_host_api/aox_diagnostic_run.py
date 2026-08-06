@@ -158,6 +158,7 @@ def validate_aox_diagnostic_decision(
     if any(marker in serialized for marker in (
         b"aox_blank_world_attempt_bundle@3",
         b"aox_blank_world_campaign_decision@1",
+        b"aox_blank_world_campaign_failure_decision@1",
     )):
         _reject("diagnostic_decision_formal_evidence_forbidden", "formal evidence is forbidden")
     expected_digest = canonical_digest({

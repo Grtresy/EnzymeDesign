@@ -10,6 +10,7 @@ import pytest
 from openzyme_core import MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID
 from openzyme_core import sandbox_image_record
 from openzyme_host_api import aox_cutover_evidence as cutover_evidence
+from openzyme_host_api import aox_formal_slot_failure as formal_slot_failure
 from openzyme_host_api import aox_public_conductor_bundle as conductor_bundle
 from openzyme_host_api.aox_attempt_authority import (
     AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID,
@@ -895,6 +896,395 @@ def _bound_supervision_receipt(
     payload = {key: value for key, value in receipt.items() if key != "receipt_digest"}
     receipt["receipt_digest"] = canonical_digest(payload)
     return receipt
+
+
+def _formal_slot_failure_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    attempt_exists: bool = False,
+    late_mutation: bool = False,
+    typed_cause: bool = True,
+) -> dict[str, object]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    preflight_path, preflight, identity_path = _preflight_fixture(tmp_path)
+    evidence_root = preflight_path.parent
+    slot = dict(preflight["slot"])
+    startup = _startup_receipt(preflight=preflight)
+    supervision = _bound_supervision_receipt(
+        preflight=preflight,
+        startup=startup,
+    )
+    _write_canonical(evidence_root / "aox-host-startup.json", startup)
+    _write_canonical(evidence_root / "aox-host-supervision.json", supervision)
+
+    session_id = str(slot["session_id"])
+    command_id = "runtime_command_failed"
+    status_url = f"/v3/sessions/{session_id}/runtime/commands/{command_id}"
+    records = [
+        _receipt(
+            1,
+            "POST",
+            "/v3/sessions",
+            {
+                "session_id": session_id,
+                "project_id": "aox-blank-world-cutover",
+                "objective": PUBLIC_CONDUCTOR_OBJECTIVE,
+                "title": PUBLIC_CONDUCTOR_TITLE,
+            },
+        ),
+        _receipt(
+            2,
+            "POST",
+            f"/v3/sessions/{session_id}/messages",
+            {
+                "message_digest": _digest_bytes(PUBLIC_CONDUCTOR_MESSAGE.encode()),
+                "skill_keys": [
+                    "workflow:aox@1.0.0#sha256:" + "c" * 64
+                ],
+                "task_id": None,
+                "lane_id": None,
+            },
+        ),
+        _receipt(
+            3,
+            "POST",
+            f"/v3/sessions/{session_id}/runtime/drain",
+            {
+                "max_signals": 1,
+                "max_steps_per_agent": 16,
+                "auto_enqueue_ready_tasks": False,
+            },
+            status_code=202,
+        ),
+        _receipt(4, "GET", status_url, {}),
+        _receipt(5, "GET", f"/v3/sessions/{session_id}/workspace", {}),
+        _receipt(
+            6,
+            "GET",
+            f"/v3/sessions/{session_id}/events?replay=1&after_cursor=0",
+            {"replay": True, "after_cursor": 0},
+        ),
+    ]
+    if late_mutation:
+        records.append(
+            _receipt(
+                7,
+                "POST",
+                f"/v3/sessions/{session_id}/messages",
+                {
+                    "message_digest": _digest_bytes(b"late mutation"),
+                    "skill_keys": [],
+                    "task_id": None,
+                    "lane_id": None,
+                },
+            )
+        )
+    admitted = {
+        "schema_version": "runtime_command_status@1",
+        "session_id": session_id,
+        "command_id": command_id,
+        "command_type": "runtime.drain",
+        "status": "accepted",
+        "status_url": status_url,
+        "accepted_at": "2026-08-06T00:00:00+00:00",
+        "started_at": None,
+        "completed_at": None,
+        "bounded_outcome_summary": None,
+        "error_code": None,
+        "safe_error_summary": None,
+        "safe_retry_hint": None,
+    }
+    terminal = {
+        "schema_version": "runtime_command_status@1",
+        "session_id": session_id,
+        "command_id": command_id,
+        "command_type": "runtime.drain",
+        "status": "failed",
+        "status_url": status_url,
+        "accepted_at": "2026-08-06T00:00:00+00:00",
+        "started_at": "2026-08-06T00:00:01+00:00",
+        "completed_at": "2026-08-06T00:00:02+00:00",
+        "bounded_outcome_summary": {"scheduler_status": "failed"},
+        "error_code": (
+            "runtime_scheduler_batch_failed" if typed_cause else None
+        ),
+        "safe_error_summary": "The bounded runtime scheduler batch failed.",
+        "safe_retry_hint": "Inspect current session facts.",
+    }
+    signal_id = "sig_failed_budget"
+    failure_observation = {
+        "schema_version": "failure_observation@1",
+        "failure_id": "failure_budget",
+        "session_id": session_id,
+        "task_id": "task_execution",
+        "agent_id": "agent:executor",
+        "source_kind": "runtime_signal",
+        "source_ref": signal_id,
+        "source_version": "attempt:1",
+        "error_code": "agent_turn_budget_exhausted",
+        "effect_certainty": "no_effect",
+        "recoverability": "agent_can_replan",
+        "retry_eligibility": "terminal",
+    }
+    attempt_ids = ["attempt_existing"] if attempt_exists else []
+    workspace = {
+        "session": {"session_id": session_id},
+        "scientific_attempts": {
+            "attempt_count": len(attempt_ids),
+            "attempts": [
+                {"attempt_id": attempt_id} for attempt_id in attempt_ids
+            ],
+        },
+        "failure_observations": [failure_observation] if typed_cause else [],
+    }
+    terminal_projection = {
+        key: terminal.get(key)
+        for key in (
+            "command_id",
+            "command_type",
+            "status",
+            "completed_at",
+            "bounded_outcome_summary",
+            "error_code",
+            "safe_error_summary",
+            "safe_retry_hint",
+        )
+    }
+    cause_events = [
+        {
+            "cursor": 1,
+            "session_id": session_id,
+            "event_type": "agent.runtime_signal.updated",
+            "payload": {
+                "signal_id": signal_id,
+                "status": "failed",
+                "error_message": "agent_turn_budget_exhausted",
+            },
+        },
+        {
+            "cursor": 2,
+            "session_id": session_id,
+            "event_type": "runtime.budget_handoff_incomplete",
+            "payload": {
+                "signal_id": signal_id,
+                "error_code": "budget_replan_identity_not_closed",
+            },
+        },
+    ]
+    events = [
+        *(cause_events if typed_cause else []),
+        {
+            "cursor": 3,
+            "session_id": session_id,
+            "event_type": "runtime.command.finished",
+            "command_id": command_id,
+            "payload": terminal_projection,
+        },
+    ]
+    responses = {
+        "drain-response.json": (records[2], admitted),
+        "terminal-response.json": (records[3], terminal),
+        "workspace-response.json": (records[4], workspace),
+        "events-response.json": (records[5], events),
+    }
+    response_paths: dict[str, Path] = {}
+    for name, (receipt, response) in responses.items():
+        receipt["response_semantic_digest"] = canonical_digest(response)
+        path = evidence_root / name
+        _seal_response(path, receipt=receipt, response=response)
+        response_paths[name] = path
+    receipt_path = evidence_root / "public-api-receipts.jsonl"
+    receipt_path.write_bytes(
+        b"".join(canonical_json_bytes(record) + b"\n" for record in records)
+    )
+    ledger_before = evidence_root / "micu-before.json"
+    ledger_after = evidence_root / "micu-after.json"
+    _write_canonical(ledger_before, {"sequence": 1})
+    _write_canonical(ledger_after, {"sequence": 2})
+    for path in evidence_root.iterdir():
+        if path.is_file():
+            path.chmod(0o600)
+    monkeypatch.setattr(
+        formal_slot_failure,
+        "_validate_ledger_transition",
+        lambda *_: None,
+    )
+    return {
+        "identity": identity_path,
+        "preflight": preflight_path,
+        "receipt_chain": receipt_path,
+        "workspace": response_paths["workspace-response.json"],
+        "events": response_paths["events-response.json"],
+        "handoffs": [
+            response_paths["drain-response.json"],
+            response_paths["terminal-response.json"],
+        ],
+        "ledger_before": ledger_before,
+        "ledger_after": ledger_after,
+        "evidence_root": evidence_root,
+    }
+
+
+def test_formal_slot_failure_seals_without_fabricating_attempt_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _formal_slot_failure_fixture(tmp_path, monkeypatch)
+    path, digest = formal_slot_failure.finalize_and_seal_formal_slot_failure(
+        identity_path=sources["identity"],
+        preflight_path=sources["preflight"],
+        receipt_chain_path=sources["receipt_chain"],
+        workspace_response_path=sources["workspace"],
+        event_response_path=sources["events"],
+        handoff_response_paths=sources["handoffs"],
+        ledger_before_path=sources["ledger_before"],
+        ledger_after_path=sources["ledger_after"],
+        sealed_at="2026-08-06T00:01:00+00:00",
+    )
+
+    verification = formal_slot_failure.verify_formal_slot_failure(path)
+    assert verification.passed is True
+    assert verification.failure_digest == digest
+    assert path.name == formal_slot_failure.FORMAL_SLOT_FAILURE_FILENAME
+    assert not (path.parent / "attempt-bundle.json").exists()
+    assert not (path.parent / ".formal-slot-failure-identity.verify.json").exists()
+    decision = formal_slot_failure.evaluate_formal_slot_failure(
+        path,
+        decided_at="2026-08-06T00:02:00+00:00",
+    )
+    assert decision["decision"] == "NO-GO"
+    assert decision["formal_slot_failure_digest"] == digest
+    assert decision["attempt_digests"] == []
+    assert decision["blocker"]["code"] == "budget_replan_identity_not_closed"
+    decision_path = path.parent / "campaign-failure-decision.json"
+    assert (
+        formal_slot_failure.seal_formal_slot_failure_decision(
+            decision,
+            decision_path,
+        )
+        == decision["decision_digest"]
+    )
+    malformed_decision = deepcopy(decision)
+    malformed_decision["decision"] = "GO"
+    malformed_decision["decision_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in malformed_decision.items()
+            if key != "decision_digest"
+        }
+    )
+    with pytest.raises(CutoverEvidenceError) as decision_error:
+        formal_slot_failure.seal_formal_slot_failure_decision(
+            malformed_decision,
+            path.parent / "malformed-campaign-decision.json",
+        )
+    assert decision_error.value.code == (
+        "formal_slot_failure_decision_semantics_invalid"
+    )
+
+    evidence_root = sources["evidence_root"]
+    evidence_root.chmod(0o500)
+    try:
+        assert formal_slot_failure.verify_formal_slot_failure(path).passed is True
+    finally:
+        evidence_root.chmod(0o700)
+
+    workspace_path = sources["workspace"]
+    workspace_path.write_bytes(workspace_path.read_bytes() + b"\n")
+    tampered = formal_slot_failure.verify_formal_slot_failure(path)
+    assert tampered.passed is False
+    assert tampered.issue is not None
+    assert tampered.issue.code == "formal_slot_failure_source_digest_mismatch"
+
+
+def test_formal_slot_failure_rejects_existing_attempt_and_symlink_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    existing = _formal_slot_failure_fixture(
+        tmp_path / "existing",
+        monkeypatch,
+        attempt_exists=True,
+    )
+    with pytest.raises(CutoverEvidenceError) as attempt_error:
+        formal_slot_failure.finalize_and_seal_formal_slot_failure(
+            identity_path=existing["identity"],
+            preflight_path=existing["preflight"],
+            receipt_chain_path=existing["receipt_chain"],
+            workspace_response_path=existing["workspace"],
+            event_response_path=existing["events"],
+            handoff_response_paths=existing["handoffs"],
+            ledger_before_path=existing["ledger_before"],
+            ledger_after_path=existing["ledger_after"],
+        )
+    assert attempt_error.value.code == "formal_slot_failure_attempt_exists"
+
+    clean = _formal_slot_failure_fixture(tmp_path / "symlink", monkeypatch)
+    linked_workspace = clean["evidence_root"] / "workspace-linked.json"
+    linked_workspace.symlink_to(clean["workspace"].name)
+    with pytest.raises(CutoverEvidenceError) as symlink_error:
+        formal_slot_failure.finalize_and_seal_formal_slot_failure(
+            identity_path=clean["identity"],
+            preflight_path=clean["preflight"],
+            receipt_chain_path=clean["receipt_chain"],
+            workspace_response_path=linked_workspace,
+            event_response_path=clean["events"],
+            handoff_response_paths=clean["handoffs"],
+            ledger_before_path=clean["ledger_before"],
+            ledger_after_path=clean["ledger_after"],
+        )
+    assert symlink_error.value.code == "formal_slot_failure_source_invalid"
+
+
+def test_formal_slot_failure_rejects_an_inferred_missing_attempt_cause(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _formal_slot_failure_fixture(
+        tmp_path,
+        monkeypatch,
+        typed_cause=False,
+    )
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        formal_slot_failure.finalize_and_seal_formal_slot_failure(
+            identity_path=sources["identity"],
+            preflight_path=sources["preflight"],
+            receipt_chain_path=sources["receipt_chain"],
+            workspace_response_path=sources["workspace"],
+            event_response_path=sources["events"],
+            handoff_response_paths=sources["handoffs"],
+            ledger_before_path=sources["ledger_before"],
+            ledger_after_path=sources["ledger_after"],
+        )
+
+    assert error.value.code == "formal_slot_failure_cause_unproven"
+
+
+def test_formal_slot_failure_requires_final_reads_after_public_mutations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _formal_slot_failure_fixture(
+        tmp_path,
+        monkeypatch,
+        late_mutation=True,
+    )
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        formal_slot_failure.finalize_and_seal_formal_slot_failure(
+            identity_path=sources["identity"],
+            preflight_path=sources["preflight"],
+            receipt_chain_path=sources["receipt_chain"],
+            workspace_response_path=sources["workspace"],
+            event_response_path=sources["events"],
+            handoff_response_paths=sources["handoffs"],
+            ledger_before_path=sources["ledger_before"],
+            ledger_after_path=sources["ledger_after"],
+        )
+
+    assert error.value.code == "formal_slot_failure_final_read_not_latest"
 
 
 def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(

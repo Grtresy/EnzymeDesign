@@ -18,6 +18,12 @@ conductor-owned started_head、drift、recovery/adoption truth、预生成 task/
 identity、agent action order或旧 rNN 的 plan/slot/root/session/effect/receipt。source 真值只接受
 qualification runner 在 single-flight admission 内封存并逐阶段重验的 identity。
 
+rNN 仅是操作员 rollout 索引，不是 Host 产品身份。qualification、配置检查、pin 或 formal plan
+发布前失败时固定报告 `rNN=none`。只有 fresh pin 与 exact authority plan 都成功发布后，才取冻结历史
+中的下一编号，并一次性绑定 HEAD、launch identity digest、campaign id 与 plan digest；该映射须随 exact
+plan 一同获得唯一一次人工 live 批准。批准后不得换号或重复询问，直到该 campaign 得到 canonical GO、
+canonical NO-GO 或确实无法封存的 evidence blocker。
+
 权限严格分层，不能从上一层或工具成功推断下一层：
 
 1. 只读诊断：只读取代码、合同、public surface 与既有冻结 evidence；不修改、不提交、不运行
@@ -80,6 +86,12 @@ runtime drain，读取 public canonical state/inspect/export，并且只处理�
 mutation/finalizer，或向 agent 注入规定的下一 tool call。Codex 只持有当前 public command handle
 与caller选择的output path，不拥有 scientific identity或业务 continuation。
 
+session 的 objective、title 与唯一 entry message 必须逐字读取当前实现中的
+`PUBLIC_CONDUCTOR_OBJECTIVE`、`PUBLIC_CONDUCTOR_TITLE`、`PUBLIC_CONDUCTOR_MESSAGE`；不得以 objective
+替代 message。这个入口不限制 agent 的 task、tool、delegation 或科学策略。exact plan 获批后，凡公开
+pending approval 与同一 slot authority、operation、effect、provider/HPC target 和预算完全闭合，Codex
+都通过公开接口逐项显式裁决并继续，不再请求第二次人工批准；任何扩大范围或身份漂移才进入新授权门。
+
 agent 可以早委派 reporter、插入 read/prose、改变独立 action 顺序、修正或放弃 known-no-effect
 失败，或在 bounded turn 结束时保持业务非终态。只要 owner-local authority、assignment、lifecycle、
 fencing、unknown-effect、quiescence、integrity、provenance、isolation、budget与atomicity边界未被
@@ -91,6 +103,20 @@ automatic wake/retry或 hidden handoff纠正它们。
 源码得出的推论和尚未证实的假设。没有内部事实时应如实标明具体原因尚未证明，不得伪造配置、
 provider、runner 或 agent 诊断，也不得仅凭假设请求或执行纠正后重试（corrected retry）、授权消费
 （authority consumption）或其他状态变更。后续成功采用的因果链不能被先前 known-effect 试探污染。
+
+`runtime.command.finished` 只证明一条 bounded command 已终结，不证明业务或 campaign 终结。若
+`agent_turn_budget_exhausted/no_effect`、非终态 task、唯一 pending master successor 与
+`agent_runtime_outcome_settlement@2` 的 source-lane snapshot / current `handoff_lane_id` 同时闭合，Codex
+可在原批准和剩余预算内选择下一条显式 drain；不得重放源 signal、合成 wake 或固化 agent 下一步。
+若决定停止，只要 Host 尚可访问，必须先封存 final workspace、相关完整 events、所有 admission/terminal
+handoff，并在真实 attempt 存在时导出 closed-attempt evidence，然后才退休 Host。
+
+正式 slot 已消费且 Host 已可靠退休、但 final workspace 证明 attempt count 为零时，不得伪造
+scientific attempt bundle。应使用 `seal-slot-failure`、`verify-slot-failure` 与
+`decide --slot-failure` 将 preflight、slot、Host supervision、public receipts、MICU 和 earliest typed
+cause 封存为 canonical NO-GO。若真实 attempt 已存在，则仍只接受 closed-attempt export、
+`finalize-and-seal`、`verify` 和常规 exact-three reducer。缺少 final public read 或 source binding 时只能
+报告 evidence blocker，不能冒充 NO-GO。
 
 最终 GO 只由 current public canonical state、sealed evidence、current full qualification receipt
 和 offline verifier/reducer共同给出。exact-three task、owner-authored finish、source-linked report/

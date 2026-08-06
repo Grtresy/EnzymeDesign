@@ -832,3 +832,17 @@ public closed export和bundle只在真实control存在后解析attempt/lane/admi
 selection identity。campaign reducer先验证三个slot的session/task/envelope/root唯一，再独立
 验证三份真实control identity唯一；旧plan/claim中的speculative IDs只在legacy verifier分支
 可读，永远不能满足current launch或GO。
+
+## 16. 正式 slot 在 attempt 创建前失败
+
+正式 slot 的 authority/root/session/receipt 已消费而 `ScientificAttempt` 尚未创建，并不意味着“没有
+证据”，也不能用 synthetic attempt 补齐。只要 Host 仍可访问，Codex 在停止前必须封存 final public
+workspace、完整相关 events 与全部 bounded admission/terminal handoff；Host 退休后再绑定 preflight、
+slot claim、startup/supervision、MICU before/after 和 earliest source-bound typed cause。
+
+`aox_formal_slot_failure@1` 固定 `acceptance_eligible=false`、`state_reusable=false` 与 zero-attempt
+projection。其 verifier 只读 source files，不写 evidence root、不访问 SQLite/network，也拒绝 symlink、
+source drift、已有 attempt、private scientific mutation/finalizer receipt 和 handoff/event mismatch。
+验证通过后，`aox_blank_world_campaign_failure_decision@1` 可把该已消费正式 rollout 封存为 canonical
+NO-GO；正常 GO 仍只接受同一 plan 的 exact positive/positive/fault 三份真实 `@3` attempt bundle。
+历史 pre-attempt blocked 记录因当时没有这份 current receipt，继续保持历史状态，不被追认或复用。

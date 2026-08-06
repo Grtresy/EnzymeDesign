@@ -88,7 +88,12 @@ channel或master lane fixture。wrong task与wrong actor在零attempt状态被�
 不调用private service、不手工组装`ToolRegistry`、不直接写canonical truth或合成receipt。
 场景还检查diagnostic authority、public generic
 scientific mutation/finalizer、automatic runner/observer及其CLI/client/dead Core入口确实缺席，
-而非靠一个source symbol宣称positive reachability。
+而非靠一个source symbol宣称positive reachability。当前场景同时要求 public conductor 暴露
+`seal-slot-failure`、`verify-slot-failure`，并要求 pre-attempt formal failure 的 finalizer、纯离线
+verifier 与 reducer 具备 production reachability；其 source-bound 重建、零 attempt、append-only、
+篡改与 symlink 负向控制由邻近 focused tests 闭合。registry 以 `late-bound-lane-handoff` 和
+`pre-attempt-formal-failure-unsealed` fault points 跟踪这两条边界，不能用 synthetic attempt bundle
+或文字 `NO-GO` 替代。
 fresh-Host invariant使用既有`admission-bypass`、`false-success`与`unverifiable-evidence` P0 trigger；
 本repair不伪造新的P0 closure sidecar记录，缺失/malformed/mismatch/preexisting/duplicate/drift/tamper/
 rollback controls必须由同一tracked scenario与focused tests实际为green。

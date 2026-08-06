@@ -449,6 +449,160 @@ def _validate_control_slot_binding(
         "authority_request_digest": request_digest,
     }
 
+
+def _validate_runtime_command_handoffs(
+    *,
+    records: Sequence[Mapping[str, Any]],
+    drains: Sequence[Mapping[str, Any]],
+    statuses: Sequence[Mapping[str, Any]],
+    handoff_envelopes: Sequence[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]],
+    session_id: str,
+    final_sequence: int,
+) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]], set[int]]:
+    envelope_by_sequence: dict[int, dict[str, Any]] = {}
+    for raw_envelope in handoff_envelopes:
+        envelope = dict(raw_envelope)
+        receipt = envelope.get("receipt")
+        if not isinstance(receipt, dict):
+            _fail(
+                "public_terminal_handoff_invalid",
+                "terminal handoff lacks its bound receipt",
+                identity="handoff_responses",
+            )
+        sequence = receipt.get("sequence")
+        if (
+            type(sequence) is not int
+            or sequence in envelope_by_sequence
+            or sum(dict(item) == receipt for item in records) != 1
+            or envelope.get("response_semantic_digest")
+            != canonical_digest(envelope.get("response"))
+        ):
+            _fail(
+                "public_terminal_handoff_invalid",
+                "terminal handoff is duplicated or does not bind one receipt",
+                identity="handoff_responses",
+            )
+        envelope_by_sequence[int(sequence)] = envelope
+    if not envelope_by_sequence or len(envelope_by_sequence) > _MAX_HANDOFF_RESPONSES:
+        _fail(
+            "public_terminal_handoff_invalid",
+            "terminal handoff response cardinality is invalid",
+            identity="handoff_responses",
+        )
+
+    ordered_drains = sorted(drains, key=lambda item: int(item["sequence"]))
+    command_handoffs: list[dict[str, Any]] = []
+    used_handoff_sequences: set[int] = set()
+    for index, raw_drain in enumerate(ordered_drains):
+        drain = dict(raw_drain)
+        drain_sequence = int(drain["sequence"])
+        drain_envelope = envelope_by_sequence.get(drain_sequence)
+        drain_response = (
+            dict(drain_envelope.get("response") or {})
+            if isinstance(drain_envelope, dict)
+            else {}
+        )
+        command_id = str(drain_response.get("command_id") or "")
+        status_route = f"/v3/sessions/{session_id}/runtime/commands/{command_id}"
+        upper_bound = (
+            int(ordered_drains[index + 1]["sequence"])
+            if index + 1 < len(ordered_drains)
+            else final_sequence
+        )
+        sealed_statuses = [
+            envelope_by_sequence[int(status["sequence"])]
+            for status in statuses
+            if int(status["sequence"]) in envelope_by_sequence
+            and drain_sequence < int(status["sequence"]) < upper_bound
+            and status.get("route") == status_route
+        ]
+        terminal_statuses = [
+            envelope
+            for envelope in sealed_statuses
+            if isinstance(envelope.get("response"), dict)
+            and envelope["response"].get("status")
+            in _TERMINAL_RUNTIME_COMMAND_STATUSES
+        ]
+        if not all(
+            (
+                drain_envelope is not None,
+                drain_response.get("schema_version") == "runtime_command_status@1",
+                drain_response.get("session_id") == session_id,
+                drain_response.get("command_type") == "runtime.drain",
+                bool(command_id),
+                drain_response.get("status_url") == status_route,
+                len(terminal_statuses) == 1,
+            )
+        ):
+            _fail(
+                "public_terminal_handoff_invalid",
+                "each bounded drain requires sealed admission and one sealed terminal status",
+                identity=f"receipt_chain[{drain_sequence}]",
+            )
+        terminal_envelope = terminal_statuses[0]
+        terminal_response = dict(terminal_envelope["response"])
+        terminal_receipt = dict(terminal_envelope["receipt"])
+        if not all(
+            (
+                terminal_response.get("schema_version")
+                == "runtime_command_status@1",
+                terminal_response.get("session_id") == session_id,
+                terminal_response.get("command_id") == command_id,
+                terminal_response.get("command_type") == "runtime.drain",
+                terminal_response.get("status_url") == status_route,
+                bool(terminal_response.get("completed_at")),
+            )
+        ):
+            _fail(
+                "public_terminal_handoff_invalid",
+                "sealed terminal response does not reproduce its runtime command",
+                identity=f"runtime_command:{command_id}",
+            )
+        finished = [
+            event
+            for event in events
+            if event.get("event_type") == "runtime.command.finished"
+            and event.get("command_id") == command_id
+            and dict(event.get("payload") or {}).get("command_id") == command_id
+        ]
+        finished_payload = (
+            dict(finished[0].get("payload") or {})
+            if len(finished) == 1
+            else {}
+        )
+        terminal_event_projection = {
+            key: terminal_response.get(key)
+            for key in (
+                "command_id",
+                "command_type",
+                "status",
+                "completed_at",
+                "bounded_outcome_summary",
+                "error_code",
+                "safe_error_summary",
+                "safe_retry_hint",
+            )
+        }
+        if finished_payload != terminal_event_projection:
+            _fail(
+                "public_terminal_handoff_event_mismatch",
+                "sealed terminal response lacks its canonical finished event",
+                identity=f"runtime_command:{command_id}",
+            )
+        used_handoff_sequences.update(
+            {drain_sequence, int(terminal_receipt["sequence"])}
+        )
+        command_handoffs.append(
+            {
+                "drain_receipt": drain,
+                "terminal_receipt": terminal_receipt,
+                "drain_response": drain_response,
+                "terminal_response": terminal_response,
+            }
+        )
+    return command_handoffs, envelope_by_sequence, used_handoff_sequences
+
 def _validate_receipt_chain(
     receipts: Sequence[Mapping[str, Any]],
     *,
@@ -668,140 +822,20 @@ def _validate_receipt_chain(
         *(item for items in final_candidates.values() for item in items),
     ):
         remaining.remove(item)
-    envelope_by_sequence: dict[int, dict[str, Any]] = {}
-    for raw_envelope in handoff_envelopes:
-        envelope = dict(raw_envelope)
-        receipt = envelope.get("receipt")
-        if not isinstance(receipt, dict):
-            _fail(
-                "public_terminal_handoff_invalid",
-                "terminal handoff lacks its bound receipt",
-                identity="handoff_responses",
-            )
-        sequence = receipt.get("sequence")
-        if (
-            type(sequence) is not int
-            or sequence in envelope_by_sequence
-            or sum(dict(item) == receipt for item in records) != 1
-            or envelope.get("response_semantic_digest")
-            != canonical_digest(envelope.get("response"))
-        ):
-            _fail(
-                "public_terminal_handoff_invalid",
-                "terminal handoff is duplicated or does not bind one receipt",
-                identity="handoff_responses",
-            )
-        envelope_by_sequence[int(sequence)] = envelope
-    if not envelope_by_sequence or len(envelope_by_sequence) > _MAX_HANDOFF_RESPONSES:
-        _fail(
-            "public_terminal_handoff_invalid",
-            "terminal handoff response cardinality is invalid",
-            identity="handoff_responses",
+    command_handoffs, envelope_by_sequence, used_handoff_sequences = (
+        _validate_runtime_command_handoffs(
+            records=records,
+            drains=drains,
+            statuses=statuses,
+            handoff_envelopes=handoff_envelopes,
+            events=events,
+            session_id=session_id,
+            final_sequence=min(int(item["sequence"]) for item in final.values()),
         )
-
-    ordered_drains = sorted(drains, key=lambda item: int(item["sequence"]))
-    command_handoffs: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    used_handoff_sequences: set[int] = set()
-    for index, drain in enumerate(ordered_drains):
-        drain_sequence = int(drain["sequence"])
-        drain_envelope = envelope_by_sequence.get(drain_sequence)
-        drain_response = (
-            dict(drain_envelope.get("response") or {})
-            if isinstance(drain_envelope, dict)
-            else {}
-        )
-        command_id = str(drain_response.get("command_id") or "")
-        status_route = f"/v3/sessions/{session_id}/runtime/commands/{command_id}"
-        upper_bound = (
-            int(ordered_drains[index + 1]["sequence"])
-            if index + 1 < len(ordered_drains)
-            else min(int(item["sequence"]) for item in final.values())
-        )
-        sealed_statuses = [
-            envelope_by_sequence[int(status["sequence"])]
-            for status in statuses
-            if int(status["sequence"]) in envelope_by_sequence
-            and drain_sequence < int(status["sequence"]) < upper_bound
-            and status.get("route") == status_route
-        ]
-        terminal_statuses = [
-            envelope
-            for envelope in sealed_statuses
-            if isinstance(envelope.get("response"), dict)
-            and envelope["response"].get("status")
-            in _TERMINAL_RUNTIME_COMMAND_STATUSES
-        ]
-        if not all(
-            (
-                drain_envelope is not None,
-                drain_response.get("schema_version") == "runtime_command_status@1",
-                drain_response.get("session_id") == session_id,
-                drain_response.get("command_type") == "runtime.drain",
-                bool(command_id),
-                drain_response.get("status_url") == status_route,
-                len(terminal_statuses) == 1,
-            )
-        ):
-            _fail(
-                "public_terminal_handoff_invalid",
-                "each bounded drain requires sealed admission and one sealed terminal status",
-                identity=f"receipt_chain[{drain_sequence}]",
-            )
-        terminal_envelope = terminal_statuses[0]
-        terminal_response = dict(terminal_envelope["response"])
-        terminal_receipt = dict(terminal_envelope["receipt"])
-        if not all(
-            (
-                terminal_response.get("schema_version") == "runtime_command_status@1",
-                terminal_response.get("session_id") == session_id,
-                terminal_response.get("command_id") == command_id,
-                terminal_response.get("command_type") == "runtime.drain",
-                terminal_response.get("status_url") == status_route,
-                bool(terminal_response.get("completed_at")),
-            )
-        ):
-            _fail(
-                "public_terminal_handoff_invalid",
-                "sealed terminal response does not reproduce its runtime command",
-                identity=f"runtime_command:{command_id}",
-            )
-        finished = [
-            event
-            for event in events
-            if event.get("event_type") == "runtime.command.finished"
-            and event.get("command_id") == command_id
-            and dict(event.get("payload") or {}).get("command_id") == command_id
-        ]
-        finished_payload = (
-            dict(finished[0].get("payload") or {})
-            if len(finished) == 1
-            else {}
-        )
-        terminal_event_projection = {
-            key: terminal_response.get(key)
-            for key in (
-                "command_id",
-                "command_type",
-                "status",
-                "completed_at",
-                "bounded_outcome_summary",
-                "error_code",
-                "safe_error_summary",
-                "safe_retry_hint",
-            )
-        }
-        if finished_payload != terminal_event_projection:
-            _fail(
-                "public_terminal_handoff_event_mismatch",
-                "sealed terminal response lacks its canonical finished event",
-                identity=f"runtime_command:{command_id}",
-            )
-        used_handoff_sequences.update(
-            {drain_sequence, int(terminal_receipt["sequence"])}
-        )
-        command_handoffs.append((drain, terminal_receipt))
-
-    first_drain, first_terminal = command_handoffs[0] if command_handoffs else ({}, {})
+    )
+    first = command_handoffs[0] if command_handoffs else {}
+    first_drain = dict(first.get("drain_receipt") or {})
+    first_terminal = dict(first.get("terminal_receipt") or {})
     pregrant_workspace = [
         envelope
         for sequence, envelope in envelope_by_sequence.items()

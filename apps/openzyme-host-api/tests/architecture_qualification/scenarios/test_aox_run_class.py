@@ -13,6 +13,7 @@ from openzyme_host_api import aox_attempt_preflight
 from openzyme_host_api import aox_cutover_cli
 from openzyme_host_api import aox_cutover_launch
 from openzyme_host_api import aox_diagnostic_run
+from openzyme_host_api import aox_formal_slot_failure
 from openzyme_host_api import aox_host_supervision
 from openzyme_host_api import aox_public_conductor_bundle
 from openzyme_host_api.v3_service import V3HostApiService
@@ -231,7 +232,9 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
         "preflight",
         "serve-attempt",
         "finalize-and-seal",
+        "seal-slot-failure",
         "verify",
+        "verify-slot-failure",
         "decide",
     }
 
@@ -282,6 +285,9 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
         aox_public_conductor_bundle.finalize_and_seal_public_conductor_bundle
     )
     assert callable(aox_public_conductor_bundle.verify_public_conductor_bundle)
+    assert callable(aox_formal_slot_failure.finalize_and_seal_formal_slot_failure)
+    assert callable(aox_formal_slot_failure.verify_formal_slot_failure)
+    assert callable(aox_formal_slot_failure.evaluate_formal_slot_failure)
     factory = ProductionCompositionFactory.create(tmp_path / "aox-composition")
     model_factory = _AoxPublicCompositionModelFactory()
     composition = factory.build(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from openzyme_host_api import aox_diagnostic_run
 from openzyme_host_api.aox_cutover_evidence import canonical_digest
 from openzyme_host_api.aox_diagnostic_run import (
@@ -62,3 +64,21 @@ def test_historical_diagnostic_decision_remains_read_only_non_acceptance() -> No
 
 def test_automatic_diagnostic_runner_is_retired() -> None:
     assert not hasattr(aox_diagnostic_run, "AoxDiagnosticRun")
+
+
+def test_diagnostic_decision_cannot_embed_formal_slot_failure_decision() -> None:
+    decision = _sealed_no_go_decision()
+    observations = dict(decision["observations"])
+    observations["raw_facts"] = {
+        "forbidden": "aox_blank_world_campaign_failure_decision@1"
+    }
+    decision["observations"] = observations
+    payload = {
+        key: value for key, value in decision.items() if key != "decision_digest"
+    }
+    decision["decision_digest"] = canonical_digest(payload)
+
+    with pytest.raises(aox_diagnostic_run.CutoverEvidenceError) as error:
+        validate_aox_diagnostic_decision(decision)
+
+    assert error.value.code == "diagnostic_decision_formal_evidence_forbidden"

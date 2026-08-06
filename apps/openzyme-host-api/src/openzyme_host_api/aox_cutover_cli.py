@@ -48,6 +48,10 @@ from .aox_host_supervision import DEFAULT_STARTUP_TIMEOUT_SECONDS
 from .aox_host_supervision import DEFAULT_TERM_GRACE_SECONDS
 from .aox_host_supervision import HostSupervisionError
 from .aox_host_supervision import supervised_attempt_host
+from .aox_formal_slot_failure import evaluate_formal_slot_failure
+from .aox_formal_slot_failure import finalize_and_seal_formal_slot_failure
+from .aox_formal_slot_failure import seal_formal_slot_failure_decision
+from .aox_formal_slot_failure import verify_formal_slot_failure
 from .aox_public_conductor_bundle import (
     finalize_and_seal_public_conductor_bundle,
 )
@@ -747,9 +751,44 @@ def _finalize_and_seal(args: argparse.Namespace) -> int:
     return 0
 
 
+def _seal_slot_failure(args: argparse.Namespace) -> int:
+    failure_path, failure_digest = finalize_and_seal_formal_slot_failure(
+        identity_path=args.identity,
+        preflight_path=args.preflight_receipt,
+        receipt_chain_path=args.receipt_chain,
+        workspace_response_path=args.workspace_response,
+        event_response_path=args.event_response,
+        handoff_response_paths=args.handoff_response,
+        ledger_before_path=args.ledger_before,
+        ledger_after_path=args.ledger_after,
+    )
+    _print(
+        {
+            "schema_id": "aox_formal_slot_failure_seal_receipt@1",
+            "status": "sealed_for_offline_reduction",
+            "failure_file": str(failure_path),
+            "failure_digest": failure_digest,
+        }
+    )
+    return 0
+
+
+def _verify_slot_failure(args: argparse.Namespace) -> int:
+    result = verify_formal_slot_failure(args.failure)
+    _print(result.to_dict())
+    return 0 if result.passed else 2
+
+
 def _decide(args: argparse.Namespace) -> int:
+    if args.slot_failure is not None:
+        decision = evaluate_formal_slot_failure(args.slot_failure)
+        if args.output is not None:
+            seal_formal_slot_failure_decision(decision, args.output)
+        _print(decision)
+        return 2
+
     records: list[AttemptRunRecord] = []
-    for bundle_path, artifact_root in args.attempt:
+    for bundle_path, artifact_root in args.attempt or ():
         verification = verify_attempt_bundle(
             bundle_path,
             artifact_root=artifact_root,
@@ -1054,6 +1093,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     finalize_and_seal.set_defaults(handler=_finalize_and_seal)
 
+    seal_slot_failure = subparsers.add_parser(
+        "seal-slot-failure",
+        help=(
+            "seal one consumed formal slot that retired before any scientific "
+            "attempt was created"
+        ),
+    )
+    _required_path_arguments(
+        seal_slot_failure,
+        "identity",
+        "preflight_receipt",
+        "receipt_chain",
+        "workspace_response",
+        "event_response",
+        "ledger_before",
+        "ledger_after",
+    )
+    seal_slot_failure.add_argument(
+        "--handoff-response",
+        action="append",
+        default=[],
+        type=Path,
+        help=(
+            "sealed drain admission or terminal command-status response; "
+            "repeat for every bounded handoff"
+        ),
+    )
+    seal_slot_failure.set_defaults(handler=_seal_slot_failure)
+
     verify = subparsers.add_parser(
         "verify",
         help="verify one sealed attempt without network access",
@@ -1061,17 +1129,35 @@ def build_parser() -> argparse.ArgumentParser:
     _required_path_arguments(verify, "bundle", "artifact_root")
     verify.set_defaults(handler=_verify)
 
+    verify_slot_failure = subparsers.add_parser(
+        "verify-slot-failure",
+        help="verify one formal pre-attempt slot failure without network access",
+    )
+    _required_path_arguments(verify_slot_failure, "failure")
+    verify_slot_failure.set_defaults(handler=_verify_slot_failure)
+
     decide = subparsers.add_parser(
         "decide",
-        help="derive GO/NO-GO from two positive bundles followed by one fault bundle",
+        help=(
+            "derive GO/NO-GO from the exact three-attempt bundle chain or "
+            "derive NO-GO from one verified pre-attempt formal slot failure"
+        ),
     )
-    decide.add_argument(
+    decision_source = decide.add_mutually_exclusive_group(required=True)
+    decision_source.add_argument(
         "--attempt",
-        required=True,
         action="append",
         nargs=2,
         metavar=("BUNDLE", "ARTIFACT_ROOT"),
         type=Path,
+    )
+    decision_source.add_argument(
+        "--slot-failure",
+        type=Path,
+        help=(
+            "verified consumed-slot failure; emits canonical NO-GO without "
+            "fabricating an attempt bundle"
+        ),
     )
     decide.add_argument("--output", type=Path)
     decide.set_defaults(handler=_decide)

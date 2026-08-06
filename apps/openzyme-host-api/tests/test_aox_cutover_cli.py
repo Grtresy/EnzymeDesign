@@ -57,6 +57,51 @@ def test_cli_json_handoff_is_flushed(
     assert json.loads(str(observed["value"])) == {"status": "host_ready"}
 
 
+def test_decide_accepts_verified_slot_failure_without_attempt_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failure_path = tmp_path / "formal-slot-failure.json"
+    output_path = tmp_path / "campaign-decision.json"
+    decision = {
+        "schema_id": "aox_blank_world_campaign_failure_decision@1",
+        "decision": "NO-GO",
+        "decision_digest": "sha256:" + "a" * 64,
+    }
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli,
+        "evaluate_formal_slot_failure",
+        lambda path: decision if path == failure_path else None,
+    )
+    monkeypatch.setattr(
+        cli,
+        "seal_formal_slot_failure_decision",
+        lambda value, destination: observed.update(
+            decision=value,
+            destination=destination,
+        ),
+    )
+    monkeypatch.setattr(cli, "_print", lambda value: observed.update(output=value))
+    args = cli.build_parser().parse_args(
+        [
+            "decide",
+            "--slot-failure",
+            str(failure_path),
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert cli._decide(args) == 2
+    assert args.attempt is None
+    assert observed == {
+        "decision": decision,
+        "destination": output_path,
+        "output": decision,
+    }
+
+
 @pytest.fixture(autouse=True)
 def _verified_architecture_qualification(
     monkeypatch: pytest.MonkeyPatch,

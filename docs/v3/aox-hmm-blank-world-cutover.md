@@ -3337,3 +3337,28 @@ non-live 环境、清除 live credentials 且拒绝未声明外部端口。不�
 探针、另一个 output 或 terminal 后等价重发恢复。平台若在进程启动前拒绝该能力，则执行次数保持为
 零，操作员在环境权限边界停止，不制造 product failure receipt。`check-config` 继续在普通 sandbox
 内运行；`pin` 的 forced-SSH attestation 仍是独立、明确授权的 external-effect 边界。
+
+### 2026-08-06 late-bound lane 与 pre-attempt 正式失败闭合
+
+最近一次已消费的正式 slot 中，execution assignee 在首次 turn 内创建并绑定了 canonical lane。源
+runtime signal 的 `lane_id` 按历史事实为空，而 task、agent 与唯一 durable successor 在 turn 结束时
+已共同指向新 lane。旧 settlement 把两种不同时点的事实压成同一 identity，因而错误产生
+`budget_replan_identity_not_closed`。`AgentRuntimeOutcomeSettlement@2` 现在保留 source `lane_id`，并
+用独立 `handoff_lane_id` 表示仅允许 `None -> canonical lane` 的单调补全；已有非空 source lane 的
+漂移、task/agent/successor 不一致或 successor 不唯一仍 fail closed。它只呈现可继续的真实约束，后续
+是否以及何时提交下一次 bounded drain 仍由 Codex 测试员在已批准计划内决定。
+
+正式 rNN 只在 fresh pin 与 exact authority plan 发布后分配并冻结；此前失败统一为 `rNN=none`。
+exact plan 的一次人工批准覆盖同一 plan、slot、authority、预算和 effect 闭集内的公开 approval
+resolution 与显式继续动作，不重复请求。session 创建和首条 message 必须分别使用当前代码公开的
+`PUBLIC_CONDUCTOR_OBJECTIVE`、`PUBLIC_CONDUCTOR_TITLE`、`PUBLIC_CONDUCTOR_MESSAGE` 精确字节；不得
+以 objective 代替 message。Host 退休前必须封存最终 workspace、events、terminal handoffs 与 attempt
+export 状态。
+
+若最终公开状态证明 scientific attempt 已存在，则继续使用正常 attempt export、`finalize-and-seal`
+和 exact-three reducer。若正式 slot 已消费、Host 已完整退休且证明 attempt count 为零，则不得生成
+scientific attempt bundle；应使用 public `seal-slot-failure` 封存 authority/preflight/slot、Host
+supervision、最终公开读取、MICU transition 与 earliest typed cause，再由纯离线
+`verify-slot-failure` 和 `decide --slot-failure` 产生 canonical `NO-GO`。任何来源缺失或不一致都只能
+形成 evidence blocker。最近一次历史 slot 的入口 message 与 current contract 不同，且没有这些
+current receipts，因此不得追溯补造或重新命名；其旧状态保持不可复用。

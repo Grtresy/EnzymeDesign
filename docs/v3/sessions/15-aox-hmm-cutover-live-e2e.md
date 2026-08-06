@@ -1725,6 +1725,20 @@ composition闭合，不调用private service、不手工组装`ToolRegistry`、�
 receipt。本repair只运行全部non-live gate、同步OpenSpec/architecture/V3/qualification资源并提交；
 不启动r71、live、MICU、provider、HPC或Chrome。
 
+### post-latest formal slot：late-bound lane 与零 attempt 终局
+
+最近一次正式 slot 在首次 execution turn 内已经通过 public lane tools 创建并绑定真实 lane，但旧
+runtime settlement 仍拿 source signal 的空 lane 与 turn 结束后的 task lane 直接比较，误报
+`budget_replan_identity_not_closed`。该历史运行没有 scientific attempt，也缺少 current
+formal-slot-failure receipt；不得在 Host 退休后重启、补造 export 或伪造 attempt bundle，仍按不可复用
+的 evidence blocker 保存。
+
+forward contract 以 settlement `@2` 分开 source lane 与单调 late-bound handoff lane。今后同类正式
+slot 必须在 Host 退休前封存最终 public workspace、events、terminal handoffs 和 attempt count：存在
+真实 attempt 时走 attempt bundle；零 attempt 且最早类型化原因可重建时走
+`seal-slot-failure -> verify-slot-failure -> decide --slot-failure`，由 offline reducer 形成 canonical
+`NO-GO`。这条路径不放宽 exact-three `GO`，也不把 runtime command terminal 当成业务成功。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

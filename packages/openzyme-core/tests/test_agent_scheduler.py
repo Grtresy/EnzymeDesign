@@ -223,6 +223,62 @@ class LoopingModelFactory:
         return self.invoker
 
 
+class LateBindingThenLoopingInvoker:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def invoke_with_tools(
+        self,
+        *,
+        system_prompt: str,
+        messages: list[object],
+        tools: list[object],
+    ) -> object:
+        del system_prompt, messages, tools
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_create_late_lane",
+                        "name": "lane.create",
+                        "args": {
+                            "lane_id": "lane_late_bound",
+                            "name": "Late-bound lane",
+                            "cwd": "/workspace",
+                        },
+                    }
+                ],
+            }
+        return {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_bind_late_lane",
+                    "name": "lane.bind_task",
+                    "args": {
+                        "task_id": "task_0",
+                        "lane_id": "lane_late_bound",
+                    },
+                }
+            ],
+        }
+
+
+class LateBindingThenLoopingModelFactory:
+    def __init__(self) -> None:
+        self.invoker = LateBindingThenLoopingInvoker()
+
+    def create_tool_calling_invoker(
+        self,
+        *,
+        purpose: str,
+    ) -> LateBindingThenLoopingInvoker:
+        del purpose
+        return self.invoker
+
+
 async def _invoke_without_executor(func, /, *args, **kwargs):
     return func(*args, **kwargs)
 
@@ -1302,6 +1358,55 @@ def test_teammate_max_steps_forms_handoff_and_stops_the_current_batch(
     assert successor.agent_id == "agent:master"
     assert successor.status is AgentRuntimeSignalStatus.PENDING
     assert successor.attempt_count == 0
+
+
+def test_teammate_budget_handoff_accepts_lane_bound_during_the_source_turn(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(asyncio, "to_thread", _invoke_without_executor)
+    repositories, context = _build_context(
+        model_factory=LateBindingThenLoopingModelFactory()
+    )
+    source = repositories.runtime_signals.get("sig_0")
+    assert source is not None
+    assigned = repositories.agents.get("sess_scheduler", source.agent_id)
+    assert assigned is not None
+    repositories.agents.save(replace(assigned, role="executor"))
+
+    outcomes = AgentRuntimeScheduler(
+        context,
+        worker_id="test:late-bound-budget-handoff",
+        max_session_concurrency=1,
+    ).run_once_sync(
+        "sess_scheduler",
+        max_signals=1,
+        max_steps_per_agent=2,
+        signal_ids={"sig_0"},
+    )
+
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.settlement is not None
+    assert outcome.settlement.disposition is (
+        AgentRuntimeSettlementDisposition.BUDGET_REPLAN_HANDOFF
+    )
+    assert outcome.settlement.lane_id is None
+    assert outcome.settlement.handoff_lane_id == "lane_late_bound"
+    assert outcome.settlement.successor_lane_id == "lane_late_bound"
+    assert outcome.task is not None
+    assert outcome.task.lane_id == "lane_late_bound"
+    assert outcome.agent is not None
+    assert outcome.agent.lane_id == "lane_late_bound"
+    source_failure = repositories.failure_observations.get_by_source(
+        session_id="sess_scheduler",
+        source_kind="runtime_signal",
+        source_ref="sig_0",
+        source_version="attempt:1",
+        phase="runtime",
+        error_code=AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE,
+    )
+    assert source_failure is not None
+    assert source_failure.lane_id is None
 
 
 @pytest.mark.parametrize(

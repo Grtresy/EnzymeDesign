@@ -785,12 +785,15 @@ source/correlation/agent/task/lane 全部 exact。driver 只允许下一次既�
 cross-bound、unknown-effect 或 dispatch-in-doubt 事实都保持原 failed stop。
 
 Core 为每个 `AgentRuntimeOutcome` 生成 immutable typed
-`AgentRuntimeOutcomeSettlement`。闭集 disposition 只有 signal completed、signal failed、
+`AgentRuntimeOutcomeSettlement@2`。闭集 disposition 只有 signal completed、signal failed、
 waiting approval 和 budget-replan handoff；budget handoff 在同一个短 repository
-transaction/session runtime authority 内绑定 exact source occurrence、task/agent/lane/correlation
-snapshot、failure observation 与唯一 pending master successor。若 successor 缺失、重复、
-cancelled 或任一 identity 漂移，Core 不生成 handoff disposition，结果保持普通 signal
-failure。后续 task 或 successor 状态变化不得反向改写这个 occurrence snapshot。
+transaction/session runtime authority 内绑定 exact source occurrence、task/agent/correlation
+snapshot、failure observation 与唯一 pending master successor。`lane_id` 永远保留 source signal
+创建/claim 时的 occurrence snapshot；`handoff_lane_id` 则绑定 turn 结束时 canonical task/agent 和
+successor 共同持有的 current lane。唯一允许的变化是 source lane 尚未分配时，在同一合法 agent turn
+通过 `lane.create` / `lane.bind_task` 单调晚绑定为真实 lane；已有非空 source lane 不得漂移。若
+successor 缺失、重复、cancelled 或任一其他 identity 漂移，Core 不生成 handoff disposition，结果
+保持普通 signal failure。后续 task 或 successor 状态变化不得反向改写这个 occurrence snapshot。
 
 任一 master 或 teammate max-step outcome 都是当前 bounded batch 的 barrier。已经 claim 的
 同一 wave 可以完成收尾，但 scheduler 随后必须停止 claim；即使 command 的
@@ -1135,6 +1138,15 @@ receipt并经 artifact boundary读取 sealed bytes。finalizer 在任何输出�
 preflight、startup/retirement、public receipt chain、final workspace/events/evidence 与 MICU
    snapshots，然后 no-replace 封存 profile `aox_public_conductor_bundle@2` 的 `@3` bundle。
 
+正式 slot 已消费但 Host 退休前仍没有真实 `ScientificAttempt` 时，不得进入上述 attempt finalizer。
+Codex 必须先在 Host 可访问时封存 final workspace、完整相关 events 与每个 bounded command 的
+admission/terminal response，再在退休后用 `seal-slot-failure` 把 preflight/slot claim、Host
+startup/supervision、public receipts、MICU 与 earliest typed cause 绑定为
+`aox_formal_slot_failure@1`。纯读取 `verify-slot-failure` 重建全部 source bytes，
+`decide --slot-failure` 只产生 `aox_blank_world_campaign_failure_decision@1` 的 canonical NO-GO；
+它不创建 attempt、selection、closure 或 `aox_blank_world_attempt_bundle@3`。若 final public read、
+Host settlement 或 source binding 缺失，只能报告 evidence blocker，不能伪造 NO-GO。
+
 本 repair 只证明正向生产可达性，不改变 fault criterion。不能证明 exact
 `derived_required_artifact_blob_byte_flip@2` 与 `artifact_blob_digest_mismatch` 的 fault bundle
 必须被 reducer 记录为 `fault_contract_unproven` NO-GO。任何下一 rNN 仍需在 repair commit
@@ -1394,6 +1406,22 @@ failure code。该权限只承载本地 IPC、包 cache 与 non-live 子进程�
 也不改变 source binding、bounded receipt、no-replace publication 与 pure verifier 权威。
 `check-config` 仍属于普通 sandbox 内的无副作用配置解析；`pin` 的 forced-SSH runner attestation 保持
 独立的 preparation external-effect 权限边界。
+
+### 9.11 正式编号、bounded continuation 与 pre-attempt NO-GO
+
+R 系列编号是操作员 rollout 索引，不进入 Host canonical state。只有 fresh admission、pin 与 exact
+formal authority plan 全部发布后，才把下一 `rNN` 一次性绑定到 HEAD、launch identity、campaign 与
+plan digest；此前的 preparation failure 均为 `rNN=none`。用户对该 exact plan 的批准是唯一人工
+live gate：同一 authority/effect/budget 闭集内的 public pending approval 仍须由 Codex 逐项显式
+resolve，但不重复请求人工批准。
+
+`runtime.command.finished` 只终结一条 bounded command。若
+`agent_turn_budget_exhausted/no_effect`、非终态 task、唯一 pending master successor 与
+`AgentRuntimeOutcomeSettlement@2` 全部闭合，Codex 可以在同一批准和剩余预算内选择下一条显式 drain；
+这不是 source signal replay，也不是 automatic drive-until-terminal。真正停止时必须先在 live Host
+上保存最终 public reads；有真实 closed attempt 才走 attempt bundle，零 attempt 且 source 完整才走
+formal slot failure receipt 与 canonical NO-GO。进程退休、连接拒绝或 conductor prose都不能替代
+这两类封存终局。
 
 ---
 

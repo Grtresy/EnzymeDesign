@@ -156,6 +156,7 @@ def test_budget_replan_handoff_is_typed_and_serializable() -> None:
         "failure_observation_id": "failure_budget",
         "failure_source_version": "attempt:2",
         "failure_error_code": AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE,
+        "handoff_lane_id": "lane_budget",
         "successor_signal_id": "sig_budget_successor",
         "successor_signal_status": "pending",
         "successor_agent_id": "agent:master",
@@ -164,6 +165,24 @@ def test_budget_replan_handoff_is_typed_and_serializable() -> None:
         "successor_lane_id": "lane_budget",
         "successor_correlation_id": "corr_budget",
     }
+
+
+def test_budget_replan_handoff_preserves_source_lane_before_late_binding() -> None:
+    source, task, agent, failure, successor = _closed_budget_handoff_facts()
+    source = replace(source, lane_id=None)
+    failure = replace(failure, lane_id=None)
+
+    settlement = AgentRuntimeOutcomeSettlement.budget_replan_handoff(
+        source_signal=source,
+        task=task,
+        agent=agent,
+        failure=failure,
+        successor=successor,
+    )
+
+    assert settlement.lane_id is None
+    assert settlement.handoff_lane_id == "lane_budget"
+    assert settlement.successor_lane_id == "lane_budget"
 
 
 @pytest.mark.parametrize(
@@ -186,6 +205,16 @@ def test_budget_replan_handoff_is_typed_and_serializable() -> None:
                 replace(task, lane_id="lane_other"),
                 agent,
                 failure,
+                successor,
+            ),
+        ),
+        (
+            "source_bound_lane_drift",
+            lambda source, task, agent, failure, successor: (
+                replace(source, lane_id="lane_other"),
+                task,
+                agent,
+                replace(failure, lane_id="lane_other"),
                 successor,
             ),
         ),
