@@ -1542,6 +1542,28 @@ exit/signal、descendant residue与forced-unproven组合均为deterministic chec
 验证、同步registry/resource manifest/docs并在clean commit上生成一次明确non-adoptable full
 diagnostic；不启动下一rNN、live、MICU、provider、HPC或Chrome。
 
+### 2026-08-06 启动失败证据与判断边界修正
+
+ec69fd8 上的 `pin` 只执行一次，公开 stderr 仅证明
+`aox_launch_effective_config_schema_invalid`；事务目录没有产出身份、前置条件或提交标记，
+因此具体字段只能记为 `exact_identity_unproven`。把缺少
+`OPENZYME_RESEARCH_MCP_ENABLED` 直接写成根因，是将未被 AOX 有效配置构造器消费的环境输入
+误当成封存事实。该状态是 prelaunch blocked，不是 canonical NO-GO；没有 root、session、attempt、
+MICU、provider、runner 或 Chrome effect，也不授权纠正后重试（corrected retry）。
+
+本次修复删除 `ResearchSettings.mcp_enabled` 及其环境解析。普通 Host 仍由 foundation 明确启用
+Research MCP；AOX 有效配置继续把这项 Host 权威能力投影为 `research.mcp_enabled=true`，从而只保留
+一处产品真值。公开 CLI 失败升级为 `aox_cutover_launch_failure@2`：稳定的 `failure_code` 始终可见，
+只有失败源明确提供的 `public_details` 才映射为 `failure_details`。当前闭合 schema 失败源只允许逻辑字段
+`identity/missing/unexpected`；内部 `details`、配置值、路径、凭据、消息和异常链不会自动公开。
+历史 `@1` 只读保留。
+
+验证 skill 只增加通用证据纪律，不写死错误码、环境变量或调查顺序。Codex 可自由检查当前代码并形成
+假设，但必须分别陈述封存观测、源码推论和未证实假设；假设不能改写封存证据，也不能取得状态变更、
+纠正后重试或授权消费权限。该约束保护真实世界感知与策略自由，同时把“能够调查”与“已经证明”分开。
+本次修复仅运行 non-live 验证，不启动下一 rNN、live、MICU、provider、HPC 或 Chrome，且未获明确要求
+时不提交。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

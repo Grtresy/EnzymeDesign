@@ -697,3 +697,18 @@ identity、Core projection与digest，进入child-ready `@2`、startup `@4`和bu
 任何missing/malformed/mismatch/preexisting/duplicate/drift/tamper/reread failure都在ready与外部effect
 前fail closed；不得pull/build/install/tag/fallback。普通Host仍保留`sandbox_image_missing`，Codex
 无SQLite mutation surface。
+
+### 9.5 当前启动失败回执
+
+`openzyme-aox-cutover` 的当前启动失败回执是闭合对象
+`aox_cutover_launch_failure@2`，必含 `schema_id`、`status` 与 `failure_code`。仅当失败源明确提供
+可公开的字段级原因时，回执才增加 `failure_details`；当前闭合 schema 失败只允许逻辑字段
+`identity` 以及可选的 `missing`、`unexpected`。配置值、Host/runner 路径、凭据、原始消息、异常表示和
+异常链始终留在私有边界。内部 `details` 的存在本身不构成公开许可。历史
+`aox_cutover_launch_failure@1` 只能作为冻结记录读取，不能冒充当前回执。
+
+AOX 有效配置中的 `research.mcp_enabled=true` 是 Host 权威能力投影，不读取
+`OPENZYME_RESEARCH_MCP_ENABLED`，也不再经过 `ResearchSettings.mcp_enabled`。若公开回执没有给出
+`failure_details`，操作员必须保留 `exact_identity_unproven`；源码检查可以形成或排除假设，却不能把
+假设升级为权威原因（canonical cause），更不能据此执行纠正后重试（corrected retry）、授权消费
+（authority consumption）或其他状态变更。

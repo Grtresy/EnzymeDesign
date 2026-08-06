@@ -465,6 +465,11 @@ def test_cli_redacts_chained_launch_failure(
             raise AoxCutoverLaunchError(
                 "aox_launch_toolchain_pin_execution_failed",
                 "safe boundary message",
+                details={"private": private_value},
+                public_details={
+                    "identity": "effective_config.llm",
+                    "private": private_value,
+                },
             ) from exc
 
     monkeypatch.setattr(cli, "pin_aox_cutover_launch", reject_pin)
@@ -486,9 +491,62 @@ def test_cli_redacts_chained_launch_failure(
     assert captured.out == ""
     assert private_value not in captured.err
     assert json.loads(captured.err) == {
-        "schema_id": "aox_cutover_launch_failure@1",
+        "schema_id": "aox_cutover_launch_failure@2",
         "status": "failed",
         "failure_code": "aox_launch_toolchain_pin_execution_failed",
+    }
+
+
+def test_cli_projects_only_explicit_public_launch_failure_details(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    private_value = "private-config-value"
+
+    def reject_pin(**kwargs: object) -> object:
+        del kwargs
+        raise AoxCutoverLaunchError(
+            "aox_launch_effective_config_schema_invalid",
+            "safe boundary message",
+            details={
+                "identity": "effective_config.llm",
+                "private": private_value,
+            },
+            public_details={
+                "identity": "effective_config.llm",
+                "missing": ["enabled"],
+                "unexpected": ["legacy_flag"],
+            },
+        )
+
+    monkeypatch.setattr(cli, "pin_aox_cutover_launch", reject_pin)
+
+    result = cli.main(
+        [
+            "pin",
+            "--identity-output",
+            str(tmp_path / "identity.json"),
+            "--allowed-prerequisites-output",
+            str(tmp_path / "prerequisites.json"),
+            "--architecture-qualification-report",
+            str(tmp_path / "architecture-qualification.json"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.out == ""
+    assert private_value not in captured.err
+    assert json.loads(captured.err) == {
+        "schema_id": "aox_cutover_launch_failure@2",
+        "status": "failed",
+        "failure_code": "aox_launch_effective_config_schema_invalid",
+        "failure_details": {
+            "identity": "effective_config.llm",
+            "missing": ["enabled"],
+            "unexpected": ["legacy_flag"],
+        },
     }
 
 

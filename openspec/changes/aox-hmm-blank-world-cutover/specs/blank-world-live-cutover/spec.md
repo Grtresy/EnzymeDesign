@@ -65,6 +65,23 @@ Allowed prerequisites MUST contain exactly `git_commit`, `config_digest`, `workf
 - **WHEN** the effective owner policy leaves any AOX provider/HPC route on legacy ownership, runtime drain is not `command_v1`, mutation closure is not `generic_v1`, or any of those fields drift between pin, consumption and preflight
 - **THEN** pin fails before forced-SSH attestation, or consumption/preflight fails before session/attempt-root creation, and the reliability preimage participates in the canonical config digest
 
+### Requirement: 可验证且脱敏的启动失败因果
+当前 `openzyme-aox-cutover` 启动命令 SHALL 以闭合的 `aox_cutover_launch_failure@2` 公开失败。该对象 MUST 包含 `schema_id`、`status` 与 `failure_code`；只有失败源明确标记为可公开时，才 MAY 增加 `failure_details`。`failure_details` 只能保留逻辑 schema 字段标识 `identity` 以及可选的 `missing`、`unexpected`，不得包含配置值、Host/runner 路径、凭据、原始消息、异常表示或异常链。内部 `details` 不得因存在而自动升级为公开证据。历史 `aox_cutover_launch_failure@1` 只可作为冻结记录读取，不得冒充当前失败 receipt。
+
+AOX 有效配置中的 `research.mcp_enabled=true` SHALL 来自 Host 的权威能力投影，不得从无产品消费者的 `OPENZYME_RESEARCH_MCP_ENABLED` 环境开关或 `ResearchSettings` 影子字段推导。Codex 测试操作员 MUST 区分封存观测、依据当前源码形成的推论与尚未证实的假设；没有公开内部事实时必须保留 `exact_identity_unproven`，不得仅凭假设请求或执行纠正后重试（corrected retry）、授权消费（authority consumption）或其他状态变更。
+
+#### Scenario: 保留字段级原因而不泄露配置值
+- **WHEN** 有效配置违反闭合 schema，且 schema 校验器给出安全的逻辑字段标识
+- **THEN** CLI 在解析实际身份、创建 attempt root 或产生 MICU/provider/runner effect 之前返回 `aox_cutover_launch_failure@2`，以 `failure_code=aox_launch_effective_config_schema_invalid` 保留外层原因，并只在 `failure_details` 中投影获准的字段标识
+
+#### Scenario: 内部详情不自动成为公开证据
+- **WHEN** 启动错误内部 `details` 含有私有值、路径、凭据或任意异常文本，但错误源没有明确提供 `public_details`
+- **THEN** CLI 只公开稳定的 `failure_code`，不输出 `failure_details`，也不泄露异常链
+
+#### Scenario: 未证明的假设不得授权纠正后重试
+- **WHEN** 冻结的公开失败只有外层 wrapper，源码检查只能缩小可能原因而不能证明精确身份
+- **THEN** 测试操作员报告已证明事实与不确定性并停在现有权限边界，不注入猜测的配置，不重试 `pin`，也不消费 authority
+
 ### Requirement: One-message canonical product path
 A positive attempt SHALL begin with one user message through `POST /v3/sessions/{session_id}/messages` and SHALL progress only through resident master/teammate turns, durable signals, canonical delegation, approvals, persistent sandbox execution, Host-supervised providers/HPC, artifact registration, task business exits, and `report.publish`.
 

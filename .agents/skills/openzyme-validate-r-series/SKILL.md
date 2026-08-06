@@ -1,9 +1,9 @@
 ---
 name: openzyme-validate-r-series
-description: 在 EnzymeDesign 仓库中准备、执行或裁决 OpenZyme AOX/HMM fresh r-series validation。用户要求 readiness audit、qualification/admission、exact authority plan、获批的 live rNN campaign、sealed evidence 或 canonical GO/NO-GO 核验时使用。默认只读；不得用它诊断并实施系统性修复、修改代码或提交 commit。
+description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZyme AOX/HMM R 系列验证。用户要求就绪审计、qualification/admission、精确授权计划、获批的 live rNN campaign、封存证据或 canonical GO/NO-GO 核验时使用。默认只读；不得用它诊断并实施系统性修复、修改代码或提交 commit。
 ---
 
-# OpenZyme R-Series Validation
+# OpenZyme R 系列验证
 
 把 Codex 保持在 OpenZyme 产品 runtime 之外，只编排当前公开接口、保存命令 receipt，并依据当前 canonical evidence 裁决测试资格。让 OpenZyme agent 自由决定科学计划、tool 顺序、delegation、试错、报告时机与业务终态。
 
@@ -41,7 +41,7 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决 OpenZyme AOX/HMM
 - Offline verifier/reducer 是唯一 GO 权威；Codex prose、exit code、局部 task label、fixture 或 process retirement 不能替代它。
 - 将模型的合法策略变化当作可观察行为；不得用 exact trace、phase matcher 或规定下一 tool call 的方式纠正 agent。
 
-## 执行 validation
+## 执行验证
 
 1. 先完成一次 bounded read-only readiness audit，确认 source identity、worktree、current contract、public reachability、冻结历史、预算和待授权阶段。
 2. 只在当前授权允许时进入 preparation；任何 source、identity、registry、output target 或 prerequisite drift 都立即停止。
@@ -51,6 +51,22 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决 OpenZyme AOX/HMM
 6. 新出现的 manual approval 进入同一个单次授权门；不得自动批准。Runtime idle、no wakeup、zero-signal drain、tool success、child exit 或 process settlement都不自动构成业务终态。
 
 不要把 operation failure 自动升级成 campaign failure。保留 earliest source-bound typed cause、effect certainty 和 wrapper；只有 current canonical state 与 selected-chain contract 能决定是否仍具备继续资格。
+
+## 证据纪律
+
+严格区分封存观测、依据当前源码得出的推论和尚未证实的假设。可以自由调查、比较实现并形成假设，
+但不得把假设写成权威原因（canonical cause），也不得仅凭假设请求或执行状态变更、纠正后重试
+（corrected retry）或授权消费（authority consumption）。当前公开证据未给出内部原因时，如实标明
+具体原因尚未证明并停在现有权限边界；源码检查可以缩小假设范围，却不能改写已经封存的证据。
+
+检查配置时只报告与判断相关的存在性、类型、来源和经过脱敏的字段标识。不得打印密钥、令牌、凭据、
+私有定位信息或其他机密值；内部 `details` 只有在产品公开契约明确投影后，才能作为公开事实使用。
+
+## 表述方式
+
+面向用户的说明以准确、流畅的中文为主。只有代码标识、schema id、命令、接口路径、固定状态名和无法
+安全翻译的专有名词保留英文；普通概念不采用中英文交错拼接。首次出现且确有必要时，可以用“中文释义
+（英文关键词）”建立对应关系，后文沿用中文。
 
 ## 裁决与移交
 

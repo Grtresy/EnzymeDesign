@@ -311,7 +311,6 @@ class ResearchSettings:
     tavily_api_key: str | None = field(repr=False)
     tavily_max_results: int
     tavily_topic: str
-    mcp_enabled: bool
     mcp_tool_allowlist: tuple[str, ...] = ()
     tavily_timeout_seconds: float = 30.0
     pubmed_email: str | None = field(default=None, repr=False)
@@ -336,7 +335,6 @@ class ResearchSettings:
             tavily_api_key=os.getenv("TAVILY_API_KEY"),
             tavily_max_results=_parse_int(os.getenv("OPENZYME_TAVILY_MAX_RESULTS"), 3),
             tavily_topic=os.getenv("OPENZYME_TAVILY_TOPIC", "general"),
-            mcp_enabled=_parse_bool(os.getenv("OPENZYME_RESEARCH_MCP_ENABLED"), False),
             mcp_tool_allowlist=tuple(
                 item.strip()
                 for item in (os.getenv("OPENZYME_RESEARCH_MCP_TOOL_ALLOWLIST") or "").split(",")

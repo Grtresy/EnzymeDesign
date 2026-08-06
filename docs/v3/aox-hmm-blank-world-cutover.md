@@ -3069,6 +3069,26 @@ probe and no subsecond business timing policy. This repair runs only non-live ve
 updates, one clean explicitly non-adoptable full diagnostic and a local commit. It does not launch or name a next
 rNN, consume authority, or contact live, MICU, provider, HPC or Chrome surfaces.
 
+## ec69fd8 启动前阻塞与公开因果修正
+
+ec69fd8 上的 `pin` 实际只执行一次。公开 stderr 是
+`aox_cutover_launch_failure@1`，其中只有
+`failure_code=aox_launch_effective_config_schema_invalid`；事务目录为空，没有启动身份、前置条件或提交
+标记。故冻结结论只能是
+`aox_launch_effective_config_schema_invalid / exact_identity_unproven`。没有 Host、root、session、
+attempt、MICU、provider、runner 或 Chrome effect；这不是 canonical rNN NO-GO，也不授权重试。
+
+旧分析把缺少 `OPENZYME_RESEARCH_MCP_ENABLED` 当成根因，但当前 AOX 有效配置构造器固定投影
+`research.mcp_enabled=true`，并未读取 `ResearchSettings.mcp_enabled`。本次修复删除该无产品消费者的
+环境影子字段；普通 Host 仍由 foundation 显式启用 Research MCP，AOX 则继续封存同一 Host 权威能力。
+
+当前 CLI 失败升级为 `aox_cutover_launch_failure@2`。只有错误源明确标记的安全逻辑字段才进入
+`failure_details`；任意内部 `details`、配置值、路径、凭据和异常链均不会自动公开。对于闭合 schema
+失败，`identity/missing/unexpected` 可以保留最早字段级原因；若这些内部事实不存在，操作员必须如实
+保留 `exact_identity_unproven`。验证 skill 同时增加通用证据纪律：Codex 可以自由调查，但必须区分封存
+观测、源码推论和未证实假设，不能用假设取得纠正后重试、授权消费或其他状态变更权限。这项修复不固定
+agent 的调查路径，也不启动下一 rNN 或任何 live 外部能力。
+
 r59 remains the latest numbered campaign with a canonical formal-attempt decision. It is a failed campaign whose
 exact-three plan is consumed and whose later slots cannot be reused. The later
 non-`rNN` closure-stage runs and r60 full-path diagnostic do not revise that

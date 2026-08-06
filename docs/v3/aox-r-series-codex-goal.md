@@ -1,7 +1,7 @@
-# AOX r-series Codex 测试 goal（fresh / pre-next-rNN）
+# AOX R 系列 Codex 测试目标（全新一轮 / 下一 rNN 之前）
 
-状态：paste-ready、public-only、stateless operator protocol。历史 rNN 结论、不可复用状态与
-证据索引只见 [aox-hmm-blank-world-cutover.md](aox-hmm-blank-world-cutover.md)，不复制进本 goal。
+状态：可直接粘贴、仅限公开接口、无外置状态的操作规程。历史 rNN 结论、不可复用状态与
+证据索引只见 [aox-hmm-blank-world-cutover.md](aox-hmm-blank-world-cutover.md)，不复制进本目标。
 
 ```text
 /goal
@@ -54,9 +54,14 @@ fencing、unknown-effect、quiescence、integrity、provenance、isolation、bud
 违反，这些都是可观察的策略选择，不是 Harness failure。不要用 exact trace、phase matcher、
 automatic wake/retry或 hidden handoff纠正它们。
 
-每次决策先读 public ToolResult、FailureObservation、canonical wake facts、events与export：保留
-exact source/effect certainty和earliest typed cause，wrapper只能追加。没有 inner fact时不得伪造
-provider/runner/agent诊断；later successful adopted chain不能被 earlier known-effect trial污染。
+每次决策先读取公开的 ToolResult、FailureObservation、canonical wake facts、events 与 export，保留
+精确来源、effect certainty 和 earliest typed cause；wrapper 只能追加。必须区分封存观测、依据当前
+源码得出的推论和尚未证实的假设。没有内部事实时应如实标明具体原因尚未证明，不得伪造配置、
+provider、runner 或 agent 诊断，也不得仅凭假设请求或执行纠正后重试（corrected retry）、授权消费
+（authority consumption）或其他状态变更。后续成功采用的因果链不能被先前 known-effect 试探污染。
+
+面向用户的说明应使用准确、流畅的中文。只有代码标识、schema id、命令、接口路径、固定状态名和无法
+安全翻译的专有名词保留英文；普通概念不要采用中英文交错拼接。
 
 最终 GO 只由 current public canonical state、sealed evidence、current full qualification receipt
 和 offline verifier/reducer共同给出。exact-three task、owner-authored finish、source-linked report/

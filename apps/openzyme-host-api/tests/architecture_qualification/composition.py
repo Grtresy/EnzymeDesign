@@ -266,7 +266,6 @@ def _qualification_settings() -> OpenZymeSettings:
             tavily_api_key=None,
             tavily_max_results=1,
             tavily_topic="general",
-            mcp_enabled=False,
             mcp_tool_allowlist=(),
             tavily_timeout_seconds=1.0,
             pubmed_email=None,

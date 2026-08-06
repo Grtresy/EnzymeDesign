@@ -57,7 +57,6 @@ def _settings(*, ledger_path: Path, hpc_config_path: Path) -> OpenZymeSettings:
             tavily_api_key=None,
             tavily_max_results=3,
             tavily_topic="general",
-            mcp_enabled=True,
             mcp_tool_allowlist=("pubmed.search",),
             pubmed_email="ncbi@example.org",
             pubmed_tool="openzyme-aox",
@@ -279,3 +278,21 @@ def test_effective_config_maps_closed_schema_failure_to_launch_error(
 
     assert error.value.code == "aox_launch_effective_config_schema_invalid"
     assert error.value.details == {"identity": "effective_config.llm"}
+    assert error.value.public_details == {"identity": "effective_config.llm"}
+
+
+def test_effective_config_uses_canonical_host_mcp_capability(
+    tmp_path: Path,
+) -> None:
+    hpc_config = tmp_path / "hpc.toml"
+    hpc_config.write_text("revision=1\n", encoding="utf-8")
+    ledger = tmp_path / "micu.sqlite3"
+
+    effective = launch.build_aox_cutover_effective_config(
+        _settings(ledger_path=ledger, hpc_config_path=hpc_config),
+        ledger_path=ledger,
+    )
+
+    research = effective.payload["research"]
+    assert isinstance(research, dict)
+    assert research["mcp_enabled"] is True

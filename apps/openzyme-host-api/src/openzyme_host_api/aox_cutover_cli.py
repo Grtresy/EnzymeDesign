@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 
@@ -105,6 +106,43 @@ def _print(payload: object) -> None:
         ),
         flush=True,
     )
+
+
+_PUBLIC_SCHEMA_PATH_PATTERN = re.compile(
+    r"^effective_config(?:\.[A-Za-z0-9_-]+|\[[0-9]+\])*$"
+)
+_PUBLIC_SCHEMA_FIELD_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,255}$")
+
+
+def _public_launch_failure_details(
+    exc: AoxCutoverLaunchError,
+) -> dict[str, object] | None:
+    raw = exc.public_details
+    if not raw or not set(raw).issubset({"identity", "missing", "unexpected"}):
+        return None
+    identity = raw.get("identity")
+    if (
+        not isinstance(identity, str)
+        or _PUBLIC_SCHEMA_PATH_PATTERN.fullmatch(identity) is None
+    ):
+        return None
+    normalized: dict[str, object] = {"identity": identity}
+    for key in ("missing", "unexpected"):
+        if key not in raw:
+            continue
+        values = raw[key]
+        if (
+            not isinstance(values, (list, tuple))
+            or any(
+                not isinstance(value, str)
+                or _PUBLIC_SCHEMA_FIELD_PATTERN.fullmatch(value) is None
+                for value in values
+            )
+            or list(values) != sorted(set(values))
+        ):
+            return None
+        normalized[key] = list(values)
+    return normalized
 
 
 def _pin_output_target(path: Path) -> Path:
@@ -958,16 +996,20 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(handler(args))
     except (AoxArchitectureQualificationError, AoxCutoverLaunchError) as exc:
-        # Launch failures can wrap SSH/provider/config exceptions whose repr may
-        # contain private locators or credentials.  The operator boundary gets
-        # only the stable public code; Python's chained traceback stays closed.
+        # 启动失败可能包裹含私有定位信息或凭据的异常。只有错误源明确标记为
+        # 可公开的字段级详情才能越过操作员边界；异常链本身始终保持封闭。
+        payload: dict[str, object] = {
+            "schema_id": "aox_cutover_launch_failure@2",
+            "status": "failed",
+            "failure_code": exc.code,
+        }
+        if isinstance(exc, AoxCutoverLaunchError):
+            public_details = _public_launch_failure_details(exc)
+            if public_details is not None:
+                payload["failure_details"] = public_details
         print(
             json.dumps(
-                {
-                    "schema_id": "aox_cutover_launch_failure@1",
-                    "status": "failed",
-                    "failure_code": exc.code,
-                },
+                payload,
                 ensure_ascii=False,
                 sort_keys=True,
             ),

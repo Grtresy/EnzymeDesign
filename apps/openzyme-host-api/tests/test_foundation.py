@@ -71,7 +71,6 @@ def _settings() -> OpenZymeSettings:
             tavily_api_key=None,
             tavily_max_results=3,
             tavily_topic="general",
-            mcp_enabled=False,
         ),
         tracing=TracingSettings(enabled=False, project_name="openzyme-test"),
         host_cli=HostCliSettings(
@@ -216,7 +215,6 @@ def test_configured_foundation_uses_hpc_and_tavily_when_enabled(monkeypatch) -> 
             tavily_topic="news",
             tavily_timeout_seconds=11.0,
             provider_max_attempts=2,
-            mcp_enabled=False,
         ),
         execution=ExecutionSettings(backend="hpc", hpc_runner_config="/tmp/hpc.toml"),
     )

@@ -147,10 +147,14 @@ class AoxCutoverLaunchError(RuntimeError):
         message: str,
         *,
         details: Mapping[str, object] | None = None,
+        public_details: Mapping[str, object] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.details = {} if details is None else dict(details)
+        self.public_details = (
+            {} if public_details is None else dict(public_details)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1024,10 +1028,12 @@ def build_aox_cutover_effective_config(
             expected_runner_contracts=AOX_TOOLCHAIN_RUNTIME_CONTRACTS,
         )
     except AoxRuntimeConfigSchemaError as exc:
+        public_details = exc.details()
         raise AoxCutoverLaunchError(
             "aox_launch_effective_config_schema_invalid",
             "AOX cutover effective configuration violates its closed schema",
-            details=exc.details(),
+            details=public_details,
+            public_details=public_details,
         ) from exc
     return AoxCutoverEffectiveConfig(
         settings=effective,
