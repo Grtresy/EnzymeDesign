@@ -1,6 +1,6 @@
 ---
 name: openzyme-validate-r-series
-description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZyme AOX/HMM R 系列验证。用户要求就绪审计、qualification/admission、精确授权计划、获批的 live rNN campaign、封存证据或 canonical GO/NO-GO 核验时使用。默认只读；不得用它诊断并实施系统性修复、修改代码或提交 commit。
+description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZyme AOX/HMM R 系列验证，并在 pin 前从当前合同闭合完整启动配置。用户要求就绪审计、qualification/admission、精确授权计划、获批的 live rNN campaign、封存证据或 canonical GO/NO-GO 核验时使用。默认只读；不得用它诊断并实施系统性修复、修改代码或提交 commit。
 ---
 
 # OpenZyme R 系列验证
@@ -32,6 +32,8 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZym
 
 动态解析 clean HEAD、worktree、最新 canonical rNN、current schemas、qualification selection、MICU ledger 和 public capabilities。不要硬编码或预生成 rNN、HEAD、task/lane/envelope/attempt identity、action order、schema version 或 command list。旧 campaign 的 plan、authority、slot、root、session、effect、receipt、bundle 和 decision 一律不可复用，除非当前合同明确把它们定义为只读兼容输入。
 
+历史失败、会话、记忆或示例中的操作建议只约束其原始来源、attempt 和证据边界，不能覆盖当前合同。尤其不得把某次“不要注入变量或重试”的结论扩大成禁止为本次全新准备装配当前合同要求的启动配置；也不得把旧环境取值直接复用为当前真值。
+
 ## 保持真实产品边界
 
 - 只使用 current public Host API/CLI 和无业务判断的 process/evidence shell。
@@ -41,10 +43,20 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZym
 - Offline verifier/reducer 是唯一 GO 权威；Codex prose、exit code、局部 task label、fixture 或 process retirement 不能替代它。
 - 将模型的合法策略变化当作可观察行为；不得用 exact trace、phase matcher 或规定下一 tool call 的方式纠正 agent。
 
+## 在 pin 前闭合启动配置
+
+把科学策略留给 OpenZyme agent，但把操作员启动配置视为必须如实呈现的外部约束。任何获批的全新 `pin` 之前，先完成下列不产生外部影响的准备；不得用 `pin` 本身试探配置：
+
+1. 从公开 CLI 的真实设置入口、有效配置构建器、当前闭集 schema、操作说明、active OpenSpec 与当前合同追踪完整配置链。至少逐项核对普通 Host 默认值可能偏离 AOX 合同的可靠性（`reliability`）、live 开关、LLM 上限、execution/ledger 和凭据存在性字段；不要只检查上一次失败暴露的字段。
+2. 为每个相关字段确认当前来源、存在性、类型、合同允许集合与本次实际值。当前代码和合同优先于历史会话、记忆、示例命令及旧环境；敏感字段只记录可用性和安全身份，不读取或打印秘密值。
+3. 若任一普通 Host 默认值不属于当前 AOX 闭集 schema，禁止直接使用当前环境执行 `pin`。若用户已批准包含 `pin` 的准备阶段，可把从当前合同证明出的非敏感启动值作为该命令的临时环境整组原子应用；这不等于修改仓库、`.env`、用户 shell 或产品真状态。
+4. 同一完整启动配置必须用于 `pin` 以及后续所有会重算其 `config_digest` 的已授权公开命令。不得只修补公开失败字段、逐字段试跑、猜测未公开值，或在同一失败后发起纠正后重试（`corrected retry`）。
+5. 发出 `pin` 前先形成一份脱敏检查表，证明完整配置、设置来源、qualification HEAD、ledger 和输出目标相互一致。若无法在现有权限内证明，停在准备阶段阻塞并说明缺失证据；不要制造 Host failure code，也不要消费 live authority。
+
 ## 执行验证
 
-1. 先完成一次 bounded read-only readiness audit，确认 source identity、worktree、current contract、public reachability、冻结历史、预算和待授权阶段。
-2. 只在当前授权允许时进入 preparation；任何 source、identity、registry、output target 或 prerequisite drift 都立即停止。
+1. 先完成一次 bounded read-only readiness audit，确认 source identity、worktree、current contract、public reachability、冻结历史、预算、启动配置来源和待授权阶段。
+2. 只在当前授权允许时进入 preparation；在执行 `pin` 前完成完整启动配置检查，任何 source、identity、registry、config、output target 或 prerequisite drift 都立即停止。
 3. 只在 exact live approval 有效时消费对应 one-use authority，并只经 public Host surface 建立 fresh state。
 4. 一次只发出一条 command。若命令 yield `cell_id` 或 `session_id`，只能恢复该 exact handle；handle 失联时做有界只读检查后停止，不重发等价命令、不换 output、不自动 recovery。
 5. 每个 bounded action 后先读取 public ToolResult、FailureObservation、canonical wake facts、events、workspace、pending approvals 与 export，再自行决定唯一下一步 public action或停止。

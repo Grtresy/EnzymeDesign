@@ -1,6 +1,6 @@
 interface:
   display_name: "OpenZyme R 系列验证"
-  short_description: "仅经公开接口安全编排 AOX R 系列验证"
-  default_prompt: "使用 $openzyme-validate-r-series 对下一轮全新 AOX R 系列执行只读就绪审计，并在第一个人工授权门停止。"
+  short_description: "闭合启动配置并经公开接口编排 AOX R 系列验证"
+  default_prompt: "使用 $openzyme-validate-r-series 从当前 checkout 准备下一轮全新 AOX R 系列验证；在任何 pin 前先闭合当前启动配置，并在第一个人工授权门停止。"
 policy:
   allow_implicit_invocation: true
