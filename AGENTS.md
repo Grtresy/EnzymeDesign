@@ -69,7 +69,7 @@ V3 默认产品语义是 `session + task board + lane/workspace + approval + res
 - `task.delegate` 是产品-facing delegation tool；真实 delegation 写路径是 `ProtocolService.delegate()`
 - `protocol.send` 只投递 inbox message 并排队 wakeup signal，不同步运行 recipient
 - `auto_enqueue_ready_tasks` 默认关闭，仅用于显式 operator/debug/recovery
-- task 业务终态必须由 agent 显式 `task.update` 或已文档化机械迁移写入；runtime idle、max steps、tool result 或 protocol message 不自动代表 task completed
+- task 业务终态必须由 agent 显式 `task.finish` 或已文档化机械迁移写入；`task.update` 只编辑普通字段和非终态，runtime idle、max steps、tool result 或 protocol message 不自动代表 task completed
 - 不新增隐藏 fallback：provider/runtime 异常显式失败，tool 参数错误返回 LLM 可读 tool error，不能静默改写用户意图、重开 blocked action 或默认选择“能跑”的替代 plan
 - execution teammate 不直接调用 runner、SSH、Slurm 或 runner config；它提交 `execution.pipeline.*`，通过受控 sandbox 内 `openzyme_pipeline` SDK 间接请求 Host supervisor
 - runner/HPC 不得使用 Host 本地 artifact path；输入必须经 artifact catalog 授权并 staging，输出必须来自 declared `expected_outputs`

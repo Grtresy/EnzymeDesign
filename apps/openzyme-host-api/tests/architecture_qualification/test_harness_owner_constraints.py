@@ -98,6 +98,28 @@ def test_owner_registry_is_canonical_closed_and_source_resolved() -> None:
     }
 
 
+def test_repository_guidance_uses_current_task_business_exit_owner() -> None:
+    registry = load_harness_owner_constraint_registry(REPO_ROOT)
+    constraints = registry.payload["constraints"]
+    assert isinstance(constraints, list)
+    task_lifecycle = next(
+        item
+        for item in constraints
+        if item["constraint_id"] == "task.business-lifecycle"
+    )
+    assert task_lifecycle["owner_symbol"] == "finish_task"
+
+    guidance_lines = [
+        line
+        for line in (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8").splitlines()
+        if "task 业务终态必须由 agent 显式" in line
+    ]
+    assert len(guidance_lines) == 1
+    assert "`task.finish`" in guidance_lines[0]
+    assert "`task.update`" in guidance_lines[0]
+    assert "只编辑普通字段和非终态" in guidance_lines[0]
+
+
 def test_owner_registry_rejects_duplicate_owner_identity_and_dead_symbol() -> None:
     registry = load_harness_owner_constraint_registry(REPO_ROOT)
     payload = deepcopy(dict(registry.payload))

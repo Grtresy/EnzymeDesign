@@ -1,8 +1,8 @@
-# AOX R 系列 Codex 测试目标
+# AOX R 系列 Codex 验证与修复目标
 
-本页只定义如何启动 `openzyme-validate-r-series` 以及 goal 应承载的授权信息。产品合同、CLI 参数、schema、配置值、证据结构和终局规则以 `docs/v3/README.md` 路由的稳定文档、active OpenSpec 与当前 public CLI 为准，不复制到 goal 或 skill。
+本页只定义如何启动 `openzyme-validate-r-series`、`openzyme-repair-r-series`，以及 goal 应承载的授权信息。产品合同、CLI 参数、schema、配置值、证据结构和终局规则以 `docs/v3/README.md` 路由的稳定文档、active OpenSpec 与当前 public CLI 为准，不复制到 goal 或 skill。
 
-## 推荐 goal
+## 验证 goal
 
 ```text
 /goal 在当前 EnzymeDesign checkout 使用 $openzyme-validate-r-series 启动一轮全新的 AOX/HMM R 系列验证。
@@ -15,7 +15,20 @@ goal 只回答“本轮要达到什么结果、允许哪些阶段和外部影响
 
 平台执行许可不是第二轮业务授权。已获批准的动作需要本地 IPC、远程 runner 或其他平台能力时，Codex 通过工具机制申请；实际 target、operation、预算、identity 或 effect 扩大时，才返回新的人工授权门。
 
-## 当前事实来源
+## 修复 goal
+
+```text
+/goal 在当前 EnzymeDesign checkout 使用 $openzyme-repair-r-series 处理操作员指定的最新 frozen incident。
+先只读诊断并提出一个 bounded repair slice，然后停在唯一 Phase 2 授权门。
+收到一次明确批准后，在该 slice 内完成代码、OpenSpec 与文档同步，运行全部适用 non-live 验证并创建本地提交。
+不得启动 fresh admission、下一 rNN、live、MICU、provider、HPC 或 Chrome。
+```
+
+修复 goal 只指定事故、两阶段权限和完成条件。skill 必须按事故实际边界区分 `rNN=none` preparation blocker、零 attempt formal slot failure、真实 attempt/campaign、evidence blocker 与 operator/platform blocker；不存在的后续 identity 不能被误报为缺失 evidence。Phase 1 报告完整 bounded slice 后只进入一次授权门；同一批准内的实现选择、测试修复和代码整理不再逐项申请。
+
+Deletion-first 只优先删除 shadow truth、重复 owner、dead compatibility 与策略拦截，不要求每个正确修复都产生生产代码净删除。必要的最小 public capability、类型化 evidence、历史兼容或跨来源回归可以新增，但必须说明 canonical owner 与不可替代性。
+
+## 验证的当前事实来源
 
 fresh session 必须从以下入口重新推导，不使用历史 prompt 或旧 rNN 状态：
 
@@ -27,6 +40,8 @@ fresh session 必须从以下入口重新推导，不使用历史 prompt 或旧 
 6. 本轮 public preflight、execution contract、receipt、sealed response 与 canonical export。
 
 文档、OpenSpec、CLI 和实现出现冲突时停止并报告 contract drift，不由 skill 保存旧值补齐。历史 incident 只作为不可变证据索引，见 [aox-hmm-blank-world-cutover.md](aox-hmm-blank-world-cutover.md)。
+
+上述“停止”适用于 validation preparation。Repair Phase 1 应把 contract drift 本身作为候选根因，核对 production reachability、当前公开 schema/CLI、owner registry、最近 change 的设计和验证证据，提出同步全部冲突来源及跨来源回归的方案；只有 forward intent 仍无法证明时才请求用户决策。
 
 ## 正式 public conductor
 
