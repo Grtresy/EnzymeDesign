@@ -1633,6 +1633,38 @@ no-replace/fsync publication 与 pure verifier 均保持唯一权威。
 
 rNN 只在 fresh pin 与 exact formal plan 发布后分配并冻结；此前失败报告 `rNN=none`。用户对该 exact plan 的一次批准覆盖同一 plan、slot、authority、预算和 effect 闭集内的公开 approval resolution 与显式继续动作，不覆盖身份漂移、预算扩大或新 effect。session 入口必须逐字使用当前公开的 objective、title 与 message，Host 退休前必须先封存所有最终读取。历史失败缺少 current receipt 或入口字节不匹配时不得追溯补造，只作为不可复用历史 blocker 保留。
 
+### 2026-08-07 public conductor execution contract 与退休证据门
+
+r74 再次证明，单靠提示词或 skill 提醒操作员手工附加 `--receipt-chain`、
+`--seal-response` 并在 Host 退休前补做最终读取，并不能形成可靠的产品合同。该正式 slot 已消费
+authority、root、session 与一次 runtime turn，但操作员没有同步封存 public receipt/response；Host
+退休后失去唯一公开读取面，因此既不能伪造 attempt bundle，也不能满足
+`aox_formal_slot_failure@1` 的零 attempt NO-GO 来源闭合，只能保留为 evidence blocker。
+
+前向修复不恢复 AOX observer、automatic driver 或业务策略机。`preflight` 额外发布一个
+source-bound conductor execution contract，只含 consumed slot 推导出的 Host/project/session
+身份和相对 evidence 名称。新的 formal public Host command 机械注入这些身份、receipt chain 与
+sealed response 目标，并拒绝调用者重绑定；其余 public action、参数、科学工具、drain 次数与推进
+节奏仍由 Codex 测试员根据真实世界状态决定。
+
+在操作员请求 Host 退休前，policy-free evidence shell 从公开 receipt/response 重新计算
+one-to-one coverage、bounded drain admission/terminal event handoff，以及 mutation 后最终
+workspace/events，封存不可变 retirement-readiness receipt。该 receipt 缺失、漂移或不完整时，
+supervisor 只拒绝这次操作员退休并保持同一 Host 可读，不重放 command、不创建 task、不判断业务
+终态；真实 child exit 与 authority expiry 仍按原监督合同封存。positive/fault finalizer 与零 attempt
+slot-failure finalizer 都只接受 readiness receipt，并从中派生 exact source，删除 caller-selected
+receipt/workspace/event/handoff/evidence path 组合。
+脱敏且逐条封存的 4xx/5xx 可进入 readiness 与零-attempt failure source，避免一次真实 command
+failure 永久毒化退休；positive bundle仍只接受成功 chain，HTTP status本身也不能替代 canonical
+typed cause。architecture owner registry以 `aox.conductor-evidence` 固定该能力的 lifecycle、
+persistence与 forbidden edges，禁止 action selection、automatic drain、business terminal write 和
+campaign decision。
+
+验证 skill 同步降为当前合同路由器：每个阶段先完整读取 `AGENTS.md`、V3 索引、当前 goal、active
+OpenSpec 与公开 CLI help，再提取本阶段 execution contract。skill 只保留稳定的授权、证据与停止
+不变量，不再复制易漂移的 schema、配置默认值、固定命令序列或 harness fixture 数量。这样把机械
+证据约束放进产品，把世界理解和策略判断留给 agent，也避免文档与 skill 双重维护。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

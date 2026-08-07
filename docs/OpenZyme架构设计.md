@@ -1122,30 +1122,40 @@ reachability/qualification证明，不写回 Host runtime config。
 fresh exact plan/consumption
   -> atomic one-use slot claim（先于任何 root）
   -> preflight 验证全部 identity 后才创建唯一 private root
+  -> source-bound conductor execution contract
   -> policy-free supervised loopback Host
-  -> Codex 逐步调用 public message/drain/status/approval/read APIs
-  -> append-only conductor-owned openzyme_public_api_receipt@2 chain
+  -> Codex 经 formal public-host 逐步选择 message/drain/status/approval/read APIs
+  -> 自动绑定的 append-only receipt chain 与 sealed responses
   -> Host public canonical control/events/product-closure export
+  -> retirement-readiness seal（先于操作员退休 Host）
   -> single source-bound finalize-and-seal
   -> network-free attempt verifier
   -> exact-three campaign reducer
 ```
 
 `serve-attempt` 只监督固定 Host process group，不发送业务命令或判断 terminal；Host 继续独占
-canonical state、approval、fencing、effect、quiescence 与隔离。closed evidence export 要求
+canonical state、approval、fencing、effect、quiescence 与隔离。preflight发布的 execution contract
+不含绝对路径或业务策略，只让 `public-host` 对调用者选择的任意合法 public command机械绑定同一
+Host/session、receipt chain 与一次 sealed response。closed evidence export 要求
 exact session/closed attempt/sealed selection，positive 还要重验 source-bound 17-deliverable
 receipt并经 artifact boundary读取 sealed bytes。finalizer 在任何输出前闭合 identity、
 preflight、startup/retirement、public receipt chain、final workspace/events/evidence 与 MICU
-   snapshots，然后 no-replace 封存 profile `aox_public_conductor_bundle@2` 的 `@3` bundle。
+snapshots，然后 no-replace 封存 profile `aox_public_conductor_bundle@3` 的 `@3` bundle。
 
-正式 slot 已消费但 Host 退休前仍没有真实 `ScientificAttempt` 时，不得进入上述 attempt finalizer。
-Codex 必须先在 Host 可访问时封存 final workspace、完整相关 events 与每个 bounded command 的
-admission/terminal response，再在退休后用 `seal-slot-failure` 把 preflight/slot claim、Host
+正式 slot 已消费但仍没有真实 `ScientificAttempt` 时，不得进入上述 attempt finalizer。Codex 必须
+先在 Host 可访问时封存 final workspace、完整相关 events 与每个 bounded command 的
+admission/terminal response，再用 `seal-conductor-state` 建立可重算的
+`aox_public_conductor_retirement_readiness@1`。缺少 readiness 或 source 已漂移时，supervisor拒绝
+操作员退休并保持 Host 可访问；readiness 只决定机械证据是否完整，不判断业务 terminal。可靠退休后，
+`seal-slot-failure` 从 readiness解析 exact sources，把 preflight/slot claim、Host
 startup/supervision、public receipts、MICU 与 earliest typed cause 绑定为
 `aox_formal_slot_failure@1`。纯读取 `verify-slot-failure` 重建全部 source bytes，
 `decide --slot-failure` 只产生 `aox_blank_world_campaign_failure_decision@1` 的 canonical NO-GO；
 它不创建 attempt、selection、closure 或 `aox_blank_world_attempt_bundle@3`。若 final public read、
 Host settlement 或 source binding 缺失，只能报告 evidence blocker，不能伪造 NO-GO。
+已递归脱敏并逐条封存的 4xx/5xx 可以进入 readiness 和零-attempt failure source，不会永久毒化
+操作员退休；positive bundle 仍只接受完整成功 chain，failure reducer 仍要求独立的 canonical
+typed cause，HTTP status 本身不能被提升为业务 NO-GO。
 
 本 repair 只证明正向生产可达性，不改变 fault criterion。不能证明 exact
 `derived_required_artifact_blob_byte_flip@2` 与 `artifact_blob_digest_mismatch` 的 fault bundle

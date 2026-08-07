@@ -585,7 +585,10 @@ def _build_payload(
         receipt_chain_path,
         identity="formal_slot_failure.receipt_chain",
     )
-    receipts, receipt_bytes = _load_receipt_chain(receipt_chain_path)
+    receipts, receipt_bytes = _load_receipt_chain(
+        receipt_chain_path,
+        allow_failure_responses=True,
+    )
     session_id = str(slot["session_id"])
     session_receipts = [
         receipt

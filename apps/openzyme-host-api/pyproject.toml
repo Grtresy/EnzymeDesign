@@ -14,6 +14,7 @@ dependencies = [
   "openzyme-domain",
   "openzyme-engines",
   "openzyme-execution",
+  "openzyme-host-cli",
   "openzyme-pipeline",
   "openzyme-research[tavily]",
   "openzyme-runtime",

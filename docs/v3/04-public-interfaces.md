@@ -601,6 +601,14 @@ source-bound public facts。chain/record/response均有固定byte与cardinality�
 在计算receipt/response semantic digest前递归脱敏，因此不会把Host path、secret或raw exception
 写进封存证据，且与2xx使用同一full-write/fsync/no-replace合同。
 
+正式 AOX slot 不要求 Codex 为每条普通 `openzyme` 命令手工重复上述两个参数。`preflight`
+同时发布 source-bound、只含相对证据名的 `aox_public_conductor_execution_contract@1`；
+`public-host` 从该合同和 exact Host startup receipt解析 loopback endpoint、session/project identity、
+唯一 receipt chain 与 response target，再把调用者自由选择的其余参数原样交给 thin Host CLI。
+调用者不能覆盖 Host、identity、format、receipt 或 response binding；每个真正发出的 public response
+因此恰有一条 receipt 和一个 `openzyme_public_host_response@1`。该入口不选择 action、不循环、不
+自动 approval，也不解释业务状态。
+
 closed evidence route 只导出 exact session 中已 closed attempt 的 exact sealed selection。
 formal positive 还必须存在且通过 persisted `aox_final_deliverable_validation_receipt@1`；
 Host 经 `ArtifactBoundaryService.read_sealed_file()` 核对 artifact scope、kind、size、digest后
@@ -619,6 +627,16 @@ transition 只由 closed control、workspace、events 与 export 证明。每个
 bounded outcome及safe error/retry字段上exact相同。digest-only GET receipt、unsealed/synthetic或
 extra handoff都不是terminal proof；stdout JSON handoff 必须 flush。
 
+Host 退休前，`seal-conductor-state` 必须从同一 evidence root 重新验证完整 receipt chain 与所有
+`public-response-*` envelopes，要求每条 receipt 恰有一个封存 response、每个 bounded drain 都有
+唯一 terminal status 且与 `runtime.command.finished` 一致、最终 workspace/events 晚于全部 public
+mutation，并从最终 workspace 只判定 `attempt | slot_failure` 证据模式。成功后以 no-replace
+`aox_public_conductor_retirement_readiness@1` 绑定所有 source bytes；封存后任何追加或漂移都使它
+失效。该机械检查允许已脱敏且完整封存的 4xx/5xx response 留在 failure-mode chain 中，避免一次
+真实失败把 Host 变成不可退休的状态；它只证明证据完整性，不判断业务成功或 campaign decision。
+含 non-2xx 的 chain 仍不得进入 positive attempt bundle，只有 final public state、earliest typed
+cause 与零 attempt 合同同时闭合时，才可进入 slot-failure verifier/reducer。
+
 fault 槽新增唯一 public capability：
 `POST /v3/sessions/{session_id}/aox-fault-injections/reference-byte-flip`。request 只接受 exact
 `attempt_id` 与 `artifact_id`，并要求 `Idempotency-Key`；Host 验证 active fault authority、
@@ -627,14 +645,16 @@ AOX reference selection contract、sealed bytes 与零既有 consumer 后，在 
 已消费或 drift 均 fail closed。
 
 AOX cutover shell 保留彼此分离的 production seams：`preflight` 先对 exact ordinal执行
-private atomic one-use slot claim，再在所有 authority/pin/qualification/config validation 通过后
-创建 exact root、复制 claim、封存 `aox_attempt_preflight@4` 并报告 Host 未启动；`serve-attempt`
-只启动/退休 fixed loopback Host，不发 message/drain/approval；`finalize-and-seal` 只从 exact
-public receipts和 sealed source responses重建并原子封存真实 attempt 的 `@3` bundle；
-`seal-slot-failure` 则只在 final public workspace 证明 attempt count 为零、Host 已可靠退休且全部
-source binding 闭合时封存 `aox_formal_slot_failure@1`。`verify-slot-failure` 纯读取重建该 receipt，
-`decide --slot-failure` 只能给出 source-bound canonical NO-GO，不能创建 attempt bundle。任何 seam
-都不能自动判断 agent 业务 terminal 或声明 GO。
+private atomic one-use slot claim，再在全部 authority/pin/qualification/config validation 通过后
+创建 exact root、复制 claim，封存 `aox_attempt_preflight@4` 与 execution contract并报告 Host 未启动；
+`serve-attempt` 只启动/退休 fixed loopback Host，不发 message/drain/approval。操作员发送中断时，
+supervisor 只有在 current readiness receipt能从未漂移 source完整重算时才退休 Host，否则公开
+`host_remains_active` 并继续服务；child crash或 authority deadline仍按真实 supervision事实处理，
+不伪造 readiness。`finalize-and-seal` 与 `seal-slot-failure` 均从 readiness自动解析 exact receipt、
+final reads和handoffs，不再接受调用者逐项挑选这些路径；前者只封存真实 attempt 的 `@3` bundle，
+后者只封存 final workspace 已证明的零-attempt `aox_formal_slot_failure@1`。`verify-slot-failure` 纯读取
+重建该 receipt，`decide --slot-failure` 只能给出 source-bound canonical NO-GO，不能创建 attempt
+bundle。任何 seam 都不能自动判断 agent 业务 terminal 或声明 GO。
 
 ### 9.2 historical post-r69 late-bound scientific admission
 

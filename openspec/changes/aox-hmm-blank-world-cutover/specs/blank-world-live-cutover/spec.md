@@ -690,6 +690,13 @@ single-linked, locked, fully written and fsynced. A requested final response MAY
 be sealed once as `openzyme_public_host_response@1` only when it reproduces the
 same semantic digest.
 
+Formal preflight SHALL publish one source-bound public conductor execution contract
+that derives the exact Host/project/session binding and relative receipt/response
+evidence names from the consumed slot. The formal public command SHALL inject those
+mechanical bindings, reject caller overrides, and preserve the caller's choice of any
+otherwise-valid public Host action, arguments and bounded cadence. It MUST NOT select
+scientific tools, task strategy, drain count or business terminal state for the agent.
+
 The receipt chain SHALL attest only actions owned by the Codex conductor: session
 creation, entry message, explicit bounded drain and status reads, the sealed
 canonical task read, late-bound authority grant,
@@ -706,6 +713,22 @@ unsealed GET, synthesized response, extra handoff, or status/event drift MUST fa
 closed. CLI JSON handoff MUST be flushed, recursively sanitized on non-2xx, bounded,
 and sealed with the same canonical response semantics as a successful request.
 
+Before operator-requested Host retirement, the public conductor shell SHALL recompute
+the complete receipt chain and every sealed response, prove one-to-one receipt/response
+coverage, validate every bounded drain admission/terminal event handoff, and require
+post-mutation final public workspace and event reads. It SHALL seal those immutable
+facts as one source-bound retirement-readiness receipt. The supervisor MUST refuse an
+operator retirement request and keep the same Host process available when readiness is
+missing, stale or invalid; it MUST NOT retry a command, create a task or choose a
+business outcome. Child exit and authority expiry remain honest terminal supervision
+facts and MUST NOT be concealed by this operator gate.
+
+A recursively sanitized and exactly sealed 4xx/5xx public response MAY remain in the
+retirement and formal-slot-failure source chain so that a real failure cannot poison
+operator retirement. It MUST remain ineligible for a positive attempt bundle, and its
+HTTP status alone MUST NOT become a business or campaign cause; zero-attempt NO-GO still
+requires the independent canonical typed-cause and final-state closure.
+
 For the formal fault slot, the public Host SHALL expose only the authority-bound exact
 `AOX_ref21.fasta` byte-zero flip capability. It MUST validate the active fault attempt,
 exact derived selection contract and sealed bytes, require zero existing consumers,
@@ -714,10 +737,11 @@ change, fsync and restore the file mode, and persist a source/authority/idempote
 bound receipt. A conflicting retry, rebound artifact, prior consumer, stale bytes or
 wrong contract MUST fail closed.
 
-One `finalize-and-seal` command SHALL prevalidate the exact identity, preflight,
-startup/retirement receipts, complete public receipt chain, sealed final
-workspace/event/evidence responses, source attestations and MICU snapshots before
-creating any output. It SHALL reconstruct one source-bound
+One `finalize-and-seal` command SHALL accept one exact retirement-readiness receipt,
+revalidate its source digests, and derive rather than accept caller-selected paths for
+the identity, preflight, startup/retirement receipts, complete public receipt chain,
+sealed final workspace/event/evidence responses, source attestations and MICU
+snapshots before creating any output. It SHALL reconstruct one source-bound
 `aox_blank_world_attempt_bundle@3` with profile
 `aox_public_conductor_bundle@3`, install it atomically without replacement, and
 make the sealed source set independently reconstructable by the network-free
@@ -781,6 +805,14 @@ package and MUST NOT be a production caller.
 #### Scenario: Bind every terminal handoff to the durable event
 - **WHEN** a conductor submits a bounded drain and later reads its terminal status
 - **THEN** both public responses are sealed and the terminal response exactly reproduces the unique `runtime.command.finished` event projection; an unsealed or digest-only status GET is not terminal proof
+
+#### Scenario: Refuse unsealed operator retirement
+- **WHEN** the operator requests retirement before every public receipt has one sealed response, every bounded drain has one matching terminal event, or post-mutation workspace/events have been sealed
+- **THEN** the supervisor emits a typed retirement refusal and keeps the same Host active so the conductor can perform only the missing public reads; it does not infer or alter the business outcome
+
+#### Scenario: Preserve caller strategy under formal public execution
+- **WHEN** preflight has published the formal execution contract and the conductor selects an otherwise-valid public Host CLI action
+- **THEN** the formal command injects only the exact identity and evidence sinks, rejects rebinding, and forwards the selected action unchanged without imposing a tool sequence, drain count or completion policy
 
 ### Requirement: Three-attempt GO campaign
 Local Live cutover SHALL be GO only after one formal acceptance campaign and one exact authority plan produce ordinal 1, 2 and 3 in that order: two consecutive independent positive attempts on the same exact-seven launch identity, followed by one `derived_required_artifact_blob_byte_flip@2` attempt that fails closed. Every session/root/authority-policy/receipt-chain launch identity MUST be non-empty and unique across the three slots; after the public task read and Host finalization, every canonical task/envelope/attempt/lane/admission-request/admission-idempotency/selection identity MUST independently be non-empty and unique across the three real control graphs. No outer launch artifact may supply those late-bound control identities. The fault MUST traverse the real exact-14 NCBI `proteins.fasta` through `aox_hmm_reference_set_selection@1` to derived `AOX_ref21.fasta`, consume the authority-bound public capability before its unique pending MAFFT consumer, and terminate that consumer with exact `artifact_blob_digest_mismatch`. Positive attempts MUST use different clean roots and MUST each prove exact three-task completion, publish a source-linked report, preserve a final answer and pass offline evidence verification. Diagnostic live runs, implementation completion, and non-live test completion MUST NOT be reported as Live completion before all three fresh formal bundles and the sealed reducer decision exist.

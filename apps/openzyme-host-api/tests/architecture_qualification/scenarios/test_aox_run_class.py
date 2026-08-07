@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 import openzyme_core
 from openzyme_host_api import aox_attempt_authority
 from openzyme_host_api import aox_attempt_preflight
+from openzyme_host_api import aox_conductor_execution
 from openzyme_host_api import aox_cutover_cli
 from openzyme_host_api import aox_cutover_launch
 from openzyme_host_api import aox_diagnostic_run
@@ -231,6 +233,8 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
     required_conductor_commands = {
         "preflight",
         "serve-attempt",
+        "public-host",
+        "seal-conductor-state",
         "finalize-and-seal",
         "seal-slot-failure",
         "verify",
@@ -245,6 +249,23 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
     assert "authorize-diagnostic" not in subcommands
     assert "consume-diagnostic-authority" not in subcommands
     assert required_conductor_commands.issubset(subcommands)
+    public_host_arguments = {
+        action.dest: action
+        for action in subcommands["public-host"]._actions
+    }
+    assert public_host_arguments["host_cli_args"].nargs == argparse.REMAINDER
+    for finalizer_name in ("finalize-and-seal", "seal-slot-failure"):
+        finalizer_arguments = {
+            action.dest for action in subcommands[finalizer_name]._actions
+        }
+        assert "retirement_readiness" in finalizer_arguments
+        assert not {
+            "receipt_chain",
+            "workspace_response",
+            "event_response",
+            "evidence_response",
+            "handoff_response",
+        }.intersection(finalizer_arguments)
     assert not hasattr(aox_diagnostic_run, "AoxDiagnosticRun")
     assert not hasattr(aox_cutover_launch, "AoxCutoverDriverConfig")
     assert not hasattr(openzyme_core, "RuntimeBarrierProjectionService")
@@ -280,6 +301,9 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
     assert not hasattr(openzyme_core.ScientificAttemptService, "create_attempt")
     assert not hasattr(aox_attempt_authority, "attempt_admission_arguments")
     assert callable(aox_attempt_preflight.load_attempt_preflight_receipt)
+    assert callable(aox_conductor_execution.publish_conductor_execution_contract)
+    assert callable(aox_conductor_execution.seal_conductor_retirement_readiness)
+    assert callable(aox_conductor_execution.load_conductor_retirement_readiness)
     assert callable(aox_host_supervision.supervised_attempt_host)
     assert callable(
         aox_public_conductor_bundle.finalize_and_seal_public_conductor_bundle
@@ -522,6 +546,17 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
         ),
         "public_conductor_commands_present": sorted(
             required_conductor_commands.intersection(subcommands)
+        ),
+        "public_conductor_execution_contract_present": all(
+            callable(item)
+            for item in (
+                aox_conductor_execution.publish_conductor_execution_contract,
+                aox_conductor_execution.seal_conductor_retirement_readiness,
+                aox_conductor_execution.load_conductor_retirement_readiness,
+            )
+        ),
+        "public_conductor_strategy_preserved": (
+            public_host_arguments["host_cli_args"].nargs == argparse.REMAINDER
         ),
         "public_host_cli_receipt_chain_present": {
             "events": "events" in session_commands,

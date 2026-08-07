@@ -217,7 +217,11 @@ def _load_canonical_object(
         _fail("public_conductor_source_noncanonical", "source is not canonical JSON", identity=identity)
     return dict(value), content
 
-def _load_receipt_chain(path: Path) -> tuple[list[dict[str, Any]], bytes]:
+def _load_receipt_chain(
+    path: Path,
+    *,
+    allow_failure_responses: bool = False,
+) -> tuple[list[dict[str, Any]], bytes]:
     try:
         metadata, content = path.lstat(), path.read_bytes()
     except OSError as exc:
@@ -257,6 +261,11 @@ def _load_receipt_chain(path: Path) -> tuple[list[dict[str, Any]], bytes]:
                 "public Host receipt chain contains invalid JSONL",
                 details={"identity": f"receipt_chain[{sequence}]"},
             ) from exc
+        status_code = raw.get("status_code") if isinstance(raw, dict) else None
+        status_valid = type(status_code) is int and (
+            200 <= status_code < 300
+            or (allow_failure_responses and 400 <= status_code < 600)
+        )
         valid = isinstance(raw, dict) and all(
             (
                 set(raw) == _RECEIPT_FIELDS,
@@ -264,8 +273,7 @@ def _load_receipt_chain(path: Path) -> tuple[list[dict[str, Any]], bytes]:
                 raw.get("sequence") == sequence,
                 canonical_json_bytes(raw) == line,
                 raw.get("request_digest") == canonical_digest(raw.get("request")),
-                type(raw.get("status_code")) is int,
-                200 <= int(raw.get("status_code") or 0) < 300,
+                status_valid,
                 all(
                     _DIGEST.fullmatch(str(raw.get(name) or ""))
                     for name in (
@@ -279,7 +287,7 @@ def _load_receipt_chain(path: Path) -> tuple[list[dict[str, Any]], bytes]:
         if not valid:
             _fail(
                 "public_receipt_chain_invalid",
-                "receipt chain is not successful and closed",
+                "receipt chain is not closed under the selected response mode",
                 identity=f"receipt_chain[{sequence}]",
             )
         records.append(dict(raw))

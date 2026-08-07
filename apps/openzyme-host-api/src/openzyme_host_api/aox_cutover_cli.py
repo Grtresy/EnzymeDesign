@@ -11,6 +11,7 @@ import tempfile
 
 from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime import REPO_ROOT
+from openzyme_host_cli.cli import run_cli as run_host_cli
 
 from .aox_architecture_qualification import AoxArchitectureQualificationError
 from .aox_architecture_qualification import (
@@ -32,6 +33,15 @@ from .aox_attempt_authority import publish_aox_attempt_authority_plan
 from .aox_attempt_preflight import build_attempt_preflight_receipt
 from .aox_attempt_preflight import publish_attempt_preflight_receipt
 from .aox_attempt_preflight import publish_attempt_slot_claim_evidence
+from .aox_conductor_execution import (
+    CONDUCTOR_RETIREMENT_READINESS_FILENAME,
+)
+from .aox_conductor_execution import load_active_public_host_context
+from .aox_conductor_execution import load_conductor_retirement_readiness
+from .aox_conductor_execution import public_response_path
+from .aox_conductor_execution import publish_conductor_execution_contract
+from .aox_conductor_execution import retirement_readiness_sources
+from .aox_conductor_execution import seal_conductor_retirement_readiness
 from .aox_cutover_evidence import AttemptRunRecord
 from .aox_cutover_evidence import create_blank_world_roots
 from .aox_cutover_evidence import CutoverEvidenceError
@@ -655,6 +665,7 @@ def _preflight(args: argparse.Namespace) -> int:
         roots=roots,
     )
     receipt_path = publish_attempt_preflight_receipt(receipt, roots=roots)
+    contract_path, contract = publish_conductor_execution_contract(receipt_path)
     _print(
         {
             "schema_id": "aox_attempt_preflight_publish_receipt@1",
@@ -669,6 +680,8 @@ def _preflight(args: argparse.Namespace) -> int:
             "preflight_receipt_digest": receipt["receipt_digest"],
             "slot_claim": str(slot_claim_path),
             "slot_claim_digest": slot_claim["claim_digest"],
+            "conductor_execution_contract": str(contract_path),
+            "conductor_execution_contract_digest": contract["contract_digest"],
             "local_paths": {
                 key: str(path) for key, path in roots.local_paths().items()
             },
@@ -703,10 +716,38 @@ def _serve_attempt(args: argparse.Namespace) -> int:
                 ),
             }
         )
-        try:
-            lease.wait()
-        except KeyboardInterrupt:
-            lease.shutdown_reason = "operator_stop"
+        while True:
+            try:
+                lease.wait()
+                break
+            except KeyboardInterrupt:
+                readiness_path = (
+                    args.preflight_receipt.parent
+                    / CONDUCTOR_RETIREMENT_READINESS_FILENAME
+                )
+                try:
+                    readiness = load_conductor_retirement_readiness(
+                        readiness_path,
+                        preflight_path=args.preflight_receipt,
+                    )
+                except CutoverEvidenceError as exc:
+                    _print(
+                        {
+                            "schema_id": "aox_supervised_host_retirement_refused@1",
+                            "status": "host_remains_active",
+                            "failure_code": exc.code,
+                        }
+                    )
+                    continue
+                lease.shutdown_reason = "operator_stop"
+                _print(
+                    {
+                        "schema_id": "aox_supervised_host_retirement_admission@1",
+                        "status": "retirement_admitted",
+                        "readiness_receipt_digest": readiness["receipt_digest"],
+                    }
+                )
+                break
     receipt = lease.supervision_receipt
     if receipt is None:
         raise HostSupervisionError(
@@ -728,15 +769,97 @@ def _serve_attempt(args: argparse.Namespace) -> int:
     return 0
 
 
+def _public_host(args: argparse.Namespace) -> int:
+    forwarded = list(args.host_cli_args)
+    if forwarded and forwarded[0] == "--":
+        forwarded = forwarded[1:]
+    if not forwarded:
+        raise CutoverEvidenceError(
+            "public_conductor_command_missing",
+            "public-host requires one thin Host CLI command after --",
+            details={"identity": "host_cli_args"},
+        )
+    controlled = {
+        "--host",
+        "--project-id",
+        "--session-id",
+        "--format",
+        "--receipt-chain",
+        "--seal-response",
+    }
+    if any(
+        token in controlled
+        or any(token.startswith(f"{option}=") for option in controlled)
+        for token in forwarded
+    ):
+        raise CutoverEvidenceError(
+            "public_conductor_command_boundary_invalid",
+            "public-host owns Host, identity, format, receipt, and response binding",
+            details={"identity": "host_cli_args"},
+        )
+    _, contract, startup, evidence_root = load_active_public_host_context(
+        args.preflight_receipt
+    )
+    response_path = public_response_path(
+        args.preflight_receipt,
+        args.response_name,
+    )
+    return run_host_cli(
+        [
+            "--host",
+            str(startup["base_url"]),
+            "--project-id",
+            str(contract["project_id"]),
+            "--session-id",
+            str(contract["session_id"]),
+            "--format",
+            "json",
+            "--receipt-chain",
+            str(evidence_root / contract["receipt_chain_name"]),
+            "--seal-response",
+            str(response_path),
+            *forwarded,
+        ]
+    )
+
+
+def _seal_conductor_state(args: argparse.Namespace) -> int:
+    path, readiness = seal_conductor_retirement_readiness(
+        args.preflight_receipt
+    )
+    _print(
+        {
+            "schema_id": "aox_public_conductor_retirement_ready@1",
+            "status": "ready_for_supervised_host_retirement",
+            "closure_mode": readiness["closure_mode"],
+            "scientific_attempt_count": readiness["scientific_attempt_count"],
+            "readiness_file": str(path),
+            "readiness_receipt_digest": readiness["receipt_digest"],
+        }
+    )
+    return 0
+
+
 def _finalize_and_seal(args: argparse.Namespace) -> int:
+    sources = retirement_readiness_sources(
+        args.retirement_readiness,
+        preflight_path=args.preflight_receipt,
+    )
+    readiness = dict(sources["readiness"])
+    if readiness.get("closure_mode") != "attempt" or sources["evidence"] is None:
+        raise CutoverEvidenceError(
+            "public_conductor_finalize_mode_invalid",
+            "attempt finalization requires attempt-mode retirement readiness",
+            details={"identity": "retirement_readiness.closure_mode"},
+        )
     bundle_path, bundle_digest = finalize_and_seal_public_conductor_bundle(
         identity_path=args.identity,
         preflight_path=args.preflight_receipt,
-        receipt_chain_path=args.receipt_chain,
-        workspace_response_path=args.workspace_response,
-        event_response_path=args.event_response,
-        evidence_response_path=args.evidence_response,
-        handoff_response_paths=args.handoff_response,
+        receipt_chain_path=sources["receipt_chain"],
+        workspace_response_path=sources["workspace"],
+        event_response_path=sources["events"],
+        evidence_response_path=sources["evidence"],
+        handoff_response_paths=sources["handoffs"],
         ledger_before_path=args.ledger_before,
         ledger_after_path=args.ledger_after,
     )
@@ -752,13 +875,24 @@ def _finalize_and_seal(args: argparse.Namespace) -> int:
 
 
 def _seal_slot_failure(args: argparse.Namespace) -> int:
+    sources = retirement_readiness_sources(
+        args.retirement_readiness,
+        preflight_path=args.preflight_receipt,
+    )
+    readiness = dict(sources["readiness"])
+    if readiness.get("closure_mode") != "slot_failure":
+        raise CutoverEvidenceError(
+            "formal_slot_failure_mode_invalid",
+            "slot failure sealing requires zero-attempt retirement readiness",
+            details={"identity": "retirement_readiness.closure_mode"},
+        )
     failure_path, failure_digest = finalize_and_seal_formal_slot_failure(
         identity_path=args.identity,
         preflight_path=args.preflight_receipt,
-        receipt_chain_path=args.receipt_chain,
-        workspace_response_path=args.workspace_response,
-        event_response_path=args.event_response,
-        handoff_response_paths=args.handoff_response,
+        receipt_chain_path=sources["receipt_chain"],
+        workspace_response_path=sources["workspace"],
+        event_response_path=sources["events"],
+        handoff_response_paths=sources["handoffs"],
         ledger_before_path=args.ledger_before,
         ledger_after_path=args.ledger_after,
     )
@@ -1063,6 +1197,36 @@ def build_parser() -> argparse.ArgumentParser:
         )
     serve_attempt.set_defaults(handler=_serve_attempt)
 
+    public_host = subparsers.add_parser(
+        "public-host",
+        help=(
+            "forward one operator-selected thin Host CLI command while binding "
+            "the formal receipt chain and one sealed response"
+        ),
+    )
+    _required_path_arguments(public_host, "preflight_receipt")
+    public_host.add_argument(
+        "--response-name",
+        required=True,
+        help="unique lowercase label for this sealed public response",
+    )
+    public_host.add_argument(
+        "host_cli_args",
+        nargs=argparse.REMAINDER,
+        help="thin Host CLI command after --; scientific strategy remains caller-owned",
+    )
+    public_host.set_defaults(handler=_public_host)
+
+    seal_conductor_state = subparsers.add_parser(
+        "seal-conductor-state",
+        help=(
+            "verify every formal public response, bounded handoff, and final read "
+            "before supervised Host retirement"
+        ),
+    )
+    _required_path_arguments(seal_conductor_state, "preflight_receipt")
+    seal_conductor_state.set_defaults(handler=_seal_conductor_state)
+
     finalize_and_seal = subparsers.add_parser(
         "finalize-and-seal",
         help=(
@@ -1074,22 +1238,9 @@ def build_parser() -> argparse.ArgumentParser:
         finalize_and_seal,
         "identity",
         "preflight_receipt",
-        "receipt_chain",
-        "workspace_response",
-        "event_response",
-        "evidence_response",
+        "retirement_readiness",
         "ledger_before",
         "ledger_after",
-    )
-    finalize_and_seal.add_argument(
-        "--handoff-response",
-        action="append",
-        required=True,
-        type=Path,
-        help=(
-            "sealed drain, terminal command-status, or pre-grant workspace "
-            "response; repeat for every bounded handoff"
-        ),
     )
     finalize_and_seal.set_defaults(handler=_finalize_and_seal)
 
@@ -1104,21 +1255,9 @@ def build_parser() -> argparse.ArgumentParser:
         seal_slot_failure,
         "identity",
         "preflight_receipt",
-        "receipt_chain",
-        "workspace_response",
-        "event_response",
+        "retirement_readiness",
         "ledger_before",
         "ledger_after",
-    )
-    seal_slot_failure.add_argument(
-        "--handoff-response",
-        action="append",
-        default=[],
-        type=Path,
-        help=(
-            "sealed drain admission or terminal command-status response; "
-            "repeat for every bounded handoff"
-        ),
     )
     seal_slot_failure.set_defaults(handler=_seal_slot_failure)
 

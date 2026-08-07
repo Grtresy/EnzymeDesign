@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,6 +22,10 @@ from openzyme_host_api.aox_attempt_preflight import build_attempt_preflight_rece
 from openzyme_host_api.aox_attempt_preflight import load_attempt_preflight_receipt
 from openzyme_host_api.aox_attempt_preflight import publish_attempt_preflight_receipt
 from openzyme_host_api.aox_attempt_preflight import publish_attempt_slot_claim_evidence
+from openzyme_host_api import aox_conductor_execution
+from openzyme_host_api.aox_conductor_execution import (
+    publish_conductor_execution_contract,
+)
 from openzyme_host_api.aox_cutover_evidence import BlankWorldRoots
 from openzyme_host_api.aox_cutover_evidence import CutoverEvidenceError
 from openzyme_host_api.aox_cutover_evidence import canonical_digest
@@ -619,11 +624,14 @@ def test_public_receipt_loader_rejects_failed_or_resealed_records(
     )
     path = tmp_path / "receipts.jsonl"
     path.write_bytes(canonical_json_bytes(receipt) + b"\n")
+    path.chmod(0o600)
 
     with pytest.raises(CutoverEvidenceError) as error:
         _load_receipt_chain(path)
 
     assert error.value.code == "public_receipt_chain_invalid"
+    records, _ = _load_receipt_chain(path, allow_failure_responses=True)
+    assert records == [receipt]
 
 
 def test_closed_control_rejects_authority_slot_mix() -> None:
@@ -760,6 +768,7 @@ def _preflight_fixture(
         roots=roots,
     )
     path = publish_attempt_preflight_receipt(receipt, roots=roots)
+    publish_conductor_execution_contract(path)
     return path, receipt, identity_path
 
 
@@ -1083,10 +1092,18 @@ def _formal_slot_failure_fixture(
         },
     ]
     responses = {
-        "drain-response.json": (records[2], admitted),
-        "terminal-response.json": (records[3], terminal),
-        "workspace-response.json": (records[4], workspace),
-        "events-response.json": (records[5], events),
+        "public-response-session-create.json": (
+            records[0],
+            {"session_id": session_id, "status": "created"},
+        ),
+        "public-response-entry-message.json": (
+            records[1],
+            {"session_id": session_id, "status": "accepted"},
+        ),
+        "public-response-drain-admission.json": (records[2], admitted),
+        "public-response-drain-terminal.json": (records[3], terminal),
+        "public-response-final-workspace.json": (records[4], workspace),
+        "public-response-final-events.json": (records[5], events),
     }
     response_paths: dict[str, Path] = {}
     for name, (receipt, response) in responses.items():
@@ -1114,16 +1131,179 @@ def _formal_slot_failure_fixture(
         "identity": identity_path,
         "preflight": preflight_path,
         "receipt_chain": receipt_path,
-        "workspace": response_paths["workspace-response.json"],
-        "events": response_paths["events-response.json"],
+        "workspace": response_paths["public-response-final-workspace.json"],
+        "events": response_paths["public-response-final-events.json"],
         "handoffs": [
-            response_paths["drain-response.json"],
-            response_paths["terminal-response.json"],
+            response_paths["public-response-drain-admission.json"],
+            response_paths["public-response-drain-terminal.json"],
         ],
         "ledger_before": ledger_before,
         "ledger_after": ledger_after,
         "evidence_root": evidence_root,
     }
+
+
+def test_conductor_retirement_readiness_closes_zero_attempt_public_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _formal_slot_failure_fixture(tmp_path, monkeypatch)
+    supervision_path = sources["evidence_root"] / "aox-host-supervision.json"
+    supervision_path.unlink()
+
+    readiness_path, readiness = (
+        aox_conductor_execution.seal_conductor_retirement_readiness(
+            sources["preflight"]
+        )
+    )
+
+    assert readiness["closure_mode"] == "slot_failure"
+    assert readiness["scientific_attempt_count"] == 0
+    assert readiness["final_workspace_response_name"] == sources["workspace"].name
+    assert readiness["final_event_response_name"] == sources["events"].name
+    assert readiness["handoff_response_names"] == [
+        path.name for path in sources["handoffs"]
+    ]
+    assert readiness["evidence_response_name"] is None
+    _write_canonical(
+        supervision_path,
+        _bound_supervision_receipt(
+            preflight=json.loads(sources["preflight"].read_text()),
+            startup=json.loads(
+                (sources["evidence_root"] / "aox-host-startup.json").read_text()
+            ),
+        ),
+    )
+    supervision_path.chmod(0o600)
+    loaded = aox_conductor_execution.load_conductor_retirement_readiness(
+        readiness_path,
+        preflight_path=sources["preflight"],
+    )
+    resolved = aox_conductor_execution.retirement_readiness_sources(
+        readiness_path,
+        preflight_path=sources["preflight"],
+    )
+    assert loaded == readiness
+    assert resolved["receipt_chain"] == sources["receipt_chain"]
+    assert resolved["workspace"] == sources["workspace"]
+    assert resolved["events"] == sources["events"]
+
+
+def test_public_response_name_is_prevalidated_before_host_action(
+    tmp_path: Path,
+) -> None:
+    preflight_path, _, _ = _preflight_fixture(tmp_path)
+    destination = aox_conductor_execution.public_response_path(
+        preflight_path,
+        "final-workspace",
+    )
+    destination.write_text("already consumed")
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        aox_conductor_execution.public_response_path(
+            preflight_path,
+            "final-workspace",
+        )
+
+    assert error.value.code == "public_conductor_response_target_exists"
+
+
+def test_conductor_retirement_readiness_rejects_missing_or_late_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing = _formal_slot_failure_fixture(tmp_path / "missing", monkeypatch)
+    (missing["evidence_root"] / "aox-host-supervision.json").unlink()
+    (missing["evidence_root"] / "public-response-entry-message.json").unlink()
+    with pytest.raises(CutoverEvidenceError) as missing_error:
+        aox_conductor_execution.seal_conductor_retirement_readiness(
+            missing["preflight"]
+        )
+    assert missing_error.value.code == "public_conductor_response_set_incomplete"
+
+    drift = _formal_slot_failure_fixture(tmp_path / "drift", monkeypatch)
+    (drift["evidence_root"] / "aox-host-supervision.json").unlink()
+    readiness_path, _ = (
+        aox_conductor_execution.seal_conductor_retirement_readiness(
+            drift["preflight"]
+        )
+    )
+    with drift["receipt_chain"].open("ab") as handle:
+        handle.write(b"{}\n")
+    with pytest.raises(CutoverEvidenceError) as drift_error:
+        aox_conductor_execution.load_conductor_retirement_readiness(
+            readiness_path,
+            preflight_path=drift["preflight"],
+        )
+    assert drift_error.value.code in {
+        "public_receipt_chain_invalid",
+        "public_conductor_retirement_readiness_drift",
+    }
+
+
+def test_conductor_retirement_readiness_preserves_sealed_public_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _formal_slot_failure_fixture(tmp_path, monkeypatch)
+    (sources["evidence_root"] / "aox-host-supervision.json").unlink()
+    failure_response = {
+        "error": {
+            "code": "runtime_status_unavailable",
+            "message": "safe public failure",
+        }
+    }
+    failure_receipt = _receipt(
+        7,
+        "GET",
+        "/v3/sessions/sess_aox/pending-approvals",
+        {},
+        status_code=503,
+    )
+    failure_receipt["response_semantic_digest"] = canonical_digest(
+        failure_response
+    )
+    failure_path = (
+        sources["evidence_root"] / "public-response-pending-failure.json"
+    )
+    _seal_response(
+        failure_path,
+        receipt=failure_receipt,
+        response=failure_response,
+    )
+    with sources["receipt_chain"].open("ab") as handle:
+        handle.write(canonical_json_bytes(failure_receipt) + b"\n")
+    failure_path.chmod(0o600)
+
+    _, readiness = aox_conductor_execution.seal_conductor_retirement_readiness(
+        sources["preflight"]
+    )
+
+    assert readiness["closure_mode"] == "slot_failure"
+    assert readiness["receipt_chain"]["record_count"] == 7
+    assert readiness["sealed_responses"][-1]["name"] == failure_path.name
+    supervision_path = sources["evidence_root"] / "aox-host-supervision.json"
+    _write_canonical(
+        supervision_path,
+        _bound_supervision_receipt(
+            preflight=json.loads(sources["preflight"].read_text()),
+            startup=json.loads(
+                (sources["evidence_root"] / "aox-host-startup.json").read_text()
+            ),
+        ),
+    )
+    supervision_path.chmod(0o600)
+    sealed_path, _ = formal_slot_failure.finalize_and_seal_formal_slot_failure(
+        identity_path=sources["identity"],
+        preflight_path=sources["preflight"],
+        receipt_chain_path=sources["receipt_chain"],
+        workspace_response_path=sources["workspace"],
+        event_response_path=sources["events"],
+        handoff_response_paths=sources["handoffs"],
+        ledger_before_path=sources["ledger_before"],
+        ledger_after_path=sources["ledger_after"],
+    )
+    assert sealed_path.name == formal_slot_failure.FORMAL_SLOT_FAILURE_FILENAME
 
 
 def test_formal_slot_failure_seals_without_fabricating_attempt_bundle(

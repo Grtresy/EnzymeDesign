@@ -21,6 +21,7 @@ from .aox_live_run_class import AoxLiveRunClass
 
 ATTEMPT_PREFLIGHT_SCHEMA_ID = "aox_attempt_preflight@4"
 ATTEMPT_PREFLIGHT_FILENAME = "aox-attempt-preflight.json"
+ATTEMPT_CONDUCTOR_CONTRACT_FILENAME = "aox-public-conductor-contract.json"
 ATTEMPT_SLOT_CLAIM_FILENAME = "aox-attempt-slot-claim.json"
 _PREFLIGHT_FIELDS = set(
     "schema_id run_class campaign_id plan_digest consumption_digest identity_digest "
@@ -271,7 +272,13 @@ def load_attempt_preflight_receipt(
             or nonempty
             or (
                 evidence_entries
-                != sorted([ATTEMPT_PREFLIGHT_FILENAME, ATTEMPT_SLOT_CLAIM_FILENAME])
+                != sorted(
+                    [
+                        ATTEMPT_PREFLIGHT_FILENAME,
+                        ATTEMPT_SLOT_CLAIM_FILENAME,
+                        ATTEMPT_CONDUCTOR_CONTRACT_FILENAME,
+                    ]
+                )
             )
         ):
             _reject("attempt_preflight_already_started", "attempt root already started", nonempty_roots=nonempty)

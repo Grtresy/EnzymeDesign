@@ -279,6 +279,142 @@ def test_automatic_live_commands_are_absent() -> None:
     assert "consume-diagnostic-authority" not in subcommands
 
 
+def test_public_host_owns_receipt_response_and_formal_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    preflight = tmp_path / "aox-attempt-preflight.json"
+    response = tmp_path / "public-response-final-workspace.json"
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli,
+        "load_active_public_host_context",
+        lambda path: (
+            {},
+            {
+                "project_id": "aox-blank-world-cutover",
+                "session_id": "session-formal",
+                "receipt_chain_name": "public-api-receipts.jsonl",
+            },
+            {"base_url": "http://127.0.0.1:41234"},
+            tmp_path,
+        ),
+    )
+    monkeypatch.setattr(cli, "public_response_path", lambda *args: response)
+    monkeypatch.setattr(
+        cli,
+        "run_host_cli",
+        lambda argv: captured.update(argv=argv) or 0,
+    )
+    args = SimpleNamespace(
+        preflight_receipt=preflight,
+        response_name="final-workspace",
+        host_cli_args=["--", "sessions", "show"],
+    )
+
+    assert cli._public_host(args) == 0
+    assert captured["argv"] == [
+        "--host",
+        "http://127.0.0.1:41234",
+        "--project-id",
+        "aox-blank-world-cutover",
+        "--session-id",
+        "session-formal",
+        "--format",
+        "json",
+        "--receipt-chain",
+        str(tmp_path / "public-api-receipts.jsonl"),
+        "--seal-response",
+        str(response),
+        "sessions",
+        "show",
+    ]
+
+
+def test_public_host_rejects_evidence_and_identity_overrides(tmp_path: Path) -> None:
+    args = SimpleNamespace(
+        preflight_receipt=tmp_path / "aox-attempt-preflight.json",
+        response_name="bad",
+        host_cli_args=["--", "--receipt-chain", str(tmp_path / "other"), "sessions", "show"],
+    )
+
+    with pytest.raises(cli.CutoverEvidenceError) as error:
+        cli._public_host(args)
+
+    assert error.value.code == "public_conductor_command_boundary_invalid"
+
+
+def test_serve_attempt_refuses_retirement_then_reuses_same_host_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Lease:
+        startup_receipt = {"base_url": "http://127.0.0.1:41234"}
+        shutdown_reason = "not_requested"
+        supervision_receipt: dict[str, object] | None = None
+        wait_count = 0
+
+        def wait(self) -> None:
+            self.wait_count += 1
+            raise KeyboardInterrupt
+
+    class Supervision:
+        def __init__(self, lease: Lease) -> None:
+            self.lease = lease
+
+        def __enter__(self) -> Lease:
+            return self.lease
+
+        def __exit__(self, *args: object) -> None:
+            self.lease.supervision_receipt = {
+                "launch_id": "formal-slot-test",
+                "shutdown_reason": self.lease.shutdown_reason,
+                "receipt_digest": "sha256:" + "a" * 64,
+            }
+
+    lease = Lease()
+    readiness_checks = 0
+    outputs: list[dict[str, object]] = []
+
+    def load_readiness(*args: object, **kwargs: object) -> dict[str, str]:
+        nonlocal readiness_checks
+        readiness_checks += 1
+        if readiness_checks == 1:
+            raise cli.CutoverEvidenceError(
+                "public_conductor_response_set_incomplete",
+                "one response is not sealed",
+            )
+        return {"receipt_digest": "sha256:" + "b" * 64}
+
+    monkeypatch.setattr(
+        cli,
+        "supervised_attempt_host",
+        lambda *args, **kwargs: Supervision(lease),
+    )
+    monkeypatch.setattr(cli, "load_conductor_retirement_readiness", load_readiness)
+    monkeypatch.setattr(cli, "_print", outputs.append)
+    args = SimpleNamespace(
+        preflight_receipt=tmp_path / "aox-attempt-preflight.json",
+        startup_timeout_seconds=1.0,
+        term_grace_seconds=1.0,
+        kill_grace_seconds=1.0,
+    )
+
+    assert cli._serve_attempt(args) == 0
+    assert lease.wait_count == 2
+    assert readiness_checks == 2
+    assert lease.shutdown_reason == "operator_stop"
+    assert [item.get("status") for item in outputs] == [
+        "ready_for_public_host_cli",
+        "host_remains_active",
+        "retirement_admitted",
+        "retired",
+    ]
+    assert outputs[1]["failure_code"] == (
+        "public_conductor_response_set_incomplete"
+    )
+
+
 def test_consume_authority_only_seals_consumption_receipt(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
