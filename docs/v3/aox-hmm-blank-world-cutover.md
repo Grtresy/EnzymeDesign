@@ -3051,17 +3051,19 @@ repository CLI enters `scripts/architecture_qualification_runner.py` outside the
 `scripts/test_gate/runner.py` process-group executor.
 
 The lock-admission source identity is now immutable run input. Revalidation occurs before/after collection, after
-harness, before/after every selected scenario and before publication. Current report `@2` seals these observations,
+harness, before/after every selected scenario and before publication. The post-r73 report `@2` sealed these observations,
 source-bound bounded process receipts, exact not-run identities and one earliest typed cause. A collection closure,
 harness timeout/failure, malformed scenario evidence or source drift stops immediately; no fallback scenario result,
-GAP/P0 cascade or equivalent process launch is allowed. Current AOX receipt `@2` also binds report schema, source
+GAP/P0 cascade or equivalent process launch is allowed. The corresponding AOX receipt `@2` also bound report schema, source
 identity and run-evidence digest. Historical report/receipt `@1` remain readable only by explicit frozen readers and
 cannot enter pin, preflight, launch or reducer admission.
 
 Those `@2` schemas are now historical read-only input. Current report/AOX receipt are `@3`; they additionally bind
 the closed owner/constraint registry and exact strategy-neutrality/world-fidelity transformation results. Full
 admission requires those independent families, so the scripted AOX reachability witness cannot self-prove the
-current Harness contract.
+current Harness contract. The AOX admission scenario also closes these current identities and policy-free runtime
+config `@5` against the active blank-world normative requirement; historical promotion, conductor shadow truth, or
+missing owner/transformation bindings fail before any external effect.
 
 Operator-retirement eligibility and quarantine are now pure functions of exact identity, raw exit/signal, final
 process-group membership and forced-unproven state. The suite retains one generous seconds-scale real containment

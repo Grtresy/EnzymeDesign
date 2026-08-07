@@ -272,4 +272,8 @@ SDK 读取 `aox_exact_calculation_manifest@1`，证明 candidate/conditional-emp
 exact callables、contract/implementation digests 与 fixed 17 path digest 都已安装；source
 snapshot 或 workflow prose 不能替代该证明。该 scenario source 与当前 source commit/test manifest
 共同进入 qualification receipt，因此 contract/config 改动会使旧 report 与 pin 失效。
+同一 scenario 还读取 active blank-world normative requirement，并将其 current runtime config、
+qualification report/AOX receipt 与实现导出的 schema identity 精确闭合；历史 schema 被提升为current、
+`conductor` shadow truth重新出现，或owner/transformation digest binding缺失时均以零外部effect负向控制拒绝。
+OpenSpec strict继续负责单个change的结构合法性，不能替代这项跨来源语义闭合。
 这只证明 non-live admission 行为，不创建 attempt 或授权 external effect。

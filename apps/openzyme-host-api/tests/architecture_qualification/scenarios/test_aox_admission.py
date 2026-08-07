@@ -12,6 +12,15 @@ from openzyme_core import ScientificWorkflowContractError
 from openzyme_host_api import aox_architecture_qualification as qualification
 from openzyme_host_api import aox_cutover_cli as cli
 from openzyme_host_api.aox_architecture_qualification import (
+    ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID,
+)
+from openzyme_host_api.aox_architecture_qualification import (
+    ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID_V1,
+)
+from openzyme_host_api.aox_architecture_qualification import (
+    ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID_V2,
+)
+from openzyme_host_api.aox_architecture_qualification import (
     AoxArchitectureQualificationError,
 )
 from openzyme_host_api.aox_architecture_qualification import (
@@ -24,7 +33,19 @@ from openzyme_host_api.aox_architecture_qualification import (
     require_matching_architecture_qualification_receipt,
 )
 from openzyme_host_api.aox_cutover_runtime_config import (
+    AOX_BLANK_WORLD_RUNTIME_CONFIG_LEGACY_SCHEMA_ID,
+)
+from openzyme_host_api.aox_cutover_runtime_config import (
     AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID,
+)
+from openzyme_host_api.aox_cutover_runtime_config import (
+    AOX_BLANK_WORLD_RUNTIME_CONFIG_V2_SCHEMA_ID,
+)
+from openzyme_host_api.aox_cutover_runtime_config import (
+    AOX_BLANK_WORLD_RUNTIME_CONFIG_V3_SCHEMA_ID,
+)
+from openzyme_host_api.aox_cutover_runtime_config import (
+    AOX_BLANK_WORLD_RUNTIME_CONFIG_V4_SCHEMA_ID,
 )
 from openzyme_host_api.aox_scientific_contract import (
     AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY,
@@ -39,14 +60,108 @@ from openzyme_host_api.aox_scientific_contract import (
     AOX_SELECTED_CHAIN_WORKFLOW_ID,
 )
 from openzyme_host_api.architecture_qualification import canonical_json_bytes
+from openzyme_host_api.architecture_qualification import QUALIFICATION_REPORT_SCHEMA_ID
+from openzyme_host_api.architecture_qualification import (
+    QUALIFICATION_REPORT_SCHEMA_ID_V1,
+)
+from openzyme_host_api.architecture_qualification import (
+    QUALIFICATION_REPORT_SCHEMA_ID_V2,
+)
 
 from ..execution_evidence import record_effect_ledger_snapshot
 from ..execution_evidence import record_execution_observation_digest
 from ..external_ports import ExternalEffectLedger
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[5]
+_ACTIVE_CUTOVER_SPEC = (
+    _REPO_ROOT / "openspec/changes/aox-hmm-blank-world-cutover/specs/"
+    "blank-world-live-cutover/spec.md"
+)
+
+
 def _digest(digit: str) -> str:
     return "sha256:" + digit * 64
+
+
+def _requirement(document: str, title: str) -> str:
+    header = f"### Requirement: {title}\n"
+    if document.count(header) != 1:
+        raise AssertionError(f"active contract must contain exactly one {header!r}")
+    start = document.index(header)
+    end = document.find("\n### Requirement:", start + len(header))
+    return document[start:] if end < 0 else document[start:end]
+
+
+def _replace_once(document: str, old: str, new: str) -> str:
+    if document.count(old) != 1:
+        raise AssertionError(f"contract mutation target is not unique: {old!r}")
+    return document.replace(old, new, 1)
+
+
+def _assert_current_schema_contract(document: str) -> dict[str, str]:
+    launch = _requirement(document, "Canonical launch and prerequisite identity")
+    current_config = f"`{AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID}` preimage"
+    if current_config not in launch:
+        raise AssertionError(
+            "active launch contract does not bind current runtime config"
+        )
+    if "MUST NOT contain a `conductor` or `driver` policy object" not in launch:
+        raise AssertionError("active launch contract permits conductor shadow truth")
+    if "Its closed `conductor` object MUST bind" in launch:
+        raise AssertionError("active launch contract restored the historical conductor")
+    historical_configs = (
+        AOX_BLANK_WORLD_RUNTIME_CONFIG_LEGACY_SCHEMA_ID,
+        AOX_BLANK_WORLD_RUNTIME_CONFIG_V2_SCHEMA_ID,
+        AOX_BLANK_WORLD_RUNTIME_CONFIG_V3_SCHEMA_ID,
+        AOX_BLANK_WORLD_RUNTIME_CONFIG_V4_SCHEMA_ID,
+    )
+    for schema_id in historical_configs:
+        if f"`{schema_id}`" not in launch:
+            raise AssertionError(
+                f"historical runtime config is not explicit: {schema_id}"
+            )
+        if f"`{schema_id}` preimage" in launch:
+            raise AssertionError(f"historical runtime config was promoted: {schema_id}")
+    if "MAY remain readable only for historical offline verification" not in launch:
+        raise AssertionError("historical runtime configs lost their read-only boundary")
+
+    admission = _requirement(
+        document,
+        "AOX current admission consumes current source-causal qualification only",
+    )
+    current_pair = (
+        f"verified `{QUALIFICATION_REPORT_SCHEMA_ID}` and matching "
+        f"`{ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID}`"
+    )
+    if current_pair not in admission:
+        raise AssertionError("active admission contract does not bind current schemas")
+    for field in (
+        "owner_constraint_registry_digest",
+        "transformation_results_digest",
+    ):
+        if f"`{field}`" not in admission:
+            raise AssertionError(f"current qualification receipt omits {field}")
+    historical_qualification = (
+        QUALIFICATION_REPORT_SCHEMA_ID_V1,
+        QUALIFICATION_REPORT_SCHEMA_ID_V2,
+        ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID_V1,
+        ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID_V2,
+    )
+    for schema_id in historical_qualification:
+        if f"`{schema_id}`" not in admission:
+            raise AssertionError(
+                f"historical qualification is not explicit: {schema_id}"
+            )
+    if "MAY remain readable only for frozen bundle compatibility" not in admission:
+        raise AssertionError("historical qualification lost its read-only boundary")
+    return {
+        "qualification_receipt_schema_id": (
+            ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID
+        ),
+        "qualification_report_schema_id": QUALIFICATION_REPORT_SCHEMA_ID,
+        "runtime_config_schema_id": AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID,
+    }
 
 
 @pytest.mark.architecture_qualification_scenario(
@@ -58,8 +173,50 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    spec_bytes = _ACTIVE_CUTOVER_SPEC.read_bytes()
+    spec_document = spec_bytes.decode("utf-8")
+    schema_contract = _assert_current_schema_contract(spec_document)
+    contract_drift_mutations = {
+        "conductor_shadow_truth": _replace_once(
+            spec_document,
+            "MUST NOT contain a `conductor` or `driver` policy object",
+            "MUST contain a `conductor` policy object",
+        ),
+        "historical_qualification_promoted": _replace_once(
+            spec_document,
+            (
+                f"verified `{QUALIFICATION_REPORT_SCHEMA_ID}` and matching "
+                f"`{ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID}`"
+            ),
+            (
+                f"verified `{QUALIFICATION_REPORT_SCHEMA_ID_V2}` and matching "
+                f"`{ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID_V2}`"
+            ),
+        ),
+        "historical_runtime_config_promoted": _replace_once(
+            spec_document,
+            f"`{AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID}` preimage",
+            f"`{AOX_BLANK_WORLD_RUNTIME_CONFIG_V4_SCHEMA_ID}` preimage",
+        ),
+        "owner_constraint_binding_removed": _replace_once(
+            spec_document,
+            "`owner_constraint_registry_digest`",
+            "`legacy_registry_digest`",
+        ),
+        "transformation_binding_removed": _replace_once(
+            spec_document,
+            "`transformation_results_digest`",
+            "`legacy_transformation_digest`",
+        ),
+    }
+    rejected_contract_drifts: list[str] = []
+    for mutation, drifted_document in sorted(contract_drift_mutations.items()):
+        with pytest.raises(AssertionError):
+            _assert_current_schema_contract(drifted_document)
+        rejected_contract_drifts.append(mutation)
+
     loaded = SimpleNamespace(
-        envelope={"schema_id": "openzyme_v3_architecture_qualification_report@3"},
+        envelope={"schema_id": QUALIFICATION_REPORT_SCHEMA_ID},
         payload={},
     )
     monkeypatch.setattr(qualification, "load_report", lambda path: loaded)
@@ -119,16 +276,19 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
         test_manifest_digest=_digest("3"),
         profile_id="local_single_process_file_sqlite@1",
         source_commit="a" * 40,
-        report_schema_id="openzyme_v3_architecture_qualification_report@3",
+        report_schema_id=QUALIFICATION_REPORT_SCHEMA_ID,
         run_evidence_digest=_digest("5"),
         source_identity_digest=_digest("6"),
         owner_constraint_registry_digest=_digest("7"),
         transformation_results_digest=_digest("8"),
     )
-    assert normalize_architecture_qualification_receipt(
-        receipt,
-        expected_source_commit="a" * 40,
-    ) == receipt
+    assert (
+        normalize_architecture_qualification_receipt(
+            receipt,
+            expected_source_commit="a" * 40,
+        )
+        == receipt
+    )
 
     tampered = deepcopy(receipt)
     tampered["report_payload_digest"] = _digest("4")
@@ -142,7 +302,7 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
         test_manifest_digest=_digest("3"),
         profile_id="local_single_process_file_sqlite@1",
         source_commit="a" * 40,
-        report_schema_id="openzyme_v3_architecture_qualification_report@3",
+        report_schema_id=QUALIFICATION_REPORT_SCHEMA_ID,
         run_evidence_digest=_digest("5"),
         source_identity_digest=_digest("6"),
         owner_constraint_registry_digest=_digest("7"),
@@ -156,9 +316,7 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
 
     active_contract = AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY.resolve(
         workflow_id=AOX_SELECTED_CHAIN_WORKFLOW_ID,
-        workflow_contract_digest=(
-            AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST
-        ),
+        workflow_contract_digest=(AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST),
         for_new_attempt=True,
     )
     assert isinstance(active_contract, ScientificWorkflowContract)
@@ -168,12 +326,16 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
     assert AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID == (
         "aox_blank_world_runtime_config@5"
     )
+    assert QUALIFICATION_REPORT_SCHEMA_ID == (
+        "openzyme_v3_architecture_qualification_report@3"
+    )
+    assert ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID == (
+        "aox_architecture_qualification_receipt@3"
+    )
     with pytest.raises(ScientificWorkflowContractError) as historical_error:
         AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY.resolve(
             workflow_id=AOX_SELECTED_CHAIN_WORKFLOW_ID,
-            workflow_contract_digest=(
-                AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_V1_DIGEST
-            ),
+            workflow_contract_digest=(AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_V1_DIGEST),
             for_new_attempt=True,
         )
     assert historical_error.value.error_code == (
@@ -181,20 +343,21 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
     )
 
     observation = {
+        "active_cutover_spec_digest": (
+            "sha256:" + hashlib.sha256(spec_bytes).hexdigest()
+        ),
         "admission_error_code": gate_error.value.code,
         "campaign_root_created": campaign_root.exists(),
+        "contract_drift_rejections": rejected_contract_drifts,
         "digest_tamper_error_code": digest_error.value.code,
         "receipt": receipt,
         "receipt_mismatch_error_code": mismatch_error.value.code,
         "root_call_count": len(root_calls),
-        "runtime_config_schema_id": (
-            AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID
-        ),
+        "runtime_config_schema_id": (AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID),
+        "schema_contract": schema_contract,
         "schema_id": "aox_architecture_qualification_observation@1",
         "selected_chain_contract_digest": active_contract.digest,
-        "selected_chain_historical_rejection": (
-            historical_error.value.error_code
-        ),
+        "selected_chain_historical_rejection": (historical_error.value.error_code),
     }
     record_execution_observation_digest(
         "sha256:" + hashlib.sha256(canonical_json_bytes(observation)).hexdigest()

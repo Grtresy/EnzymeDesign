@@ -6,6 +6,11 @@
 
 本设计涉及科学 SDK、research adapter、execution engine、Host API/eval、Web UI、workflow pack、campaign tooling 和稳定文档。reference 目录只用于开发期只读复核和最小 golden 的来源审计，绝不进入 live roots。
 
+> 合同读取边界：本文件按日期保留历次 r-series correction addendum；旧段落中的“current”只描述
+> 该 addendum 当时的已封存合同，不是今天可运行的 operator authority。现行数值化 schema 身份只由
+> 本 change 的 normative delta spec、仍 active 的相关 OpenSpec delta、稳定 V3 文档与当前实现共同
+> 闭合；这些来源不一致时必须在 preparation 前以 contract drift 停止，不能从历史段落选择一个版本。
+
 ### 2026-07-23 selected-chain implementation addendum
 
 r48-r51 继续作为冻结的永久 NO-GO 历史证据，旧
@@ -1274,7 +1279,7 @@ path、browser observation helper 与 runnable automatic contract 全部删除�
 runtime config、legacy supervision/evidence receipt 只保留 closed read-only verifier，不得成为
 current launch caller。test evidence fixture 移入 tests package，production composition 禁止引用。
 
-current `aox_blank_world_runtime_config@4` 把 Codex tester、public Host API/CLI、receipt
+该阶段的 `aox_blank_world_runtime_config@4` 把 Codex tester、public Host API/CLI、receipt
 chain、policy-free supervised Host 与 MICU identity 封入 config digest，并强制 automatic
 drain/approval/rollover 全为 false。`preflight` 在任何 root 前验证 exact consumed slot、clean
 identity、committed pin、full architecture qualification、runtime config 与 plan/consumption；
@@ -1530,10 +1535,10 @@ pytest orchestration从Host production package整体删除。`scripts/v3_archite
 产品无关`scripts/test_gate`包之外的repository `scripts/architecture_qualification_runner.py`，所有 process统一由
 `scripts/test_gate/runner.py` bounded process-group executor拥有。single-flight lock内第一份 source
 identity是admission真值；collection前后、harness后、scenario前后与publication前逐阶段复核。
-current report `@2`封存每个process的safe command、bounded output digest/bytes/tail、exit、timeout、
+该阶段的 report `@2`封存每个process的safe command、bounded output digest/bytes/tail、exit、timeout、
 TERM/KILL、source digest以及唯一earliest typed failure。collection/harness/scenario/source-drift任一
 terminal failure立即停止selected chain，not-run identities exact闭合，不生成fallback result或GAP
-cascade。AOX current receipt `@2`进一步绑定report schema、source identity与run-evidence digest；report/
+cascade。该阶段的 AOX receipt `@2`进一步绑定report schema、source identity与run-evidence digest；report/
 receipt `@1`只允许历史bundle reader显式只读，不能进入pin/preflight/run/reducer。
 
 operator-retirement的 eligibility/quarantine/unknown-effect由pure semantic calculation决定，不再依赖
@@ -1664,6 +1669,23 @@ campaign decision。
 OpenSpec 与公开 CLI help，再提取本阶段 execution contract。skill 只保留稳定的授权、证据与停止
 不变量，不再复制易漂移的 schema、配置默认值、固定命令序列或 harness fixture 数量。这样把机械
 证据约束放进产品，把世界理解和策略判断留给 agent，也避免文档与 skill 双重维护。
+
+### 2026-08-07 current schema contract-drift closure
+
+后续 preparation readiness 发现，策略中性变更已经把 runtime config 升级为
+`aox_blank_world_runtime_config@5`、qualification report/AOX receipt 升级为 `@3`，但本 change 的
+normative blank-world requirement 仍把 `@4` conductor shadow object 与 `@2` qualification 写成
+current。两组 requirement 在同一 clean HEAD 上互斥，无法安全形成 config digest、qualification
+receipt 或 exact plan；因此该次保持 `rNN=none`，在 admission、check-config、pin、authority、root、
+session 与全部外部 effect 前以 contract drift 停止。
+
+前向修复不降级 runtime，也不允许历史 schema 进入 current launch。normative spec 改为只接受无
+conductor/driver policy object 的 config `@5`，并只接受绑定 owner/constraint registry 与
+strategy/world-fidelity transformation results 的 report/receipt `@3`；`@1`–`@4` config 与
+`@1/@2` qualification 继续保持显式历史只读。architecture qualification 的 AOX admission scenario
+同时读取 active normative requirement，将实现常量与其 current 声明闭合，并以旧 schema、重新引入
+conductor shadow truth、缺少新 digest binding 作为零外部副作用负向控制。OpenSpec strict 仍负责
+结构合法性，该 scenario 负责此前缺失的跨来源语义闭合。
 
 ## Risks / Trade-offs
 
