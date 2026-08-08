@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import stat
@@ -24,7 +25,9 @@ from openzyme_host_api.aox_attempt_authority import (
     publish_aox_attempt_authority_plan,
 )
 from openzyme_host_api.aox_cutover_launch import AoxCutoverLaunchError
+from openzyme_host_api.aox_launch_profile import build_aox_cutover_launch_profile
 from openzyme_runtime import OpenZymeSettings
+from openzyme_runtime.reliability import ControlledOperationOwnerPolicy
 
 
 def _architecture_qualification() -> dict[str, str]:
@@ -39,6 +42,32 @@ def _architecture_qualification() -> dict[str, str]:
         source_identity_digest="sha256:" + "5" * 64,
         owner_constraint_registry_digest="sha256:" + "6" * 64,
         transformation_results_digest="sha256:" + "7" * 64,
+    )
+
+
+def _launch_settings() -> OpenZymeSettings:
+    settings = OpenZymeSettings.from_env()
+    return replace(
+        settings,
+        reliability=replace(
+            settings.reliability,
+            controlled_operation_owner_policy=(
+                ControlledOperationOwnerPolicy.ROUTE_ALLOWLIST_V1
+            ),
+        ),
+    )
+
+
+def _launch_profile(
+    *,
+    ledger_path: Path = Path("/tmp/aox-cli-ledger.json"),
+) -> dict[str, object]:
+    return build_aox_cutover_launch_profile(
+        settings=_launch_settings(),
+        ledger_path=ledger_path,
+        source_commit="a" * 40,
+        config_digest="sha256:" + "b" * 64,
+        created_at="2026-07-23T00:00:00+00:00",
     )
 
 
@@ -102,6 +131,54 @@ def test_decide_accepts_verified_slot_failure_without_attempt_bundle(
     }
 
 
+def test_decide_accepts_preflight_failure_without_claim_or_launch_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failure_path = tmp_path / "preflight-failure.json"
+    output_path = tmp_path / "campaign-decision.json"
+    decision = {
+        "schema_id": "aox_blank_world_campaign_preflight_failure_decision@1",
+        "decision": "NO-GO",
+        "attempt_ids": [],
+        "decision_digest": "sha256:" + "a" * 64,
+    }
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli,
+        "evaluate_formal_preflight_failure",
+        lambda path: decision if path == failure_path else None,
+    )
+    monkeypatch.setattr(
+        cli,
+        "seal_formal_preflight_failure_decision",
+        lambda value, destination: observed.update(
+            decision=value,
+            destination=destination,
+        ),
+    )
+    monkeypatch.setattr(cli, "_print", lambda value: observed.update(output=value))
+    args = cli.build_parser().parse_args(
+        [
+            "decide",
+            "--preflight-failure",
+            str(failure_path),
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert cli._decide(args) == 2
+    assert args.attempt is None
+    assert args.slot_failure is None
+    assert "launch_id" not in decision
+    assert observed == {
+        "decision": decision,
+        "destination": output_path,
+        "output": decision,
+    }
+
+
 @pytest.fixture(autouse=True)
 def _verified_architecture_qualification(
     monkeypatch: pytest.MonkeyPatch,
@@ -119,21 +196,25 @@ def _consume_authority_args(tmp_path: Path):
     authority_plan_path = tmp_path / "attempt-authority.json"
     identity = {"declared": "identity"}
     prerequisites = {"declared": "prerequisites"}
+    launch_profile = _launch_profile()
     cli._write_pin_outputs_atomic_no_replace(
         identity_target=identity_path,
         prerequisites_target=prerequisite_path,
+        profile_target=tmp_path / cli.AOX_CUTOVER_LAUNCH_PROFILE_FILENAME,
         identity=identity,
         prerequisites=prerequisites,
+        launch_profile=launch_profile,
         architecture_qualification=_architecture_qualification(),
     )
     authority_plan = build_aox_attempt_authority_plan(
         identity=identity,
         allowed_prerequisites=prerequisites,
         architecture_qualification=_architecture_qualification(),
+        launch_profile=launch_profile,
         expires_at="2099-01-01T00:00:00+00:00",
         max_micu_per_attempt=1,
         max_cost_microunits_per_attempt=1,
-        max_wall_time_seconds_per_attempt=1,
+        max_wall_time_seconds_per_attempt=100_000,
     )
     publish_aox_attempt_authority_plan(authority_plan, authority_plan_path)
     return cli.build_parser().parse_args(
@@ -431,13 +512,108 @@ def test_consume_authority_only_seals_consumption_receipt(
     assert output["schema_id"] == "aox_attempt_authority_consume_receipt@1"
 
 
+def test_preflight_config_failure_seals_before_claim_or_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    consume_args = _consume_authority_args(tmp_path)
+    assert cli._consume_authority(consume_args) == 0
+    capsys.readouterr()
+    preflight_args = cli.build_parser().parse_args(
+        [
+            "preflight",
+            "--campaign-root",
+            str(tmp_path / "campaign"),
+            "--identity",
+            str(consume_args.identity),
+            "--allowed-prerequisites",
+            str(consume_args.allowed_prerequisites),
+            "--architecture-qualification-report",
+            str(consume_args.architecture_qualification_report),
+            "--attempt-authority-plan",
+            str(consume_args.attempt_authority_plan),
+            "--attempt-authority-consumption",
+            str(consume_args.attempt_authority_consumption),
+            "--slot-ordinal",
+            "1",
+        ]
+    )
+    launch_error = AoxCutoverLaunchError(
+        "aox_launch_effective_config_schema_invalid",
+        "closed preflight failure",
+        public_details={
+            "kind": "schema_field",
+            "identity": (
+                "effective_config.reliability."
+                "controlled_operation_owner_policy"
+            ),
+        },
+    )
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli,
+        "resolve_aox_cutover_launch_profile",
+        lambda profile: (_ for _ in ()).throw(launch_error),
+    )
+    monkeypatch.setattr(
+        cli,
+        "seal_formal_preflight_failure",
+        lambda **kwargs: (
+            observed.update(kwargs),
+            (
+                tmp_path / "attempt-authority.json.slot-1.preflight-failure.json",
+                "sha256:" + "f" * 64,
+            ),
+        )[1],
+    )
+    monkeypatch.setattr(
+        cli,
+        "claim_aox_attempt_authority_slot",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError(kwargs)),
+    )
+    monkeypatch.setattr(
+        cli,
+        "create_blank_world_roots",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError((args, kwargs))
+        ),
+    )
+
+    with pytest.raises(AoxCutoverLaunchError) as error:
+        cli._preflight(preflight_args)
+
+    assert error.value is launch_error
+    assert observed["slot_ordinal"] == 1
+    assert observed["launch_profile"]["schema_id"] == (
+        "aox_cutover_launch_profile@1"
+    )
+    assert observed["failure"] == {
+        "schema_id": "aox_cutover_launch_failure@3",
+        "status": "failed",
+        "failure_code": "aox_launch_effective_config_schema_invalid",
+        "failure_details": {
+            "kind": "schema_field",
+            "identity": (
+                "effective_config.reliability."
+                "controlled_operation_owner_policy"
+            ),
+        },
+    }
+    assert not (tmp_path / "campaign").exists()
+    output = json.loads(capsys.readouterr().out)
+    assert output["slot_claim_created"] is False
+    assert output["campaign_attempt_root_created"] is False
+    assert output["scientific_attempt_count"] == 0
+
+
 def test_pin_uses_policy_free_conductor_and_writes_safe_no_replace_json(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     args = _pin_args(tmp_path)
-    raw_settings = SimpleNamespace(name="raw")
+    raw_settings = _launch_settings()
     identity = {
         "git_commit": "a" * 40,
         "config_digest": "sha256:" + "b" * 64,
@@ -459,6 +635,7 @@ def test_pin_uses_policy_free_conductor_and_writes_safe_no_replace_json(
             identity=identity,
             allowed_prerequisites=prerequisites,
             architecture_qualification=_architecture_qualification(),
+            effective_settings=raw_settings,
         )
 
     monkeypatch.setattr(cli, "pin_aox_cutover_launch", fake_pin)
@@ -475,14 +652,18 @@ def test_pin_uses_policy_free_conductor_and_writes_safe_no_replace_json(
     )
     assert stat.S_IMODE(args.identity_output.stat().st_mode) == 0o600
     assert stat.S_IMODE(args.allowed_prerequisites_output.stat().st_mode) == 0o600
+    profile_path = tmp_path / cli.AOX_CUTOVER_LAUNCH_PROFILE_FILENAME
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    assert profile["schema_id"] == "aox_cutover_launch_profile@1"
+    assert stat.S_IMODE(profile_path.stat().st_mode) == 0o600
     commit_path = args.identity_output.parent / cli._PIN_COMMIT_BASENAME
     assert stat.S_IMODE(commit_path.stat().st_mode) == 0o600
     assert cli._load_pinned_declarations(
         args.identity_output,
         args.allowed_prerequisites_output,
-    ) == (identity, prerequisites, _architecture_qualification())
+    ) == (identity, prerequisites, _architecture_qualification(), profile)
     output = json.loads(capsys.readouterr().out)
-    assert output["schema_id"] == "aox_cutover_pin_receipt@2"
+    assert output["schema_id"] == "aox_cutover_pin_receipt@3"
     assert output["architecture_qualification"] == _architecture_qualification()
     assert output["status"] == "pinned"
     assert output["git_commit"] == "a" * 40
@@ -569,6 +750,7 @@ def test_atomic_pin_pair_rolls_back_first_link_if_second_target_races(
 ) -> None:
     identity_target = tmp_path / "identity.json"
     prerequisites_target = tmp_path / "prerequisites.json"
+    profile_target = tmp_path / cli.AOX_CUTOVER_LAUNCH_PROFILE_FILENAME
     real_link = cli.os.link
     links = 0
 
@@ -585,14 +767,17 @@ def test_atomic_pin_pair_rolls_back_first_link_if_second_target_races(
         cli._write_pin_outputs_atomic_no_replace(
             identity_target=identity_target,
             prerequisites_target=prerequisites_target,
+            profile_target=profile_target,
             identity={"git_commit": "a" * 40},
             prerequisites={"git_commit": "a" * 40},
+            launch_profile=_launch_profile(),
             architecture_qualification=_architecture_qualification(),
         )
 
     assert error.value.code == "aox_launch_pin_output_exists"
     assert not identity_target.exists()
     assert not prerequisites_target.exists()
+    assert not profile_target.exists()
     assert not list(tmp_path.glob(".openzyme-aox-pin-*.tmp"))
 
 
@@ -616,8 +801,12 @@ def test_pin_staging_failure_cleans_already_staged_temporary(
         cli._write_pin_outputs_atomic_no_replace(
             identity_target=tmp_path / "identity.json",
             prerequisites_target=tmp_path / "prerequisites.json",
+            profile_target=(
+                tmp_path / cli.AOX_CUTOVER_LAUNCH_PROFILE_FILENAME
+            ),
             identity={"git_commit": "a" * 40},
             prerequisites={"git_commit": "a" * 40},
+            launch_profile=_launch_profile(),
             architecture_qualification=_architecture_qualification(),
         )
 
@@ -649,8 +838,14 @@ def test_consume_authority_rejects_uncommitted_or_tampered_pin(
     marker_payload = cli._pin_commit_payload(
         identity_target=args.identity,
         prerequisites_target=args.allowed_prerequisites,
+        profile_target=tmp_path / cli.AOX_CUTOVER_LAUNCH_PROFILE_FILENAME,
         identity={"declared": "identity"},
         prerequisites={"declared": "prerequisites"},
+        launch_profile=json.loads(
+            (tmp_path / cli.AOX_CUTOVER_LAUNCH_PROFILE_FILENAME).read_text(
+                encoding="utf-8"
+            )
+        ),
         architecture_qualification=_architecture_qualification(),
     )
     marker_payload["identity_digest"] = "sha256:" + "f" * 64

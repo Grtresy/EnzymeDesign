@@ -231,8 +231,10 @@ state、不连接 runner，只生成 `aox_cutover_config_check@1`。它不能被
 corrected retry。随后 `pin` 的 forced-SSH deterministic fixture 是首次真实 runner effect，必须由
 准备授权明确覆盖。
 
-pin transaction marker 是 `aox_cutover_pin_commit@2`，public pin receipt 是
-`aox_cutover_pin_receipt@2`，blank-world root proof 是
+pin transaction marker 是 `aox_cutover_pin_commit@3`，public pin receipt 是
+`aox_cutover_pin_receipt@3`。transaction 还包含 credential-free
+`aox_cutover_launch_profile@1`；marker、receipt、authority 与 preflight 绑定同一 profile digest，
+preflight/Host 只从该 profile 恢复非敏感 settings，ambient 只补未落盘 credential。blank-world root proof 是
 current `aox_blank_world_root_proof@3`，launch receipt 是
 `aox_blank_world_launch_receipt@2`，attempt bundle 是
 production `aox_blank_world_attempt_bundle@3`。历史
@@ -242,14 +244,21 @@ production `aox_blank_world_attempt_bundle@3`。历史
 profile、source commit、report schema、source identity 与 run-evidence digest。collector/offline
 verifier拒绝missing、changed、mismatched或unknown-version receipt；历史`@1`仅为冻结bundle读取兼容。
 
-正式 `authorize` 只发布 exact-three `aox_live_attempt_authority_plan@3`，
-`consume-authority`发布绑定它的consumption `@4`并停止，不构造live launch/root。
-`aox_attempt_authority_slot_claim@3`、`aox_attempt_preflight@4`与Host supervision `@3`只闭合
+正式 `authorize` 只发布 exact-three `aox_live_attempt_authority_plan@4`，
+`consume-authority`发布绑定它的consumption `@5`并停止，不构造live launch/root。
+`aox_attempt_authority_slot_claim@3`、`aox_attempt_preflight@5`与Host supervision `@3`只闭合
 campaign/ordinal/session/root/policy；task与scientific authorization必须在首个public sealed
 drain/terminal/workspace read后late-bind。
 historical single-slot diagnostic plan/consumption仍永久`acceptance_eligible=false`，但current
 product无mint/consume命令。未来单独批准的Codex conductor只经public Host API/CLI编排；该
 non-live qualification scenario证明结构边界，不批准真实diagnostic或formal campaign。
+
+若 current authority 已消费，但 pinned profile/effective-config 在 slot claim 与 root 前失败，CLI
+只在 claim 不存在且 campaign root absent/empty 时封存 source-bound
+`aox_formal_preflight_failure@1`。`verify-preflight-failure` 与
+`decide --preflight-failure` 是纯离线专用 NO-GO 路径，必须证明零 Host/session/attempt/MICU/provider/
+runner/HPC/browser effect，且不得生成 launch/attempt identity。r75 发生时没有该 current receipt 链，
+因此保持 blocked/noncanonical，不允许回填。
 
 historical `aox_closure_stage_*` plan/consumption/root/source/parity/live/decision schemas
 只保留离线读取与 formal non-adoption。blank-world root factory、formal publisher 和

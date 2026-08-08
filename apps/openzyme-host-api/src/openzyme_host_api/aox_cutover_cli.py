@@ -31,6 +31,7 @@ from .aox_attempt_authority import load_aox_attempt_authority_plan
 from .aox_attempt_authority import load_aox_attempt_authority_consumption
 from .aox_attempt_authority import publish_aox_attempt_authority_plan
 from .aox_attempt_preflight import build_attempt_preflight_receipt
+from .aox_attempt_preflight import publish_attempt_launch_profile
 from .aox_attempt_preflight import publish_attempt_preflight_receipt
 from .aox_attempt_preflight import publish_attempt_slot_claim_evidence
 from .aox_conductor_execution import (
@@ -53,6 +54,11 @@ from .aox_cutover_launch import AoxCutoverLaunchError
 from .aox_cutover_launch import build_aox_cutover_effective_config
 from .aox_cutover_launch import pin_aox_cutover_launch
 from .aox_cutover_launch import validate_aox_authority_wall_time
+from .aox_launch_profile import AOX_CUTOVER_LAUNCH_PROFILE_FILENAME
+from .aox_launch_profile import build_aox_cutover_launch_profile
+from .aox_launch_profile import launch_profile_digest
+from .aox_launch_profile import normalize_aox_cutover_launch_profile
+from .aox_launch_profile import resolve_aox_cutover_launch_profile
 from .aox_host_supervision import DEFAULT_KILL_GRACE_SECONDS
 from .aox_host_supervision import DEFAULT_STARTUP_TIMEOUT_SECONDS
 from .aox_host_supervision import DEFAULT_TERM_GRACE_SECONDS
@@ -65,18 +71,24 @@ from .aox_formal_slot_failure import verify_formal_slot_failure
 from .aox_public_conductor_bundle import (
     finalize_and_seal_public_conductor_bundle,
 )
+from .aox_preflight_failure import evaluate_formal_preflight_failure
+from .aox_preflight_failure import seal_formal_preflight_failure
+from .aox_preflight_failure import seal_formal_preflight_failure_decision
+from .aox_preflight_failure import verify_formal_preflight_failure
 
 
 _PIN_COMMIT_BASENAME = ".aox-cutover-pin-commit.json"
-_PIN_COMMIT_SCHEMA_ID = "aox_cutover_pin_commit@2"
+_PIN_COMMIT_SCHEMA_ID = "aox_cutover_pin_commit@3"
 _PIN_COMMIT_FIELDS = frozenset(
     {
         "architecture_qualification",
         "schema_id",
         "identity_file",
         "allowed_prerequisites_file",
+        "launch_profile_file",
         "identity_digest",
         "allowed_prerequisites_digest",
+        "launch_profile_digest",
     }
 )
 
@@ -241,6 +253,20 @@ def _public_launch_failure_details(
     return normalized
 
 
+def _launch_failure_payload(
+    exc: AoxCutoverLaunchError,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_id": "aox_cutover_launch_failure@3",
+        "status": "failed",
+        "failure_code": exc.code,
+    }
+    public_details = _public_launch_failure_details(exc)
+    if public_details is not None:
+        payload["failure_details"] = public_details
+    return payload
+
+
 def _configured_settings_and_ledger(
     ledger_path: Path | None,
 ) -> tuple[OpenZymeSettings, Path]:
@@ -287,7 +313,7 @@ def _pin_output_target(path: Path) -> Path:
 def _pin_output_targets(
     identity_path: Path,
     prerequisites_path: Path,
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, Path]:
     identity_target = _pin_output_target(identity_path)
     prerequisites_target = _pin_output_target(prerequisites_path)
     if identity_target == prerequisites_target:
@@ -308,8 +334,16 @@ def _pin_output_targets(
             "aox_launch_pin_output_collision",
             "AOX declaration output collides with its transaction commit marker",
         )
+    profile_target = _pin_output_target(
+        identity_target.parent / AOX_CUTOVER_LAUNCH_PROFILE_FILENAME
+    )
+    if profile_target in {identity_target, prerequisites_target}:
+        raise AoxCutoverLaunchError(
+            "aox_launch_pin_output_collision",
+            "AOX launch profile collides with a declaration output",
+        )
     _pin_output_target(identity_target.parent / _PIN_COMMIT_BASENAME)
-    return identity_target, prerequisites_target
+    return identity_target, prerequisites_target, profile_target
 
 
 def _fsync_directory(path: Path) -> None:
@@ -359,8 +393,10 @@ def _pin_commit_payload(
     *,
     identity_target: Path,
     prerequisites_target: Path,
+    profile_target: Path,
     identity: object,
     prerequisites: object,
+    launch_profile: object,
     architecture_qualification: object,
 ) -> dict[str, object]:
     if not isinstance(architecture_qualification, dict):
@@ -376,8 +412,10 @@ def _pin_commit_payload(
         "schema_id": _PIN_COMMIT_SCHEMA_ID,
         "identity_file": identity_target.name,
         "allowed_prerequisites_file": prerequisites_target.name,
+        "launch_profile_file": profile_target.name,
         "identity_digest": _canonical_digest(identity),
         "allowed_prerequisites_digest": _canonical_digest(prerequisites),
+        "launch_profile_digest": launch_profile_digest(launch_profile),
     }
 
 
@@ -385,20 +423,26 @@ def _write_pin_outputs_atomic_no_replace(
     *,
     identity_target: Path,
     prerequisites_target: Path,
+    profile_target: Path,
     identity: object,
     prerequisites: object,
+    launch_profile: object,
     architecture_qualification: object,
 ) -> None:
     staged: list[tuple[Path, Path]] = []
     installed: list[Path] = []
-    if identity_target.parent != prerequisites_target.parent:
+    if not (
+        identity_target.parent
+        == prerequisites_target.parent
+        == profile_target.parent
+    ):
         raise AoxCutoverLaunchError(
             "aox_launch_pin_output_parent_mismatch",
             "AOX pin declarations must share one transaction directory",
         )
     parent = identity_target.parent
     commit_target = parent / _PIN_COMMIT_BASENAME
-    if commit_target in {identity_target, prerequisites_target}:
+    if commit_target in {identity_target, prerequisites_target, profile_target}:
         raise AoxCutoverLaunchError(
             "aox_launch_pin_output_collision",
             "AOX declaration output collides with its transaction commit marker",
@@ -406,24 +450,27 @@ def _write_pin_outputs_atomic_no_replace(
     commit_payload = _pin_commit_payload(
         identity_target=identity_target,
         prerequisites_target=prerequisites_target,
+        profile_target=profile_target,
         identity=identity,
         prerequisites=prerequisites,
+        launch_profile=launch_profile,
         architecture_qualification=architecture_qualification,
     )
     try:
         for target, payload in (
             (identity_target, identity),
             (prerequisites_target, prerequisites),
+            (profile_target, launch_profile),
             (commit_target, commit_payload),
         ):
             temporary_path = _stage_pin_json(target, payload)
             staged.append((temporary_path, target))
-        for temporary_path, target in staged[:2]:
+        for temporary_path, target in staged[:3]:
             os.link(temporary_path, target, follow_symlinks=False)
             installed.append(target)
         # Payloads must be durable before the one-link commit point can appear.
         _fsync_directory(parent)
-        commit_temporary, commit_target = staged[2]
+        commit_temporary, commit_target = staged[3]
         os.link(commit_temporary, commit_target, follow_symlinks=False)
         installed.append(commit_target)
         _fsync_directory(parent)
@@ -486,7 +533,12 @@ def _existing_pin_target(path: Path) -> Path:
 def _load_pinned_declarations(
     identity_path: Path,
     prerequisites_path: Path,
-) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+) -> tuple[
+    dict[str, object],
+    dict[str, object],
+    dict[str, object],
+    dict[str, object],
+]:
     identity_target = _existing_pin_target(identity_path)
     prerequisites_target = _existing_pin_target(prerequisites_path)
     if (
@@ -499,9 +551,15 @@ def _load_pinned_declarations(
             "AOX pinned declarations do not form one committed transaction",
         )
     commit_target = _existing_pin_target(identity_target.parent / _PIN_COMMIT_BASENAME)
+    profile_target = _existing_pin_target(
+        identity_target.parent / AOX_CUTOVER_LAUNCH_PROFILE_FILENAME
+    )
     try:
         identity = _json_object(identity_target)
         prerequisites = _json_object(prerequisites_target)
+        launch_profile = normalize_aox_cutover_launch_profile(
+            _json_object(profile_target)
+        )
         commit = _json_object(commit_target)
     except (OSError, UnicodeError, ValueError) as exc:
         raise AoxCutoverLaunchError(
@@ -512,8 +570,10 @@ def _load_pinned_declarations(
     expected_commit = _pin_commit_payload(
         identity_target=identity_target,
         prerequisites_target=prerequisites_target,
+        profile_target=profile_target,
         identity=identity,
         prerequisites=prerequisites,
+        launch_profile=launch_profile,
         architecture_qualification=commit.get("architecture_qualification"),
     )
     if set(commit) != _PIN_COMMIT_FIELDS or commit != expected_commit:
@@ -527,7 +587,12 @@ def _load_pinned_declarations(
             "aox_launch_pin_commit_invalid",
             "AOX declaration commit marker lacks architecture qualification",
         )
-    return identity, prerequisites, dict(architecture_qualification)
+    return (
+        identity,
+        prerequisites,
+        dict(architecture_qualification),
+        launch_profile,
+    )
 
 
 def _check_config(args: argparse.Namespace) -> int:
@@ -552,7 +617,7 @@ def _pin(args: argparse.Namespace) -> int:
     earliest_architecture_qualification = verify_aox_architecture_qualification_report(
         args.architecture_qualification_report,
     )
-    identity_target, prerequisites_target = _pin_output_targets(
+    identity_target, prerequisites_target, profile_target = _pin_output_targets(
         args.identity_output,
         args.allowed_prerequisites_output,
     )
@@ -566,16 +631,24 @@ def _pin(args: argparse.Namespace) -> int:
         earliest_architecture_qualification,
         launch.architecture_qualification,
     )
+    launch_profile = build_aox_cutover_launch_profile(
+        settings=launch.effective_settings,
+        ledger_path=ledger_path,
+        source_commit=str(launch.identity["git_commit"]),
+        config_digest=str(launch.identity["config_digest"]),
+    )
     _write_pin_outputs_atomic_no_replace(
         identity_target=identity_target,
         prerequisites_target=prerequisites_target,
+        profile_target=profile_target,
         identity=launch.identity,
         prerequisites=launch.allowed_prerequisites,
+        launch_profile=launch_profile,
         architecture_qualification=launch.architecture_qualification,
     )
     _print(
         {
-            "schema_id": "aox_cutover_pin_receipt@2",
+            "schema_id": "aox_cutover_pin_receipt@3",
             "status": "pinned",
             "architecture_qualification": launch.architecture_qualification,
             "git_commit": launch.identity["git_commit"],
@@ -584,11 +657,14 @@ def _pin(args: argparse.Namespace) -> int:
                 _pin_commit_payload(
                     identity_target=identity_target,
                     prerequisites_target=prerequisites_target,
+                    profile_target=profile_target,
                     identity=launch.identity,
                     prerequisites=launch.allowed_prerequisites,
+                    launch_profile=launch_profile,
                     architecture_qualification=launch.architecture_qualification,
                 )
             ),
+            "launch_profile_digest": launch_profile["profile_digest"],
         }
     )
     return 0
@@ -598,9 +674,13 @@ def _preflight(args: argparse.Namespace) -> int:
     current_qualification = verify_aox_architecture_qualification_report(
         args.architecture_qualification_report,
     )
-    identity, prerequisites, pinned_qualification = _load_pinned_declarations(
-        args.identity,
-        args.allowed_prerequisites,
+    (
+        identity,
+        prerequisites,
+        pinned_qualification,
+        launch_profile,
+    ) = _load_pinned_declarations(
+        args.identity, args.allowed_prerequisites
     )
     architecture_qualification = require_matching_architecture_qualification_receipt(
         pinned_qualification,
@@ -612,6 +692,7 @@ def _preflight(args: argparse.Namespace) -> int:
         identity=identity,
         allowed_prerequisites=prerequisites,
         architecture_qualification=architecture_qualification,
+        launch_profile=launch_profile,
     )
     consumption_path = args.attempt_authority_consumption.expanduser().resolve(
         strict=True
@@ -625,16 +706,43 @@ def _preflight(args: argparse.Namespace) -> int:
     validate_aox_authority_wall_time(
         dict(slot["authority_policy"])["max_wall_time_seconds"]
     )
-    settings = OpenZymeSettings.from_env()
-    effective_config = build_aox_cutover_effective_config(
-        settings,
-        ledger_path=Path(settings.test.live_llm.token_ledger_path),
-    )
-    if effective_config.digest != identity.get("config_digest"):
-        raise AoxCutoverLaunchError(
-            "aox_preflight_config_drift",
-            "AOX preflight configuration differs from the pinned identity",
+    try:
+        settings, ledger_path = resolve_aox_cutover_launch_profile(launch_profile)
+        effective_config = build_aox_cutover_effective_config(
+            settings, ledger_path=ledger_path
         )
+        if effective_config.digest != identity.get("config_digest"):
+            raise AoxCutoverLaunchError(
+                "aox_preflight_config_drift",
+                "AOX preflight configuration differs from the pinned identity",
+            )
+    except AoxCutoverLaunchError as exc:
+        failure_path, failure_digest = seal_formal_preflight_failure(
+            plan_path=plan_path,
+            campaign_root=args.campaign_root,
+            slot_ordinal=args.slot_ordinal,
+            identity=identity,
+            allowed_prerequisites=prerequisites,
+            architecture_qualification=architecture_qualification,
+            launch_profile=launch_profile,
+            authority_plan=plan,
+            authority_consumption=consumption,
+            failure=_launch_failure_payload(exc),
+        )
+        _print(
+            {
+                "schema_id": "aox_formal_preflight_failure_seal_receipt@1",
+                "status": "sealed_for_offline_reduction",
+                "campaign_id": plan["campaign_id"],
+                "slot_ordinal": args.slot_ordinal,
+                "failure_file": str(failure_path),
+                "failure_digest": failure_digest,
+                "slot_claim_created": False,
+                "campaign_attempt_root_created": False,
+                "scientific_attempt_count": 0,
+            }
+        )
+        raise
     slot_claim = claim_aox_attempt_authority_slot(
         plan=plan,
         consumption=consumption,
@@ -653,10 +761,14 @@ def _preflight(args: argparse.Namespace) -> int:
         slot_claim,
         roots=roots,
     )
+    launch_profile_path = publish_attempt_launch_profile(
+        launch_profile, roots=roots
+    )
     receipt = build_attempt_preflight_receipt(
         identity=identity,
         allowed_prerequisites=prerequisites,
         architecture_qualification=architecture_qualification,
+        launch_profile=launch_profile,
         effective_config=effective_config.payload,
         authority_plan=plan,
         authority_consumption=consumption,
@@ -680,6 +792,8 @@ def _preflight(args: argparse.Namespace) -> int:
             "preflight_receipt_digest": receipt["receipt_digest"],
             "slot_claim": str(slot_claim_path),
             "slot_claim_digest": slot_claim["claim_digest"],
+            "launch_profile": str(launch_profile_path),
+            "launch_profile_digest": launch_profile["profile_digest"],
             "conductor_execution_contract": str(contract_path),
             "conductor_execution_contract_digest": contract["contract_digest"],
             "local_paths": {
@@ -913,7 +1027,19 @@ def _verify_slot_failure(args: argparse.Namespace) -> int:
     return 0 if result.passed else 2
 
 
+def _verify_preflight_failure(args: argparse.Namespace) -> int:
+    result = verify_formal_preflight_failure(args.failure)
+    _print(result.to_dict())
+    return 0 if result.passed else 2
+
+
 def _decide(args: argparse.Namespace) -> int:
+    if getattr(args, "preflight_failure", None) is not None:
+        decision = evaluate_formal_preflight_failure(args.preflight_failure)
+        if args.output is not None:
+            seal_formal_preflight_failure_decision(decision, args.output)
+        _print(decision)
+        return 2
     if args.slot_failure is not None:
         decision = evaluate_formal_slot_failure(args.slot_failure)
         if args.output is not None:
@@ -969,9 +1095,13 @@ def _authorize(args: argparse.Namespace) -> int:
     current_qualification = verify_aox_architecture_qualification_report(
         args.architecture_qualification_report,
     )
-    identity, prerequisites, pinned_qualification = _load_pinned_declarations(
-        args.identity,
-        args.allowed_prerequisites,
+    (
+        identity,
+        prerequisites,
+        pinned_qualification,
+        launch_profile,
+    ) = _load_pinned_declarations(
+        args.identity, args.allowed_prerequisites
     )
     qualification = require_matching_architecture_qualification_receipt(
         pinned_qualification,
@@ -982,6 +1112,7 @@ def _authorize(args: argparse.Namespace) -> int:
         identity=identity,
         allowed_prerequisites=prerequisites,
         architecture_qualification=qualification,
+        launch_profile=launch_profile,
         expires_at=args.expires_at,
         max_micu_per_attempt=args.max_micu_per_attempt,
         max_cost_microunits_per_attempt=(args.max_cost_microunits_per_attempt),
@@ -1004,32 +1135,46 @@ def _authorize(args: argparse.Namespace) -> int:
 
 def _load_authority_declarations(
     args: argparse.Namespace,
-) -> tuple[dict[str, object], dict[str, object], dict[str, str]]:
+) -> tuple[
+    dict[str, object],
+    dict[str, object],
+    dict[str, str],
+    dict[str, object],
+]:
     earliest_architecture_qualification = verify_aox_architecture_qualification_report(
         args.architecture_qualification_report,
     )
-    identity, prerequisites, pinned_architecture_qualification = (
-        _load_pinned_declarations(
-            args.identity,
-            args.allowed_prerequisites,
-        )
-    )
+    (
+        identity,
+        prerequisites,
+        pinned_architecture_qualification,
+        launch_profile,
+    ) = _load_pinned_declarations(args.identity, args.allowed_prerequisites)
     require_matching_architecture_qualification_receipt(
         pinned_architecture_qualification,
         earliest_architecture_qualification,
     )
-    return identity, prerequisites, pinned_architecture_qualification
+    return (
+        identity,
+        prerequisites,
+        pinned_architecture_qualification,
+        launch_profile,
+    )
 
 
 def _consume_authority(args: argparse.Namespace) -> int:
-    identity, prerequisites, architecture_qualification = _load_authority_declarations(
-        args
-    )
+    (
+        identity,
+        prerequisites,
+        architecture_qualification,
+        launch_profile,
+    ) = _load_authority_declarations(args)
     plan = load_aox_attempt_authority_plan(
         args.attempt_authority_plan,
         identity=identity,
         allowed_prerequisites=prerequisites,
         architecture_qualification=architecture_qualification,
+        launch_profile=launch_profile,
     )
     plan_path = args.attempt_authority_plan.expanduser().resolve(strict=True)
     target = _pin_output_target(args.attempt_authority_consumption)
@@ -1275,6 +1420,16 @@ def build_parser() -> argparse.ArgumentParser:
     _required_path_arguments(verify_slot_failure, "failure")
     verify_slot_failure.set_defaults(handler=_verify_slot_failure)
 
+    verify_preflight_failure = subparsers.add_parser(
+        "verify-preflight-failure",
+        help=(
+            "verify one consumed-authority failure that occurred before slot "
+            "claim or campaign attempt-root creation"
+        ),
+    )
+    _required_path_arguments(verify_preflight_failure, "failure")
+    verify_preflight_failure.set_defaults(handler=_verify_preflight_failure)
+
     decide = subparsers.add_parser(
         "decide",
         help=(
@@ -1296,6 +1451,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "verified consumed-slot failure; emits canonical NO-GO without "
             "fabricating an attempt bundle"
+        ),
+    )
+    decision_source.add_argument(
+        "--preflight-failure",
+        type=Path,
+        help=(
+            "verified consumed-authority preflight failure; emits canonical "
+            "NO-GO without a slot claim, launch id, or attempt bundle"
         ),
     )
     decide.add_argument("--output", type=Path)
@@ -1343,15 +1506,15 @@ def main(argv: list[str] | None = None) -> int:
     except (AoxArchitectureQualificationError, AoxCutoverLaunchError) as exc:
         # 启动失败可能包裹含私有定位信息或凭据的异常。只有错误源明确标记为
         # 可公开的字段级详情才能越过操作员边界；异常链本身始终保持封闭。
-        payload: dict[str, object] = {
-            "schema_id": "aox_cutover_launch_failure@3",
-            "status": "failed",
-            "failure_code": exc.code,
-        }
-        if isinstance(exc, AoxCutoverLaunchError):
-            public_details = _public_launch_failure_details(exc)
-            if public_details is not None:
-                payload["failure_details"] = public_details
+        payload: dict[str, object] = (
+            _launch_failure_payload(exc)
+            if isinstance(exc, AoxCutoverLaunchError)
+            else {
+                "schema_id": "aox_cutover_launch_failure@3",
+                "status": "failed",
+                "failure_code": exc.code,
+            }
+        )
         print(
             json.dumps(
                 payload,

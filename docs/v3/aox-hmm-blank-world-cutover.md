@@ -2134,28 +2134,28 @@ nor Slurm/discovery metadata can populate
 `prepare_aox_cutover_launch` gate used by `run-live` to detect any intervening
 checkout/config/runtime drift.
 
-Both payload files are canonical JSON written with mode `0600` and individual
+All three payload files are canonical JSON written with mode `0600` and individual
 no-replace publication. They must share one existing real transaction directory
-whose two payload targets and fixed marker target do not yet exist. Host fsyncs
-both payloads first, then publishes the fixed hidden
+whose identity, prerequisites, fixed `aox-launch-profile.json`, and marker targets do not yet exist. Host fsyncs
+all payloads first, then publishes the fixed hidden
 `.aox-cutover-pin-commit.json` marker as the single consumer-visible commit
-point and fsyncs the directory again. The `aox_cutover_pin_commit@2` marker is an
-exact closed object that binds both basenames, both canonical payload digests and
-the architecture qualification receipt. `run-live` refuses the
-pair before launch/root creation when the marker is absent, a symlink, malformed
+point and fsyncs the directory again. The `aox_cutover_pin_commit@3` marker is an
+exact closed object that binds all three basenames/digests and
+the architecture qualification receipt. Authority consumption and preflight refuse the
+transaction before launch/root creation when the marker is absent, a symlink, malformed
 or digest-drifted. A crash before the marker may leave orphan payload files, but
-they can never be consumed as a committed declaration pair; the operator uses a
+they can never be consumed as a committed declaration transaction; the operator uses a
 new transaction directory. Parents must already exist without symlink
 traversal, targets must not exist, and checkout-local targets are rejected so
 the subsequent clean-checkout guard remains valid. The public
-`aox_cutover_pin_receipt@2` contains the same qualification receipt plus only
-commit/config/declaration digests, never an output path,
+`aox_cutover_pin_receipt@3` contains the same qualification receipt plus only
+commit/config/declaration/profile digests, never an output path,
 credential, NCBI identity value, runner locator or Host artifact path.
 
 The unsigned marker is a transaction-integrity commit point, not producer
-attestation. `run-live` verifies real regular files, one parent, the exact marker
-shape/basenames and both canonical payload digests; it does not prove that an
-accepted pair was written by `pin`, that the directory contains no unrelated
+attestation. Current consumers verify real regular files, one parent, the exact marker
+shape/basenames and all three canonical payload digests; this does not prove that an
+accepted transaction was written by `pin`, that the directory contains no unrelated
 files, or that consumer-time modes remain `0600`. The live trusted-operator
 contract therefore still requires the canonical `pin` command, while actual
 launch recomputation and each live operation's runner-issued identity fail
@@ -2936,8 +2936,9 @@ admission request or scientific attempt. r70 is therefore consumed **pre-runtime
 not a canonical r70 NO-GO. Every r70 plan, claim, root, session, receipt and derived identity is sealed
 and non-reusable; no repair may backfill a task, grant, drain or attempt into that state.
 
-Current launch evidence is `aox_live_attempt_authority_plan@3`, consumption `@4`, slot claim `@3`,
-root proof `@3`, preflight `@4`, Host startup `@4`, and supervision `@3`. At the launch layer they bind only
+Current launch evidence is `aox_live_attempt_authority_plan@4`, consumption `@5`, slot claim `@3`,
+root proof `@3`, preflight `@5`, Host startup `@4`, and supervision `@3`. Plan, consumption and preflight
+also bind the pinned credential-free launch-profile digest. At the launch layer they otherwise bind only
 campaign/plan, ordinal, attempt kind, session, root, authority policy and deterministic launch identity.
 They MUST NOT contain a task id, prebuilt authorization envelope/request, lane, attempt or admission
 identity. Historical launch schemas and evidence remain read-only; they cannot be paired with these
@@ -3385,3 +3386,30 @@ event 与 mutation 后 final reads，封存 `aox_public_conductor_retirement_rea
 仍如实终结。attempt 与 zero-attempt finalizer 只从 readiness 派生 source path。4xx/5xx 不会毒化
 退休，但仍不能进入 positive bundle，HTTP status 也不能替代 source-bound typed cause。该修复不
 新增 observer、automatic drain/retry、business terminal policy 或下一 rNN 授权。
+
+### 2026-08-08 r75 pinned launch profile 与 preflight-failure closure
+
+r75 的 `pin` 与 formal plan 已在 live command-scoped profile 下闭合，但 authority 消费后的
+`preflight` 重新从 ambient environment 解析 settings，controlled-operation owner 因而回落到
+`legacy_only_v1`。current closed config 只接受 `route_allowlist_v1` 或 `durable_only_v1`，所以在
+`effective_config.reliability.controlled_operation_owner_policy` 失败。该轮没有 slot claim、campaign
+attempt root、Host、session、scientific attempt、MICU 增量或 provider/runner/HPC/browser effect。
+然而 r75 当时没有 current source-bound preflight-failure receipt，不能追溯形成 canonical NO-GO；
+authority/campaign/state 均已消费且不可复用，历史分类保持 blocked/noncanonical。
+
+前向 pin transaction 现在原子发布 identity、prerequisites、credential-free
+`aox_cutover_launch_profile@1`，最后发布 `aox_cutover_pin_commit@3`；public pin receipt 同步为 `@3`。
+profile 是完整闭集的非敏感 settings/ledger 投影：credential、email、token、Host principal 和
+credential-bearing URL 不落盘，LLM open extra body 只记录 digest。formal authority plan `@4`、
+consumption `@5` 与 `aox_attempt_preflight@5` 绑定同一 profile digest。preflight 与 supervised Host
+从 profile 重建非敏感 settings，ambient 只提供 credential，其他 ambient launch 变量不能覆盖 pinned
+值；extra-body digest/shared Host principal 冲突、profile/config drift、profile 内 legacy owner 或
+hidden fallback 均在 root/listener 前 fail closed。
+
+若 consumed authority 的 exact slot 仍未 claim 且 campaign attempt root absent/empty，profile 或
+effective-config typed failure 会写入 deterministic sibling `aox_formal_preflight_failure@1`。receipt
+嵌入并重读 identity、prerequisites、qualification、profile、plan、consumption，明确闭合
+no-claim/no-root/no-Host/no-session/zero-attempt/zero-MICU/no-provider/runner/HPC/browser effect。CLI
+仍返回原始 safe typed failure；`verify-preflight-failure` 与 `decide --preflight-failure` 只离线重建并
+append `aox_blank_world_campaign_preflight_failure_decision@1` canonical NO-GO，attempt ids/digests
+必须为空，不生成 `launch_id`、attempt bundle、corrected retry 或 successor。

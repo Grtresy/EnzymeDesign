@@ -61,6 +61,7 @@ readiness 缺失或失败时，supervised Host 拒绝操作员退休并保持运
 ## 终局
 
 - plan 发布前失败：`rNN=none` 的 preparation blocker；
+- current formal authority 已消费、slot claim/root 尚未创建且 source-bound preflight-failure receipt 完整：专用 verifier/decision 产生 canonical NO-GO；缺少该 current receipt 的历史 r75 保持 blocked，不回填；
 - 正式 slot 已消费、final workspace 为零 attempt 且 source-bound typed failure 完整：formal slot-failure verifier/reducer 产生 canonical NO-GO；
 - 存在真实 closed attempt：走 attempt bundle verifier，再由 campaign reducer 产生 GO/NO-GO；
 - public closure capability 或必需 source evidence 确实不可取得：如实报告 evidence blocker。

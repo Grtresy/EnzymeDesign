@@ -32,10 +32,10 @@ from openzyme_core.sandbox_workspace import DEFAULT_SANDBOX_IMAGE_REF
 from openzyme_domain import SandboxImageCompatibility
 from openzyme_engines import PodmanPipelineSandboxRunner
 from openzyme_engines.execution import validate_closed_sandbox_runtime_identity
-from openzyme_runtime import OpenZymeSettings
 
 from .aox_attempt_preflight import (
     ATTEMPT_PREFLIGHT_FILENAME,
+    load_attempt_launch_profile,
     load_attempt_preflight_receipt,
 )
 from .aox_authority_storage import publish_private_canonical_authority
@@ -45,6 +45,7 @@ from .aox_cutover_evidence import (
     canonical_json_bytes,
 )
 from .aox_cutover_launch import build_aox_cutover_effective_config
+from .aox_launch_profile import resolve_aox_cutover_launch_profile
 from .app import HostApiDependencies, create_app
 from .foundation import build_configured_foundation
 
@@ -308,9 +309,12 @@ def _host_child_main(
     listener: socket.socket | None = None
     failures: list[BaseException] = []
     try:
-        settings = OpenZymeSettings.from_env()
+        settings, ledger_path = resolve_aox_cutover_launch_profile(
+            load_attempt_launch_profile(Path(preflight_path)),
+            install_provider_environment=True,
+        )
         config = build_aox_cutover_effective_config(
-            settings, ledger_path=Path(settings.test.live_llm.token_ledger_path)
+            settings, ledger_path=ledger_path
         )
         if config.payload != preflight.get("effective_config"):
             raise HostSupervisionError(

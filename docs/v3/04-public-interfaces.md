@@ -470,8 +470,8 @@ closure，不能信任report中的pass boolean。它不进入`/v3` workspace DTO
 但不能进入current verifier或AOX admission。
 
 AOX 对外命令显式接收 report path，并只把 closed
-`aox_architecture_qualification_receipt@3` 写入 `aox_cutover_pin_commit@2`、
-`aox_cutover_pin_receipt@2`、current `aox_blank_world_root_proof@3`、
+`aox_architecture_qualification_receipt@3` 写入 `aox_cutover_pin_commit@3`、
+`aox_cutover_pin_receipt@3`、current `aox_blank_world_root_proof@3`、
 `aox_blank_world_launch_receipt@2` 与新 production
 `aox_blank_world_attempt_bundle@3`。历史 `@2` bundle 只进入 frozen verifier。public/offline consumer 必须
 拒绝missing、historical`@1/@2`、unknown-version、report schema/run-evidence/source identity/
@@ -645,8 +645,10 @@ AOX reference selection contract、sealed bytes 与零既有 consumer 后，在 
 已消费或 drift 均 fail closed。
 
 AOX cutover shell 保留彼此分离的 production seams：`preflight` 先对 exact ordinal执行
-private atomic one-use slot claim，再在全部 authority/pin/qualification/config validation 通过后
-创建 exact root、复制 claim，封存 `aox_attempt_preflight@4` 与 execution contract并报告 Host 未启动；
+profile-bound effective-config validation；通过后才 private atomic one-use claim，再创建 exact root、
+复制 claim 与 `aox_cutover_launch_profile@1`，封存 `aox_attempt_preflight@5` 与 execution contract并报告
+Host 未启动。profile 是 pin transaction 的 credential-free 非敏感 settings owner，ambient 只补 credential，
+不能回落到另一套 owner policy；
 `serve-attempt` 只启动/退休 fixed loopback Host，不发 message/drain/approval。操作员发送中断时，
 supervisor 只有在 current readiness receipt能从未漂移 source完整重算时才退休 Host，否则公开
 `host_remains_active` 并继续服务；child crash或 authority deadline仍按真实 supervision事实处理，
@@ -655,6 +657,12 @@ final reads和handoffs，不再接受调用者逐项挑选这些路径；前者�
 后者只封存 final workspace 已证明的零-attempt `aox_formal_slot_failure@1`。`verify-slot-failure` 纯读取
 重建该 receipt，`decide --slot-failure` 只能给出 source-bound canonical NO-GO，不能创建 attempt
 bundle。任何 seam 都不能自动判断 agent 业务 terminal 或声明 GO。
+
+authority 已消费、slot 尚未 claim 且 campaign root absent/empty 时，profile/effective-config 的 typed
+失败写入 deterministic private sibling `aox_formal_preflight_failure@1`。公开命令仍返回原失败；纯离线
+`verify-preflight-failure` 与 `decide --preflight-failure` 只在 receipt 重建成功、零 claim/root/Host/
+session/attempt/MICU/provider/runner/HPC/browser effect 闭合时写入专用 canonical NO-GO。该路径没有
+`launch_id` 或 attempt bundle，也不能回填缺少 current source bytes 的历史 r75。
 
 ### 9.2 historical post-r69 late-bound scientific admission
 

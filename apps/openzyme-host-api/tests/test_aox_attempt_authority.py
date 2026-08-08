@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 import stat
 
@@ -39,6 +40,9 @@ from openzyme_host_api.aox_attempt_authority import (
 from openzyme_host_api.aox_live_run_class import AoxLiveRunClass
 from openzyme_host_api.aox_cutover_evidence import canonical_digest
 from openzyme_host_api.aox_cutover_evidence import CutoverEvidenceError
+from openzyme_host_api.aox_launch_profile import build_aox_cutover_launch_profile
+from openzyme_runtime import OpenZymeSettings
+from openzyme_runtime.reliability import ControlledOperationOwnerPolicy
 
 
 def _declarations() -> tuple[
@@ -56,6 +60,26 @@ def _declarations() -> tuple[
     )
 
 
+def _launch_profile() -> dict[str, object]:
+    settings = OpenZymeSettings.from_env()
+    settings = replace(
+        settings,
+        reliability=replace(
+            settings.reliability,
+            controlled_operation_owner_policy=(
+                ControlledOperationOwnerPolicy.ROUTE_ALLOWLIST_V1
+            ),
+        ),
+    )
+    return build_aox_cutover_launch_profile(
+        settings=settings,
+        ledger_path=Path("/tmp/aox-authority-ledger.json"),
+        source_commit="a" * 40,
+        config_digest="sha256:" + "b" * 64,
+        created_at="2026-07-23T00:00:00+00:00",
+    )
+
+
 def _plan() -> tuple[
     dict[str, object],
     dict[str, object],
@@ -67,6 +91,7 @@ def _plan() -> tuple[
         identity=identity,
         allowed_prerequisites=prerequisites,
         architecture_qualification=qualification,
+        launch_profile=_launch_profile(),
         issued_at="2026-07-23T00:00:00+00:00",
         expires_at="2099-01-01T00:00:00+00:00",
         max_micu_per_attempt=10_000,
@@ -101,6 +126,7 @@ def test_authority_plan_binds_three_one_use_launch_slots() -> None:
         identity=identity,
         allowed_prerequisites=prerequisites,
         architecture_qualification=qualification,
+        launch_profile=_launch_profile(),
     )
 
     assert validated["schema_id"] == AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID
@@ -143,6 +169,7 @@ def test_authority_plan_rejects_resealed_semantic_expansion() -> None:
             identity=identity,
             allowed_prerequisites=prerequisites,
             architecture_qualification=qualification,
+            launch_profile=_launch_profile(),
         )
 
     assert error.value.code == "attempt_authority_slot_policy_mismatch"
@@ -181,6 +208,7 @@ def test_authority_plan_rejects_declaration_drift_and_invalid_resources() -> Non
             identity={**identity, "git_commit": "d" * 40},
             allowed_prerequisites=prerequisites,
             architecture_qualification=qualification,
+            launch_profile=_launch_profile(),
         )
     assert drift.value.code == "attempt_authority_plan_digest_mismatch"
 
@@ -189,6 +217,7 @@ def test_authority_plan_rejects_declaration_drift_and_invalid_resources() -> Non
             identity=identity,
             allowed_prerequisites=prerequisites,
             architecture_qualification=qualification,
+            launch_profile=_launch_profile(),
             expires_at="2099-01-01T00:00:00+00:00",
             max_micu_per_attempt=True,
             max_cost_microunits_per_attempt=20_000,
@@ -205,6 +234,7 @@ def test_authority_plan_rejects_invalid_time_order() -> None:
             identity=identity,
             allowed_prerequisites=prerequisites,
             architecture_qualification=qualification,
+            launch_profile=_launch_profile(),
             issued_at="2099-01-02T00:00:00+00:00",
             expires_at="2099-01-01T00:00:00+00:00",
             max_micu_per_attempt=10_000,
@@ -228,6 +258,7 @@ def test_private_authority_file_has_one_deterministic_consumption_target(
         identity=identity,
         allowed_prerequisites=prerequisites,
         architecture_qualification=qualification,
+        launch_profile=_launch_profile(),
     )
     consumption_path = attempt_authority_consumption_path(plan_path)
     assert consumption_path.name == "authority.json.consumed.json"
@@ -279,6 +310,7 @@ def test_authority_slots_are_atomically_claimed_once_across_campaign_roots(
         identity=identity,
         allowed_prerequisites=prerequisites,
         architecture_qualification=qualification,
+        launch_profile=_launch_profile(),
     )
     consumption = consume_aox_attempt_authority_plan(
         loaded,
@@ -336,7 +368,11 @@ def test_authority_slots_are_atomically_claimed_once_across_campaign_roots(
 
 @pytest.mark.parametrize(
     "schema_id",
-    ("aox_live_attempt_authority_plan@1", "aox_live_attempt_authority_plan@2"),
+    (
+        "aox_live_attempt_authority_plan@1",
+        "aox_live_attempt_authority_plan@2",
+        "aox_live_attempt_authority_plan@3",
+    ),
 )
 def test_prebound_launch_schemas_are_not_reusable(schema_id: str) -> None:
     plan, identity, prerequisites, qualification = _plan()
@@ -351,6 +387,7 @@ def test_prebound_launch_schemas_are_not_reusable(schema_id: str) -> None:
             identity=identity,
             allowed_prerequisites=prerequisites,
             architecture_qualification=qualification,
+            launch_profile=_launch_profile(),
         )
 
     assert error.value.code == "attempt_authority_plan_schema_invalid"

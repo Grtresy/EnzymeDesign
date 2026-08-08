@@ -31,15 +31,23 @@ Blank-world live against MICU or another OpenAI-compatible endpoint MUST explici
 
 Allowed prerequisites MUST contain exactly `git_commit`, `config_digest`, `workflow_ref`, `image_digest`, `sdk_digest`, `toolchain_image_digests`, `credential_slots`, `ncbi_identity`, and `prompt_accessions`. The first five MUST equal the launch identity. `toolchain_image_digests` MUST contain exactly `mafft_7.525.hpc_apptainer_sif:v1`, `hmmer_3.4.hmmbuild.hpc_apptainer_sif:v1`, `hmmer_3.4.hmmalign.hpc_apptainer_sif:v1`, and `cdhit_4.8.1.hpc_apptainer_sif:v1`, with hmmbuild and hmmalign bound to identical HMMER SIF bytes. `credential_slots` MUST contain only boolean `llm`, `ncbi`, `semantic_scholar`, and `tavily` availability, with LLM and NCBI ready; `ncbi_identity` MUST be opaque; and `prompt_accessions` MUST equal the formal exact-14 plus fixed probe NCBI/UniProt sets.
 
-`pin` SHALL be the canonical supported operator bootstrap for a reviewable authority declaration pair. It MUST use the production compiler and trusted Host's forced-SSH runner to execute deterministic non-scientific MAFFT, CD-HIT, hmmbuild, and chained hmmalign payloads, deriving all four toolchain image digests only from runner-issued same-shell runtime identities. Its writer MUST publish the exact-seven and exact-nine canonical JSON payloads with mode `0600` in one existing real transaction directory outside the checkout whose two payload targets and fixed marker target do not yet exist, fsync both payloads, and last-publish one exact closed `.aox-cutover-pin-commit.json` marker binding both basenames and canonical payload digests. Authority consumption MUST validate that committed pair before producing its receipt; a pre-marker crash MAY leave orphan payloads, but those payloads MUST NOT be consumable. Because the marker is unsigned, its acceptance proves only pair integrity and consistency, not producer provenance, directory-wide freshness, or consumer-time file mode; trusted operation, an explicit preflight before any root, and runner-issued identities on later live operations remain mandatory.
+`pin` SHALL be the canonical supported operator bootstrap for one reviewable authority declaration transaction. It MUST use the production compiler and trusted Host's forced-SSH runner to execute deterministic non-scientific MAFFT, CD-HIT, hmmbuild, and chained hmmalign payloads, deriving all four toolchain image digests only from runner-issued same-shell runtime identities. Its writer MUST publish the exact-seven identity, exact-nine prerequisites, and one closed credential-free `aox_cutover_launch_profile@1` with mode `0600` in one existing real transaction directory outside the checkout whose three payload targets and fixed marker target do not yet exist, fsync all payloads, and last-publish one exact closed `aox_cutover_pin_commit@3` marker binding all three basenames and digests. The profile MUST contain the complete non-sensitive effective settings and ledger identity used by `pin`, MUST persist open LLM extra-body content only as a digest, and MUST exclude API keys, emails, tokens, Host principals, credentials and credential-bearing URLs. Current `aox_live_attempt_authority_plan@4`, `aox_live_attempt_authority_consumption@5`, and `aox_attempt_preflight@5` MUST bind the same profile digest. Authority consumption MUST validate the committed transaction before producing its receipt; a pre-marker crash MAY leave orphan payloads, but those payloads MUST NOT be consumable. Because the marker is unsigned, its acceptance proves only transaction integrity and consistency, not producer provenance, directory-wide freshness, or consumer-time file mode; trusted operation, an explicit preflight before any root, and runner-issued identities on later live operations remain mandatory.
+
+Preflight and the supervised Host MUST reconstruct all non-sensitive launch settings from that pinned profile instead of re-resolving an ambient launch profile. Ambient state MAY supply only credentials that the profile deliberately excludes; ambient non-sensitive launch variables MUST be ignored and MUST NOT override the pinned values. A changed LLM extra-body digest, a shared Host principal, a credential-bearing URL, a legacy controlled-operation owner inside the profile, or any profile/config digest drift MUST fail closed. No hidden default, ambient fallback or profile rewrite is permitted.
 
 #### Scenario: Pin and resolve the actual clean launch
 - **WHEN** an operator invokes `pin`, authorizes an exact plan, consumes it through the matching policy-free command, and a separately approved conductor performs preflight under the exact same effective settings
-- **THEN** pin obtains the four runner-issued direct-SSH toolchain identities, publishes the payloads and marker as one consumer-visible transaction, and preflight independently computes the exact-seven actual identity and safe effective-config preimage before root creation, requires field-for-field equality, and makes that same config preimage/digest available for later attempt launch evidence without starting an attempt
+- **THEN** pin obtains the four runner-issued direct-SSH toolchain identities, publishes identity/prerequisites/profile plus the marker as one consumer-visible transaction, and preflight reconstructs the exact pinned non-sensitive settings, independently computes the exact-seven actual identity and safe effective-config preimage before root creation, requires field-for-field equality, and makes that same config preimage/digest available for later attempt launch evidence without starting an attempt
 
 #### Scenario: Reject an uncommitted or drifted pin transaction
-- **WHEN** the two declarations are cross-directory, symlinked, missing their fixed marker, have an open or malformed marker, or no longer match its bound basenames/digests
+- **WHEN** the three declarations are cross-directory, symlinked, missing their fixed marker, have an open or malformed marker, or no longer match its bound basenames/digests
 - **THEN** authority consumption or preflight fails before constructing launch/session state or creating an attempt root; an orphan payload from a pre-marker crash is never reinterpreted as committed input
+
+#### Scenario: Seal a consumed-authority configuration failure before slot claim
+- **WHEN** one current formal authority plan has been consumed, its exact slot is still unclaimed, its campaign attempt root is absent or empty, and reconstruction of the bound launch profile or current effective configuration fails with a safe public launch error
+- **THEN** preflight atomically seals one source-bound `aox_formal_preflight_failure@1` sibling that embeds and revalidates the identity, prerequisites, qualification, launch profile, authority plan and consumption bytes; it proves no slot claim, attempt root, Host, session, scientific attempt, MICU, provider, runner, HPC or browser effect, and the original preflight command still returns the typed failure
+- **AND** pure `verify-preflight-failure` plus `decide --preflight-failure` MAY append one `aox_blank_world_campaign_preflight_failure_decision@1` canonical `NO-GO` with empty attempt ids/digests, but MUST NOT invent a `launch_id`, scientific attempt bundle or campaign success
+- **AND** a historical failure lacking these source-bound current-schema bytes MUST remain its original blocked/noncanonical evidence and MUST NOT be retroactively backfilled
 
 #### Scenario: Reject launch or inter-attempt drift
 - **WHEN** the checkout is dirty, a declared field is missing/extra/malformed, or checkout/workflow/scoring/image/SDK/effective configuration differs initially or before a later attempt
@@ -599,8 +607,10 @@ state, report state or campaign decision.
 
 ### Requirement: Authority-bound public conductor production reachability
 After an exact plan has been consumed, preflight SHALL first validate the clean
-launch identity, committed pin pair, current full architecture qualification,
+launch identity, committed pin transaction and launch-profile digest, current full architecture qualification,
 runtime configuration, exact plan/consumption binding and unused slot. Preflight
+MUST require current `aox_live_attempt_authority_plan@4` and
+`aox_live_attempt_authority_consumption@5` source bytes. Preflight
 MUST then atomically publish one mode-private no-replace
 `aox_attempt_authority_slot_claim@3` sibling before any root creation. The claim
 MUST bind campaign, plan/consumption, exact ordinal, attempt kind, session, root,
@@ -609,7 +619,7 @@ campaign-root identity, authority-policy digest and a deterministic source-deriv
 attempt id, lane id or admission idempotency key. Only
 after that claim succeeds MAY it
 create that slot's one fresh private root, copy the exact claim into its evidence
-root and seal `aox_attempt_preflight@4`; the receipt MUST state that Host was not started and MUST
+root, copy the pinned profile, and seal `aox_attempt_preflight@5`; the receipt MUST state that Host was not started and MUST
 be rejected when rebound, replayed, symlinked, drifted or reused after any
 session/attempt state exists.
 

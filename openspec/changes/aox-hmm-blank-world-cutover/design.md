@@ -1687,6 +1687,34 @@ strategy/world-fidelity transformation results 的 report/receipt `@3`；`@1`–
 conductor shadow truth、缺少新 digest binding 作为零外部副作用负向控制。OpenSpec strict 仍负责
 结构合法性，该 scenario 负责此前缺失的跨来源语义闭合。
 
+### 2026-08-08 r75 pinned launch profile 与 preflight-failure closure
+
+r75 的 pin 与 authority plan 使用了同一 command-scoped live launch profile，但 authority 消费后的
+`preflight` 没有可复用的 profile artifact，只能再次从 ambient environment 解析设置。该环境回落到
+`legacy_only_v1`，因此 current `aox_blank_world_runtime_config@5` 在
+`effective_config.reliability.controlled_operation_owner_policy` 拒绝它。失败发生在 slot claim、campaign
+attempt root、Host、session、scientific attempt、MICU、provider、runner/HPC 与 browser action 之前；
+authority 已消费使它也不能退回 preparation blocker。历史 r75 没有本修复新增的 source-bound failure
+bytes，不能追溯补造 canonical decision，继续保持 blocked/noncanonical 且 state 不可复用。
+
+前向合同把 launch profile 提升为 pin transaction 的第三个 immutable payload。
+`aox_cutover_launch_profile@1` 是完整闭集的非敏感 `OpenZymeSettings` 投影与 ledger identity：credential、
+email、token、Host principal 和 credential-bearing URL 一律不落盘；open LLM `extra_body` 只保留 digest。
+`aox_cutover_pin_commit@3` / receipt `@3`、formal authority plan `@4` / consumption `@5` 与
+`aox_attempt_preflight@5` 共同绑定同一 profile digest。preflight 和 supervised Host 从该 profile 恢复
+全部非敏感设置，ambient 只提供 profile 故意排除的 credential，其他 ambient launch 变量不能覆盖
+pinned 值；extra-body digest/shared principal 冲突、profile digest drift、profile 内 legacy owner 或
+hidden fallback 都在 root 前 fail closed。
+
+authority 已消费后、slot 尚未 claim 且 campaign attempt root absent/empty 时，profile/effective-config
+失败会原子封存 deterministic sibling `aox_formal_preflight_failure@1`。receipt 嵌入并重读绑定 identity、
+prerequisites、qualification、profile、plan 与 consumption，闭合 no-claim/no-root/no-Host/no-session/
+zero-attempt/zero-MICU/no-provider/runner/HPC/browser effect；原 preflight 仍返回 typed public failure。
+纯离线 `verify-preflight-failure` 与 `decide --preflight-failure` 只能生成专用 append-only
+`aox_blank_world_campaign_preflight_failure_decision@1` canonical `NO-GO`，attempt ids/digests 必须为空，
+不得创建 `launch_id`、attempt bundle 或 successor campaign。claim/root 已存在、source 缺失或漂移时
+一律拒绝该 closure。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

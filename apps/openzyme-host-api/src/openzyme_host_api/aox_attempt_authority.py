@@ -15,19 +15,21 @@ from .aox_authority_storage import publish_private_canonical_authority
 from .aox_cutover_evidence import canonical_digest, canonical_json_bytes
 from .aox_cutover_evidence import CutoverEvidenceError
 from .aox_live_run_class import AoxLiveRunClass, FORMAL_ACCEPTANCE_RUN_POLICY
+from .aox_launch_profile import launch_profile_digest
 from .aox_scientific_contract import AOX_SELECTED_CHAIN_WORKFLOW_ID
 
 
-AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID = "aox_live_attempt_authority_plan@3"
+AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID = "aox_live_attempt_authority_plan@4"
 AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID = (
-    "aox_live_attempt_authority_consumption@4"
+    "aox_live_attempt_authority_consumption@5"
 )
 AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID = "aox_attempt_authority_slot_claim@3"
 AOX_ATTEMPT_AUTHORITY_GRANTOR_REF = "user:local-dev"
 
 _PLAN_FIELDS = set(
     "schema_id campaign_id identity_digest allowed_prerequisite_digest "
-    "architecture_qualification_digest issued_at expires_at slots plan_digest".split()
+    "architecture_qualification_digest launch_profile_digest issued_at expires_at "
+    "slots plan_digest".split()
 )
 _SLOT_FIELDS = set(
     "ordinal attempt_kind session_id root_ref scope authority_policy "
@@ -130,6 +132,7 @@ def build_aox_attempt_authority_plan(
     identity: Mapping[str, object],
     allowed_prerequisites: Mapping[str, object],
     architecture_qualification: Mapping[str, object],
+    launch_profile: Mapping[str, object],
     expires_at: str,
     max_micu_per_attempt: int,
     max_cost_microunits_per_attempt: int,
@@ -169,11 +172,13 @@ def build_aox_attempt_authority_plan(
     identity_digest = canonical_digest(dict(identity))
     prerequisite_digest = canonical_digest(dict(allowed_prerequisites))
     qualification_digest = canonical_digest(dict(architecture_qualification))
+    pinned_launch_profile_digest = launch_profile_digest(launch_profile)
     campaign_id = "aox_campaign_" + canonical_digest(
         {
             "identity_digest": identity_digest,
             "allowed_prerequisite_digest": prerequisite_digest,
             "architecture_qualification_digest": qualification_digest,
+            "launch_profile_digest": pinned_launch_profile_digest,
             "nonce": secrets.token_hex(32),
         }
     ).removeprefix("sha256:")[:24]
@@ -213,6 +218,7 @@ def build_aox_attempt_authority_plan(
         "identity_digest": identity_digest,
         "allowed_prerequisite_digest": prerequisite_digest,
         "architecture_qualification_digest": qualification_digest,
+        "launch_profile_digest": pinned_launch_profile_digest,
         "issued_at": effective_issued_at,
         "expires_at": expires_at,
         "slots": slots,
@@ -226,6 +232,7 @@ def validate_aox_attempt_authority_plan(
     identity: Mapping[str, object],
     allowed_prerequisites: Mapping[str, object],
     architecture_qualification: Mapping[str, object],
+    launch_profile: Mapping[str, object],
 ) -> dict[str, Any]:
     normalized = dict(plan)
     if (
@@ -268,6 +275,7 @@ def validate_aox_attempt_authority_plan(
         "architecture_qualification_digest": canonical_digest(
             dict(architecture_qualification)
         ),
+        "launch_profile_digest": launch_profile_digest(launch_profile),
     }
     expected_plan_digest = canonical_digest(
         {key: value for key, value in normalized.items() if key != "plan_digest"}
@@ -376,6 +384,7 @@ def load_aox_attempt_authority_plan(
     identity: Mapping[str, object],
     allowed_prerequisites: Mapping[str, object],
     architecture_qualification: Mapping[str, object],
+    launch_profile: Mapping[str, object],
 ) -> dict[str, Any]:
     value = _load_private_canonical(
         path, unreadable_code="attempt_authority_plan_unreadable"
@@ -385,6 +394,7 @@ def load_aox_attempt_authority_plan(
         identity=identity,
         allowed_prerequisites=allowed_prerequisites,
         architecture_qualification=architecture_qualification,
+        launch_profile=launch_profile,
     )
 
 

@@ -210,7 +210,7 @@ exact command id的短writer authority，并在写入command/event/projection后
 启动时的空authority，也不能扩大成observer、retry、rollover或业务terminal判断；scope/parent/
 fence不匹配继续typed fail closed。
 
-AOX 使用更窄的 `aox_live_attempt_authority_plan@3`：
+AOX 使用更窄的 `aox_live_attempt_authority_plan@4`：
 
 - plan 精确包含 `positive, positive, fault` 三个槽；
 - 每槽只绑定预声明 session/root、同一 launch identity、qualification与exact operator
@@ -219,8 +219,8 @@ AOX 使用更窄的 `aox_live_attempt_authority_plan@3`：
 - `consume-authority` 只能把 plan 消费到 deterministic sibling
   `<plan-name>.consumed.json`，并且必须在创建任何 attempt root 前通过 atomic no-replace
   完成一次性消费；current receipt 是
-  `aox_live_attempt_authority_consumption@4`，显式绑定
-  `run_class=formal_acceptance`、formal plan schema/digest 与 sibling filename；
+  `aox_live_attempt_authority_consumption@5`，显式绑定
+  `run_class=formal_acceptance`、formal plan schema/digest、pinned launch-profile digest 与 sibling filename；
 - `aox_attempt_authority_slot_claim@3` 在root前闭合ordinal/session/root/authority-policy与
   source-derived `launch_id`，但不包含task/envelope/attempt/lane/admission identity；
 - session entry message的首个bounded drain必须封存admission与terminal response；随后public
@@ -230,6 +230,14 @@ AOX 使用更窄的 `aox_live_attempt_authority_plan@3`：
   digest-only GET、未封存或synthetic handoff不是terminal proof；
 - 复制 plan 文件不能获得新的 campaign authority；当前信任边界要求 operator 保护原 plan
   与其 deterministic consumption sibling，并以 durable in-attempt envelope 证明每槽消费。
+
+plan `@4`、consumption `@5` 与 `aox_attempt_preflight@5` 共同绑定 pin transaction 中的
+`aox_cutover_launch_profile@1`。若 authority 已消费后 profile/effective-config 在 claim 前失败，只能在
+slot claim 不存在且 campaign attempt root absent/empty 时封存 `aox_formal_preflight_failure@1`；它必须
+闭合零 root/Host/session/attempt/MICU/provider/runner/HPC/browser effect。纯离线 verifier 与专用
+`aox_blank_world_campaign_preflight_failure_decision@1` reducer 可以形成 canonical NO-GO，但 attempt
+identity/digest 必须为空。缺少 current plan/profile/consumption bytes 的历史 r75 仍是 evidence blocker，
+不能因新 capability 被追溯升级。
 
 r70在上述首个drain之前停止：authority/slot/root/session/receipt已消费，但没有runtime command、
 scientific authorization、admission或attempt。这是pre-runtime conductor blocked而不是canonical

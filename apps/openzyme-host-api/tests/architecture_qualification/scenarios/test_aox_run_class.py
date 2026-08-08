@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -18,10 +19,13 @@ from openzyme_host_api import aox_diagnostic_run
 from openzyme_host_api import aox_formal_slot_failure
 from openzyme_host_api import aox_host_supervision
 from openzyme_host_api import aox_public_conductor_bundle
+from openzyme_host_api.aox_launch_profile import build_aox_cutover_launch_profile
 from openzyme_host_api.v3_service import V3HostApiService
 from openzyme_host_api.architecture_qualification import canonical_json_bytes
 from openzyme_host_cli import cli as host_cli
 from openzyme_host_cli.client import HostApiClient
+from openzyme_runtime import OpenZymeSettings
+from openzyme_runtime.reliability import ControlledOperationOwnerPolicy
 
 from ..composition import ProductionCompositionFactory
 from ..composition import QUALIFICATION_SANDBOX_IMAGE_DIGEST
@@ -239,6 +243,7 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
         "seal-slot-failure",
         "verify",
         "verify-slot-failure",
+        "verify-preflight-failure",
         "decide",
     }
 
@@ -349,10 +354,32 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
         path for _, path in public_routes
     )
 
+    identity = {
+        "git_commit": "a" * 40,
+        "config_digest": "sha256:" + "b" * 64,
+    }
+    settings = OpenZymeSettings.from_env()
+    settings = replace(
+        settings,
+        reliability=replace(
+            settings.reliability,
+            controlled_operation_owner_policy=(
+                ControlledOperationOwnerPolicy.ROUTE_ALLOWLIST_V1
+            ),
+        ),
+    )
+    qualification_launch_profile = build_aox_cutover_launch_profile(
+        settings=settings,
+        ledger_path=tmp_path / "micu-ledger.json",
+        source_commit=str(identity["git_commit"]),
+        config_digest=str(identity["config_digest"]),
+        created_at="2026-08-04T00:00:00+00:00",
+    )
     plan = aox_attempt_authority.build_aox_attempt_authority_plan(
-        identity={"git_commit": "a" * 40},
+        identity=identity,
         allowed_prerequisites={"provider_cache_mode": "bypass"},
         architecture_qualification={"schema_id": "qualification@1"},
+        launch_profile=qualification_launch_profile,
         issued_at="2026-08-04T00:00:00+00:00",
         expires_at="2099-01-01T00:00:00+00:00",
         max_micu_per_attempt=1,
@@ -361,6 +388,7 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
     )
     slot = dict(plan["slots"][0])
     session_id = str(slot["session_id"])
+
     with composition:
         assert composition.client is not None
         public = HostApiClient("http://testserver", session=composition.client)

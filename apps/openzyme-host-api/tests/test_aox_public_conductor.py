@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -20,6 +21,7 @@ from openzyme_host_api.aox_attempt_authority import authority_grant_payload
 from openzyme_host_api.aox_attempt_authority import authority_grant_identity
 from openzyme_host_api.aox_attempt_preflight import build_attempt_preflight_receipt
 from openzyme_host_api.aox_attempt_preflight import load_attempt_preflight_receipt
+from openzyme_host_api.aox_attempt_preflight import publish_attempt_launch_profile
 from openzyme_host_api.aox_attempt_preflight import publish_attempt_preflight_receipt
 from openzyme_host_api.aox_attempt_preflight import publish_attempt_slot_claim_evidence
 from openzyme_host_api import aox_conductor_execution
@@ -35,6 +37,7 @@ from openzyme_host_api.aox_host_supervision import HOST_STARTUP_SCHEMA_ID
 from openzyme_host_api.aox_host_supervision import HOST_SUPERVISION_RECEIPT_SCHEMA_ID
 from openzyme_host_api.aox_host_supervision import host_supervision_contract_digest
 from openzyme_host_api.aox_host_supervision import validate_supervised_host_receipt
+from openzyme_host_api.aox_launch_profile import build_aox_cutover_launch_profile
 from openzyme_host_api.aox_public_conductor_bundle import PUBLIC_API_RECEIPT_SCHEMA_ID
 from openzyme_host_api.aox_public_conductor_bundle import PUBLIC_CONDUCTOR_MESSAGE
 from openzyme_host_api.aox_public_conductor_bundle import PUBLIC_CONDUCTOR_OBJECTIVE
@@ -44,6 +47,8 @@ from openzyme_host_api.aox_public_conductor_bundle import _load_receipt_chain
 from openzyme_host_api.aox_public_conductor_bundle import _read_bound_artifact_file
 from openzyme_host_api.aox_public_conductor_bundle import _validate_control_slot_binding
 from openzyme_host_api.aox_public_conductor_bundle import _validate_receipt_chain
+from openzyme_runtime import OpenZymeSettings
+from openzyme_runtime.reliability import ControlledOperationOwnerPolicy
 
 
 def _digest_bytes(content: bytes) -> str:
@@ -688,6 +693,23 @@ def _preflight_fixture(
         "sdk_digest": identity["sdk_digest"],
     }
     qualification = {"schema_id": "qualification@1"}
+    settings = OpenZymeSettings.from_env()
+    settings = replace(
+        settings,
+        reliability=replace(
+            settings.reliability,
+            controlled_operation_owner_policy=(
+                ControlledOperationOwnerPolicy.ROUTE_ALLOWLIST_V1
+            ),
+        ),
+    )
+    launch_profile = build_aox_cutover_launch_profile(
+        settings=settings,
+        ledger_path=tmp_path / "micu-ledger.json",
+        source_commit=str(identity["git_commit"]),
+        config_digest=str(identity["config_digest"]),
+        created_at="2026-07-31T00:00:00+00:00",
+    )
     proof = {
         "schema_id": "aox_blank_world_root_proof@3",
         "launch_id": launch_id,
@@ -732,6 +754,7 @@ def _preflight_fixture(
     plan = {
         "campaign_id": "aox_campaign_test",
         "plan_digest": "sha256:" + "d" * 64,
+        "launch_profile_digest": launch_profile["profile_digest"],
         "slots": [slot],
     }
     consumption = {"plan_digest": plan["plan_digest"], "status": "consumed"}
@@ -756,10 +779,12 @@ def _preflight_fixture(
         "claim_digest": canonical_digest(claim_payload),
     }
     publish_attempt_slot_claim_evidence(slot_claim, roots=roots)
+    publish_attempt_launch_profile(launch_profile, roots=roots)
     receipt = build_attempt_preflight_receipt(
         identity=identity,
         allowed_prerequisites=prerequisites,
         architecture_qualification=qualification,
+        launch_profile=launch_profile,
         effective_config=effective_config,
         authority_plan=plan,
         authority_consumption=consumption,

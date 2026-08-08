@@ -17,16 +17,19 @@ from .aox_cutover_evidence import (
     canonical_json_bytes,
 )
 from .aox_live_run_class import AoxLiveRunClass
+from .aox_launch_profile import AOX_CUTOVER_LAUNCH_PROFILE_FILENAME
+from .aox_launch_profile import launch_profile_digest
+from .aox_launch_profile import normalize_aox_cutover_launch_profile
 
 
-ATTEMPT_PREFLIGHT_SCHEMA_ID = "aox_attempt_preflight@4"
+ATTEMPT_PREFLIGHT_SCHEMA_ID = "aox_attempt_preflight@5"
 ATTEMPT_PREFLIGHT_FILENAME = "aox-attempt-preflight.json"
 ATTEMPT_CONDUCTOR_CONTRACT_FILENAME = "aox-public-conductor-contract.json"
 ATTEMPT_SLOT_CLAIM_FILENAME = "aox-attempt-slot-claim.json"
 _PREFLIGHT_FIELDS = set(
     "schema_id run_class campaign_id plan_digest consumption_digest identity_digest "
-    "allowed_prerequisite_digest architecture_qualification_digest effective_config "
-    "slot slot_claim root_proof created_at receipt_digest".split()
+    "allowed_prerequisite_digest architecture_qualification_digest launch_profile_digest "
+    "effective_config slot slot_claim root_proof created_at receipt_digest".split()
 )
 _ROOT_PROOF_FIELDS = set(
     "schema_id architecture_qualification launch_id attempt_kind root_identity "
@@ -50,6 +53,7 @@ def build_attempt_preflight_receipt(
     identity: Mapping[str, object],
     allowed_prerequisites: Mapping[str, object],
     architecture_qualification: Mapping[str, object],
+    launch_profile: Mapping[str, object],
     effective_config: Mapping[str, object],
     authority_plan: Mapping[str, object],
     authority_consumption: Mapping[str, object],
@@ -65,6 +69,9 @@ def build_attempt_preflight_receipt(
             slot.get("attempt_kind") == roots.attempt_kind,
             authority_consumption.get("plan_digest")
             == authority_plan.get("plan_digest"),
+            authority_plan.get("launch_profile_digest")
+            == launch_profile_digest(launch_profile),
+            launch_profile.get("config_digest") == identity.get("config_digest"),
             roots.proof.get("allowed_prerequisite_digest")
             == canonical_digest(dict(allowed_prerequisites)),
             roots.proof.get("architecture_qualification")
@@ -111,6 +118,7 @@ def build_attempt_preflight_receipt(
         "architecture_qualification_digest": canonical_digest(
             dict(architecture_qualification)
         ),
+        "launch_profile_digest": launch_profile_digest(launch_profile),
         "effective_config": dict(effective_config),
         "slot": dict(slot),
         "slot_claim": dict(slot_claim),
@@ -140,6 +148,17 @@ def publish_attempt_slot_claim_evidence(
     return path
 
 
+def publish_attempt_launch_profile(
+    launch_profile: Mapping[str, object], *, roots: BlankWorldRoots
+) -> Path:
+    normalized = normalize_aox_cutover_launch_profile(launch_profile)
+    path = roots.evidence_root / AOX_CUTOVER_LAUNCH_PROFILE_FILENAME
+    publish_private_canonical_authority(
+        path, canonical_json_bytes(normalized) + b"\n"
+    )
+    return path
+
+
 def _load_canonical_private_file(path: Path) -> dict[str, Any]:
     try:
         metadata, content = path.lstat(), path.read_bytes()
@@ -158,6 +177,22 @@ def _load_canonical_private_file(path: Path) -> dict[str, Any]:
     )):
         _reject("attempt_preflight_invalid", "preflight receipt is unsafe or noncanonical")
     return dict(value)
+
+
+def _load_bound_attempt_launch_profile(
+    path: Path,
+    preflight: Mapping[str, object],
+) -> dict[str, object]:
+    profile_path = path.parent / AOX_CUTOVER_LAUNCH_PROFILE_FILENAME
+    profile = normalize_aox_cutover_launch_profile(
+        _load_canonical_private_file(profile_path)
+    )
+    if preflight.get("launch_profile_digest") != launch_profile_digest(profile):
+        _reject(
+            "attempt_preflight_launch_profile_mismatch",
+            "preflight launch profile source drifted",
+        )
+    return profile
 
 
 def load_attempt_preflight_receipt(
@@ -261,6 +296,7 @@ def load_attempt_preflight_receipt(
         )):
             _reject("attempt_preflight_root_invalid", "root topology drifted", root_kind=kind)
     if require_unstarted:
+        _load_bound_attempt_launch_profile(path, value)
         nonempty = {
             kind: sorted(item.name for item in root.iterdir())
             for kind, root in roots.items()
@@ -277,9 +313,18 @@ def load_attempt_preflight_receipt(
                         ATTEMPT_PREFLIGHT_FILENAME,
                         ATTEMPT_SLOT_CLAIM_FILENAME,
                         ATTEMPT_CONDUCTOR_CONTRACT_FILENAME,
+                        AOX_CUTOVER_LAUNCH_PROFILE_FILENAME,
                     ]
                 )
             )
         ):
             _reject("attempt_preflight_already_started", "attempt root already started", nonempty_roots=nonempty)
     return value
+
+
+def load_attempt_launch_profile(path: Path) -> dict[str, object]:
+    """Load the private launch profile bound to one canonical preflight receipt."""
+
+    resolved = path.expanduser().resolve(strict=True)
+    preflight = load_attempt_preflight_receipt(resolved)
+    return _load_bound_attempt_launch_profile(resolved, preflight)

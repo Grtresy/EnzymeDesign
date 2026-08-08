@@ -32,6 +32,13 @@ from openzyme_host_api.aox_architecture_qualification import (
 from openzyme_host_api.aox_architecture_qualification import (
     require_matching_architecture_qualification_receipt,
 )
+from openzyme_host_api.aox_attempt_authority import (
+    AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID,
+)
+from openzyme_host_api.aox_attempt_authority import (
+    AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID,
+)
+from openzyme_host_api.aox_attempt_preflight import ATTEMPT_PREFLIGHT_SCHEMA_ID
 from openzyme_host_api.aox_cutover_runtime_config import (
     AOX_BLANK_WORLD_RUNTIME_CONFIG_LEGACY_SCHEMA_ID,
 )
@@ -46,6 +53,15 @@ from openzyme_host_api.aox_cutover_runtime_config import (
 )
 from openzyme_host_api.aox_cutover_runtime_config import (
     AOX_BLANK_WORLD_RUNTIME_CONFIG_V4_SCHEMA_ID,
+)
+from openzyme_host_api.aox_launch_profile import (
+    AOX_CUTOVER_LAUNCH_PROFILE_SCHEMA_ID,
+)
+from openzyme_host_api.aox_preflight_failure import (
+    FORMAL_PREFLIGHT_FAILURE_DECISION_SCHEMA_ID,
+)
+from openzyme_host_api.aox_preflight_failure import (
+    FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID,
 )
 from openzyme_host_api.aox_scientific_contract import (
     AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY,
@@ -125,6 +141,20 @@ def _assert_current_schema_contract(document: str) -> dict[str, str]:
             raise AssertionError(f"historical runtime config was promoted: {schema_id}")
     if "MAY remain readable only for historical offline verification" not in launch:
         raise AssertionError("historical runtime configs lost their read-only boundary")
+    for schema_id in (
+        AOX_CUTOVER_LAUNCH_PROFILE_SCHEMA_ID,
+        AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID,
+        AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID,
+        ATTEMPT_PREFLIGHT_SCHEMA_ID,
+        FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID,
+        FORMAL_PREFLIGHT_FAILURE_DECISION_SCHEMA_ID,
+    ):
+        if f"`{schema_id}`" not in launch:
+            raise AssertionError(f"active launch contract omits {schema_id}")
+    if "Ambient state MAY supply only credentials" not in launch:
+        raise AssertionError("active launch contract permits ambient profile fallback")
+    if "MUST NOT be retroactively backfilled" not in launch:
+        raise AssertionError("active launch contract permits historical backfill")
 
     admission = _requirement(
         document,
@@ -161,6 +191,16 @@ def _assert_current_schema_contract(document: str) -> dict[str, str]:
         ),
         "qualification_report_schema_id": QUALIFICATION_REPORT_SCHEMA_ID,
         "runtime_config_schema_id": AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID,
+        "launch_profile_schema_id": AOX_CUTOVER_LAUNCH_PROFILE_SCHEMA_ID,
+        "authority_plan_schema_id": AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID,
+        "authority_consumption_schema_id": (
+            AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID
+        ),
+        "preflight_schema_id": ATTEMPT_PREFLIGHT_SCHEMA_ID,
+        "preflight_failure_schema_id": FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID,
+        "preflight_failure_decision_schema_id": (
+            FORMAL_PREFLIGHT_FAILURE_DECISION_SCHEMA_ID
+        ),
     }
 
 
@@ -207,6 +247,19 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
             spec_document,
             "`transformation_results_digest`",
             "`legacy_transformation_digest`",
+        ),
+        "launch_profile_binding_removed": _replace_once(
+            spec_document,
+            (
+                "one closed credential-free "
+                f"`{AOX_CUTOVER_LAUNCH_PROFILE_SCHEMA_ID}`"
+            ),
+            "one unbound ambient launch profile",
+        ),
+        "preflight_failure_closure_removed": _replace_once(
+            spec_document,
+            f"one source-bound `{FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID}` sibling",
+            "one unbound preflight failure note",
         ),
     }
     rejected_contract_drifts: list[str] = []
@@ -332,6 +385,24 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
     assert ARCHITECTURE_QUALIFICATION_RECEIPT_SCHEMA_ID == (
         "aox_architecture_qualification_receipt@3"
     )
+    assert AOX_CUTOVER_LAUNCH_PROFILE_SCHEMA_ID == "aox_cutover_launch_profile@1"
+    assert AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID == (
+        "aox_live_attempt_authority_plan@4"
+    )
+    assert AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID == (
+        "aox_live_attempt_authority_consumption@5"
+    )
+    assert ATTEMPT_PREFLIGHT_SCHEMA_ID == "aox_attempt_preflight@5"
+    assert FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID == "aox_formal_preflight_failure@1"
+    assert FORMAL_PREFLIGHT_FAILURE_DECISION_SCHEMA_ID == (
+        "aox_blank_world_campaign_preflight_failure_decision@1"
+    )
+    host_supervision_source = (
+        _REPO_ROOT
+        / "apps/openzyme-host-api/src/openzyme_host_api/aox_host_supervision.py"
+    ).read_text(encoding="utf-8")
+    assert "resolve_aox_cutover_launch_profile" in host_supervision_source
+    assert "OpenZymeSettings.from_env()" not in host_supervision_source
     with pytest.raises(ScientificWorkflowContractError) as historical_error:
         AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY.resolve(
             workflow_id=AOX_SELECTED_CHAIN_WORKFLOW_ID,

@@ -1433,6 +1433,23 @@ resolve，但不重复请求人工批准。
 formal slot failure receipt 与 canonical NO-GO。进程退休、连接拒绝或 conductor prose都不能替代
 这两类封存终局。
 
+### 9.12 pinned launch profile 与 pre-claim failure closure
+
+pin、authority、preflight 与 supervised Host 必须共享同一份非敏感 launch truth。current pin
+transaction 除 identity/prerequisites 外原子发布 credential-free
+`aox_cutover_launch_profile@1`，并由 marker/receipt `@3`、formal plan `@4`、consumption `@5` 和
+preflight `@5` 共同绑定 profile digest。profile 覆盖完整非敏感 effective settings 与 ledger identity，
+但不持久化 API key、email、token、Host principal 或 credential-bearing URL；LLM open extra body 只保留
+digest。preflight/Host 从 profile 恢复非敏感字段，ambient 只补 credential，其他 ambient launch
+变量不能覆盖 pinned 值；extra-body digest/shared principal 冲突、profile 内 legacy owner 或 digest
+漂移都在 claim/root/listener 前显式失败。
+
+若 authority 已消费而 profile/effective-config 在 slot claim 前失败，且 claim 不存在、campaign attempt
+root absent/empty，preflight 同步封存 source-bound `aox_formal_preflight_failure@1`，证明零
+claim/root/Host/session/attempt/MICU/provider/runner/HPC/browser effect。纯离线 verifier 与专用 decision
+可据此形成 canonical NO-GO；它不创建 `launch_id`、attempt bundle 或 successor。r75 发生时没有这些
+current source bytes，故继续是 blocked/noncanonical 历史证据，不能回填。
+
 ---
 
 ## 10. Legacy Boundary
