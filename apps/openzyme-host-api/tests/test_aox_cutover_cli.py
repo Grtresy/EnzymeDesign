@@ -554,7 +554,15 @@ def test_preflight_config_failure_seals_before_claim_or_root(
     monkeypatch.setattr(
         cli,
         "resolve_aox_cutover_launch_profile",
-        lambda profile: (_ for _ in ()).throw(launch_error),
+        lambda profile: (object(), tmp_path / "micu-ledger.sqlite3"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "prepare_aox_cutover_launch",
+        lambda **kwargs: (
+            observed.update({"prepare": kwargs}),
+            (_ for _ in ()).throw(launch_error),
+        )[1],
     )
     monkeypatch.setattr(
         cli,
@@ -585,6 +593,10 @@ def test_preflight_config_failure_seals_before_claim_or_root(
 
     assert error.value is launch_error
     assert observed["slot_ordinal"] == 1
+    assert observed["prepare"]["declared_identity"] == observed["identity"]
+    assert observed["prepare"]["architecture_qualification_report"] == (
+        consume_args.architecture_qualification_report
+    )
     assert observed["launch_profile"]["schema_id"] == (
         "aox_cutover_launch_profile@1"
     )
@@ -605,6 +617,65 @@ def test_preflight_config_failure_seals_before_claim_or_root(
     assert output["slot_claim_created"] is False
     assert output["campaign_attempt_root_created"] is False
     assert output["scientific_attempt_count"] == 0
+
+
+def test_preflight_revalidates_actual_launch_immediately_before_slot_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    consume_args = _consume_authority_args(tmp_path)
+    assert cli._consume_authority(consume_args) == 0
+    capsys.readouterr()
+    args = cli.build_parser().parse_args(
+        [
+            "preflight",
+            "--campaign-root",
+            str(tmp_path / "campaign"),
+            "--identity",
+            str(consume_args.identity),
+            "--allowed-prerequisites",
+            str(consume_args.allowed_prerequisites),
+            "--architecture-qualification-report",
+            str(consume_args.architecture_qualification_report),
+            "--attempt-authority-plan",
+            str(consume_args.attempt_authority_plan),
+            "--attempt-authority-consumption",
+            str(consume_args.attempt_authority_consumption),
+            "--slot-ordinal",
+            "1",
+        ]
+    )
+    calls: list[str] = []
+
+    class Snapshot:
+        effective_config = {"schema_id": "aox_blank_world_runtime_config@5"}
+
+        def assert_unchanged(self) -> None:
+            calls.append("guard")
+
+    monkeypatch.setattr(
+        cli,
+        "resolve_aox_cutover_launch_profile",
+        lambda profile: (object(), tmp_path / "micu-ledger.sqlite3"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "prepare_aox_cutover_launch",
+        lambda **kwargs: (calls.append("prepare"), Snapshot())[1],
+    )
+
+    def stop_at_claim(**kwargs: object) -> dict[str, object]:
+        assert calls == ["prepare", "guard"]
+        raise RuntimeError("stop at slot claim")
+
+    monkeypatch.setattr(cli, "claim_aox_attempt_authority_slot", stop_at_claim)
+
+    with pytest.raises(RuntimeError, match="stop at slot claim"):
+        cli._preflight(args)
+
+    assert calls == ["prepare", "guard"]
+    assert not (tmp_path / "campaign").exists()
 
 
 def test_pin_uses_policy_free_conductor_and_writes_safe_no_replace_json(

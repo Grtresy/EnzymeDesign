@@ -645,18 +645,32 @@ AOX reference selection contract、sealed bytes 与零既有 consumer 后，在 
 已消费或 drift 均 fail closed。
 
 AOX cutover shell 保留彼此分离的 production seams：`preflight` 先对 exact ordinal执行
-profile-bound effective-config validation；通过后才 private atomic one-use claim，再创建 exact root、
+profile-bound full actual launch validation：从 pinned settings重算 checkout/workflow/scoring、actual
+Podman/rootless image identity、SDK digest与 `aox_sandbox_scientific_backend_probe@2`，并立即执行
+unchanged guard；config-only digest不构成通过。actual guard通过后才 private atomic one-use claim，再创建 exact root、
 复制 claim 与 `aox_cutover_launch_profile@1`，封存 `aox_attempt_preflight@5` 与 execution contract并报告
 Host 未启动。profile 是 pin transaction 的 credential-free 非敏感 settings owner，ambient 只补 credential，
 不能回落到另一套 owner policy；
 `serve-attempt` 只启动/退休 fixed loopback Host，不发 message/drain/approval。操作员发送中断时，
 supervisor 只有在 current readiness receipt能从未漂移 source完整重算时才退休 Host，否则公开
 `host_remains_active` 并继续服务；child crash或 authority deadline仍按真实 supervision事实处理，
-不伪造 readiness。`finalize-and-seal` 与 `seal-slot-failure` 均从 readiness自动解析 exact receipt、
-final reads和handoffs，不再接受调用者逐项挑选这些路径；前者只封存真实 attempt 的 `@3` bundle，
-后者只封存 final workspace 已证明的零-attempt `aox_formal_slot_failure@1`。`verify-slot-failure` 纯读取
+不伪造 readiness。`finalize-and-seal` 从 readiness自动解析 exact receipt、final reads和handoffs；
+`seal-slot-failure` 的 post-child-ready分支使用同一 owner，两者都不接受调用者逐项挑选这些路径。
+前者只封存真实 attempt 的 `@3` bundle，后者只封存 final workspace 已证明的零-attempt
+`aox_formal_slot_failure@2 / closure_mode=public_host`。`verify-slot-failure` 纯读取
 重建该 receipt，`decide --slot-failure` 只能给出 source-bound canonical NO-GO，不能创建 attempt
 bundle。任何 seam 都不能自动判断 agent 业务 terminal 或声明 GO。
+
+若 actual guard通过、claim/root已创建，但 supervised child在
+`sandbox_bootstrap_pre_registry`、child-ready之前失败，parent必须在child存活时验证 closed frame 的
+PID=PGID、`/proc` start-time、process epoch与digest，退休exact process group，并证明initial evidence set、
+SQLite业务表、mutation scope/writer与四个effect目录仍为零。只有safe allowlisted sandbox cause与上述
+settlement全部成立，才封存 `aox_supervised_host_pre_ready_failure@1`；该 receipt明确没有startup、normal
+supervision或public receipt chain。`seal-slot-failure --pre-ready-failure`与
+`--retirement-readiness`严格互斥，前者只生成
+`aox_formal_slot_failure@2 / closure_mode=pre_child_ready`，要求两个不同且内容相同的 MICU snapshot并拒绝
+later Host/public/attempt source。历史 `aox_formal_slot_failure@1`只读验证原 public-Host shape，不能
+crossgrade。无法证明进程、root、SQLite、effect、cause或MICU时继续是 evidence blocker。
 
 authority 已消费、slot 尚未 claim 且 campaign root absent/empty 时，profile/effective-config 的 typed
 失败写入 deterministic private sibling `aox_formal_preflight_failure@1`。公开命令仍返回原失败；纯离线
@@ -751,7 +765,10 @@ runner availability 证明；`pin` 会重新计算配置。Codex conductor 不�
 `identity` 以及可选的 `missing`、`unexpected`；`kind=runner_attestation` 只允许 AOX `tool_id`、可选
 安全 `runner_run_id`、可选 `runner_attempt_receipt_digest`、`stage=runner_call|runner_result`、closed
 effect certainty 与可选安全 `runner_error_code`；code 只接受
-全大写执行码或全小写 source-causal code，不接受混合大小写或自由文本。配置值、
+全大写执行码或全小写 source-causal code，不接受混合大小写或自由文本。`kind=sandbox_runtime`只允许
+exact `failure_code`，其闭集是 `pipeline_sdk_source_unavailable`、`podman_binary_unavailable`、
+`podman_rootless_preflight_failed`、`sandbox_image_identity_invalid`、`sandbox_image_unavailable`与
+`sandbox_runtime_identity_drift`。配置值、
 Host/runner 路径、凭据、原始消息、异常表示和异常链始终留在私有边界。内部 `details` 的存在本身不
 构成公开许可。历史 `aox_cutover_launch_failure@1/@2` 只能作为冻结记录读取，不能冒充当前回执。
 

@@ -9,6 +9,8 @@ import re
 import stat
 from typing import Any
 
+from openzyme_engines import PODMAN_SANDBOX_PREFLIGHT_FAILURE_CODES
+
 from .aox_architecture_qualification import (
     AoxArchitectureQualificationError,
     normalize_architecture_qualification_receipt,
@@ -230,7 +232,25 @@ def _normalize_public_failure(value: Mapping[str, object]) -> dict[str, object]:
     details = failure.get("failure_details")
     if details is None:
         return failure
-    if not isinstance(details, dict) or details.get("kind") != "schema_field":
+    if not isinstance(details, dict):
+        _fail(
+            "formal_preflight_failure_cause_invalid",
+            "preflight failure details are not a safe closed projection",
+            identity="failure.failure_details",
+        )
+    if details.get("kind") == "sandbox_runtime":
+        if (
+            set(details) != {"kind", "failure_code"}
+            or details.get("failure_code")
+            not in PODMAN_SANDBOX_PREFLIGHT_FAILURE_CODES
+        ):
+            _fail(
+                "formal_preflight_failure_cause_invalid",
+                "preflight sandbox runtime details are not a closed typed cause",
+                identity="failure.failure_details",
+            )
+        return failure
+    if details.get("kind") != "schema_field":
         _fail(
             "formal_preflight_failure_cause_invalid",
             "preflight failure details are not a safe schema-field projection",
@@ -631,11 +651,12 @@ def evaluate_formal_preflight_failure(
     )
     failure = dict(receipt["failure"])
     details = failure.get("failure_details")
-    blocker_identity = (
-        str(dict(details).get("identity"))
-        if isinstance(details, dict) and details.get("identity")
-        else "effective_config"
-    )
+    if isinstance(details, dict) and details.get("kind") == "sandbox_runtime":
+        blocker_identity = f"sandbox_runtime.{details['failure_code']}"
+    elif isinstance(details, dict) and details.get("identity"):
+        blocker_identity = str(details["identity"])
+    else:
+        blocker_identity = "effective_config"
     decision: dict[str, Any] = {
         "schema_id": FORMAL_PREFLIGHT_FAILURE_DECISION_SCHEMA_ID,
         "decided_at": decided_at or datetime.now(UTC).isoformat(),

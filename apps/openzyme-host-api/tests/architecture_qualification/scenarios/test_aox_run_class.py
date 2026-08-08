@@ -259,11 +259,20 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
         for action in subcommands["public-host"]._actions
     }
     assert public_host_arguments["host_cli_args"].nargs == argparse.REMAINDER
-    for finalizer_name in ("finalize-and-seal", "seal-slot-failure"):
-        finalizer_arguments = {
-            action.dest for action in subcommands[finalizer_name]._actions
-        }
-        assert "retirement_readiness" in finalizer_arguments
+    attempt_finalizer_arguments = {
+        action.dest for action in subcommands["finalize-and-seal"]._actions
+    }
+    assert "retirement_readiness" in attempt_finalizer_arguments
+    slot_failure_arguments = {
+        action.dest for action in subcommands["seal-slot-failure"]._actions
+    }
+    assert {"retirement_readiness", "pre_ready_failure"}.issubset(
+        slot_failure_arguments
+    )
+    for finalizer_arguments in (
+        attempt_finalizer_arguments,
+        slot_failure_arguments,
+    ):
         assert not {
             "receipt_chain",
             "workspace_response",
@@ -315,8 +324,23 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
     )
     assert callable(aox_public_conductor_bundle.verify_public_conductor_bundle)
     assert callable(aox_formal_slot_failure.finalize_and_seal_formal_slot_failure)
+    assert callable(
+        aox_formal_slot_failure.finalize_and_seal_pre_ready_formal_slot_failure
+    )
     assert callable(aox_formal_slot_failure.verify_formal_slot_failure)
     assert callable(aox_formal_slot_failure.evaluate_formal_slot_failure)
+    assert callable(
+        aox_host_supervision.validate_supervised_host_pre_ready_failure
+    )
+    assert aox_formal_slot_failure.FORMAL_SLOT_FAILURE_SCHEMA_ID == (
+        "aox_formal_slot_failure@2"
+    )
+    assert aox_formal_slot_failure.LEGACY_FORMAL_SLOT_FAILURE_SCHEMA_ID == (
+        "aox_formal_slot_failure@1"
+    )
+    assert aox_host_supervision.HOST_PRE_READY_FAILURE_SCHEMA_ID == (
+        "aox_supervised_host_pre_ready_failure@1"
+    )
     factory = ProductionCompositionFactory.create(tmp_path / "aox-composition")
     model_factory = _AoxPublicCompositionModelFactory()
     composition = factory.build(

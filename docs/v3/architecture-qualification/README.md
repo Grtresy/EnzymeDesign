@@ -253,12 +253,26 @@ historical single-slot diagnostic plan/consumption仍永久`acceptance_eligible=
 product无mint/consume命令。未来单独批准的Codex conductor只经public Host API/CLI编排；该
 non-live qualification scenario证明结构边界，不批准真实diagnostic或formal campaign。
 
+current preflight必须从pinned profile调用full `prepare_aox_cutover_launch()` actual resolver并立即执行
+unchanged guard，严格先于slot claim与root factory；actual Podman/rootless/image、SDK或
+`aox_sandbox_scientific_backend_probe@2`失败不能被config-only digest掩盖。AOX admission scenario把
+active normative requirement、实现schema与该source call order闭合；focused regression以fake probes
+证明failure不创建claim/root，真实non-live process回归证明pre-ready frame绑定PID/PGID/start-time并完成
+process-group retirement。上述证明不执行live Podman、provider、HPC或MICU。
+
 若 current authority 已消费，但 pinned profile/effective-config 在 slot claim 与 root 前失败，CLI
 只在 claim 不存在且 campaign root absent/empty 时封存 source-bound
 `aox_formal_preflight_failure@1`。`verify-preflight-failure` 与
 `decide --preflight-failure` 是纯离线专用 NO-GO 路径，必须证明零 Host/session/attempt/MICU/provider/
 runner/HPC/browser effect，且不得生成 launch/attempt identity。r75 发生时没有该 current receipt 链，
 因此保持 blocked/noncanonical，不允许回填。
+
+claim/root后、child-ready前的sandbox bootstrap failure只有在
+`aox_supervised_host_pre_ready_failure@1`证明live process identity、exact descendant retirement、fresh
+root、zero control-plane/mutation/effect与unchanged MICU后，才可进入
+`aox_formal_slot_failure@2 / closure_mode=pre_child_ready`。`public_host`分支继续使用retirement-readiness。
+qualification同时证明CLI两个source option互斥、current `@2` finalizer/verifier可达、历史`@1`只读且
+不能crossgrade。r76缺少该receipt，继续blocked/noncanonical，不回填。
 
 historical `aox_closure_stage_*` plan/consumption/root/source/parity/live/decision schemas
 只保留离线读取与 formal non-adoption。blank-world root factory、formal publisher 和

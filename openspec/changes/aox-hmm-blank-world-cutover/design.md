@@ -1715,6 +1715,47 @@ zero-attempt/zero-MICU/no-provider/runner/HPC/browser effect；原 preflight 仍
 不得创建 `launch_id`、attempt bundle 或 successor campaign。claim/root 已存在、source 缺失或漂移时
 一律拒绝该 closure。
 
+### 2026-08-09 r76 actual-launch guard 与 child-ready 前失败闭合
+
+r76 已消费 formal authority 并创建 slot 1 claim、blank-world root、preflight 与 conductor contract，
+但 supervised Host 在 child-ready 前以 `host_sandbox_runtime_identity_missing` 停止。该轮没有 Host
+startup/session/runtime/MICU/provider/HPC/Chrome effect，也没有 startup/supervision/public receipt 或
+retirement-readiness；MICU 仍为 `130,589,612 / 500,000,000`。旧 child terminal frame未绑定可由
+parent 在进程存活时核验的 PID/PGID/start-time，旧 root也没有 current pre-ready settlement receipt，
+因此不能把 process exit或 wrapper error追认为 canonical NO-GO。r76 保持 blocked/noncanonical，已消费
+plan、slot、root 与 evidence 全部不可复用或回填。
+
+根因首先位于 preflight owner seam：`preflight` 只重建并比较 effective config，没有调用 pin/launch
+共用的 full actual resolver，因此实际 Podman/rootless/image/SDK/scientific backend runtime identity 可在
+claim/root 后才第一次由 Host 发现。修复后的 preflight 从 pinned profile恢复设置，调用
+`prepare_aox_cutover_launch()`，并在 atomic claim 前立即执行 snapshot unchanged guard；它重新计算 clean
+checkout/workflow/scoring、actual Podman runtime identity、immutable image、Pipeline SDK digest与 current
+`aox_sandbox_scientific_backend_probe@2`（包含 `aox_exact_calculation_manifest@1`）。config-only equality不再
+满足 admission。safe sandbox cause经 closed `kind=sandbox_runtime/failure_code` 投影进入既有
+`aox_formal_preflight_failure@1`；失败仍发生在 claim/root 前，不自动 retry或换 slot。
+
+claim 后与 child bootstrap 之间仍存在真实 drift窗口，不能只依赖前置 guard。child 在
+`sandbox_bootstrap_pre_registry` 失败时发送 closed terminal frame，绑定 process epoch、PID、PGID、
+`/proc` start-time、failure stage、outer Host code与 allowlisted Podman subcause。parent必须在 child仍存活
+时逐项重验身份，随后退休 exact process group；只有 fresh root仍保持 exact initial evidence set、四个
+effect目录全空、SQLite所有业务表零行、mutation authority零 writer/scope、checkpoint/integrity与fsync
+全部闭合，才 no-replace封存 `aox_supervised_host_pre_ready_failure@1`。该 receipt明确 startup、normal
+supervision与public receipt chain均不存在；unknown identity、dirty root、已有 registry/session/attempt、
+retirement不确定或非 allowlisted cause均保持 evidence blocker，不能伪造 later-stage receipt。
+
+`aox_formal_slot_failure@2` 采用 closed discriminated union。`closure_mode=public_host`保留 post-r74
+retirement-readiness路径；`closure_mode=pre_child_ready`只接受同一 evidence root 的 preflight、slot
+claim、pre-ready receipt与两个不同但内容完全相等的 MICU snapshot，拒绝 startup/supervision/fatal/
+public receipt/attempt bundle共存，固定 zero attempt、`acceptance_eligible=false`、
+`state_reusable=false`和 `no_effect/authorization_required/terminal`。旧 `@1` reader只验证原 public-Host
+frozen shape，不能 crossgrade或发射 pre-ready branch。CLI `seal-slot-failure` 要求 readiness或
+pre-ready receipt二选一；offline verifier/reducer保持唯一 canonical NO-GO权威。
+
+non-live回归覆盖 actual resolver/guard严格先于 claim/root、typed Podman cause、真实本地process
+PID/PGID/start-time握手与退休、空/非空 SQLite/root、MICU漂移、later-source冲突、`@1`只读兼容与
+`@2` crossgrade拒绝。该 repair不启动 fresh qualification、preparation、下一 rNN、live、MICU、provider、
+HPC或Chrome；后续验证必须从新 clean commit与全新 preparation/plan开始。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

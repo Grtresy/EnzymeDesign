@@ -177,7 +177,11 @@ def _failure() -> dict[str, object]:
     }
 
 
-def _seal(tmp_path: Path) -> tuple[Path, str, dict[str, object]]:
+def _seal(
+    tmp_path: Path,
+    *,
+    failure: dict[str, object] | None = None,
+) -> tuple[Path, str, dict[str, object]]:
     sources = _sources(tmp_path)
     campaign_root = tmp_path / "campaign"
     campaign_root.mkdir(mode=0o700)
@@ -191,10 +195,49 @@ def _seal(tmp_path: Path) -> tuple[Path, str, dict[str, object]]:
         launch_profile=sources["profile"],
         authority_plan=sources["plan"],
         authority_consumption=sources["consumption"],
-        failure=_failure(),
+        failure=_failure() if failure is None else failure,
         sealed_at="2026-08-08T00:01:00+00:00",
     )
     return path, digest, sources
+
+
+def test_preflight_failure_preserves_closed_sandbox_runtime_cause(
+    tmp_path: Path,
+) -> None:
+    failure = {
+        "schema_id": "aox_cutover_launch_failure@3",
+        "status": "failed",
+        "failure_code": "aox_launch_sandbox_preflight_failed",
+        "failure_details": {
+            "kind": "sandbox_runtime",
+            "failure_code": "podman_rootless_preflight_failed",
+        },
+    }
+    path, _, _ = _seal(tmp_path, failure=failure)
+
+    verification = verify_formal_preflight_failure(path)
+    decision = evaluate_formal_preflight_failure(path)
+
+    assert verification.passed is True
+    assert decision["blocker"] == {
+        "code": "aox_launch_sandbox_preflight_failed",
+        "identity": "sandbox_runtime.podman_rootless_preflight_failed",
+        "message": (
+            "the consumed authority failed before slot claim, campaign attempt "
+            "root creation, Host startup, or scientific attempt creation"
+        ),
+    }
+
+    tampered = json.loads(path.read_text(encoding="utf-8"))
+    tampered["failure"]["failure_details"]["failure_code"] = (
+        "private_runtime_/home/operator"
+    )
+    path.chmod(0o600)
+    path.write_bytes(canonical_json_bytes(tampered) + b"\n")
+    invalid = verify_formal_preflight_failure(path)
+    assert invalid.passed is False
+    assert invalid.issue is not None
+    assert invalid.issue.code == "formal_preflight_failure_cause_invalid"
 
 
 def test_preflight_failure_closes_consumed_authority_without_launch(

@@ -30,6 +30,16 @@ from .execution import ExecutionOutcome
 
 
 DEFAULT_SANDBOX_IMAGE = "localhost/openzyme-pipeline-sandbox:dev"
+PODMAN_SANDBOX_PREFLIGHT_FAILURE_CODES = frozenset(
+    {
+        "pipeline_sdk_source_unavailable",
+        "podman_binary_unavailable",
+        "podman_rootless_preflight_failed",
+        "sandbox_image_identity_invalid",
+        "sandbox_image_unavailable",
+        "sandbox_runtime_identity_drift",
+    }
+)
 _CONTROL_SOCKET_START_ATTEMPTS = 100
 _CONTROL_SOCKET_START_POLL_SECONDS = 0.01
 _CONTROL_SOCKET_STOP_GRACE_SECONDS = 2.0
@@ -91,6 +101,7 @@ class PodmanSandboxPreflight:
     ok: bool
     message: str
     runtime_identity: dict[str, str] | None = None
+    failure_code: str | None = None
 
 
 @dataclass(slots=True)
@@ -146,22 +157,51 @@ class PodmanPipelineSandboxRunner:
     def preflight(self) -> PodmanSandboxPreflight:
         podman = shutil.which(self.podman_binary)
         if podman is None:
-            return PodmanSandboxPreflight(False, "podman binary is not available")
+            return PodmanSandboxPreflight(
+                False,
+                "podman binary is not available",
+                failure_code="podman_binary_unavailable",
+            )
         try:
             subprocess.run([self.podman_binary, "info", "--format", "{{.Host.Security.Rootless}}"], check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as exc:
-            return PodmanSandboxPreflight(False, f"podman rootless preflight failed: {exc.stderr.strip() or exc.stdout.strip()}")
+            return PodmanSandboxPreflight(
+                False,
+                f"podman rootless preflight failed: {exc.stderr.strip() or exc.stdout.strip()}",
+                failure_code="podman_rootless_preflight_failed",
+            )
+        except OSError:
+            return PodmanSandboxPreflight(
+                False,
+                "podman rootless preflight could not execute",
+                failure_code="podman_rootless_preflight_failed",
+            )
         try:
             subprocess.run([self.podman_binary, "image", "exists", self.image], check=True, capture_output=True, text=True)
-        except subprocess.CalledProcessError:
-            return PodmanSandboxPreflight(False, f"sandbox image {self.image!r} is not present; run `uv run python -m openzyme_pipeline.sandbox_image build`")
+        except (OSError, subprocess.CalledProcessError):
+            return PodmanSandboxPreflight(
+                False,
+                f"sandbox image {self.image!r} is not present; run `uv run python -m openzyme_pipeline.sandbox_image build`",
+                failure_code="sandbox_image_unavailable",
+            )
         try:
             image_digest = self._inspect_image_digest()
-        except (subprocess.CalledProcessError, RuntimeError) as exc:
-            return PodmanSandboxPreflight(False, str(exc))
-        sdk_digest = self._pipeline_sdk_digest()
+        except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
+            return PodmanSandboxPreflight(
+                False,
+                str(exc),
+                failure_code="sandbox_image_identity_invalid",
+            )
+        try:
+            sdk_digest = self._pipeline_sdk_digest()
+        except OSError:
+            sdk_digest = None
         if sdk_digest is None:
-            return PodmanSandboxPreflight(False, "openzyme_pipeline SDK source is not available")
+            return PodmanSandboxPreflight(
+                False,
+                "openzyme_pipeline SDK source is not available",
+                failure_code="pipeline_sdk_source_unavailable",
+            )
         identity_without_digest = {
             "configured_image_ref": self.image,
             "immutable_image_ref": image_digest,
@@ -174,7 +214,11 @@ class PodmanPipelineSandboxRunner:
         ).hexdigest()
         identity = {**identity_without_digest, "runtime_identity_digest": identity_digest}
         if self.pinned_runtime_identity not in (None, identity):
-            return PodmanSandboxPreflight(False, "sandbox runtime identity drifted after Host bootstrap")
+            return PodmanSandboxPreflight(
+                False,
+                "sandbox runtime identity drifted after Host bootstrap",
+                failure_code="sandbox_runtime_identity_drift",
+            )
         return PodmanSandboxPreflight(True, "podman sandbox is ready", identity)
 
     def run_pipeline(

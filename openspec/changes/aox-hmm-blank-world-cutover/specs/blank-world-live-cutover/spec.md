@@ -23,7 +23,7 @@ Each cutover attempt SHALL create unique empty SQLite, artifact/blob, sandbox wo
 ### Requirement: Canonical launch and prerequisite identity
 The retained preflight and authority-consumption shell SHALL resolve a canonical clean launch snapshot before a separately approved public Codex conductor creates any attempt root. The launch identity MUST be the exact seven-field closed object `git_commit`, `config_digest`, `workflow_ref`, `scoring_contract_digest`, `scoring_implementation_digest`, `image_digest`, and `sdk_digest`; each value MUST be derived from the actual clean canonical checkout, digest-pinned workflow/scoring implementation, sandbox runtime preflight, and Pipeline SDK source tree rather than trusted from caller declarations. No retained shell SHALL construct or automatically drive an attempt runner or campaign.
 
-Every initial identity resolution and inter-attempt launch guard SHALL execute `aox_sandbox_scientific_backend_probe@1` before pin runner attestation, attempt-root creation, or any MICU/provider/runner effect. The probe MUST copy the exact Pipeline SDK to a temporary tree, normalize directory/file modes to `0755`/`0644`, recompute and match its source-tree digest, and mount it read-only into the selected immutable image under no-pull, no-network, bounded CPU/memory/pids execution. It MUST run the real `biopython_trace_guarded_numpy_gotoh@1` import, exact Biopython `1.87` and NumPy `2.4.4` checks, Gotoh configuration, IEEE-754 binary64 verification, and frozen numeric examples, returning only the exact canonical closed `aox_sandbox_scientific_backend_probe@1` projection. Missing dependencies, nonzero exit, timeout, image/SDK mismatch, version/algorithm/numeric drift, or malformed/open/noncanonical projection MUST fail launch without runtime installation, Host-package substitution, or alternate backend. This gate MUST NOT expand the exact-seven identity or exact-nine prerequisite object and MUST NOT be represented as a reproducible dependency manifest, SBOM, or supply-chain attestation.
+Every initial identity resolution and inter-attempt launch guard SHALL execute `aox_sandbox_scientific_backend_probe@2` before pin runner attestation, attempt-root creation, or any MICU/provider/runner effect. The probe MUST copy the exact Pipeline SDK to a temporary tree, normalize directory/file modes to `0755`/`0644`, recompute and match its source-tree digest, and mount it read-only into the selected immutable image under no-pull, no-network, bounded CPU/memory/pids execution. It MUST run the real `biopython_trace_guarded_numpy_gotoh@1` import, exact Biopython `1.87` and NumPy `2.4.4` checks, Gotoh configuration, IEEE-754 binary64 verification, frozen numeric examples, and the closed installed `aox_exact_calculation_manifest@1`, returning only the exact canonical closed `aox_sandbox_scientific_backend_probe@2` projection. Missing dependencies, nonzero exit, timeout, image/SDK mismatch, version/algorithm/numeric/manifest drift, or malformed/open/noncanonical projection MUST fail launch without runtime installation, Host-package substitution, or alternate backend. This gate MUST NOT expand the exact-seven identity or exact-nine prerequisite object and MUST NOT be represented as a reproducible dependency manifest, SBOM, or supply-chain attestation.
 
 `config_digest` MUST be the canonical digest of a sealed safe `aox_blank_world_runtime_config@5` preimage covering the effective trusted-Host/single-process-SQLite profile, HPC runner-config digest, runner-owned manifest bytes digest, the closed exact-AOX tool-to-adapter/template/runner-contract expectation map, provider limits, MICU model/policy/bounds, research/tracing/test opt-ins, the complete reliability projection that determines controlled-operation ownership/durable route admission/command drain/generic mutation closure, and the exact active `aox_blank_world_selected_chain@2` schema/contract/workflow/digest identity. Current `@5` MUST NOT contain a `conductor` or `driver` policy object, public-command/receipt/supervision claims, or any `automatic_*` orchestration flag; those operator, source, evidence, authority and MICU-ledger facts MUST remain in their owning launch, preflight, public-receipt, supervision and budget evidence. The absence of automatic orchestration MUST be proved by production reachability and static qualification rather than sealed booleans. The selected-chain digest MUST cover the complete formal/fault/probe role-to-SDK-operation-signature mapping used by admission, inspection/readiness, validation, and the bundle verifier. The reliability projection MUST prove `durable_async_v1` ownership for every AOX provider/HPC route, `command_v1`, and `generic_v1` before pin contacts the runner or a public conductor creates an attempt root. Frozen `aox_blank_world_runtime_config@1`, `aox_blank_world_runtime_config@2`, `aox_blank_world_runtime_config@3`, and `aox_blank_world_runtime_config@4` evidence MAY remain readable only for historical offline verification; none MAY be emitted or admitted for a new launch, silently promoted, or used to restore driver/conductor shadow truth. Summary, reservation and campaign startup MUST NOT reinterpret a stored ceiling. An explicit operator migration MAY change only the exact legacy fixed 100M policy to 500M transactionally; it MUST preserve all prior usage, be idempotent at 500M, reject any other stored limit, and never reset the ledger. The preimage MUST NOT expose credentials, NCBI email, Host/runner/ledger paths or conductor-owned state. Binding the runner map and selected-chain identity MUST NOT add a tenth prerequisite field.
 
@@ -52,6 +52,10 @@ Preflight and the supervised Host MUST reconstruct all non-sensitive launch sett
 #### Scenario: Reject launch or inter-attempt drift
 - **WHEN** the checkout is dirty, a declared field is missing/extra/malformed, or checkout/workflow/scoring/image/SDK/effective configuration differs initially or before a later attempt
 - **THEN** preflight or the conductor's explicit per-attempt admission check fails before creating that attempt root or contacting a model, provider, or runner; no automatic driver continues or emits a substitute campaign state
+
+#### Scenario: Revalidate the actual sandbox launch before claiming a slot
+- **WHEN** consumed authority and a pinned profile are structurally valid but the actual Podman binary, rootless runtime, immutable image, Pipeline SDK tree, scientific backend probe or declared launch identity is unavailable or drifted
+- **THEN** preflight reruns the full actual launch resolver and its unchanged guard immediately before slot claim, rejects a config-only comparison as insufficient, and seals only the current pre-claim failure path without creating the claim or attempt root
 
 #### Scenario: Reject an immutable image without the frozen AOX backend
 - **WHEN** the selected immutable image is present but lacks Biopython, exposes a wrong Biopython/NumPy/algorithm/numeric behavior, or its canonical capability receipt or copied SDK identity drifts
@@ -106,7 +110,7 @@ qualification failure code、report、product defect 或 canonical NO-GO。
 
 fresh preparation MUST 在首次 `check-config` 之前，从 current closed schema 与 operator contract 解析并原子装配完整 command-scoped launch profile。未经装配的 ambient environment 不得冒充该 profile；若普通 Host 默认值已由当前合同证明不合格，测试操作员不得先执行无 profile 的 public check 来试探。批准 fresh `pin` 的 preparation SHALL 覆盖把合同明确要求的非敏感值临时应用到首次 `check-config` 与随后 `pin`；两者 MUST 使用相同的环境映射、ledger identity 与 source identity。完整 profile 的首次 public check 失败后 MUST fail closed，不得逐字段补值或 corrected retry。当前 schema 变化时，测试操作员 MUST 在首次命令前重新推导 profile，不得机械复用历史取值。
 
-当前 `openzyme-aox-cutover` 启动命令 SHALL 以闭合的 `aox_cutover_launch_failure@3` 公开失败。该对象 MUST 包含 `schema_id`、`status` 与 `failure_code`；只有失败源明确标记为可公开时，才 MAY 增加 closed tagged-union `failure_details`。schema branch MUST 使用 `kind=schema_field`，并只保留逻辑字段标识 `identity` 以及可选的 `missing`、`unexpected`。runner branch MUST 使用 `kind=runner_attestation`，并只保留 AOX contract `tool_id`、可选安全 `runner_run_id`、可选 `runner_attempt_receipt_digest`、`stage=runner_call|runner_result`、closed effect certainty 与可选的安全 machine `runner_error_code`；code 只能是全大写执行码或全小写 source-causal code，不接受混合大小写或自由文本。它不得包含配置值、Host/runner 路径、凭据、原始消息、异常表示或异常链。内部 `details` 不得因存在而自动升级为公开证据。历史 `aox_cutover_launch_failure@1/@2` 只可作为冻结记录读取，不得冒充当前失败 receipt。
+当前 `openzyme-aox-cutover` 启动命令 SHALL 以闭合的 `aox_cutover_launch_failure@3` 公开失败。该对象 MUST 包含 `schema_id`、`status` 与 `failure_code`；只有失败源明确标记为可公开时，才 MAY 增加 closed tagged-union `failure_details`。schema branch MUST 使用 `kind=schema_field`，并只保留逻辑字段标识 `identity` 以及可选的 `missing`、`unexpected`。runner branch MUST 使用 `kind=runner_attestation`，并只保留 AOX contract `tool_id`、可选安全 `runner_run_id`、可选 `runner_attempt_receipt_digest`、`stage=runner_call|runner_result`、closed effect certainty 与可选的安全 machine `runner_error_code`；code 只能是全大写执行码或全小写 source-causal code，不接受混合大小写或自由文本。sandbox runtime branch MUST 使用 exact `kind=sandbox_runtime` 与一个 `failure_code`，且后者只能是 `pipeline_sdk_source_unavailable`、`podman_binary_unavailable`、`podman_rootless_preflight_failed`、`sandbox_image_identity_invalid`、`sandbox_image_unavailable` 或 `sandbox_runtime_identity_drift`。它不得包含配置值、Host/runner 路径、凭据、原始消息、stderr/stdout、异常表示或异常链。内部 `details` 不得因存在而自动升级为公开证据。历史 `aox_cutover_launch_failure@1/@2` 只可作为冻结记录读取，不得冒充当前失败 receipt。
 
 AOX 有效配置中的 `research.mcp_enabled=true` SHALL 来自 Host 的权威能力投影，不得从无产品消费者的 `OPENZYME_RESEARCH_MCP_ENABLED` 环境开关或 `ResearchSettings` 影子字段推导。Codex 测试操作员 MUST 区分封存观测、依据当前源码形成的推论与尚未证实的假设；没有公开内部事实时必须保留 `exact_identity_unproven`，不得仅凭假设请求或执行纠正后重试（corrected retry）、授权消费（authority consumption）或其他状态变更。
 
@@ -125,6 +129,10 @@ AOX 有效配置中的 `research.mcp_enabled=true` SHALL 来自 Host 的权威�
 #### Scenario: 保留 runner 最早类型化原因
 - **WHEN** forced-SSH toolchain pin 返回 terminal runner result，且其中有安全 `error_code` 与 effect certainty
 - **THEN** CLI 返回 `aox_cutover_launch_failure@3`，保留外层 `aox_launch_toolchain_pin_execution_failed`，并在 `failure_details.kind=runner_attestation` 中投影 exact tool、可用的 run/receipt identity、result stage、effect certainty 与同一 source-bound `runner_error_code`；不得把它压平为只有 digest 或 generic wrapper
+
+#### Scenario: 保留 actual sandbox runtime 原因
+- **WHEN** preflight 的 full actual launch resolver在slot claim前发现Podman binary/rootless/image、Pipeline SDK或pinned runtime identity不可用或漂移
+- **THEN** CLI保留外层 `aox_launch_sandbox_preflight_failed`，并只在 `failure_details.kind=sandbox_runtime` 投影allowlisted `failure_code`；不得公开command、路径、stdout/stderr或异常链，且不得创建claim/root
 
 #### Scenario: runner 调用异常保持 effect 未证明
 - **WHEN** runner boundary 在返回闭合 result 前抛出异常
@@ -611,6 +619,12 @@ launch identity, committed pin transaction and launch-profile digest, current fu
 runtime configuration, exact plan/consumption binding and unused slot. Preflight
 MUST require current `aox_live_attempt_authority_plan@4` and
 `aox_live_attempt_authority_consumption@5` source bytes. Preflight
+MUST rerun the full actual launch resolver and its unchanged guard immediately before slot claim,
+including the current checkout/workflow/scoring identity, actual Podman runtime identity,
+immutable image, Pipeline SDK digest and `aox_sandbox_scientific_backend_probe@2`.
+A config-only digest comparison MUST NOT satisfy this gate. Any typed actual-runtime
+failure MUST stop through the pre-claim source-bound failure path without creating a
+slot claim or attempt root. Preflight
 MUST then atomically publish one mode-private no-replace
 `aox_attempt_authority_slot_claim@3` sibling before any root creation. The claim
 MUST bind campaign, plan/consumption, exact ordinal, attempt kind, session, root,
@@ -673,6 +687,28 @@ before ready/session/model/MICU/provider/HPC. The bootstrap MUST NOT pull, build
 install, retag or choose an alternate image, and Codex MUST NOT mutate SQLite to
 satisfy it. Ordinary Hosts without this explicit formal bootstrap SHALL retain
 the canonical `sandbox_image_missing` result.
+
+If that supervised bootstrap fails before child-ready, the child SHALL emit one
+closed failure frame bound to its live PID, process-group id, `/proc` start-time
+ticks, process epoch, failure stage and safe typed sandbox subcause. The parent MUST
+validate that identity while the child is still alive, retire the exact process
+group, and revalidate the fresh attempt root, exact initial evidence set, zero
+control-plane rows, zero local mutation writers and empty effect directories before
+sealing `aox_supervised_host_pre_ready_failure@1`. This receipt MUST explicitly state
+that startup, terminal supervision and public receipt-chain artifacts do not exist;
+it MUST NOT fabricate any of them. Unknown process identity, descendant retirement,
+SQLite/root freshness, effect certainty or typed cause MUST remain an evidence
+blocker and MUST NOT be sealed as this mode.
+
+Current zero-attempt failure output SHALL use the discriminated
+`aox_formal_slot_failure@2` union. `closure_mode=public_host` SHALL retain the
+post-child-ready retirement-readiness source chain. `closure_mode=pre_child_ready`
+SHALL accept only the exact preflight, slot claim,
+`aox_supervised_host_pre_ready_failure@1`, and two distinct unchanged MICU ledger
+snapshots from the same evidence root; startup/supervision/public receipts or an
+attempt bundle MUST make this branch invalid. Historical `aox_formal_slot_failure@1`
+MAY remain readable only for its original public-Host frozen evidence and MUST NOT
+accept, crossgrade or emit the pre-child-ready branch.
 
 The public Host SHALL export one exact closed attempt and sealed selection through
 `GET /v3/sessions/{session_id}/scientific-attempts/{attempt_id}/selections/{selection_id}/evidence`.
@@ -759,6 +795,13 @@ verifier. Any missing/extra/non-2xx/discontinuous command, identity drift,
 noncanonical business closure, invalid task/report/finalization state, symlink,
 source drift or partial output MUST leave no sealed bundle.
 
+`seal-slot-failure` SHALL require exactly one of the post-child-ready
+retirement-readiness receipt or the pre-child-ready supervision failure receipt.
+It SHALL emit only current `aox_formal_slot_failure@2`, preserve
+`acceptance_eligible=false`, `state_reusable=false`, zero attempt identities and an
+unchanged MICU ledger for the pre-child-ready branch, and leave campaign decision to
+the existing pure offline verifier/reducer.
+
 Executable architecture qualification SHALL prove the retained composition by
 constructing the production FastAPI application through the real composition factory,
 using a deterministic model/runtime only as the injected agent boundary, calling real
@@ -778,7 +821,7 @@ package and MUST NOT be a production caller.
 
 #### Scenario: Preflight before Host startup
 - **WHEN** one consumed exact slot and every pinned/current qualification input agree
-- **THEN** preflight creates only that slot's fresh root and immutable receipt, reports `preflight_complete_host_not_started`, and performs no Host, session, attempt, MICU, provider, runner, HPC or browser action
+- **THEN** preflight first passes the actual local sandbox launch guard, then creates only that slot's fresh root and immutable receipt, reports `preflight_complete_host_not_started`, and performs no Host, session, attempt, MICU, provider, remote runner, HPC workload or browser action
 
 #### Scenario: Bootstrap one fresh supervised Host image identity
 - **WHEN** the exact preflight image and SDK digests match one closed runner identity and the fresh SQLite image/session/workspace registries are completely empty
@@ -798,7 +841,15 @@ package and MUST NOT be a production caller.
 
 #### Scenario: Seal a consumed formal slot before attempt creation
 - **WHEN** one approved formal slot has been consumed, the supervised Host has settled, final public workspace/events/handoffs and MICU facts prove zero scientific attempts, and the earliest typed failure is source-bound
-- **THEN** the public finalizer seals a formal slot-failure artifact and the pure offline verifier/reducer emits canonical `NO-GO` without creating or relabelling an attempt bundle
+- **THEN** the public finalizer seals `aox_formal_slot_failure@2` with `closure_mode=public_host` and the pure offline verifier/reducer emits canonical `NO-GO` without creating or relabelling an attempt bundle
+
+#### Scenario: Seal an actual Host bootstrap failure before child-ready
+- **WHEN** the actual pre-claim launch guard passed, the claimed Host child then fails at sandbox bootstrap before registry mutation or child-ready, the parent proves the live process identity and full process-group retirement, the attempt root remains exactly fresh, and MICU before/after are identical
+- **THEN** the parent seals `aox_supervised_host_pre_ready_failure@1`, `seal-slot-failure` emits `aox_formal_slot_failure@2` with `closure_mode=pre_child_ready`, and the pure offline verifier/reducer may emit canonical `NO-GO` without startup, supervision, public receipt, session or attempt artifacts
+
+#### Scenario: Preserve an older unsealable pre-child-ready incident
+- **WHEN** historical evidence contains only a wrapper failure and lacks the current live PID/PGID/start-time frame, exact fresh-root settlement or pre-ready receipt
+- **THEN** it remains blocked and noncanonical; the current receipt, slot-failure or decision MUST NOT be retroactively backfilled or reused
 
 #### Scenario: Reject an unclosed pre-attempt failure
 - **WHEN** the final public reads, terminal handoff, supervision receipt, source digest, typed cause or zero-attempt proof is absent, mutable, substituted or inconsistent

@@ -37,7 +37,7 @@ fresh session 必须从以下入口重新推导，不使用历史 prompt 或旧 
 3. active AOX/cutover OpenSpec delta；
 4. qualification registry/resource manifest 与 test-gate 文档；
 5. public cutover/Host CLI 的当前 `--help`；
-6. 本轮 public preflight、execution contract、receipt、sealed response 与 canonical export。
+6. 本轮 actual-launch preflight、slot claim、Host startup或pre-child-ready failure receipt、execution contract、sealed public response 与 canonical export。
 
 文档、OpenSpec、CLI 和实现出现冲突时停止并报告 contract drift，不由 skill 保存旧值补齐。历史 incident 只作为不可变证据索引，见 [aox-hmm-blank-world-cutover.md](aox-hmm-blank-world-cutover.md)。
 
@@ -45,7 +45,7 @@ fresh session 必须从以下入口重新推导，不使用历史 prompt 或旧 
 
 ## 正式 public conductor
 
-preflight 除 slot claim、blank-world root 和 prelaunch receipt 外，还发布 source-bound、无绝对路径的 conductor execution contract。Codex 只使用该合同声明的 formal public CLI 入口；入口透传由 Codex 选择的任意合法 public Host command，并机械绑定同一 receipt chain 与一次 sealed response，不选择科学动作或形成自动循环。
+preflight 必须在 slot claim/root 前从 pinned profile重跑 full actual Podman/image/SDK/scientific-backend resolver与immediate unchanged guard；config-only equality不是 admission。actual runtime失败只走current pre-claim failure，不创建claim/root、不换slot、不retry。guard通过后，preflight再创建slot claim、blank-world root和prelaunch receipt，并发布source-bound、无绝对路径的conductor execution contract。Codex只使用该合同声明的formal public CLI入口；入口透传由Codex选择的任意合法public Host command，并机械绑定同一receipt chain与一次sealed response，不选择科学动作或形成自动循环。
 
 每次 bounded drain 的 admission 与唯一 terminal status、最终 workspace/events，以及存在真实 attempt 时的 closed-attempt export，都必须在 Host 仍可访问时封存。随后由公开 retirement-readiness seal 证明：
 
@@ -58,11 +58,17 @@ preflight 除 slot claim、blank-world root 和 prelaunch receipt 外，还发�
 readiness 缺失或失败时，supervised Host 拒绝操作员退休并保持运行。readiness 成功后，attempt finalizer 或 zero-attempt slot-failure finalizer只消费该 receipt 绑定的 exact sources，不再由 agent 手工拼接 response 路径。该机械门不判断业务成功、不自动 approval、drain、retry、rollover 或 closure。
 完整封存的脱敏 4xx/5xx 不会阻止 readiness，但不能进入 positive bundle；只有 canonical final state 与 source-bound typed cause 同时满足零-attempt failure 合同时，才能形成正式 NO-GO。
 
+若Host在child-ready前的sandbox bootstrap失败，尚不存在可封存的public chain。只有parent在child存活时
+验证exact PID/PGID/start-time，退休完整process group，并证明fresh root、SQLite、mutation writer、effect
+目录与MICU均未变化，才可生成pre-child-ready failure receipt并进入formal slot-failure `@2`分支；不得
+伪造startup/supervision/readiness。缺少任一证明时如实停在evidence blocker，历史r76不回填。
+
 ## 终局
 
 - plan 发布前失败：`rNN=none` 的 preparation blocker；
 - current formal authority 已消费、slot claim/root 尚未创建且 source-bound preflight-failure receipt 完整：专用 verifier/decision 产生 canonical NO-GO；缺少该 current receipt 的历史 r75 保持 blocked，不回填；
-- 正式 slot 已消费、final workspace 为零 attempt 且 source-bound typed failure 完整：formal slot-failure verifier/reducer 产生 canonical NO-GO；
+- 正式 slot 已消费、Host已child-ready且final workspace为零attempt、public source chain与typed failure完整：formal slot-failure `public_host` verifier/reducer产生canonical NO-GO；
+- 正式 slot 已消费、Host在child-ready前失败且current process/root/no-effect receipt与unchanged MICU完整：formal slot-failure `pre_child_ready` verifier/reducer产生canonical NO-GO；缺少current receipt的历史r76保持blocked，不回填；
 - 存在真实 closed attempt：走 attempt bundle verifier，再由 campaign reducer 产生 GO/NO-GO；
 - public closure capability 或必需 source evidence 确实不可取得：如实报告 evidence blocker。
 

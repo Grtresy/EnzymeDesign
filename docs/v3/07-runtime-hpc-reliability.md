@@ -306,6 +306,12 @@ credential-bearing URL、ambient shared Host principal/extra-body digest 冲突�
 controlled-operation owner 或 profile/config drift 均在 listener/session/effect 前 fail closed；其他
 ambient 非敏感 launch 变量被忽略，不能覆盖 pinned 值或形成 legacy owner fallback。
 
+slot claim前的 current preflight不得只比较 effective-config。它必须调用 full actual launch resolver并
+立即执行 unchanged guard，重算 clean checkout/workflow/scoring、Podman/rootless runtime identity、
+immutable image、Pipeline SDK digest与包含 `aox_exact_calculation_manifest@1` 的
+`aox_sandbox_scientific_backend_probe@2`。safe Podman preflight cause只经 closed
+`sandbox_runtime.failure_code`公开；失败在claim/root前封存，不自动retry或换slot。
+
 preflight 前必须以 mode-private no-replace sibling原子 claim exact ordinal；claim 绑定同一
 campaign/plan/consumption、session/root、authority-policy、campaign-root identity与deterministic
 `launch_id`，不得预造task/envelope/attempt/lane/admission truth。任何
@@ -319,6 +325,15 @@ terminal。operator CLI 的 JSON handoff使用 flush；每个 runtime drain保�
 command，并把admission response与独立terminal status都作为sealed handoff；terminal status
 必须exact绑定唯一`runtime.command.finished` event。digest-only status、stdout、process exit或
 空 drain都不能解释为业务完成。
+
+child若在 `sandbox_bootstrap_pre_registry`、child-ready之前失败，不得伪造startup或normal
+supervision receipt。closed child frame必须绑定process epoch、PID=PGID、`/proc` start-time、stage、
+outer Host code、allowlisted Podman subcause与digest；parent只在child仍存活时接受该frame，随后退休exact
+process group。只有attempt root仍为exact initial evidence、四个effect目录全空、control-plane所有业务表
+零行、mutation authority零scope/writer、SQLite integrity与root fsync全部成立，才no-replace封存
+`aox_supervised_host_pre_ready_failure@1`。该receipt明确startup/supervision/public receipt均不存在；任一
+process/root/state/effect/cause不确定都保持blocker。它只可进入
+`aox_formal_slot_failure@2 / closure_mode=pre_child_ready`，并要求unchanged MICU；历史`@1`只读。
 
 supervisor的`launch_id`仅关联local process epoch与launch artifacts，不是scientific attempt
 identity。真实lane与attempt由session内canonical lane tools、assignee-only `attempt.create`及

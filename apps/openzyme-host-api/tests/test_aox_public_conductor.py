@@ -10,9 +10,11 @@ from types import SimpleNamespace
 import pytest
 
 from openzyme_core import MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID
+from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import sandbox_image_record
 from openzyme_host_api import aox_cutover_evidence as cutover_evidence
 from openzyme_host_api import aox_formal_slot_failure as formal_slot_failure
+from openzyme_host_api import aox_host_supervision as host_supervision
 from openzyme_host_api import aox_public_conductor_bundle as conductor_bundle
 from openzyme_host_api.aox_attempt_authority import (
     AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID,
@@ -1395,12 +1397,231 @@ def test_formal_slot_failure_seals_without_fabricating_attempt_bundle(
     finally:
         evidence_root.chmod(0o700)
 
+    legacy = json.loads(path.read_text(encoding="utf-8"))
+    legacy["payload"]["schema_id"] = "aox_formal_slot_failure@1"
+    legacy["payload"].pop("closure_mode")
+    legacy["failure_digest"] = canonical_digest(legacy["payload"])
+    path.chmod(0o600)
+    path.write_bytes(canonical_json_bytes(legacy) + b"\n")
+    assert formal_slot_failure.verify_formal_slot_failure(path).passed is True
+
     workspace_path = sources["workspace"]
     workspace_path.write_bytes(workspace_path.read_bytes() + b"\n")
     tampered = formal_slot_failure.verify_formal_slot_failure(path)
     assert tampered.passed is False
     assert tampered.issue is not None
     assert tampered.issue.code == "formal_slot_failure_source_digest_mismatch"
+
+
+def _pre_ready_failure_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    preload_control_plane: bool = False,
+) -> dict[str, Path]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    preflight_path, preflight, identity_path = _preflight_fixture(tmp_path)
+    root = preflight_path.parent.parent
+    provider = SQLiteRepositoryProvider(str(root / "control-plane.sqlite3"))
+    with provider.read():
+        pass
+    if preload_control_plane:
+        with provider.write() as scope:
+            scope.repositories.sandbox_images.save(
+                sandbox_image_record(
+                    image_ref="example.invalid/preloaded@" + "sha256:" + "9" * 64,
+                    image_digest="sha256:" + "9" * 64,
+                    is_default=False,
+                )
+            )
+    frame_payload = {
+        "schema_id": "aox_supervised_host_child_pre_ready_failure@1",
+        "process_epoch": "epoch-pre-ready",
+        "outcome": "failed",
+        "failure_code": "host_sandbox_runtime_identity_missing",
+        "failure_type": "HostSupervisionError",
+        "failure_stage": "sandbox_bootstrap_pre_registry",
+        "sandbox_preflight_failure_code": "podman_rootless_preflight_failed",
+        "child_pid": 2345,
+        "child_pgid": 2345,
+        "child_start_time_ticks": 6789,
+    }
+    frame = {
+        **frame_payload,
+        "terminal_digest": canonical_digest(frame_payload),
+    }
+    timeout = float(dict(preflight["slot"])["authority_policy"]["max_wall_time_seconds"])
+    receipt = host_supervision._seal_pre_ready_failure(
+        preflight_path=preflight_path,
+        preflight=preflight,
+        frame=frame,
+        process=SimpleNamespace(exitcode=1),
+        retired=True,
+        timeout_seconds=timeout,
+        startup_timeout_seconds=60.0,
+        term_grace_seconds=15.0,
+        kill_grace_seconds=10.0,
+    )
+    pre_ready_path = preflight_path.parent / host_supervision.HOST_PRE_READY_FAILURE_FILENAME
+    assert host_supervision.validate_supervised_host_pre_ready_failure(
+        receipt,
+        preflight=preflight,
+    ) == receipt
+    ledger = {
+        "ledger_identity_digest": "sha256:" + "8" * 64,
+        "charged_tokens": 130_589_612,
+        "attempt_count": 2408,
+    }
+    ledger_before = preflight_path.parent / "micu-before.json"
+    ledger_after = preflight_path.parent / "micu-after.json"
+    _write_canonical(ledger_before, ledger)
+    _write_canonical(ledger_after, ledger)
+    ledger_before.chmod(0o600)
+    ledger_after.chmod(0o600)
+    monkeypatch.setattr(
+        formal_slot_failure,
+        "_validate_ledger_transition",
+        lambda *_: None,
+    )
+    return {
+        "identity": identity_path,
+        "preflight": preflight_path,
+        "pre_ready_failure": pre_ready_path,
+        "ledger_before": ledger_before,
+        "ledger_after": ledger_after,
+    }
+
+
+def test_pre_ready_formal_slot_failure_seals_without_synthetic_host_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _pre_ready_failure_fixture(tmp_path, monkeypatch)
+
+    path, digest = (
+        formal_slot_failure.finalize_and_seal_pre_ready_formal_slot_failure(
+            identity_path=sources["identity"],
+            preflight_path=sources["preflight"],
+            pre_ready_failure_path=sources["pre_ready_failure"],
+            ledger_before_path=sources["ledger_before"],
+            ledger_after_path=sources["ledger_after"],
+            sealed_at="2026-08-09T00:00:00+00:00",
+        )
+    )
+
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    payload = envelope["payload"]
+    verification = formal_slot_failure.verify_formal_slot_failure(path)
+    decision = formal_slot_failure.evaluate_formal_slot_failure(path)
+    assert verification.passed is True
+    assert verification.failure_digest == digest
+    assert payload["schema_id"] == "aox_formal_slot_failure@2"
+    assert payload["closure_mode"] == "pre_child_ready"
+    assert payload["earliest_typed_cause"]["code"] == (
+        "podman_rootless_preflight_failed"
+    )
+    assert payload["micu_ledger"]["before"] == payload["micu_ledger"]["after"]
+    assert decision["decision"] == "NO-GO"
+    assert decision["attempt_digests"] == []
+    evidence_root = path.parent
+    assert not (evidence_root / "aox-host-startup.json").exists()
+    assert not (evidence_root / "aox-host-supervision.json").exists()
+    assert not (
+        evidence_root / "aox-public-conductor-retirement-readiness.json"
+    ).exists()
+    assert not (evidence_root / "public-api-receipts.jsonl").exists()
+    assert not (evidence_root / "attempt-bundle.json").exists()
+
+    crossgraded = deepcopy(envelope)
+    crossgraded["payload"]["schema_id"] = "aox_formal_slot_failure@1"
+    crossgraded["payload"].pop("closure_mode")
+    crossgraded["failure_digest"] = canonical_digest(crossgraded["payload"])
+    path.chmod(0o600)
+    path.write_bytes(canonical_json_bytes(crossgraded) + b"\n")
+    rejected = formal_slot_failure.verify_formal_slot_failure(path)
+    assert rejected.passed is False
+    assert rejected.issue is not None
+    assert rejected.issue.code == "formal_slot_failure_schema_invalid"
+
+
+def test_pre_ready_formal_slot_failure_rejects_micu_drift_and_later_host_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    drifted = _pre_ready_failure_fixture(tmp_path / "drift", monkeypatch)
+    after = json.loads(drifted["ledger_after"].read_text(encoding="utf-8"))
+    after["charged_tokens"] += 1
+    _write_canonical(drifted["ledger_after"], after)
+    with pytest.raises(CutoverEvidenceError) as micu_error:
+        formal_slot_failure.finalize_and_seal_pre_ready_formal_slot_failure(
+            identity_path=drifted["identity"],
+            preflight_path=drifted["preflight"],
+            pre_ready_failure_path=drifted["pre_ready_failure"],
+            ledger_before_path=drifted["ledger_before"],
+            ledger_after_path=drifted["ledger_after"],
+        )
+    assert micu_error.value.code == "formal_slot_failure_pre_ready_micu_changed"
+
+    later = _pre_ready_failure_fixture(tmp_path / "later", monkeypatch)
+    _write_canonical(
+        later["preflight"].parent / "aox-host-startup.json",
+        {"schema_id": "synthetic-forbidden"},
+    )
+    with pytest.raises(CutoverEvidenceError) as source_error:
+        formal_slot_failure.finalize_and_seal_pre_ready_formal_slot_failure(
+            identity_path=later["identity"],
+            preflight_path=later["preflight"],
+            pre_ready_failure_path=later["pre_ready_failure"],
+            ledger_before_path=later["ledger_before"],
+            ledger_after_path=later["ledger_after"],
+        )
+    assert source_error.value.code == (
+        "formal_slot_failure_pre_ready_source_conflict"
+    )
+
+
+def test_pre_ready_supervision_refuses_nonempty_control_plane(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(host_supervision.HostSupervisionError) as error:
+        _pre_ready_failure_fixture(
+            tmp_path,
+            monkeypatch,
+            preload_control_plane=True,
+        )
+    assert error.value.code == "host_pre_ready_control_plane_not_empty"
+    evidence_root = next(tmp_path.glob("formal-slot-*/evidence"))
+    assert not (
+        evidence_root / host_supervision.HOST_PRE_READY_FAILURE_FILENAME
+    ).exists()
+
+
+def test_pre_ready_supervision_receipt_rejects_terminal_frame_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _pre_ready_failure_fixture(tmp_path, monkeypatch)
+    preflight = json.loads(sources["preflight"].read_text(encoding="utf-8"))
+    receipt = json.loads(
+        sources["pre_ready_failure"].read_text(encoding="utf-8")
+    )
+    receipt["child_start_time_ticks"] += 1
+    receipt["receipt_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in receipt.items()
+            if key != "receipt_digest"
+        }
+    )
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        host_supervision.validate_supervised_host_pre_ready_failure(
+            receipt,
+            preflight=preflight,
+        )
+
+    assert error.value.code == "host_pre_ready_failure_receipt_invalid"
 
 
 def test_formal_slot_failure_rejects_existing_attempt_and_symlink_source(

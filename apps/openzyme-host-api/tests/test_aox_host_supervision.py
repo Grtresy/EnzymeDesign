@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import multiprocessing
+from multiprocessing.connection import Connection
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +14,7 @@ from openzyme_core import sandbox_image_record
 from openzyme_core.repositories import SandboxImageRecordRepository
 from openzyme_domain import SandboxImageCompatibility
 from openzyme_engines import PodmanSandboxPreflight
+from openzyme_host_api import aox_host_supervision as host_supervision
 from openzyme_host_api.aox_cutover_evidence import canonical_digest
 from openzyme_host_api.aox_host_supervision import HostSupervisionError
 from openzyme_host_api.aox_host_supervision import (
@@ -51,13 +56,21 @@ class _Runner:
         identity = self.identities[min(self.calls, len(self.identities) - 1)]
         self.calls += 1
         if identity is None:
-            return PodmanSandboxPreflight(False, "missing")
+            return PodmanSandboxPreflight(
+                False,
+                "missing",
+                failure_code="podman_rootless_preflight_failed",
+            )
         if (
             self.respect_pin
             and self.pinned_runtime_identity is not None
             and identity != self.pinned_runtime_identity
         ):
-            return PodmanSandboxPreflight(False, "drift")
+            return PodmanSandboxPreflight(
+                False,
+                "drift",
+                failure_code="sandbox_runtime_identity_drift",
+            )
         return PodmanSandboxPreflight(True, "ready", dict(identity))
 
 
@@ -77,6 +90,111 @@ def _bootstrap(
         runner,
         binding=(PREFLIGHT_DIGEST, expected_image_digest, expected_sdk_digest),
     )
+
+
+def _failed_child_frame(**changes: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_id": "aox_supervised_host_child_pre_ready_failure@1",
+        "process_epoch": "epoch-1",
+        "outcome": "failed",
+        "failure_code": "host_sandbox_runtime_identity_missing",
+        "failure_type": "HostSupervisionError",
+        "failure_stage": "sandbox_bootstrap_pre_registry",
+        "sandbox_preflight_failure_code": "podman_rootless_preflight_failed",
+        "child_pid": 1234,
+        "child_pgid": 1234,
+        "child_start_time_ticks": 5678,
+    }
+    payload.update(changes)
+    return {**payload, "terminal_digest": canonical_digest(payload)}
+
+
+def _pre_ready_fault_child(connection: Connection, process_epoch: str) -> None:
+    os.setsid()
+    pid = os.getpid()
+    payload: dict[str, object] = {
+        "schema_id": "aox_supervised_host_child_pre_ready_failure@1",
+        "process_epoch": process_epoch,
+        "outcome": "failed",
+        "failure_code": "host_sandbox_runtime_identity_missing",
+        "failure_type": "HostSupervisionError",
+        "failure_stage": "sandbox_bootstrap_pre_registry",
+        "sandbox_preflight_failure_code": "podman_rootless_preflight_failed",
+        "child_pid": pid,
+        "child_pgid": os.getpgrp(),
+        "child_start_time_ticks": host_supervision._process_start_time_ticks(pid),
+    }
+    frame = {**payload, "terminal_digest": canonical_digest(payload)}
+    connection.send_bytes(host_supervision.canonical_json_bytes(frame))
+    if connection.poll(5):
+        connection.recv_bytes()
+    connection.close()
+    raise SystemExit(17)
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not Path("/proc/self/stat").is_file(),
+    reason="AOX supervised process identity requires POSIX /proc",
+)
+def test_pre_ready_child_frame_binds_real_process_and_retires_group() -> None:
+    process_context = multiprocessing.get_context("fork")
+    parent, child = process_context.Pipe(duplex=True)
+    process_epoch = "epoch-real-process"
+    process = process_context.Process(
+        target=_pre_ready_fault_child,
+        args=(child, process_epoch),
+    )
+    process.start()
+    child.close()
+    try:
+        frame = host_supervision._receive_frame(parent, 5.0)
+        validated = host_supervision._validated_child_pre_ready_failure(
+            frame,
+            process=process,
+            process_epoch=process_epoch,
+        )
+        parent.send_bytes(b"settle-pre-ready-failure")
+        process.join(timeout=5)
+        assert process.exitcode == 17
+        assert host_supervision._retire_process_group(
+            process,
+            pgid=int(validated["child_pgid"]),
+            term_grace_seconds=0.1,
+            kill_grace_seconds=0.1,
+        ) is True
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5)
+        parent.close()
+
+
+def test_pre_ready_child_frame_binds_exact_live_process_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = SimpleNamespace(pid=1234, is_alive=lambda: True)
+    monkeypatch.setattr(host_supervision.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(
+        host_supervision,
+        "_process_start_time_ticks",
+        lambda pid: 5678,
+    )
+    frame = _failed_child_frame()
+
+    assert host_supervision._validated_child_pre_ready_failure(
+        frame,
+        process=process,
+        process_epoch="epoch-1",
+    ) == frame
+
+    drifted = _failed_child_frame(child_pgid=4321)
+    with pytest.raises(HostSupervisionError) as error:
+        host_supervision._validated_child_pre_ready_failure(
+            drifted,
+            process=process,
+            process_epoch="epoch-1",
+        )
+    assert error.value.code == "host_process_identity_unproven"
 
 
 def test_supervised_host_bootstrap_atomically_installs_exact_immutable_record(
@@ -172,6 +290,10 @@ def test_supervised_host_bootstrap_rejects_missing_malformed_or_mismatched_ident
         )
 
     assert error.value.code == code
+    if code == "host_sandbox_runtime_identity_missing":
+        assert error.value.sandbox_preflight_failure_code == (
+            "podman_rootless_preflight_failed"
+        )
     with provider.read() as scope:
         count = scope.connection.execute(
             "SELECT COUNT(*) FROM sandbox_image_records"

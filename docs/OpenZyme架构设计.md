@@ -928,6 +928,7 @@ V3 execution 的目标主路径是 executor-owned persistent sandbox workspace�
 - blank-world campaign 的 fresh SQLite 不继承 sandbox image registry 状态。supervised Host child 必须在 foundation/listener/child-ready/session/model/provider 前，通过将用于 health/execution 的同一个 runner取得 exact six-field runtime identity；它与 authority-bound preflight 的 image/SDK digest 完全一致后，才在一个 transaction 内证明 image/session/workspace 三个 registry 全空、写入并重读唯一 immutable cutover-grade Core image row。Core workspace manifest protocol与Podman runtime protocol分别保持typed version。预存任意 default/non-default row、缺失、格式非法、digest/runner漂移或重读失败均在外部副作用前rollback并fail closed；source-bound bootstrap receipt同时进入child-ready、Host startup与bundle。该路径不pull/build/install/tag/fallback，普通Host继续返回canonical `sandbox_image_missing`
 - **current-contract supersession**：下列仍以 `run-live`、automatic driver、observer/barrier、`chrome-once`、browser helper、diagnostic authority、public scientific mutation/finalizer、outer-plan attempt/lane id 或 AOX dispatch precondition 表述的条目只解释历史 sealed evidence，不是 current runnable operator contract。current config 为 `aox_blank_world_runtime_config@5`，不含 conductor/driver policy object；formal launch 只经 exact claim/preflight 与 policy-free supervision，scientific mutation只经 agent tools，transition finalization只在 Host内部进行，Codex只使用 public inspect/export/coordination API/CLI。不得从以下历史条目恢复已删除 surface。
 - AOX/HMM `pin`、`preflight` 与 current launch 的共同最前置 operator boundary 必须显式接收 architecture qualification report，并在 settings、pin runner、attempt root、sandbox probe、provider/runner/Chrome/MICU 之前用当前 checkout 的 pure verifier 重算。只有当前 clean HEAD 的 full selection、current invariant registry `@2`、owner-constraint registry、strategy/world-fidelity transformation results、完整 source/process receipt chain、全部 invariant satisfied 且零 open P0 的 `openzyme_v3_architecture_qualification_report@3` 可生成 `aox_architecture_qualification_receipt@3`。历史 report/receipt `@1/@2`和`aox_blank_world_attempt_bundle@2`只由冻结reader读取，不得进入current pin/preflight/launch/reducer或自动升级。AOX admission scenario 还必须把实现导出的 current config/report/receipt identity 与 active blank-world normative requirement 闭合；任一历史 schema 被写成 current、conductor shadow truth 复现或新 receipt digest binding 缺失都在零外部 effect 下 fail closed。missing、diagnostic/subset、dirty/stale/tampered/unknown-profile/open-P0、typed run failure、receipt drift或active-contract drift均fail closed，不存在force/debug/env/legacy/pass-boolean bypass。资格报告是checkout外operator admission evidence，不是control-plane或scientific truth；scripted happy path本身不能满足admission，通过也不创建attempt、不启动numbered live campaign。
+- current `preflight` 在 atomic slot claim 与 root 创建前，必须从 pinned launch profile 调用 full actual launch resolver 并立即执行 unchanged guard；它重算 clean checkout/workflow/scoring、actual Podman/rootless runtime identity、immutable image、Pipeline SDK digest，以及包含 `aox_exact_calculation_manifest@1` 的 `aox_sandbox_scientific_backend_probe@2`。仅比较 effective config digest 不是 admission。safe sandbox preflight failure以闭合 `kind=sandbox_runtime/failure_code` 进入 source-bound pre-claim failure；不得创建 claim/root、改用下一 slot或自动 retry。
 - AOX/HMM `pin` 是 `run-live` 的 canonical supported operator bootstrap：它在 clean checkout 上使用 production compiler 和受信 Host 的 forced-SSH runner 执行四个 deterministic non-scientific MAFFT/hmmbuild/hmmalign/CD-HIT payload，只从 runner 签发的 same-shell runtime identity 得到 toolchain image digests。writer 将 exact-seven identity 与 exact-nine prerequisites 以 `0600` canonical JSON 发布在 checkout 外同一 existing real transaction directory，三个 reserved targets 初始必须不存在；Host 在两个 payload 落盘后最后发布闭集 `.aox-cutover-pin-commit.json`，用 basename 和 canonical payload digest 形成单一 consumer-visible commit point。marker 前 crash 留下的 orphan payload 不可消费；`run-live` 必须在读取 settings、构造 launch/campaign 或创建 root 前拒绝 marker 缺失、symlink、跨目录、开放/畸形字段或 digest drift。该无签名 marker 只证明 committed pair 完整性/一致性，不证明 producer provenance、目录整体 freshness 或消费时 file mode；真实运行仍依赖 trusted operator、actual launch recomputation 与每个 operation 的 runner-issued identity fail-closed
 - AOX/HMM `run-live` 在构造 runner/campaign 或 attempt root 前必须从 clean checkout、digest-pinned workflow registry、`aox_motif_rule_score@1`、实际 Podman runtime preflight 与 Pipeline SDK tree 重算 canonical 七字段 identity；已提交的 pin declaration 只用于精确比较，不是真值来源。identity 解析还必须以 selected immutable image、复制后统一为目录 `0755`/文件 `0644` 且重算 digest 相等的 exact SDK tree，在 `--pull=never`、无网络、只读、限额容器内执行 `aox_sandbox_scientific_backend_probe@1`：真实导入并运行 `biopython_trace_guarded_numpy_gotoh@1` 的 Biopython `1.87`、NumPy `2.4.4`、Gotoh/IEEE-754/numeric preflight；缺包、版本/算法/数值/schema drift 必须在 pin runner attestation、attempt root、MICU/provider/runner effect 前失败。该有界 capability gate 不扩张 exact-seven/exact-nine，也不冒充 deferred reproducible dependency manifest、SBOM 或供应链 attestation。`config_digest` 必须来自 safe `aox_blank_world_runtime_config@3` preimage，绑定 trusted local Host/single-process SQLite、HPC runner config digest、runner-owned manifest bytes digest及 exact AOX `tool_id` 到 adapter/template/runner-contract digest 的闭集 expectation map、effective MICU/research/tracing/test opt-in、driver/Chrome bounds、controlled-operation owner policy、durable route allowlist、command drain、generic mutation closure、bounded shadow observation、完整 `aox_blank_world_selected_chain@2` identity 与既有累计 500M ledger identity，但不投影 credential、NCBI email 或私有路径。pin 在 forced-SSH attestation 前、run-live 在 campaign/attempt root 前必须证明全部 AOX provider/HPC route 使用 `durable_async_v1`、drain 为 `command_v1` 且 closure 为 `generic_v1`；旧 config `@1/@2` 和 selected-chain `@1` 只允许 frozen evidence 离线复核，不得启动新的 live campaign。100M→500M 只能由 operator 显式执行 exact fixed-policy migration，保留全部历史 usage，caller-selected lower limit 不被抬高，普通 summary/reserve/run-live 不自动迁移。MICU/OpenAI-compatible blank-world live 必须显式声明 `context_window_tokens` 且不大于 `200000`，不得按模型名继承第三方 endpoint 未证实的百万级 context。每个 attempt root 前重新校验 checkout/config drift，exact-nine prerequisite 顶层 schema 不因此扩张
 - AOX live launcher 先用已提交 declaration pair 与当前 architecture qualification 验证对应 run-class plan 和 deterministic consumption target，再以 no-replace 私有 receipt 消费 authority；只有随后才构造 live launch snapshot、process supervisor 或 root。正式 `authorize` / `run-live` 固定为 exact-three `formal_acceptance`，独立 `authorize-diagnostic` / `run-diagnostic-live` 固定为单 positive-shaped `diagnostic`。两者共用一次 attempt 的 root、ledger、supervision、runner 与 scientific-control settlement 内核，但 collector schema 完全分离：formal 独占 `aox_blank_world_attempt_bundle@3` 与 GO reducer；diagnostic 只写 `aox_blank_world_diagnostic_decision@1`，其 root marker/proof、authority/consumption 和 decision 全部 `acceptance_eligible=false`。正式 root 若自身或任一 ancestor 带 diagnostic marker 会在创建前失败；diagnostic slot 删除 run-class、换用 formal identity，或 formal slot进入 diagnostic core 同样在 root 前失败
@@ -1149,7 +1150,7 @@ admission/terminal response，再用 `seal-conductor-state` 建立可重算的
 操作员退休并保持 Host 可访问；readiness 只决定机械证据是否完整，不判断业务 terminal。可靠退休后，
 `seal-slot-failure` 从 readiness解析 exact sources，把 preflight/slot claim、Host
 startup/supervision、public receipts、MICU 与 earliest typed cause 绑定为
-`aox_formal_slot_failure@1`。纯读取 `verify-slot-failure` 重建全部 source bytes，
+`aox_formal_slot_failure@2 / closure_mode=public_host`。纯读取 `verify-slot-failure` 重建全部 source bytes，
 `decide --slot-failure` 只产生 `aox_blank_world_campaign_failure_decision@1` 的 canonical NO-GO；
 它不创建 attempt、selection、closure 或 `aox_blank_world_attempt_bundle@3`。若 final public read、
 Host settlement 或 source binding 缺失，只能报告 evidence blocker，不能伪造 NO-GO。
@@ -1374,7 +1375,8 @@ prelaunch blocked，而非 canonical NO-GO；没有 root、session、attempt 或
 `failure_code` 始终保留；只有失败源明确声明可公开的 closed tagged-union 原因，才会通过
 `failure_details` 输出。`kind=schema_field` 只允许逻辑 schema 字段 `identity/missing/unexpected`；
 `kind=runner_attestation` 只允许 exact AOX `tool_id`、可选安全 run/attempt-receipt identity、
-`runner_call|runner_result`、closed effect certainty 与可选安全 `runner_error_code`。内部 `details`、
+`runner_call|runner_result`、closed effect certainty 与可选安全 `runner_error_code`；
+`kind=sandbox_runtime`只允许一个来自Podman/SDK preflight闭集的`failure_code`。内部 `details`、
 配置值、Host/runner 路径、凭据、消息与
 异常链不会自动越过公开边界。历史 `@1/@2` 只作为冻结记录读取。无产品消费者的
 `ResearchSettings.mcp_enabled` 已删除；AOX 的 `research.mcp_enabled=true` 继续由 Host 权威配置
@@ -1449,6 +1451,33 @@ root absent/empty，preflight 同步封存 source-bound `aox_formal_preflight_fa
 claim/root/Host/session/attempt/MICU/provider/runner/HPC/browser effect。纯离线 verifier 与专用 decision
 可据此形成 canonical NO-GO；它不创建 `launch_id`、attempt bundle 或 successor。r75 发生时没有这些
 current source bytes，故继续是 blocked/noncanonical 历史证据，不能回填。
+
+### 9.13 actual launch 与 child-ready 前失败闭合
+
+r76 已消费 slot 1 claim/root/preflight，但 Host 在 child-ready 前以
+`host_sandbox_runtime_identity_missing` 停止；没有 startup/session/runtime/MICU/provider/HPC/Chrome
+effect，也没有可重建的 process/root settlement receipt。它保持 blocked/noncanonical，MICU历史观测
+保持 `130,589,612 / 500,000,000`；现行能力不得回填、重命名或复用 r76 的 plan、slot、root或证据。
+
+preflight 的 canonical owner 是 full `prepare_aox_cutover_launch()` snapshot，不是 CLI 内的 config-only
+副本。snapshot与 immediate guard必须先于 `claim_aox_attempt_authority_slot()` 和
+`create_blank_world_roots()`；actual sandbox identity不可用时走既有 pre-claim failure封存，保留
+allowlisted Podman cause但不公开路径、stderr或异常链。
+
+若 actual guard通过后到 Host bootstrap之间发生 drift，child只可在
+`sandbox_bootstrap_pre_registry` 阶段发送 closed failure frame。parent在 child仍存活时重验 exact
+PID=PGID、`/proc` start-time与frame digest，退休整个process group，并证明 fresh root仍只有initial
+evidence、四个effect目录全空、control-plane所有业务表零行、mutation authority零scope/writer、SQLite
+integrity与fsync闭合。全部成立才封存 `aox_supervised_host_pre_ready_failure@1`；receipt明确没有
+startup、normal supervision或public receipt chain。任何身份、退休、root、SQLite、effect或cause不确定
+都保持 blocker。
+
+formal zero-attempt failure current schema为 discriminated `aox_formal_slot_failure@2`：
+`public_host`继续消费 retirement-readiness，`pre_child_ready`只消费 preflight、claim、上述 receipt与两个
+不同且完全相等的 MICU snapshots。后者拒绝任何 startup/supervision/fatal/public receipt/attempt bundle，
+固定 `acceptance_eligible=false`、`state_reusable=false`、zero attempt与no-effect typed cause。历史
+`aox_formal_slot_failure@1`仅只读验证旧 public-Host shape，不接受crossgrade。offline verifier/reducer
+仍是唯一 canonical NO-GO权威；本 repair完成只表示等待全新 validation，不构成 GO或下一 rNN授权。
 
 ---
 

@@ -1,6 +1,6 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r67 are permanent NO-GO evidence. r68 is authority-consumed prelaunch blocked before root/Host/session/attempt. r69 is authority/root/session/provider/MICU-consumed pre-admission blocked before an admission request or scientific attempt. r70 is authority/slot/root/session/receipt-consumed pre-runtime conductor blocked before any runtime drain or scientific authorization/admission/attempt. r71 is authority/positive-slot/root/session/task/authorization/receipt/MICU-consumed pre-attempt sandbox-bootstrap blocked at typed `sandbox_image_missing`, before scientific admission/attempt/provider/HPC/sandbox/browser effect. r72 is prelive conductor blocked after duplicate full-qualification concurrency polluted one output and an invalid-parent recovery reran work that could not publish. r73 is prelive conductor/qualification blocked after stale conductor HEAD shadow truth discarded the first `789f1c1` report, serially relaunched full admission, and the harness timeout retained only digest/cascade evidence. r74 consumed a formal slot, root, session and one runtime turn but retired Host before sealing the public receipt/response/final-read chain, so its zero-attempt state is an evidence blocker rather than canonical NO-GO. None of r68-r74 is a canonical NO-GO, and none of their state or the old persistent goal is reusable. The post-r71 repair gives one formal supervised Host child the only explicit fresh-SQLite sandbox identity bootstrap; the post-r72 repair gives qualification one canonical-checkout kernel single-flight and exact yielded-handle stop semantics; the post-r73 repair gave the repository test-gate one source-bound bounded executor and causal-evidence report/receipt `@2`. The current strategy-neutral repair supersedes those emitters with report/receipt `@3`, removes the generic AOX dispatch-policy path and binds owner/world-fidelity transformation proof; the post-r74 correction adds a machine-bound public execution contract and retirement-readiness gate without restoring an observer or strategy driver. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
+Status: r43-r67 are permanent NO-GO evidence. r68-r74 retain their documented prelaunch/pre-admission/pre-runtime/evidence-blocker classifications. r75 consumed authority but failed profile/config reconstruction before slot claim/root and lacks the current preflight-failure receipt. r76 consumed slot 1 claim/root/preflight but failed before Host child-ready at `host_sandbox_runtime_identity_missing`; it lacks current process-bound pre-ready settlement and cannot form canonical GO/NO-GO. None of r68-r76 is a canonical NO-GO, and none of their state or the old persistent goal is reusable. Current forward contracts include qualification report/receipt `@3`, credential-free pinned launch profile, actual launch revalidation before claim/root, source-bound public conductor readiness, and a strict pre-child-ready sandbox failure receipt plus discriminated formal slot failure `@2`. These capabilities do not backfill r75/r76. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
 
 Historical incident and older command/observer/driver/browser/diagnostic-authority/public-finalizer sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract; in particular, every older `run-live`, `run-diagnostic-live`, diagnostic authority command, observer, barrier, rollover, no-wakeup, public generic scientific mutation/finalizer, `chrome-once`, browser-helper and ambient dev/eval image-registration instruction is retired even where a historical section called it current at that time. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, late-bound task/scientific-attempt selection, fresh supervised Host bootstrap and qualification semantics are defined by the post-r70/post-r71 sections below, [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
@@ -3313,7 +3313,9 @@ Current launch failures use `aox_cutover_launch_failure@3`. Its schema-field
 branch preserves only `kind=schema_field` plus safe logical field identities;
 its runner branch preserves only `kind=runner_attestation`, the exact AOX tool,
 optional safe run/attempt-receipt identity, call/result stage, closed effect
-certainty and an optional validated runner machine code. Paths, credentials,
+certainty and an optional validated runner machine code. Its sandbox branch
+preserves only `kind=sandbox_runtime` plus one allowlisted Podman/image/SDK
+preflight code. Paths, credentials, commands, stdout/stderr,
 raw messages and exception chains remain
 private. A terminal pin failure stops the preparation without automatic retry,
 and reports must separate actual command execution counts from read-only goal
@@ -3413,3 +3415,38 @@ no-claim/no-root/no-Host/no-session/zero-attempt/zero-MICU/no-provider/runner/HP
 仍返回原始 safe typed failure；`verify-preflight-failure` 与 `decide --preflight-failure` 只离线重建并
 append `aox_blank_world_campaign_preflight_failure_decision@1` canonical NO-GO，attempt ids/digests
 必须为空，不生成 `launch_id`、attempt bundle、corrected retry 或 successor。
+
+### 2026-08-09 r76 child-ready 前 sandbox runtime evidence blocker 与前向闭合
+
+r76 在 frozen identity、plan与consumption下启动slot 1，已经创建slot claim、blank-world root、
+`aox_attempt_preflight@5`与public conductor contract。supervised Host尚未到child-ready，就以
+`aox_supervised_host_failure@1 / host_sandbox_runtime_identity_missing`停止。没有startup/session/runtime、
+MICU增量、provider、HPC或Chrome effect；MICU保持
+`130,589,612 / 500,000,000`。因为旧failure frame没有parent在child存活时验证的PID/PGID/start-time，
+也没有fresh-root/zero-SQLite/effect与descendant-retirement的current receipt，所以不能合法封存
+slot failure。r76保持`workflow_status=blocked`、`blocked_on=live_pre_runtime_evidence`；slot 2/3不在
+同一环境继续，旧plan/claim/root/evidence不复用，新能力也不得追溯补写。
+
+前向修复把实际launch identity的owner从CLI config-only比较收回
+`prepare_aox_cutover_launch()`。current `preflight`从pinned profile恢复settings后，先执行full actual
+checkout/workflow/scoring、Podman/rootless/image、Pipeline SDK与
+`aox_sandbox_scientific_backend_probe@2`解析，再立即执行unchanged guard；两者严格先于atomic claim和
+root创建。probe `@2`绑定installed `aox_exact_calculation_manifest@1`。Podman缺失、rootless failure、
+image/SDK/runtime drift以allowlisted `sandbox_runtime.failure_code`进入current pre-claim receipt，不泄露
+路径、stderr或异常链，也不自动retry/换slot。
+
+actual guard与child bootstrap之间仍可能发生真实漂移。child只在
+`sandbox_bootstrap_pre_registry`发送closed pre-ready frame；parent在child仍存活时验证PID=PGID、
+`/proc` start-time、process epoch与digest，随后退休exact process group。只有attempt root仍只有initial
+四份evidence、artifact/blob/HPC/sandbox effect目录全空、SQLite所有业务表零行、mutation authority零
+scope/writer、integrity/checkpoint/fsync闭合，才no-replace封存
+`aox_supervised_host_pre_ready_failure@1`。该receipt明确没有startup、normal supervision或public receipt
+chain；任一identity、retirement、root/state/effect或cause不确定都继续是evidence blocker。
+
+formal slot failure current schema升级为closed union `aox_formal_slot_failure@2`。正常
+`closure_mode=public_host`继续消费retirement-readiness；`closure_mode=pre_child_ready`只接受同一root的
+preflight、claim、pre-ready receipt与两个不同但内容完全相等的MICU snapshots，拒绝startup/
+supervision/fatal/public receipt/attempt bundle共存。历史`@1`只读验证原public-Host frozen shape，不能
+crossgrade或发射pre-ready branch。non-live修复通过并提交后仍只处于
+`repair_complete_awaiting_validation`；任何后续R系列必须从新clean commit、fresh qualification/pin/plan
+与新的精确授权开始。

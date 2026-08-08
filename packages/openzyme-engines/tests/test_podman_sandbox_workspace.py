@@ -31,6 +31,58 @@ def test_podman_runner_rejects_runtime_identity_drift_after_pin(
     assert drifted.ok is False
     assert drifted.runtime_identity is None
     assert drifted.message == "sandbox runtime identity drifted after Host bootstrap"
+    assert drifted.failure_code == "sandbox_runtime_identity_drift"
+
+
+def test_podman_preflight_projects_closed_failure_codes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = PodmanPipelineSandboxRunner()
+    monkeypatch.setattr(
+        "openzyme_engines.podman_sandbox.shutil.which",
+        lambda binary: None,
+    )
+
+    missing_binary = runner.preflight()
+
+    assert missing_binary.ok is False
+    assert missing_binary.failure_code == "podman_binary_unavailable"
+
+    def fail_rootless(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        del args, kwargs
+        raise subprocess.CalledProcessError(
+            125,
+            ["podman", "info"],
+            stderr="permission denied: /private/runtime/path",
+        )
+
+    monkeypatch.setattr(
+        "openzyme_engines.podman_sandbox.shutil.which",
+        lambda binary: f"/usr/bin/{binary}",
+    )
+    monkeypatch.setattr(
+        "openzyme_engines.podman_sandbox.subprocess.run",
+        fail_rootless,
+    )
+
+    rootless_failure = runner.preflight()
+
+    assert rootless_failure.ok is False
+    assert rootless_failure.failure_code == "podman_rootless_preflight_failed"
+    assert "/private/runtime/path" in rootless_failure.message
+
+    def reject_exec(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        del args, kwargs
+        raise PermissionError
+
+    monkeypatch.setattr(
+        "openzyme_engines.podman_sandbox.subprocess.run",
+        reject_exec,
+    )
+    execution_failure = runner.preflight()
+    assert execution_failure.ok is False
+    assert execution_failure.failure_code == "podman_rootless_preflight_failed"
+    assert "private" not in execution_failure.message
 
 
 def test_podman_runner_rejects_symlink_sandbox_root_without_touching_target(

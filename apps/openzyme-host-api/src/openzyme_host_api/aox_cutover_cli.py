@@ -12,6 +12,7 @@ import tempfile
 from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime import REPO_ROOT
 from openzyme_host_cli.cli import run_cli as run_host_cli
+from openzyme_engines import PODMAN_SANDBOX_PREFLIGHT_FAILURE_CODES
 
 from .aox_architecture_qualification import AoxArchitectureQualificationError
 from .aox_architecture_qualification import (
@@ -53,6 +54,7 @@ from .aox_cutover_evidence import verify_attempt_bundle
 from .aox_cutover_launch import AoxCutoverLaunchError
 from .aox_cutover_launch import build_aox_cutover_effective_config
 from .aox_cutover_launch import pin_aox_cutover_launch
+from .aox_cutover_launch import prepare_aox_cutover_launch
 from .aox_cutover_launch import validate_aox_authority_wall_time
 from .aox_launch_profile import AOX_CUTOVER_LAUNCH_PROFILE_FILENAME
 from .aox_launch_profile import build_aox_cutover_launch_profile
@@ -65,6 +67,9 @@ from .aox_host_supervision import DEFAULT_TERM_GRACE_SECONDS
 from .aox_host_supervision import HostSupervisionError
 from .aox_host_supervision import supervised_attempt_host
 from .aox_formal_slot_failure import evaluate_formal_slot_failure
+from .aox_formal_slot_failure import (
+    finalize_and_seal_pre_ready_formal_slot_failure,
+)
 from .aox_formal_slot_failure import finalize_and_seal_formal_slot_failure
 from .aox_formal_slot_failure import seal_formal_slot_failure_decision
 from .aox_formal_slot_failure import verify_formal_slot_failure
@@ -224,6 +229,13 @@ def _public_launch_failure_details(
                 return None
             normalized_runner["runner_error_code"] = runner_error_code
         return normalized_runner
+    if kind == "sandbox_runtime":
+        if set(raw) != {"kind", "failure_code"}:
+            return None
+        failure_code = raw.get("failure_code")
+        if failure_code not in PODMAN_SANDBOX_PREFLIGHT_FAILURE_CODES:
+            return None
+        return {"kind": kind, "failure_code": failure_code}
     if kind != "schema_field" or not set(raw).issubset(
         {"kind", "identity", "missing", "unexpected"}
     ):
@@ -708,14 +720,14 @@ def _preflight(args: argparse.Namespace) -> int:
     )
     try:
         settings, ledger_path = resolve_aox_cutover_launch_profile(launch_profile)
-        effective_config = build_aox_cutover_effective_config(
-            settings, ledger_path=ledger_path
+        launch = prepare_aox_cutover_launch(
+            settings=settings,
+            ledger_path=ledger_path,
+            declared_identity=identity,
+            declared_prerequisites=prerequisites,
+            architecture_qualification_report=args.architecture_qualification_report,
         )
-        if effective_config.digest != identity.get("config_digest"):
-            raise AoxCutoverLaunchError(
-                "aox_preflight_config_drift",
-                "AOX preflight configuration differs from the pinned identity",
-            )
+        launch.assert_unchanged()
     except AoxCutoverLaunchError as exc:
         failure_path, failure_digest = seal_formal_preflight_failure(
             plan_path=plan_path,
@@ -769,7 +781,7 @@ def _preflight(args: argparse.Namespace) -> int:
         allowed_prerequisites=prerequisites,
         architecture_qualification=architecture_qualification,
         launch_profile=launch_profile,
-        effective_config=effective_config.payload,
+        effective_config=launch.effective_config,
         authority_plan=plan,
         authority_consumption=consumption,
         slot=slot,
@@ -989,30 +1001,41 @@ def _finalize_and_seal(args: argparse.Namespace) -> int:
 
 
 def _seal_slot_failure(args: argparse.Namespace) -> int:
-    sources = retirement_readiness_sources(
-        args.retirement_readiness,
-        preflight_path=args.preflight_receipt,
-    )
-    readiness = dict(sources["readiness"])
-    if readiness.get("closure_mode") != "slot_failure":
-        raise CutoverEvidenceError(
-            "formal_slot_failure_mode_invalid",
-            "slot failure sealing requires zero-attempt retirement readiness",
-            details={"identity": "retirement_readiness.closure_mode"},
+    if args.pre_ready_failure is not None:
+        failure_path, failure_digest = (
+            finalize_and_seal_pre_ready_formal_slot_failure(
+                identity_path=args.identity,
+                preflight_path=args.preflight_receipt,
+                pre_ready_failure_path=args.pre_ready_failure,
+                ledger_before_path=args.ledger_before,
+                ledger_after_path=args.ledger_after,
+            )
         )
-    failure_path, failure_digest = finalize_and_seal_formal_slot_failure(
-        identity_path=args.identity,
-        preflight_path=args.preflight_receipt,
-        receipt_chain_path=sources["receipt_chain"],
-        workspace_response_path=sources["workspace"],
-        event_response_path=sources["events"],
-        handoff_response_paths=sources["handoffs"],
-        ledger_before_path=args.ledger_before,
-        ledger_after_path=args.ledger_after,
-    )
+    else:
+        sources = retirement_readiness_sources(
+            args.retirement_readiness,
+            preflight_path=args.preflight_receipt,
+        )
+        readiness = dict(sources["readiness"])
+        if readiness.get("closure_mode") != "slot_failure":
+            raise CutoverEvidenceError(
+                "formal_slot_failure_mode_invalid",
+                "slot failure sealing requires zero-attempt retirement readiness",
+                details={"identity": "retirement_readiness.closure_mode"},
+            )
+        failure_path, failure_digest = finalize_and_seal_formal_slot_failure(
+            identity_path=args.identity,
+            preflight_path=args.preflight_receipt,
+            receipt_chain_path=sources["receipt_chain"],
+            workspace_response_path=sources["workspace"],
+            event_response_path=sources["events"],
+            handoff_response_paths=sources["handoffs"],
+            ledger_before_path=args.ledger_before,
+            ledger_after_path=args.ledger_after,
+        )
     _print(
         {
-            "schema_id": "aox_formal_slot_failure_seal_receipt@1",
+            "schema_id": "aox_formal_slot_failure_seal_receipt@2",
             "status": "sealed_for_offline_reduction",
             "failure_file": str(failure_path),
             "failure_digest": failure_digest,
@@ -1400,9 +1423,24 @@ def build_parser() -> argparse.ArgumentParser:
         seal_slot_failure,
         "identity",
         "preflight_receipt",
-        "retirement_readiness",
         "ledger_before",
         "ledger_after",
+    )
+    slot_failure_source = seal_slot_failure.add_mutually_exclusive_group(
+        required=True
+    )
+    slot_failure_source.add_argument(
+        "--retirement-readiness",
+        type=Path,
+        help="post-child-ready public retirement-readiness receipt",
+    )
+    slot_failure_source.add_argument(
+        "--pre-ready-failure",
+        type=Path,
+        help=(
+            "source-bound supervised failure sealed before child-ready, Host "
+            "startup, session, or public receipt creation"
+        ),
     )
     seal_slot_failure.set_defaults(handler=_seal_slot_failure)
 

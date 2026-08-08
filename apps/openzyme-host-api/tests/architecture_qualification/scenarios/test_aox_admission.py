@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import hashlib
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -39,6 +40,9 @@ from openzyme_host_api.aox_attempt_authority import (
     AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID,
 )
 from openzyme_host_api.aox_attempt_preflight import ATTEMPT_PREFLIGHT_SCHEMA_ID
+from openzyme_host_api.aox_cutover_launch import (
+    AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_SCHEMA_ID,
+)
 from openzyme_host_api.aox_cutover_runtime_config import (
     AOX_BLANK_WORLD_RUNTIME_CONFIG_LEGACY_SCHEMA_ID,
 )
@@ -56,6 +60,15 @@ from openzyme_host_api.aox_cutover_runtime_config import (
 )
 from openzyme_host_api.aox_launch_profile import (
     AOX_CUTOVER_LAUNCH_PROFILE_SCHEMA_ID,
+)
+from openzyme_host_api.aox_formal_slot_failure import (
+    FORMAL_SLOT_FAILURE_SCHEMA_ID,
+)
+from openzyme_host_api.aox_formal_slot_failure import (
+    LEGACY_FORMAL_SLOT_FAILURE_SCHEMA_ID,
+)
+from openzyme_host_api.aox_host_supervision import (
+    HOST_PRE_READY_FAILURE_SCHEMA_ID,
 )
 from openzyme_host_api.aox_preflight_failure import (
     FORMAL_PREFLIGHT_FAILURE_DECISION_SCHEMA_ID,
@@ -117,6 +130,10 @@ def _replace_once(document: str, old: str, new: str) -> str:
 
 def _assert_current_schema_contract(document: str) -> dict[str, str]:
     launch = _requirement(document, "Canonical launch and prerequisite identity")
+    if f"`{AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_SCHEMA_ID}`" not in launch:
+        raise AssertionError("active launch contract omits the current sandbox probe")
+    if "`aox_exact_calculation_manifest@1`" not in launch:
+        raise AssertionError("active launch contract omits exact calculation identity")
     current_config = f"`{AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID}` preimage"
     if current_config not in launch:
         raise AssertionError(
@@ -155,6 +172,45 @@ def _assert_current_schema_contract(document: str) -> dict[str, str]:
         raise AssertionError("active launch contract permits ambient profile fallback")
     if "MUST NOT be retroactively backfilled" not in launch:
         raise AssertionError("active launch contract permits historical backfill")
+
+    launch_failure = _requirement(
+        document,
+        "可验证且脱敏的启动配置与失败因果",
+    )
+    if "sandbox runtime branch MUST 使用 exact `kind=sandbox_runtime`" not in launch_failure:
+        raise AssertionError("active launch failure omits the sandbox runtime branch")
+    for failure_code in (
+        "pipeline_sdk_source_unavailable",
+        "podman_binary_unavailable",
+        "podman_rootless_preflight_failed",
+        "sandbox_image_identity_invalid",
+        "sandbox_image_unavailable",
+        "sandbox_runtime_identity_drift",
+    ):
+        if f"`{failure_code}`" not in launch_failure:
+            raise AssertionError(
+                f"sandbox runtime failure allowlist omits {failure_code}"
+            )
+
+    conductor = _requirement(
+        document,
+        "Authority-bound public conductor production reachability",
+    )
+    for schema_id in (
+        FORMAL_SLOT_FAILURE_SCHEMA_ID,
+        HOST_PRE_READY_FAILURE_SCHEMA_ID,
+    ):
+        if f"`{schema_id}`" not in conductor:
+            raise AssertionError(f"active conductor contract omits {schema_id}")
+    if "immediately before slot claim" not in conductor:
+        raise AssertionError("preflight does not require the actual pre-claim guard")
+    if "closure_mode=pre_child_ready" not in conductor:
+        raise AssertionError("pre-ready failure mode is not explicit")
+    if (
+        f"Historical `{LEGACY_FORMAL_SLOT_FAILURE_SCHEMA_ID}`"
+        not in conductor
+    ):
+        raise AssertionError("legacy formal slot failure lost read-only status")
 
     admission = _requirement(
         document,
@@ -200,6 +256,11 @@ def _assert_current_schema_contract(document: str) -> dict[str, str]:
         "preflight_failure_schema_id": FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID,
         "preflight_failure_decision_schema_id": (
             FORMAL_PREFLIGHT_FAILURE_DECISION_SCHEMA_ID
+        ),
+        "formal_slot_failure_schema_id": FORMAL_SLOT_FAILURE_SCHEMA_ID,
+        "host_pre_ready_failure_schema_id": HOST_PRE_READY_FAILURE_SCHEMA_ID,
+        "sandbox_probe_schema_id": (
+            AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_SCHEMA_ID
         ),
     }
 
@@ -403,6 +464,13 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
     ).read_text(encoding="utf-8")
     assert "resolve_aox_cutover_launch_profile" in host_supervision_source
     assert "OpenZymeSettings.from_env()" not in host_supervision_source
+    preflight_source = inspect.getsource(cli._preflight)
+    prepare_position = preflight_source.index("prepare_aox_cutover_launch(")
+    guard_position = preflight_source.index("launch.assert_unchanged()")
+    claim_position = preflight_source.index("claim_aox_attempt_authority_slot(")
+    root_position = preflight_source.index("create_blank_world_roots(")
+    assert prepare_position < guard_position < claim_position < root_position
+    assert "build_aox_cutover_effective_config(" not in preflight_source
     with pytest.raises(ScientificWorkflowContractError) as historical_error:
         AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY.resolve(
             workflow_id=AOX_SELECTED_CHAIN_WORKFLOW_ID,

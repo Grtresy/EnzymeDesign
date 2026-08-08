@@ -21,6 +21,7 @@ from urllib.parse import urlunsplit
 from mcp_hpc_runner.server import MCPHpcServer
 from openzyme_core.sandbox_runtime import EXEC_MAX_TIMEOUT_SECONDS
 from openzyme_core.workflow_knowledge import default_workflow_registry
+from openzyme_engines import PODMAN_SANDBOX_PREFLIGHT_FAILURE_CODES
 from openzyme_engines import PodmanPipelineSandboxRunner
 from openzyme_engines.execution import BioProviderHttpConfig
 from openzyme_pipeline import aox_finalization
@@ -443,9 +444,16 @@ def _probe_scoring_identity() -> tuple[str, str]:
 def _probe_sandbox_runtime_identity() -> Mapping[str, object]:
     preflight = PodmanPipelineSandboxRunner().preflight()
     if not preflight.ok or not isinstance(preflight.runtime_identity, dict):
+        failure_code = preflight.failure_code
+        public_details = (
+            {"kind": "sandbox_runtime", "failure_code": failure_code}
+            if failure_code in PODMAN_SANDBOX_PREFLIGHT_FAILURE_CODES
+            else None
+        )
         raise AoxCutoverLaunchError(
             "aox_launch_sandbox_preflight_failed",
             "AOX cutover sandbox runtime identity is unavailable",
+            public_details=public_details,
         )
     return dict(preflight.runtime_identity)
 

@@ -232,7 +232,9 @@ AOX 使用更窄的 `aox_live_attempt_authority_plan@4`：
   与其 deterministic consumption sibling，并以 durable in-attempt envelope 证明每槽消费。
 
 plan `@4`、consumption `@5` 与 `aox_attempt_preflight@5` 共同绑定 pin transaction 中的
-`aox_cutover_launch_profile@1`。若 authority 已消费后 profile/effective-config 在 claim 前失败，只能在
+`aox_cutover_launch_profile@1`。preflight必须在claim前从该profile执行full actual
+Podman/image/SDK/`aox_sandbox_scientific_backend_probe@2` resolver与immediate unchanged guard；
+config-only比较不构成admission。若 authority 已消费后 profile/effective-config/actual runtime 在 claim 前失败，只能在
 slot claim 不存在且 campaign attempt root absent/empty 时封存 `aox_formal_preflight_failure@1`；它必须
 闭合零 root/Host/session/attempt/MICU/provider/runner/HPC/browser effect。纯离线 verifier 与专用
 `aox_blank_world_campaign_preflight_failure_decision@1` reducer 可以形成 canonical NO-GO，但 attempt
@@ -848,9 +850,18 @@ selection identity。campaign reducer先验证三个slot的session/task/envelope
 workspace、完整相关 events 与全部 bounded admission/terminal handoff；Host 退休后再绑定 preflight、
 slot claim、startup/supervision、MICU before/after 和 earliest source-bound typed cause。
 
-`aox_formal_slot_failure@1` 固定 `acceptance_eligible=false`、`state_reusable=false` 与 zero-attempt
-projection。其 verifier 只读 source files，不写 evidence root、不访问 SQLite/network，也拒绝 symlink、
-source drift、已有 attempt、private scientific mutation/finalizer receipt 和 handoff/event mismatch。
+current `aox_formal_slot_failure@2` 固定 `acceptance_eligible=false`、`state_reusable=false` 与
+zero-attempt projection，并以 `closure_mode` 区分两种不可混合来源。`public_host`绑定上述startup、normal
+supervision、retirement-readiness与final public reads；`pre_child_ready`只绑定preflight、slot claim、
+`aox_supervised_host_pre_ready_failure@1`和两个不同且完全相等的MICU snapshots。后者只在parent已于child
+存活时验证PID=PGID、`/proc` start-time与frame digest、完整退休process group，并证明fresh root initial
+evidence、SQLite业务表、mutation scope/writer与effect目录全空时成立；它明确拒绝startup/supervision/
+fatal/public receipt/attempt bundle共存。其 verifier 只读 source files，不写 evidence root、不访问
+SQLite/network，也拒绝 symlink、source drift、已有 attempt、private scientific mutation/finalizer
+receipt 和 handoff/event mismatch。历史 `aox_formal_slot_failure@1`只读验证旧`public_host` shape，不能
+发射或crossgrade `pre_child_ready`。
 验证通过后，`aox_blank_world_campaign_failure_decision@1` 可把该已消费正式 rollout 封存为 canonical
 NO-GO；正常 GO 仍只接受同一 plan 的 exact positive/positive/fault 三份真实 `@3` attempt bundle。
 历史 pre-attempt blocked 记录因当时没有这份 current receipt，继续保持历史状态，不被追认或复用。
+r76只有旧wrapper与已消费claim/root，没有current live process/root settlement receipt，因此仍是
+blocked/noncanonical；不得依据新schema回填、复用或改写其MICU/slot终局。

@@ -19,8 +19,12 @@ from .aox_cutover_evidence import _write_append_only_bytes
 from .aox_cutover_evidence import canonical_digest
 from .aox_cutover_evidence import canonical_json_bytes
 from .aox_host_supervision import HOST_STARTUP_FILENAME
+from .aox_host_supervision import HOST_PRE_READY_FAILURE_FILENAME
+from .aox_host_supervision import HOST_PRE_READY_FAILURE_SCHEMA_ID
 from .aox_host_supervision import HOST_SUPERVISION_FILENAME
+from .aox_host_supervision import validate_supervised_host_pre_ready_failure
 from .aox_host_supervision import validate_supervised_host_receipt
+from .aox_public_conductor_bundle import PUBLIC_CONDUCTOR_BUNDLE_FILENAME
 from .aox_public_conductor_bundle import PUBLIC_CONDUCTOR_MESSAGE
 from .aox_public_conductor_bundle import PUBLIC_CONDUCTOR_OBJECTIVE
 from .aox_public_conductor_bundle import PUBLIC_CONDUCTOR_TITLE
@@ -33,7 +37,8 @@ from .aox_public_conductor_bundle import _validate_runtime_command_handoffs
 from .aox_public_conductor_bundle import _validate_startup
 
 
-FORMAL_SLOT_FAILURE_SCHEMA_ID = "aox_formal_slot_failure@1"
+FORMAL_SLOT_FAILURE_SCHEMA_ID = "aox_formal_slot_failure@2"
+LEGACY_FORMAL_SLOT_FAILURE_SCHEMA_ID = "aox_formal_slot_failure@1"
 FORMAL_SLOT_FAILURE_FILENAME = "formal-slot-failure.json"
 FORMAL_SLOT_FAILURE_DECISION_SCHEMA_ID = (
     "aox_blank_world_campaign_failure_decision@1"
@@ -42,7 +47,7 @@ FORMAL_SLOT_FAILURE_DECISION_SCHEMA_ID = (
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _ERROR_CODE = re.compile(r"[a-z][a-z0-9_.-]{0,127}")
 _TERMINAL_COMMAND_STATUSES = {"completed", "failed", "locked", "cancelled"}
-_PAYLOAD_FIELDS = {
+_LEGACY_PAYLOAD_FIELDS = {
     "schema_id",
     "sealed_at",
     "run_class",
@@ -70,6 +75,32 @@ _PAYLOAD_FIELDS = {
     "terminal_command",
     "earliest_typed_cause",
     "cause_observation",
+    "micu_ledger",
+    "sources",
+}
+_PUBLIC_HOST_PAYLOAD_FIELDS = _LEGACY_PAYLOAD_FIELDS | {"closure_mode"}
+_PRE_READY_PAYLOAD_FIELDS = {
+    "schema_id",
+    "closure_mode",
+    "sealed_at",
+    "run_class",
+    "acceptance_eligible",
+    "state_reusable",
+    "identity",
+    "campaign_id",
+    "plan_digest",
+    "consumption_digest",
+    "launch_id",
+    "attempt_kind",
+    "slot_ordinal",
+    "session_id",
+    "root_ref",
+    "authority_policy_digest",
+    "preflight_receipt_digest",
+    "slot_claim_digest",
+    "host_pre_ready_failure_receipt_digest",
+    "scientific_attempt_state",
+    "earliest_typed_cause",
     "micu_ledger",
     "sources",
 }
@@ -137,6 +168,13 @@ _SOURCE_KEYS = {
     "ledger_before",
     "ledger_after",
     "handoffs",
+}
+_PRE_READY_SOURCE_KEYS = {
+    "preflight",
+    "slot_claim",
+    "host_pre_ready_failure",
+    "ledger_before",
+    "ledger_after",
 }
 _DECISION_FIELDS = {
     "schema_id",
@@ -489,6 +527,7 @@ def _build_payload(
     ledger_before_path: Path,
     ledger_after_path: Path,
     sealed_at: str,
+    schema_id: str = FORMAL_SLOT_FAILURE_SCHEMA_ID,
 ) -> dict[str, Any]:
     if not _is_aware_timestamp(sealed_at):
         _fail(
@@ -811,8 +850,17 @@ def _build_payload(
         handoff_descriptors,
         key=lambda item: item["name"],
     )
+    if schema_id not in {
+        FORMAL_SLOT_FAILURE_SCHEMA_ID,
+        LEGACY_FORMAL_SLOT_FAILURE_SCHEMA_ID,
+    }:
+        _fail(
+            "formal_slot_failure_schema_invalid",
+            "formal slot failure schema is not supported",
+            identity="schema_id",
+        )
     payload = {
-        "schema_id": FORMAL_SLOT_FAILURE_SCHEMA_ID,
+        "schema_id": schema_id,
         "sealed_at": sealed_at,
         "run_class": "formal_acceptance",
         "acceptance_eligible": False,
@@ -852,6 +900,8 @@ def _build_payload(
         "micu_ledger": {"before": before, "after": after},
         "sources": sources,
     }
+    if schema_id == FORMAL_SLOT_FAILURE_SCHEMA_ID:
+        payload["closure_mode"] = "public_host"
     return payload
 
 
@@ -955,11 +1005,278 @@ def _verify_payload_sources(
         ledger_before_path=paths["ledger_before"],
         ledger_after_path=paths["ledger_after"],
         sealed_at=str(payload.get("sealed_at") or ""),
+        schema_id=str(payload.get("schema_id") or ""),
     )
     if rebuilt != dict(payload):
         _fail(
             "formal_slot_failure_semantic_mismatch",
             "formal slot failure facts do not reproduce from sealed public sources",
+            identity="payload",
+        )
+
+
+def _build_pre_ready_payload(
+    *,
+    identity_path: Path | None = None,
+    identity_value: Mapping[str, Any] | None = None,
+    preflight_path: Path,
+    pre_ready_failure_path: Path,
+    ledger_before_path: Path,
+    ledger_after_path: Path,
+    sealed_at: str,
+) -> dict[str, Any]:
+    if not _is_aware_timestamp(sealed_at):
+        _fail(
+            "formal_slot_failure_sealed_at_invalid",
+            "formal slot failure requires an aware sealing timestamp",
+            identity="sealed_at",
+        )
+    preflight_path = _real_source_path(
+        preflight_path,
+        identity="formal_slot_failure.preflight",
+    )
+    evidence_root = preflight_path.parent
+    if preflight_path.name != ATTEMPT_PREFLIGHT_FILENAME:
+        _fail(
+            "formal_slot_failure_preflight_invalid",
+            "formal slot failure requires the canonical preflight source",
+            identity="preflight",
+        )
+    if (identity_path is None) == (identity_value is None):
+        _fail(
+            "formal_slot_failure_identity_source_invalid",
+            "formal slot failure requires exactly one identity source",
+            identity="identity",
+        )
+    if identity_path is not None:
+        loaded_identity, _ = _load_canonical_object(
+            _real_source_path(
+                identity_path,
+                identity="formal_slot_failure.identity",
+            ),
+            identity="formal_slot_failure.identity",
+        )
+    else:
+        assert identity_value is not None
+        loaded_identity = dict(identity_value)
+    identity = _normalize_identity(loaded_identity)
+    preflight = load_attempt_preflight_receipt(preflight_path)
+    if preflight.get("identity_digest") != canonical_digest(identity):
+        _fail(
+            "formal_slot_failure_identity_mismatch",
+            "formal slot failure identity differs from preflight",
+            identity="identity",
+        )
+    slot = dict(preflight["slot"])
+    slot_claim = dict(preflight["slot_claim"])
+    slot_claim_path = evidence_root / ATTEMPT_SLOT_CLAIM_FILENAME
+    slot_claim_value, _ = _load_canonical_object(
+        slot_claim_path,
+        identity="formal_slot_failure.slot_claim",
+    )
+    if slot_claim_value != slot_claim:
+        _fail(
+            "formal_slot_failure_slot_claim_mismatch",
+            "formal slot failure slot claim differs from preflight",
+            identity="slot_claim",
+        )
+    pre_ready_failure_path = _real_source_path(
+        pre_ready_failure_path,
+        identity="formal_slot_failure.host_pre_ready_failure",
+    )
+    if (
+        pre_ready_failure_path.parent != evidence_root
+        or pre_ready_failure_path.name != HOST_PRE_READY_FAILURE_FILENAME
+    ):
+        _fail(
+            "formal_slot_failure_source_path_invalid",
+            "pre-ready failure must use the canonical evidence source",
+            identity="host_pre_ready_failure",
+        )
+    pre_ready_value, _ = _load_canonical_object(
+        pre_ready_failure_path,
+        identity="formal_slot_failure.host_pre_ready_failure",
+    )
+    pre_ready = validate_supervised_host_pre_ready_failure(
+        pre_ready_value,
+        preflight=preflight,
+    )
+    for forbidden in (
+        HOST_STARTUP_FILENAME,
+        HOST_SUPERVISION_FILENAME,
+        "aox-host-supervision-fatal.json",
+        "aox-public-conductor-retirement-readiness.json",
+        "public-api-receipts.jsonl",
+        PUBLIC_CONDUCTOR_BUNDLE_FILENAME,
+    ):
+        if (evidence_root / forbidden).exists():
+            _fail(
+                "formal_slot_failure_pre_ready_source_conflict",
+                "pre-ready failure cannot coexist with later Host or public evidence",
+                identity=forbidden,
+            )
+    ledger_before_path = _real_source_path(
+        ledger_before_path,
+        identity="formal_slot_failure.micu_before",
+    )
+    ledger_after_path = _real_source_path(
+        ledger_after_path,
+        identity="formal_slot_failure.micu_after",
+    )
+    if (
+        ledger_before_path.parent != evidence_root
+        or ledger_after_path.parent != evidence_root
+        or ledger_before_path == ledger_after_path
+    ):
+        _fail(
+            "formal_slot_failure_source_path_invalid",
+            "formal slot failure sources must share one evidence root",
+            identity="micu_ledger",
+        )
+    before, _ = _load_canonical_object(
+        ledger_before_path,
+        identity="formal_slot_failure.micu_before",
+    )
+    after, _ = _load_canonical_object(
+        ledger_after_path,
+        identity="formal_slot_failure.micu_after",
+    )
+    _validate_ledger_transition(before, after)
+    if before != after:
+        _fail(
+            "formal_slot_failure_pre_ready_micu_changed",
+            "pre-ready failure requires an unchanged cumulative MICU ledger",
+            identity="micu_ledger",
+        )
+    sources = {
+        "preflight": _source_descriptor(preflight_path, evidence_root=evidence_root),
+        "slot_claim": _source_descriptor(
+            slot_claim_path, evidence_root=evidence_root
+        ),
+        "host_pre_ready_failure": _source_descriptor(
+            pre_ready_failure_path, evidence_root=evidence_root
+        ),
+        "ledger_before": _source_descriptor(
+            ledger_before_path, evidence_root=evidence_root
+        ),
+        "ledger_after": _source_descriptor(
+            ledger_after_path, evidence_root=evidence_root
+        ),
+    }
+    sandbox_failure_code = pre_ready.get("sandbox_preflight_failure_code")
+    cause_code = str(sandbox_failure_code or pre_ready["failure_code"])
+    return {
+        "schema_id": FORMAL_SLOT_FAILURE_SCHEMA_ID,
+        "closure_mode": "pre_child_ready",
+        "sealed_at": sealed_at,
+        "run_class": "formal_acceptance",
+        "acceptance_eligible": False,
+        "state_reusable": False,
+        "identity": {**identity, "identity_digest": canonical_digest(identity)},
+        "campaign_id": preflight["campaign_id"],
+        "plan_digest": preflight["plan_digest"],
+        "consumption_digest": preflight["consumption_digest"],
+        "launch_id": slot_claim["launch_id"],
+        "attempt_kind": slot["attempt_kind"],
+        "slot_ordinal": slot["ordinal"],
+        "session_id": slot["session_id"],
+        "root_ref": slot["root_ref"],
+        "authority_policy_digest": slot["authority_policy_digest"],
+        "preflight_receipt_digest": preflight["receipt_digest"],
+        "slot_claim_digest": slot_claim["claim_digest"],
+        "host_pre_ready_failure_receipt_digest": pre_ready["receipt_digest"],
+        "scientific_attempt_state": {
+            "attempt_count": 0,
+            "attempt_ids": [],
+            "cutover_eligible": False,
+        },
+        "earliest_typed_cause": {
+            "code": cause_code,
+            "identity": f"sandbox_runtime.{cause_code}",
+            "source_kind": "host_supervision",
+            "source_ref": HOST_PRE_READY_FAILURE_FILENAME,
+            "source_version": HOST_PRE_READY_FAILURE_SCHEMA_ID,
+            "effect_certainty": "no_effect",
+            "recoverability": "authorization_required",
+            "retry_eligibility": "terminal",
+        },
+        "micu_ledger": {"before": before, "after": after},
+        "sources": sources,
+    }
+
+
+def finalize_and_seal_pre_ready_formal_slot_failure(
+    *,
+    identity_path: Path,
+    preflight_path: Path,
+    pre_ready_failure_path: Path,
+    ledger_before_path: Path,
+    ledger_after_path: Path,
+    sealed_at: str | None = None,
+) -> tuple[Path, str]:
+    preflight_path = _real_source_path(
+        preflight_path,
+        identity="formal_slot_failure.preflight",
+    )
+    destination = preflight_path.parent / FORMAL_SLOT_FAILURE_FILENAME
+    payload = _build_pre_ready_payload(
+        identity_path=identity_path,
+        preflight_path=preflight_path,
+        pre_ready_failure_path=pre_ready_failure_path,
+        ledger_before_path=ledger_before_path,
+        ledger_after_path=ledger_after_path,
+        sealed_at=sealed_at or datetime.now(UTC).isoformat(),
+    )
+    failure_digest = canonical_digest(payload)
+    _write_append_only_bytes(
+        destination,
+        canonical_json_bytes(
+            {"payload": payload, "failure_digest": failure_digest}
+        )
+        + b"\n",
+        error_code="formal_slot_failure_append_only",
+        error_message="formal slot failure receipt already exists",
+    )
+    return destination, failure_digest
+
+
+def _verify_pre_ready_payload_sources(
+    payload: Mapping[str, Any],
+    *,
+    failure_path: Path,
+) -> None:
+    evidence_root = failure_path.parent
+    sources = payload.get("sources")
+    if not isinstance(sources, dict) or set(sources) != _PRE_READY_SOURCE_KEYS:
+        _fail(
+            "formal_slot_failure_source_binding_invalid",
+            "pre-ready formal slot failure source map is incomplete",
+            identity="sources",
+        )
+    paths = {
+        key: _source_path(sources, key, evidence_root=evidence_root)
+        for key in _PRE_READY_SOURCE_KEYS
+    }
+    identity = dict(payload.get("identity") or {})
+    declared_identity_digest = identity.pop("identity_digest", None)
+    if declared_identity_digest != canonical_digest(identity):
+        _fail(
+            "formal_slot_failure_identity_mismatch",
+            "formal slot failure identity digest does not reproduce",
+            identity="identity.identity_digest",
+        )
+    rebuilt = _build_pre_ready_payload(
+        identity_value=identity,
+        preflight_path=paths["preflight"],
+        pre_ready_failure_path=paths["host_pre_ready_failure"],
+        ledger_before_path=paths["ledger_before"],
+        ledger_after_path=paths["ledger_after"],
+        sealed_at=str(payload.get("sealed_at") or ""),
+    )
+    if rebuilt != dict(payload):
+        _fail(
+            "formal_slot_failure_semantic_mismatch",
+            "pre-ready formal slot failure does not reproduce from exact sources",
             identity="payload",
         )
 
@@ -980,10 +1297,99 @@ def verify_formal_slot_failure(path: Path) -> FormalSlotFailureVerification:
                 identity="formal_slot_failure",
             )
         payload = envelope.get("payload")
-        if not isinstance(payload, dict) or set(payload) != _PAYLOAD_FIELDS:
+        if not isinstance(payload, dict):
             _fail(
                 "formal_slot_failure_schema_invalid",
                 "formal slot failure payload is not the current closed schema",
+                identity="payload",
+            )
+        is_pre_ready = (
+            payload.get("schema_id") == FORMAL_SLOT_FAILURE_SCHEMA_ID
+            and payload.get("closure_mode") == "pre_child_ready"
+        )
+        if is_pre_ready:
+            cause = payload.get("earliest_typed_cause")
+            attempt_state = payload.get("scientific_attempt_state")
+            if not all(
+                (
+                    set(payload) == _PRE_READY_PAYLOAD_FIELDS,
+                    payload.get("run_class") == "formal_acceptance",
+                    payload.get("acceptance_eligible") is False,
+                    payload.get("state_reusable") is False,
+                    _is_aware_timestamp(payload.get("sealed_at")),
+                    payload.get("attempt_kind") in {"positive", "fault"},
+                    type(payload.get("slot_ordinal")) is int,
+                    payload.get("slot_ordinal") in {1, 2, 3},
+                    all(
+                        isinstance(payload.get(field), str)
+                        and bool(payload.get(field))
+                        for field in (
+                            "campaign_id",
+                            "launch_id",
+                            "session_id",
+                            "root_ref",
+                        )
+                    ),
+                    all(
+                        _DIGEST.fullmatch(str(payload.get(field) or ""))
+                        is not None
+                        for field in (
+                            "plan_digest",
+                            "consumption_digest",
+                            "authority_policy_digest",
+                            "preflight_receipt_digest",
+                            "slot_claim_digest",
+                            "host_pre_ready_failure_receipt_digest",
+                        )
+                    ),
+                    isinstance(cause, dict) and set(cause) == _CAUSE_FIELDS,
+                    isinstance(cause, dict)
+                    and _ERROR_CODE.fullmatch(str(cause.get("code") or ""))
+                    is not None,
+                    isinstance(cause, dict)
+                    and cause.get("effect_certainty") == "no_effect",
+                    isinstance(cause, dict)
+                    and cause.get("recoverability") == "authorization_required",
+                    isinstance(cause, dict)
+                    and cause.get("retry_eligibility") == "terminal",
+                    isinstance(attempt_state, dict)
+                    and attempt_state
+                    == {
+                        "attempt_count": 0,
+                        "attempt_ids": [],
+                        "cutover_eligible": False,
+                    },
+                    envelope.get("failure_digest") == canonical_digest(payload),
+                )
+            ):
+                _fail(
+                    "formal_slot_failure_semantics_invalid",
+                    "pre-ready formal slot failure payload is not fail-closed",
+                    identity="payload",
+                )
+            _verify_pre_ready_payload_sources(payload, failure_path=resolved)
+            return FormalSlotFailureVerification(
+                passed=True,
+                failure_digest=str(envelope["failure_digest"]),
+                campaign_id=str(payload["campaign_id"]),
+                plan_digest=str(payload["plan_digest"]),
+                launch_id=str(payload["launch_id"]),
+                attempt_kind=str(payload["attempt_kind"]),
+                slot_ordinal=int(payload["slot_ordinal"]),
+            )
+        is_legacy_public = (
+            payload.get("schema_id") == LEGACY_FORMAL_SLOT_FAILURE_SCHEMA_ID
+            and set(payload) == _LEGACY_PAYLOAD_FIELDS
+        )
+        is_current_public = (
+            payload.get("schema_id") == FORMAL_SLOT_FAILURE_SCHEMA_ID
+            and payload.get("closure_mode") == "public_host"
+            and set(payload) == _PUBLIC_HOST_PAYLOAD_FIELDS
+        )
+        if not (is_legacy_public or is_current_public):
+            _fail(
+                "formal_slot_failure_schema_invalid",
+                "formal slot failure payload is not a supported closed schema",
                 identity="payload",
             )
         cause = payload.get("earliest_typed_cause")
@@ -991,7 +1397,7 @@ def verify_formal_slot_failure(path: Path) -> FormalSlotFailureVerification:
         terminal_command = payload.get("terminal_command")
         if not all(
             (
-                payload.get("schema_id") == FORMAL_SLOT_FAILURE_SCHEMA_ID,
+                is_legacy_public or is_current_public,
                 payload.get("run_class") == "formal_acceptance",
                 payload.get("acceptance_eligible") is False,
                 payload.get("state_reusable") is False,
@@ -1235,6 +1641,7 @@ __all__ = [
     "FORMAL_SLOT_FAILURE_SCHEMA_ID",
     "FormalSlotFailureVerification",
     "evaluate_formal_slot_failure",
+    "finalize_and_seal_pre_ready_formal_slot_failure",
     "finalize_and_seal_formal_slot_failure",
     "seal_formal_slot_failure_decision",
     "verify_formal_slot_failure",

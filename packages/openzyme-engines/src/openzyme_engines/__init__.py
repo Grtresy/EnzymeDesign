@@ -36,6 +36,7 @@ from .execution import PreprocessResult
 from .execution import ProviderHttpBioDatabaseAdapter
 from .execution import register_execution_tools
 from .podman_sandbox import DEFAULT_SANDBOX_IMAGE
+from .podman_sandbox import PODMAN_SANDBOX_PREFLIGHT_FAILURE_CODES
 from .podman_sandbox import PodmanPipelineSandboxRunner
 from .podman_sandbox import PodmanSandboxPreflight
 
@@ -82,6 +83,7 @@ __all__ = [
     "ProviderHttpBioDatabaseAdapter",
     "PodmanPipelineSandboxRunner",
     "PodmanSandboxPreflight",
+    "PODMAN_SANDBOX_PREFLIGHT_FAILURE_CODES",
     "register_deep_research_tools",
     "register_execution_tools",
 ]
