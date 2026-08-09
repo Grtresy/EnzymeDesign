@@ -19,6 +19,14 @@ from .aox_cutover_evidence import canonical_json_bytes
 from .aox_host_supervision import HOST_STARTUP_FILENAME
 from .aox_host_supervision import HOST_SUPERVISION_FATAL_FILENAME
 from .aox_host_supervision import HOST_SUPERVISION_FILENAME
+from .aox_public_conductor_contract import PUBLIC_CONDUCTOR_PROJECT_ID
+from .aox_public_conductor_contract import entry_message_request
+from .aox_public_conductor_contract import runtime_drain_constraints
+from .aox_public_conductor_contract import session_create_request
+from .aox_public_conductor_contract import validate_bounded_drain_receipts
+from .aox_public_conductor_contract import validate_bounded_drain_request
+from .aox_public_conductor_contract import validate_canonical_entry_receipts
+from .aox_public_conductor_contract import workflow_ref_from_preflight
 from .aox_public_conductor_bundle import _load_canonical_object
 from .aox_public_conductor_bundle import _load_receipt_chain
 from .aox_public_conductor_bundle import _load_response_envelope
@@ -27,7 +35,8 @@ from .aox_public_conductor_bundle import _validate_runtime_command_handoffs
 from .aox_public_conductor_bundle import _validate_startup
 
 
-CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID = (
+CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID = "aox_public_conductor_execution_contract@2"
+LEGACY_CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID = (
     "aox_public_conductor_execution_contract@1"
 )
 CONDUCTOR_EXECUTION_CONTRACT_FILENAME = ATTEMPT_CONDUCTOR_CONTRACT_FILENAME
@@ -40,7 +49,6 @@ CONDUCTOR_RETIREMENT_READINESS_FILENAME = (
 PUBLIC_API_RECEIPT_CHAIN_FILENAME = "public-api-receipts.jsonl"
 PUBLIC_RESPONSE_PREFIX = "public-response-"
 PUBLIC_RESPONSE_SUFFIX = ".json"
-PUBLIC_CONDUCTOR_PROJECT_ID = "aox-blank-world-cutover"
 
 _CONTRACT_FIELDS = {
     "schema_id",
@@ -51,6 +59,11 @@ _CONTRACT_FIELDS = {
     "session_id",
     "project_id",
     "public_cli_command",
+    "late_bound_authority_command",
+    "session_create_request",
+    "entry_message_request",
+    "entry_message_count",
+    "runtime_drain_constraints",
     "receipt_chain_name",
     "response_name_pattern",
     "retirement_readiness_name",
@@ -95,6 +108,12 @@ _SAFE_RESPONSE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 _EVIDENCE_ROUTE = re.compile(
     r"/v3/sessions/[^/]+/scientific-attempts/[^/]+/selections/[^/]+/evidence"
 )
+_TERMINAL_RUNTIME_COMMAND_STATUSES = {
+    "completed",
+    "failed",
+    "locked",
+    "cancelled",
+}
 
 
 def _fail(code: str, message: str, *, identity: str) -> None:
@@ -150,15 +169,26 @@ def build_conductor_execution_contract(
 ) -> dict[str, Any]:
     slot = dict(preflight.get("slot") or {})
     slot_claim = dict(preflight.get("slot_claim") or {})
+    session_id = slot.get("session_id")
+    workflow_ref = workflow_ref_from_preflight(preflight)
     payload = {
         "schema_id": CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID,
         "launch_id": slot_claim.get("launch_id"),
         "campaign_id": preflight.get("campaign_id"),
         "plan_digest": preflight.get("plan_digest"),
         "preflight_receipt_digest": preflight.get("receipt_digest"),
-        "session_id": slot.get("session_id"),
+        "session_id": session_id,
         "project_id": PUBLIC_CONDUCTOR_PROJECT_ID,
         "public_cli_command": "openzyme-aox-cutover public-host",
+        "late_bound_authority_command": (
+            "openzyme-aox-cutover grant-task-authority"
+        ),
+        "session_create_request": (
+            session_create_request(session_id) if isinstance(session_id, str) else {}
+        ),
+        "entry_message_request": entry_message_request(workflow_ref),
+        "entry_message_count": 1,
+        "runtime_drain_constraints": runtime_drain_constraints(),
         "receipt_chain_name": PUBLIC_API_RECEIPT_CHAIN_FILENAME,
         "response_name_pattern": (
             f"{PUBLIC_RESPONSE_PREFIX}<label>{PUBLIC_RESPONSE_SUFFIX}"
@@ -203,6 +233,12 @@ def load_conductor_execution_contract(
     evidence_root, preflight = _evidence_root(preflight_path)
     path = evidence_root / CONDUCTOR_EXECUTION_CONTRACT_FILENAME
     value = _private_canonical_object(path, identity="execution_contract")
+    if value.get("schema_id") == LEGACY_CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID:
+        _fail(
+            "public_conductor_execution_contract_legacy_non_admissible",
+            "legacy conductor execution contracts are read-only historical evidence",
+            identity="execution_contract.schema_id",
+        )
     expected = build_conductor_execution_contract(preflight)
     if set(value) != _CONTRACT_FIELDS or value != expected:
         _fail(
@@ -213,8 +249,12 @@ def load_conductor_execution_contract(
     return evidence_root, value, preflight
 
 
-def public_response_path(preflight_path: Path, response_name: str) -> Path:
-    evidence_root, contract, _ = load_conductor_execution_contract(preflight_path)
+def bound_public_response_path(
+    *,
+    evidence_root: Path,
+    contract: Mapping[str, Any],
+    response_name: str,
+) -> Path:
     if _SAFE_RESPONSE_NAME.fullmatch(response_name) is None:
         _fail(
             "public_conductor_response_name_invalid",
@@ -248,6 +288,15 @@ def public_response_path(preflight_path: Path, response_name: str) -> Path:
     )
 
 
+def public_response_path(preflight_path: Path, response_name: str) -> Path:
+    evidence_root, contract, _ = load_conductor_execution_contract(preflight_path)
+    return bound_public_response_path(
+        evidence_root=evidence_root,
+        contract=contract,
+        response_name=response_name,
+    )
+
+
 def load_active_public_host_context(
     preflight_path: Path,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], Path]:
@@ -269,6 +318,413 @@ def load_active_public_host_context(
     )
     startup = _validate_startup(startup_value, preflight=preflight)
     return preflight, contract, startup, evidence_root
+
+
+def _contract_workflow_ref(contract: Mapping[str, Any]) -> str:
+    entry = contract.get("entry_message_request")
+    skill_keys = entry.get("skill_keys") if isinstance(entry, Mapping) else None
+    if not (
+        isinstance(skill_keys, list)
+        and len(skill_keys) == 1
+        and isinstance(skill_keys[0], str)
+    ):
+        _fail(
+            "public_conductor_execution_contract_invalid",
+            "execution contract lacks one exact entry workflow binding",
+            identity="execution_contract.entry_message_request.skill_keys",
+        )
+    return skill_keys[0]
+
+
+def _current_receipts(
+    *, evidence_root: Path, contract: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    path = evidence_root / str(contract["receipt_chain_name"])
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise CutoverEvidenceError(
+            "public_receipt_chain_unreadable",
+            "public Host receipt chain cannot be inspected before the next action",
+            details={"identity": "receipt_chain"},
+        ) from exc
+    receipts, _ = _load_receipt_chain(path, allow_failure_responses=True)
+    return receipts
+
+
+def _canonical_entry_progress(
+    receipts: Sequence[Mapping[str, Any]], *, contract: Mapping[str, Any]
+) -> str:
+    session_id = str(contract["session_id"])
+    workflow_ref = _contract_workflow_ref(contract)
+    if not receipts:
+        return "session_create"
+    if len(receipts) == 1:
+        receipt = dict(receipts[0])
+        if not (
+            receipt.get("sequence") == 1
+            and receipt.get("method") == "POST"
+            and receipt.get("route") == "/v3/sessions"
+            and receipt.get("request") == session_create_request(session_id)
+            and type(receipt.get("status_code")) is int
+            and 200 <= receipt["status_code"] < 300
+        ):
+            _fail(
+                "public_conductor_entry_state_invalid",
+                "formal receipt chain did not begin with the canonical session",
+                identity="receipt_chain[1]",
+            )
+        return "entry_message"
+    validate_canonical_entry_receipts(
+        receipts,
+        session_id=session_id,
+        workflow_ref=workflow_ref,
+        code="public_conductor_entry_state_invalid",
+    )
+    return "ready"
+
+
+def _closed_cli_options(
+    tokens: Sequence[str],
+    *,
+    allowed: frozenset[str],
+    repeated: frozenset[str] = frozenset(),
+) -> dict[str, str | list[str]]:
+    values: dict[str, str | list[str]] = {}
+    cursor = 0
+    while cursor < len(tokens):
+        token = tokens[cursor]
+        if not token.startswith("--"):
+            _fail(
+                "public_conductor_command_arguments_invalid",
+                "formal command contains an unexpected positional argument",
+                identity="host_cli_args",
+            )
+        raw = token[2:]
+        if "=" in raw:
+            name, value = raw.split("=", 1)
+        else:
+            name = raw
+            cursor += 1
+            if cursor >= len(tokens):
+                _fail(
+                    "public_conductor_command_arguments_invalid",
+                    "formal command option lacks its value",
+                    identity=f"host_cli_args.{name}",
+                )
+            value = tokens[cursor]
+        if name not in allowed:
+            _fail(
+                "public_conductor_command_arguments_invalid",
+                "formal command contains an option outside its public contract",
+                identity=f"host_cli_args.{name}",
+            )
+        if name in repeated:
+            current = values.setdefault(name, [])
+            if not isinstance(current, list):
+                raise AssertionError(name)
+            current.append(value)
+        elif name in values:
+            _fail(
+                "public_conductor_command_arguments_invalid",
+                "formal command repeats a single-valued option",
+                identity=f"host_cli_args.{name}",
+            )
+        else:
+            values[name] = value
+        cursor += 1
+    return values
+
+
+def _validate_session_create_command(
+    forwarded: Sequence[str], *, contract: Mapping[str, Any]
+) -> None:
+    if list(forwarded[:2]) != ["sessions", "create"]:
+        _fail(
+            "public_conductor_session_create_required",
+            "the first formal public action must create the canonical session",
+            identity="host_cli_args",
+        )
+    options = _closed_cli_options(
+        forwarded[2:], allowed=frozenset({"objective", "title"})
+    )
+    expected = dict(contract["session_create_request"])
+    if options != {
+        "objective": expected["objective"],
+        "title": expected["title"],
+    }:
+        _fail(
+            "public_conductor_session_create_invalid",
+            "formal session creation differs from its source-bound contract",
+            identity="host_cli_args.sessions.create",
+        )
+
+
+def _validate_entry_message_command(
+    forwarded: Sequence[str], *, contract: Mapping[str, Any]
+) -> None:
+    if list(forwarded[:2]) != ["sessions", "message"]:
+        _fail(
+            "public_conductor_entry_message_required",
+            "the second formal public action must send the canonical entry message",
+            identity="host_cli_args",
+        )
+    options = _closed_cli_options(
+        forwarded[2:],
+        allowed=frozenset({"message", "skill-key", "task-id", "lane-id"}),
+        repeated=frozenset({"skill-key"}),
+    )
+    expected = dict(contract["entry_message_request"])
+    if options != {
+        "message": expected["message"],
+        "skill-key": list(expected["skill_keys"]),
+    }:
+        _fail(
+            "public_conductor_entry_message_invalid",
+            "formal entry message lacks its exact pinned workflow binding",
+            identity="host_cli_args.sessions.message",
+        )
+
+
+def _validate_drain_command(forwarded: Sequence[str]) -> None:
+    options = _closed_cli_options(
+        forwarded[2:],
+        allowed=frozenset(
+            {"max-signals", "max-steps-per-agent", "idempotency-key"}
+        ),
+    )
+    try:
+        request = {
+            "max_signals": int(options.get("max-signals", "3")),
+            "max_steps_per_agent": int(options.get("max-steps-per-agent", "8")),
+            "auto_enqueue_ready_tasks": False,
+        }
+    except (TypeError, ValueError) as exc:
+        raise CutoverEvidenceError(
+            "public_conductor_drain_request_invalid",
+            "formal runtime drain bounds are not integers",
+            details={"identity": "host_cli_args.runtime.drain"},
+        ) from exc
+    validate_bounded_drain_request(
+        request,
+        identity="host_cli_args.runtime.drain",
+    )
+
+
+def validate_public_host_command(
+    *,
+    contract: Mapping[str, Any],
+    evidence_root: Path,
+    forwarded: Sequence[str],
+) -> None:
+    if contract.get("schema_id") != CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID:
+        _fail(
+            "public_conductor_execution_contract_legacy_non_admissible",
+            "only the current conductor execution contract may issue Host actions",
+            identity="execution_contract.schema_id",
+        )
+    if len(forwarded) < 2:
+        _fail(
+            "public_conductor_command_missing",
+            "public-host requires one complete thin Host CLI command",
+            identity="host_cli_args",
+        )
+    receipts = _current_receipts(evidence_root=evidence_root, contract=contract)
+    progress = _canonical_entry_progress(receipts, contract=contract)
+    if progress == "session_create":
+        _validate_session_create_command(forwarded, contract=contract)
+        return
+    if progress == "entry_message":
+        _validate_entry_message_command(forwarded, contract=contract)
+        return
+    validate_bounded_drain_receipts(
+        receipts,
+        session_id=str(contract["session_id"]),
+    )
+    action = list(forwarded[:2])
+    if action in (["sessions", "create"], ["sessions", "message"]):
+        _fail(
+            "public_conductor_entry_already_closed",
+            "formal execution permits exactly one canonical session entry",
+            identity="host_cli_args",
+        )
+    if action == ["scientific", "authorize"]:
+        _fail(
+            "public_conductor_authority_command_required",
+            "formal scientific authority must use grant-task-authority",
+            identity="host_cli_args.scientific.authorize",
+        )
+    if action == ["runtime", "drain"]:
+        _validate_drain_command(forwarded)
+
+
+def _pregrant_terminal_sequences(
+    *,
+    receipts: Sequence[Mapping[str, Any]],
+    envelopes: Mapping[int, Mapping[str, Any]],
+    session_id: str,
+) -> list[int]:
+    drains = validate_bounded_drain_receipts(receipts, session_id=session_id)
+    if not drains:
+        _fail(
+            "public_conductor_pregrant_state_invalid",
+            "late-bound authority requires at least one sealed bounded drain",
+            identity="receipt_chain",
+        )
+    statuses = [
+        dict(receipt)
+        for receipt in receipts
+        if receipt.get("method") == "GET"
+        and re.fullmatch(
+            rf"/v3/sessions/{re.escape(session_id)}/runtime/commands/[^/]+",
+            str(receipt.get("route") or ""),
+        )
+    ]
+    ordered_drains = sorted(drains, key=lambda item: int(item["sequence"]))
+    terminal_sequences: list[int] = []
+    for index, drain in enumerate(ordered_drains):
+        drain_sequence = int(drain["sequence"])
+        admission = dict(envelopes.get(drain_sequence, {}).get("response") or {})
+        command_id = str(admission.get("command_id") or "")
+        status_route = f"/v3/sessions/{session_id}/runtime/commands/{command_id}"
+        upper_bound = (
+            int(ordered_drains[index + 1]["sequence"])
+            if index + 1 < len(ordered_drains)
+            else len(receipts) + 1
+        )
+        terminals = [
+            status
+            for status in statuses
+            if drain_sequence < int(status["sequence"]) < upper_bound
+            and status.get("route") == status_route
+            and dict(envelopes.get(int(status["sequence"]), {}).get("response") or {}).get(
+                "status"
+            )
+            in _TERMINAL_RUNTIME_COMMAND_STATUSES
+        ]
+        if not (
+            admission.get("schema_version") == "runtime_command_status@1"
+            and admission.get("session_id") == session_id
+            and admission.get("command_type") == "runtime.drain"
+            and admission.get("status_url") == status_route
+            and bool(command_id)
+            and len(terminals) == 1
+        ):
+            _fail(
+                "public_conductor_pregrant_state_invalid",
+                "late-bound authority requires every drain admission and terminal response",
+                identity=f"receipt_chain[{drain_sequence}]",
+            )
+        terminal_sequence = int(terminals[0]["sequence"])
+        terminal = dict(envelopes[terminal_sequence].get("response") or {})
+        if not (
+            terminal.get("schema_version") == "runtime_command_status@1"
+            and terminal.get("session_id") == session_id
+            and terminal.get("command_id") == command_id
+            and terminal.get("command_type") == "runtime.drain"
+            and terminal.get("status_url") == status_route
+            and bool(terminal.get("completed_at"))
+        ):
+            _fail(
+                "public_conductor_pregrant_state_invalid",
+                "pre-grant terminal response does not reproduce its runtime command",
+                identity=f"runtime_command:{command_id}",
+            )
+        terminal_sequences.append(terminal_sequence)
+    return terminal_sequences
+
+
+def resolve_pregrant_execution_task(
+    *,
+    preflight: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    evidence_root: Path,
+    task_id: str,
+) -> dict[str, Any]:
+    receipts = _current_receipts(evidence_root=evidence_root, contract=contract)
+    session_id = str(contract["session_id"])
+    validate_canonical_entry_receipts(
+        receipts,
+        session_id=session_id,
+        workflow_ref=_contract_workflow_ref(contract),
+        code="public_conductor_pregrant_state_invalid",
+    )
+    grant_route = f"/v3/sessions/{session_id}/scientific-attempt-authorizations"
+    if any(
+        receipt.get("method") == "POST" and receipt.get("route") == grant_route
+        for receipt in receipts
+    ):
+        _fail(
+            "public_conductor_authority_already_granted",
+            "formal task authority is a one-use late-bound action",
+            identity="receipt_chain",
+        )
+    envelopes, _, _ = _response_descriptors(
+        evidence_root=evidence_root,
+        receipts=receipts,
+    )
+    terminal_sequences = _pregrant_terminal_sequences(
+        receipts=receipts,
+        envelopes=envelopes,
+        session_id=session_id,
+    )
+    workspace_route = f"/v3/sessions/{session_id}/workspace"
+    mutation_sequences = [
+        int(receipt["sequence"])
+        for receipt in receipts
+        if receipt.get("method") in {"POST", "PATCH", "PUT", "DELETE"}
+    ]
+    workspace_receipts = [
+        dict(receipt)
+        for receipt in receipts
+        if receipt.get("method") == "GET"
+        and receipt.get("route") == workspace_route
+        and int(receipt["sequence"]) > max(terminal_sequences)
+        and (
+            not mutation_sequences
+            or int(receipt["sequence"]) > max(mutation_sequences)
+        )
+    ]
+    if len(workspace_receipts) != 1:
+        _fail(
+            "public_conductor_pregrant_read_invalid",
+            "late-bound authority requires one sealed post-drain task read",
+            identity="pregrant_workspace",
+        )
+    workspace = envelopes[int(workspace_receipts[0]["sequence"])].get("response")
+    task_items = (
+        dict(workspace.get("task_board") or {}).get("items")
+        if isinstance(workspace, Mapping)
+        else None
+    )
+    execution_tasks = [
+        dict(item["task"])
+        for item in (task_items or [])
+        if isinstance(item, Mapping)
+        and isinstance(item.get("task"), Mapping)
+        and item["task"].get("kind") == "execution"
+    ]
+    if not (
+        isinstance(workspace, Mapping)
+        and dict(workspace.get("session") or {}).get("session_id") == session_id
+        and len(execution_tasks) == 1
+        and execution_tasks[0].get("task_id") == task_id
+    ):
+        _fail(
+            "public_task_late_binding_invalid",
+            "operator-selected task is not the unique canonical execution task",
+            identity="pregrant_workspace",
+        )
+    slot = dict(preflight.get("slot") or {})
+    if slot.get("session_id") != session_id:
+        _fail(
+            "public_task_late_binding_invalid",
+            "preflight and public task session identities differ",
+            identity="preflight.slot.session_id",
+        )
+    return execution_tasks[0]
 
 
 def _response_descriptors(
@@ -387,15 +843,14 @@ def _handoff_sequences(
     session_id: str,
     final_sequence: int,
 ) -> set[int]:
-    drain_route = f"/v3/sessions/{session_id}/runtime/drain"
     status_pattern = re.compile(
         rf"/v3/sessions/{re.escape(session_id)}/runtime/commands/[^/]+"
     )
-    drains = [
-        receipt
-        for receipt in receipts
-        if receipt.get("method") == "POST" and receipt.get("route") == drain_route
-    ]
+    drains = validate_bounded_drain_receipts(
+        receipts,
+        session_id=session_id,
+        code="public_conductor_handoff_drain_invalid",
+    )
     statuses = [
         receipt
         for receipt in receipts
@@ -482,11 +937,22 @@ def _build_retirement_readiness(
         receipt_chain_path,
         allow_failure_responses=True,
     )
+    session_id = str(contract["session_id"])
+    validate_canonical_entry_receipts(
+        receipts,
+        session_id=session_id,
+        workflow_ref=_contract_workflow_ref(contract),
+        code="public_conductor_retirement_entry_invalid",
+    )
+    validate_bounded_drain_receipts(
+        receipts,
+        session_id=session_id,
+        code="public_conductor_retirement_drain_invalid",
+    )
     envelopes, response_paths, response_descriptors = _response_descriptors(
         evidence_root=evidence_root,
         receipts=receipts,
     )
-    session_id = str(contract["session_id"])
     workspace_sequence, event_sequence, workspace, events = _final_public_reads(
         receipts=receipts,
         envelopes=envelopes,

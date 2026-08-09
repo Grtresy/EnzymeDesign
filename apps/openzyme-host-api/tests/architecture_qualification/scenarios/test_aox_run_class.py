@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import replace
 import hashlib
+from io import StringIO
 import json
 from pathlib import Path
 import time
@@ -10,6 +11,7 @@ import time
 import pytest
 
 import openzyme_core
+from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_host_api import aox_attempt_authority
 from openzyme_host_api import aox_attempt_preflight
 from openzyme_host_api import aox_conductor_execution
@@ -20,6 +22,13 @@ from openzyme_host_api import aox_formal_slot_failure
 from openzyme_host_api import aox_host_supervision
 from openzyme_host_api import aox_public_conductor_bundle
 from openzyme_host_api.aox_launch_profile import build_aox_cutover_launch_profile
+from openzyme_host_api.aox_cutover_evidence import CutoverEvidenceError
+from openzyme_host_api.aox_public_conductor_contract import (
+    validate_bounded_drain_receipts,
+)
+from openzyme_host_api.aox_public_conductor_contract import (
+    validate_canonical_entry_receipts,
+)
 from openzyme_host_api.v3_service import V3HostApiService
 from openzyme_host_api.architecture_qualification import canonical_json_bytes
 from openzyme_host_cli import cli as host_cli
@@ -238,6 +247,7 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
         "preflight",
         "serve-attempt",
         "public-host",
+        "grant-task-authority",
         "seal-conductor-state",
         "finalize-and-seal",
         "seal-slot-failure",
@@ -259,6 +269,12 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
         for action in subcommands["public-host"]._actions
     }
     assert public_host_arguments["host_cli_args"].nargs == argparse.REMAINDER
+    grant_arguments = {
+        action.dest for action in subcommands["grant-task-authority"]._actions
+    }
+    assert {"preflight_receipt", "response_name", "task_id"}.issubset(
+        grant_arguments
+    )
     attempt_finalizer_arguments = {
         action.dest for action in subcommands["finalize-and-seal"]._actions
     }
@@ -316,6 +332,8 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
     assert not hasattr(aox_attempt_authority, "attempt_admission_arguments")
     assert callable(aox_attempt_preflight.load_attempt_preflight_receipt)
     assert callable(aox_conductor_execution.publish_conductor_execution_contract)
+    assert callable(aox_cutover_cli.run_bound_public_host_command)
+    assert callable(aox_cutover_cli.run_bound_task_authority_grant)
     assert callable(aox_conductor_execution.seal_conductor_retirement_readiness)
     assert callable(aox_conductor_execution.load_conductor_retirement_readiness)
     assert callable(aox_host_supervision.supervised_attempt_host)
@@ -378,9 +396,15 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
         path for _, path in public_routes
     )
 
+    workflow_ref = next(
+        manifest.selection_ref
+        for manifest in default_workflow_registry().list_manifests()
+        if manifest.workflow_id == "aox-hmm-live"
+    )
     identity = {
         "git_commit": "a" * 40,
         "config_digest": "sha256:" + "b" * 64,
+        "workflow_ref": workflow_ref,
     }
     settings = OpenZymeSettings.from_env()
     settings = replace(
@@ -401,7 +425,10 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
     )
     plan = aox_attempt_authority.build_aox_attempt_authority_plan(
         identity=identity,
-        allowed_prerequisites={"provider_cache_mode": "bypass"},
+        allowed_prerequisites={
+            "provider_cache_mode": "bypass",
+            "workflow_ref": workflow_ref,
+        },
         architecture_qualification={"schema_id": "qualification@1"},
         launch_profile=qualification_launch_profile,
         issued_at="2026-08-04T00:00:00+00:00",
@@ -412,6 +439,25 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
     )
     slot = dict(plan["slots"][0])
     session_id = str(slot["session_id"])
+    qualification_preflight = {
+        "campaign_id": plan["campaign_id"],
+        "plan_digest": plan["plan_digest"],
+        "receipt_digest": "sha256:" + "c" * 64,
+        "slot": slot,
+        "slot_claim": {"launch_id": "formal-slot-" + "d" * 24},
+        "root_proof": {
+            "allowed_prerequisites": {"workflow_ref": workflow_ref}
+        },
+    }
+    conductor_contract = aox_conductor_execution.build_conductor_execution_contract(
+        qualification_preflight
+    )
+    assert conductor_contract["schema_id"] == (
+        "aox_public_conductor_execution_contract@2"
+    )
+    conductor_evidence_root = tmp_path / "public-conductor-evidence"
+    conductor_evidence_root.mkdir(mode=0o700)
+    qualification_startup = {"base_url": "http://testserver"}
 
     with composition:
         assert composition.client is not None
@@ -437,28 +483,154 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
         )
         assert preexisting_session is None
         assert not preexisting_workspaces
-        created = public.create_v3_session(
-            session_id=session_id,
-            project_id="aox-blank-world-cutover",
-            objective="Qualify public Host and SQLite composition",
-            title="AOX composition qualification",
+        runner_outputs: list[object] = []
+        runner_argvs: list[list[str]] = []
+        forwarded_actions: list[list[str]] = []
+        runner_calls = 0
+
+        def qualification_host_cli_runner(argv: list[str]) -> int:
+            nonlocal runner_calls
+            stdout = StringIO()
+            stderr = StringIO()
+            result = host_cli.run_cli(
+                argv,
+                session=composition.client,
+                stdout=stdout,
+                stderr=stderr,
+            )
+            assert result == 0, stderr.getvalue()
+            runner_calls += 1
+            runner_argvs.append(list(argv))
+            runner_outputs.append(json.loads(stdout.getvalue()))
+            return result
+
+        def run_bound(response_name: str, forwarded: list[str]) -> object:
+            output_count = len(runner_outputs)
+            runner_argv_count = len(runner_argvs)
+            result = aox_cutover_cli.run_bound_public_host_command(
+                contract=conductor_contract,
+                startup=qualification_startup,
+                evidence_root=conductor_evidence_root,
+                response_name=response_name,
+                forwarded=forwarded,
+                host_cli_runner=qualification_host_cli_runner,
+            )
+            assert result == 0
+            assert len(runner_outputs) == output_count + 1
+            assert len(runner_argvs) == runner_argv_count + 1
+            assert runner_argvs[-1][-len(forwarded) :] == forwarded
+            forwarded_actions.append(list(forwarded))
+            return runner_outputs[-1]
+
+        create_request = dict(conductor_contract["session_create_request"])
+        created = dict(
+            run_bound(
+                "session-create",
+                [
+                    "sessions",
+                    "create",
+                    "--objective",
+                    str(create_request["objective"]),
+                    "--title",
+                    str(create_request["title"]),
+                ],
+            )
         )
-        posted = public.post_v3_message(
-            session_id,
-            message="Create and delegate the canonical AOX task graph.",
+        receipt_chain_path = conductor_evidence_root / str(
+            conductor_contract["receipt_chain_name"]
         )
-        first = public.drain_v3_runtime(
-            session_id,
-            max_signals=1,
-            max_steps_per_agent=8,
-            idempotency_key="qualification:first-drain",
+        pre_rejection_receipts = receipt_chain_path.read_bytes()
+        pre_rejection_calls = runner_calls
+        with pytest.raises(CutoverEvidenceError) as missing_pin:
+            aox_cutover_cli.run_bound_public_host_command(
+                contract=conductor_contract,
+                startup=qualification_startup,
+                evidence_root=conductor_evidence_root,
+                response_name="invalid-unpinned-entry",
+                forwarded=[
+                    "sessions",
+                    "message",
+                    "--message",
+                    str(
+                        dict(conductor_contract["entry_message_request"])[
+                            "message"
+                        ]
+                    ),
+                ],
+                host_cli_runner=qualification_host_cli_runner,
+            )
+        assert missing_pin.value.code == "public_conductor_entry_message_invalid"
+        assert runner_calls == pre_rejection_calls
+        assert receipt_chain_path.read_bytes() == pre_rejection_receipts
+
+        entry_request = dict(conductor_contract["entry_message_request"])
+        posted = dict(
+            run_bound(
+                "entry-message",
+                [
+                    "sessions",
+                    "message",
+                    "--message",
+                    str(entry_request["message"]),
+                    "--skill-key",
+                    workflow_ref,
+                ],
+            )
         )
-        first_terminal = _wait_for_terminal_command(
+        pre_duplicate_receipts = receipt_chain_path.read_bytes()
+        pre_duplicate_calls = runner_calls
+        with pytest.raises(CutoverEvidenceError) as duplicate_entry:
+            aox_cutover_cli.run_bound_public_host_command(
+                contract=conductor_contract,
+                startup=qualification_startup,
+                evidence_root=conductor_evidence_root,
+                response_name="invalid-duplicate-entry",
+                forwarded=[
+                    "sessions",
+                    "message",
+                    "--message",
+                    str(entry_request["message"]),
+                    "--skill-key",
+                    workflow_ref,
+                ],
+                host_cli_runner=qualification_host_cli_runner,
+            )
+        assert duplicate_entry.value.code == "public_conductor_entry_already_closed"
+        assert runner_calls == pre_duplicate_calls
+        assert receipt_chain_path.read_bytes() == pre_duplicate_receipts
+
+        first = dict(
+            run_bound(
+                "first-drain-admission",
+                [
+                    "runtime",
+                    "drain",
+                    "--max-signals",
+                    "1",
+                    "--max-steps-per-agent",
+                    "16",
+                    "--idempotency-key",
+                    "qualification:first-drain",
+                ],
+            )
+        )
+        _wait_for_terminal_command(
             public,
             session_id=session_id,
             command_id=str(first["command_id"]),
         )
-        workspace = public.get_v3_workspace(session_id)
+        first_terminal = dict(
+            run_bound(
+                "first-drain-terminal",
+                [
+                    "runtime",
+                    "status",
+                    "--command-id",
+                    str(first["command_id"]),
+                ],
+            )
+        )
+        workspace = dict(run_bound("pregrant-workspace", ["sessions", "show"]))
         tasks = [
             dict(item["task"])
             for item in dict(workspace["task_board"])["items"]
@@ -480,42 +652,78 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
             headers={"Idempotency-Key": "qualification:invalid-task-grant"},
         )
         assert invalid_grant.status_code >= 400
-        authority = public.grant_v3_scientific_attempt_authorization(
-            session_id,
-            aox_attempt_authority.authority_grant_payload(
-                slot,
-                campaign_id=str(plan["campaign_id"]),
-                task_id=task_id,
-            ),
-            idempotency_key=str(dict(slot["authority_policy"])["idempotency_key"]),
+        grant_output_count = len(runner_outputs)
+        grant_result = aox_cutover_cli.run_bound_task_authority_grant(
+            preflight=qualification_preflight,
+            contract=conductor_contract,
+            startup=qualification_startup,
+            evidence_root=conductor_evidence_root,
+            response_name="task-authority-grant",
+            task_id=task_id,
+            host_cli_runner=qualification_host_cli_runner,
         )
+        assert grant_result == 0
+        assert len(runner_outputs) == grant_output_count + 1
+        authority = dict(runner_outputs[-1])
         envelope_id = str(dict(authority["record"])["envelope_id"])
         post_authority_terminals: list[dict[str, object]] = []
         inspection: dict[str, object] = {}
         for ordinal in range(1, 9):
-            command = public.drain_v3_runtime(
-                session_id,
-                max_signals=1,
-                max_steps_per_agent=8,
-                idempotency_key=f"qualification:post-authority-drain:{ordinal}",
+            command = dict(
+                run_bound(
+                    f"post-authority-drain-{ordinal}-admission",
+                    [
+                        "runtime",
+                        "drain",
+                        "--max-signals",
+                        "1",
+                        "--max-steps-per-agent",
+                        "8",
+                        "--idempotency-key",
+                        f"qualification:post-authority-drain:{ordinal}",
+                    ],
+                )
             )
-            terminal = _wait_for_terminal_command(
+            _wait_for_terminal_command(
                 public,
                 session_id=session_id,
                 command_id=str(command["command_id"]),
             )
+            terminal = dict(
+                run_bound(
+                    f"post-authority-drain-{ordinal}-terminal",
+                    [
+                        "runtime",
+                        "status",
+                        "--command-id",
+                        str(command["command_id"]),
+                    ],
+                )
+            )
             post_authority_terminals.append(terminal)
-            inspection = public.get_v3_scientific_attempts(session_id)
+            inspection = dict(
+                run_bound(
+                    f"post-authority-inspection-{ordinal}",
+                    ["scientific", "inspect"],
+                )
+            )
             if inspection["attempt_count"] == 1:
                 break
-        final_workspace = public.get_v3_workspace(session_id)
+        final_workspace = dict(
+            run_bound("final-workspace", ["sessions", "show"])
+        )
         final_execution_task = next(
             dict(item["task"])
             for item in dict(final_workspace["task_board"])["items"]
             if dict(item["task"]).get("kind") == "execution"
         )
         lane_id = str(final_execution_task["lane_id"])
-        public_events = public.get_v3_events(session_id, after_cursor=0)
+        public_events = list(
+            run_bound(
+                "final-events",
+                ["sessions", "events", "--after-cursor", "0"],
+            )
+        )
         fault_rejection = composition.client.post(
             f"/v3/sessions/{session_id}/aox-fault-injections/reference-byte-flip",
             json={"attempt_id": "not-admitted", "artifact_id": "not-admitted"},
@@ -525,6 +733,43 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
             f"/v3/sessions/{session_id}/scientific-attempts/not-closed/"
             "selections/not-sealed/evidence"
         )
+        qualified_receipts = [
+            json.loads(line)
+            for line in receipt_chain_path.read_text(encoding="utf-8").splitlines()
+        ]
+        validate_canonical_entry_receipts(
+            qualified_receipts,
+            session_id=session_id,
+            workflow_ref=workflow_ref,
+        )
+        qualified_drains = validate_bounded_drain_receipts(
+            qualified_receipts,
+            session_id=session_id,
+        )
+        assert any(
+            receipt["request"]
+            == {
+                "max_signals": 1,
+                "max_steps_per_agent": 16,
+                "auto_enqueue_ready_tasks": False,
+            }
+            for receipt in qualified_drains
+        )
+        authority_receipts = [
+            receipt
+            for receipt in qualified_receipts
+            if receipt["method"] == "POST"
+            and receipt["route"]
+            == (
+                f"/v3/sessions/{session_id}/"
+                "scientific-attempt-authorizations"
+            )
+        ]
+        assert len(authority_receipts) == 1
+        assert len(
+            list(conductor_evidence_root.glob("public-response-*.json"))
+        ) == len(qualified_receipts)
+        assert len(runner_argvs) == runner_calls == len(runner_outputs)
 
     assert created["session_id"] == session_id
     assert posted["session_id"] == session_id
@@ -586,6 +831,28 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
     for relative_path in retired_paths:
         assert not (REPO_ROOT / relative_path).exists()
 
+    exercised_action_pairs = sorted(
+        {" ".join(action[:2]) for action in forwarded_actions}
+    )
+    exercised_drain_cadences = sorted(
+        {
+            (
+                f"{action[action.index('--max-signals') + 1]}/"
+                f"{action[action.index('--max-steps-per-agent') + 1]}"
+            )
+            for action in forwarded_actions
+            if action[:2] == ["runtime", "drain"]
+        }
+    )
+    assert {
+        "runtime drain",
+        "runtime status",
+        "scientific inspect",
+        "sessions events",
+        "sessions show",
+    }.issubset(exercised_action_pairs)
+    assert "1/16" in exercised_drain_cadences
+
     observation = {
         "automatic_commands_absent": all(
             command not in subcommands
@@ -605,11 +872,19 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
                 aox_conductor_execution.publish_conductor_execution_contract,
                 aox_conductor_execution.seal_conductor_retirement_readiness,
                 aox_conductor_execution.load_conductor_retirement_readiness,
+                aox_cutover_cli.run_bound_public_host_command,
+                aox_cutover_cli.run_bound_task_authority_grant,
             )
         ),
-        "public_conductor_strategy_preserved": (
-            public_host_arguments["host_cli_args"].nargs == argparse.REMAINDER
-        ),
+        "public_conductor_passthrough_exercised": {
+            "action_pairs": exercised_action_pairs,
+            "argparse_remainder": (
+                public_host_arguments["host_cli_args"].nargs
+                == argparse.REMAINDER
+            ),
+            "bounded_cadences": exercised_drain_cadences,
+            "forwarded_action_count": len(forwarded_actions),
+        },
         "public_host_cli_receipt_chain_present": {
             "events": "events" in session_commands,
             "pending_approvals": "pending" in approval_commands,
@@ -677,6 +952,17 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
             "late_bound_attempt_id": admitted_attempt["attempt_id"],
             "assignee_bound_actor": admission["actor_ref"],
             "speculative_task_grant_rejected": invalid_grant.status_code >= 400,
+            "contract_schema_id": conductor_contract["schema_id"],
+            "missing_pin_rejected_before_host_call": (
+                missing_pin.value.code == "public_conductor_entry_message_invalid"
+            ),
+            "duplicate_entry_rejected_before_host_call": (
+                duplicate_entry.value.code
+                == "public_conductor_entry_already_closed"
+            ),
+            "canonical_entry_count": 1,
+            "late_bound_authority_receipt_count": len(authority_receipts),
+            "sealed_public_receipt_count": len(qualified_receipts),
             "first_runtime_command_terminal": first_terminal["status"],
             "post_authority_runtime_command_terminals": [
                 item["status"] for item in post_authority_terminals
@@ -688,7 +974,7 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
             "fault_route_fail_closed": fault_rejection.status_code >= 400,
             "export_route_fail_closed": export_rejection.status_code >= 400,
         },
-        "schema_id": "aox_post_r71_fresh_host_composition_qualification@1",
+        "schema_id": "aox_r77_public_entry_contract_qualification@1",
     }
     record_execution_observation_digest(
         "sha256:" + hashlib.sha256(canonical_json_bytes(observation)).hexdigest()

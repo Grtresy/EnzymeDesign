@@ -270,7 +270,7 @@ canonical facts without creating an observer writer or excluding another writer
 from safety checks.
 
 #### Scenario: Observe state only through public facts
-- **WHEN** a Codex test conductor needs to decide whether to send another message, issue one explicit runtime drain, resolve an approved operation, or stop
+- **WHEN** a Codex test conductor needs to decide whether to issue the next explicit runtime drain, perform a public read, resolve an approved operation, or stop after the canonical entry
 - **THEN** it reads the public Host API/CLI projections and makes that test decision outside product runtime; no AOX service registers an observer writer, polls until terminal, or writes a business state on the conductor's behalf
 
 #### Scenario: Preserve atomic attempt scope transitions
@@ -638,13 +638,20 @@ be rejected when rebound, replayed, symlinked, drifted or reused after any
 session/attempt state exists.
 
 Within the session, no operator authority MAY be granted to a speculative task.
-The Codex conductor SHALL first create the session, send the single entry message,
-submit one bounded drain, seal both its public admission response and its one public
-terminal status response, and then seal a public canonical workspace read. That read
-MUST contain exactly one execution task. Only then MAY the operator atomically grant
-the slot authority to that actual task, using the source-derived campaign and policy
-binding; a missing or ambiguous execution task, a pre-grant task id, a second grant,
-or a grant to any other task MUST create no scientific authorization or effect.
+The current `aox_public_conductor_execution_contract@2` SHALL bind the exact session
+creation request and exactly one raw entry-message request whose `skill_keys` contain
+only the preflight-pinned workflow reference. The formal wrapper MUST require those as
+the first two successful public actions, reject a missing/different pin and every later
+session message before calling Host, and treat historical execution contract `@1` as
+read-only and non-admissible for new execution. After the canonical entry, the Codex
+conductor SHALL submit one bounded drain, seal both its public admission response and
+its one public terminal status response, and then seal a public canonical workspace
+read. That read MUST contain exactly one execution task. Only then MAY the operator use
+the dedicated late-bound grant command to atomically grant the slot authority to that
+actual task using the source-derived campaign and policy binding. Generic formal
+`public-host scientific authorize`, a missing or ambiguous execution task, a pre-grant
+task id, a second grant, or a grant to any other task MUST create no scientific
+authorization or effect.
 
 The assigned executor SHALL create a real lane and bind that canonical execution
 task using ordinary lane tools before invoking `attempt.create`. The tool SHALL
@@ -736,15 +743,22 @@ single-linked, locked, fully written and fsynced. A requested final response MAY
 be sealed once as `openzyme_public_host_response@1` only when it reproduces the
 same semantic digest.
 
-Formal preflight SHALL publish one source-bound public conductor execution contract
-that derives the exact Host/project/session binding and relative receipt/response
-evidence names from the consumed slot. The formal public command SHALL inject those
-mechanical bindings, reject caller overrides, and preserve the caller's choice of any
-otherwise-valid public Host action, arguments and bounded cadence. It MUST NOT select
-scientific tools, task strategy, drain count or business terminal state for the agent.
+Formal preflight SHALL publish one source-bound
+`aox_public_conductor_execution_contract@2` that derives the exact
+Host/project/session binding, exact canonical session/entry requests, one pinned
+workflow reference, the dedicated late-bound authority command, public runtime-drain
+bounds, and relative receipt/response evidence names from the consumed slot. Formal
+drains MAY choose any integer `max_signals` and `max_steps_per_agent` accepted by the
+public Host schema (`1..100` for each), but MUST keep
+`auto_enqueue_ready_tasks=false`; historical fixed `1/8` cadence is not an evidence
+contract. After the exact two-action entry has closed, the formal public command SHALL
+inject only the mechanical bindings, reject caller overrides and prohibited entry/
+authority commands, and preserve the caller's choice of every otherwise-valid public
+Host action, arguments and bounded cadence. It MUST NOT select scientific tools, task
+strategy, drain count or business terminal state for the agent.
 
-The receipt chain SHALL attest only actions owned by the Codex conductor: session
-creation, entry message, explicit bounded drain and status reads, the sealed
+The receipt chain SHALL attest only actions owned by the Codex conductor: one exact
+session creation, one exact pinned entry message, explicit bounded drain and status reads, the sealed
 canonical task read, late-bound authority grant,
 pending approval reads/resolutions, the exact fault capability and final canonical
 reads. It MUST reject any conductor receipt for agent-owned
@@ -859,8 +873,20 @@ package and MUST NOT be a production caller.
 - **WHEN** a command or sealed handoff is missing, duplicated, unbounded, semantically drifted, digest-only, privately substituted, test-built, cross-authority, cross-root, cross-attempt or followed by partial output
 - **THEN** finalization fails before destination creation and none of those facts can be relabelled as a closed attempt or campaign decision
 
+#### Scenario: Reject an unpinned or repeated formal entry before Host effect
+- **WHEN** the second formal command omits or changes the preflight-pinned workflow reference, changes the canonical message bytes, or any later command attempts a second session message
+- **THEN** the formal wrapper invokes no Host command, appends no receipt, reserves no response target, and creates no scientific or external effect
+
+#### Scenario: Admit bounded cadence without restoring a fixed driver
+- **WHEN** the conductor selects public drain bounds inside `1..100` with hidden ready-task enqueue disabled, including a cadence other than historical `1/8`
+- **THEN** the command and offline evidence validators accept that bounded request; an out-of-range value, extra field or enabled hidden enqueue fails closed without choosing a replacement cadence
+
+#### Scenario: Reject a historical execution contract for current actions
+- **WHEN** an `aox_public_conductor_execution_contract@1` artifact is presented to the current formal wrapper
+- **THEN** it remains historical read-only evidence and cannot issue a Host action or be silently promoted to `@2`
+
 #### Scenario: Bind the formal authority only to the canonical execution task
-- **WHEN** the first message has produced one sealed bounded drain, its sealed terminal status and a public workspace containing exactly one execution task
+- **WHEN** the single canonical pinned entry has produced one sealed bounded drain, its sealed terminal status and a public workspace containing exactly one execution task
 - **THEN** the operator grant is accepted only for that task and any speculative, absent, duplicate or different task identity creates no scientific authorization or effect
 
 #### Scenario: Bind every terminal handoff to the durable event
@@ -872,8 +898,8 @@ package and MUST NOT be a production caller.
 - **THEN** the supervisor emits a typed retirement refusal and keeps the same Host active so the conductor can perform only the missing public reads; it does not infer or alter the business outcome
 
 #### Scenario: Preserve caller strategy under formal public execution
-- **WHEN** preflight has published the formal execution contract and the conductor selects an otherwise-valid public Host CLI action
-- **THEN** the formal command injects only the exact identity and evidence sinks, rejects rebinding, and forwards the selected action unchanged without imposing a tool sequence, drain count or completion policy
+- **WHEN** preflight has published the formal execution contract, its exact session and single pinned entry are closed, and the conductor selects an otherwise-valid later public Host CLI action
+- **THEN** the formal command injects only the exact identity and evidence sinks, rejects rebinding, and forwards the selected later action unchanged without imposing a scientific tool sequence, drain count or completion policy
 
 ### Requirement: Three-attempt GO campaign
 Local Live cutover SHALL be GO only after one formal acceptance campaign and one exact authority plan produce ordinal 1, 2 and 3 in that order: two consecutive independent positive attempts on the same exact-seven launch identity, followed by one `derived_required_artifact_blob_byte_flip@2` attempt that fails closed. Every session/root/authority-policy/receipt-chain launch identity MUST be non-empty and unique across the three slots; after the public task read and Host finalization, every canonical task/envelope/attempt/lane/admission-request/admission-idempotency/selection identity MUST independently be non-empty and unique across the three real control graphs. No outer launch artifact may supply those late-bound control identities. The fault MUST traverse the real exact-14 NCBI `proteins.fasta` through `aox_hmm_reference_set_selection@1` to derived `AOX_ref21.fasta`, consume the authority-bound public capability before its unique pending MAFFT consumer, and terminate that consumer with exact `artifact_blob_digest_mismatch`. Positive attempts MUST use different clean roots and MUST each prove exact three-task completion, publish a source-linked report, preserve a final answer and pass offline evidence verification. Diagnostic live runs, implementation completion, and non-live test completion MUST NOT be reported as Live completion before all three fresh formal bundles and the sealed reducer decision exist.

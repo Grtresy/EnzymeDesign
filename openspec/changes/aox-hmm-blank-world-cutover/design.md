@@ -1756,6 +1756,38 @@ PID/PGID/start-time握手与退休、空/非空 SQLite/root、MICU漂移、later
 `@2` crossgrade拒绝。该 repair不启动 fresh qualification、preparation、下一 rNN、live、MICU、provider、
 HPC或Chrome；后续验证必须从新 clean commit与全新 preparation/plan开始。
 
+### 2026-08-09 r77 canonical public entry repair
+
+r77 campaign `aox_campaign_bea410774b995ea4a651768b` 已消费一次 authority 并只进入 slot 1
+`formal-slot-b683e4c788ee0ebccf1706d7`。runtime drain 完成，Host 在 retirement readiness 通过后
+安全退休；最终 public workspace 证明 `scientific_attempts=0`、`authorizations=0`、
+`admission_requests=0`，没有 scientific provider/HPC effect，MICU 累计为
+`131,417,219 / 500,000,000`。但 receipt chain 没有同时证明唯一 canonical message 与 exact pinned
+workflow entry，`seal-slot-failure` 因 `formal_slot_failure_public_entry_invalid` 拒绝。缺少合法 failure
+bundle 时不能形成 canonical GO/NO-GO，也不能重试、回填或改写 r77；slot 2/3 未启动，全部已消费
+identity/state/evidence 不可复用。
+
+前向 execution contract 升级为 `aox_public_conductor_execution_contract@2`。它从 preflight 唯一
+`workflow_ref` 派生 exact session-create request、raw canonical entry message、单元素 `skill_keys`、
+`entry_message_count=1`、专用 `grant-task-authority` 命令和公开 drain 上下界。formal wrapper 在任何 Host
+调用和 response target 消费前验证顺序：receipt 为空时只接受 exact session create；成功后只接受 exact
+pinned entry；入口闭合后拒绝任何第二条 session message，并拒绝 generic
+`public-host scientific authorize`。历史 `@1` 只读、non-admissible，不允许 silent crossgrade。
+
+入口之后的科学策略仍由 Codex 测试员决定。runtime drain 只要求 public Host schema 的整数闭集
+`max_signals=1..100`、`max_steps_per_agent=1..100` 与
+`auto_enqueue_ready_tasks=false`，不再把历史 `1/8` 当作 evidence truth。专用 authority grant 只在
+receipt chain 已封存 bounded drain admission、对应唯一 terminal status 和 mutation 后唯一 workspace，
+且 workspace 中只有一个 caller 明确选择的 execution task 时，才从 consumed slot 派生 canonical payload
+与 idempotency key；它不猜 task、不自动 grant，也不选择后续 drain。
+
+为避免 formal failure 继续复制并漂移 positive bundle 的入口规则，exact session/message 与 bounded drain
+验证提取到纯 `aox_public_conductor_contract` 模块，由 public bundle、retirement readiness、pre-grant 与
+formal slot-failure reconstruction 共用。production-composition qualification 同步验证 `@2`、缺 pin 与
+第二条 message 在 Host 前零 receipt/零调用失败、非 `1/8` 合法 bounded cadence，以及 source-derived
+late-bound grant。本修复只运行 non-live 验证，不回填 r77、不启动 qualification、slot 2/3、下一 rNN、
+live、MICU、provider、HPC 或 Chrome，也不在未获明确要求时提交。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

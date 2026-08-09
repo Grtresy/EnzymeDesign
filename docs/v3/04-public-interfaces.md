@@ -602,12 +602,19 @@ source-bound public facts。chain/record/response均有固定byte与cardinality�
 写进封存证据，且与2xx使用同一full-write/fsync/no-replace合同。
 
 正式 AOX slot 不要求 Codex 为每条普通 `openzyme` 命令手工重复上述两个参数。`preflight`
-同时发布 source-bound、只含相对证据名的 `aox_public_conductor_execution_contract@1`；
-`public-host` 从该合同和 exact Host startup receipt解析 loopback endpoint、session/project identity、
-唯一 receipt chain 与 response target，再把调用者自由选择的其余参数原样交给 thin Host CLI。
-调用者不能覆盖 Host、identity、format、receipt 或 response binding；每个真正发出的 public response
-因此恰有一条 receipt 和一个 `openzyme_public_host_response@1`。该入口不选择 action、不循环、不
-自动 approval，也不解释业务状态。
+同时发布 source-bound、只含相对证据名的 `aox_public_conductor_execution_contract@2`。除 loopback
+Host、session/project、唯一 receipt chain 与 response target 外，current contract还绑定 exact session
+create request、raw canonical entry message、preflight唯一 pinned `workflow_ref`、
+`entry_message_count=1`、专用 `grant-task-authority` 与 public runtime-drain bounds。历史 `@1`只读，
+不能驱动 current public action或silent crossgrade。
+
+`public-host` 在 Host 调用前读取现有 chain：空 chain只接受 exact session create；成功的 sequence 1
+之后只接受 exact message与单元素 pinned `skill_keys`；sequence 2闭合后拒绝任何第二条message。
+generic `public-host scientific authorize`也被拒绝，authority只能由专用命令从sealed pre-grant facts派生。
+缺pin、message bytes drift、重复entry或legacy contract均不调用Host、不追加receipt，也不消费response
+label。入口闭合后，调用者仍自由选择其余合法public action与bounded cadence；wrapper只机械注入
+identity/evidence binding。每个真正发出的 public response 因此恰有一条 receipt 和一个
+`openzyme_public_host_response@1`。该入口不选择科学 action、不循环、不自动 approval，也不解释业务状态。
 
 closed evidence route 只导出 exact session 中已 closed attempt 的 exact sealed selection。
 formal positive 还必须存在且通过 persisted `aox_final_deliverable_validation_receipt@1`；
@@ -626,6 +633,16 @@ transition 只由 closed control、workspace、events 与 export 证明。每个
 后者必须与唯一`runtime.command.finished` event在command identity/type、status、completion、
 bounded outcome及safe error/retry字段上exact相同。digest-only GET receipt、unsealed/synthetic或
 extra handoff都不是terminal proof；stdout JSON handoff 必须 flush。
+
+formal drain request只接受public Host schema闭集：`max_signals`与`max_steps_per_agent`均为
+`1..100`整数，`auto_enqueue_ready_tasks=false`，不得出现额外字段。历史 bundle曾写死的`1/8`只是一次
+cadence，不是current evidence truth；合法`2/16`等bounded选择必须由command、readiness、positive与
+failure validator一致接受，越界或hidden enqueue则fail closed且不替agent选择替代值。
+
+`grant-task-authority`要求entry已经闭合，每个既有drain都有sealed admission与唯一terminal response，
+并且mutation后的唯一sealed workspace中恰有一个caller明确指定的execution task。命令只从consumed
+slot派生canonical authorization payload与idempotency key，然后经thin public
+`scientific authorize`调用Host；missing/ambiguous/wrong task、第二次grant或已有未封存response全部拒绝。
 
 Host 退休前，`seal-conductor-state` 必须从同一 evidence root 重新验证完整 receipt chain 与所有
 `public-response-*` envelopes，要求每条 receipt 恰有一个封存 response、每个 bounded drain 都有

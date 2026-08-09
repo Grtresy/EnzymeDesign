@@ -29,9 +29,6 @@ from .aox_host_supervision import HOST_SUPERVISION_FILENAME
 from .aox_host_supervision import validate_supervised_host_pre_ready_failure
 from .aox_host_supervision import validate_supervised_host_receipt
 from .aox_public_conductor_bundle import PUBLIC_CONDUCTOR_BUNDLE_FILENAME
-from .aox_public_conductor_bundle import PUBLIC_CONDUCTOR_MESSAGE
-from .aox_public_conductor_bundle import PUBLIC_CONDUCTOR_OBJECTIVE
-from .aox_public_conductor_bundle import PUBLIC_CONDUCTOR_TITLE
 from .aox_public_conductor_bundle import _content_digest
 from .aox_public_conductor_bundle import _load_canonical_object
 from .aox_public_conductor_bundle import _load_receipt_chain
@@ -39,6 +36,8 @@ from .aox_public_conductor_bundle import _load_response_envelope
 from .aox_public_conductor_bundle import _validate_events
 from .aox_public_conductor_bundle import _validate_runtime_command_handoffs
 from .aox_public_conductor_bundle import _validate_startup
+from .aox_public_conductor_contract import validate_bounded_drain_receipts
+from .aox_public_conductor_contract import validate_canonical_entry_receipts
 
 
 FORMAL_SLOT_FAILURE_SCHEMA_ID = "aox_formal_slot_failure@2"
@@ -633,38 +632,12 @@ def _build_payload(
         allow_failure_responses=True,
     )
     session_id = str(slot["session_id"])
-    session_receipts = [
-        receipt
-        for receipt in receipts
-        if receipt.get("method") == "POST"
-        and receipt.get("route") == "/v3/sessions"
-        and receipt.get("request")
-        == {
-            "session_id": session_id,
-            "project_id": "aox-blank-world-cutover",
-            "objective": PUBLIC_CONDUCTOR_OBJECTIVE,
-            "title": PUBLIC_CONDUCTOR_TITLE,
-        }
-    ]
-    message_receipts = [
-        receipt
-        for receipt in receipts
-        if receipt.get("method") == "POST"
-        and receipt.get("route") == f"/v3/sessions/{session_id}/messages"
-        and receipt.get("request")
-        == {
-            "message_digest": _content_digest(PUBLIC_CONDUCTOR_MESSAGE.encode()),
-            "skill_keys": [identity["workflow_ref"]],
-            "task_id": None,
-            "lane_id": None,
-        }
-    ]
-    if len(session_receipts) != 1 or len(message_receipts) != 1:
-        _fail(
-            "formal_slot_failure_public_entry_invalid",
-            "formal slot failure does not bind one canonical public entry",
-            identity="receipt_chain",
-        )
+    validate_canonical_entry_receipts(
+        receipts,
+        session_id=session_id,
+        workflow_ref=identity["workflow_ref"],
+        code="formal_slot_failure_public_entry_invalid",
+    )
     forbidden_fragments = {
         "scientific-attempt-commands",
         "scientific-attempt-admissions/finalize",
@@ -753,12 +726,11 @@ def _build_payload(
         receipts=receipts,
         evidence_root=evidence_root,
     )
-    drains = [
-        receipt
-        for receipt in receipts
-        if receipt.get("method") == "POST"
-        and receipt.get("route") == f"/v3/sessions/{session_id}/runtime/drain"
-    ]
+    drains = validate_bounded_drain_receipts(
+        receipts,
+        session_id=session_id,
+        code="formal_slot_failure_drain_request_invalid",
+    )
     statuses = [
         receipt
         for receipt in receipts

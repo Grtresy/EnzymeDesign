@@ -1123,9 +1123,11 @@ reachability/qualification证明，不写回 Host runtime config。
 fresh exact plan/consumption
   -> atomic one-use slot claim（先于任何 root）
   -> preflight 验证全部 identity 后才创建唯一 private root
-  -> source-bound conductor execution contract
+  -> source-bound conductor execution contract@2（exact session + one pinned entry）
   -> policy-free supervised loopback Host
-  -> Codex 经 formal public-host 逐步选择 message/drain/status/approval/read APIs
+  -> formal public-host 先闭合 exact session create 与唯一 pinned message
+  -> Codex 再逐步选择 drain/status/approval/read APIs
+  -> sealed terminal + unique execution-task workspace 后专用 late-bound grant
   -> 自动绑定的 append-only receipt chain 与 sealed responses
   -> Host public canonical control/events/product-closure export
   -> retirement-readiness seal（先于操作员退休 Host）
@@ -1135,9 +1137,12 @@ fresh exact plan/consumption
 ```
 
 `serve-attempt` 只监督固定 Host process group，不发送业务命令或判断 terminal；Host 继续独占
-canonical state、approval、fencing、effect、quiescence 与隔离。preflight发布的 execution contract
-不含绝对路径或业务策略，只让 `public-host` 对调用者选择的任意合法 public command机械绑定同一
-Host/session、receipt chain 与一次 sealed response。closed evidence export 要求
+canonical state、approval、fencing、effect、quiescence 与隔离。preflight发布的 current
+`aox_public_conductor_execution_contract@2` 不含绝对路径或科学策略，但精确绑定 session create、
+raw canonical message、唯一 pinned `workflow_ref`、入口 cardinality、专用 late-bound grant 和公开
+drain 上下界。`public-host` 在 Host 调用前强制前两项，入口闭合后拒绝第二条 message 与 generic formal
+authorize；其余合法 public command 只机械绑定同一 Host/session、receipt chain 与一次 sealed response，
+推进节奏仍由 Codex 选择。历史 execution contract `@1` 只读且不能驱动新动作。closed evidence export 要求
 exact session/closed attempt/sealed selection，positive 还要重验 source-bound 17-deliverable
 receipt并经 artifact boundary读取 sealed bytes。finalizer 在任何输出前闭合 identity、
 preflight、startup/retirement、public receipt chain、final workspace/events/evidence 与 MICU
@@ -1169,10 +1174,12 @@ provider、HPC 或 Chrome。
 public receipt chain 不再伪装 Codex conductor 发出了 agent-owned scientific mutation 或
 Host-owned admission/closure finalization。`scientific-attempt-commands`、admission finalizer 和
 closure finalizer 一旦出现在 conductor receipt 中，offline finalizer 必须以
-`public_conductor_actor_boundary_invalid` 拒绝。receipt 只闭合 session create、entry message、
+`public_conductor_actor_boundary_invalid` 拒绝。receipt 只闭合 exact session create、唯一 pinned entry message、
 authority grant、显式 bounded drain/status、pending approval/resolve、fault capability 与最终
 workspace/events/export reads；每个 drain 必须在下一 drain 或最终读取前得到 terminal command
-status，CLI handoff 使用 flushed JSON stdout。
+status，CLI handoff 使用 flushed JSON stdout。drain evidence 接受 public schema 内的
+`max_signals=1..100`、`max_steps_per_agent=1..100` 且固定
+`auto_enqueue_ready_tasks=false`；历史 `1/8` 不是 current evidence contract。
 
 agent 与 Host 的真实转换由 `aox_closed_attempt_evidence@2` 证明。其
 `aox_public_product_closure@1` 必须与最终 public workspace 和完整 event replay 一致，并固定
@@ -1252,11 +1259,11 @@ current launch contract进一步删除 pre-task shadow truth：
 formal plan@3 / consumption@4
   -> slot claim@3(campaign, ordinal, session, root, authority policy)
   -> root proof@3 / preflight@4 / Host supervision@3
-  -> public session create + entry message
+  -> public exact session create + one canonical pinned entry message
   -> bounded drain admission response（sealed）
   -> terminal command status（sealed + runtime.command.finished exact binding）
   -> public canonical workspace（exact one execution task）
-  -> operator scientific authority late-bound to that task
+  -> dedicated operator scientific authority grant late-bound to that task
   -> executor lane.create / lane.bind_task / attempt.create
   -> Host late-bound admission/attempt + canonical owner wake
   -> public inspect/export -> conductor bundle@3 -> offline verifier/reducer
@@ -1478,6 +1485,27 @@ formal zero-attempt failure current schema为 discriminated `aox_formal_slot_fai
 固定 `acceptance_eligible=false`、`state_reusable=false`、zero attempt与no-effect typed cause。历史
 `aox_formal_slot_failure@1`仅只读验证旧 public-Host shape，不接受crossgrade。offline verifier/reducer
 仍是唯一 canonical NO-GO权威；本 repair完成只表示等待全新 validation，不构成 GO或下一 rNN授权。
+
+### 9.14 r77 唯一 pinned public entry 与 late-bound grant
+
+r77 只消费并运行 slot 1。Host 在 `aox_public_conductor_retirement_readiness@1` 通过后安全退休，final
+workspace 为 zero attempt/authorization/admission，且没有 provider/HPC scientific effect；但 public
+receipt chain 缺少唯一 canonical message 与 pinned workflow entry，因而以
+`formal_slot_failure_public_entry_invalid` 拒绝 failure seal。没有合法 failure bundle 就没有 canonical
+GO/NO-GO；r77、slot 2/3 与其 frozen evidence 均不得重试、回填或改写。
+
+current `aox_public_conductor_execution_contract@2` 把 mechanical entry 真值从操作员记忆收回 source-bound
+contract：第一条成功 public action 只能是 exact session create，第二条只能是 raw canonical message 加
+preflight 唯一 `workflow_ref`，后续任何 session message 都在 Host 调用和 receipt/response 写入前拒绝。
+generic `public-host scientific authorize` 同样拒绝；专用 `grant-task-authority` 只能从已封存的 bounded
+drain admission、唯一 terminal response 与 post-mutation workspace 中验证 caller 指定的唯一 execution
+task，再用 consumed slot 派生 canonical grant payload/idempotency key。历史 contract `@1` 只读且不能执行。
+
+这条 guard 只固定正式测试不可变化的入口与 authority 真实性，不固定 scientific action、drain 次数或
+推进策略。每次 drain 可在 public Host 的 `1..100` signals/steps 闭集中选择，必须关闭 hidden ready-task
+enqueue；positive/failure/readiness 共同复用纯 canonical-entry/drain validator，历史写死 `1/8` 的 bundle
+判断已删除。non-live qualification 对缺 pin、第二条 message、legacy `@1`、合法非 `1/8` cadence 和
+late-bound grant 做 production composition 证明；它本身不授权 fresh qualification、下一 rNN 或 live。
 
 ---
 

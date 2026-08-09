@@ -25,6 +25,7 @@ from .aox_architecture_qualification import (
     verify_aox_architecture_qualification_report,
 )
 from .aox_attempt_authority import build_aox_attempt_authority_plan
+from .aox_attempt_authority import authority_grant_payload
 from .aox_attempt_authority import claim_aox_attempt_authority_slot
 from .aox_attempt_authority import consume_aox_attempt_authority_plan
 from .aox_attempt_authority import attempt_authority_consumption_path
@@ -38,12 +39,14 @@ from .aox_attempt_preflight import publish_attempt_slot_claim_evidence
 from .aox_conductor_execution import (
     CONDUCTOR_RETIREMENT_READINESS_FILENAME,
 )
+from .aox_conductor_execution import bound_public_response_path
 from .aox_conductor_execution import load_active_public_host_context
 from .aox_conductor_execution import load_conductor_retirement_readiness
-from .aox_conductor_execution import public_response_path
 from .aox_conductor_execution import publish_conductor_execution_contract
 from .aox_conductor_execution import retirement_readiness_sources
+from .aox_conductor_execution import resolve_pregrant_execution_task
 from .aox_conductor_execution import seal_conductor_retirement_readiness
+from .aox_conductor_execution import validate_public_host_command
 from .aox_cutover_evidence import AttemptRunRecord
 from .aox_cutover_evidence import create_blank_world_roots
 from .aox_cutover_evidence import CutoverEvidenceError
@@ -895,16 +898,7 @@ def _serve_attempt(args: argparse.Namespace) -> int:
     return 0
 
 
-def _public_host(args: argparse.Namespace) -> int:
-    forwarded = list(args.host_cli_args)
-    if forwarded and forwarded[0] == "--":
-        forwarded = forwarded[1:]
-    if not forwarded:
-        raise CutoverEvidenceError(
-            "public_conductor_command_missing",
-            "public-host requires one thin Host CLI command after --",
-            details={"identity": "host_cli_args"},
-        )
+def _validate_public_host_overrides(forwarded: list[str]) -> None:
     controlled = {
         "--host",
         "--project-id",
@@ -923,29 +917,150 @@ def _public_host(args: argparse.Namespace) -> int:
             "public-host owns Host, identity, format, receipt, and response binding",
             details={"identity": "host_cli_args"},
         )
+
+
+def _run_bound_host_cli(
+    *,
+    contract: dict[str, object],
+    startup: dict[str, object],
+    evidence_root: Path,
+    response_name: str,
+    forwarded: list[str],
+    host_cli_runner=None,
+) -> int:
+    _validate_public_host_overrides(forwarded)
+    response_path = bound_public_response_path(
+        evidence_root=evidence_root,
+        contract=contract,
+        response_name=response_name,
+    )
+    runner = run_host_cli if host_cli_runner is None else host_cli_runner
+    return int(
+        runner(
+            [
+                "--host",
+                str(startup["base_url"]),
+                "--project-id",
+                str(contract["project_id"]),
+                "--session-id",
+                str(contract["session_id"]),
+                "--format",
+                "json",
+                "--receipt-chain",
+                str(evidence_root / str(contract["receipt_chain_name"])),
+                "--seal-response",
+                str(response_path),
+                *forwarded,
+            ]
+        )
+    )
+
+
+def run_bound_public_host_command(
+    *,
+    contract: dict[str, object],
+    startup: dict[str, object],
+    evidence_root: Path,
+    response_name: str,
+    forwarded: list[str],
+    host_cli_runner=None,
+) -> int:
+    _validate_public_host_overrides(forwarded)
+    validate_public_host_command(
+        contract=contract,
+        evidence_root=evidence_root,
+        forwarded=forwarded,
+    )
+    return _run_bound_host_cli(
+        contract=contract,
+        startup=startup,
+        evidence_root=evidence_root,
+        response_name=response_name,
+        forwarded=forwarded,
+        host_cli_runner=host_cli_runner,
+    )
+
+
+def run_bound_task_authority_grant(
+    *,
+    preflight: dict[str, object],
+    contract: dict[str, object],
+    startup: dict[str, object],
+    evidence_root: Path,
+    response_name: str,
+    task_id: str,
+    host_cli_runner=None,
+) -> int:
+    resolve_pregrant_execution_task(
+        preflight=preflight,
+        contract=contract,
+        evidence_root=evidence_root,
+        task_id=task_id,
+    )
+    slot = dict(preflight["slot"])
+    payload = authority_grant_payload(
+        slot,
+        campaign_id=str(preflight["campaign_id"]),
+        task_id=task_id,
+    )
+    payload_json = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    idempotency_key = str(dict(slot["authority_policy"])["idempotency_key"])
+    return _run_bound_host_cli(
+        contract=contract,
+        startup=startup,
+        evidence_root=evidence_root,
+        response_name=response_name,
+        forwarded=[
+            "scientific",
+            "authorize",
+            "--payload-json",
+            payload_json,
+            "--idempotency-key",
+            idempotency_key,
+        ],
+        host_cli_runner=host_cli_runner,
+    )
+
+
+def _public_host(args: argparse.Namespace) -> int:
+    forwarded = list(args.host_cli_args)
+    if forwarded and forwarded[0] == "--":
+        forwarded = forwarded[1:]
+    if not forwarded:
+        raise CutoverEvidenceError(
+            "public_conductor_command_missing",
+            "public-host requires one thin Host CLI command after --",
+            details={"identity": "host_cli_args"},
+        )
+    _validate_public_host_overrides(forwarded)
     _, contract, startup, evidence_root = load_active_public_host_context(
         args.preflight_receipt
     )
-    response_path = public_response_path(
-        args.preflight_receipt,
-        args.response_name,
+    return run_bound_public_host_command(
+        contract=contract,
+        startup=startup,
+        evidence_root=evidence_root,
+        response_name=args.response_name,
+        forwarded=forwarded,
     )
-    return run_host_cli(
-        [
-            "--host",
-            str(startup["base_url"]),
-            "--project-id",
-            str(contract["project_id"]),
-            "--session-id",
-            str(contract["session_id"]),
-            "--format",
-            "json",
-            "--receipt-chain",
-            str(evidence_root / contract["receipt_chain_name"]),
-            "--seal-response",
-            str(response_path),
-            *forwarded,
-        ]
+
+
+def _grant_task_authority(args: argparse.Namespace) -> int:
+    preflight, contract, startup, evidence_root = load_active_public_host_context(
+        args.preflight_receipt
+    )
+    return run_bound_task_authority_grant(
+        preflight=preflight,
+        contract=contract,
+        startup=startup,
+        evidence_root=evidence_root,
+        response_name=args.response_name,
+        task_id=args.task_id,
     )
 
 
@@ -1384,6 +1499,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="thin Host CLI command after --; scientific strategy remains caller-owned",
     )
     public_host.set_defaults(handler=_public_host)
+
+    grant_task_authority = subparsers.add_parser(
+        "grant-task-authority",
+        help=(
+            "bind the consumed formal authority to one explicitly selected "
+            "canonical execution task after its sealed public read"
+        ),
+    )
+    _required_path_arguments(grant_task_authority, "preflight_receipt")
+    grant_task_authority.add_argument(
+        "--response-name",
+        required=True,
+        help="unique lowercase label for the sealed public authority response",
+    )
+    grant_task_authority.add_argument(
+        "--task-id",
+        required=True,
+        help="execution task id read from the unique sealed pre-grant workspace",
+    )
+    grant_task_authority.set_defaults(handler=_grant_task_authority)
 
     seal_conductor_state = subparsers.add_parser(
         "seal-conductor-state",

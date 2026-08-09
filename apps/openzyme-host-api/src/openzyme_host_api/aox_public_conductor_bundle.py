@@ -56,6 +56,17 @@ from .aox_host_supervision import (
 from .aox_selected_chain_evidence import _verify_selected_chain_control
 from .aox_public_product_closure import AoxPublicProductClosureError
 from .aox_public_product_closure import validate_aox_public_product_closure
+from .aox_public_conductor_contract import (
+    PUBLIC_CONDUCTOR_MESSAGE as PUBLIC_CONDUCTOR_MESSAGE,
+)
+from .aox_public_conductor_contract import (
+    PUBLIC_CONDUCTOR_OBJECTIVE as PUBLIC_CONDUCTOR_OBJECTIVE,
+)
+from .aox_public_conductor_contract import (
+    PUBLIC_CONDUCTOR_TITLE as PUBLIC_CONDUCTOR_TITLE,
+)
+from .aox_public_conductor_contract import validate_bounded_drain_receipts
+from .aox_public_conductor_contract import validate_canonical_entry_receipts
 
 
 PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID = "aox_public_conductor_bundle@3"
@@ -63,16 +74,6 @@ PUBLIC_API_RECEIPT_SCHEMA_ID = "openzyme_public_api_receipt@2"
 PUBLIC_RESPONSE_ENVELOPE_SCHEMA_ID = "openzyme_public_host_response@1"
 PUBLIC_CONDUCTOR_ATTESTATION_DIR = "aox-public-conductor"
 PUBLIC_CONDUCTOR_BUNDLE_FILENAME = "attempt-bundle.json"
-PUBLIC_CONDUCTOR_OBJECTIVE = (
-    "Run the canonical blank-world AOX/HMM product path and publish "
-    "a source-linked scientific report."
-)
-PUBLIC_CONDUCTOR_TITLE = "AOX blank-world formal"
-PUBLIC_CONDUCTOR_MESSAGE = (
-    "Execute the pinned AOX/HMM workflow under the exact scientific-attempt "
-    "authority. Use only public Host tools, resolve approvals explicitly, "
-    "close the selected chain, and publish the source-linked report."
-)
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _ANY = object()
@@ -686,28 +687,14 @@ def _validate_receipt_chain(
         return matches[0]
 
     core_code = "public_conductor_command_chain_invalid"
-    session_receipt = consume(
-            "POST",
-            "/v3/sessions",
-            {
-                "session_id": session_id,
-                "project_id": "aox-blank-world-cutover",
-                "objective": PUBLIC_CONDUCTOR_OBJECTIVE,
-                "title": PUBLIC_CONDUCTOR_TITLE,
-            },
-            code=core_code,
-        )
-    message_receipt = consume(
-            "POST",
-            f"/v3/sessions/{session_id}/messages",
-            {
-                "message_digest": _content_digest(PUBLIC_CONDUCTOR_MESSAGE.encode()),
-                "skill_keys": [identity["workflow_ref"]],
-                "task_id": None,
-                "lane_id": None,
-            },
-            code=core_code,
-        )
+    session_receipt, message_receipt = validate_canonical_entry_receipts(
+        records,
+        session_id=session_id,
+        workflow_ref=identity["workflow_ref"],
+        code=core_code,
+    )
+    remaining.remove(session_receipt)
+    remaining.remove(message_receipt)
     grant_receipt = consume(
         "POST",
         routes["grant"],
@@ -734,17 +721,11 @@ def _validate_receipt_chain(
         )
         for approval_id in sorted(approval_ids)
     ]
-    drain_request = {
-        "max_signals": 1,
-        "max_steps_per_agent": 8,
-        "auto_enqueue_ready_tasks": False,
-    }
-    drains = [
-        item
-        for item in remaining
-        if (item.get("method"), item.get("route"), item.get("request"))
-        == ("POST", routes["drain"], drain_request)
-    ]
+    drains = validate_bounded_drain_receipts(
+        remaining,
+        session_id=session_id,
+        code="public_conductor_command_chain_invalid",
+    )
     statuses = [
         item
         for item in remaining

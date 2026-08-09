@@ -360,13 +360,43 @@ def test_automatic_live_commands_are_absent() -> None:
     assert "consume-diagnostic-authority" not in subcommands
 
 
-def test_public_host_owns_receipt_response_and_formal_identity(
+@pytest.mark.parametrize(
+    "forwarded",
+    [
+        pytest.param(["sessions", "show"], id="workspace-read"),
+        pytest.param(
+            ["sessions", "events", "--after-cursor", "0"],
+            id="event-read",
+        ),
+        pytest.param(["approvals", "pending"], id="approval-read"),
+        pytest.param(["scientific", "inspect"], id="scientific-read"),
+        pytest.param(
+            ["runtime", "status", "--command-id", "runtime-command-test"],
+            id="runtime-status",
+        ),
+        pytest.param(
+            [
+                "runtime",
+                "drain",
+                "--max-signals",
+                "2",
+                "--max-steps-per-agent",
+                "16",
+                "--idempotency-key",
+                "strategy:drain",
+            ],
+            id="nonhistorical-drain",
+        ),
+    ],
+)
+def test_public_host_injects_formal_identity_and_preserves_strategy_action(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    forwarded: list[str],
 ) -> None:
     preflight = tmp_path / "aox-attempt-preflight.json"
     response = tmp_path / "public-response-final-workspace.json"
-    captured: dict[str, object] = {}
+    observed: dict[str, object] = {}
     monkeypatch.setattr(
         cli,
         "load_active_public_host_context",
@@ -381,20 +411,31 @@ def test_public_host_owns_receipt_response_and_formal_identity(
             tmp_path,
         ),
     )
-    monkeypatch.setattr(cli, "public_response_path", lambda *args: response)
+    monkeypatch.setattr(
+        cli,
+        "bound_public_response_path",
+        lambda **kwargs: response,
+    )
+    monkeypatch.setattr(
+        cli,
+        "validate_public_host_command",
+        lambda **kwargs: observed.update(validation=kwargs),
+    )
     monkeypatch.setattr(
         cli,
         "run_host_cli",
-        lambda argv: captured.update(argv=argv) or 0,
+        lambda argv: observed.update(argv=argv) or 0,
     )
     args = SimpleNamespace(
         preflight_receipt=preflight,
         response_name="final-workspace",
-        host_cli_args=["--", "sessions", "show"],
+        host_cli_args=["--", *forwarded],
     )
 
     assert cli._public_host(args) == 0
-    assert captured["argv"] == [
+    validation = dict(observed["validation"])
+    assert validation["forwarded"] == forwarded
+    assert observed["argv"] == [
         "--host",
         "http://127.0.0.1:41234",
         "--project-id",
@@ -407,8 +448,7 @@ def test_public_host_owns_receipt_response_and_formal_identity(
         str(tmp_path / "public-api-receipts.jsonl"),
         "--seal-response",
         str(response),
-        "sessions",
-        "show",
+        *forwarded,
     ]
 
 
@@ -423,6 +463,85 @@ def test_public_host_rejects_evidence_and_identity_overrides(tmp_path: Path) -> 
         cli._public_host(args)
 
     assert error.value.code == "public_conductor_command_boundary_invalid"
+
+
+def test_late_bound_grant_derives_canonical_public_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy = {
+        "workflow_id": "aox_blank_world",
+        "grantor_kind": "operator",
+        "grantor_ref": "operator:aox-cutover",
+        "allowed_scopes": ["formal"],
+        "allowed_effect_classes": ["hpc", "provider"],
+        "allowed_providers": ["aox-provider-routes@test"],
+        "allowed_hpc_targets": ["aox-hpc-routes@test"],
+        "max_attempts": 1,
+        "max_micu": 100,
+        "max_cost_microunits": 1000,
+        "max_wall_time_seconds": 600,
+        "expires_at": "2099-01-01T00:00:00+00:00",
+        "idempotency_key": "aox_campaign_test:authority:1",
+    }
+    slot = {
+        "session_id": "session-formal",
+        "root_ref": "formal-slots/aox_campaign_test/1/fixture",
+        "authority_policy": policy,
+    }
+    preflight = {"campaign_id": "aox_campaign_test", "slot": slot}
+    contract = {
+        "project_id": "aox-blank-world-cutover",
+        "session_id": "session-formal",
+        "receipt_chain_name": "public-api-receipts.jsonl",
+        "retirement_readiness_name": (
+            "aox-public-conductor-retirement-readiness.json"
+        ),
+    }
+    startup = {"base_url": "http://127.0.0.1:41234"}
+    response = tmp_path / "public-response-authority-grant.json"
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli,
+        "resolve_pregrant_execution_task",
+        lambda **kwargs: observed.update(binding=kwargs)
+        or {"task_id": "task_execution", "kind": "execution"},
+    )
+    monkeypatch.setattr(
+        cli,
+        "bound_public_response_path",
+        lambda **kwargs: response,
+    )
+
+    result = cli.run_bound_task_authority_grant(
+        preflight=preflight,
+        contract=contract,
+        startup=startup,
+        evidence_root=tmp_path,
+        response_name="authority-grant",
+        task_id="task_execution",
+        host_cli_runner=lambda argv: observed.update(argv=argv) or 0,
+    )
+
+    assert result == 0
+    binding = dict(observed["binding"])
+    assert binding["task_id"] == "task_execution"
+    argv = list(observed["argv"])
+    command_index = argv.index("scientific")
+    assert argv[command_index : command_index + 2] == [
+        "scientific",
+        "authorize",
+    ]
+    payload_index = argv.index("--payload-json") + 1
+    assert json.loads(argv[payload_index]) == cli.authority_grant_payload(
+        slot,
+        campaign_id="aox_campaign_test",
+        task_id="task_execution",
+    )
+    assert argv[-2:] == [
+        "--idempotency-key",
+        "aox_campaign_test:authority:1",
+    ]
 
 
 def test_serve_attempt_refuses_retirement_then_reuses_same_host_lease(

@@ -3377,10 +3377,12 @@ active mutation writer 均通过，但退休后公开读取面已经消失，无
 source。它因此不是“看见失败却拒绝 NO-GO”，而是缺少 offline reducer 所需 canonical source 的
 formal evidence blocker；r74 全部 state 不可复用。
 
-前向路径由 `preflight` 发布 `aox_public_conductor_execution_contract@1`。Codex 仍自由选择任意合法
-public Host action、参数与 bounded cadence，但必须经 `public-host` 执行；该入口只机械绑定 exact
-Host/project/session、唯一 receipt chain 与一次 response target，并在动作前拒绝已消费的 response
-label。每条 2xx 或已脱敏 4xx/5xx 都保留一一对应的封存 envelope。
+前向路径当时由 `preflight` 发布 `aox_public_conductor_execution_contract@1`；该 schema 现为历史只读，
+不能执行 current action。current `@2` 在保留 exact Host/project/session、唯一 receipt chain 与一次
+response target机械绑定的同时，新增 exact session create、唯一 raw canonical message + pinned
+workflow entry、专用 late-bound grant 和 public drain bounds。入口闭合后 Codex 仍自由选择其余合法
+public Host action、参数与 bounded cadence。每条真正发出的 2xx 或已脱敏 4xx/5xx 都保留一一对应的
+封存 envelope。
 
 操作员退休前，`seal-conductor-state` 重算完整 chain、response coverage、bounded drain terminal
 event 与 mutation 后 final reads，封存 `aox_public_conductor_retirement_readiness@1`。readiness 缺失
@@ -3450,3 +3452,42 @@ supervision/fatal/public receipt/attempt bundle共存。历史`@1`只读验证�
 crossgrade或发射pre-ready branch。non-live修复通过并提交后仍只处于
 `repair_complete_awaiting_validation`；任何后续R系列必须从新clean commit、fresh qualification/pin/plan
 与新的精确授权开始。
+
+### 2026-08-09 r77 canonical public entry evidence blocker 与前向闭合
+
+r77 campaign `aox_campaign_bea410774b995ea4a651768b` 只进入 slot 1
+`formal-slot-b683e4c788ee0ebccf1706d7`，session 为
+`sess_aox_formal_bbaa24668f4d566eb399e4af63efb321`。authority 已消费一次，runtime drain完成，Host在
+retirement readiness通过后安全退休；final workspace为`scientific_attempts=0`、
+`authorizations=0`、`admission_requests=0`，无scientific provider/HPC effect，MICU累计
+`131,417,219 / 500,000,000`。但public receipt chain缺少可同时证明唯一canonical message与pinned
+workflow entry的exact sequence，slot failure以`formal_slot_failure_public_entry_invalid`停止。没有合法
+failure bundle就不能形成canonical GO/NO-GO；slot 2/3未启动，r77 frozen plan/root/session/receipt不得
+重试、回填、改写或进入successor。
+
+前向合同升级为`aox_public_conductor_execution_contract@2`。它从
+`aox_attempt_preflight@5.root_proof.allowed_prerequisites.workflow_ref`唯一派生：
+
+- exact session create objective/title/project/session；
+- raw `PUBLIC_CONDUCTOR_MESSAGE`与单元素pinned `skill_keys`，固定`entry_message_count=1`；
+- `openzyme-aox-cutover grant-task-authority`专用late-bound grant；
+- `max_signals=1..100`、`max_steps_per_agent=1..100`、
+  `auto_enqueue_ready_tasks=false`的public drain constraints；
+- 唯一receipt chain、sealed response命名与retirement-readiness相对路径。
+
+formal `public-host`在Host调用前检查current chain：空chain只接受exact session create；sequence 1成功后
+只接受exact pinned entry；entry闭合后任何第二条message都以
+`public_conductor_entry_already_closed`拒绝。缺pin/message drift同样不调用Host、不追加receipt、不消费
+response label。generic formal `scientific authorize`被拒绝；专用grant要求所有pre-grant receipt都有
+sealed response，至少一个bounded drain拥有exact admission与唯一terminal status，mutation后恰有一个
+sealed workspace且caller `task_id`是其中唯一execution task，再从consumed slot派生payload与
+idempotency key。它不自动grant，也不替Codex选择task或推进策略。历史execution contract`@1`只读且
+non-admissible。
+
+positive bundle、retirement readiness、pre-grant与formal slot-failure现在共用纯
+`aox_public_conductor_contract`的exact entry/drain validator。历史bundle对每个drain写死`1/8`的判断已
+删除；public schema闭集内的`2/16`等cadence可合法封存，越界、额外字段或hidden enqueue仍fail closed。
+architecture qualification的real composition scenario同步走contract `@2`、thin CLI和sealed response，
+并检查missing pin与duplicate message在Host前零调用/零receipt，以及source-derived late-bound grant。
+本repair只运行non-live验证，不回填r77、不启动qualification、slot 2/3、下一rNN、live、MICU、provider、
+HPC或Chrome，也不在未获明确要求时提交。

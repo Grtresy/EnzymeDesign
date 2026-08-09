@@ -435,6 +435,65 @@ def test_public_receipts_cover_only_conductor_owned_control_and_final_reads() ->
     _validate_test_chain(_receipt_chain(slot, control), slot=slot, control=control)
 
 
+def test_public_receipts_accept_current_bounded_drain_cadence() -> None:
+    slot = _slot()
+    control = _control(slot)
+    chain = _receipt_chain(slot, control)
+    chain[2] = _receipt(
+        3,
+        "POST",
+        f"/v3/sessions/{slot['session_id']}/runtime/drain",
+        {
+            "max_signals": 2,
+            "max_steps_per_agent": 16,
+            "auto_enqueue_ready_tasks": False,
+        },
+        status_code=202,
+    )
+
+    _validate_test_chain(chain, slot=slot, control=control)
+
+
+@pytest.mark.parametrize(
+    "drain_request",
+    [
+        {
+            "max_signals": 0,
+            "max_steps_per_agent": 8,
+            "auto_enqueue_ready_tasks": False,
+        },
+        {
+            "max_signals": 1,
+            "max_steps_per_agent": 101,
+            "auto_enqueue_ready_tasks": False,
+        },
+        {
+            "max_signals": 1,
+            "max_steps_per_agent": 8,
+            "auto_enqueue_ready_tasks": True,
+        },
+    ],
+)
+def test_public_receipts_reject_unbounded_or_hidden_enqueue_drain(
+    drain_request: dict[str, object],
+) -> None:
+    slot = _slot()
+    control = _control(slot)
+    chain = _receipt_chain(slot, control)
+    chain[2] = _receipt(
+        3,
+        "POST",
+        f"/v3/sessions/{slot['session_id']}/runtime/drain",
+        drain_request,
+        status_code=202,
+    )
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        _validate_test_chain(chain, slot=slot, control=control)
+
+    assert error.value.code == "public_conductor_command_chain_invalid"
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected_code"),
     [
@@ -691,6 +750,7 @@ def _preflight_fixture(
     identity_path.write_bytes(canonical_json_bytes(identity) + b"\n")
     prerequisites = {
         "config_digest": canonical_digest(effective_config),
+        "workflow_ref": identity["workflow_ref"],
         "image_digest": identity["image_digest"],
         "sdk_digest": identity["sdk_digest"],
     }
@@ -807,6 +867,206 @@ def test_preflight_is_exact_and_single_start(tmp_path: Path) -> None:
     with pytest.raises(CutoverEvidenceError) as error:
         load_attempt_preflight_receipt(path, require_unstarted=True)
     assert error.value.code == "attempt_preflight_already_started"
+
+
+def test_execution_contract_v2_binds_entry_grant_and_public_drain_bounds(
+    tmp_path: Path,
+) -> None:
+    preflight_path, preflight, _ = _preflight_fixture(tmp_path)
+
+    _, contract, loaded_preflight = (
+        aox_conductor_execution.load_conductor_execution_contract(
+            preflight_path
+        )
+    )
+
+    workflow_ref = dict(
+        dict(preflight["root_proof"])["allowed_prerequisites"]
+    )["workflow_ref"]
+    assert loaded_preflight == preflight
+    assert contract["schema_id"] == "aox_public_conductor_execution_contract@2"
+    assert contract["late_bound_authority_command"] == (
+        "openzyme-aox-cutover grant-task-authority"
+    )
+    assert contract["entry_message_count"] == 1
+    assert dict(contract["entry_message_request"])["skill_keys"] == [
+        workflow_ref
+    ]
+    assert contract["runtime_drain_constraints"] == {
+        "max_signals": {"minimum": 1, "maximum": 100},
+        "max_steps_per_agent": {"minimum": 1, "maximum": 100},
+        "auto_enqueue_ready_tasks": False,
+    }
+
+
+def test_execution_contract_v1_is_historical_and_non_admissible(
+    tmp_path: Path,
+) -> None:
+    preflight_path, _, _ = _preflight_fixture(tmp_path)
+    contract_path = (
+        preflight_path.parent
+        / aox_conductor_execution.CONDUCTOR_EXECUTION_CONTRACT_FILENAME
+    )
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract["schema_id"] = "aox_public_conductor_execution_contract@1"
+    contract_path.chmod(0o600)
+    _write_canonical(contract_path, contract)
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        aox_conductor_execution.load_conductor_execution_contract(
+            preflight_path
+        )
+
+    assert error.value.code == (
+        "public_conductor_execution_contract_legacy_non_admissible"
+    )
+
+
+def test_public_host_guard_enforces_exact_single_entry_and_bounded_drain(
+    tmp_path: Path,
+) -> None:
+    preflight_path, preflight, _ = _preflight_fixture(tmp_path)
+    evidence_root, contract, _ = (
+        aox_conductor_execution.load_conductor_execution_contract(
+            preflight_path
+        )
+    )
+    session_id = str(contract["session_id"])
+    workflow_ref = str(
+        dict(dict(preflight["root_proof"])["allowed_prerequisites"])[
+            "workflow_ref"
+        ]
+    )
+    create_command = [
+        "sessions",
+        "create",
+        "--objective",
+        PUBLIC_CONDUCTOR_OBJECTIVE,
+        "--title",
+        PUBLIC_CONDUCTOR_TITLE,
+    ]
+    aox_conductor_execution.validate_public_host_command(
+        contract=contract,
+        evidence_root=evidence_root,
+        forwarded=create_command,
+    )
+
+    receipt_path = evidence_root / str(contract["receipt_chain_name"])
+    session_receipt = _receipt(
+        1,
+        "POST",
+        "/v3/sessions",
+        {
+            "session_id": session_id,
+            "project_id": "aox-blank-world-cutover",
+            "objective": PUBLIC_CONDUCTOR_OBJECTIVE,
+            "title": PUBLIC_CONDUCTOR_TITLE,
+        },
+    )
+    receipt_path.write_bytes(canonical_json_bytes(session_receipt) + b"\n")
+    receipt_path.chmod(0o600)
+
+    with pytest.raises(CutoverEvidenceError) as missing_pin:
+        aox_conductor_execution.validate_public_host_command(
+            contract=contract,
+            evidence_root=evidence_root,
+            forwarded=[
+                "sessions",
+                "message",
+                "--message",
+                PUBLIC_CONDUCTOR_MESSAGE,
+            ],
+        )
+    assert missing_pin.value.code == "public_conductor_entry_message_invalid"
+
+    entry_command = [
+        "sessions",
+        "message",
+        "--message",
+        PUBLIC_CONDUCTOR_MESSAGE,
+        "--skill-key",
+        workflow_ref,
+    ]
+    aox_conductor_execution.validate_public_host_command(
+        contract=contract,
+        evidence_root=evidence_root,
+        forwarded=entry_command,
+    )
+    message_receipt = _receipt(
+        2,
+        "POST",
+        f"/v3/sessions/{session_id}/messages",
+        {
+            "message_digest": _digest_bytes(PUBLIC_CONDUCTOR_MESSAGE.encode()),
+            "skill_keys": [workflow_ref],
+            "task_id": None,
+            "lane_id": None,
+        },
+    )
+    receipt_path.write_bytes(
+        canonical_json_bytes(session_receipt)
+        + b"\n"
+        + canonical_json_bytes(message_receipt)
+        + b"\n"
+    )
+
+    for rejected in (
+        entry_command,
+        ["scientific", "authorize", "--payload-json", "{}"],
+    ):
+        with pytest.raises(CutoverEvidenceError) as error:
+            aox_conductor_execution.validate_public_host_command(
+                contract=contract,
+                evidence_root=evidence_root,
+                forwarded=rejected,
+            )
+        assert error.value.code in {
+            "public_conductor_entry_already_closed",
+            "public_conductor_authority_command_required",
+        }
+
+    for later_action in (
+        ["sessions", "show"],
+        ["sessions", "events", "--after-cursor", "0"],
+        ["approvals", "pending"],
+        ["scientific", "inspect"],
+        ["runtime", "status", "--command-id", "runtime-command-test"],
+    ):
+        selected = list(later_action)
+        aox_conductor_execution.validate_public_host_command(
+            contract=contract,
+            evidence_root=evidence_root,
+            forwarded=selected,
+        )
+        assert selected == later_action
+
+    for max_signals, max_steps_per_agent in ((1, 16), (2, 16), (3, 7)):
+        aox_conductor_execution.validate_public_host_command(
+            contract=contract,
+            evidence_root=evidence_root,
+            forwarded=[
+                "runtime",
+                "drain",
+                "--max-signals",
+                str(max_signals),
+                "--max-steps-per-agent",
+                str(max_steps_per_agent),
+            ],
+        )
+    with pytest.raises(CutoverEvidenceError) as unbounded:
+        aox_conductor_execution.validate_public_host_command(
+            contract=contract,
+            evidence_root=evidence_root,
+            forwarded=[
+                "runtime",
+                "drain",
+                "--max-signals",
+                "101",
+                "--max-steps-per-agent",
+                "16",
+            ],
+        )
+    assert unbounded.value.code == "public_conductor_drain_request_invalid"
 
 
 def _write_canonical(path: Path, value: object) -> None:
@@ -1007,12 +1267,10 @@ def _formal_slot_failure_fixture(
             _receipt(
                 7,
                 "POST",
-                f"/v3/sessions/{session_id}/messages",
+                f"/v3/sessions/{session_id}/pending-approvals/approval-late/resolve",
                 {
-                    "message_digest": _digest_bytes(b"late mutation"),
-                    "skill_keys": [],
-                    "task_id": None,
-                    "lane_id": None,
+                    "decision": "approve",
+                    "reason": "late mutation",
                 },
             )
         )
@@ -1066,6 +1324,16 @@ def _formal_slot_failure_fixture(
     attempt_ids = ["attempt_existing"] if attempt_exists else []
     workspace = {
         "session": {"session_id": session_id},
+        "task_board": {
+            "items": [
+                {
+                    "task": {
+                        "task_id": "task_execution",
+                        "kind": "execution",
+                    }
+                }
+            ]
+        },
         "scientific_attempts": {
             "attempt_count": len(attempt_ids),
             "attempts": [
@@ -1168,6 +1436,36 @@ def _formal_slot_failure_fixture(
         "ledger_after": ledger_after,
         "evidence_root": evidence_root,
     }
+
+
+def test_pregrant_task_binding_uses_one_sealed_post_drain_execution_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _formal_slot_failure_fixture(tmp_path, monkeypatch)
+    preflight = json.loads(sources["preflight"].read_text(encoding="utf-8"))
+    evidence_root, contract, _ = (
+        aox_conductor_execution.load_conductor_execution_contract(
+            sources["preflight"]
+        )
+    )
+
+    task = aox_conductor_execution.resolve_pregrant_execution_task(
+        preflight=preflight,
+        contract=contract,
+        evidence_root=evidence_root,
+        task_id="task_execution",
+    )
+
+    assert task == {"task_id": "task_execution", "kind": "execution"}
+    with pytest.raises(CutoverEvidenceError) as wrong_task:
+        aox_conductor_execution.resolve_pregrant_execution_task(
+            preflight=preflight,
+            contract=contract,
+            evidence_root=evidence_root,
+            task_id="task_other",
+        )
+    assert wrong_task.value.code == "public_task_late_binding_invalid"
 
 
 def test_conductor_retirement_readiness_closes_zero_attempt_public_state(
@@ -1711,6 +2009,40 @@ def test_formal_slot_failure_requires_final_reads_after_public_mutations(
         )
 
     assert error.value.code == "formal_slot_failure_final_read_not_latest"
+
+
+def test_formal_slot_failure_rejects_a_second_public_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _formal_slot_failure_fixture(tmp_path, monkeypatch)
+    duplicate = _receipt(
+        7,
+        "POST",
+        "/v3/sessions/sess_aox/messages",
+        {
+            "message_digest": _digest_bytes(b"second message"),
+            "skill_keys": [],
+            "task_id": None,
+            "lane_id": None,
+        },
+    )
+    with sources["receipt_chain"].open("ab") as handle:
+        handle.write(canonical_json_bytes(duplicate) + b"\n")
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        formal_slot_failure.finalize_and_seal_formal_slot_failure(
+            identity_path=sources["identity"],
+            preflight_path=sources["preflight"],
+            receipt_chain_path=sources["receipt_chain"],
+            workspace_response_path=sources["workspace"],
+            event_response_path=sources["events"],
+            handoff_response_paths=sources["handoffs"],
+            ledger_before_path=sources["ledger_before"],
+            ledger_after_path=sources["ledger_after"],
+        )
+
+    assert error.value.code == "formal_slot_failure_public_entry_invalid"
 
 
 def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(

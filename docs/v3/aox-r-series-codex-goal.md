@@ -45,7 +45,7 @@ fresh session 必须从以下入口重新推导，不使用历史 prompt 或旧 
 
 ## 正式 public conductor
 
-preflight 必须在 slot claim/root 前从 pinned profile重跑 full actual Podman/image/SDK/scientific-backend resolver与immediate unchanged guard；config-only equality不是 admission。actual runtime失败只走current pre-claim failure，不创建claim/root、不换slot、不retry。guard通过后，preflight再创建slot claim、blank-world root和prelaunch receipt，并发布source-bound、无绝对路径的conductor execution contract。Codex只使用该合同声明的formal public CLI入口；入口透传由Codex选择的任意合法public Host command，并机械绑定同一receipt chain与一次sealed response，不选择科学动作或形成自动循环。
+preflight 必须在 slot claim/root 前从 pinned profile重跑 full actual Podman/image/SDK/scientific-backend resolver与immediate unchanged guard；config-only equality不是 admission。actual runtime失败只走current pre-claim failure，不创建claim/root、不换slot、不retry。guard通过后，preflight再创建slot claim、blank-world root和prelaunch receipt，并发布source-bound、无绝对路径的current conductor execution contract `@2`。Codex只使用该合同声明的formal public CLI入口：前两次成功动作必须逐字闭合exact session create与唯一raw canonical message + pinned `workflow_ref`；之后禁止第二条message，scientific authority只经专用late-bound grant。入口闭合后，CLI透传由Codex选择的其余合法public Host command，并机械绑定同一receipt chain与一次sealed response，不选择科学动作、drain cadence或形成自动循环。历史contract `@1`不能执行。
 
 每次 bounded drain 的 admission 与唯一 terminal status、最终 workspace/events，以及存在真实 attempt 时的 closed-attempt export，都必须在 Host 仍可访问时封存。随后由公开 retirement-readiness seal 证明：
 

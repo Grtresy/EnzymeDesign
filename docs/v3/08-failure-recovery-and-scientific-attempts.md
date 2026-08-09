@@ -865,3 +865,28 @@ NO-GO；正常 GO 仍只接受同一 plan 的 exact positive/positive/fault 三�
 历史 pre-attempt blocked 记录因当时没有这份 current receipt，继续保持历史状态，不被追认或复用。
 r76只有旧wrapper与已消费claim/root，没有current live process/root settlement receipt，因此仍是
 blocked/noncanonical；不得依据新schema回填、复用或改写其MICU/slot终局。
+
+## 17. r77 唯一 public entry 与 failure reconstruction
+
+r77 已有合法preflight、slot 1 runtime drain与Host retirement readiness，最终public state证明zero
+attempt/authorization/admission和zero scientific provider/HPC effect；但receipt chain不能证明唯一
+canonical message与pinned workflow entry。`formal_slot_failure_public_entry_invalid`因此是source
+reconstruction blocker，不是scientific cause或canonical NO-GO。不得通过补发message、改写JSONL、生成
+synthetic response或重跑slot来修复frozen incident；slot 2/3保持未启动。
+
+current execution contract `@2`在新formal Host effect前固定两步mechanical entry：exact session create，
+随后exact raw canonical message加preflight唯一`workflow_ref`。第二步缺pin、不同pin、message bytes漂移，
+以及entry后的任何第二条message，均在Host runner、receipt append和response target消费前fail closed。
+historical contract `@1`只能作为frozen evidence读取，不能发射current command。
+
+failure reconstruction与positive/readiness不再各自解释entry和drain。共享纯validator要求成功的sequence
+1/2 exact session/message cardinality，并要求每个formal drain只使用public Host schema闭集：signals/steps
+均为`1..100`整数且hidden enqueue关闭。它不要求历史固定`1/8`，也不选择替代cadence。由此，finalizer
+对extra message最早报告entry invalid；对合法entry后的晚期其他mutation仍保持final reads必须最新的独立
+错误语义。
+
+scientific authority只能在entry闭合、所有pre-grant responses已sealed、bounded drain与唯一terminal
+status闭合、post-mutation workspace恰有一个execution task后，由`grant-task-authority`从consumed slot
+派生。generic formal authorize、wrong/ambiguous task或second grant不能创建authorization/effect。该
+前向能力只让未来同型incident可被真实source封存，不改变r77的blocked/noncanonical分类，也不授权新
+qualification、rNN或live。

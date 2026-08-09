@@ -423,6 +423,13 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   pre-child-ready 两种 source reconstruction、seal、verification 和 reduction。当前仍由同一
   canonical owner 管理且没有第二产品真状态，但继续增长会削弱单一职责和审查摩擦。
 
+  r77 bounded extraction：exact session/message entry 与 runtime-drain closed validation 已提取到
+  纯 `aox_public_conductor_contract.py`，由 positive bundle、retirement readiness、pre-grant 与
+  formal slot-failure reconstruction 共享；这删除了 `formal_slot_failure` 对 entry bytes 的复制和
+  bundle 对历史 `1/8` cadence 的写死。POSIX/root/SQLite supervision 以及两种 failure mode 的整体
+  reconstruction/seal/verifier/reducer 仍未拆分，因此本项保持未勾选，不能把这次窄提取描述为全部债务
+  已解决。
+
   实施触发：向前者新增 process/root/SQLite/receipt responsibility，或向后者新增 closure
   mode/evidence reconstruction branch 前，先提取纯 projection/receipt validator 模块；保留
   现有 public import/re-export、JSON bytes、digest、schema、error code 与历史只读兼容，并用
