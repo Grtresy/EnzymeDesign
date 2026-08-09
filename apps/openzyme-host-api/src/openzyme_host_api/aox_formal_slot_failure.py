@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# AOX-DEBT-EVIDENCE-MODULE-SPLIT: before adding another closure mode or evidence
+# reconstruction responsibility, follow the extraction trigger recorded in
+# docs/v3/harness-complexity-audit.md.
+
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime

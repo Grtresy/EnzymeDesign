@@ -39,6 +39,11 @@ from .aox_launch_profile import (
 from .aox_live_run_class import AoxLiveRunClass
 
 
+# AOX-DEBT-PREFLIGHT-STAGE-V2: `@1` retains its historical
+# `effective_config_pre_slot_claim` stage. Before adding another pre-claim launch
+# failure kind or changing this writer/verifier, follow the trigger recorded in
+# docs/v3/harness-complexity-audit.md and introduce a current schema while keeping
+# `@1` read-only compatible.
 FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID = "aox_formal_preflight_failure@1"
 FORMAL_PREFLIGHT_FAILURE_DECISION_SCHEMA_ID = (
     "aox_blank_world_campaign_preflight_failure_decision@1"

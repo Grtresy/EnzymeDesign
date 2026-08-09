@@ -404,6 +404,31 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   单纯减少策略代码。后续若要删除 Lane，必须先把 cwd/branch/workspace ownership 迁移到一个
   更小的 task-owned binding；不得以字段数量代替消费者证据。
 
+- [ ] AOX formal preflight failure 的 current stage 是否仍能准确表达实际 launch 边界。
+
+  当前债务：`aox_formal_preflight_failure@1` 的 `failed_stage` 保留
+  `effective_config_pre_slot_claim` 历史措辞，但 current preflight 已在 claim 前执行完整
+  Podman/image/SDK/runtime identity launch guard。inner typed cause 仍保持准确，因此该债务
+  不阻断当前 verifier、NO-GO 或后续 fresh preparation。
+
+  实施触发：下一次修改 `FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID`、对应 writer/verifier，或新增
+  pre-claim launch failure kind 时，必须引入准确命名的 current schema/stage 闭集，并将 `@1`
+  保留为只读兼容；不得在原 schema 下静默改写历史 stage 语义。代码搜索标记：
+  `AOX-DEBT-PREFLIGHT-STAGE-V2`。
+
+- [ ] AOX Host supervision 与 formal slot-failure 模块是否需要先拆分纯证据职责。
+
+  当前债务：`aox_host_supervision.py` 同时包含 POSIX process supervision、root/SQLite
+  settlement、receipt seal/validation；`aox_formal_slot_failure.py` 同时包含 public-host 与
+  pre-child-ready 两种 source reconstruction、seal、verification 和 reduction。当前仍由同一
+  canonical owner 管理且没有第二产品真状态，但继续增长会削弱单一职责和审查摩擦。
+
+  实施触发：向前者新增 process/root/SQLite/receipt responsibility，或向后者新增 closure
+  mode/evidence reconstruction branch 前，先提取纯 projection/receipt validator 模块；保留
+  现有 public import/re-export、JSON bytes、digest、schema、error code 与历史只读兼容，并用
+  等价回归证明没有 evidence contract 漂移。代码搜索标记：
+  `AOX-DEBT-EVIDENCE-MODULE-SPLIT`。
+
 ## 4. 后续工作流
 
 每次后续简化时：

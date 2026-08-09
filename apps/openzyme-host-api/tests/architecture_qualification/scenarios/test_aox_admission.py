@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 import hashlib
-import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -265,6 +264,128 @@ def _assert_current_schema_contract(document: str) -> dict[str, str]:
     }
 
 
+def _observe_actual_launch_guard_before_slot_claim(
+    *,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    architecture_qualification: dict[str, object],
+) -> list[str]:
+    plan_path = tmp_path / "behavioral-attempt-authority.json"
+    consumption_path = tmp_path / "behavioral-attempt-authority-consumption.json"
+    plan_path.touch()
+    consumption_path.touch()
+    campaign_root = tmp_path / "behavioral-campaign"
+    identity = {"git_commit": "a" * 40, "config_digest": _digest("9")}
+    prerequisites = {"schema_id": "aox_blank_world_prerequisites@1"}
+    launch_profile = {"schema_id": AOX_CUTOVER_LAUNCH_PROFILE_SCHEMA_ID}
+    plan = {
+        "slots": [
+            {
+                "attempt_kind": "positive",
+                "authority_policy": {"max_wall_time_seconds": 100_000},
+            }
+        ]
+    }
+    consumption = {"schema_id": AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID}
+    calls: list[str] = []
+
+    class LaunchSnapshot:
+        effective_config = {"schema_id": AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID}
+
+        def assert_unchanged(self) -> None:
+            calls.append("guard")
+
+    monkeypatch.setattr(
+        cli,
+        "verify_aox_architecture_qualification_report",
+        lambda path: architecture_qualification,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_load_pinned_declarations",
+        lambda identity_path, prerequisites_path: (
+            identity,
+            prerequisites,
+            architecture_qualification,
+            launch_profile,
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "require_matching_architecture_qualification_receipt",
+        lambda pinned, current: architecture_qualification,
+    )
+    monkeypatch.setattr(cli, "load_aox_attempt_authority_plan", lambda *a, **k: plan)
+    monkeypatch.setattr(
+        cli,
+        "load_aox_attempt_authority_consumption",
+        lambda *a, **k: consumption,
+    )
+
+    def resolve_launch(profile: object) -> tuple[object, Path]:
+        assert profile is launch_profile
+        calls.append("resolve")
+        return object(), tmp_path / "micu-ledger.sqlite3"
+
+    def prepare_launch(**kwargs: object) -> LaunchSnapshot:
+        assert kwargs["declared_identity"] is identity
+        assert kwargs["declared_prerequisites"] is prerequisites
+        calls.append("prepare")
+        return LaunchSnapshot()
+
+    def claim_slot(**kwargs: object) -> dict[str, object]:
+        assert calls == ["resolve", "prepare", "guard"]
+        calls.append("claim")
+        return {"launch_id": "behavioral-launch"}
+
+    def stop_at_root(*args: object, **kwargs: object) -> None:
+        assert calls == ["resolve", "prepare", "guard", "claim"]
+        assert args[0] == campaign_root
+        calls.append("root")
+        raise RuntimeError("behavioral proof stopped before root creation")
+
+    monkeypatch.setattr(cli, "resolve_aox_cutover_launch_profile", resolve_launch)
+    monkeypatch.setattr(cli, "prepare_aox_cutover_launch", prepare_launch)
+    monkeypatch.setattr(cli, "claim_aox_attempt_authority_slot", claim_slot)
+    monkeypatch.setattr(cli, "create_blank_world_roots", stop_at_root)
+    monkeypatch.setattr(
+        cli,
+        "build_aox_cutover_effective_config",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("preflight used the retired config-only launch check")
+        ),
+    )
+    args = cli.build_parser().parse_args(
+        [
+            "preflight",
+            "--campaign-root",
+            str(campaign_root),
+            "--identity",
+            str(tmp_path / "behavioral-identity.json"),
+            "--allowed-prerequisites",
+            str(tmp_path / "behavioral-prerequisites.json"),
+            "--architecture-qualification-report",
+            str(tmp_path / "behavioral-qualification.json"),
+            "--attempt-authority-plan",
+            str(plan_path),
+            "--attempt-authority-consumption",
+            str(consumption_path),
+            "--slot-ordinal",
+            "1",
+        ]
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="behavioral proof stopped before root creation",
+    ):
+        cli._preflight(args)
+
+    assert calls == ["resolve", "prepare", "guard", "claim", "root"]
+    assert not campaign_root.exists()
+    return calls
+
+
 @pytest.mark.architecture_qualification_scenario(
     scenario_id="evidence-projection.aox-admission-receipt-closure",
     family="evidence-projection",
@@ -464,13 +585,11 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
     ).read_text(encoding="utf-8")
     assert "resolve_aox_cutover_launch_profile" in host_supervision_source
     assert "OpenZymeSettings.from_env()" not in host_supervision_source
-    preflight_source = inspect.getsource(cli._preflight)
-    prepare_position = preflight_source.index("prepare_aox_cutover_launch(")
-    guard_position = preflight_source.index("launch.assert_unchanged()")
-    claim_position = preflight_source.index("claim_aox_attempt_authority_slot(")
-    root_position = preflight_source.index("create_blank_world_roots(")
-    assert prepare_position < guard_position < claim_position < root_position
-    assert "build_aox_cutover_effective_config(" not in preflight_source
+    preflight_launch_sequence = _observe_actual_launch_guard_before_slot_claim(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        architecture_qualification=receipt,
+    )
     with pytest.raises(ScientificWorkflowContractError) as historical_error:
         AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY.resolve(
             workflow_id=AOX_SELECTED_CHAIN_WORKFLOW_ID,
@@ -495,6 +614,7 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
         "runtime_config_schema_id": (AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID),
         "schema_contract": schema_contract,
         "schema_id": "aox_architecture_qualification_observation@1",
+        "preflight_launch_sequence": preflight_launch_sequence,
         "selected_chain_contract_digest": active_contract.digest,
         "selected_chain_historical_rejection": (historical_error.value.error_code),
     }

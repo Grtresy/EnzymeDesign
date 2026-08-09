@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# AOX-DEBT-EVIDENCE-MODULE-SPLIT: before adding another process-supervision,
+# root/SQLite projection, or receipt-validation responsibility, follow the
+# extraction trigger recorded in docs/v3/harness-complexity-audit.md.
+
 from contextlib import contextmanager
 from collections.abc import Mapping
 from dataclasses import dataclass
