@@ -17,6 +17,17 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZym
 
 平台执行许可与 OpenZyme 业务授权彼此独立。业务范围已经覆盖时，按工具机制申请必要的平台许可，不要求用户复述同一业务批准。平台在命令启动前拒绝执行时，报告操作员环境 blocker，不伪造产品失败。
 
+任何会传递调用 actual rootless Podman launch resolver 的 `pin` 或 `preflight`，都必须通过当前文档声明的
+`uv --project apps/openzyme-host-api run openzyme-aox-cutover ...` 公开入口执行，并在工具调用上显式使用
+`sandbox_permissions=require_escalated`。不得在会把 rootless runtime 目录重新挂载为只读的普通 Codex
+文件系统 sandbox 中直接调用 `.venv/bin/openzyme-aox-cutover ...`；Host 上单独执行 `podman info` 成功，
+不能证明不同外层 launcher 中的子进程具备同一执行能力。
+
+在消费 one-use authority 前，必须确认 exact formal `preflight` launcher 的上述平台许可已经可用；
+平台不能在消费前授予该能力时，以未消费 authority、零 product execution 的 operator/platform blocker
+停止。不得先消费 authority，再用 sandboxed `preflight` 探测权限，也不得把已知的外层只读挂载映射为
+OpenZyme 产品或 Podman installation failure。该平台许可不扩大 exact plan、预算或 external-effect 授权。
+
 到达人工授权门时只做一次最小必要校验，报告 `workflow_status=blocked`、`blocked_on=manual_authorization`、待批准对象和保持不变的 canonical state，然后停止。持久 goal 若要求多轮才能标记 blocked，后续只确认没有新授权，不重跑检查、qualification、命令或 evidence 收集。
 
 ## 强制读取当前合同
@@ -81,7 +92,7 @@ plan 发布前失败记为 `rNN=none` 的 preparation blocker。旧 plan、autho
 
 ## 执行获批 live campaign
 
-1. 只在 exact live approval 有效时消费 one-use authority，并严格使用 preflight 发布的 source-bound execution contract。
+1. 只在 exact live approval 有效、且 exact formal `preflight` 的 Podman 外层执行许可已在消费前闭合时，才消费 one-use authority；随后必须以同一已许可的公开 launcher 执行 preflight，并严格使用它发布的 source-bound execution contract。
 2. 每次 operator-selected public action都通过合同声明的 formal public CLI入口执行，使 receipt chain 与 sealed response 自动绑定；不得直接调用缺少该合同的普通 CLI 路径。
 3. 一次只发出一条 bounded command。每次读取 public ToolResult、FailureObservation、canonical wake facts、events、workspace、pending approvals 和 export 后，由 Codex 决定唯一下一步；不得形成自动循环。
 4. runtime command 的 terminal 只证明该 bounded command 已结算，不自动代表 task、attempt、slot 或 campaign 终结。保留 earliest source-bound typed cause、effect certainty 与 outer wrapper。

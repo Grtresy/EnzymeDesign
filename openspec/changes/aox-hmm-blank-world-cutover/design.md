@@ -1788,6 +1788,33 @@ formal slot-failure reconstruction 共用。production-composition qualification
 late-bound grant。本修复只运行 non-live 验证，不回填 r77、不启动 qualification、slot 2/3、下一 rNN、
 live、MICU、provider、HPC 或 Chrome，也不在未获明确要求时提交。
 
+### 2026-08-10 r78 Podman outer-executor repair
+
+r78 campaign `aox_campaign_3dd01682ed4bb7b2d45efb41` 的 authority 只消费一次；slot 1 formal
+preflight 在 claim/root/Host/session/attempt 前返回
+`sandbox_runtime.podman_rootless_preflight_failed`。current preflight-failure verifier通过，专用 reducer
+形成 decision digest `sha256:7fb899562369d6d96e6cba490b2d862943c1359fa972389e9b1d9fd374216c84` 的
+canonical `NO-GO`；slot 2/3 未启动，MICU 保持 `131,417,219 / 500,000,000`。该历史终局与 frozen
+authority/evidence 不回填、不重试、不复用。
+
+canonical receipt 按设计不公开 stderr 或 Host mount 详情。operator transcript 证明，先前成功的 `pin`
+显式取得 sandbox 外权限，而 formal `preflight` 通过 `.venv/bin/openzyme-aox-cutover` 在普通 Codex
+filesystem sandbox 中执行且未申请相同平台许可。相同 checkout 的对照复现证明，该外层 sandbox 把
+rootless runtime 目录挂成只读并使嵌套 `podman info` 失败；文档化的
+`uv --project apps/openzyme-host-api run ...` 路径则保持目录可写并得到 `rootless=true`。该机制证据不
+升级为 r78 canonical receipt 中未封存的 raw cause。
+
+前向修复位于 operator executor contract，而不是 Podman storage、Host mode、launch resolver 或
+failure schema。所有会传递调用 actual rootless Podman resolver 的 `pin` / formal `preflight` 必须通过
+文档化的 `uv --project ... openzyme-aox-cutover` 入口，并显式使用
+`sandbox_permissions=require_escalated`；默认 sandbox 中的直接 `.venv/bin` 调用被禁止。exact preflight
+的该平台能力必须在 one-use authority 消费前闭合；平台拒绝时保持 authority 未消费、product execution
+为零并报告 operator-environment blocker，不能先制造一次 product preflight failure再解释权限。
+
+该平台能力只覆盖 rootless Podman 所需的本地 runtime/IPC，不授权新 plan、live、MICU、provider、runner、
+HPC、Chrome 或科学策略。production Python净变化为零；`aox_formal_preflight_failure@1` 的历史 stage
+命名债务、rootless stdout 真值检查与其他 sandbox hardening 不属于本次 r78 slice。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

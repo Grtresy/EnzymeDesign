@@ -1,6 +1,6 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r67 are permanent NO-GO evidence. r68-r74 retain their documented prelaunch/pre-admission/pre-runtime/evidence-blocker classifications. r75 consumed authority but failed profile/config reconstruction before slot claim/root and lacks the current preflight-failure receipt. r76 consumed slot 1 claim/root/preflight but failed before Host child-ready at `host_sandbox_runtime_identity_missing`; it lacks current process-bound pre-ready settlement and cannot form canonical GO/NO-GO. None of r68-r76 is a canonical NO-GO, and none of their state or the old persistent goal is reusable. Current forward contracts include qualification report/receipt `@3`, credential-free pinned launch profile, actual launch revalidation before claim/root, source-bound public conductor readiness, and a strict pre-child-ready sandbox failure receipt plus discriminated formal slot failure `@2`. These capabilities do not backfill r75/r76. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
+Status: r43-r67 are permanent NO-GO evidence. r68-r77 retain their documented prelaunch/pre-admission/pre-runtime/evidence-blocker classifications and none is a canonical NO-GO. r78 consumed authority once and then failed slot 1 preflight before claim/root/Host because the actual rootless Podman resolver returned `podman_rootless_preflight_failed`; its source-bound preflight-failure verifier and reducer closed canonical `NO-GO` with decision digest `sha256:7fb899562369d6d96e6cba490b2d862943c1359fa972389e9b1d9fd374216c84`. None of r68-r78 state or the old persistent goal is reusable. Current forward contracts include qualification report/receipt `@3`, credential-free pinned launch profile, actual launch revalidation before claim/root, a pre-consumption Podman executor-capability boundary, source-bound public conductor readiness, and a strict pre-child-ready sandbox failure receipt plus discriminated formal slot failure `@2`. These capabilities do not backfill r75-r77 or alter r78. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
 
 Historical incident and older command/observer/driver/browser/diagnostic-authority/public-finalizer sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract; in particular, every older `run-live`, `run-diagnostic-live`, diagnostic authority command, observer, barrier, rollover, no-wakeup, public generic scientific mutation/finalizer, `chrome-once`, browser-helper and ambient dev/eval image-registration instruction is retired even where a historical section called it current at that time. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, late-bound task/scientific-attempt selection, fresh supervised Host bootstrap and qualification semantics are defined by the post-r70/post-r71 sections below, [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
@@ -2202,13 +2202,26 @@ This command creates an attempt root. It is the first campaign mutation and
 must not be used as a no-attempt readiness probe or run before the operator has
 explicitly authorized the new numbered campaign.
 
+Because it transitively executes the actual rootless Podman resolver, the exact public invocation MUST use
+`sandbox_permissions=require_escalated`. Before consuming the one-use authority, the operator must confirm that
+this platform capability is already available for the same outer launcher. A default Codex filesystem sandbox
+that remounts the rootless runtime directory read-only is not an eligible executor, and a direct Host
+`podman info` success does not prove the nested CLI invocation. Platform permission remains separate from the
+exact campaign/business authorization.
+
 ```bash
 uv --project apps/openzyme-host-api run openzyme-aox-cutover preflight \
   --campaign-root /tmp/openzyme-aox-cutover/<campaign-id> \
-  --attempt-kind positive \
-  --allowed-prerequisites /tmp/aox-allowed-prerequisites.json \
+  --identity /tmp/openzyme-aox-pin/<campaign-id>/identity.json \
+  --allowed-prerequisites \
+    /tmp/openzyme-aox-pin/<campaign-id>/allowed-prerequisites.json \
   --architecture-qualification-report \
-    /tmp/openzyme-v3-admission/<commit>/architecture-qualification-report.json
+    /tmp/openzyme-v3-admission/<commit>/architecture-qualification-report.json \
+  --attempt-authority-plan \
+    /tmp/openzyme-aox-authority/<campaign-id>/attempt-authority.json \
+  --attempt-authority-consumption \
+    /tmp/openzyme-aox-authority/<campaign-id>/attempt-authority.json.consumed.json \
+  --slot-ordinal 1
 ```
 
 `local_paths` in this command's stdout are operator-only launch inputs. They must not be copied into workspace/events/report/evidence projections.
@@ -3491,3 +3504,33 @@ architecture qualification的real composition scenario同步走contract `@2`、t
 并检查missing pin与duplicate message在Host前零调用/零receipt，以及source-derived late-bound grant。
 本repair只运行non-live验证，不回填r77、不启动qualification、slot 2/3、下一rNN、live、MICU、provider、
 HPC或Chrome，也不在未获明确要求时提交。
+
+### 2026-08-10 r78 Podman 外层执行权限边界
+
+r78 campaign `aox_campaign_3dd01682ed4bb7b2d45efb41` 的 authority 只消费一次。slot 1 formal
+`preflight` 在 claim、campaign attempt root、Host、session 与 scientific attempt 之前，以
+`aox_launch_sandbox_preflight_failed / sandbox_runtime.podman_rootless_preflight_failed` 停止；slot 2/3
+未启动，MICU 保持 `131,417,219 / 500,000,000`。`aox_formal_preflight_failure@1` 的离线验证通过，
+`aox_blank_world_campaign_preflight_failure_decision@1` 形成 canonical `NO-GO`，decision digest 为
+`sha256:7fb899562369d6d96e6cba490b2d862943c1359fa972389e9b1d9fd374216c84`。r78 的 authority、campaign
+与全部 frozen evidence 不得重试、改写或复用。
+
+canonical receipt 只公开上述 allowlisted sandbox cause，不包含原始 stderr 或外层 mount 详情。操作员
+执行 transcript 另行证明：成功的 `pin` 显式取得 sandbox 外权限；失败的 formal `preflight` 则通过
+`.venv/bin/openzyme-aox-cutover` 进入普通 Codex 文件系统 sandbox，未申请对应平台许可。相同 checkout
+上的受控对照进一步证明，后者把 rootless runtime 目录挂成只读并使子进程 `podman info` 失败，而文档化
+的 `uv --project apps/openzyme-host-api run ...` 执行路径保持该目录可写且返回 `rootless=true`。这些是
+用于定位机制的 operator evidence，不回填或扩大 r78 canonical failure 字段。
+
+前向修复不修改 Podman storage、Host 目录权限、服务状态、launch resolver、failure schema 或 verifier。
+任何传递调用 actual rootless Podman resolver 的 `pin` 或 formal `preflight` 都必须使用文档化的
+`uv --project ... openzyme-aox-cutover` 公开入口，并在工具层显式设置
+`sandbox_permissions=require_escalated`；禁止在已知会只读挂载 rootless runtime 的普通 sandbox 中直接
+调用 `.venv/bin/openzyme-aox-cutover`。Host 上独立的 `podman info` 成功不能代替同一外层 launcher 的
+执行能力。
+
+exact formal `preflight` 的平台许可必须在 `consume-authority` 前闭合。若平台不能在消费前提供该能力，
+操作员以未消费 authority、零 product execution 的 operator/platform blocker 停止，不发出 sandboxed
+preflight、不制造 OpenZyme failure receipt，也不把平台 mount 约束归因于 Podman installation。该许可
+只开放 rootless Podman 所需的本地 runtime/IPC，不扩张 exact plan、预算、external effects 或科学策略；
+后续验证仍需 fresh clean commit、qualification/pin/plan 与新的精确 live 授权。

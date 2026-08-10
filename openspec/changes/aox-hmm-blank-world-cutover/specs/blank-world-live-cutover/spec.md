@@ -35,6 +35,10 @@ Allowed prerequisites MUST contain exactly `git_commit`, `config_digest`, `workf
 
 Preflight and the supervised Host MUST reconstruct all non-sensitive launch settings from that pinned profile instead of re-resolving an ambient launch profile. Ambient state MAY supply only credentials that the profile deliberately excludes; ambient non-sensitive launch variables MUST be ignored and MUST NOT override the pinned values. A changed LLM extra-body digest, a shared Host principal, a credential-bearing URL, a legacy controlled-operation owner inside the profile, or any profile/config digest drift MUST fail closed. No hidden default, ambient fallback or profile rewrite is permitted.
 
+Every trusted-operator `pin` or formal `preflight` command that transitively invokes the actual rootless Podman resolver MUST use the documented `uv --project apps/openzyme-host-api run openzyme-aox-cutover ...` public entry in an executor with the rootless runtime directory writable. Codex MUST attach `sandbox_permissions=require_escalated` to that exact tool invocation and MUST NOT directly run `.venv/bin/openzyme-aox-cutover ...` inside a default filesystem sandbox that remounts the runtime directory read-only. A direct Host `podman info` success MUST NOT be treated as proof that a different outer launcher can execute Podman.
+
+Before consuming one-use formal authority, the operator MUST establish that the exact preflight launcher has this platform capability. If the platform cannot grant it before consumption, the workflow MUST stop with unconsumed authority and zero product execution as an operator-environment blocker; it MUST NOT launch a sandboxed preflight to probe permission, create a product failure receipt, or attribute the outer mount restriction to the OpenZyme product or Podman installation. Platform execution permission MUST NOT expand the separately approved plan, budget, effects, target, operation, or scientific strategy.
+
 #### Scenario: Pin and resolve the actual clean launch
 - **WHEN** an operator invokes `pin`, authorizes an exact plan, consumes it through the matching policy-free command, and a separately approved conductor performs preflight under the exact same effective settings
 - **THEN** pin obtains the four runner-issued direct-SSH toolchain identities, publishes identity/prerequisites/profile plus the marker as one consumer-visible transaction, and preflight reconstructs the exact pinned non-sensitive settings, independently computes the exact-seven actual identity and safe effective-config preimage before root creation, requires field-for-field equality, and makes that same config preimage/digest available for later attempt launch evidence without starting an attempt
@@ -56,6 +60,14 @@ Preflight and the supervised Host MUST reconstruct all non-sensitive launch sett
 #### Scenario: Revalidate the actual sandbox launch before claiming a slot
 - **WHEN** consumed authority and a pinned profile are structurally valid but the actual Podman binary, rootless runtime, immutable image, Pipeline SDK tree, scientific backend probe or declared launch identity is unavailable or drifted
 - **THEN** preflight reruns the full actual launch resolver and its unchanged guard immediately before slot claim, rejects a config-only comparison as insufficient, and seals only the current pre-claim failure path without creating the claim or attempt root
+
+#### Scenario: Run a Podman-transitive command in the eligible outer executor
+- **WHEN** an approved `pin` or formal `preflight` will transitively invoke the actual rootless Podman resolver
+- **THEN** Codex uses the documented `uv --project ... openzyme-aox-cutover` public entry with `sandbox_permissions=require_escalated`, keeps the rootless runtime directory writable for the child Podman process, and does not substitute a direct Host-only Podman probe or a default-sandbox `.venv/bin` invocation
+
+#### Scenario: Stop before authority consumption when Podman executor permission is unavailable
+- **WHEN** an exact formal plan is otherwise ready but the platform cannot grant the required outer-executor capability for its future preflight before authority consumption
+- **THEN** the operator reports an operator-environment blocker with the authority unconsumed and zero product execution, and does not create a preflight-failure receipt, slot claim, attempt root, Host, session, MICU, provider, runner, HPC or browser effect
 
 #### Scenario: Reject an immutable image without the frozen AOX backend
 - **WHEN** the selected immutable image is present but lacks Biopython, exposes a wrong Biopython/NumPy/algorithm/numeric behavior, or its canonical capability receipt or copied SDK identity drifts
