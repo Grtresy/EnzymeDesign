@@ -1815,6 +1815,38 @@ failure schema。所有会传递调用 actual rootless Podman resolver 的 `pin`
 HPC、Chrome 或科学策略。production Python净变化为零；`aox_formal_preflight_failure@1` 的历史 stage
 命名债务、rootless stdout 真值检查与其他 sandbox hardening 不属于本次 r78 slice。
 
+### 2026-08-10 r79 runtime-command late-scope heartbeat authority repair
+
+r79 slot 1 的第二条 bounded command 在无 mutation scope 时完成 claim；executor 随后创建并绑定真实
+lane、admit 唯一 scientific attempt，并打开 session mutation scope。source-bound public workspace/events
+证明 attempt `attempt_e9fc103cd098020cc24c30fe` 已 open、selection 缺失、provider/HPC operation 为零；
+command `runtime_command_5ae67fa8ccea` 最终以 `runtime_command_claim_expired` 失败。该状态没有形成可封存的
+scientific evidence export，故 conductor readiness 正确拒绝，Host 保持 active；这不是 canonical GO/NO-GO，
+也不授权重试 r79 或启动 slot 2/3。
+
+最早源码机制位于 command heartbeat 的 authority context，而不是 scheduler outcome。command worker 在 scope
+出现前取得空 writer admission，heartbeat 线程继承该空 context；attempt scope 打开后，SQLite mutation guard
+拒绝下一次 `runtime_command_records` lease update。旧 heartbeat 将该 rejection 统一包装为 claim fencing并退出，
+reclaimer 随后按既有 no-replay 合同把过期 claim 终结为 `runtime_command_claim_expired`。terminal settlement 与
+post-transition projection 已有 late-bound writer，但 heartbeat 未纳入同一跨 scope 合同。
+
+修复不持有一个覆盖剩余 executor lifetime 的长 writer。late-scope command 的每次 heartbeat 独立注册
+`runtime-command:<command_id>:lease-heartbeat` 短 writer，使用 fresh repository scope 更新 exact
+state-version、lease token 与 fencing token，随后立即退休。scope 在 writer admission 与 lease update 之间
+出现时，`RuntimeCommandRepository`把精确SQLite mutation-guard rejection翻译为包内
+`MutationWriteAuthorityRejectedError`；worker不解析原始SQLite错误文本，只在late-scope上下文对该类型重新取得
+短writer。普通SQLite `BUSY/LOCKED`使用固定短delay，并同时受当前已观察lease expiry与有限次数约束。
+executor已返回时取消尚未发生的contention retry，让terminal settlement用自己的exact writer完成fence；
+真实token/fence/state漂移、原始同文错误、其他integrity error与retry exhaustion均继续fail closed。
+
+该 correction 不修改 public schema、command state machine、expired-claim reclaimer、scheduler replay、
+scientific selection/closure、retirement readiness 或 canonical decision。qualification 必须用真实 public
+FastAPI、thin CLI、file-backed SQLite 与 production Host composition，把 lease 缩短，并在 canonical attempt
+scope出现后让executor等待由真实`RuntimeCommandRepository.renew_lease`成功触发的非写入Event，直至观测至少一次
+authorized heartbeat；不得用固定亚秒sleep假设线程调度。同时证明command/event terminal、heartbeat writer
+全部退休且不存在 `runtime_command_claim_expired`。本 slice 只包含代码、测试、OpenSpec/文档与 non-live 验证，
+不提交，不回填 r79，也不启动任何 live、MICU、provider、HPC 或 Chrome action。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

@@ -61,6 +61,8 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
 
   追加修正记录：public `/runtime/drain` 已从同步 scheduler 调用改为严格 durable command admission。POST 原子创建 command/outbox、始终返回 `202`，独立 `RuntimeCommandWorker` 后续获取 session lease 并执行 bounded batch；GET 返回闭集脱敏状态。HTTP request、command 和 session lease 均不拥有 approval/provider/HPC wall time。
 
+  追加修正记录：r79 暴露 command 在无 mutation scope 时 claim、同一 batch 打开 attempt scope 后，heartbeat 仍继承空 authority 的跨 scope 缺口。late-scope heartbeat 现按 exact command id 为每次续租创建并立即退休短 `runtime_command` writer；repository把精确mutation-guard rejection翻译为包内typed exception，worker不解析原始SQLite文本，只对该authority-transition类型与SQLite `BUSY/LOCKED`在当前lease内有界处理，executor返回取消待执行retry，真实state/token/fence drift与expired-claim recovery继续fail closed且不replay scheduler。core覆盖authorized heartbeat、typed transition、raw-text rejection、contention/cancel、fence-loss与旧no-replay负例；production-composition qualification用真实public FastAPI、thin CLI与file SQLite及authorized-renew Event屏障证明attempt scope后heartbeat writer terminal、command/event closure且无`runtime_command_claim_expired`，不再依赖固定亚秒sleep。
+
 - [x] Host 在 scheduler 释放 runtime authority 后重扫 mutable repository，并重建
   max-step handoff 与 scheduler success/failure。
 

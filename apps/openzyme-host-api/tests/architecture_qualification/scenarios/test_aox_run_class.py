@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+from functools import partial
 import hashlib
 from io import StringIO
 import json
 from pathlib import Path
+import threading
 import time
 
 import pytest
 
 import openzyme_core
+from openzyme_core import RuntimeCommandWorker
 from openzyme_core.workflow_knowledge import default_workflow_registry
+import openzyme_host_api.app as host_app
 from openzyme_host_api import aox_attempt_authority
 from openzyme_host_api import aox_attempt_preflight
 from openzyme_host_api import aox_conductor_execution
@@ -29,6 +33,7 @@ from openzyme_host_api.aox_public_conductor_contract import (
 from openzyme_host_api.aox_public_conductor_contract import (
     validate_canonical_entry_receipts,
 )
+from openzyme_host_api.runtime_commands import HostRuntimeCommandExecutor
 from openzyme_host_api.v3_service import V3HostApiService
 from openzyme_host_api.architecture_qualification import canonical_json_bytes
 from openzyme_host_cli import cli as host_cli
@@ -240,7 +245,10 @@ def _wait_for_terminal_command(
     family="evidence-projection",
     selections=("full", "premerge_subset"),
 )
-def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
+def test_aox_automatic_run_surfaces_are_retired(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     parser = aox_cutover_cli.build_parser()
     subcommands = parser._subparsers._group_actions[0].choices
     required_conductor_commands = {
@@ -329,6 +337,7 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
     assert not hasattr(V3HostApiService, "finalize_scientific_attempt_admission")
     assert not hasattr(V3HostApiService, "finalize_scientific_attempt_closure")
     assert not hasattr(openzyme_core.ScientificAttemptService, "create_attempt")
+    assert not hasattr(openzyme_core, "MutationWriteAuthorityRejectedError")
     assert not hasattr(aox_attempt_authority, "attempt_admission_arguments")
     assert callable(aox_attempt_preflight.load_attempt_preflight_receipt)
     assert callable(aox_conductor_execution.publish_conductor_execution_contract)
@@ -359,11 +368,64 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
     assert aox_host_supervision.HOST_PRE_READY_FAILURE_SCHEMA_ID == (
         "aox_supervised_host_pre_ready_failure@1"
     )
+    monkeypatch.setattr(
+        host_app,
+        "RuntimeCommandWorker",
+        partial(RuntimeCommandWorker, lease_seconds=1),
+    )
     factory = ProductionCompositionFactory.create(tmp_path / "aox-composition")
     model_factory = _AoxPublicCompositionModelFactory()
     composition = factory.build(
         model_factory=model_factory,
         bootstrap_supervised_sandbox=True,
+    )
+    authorized_heartbeat = threading.Event()
+    original_renew_lease = openzyme_core.RuntimeCommandRepository.renew_lease
+    original_runtime_command_call = HostRuntimeCommandExecutor.__call__
+
+    def observe_authorized_heartbeat(
+        repository: openzyme_core.RuntimeCommandRepository,
+        record: openzyme_core.RuntimeCommandRecord,
+        *,
+        expected_state_version: int,
+        expected_lease_token: str,
+        expected_fencing_token: int,
+    ) -> openzyme_core.RuntimeCommandRecord:
+        renewed = original_renew_lease(
+            repository,
+            record,
+            expected_state_version=expected_state_version,
+            expected_lease_token=expected_lease_token,
+            expected_fencing_token=expected_fencing_token,
+        )
+        if openzyme_core.current_mutation_write_authority() is not None:
+            authorized_heartbeat.set()
+        return renewed
+
+    def await_authorized_heartbeat(
+        executor: HostRuntimeCommandExecutor,
+        command: openzyme_core.RuntimeCommandRecord,
+    ) -> openzyme_core.RuntimeCommandExecutionResult:
+        result = original_runtime_command_call(executor, command)
+        with composition.repository_provider.read() as reader:
+            scope_exists = bool(
+                reader.repositories.mutation_scopes.list_by_session(
+                    command.session_id
+                )
+            )
+        if scope_exists:
+            assert authorized_heartbeat.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(
+        openzyme_core.RuntimeCommandRepository,
+        "renew_lease",
+        observe_authorized_heartbeat,
+    )
+    monkeypatch.setattr(
+        HostRuntimeCommandExecutor,
+        "__call__",
+        await_authorized_heartbeat,
     )
     public_routes = {
         (method, route.path)
@@ -812,7 +874,48 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
         sandbox_workspaces = reader.repositories.sandbox_workspaces.list_by_session(
             session_id
         )
+        runtime_commands = reader.repositories.runtime_commands.list_by_session(
+            session_id
+        )
+        mutation_scopes = reader.repositories.mutation_scopes.list_by_session(
+            session_id
+        )
+        mutation_writers = [
+            writer
+            for scope in mutation_scopes
+            for writer in reader.repositories.mutation_writers.list_all(
+                scope.scope_id
+            )
+        ]
     assert persisted_session is not None
+    heartbeat_writers = [
+        writer
+        for writer in mutation_writers
+        if writer.owner_ref.endswith(":lease-heartbeat")
+    ]
+    heartbeat_command_ids = {
+        command.command_id
+        for command in runtime_commands
+        if any(
+            writer.owner_ref
+            == f"runtime-command:{command.command_id}:lease-heartbeat"
+            for writer in heartbeat_writers
+        )
+    }
+    assert heartbeat_writers
+    assert all(writer.state.is_terminal for writer in heartbeat_writers)
+    assert any(
+        command.command_id in heartbeat_command_ids
+        and dict(command.bounded_outcome_summary or {}).get(
+            "processed_signal_count"
+        )
+        == 1
+        for command in runtime_commands
+    )
+    assert all(
+        command.error_code != "runtime_command_claim_expired"
+        for command in runtime_commands
+    )
     assert any(item.message_type == "user_message" for item in persisted_messages)
     assert persisted_events
     assert len(sandbox_workspaces) == 1
@@ -967,6 +1070,14 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
             "post_authority_runtime_command_terminals": [
                 item["status"] for item in post_authority_terminals
             ],
+            "late_scope_runtime_command_heartbeat": {
+                "command_ids": sorted(heartbeat_command_ids),
+                "terminal_writer_count": len(heartbeat_writers),
+                "expired_claim_count": sum(
+                    command.error_code == "runtime_command_claim_expired"
+                    for command in runtime_commands
+                ),
+            },
             "public_route_registry_composed": bool(public_routes),
             "legacy_public_routes_absent": not retired_route_paths.intersection(
                 path for _, path in public_routes
@@ -974,7 +1085,7 @@ def test_aox_automatic_run_surfaces_are_retired(tmp_path: Path) -> None:
             "fault_route_fail_closed": fault_rejection.status_code >= 400,
             "export_route_fail_closed": export_rejection.status_code >= 400,
         },
-        "schema_id": "aox_r77_public_entry_contract_qualification@1",
+        "schema_id": "aox_r79_runtime_command_heartbeat_qualification@1",
     }
     record_execution_observation_digest(
         "sha256:" + hashlib.sha256(canonical_json_bytes(observation)).hexdigest()

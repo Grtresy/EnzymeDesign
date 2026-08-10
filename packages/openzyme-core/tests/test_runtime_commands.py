@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import replace
+import sqlite3
 import threading
 
 import pytest
@@ -20,6 +21,13 @@ from openzyme_core import runtime_command_pre_core_failure_summary
 from openzyme_core.runtime_drain_receipts import (
     validate_runtime_command_outcome_v2,
 )
+from openzyme_core.durable_coordination_repositories import (
+    MutationWriteAuthorityRejectedError,
+)
+from openzyme_core.durable_coordination_repositories import (
+    RuntimeCommandRepository,
+)
+from openzyme_core.reliability_repositories import OptimisticStateConflictError
 from openzyme_domain import RuntimeCommandRecord
 from openzyme_domain import RuntimeCommandStatus
 from openzyme_domain import RuntimeCommandType
@@ -261,6 +269,425 @@ def test_runtime_command_late_binds_terminal_writer_when_execution_opens_scope(
     assert writers[0].state.is_terminal
 
 
+def test_runtime_command_late_scope_heartbeat_uses_exact_short_writer(
+    tmp_path,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider(tmp_path)
+    command = _command(command_id="command_late_scope_heartbeat")
+    with provider.write() as unit_of_work:
+        unit_of_work.repositories.runtime_commands.add(command)
+    heartbeat_renewed = threading.Event()
+    original_renew_lease = RuntimeCommandRepository.renew_lease
+
+    def observe_renewal(
+        repository: RuntimeCommandRepository,
+        record: RuntimeCommandRecord,
+        *,
+        expected_state_version: int,
+        expected_lease_token: str,
+        expected_fencing_token: int,
+    ) -> RuntimeCommandRecord:
+        renewed = original_renew_lease(
+            repository,
+            record,
+            expected_state_version=expected_state_version,
+            expected_lease_token=expected_lease_token,
+            expected_fencing_token=expected_fencing_token,
+        )
+        if current_mutation_write_authority() is not None:
+            heartbeat_renewed.set()
+        return renewed
+
+    monkeypatch.setattr(RuntimeCommandRepository, "renew_lease", observe_renewal)
+
+    def execute(claimed: RuntimeCommandRecord) -> RuntimeCommandExecutionResult:
+        with _authority_aware_repository_scope(provider) as repositories:
+            MutationScopeService(repositories).open_scope(
+                session_id=claimed.session_id,
+                scope_kind=MutationScopeKind.SESSION,
+                scope_ref="runtime-command-heartbeat-scope",
+            )
+        assert heartbeat_renewed.wait(timeout=2)
+        return RuntimeCommandExecutionResult(
+            status=RuntimeCommandStatus.COMPLETED,
+            bounded_outcome_summary=_completed_outcome_summary(
+                processed_signal_count=1,
+                suspended=False,
+            ),
+        )
+
+    writer_turns = MutationWriterTurnFactory(
+        repository_scope_factory=lambda: _authority_aware_repository_scope(provider)
+    )
+    outcome = RuntimeCommandWorker(
+        repository_scope_factory=lambda: _authority_aware_repository_scope(provider),
+        executor=execute,
+        worker_id="runtime-worker:late-scope-heartbeat",
+        lease_seconds=1,
+        mutation_writer_scope_factory=writer_turns.open,
+    ).run_once()
+
+    assert outcome.status == RuntimeCommandStatus.COMPLETED.value
+    with provider.read() as unit_of_work:
+        repositories = unit_of_work.repositories
+        stored = repositories.runtime_commands.get(command.command_id)
+        scopes = repositories.mutation_scopes.list_by_session(command.session_id)
+        writers = repositories.mutation_writers.list_all(scopes[0].scope_id)
+        events = repositories.durable_events.list_by_session(command.session_id)
+    assert stored is not None
+    assert stored.status is RuntimeCommandStatus.COMPLETED
+    assert [event.event_type for event in events] == ["runtime.command.finished"]
+    owner_refs = [writer.owner_ref for writer in writers]
+    assert f"runtime-command:{command.command_id}:lease-heartbeat" in owner_refs
+    assert f"runtime-command:{command.command_id}:terminal-settlement" in owner_refs
+    assert all(writer.state.is_terminal for writer in writers)
+
+
+def test_runtime_command_late_scope_heartbeat_retries_authority_transition_race(
+    tmp_path,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider(tmp_path)
+    command = _command(command_id="command_heartbeat_authority_race")
+    with provider.write() as unit_of_work:
+        unit_of_work.repositories.runtime_commands.add(command)
+    heartbeat_renewed = threading.Event()
+    heartbeat_writer_attempts = 0
+    writer_turns = MutationWriterTurnFactory(
+        repository_scope_factory=lambda: _authority_aware_repository_scope(provider)
+    )
+    original_renew_lease = RuntimeCommandRepository.renew_lease
+
+    def observe_renewal(
+        repository: RuntimeCommandRepository,
+        record: RuntimeCommandRecord,
+        *,
+        expected_state_version: int,
+        expected_lease_token: str,
+        expected_fencing_token: int,
+    ) -> RuntimeCommandRecord:
+        renewed = original_renew_lease(
+            repository,
+            record,
+            expected_state_version=expected_state_version,
+            expected_lease_token=expected_lease_token,
+            expected_fencing_token=expected_fencing_token,
+        )
+        if current_mutation_write_authority() is not None:
+            heartbeat_renewed.set()
+        return renewed
+
+    @contextmanager
+    def racing_writer_scope(
+        *,
+        session_id: str,
+        owner_kind: MutationWriterKind,
+        owner_ref: str,
+        process_epoch: int | None = None,
+    ):  # type: ignore[no-untyped-def]
+        nonlocal heartbeat_writer_attempts
+        if owner_ref.endswith(":lease-heartbeat"):
+            heartbeat_writer_attempts += 1
+            if heartbeat_writer_attempts == 1:
+                yield None
+                return
+        with writer_turns.open(
+            session_id=session_id,
+            owner_kind=owner_kind,
+            owner_ref=owner_ref,
+            process_epoch=process_epoch,
+        ) as authority:
+            yield authority
+
+    monkeypatch.setattr(RuntimeCommandRepository, "renew_lease", observe_renewal)
+
+    def execute(claimed: RuntimeCommandRecord) -> RuntimeCommandExecutionResult:
+        with _authority_aware_repository_scope(provider) as repositories:
+            MutationScopeService(repositories).open_scope(
+                session_id=claimed.session_id,
+                scope_kind=MutationScopeKind.SESSION,
+                scope_ref="runtime-command-heartbeat-race-scope",
+            )
+        assert heartbeat_renewed.wait(timeout=2)
+        return RuntimeCommandExecutionResult(
+            status=RuntimeCommandStatus.COMPLETED,
+            bounded_outcome_summary=_completed_outcome_summary(
+                processed_signal_count=1,
+                suspended=False,
+            ),
+        )
+
+    outcome = RuntimeCommandWorker(
+        repository_scope_factory=lambda: _authority_aware_repository_scope(provider),
+        executor=execute,
+        worker_id="runtime-worker:heartbeat-authority-race",
+        lease_seconds=1,
+        mutation_writer_scope_factory=racing_writer_scope,
+    ).run_once()
+
+    assert heartbeat_writer_attempts == 2
+    assert outcome.status == RuntimeCommandStatus.COMPLETED.value
+    with provider.read() as unit_of_work:
+        stored = unit_of_work.repositories.runtime_commands.get(command.command_id)
+        events = unit_of_work.repositories.durable_events.list_by_session(
+            command.session_id
+        )
+    assert stored is not None
+    assert stored.status is RuntimeCommandStatus.COMPLETED
+    assert [event.event_type for event in events] == ["runtime.command.finished"]
+
+
+def test_runtime_command_heartbeat_does_not_parse_raw_sqlite_guard_text(
+    tmp_path,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider(tmp_path)
+    command = _command(command_id="command_heartbeat_raw_guard_text")
+    with provider.write() as unit_of_work:
+        unit_of_work.repositories.runtime_commands.add(command)
+    rejection_observed = threading.Event()
+    renewal_attempts = 0
+
+    def reject_with_raw_sqlite_error(
+        repository: RuntimeCommandRepository,
+        record: RuntimeCommandRecord,
+        *,
+        expected_state_version: int,
+        expected_lease_token: str,
+        expected_fencing_token: int,
+    ) -> RuntimeCommandRecord:
+        del (
+            repository,
+            record,
+            expected_state_version,
+            expected_lease_token,
+            expected_fencing_token,
+        )
+        nonlocal renewal_attempts
+        renewal_attempts += 1
+        rejection_observed.set()
+        raise sqlite3.IntegrityError("mutation write authority rejected")
+
+    monkeypatch.setattr(
+        RuntimeCommandRepository,
+        "renew_lease",
+        reject_with_raw_sqlite_error,
+    )
+
+    def execute(claimed: RuntimeCommandRecord) -> RuntimeCommandExecutionResult:
+        with _authority_aware_repository_scope(provider) as repositories:
+            MutationScopeService(repositories).open_scope(
+                session_id=claimed.session_id,
+                scope_kind=MutationScopeKind.SESSION,
+                scope_ref="runtime-command-heartbeat-raw-guard-scope",
+            )
+        assert rejection_observed.wait(timeout=2)
+        return RuntimeCommandExecutionResult(
+            status=RuntimeCommandStatus.COMPLETED,
+            bounded_outcome_summary=_completed_outcome_summary(
+                processed_signal_count=1,
+                suspended=False,
+            ),
+        )
+
+    writer_turns = MutationWriterTurnFactory(
+        repository_scope_factory=lambda: _authority_aware_repository_scope(provider)
+    )
+    outcome = RuntimeCommandWorker(
+        repository_scope_factory=lambda: _authority_aware_repository_scope(provider),
+        executor=execute,
+        worker_id="runtime-worker:heartbeat-raw-guard-text",
+        lease_seconds=1,
+        mutation_writer_scope_factory=writer_turns.open,
+    ).run_once()
+
+    assert renewal_attempts == 1
+    assert outcome.action == "claim_fenced"
+    assert outcome.semantic_progress is False
+
+
+def test_runtime_command_heartbeat_retries_transient_sqlite_contention(
+    tmp_path,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider(tmp_path)
+    command = _command(command_id="command_heartbeat_contention")
+    with provider.write() as unit_of_work:
+        unit_of_work.repositories.runtime_commands.add(command)
+    heartbeat_renewed = threading.Event()
+    renewal_attempts = 0
+    original_renew_lease = RuntimeCommandRepository.renew_lease
+
+    def contend_then_renew(
+        repository: RuntimeCommandRepository,
+        record: RuntimeCommandRecord,
+        *,
+        expected_state_version: int,
+        expected_lease_token: str,
+        expected_fencing_token: int,
+    ) -> RuntimeCommandRecord:
+        nonlocal renewal_attempts
+        renewal_attempts += 1
+        if renewal_attempts < 3:
+            raise sqlite3.OperationalError("database is locked")
+        renewed = original_renew_lease(
+            repository,
+            record,
+            expected_state_version=expected_state_version,
+            expected_lease_token=expected_lease_token,
+            expected_fencing_token=expected_fencing_token,
+        )
+        heartbeat_renewed.set()
+        return renewed
+
+    monkeypatch.setattr(RuntimeCommandRepository, "renew_lease", contend_then_renew)
+
+    def execute(claimed: RuntimeCommandRecord) -> RuntimeCommandExecutionResult:
+        del claimed
+        assert heartbeat_renewed.wait(timeout=2)
+        return RuntimeCommandExecutionResult(
+            status=RuntimeCommandStatus.COMPLETED,
+            bounded_outcome_summary=_completed_outcome_summary(
+                processed_signal_count=1,
+                suspended=False,
+            ),
+        )
+
+    outcome = RuntimeCommandWorker(
+        repository_scope_factory=lambda: _repository_scope(provider),
+        executor=execute,
+        worker_id="runtime-worker:heartbeat-contention",
+        lease_seconds=1,
+    ).run_once()
+
+    assert renewal_attempts == 3
+    assert outcome.status == RuntimeCommandStatus.COMPLETED.value
+    with provider.read() as unit_of_work:
+        stored = unit_of_work.repositories.runtime_commands.get(command.command_id)
+    assert stored is not None
+    assert stored.status is RuntimeCommandStatus.COMPLETED
+
+
+def test_runtime_command_heartbeat_stops_contention_retry_after_executor_return(
+    tmp_path,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider(tmp_path)
+    command = _command(command_id="command_heartbeat_retry_cancelled")
+    with provider.write() as unit_of_work:
+        unit_of_work.repositories.runtime_commands.add(command)
+    contention_observed = threading.Event()
+    renewal_attempts = 0
+
+    def contend(
+        repository: RuntimeCommandRepository,
+        record: RuntimeCommandRecord,
+        *,
+        expected_state_version: int,
+        expected_lease_token: str,
+        expected_fencing_token: int,
+    ) -> RuntimeCommandRecord:
+        del (
+            repository,
+            record,
+            expected_state_version,
+            expected_lease_token,
+            expected_fencing_token,
+        )
+        nonlocal renewal_attempts
+        renewal_attempts += 1
+        contention_observed.set()
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(RuntimeCommandRepository, "renew_lease", contend)
+
+    def execute(claimed: RuntimeCommandRecord) -> RuntimeCommandExecutionResult:
+        del claimed
+        assert contention_observed.wait(timeout=2)
+        return RuntimeCommandExecutionResult(
+            status=RuntimeCommandStatus.COMPLETED,
+            bounded_outcome_summary=_completed_outcome_summary(
+                processed_signal_count=1,
+                suspended=False,
+            ),
+        )
+
+    outcome = RuntimeCommandWorker(
+        repository_scope_factory=lambda: _repository_scope(provider),
+        executor=execute,
+        worker_id="runtime-worker:heartbeat-retry-cancelled",
+        lease_seconds=1,
+    ).run_once()
+
+    assert renewal_attempts == 1
+    assert outcome.status == RuntimeCommandStatus.COMPLETED.value
+
+
+def test_runtime_command_heartbeat_fence_loss_remains_fail_closed(
+    tmp_path,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider(tmp_path)
+    command = _command(command_id="command_heartbeat_fenced")
+    with provider.write() as unit_of_work:
+        unit_of_work.repositories.runtime_commands.add(command)
+    fence_loss_observed = threading.Event()
+
+    def reject_fenced_renewal(
+        repository: RuntimeCommandRepository,
+        record: RuntimeCommandRecord,
+        *,
+        expected_state_version: int,
+        expected_lease_token: str,
+        expected_fencing_token: int,
+    ) -> RuntimeCommandRecord:
+        del (
+            repository,
+            record,
+            expected_state_version,
+            expected_lease_token,
+            expected_fencing_token,
+        )
+        fence_loss_observed.set()
+        raise OptimisticStateConflictError("runtime command lease renewal was fenced")
+
+    monkeypatch.setattr(
+        RuntimeCommandRepository,
+        "renew_lease",
+        reject_fenced_renewal,
+    )
+
+    def execute(claimed: RuntimeCommandRecord) -> RuntimeCommandExecutionResult:
+        del claimed
+        assert fence_loss_observed.wait(timeout=2)
+        return RuntimeCommandExecutionResult(
+            status=RuntimeCommandStatus.COMPLETED,
+            bounded_outcome_summary=_completed_outcome_summary(
+                processed_signal_count=1,
+                suspended=False,
+            ),
+        )
+
+    outcome = RuntimeCommandWorker(
+        repository_scope_factory=lambda: _repository_scope(provider),
+        executor=execute,
+        worker_id="runtime-worker:heartbeat-fenced",
+        lease_seconds=1,
+    ).run_once()
+
+    assert outcome.action == "claim_fenced"
+    assert outcome.semantic_progress is False
+    with provider.read() as unit_of_work:
+        stored = unit_of_work.repositories.runtime_commands.get(command.command_id)
+        events = unit_of_work.repositories.durable_events.list_by_session(
+            command.session_id
+        )
+    assert stored is not None
+    assert stored.status is RuntimeCommandStatus.CLAIMED
+    assert events == []
+
+
 def test_runtime_command_worker_pre_core_exception_uses_v2_zero_receipt(
     tmp_path,  # type: ignore[no-untyped-def]
 ) -> None:
@@ -433,6 +860,45 @@ def test_runtime_command_repository_renews_without_advancing_state_version(
     with provider.read() as unit_of_work:
         assert unit_of_work.repositories.runtime_commands.count_active() == 1
         assert unit_of_work.repositories.runtime_commands.list_active() == [renewed]
+
+
+def test_runtime_command_repository_types_mutation_authority_rejection(
+    tmp_path,  # type: ignore[no-untyped-def]
+) -> None:
+    provider = _provider(tmp_path)
+    command = _command(command_id="command_typed_authority_rejection")
+    with provider.write() as unit_of_work:
+        repositories = unit_of_work.repositories
+        repositories.runtime_commands.add(command)
+        claimed = repositories.runtime_commands.claim(
+            command.command_id,
+            expected_state_version=1,
+            claim_owner="runtime-worker:typed-authority",
+            lease_token="runtime-command-lease:typed-authority",
+            lease_expires_at="2026-07-21T00:00:10+00:00",
+            now_iso=NOW,
+            started_at=NOW,
+        )
+    with provider.write() as unit_of_work:
+        MutationScopeService(unit_of_work.repositories).open_scope(
+            session_id=command.session_id,
+            scope_kind=MutationScopeKind.SESSION,
+            scope_ref="runtime-command-typed-authority-scope",
+        )
+
+    with pytest.raises(MutationWriteAuthorityRejectedError) as rejected:
+        with _authority_aware_repository_scope(provider) as repositories:
+            repositories.runtime_commands.renew_lease(
+                replace(
+                    claimed,
+                    lease_expires_at="2026-07-21T00:00:20+00:00",
+                ),
+                expected_state_version=claimed.state_version,
+                expected_lease_token=str(claimed.lease_token),
+                expected_fencing_token=claimed.fencing_token,
+            )
+
+    assert isinstance(rejected.value.__cause__, sqlite3.IntegrityError)
 
 
 def test_runtime_command_projection_recursively_redacts_private_authority() -> None:

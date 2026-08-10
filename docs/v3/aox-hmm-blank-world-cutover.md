@@ -1,6 +1,6 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r67 are permanent NO-GO evidence. r68-r77 retain their documented prelaunch/pre-admission/pre-runtime/evidence-blocker classifications and none is a canonical NO-GO. r78 consumed authority once and then failed slot 1 preflight before claim/root/Host because the actual rootless Podman resolver returned `podman_rootless_preflight_failed`; its source-bound preflight-failure verifier and reducer closed canonical `NO-GO` with decision digest `sha256:7fb899562369d6d96e6cba490b2d862943c1359fa972389e9b1d9fd374216c84`. None of r68-r78 state or the old persistent goal is reusable. Current forward contracts include qualification report/receipt `@3`, credential-free pinned launch profile, actual launch revalidation before claim/root, a pre-consumption Podman executor-capability boundary, source-bound public conductor readiness, and a strict pre-child-ready sandbox failure receipt plus discriminated formal slot failure `@2`. These capabilities do not backfill r75-r77 or alter r78. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
+Status: r43-r67 are permanent NO-GO evidence. r68-r77 retain their documented prelaunch/pre-admission/pre-runtime/evidence-blocker classifications and none is a canonical NO-GO. r78 consumed authority once and then failed slot 1 preflight before claim/root/Host because the actual rootless Podman resolver returned `podman_rootless_preflight_failed`; its source-bound preflight-failure verifier and reducer closed canonical `NO-GO` with decision digest `sha256:7fb899562369d6d96e6cba490b2d862943c1359fa972389e9b1d9fd374216c84`. r79 then started only slot 1, admitted one open scientific attempt with no selection or provider/HPC operation, and stopped after its second bounded command expired because a post-scope heartbeat lacked mutation writer authority. r79 has no sealed scientific evidence export and no canonical GO/NO-GO decision; its supervised Host correctly remains active under the readiness contract. None of r68-r79 state or the old persistent goal is reusable. Current forward contracts additionally bind every late-scope command heartbeat to an exact short writer with lease-bounded SQLite contention/authority-transition handling while preserving real-fence and expired-claim no-replay semantics. These capabilities do not backfill, retry or alter any frozen run. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, slot 2/3, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
 
 Historical incident and older command/observer/driver/browser/diagnostic-authority/public-finalizer sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract; in particular, every older `run-live`, `run-diagnostic-live`, diagnostic authority command, observer, barrier, rollover, no-wakeup, public generic scientific mutation/finalizer, `chrome-once`, browser-helper and ambient dev/eval image-registration instruction is retired even where a historical section called it current at that time. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, late-bound task/scientific-attempt selection, fresh supervised Host bootstrap and qualification semantics are defined by the post-r70/post-r71 sections below, [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
@@ -3534,3 +3534,46 @@ exact formal `preflight` 的平台许可必须在 `consume-authority` 前闭合�
 preflight、不制造 OpenZyme failure receipt，也不把平台 mount 约束归因于 Podman installation。该许可
 只开放 rootless Podman 所需的本地 runtime/IPC，不扩张 exact plan、预算、external effects 或科学策略；
 后续验证仍需 fresh clean commit、qualification/pin/plan 与新的精确 live 授权。
+
+### 2026-08-10 r79 late-scope runtime-command heartbeat evidence blocker
+
+r79 campaign `aox_campaign_350aaf11ace70999f50ccf57` 按批准的 exact plan 只启动 slot 1，未重试，
+slot 2/3 未启动。首条 bounded drain 正常 terminal；第二条 command
+`runtime_command_5ae67fa8ccea` 由 executor 完成 execution turn：canonical lane/task 已建立，
+scientific attempt `attempt_e9fc103cd098020cc24c30fe` 已 admission，当前 `attempt_count=1`、
+`lifecycle_phase=open`，selection head 缺失且返回 `selection_head_missing`。provider/HPC operation、pending
+approval 均为零。随后 command 以 `runtime_command_claim_expired` 失败，sealed public summary 保留
+`processed_signal_count=0`、`scheduler_status=not_started` 与 `recovery_required=true`，因为 command worker
+没有在 claim 有效期内形成可发布的 scheduler outcome；这不否认 executor 已持久化的 attempt facts。
+
+最早 source-bound 机制由 frozen events/workspace 与 current source共同闭合。command claim发生时session
+尚无 mutation scope，初始 `runtime_command` writer admission 因而为空；heartbeat thread通过
+`copy_context()`继承该空authority。executor的`attempt.create`随后打开session scope，下一次
+`runtime_command_records` lease renewal没有exact writer，被migration mutation guard以
+`mutation write authority rejected`拒绝。旧heartbeat把任意续租异常折叠为
+`OptimisticStateConflictError`并结束；claim保持claimed直至过期，reclaimer按既有安全合同只增加fence并以
+`recovered_without_replay`终结，未重新运行scheduler。该原因早于最终`runtime_command_claim_expired`
+wrapper，也与此前可恢复、无effect的tool error无关。
+
+`seal-conductor-state` 以 `public_conductor_evidence_mode_invalid` 拒绝是正确行为：attempt-mode retirement
+需要sealed scientific evidence export，而当前没有selection，不能伪造export、把open attempt降格为zero-attempt
+slot failure，或仅凭Host/process状态制造canonical decision。因此r79保持blocked/noncanonical；现有Host
+继续active只为保留获批范围内缺失public reads的可能性，本repair不终止、重启或改变它。
+
+前向修复让late-scope command的每次heartbeat独立取得
+`runtime-command:<command_id>:lease-heartbeat`短writer，在fresh repository scope内以exact state version、
+lease token与fencing token续租，随后立即退休；不持有覆盖executor剩余生命周期的长writer。SQLite
+`BUSY/LOCKED`与writer admission观察无scope、随后scope恰好打开的精确race只使用固定有限delay，并受当前
+lease expiry约束；repository把该精确mutation-guard rejection翻译为包内
+`MutationWriteAuthorityRejectedError`，worker不解析原始SQLite错误文本，原始同文错误本身不授予retry。
+executor返回会取消待执行contention retry，使terminal settlement以自己的短writer立即fence。真实
+token/fence/state drift、其他integrity failure与retry exhaustion继续fail closed，expired-claim reclaimer
+仍不replay scheduler，也不重建outcome或写业务终态。
+
+non-live回归同时覆盖authorized late-scope heartbeat、typed authority-transition race、raw SQLite同文负例、
+SQLite contention、executor-return取消、真实fence loss和原有expired-claim no-replay；production-composition
+qualification通过public FastAPI、thin CLI和file-backed SQLite实际创建attempt scope，并让真实authorized
+renew成功Event释放executor，而不是依赖固定亚秒sleep，最终观测terminal heartbeat writers、唯一command
+event与零`runtime_command_claim_expired`。public schema、scientific selection/closure、conductor
+readiness与offline decision权威均不改变。本slice不回填或重试r79，不启动slot 2/3、qualification、下一
+rNN、live、MICU、provider、HPC或Chrome，也不提交。

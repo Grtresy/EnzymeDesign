@@ -58,10 +58,15 @@ POST 只在短 admission transaction 中验证 access、request digest 与幂等
 `V3DurableWorkSupervisor` 中的 `RuntimeCommandWorker` 独立 claim command，再调用统一 scheduler acquire session lease、claim `agent:master` 或 teammate signal 并运行 bounded batch。`auto_enqueue_ready_tasks` 默认关闭；只有请求明确为 `true` 时才扫描 ready unassigned tasks。command 在 batch completed/failed、session locked 或 work park 后即 terminal，approval/provider/HPC wall time 不属于 command lifetime。
 
 command开始时可能尚无mutation scope，而它处理的canonical transition会在同一bounded batch中
-打开scope。此时terminal command settlement与post-transition projection必须分别以exact
-`runtime-command:<command_id>` source获取短writer authority并在写后退休；不得复用空的initial
-admission，也不得演化为observer或业务terminal policy。公开terminal status与
-`runtime.command.finished` event使用同一closed safe projection。
+打开scope。此后的每次command lease heartbeat、terminal command settlement与post-transition
+projection必须分别以exact `runtime-command:<command_id>` source获取短writer authority并在单次写后
+退休；不得复用空的initial admission，也不得持有覆盖剩余executor lifetime的长writer。heartbeat保留
+exact state version、lease token与fencing token；repository把精确mutation-guard rejection翻译为包内
+typed exception，worker不解析原始SQLite错误文本，只对该writer admission/scope open race与SQLite
+`BUSY/LOCKED`使用fresh scope和固定有限delay，并受当前lease expiry约束。executor返回会取消尚未发生的
+contention retry；真实fence/token/state drift、原始同文错误、其他integrity failure与retry exhaustion继续
+fail closed，不replay scheduler、不重建outcome，也不得演化为observer或业务terminal policy。
+公开terminal status与`runtime.command.finished` event使用同一closed safe projection。
 
 调用方通过 `GET /v3/sessions/{session_id}/runtime/commands/{command_id}` 查询相同闭集 DTO；command 必须属于 URL session。若 session lease 已被 background/manual/recovery owner 持有，worker 把 command 终结为 `locked` 并给出 safe retry hint，不暴露 owner identity，也不静默等待、创建 replacement command 或并发绕过 ownership。同一 idempotency key 与相同 normalized request 返回同一 command；相同 key 不同 digest 在任何 side effect 前冲突。旧同步 `V3CommandResult`/workspace response 已退休，public API 不提供 fallback。
 
@@ -736,8 +741,10 @@ execution task；此后operator才可调用
 或effect。executor随后继续通过canonical lane tools与current-assignee `attempt.create`建立真实
 control graph；finalization policy不再隐藏匹配预定`task.create`。
 
-如果runtime command执行期间才创建mutation scope，terminal settlement与post-transition
-projection各自在Host内部获取绑定exact command id的短writer authority，写完立即退休。public
+如果runtime command执行期间才创建mutation scope，此后的每次lease heartbeat、terminal settlement与
+post-transition projection各自在Host内部获取绑定exact command id的短writer authority，写完立即退休。
+heartbeat contention/race retry只存在于当前command lease内，不能创建replacement command或恢复scheduler。
+public
 terminal response必须逐项复现唯一`runtime.command.finished` event；这项settlement只证明
 command closure，不改变task/attempt/report业务terminal。exact三任务仍按kind、agent role、
 assignee和owner-authored finish cardinality从canonical repositories/events导出。

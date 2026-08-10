@@ -205,10 +205,12 @@ scope 或把无 signal/no wakeup 当作 attempt terminal。缺 scope、多 scope
 parent/authority mismatch 与 unknown effect 仍由 Host typed fail closed。
 
 若一个runtime command在开始时没有可写scope，而该command中的canonical scientific transition
-随后打开了scope，terminal command settlement与post-transition projection必须各自重新取得绑定
-exact command id的短writer authority，并在写入command/event/projection后退休。它们不能复用
-启动时的空authority，也不能扩大成observer、retry、rollover或业务terminal判断；scope/parent/
-fence不匹配继续typed fail closed。
+随后打开了scope，此后的每次lease heartbeat、terminal command settlement与post-transition projection
+必须各自重新取得绑定exact command id的短writer authority，并在单次写入后退休。它们不能复用启动时的
+空authority，也不能扩大成observer、scheduler replay、rollover或业务terminal判断。heartbeat只对
+SQLite `BUSY/LOCKED`及repository翻译出的包内typed authority-transition rejection在当前lease内使用
+fresh scope与固定有限delay；worker不得把原始SQLite错误文本当作retry authority。executor返回取消待执行
+retry，真正scope/parent/state/token/fence不匹配继续typed fail closed。
 
 AOX 使用更窄的 `aox_live_attempt_authority_plan@4`：
 

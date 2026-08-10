@@ -75,7 +75,7 @@ literals，不依赖或恢复已删除的 closure-stage production modules。
 当前 `evidence-projection.aox-run-class-disjoint-closure` scenario 同时闭合
 `evidence-projection.aox-run-class-disjoint`与
 `evidence-projection.aox-fresh-host-sandbox-bootstrap`，并以
-`aox_r77_public_entry_contract_qualification@1` observation收口真实 production
+`aox_r79_runtime_command_heartbeat_qualification@1` observation收口真实 production
 composition：场景通过`HostApiDependencies/create_app()`组成actual FastAPI应用，以current
 conductor execution contract `@2`和thin Host CLI调用public route，使用file-backed SQLite和只注入agent边界的deterministic
 model/runtime先调用production Host bootstrap，在session/model前证明全空registry、唯一immutable
@@ -88,6 +88,13 @@ channel或master lane fixture。wrong task与wrong actor在零attempt状态被�
 生成late-bound identity，独立reader再证明持久化。场景还证明terminal response与唯一
 `runtime.command.finished` exact一致，fault与closed export在不匹配状态typed fail closed，且
 不调用private service、不手工组装`ToolRegistry`、不直接写canonical truth或合成receipt。
+同一场景把production `RuntimeCommandWorker` lease收窄为1秒；只读检查发现canonical attempt scope后，
+真实Host executor等待由原production `RuntimeCommandRepository.renew_lease`成功返回触发的Event，确保file
+SQLite至少发生一次scope-open后的authorized heartbeat，不再依赖固定0.4秒sleep。observer只在原方法成功后
+发出进程内测试信号，不改变repository返回值或canonical truth；独立reader必须看到绑定exact command id的
+`lease-heartbeat` writer全部terminal、对应command真实处理1条signal、terminal event闭合且全session没有
+`runtime_command_claim_expired`。该test-only synchronization gate不替换Host service、scheduler、repository、
+public route或receipt，也不把non-live witness升级为cutover evidence。
 场景还检查diagnostic authority、public generic
 scientific mutation/finalizer、automatic runner/observer及其CLI/client/dead Core入口确实缺席，
 而非靠一个source symbol宣称positive reachability。当前场景同时要求 public conductor 暴露
@@ -98,7 +105,7 @@ scientific mutation/finalizer、automatic runner/observer及其CLI/client/dead C
 readiness 时 supervisor 拒绝操作员退休并保持原 Host 可读。pre-attempt formal failure 的 finalizer、
 纯离线 verifier 与 reducer 仍须具备 production reachability；其 source-bound 重建、零 attempt、
 append-only、篡改与 symlink 负向控制由邻近 focused tests 闭合。registry 以
-`late-bound-lane-handoff`、`public-conductor-response-unsealed`、
+`late-bound-lane-handoff`、`late-scope-command-heartbeat`、`public-conductor-response-unsealed`、
 `operator-retirement-readiness-missing` 和 `pre-attempt-formal-failure-unsealed` fault points 跟踪这些
 边界，不能用 synthetic attempt bundle、手工 response path 组合或文字 `NO-GO` 替代。
 fresh-Host invariant使用既有`admission-bypass`、`false-success`与`unverifiable-evidence` P0 trigger；

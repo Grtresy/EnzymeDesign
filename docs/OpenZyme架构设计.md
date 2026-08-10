@@ -1284,10 +1284,13 @@ error/retry字段上逐项相同；digest-only GET receipt、未封存status、s
 handoff不构成terminal proof。thin CLI对non-2xx payload先递归脱敏，再用与2xx相同的canonical
 semantic digest、链大小/条数上限和fsync/no-replace封存合同记录。
 
-若runtime command开始时尚无mutation scope、执行期间由canonical transition打开scope，Host仅在
-terminal settlement与post-transition projection时获取绑定exact command id的短writer authority，
-完成后立即退休；这不是observer、retry或业务终态判断。production qualification通过real public
-FastAPI应用、thin client、file SQLite与deterministic model/runtime composition证明正向路径，
+若runtime command开始时尚无mutation scope、执行期间由canonical transition打开scope，Host在此后的
+每次lease heartbeat、terminal settlement与post-transition projection分别获取绑定exact command id的
+短writer authority，完成单次写入后立即退休；这不是observer、scheduler replay或业务终态判断。heartbeat
+只可对SQLite `BUSY/LOCKED`与repository翻译出的包内typed authority-transition rejection在当前lease内
+有界重试；worker不得解析原始SQLite错误文本，真实state/token/fence漂移继续fail closed。production
+qualification通过real public FastAPI应用、thin client、file SQLite与deterministic model/runtime
+composition证明正向路径，并以真实authorized renew成功Event代替固定亚秒sleep，
 禁止private service、手工`ToolRegistry`、直接canonical write或synthetic receipt自证。该repair
 只运行non-live验证、更新规格/文档/qualification资源并提交本地commit；不启动r71、live、MICU、
 provider、HPC或Chrome。下一fresh rNN仍需clean commit、full admission/pin、fresh authority和
@@ -1506,6 +1509,26 @@ task，再用 consumed slot 派生 canonical grant payload/idempotency key。历
 enqueue；positive/failure/readiness 共同复用纯 canonical-entry/drain validator，历史写死 `1/8` 的 bundle
 判断已删除。non-live qualification 对缺 pin、第二条 message、legacy `@1`、合法非 `1/8` cadence 和
 late-bound grant 做 production composition 证明；它本身不授权 fresh qualification、下一 rNN 或 live。
+
+### 9.15 r79 late-scope runtime-command heartbeat
+
+r79 slot 1 只启动一次。第二条 bounded command 完成 execution turn 并形成唯一 open scientific attempt，
+但 selection 尚未建立，provider/HPC operation 为零；command 随后以
+`runtime_command_claim_expired` 失败。其最早 source-bound 原因是 command 在 mutation scope 出现前
+取得空 writer admission，heartbeat 线程继承空 authority，而 attempt transition 打开 scope 后下一次
+lease update 被 SQLite mutation guard 拒绝。reclaimer 正确保持 no-replay 并封存 expired claim；
+`seal-conductor-state` 也正确因缺少 selection/evidence export 拒绝。r79 因而保持 blocked/noncanonical，
+没有 GO/NO-GO decision，不回填、不重试，也不启动 slot 2/3。
+
+前向 correction 只补 command ownership：late-scope heartbeat 每次创建
+`runtime-command:<command_id>:lease-heartbeat` 短 writer，以 fresh repository scope 核对 exact
+state version、lease token 与 fencing token，续租后立即退休。repository把精确SQLite mutation-guard
+rejection翻译为包内`MutationWriteAuthorityRejectedError`，worker不解析原始错误文本；只有该typed
+writer-admission/scope-open race与SQLite `BUSY/LOCKED`使用固定有限delay，并受当前lease expiry约束。
+executor返回会取消尚未发生的retry，使terminal settlement立即以自己的短writer fence。真实
+token/fence/state drift、原始同文错误、其他integrity failure与retry exhaustion仍fail closed，不replay
+scheduler、不重建outcome、不写业务终态。production qualification等待真实authorized renew成功Event，
+不依赖固定亚秒sleep。public schema、expired-claim recovery、scientific lifecycle与retirement readiness均不改变。
 
 ---
 

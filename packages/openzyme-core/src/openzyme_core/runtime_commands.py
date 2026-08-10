@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import threading
+import time
 from typing import Any
 from typing import Protocol
 from uuid import uuid4
@@ -23,6 +24,7 @@ from openzyme_domain import MutationWriterKind
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import sanitize_public_diagnostic_text
 
+from .durable_coordination_repositories import MutationWriteAuthorityRejectedError
 from .reliability_repositories import OptimisticStateConflictError
 from .reliability_repositories import is_transient_sqlite_contention
 from .repositories import CoreRepositories
@@ -38,6 +40,7 @@ from .runtime_drain_receipts import validate_runtime_command_outcome_v2
 
 RUNTIME_COMMAND_OUTCOME_MAX_BYTES = 32 * 1024
 _SAFE_ERROR_CODE = re.compile(r"[a-z][a-z0-9_.-]{0,127}")
+_HEARTBEAT_RETRY_DELAYS = (0.05, 0.1, 0.25)
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,7 +192,10 @@ class RuntimeCommandWorker:
             )
 
         try:
-            result, captured = self._call_executor_with_heartbeat(claimed)
+            result, captured = self._call_executor_with_heartbeat(
+                claimed,
+                late_writer_required=late_settlement_writer_required,
+            )
         except OptimisticStateConflictError:
             return RuntimeCommandWorkerOutcome(
                 command_id=claimed.command_id,
@@ -366,6 +372,8 @@ class RuntimeCommandWorker:
     def _call_executor_with_heartbeat(
         self,
         command: RuntimeCommandRecord,
+        *,
+        late_writer_required: bool = False,
     ) -> tuple[RuntimeCommandExecutionResult, RuntimeCommandRecord]:
         stopped = threading.Event()
         state_lock = threading.Lock()
@@ -382,23 +390,16 @@ class RuntimeCommandWorker:
                 with state_lock:
                     captured = latest
                 try:
-                    renewed_record = replace(
+                    renewed = self._renew_claim_lease(
                         captured,
-                        lease_expires_at=self._after_iso(
-                            self.clock(),
-                            self.lease_seconds,
-                        ),
+                        stopped=stopped,
+                        late_writer_required=late_writer_required,
                     )
-                    with self.repository_scope_factory() as repositories:
-                        renewed = repositories.runtime_commands.renew_lease(
-                            renewed_record,
-                            expected_state_version=captured.state_version,
-                            expected_lease_token=str(captured.lease_token),
-                            expected_fencing_token=captured.fencing_token,
-                        )
                 except Exception as exc:
                     heartbeat_error.append(exc)
                     stopped.set()
+                    return
+                if renewed is None:
                     return
                 with state_lock:
                     latest = renewed
@@ -422,6 +423,72 @@ class RuntimeCommandWorker:
                 "runtime command lost its lease during scheduler work"
             ) from heartbeat_error[0]
         return result, captured
+
+    def _renew_claim_lease(
+        self,
+        captured: RuntimeCommandRecord,
+        *,
+        stopped: threading.Event,
+        late_writer_required: bool,
+    ) -> RuntimeCommandRecord | None:
+        """Renew one exact claim without carrying a late writer across execution."""
+
+        retry_deadline = time.monotonic() + self._lease_remaining_seconds(captured)
+        retry_delays = iter(_HEARTBEAT_RETRY_DELAYS)
+        while True:
+            try:
+                renewed_record = replace(
+                    captured,
+                    lease_expires_at=self._after_iso(
+                        self.clock(),
+                        self.lease_seconds,
+                    ),
+                )
+                writer_scope = (
+                    self.mutation_writer_scope_factory(
+                        session_id=captured.session_id,
+                        owner_kind=MutationWriterKind.RUNTIME_COMMAND,
+                        owner_ref=(
+                            f"runtime-command:{captured.command_id}:lease-heartbeat"
+                        ),
+                    )
+                    if late_writer_required
+                    and self.mutation_writer_scope_factory is not None
+                    else nullcontext(None)
+                )
+                with writer_scope:
+                    with self.repository_scope_factory() as repositories:
+                        return repositories.runtime_commands.renew_lease(
+                            renewed_record,
+                            expected_state_version=captured.state_version,
+                            expected_lease_token=str(captured.lease_token),
+                            expected_fencing_token=captured.fencing_token,
+                        )
+            except Exception as exc:
+                retryable = is_transient_sqlite_contention(exc) or (
+                    late_writer_required
+                    and isinstance(exc, MutationWriteAuthorityRejectedError)
+                )
+                if not retryable:
+                    raise
+                if stopped.is_set():
+                    return None
+                try:
+                    delay = next(retry_delays)
+                except StopIteration:
+                    raise exc
+                remaining = retry_deadline - time.monotonic()
+                if remaining <= delay:
+                    raise exc
+                if stopped.wait(delay):
+                    return None
+
+    def _lease_remaining_seconds(self, command: RuntimeCommandRecord) -> float:
+        if command.lease_expires_at is None:
+            return 0.0
+        lease_expires_at = datetime.fromisoformat(command.lease_expires_at)
+        now = datetime.fromisoformat(self.clock())
+        return max(0.0, (lease_expires_at - now).total_seconds())
 
     @staticmethod
     def _validated_result(

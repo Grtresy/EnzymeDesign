@@ -32,6 +32,13 @@ from .repositories import _require_enum_member
 from .repositories import _require_session_exists
 
 
+_MUTATION_WRITE_AUTHORITY_REJECTED = "mutation write authority rejected"
+
+
+class MutationWriteAuthorityRejectedError(RuntimeError):
+    """Internal typed form of the SQLite mutation-guard rejection."""
+
+
 def _runtime_command_identity(record: RuntimeCommandRecord) -> tuple[object, ...]:
     return (
         record.command_id,
@@ -329,24 +336,32 @@ class RuntimeCommandRepository:
             raise ImmutableIdentityConflictError(
                 "runtime command lease renewal attempted to change command state"
             )
-        cursor = self.connection.execute(
-            """
-            UPDATE runtime_command_records
-            SET lease_expires_at = ?
-            WHERE command_id = ?
-              AND status = 'claimed'
-              AND state_version = ?
-              AND lease_token = ?
-              AND fencing_token = ?
-            """,
-            (
-                record.lease_expires_at,
-                record.command_id,
-                expected_state_version,
-                expected_lease_token,
-                expected_fencing_token,
-            ),
-        )
+        try:
+            cursor = self.connection.execute(
+                """
+                UPDATE runtime_command_records
+                SET lease_expires_at = ?
+                WHERE command_id = ?
+                  AND status = 'claimed'
+                  AND state_version = ?
+                  AND lease_token = ?
+                  AND fencing_token = ?
+                """,
+                (
+                    record.lease_expires_at,
+                    record.command_id,
+                    expected_state_version,
+                    expected_lease_token,
+                    expected_fencing_token,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            if str(exc) == _MUTATION_WRITE_AUTHORITY_REJECTED:
+                raise MutationWriteAuthorityRejectedError(
+                    "runtime command lease renewal lacked current mutation "
+                    "writer authority"
+                ) from exc
+            raise
         if cursor.rowcount != 1:
             _commit(self.connection)
             raise OptimisticStateConflictError(

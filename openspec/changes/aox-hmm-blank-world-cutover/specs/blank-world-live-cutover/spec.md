@@ -676,6 +676,20 @@ late-bound facts through the canonical owner wake. Wrong actor, reassignment,
 absent/foreign lane, ambiguous authority or legacy caller-supplied identity fields
 MUST create no attempt and consume no effect.
 
+A runtime command MAY begin before any mutation scope exists and open the session's
+first scope during its bounded scheduler batch. After that transition, every later
+command lease heartbeat, post-transition projection and terminal settlement MUST use
+its own short writer authority bound to the exact command id and MUST retire that writer
+immediately after the write. Every heartbeat MUST preserve the exact state version,
+lease token and fencing token. SQLite `BUSY` / `LOCKED` and the exact race in which the
+scope opens after a writer admission observed no scope MAY be retried only through fresh
+repository/writer scopes, a fixed finite delay set and the currently observed lease
+expiry. Executor completion MUST cancel a pending contention retry so exact terminal
+settlement can fence the row. Token, fence or state drift, any unrelated integrity
+failure and retry exhaustion MUST fail closed without replaying the scheduler,
+reconstructing an outcome, creating a replacement command or writing business terminal
+state.
+
 `serve-attempt` MAY start only the fixed loopback production Host in one local
 process group using that exact preflight receipt. It MUST disable background
 runtime and MUST NOT send a message, drain runtime, resolve approval, retry,
@@ -864,6 +878,10 @@ package and MUST NOT be a production caller.
 #### Scenario: Preserve a same-turn late-bound lane handoff
 - **WHEN** a claimed execution task begins from a source runtime signal with no lane, the assignee creates and binds its canonical lane during that turn, and the bounded turn emits exactly one durable successor
 - **THEN** runtime settlement preserves the source signal's empty lane as historical evidence, records the task/agent/successor lane as the monotonic handoff lane, and permits the next explicit bounded drain under the same approved plan; any non-empty source-lane drift or multiple successor identities fails closed
+
+#### Scenario: Keep a late-scope runtime command claim alive without replay
+- **WHEN** a claimed command starts before a mutation scope, its executor opens the first attempt scope, and at least one lease heartbeat occurs before the executor returns
+- **THEN** each post-transition heartbeat renews the exact claim under a terminal short command writer, the repository translates the exact mutation-guard rejection to a package-internal typed exception before worker classification, raw SQLite error text alone grants no retry, the command emits one matching terminal event without expired-claim recovery or scheduler replay, and transient contention or the typed scope-admission race remains bounded by the current lease while actual fencing still fails closed
 
 #### Scenario: Seal a consumed formal slot before attempt creation
 - **WHEN** one approved formal slot has been consumed, the supervised Host has settled, final public workspace/events/handoffs and MICU facts prove zero scientific attempts, and the earliest typed failure is source-bound
