@@ -3577,3 +3577,52 @@ renew成功Event释放executor，而不是依赖固定亚秒sleep，最终观测
 event与零`runtime_command_claim_expired`。public schema、scientific selection/closure、conductor
 readiness与offline decision权威均不改变。本slice不回填或重试r79，不启动slot 2/3、qualification、下一
 rNN、live、MICU、provider、HPC或Chrome，也不提交。
+
+### 2026-08-11 post-r79 HMMER late-terminal public evidence blocker
+
+campaign `aox_campaign_b22dbb53d1e3a77b31ee69a6` 只消费一次 authority，创建唯一 attempt
+`attempt_57fd3e6a2e154c1edb228541`。`ncbi_fetch_proteins`、`mafft`与`hmmbuild`已有成功终态；冻结
+public scientific inspect、workspace、events receipts分别为sequence 89、90、91，此时
+`bio.hmmer_search`仍为`dispatching`且没有terminal handoff，report与offline verifier evidence缺失。
+retirement readiness以`public_terminal_handoff_event_mismatch`拒绝，attempt在冻结public surface仍
+`active/open`，campaign保持blocked/noncanonical；没有GO、canonical NO-GO、retry或successor。
+
+同一evidence root的private SQLite与provider transcript随后记录provider poll timeout、operation terminal和
+`runtime.command.finished`。这些后到事实用于定位“final public reads早于terminal”的机制，但未进入冻结
+response envelope/receipt chain，不能回填为canonical scientific failure、替代report/verifier或授权退休。
+本地supervision的deadline process settlement同样不等于public retirement-readiness seal。
+
+现有production conductor已经按receipt sequence fail closed，本次不修改HMMER polling、durable exact-handle
+reconciliation、runtime command或public schema。新增non-live composition regression构造
+`drain admission -> final workspace/events -> terminal status`并要求readiness拒绝且不落盘；只有在terminal
+之后追加fresh sealed workspace和含exact finished projection的full event replay，既有readiness才可成立。
+OpenSpec、主架构与稳定V3文档同步这一forward-only合同；历史sequence 89-91保持冻结，不运行live、retry、
+successor、MICU、provider、HPC或Chrome，也不提交。
+
+### 2026-08-11 post-r79 durable HMMER exact-handle correction
+
+上一节的 non-live evidence hardening 正确保留了冻结 public chain，却没有修复该 incident 暴露的生产机制：
+当时 `ProviderHttpBioDatabaseAdapter.hmmer_search()` 在 durable execution 的一个 dispatch callback 内完成
+submit、反复 sleep/poll 与 result materialization。因而 Host 只有安全的 `provider_request_id`，没有在
+provider 接受后立即 canonical commit 的 EBI job id/deadline receipt；worker 无法在 restart 后把
+`dispatching` 恢复成同一 job 的短 poll slice。生产源码未在上一节变化，并不表示运行时配置/provider
+状态不会触发这一已存在的长回调缺口。
+
+前向修复继续使用通用 `ControlledOperationExecution`，不增加 AOX observer、自动 conductor、HMMER
+业务状态机、retry 或 successor。migration `037` 增加两类 Host-private canonical records：每个 execution
+至多一个 immutable provider dispatch receipt，以及按连续 index append-only 的 provider observation
+receipts。dispatch receipt 绑定 dispatch generation、frozen `provider_request_id`、EBI exact job id、
+HMM/请求 digest、page/max 参数、poll interval、接受时刻与唯一绝对 deadline；observation receipt 绑定
+同一 job、raw response digest/bytes、status class 与时间。两类表均受 owner trigger、immutable trigger、
+mutation authority 与 current-schema validation 约束，不投影到 public API/workspace。
+
+产品 HMMER callback 现在按 phase 工作：dispatch 只 submit 一次并立即落 receipt；poll/reconcile 只在冻结
+间隔到达时 GET 同一 job 一次；`RETRY` 追加为 nonterminal，restart 不重置 `3300s` deadline；terminal
+success 才进入既有无缺口 result-page materialization；`FAILURE`/未知状态和 deadline timeout 形成 typed
+terminal handoff，timeout 保留 `provider_timeout`。如果 provider 已接受 submit、但 callback 在 job id
+receipt canonical commit 前消失，reconcile 找不到 exact handle，必须保持 `dispatch_in_doubt`，绝不补发。
+这是 provider 无 idempotency/query API 时的显式剩余风险，不用 hidden fallback 掩盖。
+
+本修复只增加 non-live contract、repository、adapter 与 Host-route 回归；不会回填 campaign
+`aox_campaign_b22dbb53d1e3a77b31ee69a6`，不会改写其冻结 evidence，也不授权 live、retry、successor、
+MICU、provider、HPC或Chrome。

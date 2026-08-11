@@ -104,6 +104,25 @@ Effect certainty 是闭集：
 - `effect_known`：只能查询 exact persisted handle；
 - `terminal_known`：可以恢复结果落盘或 declared-output fetch，不能重跑 payload。
 
+对异步 provider，`backend_handle_ref` 继续是 execution 冻结的公开安全请求身份；真实外部
+job id 不创建第二个 execution owner，而是进入 Host-private immutable provider receipt。
+当前 EBI HMMER 路径遵循以下闭集生命周期：
+
+- dispatch slice 只 submit 一次；接受后立即封存 execution/generation、`provider_request_id`、
+  exact job id、HMM/请求 digest、poll interval 与从接受时刻计算的绝对 deadline；
+- poll/reconcile slice 只读取该 receipt 的 job id，并按连续 index 追加 exact response
+  observation；`RETRY` 是 `effect_known` 非终态，不授权 resubmit；
+- restart 从 receipt 恢复同一 deadline，既不重新计时，也不把 config 默认值当成新 authority；
+- terminal success 进入既有 result staging/materialization；terminal failure 或 deadline 到期形成
+  typed terminal handoff，其中到期 code 为 `provider_timeout`；
+- submit 已被 provider 接受、但 callback 在 job id receipt canonical commit 前丢失时，系统只能
+  保留 `dispatch_in_doubt`。在 provider 没有 idempotency key 或按请求 digest 查询 job 的前提下，
+  这段 crash window 不能安全自动修复，任何新 submit 都必须是另行授权的新 operation。
+
+dispatch 与 observation receipt 都是 Host-private、immutable、mutation-authority-covered 的 canonical
+SQLite records，不进入 workspace、agent trace 或 public API。observation 数量由 frozen
+deadline/interval 推导的上限约束；它们记录恢复事实，不是新的业务状态机。
+
 Result handle 与 artifact set 是 Host-owned immutable records。partial、digest-invalid 或
 identity-drifted outputs 不得 promotion。Execution terminal、result ready、continuation
 delivery、agent wakeup 与 task business terminal 是五个不同事实。

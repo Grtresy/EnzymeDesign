@@ -43,6 +43,12 @@ Public JSON contract 由 Host API 的 request/response DTO 双向校验。未知
 
 `POST /v3/approvals/{approval_id}/resolve` 是普通用户/Web UI 改变 approval 状态的唯一入口。approval resolve 后只写入 approval resolution 与对应恢复状态，随后按 approval kind 分流：agent-level approval 可以排队相关 agent wakeup signal，由 scheduler claim 后恢复 agent turn；durable SDK controlled-operation approval 只使 canonical execution 具备后续 claim 条件，由 `ControlledOperationExecutionWorker` 推进 effect，结果就绪后再由 continuation-delivery worker 向 exact attached process epoch 投递。原 agent signal、session lease 与 HTTP request 不等待这个 wall time。配置化 Host 默认由 FastAPI lifespan 中的 background runtime worker自动推进 agent wakeup，由 durable supervisor 推进 execution 与 continuation。`/runtime/drain` 只保留为 worker 禁用、测试 scheduler claim lease 或 operator recovery 时的手动 command admission。在 resolve 前，任何 `execution.resume` / SDK resume 机制都不能被当成批准入口，也不应暴露为用户或 agent 必须手工编排的主流程。
 
+异步 provider 的外部 job id、submit response 与逐次 poll response 属于 Host-private recovery authority，
+不得新增 public API 字段。当前 EBI HMMER 将这些 exact bytes/digests 写入 immutable provider
+dispatch/observation receipts；public execution 仍只投影安全的 frozen `provider_request_id`、lifecycle、
+effect certainty、retry eligibility、typed error 与最终 artifact/result refs。workspace、events、agent trace
+或 CLI 不得暴露 job id/raw receipt，也不能从缺失 receipt 推断并重发 provider operation。
+
 AOX blank-world campaign 的 `chrome-once` 是该公共合同的一次可封存观察模式，不是第二条 approval API。它只在 positive 1 的首个 formal gate 由 process-isolated attempt child 启动 loopback Host 并提供 digest-pinned Web UI dist；parent supervisor 与 campaign driver 都不调用 resolve endpoint，只有浏览器中的认证用户动作可以解决该 approval。driver 在触发可能生成 handoff 的 runtime drain 之前记录 durable event cursor，随后从该 cursor 重建 `approval.resolved` 与 controlled-operation continuation，因此即时浏览器批准也不会与事后 snapshot 竞争。浏览器 approval timeout 从 handoff 独立计时，但始终受 attempt 总 deadline 的上界约束；外层 process-supervision deadline 由两个 session bound 和 browser approval/hold/submission bound 确定性推导。driver 只读观察有序 durable events，并要求 approval id、operation id/digest、sandbox run/workspace 与 continuation identity 都指向同一 terminal operation。`aox_browser_approval_receipt@2` 封存 pre/post workspace semantic preimage、public response binding、完整 resolution/continuation durable-event record、child Host/UI identity 和 `driver_resolve_route_absent=true`；ordered public API receipt 使用包含 `response_semantic_digest` 的 exact 七字段闭集。approval 与 terminal handoff 动态身份完整：它们发出 sealed logical page URL、child Host process id、served UI dist digest、observation schema id、not-before、exact target 与 expected page state。formal terminal 后 child Host 强制保持 completion window。trusted operator 必须使 final target 在 hold 内不存在；稳定的 `browser-receipt` helper 从 `aox_browser_observation_capture@1` 派生 raw 23-field receipt，只在 not-before 后按 mode-`0600` sibling-temp、file fsync、atomic no-replace install、parent-directory fsync 协议发布且不生成 Host acceptance timing。当前 Host 只验证 bounded polls 中未观察到提前 target、final mtime 不早于 hold 结束，且 non-symlink regular file 经两次 stat/read 稳定，不声称证明轮询间的连续缺失或 operator atomic/fsync provenance。窗口结束后才开始由 effective config 固定的独立 submission timeout。`aox_browser_observation_receipt@2` 绑定 clean console、terminal page state、DevTools transcript、完整可解码 PNG 和 Host acceptance timing。最后一次 workspace GET 与 `after_cursor=0,replay=true` 全事件 GET 只作为 bundle-level semantic preimage 封存，不回写产品 repository。`auto` mode、Host poll 观察到提前 receipt 或重开替代 operation 都不满足 Chrome cutover proof。
 
 `workspace.pending_approvals` 是浏览器 composite workspace 中的 canonical approval snapshot；`GET /v3/sessions/{session_id}/pending-approvals` 则从相同 Approval、ControlledOperation 与 SandboxRun durable rows 构造紧凑 control snapshot，只返回 exact `session_id + pending_approvals`，不投影 artifact、activity、report 或 capability。SSE 事件只是低延迟 refresh trigger；event replay 不能单独证明“当前没有 pending approval”。Web UI 仍每五秒对当前 selected session 做一次只读 workspace reconciliation；cutover driver 在 approval 热循环和失败 cleanup 中只轮询 compact endpoint，仅在 Chrome handoff 与 command/continuation 收口后的最终证据读取 composite workspace。两个投影出现 session/approval identity drift 必须 fail closed，compact endpoint 不得 resolve approval、推进 runtime 或维护第二份真状态。每个 UI active generation 的请求必须 single-flight，并与 SSE refresh 共用 session/version freshness guard；切换 session、workspace mutation 或任一 reducer 实际写入都会 abort/失效旧 generation，旧请求的 `finally` 不得清除新的在途 generation。即使旧 GET 永不返回，新 session 仍必须能启动自己的 reconciliation；旧 response 不得覆盖较新的 mutation/event snapshot。
@@ -748,6 +754,12 @@ public
 terminal response必须逐项复现唯一`runtime.command.finished` event；这项settlement只证明
 command closure，不改变task/attempt/report业务terminal。exact三任务仍按kind、agent role、
 assignee和owner-authored finish cardinality从canonical repositories/events导出。
+
+final workspace与full event replay必须在每个sealed terminal status之后重新读取。command仍
+`accepted`/`running`/`dispatching`时取得的早期snapshot，即使private repository或稍后的status GET已经
+terminal，也不能被重新解释为final；retirement readiness只接受receipt chain中位于terminal之后的fresh
+sealed reads，并要求event response实际包含exact `runtime.command.finished`。该门只约束证据时序，既不
+轮询或重放command，也不推断scientific outcome。
 
 teammate 在 source signal 创建后、同一 turn 内为真实 task 创建并绑定 lane 时，
 `AgentRuntimeOutcomeSettlement@2` 分开保存 source `lane_id` snapshot 与 current

@@ -132,6 +132,14 @@ _DIRECT_COVERAGE: tuple[tuple[str, MutationResourceCategory], ...] = (
         MutationResourceCategory.CANONICAL_SQLITE,
     ),
     (
+        "controlled_operation_provider_dispatch_receipts",
+        MutationResourceCategory.CANONICAL_SQLITE,
+    ),
+    (
+        "controlled_operation_provider_observation_receipts",
+        MutationResourceCategory.CANONICAL_SQLITE,
+    ),
+    (
         "controlled_operation_execution_events",
         MutationResourceCategory.EVENT_OUTBOX,
     ),

@@ -251,6 +251,9 @@ def test_migration_asset_is_available() -> None:
     recovery_disposition_sql = get_migration_sql(
         "036_v3_failure_recovery_dispositions"
     )
+    provider_receipt_sql = get_migration_sql(
+        "037_v3_controlled_operation_provider_receipts"
+    )
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -371,6 +374,22 @@ def test_migration_asset_is_available() -> None:
         "mutation_guard_failure_recovery_disposition_records_insert"
         in recovery_disposition_sql
     )
+    assert (
+        "CREATE TABLE controlled_operation_provider_dispatch_receipts"
+        in provider_receipt_sql
+    )
+    assert (
+        "CREATE TABLE controlled_operation_provider_observation_receipts"
+        in provider_receipt_sql
+    )
+    assert (
+        "controlled_operation_provider_dispatch_receipts_immutable_update"
+        in provider_receipt_sql
+    )
+    assert (
+        "controlled_operation_provider_observation_receipts_immutable_update"
+        in provider_receipt_sql
+    )
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -408,6 +427,7 @@ def test_migration_asset_is_available() -> None:
         "034_v3_failure_hypotheses",
         "035_v3_scientific_attempt_closure_response",
         "036_v3_failure_recovery_dispositions",
+        "037_v3_controlled_operation_provider_receipts",
     )
 
 

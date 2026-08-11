@@ -4,6 +4,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 import hashlib
 import json
 from pathlib import Path
@@ -558,6 +561,312 @@ def test_provider_route_fails_closed_when_complete_envelope_exceeds_core_bound(
     assert result.error_code == "durable_provider_result_envelope_too_large"
     assert result.materialized_result is None
     assert engine.call_count == 1
+
+
+class _ProviderDispatchReceiptRepository:
+    def __init__(self) -> None:
+        self.record: object | None = None
+
+    def save_once(self, record: object) -> object:
+        if self.record is not None:
+            assert self.record == record
+        self.record = record
+        return record
+
+    def get_by_execution_id(self, execution_id: str):  # type: ignore[no-untyped-def]
+        if self.record is None:
+            return None
+        assert self.record.execution_id == execution_id  # type: ignore[attr-defined]
+        return self.record
+
+
+class _ProviderObservationReceiptRepository:
+    def __init__(self) -> None:
+        self.records: list[object] = []
+
+    def append(self, record: object) -> object:
+        assert record.observation_index == len(self.records) + 1  # type: ignore[attr-defined]
+        self.records.append(record)
+        return record
+
+    def list_by_execution_id(self, execution_id: str) -> list[object]:
+        return [
+            record
+            for record in self.records
+            if record.execution_id == execution_id  # type: ignore[attr-defined]
+        ]
+
+
+@dataclass
+class _FakeDurableHmmerEngine:
+    clock: object
+    poll_statuses: list[str]
+    repositories: object | None = None
+    sandbox_host_call_context_factory: object | None = None
+    fail_dispatch_after_accept: bool = False
+    _state: dict[str, object] = field(
+        default_factory=lambda: {
+            "phases": [],
+            "poll_count": 0,
+            "submit_count": 0,
+        }
+    )
+
+    @property
+    def phases(self) -> list[str]:
+        return self._state["phases"]  # type: ignore[return-value]
+
+    @property
+    def submit_count(self) -> int:
+        return int(self._state["submit_count"])
+
+    @property
+    def poll_count(self) -> int:
+        return int(self._state["poll_count"])
+
+    def supports_durable_provider_lifecycle(self, operation: object) -> bool:
+        return (
+            getattr(operation, "sdk_module", None) == "bio"
+            and getattr(operation, "function_name", None) == "hmmer_search"
+        )
+
+    def execute_sandbox_adapter_operation(
+        self,
+        operation: object,
+        envelope: dict[str, object],
+    ) -> dict[str, object]:
+        del operation
+        assert self.sandbox_host_call_context_factory is None
+        phase = str(envelope["_durable_provider_phase"])
+        self.phases.append(phase)
+        provider_request_id = str(envelope["_durable_backend_handle_ref"])
+        now = self.clock()  # type: ignore[operator]
+        if phase == "dispatch":
+            self._state["submit_count"] = self.submit_count + 1
+            if self.fail_dispatch_after_accept:
+                raise PipelineSdkFailure(
+                    error_type="simulated_submit_callback_loss",
+                    message="accepted submit callback was lost",
+                    hint="reconcile without replay",
+                    stage="provider_submit",
+                    retryable=False,
+                    sdk_method="bio.hmmer_search",
+                )
+            timeout_seconds = 30.0
+            return {
+                "durable_provider_phase": "dispatch",
+                "dispatch_receipt": {
+                    "schema_id": "ebi_hmmer_durable_dispatch_receipt@1",
+                    "provider": "ebi_hmmer",
+                    "operation": "bio.hmmer_search",
+                    "provider_request_id": provider_request_id,
+                    "provider_job_id": "job-durable-host",
+                    "submitted_at": now.isoformat(),
+                    "poll_deadline_at": (
+                        now + timedelta(seconds=timeout_seconds)
+                    ).isoformat(),
+                    "poll_interval_seconds": 5.0,
+                    "poll_timeout_seconds": timeout_seconds,
+                    "database": "refprot",
+                    "page_size": 1000,
+                    "max_hits": 100000,
+                    "query_hmm_artifact_id": "artifact_hmm",
+                    "query_hmm_digest": "sha256:" + "a" * 64,
+                    "request_payload_digest": "sha256:" + "b" * 64,
+                    "submit_response": {},
+                },
+            }
+        if phase == "poll":
+            dispatch_receipt = envelope["_durable_provider_dispatch_receipt"]
+            assert isinstance(dispatch_receipt, dict)
+            assert dispatch_receipt["provider_job_id"] == "job-durable-host"
+            status = self.poll_statuses[self.poll_count]
+            self._state["poll_count"] = self.poll_count + 1
+            status_class = (
+                "nonterminal"
+                if status == "RETRY"
+                else "terminal_success"
+                if status == "SUCCESS"
+                else "terminal_failure"
+            )
+            receipt = {
+                "schema_id": "ebi_hmmer_durable_poll_receipt@1",
+                "provider": "ebi_hmmer",
+                "operation": "bio.hmmer_search",
+                "provider_request_id": provider_request_id,
+                "provider_job_id": "job-durable-host",
+                "observation_index": self.poll_count,
+                "observed_at": now.isoformat(),
+                "status": status,
+                "status_class": status_class,
+                "page_size": 1000,
+                "response": {},
+            }
+            return {
+                "durable_provider_phase": "poll",
+                "status_class": status_class,
+                "observation_receipt": receipt,
+            }
+        if phase == "timeout":
+            raise PipelineSdkFailure(
+                error_type="provider_timeout",
+                message="frozen deadline reached",
+                hint="inspect exact job",
+                stage="provider_poll",
+                retryable=True,
+                sdk_method="bio.hmmer_search",
+            )
+        raise AssertionError(f"unexpected fake durable phase: {phase}")
+
+
+def _durable_hmmer_route_fixture(
+    *,
+    fail_dispatch_after_accept: bool = False,
+):  # type: ignore[no-untyped-def]
+    current_time = [datetime(2026, 8, 11, tzinfo=UTC)]
+    base = _execution()
+    route_policy_id = "bio.hmmer_search.provider:v1"
+    execution = replace(
+        base,
+        execution_id="execution_hmmer",
+        operation_id="operation_hmmer",
+        session_id="session_hmmer",
+        operation_digest="sha256:hmmer-operation",
+        route_policy_id=route_policy_id,
+        adapter_policy_id=durable_adapter_policy_id(route_policy_id),
+    )
+    operation = SimpleNamespace(
+        operation_id=execution.operation_id,
+        operation_digest=execution.operation_digest,
+        session_id=execution.session_id,
+        sandbox_run_id="sandbox_run_hmmer",
+        route_policy_id=execution.route_policy_id,
+        adapter_envelope_schema_version="s12.adapter_envelope.v1",
+        sdk_module="bio",
+        function_name="hmmer_search",
+    )
+    repositories = _FakeRepositories(
+        controlled_operations=_OperationRepository(operation),
+        artifacts=_ArtifactRepository(),
+        controlled_operation_provider_dispatch_receipts=(
+            _ProviderDispatchReceiptRepository()
+        ),
+        controlled_operation_provider_observation_receipts=(
+            _ProviderObservationReceiptRepository()
+        ),
+    )
+    engine = _FakeDurableHmmerEngine(
+        clock=lambda: current_time[0],
+        poll_statuses=["RETRY", "SUCCESS"],
+        repositories=repositories,
+        sandbox_host_call_context_factory=object(),
+        fail_dispatch_after_accept=fail_dispatch_after_accept,
+    )
+
+    @contextmanager
+    def repository_scope():  # type: ignore[no-untyped-def]
+        yield repositories
+
+    adapter = HostProviderControlledOperationRouteAdapter(
+        route_policy_id=route_policy_id,
+        repository_scope_factory=repository_scope,
+        engine_registry_factory=lambda scoped: _FakeEngineRegistry(engine),
+        clock=lambda: current_time[0],
+    )
+    request_envelope = {
+        "schema_version": "s12.adapter_envelope.v1",
+        "adapter_params": {
+            "hmm_artifact_id": "artifact_hmm",
+            "database": "refprot",
+            "params": {},
+        },
+    }
+    encoded = json.dumps(
+        request_envelope,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    request = ControlledOperationDispatchRequest(
+        request_id="request_hmmer",
+        execution_id=execution.execution_id,
+        operation_id=execution.operation_id,
+        session_id=execution.session_id,
+        request_digest="sha256:" + hashlib.sha256(encoded).hexdigest(),
+        request_envelope=request_envelope,
+        request_size_bytes=len(encoded),
+        created_at=current_time[0].isoformat(),
+    )
+    execution = replace(
+        execution,
+        backend_handle_ref=adapter.prepare_dispatch(execution, request),
+    )
+    return adapter, execution, request, engine, current_time, repositories
+
+
+def test_hmmer_durable_route_submits_once_and_polls_exact_job_across_reconcile() -> None:
+    adapter, execution, request, engine, current_time, repositories = (
+        _durable_hmmer_route_fixture()
+    )
+
+    dispatched = adapter.dispatch(execution, request)
+    current_time[0] += timedelta(seconds=6)
+    retrying = adapter.reconcile(execution, request)
+    current_time[0] += timedelta(seconds=6)
+    succeeded = adapter.dispatch(execution, request)
+
+    assert dispatched.kind is DurableRouteObservationKind.WAITING_EXTERNAL
+    assert retrying.kind is DurableRouteObservationKind.WAITING_EXTERNAL
+    assert succeeded.kind is DurableRouteObservationKind.RESULT_PENDING
+    assert engine.submit_count == 1
+    assert engine.poll_count == 2
+    assert engine.phases == ["dispatch", "poll", "poll"]
+    dispatch_receipt = (
+        repositories.controlled_operation_provider_dispatch_receipts.record
+    )
+    assert dispatch_receipt.external_handle_ref == "job-durable-host"
+    observations = (
+        repositories.controlled_operation_provider_observation_receipts.records
+    )
+    assert [record.observation_index for record in observations] == [1, 2]
+    assert [record.observation_envelope["status"] for record in observations] == [
+        "RETRY",
+        "SUCCESS",
+    ]
+
+
+def test_hmmer_dispatch_callback_gap_never_resubmits_without_exact_receipt() -> None:
+    adapter, execution, request, engine, _, _ = _durable_hmmer_route_fixture(
+        fail_dispatch_after_accept=True
+    )
+
+    dispatched = adapter.dispatch(execution, request)
+    reconciled = adapter.reconcile(execution, request)
+
+    assert dispatched.kind is DurableRouteObservationKind.RECONCILE_REQUIRED
+    assert dispatched.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+    assert reconciled.kind is DurableRouteObservationKind.RECONCILE_REQUIRED
+    assert reconciled.error_code == "durable_provider_dispatch_receipt_missing"
+    assert engine.submit_count == 1
+    assert engine.poll_count == 0
+    assert engine.phases == ["dispatch"]
+
+
+def test_hmmer_durable_deadline_terminalizes_without_resubmit_or_poll() -> None:
+    adapter, execution, request, engine, current_time, _ = (
+        _durable_hmmer_route_fixture()
+    )
+    dispatched = adapter.dispatch(execution, request)
+    current_time[0] += timedelta(seconds=31)
+
+    timed_out = adapter.poll(execution, request)
+
+    assert dispatched.kind is DurableRouteObservationKind.WAITING_EXTERNAL
+    assert timed_out.kind is DurableRouteObservationKind.TERMINAL_FAILURE
+    assert timed_out.effect_certainty is ExternalEffectCertainty.TERMINAL_KNOWN
+    assert timed_out.error_code == "provider_timeout"
+    assert engine.submit_count == 1
+    assert engine.poll_count == 0
+    assert engine.phases == ["dispatch", "timeout"]
 
 
 class _RunRepository:

@@ -17,6 +17,12 @@ CONTROLLED_OPERATION_RESULT_HANDLE_SCHEMA_VERSION = (
 CONTROLLED_OPERATION_DISPATCH_REQUEST_SCHEMA_VERSION = (
     "controlled_operation_dispatch_request@1"
 )
+CONTROLLED_OPERATION_PROVIDER_DISPATCH_RECEIPT_SCHEMA_VERSION = (
+    "controlled_operation_provider_dispatch_receipt@1"
+)
+CONTROLLED_OPERATION_PROVIDER_OBSERVATION_RECEIPT_SCHEMA_VERSION = (
+    "controlled_operation_provider_observation_receipt@1"
+)
 CONTINUATION_STATE_SCHEMA_VERSION = "continuation_state@2"
 RUNTIME_COMMAND_SCHEMA_VERSION = "runtime_command@1"
 MUTATION_SCOPE_SCHEMA_VERSION = "mutation_scope@1"
@@ -202,6 +208,64 @@ class ControlledOperationDispatchRequest:
     request_digest: str
     request_envelope: dict[str, Any]
     request_size_bytes: int
+    created_at: str
+
+    def to_private_dict(self) -> dict[str, Any]:
+        return _serialize_record(self, schema_version=self.SCHEMA_VERSION)
+
+
+@dataclass(frozen=True, slots=True)
+class ControlledOperationProviderDispatchReceipt:
+    """Host-private immutable proof that one provider effect was accepted.
+
+    The bounded envelope is owned by the selected provider adapter.  Core only
+    binds its exact bytes to the canonical execution, dispatch generation and
+    frozen provider request identity so a restart can reconcile without
+    replaying the submit call.
+    """
+
+    SCHEMA_VERSION: ClassVar[str] = (
+        CONTROLLED_OPERATION_PROVIDER_DISPATCH_RECEIPT_SCHEMA_VERSION
+    )
+
+    receipt_id: str
+    execution_id: str
+    operation_id: str
+    session_id: str
+    dispatch_generation: int
+    provider_request_id: str
+    provider_id: str
+    external_handle_ref: str
+    receipt_digest: str
+    receipt_envelope: dict[str, Any]
+    receipt_size_bytes: int
+    created_at: str
+
+    def to_private_dict(self) -> dict[str, Any]:
+        return _serialize_record(self, schema_version=self.SCHEMA_VERSION)
+
+
+@dataclass(frozen=True, slots=True)
+class ControlledOperationProviderObservationReceipt:
+    """Host-private append-only observation of one exact provider handle."""
+
+    SCHEMA_VERSION: ClassVar[str] = (
+        CONTROLLED_OPERATION_PROVIDER_OBSERVATION_RECEIPT_SCHEMA_VERSION
+    )
+
+    observation_id: str
+    dispatch_receipt_id: str
+    execution_id: str
+    operation_id: str
+    session_id: str
+    dispatch_generation: int
+    observation_index: int
+    provider_request_id: str
+    provider_id: str
+    external_handle_ref: str
+    observation_digest: str
+    observation_envelope: dict[str, Any]
+    observation_size_bytes: int
     created_at: str
 
     def to_private_dict(self) -> dict[str, Any]:

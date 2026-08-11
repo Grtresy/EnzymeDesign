@@ -852,6 +852,12 @@ selection identity。campaign reducer先验证三个slot的session/task/envelope
 workspace、完整相关 events 与全部 bounded admission/terminal handoff；Host 退休后再绑定 preflight、
 slot claim、startup/supervision、MICU before/after 和 earliest source-bound typed cause。
 
+这里的final reads必须晚于全部相关terminal handoff。若先封存workspace/events、后出现terminal status或
+private operation settlement，旧snapshot仍是nonterminal observation，不能由SQLite、transcript、进程
+退出或源码推论回填。只有同一public receipt chain追加terminal status后的fresh workspace与full event
+replay，并由exact `runtime.command.finished`重新闭合，才可进入retirement readiness；否则attempt、report、
+verifier与campaign decision继续保持未闭合。
+
 current `aox_formal_slot_failure@2` 固定 `acceptance_eligible=false`、`state_reusable=false` 与
 zero-attempt projection，并以 `closure_mode` 区分两种不可混合来源。`public_host`绑定上述startup、normal
 supervision、retirement-readiness与final public reads；`pre_child_ready`只绑定preflight、slot claim、

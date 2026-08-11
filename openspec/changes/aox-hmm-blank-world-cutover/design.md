@@ -1847,6 +1847,57 @@ authorized heartbeat；不得用固定亚秒sleep假设线程调度。同时证�
 全部退休且不存在 `runtime_command_claim_expired`。本 slice 只包含代码、测试、OpenSpec/文档与 non-live 验证，
 不提交，不回填 r79，也不启动任何 live、MICU、provider、HPC 或 Chrome action。
 
+### 2026-08-11 post-r79 HMMER late-terminal final-read contract hardening
+
+campaign `aox_campaign_b22dbb53d1e3a77b31ee69a6` 的唯一 attempt
+`attempt_57fd3e6a2e154c1edb228541` 已完成 NCBI、MAFFT 与 hmmbuild。冻结 public scientific inspect、
+workspace 与 events receipts 分别停在 sequence 89、90、91；此时 `bio.hmmer_search` 仍为
+`dispatching`，没有 terminal handoff，report 与 offline verifier evidence 均缺失。retirement readiness
+以 `public_terminal_handoff_event_mismatch` 拒绝，因此该 campaign 保持 blocked/noncanonical，authority
+不可重试，也不得启动 successor。
+
+同一 evidence root 的 private repository/transcript 随后出现 provider timeout、operation terminal 与
+`runtime.command.finished`，只能用于解释时序机制。它们晚于已封存的 final workspace/events，未进入对应
+public response envelope 与 receipt chain，不能回填 frozen observation、升级为 scientific failure 或形成
+canonical NO-GO。supervision 对本地 child/process 的 deadline settlement 也不能替代 public retirement
+readiness。
+
+current production owner 已正确实施该边界：`_final_public_reads()`选择每类最后一次 sealed read，
+`_handoff_sequences()`只接受位于 final reads 之前的唯一 terminal status，并要求 full event replay 含有
+exact `runtime.command.finished` projection。因此本 slice 不修改 provider、durable worker、runtime command、
+conductor state machine、schema 或 error code，production Python净变化为零。新增 composition regression
+先构造 `drain admission -> final workspace/events -> terminal status` 并证明 readiness 不产生；随后只追加
+新的 sealed workspace 与 full events response，证明 terminal handoff 与 fresh final reads 同时闭合后既有
+readiness 才成立。该回归不访问 network/provider/HPC，不合成 terminal、不重放 command，也不改写历史
+evidence。
+
+### 2026-08-11 post-r79 durable HMMER exact-handle lifecycle correction
+
+前一节的 final-read hardening 只保证冻结 public receipt chain 不会被稍后的 private terminal state
+回填，production Python 净变化为零；它没有解决本次 incident 暴露的运行时原因：
+`ControlledOperationExecution` 虽然已经 durable，EBI HMMER adapter 却仍在首次 dispatch callback 内
+执行 submit、sleep 与最长 `3300s` 的完整 poll loop。worker/Host 在 provider job 终态前退出时，public
+operation 因而可能长期停在 `dispatching`，没有可供重启恢复的 exact external handle 或固定 deadline。
+
+本 correction 复用唯一 `ControlledOperationExecution` owner，不增加 AOX observer、driver、retry owner、
+successor 或第二套状态机。migration `037` 增加 Host-private、immutable、mutation-authority-covered 的
+provider dispatch/observation receipts。dispatch slice 至多 submit 一次；provider 返回 job id 后立即把
+execution/generation、冻结的 `provider_request_id`、exact job、HMM/request digests、effective page/max、
+poll interval、接受时刻与唯一绝对 deadline 封存。后续每个 bounded slice 只读取该 receipt，对同一 job
+执行一次 poll 并按连续 index 追加 exact response bytes/digest；`RETRY` 等 accepted-job 状态保持
+nonterminal，worker reclaim、Host restart 与当前 adapter 默认值变化都不能产生新 submit 或重置 deadline。
+
+terminal success 只进入既有严格 result-page materialization；terminal failure 或 deadline 到期经同一
+controlled-operation terminal handoff 收口，其中超时保持 `provider_timeout`。同步 in-process poll loop 仅
+保留给显式 `legacy_sync` 兼容路径，不得作为 `durable_async_v1` fallback。receipt 不进入 workspace、trace、
+events 或 public API，外部 job id 也不成为第二个公开 owner。
+
+仍有一个不可伪装消除的跨系统窗口：provider 可能已经接受 POST，但 callback 在 immutable job receipt
+canonical commit 前丢失。EBI 当前没有由本地 request digest 驱动的 idempotency key 或反查 job contract，
+因此该状态必须保持 `dispatch_in_doubt`，不得自动重发、猜测/adopt job、启动 successor 或重置 deadline。
+append-only observation history 由 frozen deadline/interval 的理论上限约束；长期 retention/compaction 应由
+通用 canonical history policy 统一治理，不能在 HMMER 路径私自删除。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。
@@ -1857,6 +1908,8 @@ authorized heartbeat；不得用固定亚秒sleep假设线程调度。同时证�
 - [显式 workflow ref 是 breaking behavior] → tool schema、prompt、错误信息和回归测试同时更新；旧 implicit inheritance 不保留隐藏 fallback。
 - [Chrome/真实 HPC 不可达] → 保存精确 preflight/operation failure，campaign 保持 NO-GO，不用 seeded smoke 替代。
 - [evidence bundle 误收敏感内容] → canonical safe projection allowlist、secret scanners 和 negative tests；原始 provider payload按许可边界封存，不直接投影。
+- [provider 接受 POST 与 Host receipt commit 无法跨系统原子化] → 无 receipt 时保持 `dispatch_in_doubt` 并禁止 replay；未来只有在 provider 提供版本化 idempotency/query contract 后才能收窄窗口。
+- [append-only poll receipt 增加 canonical history 体积] → 以 frozen deadline/interval 约束单 execution 条数，并把长期 retention/compaction 留给通用历史治理，不引入 HMMER 私有清理器。
 
 ## Migration Plan
 

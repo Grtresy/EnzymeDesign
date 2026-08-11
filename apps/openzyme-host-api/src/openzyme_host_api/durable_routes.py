@@ -4,8 +4,12 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from dataclasses import replace
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -28,9 +32,13 @@ from openzyme_core import is_transient_sqlite_contention
 from openzyme_domain import ControlledOperationDispatchRequest
 from openzyme_domain import ControlledOperationExecution
 from openzyme_domain import ControlledOperationExecutionTerminalOutcome
+from openzyme_domain import ControlledOperationProviderDispatchReceipt
+from openzyme_domain import ControlledOperationProviderObservationReceipt
 from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import RetryEligibility
 from openzyme_domain import RunStatus
+from openzyme_engines.execution import EBI_HMMER_DURABLE_DISPATCH_RECEIPT_SCHEMA_ID
+from openzyme_engines.execution import EBI_HMMER_DURABLE_POLL_RECEIPT_SCHEMA_ID
 from openzyme_engines.execution import PipelineSdkFailure
 from openzyme_runtime import S12_ROUTE_POLICIES
 from openzyme_runtime import sanitize_public_diagnostic_payload
@@ -115,8 +123,62 @@ _PROVIDER_OBSERVATION_KEYS = frozenset(
         "warnings",
     }
 )
+_PROVIDER_ERROR_KEYS = frozenset(
+    {
+        "code",
+        "details",
+        "hint",
+        "output_dir",
+        "provider_request_id",
+        "retryable",
+        "stage",
+        "summary",
+    }
+)
+_DURABLE_HMMER_DISPATCH_KEYS = frozenset(
+    {
+        "database",
+        "max_hits",
+        "operation",
+        "page_size",
+        "poll_deadline_at",
+        "poll_interval_seconds",
+        "poll_timeout_seconds",
+        "provider",
+        "provider_job_id",
+        "provider_request_id",
+        "query_hmm_artifact_id",
+        "query_hmm_digest",
+        "request_payload_digest",
+        "schema_id",
+        "submit_response",
+        "submitted_at",
+    }
+)
+_DURABLE_HMMER_OBSERVATION_KEYS = frozenset(
+    {
+        "observation_index",
+        "observed_at",
+        "operation",
+        "page_size",
+        "provider",
+        "provider_job_id",
+        "provider_request_id",
+        "response",
+        "schema_id",
+        "status",
+        "status_class",
+    }
+)
+_DURABLE_HMMER_NONTERMINAL_STATUSES = frozenset(
+    {"PENDING", "QUEUED", "RETRY", "RUNNING", "STARTED", "SUBMITTED"}
+)
 RepositoryScopeFactory = Callable[[], AbstractContextManager[CoreRepositories]]
 EngineRegistryFactory = Callable[[CoreRepositories], Any]
+
+
+def _utc_now() -> datetime:
+    return datetime.now(tz=UTC)
 
 
 class _HpcToolchainRuntimeIdentityDrift(ValueError):
@@ -183,6 +245,7 @@ class HostProviderControlledOperationRouteAdapter:
     route_policy_id: str
     repository_scope_factory: RepositoryScopeFactory
     engine_registry_factory: EngineRegistryFactory
+    clock: Callable[[], datetime] = _utc_now
     selected_backend: str = "provider_http"
     adapter_policy_id: str = ""
 
@@ -238,6 +301,46 @@ class HostProviderControlledOperationRouteAdapter:
                         error_code="durable_provider_executor_unavailable",
                         effect_certainty=ExternalEffectCertainty.NO_EFFECT,
                     )
+                supports_durable_lifecycle = getattr(
+                    engine, "supports_durable_provider_lifecycle", None
+                )
+                if callable(supports_durable_lifecycle) and bool(
+                    supports_durable_lifecycle(operation)
+                ):
+                    dispatch_repository = getattr(
+                        repositories,
+                        "controlled_operation_provider_dispatch_receipts",
+                        None,
+                    )
+                    observation_repository = getattr(
+                        repositories,
+                        "controlled_operation_provider_observation_receipts",
+                        None,
+                    )
+                    if dispatch_repository is None or observation_repository is None:
+                        return self._terminal_failure(
+                            error_code="durable_provider_receipt_store_unavailable",
+                            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+                        )
+                    existing_dispatch = dispatch_repository.get_by_execution_id(
+                        execution.execution_id
+                    )
+                    if existing_dispatch is not None:
+                        return self._progress_durable_hmmer(
+                            repositories=repositories,
+                            engine=engine,
+                            operation=operation,
+                            execution=execution,
+                            request=request,
+                            action="reconcile",
+                        )
+                    return self._dispatch_durable_hmmer(
+                        repositories=repositories,
+                        engine=engine,
+                        operation=operation,
+                        execution=execution,
+                        request=request,
+                    )
                 envelope = dict(request.request_envelope)
                 envelope["_durable_backend_handle_ref"] = execution.backend_handle_ref
                 with repositories.controlled_operation_write_fence(execution):
@@ -278,14 +381,10 @@ class HostProviderControlledOperationRouteAdapter:
         execution: ControlledOperationExecution,
         request: ControlledOperationDispatchRequest,
     ) -> DurableRouteObservation:
-        del request
-        return self._reconcile_persisted(execution) or DurableRouteObservation(
-            kind=DurableRouteObservationKind.RECONCILE_REQUIRED,
-            effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
-            retry_eligibility=RetryEligibility.RECONCILE_REQUIRED,
-            backend_handle_ref=execution.backend_handle_ref,
-            error_code="durable_provider_observation_missing",
-            safe_summary="The exact provider observation is not yet available.",
+        return self._continue_provider_route(
+            execution=execution,
+            request=request,
+            action="poll",
         )
 
     def reconcile(
@@ -293,14 +392,773 @@ class HostProviderControlledOperationRouteAdapter:
         execution: ControlledOperationExecution,
         request: ControlledOperationDispatchRequest,
     ) -> DurableRouteObservation:
-        return self.poll(execution, request)
+        return self._continue_provider_route(
+            execution=execution,
+            request=request,
+            action="reconcile",
+        )
 
     def materialize(
         self,
         execution: ControlledOperationExecution,
         request: ControlledOperationDispatchRequest,
     ) -> DurableRouteObservation:
-        return self.poll(execution, request)
+        return self._continue_provider_route(
+            execution=execution,
+            request=request,
+            action="materialize",
+        )
+
+    def _continue_provider_route(
+        self,
+        *,
+        execution: ControlledOperationExecution,
+        request: ControlledOperationDispatchRequest,
+        action: str,
+    ) -> DurableRouteObservation:
+        recovered = self._reconcile_persisted(execution)
+        if recovered is not None:
+            return recovered
+        try:
+            with self.repository_scope_factory() as repositories:
+                operation = repositories.controlled_operations.get(
+                    execution.operation_id
+                )
+                if operation is None:
+                    return self._terminal_failure(
+                        error_code="durable_operation_missing",
+                        effect_certainty=execution.effect_certainty,
+                    )
+                engine = self.engine_registry_factory(repositories).require("execution")
+                dispatch_repository = getattr(
+                    repositories,
+                    "controlled_operation_provider_dispatch_receipts",
+                    None,
+                )
+                dispatch_receipt = (
+                    None
+                    if dispatch_repository is None
+                    else dispatch_repository.get_by_execution_id(
+                        execution.execution_id
+                    )
+                )
+                if dispatch_receipt is None:
+                    return DurableRouteObservation(
+                        kind=DurableRouteObservationKind.RECONCILE_REQUIRED,
+                        effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+                        retry_eligibility=RetryEligibility.RECONCILE_REQUIRED,
+                        backend_handle_ref=execution.backend_handle_ref,
+                        error_code="durable_provider_dispatch_receipt_missing",
+                        safe_summary=(
+                            "No exact accepted provider handle is available; dispatch "
+                            "will not be replayed."
+                        ),
+                    )
+                return self._progress_durable_hmmer(
+                    repositories=repositories,
+                    engine=engine,
+                    operation=operation,
+                    execution=execution,
+                    request=request,
+                    action=action,
+                )
+        except PipelineSdkFailure as exc:
+            recovered = self._reconcile_persisted(execution)
+            if recovered is not None:
+                return recovered
+            if exc.error_type == "provider_timeout":
+                return self._terminal_failure(
+                    error_code="provider_timeout",
+                    effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+                )
+            if exc.error_type in {
+                "provider_dispatch_receipt_invalid",
+                "provider_lifecycle_envelope_invalid",
+                "provider_observation_receipt_invalid",
+                "provider_request_identity_invalid",
+            }:
+                return self._terminal_failure(
+                    error_code=exc.error_type,
+                    effect_certainty=ExternalEffectCertainty.EFFECT_KNOWN,
+                    terminal_outcome=(
+                        ControlledOperationExecutionTerminalOutcome.RECOVERY_FAILED
+                    ),
+                )
+            if action == "materialize":
+                return self._result_pending(
+                    execution,
+                    error_code=exc.error_type,
+                    safe_summary=(
+                        "The terminal provider result is not yet materialized."
+                    ),
+                )
+            return self._waiting_external(
+                execution,
+                error_code=exc.error_type,
+                safe_summary="Exact-handle provider observation is temporarily unavailable.",
+            )
+
+    def _dispatch_durable_hmmer(
+        self,
+        *,
+        repositories: CoreRepositories,
+        engine: Any,
+        operation: Any,
+        execution: ControlledOperationExecution,
+        request: ControlledOperationDispatchRequest,
+    ) -> DurableRouteObservation:
+        envelope = self._durable_hmmer_phase_envelope(
+            request=request,
+            execution=execution,
+            phase="dispatch",
+        )
+        with repositories.controlled_operation_write_fence(execution):
+            raw_result = ExecutionEngineSandboxHostGateway(
+                engine
+            ).execute_adapter_operation(
+                operation=operation,
+                envelope=envelope,
+                context=_durable_host_context(repositories, execution),
+            )
+            if not isinstance(raw_result, dict) or set(raw_result) != {
+                "dispatch_receipt",
+                "durable_provider_phase",
+            }:
+                self._provider_lifecycle_failure(
+                    error_type="provider_dispatch_receipt_invalid",
+                    message="Durable HMMER dispatch returned an invalid receipt wrapper.",
+                )
+            receipt_envelope = raw_result.get("dispatch_receipt")
+            if (
+                raw_result.get("durable_provider_phase") != "dispatch"
+                or not isinstance(receipt_envelope, dict)
+            ):
+                self._provider_lifecycle_failure(
+                    error_type="provider_dispatch_receipt_invalid",
+                    message="Durable HMMER dispatch omitted its exact receipt.",
+                )
+            receipt_digest, receipt_size, job_id, submitted_at, _ = (
+                self._validate_durable_hmmer_dispatch_envelope(
+                    receipt_envelope,
+                    execution=execution,
+                )
+            )
+            receipt = ControlledOperationProviderDispatchReceipt(
+                receipt_id=(
+                    "provider_dispatch_receipt_"
+                    + receipt_digest.removeprefix("sha256:")[:32]
+                ),
+                execution_id=execution.execution_id,
+                operation_id=execution.operation_id,
+                session_id=execution.session_id,
+                dispatch_generation=execution.dispatch_generation,
+                provider_request_id=str(execution.backend_handle_ref),
+                provider_id="ebi_hmmer",
+                external_handle_ref=job_id,
+                receipt_digest=receipt_digest,
+                receipt_envelope=dict(receipt_envelope),
+                receipt_size_bytes=receipt_size,
+                created_at=submitted_at.isoformat(),
+            )
+            repositories.controlled_operation_provider_dispatch_receipts.save_once(
+                receipt
+            )
+        return self._waiting_external(
+            execution,
+            safe_receipt_digest=receipt_digest,
+            safe_summary="Provider dispatch was accepted and bound to an exact handle.",
+        )
+
+    def _progress_durable_hmmer(
+        self,
+        *,
+        repositories: CoreRepositories,
+        engine: Any,
+        operation: Any,
+        execution: ControlledOperationExecution,
+        request: ControlledOperationDispatchRequest,
+        action: str,
+    ) -> DurableRouteObservation:
+        supports_durable_lifecycle = getattr(
+            engine, "supports_durable_provider_lifecycle", None
+        )
+        if not callable(supports_durable_lifecycle) or not bool(
+            supports_durable_lifecycle(operation)
+        ):
+            self._provider_lifecycle_failure(
+                error_type="provider_durable_lifecycle_unavailable",
+                message="The exact HMMER handle cannot be progressed by this engine.",
+            )
+        dispatch_record = (
+            repositories.controlled_operation_provider_dispatch_receipts.get_by_execution_id(
+                execution.execution_id
+            )
+        )
+        if dispatch_record is None:
+            self._provider_lifecycle_failure(
+                error_type="provider_dispatch_receipt_invalid",
+                message="The accepted HMMER dispatch receipt is missing.",
+            )
+        (
+            dispatch_digest,
+            _,
+            job_id,
+            submitted_at,
+            deadline,
+        ) = self._validate_durable_hmmer_dispatch_record(
+            dispatch_record,
+            execution=execution,
+        )
+        observation_records = tuple(
+            repositories.controlled_operation_provider_observation_receipts.list_by_execution_id(
+                execution.execution_id
+            )
+        )
+        observation_envelopes = self._validate_durable_hmmer_observation_records(
+            observation_records,
+            dispatch_record=dispatch_record,
+            execution=execution,
+            job_id=job_id,
+            submitted_at=submitted_at,
+        )
+        latest = None if not observation_envelopes else observation_envelopes[-1]
+        latest_digest = (
+            dispatch_digest
+            if not observation_records
+            else observation_records[-1].observation_digest
+        )
+        if latest is not None and latest["status_class"] == "terminal_success":
+            if action != "materialize":
+                return self._result_pending(
+                    execution,
+                    safe_receipt_digest=latest_digest,
+                    safe_summary="The exact provider job succeeded; result materialization is pending.",
+                )
+            raw_result = self._execute_durable_hmmer_phase(
+                repositories=repositories,
+                engine=engine,
+                operation=operation,
+                execution=execution,
+                request=request,
+                phase="materialize",
+                dispatch_envelope=dispatch_record.receipt_envelope,
+                observation_envelopes=observation_envelopes,
+            )
+            return self._materialized_from_callback(
+                repositories=repositories,
+                execution=execution,
+                raw_result=raw_result,
+            )
+        if latest is not None and latest["status_class"] == "terminal_failure":
+            self._execute_durable_hmmer_phase(
+                repositories=repositories,
+                engine=engine,
+                operation=operation,
+                execution=execution,
+                request=request,
+                phase="terminalize_failure",
+                dispatch_envelope=dispatch_record.receipt_envelope,
+                observation_envelopes=observation_envelopes,
+            )
+            raise AssertionError("terminal HMMER failure phase must raise")
+
+        now = self.clock()
+        if now.tzinfo is None:
+            self._provider_lifecycle_failure(
+                error_type="provider_clock_invalid",
+                message="Durable provider clock has no timezone.",
+            )
+        if now >= deadline:
+            self._execute_durable_hmmer_phase(
+                repositories=repositories,
+                engine=engine,
+                operation=operation,
+                execution=execution,
+                request=request,
+                phase="timeout",
+                dispatch_envelope=dispatch_record.receipt_envelope,
+                observation_envelopes=observation_envelopes,
+            )
+            raise AssertionError("terminal HMMER timeout phase must raise")
+        if action == "materialize":
+            return self._result_pending(
+                execution,
+                safe_receipt_digest=latest_digest,
+                error_code="provider_terminal_observation_missing",
+                safe_summary="The provider job has no terminal success observation.",
+            )
+
+        poll_interval = timedelta(
+            seconds=float(dispatch_record.receipt_envelope["poll_interval_seconds"])
+        )
+        previous_observed_at = (
+            submitted_at
+            if latest is None
+            else self._parse_provider_timestamp(
+                latest["observed_at"],
+                error_type="provider_observation_receipt_invalid",
+            )
+        )
+        if now < previous_observed_at + poll_interval:
+            return self._waiting_external(
+                execution,
+                safe_receipt_digest=latest_digest,
+                safe_summary="The exact provider job is waiting for its next poll window.",
+            )
+
+        raw_result = self._execute_durable_hmmer_phase(
+            repositories=repositories,
+            engine=engine,
+            operation=operation,
+            execution=execution,
+            request=request,
+            phase="poll",
+            dispatch_envelope=dispatch_record.receipt_envelope,
+            observation_envelopes=observation_envelopes,
+        )
+        if not isinstance(raw_result, dict) or set(raw_result) != {
+            "durable_provider_phase",
+            "observation_receipt",
+            "status_class",
+        }:
+            self._provider_lifecycle_failure(
+                error_type="provider_observation_receipt_invalid",
+                message="Durable HMMER poll returned an invalid receipt wrapper.",
+            )
+        observation_envelope = raw_result.get("observation_receipt")
+        if (
+            raw_result.get("durable_provider_phase") != "poll"
+            or not isinstance(observation_envelope, dict)
+            or raw_result.get("status_class")
+            != observation_envelope.get("status_class")
+        ):
+            self._provider_lifecycle_failure(
+                error_type="provider_observation_receipt_invalid",
+                message="Durable HMMER poll omitted its exact observation.",
+            )
+        observation_index = len(observation_records) + 1
+        observation_digest, observation_size, observed_at = (
+            self._validate_durable_hmmer_observation_envelope(
+                observation_envelope,
+                execution=execution,
+                job_id=job_id,
+                expected_page_size=int(
+                    dispatch_record.receipt_envelope["page_size"]
+                ),
+                expected_index=observation_index,
+                previous_observed_at=previous_observed_at,
+                terminal_seen=False,
+            )
+        )
+        observation_record = ControlledOperationProviderObservationReceipt(
+            observation_id=(
+                "provider_observation_receipt_"
+                + observation_digest.removeprefix("sha256:")[:32]
+            ),
+            dispatch_receipt_id=dispatch_record.receipt_id,
+            execution_id=execution.execution_id,
+            operation_id=execution.operation_id,
+            session_id=execution.session_id,
+            dispatch_generation=execution.dispatch_generation,
+            observation_index=observation_index,
+            provider_request_id=str(execution.backend_handle_ref),
+            provider_id="ebi_hmmer",
+            external_handle_ref=job_id,
+            observation_digest=observation_digest,
+            observation_envelope=dict(observation_envelope),
+            observation_size_bytes=observation_size,
+            created_at=observed_at.isoformat(),
+        )
+        with repositories.controlled_operation_write_fence(execution):
+            repositories.controlled_operation_provider_observation_receipts.append(
+                observation_record
+            )
+        status_class = str(observation_envelope["status_class"])
+        if status_class == "terminal_success":
+            return self._result_pending(
+                execution,
+                safe_receipt_digest=observation_digest,
+                safe_summary="The exact provider job succeeded; result materialization is pending.",
+            )
+        if status_class == "terminal_failure":
+            self._execute_durable_hmmer_phase(
+                repositories=repositories,
+                engine=engine,
+                operation=operation,
+                execution=execution,
+                request=request,
+                phase="terminalize_failure",
+                dispatch_envelope=dispatch_record.receipt_envelope,
+                observation_envelopes=(
+                    *observation_envelopes,
+                    observation_envelope,
+                ),
+            )
+            raise AssertionError("terminal HMMER failure phase must raise")
+        return self._waiting_external(
+            execution,
+            safe_receipt_digest=observation_digest,
+            safe_summary="The exact provider job remains nonterminal.",
+        )
+
+    def _execute_durable_hmmer_phase(
+        self,
+        *,
+        repositories: CoreRepositories,
+        engine: Any,
+        operation: Any,
+        execution: ControlledOperationExecution,
+        request: ControlledOperationDispatchRequest,
+        phase: str,
+        dispatch_envelope: dict[str, Any],
+        observation_envelopes: tuple[dict[str, Any], ...],
+    ) -> dict[str, Any]:
+        envelope = self._durable_hmmer_phase_envelope(
+            request=request,
+            execution=execution,
+            phase=phase,
+            dispatch_envelope=dispatch_envelope,
+            observation_envelopes=observation_envelopes,
+        )
+        with repositories.controlled_operation_write_fence(execution):
+            return ExecutionEngineSandboxHostGateway(
+                engine
+            ).execute_adapter_operation(
+                operation=operation,
+                envelope=envelope,
+                context=_durable_host_context(repositories, execution),
+            )
+
+    @staticmethod
+    def _durable_hmmer_phase_envelope(
+        *,
+        request: ControlledOperationDispatchRequest,
+        execution: ControlledOperationExecution,
+        phase: str,
+        dispatch_envelope: dict[str, Any] | None = None,
+        observation_envelopes: tuple[dict[str, Any], ...] = (),
+    ) -> dict[str, Any]:
+        envelope = dict(request.request_envelope)
+        envelope["_durable_backend_handle_ref"] = execution.backend_handle_ref
+        envelope["_durable_provider_phase"] = phase
+        if dispatch_envelope is not None:
+            envelope["_durable_provider_dispatch_receipt"] = dict(
+                dispatch_envelope
+            )
+            envelope["_durable_provider_observation_receipts"] = [
+                dict(item) for item in observation_envelopes
+            ]
+        return envelope
+
+    def _validate_durable_hmmer_dispatch_record(
+        self,
+        record: ControlledOperationProviderDispatchReceipt,
+        *,
+        execution: ControlledOperationExecution,
+    ) -> tuple[str, int, str, datetime, datetime]:
+        if (
+            record.execution_id != execution.execution_id
+            or record.operation_id != execution.operation_id
+            or record.session_id != execution.session_id
+            or record.dispatch_generation != execution.dispatch_generation
+            or record.provider_request_id != execution.backend_handle_ref
+            or record.provider_id != "ebi_hmmer"
+        ):
+            self._provider_lifecycle_failure(
+                error_type="provider_dispatch_receipt_invalid",
+                message="Durable HMMER dispatch receipt owner identity drifted.",
+            )
+        digest, size, job_id, submitted_at, deadline = (
+            self._validate_durable_hmmer_dispatch_envelope(
+                record.receipt_envelope,
+                execution=execution,
+            )
+        )
+        if (
+            record.receipt_digest != digest
+            or record.receipt_size_bytes != size
+            or record.external_handle_ref != job_id
+            or record.created_at != submitted_at.isoformat()
+        ):
+            self._provider_lifecycle_failure(
+                error_type="provider_dispatch_receipt_invalid",
+                message="Durable HMMER dispatch receipt bytes drifted from its owner.",
+            )
+        return digest, size, job_id, submitted_at, deadline
+
+    def _validate_durable_hmmer_dispatch_envelope(
+        self,
+        envelope: Any,
+        *,
+        execution: ControlledOperationExecution,
+    ) -> tuple[str, int, str, datetime, datetime]:
+        if not isinstance(envelope, dict) or frozenset(envelope) != (
+            _DURABLE_HMMER_DISPATCH_KEYS
+        ):
+            self._provider_lifecycle_failure(
+                error_type="provider_dispatch_receipt_invalid",
+                message="Durable HMMER dispatch receipt shape is invalid.",
+            )
+        submitted_at = self._parse_provider_timestamp(
+            envelope.get("submitted_at"),
+            error_type="provider_dispatch_receipt_invalid",
+        )
+        deadline = self._parse_provider_timestamp(
+            envelope.get("poll_deadline_at"),
+            error_type="provider_dispatch_receipt_invalid",
+        )
+        job_id = envelope.get("provider_job_id")
+        poll_interval = envelope.get("poll_interval_seconds")
+        poll_timeout = envelope.get("poll_timeout_seconds")
+        page_size = envelope.get("page_size")
+        max_hits = envelope.get("max_hits")
+        if (
+            envelope.get("schema_id")
+            != EBI_HMMER_DURABLE_DISPATCH_RECEIPT_SCHEMA_ID
+            or envelope.get("provider") != "ebi_hmmer"
+            or envelope.get("operation") != "bio.hmmer_search"
+            or envelope.get("provider_request_id") != execution.backend_handle_ref
+            or not isinstance(job_id, str)
+            or not job_id
+            or job_id != job_id.strip()
+            or len(job_id.encode("utf-8")) > 4_096
+            or isinstance(poll_interval, bool)
+            or not isinstance(poll_interval, (int, float))
+            or float(poll_interval) <= 0
+            or float(poll_interval) > 300
+            or isinstance(poll_timeout, bool)
+            or not isinstance(poll_timeout, (int, float))
+            or float(poll_timeout) <= 0
+            or float(poll_timeout) > 86_400
+            or deadline
+            != submitted_at + timedelta(seconds=float(poll_timeout))
+            or isinstance(page_size, bool)
+            or not isinstance(page_size, int)
+            or page_size <= 0
+            or isinstance(max_hits, bool)
+            or not isinstance(max_hits, int)
+            or max_hits <= 0
+            or not isinstance(envelope.get("database"), str)
+            or not str(envelope.get("database"))
+            or not isinstance(envelope.get("query_hmm_artifact_id"), str)
+            or not str(envelope.get("query_hmm_artifact_id"))
+            or not self._is_sha256_digest(
+                str(envelope.get("query_hmm_digest") or "")
+            )
+            or not self._is_sha256_digest(
+                str(envelope.get("request_payload_digest") or "")
+            )
+            or not isinstance(envelope.get("submit_response"), dict)
+        ):
+            self._provider_lifecycle_failure(
+                error_type="provider_dispatch_receipt_invalid",
+                message="Durable HMMER dispatch receipt identity is invalid.",
+            )
+        encoded = self._canonical_json_bytes(envelope)
+        return (
+            "sha256:" + hashlib.sha256(encoded).hexdigest(),
+            len(encoded),
+            job_id,
+            submitted_at,
+            deadline,
+        )
+
+    def _validate_durable_hmmer_observation_records(
+        self,
+        records: tuple[ControlledOperationProviderObservationReceipt, ...],
+        *,
+        dispatch_record: ControlledOperationProviderDispatchReceipt,
+        execution: ControlledOperationExecution,
+        job_id: str,
+        submitted_at: datetime,
+    ) -> tuple[dict[str, Any], ...]:
+        poll_timeout = float(dispatch_record.receipt_envelope["poll_timeout_seconds"])
+        poll_interval = float(
+            dispatch_record.receipt_envelope["poll_interval_seconds"]
+        )
+        max_observation_count = math.ceil(poll_timeout / poll_interval) + 1
+        if len(records) > max_observation_count:
+            self._provider_lifecycle_failure(
+                error_type="provider_observation_receipt_invalid",
+                message="Durable HMMER observation history exceeds its deadline bound.",
+            )
+        envelopes: list[dict[str, Any]] = []
+        previous_observed_at = submitted_at
+        terminal_seen = False
+        for expected_index, record in enumerate(records, start=1):
+            if (
+                record.dispatch_receipt_id != dispatch_record.receipt_id
+                or record.execution_id != execution.execution_id
+                or record.operation_id != execution.operation_id
+                or record.session_id != execution.session_id
+                or record.dispatch_generation != execution.dispatch_generation
+                or record.observation_index != expected_index
+                or record.provider_request_id != execution.backend_handle_ref
+                or record.provider_id != "ebi_hmmer"
+                or record.external_handle_ref != job_id
+            ):
+                self._provider_lifecycle_failure(
+                    error_type="provider_observation_receipt_invalid",
+                    message="Durable HMMER observation owner identity drifted.",
+                )
+            digest, size, observed_at = (
+                self._validate_durable_hmmer_observation_envelope(
+                    record.observation_envelope,
+                    execution=execution,
+                    job_id=job_id,
+                    expected_page_size=int(
+                        dispatch_record.receipt_envelope["page_size"]
+                    ),
+                    expected_index=expected_index,
+                    previous_observed_at=previous_observed_at,
+                    terminal_seen=terminal_seen,
+                )
+            )
+            if (
+                record.observation_digest != digest
+                or record.observation_size_bytes != size
+                or record.created_at != observed_at.isoformat()
+            ):
+                self._provider_lifecycle_failure(
+                    error_type="provider_observation_receipt_invalid",
+                    message="Durable HMMER observation bytes drifted from its owner.",
+                )
+            envelope = dict(record.observation_envelope)
+            envelopes.append(envelope)
+            previous_observed_at = observed_at
+            terminal_seen = envelope["status_class"] != "nonterminal"
+        return tuple(envelopes)
+
+    def _validate_durable_hmmer_observation_envelope(
+        self,
+        envelope: Any,
+        *,
+        execution: ControlledOperationExecution,
+        job_id: str,
+        expected_page_size: int,
+        expected_index: int,
+        previous_observed_at: datetime,
+        terminal_seen: bool,
+    ) -> tuple[str, int, datetime]:
+        if not isinstance(envelope, dict) or frozenset(envelope) != (
+            _DURABLE_HMMER_OBSERVATION_KEYS
+        ):
+            self._provider_lifecycle_failure(
+                error_type="provider_observation_receipt_invalid",
+                message="Durable HMMER observation receipt shape is invalid.",
+            )
+        observed_at = self._parse_provider_timestamp(
+            envelope.get("observed_at"),
+            error_type="provider_observation_receipt_invalid",
+        )
+        status = envelope.get("status")
+        if not isinstance(status, str):
+            status = ""
+        expected_status_class = (
+            "nonterminal"
+            if status in _DURABLE_HMMER_NONTERMINAL_STATUSES
+            else "terminal_success"
+            if status in {"DONE", "SUCCESS"}
+            else "terminal_failure"
+        )
+        if (
+            envelope.get("schema_id")
+            != EBI_HMMER_DURABLE_POLL_RECEIPT_SCHEMA_ID
+            or envelope.get("provider") != "ebi_hmmer"
+            or envelope.get("operation") != "bio.hmmer_search"
+            or envelope.get("provider_request_id") != execution.backend_handle_ref
+            or envelope.get("provider_job_id") != job_id
+            or envelope.get("observation_index") != expected_index
+            or not status
+            or status != status.strip().upper()
+            or len(status.encode("utf-8")) > 128
+            or envelope.get("status_class") != expected_status_class
+            or envelope.get("page_size") != expected_page_size
+            or not isinstance(envelope.get("response"), dict)
+            or observed_at < previous_observed_at
+            or terminal_seen
+        ):
+            self._provider_lifecycle_failure(
+                error_type="provider_observation_receipt_invalid",
+                message="Durable HMMER observation receipt identity is invalid.",
+            )
+        encoded = self._canonical_json_bytes(envelope)
+        return (
+            "sha256:" + hashlib.sha256(encoded).hexdigest(),
+            len(encoded),
+            observed_at,
+        )
+
+    @staticmethod
+    def _parse_provider_timestamp(value: Any, *, error_type: str) -> datetime:
+        try:
+            parsed = datetime.fromisoformat(str(value or ""))
+        except ValueError as exc:
+            raise PipelineSdkFailure(
+                error_type=error_type,
+                message="Durable provider receipt timestamp is invalid.",
+                hint="Preserve the accepted effect and reject replay.",
+                stage="provider_result_validation",
+                retryable=False,
+                sdk_method="bio.hmmer_search",
+            ) from exc
+        if parsed.tzinfo is None:
+            raise PipelineSdkFailure(
+                error_type=error_type,
+                message="Durable provider receipt timestamp has no timezone.",
+                hint="Preserve the accepted effect and reject replay.",
+                stage="provider_result_validation",
+                retryable=False,
+                sdk_method="bio.hmmer_search",
+            )
+        return parsed
+
+    @staticmethod
+    def _provider_lifecycle_failure(*, error_type: str, message: str) -> NoReturn:
+        raise PipelineSdkFailure(
+            error_type=error_type,
+            message=message,
+            hint="Preserve the accepted provider effect and reject replay.",
+            stage="provider_result_validation",
+            retryable=False,
+            sdk_method="bio.hmmer_search",
+        )
+
+    @staticmethod
+    def _waiting_external(
+        execution: ControlledOperationExecution,
+        *,
+        safe_receipt_digest: str | None = None,
+        error_code: str | None = None,
+        safe_summary: str,
+    ) -> DurableRouteObservation:
+        return DurableRouteObservation(
+            kind=DurableRouteObservationKind.WAITING_EXTERNAL,
+            effect_certainty=ExternalEffectCertainty.EFFECT_KNOWN,
+            retry_eligibility=RetryEligibility.VERIFY_THEN_RETRY,
+            backend_handle_ref=execution.backend_handle_ref,
+            safe_receipt_digest=safe_receipt_digest,
+            error_code=error_code,
+            safe_summary=safe_summary,
+        )
+
+    @staticmethod
+    def _result_pending(
+        execution: ControlledOperationExecution,
+        *,
+        safe_receipt_digest: str | None = None,
+        error_code: str | None = None,
+        safe_summary: str,
+    ) -> DurableRouteObservation:
+        return DurableRouteObservation(
+            kind=DurableRouteObservationKind.RESULT_PENDING,
+            effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+            retry_eligibility=RetryEligibility.VERIFY_THEN_RETRY,
+            backend_handle_ref=execution.backend_handle_ref,
+            safe_receipt_digest=safe_receipt_digest,
+            error_code=error_code,
+            safe_summary=safe_summary,
+        )
 
     def _reconcile_persisted(
         self,
@@ -319,8 +1177,56 @@ class HostProviderControlledOperationRouteAdapter:
             has_observation = "provider_observation.json" in relative_names
             has_error = "provider_error.json" in relative_names
             if has_error and has_observation:
+                error_records = tuple(
+                    record
+                    for record in records
+                    if PurePosixPath(str(record.relative_path)).name
+                    == "provider_error.json"
+                )
+                if len(error_records) != 1:
+                    return self._terminal_failure(
+                        error_code="durable_provider_error_transcript_invalid",
+                        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+                        terminal_outcome=(
+                            ControlledOperationExecutionTerminalOutcome.RECOVERY_FAILED
+                        ),
+                    )
+                try:
+                    error_document = self._read_verified_provider_document(
+                        error_records[0],
+                        document_name="provider_error.json",
+                    )
+                    error_code = error_document.get("code")
+                    if (
+                        frozenset(error_document) != _PROVIDER_ERROR_KEYS
+                        or not isinstance(error_code, str)
+                        or _SAFE_RUNNER_ERROR_CODE.fullmatch(error_code) is None
+                        or error_document.get("provider_request_id")
+                        != execution.backend_handle_ref
+                        or not isinstance(error_document.get("details"), dict)
+                        or not isinstance(error_document.get("retryable"), bool)
+                        or not isinstance(error_document.get("stage"), str)
+                        or not isinstance(error_document.get("summary"), str)
+                        or not isinstance(error_document.get("hint"), str)
+                        or not isinstance(error_document.get("output_dir"), str)
+                    ):
+                        self._provider_result_failure(
+                            error_type="durable_provider_error_transcript_invalid",
+                            message=(
+                                "Persisted provider error transcript does not match "
+                                "the frozen contract."
+                            ),
+                        )
+                except PipelineSdkFailure as exc:
+                    return self._terminal_failure(
+                        error_code=exc.error_type,
+                        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+                        terminal_outcome=(
+                            ControlledOperationExecutionTerminalOutcome.RECOVERY_FAILED
+                        ),
+                    )
                 return self._terminal_failure(
-                    error_code="durable_provider_terminal_failure",
+                    error_code=error_code,
                     effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
                 )
             if not has_observation:
@@ -1008,12 +1914,15 @@ class HostProviderControlledOperationRouteAdapter:
         *,
         error_code: str,
         effect_certainty: ExternalEffectCertainty,
+        terminal_outcome: ControlledOperationExecutionTerminalOutcome = (
+            ControlledOperationExecutionTerminalOutcome.FAILED
+        ),
     ) -> DurableRouteObservation:
         return DurableRouteObservation(
             kind=DurableRouteObservationKind.TERMINAL_FAILURE,
             effect_certainty=effect_certainty,
             retry_eligibility=RetryEligibility.TERMINAL,
-            terminal_outcome=ControlledOperationExecutionTerminalOutcome.FAILED,
+            terminal_outcome=terminal_outcome,
             error_code=error_code,
             safe_summary="The durable provider operation failed without a canonical result.",
         )

@@ -54,6 +54,8 @@ from .reliability import ContinuationResumeStrategy
 from .reliability import ControlledOperationExecution
 from .reliability import ControlledOperationExecutionEvent
 from .reliability import ControlledOperationDispatchRequest
+from .reliability import ControlledOperationProviderDispatchReceipt
+from .reliability import ControlledOperationProviderObservationReceipt
 from .reliability import ControlledOperationExecutionLifecycle
 from .reliability import ControlledOperationExecutionPhase
 from .reliability import ControlledOperationExecutionTerminalOutcome
@@ -142,6 +144,8 @@ __all__ = [
     "ControlledOperationExecution",
     "ControlledOperationExecutionEvent",
     "ControlledOperationDispatchRequest",
+    "ControlledOperationProviderDispatchReceipt",
+    "ControlledOperationProviderObservationReceipt",
     "ControlledOperationExecutionLifecycle",
     "ControlledOperationExecutionPhase",
     "ControlledOperationExecutionTerminalOutcome",

@@ -88,6 +88,12 @@ if TYPE_CHECKING:
     from .reliability_repositories import (
         ControlledOperationDispatchRequestRepository,
     )
+    from .reliability_repositories import (
+        ControlledOperationProviderDispatchReceiptRepository,
+    )
+    from .reliability_repositories import (
+        ControlledOperationProviderObservationReceiptRepository,
+    )
     from .reliability_repositories import ControlledOperationResultHandleRepository
     from .reliability_repositories import (
         ControlledOperationResultArtifactRepository,
@@ -5996,6 +6002,12 @@ class CoreRepositories:
     controlled_operation_dispatch_requests: (
         "ControlledOperationDispatchRequestRepository"
     )
+    controlled_operation_provider_dispatch_receipts: (
+        "ControlledOperationProviderDispatchReceiptRepository"
+    )
+    controlled_operation_provider_observation_receipts: (
+        "ControlledOperationProviderObservationReceiptRepository"
+    )
     controlled_operation_execution_events: "ControlledOperationExecutionEventRepository"
     controlled_operation_results: "ControlledOperationResultHandleRepository"
     controlled_operation_result_artifacts: "ControlledOperationResultArtifactRepository"
@@ -6206,6 +6218,12 @@ class CoreRepositories:
             ControlledOperationExecutionEventRepository,
         )
         from .reliability_repositories import ControlledOperationExecutionRepository
+        from .reliability_repositories import (
+            ControlledOperationProviderDispatchReceiptRepository,
+        )
+        from .reliability_repositories import (
+            ControlledOperationProviderObservationReceiptRepository,
+        )
         from .reliability_repositories import ControlledOperationResultHandleRepository
         from .reliability_repositories import (
             ControlledOperationResultArtifactRepository,
@@ -6257,6 +6275,12 @@ class CoreRepositories:
             ),
             controlled_operation_dispatch_requests=(
                 ControlledOperationDispatchRequestRepository(connection)
+            ),
+            controlled_operation_provider_dispatch_receipts=(
+                ControlledOperationProviderDispatchReceiptRepository(connection)
+            ),
+            controlled_operation_provider_observation_receipts=(
+                ControlledOperationProviderObservationReceiptRepository(connection)
             ),
             controlled_operation_execution_events=(
                 ControlledOperationExecutionEventRepository(connection)

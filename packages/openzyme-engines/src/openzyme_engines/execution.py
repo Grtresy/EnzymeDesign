@@ -6,6 +6,9 @@ import csv
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from dataclasses import replace
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 from decimal import Decimal
 from decimal import InvalidOperation
 from http import client as http_client
@@ -633,6 +636,14 @@ def _sha256_bytes(content: bytes) -> str:
     return f"sha256:{hashlib.sha256(content).hexdigest()}"
 
 
+def _is_sha256_digest(value: str) -> bool:
+    return (
+        len(value) == 71
+        and value.startswith("sha256:")
+        and all(character in "0123456789abcdef" for character in value[7:])
+    )
+
+
 def _sequence_digest_index_metadata(
     sequence_digests: dict[str, str],
 ) -> dict[str, Any]:
@@ -782,6 +793,42 @@ _HMMER_NONTERMINAL_JOB_STATUSES = frozenset(
         "RETRY",
     }
 )
+_HMMER_PAGE_SIZE_CAP = 1_000
+_HMMER_MAX_HITS_CAP = 100_000
+EBI_HMMER_DURABLE_DISPATCH_RECEIPT_SCHEMA_ID = (
+    "ebi_hmmer_durable_dispatch_receipt@1"
+)
+EBI_HMMER_DURABLE_POLL_RECEIPT_SCHEMA_ID = "ebi_hmmer_durable_poll_receipt@1"
+
+
+def _extract_ebi_hmmer_job_id(body: str) -> str:
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        payload = body.strip()
+    if isinstance(payload, dict):
+        for key in ("id", "job_id", "jobId", "uuid"):
+            value = payload.get(key)
+            if value:
+                return str(value)
+    if isinstance(payload, str):
+        match = re.search(r"[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}", payload)
+        if match:
+            return match.group(0)
+        if payload:
+            return payload.strip().strip('"')
+    raise PipelineSdkFailure(
+        error_type="provider_schema_drift",
+        message="EBI HMMER submit response did not include a job id.",
+        hint="Inspect provider response compatibility before retrying.",
+        stage="provider_submit_parse",
+        retryable=False,
+        sdk_method="bio.hmmer_search",
+        details={
+            "body_excerpt": _scrub_provider_text(body[:1000]),
+            "response_digest": _sha256_text(body),
+        },
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -846,6 +893,40 @@ class BioSdkResult:
     warnings: tuple[dict[str, Any], ...] = ()
     provider_observation: dict[str, Any] | None = None
     api_version: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HmmerProviderDispatch:
+    job_id: str
+    submit_response: BioProviderHttpResponse
+    normalized_database: str
+    page_size: int
+    max_hits: int
+    query_hmm_digest: str
+    request_payload_digest: str
+    poll_interval_seconds: float
+    poll_timeout_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class HmmerProviderPoll:
+    job_id: str
+    page_size: int
+    status: str
+    payload: dict[str, Any]
+    response: BioProviderHttpResponse
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedHmmerSearch:
+    hmm_artifact: SessionArtifactRecord
+    normalized_database: str
+    page_size: int
+    max_hits: int
+    hmm_text: str
+    request_payload: dict[str, Any]
+    query_hmm_digest: str
+    request_payload_digest: str
 
 
 class BioDatabaseAdapter(Protocol):
@@ -2076,73 +2157,51 @@ class ProviderHttpBioDatabaseAdapter:
         database: str,
         params: dict[str, Any],
         retrieved_at: str,
+        _durable_dispatch: HmmerProviderDispatch | None = None,
+        _durable_polls: tuple[HmmerProviderPoll, ...] = (),
     ) -> BioSdkResult:
-        normalized_database = database.strip().lower()
-        if normalized_database not in {
-            "refprot",
-            "swissprot",
-            "uniprot",
-            "pdb",
-            "rp15",
-            "rp35",
-            "rp55",
-            "rp75",
-        }:
-            raise PipelineSdkFailure(
-                error_type="provider_invalid_request",
-                message=f"EBI HMMER database {database!r} is not allowed by the S13 provider policy.",
-                hint="Use database='refprot' for the AOX/HMM main route.",
-                stage="provider_request_validation",
-                retryable=False,
-                sdk_method="bio.hmmer_search",
-                details={"provider": "ebi_hmmer", "database": database},
-            )
-        hmm_text = Path(hmm_artifact.storage_uri).read_text(
-            encoding="utf-8", errors="replace"
+        prepared = self._prepare_hmmer_search(
+            hmm_artifact=hmm_artifact,
+            database=database,
+            params=params,
+            frozen_dispatch=_durable_dispatch,
         )
-        max_hits = self._hmmer_positive_int_param(
-            params,
-            key="max_hits",
-            default=self.config.hmmer_max_hits,
-            cap=self.config.hmmer_max_hits,
-        )
-        page_size = self._hmmer_positive_int_param(
-            params,
-            key="page_size",
-            default=self.config.hmmer_page_size,
-            cap=self.config.hmmer_page_size,
-        )
-        request_payload: dict[str, Any] = {
-            "input": hmm_text,
-            "input_type": "hmm",
-            "database": normalized_database,
-        }
-        if "evalue" in params and "E" not in params and params["evalue"] is not None:
-            request_payload["E"] = self._hmmer_request_number(
-                params["evalue"], field="E"
-            )
-        for key in ("E", "domE", "incE", "incdomE"):
-            if key in params and params[key] is not None:
-                request_payload[key] = self._hmmer_request_number(
-                    params[key], field=key
-                )
-        if self.config.ebi_hmmer_email:
-            request_payload["email_address"] = self.config.ebi_hmmer_email
+        normalized_database = prepared.normalized_database
+        max_hits = prepared.max_hits
+        page_size = prepared.page_size
         base = "https://www.ebi.ac.uk/Tools/hmmer/api/v1"
-        submit = self._http_request(
-            "POST",
-            f"{base}/search/hmmsearch",
-            data=json.dumps(request_payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-            sdk_method="bio.hmmer_search",
-            stage="provider_submit",
-        )
-        job_id = self._extract_hmmer_job_id(submit.body)
-        status_payload, status_requests = self._poll_hmmer_job(
-            base,
-            job_id,
-            page_size=page_size,
-        )
+        if _durable_dispatch is None:
+            dispatch = self._submit_prepared_hmmer_search(prepared)
+            status_payload, status_requests = self._poll_hmmer_job(
+                dispatch.job_id,
+                page_size=page_size,
+            )
+        else:
+            dispatch = _durable_dispatch
+            self._validate_durable_hmmer_identity(
+                prepared=prepared,
+                dispatch=dispatch,
+                polls=_durable_polls,
+            )
+            if not _durable_polls:
+                raise PipelineSdkFailure(
+                    error_type="provider_observation_missing",
+                    message="Durable EBI HMMER materialization has no terminal poll.",
+                    hint="Preserve the accepted job and continue exact-handle polling.",
+                    stage="provider_poll",
+                    retryable=False,
+                    sdk_method="bio.hmmer_search",
+                    details={
+                        "provider": "ebi_hmmer",
+                        "job_id": dispatch.job_id,
+                    },
+                )
+            status_payload = dict(_durable_polls[-1].payload)
+            status_requests = [
+                self._hmmer_poll_request_record(poll) for poll in _durable_polls
+            ]
+        submit = dispatch.submit_response
+        job_id = dispatch.job_id
         if str(status_payload.get("status") or "").upper() not in {"SUCCESS", "DONE"}:
             raise PipelineSdkFailure(
                 error_type="provider_invalid_request",
@@ -2283,8 +2342,8 @@ class ProviderHttpBioDatabaseAdapter:
         ]
         parsed_csv = self._hmmer_hits_csv(hits)
         parsed_hits_digest = _sha256_text(parsed_csv)
-        request_payload_digest = _sha256_text(_json_text(request_payload))
-        hmm_digest = _sha256_text(hmm_text)
+        request_payload_digest = prepared.request_payload_digest
+        hmm_digest = prepared.query_hmm_digest
         summary = {
             "provider": "ebi_hmmer",
             "database": normalized_database,
@@ -2408,6 +2467,274 @@ class ProviderHttpBioDatabaseAdapter:
                 ),
             ),
         )
+
+    def dispatch_hmmer_search(
+        self,
+        *,
+        hmm_artifact: SessionArtifactRecord,
+        database: str,
+        params: dict[str, Any],
+    ) -> HmmerProviderDispatch:
+        """Submit one EBI HMMER job without entering a polling loop."""
+
+        prepared = self._prepare_hmmer_search(
+            hmm_artifact=hmm_artifact,
+            database=database,
+            params=params,
+        )
+        return self._submit_prepared_hmmer_search(prepared)
+
+    def poll_hmmer_search(
+        self,
+        *,
+        job_id: str,
+        page_size: int,
+    ) -> HmmerProviderPoll:
+        """Observe one exact EBI HMMER job once."""
+
+        if not job_id or job_id != job_id.strip():
+            raise PipelineSdkFailure(
+                error_type="provider_job_identity_invalid",
+                message="Durable EBI HMMER polling requires one exact job id.",
+                hint="Preserve the dispatch receipt and reject replacement submission.",
+                stage="provider_poll",
+                retryable=False,
+                sdk_method="bio.hmmer_search",
+                details={"provider": "ebi_hmmer"},
+            )
+        if (
+            isinstance(page_size, bool)
+            or not isinstance(page_size, int)
+            or page_size <= 0
+            or page_size > _HMMER_PAGE_SIZE_CAP
+        ):
+            raise PipelineSdkFailure(
+                error_type="provider_request_identity_invalid",
+                message="Durable EBI HMMER polling page size is invalid.",
+                hint="Use the page size frozen by the dispatch receipt.",
+                stage="provider_poll",
+                retryable=False,
+                sdk_method="bio.hmmer_search",
+                details={"provider": "ebi_hmmer", "page_size": str(page_size)},
+            )
+        base = "https://www.ebi.ac.uk/Tools/hmmer/api/v1"
+        response = self._http_request(
+            "GET",
+            f"{base}/result/{urllib_parse.quote(job_id)}?"
+            + urllib_parse.urlencode(
+                {"format": "json", "page": 1, "page_size": page_size}
+            ),
+            sdk_method="bio.hmmer_search",
+            stage="provider_poll",
+        )
+        try:
+            payload = json.loads(response.body)
+        except json.JSONDecodeError as exc:
+            raise self._schema_failure(
+                "bio.hmmer_search",
+                "EBI HMMER job status was not JSON.",
+                response=response,
+            ) from exc
+        if not isinstance(payload, dict):
+            raise self._schema_failure(
+                "bio.hmmer_search",
+                "EBI HMMER job status was not an object.",
+                response=response,
+            )
+        return HmmerProviderPoll(
+            job_id=job_id,
+            page_size=page_size,
+            status=str(payload.get("status") or "").upper(),
+            payload=dict(payload),
+            response=response,
+        )
+
+    def materialize_hmmer_search(
+        self,
+        *,
+        hmm_artifact: SessionArtifactRecord,
+        database: str,
+        params: dict[str, Any],
+        retrieved_at: str,
+        dispatch: HmmerProviderDispatch,
+        polls: tuple[HmmerProviderPoll, ...],
+    ) -> BioSdkResult:
+        """Materialize terminal results from one frozen dispatch and poll chain."""
+
+        return self.hmmer_search(
+            hmm_artifact=hmm_artifact,
+            database=database,
+            params=params,
+            retrieved_at=retrieved_at,
+            _durable_dispatch=dispatch,
+            _durable_polls=polls,
+        )
+
+    def _prepare_hmmer_search(
+        self,
+        *,
+        hmm_artifact: SessionArtifactRecord,
+        database: str,
+        params: dict[str, Any],
+        frozen_dispatch: HmmerProviderDispatch | None = None,
+    ) -> _PreparedHmmerSearch:
+        normalized_database = database.strip().lower()
+        if normalized_database not in {
+            "refprot",
+            "swissprot",
+            "uniprot",
+            "pdb",
+            "rp15",
+            "rp35",
+            "rp55",
+            "rp75",
+        }:
+            raise PipelineSdkFailure(
+                error_type="provider_invalid_request",
+                message=f"EBI HMMER database {database!r} is not allowed by the S13 provider policy.",
+                hint="Use database='refprot' for the AOX/HMM main route.",
+                stage="provider_request_validation",
+                retryable=False,
+                sdk_method="bio.hmmer_search",
+                details={"provider": "ebi_hmmer", "database": database},
+            )
+        hmm_text = Path(hmm_artifact.storage_uri).read_text(
+            encoding="utf-8", errors="replace"
+        )
+        max_hits = self._hmmer_positive_int_param(
+            params,
+            key="max_hits",
+            default=(
+                frozen_dispatch.max_hits
+                if frozen_dispatch is not None
+                else min(self.config.hmmer_max_hits, _HMMER_MAX_HITS_CAP)
+            ),
+            cap=(
+                frozen_dispatch.max_hits
+                if frozen_dispatch is not None
+                else min(self.config.hmmer_max_hits, _HMMER_MAX_HITS_CAP)
+            ),
+        )
+        page_size = self._hmmer_positive_int_param(
+            params,
+            key="page_size",
+            default=(
+                frozen_dispatch.page_size
+                if frozen_dispatch is not None
+                else min(self.config.hmmer_page_size, _HMMER_PAGE_SIZE_CAP)
+            ),
+            cap=(
+                frozen_dispatch.page_size
+                if frozen_dispatch is not None
+                else min(self.config.hmmer_page_size, _HMMER_PAGE_SIZE_CAP)
+            ),
+        )
+        request_payload: dict[str, Any] = {
+            "input": hmm_text,
+            "input_type": "hmm",
+            "database": normalized_database,
+        }
+        if "evalue" in params and "E" not in params and params["evalue"] is not None:
+            request_payload["E"] = self._hmmer_request_number(
+                params["evalue"], field="E"
+            )
+        for key in ("E", "domE", "incE", "incdomE"):
+            if key in params and params[key] is not None:
+                request_payload[key] = self._hmmer_request_number(
+                    params[key], field=key
+                )
+        if self.config.ebi_hmmer_email:
+            request_payload["email_address"] = self.config.ebi_hmmer_email
+        return _PreparedHmmerSearch(
+            hmm_artifact=hmm_artifact,
+            normalized_database=normalized_database,
+            page_size=page_size,
+            max_hits=max_hits,
+            hmm_text=hmm_text,
+            request_payload=request_payload,
+            query_hmm_digest=_sha256_text(hmm_text),
+            request_payload_digest=_sha256_text(_json_text(request_payload)),
+        )
+
+    def _submit_prepared_hmmer_search(
+        self,
+        prepared: _PreparedHmmerSearch,
+    ) -> HmmerProviderDispatch:
+        base = "https://www.ebi.ac.uk/Tools/hmmer/api/v1"
+        submit = self._http_request(
+            "POST",
+            f"{base}/search/hmmsearch",
+            data=json.dumps(prepared.request_payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            sdk_method="bio.hmmer_search",
+            stage="provider_submit",
+        )
+        return HmmerProviderDispatch(
+            job_id=self._extract_hmmer_job_id(submit.body),
+            submit_response=submit,
+            normalized_database=prepared.normalized_database,
+            page_size=prepared.page_size,
+            max_hits=prepared.max_hits,
+            query_hmm_digest=prepared.query_hmm_digest,
+            request_payload_digest=prepared.request_payload_digest,
+            poll_interval_seconds=float(self.config.hmmer_poll_interval_seconds),
+            poll_timeout_seconds=float(self.config.hmmer_poll_timeout_seconds),
+        )
+
+    def _validate_durable_hmmer_identity(
+        self,
+        *,
+        prepared: _PreparedHmmerSearch,
+        dispatch: HmmerProviderDispatch,
+        polls: tuple[HmmerProviderPoll, ...],
+    ) -> None:
+        if (
+            dispatch.normalized_database != prepared.normalized_database
+            or dispatch.page_size != prepared.page_size
+            or dispatch.max_hits != prepared.max_hits
+            or dispatch.page_size > _HMMER_PAGE_SIZE_CAP
+            or dispatch.max_hits > _HMMER_MAX_HITS_CAP
+            or dispatch.query_hmm_digest != prepared.query_hmm_digest
+            or dispatch.request_payload_digest != prepared.request_payload_digest
+            or dispatch.poll_interval_seconds <= 0
+            or dispatch.poll_interval_seconds > 300
+            or dispatch.poll_timeout_seconds <= 0
+            or dispatch.poll_timeout_seconds > 86_400
+            or self._extract_hmmer_job_id(dispatch.submit_response.body)
+            != dispatch.job_id
+            or any(
+                poll.job_id != dispatch.job_id
+                or poll.page_size != dispatch.page_size
+                or poll.status
+                != str(poll.payload.get("status") or "").upper()
+                for poll in polls
+            )
+        ):
+            raise PipelineSdkFailure(
+                error_type="provider_request_identity_invalid",
+                message="Durable EBI HMMER receipt identity drifted.",
+                hint="Preserve the accepted job and reject result publication.",
+                stage="provider_result_validation",
+                retryable=False,
+                sdk_method="bio.hmmer_search",
+                details={
+                    "provider": "ebi_hmmer",
+                    "job_id": dispatch.job_id,
+                },
+            )
+
+    @staticmethod
+    def _hmmer_poll_request_record(poll: HmmerProviderPoll) -> dict[str, Any]:
+        return {
+            "method": "GET",
+            "status_code": poll.response.status_code,
+            "headers": _sanitize_provider_headers(poll.response.headers),
+            "response_digest": poll.response.body_digest,
+            "job_status": poll.status,
+            "page": 1,
+            "page_size": poll.page_size,
+            "_raw_response": poll.response,
+        }
 
     def _http_request(
         self,
@@ -3897,37 +4224,10 @@ class ProviderHttpBioDatabaseAdapter:
         return _sanitize_provider_value(metadata)
 
     def _extract_hmmer_job_id(self, body: str) -> str:
-        try:
-            payload = json.loads(body)
-        except json.JSONDecodeError:
-            payload = body.strip()
-        if isinstance(payload, dict):
-            for key in ("id", "job_id", "jobId", "uuid"):
-                value = payload.get(key)
-                if value:
-                    return str(value)
-        if isinstance(payload, str):
-            match = re.search(r"[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}", payload)
-            if match:
-                return match.group(0)
-            if payload:
-                return payload.strip().strip('"')
-        raise PipelineSdkFailure(
-            error_type="provider_schema_drift",
-            message="EBI HMMER submit response did not include a job id.",
-            hint="Inspect provider response compatibility before retrying.",
-            stage="provider_submit_parse",
-            retryable=False,
-            sdk_method="bio.hmmer_search",
-            details={
-                "body_excerpt": _scrub_provider_text(body[:1000]),
-                "response_digest": _sha256_text(body),
-            },
-        )
+        return _extract_ebi_hmmer_job_id(body)
 
     def _poll_hmmer_job(
         self,
-        base: str,
         job_id: str,
         *,
         page_size: int,
@@ -3935,42 +4235,10 @@ class ProviderHttpBioDatabaseAdapter:
         deadline = time.monotonic() + self.config.hmmer_poll_timeout_seconds
         requests: list[dict[str, Any]] = []
         while True:
-            response = self._http_request(
-                "GET",
-                f"{base}/result/{urllib_parse.quote(job_id)}?"
-                + urllib_parse.urlencode(
-                    {"format": "json", "page": 1, "page_size": page_size}
-                ),
-                sdk_method="bio.hmmer_search",
-                stage="provider_poll",
-            )
-            try:
-                payload = json.loads(response.body)
-            except json.JSONDecodeError as exc:
-                raise self._schema_failure(
-                    "bio.hmmer_search",
-                    "EBI HMMER job status was not JSON.",
-                    response=response,
-                ) from exc
-            if not isinstance(payload, dict):
-                raise self._schema_failure(
-                    "bio.hmmer_search",
-                    "EBI HMMER job status was not an object.",
-                    response=response,
-                )
-            requests.append(
-                {
-                    "method": "GET",
-                    "status_code": response.status_code,
-                    "headers": _sanitize_provider_headers(response.headers),
-                    "response_digest": response.body_digest,
-                    "job_status": payload.get("status"),
-                    "page": 1,
-                    "page_size": page_size,
-                    "_raw_response": response,
-                }
-            )
-            status = str(payload.get("status") or "").upper()
+            poll = self.poll_hmmer_search(job_id=job_id, page_size=page_size)
+            payload = poll.payload
+            requests.append(self._hmmer_poll_request_record(poll))
+            status = poll.status
             if status not in _HMMER_NONTERMINAL_JOB_STATUSES:
                 return payload, requests
             if time.monotonic() >= deadline:
@@ -5430,6 +5698,25 @@ class ExecutionEngine:
     def register_tools(self, registry: ToolRegistryProtocol) -> None:
         register_execution_tools(registry, self)
 
+    def supports_durable_provider_lifecycle(
+        self,
+        operation: ControlledOperation,
+    ) -> bool:
+        adapter = self.bio_adapter
+        return (
+            f"{operation.sdk_module}.{operation.function_name}"
+            == "bio.hmmer_search"
+            and adapter is not None
+            and all(
+                callable(getattr(adapter, method_name, None))
+                for method_name in (
+                    "dispatch_hmmer_search",
+                    "poll_hmmer_search",
+                    "materialize_hmmer_search",
+                )
+            )
+        )
+
     def execute_sandbox_adapter_operation(
         self,
         operation: ControlledOperation,
@@ -5451,6 +5738,68 @@ class ExecutionEngine:
                 sdk_method=method,
                 details={"operation_id": operation.operation_id},
             )
+        raw_durable_phase = envelope.get("_durable_provider_phase")
+        raw_dispatch_receipt = envelope.get(
+            "_durable_provider_dispatch_receipt"
+        )
+        raw_observation_receipts = envelope.get(
+            "_durable_provider_observation_receipts"
+        )
+        if (
+            raw_durable_phase is not None
+            and (
+                not isinstance(raw_durable_phase, str)
+                or not raw_durable_phase
+                or raw_durable_phase != raw_durable_phase.strip()
+            )
+        ):
+            raise PipelineSdkFailure(
+                error_type="provider_lifecycle_envelope_invalid",
+                message="Durable provider phase identity is invalid.",
+                hint="Preserve the execution and reject the malformed private envelope.",
+                stage="adapter_input_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"operation_id": operation.operation_id},
+            )
+        if raw_dispatch_receipt is not None and not isinstance(
+            raw_dispatch_receipt, dict
+        ):
+            raise PipelineSdkFailure(
+                error_type="provider_lifecycle_envelope_invalid",
+                message="Durable provider dispatch receipt is not an object.",
+                hint="Preserve the execution and reject the malformed private envelope.",
+                stage="adapter_input_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"operation_id": operation.operation_id},
+            )
+        if raw_observation_receipts is not None and (
+            not isinstance(raw_observation_receipts, list)
+            or any(not isinstance(item, dict) for item in raw_observation_receipts)
+        ):
+            raise PipelineSdkFailure(
+                error_type="provider_lifecycle_envelope_invalid",
+                message="Durable provider observation receipts are not a closed object list.",
+                hint="Preserve the execution and reject the malformed private envelope.",
+                stage="adapter_input_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"operation_id": operation.operation_id},
+            )
+        if raw_durable_phase is None and (
+            raw_dispatch_receipt is not None
+            or raw_observation_receipts is not None
+        ):
+            raise PipelineSdkFailure(
+                error_type="provider_lifecycle_envelope_invalid",
+                message="Durable provider receipts require an explicit phase.",
+                hint="Preserve the execution and reject the malformed private envelope.",
+                stage="adapter_input_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"operation_id": operation.operation_id},
+            )
         if (
             operation.sdk_module in {"bio", "rcsb_pdb"}
             and operation.selected_backend == "provider_http"
@@ -5461,6 +5810,16 @@ class ExecutionEngine:
                 params=dict(params),
                 frozen_provider_request_id=(
                     str(envelope.get("_durable_backend_handle_ref") or "") or None
+                ),
+                durable_provider_phase=raw_durable_phase,
+                durable_provider_dispatch_receipt=(
+                    dict(raw_dispatch_receipt)
+                    if isinstance(raw_dispatch_receipt, dict)
+                    else None
+                ),
+                durable_provider_observation_receipts=tuple(
+                    dict(item)
+                    for item in (raw_observation_receipts or [])
                 ),
             )
         if operation.sdk_module == "bio_tools" and operation.selected_backend == "hpc":
@@ -9732,6 +10091,555 @@ class ExecutionEngine:
             )
         return manifests
 
+    @staticmethod
+    def _durable_hmmer_submitted_at(
+        dispatch_receipt: dict[str, Any] | None,
+        *,
+        provider_request_id: str | None,
+    ) -> str:
+        if (
+            not isinstance(dispatch_receipt, dict)
+            or dispatch_receipt.get("schema_id")
+            != EBI_HMMER_DURABLE_DISPATCH_RECEIPT_SCHEMA_ID
+            or dispatch_receipt.get("provider_request_id") != provider_request_id
+            or not isinstance(dispatch_receipt.get("submitted_at"), str)
+        ):
+            raise PipelineSdkFailure(
+                error_type="provider_dispatch_receipt_invalid",
+                message="Durable EBI HMMER dispatch receipt is missing or invalid.",
+                hint="Preserve the execution for exact reconciliation; do not resubmit.",
+                stage="provider_result_validation",
+                retryable=False,
+                sdk_method="bio.hmmer_search",
+                details={"provider": "ebi_hmmer"},
+            )
+        submitted_at = str(dispatch_receipt["submitted_at"])
+        try:
+            parsed = datetime.fromisoformat(submitted_at)
+        except ValueError as exc:
+            raise PipelineSdkFailure(
+                error_type="provider_dispatch_receipt_invalid",
+                message="Durable EBI HMMER dispatch time is invalid.",
+                hint="Preserve the execution for exact reconciliation; do not resubmit.",
+                stage="provider_result_validation",
+                retryable=False,
+                sdk_method="bio.hmmer_search",
+                details={"provider": "ebi_hmmer"},
+            ) from exc
+        if parsed.tzinfo is None:
+            raise PipelineSdkFailure(
+                error_type="provider_dispatch_receipt_invalid",
+                message="Durable EBI HMMER dispatch time has no timezone.",
+                hint="Preserve the execution for exact reconciliation; do not resubmit.",
+                stage="provider_result_validation",
+                retryable=False,
+                sdk_method="bio.hmmer_search",
+                details={"provider": "ebi_hmmer"},
+            )
+        return submitted_at
+
+    def _execute_durable_hmmer_provider_phase(
+        self,
+        *,
+        adapter: Any,
+        phase: str,
+        provider_request_id: str,
+        hmm_artifact: SessionArtifactRecord,
+        database: str,
+        params: dict[str, Any],
+        retrieved_at: str,
+        dispatch_receipt: dict[str, Any] | None,
+        observation_receipts: tuple[dict[str, Any], ...],
+    ) -> BioSdkResult | dict[str, Any]:
+        if phase not in {
+            "dispatch",
+            "poll",
+            "materialize",
+            "terminalize_failure",
+            "timeout",
+        }:
+            raise self._durable_hmmer_receipt_failure(
+                "provider_lifecycle_phase_invalid",
+                "Durable EBI HMMER phase is invalid.",
+            )
+        if phase == "dispatch":
+            if dispatch_receipt is not None or observation_receipts:
+                raise self._durable_hmmer_receipt_failure(
+                    "provider_dispatch_receipt_conflict",
+                    "Durable EBI HMMER dispatch received preexisting receipt state.",
+                )
+            dispatch_callback = getattr(adapter, "dispatch_hmmer_search", None)
+            if not callable(dispatch_callback):
+                raise self._durable_hmmer_receipt_failure(
+                    "provider_durable_lifecycle_unavailable",
+                    "Configured EBI HMMER adapter has no durable dispatch capability.",
+                )
+            dispatch = dispatch_callback(
+                hmm_artifact=hmm_artifact,
+                database=database,
+                params=params,
+            )
+            if not isinstance(dispatch, HmmerProviderDispatch):
+                raise self._durable_hmmer_receipt_failure(
+                    "provider_dispatch_receipt_invalid",
+                    "EBI HMMER adapter returned an invalid dispatch receipt.",
+                )
+            submitted = datetime.fromisoformat(utc_now_iso())
+            if submitted.tzinfo is None:
+                submitted = submitted.replace(tzinfo=UTC)
+            deadline = submitted + timedelta(seconds=dispatch.poll_timeout_seconds)
+            receipt = {
+                "schema_id": EBI_HMMER_DURABLE_DISPATCH_RECEIPT_SCHEMA_ID,
+                "provider": "ebi_hmmer",
+                "operation": "bio.hmmer_search",
+                "provider_request_id": provider_request_id,
+                "provider_job_id": dispatch.job_id,
+                "submitted_at": submitted.isoformat(),
+                "poll_deadline_at": deadline.isoformat(),
+                "poll_interval_seconds": dispatch.poll_interval_seconds,
+                "poll_timeout_seconds": dispatch.poll_timeout_seconds,
+                "database": dispatch.normalized_database,
+                "page_size": dispatch.page_size,
+                "max_hits": dispatch.max_hits,
+                "query_hmm_artifact_id": hmm_artifact.artifact_id,
+                "query_hmm_digest": dispatch.query_hmm_digest,
+                "request_payload_digest": dispatch.request_payload_digest,
+                "submit_response": self._provider_http_response_receipt(
+                    dispatch.submit_response
+                ),
+            }
+            self._decode_durable_hmmer_dispatch_receipt(
+                receipt,
+                provider_request_id=provider_request_id,
+            )
+            return {
+                "durable_provider_phase": "dispatch",
+                "dispatch_receipt": receipt,
+            }
+
+        dispatch = self._decode_durable_hmmer_dispatch_receipt(
+            dispatch_receipt,
+            provider_request_id=provider_request_id,
+        )
+        dispatch_submitted_at = datetime.fromisoformat(
+            str(dispatch_receipt["submitted_at"])  # type: ignore[index]
+        )
+        polls = self._decode_durable_hmmer_poll_receipts(
+            observation_receipts,
+            dispatch=dispatch,
+            provider_request_id=provider_request_id,
+            submitted_at=dispatch_submitted_at,
+        )
+        if phase == "poll":
+            poll_callback = getattr(adapter, "poll_hmmer_search", None)
+            if not callable(poll_callback):
+                raise self._durable_hmmer_receipt_failure(
+                    "provider_durable_lifecycle_unavailable",
+                    "Configured EBI HMMER adapter has no durable poll capability.",
+                )
+            poll = poll_callback(
+                job_id=dispatch.job_id,
+                page_size=dispatch.page_size,
+            )
+            if not isinstance(poll, HmmerProviderPoll):
+                raise self._durable_hmmer_receipt_failure(
+                    "provider_observation_receipt_invalid",
+                    "EBI HMMER adapter returned an invalid poll observation.",
+                )
+            status_class = self._durable_hmmer_status_class(poll.status)
+            receipt = {
+                "schema_id": EBI_HMMER_DURABLE_POLL_RECEIPT_SCHEMA_ID,
+                "provider": "ebi_hmmer",
+                "operation": "bio.hmmer_search",
+                "provider_request_id": provider_request_id,
+                "provider_job_id": dispatch.job_id,
+                "observation_index": len(polls) + 1,
+                "observed_at": utc_now_iso(),
+                "status": poll.status,
+                "status_class": status_class,
+                "page_size": dispatch.page_size,
+                "response": self._provider_http_response_receipt(poll.response),
+            }
+            self._decode_durable_hmmer_poll_receipts(
+                (*observation_receipts, receipt),
+                dispatch=dispatch,
+                provider_request_id=provider_request_id,
+                submitted_at=dispatch_submitted_at,
+            )
+            return {
+                "durable_provider_phase": "poll",
+                "status_class": status_class,
+                "observation_receipt": receipt,
+            }
+        if phase == "timeout":
+            deadline = datetime.fromisoformat(
+                str(dispatch_receipt["poll_deadline_at"])  # type: ignore[index]
+            )
+            if deadline.tzinfo is None or datetime.now(tz=UTC) < deadline:
+                raise self._durable_hmmer_receipt_failure(
+                    "provider_timeout_not_reached",
+                    "Durable EBI HMMER timeout was requested before its frozen deadline.",
+                )
+            raise PipelineSdkFailure(
+                error_type="provider_timeout",
+                message="EBI HMMER polling reached its frozen durable deadline.",
+                hint="Inspect the exact accepted job before authorizing any new operation.",
+                stage="provider_poll",
+                retryable=True,
+                sdk_method="bio.hmmer_search",
+                details={
+                    "provider": "ebi_hmmer",
+                    "job_id": dispatch.job_id,
+                    "last_status": None if not polls else polls[-1].status,
+                    "poll_deadline_at": deadline.isoformat(),
+                },
+            )
+        if not polls:
+            raise self._durable_hmmer_receipt_failure(
+                "provider_observation_missing",
+                "Durable EBI HMMER terminal phase has no poll observation.",
+            )
+        terminal_class = self._durable_hmmer_status_class(polls[-1].status)
+        if phase == "terminalize_failure":
+            if terminal_class != "terminal_failure":
+                raise self._durable_hmmer_receipt_failure(
+                    "provider_terminal_status_invalid",
+                    "Durable EBI HMMER failure phase has no terminal failure status.",
+                )
+            raise PipelineSdkFailure(
+                error_type="provider_invalid_request",
+                message="EBI HMMER job did not complete successfully.",
+                hint="Inspect provider_error.json before authorizing a new operation.",
+                stage="provider_poll",
+                retryable=False,
+                sdk_method="bio.hmmer_search",
+                details={
+                    "provider": "ebi_hmmer",
+                    "job_id": dispatch.job_id,
+                    "job_status": polls[-1].status,
+                    "job_payload": _sanitize_provider_value(polls[-1].payload),
+                },
+            )
+        if terminal_class != "terminal_success":
+            raise self._durable_hmmer_receipt_failure(
+                "provider_terminal_status_invalid",
+                "Durable EBI HMMER materialization has no terminal success status.",
+            )
+        materialize_callback = getattr(adapter, "materialize_hmmer_search", None)
+        if not callable(materialize_callback):
+            raise self._durable_hmmer_receipt_failure(
+                "provider_durable_lifecycle_unavailable",
+                "Configured EBI HMMER adapter has no durable materialization capability.",
+            )
+        return materialize_callback(
+            hmm_artifact=hmm_artifact,
+            database=database,
+            params=params,
+            retrieved_at=retrieved_at,
+            dispatch=dispatch,
+            polls=polls,
+        )
+
+    def _decode_durable_hmmer_dispatch_receipt(
+        self,
+        receipt: dict[str, Any] | None,
+        *,
+        provider_request_id: str,
+    ) -> HmmerProviderDispatch:
+        expected_fields = {
+            "schema_id",
+            "provider",
+            "operation",
+            "provider_request_id",
+            "provider_job_id",
+            "submitted_at",
+            "poll_deadline_at",
+            "poll_interval_seconds",
+            "poll_timeout_seconds",
+            "database",
+            "page_size",
+            "max_hits",
+            "query_hmm_artifact_id",
+            "query_hmm_digest",
+            "request_payload_digest",
+            "submit_response",
+        }
+        if not isinstance(receipt, dict) or set(receipt) != expected_fields:
+            raise self._durable_hmmer_receipt_failure(
+                "provider_dispatch_receipt_invalid",
+                "Durable EBI HMMER dispatch receipt shape is invalid.",
+            )
+        job_id = receipt.get("provider_job_id")
+        interval = receipt.get("poll_interval_seconds")
+        timeout = receipt.get("poll_timeout_seconds")
+        page_size = receipt.get("page_size")
+        max_hits = receipt.get("max_hits")
+        try:
+            submitted = datetime.fromisoformat(str(receipt.get("submitted_at") or ""))
+            deadline = datetime.fromisoformat(
+                str(receipt.get("poll_deadline_at") or "")
+            )
+        except ValueError as exc:
+            raise self._durable_hmmer_receipt_failure(
+                "provider_dispatch_receipt_invalid",
+                "Durable EBI HMMER dispatch receipt timestamps are invalid.",
+            ) from exc
+        if (
+            receipt.get("schema_id")
+            != EBI_HMMER_DURABLE_DISPATCH_RECEIPT_SCHEMA_ID
+            or receipt.get("provider") != "ebi_hmmer"
+            or receipt.get("operation") != "bio.hmmer_search"
+            or receipt.get("provider_request_id") != provider_request_id
+            or not isinstance(job_id, str)
+            or not job_id
+            or job_id != job_id.strip()
+            or len(job_id.encode("utf-8")) > 4_096
+            or isinstance(interval, bool)
+            or not isinstance(interval, (int, float))
+            or float(interval) <= 0
+            or float(interval) > 300
+            or isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or float(timeout) <= 0
+            or float(timeout) > 86_400
+            or isinstance(page_size, bool)
+            or not isinstance(page_size, int)
+            or page_size <= 0
+            or page_size > _HMMER_PAGE_SIZE_CAP
+            or isinstance(max_hits, bool)
+            or not isinstance(max_hits, int)
+            or max_hits <= 0
+            or max_hits > _HMMER_MAX_HITS_CAP
+            or not isinstance(receipt.get("database"), str)
+            or not isinstance(receipt.get("query_hmm_artifact_id"), str)
+            or not _is_sha256_digest(str(receipt.get("query_hmm_digest") or ""))
+            or not _is_sha256_digest(
+                str(receipt.get("request_payload_digest") or "")
+            )
+            or submitted.tzinfo is None
+            or deadline.tzinfo is None
+            or deadline
+            != submitted + timedelta(seconds=float(timeout))
+        ):
+            raise self._durable_hmmer_receipt_failure(
+                "provider_dispatch_receipt_invalid",
+                "Durable EBI HMMER dispatch receipt identity is invalid.",
+            )
+        response = self._provider_http_response_from_receipt(
+            receipt.get("submit_response")
+        )
+        if _extract_ebi_hmmer_job_id(response.body) != job_id:
+            raise self._durable_hmmer_receipt_failure(
+                "provider_dispatch_receipt_invalid",
+                "Durable EBI HMMER submit response does not match its job id.",
+            )
+        return HmmerProviderDispatch(
+            job_id=job_id,
+            submit_response=response,
+            normalized_database=str(receipt["database"]),
+            page_size=page_size,
+            max_hits=max_hits,
+            query_hmm_digest=str(receipt["query_hmm_digest"]),
+            request_payload_digest=str(receipt["request_payload_digest"]),
+            poll_interval_seconds=float(interval),
+            poll_timeout_seconds=float(timeout),
+        )
+
+    def _decode_durable_hmmer_poll_receipts(
+        self,
+        receipts: tuple[dict[str, Any], ...],
+        *,
+        dispatch: HmmerProviderDispatch,
+        provider_request_id: str,
+        submitted_at: datetime,
+    ) -> tuple[HmmerProviderPoll, ...]:
+        expected_fields = {
+            "schema_id",
+            "provider",
+            "operation",
+            "provider_request_id",
+            "provider_job_id",
+            "observation_index",
+            "observed_at",
+            "status",
+            "status_class",
+            "page_size",
+            "response",
+        }
+        decoded: list[HmmerProviderPoll] = []
+        max_observation_count = (
+            math.ceil(
+                dispatch.poll_timeout_seconds / dispatch.poll_interval_seconds
+            )
+            + 1
+        )
+        if len(receipts) > max_observation_count:
+            raise self._durable_hmmer_receipt_failure(
+                "provider_observation_receipt_invalid",
+                "Durable EBI HMMER poll history exceeds its frozen deadline bound.",
+            )
+        terminal_seen = False
+        previous_observed_at = submitted_at
+        for index, receipt in enumerate(receipts, start=1):
+            if not isinstance(receipt, dict) or set(receipt) != expected_fields:
+                raise self._durable_hmmer_receipt_failure(
+                    "provider_observation_receipt_invalid",
+                    "Durable EBI HMMER poll receipt shape is invalid.",
+                )
+            try:
+                observed_at = datetime.fromisoformat(
+                    str(receipt.get("observed_at") or "")
+                )
+            except ValueError as exc:
+                raise self._durable_hmmer_receipt_failure(
+                    "provider_observation_receipt_invalid",
+                    "Durable EBI HMMER poll timestamp is invalid.",
+                ) from exc
+            status = str(receipt.get("status") or "")
+            status_class = self._durable_hmmer_status_class(status)
+            if (
+                receipt.get("schema_id")
+                != EBI_HMMER_DURABLE_POLL_RECEIPT_SCHEMA_ID
+                or receipt.get("provider") != "ebi_hmmer"
+                or receipt.get("operation") != "bio.hmmer_search"
+                or receipt.get("provider_request_id") != provider_request_id
+                or receipt.get("provider_job_id") != dispatch.job_id
+                or receipt.get("observation_index") != index
+                or receipt.get("status_class") != status_class
+                or receipt.get("page_size") != dispatch.page_size
+                or observed_at.tzinfo is None
+                or observed_at < previous_observed_at
+                or terminal_seen
+            ):
+                raise self._durable_hmmer_receipt_failure(
+                    "provider_observation_receipt_invalid",
+                    "Durable EBI HMMER poll receipt identity is invalid.",
+                )
+            response = self._provider_http_response_from_receipt(
+                receipt.get("response")
+            )
+            try:
+                payload = json.loads(response.body)
+            except json.JSONDecodeError as exc:
+                raise self._durable_hmmer_receipt_failure(
+                    "provider_observation_receipt_invalid",
+                    "Durable EBI HMMER poll response is not JSON.",
+                ) from exc
+            if (
+                not isinstance(payload, dict)
+                or str(payload.get("status") or "").upper() != status
+            ):
+                raise self._durable_hmmer_receipt_failure(
+                    "provider_observation_receipt_invalid",
+                    "Durable EBI HMMER poll payload does not match its status.",
+                )
+            decoded.append(
+                HmmerProviderPoll(
+                    job_id=dispatch.job_id,
+                    page_size=dispatch.page_size,
+                    status=status,
+                    payload=payload,
+                    response=response,
+                )
+            )
+            previous_observed_at = observed_at
+            terminal_seen = status_class != "nonterminal"
+        return tuple(decoded)
+
+    @staticmethod
+    def _durable_hmmer_status_class(status: str) -> str:
+        normalized = status.upper()
+        if normalized in _HMMER_NONTERMINAL_JOB_STATUSES:
+            return "nonterminal"
+        if normalized in {"SUCCESS", "DONE"}:
+            return "terminal_success"
+        return "terminal_failure"
+
+    @staticmethod
+    def _provider_http_response_receipt(
+        response: BioProviderHttpResponse,
+    ) -> dict[str, Any]:
+        return {
+            "status_code": response.status_code,
+            "headers": _sanitize_provider_headers(response.headers),
+            "body_encoding": "base64",
+            "body_base64": base64.b64encode(response.body_bytes).decode("ascii"),
+            "body_digest": response.body_digest,
+            "size_bytes": len(response.body_bytes),
+            "url": response.url,
+        }
+
+    def _provider_http_response_from_receipt(
+        self,
+        value: Any,
+    ) -> BioProviderHttpResponse:
+        expected_fields = {
+            "status_code",
+            "headers",
+            "body_encoding",
+            "body_base64",
+            "body_digest",
+            "size_bytes",
+            "url",
+        }
+        if not isinstance(value, dict) or set(value) != expected_fields:
+            raise self._durable_hmmer_receipt_failure(
+                "provider_http_receipt_invalid",
+                "Durable provider HTTP receipt shape is invalid.",
+            )
+        try:
+            body_bytes = base64.b64decode(str(value.get("body_base64")), validate=True)
+        except (TypeError, ValueError) as exc:
+            raise self._durable_hmmer_receipt_failure(
+                "provider_http_receipt_invalid",
+                "Durable provider HTTP receipt body is not canonical base64.",
+            ) from exc
+        headers = value.get("headers")
+        status_code = value.get("status_code")
+        if (
+            value.get("body_encoding") != "base64"
+            or value.get("size_bytes") != len(body_bytes)
+            or value.get("body_digest") != _sha256_bytes(body_bytes)
+            or not isinstance(headers, dict)
+            or headers != _sanitize_provider_headers(headers)
+            or any(
+                not isinstance(key, str) or not isinstance(item, str)
+                for key, item in headers.items()
+            )
+            or isinstance(status_code, bool)
+            or not isinstance(status_code, int)
+            or status_code < 100
+            or status_code > 599
+            or not isinstance(value.get("url"), str)
+            or not str(value.get("url"))
+        ):
+            raise self._durable_hmmer_receipt_failure(
+                "provider_http_receipt_invalid",
+                "Durable provider HTTP receipt identity is invalid.",
+            )
+        return BioProviderHttpResponse(
+            status_code=status_code,
+            headers=dict(headers),
+            body=body_bytes.decode("utf-8", errors="replace"),
+            body_bytes=body_bytes,
+            url=str(value["url"]),
+        )
+
+    @staticmethod
+    def _durable_hmmer_receipt_failure(
+        error_type: str,
+        message: str,
+    ) -> PipelineSdkFailure:
+        return PipelineSdkFailure(
+            error_type=error_type,
+            message=message,
+            hint="Preserve the accepted provider effect and reject replay.",
+            stage="provider_result_validation",
+            retryable=False,
+            sdk_method="bio.hmmer_search",
+            details={"provider": "ebi_hmmer"},
+        )
+
     def _execute_sandbox_bio_provider_operation(
         self,
         *,
@@ -9739,6 +10647,9 @@ class ExecutionEngine:
         method: str,
         params: dict[str, Any],
         frozen_provider_request_id: str | None = None,
+        durable_provider_phase: str | None = None,
+        durable_provider_dispatch_receipt: dict[str, Any] | None = None,
+        durable_provider_observation_receipts: tuple[dict[str, Any], ...] = (),
     ) -> dict[str, Any]:
         route_policy = self._require_bio_route_policy(method)
         if operation.route_policy_id != route_policy["route_policy_id"]:
@@ -9800,7 +10711,24 @@ class ExecutionEngine:
                 sdk_method=method,
                 details={"operation_id": operation.operation_id},
             )
-        retrieved_at = utc_now_iso()
+        if durable_provider_phase is not None and method != "bio.hmmer_search":
+            raise PipelineSdkFailure(
+                error_type="provider_lifecycle_phase_invalid",
+                message="Durable provider phases are only supported for EBI HMMER.",
+                hint="Use the ordinary durable provider route for this operation.",
+                stage="provider_route_policy_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"operation_id": operation.operation_id},
+            )
+        retrieved_at = (
+            utc_now_iso()
+            if durable_provider_phase in {None, "dispatch"}
+            else self._durable_hmmer_submitted_at(
+                durable_provider_dispatch_receipt,
+                provider_request_id=frozen_provider_request_id,
+            )
+        )
         if (
             frozen_provider_request_id is not None
             and re.fullmatch(r"provider_req_[0-9a-f]{24}", frozen_provider_request_id)
@@ -9902,12 +10830,30 @@ class ExecutionEngine:
                             "format": hmm_format,
                         },
                     )
-                result = adapter.hmmer_search(
-                    hmm_artifact=hmm_artifact,
-                    database=str(params.get("database") or ""),
-                    params=dict(params.get("params") or {}),
-                    retrieved_at=retrieved_at,
-                )
+                if durable_provider_phase is None:
+                    result = adapter.hmmer_search(
+                        hmm_artifact=hmm_artifact,
+                        database=str(params.get("database") or ""),
+                        params=dict(params.get("params") or {}),
+                        retrieved_at=retrieved_at,
+                    )
+                else:
+                    durable_result = self._execute_durable_hmmer_provider_phase(
+                        adapter=adapter,
+                        phase=durable_provider_phase,
+                        provider_request_id=provider_request_id,
+                        hmm_artifact=hmm_artifact,
+                        database=str(params.get("database") or ""),
+                        params=dict(params.get("params") or {}),
+                        retrieved_at=retrieved_at,
+                        dispatch_receipt=durable_provider_dispatch_receipt,
+                        observation_receipts=(
+                            durable_provider_observation_receipts
+                        ),
+                    )
+                    if isinstance(durable_result, dict):
+                        return durable_result
+                    result = durable_result
             else:
                 raise PipelineSdkFailure(
                     error_type="provider_not_configured",
@@ -9920,6 +10866,11 @@ class ExecutionEngine:
                 )
         except PipelineSdkFailure as exc:
             normalized_failure = self._normalize_bio_failure(exc)
+            if durable_provider_phase in {"dispatch", "poll"} or (
+                durable_provider_phase == "materialize"
+                and normalized_failure.retryable
+            ):
+                raise normalized_failure from exc
             raise self._persist_sandbox_bio_failure_transcript(
                 operation=operation,
                 failure=normalized_failure,

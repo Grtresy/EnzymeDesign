@@ -344,6 +344,54 @@ A durable provider operation whose external effect and complete artifact transcr
 - **WHEN** a required control document is absent, unreadable, oversized, non-canonical, digest-tampered, schema-drifted, identity-drifted, outside the frozen output directory, inconsistent with artifact metadata, or would produce an oversized inline summary or complete result envelope
 - **THEN** the execution becomes a terminal-known `recovery_failed` result with no materialized success result, provider replay, alternate route, fallback summary, repeated claim/reconcile loop, report, or cutover eligibility
 
+### Requirement: Durable HMMER dispatch and polling use one immutable external handle
+A `durable_async_v1` `bio.hmmer_search` operation SHALL remain owned by its single
+`ControlledOperationExecution`; it MUST NOT create an AOX-specific observer, driver,
+retry owner, successor, or second business state machine. Its dispatch phase SHALL
+submit EBI HMMER at most once. After the provider returns one job id, Host SHALL
+immediately persist one Host-private immutable dispatch receipt bound to the exact
+execution, operation, session, dispatch generation, frozen `provider_request_id`,
+provider id, external job id, HMM/request digests, effective page/max parameters,
+poll interval, accepted timestamp, and one absolute deadline. The deadline SHALL be
+derived once from acceptance and MUST NOT be reset by worker reclaim, Host restart,
+reconcile, polling, or materialization.
+
+Every later poll/reconcile phase SHALL read only that receipt's job id, perform at
+most one exact provider observation per bounded worker slice, and append one
+Host-private immutable observation receipt with a contiguous index and exact response
+bytes/digest. `RETRY`, `PENDING`, `RUNNING`, `STARTED`, `SUBMITTED`, and `QUEUED`
+SHALL remain nonterminal for the same job and MUST NOT authorize another submit.
+Observation history SHALL be bounded by the frozen deadline/interval. Terminal
+success SHALL enter the existing result materialization path without resubmit;
+terminal failure or a still-nonterminal job at the frozen deadline SHALL produce a
+typed terminal handoff, with deadline expiry preserving `provider_timeout`.
+
+The dispatch and observation receipts SHALL be canonical SQLite records covered by
+owner checks, immutable update/delete guards, mutation authority, schema validation,
+and exact envelope size/digest checks. They MUST NOT be projected into workspace,
+agent trace, events, or public API. If provider acceptance may have occurred but the
+callback is lost before the exact job receipt is canonically committed, the execution
+SHALL remain `dispatch_in_doubt`; without a provider idempotency/query contract the
+system MUST NOT resubmit, infer a job id, adopt another job, or reset the deadline.
+The in-process synchronous HMMER loop MAY remain only for explicit `legacy_sync`
+compatibility and MUST NOT be selected as durable recovery fallback.
+
+#### Scenario: Resume a nonterminal HMMER job after restart
+- **WHEN** submit has produced one immutable dispatch receipt, one or more observations report `RETRY`, and the execution worker is reclaimed or the Host restarts before the frozen deadline
+- **THEN** the next bounded slice reads the same external job id and original deadline, appends only the next exact observation, performs no POST, and remains `effect_known` until a terminal observation or deadline
+
+#### Scenario: Materialize one terminal HMMER success without resubmit
+- **WHEN** the append-only observation chain ends in terminal success for the receipt-bound job
+- **THEN** result pages are materialized through the existing strict page/count/digest path, the raw transcript includes the original submit plus ordered polls and result pages, and no replacement job or deadline is created
+
+#### Scenario: Terminalize a durable HMMER timeout
+- **WHEN** the absolute receipt deadline is reached while the latest exact observation remains nonterminal
+- **THEN** the operation emits a terminal-known `provider_timeout` handoff, preserves the exact job/receipt history for private diagnosis, and does not remain indefinitely `dispatching`
+
+#### Scenario: Preserve the accepted-submit receipt gap
+- **WHEN** EBI may have accepted submit but the Host has no canonically committed exact job receipt
+- **THEN** reconcile returns `dispatch_in_doubt`, issues no POST or speculative GET, and requires separately authorized changed state before any new operation
+
 ### Requirement: Bounded sandbox control framing
 The Host control socket and `openzyme_pipeline` client SHALL exchange exactly one JSON-RPC 2.0 request and one response as newline-delimited frames per Unix-socket connection. Request and response payloads SHALL each have a hard maximum of `4 * 1024 * 1024` bytes excluding the terminating newline. Receivers MUST aggregate across arbitrary `recv` chunks until the newline; a `64 KiB` chunk MUST NOT be interpreted as the frame limit. Host/compat request reads, SDK connect/send, and SDK response reads after the first response byte MUST use a fixed 5-second I/O timeout. Waiting for the first SDK response byte MUST instead remain governed by the outer sandbox run and approval/controlled-operation lifecycle because one request may legitimately pause for human approval or synchronous provider/HPC completion. Once any response byte has arrived, a partial response whose peer keeps the connection open MUST fail non-retryably as `sandbox_transport_response_timeout`. The SDK SHALL reject an oversized request before sending it and SHALL bound response assembly by the same limit. The Host SHALL replace an oversized response with a smaller structured error.
 
@@ -922,6 +970,10 @@ package and MUST NOT be a production caller.
 #### Scenario: Bind every terminal handoff to the durable event
 - **WHEN** a conductor submits a bounded drain and later reads its terminal status
 - **THEN** both public responses are sealed and the terminal response exactly reproduces the unique `runtime.command.finished` event projection; an unsealed or digest-only status GET is not terminal proof
+
+#### Scenario: Reject terminal handoff that arrives after frozen final reads
+- **WHEN** the conductor seals workspace and event responses while a bounded drain is still nonterminal, and its terminal status or durable finished event becomes available only after either final-read receipt
+- **THEN** the earlier responses remain stale and cannot be backfilled by later public or private state; retirement stays blocked until one sealed terminal status is followed by fresh sealed workspace and full event replay responses that include the exact `runtime.command.finished` projection
 
 #### Scenario: Refuse unsealed operator retirement
 - **WHEN** the operator requests retirement before every public receipt has one sealed response, every bounded drain has one matching terminal event, or post-mutation workspace/events have been sealed

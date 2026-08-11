@@ -219,7 +219,34 @@ def test_bulk_identity_stays_compact_and_invalid_terminal_converges_once(
         )
         driver.queue_external(
             "bio.provider_http",
-            "hmmer_search",
+            "hmmer_dispatch",
+            ControlledPortOutcome(
+                acceptance=EffectAcceptance.ACCEPTED,
+                effect_attempted=True,
+                response={
+                    "job_id": "qualification-hmmer-bulk",
+                    "max_hits": len(candidates),
+                    "page_size": 1_000,
+                    "poll_interval_seconds": 0.000001,
+                    "poll_timeout_seconds": 20.0,
+                },
+            ),
+        )
+        driver.queue_external(
+            "bio.provider_http",
+            "hmmer_poll",
+            ControlledPortOutcome(
+                acceptance=EffectAcceptance.TERMINAL,
+                effect_attempted=True,
+                response={
+                    "nreported": len(candidates),
+                    "status": "SUCCESS",
+                },
+            ),
+        )
+        driver.queue_external(
+            "bio.provider_http",
+            "hmmer_materialize",
             ControlledPortOutcome(
                 acceptance=EffectAcceptance.TERMINAL,
                 effect_attempted=True,
@@ -227,6 +254,14 @@ def test_bulk_identity_stays_compact_and_invalid_terminal_converges_once(
             ),
         )
         driver.resolve_approval(bulk_ids.approval_id)
+        bulk_dispatched = driver.run_execution_once(
+            bulk_ids.execution_id,
+            worker_id="qualification:bounded-bulk",
+        )
+        bulk_observed = driver.run_execution_once(
+            bulk_ids.execution_id,
+            worker_id="qualification:bounded-bulk",
+        )
         bulk_ready = driver.run_execution_once(
             bulk_ids.execution_id,
             worker_id="qualification:bounded-bulk",
@@ -313,7 +348,11 @@ def test_bulk_identity_stays_compact_and_invalid_terminal_converges_once(
             ),
         )
 
-    assert bulk_ready["action"] == "dispatch"
+    assert bulk_dispatched["action"] == "dispatch"
+    assert bulk_dispatched["lifecycle_state"] == "waiting_external"
+    assert bulk_observed["action"] == "poll"
+    assert bulk_observed["lifecycle_state"] == "result_staging"
+    assert bulk_ready["action"] == "materialize"
     assert bulk_ready["lifecycle_state"] == "result_ready"
     assert bulk_terminal["lifecycle_state"] == "terminal"
     bulk_envelope = bulk_records["result"]["bounded_result_envelope"]  # type: ignore[index]
@@ -398,8 +437,10 @@ def test_bulk_identity_stays_compact_and_invalid_terminal_converges_once(
         factory.external_effect_ledger,
         allowed_calls={
             ("bio.provider_http", "dispatch"): 2,
-            ("bio.provider_http", "hmmer_search"): 1,
+            ("bio.provider_http", "hmmer_dispatch"): 1,
+            ("bio.provider_http", "hmmer_materialize"): 1,
+            ("bio.provider_http", "hmmer_poll"): 1,
         },
-        expected_effect_count=3,
+        expected_effect_count=5,
     )
     assert_public_authority_absent(observation.payload["public_projection"])

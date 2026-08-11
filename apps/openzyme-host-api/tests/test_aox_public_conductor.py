@@ -1200,6 +1200,7 @@ def _formal_slot_failure_fixture(
     *,
     attempt_exists: bool = False,
     late_mutation: bool = False,
+    terminal_after_final_reads: bool = False,
     typed_cause: bool = True,
 ) -> dict[str, object]:
     tmp_path.mkdir(parents=True, exist_ok=True)
@@ -1217,51 +1218,63 @@ def _formal_slot_failure_fixture(
     session_id = str(slot["session_id"])
     command_id = "runtime_command_failed"
     status_url = f"/v3/sessions/{session_id}/runtime/commands/{command_id}"
-    records = [
-        _receipt(
-            1,
-            "POST",
-            "/v3/sessions",
-            {
-                "session_id": session_id,
-                "project_id": "aox-blank-world-cutover",
-                "objective": PUBLIC_CONDUCTOR_OBJECTIVE,
-                "title": PUBLIC_CONDUCTOR_TITLE,
-            },
-        ),
-        _receipt(
-            2,
-            "POST",
-            f"/v3/sessions/{session_id}/messages",
-            {
-                "message_digest": _digest_bytes(PUBLIC_CONDUCTOR_MESSAGE.encode()),
-                "skill_keys": [
-                    "workflow:aox@1.0.0#sha256:" + "c" * 64
-                ],
-                "task_id": None,
-                "lane_id": None,
-            },
-        ),
-        _receipt(
-            3,
-            "POST",
-            f"/v3/sessions/{session_id}/runtime/drain",
-            {
-                "max_signals": 1,
-                "max_steps_per_agent": 16,
-                "auto_enqueue_ready_tasks": False,
-            },
-            status_code=202,
-        ),
-        _receipt(4, "GET", status_url, {}),
-        _receipt(5, "GET", f"/v3/sessions/{session_id}/workspace", {}),
-        _receipt(
-            6,
-            "GET",
-            f"/v3/sessions/{session_id}/events?replay=1&after_cursor=0",
-            {"replay": True, "after_cursor": 0},
-        ),
-    ]
+    session_receipt = _receipt(
+        1,
+        "POST",
+        "/v3/sessions",
+        {
+            "session_id": session_id,
+            "project_id": "aox-blank-world-cutover",
+            "objective": PUBLIC_CONDUCTOR_OBJECTIVE,
+            "title": PUBLIC_CONDUCTOR_TITLE,
+        },
+    )
+    entry_receipt = _receipt(
+        2,
+        "POST",
+        f"/v3/sessions/{session_id}/messages",
+        {
+            "message_digest": _digest_bytes(PUBLIC_CONDUCTOR_MESSAGE.encode()),
+            "skill_keys": ["workflow:aox@1.0.0#sha256:" + "c" * 64],
+            "task_id": None,
+            "lane_id": None,
+        },
+    )
+    drain_receipt = _receipt(
+        3,
+        "POST",
+        f"/v3/sessions/{session_id}/runtime/drain",
+        {
+            "max_signals": 1,
+            "max_steps_per_agent": 16,
+            "auto_enqueue_ready_tasks": False,
+        },
+        status_code=202,
+    )
+    terminal_receipt = _receipt(
+        6 if terminal_after_final_reads else 4,
+        "GET",
+        status_url,
+        {},
+    )
+    workspace_receipt = _receipt(
+        4 if terminal_after_final_reads else 5,
+        "GET",
+        f"/v3/sessions/{session_id}/workspace",
+        {},
+    )
+    event_receipt = _receipt(
+        5 if terminal_after_final_reads else 6,
+        "GET",
+        f"/v3/sessions/{session_id}/events?replay=1&after_cursor=0",
+        {"replay": True, "after_cursor": 0},
+    )
+    records = [session_receipt, entry_receipt, drain_receipt]
+    records.extend(
+        [workspace_receipt, event_receipt, terminal_receipt]
+        if terminal_after_final_reads
+        else [terminal_receipt, workspace_receipt, event_receipt]
+    )
     if late_mutation:
         records.append(
             _receipt(
@@ -1378,27 +1391,33 @@ def _formal_slot_failure_fixture(
     ]
     events = [
         *(cause_events if typed_cause else []),
-        {
-            "cursor": 3,
-            "session_id": session_id,
-            "event_type": "runtime.command.finished",
-            "command_id": command_id,
-            "payload": terminal_projection,
-        },
+        *(
+            []
+            if terminal_after_final_reads
+            else [
+                {
+                    "cursor": 3,
+                    "session_id": session_id,
+                    "event_type": "runtime.command.finished",
+                    "command_id": command_id,
+                    "payload": terminal_projection,
+                }
+            ]
+        ),
     ]
     responses = {
         "public-response-session-create.json": (
-            records[0],
+            session_receipt,
             {"session_id": session_id, "status": "created"},
         ),
         "public-response-entry-message.json": (
-            records[1],
+            entry_receipt,
             {"session_id": session_id, "status": "accepted"},
         ),
-        "public-response-drain-admission.json": (records[2], admitted),
-        "public-response-drain-terminal.json": (records[3], terminal),
-        "public-response-final-workspace.json": (records[4], workspace),
-        "public-response-final-events.json": (records[5], events),
+        "public-response-drain-admission.json": (drain_receipt, admitted),
+        "public-response-drain-terminal.json": (terminal_receipt, terminal),
+        "public-response-final-workspace.json": (workspace_receipt, workspace),
+        "public-response-final-events.json": (event_receipt, events),
     }
     response_paths: dict[str, Path] = {}
     for name, (receipt, response) in responses.items():
@@ -1512,6 +1531,94 @@ def test_conductor_retirement_readiness_closes_zero_attempt_public_state(
     assert resolved["receipt_chain"] == sources["receipt_chain"]
     assert resolved["workspace"] == sources["workspace"]
     assert resolved["events"] == sources["events"]
+
+
+def test_conductor_retirement_readiness_requires_fresh_reads_after_terminal_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _formal_slot_failure_fixture(
+        tmp_path,
+        monkeypatch,
+        terminal_after_final_reads=True,
+    )
+    evidence_root = sources["evidence_root"]
+    (evidence_root / "aox-host-supervision.json").unlink()
+
+    with pytest.raises(CutoverEvidenceError) as stale_error:
+        aox_conductor_execution.seal_conductor_retirement_readiness(
+            sources["preflight"]
+        )
+    assert stale_error.value.code == "public_terminal_handoff_invalid"
+    assert not (
+        evidence_root
+        / aox_conductor_execution.CONDUCTOR_RETIREMENT_READINESS_FILENAME
+    ).exists()
+
+    workspace = json.loads(sources["workspace"].read_text(encoding="utf-8"))[
+        "response"
+    ]
+    stale_events = json.loads(sources["events"].read_text(encoding="utf-8"))[
+        "response"
+    ]
+    terminal = json.loads(sources["handoffs"][1].read_text(encoding="utf-8"))[
+        "response"
+    ]
+    terminal_projection = {
+        key: terminal.get(key)
+        for key in (
+            "command_id",
+            "command_type",
+            "status",
+            "completed_at",
+            "bounded_outcome_summary",
+            "error_code",
+            "safe_error_summary",
+            "safe_retry_hint",
+        )
+    }
+    fresh_events = [
+        *stale_events,
+        {
+            "cursor": 3,
+            "session_id": terminal["session_id"],
+            "event_type": "runtime.command.finished",
+            "command_id": terminal["command_id"],
+            "payload": terminal_projection,
+        },
+    ]
+    session_id = str(terminal["session_id"])
+    fresh_workspace_receipt = _receipt(
+        7,
+        "GET",
+        f"/v3/sessions/{session_id}/workspace",
+        {},
+    )
+    fresh_event_receipt = _receipt(
+        8,
+        "GET",
+        f"/v3/sessions/{session_id}/events?replay=1&after_cursor=0",
+        {"replay": True, "after_cursor": 0},
+    )
+    fresh_workspace_path = evidence_root / "public-response-fresh-workspace.json"
+    fresh_event_path = evidence_root / "public-response-fresh-events.json"
+    for path, receipt, response in (
+        (fresh_workspace_path, fresh_workspace_receipt, workspace),
+        (fresh_event_path, fresh_event_receipt, fresh_events),
+    ):
+        receipt["response_semantic_digest"] = canonical_digest(response)
+        _seal_response(path, receipt=receipt, response=response)
+        path.chmod(0o600)
+    with sources["receipt_chain"].open("ab") as handle:
+        for receipt in (fresh_workspace_receipt, fresh_event_receipt):
+            handle.write(canonical_json_bytes(receipt) + b"\n")
+
+    _, readiness = aox_conductor_execution.seal_conductor_retirement_readiness(
+        sources["preflight"]
+    )
+
+    assert readiness["final_workspace_response_name"] == fresh_workspace_path.name
+    assert readiness["final_event_response_name"] == fresh_event_path.name
 
 
 def test_public_response_name_is_prevalidated_before_host_action(

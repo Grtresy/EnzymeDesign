@@ -55,6 +55,8 @@ from openzyme_domain import ControlledOperationExecutionLifecycle
 from openzyme_domain import ControlledOperationExecutionPhase
 from openzyme_domain import ControlledOperationExecutionTerminalOutcome
 from openzyme_domain import ControlledOperationOwnerMode
+from openzyme_domain import ControlledOperationProviderDispatchReceipt
+from openzyme_domain import ControlledOperationProviderObservationReceipt
 from openzyme_domain import ControlledOperationResultHandle
 from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import ContinuationDeliveryState
@@ -446,6 +448,136 @@ def test_dispatch_request_is_private_immutable_and_execution_bound() -> None:
             UPDATE controlled_operation_dispatch_requests
             SET request_digest = 'sha256:rewritten'
             WHERE request_id = 'dispatch_request_001'
+            """
+        )
+
+
+def test_provider_receipts_are_private_immutable_and_exact_execution_bound() -> None:
+    connection, repositories, operation = _durable_repositories()
+    execution = replace(
+        _execution(
+            operation,
+            lifecycle_state=ControlledOperationExecutionLifecycle.DISPATCHING,
+            dispatch_generation=1,
+            state_version=3,
+        ),
+        selected_backend="provider_http",
+        route_policy_id="bio.hmmer_search.provider:v1",
+        adapter_policy_id="host_s12_durable_adapter:test:v1",
+        backend_handle_ref="provider_req_0123456789abcdef01234567",
+    )
+    repositories.controlled_operation_executions.add(execution)
+    dispatch_envelope = {
+        "schema_id": "ebi_hmmer_durable_dispatch_receipt@1",
+        "provider_job_id": "job-exact-001",
+    }
+    dispatch_bytes = json.dumps(
+        dispatch_envelope,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    dispatch = ControlledOperationProviderDispatchReceipt(
+        receipt_id="provider_dispatch_receipt_001",
+        execution_id=execution.execution_id,
+        operation_id=execution.operation_id,
+        session_id=execution.session_id,
+        dispatch_generation=execution.dispatch_generation,
+        provider_request_id=str(execution.backend_handle_ref),
+        provider_id="ebi_hmmer",
+        external_handle_ref="job-exact-001",
+        receipt_digest="sha256:" + hashlib.sha256(dispatch_bytes).hexdigest(),
+        receipt_envelope=dispatch_envelope,
+        receipt_size_bytes=len(dispatch_bytes),
+        created_at=NOW,
+    )
+
+    assert (
+        repositories.controlled_operation_provider_dispatch_receipts.save_once(
+            dispatch
+        )
+        == dispatch
+    )
+    assert (
+        repositories.controlled_operation_provider_dispatch_receipts.save_once(
+            dispatch
+        )
+        == dispatch
+    )
+    assert "to_dict" not in dir(dispatch)
+
+    observation_envelope = {
+        "schema_id": "ebi_hmmer_durable_poll_receipt@1",
+        "observation_index": 1,
+        "status": "RETRY",
+    }
+    observation_bytes = json.dumps(
+        observation_envelope,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    observation = ControlledOperationProviderObservationReceipt(
+        observation_id="provider_observation_receipt_001",
+        dispatch_receipt_id=dispatch.receipt_id,
+        execution_id=execution.execution_id,
+        operation_id=execution.operation_id,
+        session_id=execution.session_id,
+        dispatch_generation=execution.dispatch_generation,
+        observation_index=1,
+        provider_request_id=str(execution.backend_handle_ref),
+        provider_id="ebi_hmmer",
+        external_handle_ref="job-exact-001",
+        observation_digest=(
+            "sha256:" + hashlib.sha256(observation_bytes).hexdigest()
+        ),
+        observation_envelope=observation_envelope,
+        observation_size_bytes=len(observation_bytes),
+        created_at="2026-07-21T00:00:05+00:00",
+    )
+    assert (
+        repositories.controlled_operation_provider_observation_receipts.append(
+            observation
+        )
+        == observation
+    )
+    assert (
+        repositories.controlled_operation_provider_observation_receipts.list_by_execution_id(
+            execution.execution_id
+        )
+        == [observation]
+    )
+    assert "to_dict" not in dir(observation)
+
+    with pytest.raises(CanonicalRecordConflictError, match="contiguously"):
+        repositories.controlled_operation_provider_observation_receipts.append(
+            replace(
+                observation,
+                observation_id="provider_observation_receipt_003",
+                observation_index=3,
+            )
+        )
+    with pytest.raises(ImmutableIdentityConflictError, match="dispatch"):
+        repositories.controlled_operation_provider_observation_receipts.append(
+            replace(
+                observation,
+                observation_id="provider_observation_receipt_drift",
+                observation_index=2,
+                external_handle_ref="job-replacement",
+            )
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+        connection.execute(
+            """
+            UPDATE controlled_operation_provider_dispatch_receipts
+            SET external_handle_ref = 'job-rewritten'
+            WHERE receipt_id = 'provider_dispatch_receipt_001'
+            """
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+        connection.execute(
+            """
+            UPDATE controlled_operation_provider_observation_receipts
+            SET observation_digest = 'sha256:rewritten'
+            WHERE observation_id = 'provider_observation_receipt_001'
             """
         )
 

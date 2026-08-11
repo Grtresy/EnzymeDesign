@@ -11,6 +11,8 @@ from openzyme_domain import ControlledOperationExecutionLifecycle
 from openzyme_domain import ControlledOperationExecutionPhase
 from openzyme_domain import ControlledOperationExecutionTerminalOutcome
 from openzyme_domain import ControlledOperationOwnerMode
+from openzyme_domain import ControlledOperationProviderDispatchReceipt
+from openzyme_domain import ControlledOperationProviderObservationReceipt
 from openzyme_domain import ControlledOperationResultHandle
 from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import RetryEligibility
@@ -72,6 +74,7 @@ def is_transient_sqlite_contention(exc: BaseException) -> bool:
 
 
 CONTROLLED_OPERATION_DISPATCH_REQUEST_MAX_BYTES = 4 * 1024 * 1024
+CONTROLLED_OPERATION_PROVIDER_RECEIPT_MAX_BYTES = 4 * 1024 * 1024
 
 
 def _canonical_request_bytes(value: dict[str, object]) -> bytes:
@@ -703,6 +706,339 @@ class ControlledOperationDispatchRequestRepository:
             request_digest=row["request_digest"],
             request_envelope=_json_loads_object(row["request_envelope_json"]) or {},
             request_size_bytes=int(row["request_size_bytes"]),
+            created_at=row["created_at"],
+        )
+
+
+@dataclass(slots=True)
+class ControlledOperationProviderDispatchReceiptRepository:
+    """Immutable exact-handle proof for one accepted provider dispatch."""
+
+    connection: sqlite3.Connection
+
+    def save_once(
+        self,
+        record: ControlledOperationProviderDispatchReceipt,
+    ) -> ControlledOperationProviderDispatchReceipt:
+        encoded = _canonical_request_bytes(record.receipt_envelope)
+        if (
+            not encoded
+            or len(encoded) > CONTROLLED_OPERATION_PROVIDER_RECEIPT_MAX_BYTES
+        ):
+            raise ValueError("provider dispatch receipt exceeds its closed size bound")
+        if record.receipt_size_bytes != len(encoded):
+            raise ValueError("provider dispatch receipt size does not match its envelope")
+        if record.receipt_digest != _sha256_digest(encoded):
+            raise ValueError(
+                "provider dispatch receipt digest does not match its envelope"
+            )
+        if (
+            record.dispatch_generation <= 0
+            or not record.provider_request_id
+            or record.provider_request_id != record.provider_request_id.strip()
+            or not record.provider_id
+            or record.provider_id != record.provider_id.strip()
+            or not record.external_handle_ref
+            or record.external_handle_ref != record.external_handle_ref.strip()
+            or len(record.provider_id.encode("utf-8")) > 192
+            or len(record.external_handle_ref.encode("utf-8")) > 4_096
+        ):
+            raise ValueError("provider dispatch receipt identity is invalid")
+        execution = self.connection.execute(
+            """
+            SELECT operation_id, session_id, dispatch_generation,
+                   backend_handle_ref, selected_backend
+            FROM controlled_operation_execution_records
+            WHERE execution_id = ?
+            """,
+            (record.execution_id,),
+        ).fetchone()
+        if execution is None:
+            raise CanonicalRecordConflictError(
+                "provider dispatch receipt has no controlled operation execution owner"
+            )
+        if (
+            execution["operation_id"] != record.operation_id
+            or execution["session_id"] != record.session_id
+            or int(execution["dispatch_generation"]) != record.dispatch_generation
+            or execution["backend_handle_ref"] != record.provider_request_id
+            or execution["selected_backend"] != "provider_http"
+        ):
+            raise ImmutableIdentityConflictError(
+                "provider dispatch receipt identity does not match its execution owner"
+            )
+        try:
+            self.connection.execute(
+                """
+                INSERT INTO controlled_operation_provider_dispatch_receipts (
+                    receipt_id,
+                    execution_id,
+                    operation_id,
+                    session_id,
+                    schema_version,
+                    dispatch_generation,
+                    provider_request_id,
+                    provider_id,
+                    external_handle_ref,
+                    receipt_digest,
+                    receipt_envelope_json,
+                    receipt_size_bytes,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.receipt_id,
+                    record.execution_id,
+                    record.operation_id,
+                    record.session_id,
+                    record.SCHEMA_VERSION,
+                    record.dispatch_generation,
+                    record.provider_request_id,
+                    record.provider_id,
+                    record.external_handle_ref,
+                    record.receipt_digest,
+                    encoded.decode("utf-8"),
+                    record.receipt_size_bytes,
+                    record.created_at,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            existing = self.get_by_execution_id(record.execution_id)
+            if existing == record:
+                _commit(self.connection)
+                return existing
+            _commit(self.connection)
+            raise CanonicalRecordConflictError(
+                "controlled operation execution already has a different provider "
+                "dispatch receipt"
+            ) from exc
+        _commit(self.connection)
+        return record
+
+    def get(
+        self,
+        receipt_id: str,
+    ) -> ControlledOperationProviderDispatchReceipt | None:
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM controlled_operation_provider_dispatch_receipts
+            WHERE receipt_id = ?
+            """,
+            (receipt_id,),
+        ).fetchone()
+        return None if row is None else self._row_to_record(row)
+
+    def get_by_execution_id(
+        self,
+        execution_id: str,
+    ) -> ControlledOperationProviderDispatchReceipt | None:
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM controlled_operation_provider_dispatch_receipts
+            WHERE execution_id = ?
+            """,
+            (execution_id,),
+        ).fetchone()
+        return None if row is None else self._row_to_record(row)
+
+    @staticmethod
+    def _row_to_record(
+        row: sqlite3.Row,
+    ) -> ControlledOperationProviderDispatchReceipt:
+        return ControlledOperationProviderDispatchReceipt(
+            receipt_id=row["receipt_id"],
+            execution_id=row["execution_id"],
+            operation_id=row["operation_id"],
+            session_id=row["session_id"],
+            dispatch_generation=int(row["dispatch_generation"]),
+            provider_request_id=row["provider_request_id"],
+            provider_id=row["provider_id"],
+            external_handle_ref=row["external_handle_ref"],
+            receipt_digest=row["receipt_digest"],
+            receipt_envelope=_json_loads_object(row["receipt_envelope_json"]) or {},
+            receipt_size_bytes=int(row["receipt_size_bytes"]),
+            created_at=row["created_at"],
+        )
+
+
+@dataclass(slots=True)
+class ControlledOperationProviderObservationReceiptRepository:
+    """Append-only provider observations bound to one immutable dispatch."""
+
+    connection: sqlite3.Connection
+
+    def append(
+        self,
+        record: ControlledOperationProviderObservationReceipt,
+    ) -> ControlledOperationProviderObservationReceipt:
+        encoded = _canonical_request_bytes(record.observation_envelope)
+        if (
+            not encoded
+            or len(encoded) > CONTROLLED_OPERATION_PROVIDER_RECEIPT_MAX_BYTES
+        ):
+            raise ValueError(
+                "provider observation receipt exceeds its closed size bound"
+            )
+        if record.observation_size_bytes != len(encoded):
+            raise ValueError(
+                "provider observation receipt size does not match its envelope"
+            )
+        if record.observation_digest != _sha256_digest(encoded):
+            raise ValueError(
+                "provider observation receipt digest does not match its envelope"
+            )
+        if record.observation_index <= 0:
+            raise ValueError("provider observation receipt index must be positive")
+        dispatch = ControlledOperationProviderDispatchReceiptRepository(
+            self.connection
+        ).get(record.dispatch_receipt_id)
+        if dispatch is None:
+            raise CanonicalRecordConflictError(
+                "provider observation receipt has no immutable dispatch owner"
+            )
+        if (
+            dispatch.execution_id != record.execution_id
+            or dispatch.operation_id != record.operation_id
+            or dispatch.session_id != record.session_id
+            or dispatch.dispatch_generation != record.dispatch_generation
+            or dispatch.provider_request_id != record.provider_request_id
+            or dispatch.provider_id != record.provider_id
+            or dispatch.external_handle_ref != record.external_handle_ref
+        ):
+            raise ImmutableIdentityConflictError(
+                "provider observation receipt identity does not match its dispatch"
+            )
+        existing = self.get_by_execution_index(
+            record.execution_id,
+            record.observation_index,
+        )
+        if existing is not None:
+            if existing == record:
+                return existing
+            raise CanonicalRecordConflictError(
+                "provider observation index already has a different receipt"
+            )
+        row = self.connection.execute(
+            """
+            SELECT MAX(observation_index) AS latest_index
+            FROM controlled_operation_provider_observation_receipts
+            WHERE execution_id = ?
+            """,
+            (record.execution_id,),
+        ).fetchone()
+        latest_index = 0 if row is None or row["latest_index"] is None else int(
+            row["latest_index"]
+        )
+        if record.observation_index != latest_index + 1:
+            raise CanonicalRecordConflictError(
+                "provider observation receipts must be appended contiguously"
+            )
+        try:
+            self.connection.execute(
+                """
+                INSERT INTO controlled_operation_provider_observation_receipts (
+                    observation_id,
+                    dispatch_receipt_id,
+                    execution_id,
+                    operation_id,
+                    session_id,
+                    schema_version,
+                    dispatch_generation,
+                    observation_index,
+                    provider_request_id,
+                    provider_id,
+                    external_handle_ref,
+                    observation_digest,
+                    observation_envelope_json,
+                    observation_size_bytes,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.observation_id,
+                    record.dispatch_receipt_id,
+                    record.execution_id,
+                    record.operation_id,
+                    record.session_id,
+                    record.SCHEMA_VERSION,
+                    record.dispatch_generation,
+                    record.observation_index,
+                    record.provider_request_id,
+                    record.provider_id,
+                    record.external_handle_ref,
+                    record.observation_digest,
+                    encoded.decode("utf-8"),
+                    record.observation_size_bytes,
+                    record.created_at,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            existing = self.get_by_execution_index(
+                record.execution_id,
+                record.observation_index,
+            )
+            if existing == record:
+                _commit(self.connection)
+                return existing
+            _commit(self.connection)
+            raise CanonicalRecordConflictError(
+                "provider observation receipt conflicts with canonical history"
+            ) from exc
+        _commit(self.connection)
+        return record
+
+    def get_by_execution_index(
+        self,
+        execution_id: str,
+        observation_index: int,
+    ) -> ControlledOperationProviderObservationReceipt | None:
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM controlled_operation_provider_observation_receipts
+            WHERE execution_id = ? AND observation_index = ?
+            """,
+            (execution_id, observation_index),
+        ).fetchone()
+        return None if row is None else self._row_to_record(row)
+
+    def list_by_execution_id(
+        self,
+        execution_id: str,
+    ) -> list[ControlledOperationProviderObservationReceipt]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM controlled_operation_provider_observation_receipts
+            WHERE execution_id = ?
+            ORDER BY observation_index
+            """,
+            (execution_id,),
+        ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
+    @staticmethod
+    def _row_to_record(
+        row: sqlite3.Row,
+    ) -> ControlledOperationProviderObservationReceipt:
+        return ControlledOperationProviderObservationReceipt(
+            observation_id=row["observation_id"],
+            dispatch_receipt_id=row["dispatch_receipt_id"],
+            execution_id=row["execution_id"],
+            operation_id=row["operation_id"],
+            session_id=row["session_id"],
+            dispatch_generation=int(row["dispatch_generation"]),
+            observation_index=int(row["observation_index"]),
+            provider_request_id=row["provider_request_id"],
+            provider_id=row["provider_id"],
+            external_handle_ref=row["external_handle_ref"],
+            observation_digest=row["observation_digest"],
+            observation_envelope=(
+                _json_loads_object(row["observation_envelope_json"]) or {}
+            ),
+            observation_size_bytes=int(row["observation_size_bytes"]),
             created_at=row["created_at"],
         )
 

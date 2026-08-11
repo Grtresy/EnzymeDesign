@@ -54,8 +54,13 @@ preflight 必须在 slot claim/root 前从 pinned profile重跑 full actual Podm
 - 每个 formal public response 恰有一个 source-bound envelope；
 - 所有 bounded drain 已有 terminal status 并与 `runtime.command.finished` 一致；
 - 最终 workspace/events 晚于所有 public mutation；
+- 最终 workspace/events 也晚于每个 terminal status，且full event replay实际包含对应 finished event；
 - attempt cardinality 与 closure mode 明确；
 - receipt 和 response bytes 在封存后没有漂移。
+
+在command仍nonterminal时封存的workspace/events不能被稍后public status、private SQLite或transcript回填。
+若Host与原授权范围仍可用，只能先封存terminal status，再追加fresh workspace/full events；否则保持
+evidence blocker，不重复drain、不合成failure、不运行finalizer/verifier/reducer。
 
 readiness 缺失或失败时，supervised Host 拒绝操作员退休并保持运行。readiness 成功后，attempt finalizer 或 zero-attempt slot-failure finalizer只消费该 receipt 绑定的 exact sources，不再由 agent 手工拼接 response 路径。该机械门不判断业务成功、不自动 approval、drain、retry、rollover 或 closure。
 完整封存的脱敏 4xx/5xx 不会阻止 readiness，但不能进入 positive bundle；只有 canonical final state 与 source-bound typed cause 同时满足零-attempt failure 合同时，才能形成正式 NO-GO。

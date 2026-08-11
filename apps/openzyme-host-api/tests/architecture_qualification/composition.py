@@ -16,12 +16,16 @@ from openzyme_domain import ArtifactKind
 from openzyme_domain import SessionArtifactRecord
 from openzyme_host_api.app import HostApiDependencies
 from openzyme_host_api.app import create_app
+from openzyme_host_api.architecture_qualification import canonical_json_bytes
 from openzyme_host_api.background_runtime import RuntimeSignalNotifier
 from openzyme_host_api.background_runtime import V3DurableWorkSupervisor
 from openzyme_host_api.durable_routes import HostProviderControlledOperationRouteAdapter
 from openzyme_host_api.sandbox_host_gateway import ExecutionEngineSandboxHostGateway
 from openzyme_engines.execution import BioArtifactDraft
+from openzyme_engines.execution import BioProviderHttpResponse
 from openzyme_engines.execution import BioSdkResult
+from openzyme_engines.execution import HmmerProviderDispatch
+from openzyme_engines.execution import HmmerProviderPoll
 from openzyme_engines import PodmanSandboxPreflight
 from openzyme_host_api.aox_cutover_evidence import canonical_digest
 from openzyme_host_api.aox_host_supervision import (
@@ -73,6 +77,147 @@ class DeniedBioAdapter:
     port: ControlledExternalPort
     api_version: str = QUALIFICATION_FIXTURE_MARKER
     qualification_fixture_non_cutover: bool = True
+
+    @staticmethod
+    def _hmm_artifact_digest(hmm_artifact: SessionArtifactRecord) -> str:
+        metadata = dict(hmm_artifact.metadata or {})
+        digest = str(
+            metadata.get("sealed_digest")
+            or metadata.get("content_digest")
+            or metadata.get("tree_digest")
+            or metadata.get("source_tree_digest")
+            or ""
+        )
+        if not digest.startswith("sha256:") or len(digest) != 71:
+            raise ValueError("controlled HMM artifact digest is invalid")
+        return digest
+
+    def dispatch_hmmer_search(
+        self,
+        *,
+        hmm_artifact: SessionArtifactRecord,
+        database: str,
+        params: dict[str, Any],
+    ) -> HmmerProviderDispatch:
+        raw = self.port.invoke(
+            "hmmer_dispatch",
+            {
+                "database": database,
+                "hmm_artifact_id": hmm_artifact.artifact_id,
+                "query_hmm_digest": self._hmm_artifact_digest(hmm_artifact),
+                "params": params,
+            },
+        )
+        if set(raw) != {
+            "job_id",
+            "max_hits",
+            "page_size",
+            "poll_interval_seconds",
+            "poll_timeout_seconds",
+        }:
+            raise ValueError("controlled HMM dispatch response is not closed")
+        job_id = str(raw["job_id"])
+        page_size = int(raw["page_size"])
+        max_hits = int(raw["max_hits"])
+        poll_interval_seconds = float(raw["poll_interval_seconds"])
+        poll_timeout_seconds = float(raw["poll_timeout_seconds"])
+        if (
+            not job_id
+            or page_size <= 0
+            or max_hits <= 0
+            or poll_interval_seconds <= 0
+            or poll_timeout_seconds <= 0
+        ):
+            raise ValueError("controlled HMM dispatch identity is invalid")
+        body = f'{{"id":"{job_id}"}}'
+        return HmmerProviderDispatch(
+            job_id=job_id,
+            submit_response=BioProviderHttpResponse(
+                status_code=200,
+                headers={"content-type": "application/json"},
+                body=body,
+                body_bytes=body.encode("utf-8"),
+                url="https://qualification.invalid/hmmer/search/hmmsearch",
+            ),
+            normalized_database=database,
+            page_size=page_size,
+            max_hits=max_hits,
+            query_hmm_digest=self._hmm_artifact_digest(hmm_artifact),
+            request_payload_digest=canonical_digest(
+                {
+                    "database": database,
+                    "params": params,
+                    "query_hmm_digest": self._hmm_artifact_digest(hmm_artifact),
+                }
+            ),
+            poll_interval_seconds=poll_interval_seconds,
+            poll_timeout_seconds=poll_timeout_seconds,
+        )
+
+    def poll_hmmer_search(
+        self,
+        *,
+        job_id: str,
+        page_size: int,
+    ) -> HmmerProviderPoll:
+        raw = self.port.invoke(
+            "hmmer_poll",
+            {"job_id": job_id, "page_size": page_size},
+        )
+        if set(raw) != {"nreported", "status"}:
+            raise ValueError("controlled HMM poll response is not closed")
+        status = str(raw["status"]).upper()
+        nreported = int(raw["nreported"])
+        if nreported < 0 or not status:
+            raise ValueError("controlled HMM poll identity is invalid")
+        payload: dict[str, Any] = {
+            "status": status,
+            "result": (
+                {"stats": {"nreported": nreported}}
+                if status == "SUCCESS"
+                else None
+            ),
+        }
+        body_bytes = canonical_json_bytes(payload)
+        return HmmerProviderPoll(
+            job_id=job_id,
+            page_size=page_size,
+            status=status,
+            payload=payload,
+            response=BioProviderHttpResponse(
+                status_code=200,
+                headers={"content-type": "application/json"},
+                body=body_bytes.decode("utf-8"),
+                body_bytes=body_bytes,
+                url=f"https://qualification.invalid/hmmer/result/{job_id}",
+            ),
+        )
+
+    def materialize_hmmer_search(
+        self,
+        *,
+        hmm_artifact: SessionArtifactRecord,
+        database: str,
+        params: dict[str, Any],
+        retrieved_at: str,
+        dispatch: HmmerProviderDispatch,
+        polls: tuple[HmmerProviderPoll, ...],
+    ) -> BioSdkResult:
+        if (
+            not polls
+            or polls[-1].status != "SUCCESS"
+            or any(poll.job_id != dispatch.job_id for poll in polls)
+        ):
+            raise ValueError("controlled HMM materialization identity is invalid")
+        invoke = self.__getattr__("hmmer_materialize")
+        return invoke(
+            hmm_artifact=hmm_artifact,
+            database=database,
+            params=params,
+            retrieved_at=retrieved_at,
+            provider_job_id=dispatch.job_id,
+            poll_statuses=[poll.status for poll in polls],
+        )
 
     def __getattr__(self, name: str) -> Any:
         def invoke(**kwargs: object) -> BioSdkResult:

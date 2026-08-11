@@ -563,6 +563,99 @@ def test_ebi_hmmer_retry_status_keeps_polling_the_same_job(
     assert result.summary["hit_count"] == 1
 
 
+def test_ebi_hmmer_durable_phases_submit_once_and_reuse_exact_job(
+    tmp_path: Path,
+) -> None:
+    terminal_body = _hmmer_result_body(
+        _hmmer_hits(0, 1),
+        page_count=1,
+        nreported=1,
+    )
+    retry_body = '{"status":"RETRY","result":null,"page_count":null}'
+    responses = iter(
+        [
+            FakeHttpResponse(body='{"id":"job-durable"}'),
+            FakeHttpResponse(body=retry_body),
+            FakeHttpResponse(body=terminal_body),
+            FakeHttpResponse(body=terminal_body),
+        ]
+    )
+    requests: list[Any] = []
+    sleeps: list[float] = []
+
+    def urlopen(request: Any, timeout: float) -> FakeHttpResponse:
+        del timeout
+        requests.append(request)
+        return next(responses)
+
+    dispatch_adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=urlopen,
+        sleep=sleeps.append,
+    )
+    resume_adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(
+            hmmer_poll_interval_seconds=1.0,
+            hmmer_poll_timeout_seconds=2.0,
+            hmmer_page_size=1,
+            hmmer_max_hits=1,
+        ),
+        urlopen=urlopen,
+        sleep=sleeps.append,
+    )
+    hmm_artifact = _hmm_artifact(tmp_path)
+
+    dispatch = dispatch_adapter.dispatch_hmmer_search(
+        hmm_artifact=hmm_artifact,
+        database="refprot",
+        params={},
+    )
+    first_poll = resume_adapter.poll_hmmer_search(
+        job_id=dispatch.job_id,
+        page_size=dispatch.page_size,
+    )
+    second_poll = resume_adapter.poll_hmmer_search(
+        job_id=dispatch.job_id,
+        page_size=dispatch.page_size,
+    )
+    result = resume_adapter.materialize_hmmer_search(
+        hmm_artifact=hmm_artifact,
+        database="refprot",
+        params={},
+        retrieved_at="2026-08-11T00:00:00+00:00",
+        dispatch=dispatch,
+        polls=(first_poll, second_poll),
+    )
+
+    assert dispatch.job_id == "job-durable"
+    assert dispatch.page_size == 1_000
+    assert dispatch.max_hits == 100_000
+    assert dispatch.poll_interval_seconds == 5.0
+    assert dispatch.poll_timeout_seconds == 3_300.0
+    assert first_poll.status == "RETRY"
+    assert second_poll.status == "SUCCESS"
+    assert sum(request.data is not None for request in requests) == 1
+    assert requests[0].full_url.endswith("/search/hmmsearch")
+    assert all("/result/job-durable?" in request.full_url for request in requests[1:])
+    assert requests[1].full_url == requests[2].full_url == requests[3].full_url
+    assert sleeps == []
+    assert result.summary["provider_job_id"] == "job-durable"
+    raw_payload = _assert_offline_recomputable_raw_responses(
+        result,
+        expected_bodies=(
+            '{"id":"job-durable"}',
+            retry_body,
+            terminal_body,
+        ),
+    )
+    assert [item["phase"] for item in raw_payload["responses"]] == [
+        "submit",
+        "poll:1",
+        "poll:2",
+        "result:1",
+    ]
+
+
 def test_ebi_hmmer_failure_status_remains_terminal_and_fail_closed(
     tmp_path: Path,
 ) -> None:

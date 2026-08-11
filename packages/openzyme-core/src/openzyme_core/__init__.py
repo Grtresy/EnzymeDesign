@@ -221,6 +221,12 @@ from .reliability_repositories import CanonicalRecordConflictError
 from .reliability_repositories import ControlledOperationDispatchRequestRepository
 from .reliability_repositories import ControlledOperationExecutionEventRepository
 from .reliability_repositories import ControlledOperationExecutionRepository
+from .reliability_repositories import (
+    ControlledOperationProviderDispatchReceiptRepository,
+)
+from .reliability_repositories import (
+    ControlledOperationProviderObservationReceiptRepository,
+)
 from .reliability_repositories import ControlledOperationResultHandleRepository
 from .reliability_repositories import ControlledOperationResultArtifactRepository
 from .reliability_repositories import ImmutableIdentityConflictError
@@ -376,6 +382,8 @@ __all__ = [
     "ControlledOperationDispatchRequestRepository",
     "ControlledOperationExecutionEventRepository",
     "ControlledOperationExecutionRepository",
+    "ControlledOperationProviderDispatchReceiptRepository",
+    "ControlledOperationProviderObservationReceiptRepository",
     "ControlledOperationResultHandleRepository",
     "ControlledOperationResultArtifactRepository",
     "ControlledOperationResultArtifactRef",
