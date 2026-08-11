@@ -1,6 +1,6 @@
 interface:
   display_name: "OpenZyme R 系列修复"
-  short_description: "诊断冻结事故并在一次批准后完成有界修复"
-  default_prompt: "使用 $openzyme-repair-r-series 只读诊断操作员指定的最新冻结事故，提出一个有界修复方案后停在唯一 Phase 2 授权门；收到一次明确批准后完成修复、适用的 non-live 验证和本地提交，不启动下一 rNN 或 live。"
+  short_description: "诊断冻结事故、审查事故耦合技术债并在一次批准后完成有界修复"
+  default_prompt: "使用 $openzyme-repair-r-series 只读诊断操作员指定的最新冻结事故，完成事故耦合的有界技术债审查并提出修复方案后停在唯一 Phase 2 授权门；收到明确批准后完成修复、适用的 non-live 验证和本地提交，不启动下一 rNN 或 live。"
 policy:
   allow_implicit_invocation: true

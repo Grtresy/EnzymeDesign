@@ -1,11 +1,11 @@
 ---
 name: openzyme-repair-r-series
-description: 在 EnzymeDesign 仓库中诊断并在一次明确批准后实施 OpenZyme AOX/HMM R 系列修复。用户要求检查下一轮 R 系列问题、分析操作员指定的 frozen incident（包括 rNN=none preparation blocker、formal slot failure、attempt/campaign decision、evidence blocker 或平台阻塞）、判断提交责任、提出 bounded deletion-first 方案、实施 Phase 2、运行 non-live 验证或创建本地 commit 时使用。不得用它启动下一 rNN、fresh admission、live、MICU、provider、HPC 或 Chrome。
+description: 在 EnzymeDesign 仓库中诊断并在一次明确批准后实施 OpenZyme AOX/HMM R 系列修复。用户要求检查下一轮 R 系列问题、分析操作员指定的 frozen incident（包括 rNN=none preparation blocker、formal slot failure、attempt/campaign decision、evidence blocker 或平台阻塞）、判断提交责任、完成事故耦合的有界技术债审查、提出 bounded deletion-first 方案、实施 Phase 2、运行 non-live 验证或创建本地 commit 时使用。不得用它启动下一 rNN、fresh admission、live、MICU、provider、HPC 或 Chrome。
 ---
 
 # OpenZyme R 系列问题诊断与修复
 
-把本 skill 当作当前合同的路由器，而不是产品合同副本。消除失败背后的系统性原因，同时保留 agent 的策略自由和真实 authority、approval、fencing、unknown/external effect、provenance、quiescence 与 isolation 边界。
+把本 skill 当作当前合同的路由器，而不是产品合同副本。消除失败背后的系统性原因，在事故真实调用路径内审查技术债，同时保留 agent 的策略自由和真实 authority、approval、fencing、unknown/external effect、provenance、quiescence 与 isolation 边界。
 
 ## 确定阶段和权限
 
@@ -58,6 +58,26 @@ description: 在 EnzymeDesign 仓库中诊断并在一次明确批准后实施 O
 
 Canonical cause 只能来自对应 frozen contract 明确接纳的封存字段。private SQLite、内部异常、源码默认值或当前实现可以帮助定位机制，但不能改写历史 receipt、补出未公开 details 或升级为运行事实。从最早有证据的类型化原因构造因果链；outer wrapper、drain exhaustion、missing-control、digest 和 fatal label只能追加，不能覆盖 inner cause。
 
+## 审查事故耦合技术债
+
+技术债审查是 Phase 1 的必做项，但范围只覆盖本次事故的真实生产调用路径、canonical owner、拟修改文件及其直接组合、测试和文档边界。不得把它扩张为与事故无关的全仓风险搜索。
+
+按本次边界交叉核对：
+
+- `docs/v3/harness-complexity-audit.md` 中仍未关闭的相关条目与实施触发；
+- `docs/v3/compatibility-sunset.md` 中相关 surface 的 caller evidence 和退役状态；
+- active OpenSpec deferred item、相关架构 proposal、源码显式 debt marker（当前包括 `AOX-DEBT-*`）；
+- 真实 production composition 与 fixture、静态检查、qualification 之间会掩盖同一机制的偏差。
+
+技术债必须有现行记录、真实调用路径或可复现证据支持，不能把一般性的“还可以写得更好”或未知 latent risk 当成债务。将每项发现归入且只归入一类：
+
+- **本轮必须处理**：不处理会使根因闭合、安全边界或跨来源语义仍然失真；
+- **触发式必须处理**：本次拟修改已命中文档或源码记录的偿债触发条件；将其纳入 slice，或缩回触发该债务的修改；两者都不可行时交给用户决定；
+- **允许延期**：不影响本次闭合；记录 canonical owner、风险、再次触发条件和承载它的后续工件，本轮不自动实施；
+- **必要约束**：有证据证明该复杂度仍保护真实 authority、effect、兼容、隔离或并发边界，不误报为技术债。
+
+不得静默延期已命中的显式触发器，也不得借技术债审查修复未获批准的相邻问题。
+
 ## 形成 bounded repair slice
 
 比较 failure commit、其前后提交和当前 HEAD，按真实调用路径审计同一机制。将发现分成：
@@ -66,7 +86,7 @@ Canonical cause 只能来自对应 frozen contract 明确接纳的封存字段�
 - 同一 owner/机制内会使本次修复失真的相邻风险；
 - 不影响本次闭合的后续候选。
 
-不得把 Phase 1 扩张为自动 latent-risk audit。区分 repository defect、contract drift、environment/platform blocker、模型策略结果和 evidence gap；只有证据证明产品或合同缺陷时才提出代码修复。
+不得把 Phase 1 扩张为自动 latent-risk audit。区分 repository defect、contract drift、技术债、environment/platform blocker、模型策略结果和 evidence gap；只有证据证明产品或合同缺陷，或现行技术债触发条件已经命中时，才提出代码修复。
 
 Deletion-first 是删除 shadow truth、重复 owner、dead compatibility 和策略拦截时的优先原则，不是每轮必须净删除的验收指标。最小新增 public capability、类型化 evidence、迁移兼容或跨来源回归确有必要时允许新增，并说明为何不能通过删除或复用既有 owner 完成。
 
@@ -74,6 +94,8 @@ Deletion-first 是删除 shadow truth、重复 owner、dead compatibility 和策
 
 - 事故分类、root cause、完整失败链和最近提交责任；
 - 为什么现有静态检查、fixture、qualification 或组合测试没有发现；
+- 事故耦合技术债清单，逐项给出来源或 marker、owner/调用路径、分类和理由；
+- 本轮预计消除、保留、延期和新增的技术债；延期项必须给出风险、再次触发条件和后续工件；
 - 本次 slice、删除/合并/新增/保留边界及明确非目标；
 - 预计生产代码净变化，允许为负、零或正并说明理由；
 - 实施文件、风险、回归测试、OpenSpec、主架构与 `docs/v3/` 同步范围；
@@ -84,18 +106,20 @@ Deletion-first 是删除 shadow truth、重复 owner、dead compatibility 和策
 
 ## 实施获批修复
 
-1. 重新确认 HEAD/worktree、事故 identity 和获批 slice；发生实质 drift 时停止并重新提案。
-2. 删除错误抽象的完整生产调用链；不要用新状态机、phase、signal reason、fallback、observer 或策略 hook 替代。需要新增时复用 canonical owner，并保持职责单一。
-3. 涉及 Harness、runtime、protocol、supervision、public contract 或 V3 架构时，更新 active OpenSpec、主架构文档和相关稳定文档；同步修正 `AGENTS.md` 等仓库级现行指导中的冲突语义。
-4. 保持 agent 策略自由。测试真实身份、权限、状态变换、因果保真和 effect 边界，不固定 action order、exact trace 或科学策略。
-5. 按本次风险选择 production composition 和负向控制，不机械复制固定测试清单；保留历史 SQLite/schema/evidence 的只读兼容与 current non-adoption gate。
-6. 为本次漂移建立跨来源语义闭合：从实现导出的 current owner/schema/capability 约束 active OpenSpec、稳定文档和仓库指导；`openspec validate --strict` 只证明单个 change 合法，不能替代该检查。
-7. 运行 focused tests、Ruff、适用的 strict OpenSpec、non-live eval 和 exact-worktree mainline。不得启动 fresh admission、真实 rNN、任何 live marker 或外部系统。
-8. 审查完整 diff、陈旧符号、unrelated changes 和生产代码净变化。仅在获批时创建清晰的中文 Conventional Commit，并确认工作树状态。
+1. 重新确认 HEAD/worktree、事故 identity、获批 slice、技术债分类和显式触发器；发生实质 drift 时停止并重新提案。
+2. 只实施获批的“本轮必须处理”和“触发式必须处理”项；不得顺手偿还“允许延期”项。
+3. 删除错误抽象的完整生产调用链；不要用新状态机、phase、signal reason、fallback、observer 或策略 hook 替代。需要新增时复用 canonical owner，并保持职责单一。
+4. 涉及 Harness、runtime、protocol、supervision、public contract 或 V3 架构时，更新 active OpenSpec、主架构文档和相关稳定文档；同步修正 `AGENTS.md` 等仓库级现行指导中的冲突语义。
+5. 同步更新适用的技术债台账和源码 marker。只有完整触发条件、生产路径和回归证据均闭合时才能标记已偿还；不得静默删除未完成项。兼容 surface 的删除必须满足 caller evidence 和 sunset gate。
+6. 保持 agent 策略自由。测试真实身份、权限、状态变换、因果保真和 effect 边界，不固定 action order、exact trace 或科学策略。
+7. 按本次风险选择 production composition 和负向控制，不机械复制固定测试清单；保留历史 SQLite/schema/evidence 的只读兼容与 current non-adoption gate。
+8. 为本次漂移建立跨来源语义闭合：从实现导出的 current owner/schema/capability 约束 active OpenSpec、稳定文档和仓库指导；`openspec validate --strict` 只证明单个 change 合法，不能替代该检查。
+9. 运行 focused tests、Ruff、适用的 strict OpenSpec、non-live eval 和 exact-worktree mainline。不得启动 fresh admission、真实 rNN、任何 live marker 或外部系统。
+10. 审查完整 diff、陈旧符号、unrelated changes、生产代码净变化和技术债净变化。仅在获批时创建清晰的中文 Conventional Commit，并确认工作树状态。
 
 ## 停止并报告
 
-报告实际修改、删除/合并/新增/保留边界、生产代码净变化、验证结果、未证明事项和 commit SHA，然后停止：
+报告实际修改、删除/合并/新增/保留边界、生产代码净变化、技术债的消除/保留/延期/新增情况、验证结果、未证明事项和 commit SHA，然后停止：
 
 - 不自动启动 validation 或下一 rNN；
 - 不自动开始下一轮 latent-risk audit；

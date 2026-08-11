@@ -19,7 +19,7 @@ goal 只回答“本轮要达到什么结果、允许哪些阶段和外部影响
 
 ```text
 /goal 在当前 EnzymeDesign checkout 使用 $openzyme-repair-r-series 处理操作员指定的最新 frozen incident。
-先只读诊断并提出一个 bounded repair slice，然后停在唯一 Phase 2 授权门。
+先只读诊断，完成事故耦合的有界技术债审查并提出一个 bounded repair slice，然后停在唯一 Phase 2 授权门。
 收到一次明确批准后，在该 slice 内完成代码、OpenSpec 与文档同步，运行全部适用 non-live 验证并创建本地提交。
 不得启动 fresh admission、下一 rNN、live、MICU、provider、HPC 或 Chrome。
 ```
@@ -27,6 +27,8 @@ goal 只回答“本轮要达到什么结果、允许哪些阶段和外部影响
 修复 goal 只指定事故、两阶段权限和完成条件。skill 必须按事故实际边界区分 `rNN=none` preparation blocker、零 attempt formal slot failure、真实 attempt/campaign、evidence blocker 与 operator/platform blocker；不存在的后续 identity 不能被误报为缺失 evidence。Phase 1 报告完整 bounded slice 后只进入一次授权门；同一批准内的实现选择、测试修复和代码整理不再逐项申请。
 
 Deletion-first 只优先删除 shadow truth、重复 owner、dead compatibility 与策略拦截，不要求每个正确修复都产生生产代码净删除。必要的最小 public capability、类型化 evidence、历史兼容或跨来源回归可以新增，但必须说明 canonical owner 与不可替代性。
+
+技术债审查只覆盖事故真实调用路径、canonical owner、拟修改文件及其直接组合边界，不扩张为无关的全仓 latent-risk audit。命中文档或源码显式偿债触发器的项目必须纳入本次 slice，或缩回触发它的修改；允许延期的项目必须记录 owner、风险、再次触发条件与后续工件，不得静默遗忘。
 
 ## 验证的当前事实来源
 

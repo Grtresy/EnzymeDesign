@@ -120,6 +120,30 @@ def test_repository_guidance_uses_current_task_business_exit_owner() -> None:
     assert "只编辑普通字段和非终态" in guidance_lines[0]
 
 
+def test_r_series_repair_skill_requires_bounded_technical_debt_review() -> None:
+    skill = (
+        REPO_ROOT / ".agents/skills/openzyme-repair-r-series/SKILL.md"
+    ).read_text(encoding="utf-8")
+    goal = (REPO_ROOT / "docs/v3/aox-r-series-codex-goal.md").read_text(
+        encoding="utf-8"
+    )
+
+    for required in (
+        "事故耦合技术债",
+        "`docs/v3/harness-complexity-audit.md`",
+        "`docs/v3/compatibility-sunset.md`",
+        "`AOX-DEBT-*`",
+        "本轮必须处理",
+        "触发式必须处理",
+        "允许延期",
+        "必要约束",
+    ):
+        assert required in skill
+    assert "不得把它扩张为与事故无关的全仓风险搜索" in skill
+    assert "不得静默延期已命中的显式触发器" in skill
+    assert "事故耦合的有界技术债审查" in goal
+
+
 def test_owner_registry_rejects_duplicate_owner_identity_and_dead_symbol() -> None:
     registry = load_harness_owner_constraint_registry(REPO_ROOT)
     payload = deepcopy(dict(registry.payload))
