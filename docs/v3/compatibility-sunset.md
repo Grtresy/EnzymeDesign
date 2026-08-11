@@ -13,7 +13,7 @@ general residual 和前端 gate 之前依次执行 audit Ruff 与该 semantic sc
 surface 的 production 回流会保持 fail-fast，直接阻断后续主线验证。
 
 当前实现先构造一个 immutable `RepositoryIndex`：候选 source 每次 invocation 至多读取/
-decode 一次，Python/TOML 至多 parse 一次；symbol、method、DTO、lifecycle、route、
+decode 一次，Python/TOML 至多 parse 一次；symbol、method、DTO、CLI argv option、lifecycle、route、
 workspace、entrypoint、docs 与 non-Python literal scanner 共享同一 inventory。文档和
 非-Python exact literals 使用一次 multi-literal pass，不按 seam 重走目录。它不使用
 mtime、cross-run cache 或先前 report，scan/read/parse error 仍按原语义确定性失败。
@@ -40,6 +40,7 @@ violation 和 exit outcome。
 | `DesignTool` / `DesignToolContext` | RETIRE-BLOCKED | 仓库 production 只剩公开 re-export，但外部 import 状态 unknown |
 | `ToolSpec.to_openai_tool` | RETIRE-BLOCKED | provider compatibility catalog 仍有 production call |
 | `execution.pipeline.start` | DEPRECATE | sandbox-first 是稳定 authoring path，但 engine runtime、migration/eval/projection 仍持有显式兼容语义 |
+| AOX `--attempt-authority-consumption` | DEPRECATE | consume/preflight 正常路径已从 canonical plan owner 推导 exact sibling；专用 argv scanner 排除 parser owner definition，当前仓库 production caller 为零；参数只保留为相等性断言，外部 caller 状态 unknown |
 | `ExecutionOutcome.remote_run_dir` | DEPRECATE | DTO 构造仍写入；不得把该字段重新变成 agent/runner 授权边界 |
 | `ExecutionOutcome.job_id` | RETIRE-BLOCKED | 仓库无 production read，但公开 DTO 的外部 caller 状态 unknown |
 | raw runner `job_id` / `remote_run_dir` / `runspec` lifecycle call shape | RETIRED | active production caller 为零；opaque server handle 是唯一产品生命周期授权 |

@@ -1898,6 +1898,32 @@ canonical commit 前丢失。EBI 当前没有由本地 request digest 驱动的 
 append-only observation history 由 frozen deadline/interval 的理论上限约束；长期 retention/compaction 应由
 通用 canonical history policy 统一治理，不能在 HMMER 路径私自删除。
 
+### 2026-08-11 r80 authority-consumption target owner correction
+
+r80 在 clean commit `e13553e993b0e5f5db8b838a78d56d2af2690681` 上完成 qualification、pin、exact-three
+formal plan 发布与人工批准，但唯一 `consume-authority` 命令把
+`attempt-authority.json` 的目标写成 `attempt-authority.consumed.json`。canonical authority owner
+要求完整 basename sibling `attempt-authority.json.consumed.json`，因此以
+`attempt_authority_consumption_target_mismatch` 在 receipt 发布前 fail closed。冻结 plan 未消费；没有
+slot claim、root、Host、session、attempt、MICU、provider、runner、HPC 或 Chrome effect。r80 是
+preparation blocker，不是 formal slot failure、preflight failure、canonical NO-GO 或 evidence gap；不得
+修改、回填或重试。
+
+根因不是 owner helper 或 no-replace writer，而是 public CLI 把一个没有调用者自由度的 deterministic
+target 作为必填输入，并在 CLI 与 owner 内重复表达相同规则。前向修复保留
+`attempt_authority_consumption_path(plan_path)` 为唯一组合 owner：`consume-authority` 与 `preflight`
+正常路径从 canonical resolved plan 推导 `<完整plan basename>.consumed.json`。旧
+`--attempt-authority-consumption` 只保留为 exact compatibility assertion；它不能重绑定、搜索、去后缀或
+fallback，错误值仍在 receipt/root/effect 前 typed fail closed。storage 的 same-directory、exclusive
+no-follow、fsync、`0400`、one-use/tamper 语义与所有 schema 均不变。
+
+public parser-to-handler 回归覆盖默认名、无后缀、多点非默认名、正确/错误兼容断言、预存文件、symlink、
+tampered pin 与 preflight no-root；architecture qualification 直接走无 target 参数的真实 owner-derived
+preflight seam，并把该规范加入 active contract mutation negative control。历史外部 caller 未盘点，故兼容
+参数本轮不 breaking-remove。旧 8.3a diagnostic live task 因 post-r69 current diagnostic authority surface
+已经退役而明确 superseded，未执行也未产生 effect；8.3 与 8.4-8.8 仍未完成。本修复不启动 fresh
+admission、下一 rNN、live、MICU、provider、HPC 或 Chrome。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

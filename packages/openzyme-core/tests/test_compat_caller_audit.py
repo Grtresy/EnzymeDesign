@@ -15,10 +15,10 @@ import pytest
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 AUDIT_SCRIPT = REPOSITORY_ROOT / "scripts" / "audit-v3-compat-callers.py"
 LEGACY_FIXTURE_REPORT_SHA256 = (
-    "9ffb7b619be885645e99e3af54c8057f96ac88f06b691a6a982c99cac185232a"
+    "13ff4fce26a97a4d135b42da7c5b97b0f4e92b8a67349a06f71c61107f5c5574"
 )
 LEGACY_RETIRED_FIXTURE_REPORT_SHA256 = (
-    "63ae093d116583c8d83a0c6d84ddf76b46e8e19058cc76dbb5df8aee6a7ebc08"
+    "2cc54105973bba48868b6127d9ef2208873af7f5cfeb891022b282847b31cddb"
 )
 
 
@@ -152,6 +152,17 @@ def test_current_compatibility_decisions_are_evidence_backed() -> None:
         "production_caller_count"
     ] > 0
     assert records["openzyme_engines:execution.pipeline.start"]["decision"] == "DEPRECATE"
+    authority_consumption_option = records[
+        "openzyme-aox-cutover:--attempt-authority-consumption"
+    ]
+    assert authority_consumption_option["decision"] == "DEPRECATE"
+    assert authority_consumption_option["external_status"] == "unknown"
+    assert authority_consumption_option["production_caller_count"] == 0
+    assert all(
+        caller["path"]
+        != "apps/openzyme-host-api/src/openzyme_host_api/aox_cutover_cli.py"
+        for caller in authority_consumption_option["callers"]
+    )
     assert records["openzyme_runtime.RepoBackedHpcCatalogProvider"]["decision"] == (
         "RETIRE-BLOCKED"
     )
@@ -233,6 +244,53 @@ def test_repository_index_walks_reads_and_parses_each_candidate_once(
         index.root = tmp_path / "other"
 
 
+def test_cli_option_scanner_excludes_definition_and_reports_real_argv_caller(
+    tmp_path: Path,
+) -> None:
+    audit = _load_audit_module()
+    _materialize_complete_fixture(tmp_path, audit)
+    definition_path = (
+        tmp_path
+        / "apps/openzyme-host-api/src/openzyme_host_api/aox_cutover_cli.py"
+    )
+    _write_text(
+        definition_path,
+        "def configure(parser):\n"
+        "    parser.add_argument('--attempt-authority-consumption')\n",
+    )
+    caller_path = tmp_path / "apps/example/src/example/aox_operator.py"
+    _write_text(
+        caller_path,
+        "ARGV = [\n"
+        "    'consume-authority',\n"
+        "    '--attempt-authority-consumption',\n"
+        "    '/tmp/receipt.json',\n"
+        "]\n",
+    )
+
+    report = audit.build_report(tmp_path)
+
+    records = {record["symbol"]: record for record in report["seams"]}
+    option = records["openzyme-aox-cutover:--attempt-authority-consumption"]
+    assert option["external_status"] == "unknown"
+    assert option["production_caller_count"] == 1
+    assert [
+        (caller["path"], caller["caller_kind"])
+        for caller in option["callers"]
+        if caller["classification"] == "production"
+    ] == [
+        (
+            "apps/example/src/example/aox_operator.py",
+            "cli_argv_option",
+        )
+    ]
+    assert all(
+        caller["path"]
+        != "apps/openzyme-host-api/src/openzyme_host_api/aox_cutover_cli.py"
+        for caller in option["callers"]
+    )
+
+
 def test_fixture_report_matches_legacy_canonical_bytes_and_is_repeatable(
     tmp_path: Path,
 ) -> None:
@@ -307,7 +365,7 @@ def test_retired_fixture_matches_legacy_canonical_bytes(tmp_path: Path) -> None:
         LEGACY_RETIRED_FIXTURE_REPORT_SHA256
     )
     assert report["summary"] == {
-        "seam_count": 21,
+        "seam_count": 22,
         "violation_count": 3,
         "scan_error_count": 0,
     }

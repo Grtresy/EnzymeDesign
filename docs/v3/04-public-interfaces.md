@@ -571,9 +571,13 @@ source-snapshot implementation substitute 都返回 no-effect typed precondition
 不得产生 attempt closure、execution completed 或 report handoff。
 
 AOX `authorize` 只发布 reviewable one-use exact-three formal plan，不创建 root；
-`consume-authority` 只验证并以 atomic no-replace sibling消费 exact formal plan，生成
+`consume-authority` 的正常路径从 canonical resolved plan 的完整 basename 推导同目录
+`<plan-name>.consumed.json`，再验证并以 atomic no-replace sibling 消费 exact formal plan，生成
 source-bound receipt后停止，不创建Host/session/root、不读取credential，也不触发
-MICU/provider/HPC/Chrome。`authorize-diagnostic`、`consume-diagnostic-authority`、`run-live`
+MICU/provider/HPC/Chrome。保留的 `--attempt-authority-consumption` 只作 exact compatibility
+assertion；它不能重绑定、搜索、去后缀或 fallback，错误断言在 receipt/root/effect 前 typed fail
+closed。`preflight` 使用相同 owner-derived composition。`authorize-diagnostic`、
+`consume-diagnostic-authority`、`run-live`
 与`run-diagnostic-live`均已删除；历史 diagnostic plan/consumption只供 sealed evidence与
 formal non-adoption离线验证，不是隐藏 operator surface。
 

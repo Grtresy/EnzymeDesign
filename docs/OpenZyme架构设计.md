@@ -493,7 +493,9 @@ formal acceptance 保留 exact-three `positive, positive, fault` authority 与�
 `authorize-diagnostic`/`consume-diagnostic-authority`生成永久non-eligible单槽证据；post-r69
 current product已删除该module与命令，只保留historical schema/SQLite/evidence的只读
 non-adoption validator。现行`authorize`/`consume-authority`只发布并原子消费exact-three formal
-plan，生成source-bound receipt后停止，不创建root/session或执行attempt。实现完成不等于live
+plan；正常public路径从canonical plan的完整basename推导同目录`<plan-name>.consumed.json`，旧
+`--attempt-authority-consumption`仅作为exact compatibility assertion，不能重绑定、搜索、去后缀或
+fallback。生成source-bound receipt后停止，不创建root/session或执行attempt。实现完成不等于live
 获批，任何后继campaign仍须取得精确授权并由public-only Codex conductor编排。
 
 ---
@@ -1536,6 +1538,23 @@ executor返回会取消尚未发生的retry，使terminal settlement立即以自
 token/fence/state drift、原始同文错误、其他integrity failure与retry exhaustion仍fail closed，不replay
 scheduler、不重建outcome、不写业务终态。production qualification等待真实authorized renew成功Event，
 不依赖固定亚秒sleep。public schema、expired-claim recovery、scientific lifecycle与retirement readiness均不改变。
+
+### 9.16 r80 authority-consumption target owner boundary
+
+r80 在 clean commit `e13553e993b0e5f5db8b838a78d56d2af2690681` 完成 qualification、pin、exact plan
+发布与人工批准后，唯一 `consume-authority` 调用把 `attempt-authority.json` 去后缀组合为
+`attempt-authority.consumed.json`。canonical owner 要求
+`attempt-authority.json.consumed.json`，所以命令以
+`attempt_authority_consumption_target_mismatch` 在 receipt 前 fail closed。authority 未消费，slot/root/
+Host/session/attempt 均不存在，MICU/provider/HPC/Chrome effect 为零；r80 保持 preparation blocker，不能
+回填、重试或升级成 formal failure/NO-GO。
+
+前向修复把无策略自由度的 target composition 收回 authority owner。`consume-authority` 与
+`preflight` 的正常 public 路径只接收 plan 并从其 canonical resolved path 推导完整 basename sibling；
+可选 `--attempt-authority-consumption` 只验证 legacy caller 提供的路径是否精确相等，不改变 owner 的
+选择。错误断言仍在 receipt、slot claim、root 与任何外部 effect 前拒绝；same-directory、no-replace、
+no-follow、fsync、`0400`、one-use/tamper 与 schema 合同不变。这只移除 operator 对内部派生值的重复
+组装摩擦，不约束 agent 的科学策略或 public conductor 的合法推进节奏。
 
 ---
 

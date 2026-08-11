@@ -190,10 +190,11 @@ def _verified_architecture_qualification(
     )
 
 
-def _consume_authority_args(tmp_path: Path):
+def _pinned_authority_declarations(
+    tmp_path: Path,
+) -> tuple[Path, Path, dict[str, str], dict[str, str], dict[str, object]]:
     identity_path = tmp_path / "identity.json"
     prerequisite_path = tmp_path / "prerequisites.json"
-    authority_plan_path = tmp_path / "attempt-authority.json"
     identity = {"declared": "identity"}
     prerequisites = {"declared": "prerequisites"}
     launch_profile = _launch_profile()
@@ -206,6 +207,29 @@ def _consume_authority_args(tmp_path: Path):
         launch_profile=launch_profile,
         architecture_qualification=_architecture_qualification(),
     )
+    return (
+        identity_path,
+        prerequisite_path,
+        identity,
+        prerequisites,
+        launch_profile,
+    )
+
+
+def _consume_authority_args(
+    tmp_path: Path,
+    *,
+    plan_name: str = "attempt-authority.json",
+    include_consumption_assertion: bool = True,
+):
+    (
+        identity_path,
+        prerequisite_path,
+        identity,
+        prerequisites,
+        launch_profile,
+    ) = _pinned_authority_declarations(tmp_path)
+    authority_plan_path = tmp_path / plan_name
     authority_plan = build_aox_attempt_authority_plan(
         identity=identity,
         allowed_prerequisites=prerequisites,
@@ -217,21 +241,25 @@ def _consume_authority_args(tmp_path: Path):
         max_wall_time_seconds_per_attempt=100_000,
     )
     publish_aox_attempt_authority_plan(authority_plan, authority_plan_path)
-    return cli.build_parser().parse_args(
-        [
-            "consume-authority",
-            "--identity",
-            str(identity_path),
-            "--allowed-prerequisites",
-            str(prerequisite_path),
-            "--architecture-qualification-report",
-            str(tmp_path / "architecture-qualification.json"),
-            "--attempt-authority-plan",
-            str(authority_plan_path),
-            "--attempt-authority-consumption",
-            str(attempt_authority_consumption_path(authority_plan_path)),
-        ]
-    )
+    arguments = [
+        "consume-authority",
+        "--identity",
+        str(identity_path),
+        "--allowed-prerequisites",
+        str(prerequisite_path),
+        "--architecture-qualification-report",
+        str(tmp_path / "architecture-qualification.json"),
+        "--attempt-authority-plan",
+        str(authority_plan_path),
+    ]
+    if include_consumption_assertion:
+        arguments.extend(
+            [
+                "--attempt-authority-consumption",
+                str(attempt_authority_consumption_path(authority_plan_path)),
+            ]
+        )
+    return cli.build_parser().parse_args(arguments)
 
 
 def _pin_args(tmp_path: Path):
@@ -631,6 +659,139 @@ def test_consume_authority_only_seals_consumption_receipt(
     assert output["schema_id"] == "aox_attempt_authority_consume_receipt@1"
 
 
+def test_public_authorize_then_consume_derives_target_without_prefill(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    identity_path, prerequisite_path, *_ = _pinned_authority_declarations(tmp_path)
+    qualification_path = tmp_path / "architecture-qualification.json"
+    plan_path = tmp_path / "reviewed.formal-plan.json"
+    parser = cli.build_parser()
+    authorize_args = parser.parse_args(
+        [
+            "authorize",
+            "--identity",
+            str(identity_path),
+            "--allowed-prerequisites",
+            str(prerequisite_path),
+            "--architecture-qualification-report",
+            str(qualification_path),
+            "--output",
+            str(plan_path),
+            "--expires-at",
+            "2099-01-01T00:00:00+00:00",
+            "--max-micu-per-attempt",
+            "1",
+            "--max-cost-microunits-per-attempt",
+            "1",
+            "--max-wall-time-seconds-per-attempt",
+            "100000",
+        ]
+    )
+
+    assert authorize_args.handler(authorize_args) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == (
+        "published_not_consumed"
+    )
+
+    consume_args = parser.parse_args(
+        [
+            "consume-authority",
+            "--identity",
+            str(identity_path),
+            "--allowed-prerequisites",
+            str(prerequisite_path),
+            "--architecture-qualification-report",
+            str(qualification_path),
+            "--attempt-authority-plan",
+            str(plan_path),
+        ]
+    )
+    expected = attempt_authority_consumption_path(plan_path)
+
+    assert consume_args.attempt_authority_consumption is None
+    assert consume_args.handler(consume_args) == 0
+    assert expected.is_file()
+    assert stat.S_IMODE(expected.stat().st_mode) == 0o400
+    assert json.loads(capsys.readouterr().out)["status"] == (
+        "consumed_without_execution"
+    )
+
+
+@pytest.mark.parametrize(
+    "plan_name",
+    [
+        pytest.param("attempt-authority.json", id="default-json-name"),
+        pytest.param("attempt-authority", id="no-suffix"),
+        pytest.param("formal.authority.v2.json", id="dotted-nondefault-name"),
+    ],
+)
+def test_consume_authority_derives_full_plan_basename_through_public_parser(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    plan_name: str,
+) -> None:
+    args = _consume_authority_args(
+        tmp_path,
+        plan_name=plan_name,
+        include_consumption_assertion=False,
+    )
+    expected = attempt_authority_consumption_path(args.attempt_authority_plan)
+
+    assert args.attempt_authority_consumption is None
+    assert args.handler(args) == 0
+
+    assert expected.is_file()
+    assert stat.S_IMODE(expected.stat().st_mode) == 0o400
+    assert not (tmp_path / "campaign").exists()
+    assert json.loads(capsys.readouterr().out)["status"] == (
+        "consumed_without_execution"
+    )
+
+
+def test_consume_authority_rejects_wrong_compatibility_assertion_without_effect(
+    tmp_path: Path,
+) -> None:
+    args = _consume_authority_args(tmp_path)
+    expected = args.attempt_authority_consumption
+    wrong = tmp_path / "attempt-authority.consumed.json"
+    args.attempt_authority_consumption = wrong
+
+    with pytest.raises(cli.CutoverEvidenceError) as error:
+        args.handler(args)
+
+    assert error.value.code == "attempt_authority_consumption_target_mismatch"
+    assert not expected.exists()
+    assert not wrong.exists()
+    assert not (tmp_path / "campaign").exists()
+
+
+@pytest.mark.parametrize("existing_kind", ["file", "symlink"])
+def test_consume_authority_rejects_existing_derived_target_without_effect(
+    tmp_path: Path,
+    existing_kind: str,
+) -> None:
+    args = _consume_authority_args(
+        tmp_path,
+        include_consumption_assertion=False,
+    )
+    target = attempt_authority_consumption_path(args.attempt_authority_plan)
+    if existing_kind == "file":
+        target.write_bytes(b"preexisting")
+    else:
+        target.symlink_to(tmp_path / "missing-consumption-target")
+
+    with pytest.raises(AoxCutoverLaunchError) as error:
+        args.handler(args)
+
+    assert error.value.code == "aox_launch_pin_output_exists"
+    if existing_kind == "file":
+        assert target.read_bytes() == b"preexisting"
+    else:
+        assert target.is_symlink()
+    assert not (tmp_path / "campaign").exists()
+
+
 def test_preflight_config_failure_seals_before_claim_or_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -652,8 +813,6 @@ def test_preflight_config_failure_seals_before_claim_or_root(
             str(consume_args.architecture_qualification_report),
             "--attempt-authority-plan",
             str(consume_args.attempt_authority_plan),
-            "--attempt-authority-consumption",
-            str(consume_args.attempt_authority_consumption),
             "--slot-ordinal",
             "1",
         ]
@@ -736,6 +895,42 @@ def test_preflight_config_failure_seals_before_claim_or_root(
     assert output["slot_claim_created"] is False
     assert output["campaign_attempt_root_created"] is False
     assert output["scientific_attempt_count"] == 0
+
+
+def test_preflight_rejects_wrong_consumption_assertion_before_root(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    consume_args = _consume_authority_args(tmp_path)
+    assert cli._consume_authority(consume_args) == 0
+    capsys.readouterr()
+    wrong = tmp_path / "attempt-authority.consumed.json"
+    args = cli.build_parser().parse_args(
+        [
+            "preflight",
+            "--campaign-root",
+            str(tmp_path / "campaign"),
+            "--identity",
+            str(consume_args.identity),
+            "--allowed-prerequisites",
+            str(consume_args.allowed_prerequisites),
+            "--architecture-qualification-report",
+            str(consume_args.architecture_qualification_report),
+            "--attempt-authority-plan",
+            str(consume_args.attempt_authority_plan),
+            "--attempt-authority-consumption",
+            str(wrong),
+            "--slot-ordinal",
+            "1",
+        ]
+    )
+
+    with pytest.raises(cli.CutoverEvidenceError) as error:
+        args.handler(args)
+
+    assert error.value.code == "attempt_authority_consumption_invalid"
+    assert not wrong.exists()
+    assert not (tmp_path / "campaign").exists()
 
 
 def test_preflight_revalidates_actual_launch_immediately_before_slot_claim(

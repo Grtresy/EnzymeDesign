@@ -197,6 +197,18 @@ SEAMS = (
         owner="openzyme-engines",
     ),
     SeamSpec(
+        symbol="openzyme-aox-cutover:--attempt-authority-consumption",
+        path=(
+            "apps/openzyme-host-api/src/openzyme_host_api/"
+            "aox_cutover_cli.py"
+        ),
+        classification="compat_cli_option_assertion",
+        decision="DEPRECATE",
+        scanner="cli_option_argv",
+        literal="--attempt-authority-consumption",
+        owner="openzyme-host-api",
+    ),
+    SeamSpec(
         symbol="openzyme_execution.ExecutionOutcome.remote_run_dir",
         path="packages/openzyme-execution/src/openzyme_execution/adapter.py",
         classification="active_compat_dto_field",
@@ -451,6 +463,7 @@ class StringReference:
     path: str
     line: int
     value: str
+    is_cli_option_definition: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -539,6 +552,8 @@ def _registered_text_literals() -> tuple[tuple[str, ...], tuple[str, ...]]:
             docs.add(spec.symbol)
         elif spec.scanner == "exact_literal" and spec.literal is not None:
             docs.add(spec.literal)
+            source.add(spec.literal)
+        elif spec.scanner == "cli_option_argv" and spec.literal is not None:
             source.add(spec.literal)
         elif spec.scanner == "execution_dto_field":
             docs.add(spec.symbol)
@@ -664,6 +679,17 @@ def _build_repository_index(
             continue
         current_module, is_package = _module_name(path, root)
         nodes = tuple(ast.walk(tree))
+        cli_option_definition_ids = {
+            id(argument)
+            for node in nodes
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            for argument in node.args
+            if isinstance(argument, ast.Constant)
+            and isinstance(argument.value, str)
+            and argument.value.startswith("-")
+        }
         module_aliases: dict[str, str] = {}
         for node in nodes:
             if not isinstance(node, ast.Import):
@@ -743,6 +769,9 @@ def _build_repository_index(
                         path=relative,
                         line=node.lineno,
                         value=node.value,
+                        is_cli_option_definition=(
+                            id(node) in cli_option_definition_ids
+                        ),
                     )
                 )
             if not isinstance(node, ast.Call):
@@ -1000,6 +1029,26 @@ def _scan_exact_literal(
     return _deduplicate(callers)
 
 
+def _scan_cli_option_argv(
+    spec: SeamSpec,
+    index: RepositoryIndex,
+) -> list[dict[str, Any]]:
+    assert spec.literal is not None
+    callers = [
+        _caller(
+            path=reference.path,
+            line=reference.line,
+            evidence=f"CLI argv option {spec.literal}",
+            caller_kind="cli_argv_option",
+        )
+        for reference in index.string_references
+        if reference.value == spec.literal
+        and not reference.is_cli_option_definition
+    ]
+    callers.extend(_scan_non_python_literal(spec.literal, index=index))
+    return _deduplicate(callers)
+
+
 def _scan_execution_dto_field(
     spec: SeamSpec,
     index: RepositoryIndex,
@@ -1143,6 +1192,8 @@ def _scan(
         return _scan_python_method(spec, index)
     if spec.scanner == "exact_literal":
         return _scan_exact_literal(spec, index)
+    if spec.scanner == "cli_option_argv":
+        return _scan_cli_option_argv(spec, index)
     if spec.scanner == "execution_dto_field":
         return _scan_execution_dto_field(spec, index)
     if spec.scanner == "raw_runner_lifecycle":

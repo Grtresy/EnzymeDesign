@@ -410,6 +410,22 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   单纯减少策略代码。后续若要删除 Lane，必须先把 cwd/branch/workspace ownership 迁移到一个
   更小的 task-owned binding；不得以字段数量代替消费者证据。
 
+- [x] AOX public authority consumption target 是否把 owner truth 重复交给 operator 组合。
+
+  证据：r80 的 plan basename 是 `attempt-authority.json`，public `consume-authority` 却要求调用者再次
+  提供 deterministic sibling；操作员去除 `.json` 后组合出 `attempt-authority.consumed.json`，canonical
+  owner 正确以 `attempt_authority_consumption_target_mismatch` 在 receipt 前拒绝。authority 未消费且
+  零 product execution，说明 safety guard 正常，但 public composition 对没有策略自由度的内部派生值
+  产生了不必要摩擦。CLI 自己还复制了一次 expected-target 检查，而 focused tests 都由 helper 预填正确值，
+  qualification 也用 monkeypatch 绕过真实 target seam。
+
+  修正记录：保留 `attempt_authority_consumption_path(plan_path)` 为唯一 owner；consume/preflight 正常
+  路径从 canonical resolved plan 推导完整 basename sibling。旧参数仅作 exact compatibility assertion，
+  错误值仍 fail closed；same-directory、no-replace/no-follow、fsync、`0400`、one-use/tamper 与 schema
+  不变。public parser-to-handler 与 qualification 覆盖默认/无后缀/多点名、正确/错误断言和 no-effect
+  负例。外部 caller 状态 unknown，因此本轮不 breaking-remove 参数。该收口减少 shadow truth，不替 agent
+  选择任何 scientific action、task、drain cadence 或失败策略。
+
 - [ ] AOX formal preflight failure 的 current stage 是否仍能准确表达实际 launch 边界。
 
   当前债务：`aox_formal_preflight_failure@1` 的 `failed_stage` 保留

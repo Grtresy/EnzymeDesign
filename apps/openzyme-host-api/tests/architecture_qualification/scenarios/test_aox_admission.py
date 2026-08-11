@@ -38,6 +38,9 @@ from openzyme_host_api.aox_attempt_authority import (
 from openzyme_host_api.aox_attempt_authority import (
     AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID,
 )
+from openzyme_host_api.aox_attempt_authority import (
+    attempt_authority_consumption_path,
+)
 from openzyme_host_api.aox_attempt_preflight import ATTEMPT_PREFLIGHT_SCHEMA_ID
 from openzyme_host_api.aox_cutover_launch import (
     AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_SCHEMA_ID,
@@ -171,6 +174,14 @@ def _assert_current_schema_contract(document: str) -> dict[str, str]:
         raise AssertionError("active launch contract permits ambient profile fallback")
     if "MUST NOT be retroactively backfilled" not in launch:
         raise AssertionError("active launch contract permits historical backfill")
+    owner_derived_consumption = (
+        "normal public command path MUST derive the exact "
+        "`<plan-name>.consumed.json` sibling"
+    )
+    if owner_derived_consumption not in launch:
+        raise AssertionError(
+            "active launch contract delegates the consumption target to callers"
+        )
 
     launch_failure = _requirement(
         document,
@@ -271,7 +282,7 @@ def _observe_actual_launch_guard_before_slot_claim(
     architecture_qualification: dict[str, object],
 ) -> list[str]:
     plan_path = tmp_path / "behavioral-attempt-authority.json"
-    consumption_path = tmp_path / "behavioral-attempt-authority-consumption.json"
+    consumption_path = attempt_authority_consumption_path(plan_path)
     plan_path.touch()
     consumption_path.touch()
     campaign_root = tmp_path / "behavioral-campaign"
@@ -286,6 +297,7 @@ def _observe_actual_launch_guard_before_slot_claim(
             }
         ]
     }
+    expected_plan = plan
     consumption = {"schema_id": AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID}
     calls: list[str] = []
 
@@ -316,10 +328,22 @@ def _observe_actual_launch_guard_before_slot_claim(
         lambda pinned, current: architecture_qualification,
     )
     monkeypatch.setattr(cli, "load_aox_attempt_authority_plan", lambda *a, **k: plan)
+
+    def load_consumption(
+        path: Path,
+        *,
+        plan: object,
+        plan_path: Path,
+    ) -> dict[str, object]:
+        assert path == consumption_path
+        assert plan is expected_plan
+        assert plan_path == tmp_path / "behavioral-attempt-authority.json"
+        return consumption
+
     monkeypatch.setattr(
         cli,
         "load_aox_attempt_authority_consumption",
-        lambda *a, **k: consumption,
+        load_consumption,
     )
 
     def resolve_launch(profile: object) -> tuple[object, Path]:
@@ -368,8 +392,6 @@ def _observe_actual_launch_guard_before_slot_claim(
             str(tmp_path / "behavioral-qualification.json"),
             "--attempt-authority-plan",
             str(plan_path),
-            "--attempt-authority-consumption",
-            str(consumption_path),
             "--slot-ordinal",
             "1",
         ]
@@ -443,6 +465,14 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
             f"one source-bound `{FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID}` sibling",
             "one unbound preflight failure note",
         ),
+        "owner_derived_consumption_removed": _replace_once(
+            spec_document,
+            (
+                "normal public command path MUST derive the exact "
+                "`<plan-name>.consumed.json` sibling"
+            ),
+            "normal public command path MAY accept any caller-selected sibling",
+        ),
     }
     rejected_contract_drifts: list[str] = []
     for mutation, drifted_document in sorted(contract_drift_mutations.items()):
@@ -491,8 +521,6 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
             str(tmp_path / "qualification-report.json"),
             "--attempt-authority-plan",
             str(tmp_path / "attempt-authority.json"),
-            "--attempt-authority-consumption",
-            str(tmp_path / "attempt-authority-consumption.json"),
             "--slot-ordinal",
             "1",
         ]

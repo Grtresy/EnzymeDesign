@@ -255,7 +255,11 @@ profile、source commit、report schema、source identity 与 run-evidence diges
 verifier拒绝missing、changed、mismatched或unknown-version receipt；历史`@1`仅为冻结bundle读取兼容。
 
 正式 `authorize` 只发布 exact-three `aox_live_attempt_authority_plan@4`，
-`consume-authority`发布绑定它的consumption `@5`并停止，不构造live launch/root。
+`consume-authority`正常 public parser-to-handler 路径从 canonical plan 的完整 basename 推导
+`<plan-name>.consumed.json`，发布绑定它的 consumption `@5`并停止，不构造live launch/root；
+`preflight` 复用同一 owner helper。qualification 必须证明两条命令都不再要求该重复输入、正确 legacy
+assertion 保持兼容、错误 assertion 在 receipt/claim/root/effect 前拒绝，并覆盖默认、无后缀和多点
+basename。旧 `--attempt-authority-consumption` 的外部 caller 未知，故本轮不 breaking-remove。
 `aox_attempt_authority_slot_claim@3`、`aox_attempt_preflight@5`与Host supervision `@3`只闭合
 campaign/ordinal/session/root/policy；current conductor execution contract `@2`先闭合exact session与
 唯一pinned message，task与scientific authorization再通过专用命令于首个public sealed

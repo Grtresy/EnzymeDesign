@@ -223,6 +223,10 @@ AOX 使用更窄的 `aox_live_attempt_authority_plan@4`：
   完成一次性消费；current receipt 是
   `aox_live_attempt_authority_consumption@5`，显式绑定
   `run_class=formal_acceptance`、formal plan schema/digest、pinned launch-profile digest 与 sibling filename；
+- 该 sibling 由 authority owner 从 canonical plan 的完整 basename 推导；正常 public consume/preflight
+  不要求调用者重复组合。可选 `--attempt-authority-consumption` 仅为旧 caller 的 exact assertion，不能
+  改变 target、搜索替代文件、去除 suffix 或 fallback；不相等时必须在 receipt、slot、root 与外部 effect
+  前 fail closed；
 - `aox_attempt_authority_slot_claim@3` 在root前闭合ordinal/session/root/authority-policy与
   source-derived `launch_id`，但不包含task/envelope/attempt/lane/admission identity；
 - session entry message的首个bounded drain必须封存admission与terminal response；随后public

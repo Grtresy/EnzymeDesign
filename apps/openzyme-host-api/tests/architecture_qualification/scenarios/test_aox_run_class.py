@@ -272,6 +272,15 @@ def test_aox_automatic_run_surfaces_are_retired(
     assert "authorize-diagnostic" not in subcommands
     assert "consume-diagnostic-authority" not in subcommands
     assert required_conductor_commands.issubset(subcommands)
+    for command in ("consume-authority", "preflight"):
+        arguments = {
+            action.dest: action for action in subcommands[command]._actions
+        }
+        consumption_argument = arguments["attempt_authority_consumption"]
+        assert consumption_argument.required is False
+        assert "normal path derives '<plan-name>.consumed.json'" in (
+            consumption_argument.help or ""
+        )
     public_host_arguments = {
         action.dest: action
         for action in subcommands["public-host"]._actions

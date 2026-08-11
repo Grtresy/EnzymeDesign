@@ -1,6 +1,6 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r67 are permanent NO-GO evidence. r68-r77 retain their documented prelaunch/pre-admission/pre-runtime/evidence-blocker classifications and none is a canonical NO-GO. r78 consumed authority once and then failed slot 1 preflight before claim/root/Host because the actual rootless Podman resolver returned `podman_rootless_preflight_failed`; its source-bound preflight-failure verifier and reducer closed canonical `NO-GO` with decision digest `sha256:7fb899562369d6d96e6cba490b2d862943c1359fa972389e9b1d9fd374216c84`. r79 then started only slot 1, admitted one open scientific attempt with no selection or provider/HPC operation, and stopped after its second bounded command expired because a post-scope heartbeat lacked mutation writer authority. r79 has no sealed scientific evidence export and no canonical GO/NO-GO decision; its supervised Host correctly remains active under the readiness contract. None of r68-r79 state or the old persistent goal is reusable. Current forward contracts additionally bind every late-scope command heartbeat to an exact short writer with lease-bounded SQLite contention/authority-transition handling while preserving real-fence and expired-claim no-replay semantics. These capabilities do not backfill, retry or alter any frozen run. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, slot 2/3, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
+Status: r43-r67 are permanent NO-GO evidence. r68-r77 retain their documented prelaunch/pre-admission/pre-runtime/evidence-blocker classifications and none is a canonical NO-GO. r78 consumed authority once and then failed slot 1 preflight before claim/root/Host because the actual rootless Podman resolver returned `podman_rootless_preflight_failed`; its source-bound preflight-failure verifier and reducer closed canonical `NO-GO` with decision digest `sha256:7fb899562369d6d96e6cba490b2d862943c1359fa972389e9b1d9fd374216c84`. r79 then started only slot 1, admitted one open scientific attempt with no selection or provider/HPC operation, and stopped after its second bounded command expired because a post-scope heartbeat lacked mutation writer authority. r79 has no sealed scientific evidence export and no canonical GO/NO-GO decision; its supervised Host correctly remains active under the readiness contract. r80 published and received approval for an exact plan, but its sole `consume-authority` invocation supplied a suffix-stripped sibling and typed-failed before receipt publication; authority remained unconsumed with zero product execution. None of r68-r80 state or the old persistent goal is reusable. Current forward contracts additionally bind every late-scope command heartbeat to an exact short writer and derive authority-consumption siblings from the canonical plan owner while preserving real-fence, expired-claim no-replay, no-replace and wrong-assertion fail-closed semantics. These capabilities do not backfill, retry or alter any frozen run. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, slot 2/3, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
 
 Historical incident and older command/observer/driver/browser/diagnostic-authority/public-finalizer sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract; in particular, every older `run-live`, `run-diagnostic-live`, diagnostic authority command, observer, barrier, rollover, no-wakeup, public generic scientific mutation/finalizer, `chrome-once`, browser-helper and ambient dev/eval image-registration instruction is retired even where a historical section called it current at that time. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, late-bound task/scientific-attempt selection, fresh supervised Host bootstrap and qualification semantics are defined by the post-r70/post-r71 sections below, [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
@@ -2196,9 +2196,9 @@ row from another attempt is not accepted. The public preflight image, SDK,
 runtime-identity and protocol fields are sealed in the launch receipt, and the
 offline verifier compares the image/SDK fields to the campaign identity.
 
-Operator preflight example:
+Operator authority-consumption and preflight examples:
 
-This command creates an attempt root. It is the first campaign mutation and
+The preflight command below creates an attempt root. It is the first campaign mutation and
 must not be used as a no-attempt readiness probe or run before the operator has
 explicitly authorized the new numbered campaign.
 
@@ -2208,6 +2208,24 @@ this platform capability is already available for the same outer launcher. A def
 that remounts the rootless runtime directory read-only is not an eligible executor, and a direct Host
 `podman info` success does not prove the nested CLI invocation. Platform permission remains separate from the
 exact campaign/business authorization.
+
+Authority consumption uses the same reviewed plan path and does not require the operator to reconstruct its
+deterministic receipt target:
+
+```bash
+uv --project apps/openzyme-host-api run openzyme-aox-cutover consume-authority \
+  --identity /tmp/openzyme-aox-pin/<campaign-id>/identity.json \
+  --allowed-prerequisites \
+    /tmp/openzyme-aox-pin/<campaign-id>/allowed-prerequisites.json \
+  --architecture-qualification-report \
+    /tmp/openzyme-v3-admission/<commit>/architecture-qualification-report.json \
+  --attempt-authority-plan \
+    /tmp/openzyme-aox-authority/<campaign-id>/attempt-authority.json
+```
+
+The owner derives `attempt-authority.json.consumed.json`. The retained
+`--attempt-authority-consumption` option is only an exact compatibility assertion; a different path fails before
+receipt publication and never selects an alternative target.
 
 ```bash
 uv --project apps/openzyme-host-api run openzyme-aox-cutover preflight \
@@ -2219,8 +2237,6 @@ uv --project apps/openzyme-host-api run openzyme-aox-cutover preflight \
     /tmp/openzyme-v3-admission/<commit>/architecture-qualification-report.json \
   --attempt-authority-plan \
     /tmp/openzyme-aox-authority/<campaign-id>/attempt-authority.json \
-  --attempt-authority-consumption \
-    /tmp/openzyme-aox-authority/<campaign-id>/attempt-authority.json.consumed.json \
   --slot-ordinal 1
 ```
 
@@ -3626,3 +3642,27 @@ receipt canonical commit 前消失，reconcile 找不到 exact handle，必须�
 本修复只增加 non-live contract、repository、adapter 与 Host-route 回归；不会回填 campaign
 `aox_campaign_b22dbb53d1e3a77b31ee69a6`，不会改写其冻结 evidence，也不授权 live、retry、successor、
 MICU、provider、HPC或Chrome。
+
+### 2026-08-11 r80 authority-consumption preparation blocker and forward correction
+
+r80 在 clean commit `e13553e993b0e5f5db8b838a78d56d2af2690681` 完成 full qualification、pin、exact-three
+plan 发布与人工批准。唯一 `consume-authority` 命令却把 plan
+`attempt-authority.json` 的目标写成 `attempt-authority.consumed.json`，而 canonical owner 要求保留完整
+basename 的 `attempt-authority.json.consumed.json`。命令以
+`attempt_authority_consumption_target_mismatch`、exit 2 在 receipt 前 fail closed；两种 target 都不存在，
+plan仍为唯一冻结文件且未消费。没有slot/root/Host/session/attempt，也没有MICU/provider/runner/HPC/Chrome
+effect。因此r80是preparation blocker，不是formal slot failure、preflight failure、canonical NO-GO或
+evidence gap；不得回填、修改或重试。
+
+前向 correction 不修改 authority schema、storage writer 或 external execution。唯一 owner helper
+`attempt_authority_consumption_path(plan_path)` 继续定义 full-basename same-directory sibling；public
+`consume-authority` 与 `preflight` 的正常路径现在从canonical resolved plan直接调用它。旧
+`--attempt-authority-consumption` 仅保留为 exact compatibility assertion，不得重绑定、搜索、去后缀或
+fallback。错误断言、预存文件、symlink 与 tampered pin仍在receipt/claim/root/effect前typed fail closed；
+exclusive no-follow publish、fsync、`0400`、one-use与provenance binding不变。
+
+public parser-to-handler 回归覆盖默认、无后缀与多点非默认basename，qualification真实走无assertion的
+owner-derived preflight seam并保留contract mutation负例。外部caller尚无清零证据，所以参数没有breaking
+removal。历史8.3a diagnostic task因post-r69 current diagnostic authority surface已退役而明确superseded，
+并非被执行；8.3、8.4-8.8仍未完成。本slice不启动fresh admission、下一rNN、live、MICU、provider、HPC或
+Chrome。

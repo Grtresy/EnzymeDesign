@@ -709,8 +709,11 @@ def _preflight(args: argparse.Namespace) -> int:
         architecture_qualification=architecture_qualification,
         launch_profile=launch_profile,
     )
-    consumption_path = args.attempt_authority_consumption.expanduser().resolve(
-        strict=True
+    asserted_consumption_path = args.attempt_authority_consumption
+    consumption_path = (
+        attempt_authority_consumption_path(plan_path)
+        if asserted_consumption_path is None
+        else Path(os.path.abspath(asserted_consumption_path.expanduser()))
     )
     consumption = load_aox_attempt_authority_consumption(
         consumption_path,
@@ -1315,14 +1318,10 @@ def _consume_authority(args: argparse.Namespace) -> int:
         launch_profile=launch_profile,
     )
     plan_path = args.attempt_authority_plan.expanduser().resolve(strict=True)
-    target = _pin_output_target(args.attempt_authority_consumption)
-    expected_target = attempt_authority_consumption_path(plan_path)
-    if target != expected_target:
-        raise CutoverEvidenceError(
-            "attempt_authority_consumption_target_mismatch",
-            "authority consumption must use the deterministic sibling target",
-            details={"expected_file": expected_target.name},
-        )
+    target = _pin_output_target(
+        args.attempt_authority_consumption
+        or attempt_authority_consumption_path(plan_path)
+    )
     receipt = consume_aox_attempt_authority_plan(
         plan,
         plan_path=plan_path,
@@ -1452,7 +1451,15 @@ def build_parser() -> argparse.ArgumentParser:
         "allowed_prerequisites",
         "architecture_qualification_report",
         "attempt_authority_plan",
-        "attempt_authority_consumption",
+    )
+    preflight.add_argument(
+        "--attempt-authority-consumption",
+        type=Path,
+        help=(
+            "optional compatibility assertion for the exact consumption receipt; "
+            "the normal path derives '<plan-name>.consumed.json' from "
+            "--attempt-authority-plan"
+        ),
     )
     preflight.add_argument(
         "--slot-ordinal",
@@ -1663,7 +1670,13 @@ def build_parser() -> argparse.ArgumentParser:
     consume_authority.add_argument("--allowed-prerequisites", required=True, type=Path)
     consume_authority.add_argument("--attempt-authority-plan", required=True, type=Path)
     consume_authority.add_argument(
-        "--attempt-authority-consumption", required=True, type=Path
+        "--attempt-authority-consumption",
+        type=Path,
+        help=(
+            "optional compatibility assertion for the exact output target; "
+            "the normal path derives '<plan-name>.consumed.json' from "
+            "--attempt-authority-plan"
+        ),
     )
     consume_authority.set_defaults(handler=_consume_authority)
 
