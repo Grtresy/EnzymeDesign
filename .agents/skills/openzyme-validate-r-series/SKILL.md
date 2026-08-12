@@ -28,6 +28,26 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZym
 停止。不得先消费 authority，再用 sandboxed `preflight` 探测权限，也不得把已知的外层只读挂载映射为
 OpenZyme 产品或 Podman installation failure。该平台许可不扩大 exact plan、预算或 external-effect 授权。
 
+preparation 的累计 MICU `ledger` 读取不经过 Podman，使用与 `pin` / `preflight` 不同的最小权限合同。
+它的首次且唯一 launcher 是当前 canonical checkout 已安装的公开 console script
+`.venv/bin/openzyme-aox-cutover ledger --path <literal-ledger-path>`；该 wrapper 必须仍由
+`[project.scripts]` 绑定到 `openzyme_host_api.aox_cutover_cli:main`，不能替换成 private import 或 handler
+直调。发出前只允许静态确认该文件存在、可执行且解释器/entrypoint 绑定同一 checkout，并从 exact pinned
+`aox_cutover_launch_profile@1` 一次只读解析、验证 `ledger_path`，把取得的值作为正式 argv 中的字面量参数。
+不得通过 `jq` / shell substitution、`zsh -fc`、ambient environment 或正式命令内的 profile 重解析来
+组装该参数，也不得以预运行 `ledger` 探测平台。
+
+该唯一 `ledger` 命令必须在普通 sandbox 中直接执行，不得使用 `uv`、`--output` 或
+`sandbox_permissions=require_escalated`。console script 或 pinned literal path 在发出前不可用时，报告
+`ledger_execution_count=0` 的 operator/platform blocker并停止，不切换 launcher、cache、environment、
+sandbox permission、path 或 output。命令一经实际发出，wrapper 或 CLI 的任何 nonzero terminal 都计为
+唯一一次执行并立即停止；禁止更换 `.venv` / `uv`、cache、environment、permission、launcher、path、
+output 后重发，也禁止采用停后到达的 stdout 或 late snapshot。恢复同一个 yielded outer cell / inner
+session handle 不算重试，但必须保留完整 structured result 直到真实 `exit_code`；handle 失联则停止，之后
+出现的结果仍受 non-adoption 约束。只有该 exact 唯一命令的 terminal `exit_code=0` 与同一 structured
+result 中的安全 snapshot 可以进入后续 preparation。上述 ledger 合同不改变 `pin` / `preflight` 的
+`uv --project ... + require_escalated` 规则。
+
 到达人工授权门时只做一次最小必要校验，报告 `workflow_status=blocked`、`blocked_on=manual_authorization`、待批准对象和保持不变的 canonical state，然后停止。持久 goal 若要求多轮才能标记 blocked，后续只确认没有新授权，不重跑检查、qualification、命令或 evidence 收集。
 
 ## 强制读取当前合同

@@ -15,6 +15,13 @@ goal 只回答“本轮要达到什么结果、允许哪些阶段和外部影响
 
 平台执行许可不是第二轮业务授权。已获批准的动作需要本地 IPC、远程 runner 或其他平台能力时，Codex 通过工具机制申请；实际 target、operation、预算、identity 或 effect 扩大时，才返回新的人工授权门。
 
+这条通用规则不能把一次已经实际发出的失败命令变成可重发的“权限探针”。current preparation contract
+若把某一步声明为普通 sandbox 中的首次且唯一调用，则平台能力必须在发出前闭合；发出前不可用时以
+`ledger_execution_count=0` 停止，发出后的 nonzero 已消费唯一调用，平台提权不能授权换 launcher、cache、
+environment 或 permission 重发，late stdout/snapshot 也不得采用。preparation ledger 的具体公开
+entrypoint、literal path 和 no-retry 规则仍由 validation skill、active OpenSpec、稳定文档与 current public
+CLI 共同定义；`pin` / `preflight` 已文档化的预先平台许可不受影响。
+
 ## 修复 goal
 
 ```text

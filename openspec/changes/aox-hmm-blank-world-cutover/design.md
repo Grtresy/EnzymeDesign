@@ -1958,6 +1958,39 @@ negative controls 保留真实安全边界。
 schema 或 external effect owner，不增加 recovery state machine，也不启动 fresh admission、下一 rNN、live、
 MICU、provider、HPC 或 Chrome。
 
+### f778aa1 preparation ledger first-call 与 no-retry closure
+
+f778aa1 上的 fresh preparation 已完成唯一 full qualification、唯一 `check-config` 与唯一 `pin`，尚未发布
+plan 或分配 rNN。随后 ledger wrapper 首次在普通 Codex filesystem sandbox 中调用
+`uv --project apps/openzyme-host-api run openzyme-aox-cutover ledger ...`，因 `uv` 访问 checkout 外 cache
+文件时收到 `EROFS` 而以 exit 2 结束，没有 session handle 或 AOX JSON。操作员随后用完全相同的 wrapper
+请求 `require_escalated` 并取得 exit 0 snapshot。第二次 issuance 不是 handle resume；通用“平台许可不是
+第二轮业务授权”不能覆盖已经消耗的首次且唯一命令。因此该历史保持 `rNN=none`、
+`operator_procedure_violation.unapproved_ledger_wrapper_retry_after_sandbox_cache_failure`，late successful
+snapshot 永久 non-adoptable。没有 authority、slot、root、Host、session、attempt、provider/HPC/Chrome
+scientific effect，也不能把 wrapper `EROFS` 提升为 OpenZyme 产品 failure。
+
+前向合同删除 ledger 对 `uv` cache 的偶然依赖，不修改产品代码。current public owner 仍是
+`apps/openzyme-host-api/pyproject.toml` 的 `[project.scripts]` 映射
+`openzyme-aox-cutover = "openzyme_host_api.aox_cutover_cli:main"`；当前 checkout 生成的公开 console script
+`.venv/bin/openzyme-aox-cutover ledger --path <literal-ledger-path>` 进入同一 public parser/handler，不是
+private bypass。发出前只做静态 entrypoint binding 检查，并从 exact pinned
+`aox_cutover_launch_profile@1` 一次只读解析、验证 `ledger_path`；正式 argv 使用该值的字面量，不通过
+`jq` / shell substitution、`zsh -fc`、ambient environment 或命令内 profile lookup 再组合。
+
+正式 ledger 是普通 sandbox 中的唯一直接调用，不使用 `uv`、`--output` 或提权。entrypoint 或 pinned
+literal path 在 issuance 前不可取得时，以 `ledger_execution_count=0` 的 operator/platform blocker 停止，
+不做 ledger probe 或 fallback。一经实际发出，任何 wrapper/CLI nonzero 都计为 execution count 1 并立即
+停止；不得切换 `.venv` / `uv`、cache、environment、sandbox permission、launcher、path 或 output 后重发。
+同一 yielded outer cell / inner session 的 structured-result resume 不是重试；handle 失联或停后到达的
+stdout/snapshot 均受 non-adoption。只有唯一 exact command 的真实 `exit_code=0` 及同一 structured result
+中的 safe snapshot 可继续 preparation。`pin` / `preflight` 经过 actual Podman resolver，继续使用既有
+`uv --project ... + require_escalated` 合同。
+
+该 correction 只同步 operator contract 和跨来源静态 regression；production Python、ledger schema、CLI
+handler、read-only SQLite owner、MICU budget、`uv` 与 Codex platform 都不变。它不增加 fallback、automatic
+retry、observer、shadow truth、product state 或科学 action policy，也不修改或重试 frozen preparation。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

@@ -1256,3 +1256,36 @@ typed path segment, or change existing successful path/page semantics.
 #### Scenario: Preserve the current resolver boundary
 - **WHEN** the missing child would require arbitrary dictionary-key addressing beyond the current safe dot/index grammar
 - **THEN** the tool reports locality only and does not invent an escaped or typed path, return the parent value, or claim that arbitrary-key addressing is implemented
+
+### Requirement: Preparation ledger snapshot uses one cache-independent public invocation
+The preparation conductor MUST read the cumulative MICU ledger through the current canonical checkout's installed
+public console script `.venv/bin/openzyme-aox-cutover ledger --path <literal-ledger-path>`. The console owner MUST
+remain the `[project.scripts]` mapping `openzyme-aox-cutover = "openzyme_host_api.aox_cutover_cli:main"`; the
+conductor MUST NOT replace it with a private import or handler call. Before issuance, the conductor MAY only verify
+that the console script exists, is executable and is bound to the same checkout, and MUST read and validate
+`ledger_path` once from the exact pinned `aox_cutover_launch_profile@1`. The formal argv MUST carry that value as a
+literal argument and MUST NOT use `jq`, shell substitution, `zsh -fc`, ambient re-resolution, or an in-command profile
+lookup.
+
+The ledger invocation MUST run once in the ordinary sandbox without `uv`, `--output`, or escalated sandbox permission.
+If the entrypoint or pinned literal path is unavailable before issuance, the conductor MUST stop with
+`ledger_execution_count=0` and MUST NOT probe the ledger or switch launcher, cache, environment, permission, path, or
+output. Once the command is actually issued, any nonzero wrapper or CLI terminal MUST consume the one invocation and
+stop the preparation. The conductor MUST NOT reissue with a changed `.venv` / `uv`, cache, environment, sandbox
+permission, launcher, path, or output, and MUST NOT adopt late stdout or a late snapshot. Resuming the exact yielded
+outer-cell or inner-session handle to obtain its complete structured result is not a retry; a lost handle fails closed,
+and only the exact invocation's `exit_code=0` and same-result safe snapshot MAY continue preparation. These rules MUST
+NOT alter the existing `uv --project ...` plus pre-authorized escalated execution contract for Podman-transitive `pin`
+and formal `preflight`.
+
+#### Scenario: Stop before an unavailable ledger invocation
+- **WHEN** static pre-issue inspection cannot prove the public console binding or cannot obtain the literal path from the exact pinned launch profile
+- **THEN** preparation stops as an operator/platform blocker with `ledger_execution_count=0`, no ledger probe, no fallback, and no product state or effect
+
+#### Scenario: Freeze the first issued nonzero ledger command
+- **WHEN** the one direct ledger command has been issued and its wrapper or CLI returns a nonzero terminal result
+- **THEN** its execution count is one, preparation stops without changing launcher/cache/environment/permission/path/output, and any later stdout or snapshot is non-adoptable
+
+#### Scenario: Resume only the exact ledger handle
+- **WHEN** the exact direct ledger invocation yields an outer cell or inner process session
+- **THEN** the conductor resumes only that handle until its complete structured result and real exit code, without issuing another command or treating platform escalation as retry authority

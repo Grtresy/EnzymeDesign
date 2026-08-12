@@ -3698,3 +3698,39 @@ selected workflow prompt 明确 manifest owner、provenance-only path 与 knowle
 保留真实 system/reconciliation/authority/runtime-retry 负控。本修复 forward-only，不修改 r81 root、SQLite、
 effect、receipt 或 decision，不访问 active Host，不启动 fresh admission、下一 rNN、live、MICU、provider、
 HPC 或 Chrome。
+
+### 2026-08-12 f778aa1 preparation ledger wrapper retry blocker
+
+在 clean commit `f778aa1c6625855ec0dfb80720870d9815de70a1` 上，fresh preparation 的 full
+qualification、`check-config` 与 `pin` 各执行一次并成功；plan/authority/slot、rNN、Host/session/attempt
+均未创建。qualification report 位于
+`/tmp/openzyme-v3-admission.tgnQpa/architecture-qualification-report.json/architecture-qualification-report.json`，
+raw SHA-256 为 `2dde3bfa869bd6e4196cb9ceaeb0b668f3fe0a9852518bb1c0daef49adb1dd3e`；pin root
+`/tmp/openzyme-aox-pin.vZwODd` 的 launch profile raw SHA-256 为
+`7a686a1353023647db4b42b2d5fa8fe2b7e16155678f0722da4582b0f9e9d627`，绑定同一 source、config digest
+`sha256:7e8ca615fdf2b1701794498801a1b98cd8671956979cd010c270940e72843b75` 与 persistent ledger identity。
+
+ledger wrapper 随后实际发出两次。第一次在普通 sandbox 使用 `uv --project ...`，`uv` 访问 checkout 外
+cache 时以 `Read-only file system (os error 30)` / exit 2 结束，没有 session handle 或 AOX JSON；这只能
+支持 outer wrapper 很可能先于 public handler 失败的源码推论，不能伪造产品 cause。第二次是同一 wrapper
+的 `require_escalated` 新 issuance，exit 0 并返回 snapshot。它不是 handle resume，且没有 specific retry
+authority；因此该 snapshot 即使读取成功也不能修复命令 chronology。冻结分类为 `rNN=none` preparation
+blocker，`operator_procedure_violation.unapproved_ledger_wrapper_retry_after_sandbox_cache_failure`；late
+snapshot 不可进入 plan/live。没有 MICU charge、provider/HPC scientific operation、Chrome 或产品状态写入；
+approved `pin` 的 forced-SSH attestation 仍只是既有 preparation effect。
+
+前向合同把 ledger 与 Podman-transitive `pin` / `preflight` 明确分开。ledger 的首次且唯一 launcher 是
+current checkout 由 `[project.scripts]` 安装、仍进入 public parser/handler 的
+`.venv/bin/openzyme-aox-cutover ledger --path <literal-ledger-path>`。正式调用前，只能静态确认该 script
+存在、可执行并绑定同一 checkout，且从 exact pinned `aox_cutover_launch_profile@1` 一次只读解析、验证
+ledger path；正式 argv 使用字面量 path，不允许 `jq` / shell substitution、`zsh -fc`、ambient 或命令内
+profile lookup。调用在普通 sandbox 中直接执行，不使用 `uv`、`--output` 或提权。
+
+entrypoint 或 literal path 在发出前不可取得时，以 `ledger_execution_count=0` operator/platform blocker
+停止，不 probe 或 fallback。命令一经实际发出，任何 wrapper/CLI nonzero 都消耗唯一调用并立即停止；禁止
+切换 `.venv` / `uv`、cache、environment、sandbox permission、launcher、path、output 后重发，停后 stdout
+或 snapshot 一律 non-adoptable。只允许恢复 exact yielded handle 取得完整 structured result 和真实
+`exit_code`；handle resume 不算重试，handle 失联则 fail closed。`pin` / formal `preflight` 继续遵守既有
+`uv --project ... + require_escalated` 合同。本 correction 不修改 product Python、ledger schema/handler、
+read-only SQLite owner、MICU budget、`uv`、平台 runtime 或 agent 科学策略，也不授权 fresh preparation、
+qualification、下一 rNN 或 live。
