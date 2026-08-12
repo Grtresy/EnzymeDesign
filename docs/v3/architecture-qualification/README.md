@@ -80,14 +80,14 @@ literals，不依赖或恢复已删除的 closure-stage production modules。
 当前 `evidence-projection.aox-run-class-disjoint-closure` scenario 同时闭合
 `evidence-projection.aox-run-class-disjoint`与
 `evidence-projection.aox-fresh-host-sandbox-bootstrap`，并以
-`aox_r79_runtime_command_heartbeat_qualification@1` observation收口真实 production
+`aox_public_conductor_runtime_qualification@1` observation收口真实 production
 composition：场景通过`HostApiDependencies/create_app()`组成actual FastAPI应用，以current
-conductor execution contract `@2`和thin Host CLI调用public route，使用file-backed SQLite和只注入agent边界的deterministic
+conductor execution contract `@3`和thin Host CLI调用public route，使用file-backed SQLite和只注入agent边界的deterministic
 model/runtime先调用production Host bootstrap，在session/model前证明全空registry、唯一immutable
 image row、source receipt与public ready status，再建立exact session、唯一canonical message + pinned
 workflow entry、首个非写死`1/8`的bounded drain、sealed terminal、唯一execution-task read与专用
 late-bound authority。缺pin和第二条message必须在Host调用、receipt append和response target消费前拒绝；
-legacy execution contract `@1`不得驱动current action。execution assignee随后经production lane/scientific tool handler
+legacy execution contract `@1/@2`不得驱动current action。execution assignee随后经production lane/scientific tool handler
 从`scientific.attempt.inspect`读取真实envelope并创建lane/admission；不存在model envelope side
 channel或master lane fixture。wrong task与wrong actor在零attempt状态被拒绝，Host internal finalizer才
 生成late-bound identity，独立reader再证明持久化。场景还证明terminal response与唯一
@@ -100,17 +100,18 @@ SQLite至少发生一次scope-open后的authorized heartbeat，不再依赖固�
 `lease-heartbeat` writer全部terminal、对应command真实处理1条signal、terminal event闭合且全session没有
 `runtime_command_claim_expired`。该test-only synchronization gate不替换Host service、scheduler、repository、
 public route或receipt，也不把non-live witness升级为cutover evidence。
+同一场景用test-only Event经thin CLI证明真实`claimed -> terminal -> fresh reads`且opaque locator不参与handoff；邻近fixture覆盖`0/1/7/254`，不引入sleep、poll、replacement、observer或产品状态。
 场景还检查diagnostic authority、public generic
 scientific mutation/finalizer、automatic runner/observer及其CLI/client/dead Core入口确实缺席，
 而非靠一个source symbol宣称positive reachability。当前场景同时要求 public conductor 暴露
 `public-host`、`grant-task-authority`、`seal-conductor-state`、`seal-slot-failure`、
-`verify-slot-failure`：preflight 必须发布source-bound execution contract `@2`，formal public command
+`verify-slot-failure`：preflight 必须发布source-bound execution contract `@3`，formal public command
 先固定exact single entry和真实late-bound grant，再只绑定identity/receipt/response而保留后续caller
 策略；退休前 readiness 必须重验 one-to-one response、bounded handoff 与最终 public reads。缺少该
 readiness 时 supervisor 拒绝操作员退休并保持原 Host 可读。pre-attempt formal failure 的 finalizer、
 纯离线 verifier 与 reducer 仍须具备 production reachability；其 source-bound 重建、零 attempt、
 append-only、篡改与 symlink 负向控制由邻近 focused tests 闭合。registry 以
-`late-bound-lane-handoff`、`late-scope-command-heartbeat`、`public-conductor-response-unsealed`、
+`late-bound-lane-handoff`、`late-scope-command-heartbeat`、`nonterminal-response-label-misread`、`public-conductor-response-unsealed`、
 `operator-retirement-readiness-missing` 和 `pre-attempt-formal-failure-unsealed` fault points 跟踪这些
 边界，不能用 synthetic attempt bundle、手工 response path 组合或文字 `NO-GO` 替代。
 fresh-Host invariant使用既有`admission-bypass`、`false-success`与`unverifiable-evidence` P0 trigger；

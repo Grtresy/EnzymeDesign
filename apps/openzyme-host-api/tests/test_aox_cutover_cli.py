@@ -388,6 +388,15 @@ def test_automatic_live_commands_are_absent() -> None:
     assert "consume-diagnostic-authority" not in subcommands
 
 
+@pytest.mark.parametrize("command", ["public-host", "grant-task-authority"])
+def test_public_response_name_help_is_explicitly_nonsemantic(command: str) -> None:
+    parser = cli.build_parser()
+    subcommand = parser._subparsers._group_actions[0].choices[command]
+    help_text = " ".join(subcommand.format_help().split())
+    assert "opaque unique lowercase locator" in help_text
+    assert "receipt and response payload determine its semantic role" in help_text
+
+
 @pytest.mark.parametrize(
     "forwarded",
     [

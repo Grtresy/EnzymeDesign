@@ -637,7 +637,8 @@ generic `public-host scientific authorize`也被拒绝，authority只能由专�
 缺pin、message bytes drift、重复entry或legacy contract均不调用Host、不追加receipt，也不消费response
 label。入口闭合后，调用者仍自由选择其余合法public action与bounded cadence；wrapper只机械注入
 identity/evidence binding。每个真正发出的 public response 因此恰有一条 receipt 和一个
-`openzyme_public_host_response@1`。该入口不选择科学 action、不循环、不自动 approval，也不解释业务状态。
+`openzyme_public_host_response@1`。caller只拥有唯一opaque `--response-name`；wrapper以no-replace envelope
+append-only持久化到root封存，receipt route/payload拥有role，历史合法名称兼容且filename token无权威。该入口不选择科学 action、不循环、不自动 approval，也不解释业务状态。
 
 closed evidence route 只导出 exact session 中已 closed attempt 的 exact sealed selection。
 formal positive 还必须存在且通过 persisted `aox_final_deliverable_validation_receipt@1`；
@@ -654,8 +655,9 @@ receipt chain 只记录 Codex conductor 自己调用的 public surface。agent-o
 transition 只由 closed control、workspace、events 与 export 证明。每个 exact bounded drain
 必须封存HTTP 202 admission response，并在下一 drain 或最终读取前封存唯一terminal response；
 后者必须与唯一`runtime.command.finished` event在command identity/type、status、completion、
-bounded outcome及safe error/retry字段上exact相同。digest-only GET receipt、unsealed/synthetic或
-extra handoff都不是terminal proof；stdout JSON handoff 必须 flush。
+bounded outcome及safe error/retry字段上exact相同。`0..N`个`accepted|claimed`observations必须保持sealed但
+不得进入handoff/retirement，只有payload真实terminal的唯一status可选；digest-only GET、名称推断、
+unsealed/synthetic或extra handoff都不是terminal proof；stdout JSON handoff 必须 flush。
 
 formal drain request只接受public Host schema闭集：`max_signals`与`max_steps_per_agent`均为
 `1..100`整数，`auto_enqueue_ready_tasks=false`，不得出现额外字段。历史 bundle曾写死的`1/8`只是一次

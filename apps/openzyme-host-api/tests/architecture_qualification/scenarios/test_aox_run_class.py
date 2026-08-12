@@ -399,6 +399,10 @@ def test_aox_automatic_run_surfaces_are_retired(
         bootstrap_supervised_sandbox=True,
     )
     authorized_heartbeat = threading.Event()
+    first_runtime_claimed = threading.Event()
+    release_first_runtime = threading.Event()
+    first_runtime_lock = threading.Lock()
+    first_runtime_command_ids: list[str] = []
     original_renew_lease = openzyme_core.RuntimeCommandRepository.renew_lease
     original_runtime_command_call = HostRuntimeCommandExecutor.__call__
 
@@ -425,6 +429,13 @@ def test_aox_automatic_run_surfaces_are_retired(
         executor: HostRuntimeCommandExecutor,
         command: openzyme_core.RuntimeCommandRecord,
     ) -> openzyme_core.RuntimeCommandExecutionResult:
+        with first_runtime_lock:
+            is_first_runtime_command = not first_runtime_command_ids
+            if is_first_runtime_command:
+                first_runtime_command_ids.append(command.command_id)
+        if is_first_runtime_command:
+            first_runtime_claimed.set()
+            assert release_first_runtime.wait(timeout=5)
         result = original_runtime_command_call(executor, command)
         with composition.repository_provider.read() as reader:
             scope_exists = bool(
@@ -441,11 +452,7 @@ def test_aox_automatic_run_surfaces_are_retired(
         "renew_lease",
         observe_authorized_heartbeat,
     )
-    monkeypatch.setattr(
-        HostRuntimeCommandExecutor,
-        "__call__",
-        await_authorized_heartbeat,
-    )
+    monkeypatch.setattr(HostRuntimeCommandExecutor, "__call__", await_authorized_heartbeat)
     public_routes = {
         (method, route.path)
         for route in composition.app.routes
@@ -698,22 +705,25 @@ def test_aox_automatic_run_surfaces_are_retired(
                 ],
             )
         )
+        assert first_runtime_claimed.wait(timeout=5)
+
+        def read_first_status(response_name: str) -> dict[str, object]:
+            return dict(
+                run_bound(
+                    response_name,
+                    ["runtime", "status", "--command-id", str(first["command_id"])],
+                )
+            )
+
+        first_nonterminal = read_first_status("first-drain-observation")
+        assert first_nonterminal["status"] == "claimed"
+        release_first_runtime.set()
         _wait_for_terminal_command(
             public,
             session_id=session_id,
             command_id=str(first["command_id"]),
         )
-        first_terminal = dict(
-            run_bound(
-                "first-drain-terminal",
-                [
-                    "runtime",
-                    "status",
-                    "--command-id",
-                    str(first["command_id"]),
-                ],
-            )
-        )
+        first_terminal = read_first_status("first-drain-terminal")
         workspace = dict(run_bound("pregrant-workspace", ["sessions", "show"]))
         tasks = [
             dict(item["task"])
@@ -854,9 +864,33 @@ def test_aox_automatic_run_surfaces_are_retired(
             list(conductor_evidence_root.glob("public-response-*.json"))
         ) == len(qualified_receipts)
         assert len(runner_argvs) == runner_calls == len(runner_outputs)
+        envelopes, response_paths, _ = aox_conductor_execution._response_descriptors(
+            evidence_root=conductor_evidence_root,
+            receipts=qualified_receipts,
+        )
+        workspace_seq, event_seq, _, events = aox_conductor_execution._final_public_reads(
+            receipts=qualified_receipts,
+            envelopes=envelopes,
+            session_id=session_id,
+        )
+        handoffs = aox_conductor_execution._handoff_sequences(
+            receipts=qualified_receipts,
+            envelopes=envelopes,
+            events=events,
+            session_id=session_id,
+            final_sequence=min(workspace_seq, event_seq),
+        )
+        observation_seq = next(
+            seq
+            for seq, path in response_paths.items()
+            if path.name == "public-response-first-drain-observation.json"
+        )
+        observation_selected = observation_seq in handoffs
+        assert not observation_selected
 
     assert created["session_id"] == session_id
     assert posted["session_id"] == session_id
+    assert first_nonterminal["status"] == "claimed"
     assert first_terminal["status"] == "completed"
     assert all(item["status"] == "completed" for item in post_authority_terminals)
     assert inspection["attempt_count"] == 1, {
@@ -1090,6 +1124,10 @@ def test_aox_automatic_run_surfaces_are_retired(
             "canonical_entry_count": 1,
             "late_bound_authority_receipt_count": len(authority_receipts),
             "sealed_public_receipt_count": len(qualified_receipts),
+            "sealed_nonterminal_runtime_observation": {
+                "status": first_nonterminal["status"],
+                "selected_as_handoff": observation_selected,
+            },
             "first_runtime_command_terminal": first_terminal["status"],
             "post_authority_runtime_command_terminals": [
                 item["status"] for item in post_authority_terminals
@@ -1109,7 +1147,7 @@ def test_aox_automatic_run_surfaces_are_retired(
             "fault_route_fail_closed": fault_rejection.status_code >= 400,
             "export_route_fail_closed": export_rejection.status_code >= 400,
         },
-        "schema_id": "aox_r79_runtime_command_heartbeat_qualification@1",
+        "schema_id": "aox_public_conductor_runtime_qualification@1",
     }
     record_execution_observation_digest(
         "sha256:" + hashlib.sha256(canonical_json_bytes(observation)).hexdigest()

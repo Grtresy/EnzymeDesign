@@ -1628,6 +1628,10 @@ formal closure或 reducer input。supervision 的 receipt常量与纯validator�
 只负责 orchestration并兼容 re-export；这次触发式拆分没有增加第二套 truth。该 correction只授权 non-live
 验证、规格与文档同步，不授权 fresh qualification/admission、下一 rNN、live、MICU、provider、HPC或Chrome。
 
+r83 索引：sealed status仅为`claimed`，含`terminal`的caller locator导致operator false stop；该轮保持
+`potentially_recoverable_but_unverified`、blocked/noncanonical且不访问/恢复。前向wrapper只append-only持久化
+locator，retirement按receipt/payload选handoff；规范与测试见public interface、active delta spec和qualification README，产品runtime不变。
+
 ---
 
 ## 10. Legacy Boundary

@@ -874,11 +874,13 @@ reads. It MUST reject any conductor receipt for agent-owned
 Host transitions SHALL be established only by canonical control, workspace, events
 and export. Every bounded drain MUST seal its exact admission response and exactly
 one later terminal command-status response before the next drain or final reads.
+The caller response name SHALL be only an opaque unique locator; filename tokens MUST NOT assign an evidence role.
+Role SHALL come from receipt route and typed payload; zero or more sealed nonterminal responses MUST NOT enter terminal handoff or satisfy retirement.
 The terminal response MUST reproduce the same command and equal the unique canonical
 `runtime.command.finished` event projection for command id/type, status, completion
 time, bounded outcome and safe error/retry fields. A digest-only status receipt,
-unsealed GET, synthesized response, extra handoff, or status/event drift MUST fail
-closed. CLI JSON handoff MUST be flushed, recursively sanitized on non-2xx, bounded,
+unsealed GET, locator-derived role, synthesized response, extra terminal handoff, or
+status/event drift MUST fail closed. CLI JSON handoff MUST be flushed, recursively sanitized on non-2xx, bounded,
 and sealed with the same canonical response semantics as a successful request.
 
 Before operator-requested Host retirement, the public conductor shell SHALL recompute
@@ -940,6 +942,8 @@ matching closed attempt.
 It SHALL also prove atomic single-start claim publication, pre/post-claim MICU drift
 rejection, child claim binding, the no-PID spawn blocker, current schema closure and
 historical-schema non-adoption without invoking a live provider, HPC or MICU request.
+The same production composition SHALL use a test-only event barrier to prove `claimed -> same-command terminal -> fresh reads`.
+The observation SHALL remain sealed but outside handoff, without name inference, fixed sleep, polling, replacement, or product observer.
 It MUST NOT substitute source inspection for production reachability. Deleted
 diagnostic authority mint/consume, public scientific mutation/finalizer routes and
 CLI, Core `create_attempt` compatibility, private admission argument projection,
@@ -1000,8 +1004,8 @@ package and MUST NOT be a production caller.
 - **THEN** the command and offline evidence validators accept that bounded request; an out-of-range value, extra field or enabled hidden enqueue fails closed without choosing a replacement cadence
 
 #### Scenario: Reject a historical execution contract for current actions
-- **WHEN** an `aox_public_conductor_execution_contract@1` artifact is presented to the current formal wrapper
-- **THEN** it remains historical read-only evidence and cannot issue a Host action or be silently promoted to `@2`
+- **WHEN** an `aox_public_conductor_execution_contract@1` or `@2` artifact is presented to the current formal wrapper
+- **THEN** it remains historical read-only evidence and cannot issue a Host action or be silently promoted to current `@3`
 
 #### Scenario: Bind the formal authority only to the canonical execution task
 - **WHEN** the single canonical pinned entry has produced one sealed bounded drain, its sealed terminal status and a public workspace containing exactly one execution task
@@ -1010,6 +1014,10 @@ package and MUST NOT be a production caller.
 #### Scenario: Bind every terminal handoff to the durable event
 - **WHEN** a conductor submits a bounded drain and later reads its terminal status
 - **THEN** both public responses are sealed and the terminal response exactly reproduces the unique `runtime.command.finished` event projection; an unsealed or digest-only status GET is not terminal proof
+
+#### Scenario: Keep a misleadingly named nonterminal response as observation only
+- **WHEN** zero or more sealed `accepted|claimed` statuses, including a locator containing `terminal`, precede one real terminal response
+- **THEN** all remain sealed, only admission and the unique terminal enter handoff, and retirement still requires fresh workspace/events without shell polling or action choice
 
 #### Scenario: Reject terminal handoff that arrives after frozen final reads
 - **WHEN** the conductor seals workspace and event responses while a bounded drain is still nonterminal, and its terminal status or durable finished event becomes available only after either final-read receipt

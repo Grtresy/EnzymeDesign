@@ -1988,6 +1988,10 @@ pre/post-claim MICU drift、child digest mismatch、no-PID spawn failure 和 cur
 本 slice 只运行 non-live 验证并同步合同，不触碰 frozen r82，不启动 fresh qualification/admission、下一 rNN、
 live、MICU、provider、HPC 或 Chrome，也不在未获授权时提交。
 
+### 2026-08-13 r83 opaque response locator 与 nonterminal observation
+
+r83的`claimed`被caller locator误读后保持`potentially_recoverable_but_unverified`、blocked/noncanonical且不恢复；本设计不新增owner，仅以delta spec/public interface、thin skill和Event composition闭合payload-owned handoff，产品状态、策略与runtime不变。
+
 ### Preparation effect class 与 platform recovery
 
 f778aa1 的 no-output `ledger` 首次由 ordinary-sandbox `uv` 在 cache `EROFS` 处拒绝，未产生 AOX result；

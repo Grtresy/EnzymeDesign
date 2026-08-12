@@ -1,6 +1,6 @@
 interface:
   display_name: "OpenZyme R 系列验证"
   short_description: "按当前文档与机器合同编排 AOX R 系列验证"
-  default_prompt: "使用 $openzyme-validate-r-series 从当前 checkout 启动一轮全新 AOX R 系列验证。先按仓库文档索引和 public CLI 重新推导当前合同；批准执行一次完整 preparation，并在 exact plan 发布后停在唯一人工 live 授权门。不得消费未批准的 live authority，不得修改或修复仓库。"
+  default_prompt: "使用 $openzyme-validate-r-series 从当前 checkout 和机器可读 public contract 重新发现本轮 AOX R 系列能力与边界；只执行我明确授权的阶段，让 tester 根据 typed facts 自行决定策略，并在新的权限、identity、budget、effect 或 evidence 门前停止。不得修改或修复仓库。"
 policy:
   allow_implicit_invocation: true

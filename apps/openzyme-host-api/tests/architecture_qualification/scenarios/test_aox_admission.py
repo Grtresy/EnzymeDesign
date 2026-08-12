@@ -178,7 +178,6 @@ _ATTEMPT_START_CONTRACT_SOURCES = {
         ATTEMPT_BUNDLE_SCHEMA_ID_V4,
     ),
 }
-_VALIDATION_SKILL = _REPO_ROOT / ".agents/skills/openzyme-validate-r-series/SKILL.md"
 _VALIDATION_GOAL = _REPO_ROOT / "docs/v3/aox-r-series-codex-goal.md"
 
 
@@ -212,22 +211,6 @@ def _assert_attempt_start_guard_sources() -> list[str]:
             if phrase not in document:
                 raise AssertionError(f"{path} omits current guard phrase: {phrase}")
         checked.append(str(path.relative_to(_REPO_ROOT)))
-
-    validation_skill = _VALIDATION_SKILL.read_text(encoding="utf-8")
-    ordered_skill_phrases = (
-        "prestart root/evidence",
-        "由 canonical ledger owner读取一次",
-        "原子 no-replace 发布 attempt-scoped start claim",
-        "立即重读同一 ledger",
-        "child必须重验同一 claim digest",
-    )
-    positions = [validation_skill.index(phrase) for phrase in ordered_skill_phrases]
-    if positions != sorted(positions):
-        raise AssertionError("validation skill drifts from the canonical start order")
-    for phrase in ("external effect保持unproven", "不得把它当作startup"):
-        if phrase not in validation_skill:
-            raise AssertionError(f"validation skill omits spawn blocker rule: {phrase}")
-    checked.append(str(_VALIDATION_SKILL.relative_to(_REPO_ROOT)))
 
     validation_goal = _VALIDATION_GOAL.read_text(encoding="utf-8")
     for phrase in (

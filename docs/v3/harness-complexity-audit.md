@@ -436,6 +436,11 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   负例。外部 caller 状态 unknown，因此本轮不 breaking-remove 参数。该收口减少 shadow truth，不替 agent
   选择任何 scientific action、task、drain cadence 或失败策略。
 
+- [x] R 系列 validation skill 与 response filename 是否形成第二套 operator workflow truth。
+
+  skill复制launcher/handle/runbook且r83 tester让locator覆盖typed `claimed`，共同形成隐式operator状态机。
+  现已改为thin skill、payload-owned handoff及`0..N`/Event回归，无poll/retry或runtime变化；r83仍frozen、blocked/noncanonical、未恢复。
+
 - [ ] AOX formal preflight failure 的 current stage 是否仍能准确表达实际 launch 边界。
 
   当前债务：`aox_formal_preflight_failure@1` 的 `failed_stage` 保留

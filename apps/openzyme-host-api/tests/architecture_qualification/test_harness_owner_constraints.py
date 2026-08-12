@@ -30,34 +30,6 @@ GENERIC_RUNTIME_SOURCES = (
     "packages/openzyme-core/src/openzyme_core/teammates.py",
     "packages/openzyme-runtime/src/openzyme_runtime/tooling.py",
 )
-QUALIFICATION_HANDLE_CONTRACT_SOURCES = (
-    ".agents/skills/openzyme-validate-r-series/SKILL.md",
-    "docs/OpenZyme架构设计.md",
-    "docs/v3/architecture-qualification/README.md",
-    "openspec/changes/aox-hmm-blank-world-cutover/design.md",
-    (
-        "openspec/changes/aox-hmm-blank-world-cutover/specs/"
-        "blank-world-live-cutover/spec.md"
-    ),
-)
-PLATFORM_RECOVERY_FRAGMENTS = (
-    'openzyme-aox-cutover = "openzyme_host_api.aox_cutover_cli:main"',
-    "`check-config`",
-    "`--output`",
-    "`launcher_invocation_count=2`",
-    "`platform_escalation_count=1`",
-    "`adoptable_product_result_count=1`",
-    "typed failure",
-    "unknown effect",
-    "`require_escalated`",
-)
-PREPARATION_PLATFORM_RECOVERY_CONTRACTS = (
-    ("apps/openzyme-host-api/pyproject.toml", ('openzyme-aox-cutover = "openzyme_host_api.aox_cutover_cli:main"',)),
-    (".agents/skills/openzyme-validate-r-series/SKILL.md", PLATFORM_RECOVERY_FRAGMENTS),
-    ("openspec/changes/aox-hmm-blank-world-cutover/specs/blank-world-live-cutover/spec.md", PLATFORM_RECOVERY_FRAGMENTS),
-)
-
-
 def _canonical(payload: object) -> bytes:
     return (
         json.dumps(
@@ -195,42 +167,30 @@ def test_r_series_repair_skill_requires_bounded_technical_debt_review() -> None:
     assert "事故耦合的有界技术债审查" in goal
 
 
-def test_qualification_handle_contract_tracks_nested_command_owner() -> None:
-    required_fragments = (
-        "`functions.exec`",
-        "`cell_id`",
-        "`functions.wait`",
-        "`outer cell`",
-        "`exec_command`",
-        "`session_id`",
-        "`write_stdin`",
-        "`inner session`",
-        "`structured result`",
-        "`.output`",
-        "`exit_code`",
-        "`blocked`",
-        "`relaunch`",
-        "`late report`",
-        "`non-adoption`",
+def test_r_series_validation_skill_is_a_thin_current_contract_router() -> None:
+    path = REPO_ROOT / ".agents/skills/openzyme-validate-r-series/SKILL.md"
+    skill = path.read_text(encoding="utf-8")
+    assert 50 <= len(skill.splitlines()) <= 75
+    for fragment in (
+        "exact authorization、identity、authority、budget、deadline 与 effect",
+        "unknown/external effect",
+        "一次最多发出一条当前获批的 bounded mutation",
+        "source-bound evidence",
+        "hidden poll/retry",
+        "offline verifier/reducer",
+        "机器合同动态解析",
+        "历史 incident 只在 current source 明确引用时",
+    ):
+        assert fragment in skill
+    assert not any(
+        fragment in skill
+        for fragment in (
+            "functions.exec",
+            ".venv/bin/openzyme-aox-cutover",
+            "launcher_invocation_count",
+            "aox_public_conductor_execution_contract@",
+        )
     )
-
-    for relative_path in QUALIFICATION_HANDLE_CONTRACT_SOURCES:
-        source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
-        missing = [fragment for fragment in required_fragments if fragment not in source]
-        assert not missing, f"{relative_path} missing {missing}"
-
-
-@pytest.mark.parametrize(
-    ("relative_path", "expected_fragments"),
-    PREPARATION_PLATFORM_RECOVERY_CONTRACTS,
-)
-def test_preparation_platform_recovery_contract_has_one_public_owner(
-    relative_path: str,
-    expected_fragments: tuple[str, ...],
-) -> None:
-    source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
-    missing = [fragment for fragment in expected_fragments if fragment not in source]
-    assert not missing, f"{relative_path} missing {missing}"
 
 
 def test_owner_registry_rejects_duplicate_owner_identity_and_dead_symbol() -> None:

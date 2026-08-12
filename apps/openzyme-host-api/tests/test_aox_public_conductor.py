@@ -1367,7 +1367,9 @@ def _formal_slot_failure_fixture(
     late_mutation: bool = False,
     terminal_after_final_reads: bool = False,
     typed_cause: bool = True,
+    nonterminal_count: int = 0,
 ) -> dict[str, object]:
+    assert nonterminal_count >= 0
     tmp_path.mkdir(parents=True, exist_ok=True)
     preflight_path, preflight, identity_path = _preflight_fixture(tmp_path)
     evidence_root = preflight_path.parent
@@ -1419,25 +1421,33 @@ def _formal_slot_failure_fixture(
         },
         status_code=202,
     )
+    nonterminal_receipts = [
+        _receipt(sequence, "GET", status_url, {})
+        for sequence in range(4, 4 + nonterminal_count)
+    ]
+    terminal_sequence = 4 + nonterminal_count + (2 if terminal_after_final_reads else 0)
+    workspace_sequence = 4 + nonterminal_count
+    if not terminal_after_final_reads:
+        workspace_sequence = terminal_sequence + 1
     terminal_receipt = _receipt(
-        6 if terminal_after_final_reads else 4,
+        terminal_sequence,
         "GET",
         status_url,
         {},
     )
     workspace_receipt = _receipt(
-        4 if terminal_after_final_reads else 5,
+        workspace_sequence,
         "GET",
         f"/v3/sessions/{session_id}/workspace",
         {},
     )
     event_receipt = _receipt(
-        5 if terminal_after_final_reads else 6,
+        workspace_sequence + 1,
         "GET",
         f"/v3/sessions/{session_id}/events?replay=1&after_cursor=0",
         {"replay": True, "after_cursor": 0},
     )
-    records = [session_receipt, entry_receipt, drain_receipt]
+    records = [session_receipt, entry_receipt, drain_receipt, *nonterminal_receipts]
     records.extend(
         [workspace_receipt, event_receipt, terminal_receipt]
         if terminal_after_final_reads
@@ -1446,7 +1456,7 @@ def _formal_slot_failure_fixture(
     if late_mutation:
         records.append(
             _receipt(
-                7,
+                7 + nonterminal_count,
                 "POST",
                 f"/v3/sessions/{session_id}/pending-approvals/approval-late/resolve",
                 {
@@ -1583,6 +1593,17 @@ def _formal_slot_failure_fixture(
             {"session_id": session_id, "status": "accepted"},
         ),
         "public-response-drain-admission.json": (drain_receipt, admitted),
+        **{
+            f"public-response-observation-{index}-terminal.json": (
+                receipt,
+                {
+                    **admitted,
+                    "status": "claimed",
+                    "started_at": "2026-08-06T00:00:01+00:00",
+                },
+            )
+            for index, receipt in enumerate(nonterminal_receipts, start=1)
+        },
         "public-response-drain-terminal.json": (terminal_receipt, terminal),
         "public-response-final-workspace.json": (workspace_receipt, workspace),
         "public-response-final-events.json": (event_receipt, events),
@@ -1652,11 +1673,17 @@ def test_pregrant_task_binding_uses_one_sealed_post_drain_execution_task(
     assert wrong_task.value.code == "public_task_late_binding_invalid"
 
 
+@pytest.mark.parametrize("nonterminal_count", [0, 1, 7, 254])
 def test_conductor_retirement_readiness_closes_zero_attempt_public_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nonterminal_count: int,
 ) -> None:
-    sources = _formal_slot_failure_fixture(tmp_path, monkeypatch)
+    sources = _formal_slot_failure_fixture(
+        tmp_path,
+        monkeypatch,
+        nonterminal_count=nonterminal_count,
+    )
     supervision_path = sources["evidence_root"] / "aox-host-supervision.json"
     supervision_path.unlink()
 
@@ -1673,6 +1700,14 @@ def test_conductor_retirement_readiness_closes_zero_attempt_public_state(
     assert readiness["handoff_response_names"] == [
         path.name for path in sources["handoffs"]
     ]
+    observation_names = {
+        f"public-response-observation-{index}-terminal.json"
+        for index in range(1, nonterminal_count + 1)
+    }
+    assert observation_names <= {
+        item["name"] for item in readiness["sealed_responses"]
+    }
+    assert observation_names.isdisjoint(readiness["handoff_response_names"])
     assert readiness["evidence_response_name"] is None
     _write_canonical(
         supervision_path,
@@ -1696,7 +1731,6 @@ def test_conductor_retirement_readiness_closes_zero_attempt_public_state(
     assert resolved["receipt_chain"] == sources["receipt_chain"]
     assert resolved["workspace"] == sources["workspace"]
     assert resolved["events"] == sources["events"]
-
 
 def test_conductor_retirement_readiness_requires_fresh_reads_after_terminal_handoff(
     tmp_path: Path,

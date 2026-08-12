@@ -1495,7 +1495,10 @@ def build_parser() -> argparse.ArgumentParser:
     public_host.add_argument(
         "--response-name",
         required=True,
-        help="unique lowercase label for this sealed public response",
+        help=(
+            "opaque unique lowercase locator for this sealed response; "
+            "the receipt and response payload determine its semantic role"
+        ),
     )
     public_host.add_argument(
         "host_cli_args",
@@ -1515,7 +1518,10 @@ def build_parser() -> argparse.ArgumentParser:
     grant_task_authority.add_argument(
         "--response-name",
         required=True,
-        help="unique lowercase label for the sealed public authority response",
+        help=(
+            "opaque unique lowercase locator for the sealed authority response; "
+            "the receipt and response payload determine its semantic role"
+        ),
     )
     grant_task_authority.add_argument(
         "--task-id",
