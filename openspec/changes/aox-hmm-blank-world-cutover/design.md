@@ -1958,38 +1958,23 @@ negative controls 保留真实安全边界。
 schema 或 external effect owner，不增加 recovery state machine，也不启动 fresh admission、下一 rNN、live、
 MICU、provider、HPC 或 Chrome。
 
-### f778aa1 preparation ledger first-call 与 no-retry closure
+### Preparation effect class 与 platform recovery
 
-f778aa1 上的 fresh preparation 已完成唯一 full qualification、唯一 `check-config` 与唯一 `pin`，尚未发布
-plan 或分配 rNN。随后 ledger wrapper 首次在普通 Codex filesystem sandbox 中调用
-`uv --project apps/openzyme-host-api run openzyme-aox-cutover ledger ...`，因 `uv` 访问 checkout 外 cache
-文件时收到 `EROFS` 而以 exit 2 结束，没有 session handle 或 AOX JSON。操作员随后用完全相同的 wrapper
-请求 `require_escalated` 并取得 exit 0 snapshot。第二次 issuance 不是 handle resume；通用“平台许可不是
-第二轮业务授权”不能覆盖已经消耗的首次且唯一命令。因此该历史保持 `rNN=none`、
-`operator_procedure_violation.unapproved_ledger_wrapper_retry_after_sandbox_cache_failure`，late successful
-snapshot 永久 non-adoptable。没有 authority、slot、root、Host、session、attempt、provider/HPC/Chrome
-scientific effect，也不能把 wrapper `EROFS` 提升为 OpenZyme 产品 failure。
+f778aa1 的 no-output `ledger` 首次由 ordinary-sandbox `uv` 在 cache `EROFS` 处拒绝，未产生 AOX result；
+完全相同的 launcher/inputs 随后只增加 `require_escalated` 并返回 snapshot。旧设计把 launcher issuance 与
+产品 retry 合并计数，因而误判第二次调用。纠正后它属于一次 platform recovery；历史 preparation 仍冻结，
+不追溯采用 snapshot、复活 plan 或产生新 evidence。ec9151b 上同型 `check-config` blocker 也只作冻结记录。
 
-前向合同删除 ledger 对 `uv` cache 的偶然依赖，不修改产品代码。current public owner 仍是
-`apps/openzyme-host-api/pyproject.toml` 的 `[project.scripts]` 映射
-`openzyme-aox-cutover = "openzyme_host_api.aox_cutover_cli:main"`；当前 checkout 生成的公开 console script
-`.venv/bin/openzyme-aox-cutover ledger --path <literal-ledger-path>` 进入同一 public parser/handler，不是
-private bypass。发出前只做静态 entrypoint binding 检查，并从 exact pinned
-`aox_cutover_launch_profile@1` 一次只读解析、验证 `ledger_path`；正式 argv 使用该值的字面量，不通过
-`jq` / shell substitution、`zsh -fc`、ambient environment 或命令内 profile lookup 再组合。
+设计按 effect class 分流：current source 证明只读、零 external effect 的 `check-config` 与无 `--output`
+`ledger`，可在明确 platform rejection、无产品结果/effect 后执行一次 exact permission-only recovery；计数
+分别描述 launcher、platform escalation 与 adoptable product result。typed failure、unknown effect、输入或
+launcher 变化、非只读命令及第二次 escalation 均 fail closed。qualification、`pin`、`preflight` 的已知
+平台需求则在首次 issuance 前闭合。public owner 仍是 `[project.scripts]` 绑定的 CLI main，`uv` 与 `.venv`
+只是 launcher；ledger 继续使用 pinned literal path，禁止 private handler bypass。
 
-正式 ledger 是普通 sandbox 中的唯一直接调用，不使用 `uv`、`--output` 或提权。entrypoint 或 pinned
-literal path 在 issuance 前不可取得时，以 `ledger_execution_count=0` 的 operator/platform blocker 停止，
-不做 ledger probe 或 fallback。一经实际发出，任何 wrapper/CLI nonzero 都计为 execution count 1 并立即
-停止；不得切换 `.venv` / `uv`、cache、environment、sandbox permission、launcher、path 或 output 后重发。
-同一 yielded outer cell / inner session 的 structured-result resume 不是重试；handle 失联或停后到达的
-stdout/snapshot 均受 non-adoption。只有唯一 exact command 的真实 `exit_code=0` 及同一 structured result
-中的 safe snapshot 可继续 preparation。`pin` / `preflight` 经过 actual Podman resolver，继续使用既有
-`uv --project ... + require_escalated` 合同。
-
-该 correction 只同步 operator contract 和跨来源静态 regression；production Python、ledger schema、CLI
-handler、read-only SQLite owner、MICU budget、`uv` 与 Codex platform 都不变。它不增加 fallback、automatic
-retry、observer、shadow truth、product state 或科学 action policy，也不修改或重试 frozen preparation。
+完整规范只由 validation skill 与 delta spec 持有；职责化回归验证 project-script owner 和两份 normative
+source 的核心计数/负控。production Python、ledger/authority/effect/provenance/isolation 均不变，也不新增
+fallback、observer、shadow truth、state machine 或科学 action policy。
 
 ## Risks / Trade-offs
 

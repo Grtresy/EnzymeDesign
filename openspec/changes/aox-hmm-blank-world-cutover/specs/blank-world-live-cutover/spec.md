@@ -1257,35 +1257,38 @@ typed path segment, or change existing successful path/page semantics.
 - **WHEN** the missing child would require arbitrary dictionary-key addressing beyond the current safe dot/index grammar
 - **THEN** the tool reports locality only and does not invent an escaped or typed path, return the parent value, or claim that arbitrary-key addressing is implemented
 
-### Requirement: Preparation ledger snapshot uses one cache-independent public invocation
-The preparation conductor MUST read the cumulative MICU ledger through the current canonical checkout's installed
-public console script `.venv/bin/openzyme-aox-cutover ledger --path <literal-ledger-path>`. The console owner MUST
-remain the `[project.scripts]` mapping `openzyme-aox-cutover = "openzyme_host_api.aox_cutover_cli:main"`; the
-conductor MUST NOT replace it with a private import or handler call. Before issuance, the conductor MAY only verify
-that the console script exists, is executable and is bound to the same checkout, and MUST read and validate
-`ledger_path` once from the exact pinned `aox_cutover_launch_profile@1`. The formal argv MUST carry that value as a
-literal argument and MUST NOT use `jq`, shell substitution, `zsh -fc`, ambient re-resolution, or an in-command profile
-lookup.
+### Requirement: Read-only preparation commands permit one exact platform recovery
+Current source MUST prove preparation `check-config` and `ledger` without `--output` read-only with zero external effect
+before either command is eligible. Their public owner identity MUST remain the
+`[project.scripts]` mapping `openzyme-aox-cutover = "openzyme_host_api.aox_cutover_cli:main"`; current-checkout
+`uv --project ... run` and `.venv/bin/openzyme-aox-cutover` are launchers, not distinct owners, and neither is the
+exclusive public launcher. A private import or direct handler call MUST NOT replace the public owner.
 
-The ledger invocation MUST run once in the ordinary sandbox without `uv`, `--output`, or escalated sandbox permission.
-If the entrypoint or pinned literal path is unavailable before issuance, the conductor MUST stop with
-`ledger_execution_count=0` and MUST NOT probe the ledger or switch launcher, cache, environment, permission, path, or
-output. Once the command is actually issued, any nonzero wrapper or CLI terminal MUST consume the one invocation and
-stop the preparation. The conductor MUST NOT reissue with a changed `.venv` / `uv`, cache, environment, sandbox
-permission, launcher, path, or output, and MUST NOT adopt late stdout or a late snapshot. Resuming the exact yielded
-outer-cell or inner-session handle to obtain its complete structured result is not a retry; a lost handle fails closed,
-and only the exact invocation's `exit_code=0` and same-result safe snapshot MAY continue preparation. These rules MUST
-NOT alter the existing `uv --project ...` plus pre-authorized escalated execution contract for Podman-transitive `pin`
-and formal `preflight`.
+`check-config` MUST retain its complete command-scoped environment. `ledger` MUST omit `--output`, read and validate
+`ledger_path` once from the exact pinned launch profile, and carry it as literal argv without `jq`, shell substitution,
+`zsh -fc`, ambient re-resolution, or an in-command profile lookup.
 
-#### Scenario: Stop before an unavailable ledger invocation
-- **WHEN** static pre-issue inspection cannot prove the public console binding or cannot obtain the literal path from the exact pinned launch profile
-- **THEN** preparation stops as an operator/platform blocker with `ledger_execution_count=0`, no ledger probe, no fallback, and no product state or effect
+When the first ordinary-sandbox launcher invocation terminates with an explicit sandbox/launcher rejection such as
+`uv` cache `EROFS`, and the same result contains no AOX structured product result, typed failure, or unknown effect, the
+conductor MAY issue exactly one platform recovery. The recovery MUST preserve exact argv, environment, cwd, path,
+output, and launcher, changing only `sandbox_permissions` to `require_escalated`. A successful recovery MUST be counted
+as `launcher_invocation_count=2`, `platform_escalation_count=1`, and `adoptable_product_result_count=1`; the conductor
+MUST NOT depend on whether the product handler started because that fact is not required or reliably observable.
 
-#### Scenario: Freeze the first issued nonzero ledger command
-- **WHEN** the one direct ledger command has been issued and its wrapper or CLI returns a nonzero terminal result
-- **THEN** its execution count is one, preparation stops without changing launcher/cache/environment/permission/path/output, and any later stdout or snapshot is non-adoptable
+Recovery MUST be forbidden after any structured product result, typed failure, or unknown effect; for any non-read-only
+command; when argv, environment, cwd, path, output, or launcher would change; or after one escalation or two launcher
+issuances. Resuming the exact yielded outer-cell or inner-session handle is not a new invocation. A lost handle fails
+closed, and a late result is non-adoptable.
 
-#### Scenario: Resume only the exact ledger handle
-- **WHEN** the exact direct ledger invocation yields an outer cell or inner process session
-- **THEN** the conductor resumes only that handle until its complete structured result and real exit code, without issuing another command or treating platform escalation as retry authority
+Full qualification, Podman-transitive `pin`, and formal `preflight` belong to effect classes with known sandbox-external
+requirements. They MUST request narrowly scoped `require_escalated` permission before their first issuance and MUST stop
+after that invocation fails; the read-only recovery rule MUST NOT be used as a permission probe or second attempt.
+Platform permission MUST NOT expand preparation/live business authority, identity, budget, or external-effect scope.
+
+#### Scenario: Recover one read-only launcher rejection
+- **WHEN** eligible `check-config` or no-output `ledger` receives an explicit ordinary-sandbox launcher rejection with no product result or effect
+- **THEN** one otherwise-identical escalated issuance may produce the sole adoptable product result, with launcher, escalation, and adoption counts reported separately
+
+#### Scenario: Reject recovery outside the proven effect class
+- **WHEN** a result/effect exists or is unknown, an invocation input or launcher would change, the command is not proven read-only, or one escalation already occurred
+- **THEN** preparation stops without another issuance, fallback, result adoption, authority change, or product/external effect

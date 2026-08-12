@@ -40,18 +40,21 @@ QUALIFICATION_HANDLE_CONTRACT_SOURCES = (
         "blank-world-live-cutover/spec.md"
     ),
 )
-PREPARATION_LEDGER_CONTRACT_SOURCES = (
-    ".agents/skills/openzyme-validate-r-series/SKILL.md",
-    "docs/v3/aox-r-series-codex-goal.md",
-    "docs/OpenZyme架构设计.md",
-    "docs/v3/aox-hmm-blank-world-cutover.md",
-    "openspec/changes/aox-hmm-blank-world-cutover/proposal.md",
-    "openspec/changes/aox-hmm-blank-world-cutover/design.md",
-    "openspec/changes/aox-hmm-blank-world-cutover/tasks.md",
-    (
-        "openspec/changes/aox-hmm-blank-world-cutover/specs/"
-        "blank-world-live-cutover/spec.md"
-    ),
+PLATFORM_RECOVERY_FRAGMENTS = (
+    'openzyme-aox-cutover = "openzyme_host_api.aox_cutover_cli:main"',
+    "`check-config`",
+    "`--output`",
+    "`launcher_invocation_count=2`",
+    "`platform_escalation_count=1`",
+    "`adoptable_product_result_count=1`",
+    "typed failure",
+    "unknown effect",
+    "`require_escalated`",
+)
+PREPARATION_PLATFORM_RECOVERY_CONTRACTS = (
+    ("apps/openzyme-host-api/pyproject.toml", ('openzyme-aox-cutover = "openzyme_host_api.aox_cutover_cli:main"',)),
+    (".agents/skills/openzyme-validate-r-series/SKILL.md", PLATFORM_RECOVERY_FRAGMENTS),
+    ("openspec/changes/aox-hmm-blank-world-cutover/specs/blank-world-live-cutover/spec.md", PLATFORM_RECOVERY_FRAGMENTS),
 )
 
 
@@ -192,86 +195,17 @@ def test_qualification_handle_contract_tracks_nested_command_owner() -> None:
         assert not missing, f"{relative_path} missing {missing}"
 
 
-def test_preparation_ledger_contract_is_public_single_call_and_non_adopting() -> None:
-    project = (REPO_ROOT / "apps/openzyme-host-api/pyproject.toml").read_text(
-        encoding="utf-8"
-    )
-    assert (
-        'openzyme-aox-cutover = "openzyme_host_api.aox_cutover_cli:main"'
-        in project
-    )
-
-    # This is deliberately a repository-source contract check: it neither executes
-    # the console script nor turns Codex sandbox/platform behavior into product state.
-    assert all(
-        not relative_path.startswith(("apps/openzyme-host-api/src/", "packages/"))
-        for relative_path in PREPARATION_LEDGER_CONTRACT_SOURCES
-    )
-    common_fragments = (
-        "`ledger_execution_count=0`",
-        "late",
-        "nonzero",
-        "snapshot",
-    )
-    for relative_path in PREPARATION_LEDGER_CONTRACT_SOURCES:
-        source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
-        missing = [fragment for fragment in common_fragments if fragment not in source]
-        assert not missing, f"{relative_path} missing {missing}"
-        assert any(
-            fragment in source
-            for fragment in ("non-adopt", "不得采用", "不可采用", "禁止采用")
-        ), relative_path
-        assert any(
-            fragment in source
-            for fragment in ("首次且唯一", "run once", "one invocation")
-        ), relative_path
-        assert "普通 sandbox" in source or "ordinary sandbox" in source, relative_path
-        assert "pin" in source and "preflight" in source, relative_path
-
-    full_contract_sources = (
-        ".agents/skills/openzyme-validate-r-series/SKILL.md",
-        "docs/OpenZyme架构设计.md",
-        "docs/v3/aox-hmm-blank-world-cutover.md",
-        "openspec/changes/aox-hmm-blank-world-cutover/proposal.md",
-        "openspec/changes/aox-hmm-blank-world-cutover/design.md",
-        "openspec/changes/aox-hmm-blank-world-cutover/tasks.md",
-        (
-            "openspec/changes/aox-hmm-blank-world-cutover/specs/"
-            "blank-world-live-cutover/spec.md"
-        ),
-    )
-    required_fragments = (
-        "`.venv/bin/openzyme-aox-cutover ledger --path <literal-ledger-path>`",
-        "`[project.scripts]`",
-        "`uv`",
-        "`--output`",
-        "sandbox",
-        "launcher",
-        "cache",
-        "checkout",
-        "environment",
-        "path",
-        "shell substitution",
-    )
-    for relative_path in full_contract_sources:
-        source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
-        missing = [fragment for fragment in required_fragments if fragment not in source]
-        assert not missing, f"{relative_path} missing {missing}"
-        assert "permission" in source or "提权" in source, relative_path
-        assert any(
-            fragment in source
-            for fragment in ("structured result", "structured-result")
-        ), relative_path
-        assert any(
-            fragment in source
-            for fragment in (
-                "不得使用 `uv`、`--output`",
-                "不使用 `uv`、`--output`",
-                "禁止 `uv`、`--output`",
-                "without `uv`, `--output`",
-            )
-        ), relative_path
-        assert "重发" in source or "reissue" in source, relative_path
+@pytest.mark.parametrize(
+    ("relative_path", "expected_fragments"),
+    PREPARATION_PLATFORM_RECOVERY_CONTRACTS,
+)
+def test_preparation_platform_recovery_contract_has_one_public_owner(
+    relative_path: str,
+    expected_fragments: tuple[str, ...],
+) -> None:
+    source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+    missing = [fragment for fragment in expected_fragments if fragment not in source]
+    assert not missing, f"{relative_path} missing {missing}"
 
 
 def test_owner_registry_rejects_duplicate_owner_identity_and_dead_symbol() -> None:

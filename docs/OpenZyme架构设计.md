@@ -1582,36 +1582,17 @@ factual owner hint；`artifact.get` missing-path error 增加 deepest resolved p
 type 与 bounded parent read hint。修复不增加 recovery state machine、manifest fallback、arbitrary-key path
 语法、科学策略或外部 authority，也不修改 r81 历史记录。
 
-### 9.18 preparation ledger first-call 与平台边界
+### 9.18 preparation 只读 effect class 与平台恢复
 
-f778aa1 的 fresh preparation 在 plan 发布前读取累计 MICU ledger 时，首次 `uv --project ... ledger`
-wrapper 在普通 filesystem sandbox 因 checkout 外 cache `EROFS` 以 nonzero 结束；同一 wrapper 随后被提权
-再次实际发出并成功。第二次 issuance 不是 handle resume，也不能由“平台许可不是第二轮业务授权”授权；
-其 late snapshot 永久 non-adoptable。该历史保持 `rNN=none` 的
-`operator_procedure_violation.unapproved_ledger_wrapper_retry_after_sandbox_cache_failure` preparation
-blocker，没有 authority、slot、root、Host、session、attempt 或产品 state/effect。outer `uv` stderr 只支持
-handler 很可能未启动的源码推论，不是 canonical OpenZyme failure。
+`check-config` 与不带 `--output` 的 `ledger` 由 current source 证明为只读、零 external effect；前者保留 command-scoped config，后者使用 pinned literal ledger path。public owner 始终是 `[project.scripts] ->
+openzyme_host_api.aox_cutover_cli:main`，`uv` 与 current-checkout `.venv` 仅是 launcher。
 
-前向 ledger 读取复用现有 public owner 而不增加产品 capability：
-`apps/openzyme-host-api/pyproject.toml` 的 `[project.scripts]` 将 `openzyme-aox-cutover` 绑定到
-`openzyme_host_api.aox_cutover_cli:main`，同一 checkout 已安装的
-`.venv/bin/openzyme-aox-cutover ledger --path <literal-ledger-path>` 因而仍进入 public parser/handler，
-不是 private bypass。发出前只做静态存在/可执行/current-checkout binding 检查，并从 exact pinned
-`aox_cutover_launch_profile@1` 一次只读解析、验证 `ledger_path`；正式 argv 只能使用该字面量，不使用
-`jq` / shell substitution、`zsh -fc`、ambient 或命令内 profile lookup。
-
-该命令首次且唯一地在普通 sandbox 直接执行，不使用 `uv`、`--output` 或提权。entrypoint/path 在发出前
-不可取得时，以 `ledger_execution_count=0` operator/platform blocker 停止且不 probe/fallback；一经发出，
-任意 wrapper/CLI nonzero 都计为唯一 execution 并停止，禁止更换 `.venv` / `uv`、cache、environment、
-permission、launcher、path 或 output 后重发。exact outer cell / inner session 的 structured-result resume
-不算重试；失联或停后 stdout/snapshot 均 non-adoptable。只有唯一 exact command 的真实 `exit_code=0` 和
-同一 structured result 可继续 preparation。实际经过 Podman resolver 的 `pin` / `preflight` 仍使用既有
-`uv --project ... + require_escalated` 合同。
-
-这是 Codex conductor/operator 合同，不是产品 runtime 状态机。它不修改 CLI handler、read-only SQLite
-ledger owner、schema、MICU budget、`uv` 或平台，不引入 fallback、observer、automatic retry、shadow truth
-或科学策略约束；跨来源静态回归只验证 repository-owned contract 与 public console owner，不执行 sandbox
-或 ledger 产品路径。
+ordinary sandbox 明确拒绝且没有产品 structured result、typed failure 或 unknown effect 时，允许 exact
+launcher/inputs 不变、只改变 sandbox permission 的一次 recovery，并分别记录 launcher、escalation 与
+adoptable product result。任何产品结果/effect、输入或 launcher 变化、非只读命令、第二次升级都 fail closed；
+exact handle resume 不增加 invocation；qualification、`pin`、`preflight` 必须首次 issuance 前提权。完整规范
+由 validation skill 与 active OpenSpec 持有；这不是产品状态机，不修改 CLI/SQLite/MICU/authority/provenance/
+isolation 或 agent 策略，也不引入 fallback、observer 或 automatic retry。
 
 ---
 

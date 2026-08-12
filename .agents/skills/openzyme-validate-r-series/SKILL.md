@@ -28,25 +28,25 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZym
 停止。不得先消费 authority，再用 sandboxed `preflight` 探测权限，也不得把已知的外层只读挂载映射为
 OpenZyme 产品或 Podman installation failure。该平台许可不扩大 exact plan、预算或 external-effect 授权。
 
-preparation 的累计 MICU `ledger` 读取不经过 Podman，使用与 `pin` / `preflight` 不同的最小权限合同。
-它的首次且唯一 launcher 是当前 canonical checkout 已安装的公开 console script
-`.venv/bin/openzyme-aox-cutover ledger --path <literal-ledger-path>`；该 wrapper 必须仍由
-`[project.scripts]` 绑定到 `openzyme_host_api.aox_cutover_cli:main`，不能替换成 private import 或 handler
-直调。发出前只允许静态确认该文件存在、可执行且解释器/entrypoint 绑定同一 checkout，并从 exact pinned
-`aox_cutover_launch_profile@1` 一次只读解析、验证 `ledger_path`，把取得的值作为正式 argv 中的字面量参数。
-不得通过 `jq` / shell substitution、`zsh -fc`、ambient environment 或正式命令内的 profile 重解析来
-组装该参数，也不得以预运行 `ledger` 探测平台。
+preparation 的 `check-config` 与不带 `--output` 的累计 MICU `ledger` 是 current source 证明只读、零 external
+effect 的 effect class。public owner identity 始终是 `[project.scripts]` 映射
+`openzyme-aox-cutover = "openzyme_host_api.aox_cutover_cli:main"`；`uv --project ... run` 与 current-checkout
+`.venv/bin/openzyme-aox-cutover` 只是可选 launcher，不得 private import/handler 直调或固定唯一 launcher。
+`check-config` 保留完整 command-scoped environment；`ledger` 从 exact pinned launch profile 一次只读取得、
+验证 literal `ledger_path`，且不使用 `--output`、shell substitution、ambient 或命令内 profile lookup。
 
-该唯一 `ledger` 命令必须在普通 sandbox 中直接执行，不得使用 `uv`、`--output` 或
-`sandbox_permissions=require_escalated`。console script 或 pinned literal path 在发出前不可用时，报告
-`ledger_execution_count=0` 的 operator/platform blocker并停止，不切换 launcher、cache、environment、
-sandbox permission、path 或 output。命令一经实际发出，wrapper 或 CLI 的任何 nonzero terminal 都计为
-唯一一次执行并立即停止；禁止更换 `.venv` / `uv`、cache、environment、permission、launcher、path、
-output 后重发，也禁止采用停后到达的 stdout 或 late snapshot。恢复同一个 yielded outer cell / inner
-session handle 不算重试，但必须保留完整 structured result 直到真实 `exit_code`；handle 失联则停止，之后
-出现的结果仍受 non-adoption 约束。只有该 exact 唯一命令的 terminal `exit_code=0` 与同一 structured
-result 中的安全 snapshot 可以进入后续 preparation。上述 ledger 合同不改变 `pin` / `preflight` 的
-`uv --project ... + require_escalated` 规则。
+这两个只读命令首次在 ordinary sandbox 明确因 sandbox/launcher rejection（例如 `uv` cache `EROFS`）
+终止，且同一结果没有 AOX structured result、typed failure 或 unknown effect 时，允许一次 platform recovery：
+exact argv、environment、cwd、path、output 与 launcher 全部不变，只把
+`sandbox_permissions` 改为 `require_escalated`。成功时分别报告 `launcher_invocation_count=2`、
+`platform_escalation_count=1`、`adoptable_product_result_count=1`；不得依赖不可观测的 handler-start。
+若首次已有 structured product result、typed failure、unknown effect，恢复会改变任一输入/launcher，命令
+并非该只读 effect class，或已有一次 escalation / 两次 issuance，则禁止恢复。exact yielded handle resume
+不是新 invocation；handle 失联仍 fail closed，late result 不采用。
+
+full qualification、Podman-transitive `pin` 与 formal `preflight` 属于已知需要 sandbox 外能力的不同
+effect class，必须首次 issuance 前申请窄范围 `require_escalated`，失败即停，不以 ordinary sandbox 探测
+或套用只读恢复。平台许可不扩大 preparation/live 业务授权、authority、预算或 effect 闭集。
 
 到达人工授权门时只做一次最小必要校验，报告 `workflow_status=blocked`、`blocked_on=manual_authorization`、待批准对象和保持不变的 canonical state，然后停止。持久 goal 若要求多轮才能标记 blocked，后续只确认没有新授权，不重跑检查、qualification、命令或 evidence 收集。
 
