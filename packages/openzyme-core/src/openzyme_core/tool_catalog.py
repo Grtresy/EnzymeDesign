@@ -145,7 +145,9 @@ def artifact_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                 "Large linked output fields are summarized by default; use path/offset/limit from read_hint "
                 "to page fields such as output_payload.evidence_items. When path targets a large dict, "
                 "the result returns pageable keys; only safe path segments have exact child paths. Large "
-                "strings are pageable by character offset. Results never include Host paths."
+                "strings are pageable by character offset. A missing path reports the deepest resolved "
+                "prefix, missing segment, parent type, and a bounded parent read hint while retaining "
+                "top-level options. Results never include Host paths."
             ),
             input_schema={
                 "type": "object",
@@ -949,7 +951,12 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         ),
         ToolDescriptor(
             tool_name="docs.search",
-            description="Search the controlled V3 documentation registry for pipeline SDK and sandbox docs.",
+            description=(
+                "Search DocumentRegistry knowledge documents, including controlled "
+                "pipeline SDK and sandbox docs. Workflow manifests and workflow: "
+                "selection refs belong to WorkflowRegistry and are not docs.search "
+                "documents."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -964,9 +971,10 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         ToolDescriptor(
             tool_name="docs.read",
             description=(
-                "Read one document from the controlled V3 documentation registry "
-                "by doc_id or registered path, optionally requiring an exact "
-                "version and digest."
+                "Read one DocumentRegistry knowledge document by doc_id or registered "
+                "knowledge path, optionally requiring an exact version and digest. "
+                "A selected workflow manifest is already loaded by its selection "
+                "owner; do not pass its workflow: ref or .workflow.json path here."
             ),
             input_schema={
                 "type": "object",

@@ -1,6 +1,6 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r67 are permanent NO-GO evidence. r68-r77 retain their documented prelaunch/pre-admission/pre-runtime/evidence-blocker classifications and none is a canonical NO-GO. r78 consumed authority once and then failed slot 1 preflight before claim/root/Host because the actual rootless Podman resolver returned `podman_rootless_preflight_failed`; its source-bound preflight-failure verifier and reducer closed canonical `NO-GO` with decision digest `sha256:7fb899562369d6d96e6cba490b2d862943c1359fa972389e9b1d9fd374216c84`. r79 then started only slot 1, admitted one open scientific attempt with no selection or provider/HPC operation, and stopped after its second bounded command expired because a post-scope heartbeat lacked mutation writer authority. r79 has no sealed scientific evidence export and no canonical GO/NO-GO decision; its supervised Host correctly remains active under the readiness contract. r80 published and received approval for an exact plan, but its sole `consume-authority` invocation supplied a suffix-stripped sibling and typed-failed before receipt publication; authority remained unconsumed with zero product execution. None of r68-r80 state or the old persistent goal is reusable. Current forward contracts additionally bind every late-scope command heartbeat to an exact short writer and derive authority-consumption siblings from the canonical plan owner while preserving real-fence, expired-claim no-replay, no-replace and wrong-assertion fail-closed semantics. These capabilities do not backfill, retry or alter any frozen run. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, slot 2/3, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
+Status: r43-r67 are permanent NO-GO evidence. r68-r77 retain their documented prelaunch/pre-admission/pre-runtime/evidence-blocker classifications and none is a canonical NO-GO. r78 consumed authority once and then failed slot 1 preflight before claim/root/Host because the actual rootless Podman resolver returned `podman_rootless_preflight_failed`; its source-bound preflight-failure verifier and reducer closed canonical `NO-GO` with decision digest `sha256:7fb899562369d6d96e6cba490b2d862943c1359fa972389e9b1d9fd374216c84`. r79 then started only slot 1, admitted one open scientific attempt with no selection or provider/HPC operation, and stopped after its second bounded command expired because a post-scope heartbeat lacked mutation writer authority. r79 has no sealed scientific evidence export and no canonical GO/NO-GO decision. r80 published and received approval for an exact plan, but its sole `consume-authority` invocation supplied a suffix-stripped sibling and typed-failed before receipt publication; authority remained unconsumed with zero product execution. r81 started slot 1 and admitted one open attempt, but retained no selection, provider/HPC operation or report before the Host retired at the authority deadline; it is blocked/noncanonical and has no canonical GO/NO-GO decision. None of r68-r81 state or the old persistent goal is reusable. Current forward contracts additionally bind every late-scope command heartbeat to an exact short writer, derive authority-consumption siblings from the canonical plan owner, settle ordinary known-effect failures exactly once, distinguish workflow and document registry ownership, and expose bounded artifact missing-path locality while preserving real-fence, expired-claim no-replay, no-replace and wrong-assertion fail-closed semantics. These capabilities do not backfill, retry or alter any frozen run. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, slot 2/3, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
 
 Historical incident and older command/observer/driver/browser/diagnostic-authority/public-finalizer sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract; in particular, every older `run-live`, `run-diagnostic-live`, diagnostic authority command, observer, barrier, rollover, no-wakeup, public generic scientific mutation/finalizer, `chrome-once`, browser-helper and ambient dev/eval image-registration instruction is retired even where a historical section called it current at that time. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, late-bound task/scientific-attempt selection, fresh supervised Host bootstrap and qualification semantics are defined by the post-r70/post-r71 sections below, [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
@@ -3666,3 +3666,35 @@ owner-derived preflight seam并保留contract mutation负例。外部caller尚�
 removal。历史8.3a diagnostic task因post-r69 current diagnostic authority surface已退役而明确superseded，
 并非被执行；8.3、8.4-8.8仍未完成。本slice不启动fresh admission、下一rNN、live、MICU、provider、HPC或
 Chrome。
+
+### 2026-08-12 r81 ordinary-failure projection 与 discoverability blocker
+
+r81 campaign `aox_campaign_607e1cda2829ecdc4d98f8bf` 只启动 slot 1；session
+`sess_aox_formal_218626a54a23acb3295b081ccdac3f11` 建立 execution task，并 admission 唯一 formal
+attempt `attempt_188e429c888182f9c5098a5b`。冻结 public workspace 显示 attempt 仍
+`active/open`、`selection_head_missing`，bounded operation ids 为空，provider/HPC scientific operation、
+report draft 与 report 均为零。supervision receipt 证明 Host 在 authority deadline 以 exit 0 退休、
+SQLite integrity/checkpoint 与 descendant retirement 通过，但仍有一个 nonterminal mutation scope；这不能
+把 open attempt 或缺失 evidence 改成 formal result。因此 r81 保持 blocked/noncanonical，不形成 canonical
+GO/NO-GO，也不授权 slot 2/3 或 successor。
+
+最早公开 ordinary failures 保留了精确 source。executor 两次对 `docs.read` 提交
+`docs/v3/workflow-packs/aox-hmm-live.workflow.json`；selected manifest 实际已由 `WorkflowRegistry`
+解析，`DocumentRegistry` 正确返回 not registered，而随后用 manifest `knowledge_refs` 的 `doc_id` 读取成功。
+另一次 `artifact.get` 在已封存 oversized `world.inspect` result 中请求不存在的
+`output_payload.tool_result.payload.capabilities`，只得到 top-level choices。该 error 是 task-bound、
+`harness/agent_can_replan/terminal_known` 的 known-effect ToolResult，却被旧
+`RuntimeConsistencyService` 再投影成 `failure_reconciliation_required` task attention。公开事实能证明这些
+摩擦与 incomplete outcome，但不能把任一模型调用单独宣称为 r81 的唯一科学根因。
+
+前向修复保持单一真相边界。ordinary agent/harness known-effect failure 继续 durable 并进入下一次模型
+decision，但不再建立第二个 runtime attention；system、`reconciliation_required`、
+`dispatch_in_doubt` / `reconcile_required`、`authorization_required` 与 `runtime_retry` 仍分别 fail closed。
+selected workflow prompt 明确 manifest owner、provenance-only path 与 knowledge owner，manifest ref 误投
+`docs.read` 时返回 factual namespace hint，不猜测 fallback。`artifact.get` missing-path payload 在既有
+`error` / `available_top_level_paths` 上附加 `resolved_prefix`、`missing_segment`、`parent_type` 与 bounded
+`parent_read_hint`，不暴露 parent value、不实现 arbitrary-key typed segment。qualification 用同一真实 task
+上的 domain rejection 证明 next-decision visibility、零 effect、task nonterminal 与零 second attention，并
+保留真实 system/reconciliation/authority/runtime-retry 负控。本修复 forward-only，不修改 r81 root、SQLite、
+effect、receipt 或 decision，不访问 active Host，不启动 fresh admission、下一 rNN、live、MICU、provider、
+HPC 或 Chrome。

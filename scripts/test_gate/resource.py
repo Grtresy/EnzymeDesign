@@ -382,6 +382,13 @@ INITIAL_RESOURCE_ENTRY_SPECS: tuple[ResourceEntrySpec, ...] = (
         sqlite="memory_only",
     ),
     _parallel_temp_root_entry(
+        entry_id="core_workflow_knowledge_temp_root",
+        module_path="packages/openzyme-core/tests/test_workflow_knowledge.py",
+        fixture_paths=_ROOT_FIXTURES,
+        filesystem="immutable_checkout_read_and_test_temp_root",
+        sqlite="none",
+    ),
+    _parallel_temp_root_entry(
         entry_id="engines_deep_research_worker_local",
         module_path="packages/openzyme-engines/tests/test_deep_research.py",
         fixture_paths=_ROOT_FIXTURES,

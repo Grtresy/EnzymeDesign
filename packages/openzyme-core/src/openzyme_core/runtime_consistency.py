@@ -8,8 +8,10 @@ from openzyme_domain import AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import EngineInvocationStatus
+from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import FailureActorKind
 from openzyme_domain import FailureRecoverability
+from openzyme_domain import RetryEligibility
 from openzyme_domain import ScientificSelectionState
 from openzyme_domain import TaskStatus
 
@@ -143,24 +145,62 @@ class RuntimeConsistencyService:
 
         for failure in failure_observations:
             task = tasks.get(failure.task_id or "")
-            requires_attention = (
-                failure.actor_kind is FailureActorKind.SYSTEM
-                or failure.recoverability
-                in {
-                    FailureRecoverability.RECONCILIATION_REQUIRED,
-                    FailureRecoverability.AUTHORIZATION_REQUIRED,
-                    FailureRecoverability.AGENT_CAN_REPLAN,
-                    FailureRecoverability.RUNTIME_RETRY,
-                    FailureRecoverability.TERMINAL,
-                }
-            )
-            if task is None or task.status.is_terminal or not requires_attention:
+            if task is None or task.status.is_terminal:
                 continue
-            code = (
-                "system_runtime_failure"
-                if failure.actor_kind is FailureActorKind.SYSTEM
-                else "failure_reconciliation_required"
-            )
+            if failure.actor_kind is FailureActorKind.SYSTEM:
+                code = "system_runtime_failure"
+                message = (
+                    "The system recorded a runtime failure without an agent "
+                    "decision; the business task status remains unchanged."
+                )
+                recommendation = (
+                    "Restore runtime authority and let the agent inspect the "
+                    "structured failure before choosing recovery or refusal."
+                )
+            elif (
+                failure.recoverability
+                is FailureRecoverability.RECONCILIATION_REQUIRED
+                or failure.effect_certainty
+                is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+                or failure.retry_eligibility is RetryEligibility.RECONCILE_REQUIRED
+            ):
+                code = "failure_reconciliation_required"
+                message = (
+                    "A canonical failure has an unknown or explicitly "
+                    "reconciliation-required effect boundary."
+                )
+                recommendation = (
+                    "Inspect the canonical effect evidence before choosing any "
+                    "further mutation or external dispatch."
+                )
+            elif (
+                failure.recoverability
+                is FailureRecoverability.AUTHORIZATION_REQUIRED
+            ):
+                code = "failure_authorization_required"
+                message = (
+                    "A canonical failure requires authority that the current "
+                    "runtime does not hold."
+                )
+                recommendation = (
+                    "Expose the missing authority to the responsible actor; do "
+                    "not infer or widen it."
+                )
+            elif failure.recoverability is FailureRecoverability.RUNTIME_RETRY:
+                code = "failure_runtime_retry_required"
+                message = (
+                    "A canonical runtime failure requires a runtime-owned retry "
+                    "decision."
+                )
+                recommendation = (
+                    "Keep the business task unchanged while the runtime owner "
+                    "evaluates the typed retry boundary."
+                )
+            else:
+                # Ordinary effect-known agent or harness failures already remain
+                # durable in failure_observations and are returned to the next
+                # model decision. They are not a second recovery workflow.
+                continue
             warnings.append(
                 RuntimeConsistencyWarning(
                     code=code,
@@ -171,16 +211,8 @@ class RuntimeConsistencyService:
                     agent_id=failure.agent_id,
                     task_status=task.status.value,
                     runtime_status=failure.recoverability.value,
-                    message=(
-                        "The system recorded a runtime failure without an agent "
-                        "decision; the business task status remains unchanged."
-                        if failure.actor_kind is FailureActorKind.SYSTEM
-                        else "A canonical failure requires explicit reconciliation."
-                    ),
-                    recommendation=(
-                        "Restore runtime authority and let the agent inspect the "
-                        "structured failure before choosing recovery or refusal."
-                    ),
+                    message=message,
+                    recommendation=recommendation,
                 )
             )
             attention = task_attention[task.task_id]

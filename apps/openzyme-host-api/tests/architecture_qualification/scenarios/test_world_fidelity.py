@@ -39,13 +39,24 @@ class _WorldFidelityInvoker:
                 "content": "",
                 "tool_calls": [
                     {
-                        "id": "world_invalid_update",
-                        "name": "task.update",
+                        "id": "world_create_task",
+                        "name": "task.create",
                         "args": {
-                            "task_id": "world_missing_task",
-                            "subject": "Must be rejected without effect",
+                            "task_id": "world_real_task",
+                            "subject": "Correct an action from a typed world fact",
+                            "description": "Keep the task nonterminal after rejection.",
+                            "kind": "general",
                         },
-                    }
+                    },
+                    {
+                        "id": "world_invalid_finish",
+                        "name": "task.finish",
+                        "args": {
+                            "task_id": "world_real_task",
+                            "status": "failed",
+                            "summary": "Attempt an incomplete explicit failure exit.",
+                        },
+                    },
                 ],
             }
         if self.calls == 2:
@@ -59,7 +70,7 @@ class _WorldFidelityInvoker:
                     payload = json.loads(str(content or ""))
                 except json.JSONDecodeError:
                     continue
-                if payload.get("error_code") == "invalid_tool_context":
+                if payload.get("error_code") == "task_finish_failure_required":
                     self.observed_failure = dict(payload)
                     break
             assert self.observed_failure is not None
@@ -68,12 +79,12 @@ class _WorldFidelityInvoker:
                 "tool_calls": [
                     {
                         "id": "world_source_bound_followup",
-                        "name": "task.create",
+                        "name": "task.update",
                         "args": {
                             "task_id": "world_real_task",
-                            "subject": "Agent correction after typed world fact",
-                            "description": "The next decision uses the real rejection.",
-                            "kind": "general",
+                            "description": (
+                                "The next decision uses the real ordinary rejection."
+                            ),
                         },
                     }
                 ],
@@ -170,13 +181,24 @@ def test_typed_world_fact_reaches_next_decision_without_history_poisoning(
     delivered_observation = dict(delivered["failure_observation"])
     task_items = list(dict(workspace["task_board"])["items"])
     tasks = [dict(dict(item)["task"]) for item in task_items]
+    runtime_state = dict(workspace["runtime_state"])
     assert terminal["status"] == "completed"
-    assert delivered["error_code"] == "invalid_tool_context"
-    assert delivered_observation["source_ref"] == "world_invalid_update"
+    assert delivered["error_code"] == "task_finish_failure_required"
+    assert delivered_observation["source_ref"] == "world_invalid_finish"
+    assert delivered_observation["actor_kind"] == "harness"
+    assert delivered_observation["recoverability"] == "agent_can_replan"
+    assert delivered_observation["effect_certainty"] == "terminal_known"
     assert projected["failure_id"] == delivered_observation["failure_id"]
     assert projected["error_code"] == delivered["error_code"]
     assert projected["source_ref"] == delivered_observation["source_ref"]
     assert [task["task_id"] for task in tasks] == ["world_real_task"]
+    assert tasks[0]["status"] == "todo"
+    assert runtime_state["needs_attention_count"] == 0
+    assert runtime_state["task_attention"] == []
+    assert all(
+        warning["code"] != "failure_reconciliation_required"
+        for warning in runtime_state["warnings"]
+    )
     assert factory.external_effect_ledger.count_effects() == 0
     assert not _contains_forbidden_fallback(delivered)
 
@@ -186,7 +208,7 @@ def test_typed_world_fact_reaches_next_decision_without_history_poisoning(
         "next_decision_visible_cause": str(delivered["error_code"]),
         "sealed_terminal_cause": str(projected["error_code"]),
         "source_bound": (
-            projected["source_ref"] == "world_invalid_update"
+            projected["source_ref"] == "world_invalid_finish"
             and projected["source_version"]
             == delivered_observation["source_version"]
         ),

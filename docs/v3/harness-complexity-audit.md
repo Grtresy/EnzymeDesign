@@ -250,6 +250,16 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   unknown effect/authority/fencing 等负控不变。历史 migration 表保留兼容，但 runtime 不再
   读写或投影。
 
+  r81 追加修正记录：production driver 已把 task-bound、effect-known ordinary rejection 作为
+  exact `FailureObservation` 回灌下一次模型决策，但 `RuntimeConsistencyService` 仍把
+  `agent_can_replan` 与 `terminal` 无条件再次投影为 `failure_reconciliation_required`，形成
+  stale second recovery obligation。本轮删除该 broad projection：ordinary known-effect failure
+  只保留一份 durable observation；system、reconciliation/unknown-effect、authorization 与
+  runtime-owned retry boundary 分别保留精确 attention code。world-fidelity production-composition
+  scenario 现在以同一真实 task 上被拒绝的 `task.finish` 证明 next-decision visibility、零 effect、
+  task nonterminal 与零 second attention，而不是用 missing-task schema rejection 代替 task-bound
+  causal chain。
+
   r64 追加修正记录：旧 runner closed result 丢失
   `transport_connect_failed/no_effect`，Host 又以 local failed `Run` 抢先覆盖真实 cause；
   AOX failure evidence 只带 probe subset，driver 还在 exact recoverable owner wake 已排队时

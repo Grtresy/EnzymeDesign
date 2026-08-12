@@ -1556,6 +1556,27 @@ Host/session/attempt 均不存在，MICU/provider/HPC/Chrome effect 为零；r80
 no-follow、fsync、`0400`、one-use/tamper 与 schema 合同不变。这只移除 operator 对内部派生值的重复
 组装摩擦，不约束 agent 的科学策略或 public conductor 的合法推进节奏。
 
+### 9.17 r81 ordinary failure single-settlement 与 registry/path locality
+
+r81 campaign `aox_campaign_607e1cda2829ecdc4d98f8bf` 的 slot 1 建立 session
+`sess_aox_formal_218626a54a23acb3295b081ccdac3f11` 与唯一 open attempt
+`attempt_188e429c888182f9c5098a5b`，但 selection head 缺失，provider/HPC operation、report draft 与
+report 均为零。executor 两次把 selected manifest path 当成 `docs.read` knowledge path，另一次读取
+oversized world artifact 时猜测不存在的 `output_payload.tool_result.payload.capabilities`。这些 ordinary
+effect-known rejection 都已形成 durable `FailureObservation`；最后一项却又被旧 runtime consistency
+projection 解释成 `failure_reconciliation_required`。Host 后来按 authority deadline 安全退休，attempt
+仍 open，因此 r81 只有 blocked/noncanonical frozen evidence，没有 canonical GO/NO-GO，也不能回填、
+重试或复用。
+
+这组事实区分 incident cause 与 repository defect：公开证据能证明执行未完成、最早失败和缺失的 selection/
+report，不能把某个模型策略错误单独宣布为唯一根因；但 repository 确有三项直接放大摩擦的缺陷。前向修复
+删除 ordinary known-effect failure 的第二份 runtime attention，只让 system、unknown-effect/
+reconciliation、authorization 与 runtime-owned retry 保留精确 attention；selected workflow prompt 明确
+`WorkflowRegistry` 已装载 manifest，`DocumentRegistry` 只读取 `knowledge_refs`，误投 manifest ref 时返回
+factual owner hint；`artifact.get` missing-path error 增加 deepest resolved prefix、missing segment、parent
+type 与 bounded parent read hint。修复不增加 recovery state machine、manifest fallback、arbitrary-key path
+语法、科学策略或外部 authority，也不修改 r81 历史记录。
+
 ---
 
 ## 10. Legacy Boundary

@@ -1188,3 +1188,61 @@ AOX pin, preflight, launch, evidence and reducer paths MUST accept only a verifi
 #### Scenario: Stop after one source-bound qualification failure
 - **WHEN** a fresh qualification report seals a source drift, collection failure, harness timeout or scenario execution failure
 - **THEN** the conductor preserves that terminal report, performs no equivalent relaunch or recovery adoption, and requests an independently approved repair before any fresh goal or rNN
+
+### Requirement: Ordinary known-effect failure has one durable settlement
+For a nonterminal task, an agent- or harness-authored ordinary failure MUST have exactly one durable settlement when its external effect is `no_effect`, `effect_known`, or `terminal_known`.
+That settlement is one immutable `FailureObservation` and MUST be available to the next model
+decision. `agent_can_replan`, `agent_can_retry`, or `terminal` recoverability by
+itself MUST NOT create `failure_reconciliation_required`, task attention, a
+synthetic recovery signal, or a second recovery state machine. The failure MUST
+NOT change the task business status or authorize a retry.
+
+System failure, `reconciliation_required`, `dispatch_in_doubt`,
+`reconcile_required`, `authorization_required`, and `runtime_retry` MUST retain
+their precise runtime attention semantics. They MUST NOT be collapsed into an
+ordinary failure or a generic reconciliation label.
+
+#### Scenario: Continue from one task-bound ordinary rejection
+- **WHEN** a schema-valid but domain-invalid tool call is rejected on an existing nonterminal task with a known effect boundary
+- **THEN** the exact source-bound failure reaches the next model decision, the task remains nonterminal, no external effect is recorded, and workspace runtime state contains no second reconciliation warning or task attention for that failure
+
+#### Scenario: Preserve a true runtime boundary
+- **WHEN** a task-bound failure is system-owned, effect-ambiguous, reconciliation-required, authorization-required, or runtime-retry-owned
+- **THEN** runtime state retains the corresponding precise attention code without changing task business status or silently performing recovery
+
+### Requirement: Workflow and knowledge document registries remain distinct
+`WorkflowRegistry` MUST own exact workflow selection, manifest digest and
+requirement validation, and selected-manifest prompt loading. `DocumentRegistry`
+MUST own only registered knowledge documents addressed by `doc_id` or registered
+knowledge path. A selected prompt MUST state that its manifest is already loaded,
+that the manifest path is provenance-only, and that `docs.read` accepts the
+manifest's `knowledge_refs` rather than the workflow ref or manifest path.
+
+When `docs.read` receives a `workflow:` selection ref or a `*.workflow.json`
+manifest path that is not a registered knowledge document, it MUST return a
+factual registry-owner hint. It MUST NOT search for, guess, or load a replacement
+manifest, and ordinary missing knowledge-document errors MUST remain compatible.
+
+#### Scenario: Reject a selected manifest as a knowledge document
+- **WHEN** an agent sends the selected `workflow:` ref or manifest provenance path to `docs.read`
+- **THEN** the error identifies `WorkflowRegistry` as manifest owner and directs the agent to registered `knowledge_refs` without loading a fallback
+
+#### Scenario: Read an exact workflow knowledge reference
+- **WHEN** the agent supplies a manifest-bound knowledge `doc_id`, version, and digest to `docs.read`
+- **THEN** `DocumentRegistry` returns exactly that registered document and does not re-resolve the workflow selection
+
+### Requirement: Artifact missing-path errors expose bounded locality
+When control-plane `artifact.get` cannot resolve a requested dot/index path, its failure payload MUST retain the existing `error` and
+`available_top_level_paths` fields and MUST additionally return the deepest
+`resolved_prefix`, exact `missing_segment`, type of the resolved parent, and a
+bounded `parent_read_hint` that reads only that parent or artifact root. It MUST
+NOT inline the parent value, expose a Host-private locator, infer an arbitrary-key
+typed path segment, or change existing successful path/page semantics.
+
+#### Scenario: Identify a missing nested child
+- **WHEN** a valid artifact and valid prefix are followed by a nonexistent dict key or list index
+- **THEN** the error identifies the valid prefix, missing segment and parent type and provides an executable bounded hint for the parent while preserving top-level choices
+
+#### Scenario: Preserve the current resolver boundary
+- **WHEN** the missing child would require arbitrary dictionary-key addressing beyond the current safe dot/index grammar
+- **THEN** the tool reports locality only and does not invent an escaped or typed path, return the parent value, or claim that arbitrary-key addressing is implemented

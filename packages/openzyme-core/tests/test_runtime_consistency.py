@@ -211,6 +211,152 @@ def test_structured_generic_failure_ignores_legacy_max_step_text() -> None:
     assert attention["agent_turn_failed"] is False
 
 
+@pytest.mark.parametrize(
+    ("actor_kind", "recoverability", "effect_certainty"),
+    (
+        (
+            FailureActorKind.HARNESS,
+            FailureRecoverability.AGENT_CAN_REPLAN,
+            ExternalEffectCertainty.NO_EFFECT,
+        ),
+        (
+            FailureActorKind.AGENT,
+            FailureRecoverability.AGENT_CAN_REPLAN,
+            ExternalEffectCertainty.EFFECT_KNOWN,
+        ),
+        (
+            FailureActorKind.HARNESS,
+            FailureRecoverability.TERMINAL,
+            ExternalEffectCertainty.TERMINAL_KNOWN,
+        ),
+    ),
+)
+def test_effect_known_ordinary_failure_remains_observable_without_runtime_attention(
+    actor_kind: FailureActorKind,
+    recoverability: FailureRecoverability,
+    effect_certainty: ExternalEffectCertainty,
+) -> None:
+    repositories = _repositories()
+    observation = record_failure_observation(
+        repositories,
+        session_id="sess_consistency",
+        task_id="task_consistency",
+        agent_id=EXECUTOR_AGENT_ID,
+        source_kind="tool_invocation",
+        source_ref=f"ordinary_{actor_kind.value}_{recoverability.value}",
+        source_version="agentstep:1",
+        phase="validation",
+        failure_class=FailureClass.VALIDATION,
+        recoverability=recoverability,
+        effect_certainty=effect_certainty,
+        retry_eligibility=RetryEligibility.TERMINAL,
+        actor_kind=actor_kind,
+        error_code="ordinary_action_rejected",
+        safe_summary="The ordinary action was rejected with a known effect state.",
+    )
+
+    audit = RuntimeConsistencyService(repositories).audit_session(
+        "sess_consistency"
+    )
+
+    assert observation in repositories.failure_observations.list_by_session(
+        "sess_consistency"
+    )
+    assert "failure_reconciliation_required" not in _codes(audit)
+    assert audit.to_dict()["task_attention"] == []
+    assert audit.to_dict()["needs_attention_count"] == 0
+
+
+@pytest.mark.parametrize(
+    (
+        "case_id",
+        "actor_kind",
+        "recoverability",
+        "effect_certainty",
+        "retry_eligibility",
+        "expected_code",
+    ),
+    (
+        (
+            "system",
+            FailureActorKind.SYSTEM,
+            FailureRecoverability.AGENT_CAN_REPLAN,
+            ExternalEffectCertainty.NO_EFFECT,
+            RetryEligibility.SAME_PHASE_SAFE,
+            "system_runtime_failure",
+        ),
+        (
+            "reconciliation",
+            FailureActorKind.HARNESS,
+            FailureRecoverability.RECONCILIATION_REQUIRED,
+            ExternalEffectCertainty.NO_EFFECT,
+            RetryEligibility.RECONCILE_REQUIRED,
+            "failure_reconciliation_required",
+        ),
+        (
+            "authorization",
+            FailureActorKind.HARNESS,
+            FailureRecoverability.AUTHORIZATION_REQUIRED,
+            ExternalEffectCertainty.NO_EFFECT,
+            RetryEligibility.TERMINAL,
+            "failure_authorization_required",
+        ),
+        (
+            "runtime-retry",
+            FailureActorKind.AGENT,
+            FailureRecoverability.RUNTIME_RETRY,
+            ExternalEffectCertainty.EFFECT_KNOWN,
+            RetryEligibility.VERIFY_THEN_RETRY,
+            "failure_runtime_retry_required",
+        ),
+        (
+            "unknown-effect",
+            FailureActorKind.HARNESS,
+            FailureRecoverability.AGENT_CAN_REPLAN,
+            ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+            RetryEligibility.VERIFY_THEN_RETRY,
+            "failure_reconciliation_required",
+        ),
+    ),
+)
+def test_true_runtime_boundaries_retain_precise_attention(
+    case_id: str,
+    actor_kind: FailureActorKind,
+    recoverability: FailureRecoverability,
+    effect_certainty: ExternalEffectCertainty,
+    retry_eligibility: RetryEligibility,
+    expected_code: str,
+) -> None:
+    repositories = _repositories()
+    observation = record_failure_observation(
+        repositories,
+        session_id="sess_consistency",
+        task_id="task_consistency",
+        agent_id=EXECUTOR_AGENT_ID,
+        source_kind="runtime_boundary",
+        source_ref=f"boundary_{case_id}",
+        source_version="attempt:1",
+        phase="runtime",
+        failure_class=FailureClass.RUNTIME,
+        recoverability=recoverability,
+        effect_certainty=effect_certainty,
+        retry_eligibility=retry_eligibility,
+        actor_kind=actor_kind,
+        error_code=f"{case_id}_failure",
+        safe_summary="A typed runtime boundary requires attention.",
+    )
+
+    audit = RuntimeConsistencyService(repositories).audit_session(
+        "sess_consistency"
+    )
+    attention = audit.to_dict()["task_attention"][0]
+
+    assert expected_code in _codes(audit)
+    assert attention["runtime_attention"] is True
+    assert attention["needs_attention"] is True
+    assert attention["failure_observation_ids"] == [observation.failure_id]
+
+
 def test_running_invocation_with_terminal_agent_produces_attention_only() -> None:
     repositories = _repositories()
     agent = repositories.agents.get("sess_consistency", EXECUTOR_AGENT_ID)

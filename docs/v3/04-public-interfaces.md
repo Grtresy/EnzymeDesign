@@ -141,6 +141,13 @@ approval resolve 的 `actor_ref` 只能来自已认证 principal；请求体提�
 
 `docs.search(query, tags?, limit?)` 返回受控文档库的匹配条目，条目至少包含 `doc_id`、`title`、`summary`、`tags`、`version` 和 `path`；`docs.read(doc_id | path)` 只读取 registry 中登记的文档，不能读取任意 repo 文件，返回同样 metadata 加 `content`。首批必须索引 `docs/v3/execution-pipeline-docs/`，供 execution teammate 按需学习 pipeline SDK。该工具是通用 V3 内部能力，后续 research/reporting 文档也可接入同一接口。
 
+这里存在两个明确且不互相兜底的 registry owner：`WorkflowRegistry` 解析、校验并在 provider call
+前装载已选择的 `workflow:<id>@<semver>#sha256:<digest>` manifest；`DocumentRegistry` 只拥有
+manifest `knowledge_refs` 指向的受控知识文档。selected workflow prompt 必须明确 manifest 已由前者
+装载、manifest path 仅是 provenance，而 `docs.read` 只接受后者的 `doc_id` 或已登记 knowledge path。
+把 `workflow:` ref 或 `*.workflow.json` 传给 `docs.read` 时，工具返回 factual namespace hint，不能
+伪装成普通知识文档缺失，也不能搜索相似 manifest 作为 fallback。
+
 旧式 `skill.list` / `skill.load` 可以作为迁移期兼容机制存在，但不再是 V3 execution pipeline / sandbox SDK / backend adapter 用法说明的主路径。executor 应优先使用 `docs.search` / `docs.read`。
 
 默认 agent-facing 世界读取工具还应包括：
@@ -284,7 +291,7 @@ message 也不能自动把业务 task 写为 completed / failed。
 - `agent_traces` 不暴露 restore context、memory summary、完整 tool schema、prompt / `initial_prompt`、Host path、storage URI、runner path、SSH/runner config、provider secret 或 tool result content
 - `capabilities` 是可扩展分区，按 `capability_key` 挂载各 engine 的投影
 - 不应把当前 engine 名称直接固化为 workspace 顶层 contract，避免后续每新增一种能力都破坏接口
-- `runtime_state` 是 diagnostic-only projection：区分 `agent_turn_failed`、`runtime_signal_failed`、`task_failed`、`runtime_attention` 与 `outcome_unconsumed` / `capability_outcome_ready`，但不自动改变 task business status。terminal capability outcome 只表示可作为证据的结果已经 ready，并可用于 wake owner；它不代表 teammate、master 或 task 已完成
+- `runtime_state` 是 diagnostic-only projection：区分 `agent_turn_failed`、`runtime_signal_failed`、`task_failed`、`runtime_attention` 与 `outcome_unconsumed` / `capability_outcome_ready`，但不自动改变 task business status。task-bound、effect-known 的 ordinary `FailureObservation` 已作为同一个失败 observation durable 并进入下一次模型决策，不得再投影成第二个 `failure_reconciliation_required` / task attention obligation；只有 system failure、`reconciliation_required`、`dispatch_in_doubt` / `reconcile_required`、`authorization_required` 或 `runtime_retry` 等真实 runtime boundary 保留各自精确 attention code。terminal capability outcome 只表示可作为证据的结果已经 ready，并可用于 wake owner；它不代表 teammate、master 或 task 已完成
 - `scientific_evidence.operations` 是 session controlled-operation 的 canonical public summary；consumer 不得从 `runtime_state` 猜测或兼容读取 operation list。需要把 workspace operation 数量写入密封 evidence 时，必须由该 canonical branch 生成，并与 private terminal projection/reconstruction receipt 交叉验证
 - `task_board`、`delegation`、`lane_board` 共同表达内部执行状态；它们不是 conversation 的附属调试信息，而是与 conversation 并列的 control-plane 读模型
 - `delegation.agents` 默认表达 resident team roster：agent identity、role、status、task/lane focus、correlation thread 与 last active time。默认用户 projection 不暴露 unread inbox count、pending signal count 或 raw wakeup reason；这些属于 diagnostic-only 信息
@@ -297,7 +304,7 @@ message 也不能自动把业务 task 写为 completed / failed。
 - `artifact.list` 返回当前 session 内的安全 artifact catalog，可按 task / invocation / kind 过滤，并分页返回 `{artifacts,total_count,offset,limit,returned_count,next_offset,truncated_by_budget}`。最终 ToolResult 与内部预算使用同一份 ASCII-safe canonical JSON 序列化；单次响应硬上限为 `100000` JSON 字符。达到预算时只能在尚未返回的第一项之前截断，`next_offset = offset + returned_count`，不得跳过该项；`truncated_by_budget` 只表达字符预算截断，不替代普通数量分页
 - `artifact.list` 列表项的 `metadata` 是确定性 bounded projection：优先保留短 scalar 以及 schema/contract/count/digest 身份字段和可内联小容器；accession、page digest、file manifest 等大集合不得全量进入 agent observation，而应在 `metadata_summary(schema_id="artifact_list_metadata_summary@1")` 中给出清洗后 metadata digest、大小/数量与被省略字段。title、description、relative path 等列表自由文本同样受单项 scalar 上限约束，超限值进入 `record_summary(schema_id="artifact_list_record_summary@1")`，不能旁路 metadata 预算。metadata 无法安全序列化、递归/深度/字段/字符超限时必须 fail-closed 省略，不能退回全量值
 - omitted-field hint 必须显式区分 `read_scope="exact_pageable"` 与 `read_scope="root_only"`。只有由 `[A-Za-z0-9_-]+` 组成的 dict key 才能生成当前 dot-path resolver 可执行的 exact child path；包含 `.`、空格或其他不可寻址字符的 key 只给父 dict 的 root-only/pageable hint，不得伪造 exact path。大 dict 页自身的非空 `read_hint` 只能指向同一父 dict 的真实下一页；exact child hint 只出现在对应 key record，禁止用 `<safe-key>` 等不可执行 placeholder 冒充 read hint。完整 arbitrary-key 寻址尚未实现，后续设计见 `architecture-proposals/artifact-path-addressing-for-arbitrary-dictionary-keys.md`
-- `artifact.get` 返回单个 artifact 的安全 catalog record 及关联 invocation / output document 摘要；list/dict 大字段通过 `path`、`offset`、`limit` 分页读取，大字符串通过字符 `offset/limit` 分页读取，单页字符串上限为 `12000` 字符
+- `artifact.get` 返回单个 artifact 的安全 catalog record 及关联 invocation / output document 摘要；list/dict 大字段通过 `path`、`offset`、`limit` 分页读取，大字符串通过字符 `offset/limit` 分页读取，单页字符串上限为 `12000` 字符。path 不存在时保留既有 `error` 与 `available_top_level_paths`，并附加 deepest `resolved_prefix`、`missing_segment`、`parent_type` 与只读取已解析父节点的 bounded `parent_read_hint`；这些字段只提高 locality，不暴露父值、不猜测 arbitrary-key typed path segment，也不改变现有 dot/index resolver
 - control-plane `artifact.get` 与 sandbox SDK `openzyme_pipeline.artifacts.get` 不是同一调用面。前者拥有上述 typed paging；后者当前只返回 session-authorized、去除 Host-private locator 的单个 catalog projection并受 4 MiB control frame 约束，不得给出 sandbox 内不存在的 `artifact.get(path,offset,limit)` hint。大型 metadata 的真正 sandbox paging / manifest materialization 尚未实现，见 `bounded-canonical-artifact-metadata-manifest-references.md`
 - `tool_result_full` result artifact 默认只返回 `tool_name`、`call_id`、`original_tool_ok`、`original_status`、`tool_result_summary` 和 omitted field hint；完整结果通过 `path="output_payload.tool_result"` 分页读取
 - `artifact.preview`、`artifact.read_text`、`artifact.range` 只读取 UTF-8 文本类 artifact，适合 FASTA、PDB、log、JSON、Markdown 等；二进制或不可读内容返回结构化 tool error
@@ -463,7 +470,7 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `runtime.session_locked` 表示某个 session 当前由另一个 runtime owner 持有推进权；manual drain / background tick 必须尊重该状态
 - `runtime.lease_heartbeat_failed` / `runtime.lease_lost` 表示当前 scheduler 无法继续证明 session ownership；payload 只暴露非凭据型 fencing/worker identity 与安全 error type，不暴露 lease token、数据库路径或内部异常全文
 - `runtime.fencing_rejected` 表示 stale worker 的 signal 写回被 session lease fencing 拒绝，不能覆盖新 owner 的结果；同一 fence 从 sandbox control / Host API 暴露时使用 non-retryable `runtime_write_fenced`，不泄露 lease token、数据库路径或原始异常全文
-- `workspace.runtime_state.warnings` / `task_attention` 是请求时计算的只读诊断投影；它们可提示 operator 或 master follow-up，但不得自动把 task 写为 completed / failed，也不得在每次 drain 重复追加 derived durable event
+- `workspace.runtime_state.warnings` / `task_attention` 是请求时计算的只读诊断投影；它们可提示 operator 或 master follow-up，但不得自动把 task 写为 completed / failed，也不得在每次 drain 重复追加 derived durable event。ordinary effect-known agent/harness rejection 已由 `failure_observations` 与下一次 provider input 完整表达，不在这里制造第二份 reconciliation obligation
 
 ## 7. Legacy Boundary
 

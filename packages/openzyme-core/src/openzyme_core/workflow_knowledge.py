@@ -129,6 +129,18 @@ class WorkflowKnowledgePack:
             f"workflow_id: {manifest.workflow_id}",
             f"version: {manifest.version}",
             f"content_sha256: {manifest.content_sha256}",
+            (
+                "manifest_owner: WorkflowRegistry selection owner; this exact "
+                "manifest is already resolved and loaded"
+            ),
+            (
+                f"manifest_path: {manifest.manifest_path} (WorkflowRegistry "
+                "provenance only; not a docs.read path)"
+            ),
+            (
+                "knowledge_owner: DocumentRegistry; docs.read accepts only the "
+                "knowledge_refs below by doc_id or registered knowledge path"
+            ),
             "capability_requirements: "
             + (", ".join(manifest.capability_requirements) or "none"),
             "tool_requirements: " + (", ".join(manifest.tool_requirements) or "none"),

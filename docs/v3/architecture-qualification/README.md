@@ -65,6 +65,11 @@ reconciliation、bounded terminal convergence、restart/fencing、supervisor pro
 operator retirement、boundary scale、evidence projection、strategy neutrality 与 world fidelity。
 后两类分别通过合法trace transformations证明generic Harness不规定tool order/handoff，通过
 source-bound causal projection证明earliest typed cause在下一次decision前可见且无synthetic fallback。
+world-fidelity 的 ordinary-rejection witness 必须绑定一个真实 nonterminal task：同一 task 上
+schema-valid、domain-invalid 的 effect-known action 产生唯一 `FailureObservation`，下一次模型决策读取
+exact error/source/effect facts，task 仍 nonterminal、external effect 为零且
+`workspace.runtime_state` 不得再生成 `failure_reconciliation_required` / task attention。独立负控继续
+证明 system、unknown-effect/reconciliation、authorization 与 runtime-owned retry 仍有精确 attention。
 scripted AOX scenario只是一条reachability witness，不能独立满足current admission。AOX admission/receipt
 及 schema-disjoint run-class closure 场景归入 evidence projection。后者在零外部 effect
 下以真实 file-backed SQLite 证明 full-path diagnostic one-slot

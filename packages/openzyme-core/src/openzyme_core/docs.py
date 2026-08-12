@@ -112,6 +112,13 @@ class DocumentRegistry:
         doc_id = self.paths.get(ref, ref)
         record = self.documents.get(doc_id)
         if record is None:
+            if _looks_like_workflow_manifest_ref(ref):
+                raise ValueError(
+                    f"workflow manifest {ref!r} is owned by WorkflowRegistry; "
+                    "selected manifests are already loaded by the workflow-selection "
+                    "owner, while docs.read reads only DocumentRegistry knowledge "
+                    "refs by doc_id or registered knowledge path"
+                )
             raise ValueError(f"document {ref!r} is not registered")
         if version is not None and record.version != version:
             raise ValueError(
@@ -192,6 +199,13 @@ def _extract_title(content: str) -> str | None:
         if stripped.startswith("# "):
             return stripped.removeprefix("# ").strip()
     return None
+
+
+def _looks_like_workflow_manifest_ref(ref: str) -> bool:
+    normalized = ref.strip()
+    return normalized.startswith("workflow:") or normalized.endswith(
+        ".workflow.json"
+    )
 
 
 def _content_sha256(content: str) -> str:

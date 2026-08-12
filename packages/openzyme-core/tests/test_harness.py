@@ -2696,6 +2696,15 @@ def test_explicit_workflow_selection_propagates_through_delegation_to_teammate()
     )
     assert "# Explicitly selected workflow knowledge pack" in prompt
     assert f"content_sha256: {workflow.content_sha256}" in prompt
+    assert (
+        "manifest_owner: WorkflowRegistry selection owner; this exact manifest "
+        "is already resolved and loaded"
+    ) in prompt
+    assert "WorkflowRegistry provenance only; not a docs.read path" in prompt
+    assert (
+        "knowledge_owner: DocumentRegistry; docs.read accepts only the "
+        "knowledge_refs below"
+    ) in prompt
     assert "scientific_prerequisite_missing" in prompt
     assert tracking_registry.resolved_refs == [workflow_ref]
 

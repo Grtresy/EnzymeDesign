@@ -1924,6 +1924,35 @@ preflight seam，并把该规范加入 active contract mutation negative control
 已经退役而明确 superseded，未执行也未产生 effect；8.3 与 8.4-8.8 仍未完成。本修复不启动 fresh
 admission、下一 rNN、live、MICU、provider、HPC 或 Chrome。
 
+### 2026-08-12 r81 ordinary failure single-settlement 与 registry/path locality
+
+r81 campaign `aox_campaign_607e1cda2829ecdc4d98f8bf` 的 slot 1 建立 session
+`sess_aox_formal_218626a54a23acb3295b081ccdac3f11` 与唯一 open attempt
+`attempt_188e429c888182f9c5098a5b`。冻结 public workspace 证明 selection head 缺失、bounded
+operation ids 为空、report draft/report 为零；Host 后来按 authority deadline 安全退休，但 nonterminal
+attempt 不能由 process settlement 变成 formal outcome，故该 evidence 保持 blocked/noncanonical。
+
+incident 暴露三个相邻但 owner 不同的 repository defects。第一，runtime consistency 把 task-bound、
+effect-known ordinary `agent_can_replan|terminal` failure 再次投影成
+`failure_reconciliation_required`，与 driver 已 durable 并回灌下一次模型决策的 exact
+`FailureObservation` 重复。第二，selected workflow prompt 暴露 manifest path，却没有明确
+`WorkflowRegistry` 已经装载 manifest、`DocumentRegistry` 只拥有 `knowledge_refs`，使 executor 两次把
+manifest 当作 `docs.read` knowledge path。第三，`artifact.get` missing-path error 只有完整失败 path 与
+top-level choices，未表达 deepest valid parent，使 oversized result 的局部探索退化为猜测。
+
+correction 保持 deletion-first 和 owner locality：删除 ordinary known-effect failure 的 broad second
+attention，按 system、reconciliation/unknown effect、authorization 与 runtime retry 分别保留精确 warning；
+在 selected prompt/tool description/error 中明确两个 registry namespace，不增加 manifest fallback；在
+missing-path payload 上只增加 `resolved_prefix`、`missing_segment`、`parent_type` 与 bounded
+`parent_read_hint`，不返回 parent value、不扩张 resolver grammar。production-composition qualification
+用真实 task 上 schema-valid、domain-invalid 的 `task.finish` 形成 task-bound ordinary failure，证明 next
+decision 可见、task nonterminal、effect ledger 为零且无 second attention；独立 runtime consistency
+negative controls 保留真实安全边界。
+
+本 slice 不修改 frozen r81 evidence、scientific attempt lifecycle、authority、provider/HPC、report、public
+schema 或 external effect owner，不增加 recovery state machine，也不启动 fresh admission、下一 rNN、live、
+MICU、provider、HPC 或 Chrome。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

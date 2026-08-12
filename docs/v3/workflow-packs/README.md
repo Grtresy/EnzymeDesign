@@ -11,6 +11,8 @@
 - master delegation 持久化 selection ref 与 manifest snapshot；teammate restore 重新对照 authoritative registry，并在 provider call 前验证实际 role、engine capability 和 tool surface。
 - unknown ref、manifest/document drift、缺少 requirement 均 fail closed。不得猜测新版本、回退到近似 SOP 或隐藏工具来制造可执行路径。
 - workflow 只提供领域知识与真实约束。agent 仍负责选择步骤、工具顺序、重试策略和是否需要澄清；安全、权限、预算、数据与 provenance 边界由 harness 强制。
+- `WorkflowRegistry` 是 manifest selection owner：它解析 exact ref、验证 digest/requirements，并在 provider call 前把 selected manifest 装入 prompt；prompt 中的 manifest path 只说明 provenance，不是 `docs.read` 地址。
+- `DocumentRegistry` 是 knowledge document owner：`docs.search` / `docs.read` 只接收 manifest `knowledge_refs` 中的 `doc_id` 或登记 path。把 `workflow:` ref 或 `*.workflow.json` 误送给 `docs.read` 会得到明确 owner hint，不会搜索、猜测或加载替代 manifest。
 
 当前 manifest：
 

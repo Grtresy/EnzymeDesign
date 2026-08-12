@@ -80,6 +80,32 @@ def test_default_workflow_registry_resolves_pinned_relative_manifests() -> None:
         assert registry.resolve(manifest.selection_ref).manifest == manifest
 
 
+def test_selected_workflow_pack_exposes_registry_owners_without_reloading_manifest() -> (
+    None
+):
+    registry = default_workflow_registry()
+    manifest = next(
+        item
+        for item in registry.list_manifests()
+        if item.workflow_id == "aox-hmm-live"
+    )
+
+    rendered = registry.resolve(manifest.selection_ref).render_prompt_document()
+
+    assert (
+        "manifest_owner: WorkflowRegistry selection owner; this exact manifest "
+        "is already resolved and loaded"
+    ) in rendered
+    assert (
+        f"manifest_path: {manifest.manifest_path} (WorkflowRegistry provenance "
+        "only; not a docs.read path)"
+    ) in rendered
+    assert (
+        "knowledge_owner: DocumentRegistry; docs.read accepts only the "
+        "knowledge_refs below"
+    ) in rendered
+
+
 def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> None:
     registry = default_workflow_registry()
     manifest = next(
@@ -223,6 +249,32 @@ def test_document_registry_exact_read_rejects_version_and_digest_drift() -> None
         registry.read(document.doc_id, version="v2")
     with pytest.raises(ValueError, match="digest drift"):
         registry.read(document.doc_id, content_sha256="sha256:" + "0" * 64)
+
+
+@pytest.mark.parametrize(
+    "manifest_ref",
+    (
+        "workflow:controlled-workflow@1.0.0#sha256:" + "0" * 64,
+        "docs/v3/workflow-packs/controlled.workflow.json",
+    ),
+)
+def test_document_registry_reports_workflow_manifest_namespace_misroute(
+    manifest_ref: str,
+) -> None:
+    registry = _document_registry()
+
+    with pytest.raises(ValueError) as error:
+        registry.read(manifest_ref)
+
+    message = str(error.value)
+    assert "owned by WorkflowRegistry" in message
+    assert "already loaded by the workflow-selection owner" in message
+    assert "docs.read reads only DocumentRegistry knowledge refs" in message
+
+
+def test_document_registry_keeps_plain_missing_document_error() -> None:
+    with pytest.raises(ValueError, match="document 'missing' is not registered"):
+        _document_registry().read("missing")
 
 
 def test_workflow_registry_rejects_manifest_digest_drift(tmp_path) -> None:

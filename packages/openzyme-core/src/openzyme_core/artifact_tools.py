@@ -156,6 +156,13 @@ def _artifact_get_path_hint(
     )
 
 
+def _artifact_get_root_hint(*, artifact_id: str) -> str:
+    return (
+        "artifact.get with "
+        f"artifact_id={json.dumps(artifact_id, ensure_ascii=True)}"
+    )
+
+
 def _omitted_field(path: str, value: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "path": path,
@@ -181,20 +188,25 @@ def _split_path(path: str) -> list[str]:
     return [part for part in path.split(".") if part]
 
 
-def _resolve_path(root: dict[str, Any], path: str) -> tuple[bool, Any]:
+def _resolve_path(
+    root: dict[str, Any], path: str
+) -> tuple[bool, Any, str, str | None, Any]:
     current: Any = root
+    resolved_parts: list[str] = []
     for part in _split_path(path):
         if isinstance(current, dict) and part in current:
             current = current[part]
+            resolved_parts.append(part)
             continue
         if isinstance(current, list):
             try:
                 current = current[int(part)]
             except (ValueError, IndexError):
-                return False, None
+                return False, None, ".".join(resolved_parts), part, current
+            resolved_parts.append(part)
             continue
-        return False, None
-    return True, current
+        return False, None, ".".join(resolved_parts), part, current
+    return True, current, ".".join(resolved_parts), None, current
 
 
 def _clamped_limit(arguments: dict[str, Any]) -> int:
@@ -557,11 +569,26 @@ def _path_payload(
     limit: int,
     include_full: bool,
 ) -> tuple[bool, dict[str, Any]]:
-    exists, value = _resolve_path(root, path)
+    exists, value, resolved_prefix, missing_segment, parent = _resolve_path(
+        root, path
+    )
     if not exists:
+        parent_read_hint = (
+            _artifact_get_path_hint(
+                artifact_id=artifact_id,
+                path=resolved_prefix,
+                limit=DEFAULT_PAGE_LIMIT,
+            )
+            if resolved_prefix
+            else _artifact_get_root_hint(artifact_id=artifact_id)
+        )
         return False, {
             "error": f"path {path!r} does not exist",
             "available_top_level_paths": sorted(root.keys()),
+            "resolved_prefix": resolved_prefix,
+            "missing_segment": missing_segment,
+            "parent_type": _type_name(parent),
+            "parent_read_hint": parent_read_hint,
         }
     if isinstance(value, list):
         effective_limit = min(limit, MAX_PAGE_LIMIT)

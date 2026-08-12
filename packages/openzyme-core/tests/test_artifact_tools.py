@@ -263,6 +263,66 @@ def test_artifact_get_reports_missing_path_with_top_level_options() -> None:
     assert result.ok is False
     assert "does not exist" in payload["error"]
     assert "output_payload" in payload["available_top_level_paths"]
+    assert payload["resolved_prefix"] == "output_payload"
+    assert payload["missing_segment"] == "missing"
+    assert payload["parent_type"] == "dict"
+    assert payload["parent_read_hint"] == (
+        'artifact.get with artifact_id="inv_large:dossier", '
+        'path="output_payload", offset=0, limit=30'
+    )
+
+
+def test_artifact_get_missing_path_reports_bounded_deepest_parent_context() -> (
+    None
+):
+    _repositories, context = _build_context()
+    cases = (
+        (
+            "missing",
+            "",
+            "missing",
+            "dict",
+            'artifact.get with artifact_id="inv_large:dossier"',
+        ),
+        (
+            "output_payload.evidence_items.999",
+            "output_payload.evidence_items",
+            "999",
+            "list",
+            (
+                'artifact.get with artifact_id="inv_large:dossier", '
+                'path="output_payload.evidence_items", offset=0, limit=30'
+            ),
+        ),
+        (
+            "output_payload.status.value",
+            "output_payload.status",
+            "value",
+            "string",
+            (
+                'artifact.get with artifact_id="inv_large:dossier", '
+                'path="output_payload.status", offset=0, limit=30'
+            ),
+        ),
+    )
+
+    for path, prefix, segment, parent_type, read_hint in cases:
+        result = context.tool_registry.dispatch(
+            context,
+            ToolInvocation(
+                call_id=f"call_missing_{segment}",
+                tool_name="artifact.get",
+                arguments={"artifact_id": "inv_large:dossier", "path": path},
+            ),
+        )
+        payload = json.loads(result.content)
+
+        assert result.ok is False
+        assert payload["resolved_prefix"] == prefix
+        assert payload["missing_segment"] == segment
+        assert payload["parent_type"] == parent_type
+        assert payload["parent_read_hint"] == read_hint
+        assert "available_top_level_paths" in payload
 
 
 def _save_file_artifact(
