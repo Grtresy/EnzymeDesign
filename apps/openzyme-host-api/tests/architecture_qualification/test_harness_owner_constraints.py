@@ -30,6 +30,16 @@ GENERIC_RUNTIME_SOURCES = (
     "packages/openzyme-core/src/openzyme_core/teammates.py",
     "packages/openzyme-runtime/src/openzyme_runtime/tooling.py",
 )
+QUALIFICATION_HANDLE_CONTRACT_SOURCES = (
+    ".agents/skills/openzyme-validate-r-series/SKILL.md",
+    "docs/OpenZyme架构设计.md",
+    "docs/v3/architecture-qualification/README.md",
+    "openspec/changes/aox-hmm-blank-world-cutover/design.md",
+    (
+        "openspec/changes/aox-hmm-blank-world-cutover/specs/"
+        "blank-world-live-cutover/spec.md"
+    ),
+)
 
 
 def _canonical(payload: object) -> bytes:
@@ -142,6 +152,31 @@ def test_r_series_repair_skill_requires_bounded_technical_debt_review() -> None:
     assert "不得把它扩张为与事故无关的全仓风险搜索" in skill
     assert "不得静默延期已命中的显式触发器" in skill
     assert "事故耦合的有界技术债审查" in goal
+
+
+def test_qualification_handle_contract_tracks_nested_command_owner() -> None:
+    required_fragments = (
+        "`functions.exec`",
+        "`cell_id`",
+        "`functions.wait`",
+        "`outer cell`",
+        "`exec_command`",
+        "`session_id`",
+        "`write_stdin`",
+        "`inner session`",
+        "`structured result`",
+        "`.output`",
+        "`exit_code`",
+        "`blocked`",
+        "`relaunch`",
+        "`late report`",
+        "`non-adoption`",
+    )
+
+    for relative_path in QUALIFICATION_HANDLE_CONTRACT_SOURCES:
+        source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+        missing = [fragment for fragment in required_fragments if fragment not in source]
+        assert not missing, f"{relative_path} missing {missing}"
 
 
 def test_owner_registry_rejects_duplicate_owner_identity_and_dead_symbol() -> None:

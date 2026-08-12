@@ -140,11 +140,15 @@ close-on-exec方式打开并在 report pure verification及mainline sidecar publ
 `architecture_qualification_run_active`。lock file不记录owner或lifecycle，不产生wait/retry/
 observer/recovery authority；fd close或process crash由kernel释放。
 
-operator/Codex一次只能发出一条full command。若执行工具返回yielded `cell_id`或`session_id`，
-只能恢复该exact handle；不得在其未terminal时启动等价命令、focused recheck或另一个recovery
-output。exact handle失联时只允许只读检查process和target，然后把prelive step记为blocked并停止。
-这条停止规则不改变full matrix、bounded timeout、pure verifier、mainline sidecar non-adoption或
-live fail-closed。
+operator/Codex一次只能发出一条full command，并区分两层执行owner。`functions.exec` yield的
+`cell_id`只拥有`outer cell`的JavaScript生命周期，只能用`functions.wait`恢复；nested
+`exec_command`才拥有`inner session`。outer wrapper必须完整传播nested `structured result`，禁止只
+投影`.output`或丢弃`session_id`/`exit_code`。若inner command yield `session_id`，只能用
+`write_stdin`恢复该session，直到structured result返回真实`exit_code`；`outer cell` terminal不能
+替代inner command terminal。inner handle未暴露或失联时只允许只读检查process和target，立即把prelive
+step记为`blocked`并停止，不得等价`relaunch`、focused recheck或创建recovery output；随后出现的
+`late report`仍是`non-adoption`停后观察。这条停止规则不改变single-flight、full matrix、bounded
+timeout、pure verifier、mainline sidecar non-adoption或live fail-closed。
 
 lock admission完成后立即采样唯一source identity。runner在collection前后、harness后、每个selected
 scenario前后及publication前重新采样，并封存phase、observed digest与是否匹配admission。每个实际

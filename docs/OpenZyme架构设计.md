@@ -1350,10 +1350,15 @@ sidecar publication结束持有`flock(LOCK_EX|LOCK_NB)`。竞争者立即得到
 `architecture_qualification_run_active`；lock不记录business owner/lifecycle，不建立blocking wait、
 steal、observer、retry queue或recovery truth，fd close/process crash由kernel释放。
 
-Codex conductor收到yielded `cell_id|session_id`后只能恢复同一handle。handle unresolved时禁止等价
-command、focused recheck与recovery output；handle失联时只读检查process和原target后停止并记录prelive
-blocked。该correction不改变full matrix/bounded timeout、pure verifier、mainline sidecar non-adoption、
-live fail-closed或AOX offline verifier/reducer权威，也不授权下一rNN/live/MICU/provider/HPC/Chrome。
+Codex conductor必须区分两层执行owner：`functions.exec` yield的`cell_id`只拥有`outer cell`的JavaScript
+生命周期，只用`functions.wait`恢复；nested `exec_command`才拥有`inner session`。outer wrapper必须完整
+传播nested `structured result`，不得只投影`.output`或丢弃`session_id`/`exit_code`。若inner command
+yield `session_id`，conductor只能以`write_stdin`恢复该session，直到structured result返回真实
+`exit_code`；`outer cell` terminal不证明inner command terminal。inner handle未暴露或失联时立即记录
+`blocked`并停止，禁止等价`relaunch`、focused recheck与recovery output；停后出现的`late report`继续按
+`non-adoption`处理。该correction不改变single-flight、full matrix/bounded timeout、pure verifier、
+mainline sidecar non-adoption、live fail-closed或AOX offline verifier/reducer权威，也不授权下一rNN/
+live/MICU/provider/HPC/Chrome。
 
 ### 9.8 r73 stale conductor source 与 source-bound causal qualification
 

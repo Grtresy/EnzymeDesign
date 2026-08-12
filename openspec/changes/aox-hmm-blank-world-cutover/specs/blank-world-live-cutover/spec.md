@@ -1074,14 +1074,20 @@ a safe failure into an automatic retry or a business terminal.
 
 ### Requirement: Prelive qualification handle continuity is deletion-first
 Before any new numbered AOX launch preparation, the Codex conductor SHALL issue at
-most one full architecture-qualification command for the canonical checkout. If the
-execution tool yields a `cell_id` or `session_id`, the conductor MUST resume only that
-exact handle until it returns a terminal result. It MUST NOT start an equivalent
-qualification command, create a recovery output, retry with another parent, or adopt
-a focused recheck while the original handle is unresolved. If the exact handle is no
-longer recoverable, the conductor SHALL perform only read-only process/output
-inventory, classify the prelive step as blocked, and stop without launching Host,
-live, MICU, provider, HPC, or Chrome work.
+most one full architecture-qualification command for the canonical checkout. When
+`functions.exec` wraps `exec_command`, its yielded `cell_id` owns only the JavaScript
+`outer cell` lifecycle and SHALL be resumed only with `functions.wait`; the nested
+`exec_command` owns the `inner session`. The wrapper MUST propagate the complete
+nested `structured result` and MUST NOT project only `.output` or discard
+`session_id` / `exit_code`. If the inner command yields a `session_id`, the conductor
+MUST resume that session only with `write_stdin` until its structured result returns
+the real `exit_code`; terminal state of the `outer cell` is not terminal state of the
+inner command. If the inner handle was not exposed or is no longer recoverable, the
+conductor SHALL perform only read-only process/output inventory, classify the prelive
+step as `blocked`, and stop. It MUST NOT `relaunch` an equivalent qualification
+command, create a recovery output, retry with another parent, or adopt a focused
+recheck. Any subsequent `late report` remains subject to `non-adoption` and cannot
+authorize Host, live, MICU, provider, HPC, or Chrome work.
 
 The qualification owner SHALL validate the canonical checkout-external output target
 and any requested mainline sidecar before collection, harness self-tests, or scenario
@@ -1104,7 +1110,11 @@ target, remain no-replace, and fsync their file and parent boundaries.
 
 #### Scenario: Stop after losing the yielded handle
 - **WHEN** a qualification command yielded an execution handle but that exact handle can no longer be resumed
-- **THEN** the Codex conductor inspects only current processes and target existence, marks the prelive conductor blocked, and does not issue an equivalent command or adopt any partial/recheck/recovery state
+- **THEN** the Codex conductor inspects only current processes and target existence, marks the prelive conductor blocked, does not issue an equivalent command, and does not adopt any partial/recheck/recovery state or later report
+
+#### Scenario: Resume the nested command owner to a real terminal result
+- **WHEN** `functions.exec` resumes its `outer cell` with `functions.wait` and the nested `exec_command` structured result yields an inner `session_id`
+- **THEN** the conductor preserves the complete structured result and resumes only that `inner session` with `write_stdin` until it returns an `exit_code`; outer-cell completion or `.output` alone cannot prove command termination
 
 ### Requirement: Atomic AOX final deliverable finalization
 The exact 17 normalized AOX deliverables SHALL enter the artifact catalog only

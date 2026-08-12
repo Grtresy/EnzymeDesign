@@ -83,7 +83,14 @@ OpenZyme 产品或 Podman installation failure。该平台许可不扩大 exact 
 ## 执行 preparation
 
 1. 完成 bounded read-only readiness audit，动态确认 source identity、clean worktree、current contract、public reachability、冻结历史、预算、启动配置来源和待授权阶段。
-2. 按 qualification 文档给出的当前唯一公开入口运行一次 full admission。若命令 yield handle，只恢复原 handle；handle 失联后只做有界只读检查并停止，不等价重启、不换 output、不自动 recovery。
+2. 按 qualification 文档给出的当前唯一公开入口运行一次 full admission。若以 `functions.exec`
+   包装 `exec_command`，则 yielded `cell_id` 只拥有 `outer cell` 的 JavaScript 生命周期，只能用
+   `functions.wait` 恢复；nested `exec_command` 才拥有 `inner session`。必须向 conductor 完整传播
+   nested `structured result`，禁止只投影 `.output` 或丢弃 `session_id` / `exit_code`。当
+   `inner session` yield `session_id` 时，只能用 `write_stdin` 恢复该 session，直到其 structured
+   result 返回真实 `exit_code`；`outer cell` terminal 不能替代该 terminal result。若 inner handle
+   未暴露或失联，立即记为 `blocked` 并停止，不 `relaunch`、不换 output、不自动 recovery；随后出现的
+   `late report` 仍受 `non-adoption` 约束，只能作为停后只读观察。
 3. 在第一次 public config check 前按当前合同一次性装配完整 command-scoped launch profile。不得先以 ambient defaults 试跑再逐字段补值。
 4. 配置检查和 pin 均只执行合同允许的次数。typed terminal failure 后停止，不 corrected retry；源码调查只能形成推论，不能改写 receipt。
 5. 只有 qualification、pin 和 exact formal plan 都成功发布后才分配并冻结下一 rNN，并报告映射、预算、effects、stop conditions 与可复制授权语句。

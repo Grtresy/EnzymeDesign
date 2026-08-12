@@ -1497,9 +1497,14 @@ output 的等价 full command；随后又运行 focused recheck，并以不存�
 不可重跑、拼接、采纳或用于后继 admission。
 
 forward correction 删除 Codex automatic/bounded admission recovery、等价命令 relaunch 和
-lost-handle continuation。tool 返回 yielded `cell_id`/`session_id` 后只能恢复同一 handle；若该
-handle 失联，只允许只读检查 process 与 output target，然后停止。repository runner 在任何 pytest
-collection、harness self-test 或 scenario 前先验证 primary output 与 mainline sidecar 的 absolute、
+lost-handle continuation，并明确两层执行owner。`functions.exec` yield的`cell_id`只拥有
+`outer cell`的JavaScript生命周期，只用`functions.wait`恢复；nested `exec_command`拥有
+`inner session`。outer wrapper必须传播完整nested `structured result`，禁止只投影`.output`或丢弃
+`session_id`/`exit_code`。inner command yield `session_id`后只能以`write_stdin`恢复，直到其
+structured result返回真实`exit_code`；outer-cell terminal不证明inner command terminal。inner
+handle未暴露或失联时立即`blocked`，只允许只读检查process与output target，禁止`relaunch`；停后出现的
+`late report`继续`non-adoption`。repository runner 在任何 pytest collection、harness self-test 或
+scenario 前先验证 primary output 与 mainline sidecar 的 absolute、
 lexically canonical、existing real parent、no-symlink/no-alias、outside-checkout 和 absent target
 合同。invalid target 使用 `architecture_qualification_output_invalid`，不再晚期折叠为 report
 error。
