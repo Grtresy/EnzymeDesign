@@ -462,6 +462,14 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   reconstruction/seal/verifier/reducer 仍未拆分，因此本项保持未勾选，不能把这次窄提取描述为全部债务
   已解决。
 
+  r82 触发式偿债：attempt-start claim、claim-bound startup/supervision schema 与 no-PID spawn outcome
+  增加了 receipt responsibility，因此先把 supervision receipt schema/constants、contract digest 和纯
+  current pre-ready/normal receipt validators 提取到 `aox_host_supervision_evidence.py`；process module只保留
+  orchestration、settlement/seal与兼容re-export，并以current/legacy与tamper回归证明bytes/digest/error
+  boundary未漂移。这满足本次“先提取纯receipt validator”的触发条件，但POSIX/root/SQLite settlement与
+  seal仍在process module，formal slot-failure两种mode的reconstruction/seal/verifier/reducer也未拆分，
+  所以总债务继续保持未勾选，不宣称全部偿还。
+
   实施触发：向前者新增 process/root/SQLite/receipt responsibility，或向后者新增 closure
   mode/evidence reconstruction branch 前，先提取纯 projection/receipt validator 模块；保留
   现有 public import/re-export、JSON bytes、digest、schema、error code 与历史只读兼容，并用

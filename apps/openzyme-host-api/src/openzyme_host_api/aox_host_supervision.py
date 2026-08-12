@@ -9,7 +9,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
-import math
 import multiprocessing
 from multiprocessing.connection import Connection
 import os
@@ -26,7 +25,6 @@ from uuid import uuid4
 import uvicorn
 
 from openzyme_core import (
-    MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID,
     MutationLocalSettlementError,
     SQLiteRepositoryProvider,
     project_mutation_local_settlement,
@@ -39,106 +37,55 @@ from openzyme_engines import PodmanPipelineSandboxRunner
 from openzyme_engines.execution import validate_closed_sandbox_runtime_identity
 
 from .aox_attempt_preflight import (
-    ATTEMPT_CONDUCTOR_CONTRACT_FILENAME,
     ATTEMPT_PREFLIGHT_FILENAME,
-    ATTEMPT_SLOT_CLAIM_FILENAME,
     load_attempt_launch_profile,
     load_attempt_preflight_receipt,
 )
+from .aox_attempt_start import claim_attempt_start, load_bound_attempt_start_claim
 from .aox_authority_storage import publish_private_canonical_authority
 from .aox_cutover_evidence import (
-    CutoverEvidenceError,
     canonical_digest,
     canonical_json_bytes,
+    safe_micu_ledger_snapshot,
 )
 from .aox_cutover_launch import build_aox_cutover_effective_config
-from .aox_launch_profile import AOX_CUTOVER_LAUNCH_PROFILE_FILENAME
 from .aox_launch_profile import resolve_aox_cutover_launch_profile
 from .app import HostApiDependencies, create_app
 from .foundation import build_configured_foundation
+from .aox_host_supervision_evidence import (
+    HOST_PRE_READY_FAILURE_FILENAME,
+    HOST_PRE_READY_FAILURE_SCHEMA_ID,
+    HOST_SANDBOX_BOOTSTRAP_SCHEMA_ID,
+    HOST_SPAWN_OUTCOME_FILENAME,
+    HOST_SPAWN_OUTCOME_SCHEMA_ID,
+    HOST_STARTUP_FILENAME,
+    HOST_STARTUP_SCHEMA_ID,
+    HOST_SUPERVISION_FATAL_FILENAME,
+    HOST_SUPERVISION_FATAL_SCHEMA_ID,
+    HOST_SUPERVISION_FILENAME,
+    HOST_SUPERVISION_RECEIPT_SCHEMA_ID,
+    host_supervision_contract_digest,
+    validate_supervised_host_pre_ready_failure as validate_supervised_host_pre_ready_failure,
+    validate_supervised_host_receipt as validate_supervised_host_receipt,
+    _PRE_READY_FAILURE_CODES,
+    _PRE_READY_INITIAL_EVIDENCE_FILES,
+)
 
 
-HOST_STARTUP_SCHEMA_ID = "aox_supervised_host_startup@4"
-HOST_SUPERVISION_RECEIPT_SCHEMA_ID = "aox_supervised_host_receipt@3"
-HOST_SUPERVISION_FATAL_SCHEMA_ID = "aox_supervised_host_fatal@1"
-HOST_PRE_READY_FAILURE_SCHEMA_ID = "aox_supervised_host_pre_ready_failure@1"
-HOST_SANDBOX_BOOTSTRAP_SCHEMA_ID = "aox_supervised_host_sandbox_bootstrap@1"
 SandboxBootstrapBinding = tuple[str, str, str]
 _SANDBOX_BOOTSTRAP_FIELDS = {"schema_id", "preflight_receipt_digest", "runtime_identity", "registry_projection", "receipt_digest"}
-HOST_STARTUP_FILENAME = "aox-host-startup.json"
-HOST_SUPERVISION_FILENAME = "aox-host-supervision.json"
-HOST_SUPERVISION_FATAL_FILENAME = "aox-host-supervision-fatal.json"
-HOST_PRE_READY_FAILURE_FILENAME = "aox-host-pre-ready-failure.json"
 DEFAULT_STARTUP_TIMEOUT_SECONDS = 60.0
 DEFAULT_TERM_GRACE_SECONDS = 15.0
 DEFAULT_KILL_GRACE_SECONDS = 10.0
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _ERROR_CODE = re.compile(r"[a-z][a-z0-9_.-]{0,127}")
-_PRE_READY_FAILURE_CODES = frozenset(
-    {
-        "host_sandbox_runtime_identity_drift",
-        "host_sandbox_runtime_identity_invalid",
-        "host_sandbox_runtime_identity_mismatch",
-        "host_sandbox_runtime_identity_missing",
-    }
-)
 _PRE_READY_FAILURE_STAGE = "sandbox_bootstrap_pre_registry"
-_CHILD_PRE_READY_FAILURE_SCHEMA_ID = "aox_supervised_host_child_pre_ready_failure@1"
+_CHILD_PRE_READY_FAILURE_SCHEMA_ID = "aox_supervised_host_child_pre_ready_failure@2"
 _CHILD_PRE_READY_FAILURE_FIELDS = {
-    "schema_id", "process_epoch", "outcome", "failure_code", "failure_type",
+    "schema_id", "process_epoch", "attempt_start_claim_digest", "outcome",
+    "failure_code", "failure_type",
     "failure_stage", "sandbox_preflight_failure_code", "child_pid", "child_pgid",
     "child_start_time_ticks", "terminal_digest",
-}
-_PRE_READY_INITIAL_EVIDENCE_FILES = sorted(
-    {
-        AOX_CUTOVER_LAUNCH_PROFILE_FILENAME,
-        ATTEMPT_CONDUCTOR_CONTRACT_FILENAME,
-        ATTEMPT_PREFLIGHT_FILENAME,
-        ATTEMPT_SLOT_CLAIM_FILENAME,
-    }
-)
-_CONTRACT = {
-    "schema_id": "aox_supervised_host_contract@1",
-    "child_target": "configured_host_api", "network_boundary": "loopback_only",
-    "runtime_policy": "public_commands_only", "automatic_runtime_drain": False,
-    "automatic_approval": False, "automatic_rollover": False,
-    "process_boundary": "spawn_posix_session",
-    "retirement_ladder": ["cooperative", "sigterm", "sigkill", "group_empty"],
-    "settlement": [
-        "host_lifespan_retired", "mutation_writers_zero", "sqlite_checkpoint",
-        "sqlite_integrity", "declared_roots_fsynced", "parent_snapshot_revalidated",
-    ],
-}
-_RECEIPT_FIELDS = {
-    "schema_id", "mode", "launch_id", "attempt_kind", "session_id",
-    "root_ref", "authority_policy_digest",
-    "campaign_id", "preflight_receipt_digest", "host_startup_receipt_digest",
-    "process_epoch", "shutdown_reason", "child_exit_code", "local_state_settled",
-    "descendant_retirement_proven", "parent_snapshot_revalidated",
-    "mutation_authority_schema_id", "mutation_authority_snapshot_digest",
-    "mutation_authority_observed_row_count", "nonterminal_mutation_scope_count",
-    "active_mutation_writer_count", "sqlite_checkpoint", "sqlite_integrity",
-    "declared_root_sync", "terminal_frame_digest", "timeout_seconds",
-    "startup_timeout_seconds", "term_grace_seconds", "kill_grace_seconds",
-    "supervisor_contract_digest", "retired_at", "receipt_digest",
-}
-_PRE_READY_RECEIPT_FIELDS = {
-    "schema_id", "mode", "launch_id", "attempt_kind", "session_id",
-    "root_ref", "authority_policy_digest", "campaign_id",
-    "preflight_receipt_digest", "process_epoch", "failure_stage",
-    "failure_code", "sandbox_preflight_failure_code", "child_pid",
-    "child_pgid", "child_start_time_ticks", "child_exit_code",
-    "local_state_settled", "descendant_retirement_proven",
-    "parent_snapshot_revalidated", "mutation_authority_schema_id",
-    "mutation_authority_snapshot_digest", "mutation_authority_observed_row_count",
-    "nonterminal_mutation_scope_count", "active_mutation_writer_count",
-    "sqlite_checkpoint", "sqlite_integrity", "control_plane_row_count",
-    "effect_root_entry_counts", "evidence_files_before_receipt",
-    "host_startup_created", "host_supervision_created",
-    "public_receipt_chain_created", "declared_root_sync",
-    "terminal_frame_digest", "timeout_seconds", "startup_timeout_seconds",
-    "term_grace_seconds", "kill_grace_seconds", "supervisor_contract_digest",
-    "retired_at", "receipt_digest",
 }
 
 
@@ -246,23 +193,6 @@ def bootstrap_supervised_host_sandbox_image(repository_provider: SQLiteRepositor
         payload = {"schema_id": HOST_SANDBOX_BOOTSTRAP_SCHEMA_ID, "preflight_receipt_digest": preflight_receipt_digest, "runtime_identity": identity, "registry_projection": projection}
         receipt = {**payload, "receipt_digest": canonical_digest(payload)}
     return receipt
-
-
-def host_supervision_contract_digest(
-    *, timeout_seconds: float, startup_timeout_seconds: float,
-    term_grace_seconds: float, kill_grace_seconds: float,
-) -> str:
-    bounds = (timeout_seconds, startup_timeout_seconds, term_grace_seconds, kill_grace_seconds)
-    if (not all(math.isfinite(value) for value in bounds) or timeout_seconds <= 0
-            or startup_timeout_seconds <= 0 or term_grace_seconds < 0
-            or kill_grace_seconds < 0):
-        raise ValueError("supervised Host bounds are invalid")
-    return canonical_digest({
-        **_CONTRACT, "timeout_seconds": timeout_seconds,
-        "startup_timeout_seconds": startup_timeout_seconds,
-        "term_grace_seconds": term_grace_seconds,
-        "kill_grace_seconds": kill_grace_seconds,
-    })
 
 
 def _process_start_time_ticks(pid: int) -> int:
@@ -466,6 +396,7 @@ def _validated_child_pre_ready_failure(
     *,
     process: multiprocessing.Process,
     process_epoch: str,
+    attempt_start_claim_digest: str,
 ) -> dict[str, Any]:
     if not isinstance(frame, dict):
         raise HostSupervisionError(
@@ -498,6 +429,7 @@ def _validated_child_pre_ready_failure(
             set(value) == _CHILD_PRE_READY_FAILURE_FIELDS,
             value.get("schema_id") == _CHILD_PRE_READY_FAILURE_SCHEMA_ID,
             value.get("process_epoch") == process_epoch,
+            value.get("attempt_start_claim_digest") == attempt_start_claim_digest,
             value.get("outcome") == "failed",
             isinstance(value.get("failure_type"), str),
             _ERROR_CODE.fullmatch(str(value.get("failure_code") or "")) is not None,
@@ -542,6 +474,7 @@ def _seal_pre_ready_failure(
     *,
     preflight_path: Path,
     preflight: Mapping[str, Any],
+    attempt_start_claim: Mapping[str, Any],
     frame: Mapping[str, Any],
     process: multiprocessing.Process,
     retired: bool,
@@ -570,6 +503,7 @@ def _seal_pre_ready_failure(
         "authority_policy_digest": slot["authority_policy_digest"],
         "campaign_id": preflight["campaign_id"],
         "preflight_receipt_digest": preflight["receipt_digest"],
+        "attempt_start_claim_digest": attempt_start_claim["claim_digest"],
         "process_epoch": frame["process_epoch"],
         "failure_stage": frame["failure_stage"],
         "failure_code": frame["failure_code"],
@@ -638,17 +572,30 @@ def _receive_frame(connection: Connection, timeout: float) -> dict[str, Any]:
 
 
 def _host_child_main(
-    preflight_path: str, connection: Connection, epoch: str, startup_timeout: float
+    preflight_path: str,
+    connection: Connection,
+    epoch: str,
+    attempt_start_claim_digest: str,
+    startup_timeout: float,
 ) -> None:
     os.setsid()
-    preflight = load_attempt_preflight_receipt(Path(preflight_path), require_unstarted=True)
     root = Path(preflight_path).parent.parent
     server: uvicorn.Server | None = None
     thread: threading.Thread | None = None
     listener: socket.socket | None = None
     failures: list[BaseException] = []
-    failure_stage = "launch_profile_resolution"
+    failure_stage = "attempt_start_claim_revalidation"
     try:
+        preflight, child_claim = load_bound_attempt_start_claim(
+            Path(preflight_path),
+            process_epoch=epoch,
+            require_phase_closed=True,
+        )
+        if child_claim["claim_digest"] != attempt_start_claim_digest:
+            raise HostSupervisionError(
+                "attempt_start_claim_drift", "child start claim digest drifted"
+            )
+        failure_stage = "launch_profile_resolution"
         settings, ledger_path = resolve_aox_cutover_launch_profile(
             load_attempt_launch_profile(Path(preflight_path)),
             install_provider_environment=True,
@@ -704,7 +651,8 @@ def _host_child_main(
                 raise HostSupervisionError("host_startup_timeout", "configured Host was not ready")
             time.sleep(0.01)
         _send_frame(connection, {
-            "schema_id": "aox_supervised_host_child_ready@2", "process_epoch": epoch,
+            "schema_id": "aox_supervised_host_child_ready@3", "process_epoch": epoch,
+            "attempt_start_claim_digest": attempt_start_claim_digest,
             "child_pid": os.getpid(), "child_pgid": os.getpgrp(),
             "child_start_time_ticks": _process_start_time_ticks(os.getpid()),
             "base_url": f"http://127.0.0.1:{port}",
@@ -741,6 +689,7 @@ def _host_child_main(
         terminal = {
             "schema_id": _CHILD_PRE_READY_FAILURE_SCHEMA_ID,
             "process_epoch": epoch, "outcome": "failed",
+            "attempt_start_claim_digest": attempt_start_claim_digest,
             "failure_code": str(getattr(exc, "code", None) or "host_supervision_child_failed"),
             "failure_type": type(exc).__name__,
             "failure_stage": str(getattr(exc, "stage", None) or failure_stage),
@@ -806,10 +755,35 @@ def _publish(path: Path, payload: Mapping[str, Any]) -> None:
     )
 
 
+def _seal_spawn_outcome(
+    *, preflight_path: Path, attempt_start_claim: Mapping[str, Any],
+    ledger_path: Path, process_epoch: str, failure_type: str,
+) -> dict[str, Any]:
+    try:
+        micu_after: dict[str, Any] | None = safe_micu_ledger_snapshot(ledger_path)
+    except Exception:
+        micu_after = None
+    payload = {
+        "schema_id": HOST_SPAWN_OUTCOME_SCHEMA_ID,
+        "launch_id": attempt_start_claim["launch_id"],
+        "attempt_start_claim_digest": attempt_start_claim["claim_digest"],
+        "process_epoch": process_epoch,
+        "failure_code": "host_spawn_outcome_unproven",
+        "failure_type": failure_type, "child_identity_available": False,
+        "effect_certainty": "unproven", "retry_eligibility": "terminal",
+        "next_attempt_blocked": True, "micu_after": micu_after,
+        "observed_at": datetime.now(UTC).isoformat(),
+    }
+    receipt = {**payload, "receipt_digest": canonical_digest(payload)}
+    _publish(_receipt_path(preflight_path, HOST_SPAWN_OUTCOME_FILENAME), receipt)
+    return receipt
+
+
 @dataclass(slots=True)
 class SupervisedHostLease:
     preflight_path: Path
     preflight: dict[str, Any]
+    attempt_start_claim: dict[str, Any]
     process: multiprocessing.Process
     connection: Connection
     process_epoch: str
@@ -893,6 +867,7 @@ class SupervisedHostLease:
                 "attempt_kind": slot.get("attempt_kind"),
                 "authority_policy_digest": slot.get("authority_policy_digest"),
                 "preflight_receipt_digest": self.preflight["receipt_digest"],
+                "attempt_start_claim_digest": self.attempt_start_claim["claim_digest"],
                 "process_epoch": self.process_epoch,
                 "failure_code": "host_local_settlement_unproven",
                 "child_exit_code": self.process.exitcode,
@@ -916,6 +891,7 @@ class SupervisedHostLease:
             "authority_policy_digest": slot["authority_policy_digest"],
             "campaign_id": self.preflight["campaign_id"],
             "preflight_receipt_digest": self.preflight["receipt_digest"],
+            "attempt_start_claim_digest": self.attempt_start_claim["claim_digest"],
             "host_startup_receipt_digest": self.startup_receipt["receipt_digest"],
             "process_epoch": self.process_epoch, "shutdown_reason": self.shutdown_reason,
             "child_exit_code": self.process.exitcode, "local_state_settled": True,
@@ -958,25 +934,78 @@ def supervised_attempt_host(
             "host_supervision_platform_unsupported", "supervised AOX Host requires POSIX /proc"
         )
     path = preflight_path.expanduser().resolve(strict=True)
-    preflight = load_attempt_preflight_receipt(path, require_unstarted=True)
+    preflight = load_attempt_preflight_receipt(path)
     slot = dict(preflight["slot"])
     timeout = float(dict(slot["authority_policy"])["max_wall_time_seconds"])
     host_supervision_contract_digest(
         timeout_seconds=timeout, startup_timeout_seconds=startup_timeout_seconds,
         term_grace_seconds=term_grace_seconds, kill_grace_seconds=kill_grace_seconds,
     )
+    epoch = uuid4().hex
+    _, attempt_start_claim, ledger_path = claim_attempt_start(
+        path,
+        process_epoch=epoch,
+    )
     spawn = multiprocessing.get_context("spawn")
     parent, child = spawn.Pipe(duplex=True)
-    epoch = uuid4().hex
     process = spawn.Process(
-        target=_host_child_main, args=(str(path), child, epoch, startup_timeout_seconds),
+        target=_host_child_main,
+        args=(
+            str(path),
+            child,
+            epoch,
+            str(attempt_start_claim["claim_digest"]),
+            startup_timeout_seconds,
+        ),
         name=f"aox-host-{preflight['slot_claim']['launch_id']}",
     )
-    process.start()
+    try:
+        process.start()
+    except BaseException as exc:
+        child.close()
+        if process.pid is not None:
+            pgid = None
+            try:
+                candidate_pgid = os.getpgid(process.pid)
+                pgid = candidate_pgid if candidate_pgid == process.pid else None
+                _retire_process_group(
+                    process, pgid=pgid,
+                    term_grace_seconds=term_grace_seconds,
+                    kill_grace_seconds=kill_grace_seconds,
+                )
+            except Exception:
+                pass
+            finally:
+                parent.close()
+            raise HostSupervisionError(
+                "host_spawn_outcome_unproven",
+                "supervised Host spawn failed after a child identity became visible",
+            ) from exc
+        parent.close()
+        _seal_spawn_outcome(
+            preflight_path=path,
+            attempt_start_claim=attempt_start_claim,
+            ledger_path=ledger_path,
+            process_epoch=epoch,
+            failure_type=type(exc).__name__,
+        )
+        raise HostSupervisionError(
+            "host_spawn_outcome_unproven",
+            "supervised Host spawn failed without a verifiable child identity",
+        ) from exc
     child.close()
     if process.pid is None:
         parent.close()
-        raise HostSupervisionError("host_spawn_failed", "supervised Host has no identity")
+        _seal_spawn_outcome(
+            preflight_path=path,
+            attempt_start_claim=attempt_start_claim,
+            ledger_path=ledger_path,
+            process_epoch=epoch,
+            failure_type="MissingProcessIdentity",
+        )
+        raise HostSupervisionError(
+            "host_spawn_outcome_unproven", "supervised Host has no identity"
+        )
     pgid: int | None = None
     try:
         ready = _receive_frame(parent, startup_timeout_seconds)
@@ -988,6 +1017,7 @@ def supervised_attempt_host(
                 ready,
                 process=process,
                 process_epoch=epoch,
+                attempt_start_claim_digest=str(attempt_start_claim["claim_digest"]),
             )
             pgid = int(failed["child_pgid"])
             try:
@@ -1005,6 +1035,7 @@ def supervised_attempt_host(
                 _seal_pre_ready_failure(
                     preflight_path=path,
                     preflight=preflight,
+                    attempt_start_claim=attempt_start_claim,
                     frame=failed,
                     process=process,
                     retired=retired,
@@ -1029,8 +1060,10 @@ def supervised_attempt_host(
         pgid, child_pid = int(ready.get("child_pgid") or 0), int(ready.get("child_pid") or 0)
         child_start = int(ready.get("child_start_time_ticks") or 0)
         if not all((
-            ready.get("schema_id") == "aox_supervised_host_child_ready@2",
+            ready.get("schema_id") == "aox_supervised_host_child_ready@3",
             ready.get("process_epoch") == epoch,
+            ready.get("attempt_start_claim_digest")
+            == attempt_start_claim["claim_digest"],
             ready.get("preflight_receipt_digest") == preflight["receipt_digest"],
             child_pid == process.pid, pgid == process.pid,
             os.getpgid(process.pid) == process.pid,
@@ -1050,6 +1083,7 @@ def supervised_attempt_host(
             "authority_policy_digest": slot["authority_policy_digest"],
             "campaign_id": preflight["campaign_id"],
             "preflight_receipt_digest": preflight["receipt_digest"],
+            "attempt_start_claim_digest": attempt_start_claim["claim_digest"],
             "process_epoch": epoch, "child_pid": child_pid, "child_pgid": pgid,
             "child_start_time_ticks": child_start, "timeout_seconds": timeout,
             "sandbox_bootstrap": sandbox_bootstrap,
@@ -1058,7 +1092,9 @@ def supervised_attempt_host(
         startup = {**startup_payload, "receipt_digest": canonical_digest(startup_payload)}
         _publish(_receipt_path(path, HOST_STARTUP_FILENAME), startup)
         lease = SupervisedHostLease(
-            preflight_path=path, preflight=preflight, process=process, connection=parent,
+            preflight_path=path, preflight=preflight,
+            attempt_start_claim=attempt_start_claim,
+            process=process, connection=parent,
             process_epoch=epoch, child_pgid=pgid, child_start_time_ticks=child_start,
             startup_receipt=startup, timeout_seconds=timeout,
             startup_timeout_seconds=startup_timeout_seconds,
@@ -1080,198 +1116,3 @@ def supervised_attempt_host(
                 "host_descendant_retirement_unproven", "Host descendants did not retire"
             ) from None
         raise
-
-
-def validate_supervised_host_receipt(
-    receipt: object, *, launch_id: str, attempt_kind: str,
-    session_id: str, root_ref: str, campaign_id: str,
-    authority_policy_digest: str,
-) -> dict[str, Any]:
-    if not isinstance(receipt, dict):
-        raise CutoverEvidenceError(
-            "host_supervision_receipt_missing",
-            "eligible AOX evidence requires supervised Host retirement",
-        )
-    value = dict(receipt)
-    payload = {key: item for key, item in value.items() if key != "receipt_digest"}
-    try:
-        contract = host_supervision_contract_digest(
-            timeout_seconds=float(value["timeout_seconds"]),
-            startup_timeout_seconds=float(value["startup_timeout_seconds"]),
-            term_grace_seconds=float(value["term_grace_seconds"]),
-            kill_grace_seconds=float(value["kill_grace_seconds"]),
-        )
-    except (KeyError, TypeError, ValueError):
-        contract = None
-    valid = all((
-        set(value) == _RECEIPT_FIELDS,
-        value.get("schema_id") == HOST_SUPERVISION_RECEIPT_SCHEMA_ID,
-        value.get("mode") == "policy_free_public_host",
-        value.get("launch_id") == launch_id,
-        value.get("attempt_kind") == attempt_kind,
-        value.get("session_id") == session_id,
-        value.get("root_ref") == root_ref,
-        value.get("campaign_id") == campaign_id,
-        value.get("authority_policy_digest") == authority_policy_digest,
-        bool(value.get("process_epoch")),
-        all(_DIGEST.fullmatch(str(value.get(name) or "")) for name in (
-            "authority_policy_digest", "preflight_receipt_digest",
-            "host_startup_receipt_digest", "mutation_authority_snapshot_digest",
-            "terminal_frame_digest", "supervisor_contract_digest", "receipt_digest",
-        )),
-        value.get("shutdown_reason") in {"operator_stop", "authority_deadline"},
-        value.get("child_exit_code") == 0,
-        value.get("local_state_settled") is True,
-        value.get("descendant_retirement_proven") is True,
-        value.get("parent_snapshot_revalidated") is True,
-        value.get("mutation_authority_schema_id") == MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID,
-        all(type(value.get(name)) is int and value[name] >= 0 for name in (
-            "mutation_authority_observed_row_count", "nonterminal_mutation_scope_count",
-            "active_mutation_writer_count",
-        )),
-        value.get("nonterminal_mutation_scope_count") == 0,
-        value.get("active_mutation_writer_count") == 0,
-        value.get("sqlite_checkpoint") in {"passed", "not_present"},
-        value.get("sqlite_integrity") in {"passed", "not_present"},
-        value.get("declared_root_sync") is True, bool(value.get("retired_at")),
-        value.get("supervisor_contract_digest") == contract,
-        value.get("receipt_digest") == canonical_digest(payload),
-    ))
-    if not valid:
-        raise CutoverEvidenceError(
-            "host_supervision_receipt_invalid",
-            "supervised Host receipt does not prove exact local retirement",
-            details={"identity": "product_path.attempt_supervision"},
-        )
-    return value
-
-
-def validate_supervised_host_pre_ready_failure(
-    receipt: object,
-    *,
-    preflight: Mapping[str, Any],
-) -> dict[str, Any]:
-    if not isinstance(receipt, dict):
-        raise CutoverEvidenceError(
-            "host_pre_ready_failure_receipt_missing",
-            "pre-child-ready formal failure requires a supervision receipt",
-            details={"identity": "host_pre_ready_failure"},
-        )
-    value = dict(receipt)
-    payload = {key: item for key, item in value.items() if key != "receipt_digest"}
-    slot = dict(preflight.get("slot") or {})
-    slot_claim = dict(preflight.get("slot_claim") or {})
-    try:
-        contract = host_supervision_contract_digest(
-            timeout_seconds=float(value["timeout_seconds"]),
-            startup_timeout_seconds=float(value["startup_timeout_seconds"]),
-            term_grace_seconds=float(value["term_grace_seconds"]),
-            kill_grace_seconds=float(value["kill_grace_seconds"]),
-        )
-    except (KeyError, TypeError, ValueError):
-        contract = None
-    try:
-        retired_at = datetime.fromisoformat(str(value.get("retired_at") or ""))
-    except ValueError:
-        retired_at = None
-    sandbox_failure_code = value.get("sandbox_preflight_failure_code")
-    failure_code = value.get("failure_code")
-    terminal_payload = {
-        "schema_id": _CHILD_PRE_READY_FAILURE_SCHEMA_ID,
-        "process_epoch": value.get("process_epoch"),
-        "outcome": "failed",
-        "failure_code": failure_code,
-        "failure_type": "HostSupervisionError",
-        "failure_stage": value.get("failure_stage"),
-        "sandbox_preflight_failure_code": sandbox_failure_code,
-        "child_pid": value.get("child_pid"),
-        "child_pgid": value.get("child_pgid"),
-        "child_start_time_ticks": value.get("child_start_time_ticks"),
-    }
-    valid = all(
-        (
-            set(value) == _PRE_READY_RECEIPT_FIELDS,
-            value.get("schema_id") == HOST_PRE_READY_FAILURE_SCHEMA_ID,
-            value.get("mode") == "pre_child_ready",
-            value.get("launch_id") == slot_claim.get("launch_id"),
-            value.get("attempt_kind") == slot.get("attempt_kind"),
-            value.get("session_id") == slot.get("session_id"),
-            value.get("root_ref") == slot.get("root_ref"),
-            value.get("authority_policy_digest")
-            == slot.get("authority_policy_digest"),
-            value.get("campaign_id") == preflight.get("campaign_id"),
-            value.get("preflight_receipt_digest")
-            == preflight.get("receipt_digest"),
-            isinstance(value.get("process_epoch"), str),
-            bool(value.get("process_epoch")),
-            value.get("failure_stage") == _PRE_READY_FAILURE_STAGE,
-            failure_code in _PRE_READY_FAILURE_CODES,
-            sandbox_failure_code is None
-            or sandbox_failure_code in PODMAN_SANDBOX_PREFLIGHT_FAILURE_CODES,
-            failure_code
-            not in {
-                "host_sandbox_runtime_identity_missing",
-                "host_sandbox_runtime_identity_drift",
-            }
-            or sandbox_failure_code in PODMAN_SANDBOX_PREFLIGHT_FAILURE_CODES,
-            type(value.get("child_pid")) is int,
-            value.get("child_pid", 0) > 0,
-            value.get("child_pgid") == value.get("child_pid"),
-            type(value.get("child_start_time_ticks")) is int,
-            value.get("child_start_time_ticks", 0) > 0,
-            type(value.get("child_exit_code")) is int,
-            value.get("child_exit_code") != 0,
-            value.get("local_state_settled") is True,
-            value.get("descendant_retirement_proven") is True,
-            value.get("parent_snapshot_revalidated") is True,
-            value.get("mutation_authority_schema_id")
-            == MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID,
-            all(
-                type(value.get(name)) is int and value[name] == 0
-                for name in (
-                    "mutation_authority_observed_row_count",
-                    "nonterminal_mutation_scope_count",
-                    "active_mutation_writer_count",
-                    "control_plane_row_count",
-                )
-            ),
-            value.get("sqlite_checkpoint") == "parent_read_only",
-            value.get("sqlite_integrity") == "passed",
-            value.get("effect_root_entry_counts")
-            == {
-                "artifacts": 0,
-                "blobs": 0,
-                "hpc-workspace": 0,
-                "sandboxes": 0,
-            },
-            value.get("evidence_files_before_receipt")
-            == _PRE_READY_INITIAL_EVIDENCE_FILES,
-            value.get("host_startup_created") is False,
-            value.get("host_supervision_created") is False,
-            value.get("public_receipt_chain_created") is False,
-            value.get("declared_root_sync") is True,
-            value.get("terminal_frame_digest")
-            == canonical_digest(terminal_payload),
-            all(
-                _DIGEST.fullmatch(str(value.get(name) or "")) is not None
-                for name in (
-                    "authority_policy_digest",
-                    "preflight_receipt_digest",
-                    "mutation_authority_snapshot_digest",
-                    "terminal_frame_digest",
-                    "supervisor_contract_digest",
-                    "receipt_digest",
-                )
-            ),
-            value.get("supervisor_contract_digest") == contract,
-            retired_at is not None and retired_at.tzinfo is not None,
-            value.get("receipt_digest") == canonical_digest(payload),
-        )
-    )
-    if not valid:
-        raise CutoverEvidenceError(
-            "host_pre_ready_failure_receipt_invalid",
-            "pre-child-ready supervision receipt is not fail-closed",
-            details={"identity": "host_pre_ready_failure"},
-        )
-    return value

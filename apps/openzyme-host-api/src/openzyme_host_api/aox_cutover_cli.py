@@ -1104,7 +1104,6 @@ def _finalize_and_seal(args: argparse.Namespace) -> int:
         event_response_path=sources["events"],
         evidence_response_path=sources["evidence"],
         handoff_response_paths=sources["handoffs"],
-        ledger_before_path=args.ledger_before,
         ledger_after_path=args.ledger_after,
     )
     _print(
@@ -1125,7 +1124,6 @@ def _seal_slot_failure(args: argparse.Namespace) -> int:
                 identity_path=args.identity,
                 preflight_path=args.preflight_receipt,
                 pre_ready_failure_path=args.pre_ready_failure,
-                ledger_before_path=args.ledger_before,
                 ledger_after_path=args.ledger_after,
             )
         )
@@ -1148,7 +1146,6 @@ def _seal_slot_failure(args: argparse.Namespace) -> int:
             workspace_response_path=sources["workspace"],
             event_response_path=sources["events"],
             handoff_response_paths=sources["handoffs"],
-            ledger_before_path=args.ledger_before,
             ledger_after_path=args.ledger_after,
         )
     _print(
@@ -1549,7 +1546,6 @@ def build_parser() -> argparse.ArgumentParser:
         "identity",
         "preflight_receipt",
         "retirement_readiness",
-        "ledger_before",
         "ledger_after",
     )
     finalize_and_seal.set_defaults(handler=_finalize_and_seal)
@@ -1565,7 +1561,6 @@ def build_parser() -> argparse.ArgumentParser:
         seal_slot_failure,
         "identity",
         "preflight_receipt",
-        "ledger_before",
         "ledger_after",
     )
     slot_failure_source = seal_slot_failure.add_mutually_exclusive_group(

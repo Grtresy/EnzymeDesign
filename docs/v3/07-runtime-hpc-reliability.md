@@ -311,8 +311,9 @@ SQLite/root sync 或 TERM/KILL 解释为 task/operation/campaign terminal。该�
 的产品 ownership；different UID/cgroup 与 remote-handle/MICU crash reconciliation 仍是
 独立 hardening。
 
-r68 首次把这个 shell 收窄为 production seam；post-r70 current schema是
-`aox_supervised_host_receipt@3`，只能从 exact `aox_attempt_preflight@5` 启动固定 loopback Host child，使用独立 process group，关闭
+r68 首次把这个 shell 收窄为 production seam；current schema是
+`aox_supervised_host_receipt@4`，只能从 exact `aox_attempt_preflight@5` 与绑定的 attempt-start claim
+启动固定 loopback Host child，使用独立 process group，关闭
 background runtime，并封存 startup 与 terminal supervision receipts。它不接受 arbitrary
 callable/pickled runner，不发送 message、runtime drain或 approval，不执行 scope rollover，
 也不根据 workspace/task/attempt/report state决定退出。parent 的 TERM/KILL 只描述 local
@@ -345,14 +346,27 @@ command，并把admission response与独立terminal status都作为sealed handof
 必须exact绑定唯一`runtime.command.finished` event。digest-only status、stdout、process exit或
 空 drain都不能解释为业务完成。
 
+在`process.start()`前，parent必须再次证明attempt root只含closed prestart evidence且effect roots为空，
+读取pinned MICU ledger，原子no-replace发布唯一attempt-scoped `aox_attempt_start_claim@1`，并立即重读同一ledger。
+claim绑定preflight、slot、launch profile、execution contract、完整baseline与process epoch；污染、drift、
+existing claim或exclusive-create race均在process creation前失败，不使用campaign-global lock或replay。
+child在foundation前重验同一claim digest、epoch、preflight与closed phase。current
+`aox_supervised_host_startup@5`、`aox_supervised_host_receipt@4`、`aox_supervised_host_fatal@2`与
+`aox_supervised_host_pre_ready_failure@2`均绑定该claim。
+
+若`process.start()`在可验证child PID前失败，parent只可封存最小typed spawn outcome，并保持external
+effect unproven、retry terminal与next attempt blocked；不得伪造startup、normal supervision、formal
+closure或reducer decision。
+
 child若在 `sandbox_bootstrap_pre_registry`、child-ready之前失败，不得伪造startup或normal
 supervision receipt。closed child frame必须绑定process epoch、PID=PGID、`/proc` start-time、stage、
 outer Host code、allowlisted Podman subcause与digest；parent只在child仍存活时接受该frame，随后退休exact
 process group。只有attempt root仍为exact initial evidence、四个effect目录全空、control-plane所有业务表
 零行、mutation authority零scope/writer、SQLite integrity与root fsync全部成立，才no-replace封存
-`aox_supervised_host_pre_ready_failure@1`。该receipt明确startup/supervision/public receipt均不存在；任一
+`aox_supervised_host_pre_ready_failure@2`。该receipt绑定start claim，并明确startup/supervision/public receipt均不存在；任一
 process/root/state/effect/cause不确定都保持blocker。它只可进入
-`aox_formal_slot_failure@2 / closure_mode=pre_child_ready`，并要求unchanged MICU；历史`@1`只读。
+`aox_formal_slot_failure@3 / closure_mode=pre_child_ready`：MICU before只从start claim派生，另读取一次
+unchanged after；standalone current before被拒绝。历史formal failure `@1/@2`只按原shape读取。
 
 supervisor的`launch_id`仅关联local process epoch与launch artifacts，不是scientific attempt
 identity。真实lane与attempt由session内canonical lane tools、assignee-only `attempt.create`及

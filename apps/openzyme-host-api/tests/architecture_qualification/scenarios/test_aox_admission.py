@@ -42,6 +42,11 @@ from openzyme_host_api.aox_attempt_authority import (
     attempt_authority_consumption_path,
 )
 from openzyme_host_api.aox_attempt_preflight import ATTEMPT_PREFLIGHT_SCHEMA_ID
+from openzyme_host_api.aox_attempt_preflight import ATTEMPT_START_CLAIM_SCHEMA_ID
+from openzyme_host_api.aox_conductor_execution import (
+    CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID,
+)
+from openzyme_host_api.aox_cutover_evidence import ATTEMPT_BUNDLE_SCHEMA_ID_V4
 from openzyme_host_api.aox_cutover_launch import (
     AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_SCHEMA_ID,
 )
@@ -67,10 +72,17 @@ from openzyme_host_api.aox_formal_slot_failure import (
     FORMAL_SLOT_FAILURE_SCHEMA_ID,
 )
 from openzyme_host_api.aox_formal_slot_failure import (
-    LEGACY_FORMAL_SLOT_FAILURE_SCHEMA_ID,
+    LEGACY_FORMAL_SLOT_FAILURE_SCHEMA_IDS,
 )
 from openzyme_host_api.aox_host_supervision import (
     HOST_PRE_READY_FAILURE_SCHEMA_ID,
+    HOST_SPAWN_OUTCOME_SCHEMA_ID,
+    HOST_STARTUP_SCHEMA_ID,
+    HOST_SUPERVISION_FATAL_SCHEMA_ID,
+    HOST_SUPERVISION_RECEIPT_SCHEMA_ID,
+)
+from openzyme_host_api.aox_public_conductor_bundle import (
+    PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID,
 )
 from openzyme_host_api.aox_preflight_failure import (
     FORMAL_PREFLIGHT_FAILURE_DECISION_SCHEMA_ID,
@@ -109,6 +121,65 @@ _ACTIVE_CUTOVER_SPEC = (
     _REPO_ROOT / "openspec/changes/aox-hmm-blank-world-cutover/specs/"
     "blank-world-live-cutover/spec.md"
 )
+_ATTEMPT_START_CONTRACT_SOURCES = {
+    _REPO_ROOT / "docs/OpenZyme架构设计.md": (
+        ATTEMPT_START_CLAIM_SCHEMA_ID,
+        CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID,
+        HOST_STARTUP_SCHEMA_ID,
+        HOST_SUPERVISION_RECEIPT_SCHEMA_ID,
+        HOST_PRE_READY_FAILURE_SCHEMA_ID,
+        HOST_SUPERVISION_FATAL_SCHEMA_ID,
+        HOST_SPAWN_OUTCOME_SCHEMA_ID,
+        FORMAL_SLOT_FAILURE_SCHEMA_ID,
+        PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID,
+        ATTEMPT_BUNDLE_SCHEMA_ID_V4,
+    ),
+    _REPO_ROOT / "docs/v3/04-public-interfaces.md": (
+        ATTEMPT_START_CLAIM_SCHEMA_ID,
+        CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID,
+        HOST_STARTUP_SCHEMA_ID,
+        HOST_SUPERVISION_RECEIPT_SCHEMA_ID,
+        HOST_PRE_READY_FAILURE_SCHEMA_ID,
+        HOST_SUPERVISION_FATAL_SCHEMA_ID,
+        HOST_SPAWN_OUTCOME_SCHEMA_ID,
+        FORMAL_SLOT_FAILURE_SCHEMA_ID,
+        PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID,
+        ATTEMPT_BUNDLE_SCHEMA_ID_V4,
+    ),
+    _REPO_ROOT / "docs/v3/07-runtime-hpc-reliability.md": (
+        ATTEMPT_START_CLAIM_SCHEMA_ID,
+        HOST_STARTUP_SCHEMA_ID,
+        HOST_SUPERVISION_RECEIPT_SCHEMA_ID,
+        HOST_PRE_READY_FAILURE_SCHEMA_ID,
+        FORMAL_SLOT_FAILURE_SCHEMA_ID,
+    ),
+    _REPO_ROOT / "docs/v3/08-failure-recovery-and-scientific-attempts.md": (
+        ATTEMPT_BUNDLE_SCHEMA_ID_V4,
+        HOST_PRE_READY_FAILURE_SCHEMA_ID,
+        FORMAL_SLOT_FAILURE_SCHEMA_ID,
+    ),
+    _REPO_ROOT / "docs/v3/aox-hmm-blank-world-cutover.md": (
+        ATTEMPT_START_CLAIM_SCHEMA_ID,
+        CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID,
+        HOST_STARTUP_SCHEMA_ID,
+        HOST_SUPERVISION_RECEIPT_SCHEMA_ID,
+        HOST_PRE_READY_FAILURE_SCHEMA_ID,
+        HOST_SUPERVISION_FATAL_SCHEMA_ID,
+        HOST_SPAWN_OUTCOME_SCHEMA_ID,
+        FORMAL_SLOT_FAILURE_SCHEMA_ID,
+        PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID,
+        ATTEMPT_BUNDLE_SCHEMA_ID_V4,
+    ),
+    _REPO_ROOT / "docs/v3/architecture-qualification/README.md": (
+        CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID,
+        HOST_SUPERVISION_RECEIPT_SCHEMA_ID,
+        HOST_PRE_READY_FAILURE_SCHEMA_ID,
+        FORMAL_SLOT_FAILURE_SCHEMA_ID,
+        ATTEMPT_BUNDLE_SCHEMA_ID_V4,
+    ),
+}
+_VALIDATION_SKILL = _REPO_ROOT / ".agents/skills/openzyme-validate-r-series/SKILL.md"
+_VALIDATION_GOAL = _REPO_ROOT / "docs/v3/aox-r-series-codex-goal.md"
 
 
 def _digest(digit: str) -> str:
@@ -128,6 +199,47 @@ def _replace_once(document: str, old: str, new: str) -> str:
     if document.count(old) != 1:
         raise AssertionError(f"contract mutation target is not unique: {old!r}")
     return document.replace(old, new, 1)
+
+
+def _assert_attempt_start_guard_sources() -> list[str]:
+    checked: list[str] = []
+    for path, schema_ids in _ATTEMPT_START_CONTRACT_SOURCES.items():
+        document = path.read_text(encoding="utf-8")
+        missing = [schema_id for schema_id in schema_ids if schema_id not in document]
+        if missing:
+            raise AssertionError(f"{path} omits current guard schemas: {missing}")
+        for phrase in ("no-replace", "MICU", "process epoch"):
+            if phrase not in document:
+                raise AssertionError(f"{path} omits current guard phrase: {phrase}")
+        checked.append(str(path.relative_to(_REPO_ROOT)))
+
+    validation_skill = _VALIDATION_SKILL.read_text(encoding="utf-8")
+    ordered_skill_phrases = (
+        "prestart root/evidence",
+        "由 canonical ledger owner读取一次",
+        "原子 no-replace 发布 attempt-scoped start claim",
+        "立即重读同一 ledger",
+        "child必须重验同一 claim digest",
+    )
+    positions = [validation_skill.index(phrase) for phrase in ordered_skill_phrases]
+    if positions != sorted(positions):
+        raise AssertionError("validation skill drifts from the canonical start order")
+    for phrase in ("external effect保持unproven", "不得把它当作startup"):
+        if phrase not in validation_skill:
+            raise AssertionError(f"validation skill omits spawn blocker rule: {phrase}")
+    checked.append(str(_VALIDATION_SKILL.relative_to(_REPO_ROOT)))
+
+    validation_goal = _VALIDATION_GOAL.read_text(encoding="utf-8")
+    for phrase in (
+        CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID,
+        FORMAL_SLOT_FAILURE_SCHEMA_ID,
+        "原子no-replace发布唯一attempt-start claim并立即重读ledger",
+        "external effect\n保持unproven",
+    ):
+        if phrase not in validation_goal:
+            raise AssertionError(f"validation goal omits current guard contract: {phrase}")
+    checked.append(str(_VALIDATION_GOAL.relative_to(_REPO_ROOT)))
+    return checked
 
 
 def _assert_current_schema_contract(document: str) -> dict[str, str]:
@@ -207,6 +319,14 @@ def _assert_current_schema_contract(document: str) -> dict[str, str]:
         "Authority-bound public conductor production reachability",
     )
     for schema_id in (
+        ATTEMPT_START_CLAIM_SCHEMA_ID,
+        CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID,
+        ATTEMPT_BUNDLE_SCHEMA_ID_V4,
+        PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID,
+        HOST_STARTUP_SCHEMA_ID,
+        HOST_SUPERVISION_RECEIPT_SCHEMA_ID,
+        HOST_SUPERVISION_FATAL_SCHEMA_ID,
+        HOST_SPAWN_OUTCOME_SCHEMA_ID,
         FORMAL_SLOT_FAILURE_SCHEMA_ID,
         HOST_PRE_READY_FAILURE_SCHEMA_ID,
     ):
@@ -216,10 +336,19 @@ def _assert_current_schema_contract(document: str) -> dict[str, str]:
         raise AssertionError("preflight does not require the actual pre-claim guard")
     if "closure_mode=pre_child_ready" not in conductor:
         raise AssertionError("pre-ready failure mode is not explicit")
-    if (
-        f"Historical `{LEGACY_FORMAL_SLOT_FAILURE_SCHEMA_ID}`"
-        not in conductor
+    for phrase in (
+        "atomically publish exactly one private no-replace",
+        "immediately reread the same ledger",
+        "The child MUST revalidate that same claim digest",
+        "effect_certainty=unproven",
+        "no caller-supplied or standalone current",
     ):
+        if phrase not in conductor:
+            raise AssertionError(f"attempt-start guard omits {phrase!r}")
+    if any(
+        f"`{schema_id}`" not in conductor
+        for schema_id in LEGACY_FORMAL_SLOT_FAILURE_SCHEMA_IDS
+    ) or "read-only" not in conductor:
         raise AssertionError("legacy formal slot failure lost read-only status")
 
     admission = _requirement(
@@ -420,6 +549,8 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
     spec_bytes = _ACTIVE_CUTOVER_SPEC.read_bytes()
     spec_document = spec_bytes.decode("utf-8")
     schema_contract = _assert_current_schema_contract(spec_document)
+    cross_source_guard_contracts = _assert_attempt_start_guard_sources()
+    assert cross_source_guard_contracts
     contract_drift_mutations = {
         "conductor_shadow_truth": _replace_once(
             spec_document,

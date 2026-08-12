@@ -705,11 +705,12 @@ be rejected when rebound, replayed, symlinked, drifted or reused after any
 session/attempt state exists.
 
 Within the session, no operator authority MAY be granted to a speculative task.
-The current `aox_public_conductor_execution_contract@2` SHALL bind the exact session
+The current `aox_public_conductor_execution_contract@3` SHALL bind the exact session
 creation request and exactly one raw entry-message request whose `skill_keys` contain
-only the preflight-pinned workflow reference. The formal wrapper MUST require those as
+only the preflight-pinned workflow reference, plus the canonical
+`aox_attempt_start_claim@1` filename and schema. The formal wrapper MUST require those as
 the first two successful public actions, reject a missing/different pin and every later
-session message before calling Host, and treat historical execution contract `@1` as
+session message before calling Host, and treat historical execution contracts `@1/@2` as
 read-only and non-admissible for new execution. After the canonical entry, the Codex
 conductor SHALL submit one bounded drain, seal both its public admission response and
 its one public terminal status response, and then seal a public canonical workspace
@@ -745,12 +746,35 @@ failure and retry exhaustion MUST fail closed without replaying the scheduler,
 reconstructing an outcome, creating a replacement command or writing business terminal
 state.
 
-`serve-attempt` MAY start only the fixed loopback production Host in one local
-process group using that exact preflight receipt. It MUST disable background
+Immediately before `serve-attempt` invokes process creation, the parent MUST
+revalidate the exact clean attempt root and initial evidence set, read the pinned
+MICU ledger once, and atomically publish exactly one private no-replace
+`aox_attempt_start_claim@1`. The claim MUST bind the launch, preflight, slot claim,
+launch profile, execution contract, ledger identity, complete MICU baseline and
+process epoch by digest. The parent MUST immediately reread the same ledger and
+require byte-equivalent canonical state before process creation. Contamination,
+ledger drift, an existing claim or a lost exclusive-create race MUST fail closed;
+the implementation MUST NOT introduce a campaign-global lock or exclusivity owner.
+
+The child MUST revalidate that same claim digest, process epoch, preflight and closed
+root phase before constructing its foundation. `serve-attempt` MAY start only the
+fixed loopback production Host in one local process group using that exact preflight
+receipt. It MUST disable background
 runtime and MUST NOT send a message, drain runtime, resolve approval, retry,
 roll over a scope, inspect business terminal state or derive a campaign result.
 Startup and retirement receipts MUST bind the same root/process epoch; local
 retirement does not prove remote-effect cancellation or business closure.
+Current `aox_supervised_host_startup@5`, `aox_supervised_host_child_ready@3`,
+`aox_supervised_host_child_pre_ready_failure@2`, `aox_supervised_host_receipt@4`,
+`aox_supervised_host_pre_ready_failure@2`, and `aox_supervised_host_fatal@2`
+MUST bind the exact start-claim digest. Their historical schema versions MAY remain
+readable only under their original source shapes and MUST NOT be emitted, adopted,
+or used to drive a current start.
+If `process.start()` fails before a verifiable child PID exists, the parent MUST
+seal only `aox_host_spawn_outcome@1` with the claim digest, epoch,
+`effect_certainty=unproven`, terminal retry ineligibility and an explicit blocked
+next-attempt projection. It MUST NOT synthesize startup, ordinary supervision,
+formal slot closure or a reducer decision.
 
 Before the supervised child constructs its foundation, opens a listener, emits
 child-ready, creates a session, invokes a model/provider or admits an effect, it
@@ -782,21 +806,24 @@ ticks, process epoch, failure stage and safe typed sandbox subcause. The parent 
 validate that identity while the child is still alive, retire the exact process
 group, and revalidate the fresh attempt root, exact initial evidence set, zero
 control-plane rows, zero local mutation writers and empty effect directories before
-sealing `aox_supervised_host_pre_ready_failure@1`. This receipt MUST explicitly state
+sealing `aox_supervised_host_pre_ready_failure@2`, bound to the start-claim digest. This receipt MUST explicitly state
 that startup, terminal supervision and public receipt-chain artifacts do not exist;
 it MUST NOT fabricate any of them. Unknown process identity, descendant retirement,
 SQLite/root freshness, effect certainty or typed cause MUST remain an evidence
 blocker and MUST NOT be sealed as this mode.
 
 Current zero-attempt failure output SHALL use the discriminated
-`aox_formal_slot_failure@2` union. `closure_mode=public_host` SHALL retain the
+`aox_formal_slot_failure@3` union. `closure_mode=public_host` SHALL retain the
 post-child-ready retirement-readiness source chain. `closure_mode=pre_child_ready`
 SHALL accept only the exact preflight, slot claim,
-`aox_supervised_host_pre_ready_failure@1`, and two distinct unchanged MICU ledger
-snapshots from the same evidence root; startup/supervision/public receipts or an
+`aox_attempt_start_claim@1`, `aox_supervised_host_pre_ready_failure@2`, and one
+post-failure MICU snapshot. Its canonical `before` MUST be derived exactly from the
+claim and bind the claim digest; no caller-supplied or standalone current
+`micu-before` source is accepted. The post-failure snapshot MUST remain unchanged;
+startup/supervision/public receipts or an
 attempt bundle MUST make this branch invalid. Historical `aox_formal_slot_failure@1`
-MAY remain readable only for its original public-Host frozen evidence and MUST NOT
-accept, crossgrade or emit the pre-child-ready branch.
+and `aox_formal_slot_failure@2` MAY remain readable only under their original source shapes and MUST NOT
+be emitted, adopted or silently crossgraded by current execution.
 
 The public Host SHALL export one exact closed attempt and sealed selection through
 `GET /v3/sessions/{session_id}/scientific-attempts/{attempt_id}/selections/{selection_id}/evidence`.
@@ -825,10 +852,10 @@ be sealed once as `openzyme_public_host_response@1` only when it reproduces the
 same semantic digest.
 
 Formal preflight SHALL publish one source-bound
-`aox_public_conductor_execution_contract@2` that derives the exact
+`aox_public_conductor_execution_contract@3` that derives the exact
 Host/project/session binding, exact canonical session/entry requests, one pinned
 workflow reference, the dedicated late-bound authority command, public runtime-drain
-bounds, and relative receipt/response evidence names from the consumed slot. Formal
+bounds, the start-claim contract, and relative receipt/response evidence names from the consumed slot. Formal
 drains MAY choose any integer `max_signals` and `max_steps_per_agent` accepted by the
 public Host schema (`1..100` for each), but MUST keep
 `auto_enqueue_ready_tasks=false`; historical fixed `1/8` cadence is not an evidence
@@ -881,10 +908,13 @@ wrong contract MUST fail closed.
 One `finalize-and-seal` command SHALL accept one exact retirement-readiness receipt,
 revalidate its source digests, and derive rather than accept caller-selected paths for
 the identity, preflight, startup/retirement receipts, complete public receipt chain,
-sealed final workspace/event/evidence responses, source attestations and MICU
-snapshots before creating any output. It SHALL reconstruct one source-bound
-`aox_blank_world_attempt_bundle@3` with profile
-`aox_public_conductor_bundle@3`, install it atomically without replacement, and
+sealed final workspace/event/evidence responses, source attestations and the
+claim-derived MICU baseline plus final snapshot before creating any output. It SHALL
+reconstruct one source-bound
+`aox_blank_world_attempt_bundle@4` with profile
+`aox_public_conductor_bundle@4`, bind the exact start claim and execution contract,
+derive canonical `micu-before` bytes from that claim rather than accept an external
+path, install it atomically without replacement, and
 make the sealed source set independently reconstructable by the network-free
 verifier. Any missing/extra/non-2xx/discontinuous command, identity drift,
 noncanonical business closure, invalid task/report/finalization state, symlink,
@@ -892,9 +922,9 @@ source drift or partial output MUST leave no sealed bundle.
 
 `seal-slot-failure` SHALL require exactly one of the post-child-ready
 retirement-readiness receipt or the pre-child-ready supervision failure receipt.
-It SHALL emit only current `aox_formal_slot_failure@2`, preserve
+It SHALL emit only current `aox_formal_slot_failure@3`, preserve
 `acceptance_eligible=false`, `state_reusable=false`, zero attempt identities and an
-unchanged MICU ledger for the pre-child-ready branch, and leave campaign decision to
+unchanged claim-derived MICU baseline for the pre-child-ready branch, and leave campaign decision to
 the existing pure offline verifier/reducer.
 
 Executable architecture qualification SHALL prove the retained composition by
@@ -907,6 +937,9 @@ the exact fresh-Host sandbox bootstrap and public ready status before session/mo
 one assignee-bound late-created attempt, wrong-task and wrong-actor no-effect,
 reassignment-before-finalizer rejection, and typed fault/export failure before a
 matching closed attempt.
+It SHALL also prove atomic single-start claim publication, pre/post-claim MICU drift
+rejection, child claim binding, the no-PID spawn blocker, current schema closure and
+historical-schema non-adoption without invoking a live provider, HPC or MICU request.
 It MUST NOT substitute source inspection for production reachability. Deleted
 diagnostic authority mint/consume, public scientific mutation/finalizer routes and
 CLI, Core `create_attempt` compatibility, private admission argument projection,
@@ -928,7 +961,7 @@ package and MUST NOT be a production caller.
 
 #### Scenario: Seal an exact public positive
 - **WHEN** a policy-free Host has retired and the public chain proves one canonically closed positive attempt with the exact selected chain, passed 17-deliverable receipt, completed task board, published report, full events and final reads
-- **THEN** the single finalizer seals one source-reconstructable `@3` bundle and the offline verifier reproduces it without SQLite, provider, runner or network access
+- **THEN** the single finalizer seals one source-reconstructable `@4` bundle and the offline verifier reproduces it without SQLite, provider, runner or network access
 
 #### Scenario: Preserve a same-turn late-bound lane handoff
 - **WHEN** a claimed execution task begins from a source runtime signal with no lane, the assignee creates and binds its canonical lane during that turn, and the bounded turn emits exactly one durable successor
@@ -940,11 +973,11 @@ package and MUST NOT be a production caller.
 
 #### Scenario: Seal a consumed formal slot before attempt creation
 - **WHEN** one approved formal slot has been consumed, the supervised Host has settled, final public workspace/events/handoffs and MICU facts prove zero scientific attempts, and the earliest typed failure is source-bound
-- **THEN** the public finalizer seals `aox_formal_slot_failure@2` with `closure_mode=public_host` and the pure offline verifier/reducer emits canonical `NO-GO` without creating or relabelling an attempt bundle
+- **THEN** the public finalizer seals `aox_formal_slot_failure@3` with `closure_mode=public_host`, derives the canonical MICU-before from the exact start claim, and the pure offline verifier/reducer emits canonical `NO-GO` without creating or relabelling an attempt bundle
 
 #### Scenario: Seal an actual Host bootstrap failure before child-ready
 - **WHEN** the actual pre-claim launch guard passed, the claimed Host child then fails at sandbox bootstrap before registry mutation or child-ready, the parent proves the live process identity and full process-group retirement, the attempt root remains exactly fresh, and MICU before/after are identical
-- **THEN** the parent seals `aox_supervised_host_pre_ready_failure@1`, `seal-slot-failure` emits `aox_formal_slot_failure@2` with `closure_mode=pre_child_ready`, and the pure offline verifier/reducer may emit canonical `NO-GO` without startup, supervision, public receipt, session or attempt artifacts
+- **THEN** the parent seals `aox_supervised_host_pre_ready_failure@2`, `seal-slot-failure` emits `aox_formal_slot_failure@3` with `closure_mode=pre_child_ready`, derives the canonical MICU-before from the exact start claim, and the pure offline verifier/reducer may emit canonical `NO-GO` without startup, supervision, public receipt, session or attempt artifacts
 
 #### Scenario: Preserve an older unsealable pre-child-ready incident
 - **WHEN** historical evidence contains only a wrapper failure and lacks the current live PID/PGID/start-time frame, exact fresh-root settlement or pre-ready receipt

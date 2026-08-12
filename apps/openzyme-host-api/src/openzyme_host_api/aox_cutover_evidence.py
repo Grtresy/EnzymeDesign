@@ -36,8 +36,9 @@ from .aox_live_run_class import DIAGNOSTIC_RUN_POLICY
 
 ATTEMPT_BUNDLE_SCHEMA_ID_V2 = "aox_blank_world_attempt_bundle@2"
 ATTEMPT_BUNDLE_SCHEMA_ID_V3 = "aox_blank_world_attempt_bundle@3"
+ATTEMPT_BUNDLE_SCHEMA_ID_V4 = "aox_blank_world_attempt_bundle@4"
 # Backward-compatible public name.  Existing collectors and golden fixtures are
-# deliberately frozen on @2; new production campaigns dispatch to @3 explicitly.
+# deliberately frozen on @2; current public-conductor campaigns dispatch to @4.
 ATTEMPT_BUNDLE_SCHEMA_ID = ATTEMPT_BUNDLE_SCHEMA_ID_V2
 CAMPAIGN_DECISION_SCHEMA_ID = "aox_blank_world_campaign_decision@1"
 DIAGNOSTIC_ROOT_MARKER_SCHEMA_ID = "aox_diagnostic_root_marker@1"
@@ -1553,9 +1554,18 @@ def safe_micu_ledger_snapshot(path: Path) -> dict[str, Any]:
     summary["ledger_identity_digest"] = canonical_digest(
         {"ledger_path": str(path.resolve())}
     )
-    _validate_ledger_snapshot(summary, snapshot_name="snapshot")
-    _assert_public_safe(summary, identity="micu_ledger_snapshot")
-    return summary
+    return validate_safe_micu_ledger_snapshot(summary)
+
+
+def validate_safe_micu_ledger_snapshot(
+    snapshot: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate one canonical public MICU snapshot without consulting its ledger."""
+
+    value = dict(snapshot)
+    _validate_ledger_snapshot(value, snapshot_name="snapshot")
+    _assert_public_safe(value, identity="micu_ledger_snapshot")
+    return value
 
 
 def seal_campaign_decision(
@@ -1818,7 +1828,7 @@ def verify_attempt_bundle(
             bundle_path,
             artifact_root=artifact_root,
         )
-    if schema_id == ATTEMPT_BUNDLE_SCHEMA_ID_V3:
+    if schema_id in {ATTEMPT_BUNDLE_SCHEMA_ID_V3, ATTEMPT_BUNDLE_SCHEMA_ID_V4}:
         from .aox_selected_chain_evidence import (
             verify_selected_chain_attempt_bundle,
         )
@@ -2002,11 +2012,12 @@ def evaluate_campaign(
     *,
     decided_at: str | None = None,
 ) -> dict[str, Any]:
+    from .aox_public_conductor_bundle import LEGACY_PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID
     from .aox_public_conductor_bundle import PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID
 
     if any(
         _read_bundle_payload(record.bundle_path).get("bundle_profile")
-        == PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID
+        in {LEGACY_PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID, PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID}
         for record in records
     ):
         from .aox_public_conductor_bundle import (
@@ -10927,6 +10938,7 @@ __all__ = [
     "ATTEMPT_BUNDLE_SCHEMA_ID",
     "ATTEMPT_BUNDLE_SCHEMA_ID_V2",
     "ATTEMPT_BUNDLE_SCHEMA_ID_V3",
+    "ATTEMPT_BUNDLE_SCHEMA_ID_V4",
     "AttemptRunRecord",
     "BlankWorldRoots",
     "BLANK_WORLD_ROOT_PROOF_SCHEMA_ID",
@@ -10940,6 +10952,7 @@ __all__ = [
     "FORMAL_DELEGATION_REQUEST_SCHEMA_ID",
     "KNOWN_POSITIVE_PROBE_SCHEMA_ID",
     "safe_micu_ledger_snapshot",
+    "validate_safe_micu_ledger_snapshot",
     "SEALED_SOURCE_TREE_SCHEMA_ID",
     "seal_campaign_decision",
     "VerificationIssue",

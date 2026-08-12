@@ -26,6 +26,8 @@ ATTEMPT_PREFLIGHT_SCHEMA_ID = "aox_attempt_preflight@5"
 ATTEMPT_PREFLIGHT_FILENAME = "aox-attempt-preflight.json"
 ATTEMPT_CONDUCTOR_CONTRACT_FILENAME = "aox-public-conductor-contract.json"
 ATTEMPT_SLOT_CLAIM_FILENAME = "aox-attempt-slot-claim.json"
+ATTEMPT_START_CLAIM_SCHEMA_ID = "aox_attempt_start_claim@1"
+ATTEMPT_START_CLAIM_FILENAME = "aox-attempt-start-claim.json"
 _PREFLIGHT_FIELDS = set(
     "schema_id run_class campaign_id plan_digest consumption_digest identity_digest "
     "allowed_prerequisite_digest architecture_qualification_digest launch_profile_digest "
@@ -159,7 +161,7 @@ def publish_attempt_launch_profile(
     return path
 
 
-def _load_canonical_private_file(path: Path) -> dict[str, Any]:
+def load_private_canonical_attempt_source(path: Path) -> dict[str, Any]:
     try:
         metadata, content = path.lstat(), path.read_bytes()
         value = json.loads(content)
@@ -185,7 +187,7 @@ def _load_bound_attempt_launch_profile(
 ) -> dict[str, object]:
     profile_path = path.parent / AOX_CUTOVER_LAUNCH_PROFILE_FILENAME
     profile = normalize_aox_cutover_launch_profile(
-        _load_canonical_private_file(profile_path)
+        load_private_canonical_attempt_source(profile_path)
     )
     if preflight.get("launch_profile_digest") != launch_profile_digest(profile):
         _reject(
@@ -195,10 +197,8 @@ def _load_bound_attempt_launch_profile(
     return profile
 
 
-def load_attempt_preflight_receipt(
-    path: Path, *, require_unstarted: bool = False
-) -> dict[str, Any]:
-    value = _load_canonical_private_file(path)
+def load_attempt_preflight_receipt(path: Path) -> dict[str, Any]:
+    value = load_private_canonical_attempt_source(path)
     slot, proof, slot_claim = (
         value.get("slot"),
         value.get("root_proof"),
@@ -295,30 +295,6 @@ def load_attempt_preflight_receipt(
             resolved_launch in resolved.parents,
         )):
             _reject("attempt_preflight_root_invalid", "root topology drifted", root_kind=kind)
-    if require_unstarted:
-        _load_bound_attempt_launch_profile(path, value)
-        nonempty = {
-            kind: sorted(item.name for item in root.iterdir())
-            for kind, root in roots.items()
-            if kind != "evidence" and any(root.iterdir())
-        }
-        evidence_entries = sorted(item.name for item in roots["evidence"].iterdir())
-        if (
-            (launch_root / "control-plane.sqlite3").exists()
-            or nonempty
-            or (
-                evidence_entries
-                != sorted(
-                    [
-                        ATTEMPT_PREFLIGHT_FILENAME,
-                        ATTEMPT_SLOT_CLAIM_FILENAME,
-                        ATTEMPT_CONDUCTOR_CONTRACT_FILENAME,
-                        AOX_CUTOVER_LAUNCH_PROFILE_FILENAME,
-                    ]
-                )
-            )
-        ):
-            _reject("attempt_preflight_already_started", "attempt root already started", nonempty_roots=nonempty)
     return value
 
 

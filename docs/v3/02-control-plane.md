@@ -576,8 +576,9 @@ scientific chain。Host 导出的 occurrence universe 必须完整，四种 disp
 closure intent 后禁止新增 binding/selection，closure 必须消费 exact quiescence receipt；但
 closed attempt 仍只是一份 task 可引用 evidence，不能机械完成 task。
 
-AOX 新 production evidence 读取这些对象生成 `aox_blank_world_attempt_bundle@3`。历史
-`@2` rows/bundles 不回填、不升级、不跨 attempt adoption。
+AOX current production evidence 读取这些对象生成
+`aox_blank_world_attempt_bundle@4`。历史 `@2/@3` rows/bundles 不回填、不升级、不跨
+attempt adoption。
 
 ### 7.1 Sandbox-local pre-admission failure chain
 

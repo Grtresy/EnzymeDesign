@@ -401,7 +401,7 @@ closure 前完成以 `scientific_attempt_task_not_closed` no-effect error 拒绝
 
 ## 7. AOX evidence migration
 
-新的 AOX production collector 只生成 `aox_blank_world_attempt_bundle@3`。`@3` 在保留原有
+新的 AOX production collector 只生成 `aox_blank_world_attempt_bundle@4`。`@4` 在保留 `@3` 原有
 科学、artifact、public API、browser、MICU 和 fault 验收门槛的同时，增加：
 
 - exact authorization envelope/consumption；
@@ -410,9 +410,10 @@ closure 前完成以 `scientific_attempt_task_not_closed` no-effect error 拒绝
 - same-attempt adoption/materialization lineage；
 - sealed selection、quiescence 和 closure；
 - unknown-effect、writer/process、cross-attempt reuse 与 tamper rejection。
+- exact attempt-start claim、process epoch、execution contract 与 claim-derived MICU baseline。
 
-历史 `aox_blank_world_attempt_bundle@2` verifier 保留为只读历史入口。旧 bundle 不得升级、
-回填 selection、与 `@3` row 混合或被新 campaign 采用。r48-r59 永久保持 NO-GO；
+历史 `aox_blank_world_attempt_bundle@2/@3` verifier 保留为只读历史入口。旧 bundle 不得升级、
+回填 selection、与 `@4` row 混合或被新 campaign 采用。r48-r59 永久保持 NO-GO；
 对应 authority、root、effect、provider job、artifact、browser evidence 和 scientific
 bytes 均不得复用。r53 的 probe scope 已密封，但 formal pre-attempt scope 因旧 driver
 缺少 exact barrier observer writer 而保持 open；parent fatal 只证明进程退休，不声明
@@ -458,10 +459,10 @@ r56 触发后，AOX target contract 先将 live execution 分为两个不可互�
 
 - **diagnostic live run**：单 positive-shaped、独立 one-use authority 与独立
   root/consumption/decision schema；可在精确权限内走真实 LLM/provider/HPC/approval/browser，
-  但固定 `acceptance_eligible=false`，不生成 `aox_blank_world_attempt_bundle@3`，不进入
+  但固定 `acceptance_eligible=false`，不生成 `aox_blank_world_attempt_bundle@4`，不进入
   GO reducer；
 - **formal acceptance campaign**：继续精确消费 `positive, positive, fault` 三个 slot，
-  只有它可生成 `@3` bundle 与 campaign decision，原 GO 门槛不变。
+  只有它可生成 current `@4` bundle 与 campaign decision，原 GO 门槛不变。
 
 两类 authority validator、consumption receipt、root namespace 与 output schema 必须 closed
 且互斥。diagnostic 的 operation/effect/artifact/report/browser receipt/bytes 即使与 formal
@@ -862,21 +863,26 @@ private operation settlement，旧snapshot仍是nonterminal observation，不能
 replay，并由exact `runtime.command.finished`重新闭合，才可进入retirement readiness；否则attempt、report、
 verifier与campaign decision继续保持未闭合。
 
-current `aox_formal_slot_failure@2` 固定 `acceptance_eligible=false`、`state_reusable=false` 与
+current `aox_formal_slot_failure@3` 固定 `acceptance_eligible=false`、`state_reusable=false` 与
 zero-attempt projection，并以 `closure_mode` 区分两种不可混合来源。`public_host`绑定上述startup、normal
 supervision、retirement-readiness与final public reads；`pre_child_ready`只绑定preflight、slot claim、
-`aox_supervised_host_pre_ready_failure@1`和两个不同且完全相等的MICU snapshots。后者只在parent已于child
+attempt-start claim、`aox_supervised_host_pre_ready_failure@2`和一个post-failure MICU snapshot；
+canonical before只从claim派生。后者只在parent已于child
 存活时验证PID=PGID、`/proc` start-time与frame digest、完整退休process group，并证明fresh root initial
 evidence、SQLite业务表、mutation scope/writer与effect目录全空时成立；它明确拒绝startup/supervision/
-fatal/public receipt/attempt bundle共存。其 verifier 只读 source files，不写 evidence root、不访问
+fatal/public receipt/attempt bundle及standalone current before共存。其 verifier 只读 source files，不写 evidence root、不访问
 SQLite/network，也拒绝 symlink、source drift、已有 attempt、private scientific mutation/finalizer
-receipt 和 handoff/event mismatch。历史 `aox_formal_slot_failure@1`只读验证旧`public_host` shape，不能
-发射或crossgrade `pre_child_ready`。
+receipt 和 handoff/event mismatch。历史 `aox_formal_slot_failure@1/@2`只按原source shape读取，不能
+发射或crossgrade current `pre_child_ready`。
 验证通过后，`aox_blank_world_campaign_failure_decision@1` 可把该已消费正式 rollout 封存为 canonical
-NO-GO；正常 GO 仍只接受同一 plan 的 exact positive/positive/fault 三份真实 `@3` attempt bundle。
+NO-GO；正常 GO 仍只接受同一 plan 的 exact positive/positive/fault 三份真实 current `@4` attempt bundle。
 历史 pre-attempt blocked 记录因当时没有这份 current receipt，继续保持历史状态，不被追认或复用。
 r76只有旧wrapper与已消费claim/root，没有current live process/root settlement receipt，因此仍是
 blocked/noncanonical；不得依据新schema回填、复用或改写其MICU/slot终局。
+
+若parent在`process.start()`返回可验证PID前失败，只有绑定start claim/epoch的最小typed spawn outcome可
+保留该事实；external effect必须保持unproven，retry terminal且successor blocked。它不证明zero effect，
+也不能作为startup、supervision、formal failure closure或reducer输入。
 
 ## 17. r77 唯一 public entry 与 failure reconstruction
 

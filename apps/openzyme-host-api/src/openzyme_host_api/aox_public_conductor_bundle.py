@@ -19,8 +19,11 @@ from openzyme_pipeline import aox_finalization
 
 from .aox_attempt_authority import authority_grant_identity
 from .aox_attempt_authority import authority_grant_payload
+from .aox_attempt_preflight import ATTEMPT_CONDUCTOR_CONTRACT_FILENAME
 from .aox_attempt_preflight import ATTEMPT_SLOT_CLAIM_FILENAME
 from .aox_attempt_preflight import load_attempt_preflight_receipt
+from .aox_attempt_start import ATTEMPT_START_CLAIM_FILENAME
+from .aox_attempt_start import load_bound_attempt_start_claim
 from .aox_bundle_finalizer import (
     AoxBundleFinalizationError,
     _calculation_receipts,
@@ -28,6 +31,7 @@ from .aox_bundle_finalizer import (
 )
 from .aox_cutover_evidence import (
     ATTEMPT_BUNDLE_SCHEMA_ID_V3,
+    ATTEMPT_BUNDLE_SCHEMA_ID_V4,
     CAMPAIGN_DECISION_SCHEMA_ID,
     FAULT_ARTIFACT_BYTE_FLIP_ID,
     CutoverEvidenceError,
@@ -69,7 +73,8 @@ from .aox_public_conductor_contract import validate_bounded_drain_receipts
 from .aox_public_conductor_contract import validate_canonical_entry_receipts
 
 
-PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID = "aox_public_conductor_bundle@3"
+PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID = "aox_public_conductor_bundle@4"
+LEGACY_PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID = "aox_public_conductor_bundle@3"
 PUBLIC_API_RECEIPT_SCHEMA_ID = "openzyme_public_api_receipt@2"
 PUBLIC_RESPONSE_ENVELOPE_SCHEMA_ID = "openzyme_public_host_response@1"
 PUBLIC_CONDUCTOR_ATTESTATION_DIR = "aox-public-conductor"
@@ -118,6 +123,7 @@ _FINALIZATION_FIELDS = {
 _STATIC_SOURCE_NAMES = {
     "identity.json",
     "preflight.json",
+    "attempt-start-claim.json",
     "host-startup.json",
     "host-supervision.json",
     "public-api-receipts.jsonl",
@@ -128,6 +134,10 @@ _STATIC_SOURCE_NAMES = {
     "micu-before.json",
     "micu-after.json",
 }
+_LEGACY_STATIC_SOURCE_NAMES = _STATIC_SOURCE_NAMES - {
+    "attempt-start-claim.json", "execution-contract.json",
+}
+_STATIC_SOURCE_NAMES.add("execution-contract.json")
 _HANDOFF_SOURCE_NAME = re.compile(r"handoff-response-[0-9]{4}\.json")
 _MAX_RECEIPT_CHAIN_BYTES = 8 * 1024 * 1024
 _MAX_RECEIPT_RECORDS = 512
@@ -317,7 +327,8 @@ def _load_response_envelope(
     return value, content
 
 def _validate_startup(
-    startup: Mapping[str, Any], *, preflight: Mapping[str, Any]
+    startup: Mapping[str, Any], *, preflight: Mapping[str, Any],
+    attempt_start_claim_digest: str | None = None,
 ) -> dict[str, Any]:
     value, slot = dict(startup), dict(preflight["slot"])
     slot_claim = dict(preflight["slot_claim"])
@@ -325,10 +336,13 @@ def _validate_startup(
     fields = {
         "schema_id", "base_url", "launch_id", "attempt_kind", "session_id",
         "root_ref", "authority_policy_digest", "campaign_id",
-        "preflight_receipt_digest", "process_epoch", "child_pid", "child_pgid",
+        "preflight_receipt_digest", "attempt_start_claim_digest", "process_epoch",
+        "child_pid", "child_pgid",
         "child_start_time_ticks", "timeout_seconds", "sandbox_bootstrap",
         "started_at", "receipt_digest",
     }
+    if attempt_start_claim_digest is None:
+        fields.remove("attempt_start_claim_digest")
     bindings = {
         "launch_id": slot_claim.get("launch_id"),
         "attempt_kind": slot.get("attempt_kind"),
@@ -339,6 +353,8 @@ def _validate_startup(
         "preflight_receipt_digest": preflight.get("receipt_digest"),
         "timeout_seconds": policy.get("max_wall_time_seconds"),
     }
+    if attempt_start_claim_digest is not None:
+        bindings["attempt_start_claim_digest"] = attempt_start_claim_digest
     payload = {key: item for key, item in value.items() if key != "receipt_digest"}
     try:
         validate_supervised_host_sandbox_bootstrap(
@@ -351,7 +367,9 @@ def _validate_startup(
             details={"identity": "host_startup.sandbox_bootstrap"},
         ) from exc
     if not all((
-        set(value) == fields, value.get("schema_id") == HOST_STARTUP_SCHEMA_ID,
+        set(value) == fields,
+        value.get("schema_id") == (HOST_STARTUP_SCHEMA_ID if attempt_start_claim_digest
+                                    else "aox_supervised_host_startup@4"),
         str(value.get("base_url") or "").startswith("http://127.0.0.1:"),
         all(value.get(key) == expected for key, expected in bindings.items()),
         all(type(value.get(key)) is int and value[key] > 0 for key in (
@@ -1234,7 +1252,7 @@ def _source_payload(
     event_response_path: Path,
     evidence_response_path: Path,
     handoff_response_paths: Sequence[Path],
-    ledger_before_path: Path,
+    ledger_before_path: Path | None = None,
     ledger_after_path: Path,
     sealed_at: str,
 ) -> tuple[dict[str, Any], dict[str, bytes]]:
@@ -1243,6 +1261,14 @@ def _source_payload(
     )
     identity = _normalize_identity(identity_value)
     preflight = load_attempt_preflight_receipt(preflight_path)
+    current = (preflight_path.parent / ATTEMPT_START_CLAIM_FILENAME).is_file()
+    if current:
+        _, start_claim = load_bound_attempt_start_claim(preflight_path)
+    elif ledger_before_path is None:
+        _fail("attempt_start_claim_missing", "current finalization requires start claim",
+              identity="attempt_start_claim")
+    else:
+        start_claim = {}
     preflight_value, preflight_bytes = _load_canonical_object(
         preflight_path, identity="preflight"
     )
@@ -1270,7 +1296,10 @@ def _source_payload(
     startup_value, startup_bytes = _load_canonical_object(
         preflight_path.parent / HOST_STARTUP_FILENAME, identity="host_startup"
     )
-    startup = _validate_startup(startup_value, preflight=preflight)
+    startup = _validate_startup(
+        startup_value, preflight=preflight,
+        attempt_start_claim_digest=(str(start_claim["claim_digest"]) if current else None),
+    )
     supervision_value, supervision_bytes = _load_canonical_object(
         preflight_path.parent / HOST_SUPERVISION_FILENAME, identity="host_supervision"
     )
@@ -1282,6 +1311,7 @@ def _source_payload(
         root_ref=str(slot["root_ref"]),
         campaign_id=str(preflight["campaign_id"]),
         authority_policy_digest=str(slot["authority_policy_digest"]),
+        attempt_start_claim_digest=(str(start_claim["claim_digest"]) if current else None),
     )
     supervision_bindings = {
         "preflight_receipt_digest": preflight.get("receipt_digest"),
@@ -1412,9 +1442,12 @@ def _source_payload(
         receipts=receipts,
         supervision=supervision,
     )
-    before, before_bytes = _load_canonical_object(
-        ledger_before_path, identity="micu_before"
-    )
+    if current:
+        before = dict(start_claim["micu_before"])
+        before_bytes = canonical_json_bytes(before) + b"\n"
+    else:
+        assert ledger_before_path is not None
+        before, before_bytes = _load_canonical_object(ledger_before_path, identity="micu_before")
     after, after_bytes = _load_canonical_object(
         ledger_after_path, identity="micu_after"
     )
@@ -1443,6 +1476,15 @@ def _source_payload(
         "micu-before.json": before_bytes,
         "micu-after.json": after_bytes,
     }
+    if current:
+        _, contract_bytes = _load_canonical_object(
+            preflight_path.parent / ATTEMPT_CONDUCTOR_CONTRACT_FILENAME,
+            identity="execution_contract",
+        )
+        source_bytes.update({
+            "attempt-start-claim.json": canonical_json_bytes(start_claim) + b"\n",
+            "execution-contract.json": contract_bytes,
+        })
     source_bytes.update(handoff_source_bytes)
     attestations = [
         {
@@ -1464,8 +1506,9 @@ def _source_payload(
     closure = dict(closed.get("product_closure") or {})
     source_linked_report = dict(closure.get("source_linked_report") or {})
     payload = {
-        "schema_id": ATTEMPT_BUNDLE_SCHEMA_ID_V3,
-        "bundle_profile": PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID,
+        "schema_id": (ATTEMPT_BUNDLE_SCHEMA_ID_V4 if current else ATTEMPT_BUNDLE_SCHEMA_ID_V3),
+        "bundle_profile": (PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID if current else
+                           LEGACY_PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID),
         "attempt_id": actual["attempt_id"],
         "attempt_kind": kind,
         "sealed_at": sealed_at,
@@ -1538,6 +1581,8 @@ def _source_payload(
         "event_count": len(events),
         "event_stream_digest": canonical_digest(events),
     }
+    if current:
+        payload["authority"]["attempt_start_claim_digest"] = start_claim["claim_digest"]
     files = {f"attestations/{name}": content for name, content in source_bytes.items()}
     files.update(
         {f"deliverables/{path}": content for path, content in contents.items()}
@@ -1555,7 +1600,6 @@ def finalize_and_seal_public_conductor_bundle(
     *, identity_path: Path, preflight_path: Path, receipt_chain_path: Path,
     workspace_response_path: Path, event_response_path: Path,
     evidence_response_path: Path, handoff_response_paths: Sequence[Path],
-    ledger_before_path: Path,
     ledger_after_path: Path, sealed_at: str | None = None,
 ) -> tuple[Path, str]:
     preflight_path = preflight_path.expanduser().resolve(strict=True)
@@ -1576,7 +1620,7 @@ def finalize_and_seal_public_conductor_bundle(
         event_response_path=event_response_path,
         evidence_response_path=evidence_response_path,
         handoff_response_paths=handoff_response_paths,
-        ledger_before_path=ledger_before_path, ledger_after_path=ledger_after_path,
+        ledger_after_path=ledger_after_path,
         sealed_at=sealed_at or datetime.now(UTC).isoformat(),
     )
     temporary = Path(tempfile.mkdtemp(prefix=".aox-public-conductor-", dir=artifact_root))
@@ -1637,14 +1681,15 @@ def verify_public_conductor_bundle(
         attempt_id = str(payload.get("attempt_id") or "") or None
         attempt_kind = str(payload.get("attempt_kind") or "") or None
         declared_digest = str(envelope.get("bundle_digest") or "") or None
-        if not all(
-            (
+        current = payload.get("bundle_profile") == PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID
+        if not all((
                 set(envelope) == {"payload", "bundle_digest"},
-                payload.get("schema_id") == ATTEMPT_BUNDLE_SCHEMA_ID_V3,
-                payload.get("bundle_profile") == PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID,
+                (payload.get("schema_id"), payload.get("bundle_profile")) in {
+                    (ATTEMPT_BUNDLE_SCHEMA_ID_V4, PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID),
+                    (ATTEMPT_BUNDLE_SCHEMA_ID_V3, LEGACY_PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID),
+                },
                 declared_digest == canonical_digest(payload),
-            )
-        ):
+            )):
             _fail(
                 "bundle_digest_mismatch",
                 "public conductor bundle schema or digest does not reproduce",
@@ -1673,9 +1718,10 @@ def verify_public_conductor_bundle(
                     identity=name,
                 )
             sources[name] = path
-        handoff_source_names = set(sources) - _STATIC_SOURCE_NAMES
+        static_names = _STATIC_SOURCE_NAMES if current else _LEGACY_STATIC_SOURCE_NAMES
+        handoff_source_names = set(sources) - static_names
         if (
-            not _STATIC_SOURCE_NAMES.issubset(sources)
+            not static_names.issubset(sources)
             or not (1 <= len(handoff_source_names) <= _MAX_HANDOFF_RESPONSES)
             or any(_HANDOFF_SOURCE_NAME.fullmatch(name) is None for name in handoff_source_names)
         ):
@@ -1701,12 +1747,18 @@ def verify_public_conductor_bundle(
                 "startup": evidence / HOST_STARTUP_FILENAME,
                 "supervision": evidence / HOST_SUPERVISION_FILENAME,
             }
-            for source_name, destination in (
+            source_pairs = [
                 ("preflight.json", reconstructed["preflight"]),
                 ("slot-claim.json", reconstructed["slot_claim"]),
                 ("host-startup.json", reconstructed["startup"]),
                 ("host-supervision.json", reconstructed["supervision"]),
-            ):
+            ]
+            if current:
+                source_pairs.extend([
+                    ("attempt-start-claim.json", evidence / ATTEMPT_START_CLAIM_FILENAME),
+                    ("execution-contract.json", evidence / ATTEMPT_CONDUCTOR_CONTRACT_FILENAME),
+                ])
+            for source_name, destination in source_pairs:
                 shutil.copyfile(sources[source_name], destination)
                 destination.chmod(0o600)
             rebuilt, _ = _source_payload(
@@ -1719,7 +1771,7 @@ def verify_public_conductor_bundle(
                 handoff_response_paths=[
                     sources[name] for name in sorted(handoff_source_names)
                 ],
-                ledger_before_path=sources["micu-before.json"],
+                ledger_before_path=(None if current else sources["micu-before.json"]),
                 ledger_after_path=sources["micu-after.json"],
                 sealed_at=str(payload.get("sealed_at") or ""),
             )
@@ -1824,6 +1876,13 @@ def evaluate_public_conductor_campaign(
                 f"expected {expected[index]}, got {record.attempt_kind}",
             )
     if len(payloads) == 3 and all(payloads):
+        profiles = [str(payload.get("bundle_profile") or "") for payload in payloads]
+        if len(set(profiles)) != 1:
+            block(
+                "campaign_bundle_profile_drift",
+                "campaign.attempts",
+                "current and historical bundle profiles cannot be mixed",
+            )
         identities = {
             str(dict(payload.get("identity") or {}).get("identity_digest") or "")
             for payload in payloads

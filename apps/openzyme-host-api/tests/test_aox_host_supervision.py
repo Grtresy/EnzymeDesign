@@ -28,6 +28,7 @@ from openzyme_host_api.aox_host_supervision import (
 IMAGE_DIGEST = "sha256:" + "a" * 64
 SDK_DIGEST = "sha256:" + "b" * 64
 PREFLIGHT_DIGEST = "sha256:" + "c" * 64
+START_CLAIM_DIGEST = "sha256:" + "d" * 64
 
 
 def _identity(**changes: str) -> dict[str, str]:
@@ -94,8 +95,9 @@ def _bootstrap(
 
 def _failed_child_frame(**changes: object) -> dict[str, object]:
     payload: dict[str, object] = {
-        "schema_id": "aox_supervised_host_child_pre_ready_failure@1",
+        "schema_id": "aox_supervised_host_child_pre_ready_failure@2",
         "process_epoch": "epoch-1",
+        "attempt_start_claim_digest": START_CLAIM_DIGEST,
         "outcome": "failed",
         "failure_code": "host_sandbox_runtime_identity_missing",
         "failure_type": "HostSupervisionError",
@@ -109,12 +111,15 @@ def _failed_child_frame(**changes: object) -> dict[str, object]:
     return {**payload, "terminal_digest": canonical_digest(payload)}
 
 
-def _pre_ready_fault_child(connection: Connection, process_epoch: str) -> None:
+def _pre_ready_fault_child(
+    connection: Connection, process_epoch: str, start_claim_digest: str
+) -> None:
     os.setsid()
     pid = os.getpid()
     payload: dict[str, object] = {
-        "schema_id": "aox_supervised_host_child_pre_ready_failure@1",
+        "schema_id": "aox_supervised_host_child_pre_ready_failure@2",
         "process_epoch": process_epoch,
+        "attempt_start_claim_digest": start_claim_digest,
         "outcome": "failed",
         "failure_code": "host_sandbox_runtime_identity_missing",
         "failure_type": "HostSupervisionError",
@@ -142,7 +147,7 @@ def test_pre_ready_child_frame_binds_real_process_and_retires_group() -> None:
     process_epoch = "epoch-real-process"
     process = process_context.Process(
         target=_pre_ready_fault_child,
-        args=(child, process_epoch),
+        args=(child, process_epoch, START_CLAIM_DIGEST),
     )
     process.start()
     child.close()
@@ -152,6 +157,7 @@ def test_pre_ready_child_frame_binds_real_process_and_retires_group() -> None:
             frame,
             process=process,
             process_epoch=process_epoch,
+            attempt_start_claim_digest=START_CLAIM_DIGEST,
         )
         parent.send_bytes(b"settle-pre-ready-failure")
         process.join(timeout=5)
@@ -185,6 +191,7 @@ def test_pre_ready_child_frame_binds_exact_live_process_identity(
         frame,
         process=process,
         process_epoch="epoch-1",
+        attempt_start_claim_digest=START_CLAIM_DIGEST,
     ) == frame
 
     drifted = _failed_child_frame(child_pgid=4321)
@@ -193,6 +200,7 @@ def test_pre_ready_child_frame_binds_exact_live_process_identity(
             drifted,
             process=process,
             process_epoch="epoch-1",
+            attempt_start_claim_digest=START_CLAIM_DIGEST,
         )
     assert error.value.code == "host_process_identity_unproven"
 

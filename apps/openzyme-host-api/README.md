@@ -18,7 +18,7 @@ The current AOX production path has no automatic run command. `openzyme-aox-cuto
 validates one exact consumed authority slot before creating its private root;
 `serve-attempt` starts only the fixed loopback production Host and does not send messages, drains or
 approvals; `finalize-and-seal` consumes exact public CLI receipts plus sealed final responses and
-atomically creates one source-reconstructable `aox_blank_world_attempt_bundle@3`.
+atomically creates one source-reconstructable, start-claim-bound `aox_blank_world_attempt_bundle@4`.
 
 The public evidence route is:
 

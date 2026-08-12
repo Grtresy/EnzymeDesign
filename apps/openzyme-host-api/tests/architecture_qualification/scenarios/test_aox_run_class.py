@@ -18,6 +18,7 @@ from openzyme_core.workflow_knowledge import default_workflow_registry
 import openzyme_host_api.app as host_app
 from openzyme_host_api import aox_attempt_authority
 from openzyme_host_api import aox_attempt_preflight
+from openzyme_host_api import aox_attempt_start
 from openzyme_host_api import aox_conductor_execution
 from openzyme_host_api import aox_cutover_cli
 from openzyme_host_api import aox_cutover_launch
@@ -350,6 +351,8 @@ def test_aox_automatic_run_surfaces_are_retired(
     assert not hasattr(aox_attempt_authority, "attempt_admission_arguments")
     assert callable(aox_attempt_preflight.load_attempt_preflight_receipt)
     assert callable(aox_conductor_execution.publish_conductor_execution_contract)
+    assert callable(aox_attempt_start.claim_attempt_start)
+    assert callable(aox_attempt_start.load_bound_attempt_start_claim)
     assert callable(aox_cutover_cli.run_bound_public_host_command)
     assert callable(aox_cutover_cli.run_bound_task_authority_grant)
     assert callable(aox_conductor_execution.seal_conductor_retirement_readiness)
@@ -369,13 +372,20 @@ def test_aox_automatic_run_surfaces_are_retired(
         aox_host_supervision.validate_supervised_host_pre_ready_failure
     )
     assert aox_formal_slot_failure.FORMAL_SLOT_FAILURE_SCHEMA_ID == (
-        "aox_formal_slot_failure@2"
+        "aox_formal_slot_failure@3"
     )
-    assert aox_formal_slot_failure.LEGACY_FORMAL_SLOT_FAILURE_SCHEMA_ID == (
-        "aox_formal_slot_failure@1"
-    )
+    assert aox_formal_slot_failure.LEGACY_FORMAL_SLOT_FAILURE_SCHEMA_IDS == {
+        "aox_formal_slot_failure@1", "aox_formal_slot_failure@2"
+    }
     assert aox_host_supervision.HOST_PRE_READY_FAILURE_SCHEMA_ID == (
-        "aox_supervised_host_pre_ready_failure@1"
+        "aox_supervised_host_pre_ready_failure@2"
+    )
+    assert aox_host_supervision.HOST_STARTUP_SCHEMA_ID == "aox_supervised_host_startup@5"
+    assert aox_host_supervision.HOST_SUPERVISION_RECEIPT_SCHEMA_ID == (
+        "aox_supervised_host_receipt@4"
+    )
+    assert aox_public_conductor_bundle.PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID == (
+        "aox_public_conductor_bundle@4"
     )
     monkeypatch.setattr(
         host_app,
@@ -524,7 +534,10 @@ def test_aox_automatic_run_surfaces_are_retired(
         qualification_preflight
     )
     assert conductor_contract["schema_id"] == (
-        "aox_public_conductor_execution_contract@2"
+        "aox_public_conductor_execution_contract@3"
+    )
+    assert conductor_contract["attempt_start_claim_schema_id"] == (
+        "aox_attempt_start_claim@1"
     )
     conductor_evidence_root = tmp_path / "public-conductor-evidence"
     conductor_evidence_root.mkdir(mode=0o700)
@@ -982,6 +995,8 @@ def test_aox_automatic_run_surfaces_are_retired(
             callable(item)
             for item in (
                 aox_conductor_execution.publish_conductor_execution_contract,
+                aox_attempt_start.claim_attempt_start,
+                aox_attempt_start.load_bound_attempt_start_claim,
                 aox_conductor_execution.seal_conductor_retirement_readiness,
                 aox_conductor_execution.load_conductor_retirement_readiness,
                 aox_cutover_cli.run_bound_public_host_command,

@@ -120,11 +120,20 @@ plan 发布前失败记为 `rNN=none` 的 preparation blocker。旧 plan、autho
 ## 执行获批 live campaign
 
 1. 只在 exact live approval 有效、且 exact formal `preflight` 的 Podman 外层执行许可已在消费前闭合时，才消费 one-use authority；随后必须以同一已许可的公开 launcher 执行 preflight，并严格使用它发布的 source-bound execution contract。
-2. 每次 operator-selected public action都通过合同声明的 formal public CLI入口执行，使 receipt chain 与 sealed response 自动绑定；不得直接调用缺少该合同的普通 CLI 路径。
-3. 一次只发出一条 bounded command。每次读取 public ToolResult、FailureObservation、canonical wake facts、events、workspace、pending approvals 和 export 后，由 Codex 决定唯一下一步；不得形成自动循环。
-4. runtime command 的 terminal 只证明该 bounded command 已结算，不自动代表 task、attempt、slot 或 campaign 终结。保留 earliest source-bound typed cause、effect certainty 与 outer wrapper。
-5. Host 仍可访问时，先完成最终 workspace、events、所有 drain admission/terminal handoff，以及存在真实 attempt 时的 closed-attempt export。随后调用 execution contract 的 retirement-readiness seal；readiness 未通过时 Host 必须保持运行，不得先退休再补采。
-6. readiness 通过后才请求 supervised Host 退休。finalizer 只消费 readiness 绑定的 exact sources，不由 agent 手工挑选或拼接 response 文件。
+2. 在调用 execution contract 声明的 supervised Host start 命令前，重新确认 exact prestart root/evidence
+   仍处于 closed clean phase。只允许该公开命令在 process creation 前由 canonical ledger owner读取一次
+   baseline、原子 no-replace 发布 attempt-scoped start claim并立即重读同一 ledger；不得手工创建 claim、
+   standalone before snapshot、campaign-global lock或替代启动路径。child必须重验同一 claim digest与process
+   epoch。既有claim、root污染、ledger drift或exclusive-create race均停止，不replay、不换slot或attempt。
+3. process creation若在可验证child identity出现前失败，只接受当前合同的最小typed spawn blocker并停止：
+   external effect保持unproven、retry为terminal、successor保持blocked；不得把它当作startup、supervision、
+   formal slot closure、zero effect或reducer input。schema和文件名每轮从active OpenSpec、CLI与实现重新发现。
+4. 每次 operator-selected public action都通过合同声明的 formal public CLI入口执行，使 receipt chain 与 sealed response 自动绑定；不得直接调用缺少该合同的普通 CLI 路径。
+5. 一次只发出一条 bounded command。每次读取 public ToolResult、FailureObservation、canonical wake facts、events、workspace、pending approvals 和 export 后，由 Codex 决定唯一下一步；不得形成自动循环。
+6. runtime command 的 terminal 只证明该 bounded command 已结算，不自动代表 task、attempt、slot 或 campaign 终结。保留 earliest source-bound typed cause、effect certainty 与 outer wrapper。
+7. Host 仍可访问时，先完成最终 workspace、events、所有 drain admission/terminal handoff，以及存在真实 attempt 时的 closed-attempt export。随后调用 execution contract 的 retirement-readiness seal；readiness 未通过时 Host 必须保持运行，不得先退休再补采。
+8. readiness 通过后才请求 supervised Host 退休。current finalizer 的 MICU before只能从start claim派生，
+   再读取一次final snapshot；不得由agent手工挑选response或standalone baseline source。
 
 正式 slot 已消费后：
 

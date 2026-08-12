@@ -1,17 +1,17 @@
 # AOX/HMM blank-world cutover evidence contract
 
-Status: r43-r67 are permanent NO-GO evidence. r68-r77 retain their documented prelaunch/pre-admission/pre-runtime/evidence-blocker classifications and none is a canonical NO-GO. r78 consumed authority once and then failed slot 1 preflight before claim/root/Host because the actual rootless Podman resolver returned `podman_rootless_preflight_failed`; its source-bound preflight-failure verifier and reducer closed canonical `NO-GO` with decision digest `sha256:7fb899562369d6d96e6cba490b2d862943c1359fa972389e9b1d9fd374216c84`. r79 then started only slot 1, admitted one open scientific attempt with no selection or provider/HPC operation, and stopped after its second bounded command expired because a post-scope heartbeat lacked mutation writer authority. r79 has no sealed scientific evidence export and no canonical GO/NO-GO decision. r80 published and received approval for an exact plan, but its sole `consume-authority` invocation supplied a suffix-stripped sibling and typed-failed before receipt publication; authority remained unconsumed with zero product execution. r81 started slot 1 and admitted one open attempt, but retained no selection, provider/HPC operation or report before the Host retired at the authority deadline; it is blocked/noncanonical and has no canonical GO/NO-GO decision. None of r68-r81 state or the old persistent goal is reusable. Current forward contracts additionally bind every late-scope command heartbeat to an exact short writer, derive authority-consumption siblings from the canonical plan owner, settle ordinary known-effect failures exactly once, distinguish workflow and document registry ownership, and expose bounded artifact missing-path locality while preserving real-fence, expired-claim no-replay, no-replace and wrong-assertion fail-closed semantics. These capabilities do not backfill, retry or alter any frozen run. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, slot 2/3, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
+Status: r43-r67 are permanent NO-GO evidence. r68-r77 retain their documented prelaunch/pre-admission/pre-runtime/evidence-blocker classifications and none is a canonical NO-GO. r78 consumed authority once and then failed slot 1 preflight before claim/root/Host because the actual rootless Podman resolver returned `podman_rootless_preflight_failed`; its source-bound preflight-failure verifier and reducer closed canonical `NO-GO` with decision digest `sha256:7fb899562369d6d96e6cba490b2d862943c1359fa972389e9b1d9fd374216c84`. r79 then started only slot 1, admitted one open scientific attempt with no selection or provider/HPC operation, and stopped after its second bounded command expired because a post-scope heartbeat lacked mutation writer authority. r79 has no sealed scientific evidence export and no canonical GO/NO-GO decision. r80 published and received approval for an exact plan, but its sole `consume-authority` invocation supplied a suffix-stripped sibling and typed-failed before receipt publication; authority remained unconsumed with zero product execution. r81 started slot 1 and admitted one open attempt, but retained no selection, provider/HPC operation or report before the Host retired at the authority deadline; it is blocked/noncanonical and has no canonical GO/NO-GO decision. r82 exposed a preflight-to-process-start guard gap and remains frozen/noncanonical; it is not backfilled, retried or reusable. None of r68-r82 state or the old persistent goal is reusable. Current forward contracts additionally bind every late-scope command heartbeat to an exact short writer, derive authority-consumption siblings from the canonical plan owner, settle ordinary known-effect failures exactly once, distinguish workflow and document registry ownership, expose bounded artifact missing-path locality, and atomically bind each Host start to one attempt-scoped claim, process epoch and pinned MICU baseline while preserving real-fence, expired-claim no-replay, no-replace and wrong-assertion fail-closed semantics. These capabilities do not backfill, retry or alter any frozen run. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, slot 2/3, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
 
 Historical incident and older command/observer/driver/browser/diagnostic-authority/public-finalizer sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract; in particular, every older `run-live`, `run-diagnostic-live`, diagnostic authority command, observer, barrier, rollover, no-wakeup, public generic scientific mutation/finalizer, `chrome-once`, browser-helper and ambient dev/eval image-registration instruction is retired even where a historical section called it current at that time. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, late-bound task/scientific-attempt selection, fresh supervised Host bootstrap and qualification semantics are defined by the post-r70/post-r71 sections below, [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
 
 This document describes the operator/evidence boundary implemented by `openzyme_host_api.aox_cutover_evidence`. It does not turn the historical S15 fixture into live evidence and does not authorize seeded state, cached scientific outputs, the reference notebook, or copied reference results as attempt inputs.
 
-New production attempts use `aox_blank_world_attempt_bundle@3` and the generic
+New production attempts use `aox_blank_world_attempt_bundle@4` and the generic
 scientific-attempt control plane. The agent may retain failed/superseded trials
 inside one formal attempt while explicitly selecting a valid adopted chain, but
 the bundle still audits the full occurrence universe and fails closed on unknown
 effect, active process/writer, incomplete disposition, authority/resource breach,
-or cross-attempt reuse. Historical `@2` verification remains frozen; no r48-r59
+or cross-attempt reuse. Historical `@2/@3` verification remains frozen; no prior run
 fact can be upgraded, backfilled, or adopted.
 The current workflow knowledge identity is
 `workflow:aox-hmm-live@2.0.0#sha256:e1f66087c5e632d8e5cc93f38fda6ed1947d77ab5f9c3f7a6ae0358b9d9b447e`;
@@ -356,9 +356,9 @@ the target contract now separates:
 - a one-positive **diagnostic live run**, with its own one-use authority,
   root/consumption/decision schemas and permanent
   `acceptance_eligible=false`; it may exercise real dependencies but cannot
-  emit an `aox_blank_world_attempt_bundle@3` or enter the GO reducer;
+  emit an `aox_blank_world_attempt_bundle@4` or enter the GO reducer;
 - the unchanged **formal acceptance campaign**, whose fresh exact-three
-  `positive, positive, fault` plan is the only path to `@3` bundles and GO.
+  `positive, positive, fault` plan is the only path to current `@4` bundles and GO.
 
 The two classes never share authority, roots, effects, artifacts, reports,
 browser receipts or bytes. Atomic rollover and the run-class split are now
@@ -368,7 +368,7 @@ only its distinct deterministic sibling, creates a plan-bound
 `aox-diagnostic-*` root and seals only
 `aox_blank_world_diagnostic_decision@1`. Formal `authorize` / `run-live`
 remain exact-three-only. Both collectors reuse the same typed single-attempt
-execution core, but only formal collection can build `@3` or call the GO
+execution core, but only formal collection can build current `@4` or call the GO
 reducer. Cross-class plan, stripped mode, root/ancestor marker, receipt and
 equal-digest reuse all fail before root/effect. This implementation does not
 authorize a real diagnostic run or r57; either still requires separate
@@ -2301,17 +2301,17 @@ and is not implemented by this Goal.
 
 ## Attempt bundle
 
-New production evidence uses `aox_blank_world_attempt_bundle@3`, canonical
+New production evidence uses `aox_blank_world_attempt_bundle@4`, canonical
 sorted-key UTF-8 JSON wrapped by its SHA-256 payload digest. The historical
-`@2` collector/verifier is retained only for frozen evidence; version dispatch
-is exact, and selected-chain control relabeled as `@2` is rejected. The `@3`
+`@2/@3` collector/verifier is retained only for frozen evidence; version dispatch
+is exact, and selected-chain control relabeled as a legacy version is rejected. The `@4`
 payload preserves all prior AOX scientific gates and additionally binds:
 
 - git commit, config, workflow selection, scoring contract/implementation, image and SDK;
-- self-consistent `aox_blank_world_root_proof@2` and
+- self-consistent `aox_blank_world_root_proof@3` and
   `aox_blank_world_launch_receipt@2`, each closing the same architecture
   qualification receipt;
-- one continuous MICU ledger before/after transition;
+- one attempt-start claim and execution contract, with a claim-derived MICU baseline and one final snapshot;
 - provider and toolchain invocation/job/operation receipts with sealed formal artifact ids;
 - bounded known-positive probe receipts and probe-only artifacts;
 - canonical session/message/task/approval/operation identities;
@@ -2881,10 +2881,11 @@ The only positive production path is now:
 
 1. an atomic private no-replace claim of exact plan slot 1, 2 or 3 before any root exists, followed by
    consumed-slot `preflight`, which validates every authority/pin/qualification/config/root binding,
-   copies the claim into evidence and seals `aox_attempt_preflight@3` with
-   `preflight_complete_host_not_started`;
-2. policy-free `serve-attempt`, which starts the fixed loopback Host and proves local retirement but
-   sends no business command;
+   copies the claim into evidence and seals `aox_attempt_preflight@5` plus
+   `aox_public_conductor_execution_contract@3` with `preflight_complete_host_not_started`;
+2. policy-free `serve-attempt`, which first publishes the unique `aox_attempt_start_claim@1` over the
+   exact clean root, MICU baseline and process epoch, then starts the fixed loopback Host and proves local
+   retirement but sends no business command;
 3. explicit Codex calls through public Host CLI/API, each conductor-owned request appended as
    `openzyme_public_api_receipt@2`, with every bounded drain followed by command settlement and final
    workspace/events/evidence responses sealed once; CLI JSON handoffs are flushed;
@@ -2892,7 +2893,7 @@ The only positive production path is now:
    control/events/product closure proves agent-owned scientific writes and Host-owned finalization,
    including artifact-boundary reads of the 17-deliverable receipt for a formal positive;
 5. one source-bound `finalize-and-seal` that prevalidates every source, atomically installs profile
-   `aox_public_conductor_bundle@2` as `aox_blank_world_attempt_bundle@3`, and supports independent
+   `aox_public_conductor_bundle@4` as `aox_blank_world_attempt_bundle@4`, and supports independent
    network-free reconstruction;
 6. the unchanged offline verifier and exact-three reducer as the only GO authority.
 
@@ -2966,7 +2967,8 @@ not a canonical r70 NO-GO. Every r70 plan, claim, root, session, receipt and der
 and non-reusable; no repair may backfill a task, grant, drain or attempt into that state.
 
 Current launch evidence is `aox_live_attempt_authority_plan@4`, consumption `@5`, slot claim `@3`,
-root proof `@3`, preflight `@5`, Host startup `@4`, and supervision `@3`. Plan, consumption and preflight
+root proof `@3`, preflight `@5`, execution contract `@3`, attempt-start claim `@1`, Host startup `@5`,
+and supervision `@4`. Plan, consumption and preflight
 also bind the pinned credential-free launch-profile digest. At the launch layer they otherwise bind only
 campaign/plan, ordinal, attempt kind, session, root, authority policy and deterministic launch identity.
 They MUST NOT contain a task id, prebuilt authorization envelope/request, lane, attempt or admission
@@ -2981,7 +2983,7 @@ duplicate or different task produces no scientific authorization or effect. The 
 then establishes the canonical lane and calls the minimal `attempt.create`; Host derives and late-binds
 the envelope/request/admission/attempt identities as before.
 
-Every bounded drain contributes two bounded handoffs to `aox_public_conductor_bundle@3`: its public
+Every bounded drain contributes two bounded handoffs to `aox_public_conductor_bundle@4`: its public
 admission response and exactly one later terminal response. The terminal response MUST reproduce the
 same command and exactly equal the unique `runtime.command.finished` event projection for command
 identity/type, status, completion time, bounded outcome and safe error/retry fields. A digest-only status
@@ -3713,3 +3715,34 @@ HPC 或 Chrome。
 clean `ec9151b599915ed06d225253f57709ec30f7ff0c` 的 fresh `check-config` 同样因 `uv` cache `EROFS`、exit 2、无 AOX result/config digest 而停止，后续执行数为零、`rNN=none`。它原本符合一次 exact platform recovery，但现已冻结；本次 forward-only correction 不续跑或采用它。
 
 完整规范位于 validation skill 与 active OpenSpec；产品代码、ledger owner/schema、MICU、authority、effect、provenance、isolation 与 agent 科学策略均不变。
+
+### 2026-08-12 r82 preflight-to-spawn guard model correction
+
+r82 的 frozen authority、root、effect 与 evidence 不回填、不改写、不重试。旧路径在 preflight 后只由 child
+执行 `require_unstarted`，parent 在 `process.start()` 前没有原子 single-start owner；finalizer 又接收独立
+caller-supplied `micu-before`。因此 root/ledger 检查与 process creation 之间存在 TOCTOU，且 baseline truth
+不唯一。该机制分析不把 current source推论写回 frozen canonical facts。
+
+前向 current `serve-attempt` 在 process creation 前重验 closed attempt root和exact initial evidence set，
+证明artifact/blob/HPC/sandbox effect roots为空，从pinned launch profile解析canonical ledger，读取完整安全
+baseline，随后no-replace发布唯一`aox_attempt_start_claim@1`。claim绑定launch、preflight、slot claim、
+launch profile、`aox_public_conductor_execution_contract@3`、ledger identity、baseline与process epoch；
+parent立即重读同一ledger并要求canonical equality。污染、drift、既有claim或publish collision均停止，
+不增加campaign-global lock、automatic replay、替代slot或successor。child在foundation前重验exact claim
+digest、epoch、preflight与closed phase。
+
+current `aox_supervised_host_startup@5`、`aox_supervised_host_child_ready@3`、
+`aox_supervised_host_child_pre_ready_failure@2`、`aox_supervised_host_pre_ready_failure@2`、
+`aox_supervised_host_receipt@4`与`aox_supervised_host_fatal@2`均绑定该claim。public finalizer生成profile
+`aox_public_conductor_bundle@4` / `aox_blank_world_attempt_bundle@4`，formal failure生成
+`aox_formal_slot_failure@3`；两者的MICU before只从claim派生并各只读取一次after。历史execution contract
+`@1/@2`、formal failure `@1/@2`、public bundle/profile `@3`及其原source shape保持只读，不能驱动新执行、
+adopt或crossgrade。
+
+若`process.start()`在可验证child PID出现前抛错，parent只封存`aox_host_spawn_outcome@1`：绑定claim/epoch、
+safe failure code/type，保持`effect_certainty=unproven`、retry terminal与next attempt blocked。它不是startup、
+supervision、formal closure、zero-effect证明或reducer input。按已触发的supervision complexity偿债条件，
+receipt schema/constants与纯validator已拆入独立evidence模块，process模块只保留orchestration与兼容re-export，
+没有新增第二个owner。non-live qualification覆盖single-start、publish race、claim前后MICU drift、child binding、
+no-PID blocker与current/legacy non-adoption；该repair不授权fresh qualification/admission、下一rNN、live、
+MICU、provider、HPC或Chrome。

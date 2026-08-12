@@ -491,7 +491,7 @@ AOX 对外命令显式接收 report path，并只把 closed
 `aox_architecture_qualification_receipt@3` 写入 `aox_cutover_pin_commit@3`、
 `aox_cutover_pin_receipt@3`、current `aox_blank_world_root_proof@3`、
 `aox_blank_world_launch_receipt@2` 与新 production
-`aox_blank_world_attempt_bundle@3`。历史 `@2` bundle 只进入 frozen verifier。public/offline consumer 必须
+`aox_blank_world_attempt_bundle@4`。历史 `@2/@3` bundle 只进入 frozen verifier。public/offline consumer 必须
 拒绝missing、historical`@1/@2`、unknown-version、report schema/run-evidence/source identity/
 owner-registry/transformation-results mismatch或drift；
 receipt不暴露Host path、credential、private authority，也不扩张exact-nine scientific prerequisites。
@@ -596,7 +596,7 @@ formal non-adoption离线验证，不是隐藏 operator surface。
 处理人工决策。conductor 不调用 private repository/service/runner helper，也不注册 AOX
 observer；空 drain、无 wakeup、command terminal 和 child exit 都不是业务终态。
 Host canonical state、approval、fencing、unknown/external effect 与隔离不因此下放。
-最终 GO 只能来自 sealed `aox_blank_world_attempt_bundle@3` 的 offline verifier 和 exact-three
+最终 GO 只能来自 sealed `aox_blank_world_attempt_bundle@4` 的 offline verifier 和 exact-three
 campaign reducer。
 
 r59 closure-stage authority/reconstruction/live/CLI 已退役，public/CLI surface 不再包含
@@ -624,10 +624,11 @@ source-bound public facts。chain/record/response均有固定byte与cardinality�
 写进封存证据，且与2xx使用同一full-write/fsync/no-replace合同。
 
 正式 AOX slot 不要求 Codex 为每条普通 `openzyme` 命令手工重复上述两个参数。`preflight`
-同时发布 source-bound、只含相对证据名的 `aox_public_conductor_execution_contract@2`。除 loopback
+同时发布 source-bound、只含相对证据名的 `aox_public_conductor_execution_contract@3`。除 loopback
 Host、session/project、唯一 receipt chain 与 response target 外，current contract还绑定 exact session
 create request、raw canonical entry message、preflight唯一 pinned `workflow_ref`、
-`entry_message_count=1`、专用 `grant-task-authority` 与 public runtime-drain bounds。历史 `@1`只读，
+`entry_message_count=1`、attempt-start claim contract、专用 `grant-task-authority` 与 public runtime-drain bounds。
+历史 `@1/@2`只读，
 不能驱动 current public action或silent crossgrade。
 
 `public-host` 在 Host 调用前读取现有 chain：空 chain只接受 exact session create；成功的 sequence 1
@@ -695,21 +696,32 @@ supervisor 只有在 current readiness receipt能从未漂移 source完整重算
 `host_remains_active` 并继续服务；child crash或 authority deadline仍按真实 supervision事实处理，
 不伪造 readiness。`finalize-and-seal` 从 readiness自动解析 exact receipt、final reads和handoffs；
 `seal-slot-failure` 的 post-child-ready分支使用同一 owner，两者都不接受调用者逐项挑选这些路径。
-前者只封存真实 attempt 的 `@3` bundle，后者只封存 final workspace 已证明的零-attempt
-`aox_formal_slot_failure@2 / closure_mode=public_host`。`verify-slot-failure` 纯读取
+在 process creation前，`serve-attempt`必须重验 exact closed root、读取 pinned MICU ledger、原子
+no-replace发布唯一`aox_attempt_start_claim@1`并立即重读同一ledger；child在foundation前重验claim
+digest与process epoch。既有claim、污染、ledger drift或publish race均停止，不增加global lock或replay。
+前者只封存真实 attempt 的 `aox_blank_world_attempt_bundle@4` / profile
+`aox_public_conductor_bundle@4`，MICU before只从start claim派生；后者只封存 final workspace 已证明的
+零-attempt `aox_formal_slot_failure@3 / closure_mode=public_host`。`verify-slot-failure` 纯读取
 重建该 receipt，`decide --slot-failure` 只能给出 source-bound canonical NO-GO，不能创建 attempt
 bundle。任何 seam 都不能自动判断 agent 业务 terminal 或声明 GO。
+
+若`process.start()`在可验证PID出现前失败，parent只封存`aox_host_spawn_outcome@1`，保持external
+effect unproven、retry terminal与next attempt blocked；它不是startup/supervision/formal closure或
+reducer input。current `aox_supervised_host_startup@5`、`aox_supervised_host_receipt@4`、
+`aox_supervised_host_fatal@2`与`aox_supervised_host_pre_ready_failure@2`均绑定start claim；历史版本只读且
+不得驱动新执行。
 
 若 actual guard通过、claim/root已创建，但 supervised child在
 `sandbox_bootstrap_pre_registry`、child-ready之前失败，parent必须在child存活时验证 closed frame 的
 PID=PGID、`/proc` start-time、process epoch与digest，退休exact process group，并证明initial evidence set、
 SQLite业务表、mutation scope/writer与四个effect目录仍为零。只有safe allowlisted sandbox cause与上述
-settlement全部成立，才封存 `aox_supervised_host_pre_ready_failure@1`；该 receipt明确没有startup、normal
-supervision或public receipt chain。`seal-slot-failure --pre-ready-failure`与
+settlement全部成立，才封存 `aox_supervised_host_pre_ready_failure@2`；该 receipt绑定start claim并明确
+没有startup、normal supervision或public receipt chain。`seal-slot-failure --pre-ready-failure`与
 `--retirement-readiness`严格互斥，前者只生成
-`aox_formal_slot_failure@2 / closure_mode=pre_child_ready`，要求两个不同且内容相同的 MICU snapshot并拒绝
-later Host/public/attempt source。历史 `aox_formal_slot_failure@1`只读验证原 public-Host shape，不能
-crossgrade。无法证明进程、root、SQLite、effect、cause或MICU时继续是 evidence blocker。
+`aox_formal_slot_failure@3 / closure_mode=pre_child_ready`；canonical MICU before从start claim派生，
+只接收一个unchanged post-failure snapshot并拒绝standalone current before及later Host/public/attempt source。
+历史 `aox_formal_slot_failure@1/@2`只按原source shape读取，不能crossgrade。无法证明进程、root、SQLite、
+effect、cause或MICU时继续是 evidence blocker。
 
 authority 已消费、slot 尚未 claim 且 campaign root absent/empty 时，profile/effective-config 的 typed
 失败写入 deterministic private sibling `aox_formal_preflight_failure@1`。公开命令仍返回原失败；纯离线
@@ -744,10 +756,11 @@ reassignment、missing/foreign lane、caller-supplied legacy identity或cross-co
 Host scientific authorization、admission request或attempt；它是pre-runtime conductor blocked，
 不是canonical NO-GO，全部state不可复用。
 
-current launch schemas是formal plan `@3`、consumption `@4`、slot claim `@3`、root proof `@3`、
-preflight `@4`、Host startup `@4`和supervision `@3`。这些对象只闭合campaign/ordinal/attempt kind/
+current launch schemas是formal plan `@4`、consumption `@5`、slot claim `@3`、root proof `@3`、
+preflight `@5`、execution contract `@3`、attempt-start claim `@1`、Host startup `@5`和
+supervision `@4`。这些对象只闭合campaign/ordinal/attempt kind/
 session/root/authority policy与launch identity，不得包含task、prebuilt envelope/request、lane、
-attempt或admission identity。`aox_public_conductor_bundle@3`也必须从真实control late-bind这些
+attempt或admission identity。`aox_public_conductor_bundle@4`也必须从真实control late-bind这些
 identity，而不是从outer launch读取shadow truth。
 
 唯一public grant顺序是session create → entry message → bounded drain admission response

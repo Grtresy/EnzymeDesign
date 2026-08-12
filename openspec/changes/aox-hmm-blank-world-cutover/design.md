@@ -1958,6 +1958,36 @@ negative controls 保留真实安全边界。
 schema 或 external effect owner，不增加 recovery state machine，也不启动 fresh admission、下一 rNN、live、
 MICU、provider、HPC 或 Chrome。
 
+### 2026-08-12 r82 attempt-start guard model repair
+
+r82 的 frozen evidence 暴露了一个位于 preflight 与本地 Host process creation 之间的 ownership 缺口：旧
+`require_unstarted` 只在 child 内再次检查 root，却没有由 parent 在 `process.start()` 前原子声明唯一启动，
+也没有把当时的 MICU baseline、process epoch 与 execution contract 绑定成一个可由 child、supervisor 和
+finalizer共同重建的 source。独立的 caller-supplied `micu-before` 文件又允许 finalizer 从启动边界之外接受
+第二份 baseline truth。该机制形成 TOCTOU 窗口；frozen r82 的 authority、root、effect 与 evidence 不回填、
+不改写、不重试。
+
+前向路径新增一个 attempt-scoped、private、no-replace start claim。parent 在 exact clean root 和 initial
+evidence set 上读取 pinned ledger，原子发布绑定 launch/preflight/slot/profile/execution-contract、完整
+baseline 与 process epoch 的 claim，并立即重读同一 ledger；任一 root contamination、ledger drift、既有
+claim 或 exclusive-create race 均在 process creation 前 fail closed。该原语不引入 campaign-global lock、
+successor owner 或 replay。child 在 foundation 前重验 exact claim digest、epoch、preflight 与 closed phase；
+startup、pre-ready、normal supervision、fatal、public finalizer 和 formal failure 的 current schema 都绑定
+同一 claim。current finalizer只从 claim 派生 canonical MICU before，再读取一次 after；历史 schema 仍按
+原 source shape 只读，不能进入 current launch 或被静默 crossgrade。
+
+若 `process.start()` 在可验证 child PID 出现前抛错，parent 只封存一个最小 typed spawn outcome：保留 start
+claim、epoch、safe failure code/type、`effect_certainty=unproven`、terminal retry ineligibility 和 blocked
+next-attempt projection。它不伪造 startup/supervision/formal closure，不调用 reducer，也不把未知 external
+effect 解释为 zero effect。为命中的 supervision complexity trigger，receipt 常量与纯 validators 从 process
+orchestration 拆到独立 evidence 模块，原模块只兼容 re-export public names；没有新增第二个 owner。
+
+current execution contract、startup/supervision/failure、public profile/attempt bundle 的 schema 升级只服务
+上述 claim binding；旧版本继续离线读取且不得驱动新执行。qualification 必须以真实 no-replace race、
+pre/post-claim MICU drift、child digest mismatch、no-PID spawn failure 和 current/legacy non-adoption 作负控。
+本 slice 只运行 non-live 验证并同步合同，不触碰 frozen r82，不启动 fresh qualification/admission、下一 rNN、
+live、MICU、provider、HPC 或 Chrome，也不在未获授权时提交。
+
 ### Preparation effect class 与 platform recovery
 
 f778aa1 的 no-output `ledger` 首次由 ordinary-sandbox `uv` 在 cache `EROFS` 处拒绝，未产生 AOX result；

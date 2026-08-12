@@ -15,6 +15,8 @@ from typing import Any
 from .aox_attempt_preflight import ATTEMPT_PREFLIGHT_FILENAME
 from .aox_attempt_preflight import ATTEMPT_SLOT_CLAIM_FILENAME
 from .aox_attempt_preflight import load_attempt_preflight_receipt
+from .aox_attempt_start import ATTEMPT_START_CLAIM_FILENAME
+from .aox_attempt_start import load_bound_attempt_start_claim
 from .aox_cutover_evidence import CutoverEvidenceError
 from .aox_cutover_evidence import VerificationIssue
 from .aox_cutover_evidence import _normalize_identity
@@ -40,8 +42,10 @@ from .aox_public_conductor_contract import validate_bounded_drain_receipts
 from .aox_public_conductor_contract import validate_canonical_entry_receipts
 
 
-FORMAL_SLOT_FAILURE_SCHEMA_ID = "aox_formal_slot_failure@2"
-LEGACY_FORMAL_SLOT_FAILURE_SCHEMA_ID = "aox_formal_slot_failure@1"
+FORMAL_SLOT_FAILURE_SCHEMA_ID = "aox_formal_slot_failure@3"
+LEGACY_FORMAL_SLOT_FAILURE_SCHEMA_IDS = {
+    "aox_formal_slot_failure@1", "aox_formal_slot_failure@2",
+}
 FORMAL_SLOT_FAILURE_FILENAME = "formal-slot-failure.json"
 FORMAL_SLOT_FAILURE_DECISION_SCHEMA_ID = (
     "aox_blank_world_campaign_failure_decision@1"
@@ -81,8 +85,11 @@ _LEGACY_PAYLOAD_FIELDS = {
     "micu_ledger",
     "sources",
 }
-_PUBLIC_HOST_PAYLOAD_FIELDS = _LEGACY_PAYLOAD_FIELDS | {"closure_mode"}
-_PRE_READY_PAYLOAD_FIELDS = {
+_V2_PUBLIC_HOST_PAYLOAD_FIELDS = _LEGACY_PAYLOAD_FIELDS | {"closure_mode"}
+_PUBLIC_HOST_PAYLOAD_FIELDS = _V2_PUBLIC_HOST_PAYLOAD_FIELDS | {
+    "attempt_start_claim_digest"
+}
+_V2_PRE_READY_PAYLOAD_FIELDS = {
     "schema_id",
     "closure_mode",
     "sealed_at",
@@ -106,6 +113,9 @@ _PRE_READY_PAYLOAD_FIELDS = {
     "earliest_typed_cause",
     "micu_ledger",
     "sources",
+}
+_PRE_READY_PAYLOAD_FIELDS = _V2_PRE_READY_PAYLOAD_FIELDS | {
+    "attempt_start_claim_digest"
 }
 _CAUSE_FIELDS = {
     "code",
@@ -172,6 +182,7 @@ _SOURCE_KEYS = {
     "ledger_after",
     "handoffs",
 }
+_CURRENT_SOURCE_KEYS = (_SOURCE_KEYS - {"ledger_before"}) | {"attempt_start_claim"}
 _PRE_READY_SOURCE_KEYS = {
     "preflight",
     "slot_claim",
@@ -179,6 +190,9 @@ _PRE_READY_SOURCE_KEYS = {
     "ledger_before",
     "ledger_after",
 }
+_CURRENT_PRE_READY_SOURCE_KEYS = (
+    _PRE_READY_SOURCE_KEYS - {"ledger_before"}
+) | {"attempt_start_claim"}
 _DECISION_FIELDS = {
     "schema_id",
     "decided_at",
@@ -518,6 +532,91 @@ def _load_handoff_envelopes(
     return envelopes, descriptors
 
 
+def _load_common_failure_sources(
+    *, identity_path: Path | None, identity_value: Mapping[str, Any] | None,
+    preflight_path: Path, sealed_at: str, schema_id: str,
+) -> tuple[
+    Path, Path, dict[str, Any], dict[str, Any], bool, dict[str, Any] | None,
+    str | None, dict[str, Any], dict[str, Any], Path,
+]:
+    if not _is_aware_timestamp(sealed_at):
+        _fail("formal_slot_failure_sealed_at_invalid",
+              "formal slot failure requires an aware sealing timestamp",
+              identity="sealed_at")
+    preflight_path = _real_source_path(
+        preflight_path, identity="formal_slot_failure.preflight")
+    evidence_root = preflight_path.parent
+    if preflight_path.name != ATTEMPT_PREFLIGHT_FILENAME:
+        _fail("formal_slot_failure_preflight_invalid",
+              "formal slot failure requires the canonical preflight source",
+              identity="preflight")
+    if (identity_path is None) == (identity_value is None):
+        _fail("formal_slot_failure_identity_source_invalid",
+              "formal slot failure requires exactly one identity source",
+              identity="identity")
+    if identity_path is not None:
+        loaded_identity, _ = _load_canonical_object(
+            _real_source_path(identity_path, identity="formal_slot_failure.identity"),
+            identity="formal_slot_failure.identity")
+    else:
+        assert identity_value is not None
+        loaded_identity = dict(identity_value)
+    identity = _normalize_identity(loaded_identity)
+    preflight = load_attempt_preflight_receipt(preflight_path)
+    current = schema_id == FORMAL_SLOT_FAILURE_SCHEMA_ID
+    start_claim = load_bound_attempt_start_claim(preflight_path)[1] if current else None
+    start_digest = str(start_claim["claim_digest"]) if start_claim else None
+    if preflight.get("identity_digest") != canonical_digest(identity):
+        _fail("formal_slot_failure_identity_mismatch",
+              "formal slot failure identity differs from preflight",
+              identity="identity")
+    slot, slot_claim = dict(preflight["slot"]), dict(preflight["slot_claim"])
+    slot_claim_path = evidence_root / ATTEMPT_SLOT_CLAIM_FILENAME
+    slot_claim_value, _ = _load_canonical_object(
+        slot_claim_path, identity="formal_slot_failure.slot_claim")
+    if slot_claim_value != slot_claim:
+        _fail("formal_slot_failure_slot_claim_mismatch",
+              "formal slot failure slot claim differs from preflight",
+              identity="slot_claim")
+    return (preflight_path, evidence_root, identity, preflight, current,
+            start_claim, start_digest, slot, slot_claim, slot_claim_path)
+
+
+def _load_micu_sources(
+    *, evidence_root: Path, current: bool,
+    start_claim: Mapping[str, Any] | None, ledger_before_path: Path | None,
+    ledger_after_path: Path, require_unchanged: bool,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Path]]:
+    if current:
+        assert start_claim is not None
+        before = dict(start_claim["micu_before"])
+        before_key = "attempt_start_claim"
+        before_path = evidence_root / ATTEMPT_START_CLAIM_FILENAME
+    else:
+        assert ledger_before_path is not None
+        before_key = "ledger_before"
+        before_path = _real_source_path(
+            ledger_before_path, identity="formal_slot_failure.micu_before")
+        before, _ = _load_canonical_object(
+            before_path, identity="formal_slot_failure.micu_before")
+    after_path = _real_source_path(
+        ledger_after_path, identity="formal_slot_failure.micu_after")
+    if after_path.parent != evidence_root or (
+        require_unchanged and before_path == after_path
+    ):
+        _fail("formal_slot_failure_source_path_invalid",
+              "formal slot failure sources must share one evidence root",
+              identity="micu_ledger")
+    after, _ = _load_canonical_object(
+        after_path, identity="formal_slot_failure.micu_after")
+    _validate_ledger_transition(before, after)
+    if require_unchanged and before != after:
+        _fail("formal_slot_failure_pre_ready_micu_changed",
+              "pre-ready failure requires an unchanged cumulative MICU ledger",
+              identity="micu_ledger")
+    return before, after, {before_key: before_path, "ledger_after": after_path}
+
+
 def _build_payload(
     *,
     identity_path: Path | None = None,
@@ -527,72 +626,24 @@ def _build_payload(
     workspace_response_path: Path,
     event_response_path: Path,
     handoff_response_paths: Sequence[Path],
-    ledger_before_path: Path,
     ledger_after_path: Path,
+    ledger_before_path: Path | None = None,
     sealed_at: str,
     schema_id: str = FORMAL_SLOT_FAILURE_SCHEMA_ID,
 ) -> dict[str, Any]:
-    if not _is_aware_timestamp(sealed_at):
-        _fail(
-            "formal_slot_failure_sealed_at_invalid",
-            "formal slot failure requires an aware sealing timestamp",
-            identity="sealed_at",
-        )
-    preflight_path = _real_source_path(
-        preflight_path,
-        identity="formal_slot_failure.preflight",
-    )
-    evidence_root = preflight_path.parent
-    if preflight_path.name != ATTEMPT_PREFLIGHT_FILENAME:
-        _fail(
-            "formal_slot_failure_preflight_invalid",
-            "formal slot failure requires the canonical preflight source",
-            identity="preflight",
-        )
-    if (identity_path is None) == (identity_value is None):
-        _fail(
-            "formal_slot_failure_identity_source_invalid",
-            "formal slot failure requires exactly one identity source",
-            identity="identity",
-        )
-    if identity_path is not None:
-        loaded_identity, _ = _load_canonical_object(
-            _real_source_path(
-                identity_path,
-                identity="formal_slot_failure.identity",
-            ),
-            identity="formal_slot_failure.identity",
-        )
-    else:
-        assert identity_value is not None
-        loaded_identity = dict(identity_value)
-    identity = _normalize_identity(loaded_identity)
-    preflight = load_attempt_preflight_receipt(preflight_path)
-    if preflight.get("identity_digest") != canonical_digest(identity):
-        _fail(
-            "formal_slot_failure_identity_mismatch",
-            "formal slot failure identity differs from preflight",
-            identity="identity",
-        )
-    slot = dict(preflight["slot"])
-    slot_claim = dict(preflight["slot_claim"])
-    slot_claim_path = evidence_root / ATTEMPT_SLOT_CLAIM_FILENAME
-    slot_claim_value, _ = _load_canonical_object(
-        slot_claim_path,
-        identity="formal_slot_failure.slot_claim",
-    )
-    if slot_claim_value != slot_claim:
-        _fail(
-            "formal_slot_failure_slot_claim_mismatch",
-            "formal slot failure slot claim differs from preflight",
-            identity="slot_claim",
-        )
+    (preflight_path, evidence_root, identity, preflight, current, start_claim,
+     start_digest, slot, slot_claim, slot_claim_path) = _load_common_failure_sources(
+        identity_path=identity_path, identity_value=identity_value,
+        preflight_path=preflight_path, sealed_at=sealed_at, schema_id=schema_id)
     startup_path = evidence_root / HOST_STARTUP_FILENAME
     startup_value, _ = _load_canonical_object(
         startup_path,
         identity="formal_slot_failure.host_startup",
     )
-    startup = _validate_startup(startup_value, preflight=preflight)
+    startup = _validate_startup(
+        startup_value, preflight=preflight,
+        attempt_start_claim_digest=start_digest,
+    )
     supervision_path = evidence_root / HOST_SUPERVISION_FILENAME
     supervision_value, _ = _load_canonical_object(
         supervision_path,
@@ -606,6 +657,7 @@ def _build_payload(
         root_ref=str(slot["root_ref"]),
         campaign_id=str(preflight["campaign_id"]),
         authority_policy_digest=str(slot["authority_policy_digest"]),
+        attempt_start_claim_digest=start_digest,
     )
     if any(
         supervision.get(key) != expected
@@ -783,24 +835,10 @@ def _build_payload(
         command_handoffs=command_handoffs,
         launch_id=str(slot_claim["launch_id"]),
     )
-    ledger_before_path = _real_source_path(
-        ledger_before_path,
-        identity="formal_slot_failure.micu_before",
-    )
-    ledger_after_path = _real_source_path(
-        ledger_after_path,
-        identity="formal_slot_failure.micu_after",
-    )
-    before, _ = _load_canonical_object(
-        ledger_before_path,
-        identity="formal_slot_failure.micu_before",
-    )
-    after, _ = _load_canonical_object(
-        ledger_after_path,
-        identity="formal_slot_failure.micu_after",
-    )
-    _validate_ledger_transition(before, after)
-
+    before, after, ledger_paths = _load_micu_sources(
+        evidence_root=evidence_root, current=current, start_claim=start_claim,
+        ledger_before_path=ledger_before_path, ledger_after_path=ledger_after_path,
+        require_unchanged=False)
     fixed_paths = {
         "preflight": preflight_path,
         "slot_claim": slot_claim_path,
@@ -809,8 +847,7 @@ def _build_payload(
         "receipt_chain": receipt_chain_path,
         "workspace": workspace_response_path,
         "events": event_response_path,
-        "ledger_before": ledger_before_path,
-        "ledger_after": ledger_after_path,
+        **ledger_paths,
     }
     if any(path.parent != evidence_root for path in fixed_paths.values()):
         _fail(
@@ -826,10 +863,7 @@ def _build_payload(
         handoff_descriptors,
         key=lambda item: item["name"],
     )
-    if schema_id not in {
-        FORMAL_SLOT_FAILURE_SCHEMA_ID,
-        LEGACY_FORMAL_SLOT_FAILURE_SCHEMA_ID,
-    }:
+    if schema_id not in {FORMAL_SLOT_FAILURE_SCHEMA_ID, *LEGACY_FORMAL_SLOT_FAILURE_SCHEMA_IDS}:
         _fail(
             "formal_slot_failure_schema_invalid",
             "formal slot failure schema is not supported",
@@ -876,8 +910,10 @@ def _build_payload(
         "micu_ledger": {"before": before, "after": after},
         "sources": sources,
     }
-    if schema_id == FORMAL_SLOT_FAILURE_SCHEMA_ID:
+    if schema_id != "aox_formal_slot_failure@1":
         payload["closure_mode"] = "public_host"
+    if current:
+        payload["attempt_start_claim_digest"] = start_digest
     return payload
 
 
@@ -889,7 +925,6 @@ def finalize_and_seal_formal_slot_failure(
     workspace_response_path: Path,
     event_response_path: Path,
     handoff_response_paths: Sequence[Path],
-    ledger_before_path: Path,
     ledger_after_path: Path,
     sealed_at: str | None = None,
 ) -> tuple[Path, str]:
@@ -905,7 +940,6 @@ def finalize_and_seal_formal_slot_failure(
         workspace_response_path=workspace_response_path,
         event_response_path=event_response_path,
         handoff_response_paths=handoff_response_paths,
-        ledger_before_path=ledger_before_path,
         ledger_after_path=ledger_after_path,
         sealed_at=sealed_at or datetime.now(UTC).isoformat(),
     )
@@ -929,7 +963,9 @@ def _verify_payload_sources(
 ) -> None:
     evidence_root = failure_path.parent
     sources = payload.get("sources")
-    if not isinstance(sources, dict) or set(sources) != _SOURCE_KEYS:
+    source_keys = (_CURRENT_SOURCE_KEYS if payload.get("schema_id") ==
+                   FORMAL_SLOT_FAILURE_SCHEMA_ID else _SOURCE_KEYS)
+    if not isinstance(sources, dict) or set(sources) != source_keys:
         _fail(
             "formal_slot_failure_source_binding_invalid",
             "formal slot failure source map is incomplete",
@@ -937,7 +973,7 @@ def _verify_payload_sources(
         )
     paths = {
         key: _source_path(sources, key, evidence_root=evidence_root)
-        for key in _SOURCE_KEYS - {"handoffs"}
+        for key in source_keys - {"handoffs"}
     }
     raw_handoffs = sources.get("handoffs")
     if not isinstance(raw_handoffs, list):
@@ -978,7 +1014,7 @@ def _verify_payload_sources(
         workspace_response_path=paths["workspace"],
         event_response_path=paths["events"],
         handoff_response_paths=handoff_paths,
-        ledger_before_path=paths["ledger_before"],
+        ledger_before_path=paths.get("ledger_before"),
         ledger_after_path=paths["ledger_after"],
         sealed_at=str(payload.get("sealed_at") or ""),
         schema_id=str(payload.get("schema_id") or ""),
@@ -997,65 +1033,15 @@ def _build_pre_ready_payload(
     identity_value: Mapping[str, Any] | None = None,
     preflight_path: Path,
     pre_ready_failure_path: Path,
-    ledger_before_path: Path,
     ledger_after_path: Path,
+    ledger_before_path: Path | None = None,
     sealed_at: str,
+    schema_id: str = FORMAL_SLOT_FAILURE_SCHEMA_ID,
 ) -> dict[str, Any]:
-    if not _is_aware_timestamp(sealed_at):
-        _fail(
-            "formal_slot_failure_sealed_at_invalid",
-            "formal slot failure requires an aware sealing timestamp",
-            identity="sealed_at",
-        )
-    preflight_path = _real_source_path(
-        preflight_path,
-        identity="formal_slot_failure.preflight",
-    )
-    evidence_root = preflight_path.parent
-    if preflight_path.name != ATTEMPT_PREFLIGHT_FILENAME:
-        _fail(
-            "formal_slot_failure_preflight_invalid",
-            "formal slot failure requires the canonical preflight source",
-            identity="preflight",
-        )
-    if (identity_path is None) == (identity_value is None):
-        _fail(
-            "formal_slot_failure_identity_source_invalid",
-            "formal slot failure requires exactly one identity source",
-            identity="identity",
-        )
-    if identity_path is not None:
-        loaded_identity, _ = _load_canonical_object(
-            _real_source_path(
-                identity_path,
-                identity="formal_slot_failure.identity",
-            ),
-            identity="formal_slot_failure.identity",
-        )
-    else:
-        assert identity_value is not None
-        loaded_identity = dict(identity_value)
-    identity = _normalize_identity(loaded_identity)
-    preflight = load_attempt_preflight_receipt(preflight_path)
-    if preflight.get("identity_digest") != canonical_digest(identity):
-        _fail(
-            "formal_slot_failure_identity_mismatch",
-            "formal slot failure identity differs from preflight",
-            identity="identity",
-        )
-    slot = dict(preflight["slot"])
-    slot_claim = dict(preflight["slot_claim"])
-    slot_claim_path = evidence_root / ATTEMPT_SLOT_CLAIM_FILENAME
-    slot_claim_value, _ = _load_canonical_object(
-        slot_claim_path,
-        identity="formal_slot_failure.slot_claim",
-    )
-    if slot_claim_value != slot_claim:
-        _fail(
-            "formal_slot_failure_slot_claim_mismatch",
-            "formal slot failure slot claim differs from preflight",
-            identity="slot_claim",
-        )
+    (preflight_path, evidence_root, identity, preflight, current, start_claim,
+     start_digest, slot, slot_claim, slot_claim_path) = _load_common_failure_sources(
+        identity_path=identity_path, identity_value=identity_value,
+        preflight_path=preflight_path, sealed_at=sealed_at, schema_id=schema_id)
     pre_ready_failure_path = _real_source_path(
         pre_ready_failure_path,
         identity="formal_slot_failure.host_pre_ready_failure",
@@ -1076,6 +1062,7 @@ def _build_pre_ready_payload(
     pre_ready = validate_supervised_host_pre_ready_failure(
         pre_ready_value,
         preflight=preflight,
+        attempt_start_claim_digest=start_digest,
     )
     for forbidden in (
         HOST_STARTUP_FILENAME,
@@ -1091,58 +1078,22 @@ def _build_pre_ready_payload(
                 "pre-ready failure cannot coexist with later Host or public evidence",
                 identity=forbidden,
             )
-    ledger_before_path = _real_source_path(
-        ledger_before_path,
-        identity="formal_slot_failure.micu_before",
-    )
-    ledger_after_path = _real_source_path(
-        ledger_after_path,
-        identity="formal_slot_failure.micu_after",
-    )
-    if (
-        ledger_before_path.parent != evidence_root
-        or ledger_after_path.parent != evidence_root
-        or ledger_before_path == ledger_after_path
-    ):
-        _fail(
-            "formal_slot_failure_source_path_invalid",
-            "formal slot failure sources must share one evidence root",
-            identity="micu_ledger",
-        )
-    before, _ = _load_canonical_object(
-        ledger_before_path,
-        identity="formal_slot_failure.micu_before",
-    )
-    after, _ = _load_canonical_object(
-        ledger_after_path,
-        identity="formal_slot_failure.micu_after",
-    )
-    _validate_ledger_transition(before, after)
-    if before != after:
-        _fail(
-            "formal_slot_failure_pre_ready_micu_changed",
-            "pre-ready failure requires an unchanged cumulative MICU ledger",
-            identity="micu_ledger",
-        )
+    before, after, ledger_paths = _load_micu_sources(
+        evidence_root=evidence_root, current=current, start_claim=start_claim,
+        ledger_before_path=ledger_before_path, ledger_after_path=ledger_after_path,
+        require_unchanged=True)
+    source_paths = {
+        "preflight": preflight_path, "slot_claim": slot_claim_path,
+        "host_pre_ready_failure": pre_ready_failure_path, **ledger_paths,
+    }
     sources = {
-        "preflight": _source_descriptor(preflight_path, evidence_root=evidence_root),
-        "slot_claim": _source_descriptor(
-            slot_claim_path, evidence_root=evidence_root
-        ),
-        "host_pre_ready_failure": _source_descriptor(
-            pre_ready_failure_path, evidence_root=evidence_root
-        ),
-        "ledger_before": _source_descriptor(
-            ledger_before_path, evidence_root=evidence_root
-        ),
-        "ledger_after": _source_descriptor(
-            ledger_after_path, evidence_root=evidence_root
-        ),
+        key: _source_descriptor(path, evidence_root=evidence_root)
+        for key, path in source_paths.items()
     }
     sandbox_failure_code = pre_ready.get("sandbox_preflight_failure_code")
     cause_code = str(sandbox_failure_code or pre_ready["failure_code"])
-    return {
-        "schema_id": FORMAL_SLOT_FAILURE_SCHEMA_ID,
+    payload = {
+        "schema_id": schema_id,
         "closure_mode": "pre_child_ready",
         "sealed_at": sealed_at,
         "run_class": "formal_acceptance",
@@ -1171,7 +1122,8 @@ def _build_pre_ready_payload(
             "identity": f"sandbox_runtime.{cause_code}",
             "source_kind": "host_supervision",
             "source_ref": HOST_PRE_READY_FAILURE_FILENAME,
-            "source_version": HOST_PRE_READY_FAILURE_SCHEMA_ID,
+            "source_version": (HOST_PRE_READY_FAILURE_SCHEMA_ID if current else
+                               "aox_supervised_host_pre_ready_failure@1"),
             "effect_certainty": "no_effect",
             "recoverability": "authorization_required",
             "retry_eligibility": "terminal",
@@ -1179,6 +1131,9 @@ def _build_pre_ready_payload(
         "micu_ledger": {"before": before, "after": after},
         "sources": sources,
     }
+    if current:
+        payload["attempt_start_claim_digest"] = start_digest
+    return payload
 
 
 def finalize_and_seal_pre_ready_formal_slot_failure(
@@ -1186,7 +1141,6 @@ def finalize_and_seal_pre_ready_formal_slot_failure(
     identity_path: Path,
     preflight_path: Path,
     pre_ready_failure_path: Path,
-    ledger_before_path: Path,
     ledger_after_path: Path,
     sealed_at: str | None = None,
 ) -> tuple[Path, str]:
@@ -1199,7 +1153,6 @@ def finalize_and_seal_pre_ready_formal_slot_failure(
         identity_path=identity_path,
         preflight_path=preflight_path,
         pre_ready_failure_path=pre_ready_failure_path,
-        ledger_before_path=ledger_before_path,
         ledger_after_path=ledger_after_path,
         sealed_at=sealed_at or datetime.now(UTC).isoformat(),
     )
@@ -1223,7 +1176,9 @@ def _verify_pre_ready_payload_sources(
 ) -> None:
     evidence_root = failure_path.parent
     sources = payload.get("sources")
-    if not isinstance(sources, dict) or set(sources) != _PRE_READY_SOURCE_KEYS:
+    source_keys = (_CURRENT_PRE_READY_SOURCE_KEYS if payload.get("schema_id") ==
+                   FORMAL_SLOT_FAILURE_SCHEMA_ID else _PRE_READY_SOURCE_KEYS)
+    if not isinstance(sources, dict) or set(sources) != source_keys:
         _fail(
             "formal_slot_failure_source_binding_invalid",
             "pre-ready formal slot failure source map is incomplete",
@@ -1231,7 +1186,7 @@ def _verify_pre_ready_payload_sources(
         )
     paths = {
         key: _source_path(sources, key, evidence_root=evidence_root)
-        for key in _PRE_READY_SOURCE_KEYS
+        for key in source_keys
     }
     identity = dict(payload.get("identity") or {})
     declared_identity_digest = identity.pop("identity_digest", None)
@@ -1245,9 +1200,10 @@ def _verify_pre_ready_payload_sources(
         identity_value=identity,
         preflight_path=paths["preflight"],
         pre_ready_failure_path=paths["host_pre_ready_failure"],
-        ledger_before_path=paths["ledger_before"],
+        ledger_before_path=paths.get("ledger_before"),
         ledger_after_path=paths["ledger_after"],
         sealed_at=str(payload.get("sealed_at") or ""),
+        schema_id=str(payload.get("schema_id") or ""),
     )
     if rebuilt != dict(payload):
         _fail(
@@ -1279,8 +1235,10 @@ def verify_formal_slot_failure(path: Path) -> FormalSlotFailureVerification:
                 "formal slot failure payload is not the current closed schema",
                 identity="payload",
             )
+        schema_id = payload.get("schema_id")
+        current = schema_id == FORMAL_SLOT_FAILURE_SCHEMA_ID
         is_pre_ready = (
-            payload.get("schema_id") == FORMAL_SLOT_FAILURE_SCHEMA_ID
+            schema_id in {FORMAL_SLOT_FAILURE_SCHEMA_ID, "aox_formal_slot_failure@2"}
             and payload.get("closure_mode") == "pre_child_ready"
         )
         if is_pre_ready:
@@ -1288,7 +1246,8 @@ def verify_formal_slot_failure(path: Path) -> FormalSlotFailureVerification:
             attempt_state = payload.get("scientific_attempt_state")
             if not all(
                 (
-                    set(payload) == _PRE_READY_PAYLOAD_FIELDS,
+                    set(payload) == (_PRE_READY_PAYLOAD_FIELDS if current else
+                                     _V2_PRE_READY_PAYLOAD_FIELDS),
                     payload.get("run_class") == "formal_acceptance",
                     payload.get("acceptance_eligible") is False,
                     payload.get("state_reusable") is False,
@@ -1316,7 +1275,7 @@ def verify_formal_slot_failure(path: Path) -> FormalSlotFailureVerification:
                             "preflight_receipt_digest",
                             "slot_claim_digest",
                             "host_pre_ready_failure_receipt_digest",
-                        )
+                        ) + (("attempt_start_claim_digest",) if current else ())
                     ),
                     isinstance(cause, dict) and set(cause) == _CAUSE_FIELDS,
                     isinstance(cause, dict)
@@ -1354,8 +1313,12 @@ def verify_formal_slot_failure(path: Path) -> FormalSlotFailureVerification:
                 slot_ordinal=int(payload["slot_ordinal"]),
             )
         is_legacy_public = (
-            payload.get("schema_id") == LEGACY_FORMAL_SLOT_FAILURE_SCHEMA_ID
+            schema_id == "aox_formal_slot_failure@1"
             and set(payload) == _LEGACY_PAYLOAD_FIELDS
+        ) or (
+            schema_id == "aox_formal_slot_failure@2"
+            and payload.get("closure_mode") == "public_host"
+            and set(payload) == _V2_PUBLIC_HOST_PAYLOAD_FIELDS
         )
         is_current_public = (
             payload.get("schema_id") == FORMAL_SLOT_FAILURE_SCHEMA_ID

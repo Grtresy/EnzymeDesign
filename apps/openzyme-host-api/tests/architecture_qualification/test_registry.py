@@ -207,6 +207,19 @@ def test_scripted_aox_reachability_alone_cannot_close_current_admission() -> Non
     } == {"strategy-neutrality", "world-fidelity"}
 
 
+def test_current_aox_start_guard_is_in_qualification_implementation_identity() -> None:
+    registry = load_invariant_registry(repo_root=REPO_ROOT)
+    implementation_files = registry.payload["implementation_files"]
+    assert isinstance(implementation_files, list)
+    assert {
+        "apps/openzyme-host-api/src/openzyme_host_api/aox_attempt_start.py",
+        (
+            "apps/openzyme-host-api/src/openzyme_host_api/"
+            "aox_host_supervision_evidence.py"
+        ),
+    } <= set(implementation_files)
+
+
 @pytest.mark.parametrize(
     "content",
     [

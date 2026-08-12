@@ -52,7 +52,12 @@ fresh session 必须从以下入口重新推导，不使用历史 prompt 或旧 
 
 ## 正式 public conductor
 
-preflight 必须在 slot claim/root 前从 pinned profile重跑 full actual Podman/image/SDK/scientific-backend resolver与immediate unchanged guard；config-only equality不是 admission。actual runtime失败只走current pre-claim failure，不创建claim/root、不换slot、不retry。guard通过后，preflight再创建slot claim、blank-world root和prelaunch receipt，并发布source-bound、无绝对路径的current conductor execution contract `@2`。Codex只使用该合同声明的formal public CLI入口：前两次成功动作必须逐字闭合exact session create与唯一raw canonical message + pinned `workflow_ref`；之后禁止第二条message，scientific authority只经专用late-bound grant。入口闭合后，CLI透传由Codex选择的其余合法public Host command，并机械绑定同一receipt chain与一次sealed response，不选择科学动作、drain cadence或形成自动循环。历史contract `@1`不能执行。
+preflight 必须在 slot claim/root 前从 pinned profile重跑 full actual Podman/image/SDK/scientific-backend resolver与immediate unchanged guard；config-only equality不是 admission。actual runtime失败只走current pre-claim failure，不创建claim/root、不换slot、不retry。guard通过后，preflight再创建slot claim、blank-world root和prelaunch receipt，并发布source-bound、无绝对路径的current `aox_public_conductor_execution_contract@3`。`serve-attempt`在process creation前重验closed root/evidence和empty effect roots，从pinned ledger读取baseline，原子no-replace发布唯一attempt-start claim并立即重读ledger；child重验同一claim digest与process epoch。污染、ledger drift、既有claim或publish race均停止，不使用global lock、不replay或换slot。Codex只使用该合同声明的formal public CLI入口：前两次成功动作必须逐字闭合exact session create与唯一raw canonical message + pinned `workflow_ref`；之后禁止第二条message，scientific authority只经专用late-bound grant。入口闭合后，CLI透传由Codex选择的其余合法public Host command，并机械绑定同一receipt chain与一次sealed response，不选择科学动作、drain cadence或形成自动循环。历史contract `@1/@2`不能执行。
+
+若process creation在可验证child PID出现前失败，只接受current typed spawn blocker并停止；external effect
+保持unproven、retry terminal且successor blocked，不得合成startup/supervision、formal closure、zero effect
+或reducer decision。current finalizer的MICU before只从attempt-start claim派生，再读取一次final snapshot；
+不得由operator提供standalone baseline path。
 
 每次 bounded drain 的 admission 与唯一 terminal status、最终 workspace/events，以及存在真实 attempt 时的 closed-attempt export，都必须在 Host 仍可访问时封存。随后由公开 retirement-readiness seal 证明：
 
@@ -72,8 +77,9 @@ readiness 缺失或失败时，supervised Host 拒绝操作员退休并保持运
 
 若Host在child-ready前的sandbox bootstrap失败，尚不存在可封存的public chain。只有parent在child存活时
 验证exact PID/PGID/start-time，退休完整process group，并证明fresh root、SQLite、mutation writer、effect
-目录与MICU均未变化，才可生成pre-child-ready failure receipt并进入formal slot-failure `@2`分支；不得
-伪造startup/supervision/readiness。缺少任一证明时如实停在evidence blocker，历史r76不回填。
+目录与claim-derived MICU baseline均未变化，才可生成claim-bound pre-child-ready failure receipt并进入
+current `aox_formal_slot_failure@3`分支；不得伪造startup/supervision/readiness。缺少任一证明时如实停在
+evidence blocker，历史r76/r82不回填。
 
 ## 终局
 

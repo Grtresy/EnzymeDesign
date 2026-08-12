@@ -113,6 +113,7 @@ def test_owner_registry_is_canonical_closed_and_source_resolved() -> None:
     constraints = registry.payload["constraints"]
     assert isinstance(constraints, list)
     assert {item["constraint_id"] for item in constraints} >= {
+        "aox.attempt-start",
         "aox.offline-go",
         "aox.product-closure",
         "runtime.explicit-drain",
@@ -122,6 +123,30 @@ def test_owner_registry_is_canonical_closed_and_source_resolved() -> None:
         "task.delegation",
         "telemetry.reliability-shadow",
     }
+
+
+def test_attempt_start_owner_is_attempt_scoped_and_strategy_neutral() -> None:
+    registry = load_harness_owner_constraint_registry(REPO_ROOT)
+    constraints = registry.payload["constraints"]
+    assert isinstance(constraints, list)
+    start = next(
+        item for item in constraints if item["constraint_id"] == "aox.attempt-start"
+    )
+
+    assert start["owner_source"] == (
+        "apps/openzyme-host-api/src/openzyme_host_api/aox_attempt_start.py"
+    )
+    assert start["owner_symbol"] == "claim_attempt_start"
+    assert set(start["forbidden_edges"]) == {
+        "automatic-replay",
+        "campaign-global-lock",
+        "caller-supplied-micu-baseline",
+        "successor-start",
+    }
+    assert start["scenario_ids"] == [
+        "evidence-projection.aox-admission-receipt-closure",
+        "evidence-projection.aox-run-class-disjoint-closure",
+    ]
 
 
 def test_repository_guidance_uses_current_task_business_exit_owner() -> None:

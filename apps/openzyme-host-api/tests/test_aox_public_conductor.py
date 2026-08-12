@@ -13,6 +13,7 @@ from openzyme_core import MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import sandbox_image_record
 from openzyme_host_api import aox_cutover_evidence as cutover_evidence
+from openzyme_host_api import aox_attempt_start as attempt_start
 from openzyme_host_api import aox_formal_slot_failure as formal_slot_failure
 from openzyme_host_api import aox_host_supervision as host_supervision
 from openzyme_host_api import aox_public_conductor_bundle as conductor_bundle
@@ -26,6 +27,7 @@ from openzyme_host_api.aox_attempt_preflight import load_attempt_preflight_recei
 from openzyme_host_api.aox_attempt_preflight import publish_attempt_launch_profile
 from openzyme_host_api.aox_attempt_preflight import publish_attempt_preflight_receipt
 from openzyme_host_api.aox_attempt_preflight import publish_attempt_slot_claim_evidence
+from openzyme_host_api.aox_attempt_start import claim_attempt_start
 from openzyme_host_api import aox_conductor_execution
 from openzyme_host_api.aox_conductor_execution import (
     publish_conductor_execution_contract,
@@ -862,14 +864,172 @@ def _preflight_fixture(
 def test_preflight_is_exact_and_single_start(tmp_path: Path) -> None:
     path, receipt, _ = _preflight_fixture(tmp_path)
 
-    assert load_attempt_preflight_receipt(path, require_unstarted=True) == receipt
-    (path.parent.parent / "control-plane.sqlite3").touch()
+    assert load_attempt_preflight_receipt(path) == receipt
+    claim_path, claim, _ = claim_attempt_start(path, process_epoch="epoch-aox")
+    assert claim_path.name == "aox-attempt-start-claim.json"
+    assert claim["preflight_receipt_digest"] == receipt["receipt_digest"]
+    assert claim["micu_before_digest"] == canonical_digest(claim["micu_before"])
     with pytest.raises(CutoverEvidenceError) as error:
-        load_attempt_preflight_receipt(path, require_unstarted=True)
-    assert error.value.code == "attempt_preflight_already_started"
+        claim_attempt_start(path, process_epoch="epoch-second")
+    assert error.value.code == "attempt_start_already_claimed"
+
+    claim["claimed_at"] = "not-an-aware-timestamp"
+    claim["claim_digest"] = canonical_digest(
+        {key: value for key, value in claim.items() if key != "claim_digest"}
+    )
+    claim_path.chmod(0o600)
+    claim_path.write_bytes(canonical_json_bytes(claim) + b"\n")
+    claim_path.chmod(0o400)
+    with pytest.raises(CutoverEvidenceError) as invalid:
+        attempt_start.load_bound_attempt_start_claim(path)
+    assert invalid.value.code == "attempt_start_claim_invalid"
+
+    (tmp_path / "contaminated").mkdir()
+    contaminated, _, _ = _preflight_fixture(tmp_path / "contaminated")
+    (contaminated.parent.parent / "control-plane.sqlite3").touch()
+    with pytest.raises(CutoverEvidenceError) as contamination:
+        claim_attempt_start(contaminated, process_epoch="epoch-contaminated")
+    assert contamination.value.code == "attempt_prestart_contamination"
 
 
-def test_execution_contract_v2_binds_entry_grant_and_public_drain_bounds(
+def test_start_claim_fails_closed_on_micu_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, _, _ = _preflight_fixture(tmp_path)
+    ledger_path = tmp_path / "micu-ledger.json"
+    before = attempt_start.safe_micu_ledger_snapshot(ledger_path)
+    snapshots = iter((before, {**before, "charged_tokens": 1}))
+    monkeypatch.setattr(
+        attempt_start, "safe_micu_ledger_snapshot", lambda _: next(snapshots)
+    )
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        attempt_start.claim_attempt_start(path, process_epoch="epoch-drift")
+
+    assert error.value.code == "attempt_micu_ledger_drift"
+    claim_path = path.parent / "aox-attempt-start-claim.json"
+    assert claim_path.is_file()
+    claim = json.loads(claim_path.read_text(encoding="utf-8"))
+    assert claim["micu_before"] == before
+    with pytest.raises(CutoverEvidenceError) as replay:
+        attempt_start.claim_attempt_start(path, process_epoch="epoch-replay")
+    assert replay.value.code == "attempt_start_already_claimed"
+
+
+def test_start_claim_atomic_collision_preserves_first_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, preflight, _ = _preflight_fixture(tmp_path)
+    _, contract, _ = aox_conductor_execution.load_conductor_execution_contract(path)
+    before = attempt_start.safe_micu_ledger_snapshot(tmp_path / "micu-ledger.json")
+    first = attempt_start.build_attempt_start_claim(
+        preflight=preflight,
+        execution_contract=contract,
+        micu_before=before,
+        process_epoch="epoch-winner",
+        claimed_at="2026-08-12T00:00:00+00:00",
+    )
+
+    def race_publish(destination: Path, _: bytes) -> None:
+        destination.write_bytes(canonical_json_bytes(first) + b"\n")
+        destination.chmod(0o400)
+        raise CutoverEvidenceError("attempt_authority_publish_target_invalid", "lost race")
+
+    monkeypatch.setattr(
+        attempt_start, "publish_private_canonical_authority", race_publish
+    )
+    with pytest.raises(CutoverEvidenceError) as error:
+        attempt_start.claim_attempt_start(path, process_epoch="epoch-loser")
+
+    assert error.value.code == "attempt_start_already_claimed"
+    stored = json.loads(
+        (path.parent / "aox-attempt-start-claim.json").read_text(encoding="utf-8")
+    )
+    assert stored == first
+
+
+def test_spawn_failure_seals_minimal_terminal_blocker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, _, _ = _preflight_fixture(tmp_path)
+    closed: list[str] = []
+    parent = SimpleNamespace(close=lambda: closed.append("parent"))
+    child = SimpleNamespace(close=lambda: closed.append("child"))
+
+    def fail_start() -> None:
+        raise OSError("synthetic spawn failure")
+
+    process = SimpleNamespace(pid=None, start=fail_start)
+    spawn = SimpleNamespace(
+        Pipe=lambda *, duplex: (parent, child),
+        Process=lambda **kwargs: process,
+    )
+    monkeypatch.setattr(
+        host_supervision.multiprocessing, "get_context", lambda _: spawn
+    )
+
+    with pytest.raises(host_supervision.HostSupervisionError) as error:
+        with host_supervision.supervised_attempt_host(path):
+            pass
+
+    assert error.value.code == "host_spawn_outcome_unproven"
+    blocker_path = path.parent / host_supervision.HOST_SPAWN_OUTCOME_FILENAME
+    blocker = json.loads(blocker_path.read_text(encoding="utf-8"))
+    assert set(blocker) == {
+        "schema_id", "launch_id", "attempt_start_claim_digest",
+        "process_epoch", "failure_code", "failure_type",
+        "child_identity_available", "effect_certainty", "retry_eligibility",
+        "next_attempt_blocked", "micu_after", "observed_at", "receipt_digest",
+    }
+    assert blocker["schema_id"] == "aox_host_spawn_outcome@1"
+    assert blocker["failure_code"] == "host_spawn_outcome_unproven"
+    assert blocker["child_identity_available"] is False
+    assert blocker["effect_certainty"] == "unproven"
+    assert blocker["retry_eligibility"] == "terminal"
+    assert blocker["next_attempt_blocked"] is True
+    claim = json.loads(
+        (path.parent / "aox-attempt-start-claim.json").read_text(encoding="utf-8")
+    )
+    assert blocker["attempt_start_claim_digest"] == claim["claim_digest"]
+    assert blocker["micu_after"] == claim["micu_before"]
+    assert blocker["receipt_digest"] == canonical_digest(
+        {key: value for key, value in blocker.items() if key != "receipt_digest"}
+    )
+    assert closed == ["child", "parent"]
+    assert not (path.parent / "aox-host-startup.json").exists()
+
+
+def test_spawn_failure_with_visible_pid_does_not_seal_no_pid_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, _, _ = _preflight_fixture(tmp_path)
+    parent = SimpleNamespace(close=lambda: None)
+    child = SimpleNamespace(close=lambda: None)
+    process = SimpleNamespace(
+        pid=1729,
+        start=lambda: (_ for _ in ()).throw(OSError("late synthetic failure")),
+    )
+    spawn = SimpleNamespace(
+        Pipe=lambda *, duplex: (parent, child),
+        Process=lambda **kwargs: process,
+    )
+    monkeypatch.setattr(host_supervision.multiprocessing, "get_context", lambda _: spawn)
+    monkeypatch.setattr(host_supervision.os, "getpgid", lambda _: 1729)
+    monkeypatch.setattr(host_supervision, "_retire_process_group", lambda *_, **__: True)
+
+    with pytest.raises(host_supervision.HostSupervisionError) as error:
+        with host_supervision.supervised_attempt_host(path):
+            pass
+
+    assert error.value.code == "host_spawn_outcome_unproven"
+    assert not (path.parent / host_supervision.HOST_SPAWN_OUTCOME_FILENAME).exists()
+
+
+def test_execution_contract_v3_binds_start_claim_and_public_drain_bounds(
     tmp_path: Path,
 ) -> None:
     preflight_path, preflight, _ = _preflight_fixture(tmp_path)
@@ -884,7 +1044,9 @@ def test_execution_contract_v2_binds_entry_grant_and_public_drain_bounds(
         dict(preflight["root_proof"])["allowed_prerequisites"]
     )["workflow_ref"]
     assert loaded_preflight == preflight
-    assert contract["schema_id"] == "aox_public_conductor_execution_contract@2"
+    assert contract["schema_id"] == "aox_public_conductor_execution_contract@3"
+    assert contract["attempt_start_claim_name"] == "aox-attempt-start-claim.json"
+    assert contract["attempt_start_claim_schema_id"] == "aox_attempt_start_claim@1"
     assert contract["late_bound_authority_command"] == (
         "openzyme-aox-cutover grant-task-authority"
     )
@@ -1107,6 +1269,7 @@ def _fault_slot() -> dict[str, object]:
 def _startup_receipt(
     *,
     preflight: dict[str, object],
+    start_claim: dict[str, object],
 ) -> dict[str, object]:
     slot = dict(preflight["slot"])
     timeout = dict(slot["authority_policy"])["max_wall_time_seconds"]
@@ -1159,6 +1322,7 @@ def _startup_receipt(
         "authority_policy_digest": slot["authority_policy_digest"],
         "campaign_id": preflight["campaign_id"],
         "preflight_receipt_digest": preflight["receipt_digest"],
+        "attempt_start_claim_digest": start_claim["claim_digest"],
         "process_epoch": "epoch-aox",
         "child_pid": 1234,
         "child_pgid": 1234,
@@ -1185,6 +1349,7 @@ def _bound_supervision_receipt(
         authority_policy_digest=slot["authority_policy_digest"],
         campaign_id=preflight["campaign_id"],
         preflight_receipt_digest=preflight["receipt_digest"],
+        attempt_start_claim_digest=startup["attempt_start_claim_digest"],
         host_startup_receipt_digest=startup["receipt_digest"],
         process_epoch=startup["process_epoch"],
         timeout_seconds=startup["timeout_seconds"],
@@ -1207,7 +1372,10 @@ def _formal_slot_failure_fixture(
     preflight_path, preflight, identity_path = _preflight_fixture(tmp_path)
     evidence_root = preflight_path.parent
     slot = dict(preflight["slot"])
-    startup = _startup_receipt(preflight=preflight)
+    _, start_claim, _ = claim_attempt_start(
+        preflight_path, process_epoch="epoch-aox"
+    )
+    startup = _startup_receipt(preflight=preflight, start_claim=start_claim)
     supervision = _bound_supervision_receipt(
         preflight=preflight,
         startup=startup,
@@ -1429,10 +1597,8 @@ def _formal_slot_failure_fixture(
     receipt_path.write_bytes(
         b"".join(canonical_json_bytes(record) + b"\n" for record in records)
     )
-    ledger_before = evidence_root / "micu-before.json"
     ledger_after = evidence_root / "micu-after.json"
-    _write_canonical(ledger_before, {"sequence": 1})
-    _write_canonical(ledger_after, {"sequence": 2})
+    _write_canonical(ledger_after, start_claim["micu_before"])
     for path in evidence_root.iterdir():
         if path.is_file():
             path.chmod(0o600)
@@ -1451,7 +1617,6 @@ def _formal_slot_failure_fixture(
             response_paths["public-response-drain-admission.json"],
             response_paths["public-response-drain-terminal.json"],
         ],
-        "ledger_before": ledger_before,
         "ledger_after": ledger_after,
         "evidence_root": evidence_root,
     }
@@ -1732,7 +1897,6 @@ def test_conductor_retirement_readiness_preserves_sealed_public_failure(
         workspace_response_path=sources["workspace"],
         event_response_path=sources["events"],
         handoff_response_paths=sources["handoffs"],
-        ledger_before_path=sources["ledger_before"],
         ledger_after_path=sources["ledger_after"],
     )
     assert sealed_path.name == formal_slot_failure.FORMAL_SLOT_FAILURE_FILENAME
@@ -1750,7 +1914,6 @@ def test_formal_slot_failure_seals_without_fabricating_attempt_bundle(
         workspace_response_path=sources["workspace"],
         event_response_path=sources["events"],
         handoff_response_paths=sources["handoffs"],
-        ledger_before_path=sources["ledger_before"],
         ledger_after_path=sources["ledger_after"],
         sealed_at="2026-08-06T00:01:00+00:00",
     )
@@ -1802,11 +1965,50 @@ def test_formal_slot_failure_seals_without_fabricating_attempt_bundle(
     finally:
         evidence_root.chmod(0o700)
 
-    legacy = json.loads(path.read_text(encoding="utf-8"))
+    start_claim = json.loads(
+        (path.parent / "aox-attempt-start-claim.json").read_text(encoding="utf-8")
+    )
+    ledger_before = path.parent / "micu-before.json"
+    _write_canonical(ledger_before, start_claim["micu_before"])
+    ledger_before.chmod(0o600)
+    startup_path = path.parent / "aox-host-startup.json"
+    startup = json.loads(startup_path.read_text(encoding="utf-8"))
+    startup.pop("receipt_digest")
+    startup.pop("attempt_start_claim_digest")
+    startup["schema_id"] = "aox_supervised_host_startup@4"
+    startup["receipt_digest"] = canonical_digest(startup)
+    _write_canonical(startup_path, startup)
+    supervision_path = path.parent / "aox-host-supervision.json"
+    supervision = json.loads(supervision_path.read_text(encoding="utf-8"))
+    supervision.pop("receipt_digest")
+    supervision.pop("attempt_start_claim_digest")
+    supervision["schema_id"] = "aox_supervised_host_receipt@3"
+    supervision["host_startup_receipt_digest"] = startup["receipt_digest"]
+    supervision["receipt_digest"] = canonical_digest(supervision)
+    _write_canonical(supervision_path, supervision)
+    legacy_payload = formal_slot_failure._build_payload(
+        identity_path=sources["identity"],
+        preflight_path=sources["preflight"],
+        receipt_chain_path=sources["receipt_chain"],
+        workspace_response_path=sources["workspace"],
+        event_response_path=sources["events"],
+        handoff_response_paths=sources["handoffs"],
+        ledger_before_path=ledger_before,
+        ledger_after_path=sources["ledger_after"],
+        sealed_at="2026-08-06T00:01:00+00:00",
+        schema_id="aox_formal_slot_failure@2",
+    )
+    legacy = {
+        "payload": legacy_payload,
+        "failure_digest": canonical_digest(legacy_payload),
+    }
+    path.chmod(0o600)
+    path.write_bytes(canonical_json_bytes(legacy) + b"\n")
+    assert formal_slot_failure.verify_formal_slot_failure(path).passed is True
+
     legacy["payload"]["schema_id"] = "aox_formal_slot_failure@1"
     legacy["payload"].pop("closure_mode")
     legacy["failure_digest"] = canonical_digest(legacy["payload"])
-    path.chmod(0o600)
     path.write_bytes(canonical_json_bytes(legacy) + b"\n")
     assert formal_slot_failure.verify_formal_slot_failure(path).passed is True
 
@@ -1826,6 +2028,9 @@ def _pre_ready_failure_fixture(
 ) -> dict[str, Path]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     preflight_path, preflight, identity_path = _preflight_fixture(tmp_path)
+    _, start_claim, _ = claim_attempt_start(
+        preflight_path, process_epoch="epoch-pre-ready"
+    )
     root = preflight_path.parent.parent
     provider = SQLiteRepositoryProvider(str(root / "control-plane.sqlite3"))
     with provider.read():
@@ -1840,8 +2045,9 @@ def _pre_ready_failure_fixture(
                 )
             )
     frame_payload = {
-        "schema_id": "aox_supervised_host_child_pre_ready_failure@1",
+        "schema_id": "aox_supervised_host_child_pre_ready_failure@2",
         "process_epoch": "epoch-pre-ready",
+        "attempt_start_claim_digest": start_claim["claim_digest"],
         "outcome": "failed",
         "failure_code": "host_sandbox_runtime_identity_missing",
         "failure_type": "HostSupervisionError",
@@ -1859,6 +2065,7 @@ def _pre_ready_failure_fixture(
     receipt = host_supervision._seal_pre_ready_failure(
         preflight_path=preflight_path,
         preflight=preflight,
+        attempt_start_claim=start_claim,
         frame=frame,
         process=SimpleNamespace(exitcode=1),
         retired=True,
@@ -1871,17 +2078,10 @@ def _pre_ready_failure_fixture(
     assert host_supervision.validate_supervised_host_pre_ready_failure(
         receipt,
         preflight=preflight,
+        attempt_start_claim_digest=str(start_claim["claim_digest"]),
     ) == receipt
-    ledger = {
-        "ledger_identity_digest": "sha256:" + "8" * 64,
-        "charged_tokens": 130_589_612,
-        "attempt_count": 2408,
-    }
-    ledger_before = preflight_path.parent / "micu-before.json"
     ledger_after = preflight_path.parent / "micu-after.json"
-    _write_canonical(ledger_before, ledger)
-    _write_canonical(ledger_after, ledger)
-    ledger_before.chmod(0o600)
+    _write_canonical(ledger_after, start_claim["micu_before"])
     ledger_after.chmod(0o600)
     monkeypatch.setattr(
         formal_slot_failure,
@@ -1892,7 +2092,6 @@ def _pre_ready_failure_fixture(
         "identity": identity_path,
         "preflight": preflight_path,
         "pre_ready_failure": pre_ready_path,
-        "ledger_before": ledger_before,
         "ledger_after": ledger_after,
     }
 
@@ -1908,7 +2107,6 @@ def test_pre_ready_formal_slot_failure_seals_without_synthetic_host_state(
             identity_path=sources["identity"],
             preflight_path=sources["preflight"],
             pre_ready_failure_path=sources["pre_ready_failure"],
-            ledger_before_path=sources["ledger_before"],
             ledger_after_path=sources["ledger_after"],
             sealed_at="2026-08-09T00:00:00+00:00",
         )
@@ -1920,8 +2118,14 @@ def test_pre_ready_formal_slot_failure_seals_without_synthetic_host_state(
     decision = formal_slot_failure.evaluate_formal_slot_failure(path)
     assert verification.passed is True
     assert verification.failure_digest == digest
-    assert payload["schema_id"] == "aox_formal_slot_failure@2"
+    assert payload["schema_id"] == "aox_formal_slot_failure@3"
     assert payload["closure_mode"] == "pre_child_ready"
+    start_claim = json.loads(
+        (path.parent / "aox-attempt-start-claim.json").read_text(encoding="utf-8")
+    )
+    assert payload["attempt_start_claim_digest"] == start_claim["claim_digest"]
+    assert payload["micu_ledger"]["before"] == start_claim["micu_before"]
+    assert not (path.parent / "micu-before.json").exists()
     assert payload["earliest_typed_cause"]["code"] == (
         "podman_rootless_preflight_failed"
     )
@@ -1962,7 +2166,6 @@ def test_pre_ready_formal_slot_failure_rejects_micu_drift_and_later_host_source(
             identity_path=drifted["identity"],
             preflight_path=drifted["preflight"],
             pre_ready_failure_path=drifted["pre_ready_failure"],
-            ledger_before_path=drifted["ledger_before"],
             ledger_after_path=drifted["ledger_after"],
         )
     assert micu_error.value.code == "formal_slot_failure_pre_ready_micu_changed"
@@ -1977,7 +2180,6 @@ def test_pre_ready_formal_slot_failure_rejects_micu_drift_and_later_host_source(
             identity_path=later["identity"],
             preflight_path=later["preflight"],
             pre_ready_failure_path=later["pre_ready_failure"],
-            ledger_before_path=later["ledger_before"],
             ledger_after_path=later["ledger_after"],
         )
     assert source_error.value.code == (
@@ -2024,6 +2226,7 @@ def test_pre_ready_supervision_receipt_rejects_terminal_frame_drift(
         host_supervision.validate_supervised_host_pre_ready_failure(
             receipt,
             preflight=preflight,
+            attempt_start_claim_digest=str(receipt["attempt_start_claim_digest"]),
         )
 
     assert error.value.code == "host_pre_ready_failure_receipt_invalid"
@@ -2046,7 +2249,6 @@ def test_formal_slot_failure_rejects_existing_attempt_and_symlink_source(
             workspace_response_path=existing["workspace"],
             event_response_path=existing["events"],
             handoff_response_paths=existing["handoffs"],
-            ledger_before_path=existing["ledger_before"],
             ledger_after_path=existing["ledger_after"],
         )
     assert attempt_error.value.code == "formal_slot_failure_attempt_exists"
@@ -2062,7 +2264,6 @@ def test_formal_slot_failure_rejects_existing_attempt_and_symlink_source(
             workspace_response_path=linked_workspace,
             event_response_path=clean["events"],
             handoff_response_paths=clean["handoffs"],
-            ledger_before_path=clean["ledger_before"],
             ledger_after_path=clean["ledger_after"],
         )
     assert symlink_error.value.code == "formal_slot_failure_source_invalid"
@@ -2086,7 +2287,6 @@ def test_formal_slot_failure_rejects_an_inferred_missing_attempt_cause(
             workspace_response_path=sources["workspace"],
             event_response_path=sources["events"],
             handoff_response_paths=sources["handoffs"],
-            ledger_before_path=sources["ledger_before"],
             ledger_after_path=sources["ledger_after"],
         )
 
@@ -2111,7 +2311,6 @@ def test_formal_slot_failure_requires_final_reads_after_public_mutations(
             workspace_response_path=sources["workspace"],
             event_response_path=sources["events"],
             handoff_response_paths=sources["handoffs"],
-            ledger_before_path=sources["ledger_before"],
             ledger_after_path=sources["ledger_after"],
         )
 
@@ -2145,7 +2344,6 @@ def test_formal_slot_failure_rejects_a_second_public_message(
             workspace_response_path=sources["workspace"],
             event_response_path=sources["events"],
             handoff_response_paths=sources["handoffs"],
-            ledger_before_path=sources["ledger_before"],
             ledger_after_path=sources["ledger_after"],
         )
 
@@ -2161,7 +2359,10 @@ def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(
         tmp_path,
         slot=slot,
     )
-    startup = _startup_receipt(preflight=preflight)
+    _, start_claim, _ = claim_attempt_start(
+        preflight_path, process_epoch="epoch-aox"
+    )
+    startup = _startup_receipt(preflight=preflight, start_claim=start_claim)
     supervision = _bound_supervision_receipt(
         preflight=preflight,
         startup=startup,
@@ -2264,10 +2465,8 @@ def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(
         path = preflight_path.parent / f"handoff-{sequence:04d}.json"
         _write_canonical(path, envelope)
         handoff_paths.append(path)
-    ledger_before = preflight_path.parent / "micu-before.json"
     ledger_after = preflight_path.parent / "micu-after.json"
-    _write_canonical(ledger_before, {"sequence": 1})
-    _write_canonical(ledger_after, {"sequence": 2})
+    _write_canonical(ledger_after, start_claim["micu_before"])
 
     monkeypatch.setattr(conductor_bundle, "_validate_control", lambda **_: None)
     monkeypatch.setattr(
@@ -2297,7 +2496,6 @@ def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(
             event_response_path=events_path,
             evidence_response_path=evidence_path,
             handoff_response_paths=handoff_paths,
-            ledger_before_path=ledger_before,
             ledger_after_path=ledger_after,
             sealed_at="2026-07-31T00:01:00+00:00",
         )
@@ -2311,11 +2509,30 @@ def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(
         bundle_path,
         artifact_root=artifact_root,
     )
+    bundle_payload = json.loads(bundle_path.read_text(encoding="utf-8"))["payload"]
 
     assert verification.passed is True
     assert generic_verification == verification
     assert verification.bundle_digest == bundle_digest
     assert verification.attempt_kind == "fault"
+    assert bundle_payload["schema_id"] == "aox_blank_world_attempt_bundle@4"
+    assert bundle_payload["bundle_profile"] == "aox_public_conductor_bundle@4"
+    assert bundle_payload["authority"]["attempt_start_claim_digest"] == (
+        start_claim["claim_digest"]
+    )
+    assert bundle_payload["micu_ledger"]["before"] == start_claim["micu_before"]
+    assert (
+        artifact_root
+        / "aox-public-conductor"
+        / "attestations"
+        / "attempt-start-claim.json"
+    ).is_file()
+    assert (
+        artifact_root
+        / "aox-public-conductor"
+        / "attestations"
+        / "execution-contract.json"
+    ).is_file()
     with pytest.raises(CutoverEvidenceError) as append_only_error:
         conductor_bundle.finalize_and_seal_public_conductor_bundle(
             identity_path=identity_path,
@@ -2325,7 +2542,6 @@ def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(
             event_response_path=events_path,
             evidence_response_path=evidence_path,
             handoff_response_paths=handoff_paths,
-            ledger_before_path=ledger_before,
             ledger_after_path=ledger_after,
         )
     assert append_only_error.value.code == "public_conductor_bundle_append_only"
@@ -2469,6 +2685,17 @@ def test_campaign_reducer_keeps_unproven_public_fault_contract_no_go(
     assert decision["decision"] == "NO-GO"
     assert decision["blocker"]["code"] == "fault_contract_unproven"
 
+    payloads[1]["bundle_profile"] = (
+        conductor_bundle.LEGACY_PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID
+    )
+    _write_canonical(
+        records[1].bundle_path,
+        {"payload": payloads[1], "bundle_digest": records[1].bundle_digest},
+    )
+    profile_drift = conductor_bundle.evaluate_public_conductor_campaign(records)
+    assert profile_drift["blocker"]["code"] == "campaign_bundle_profile_drift"
+    payloads[1]["bundle_profile"] = conductor_bundle.PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID
+
     payloads[1]["authority"]["plan_digest"] = "sha256:" + "e" * 64
     _write_canonical(
         records[1].bundle_path,
@@ -2537,6 +2764,7 @@ def _supervision_receipt() -> dict[str, object]:
         "authority_policy_digest": "sha256:" + "a" * 64,
         "campaign_id": "aox_campaign_test",
         "preflight_receipt_digest": "sha256:" + "b" * 64,
+        "attempt_start_claim_digest": "sha256:" + "f" * 64,
         "host_startup_receipt_digest": "sha256:" + "c" * 64,
         "process_epoch": "epoch-aox",
         "shutdown_reason": "operator_stop",
@@ -2579,6 +2807,7 @@ def test_policy_free_supervision_receipt_accepts_campaign_id_and_rejects_writers
         root_ref="formal-slots/aox_campaign_test/1/fixture",
         campaign_id="aox_campaign_test",
         authority_policy_digest="sha256:" + "a" * 64,
+        attempt_start_claim_digest="sha256:" + "f" * 64,
     ) == receipt
 
     tampered = deepcopy(receipt)
@@ -2594,5 +2823,6 @@ def test_policy_free_supervision_receipt_accepts_campaign_id_and_rejects_writers
             root_ref="formal-slots/aox_campaign_test/1/fixture",
             campaign_id="aox_campaign_test",
             authority_policy_digest="sha256:" + "a" * 64,
+            attempt_start_claim_digest="sha256:" + "f" * 64,
         )
     assert error.value.code == "host_supervision_receipt_invalid"

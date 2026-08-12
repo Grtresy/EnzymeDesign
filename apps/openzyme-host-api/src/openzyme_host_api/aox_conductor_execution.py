@@ -12,6 +12,13 @@ from typing import Any
 from .aox_attempt_preflight import ATTEMPT_CONDUCTOR_CONTRACT_FILENAME
 from .aox_attempt_preflight import ATTEMPT_PREFLIGHT_FILENAME
 from .aox_attempt_preflight import load_attempt_preflight_receipt
+from .aox_attempt_preflight import (
+    ATTEMPT_START_CLAIM_FILENAME,
+    ATTEMPT_START_CLAIM_SCHEMA_ID,
+)
+from .aox_attempt_start import (
+    load_bound_attempt_start_claim,
+)
 from .aox_authority_storage import publish_private_canonical_authority
 from .aox_cutover_evidence import CutoverEvidenceError
 from .aox_cutover_evidence import canonical_digest
@@ -35,9 +42,12 @@ from .aox_public_conductor_bundle import _validate_runtime_command_handoffs
 from .aox_public_conductor_bundle import _validate_startup
 
 
-CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID = "aox_public_conductor_execution_contract@2"
-LEGACY_CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID = (
-    "aox_public_conductor_execution_contract@1"
+CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID = "aox_public_conductor_execution_contract@3"
+LEGACY_CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_IDS = frozenset(
+    {
+        "aox_public_conductor_execution_contract@1",
+        "aox_public_conductor_execution_contract@2",
+    }
 )
 CONDUCTOR_EXECUTION_CONTRACT_FILENAME = ATTEMPT_CONDUCTOR_CONTRACT_FILENAME
 CONDUCTOR_RETIREMENT_READINESS_SCHEMA_ID = (
@@ -67,6 +77,8 @@ _CONTRACT_FIELDS = {
     "receipt_chain_name",
     "response_name_pattern",
     "retirement_readiness_name",
+    "attempt_start_claim_name",
+    "attempt_start_claim_schema_id",
     "required_final_reads",
     "contract_digest",
 }
@@ -194,6 +206,8 @@ def build_conductor_execution_contract(
             f"{PUBLIC_RESPONSE_PREFIX}<label>{PUBLIC_RESPONSE_SUFFIX}"
         ),
         "retirement_readiness_name": CONDUCTOR_RETIREMENT_READINESS_FILENAME,
+        "attempt_start_claim_name": ATTEMPT_START_CLAIM_FILENAME,
+        "attempt_start_claim_schema_id": ATTEMPT_START_CLAIM_SCHEMA_ID,
         "required_final_reads": ["workspace", "events"],
     }
     if not all(
@@ -233,7 +247,7 @@ def load_conductor_execution_contract(
     evidence_root, preflight = _evidence_root(preflight_path)
     path = evidence_root / CONDUCTOR_EXECUTION_CONTRACT_FILENAME
     value = _private_canonical_object(path, identity="execution_contract")
-    if value.get("schema_id") == LEGACY_CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID:
+    if value.get("schema_id") in LEGACY_CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_IDS:
         _fail(
             "public_conductor_execution_contract_legacy_non_admissible",
             "legacy conductor execution contracts are read-only historical evidence",
@@ -303,6 +317,7 @@ def load_active_public_host_context(
     evidence_root, contract, preflight = load_conductor_execution_contract(
         preflight_path
     )
+    _, start_claim = load_bound_attempt_start_claim(preflight_path)
     if any(
         (evidence_root / name).exists()
         for name in (HOST_SUPERVISION_FILENAME, HOST_SUPERVISION_FATAL_FILENAME)
@@ -316,7 +331,10 @@ def load_active_public_host_context(
         evidence_root / HOST_STARTUP_FILENAME,
         identity="host_startup",
     )
-    startup = _validate_startup(startup_value, preflight=preflight)
+    startup = _validate_startup(
+        startup_value, preflight=preflight,
+        attempt_start_claim_digest=str(start_claim["claim_digest"]),
+    )
     return preflight, contract, startup, evidence_root
 
 
@@ -927,11 +945,15 @@ def _build_retirement_readiness(
         evidence_root, contract, preflight = load_conductor_execution_contract(
             preflight_path
         )
+        _, start_claim = load_bound_attempt_start_claim(preflight_path)
         startup_value, _ = _load_canonical_object(
             evidence_root / HOST_STARTUP_FILENAME,
             identity="host_startup",
         )
-        startup = _validate_startup(startup_value, preflight=preflight)
+        startup = _validate_startup(
+            startup_value, preflight=preflight,
+            attempt_start_claim_digest=str(start_claim["claim_digest"]),
+        )
     receipt_chain_path = evidence_root / str(contract["receipt_chain_name"])
     receipts, receipt_bytes = _load_receipt_chain(
         receipt_chain_path,

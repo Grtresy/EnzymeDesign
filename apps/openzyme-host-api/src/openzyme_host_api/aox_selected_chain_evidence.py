@@ -333,9 +333,13 @@ def verify_selected_chain_attempt_bundle(
     attempt_id = _text_or_none(payload.get("attempt_id"))
     attempt_kind = _text_or_none(payload.get("attempt_kind"))
     declared_digest = envelope.get("bundle_digest")
+    from .aox_public_conductor_bundle import LEGACY_PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID
     from .aox_public_conductor_bundle import PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID
 
-    if payload.get("bundle_profile") == PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID:
+    if payload.get("bundle_profile") in {
+        LEGACY_PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID,
+        PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID,
+    }:
         from .aox_public_conductor_bundle import verify_public_conductor_bundle
 
         return verify_public_conductor_bundle(

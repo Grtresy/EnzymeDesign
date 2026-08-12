@@ -256,8 +256,8 @@ pin transaction marker 是 `aox_cutover_pin_commit@3`，public pin receipt 是
 preflight/Host 只从该 profile 恢复非敏感 settings，ambient 只补未落盘 credential。blank-world root proof 是
 current `aox_blank_world_root_proof@3`，launch receipt 是
 `aox_blank_world_launch_receipt@2`，attempt bundle 是
-production `aox_blank_world_attempt_bundle@3`。历史
-`aox_blank_world_attempt_bundle@2` 只由冻结 verifier 读取，不得自动升级。新 bundle 与
+production `aox_blank_world_attempt_bundle@4`。历史
+`aox_blank_world_attempt_bundle@2/@3` 只由冻结 verifier 读取，不得自动升级。新 bundle 与
 其余 receipts 都绑定同一个 self-digesting
 `architecture_qualification` receipt：report payload、registry、test manifest、supported
 profile、source commit、report schema、source identity 与 run-evidence digest。collector/offline
@@ -269,10 +269,11 @@ verifier拒绝missing、changed、mismatched或unknown-version receipt；历史`
 `preflight` 复用同一 owner helper。qualification 必须证明两条命令都不再要求该重复输入、正确 legacy
 assertion 保持兼容、错误 assertion 在 receipt/claim/root/effect 前拒绝，并覆盖默认、无后缀和多点
 basename。旧 `--attempt-authority-consumption` 的外部 caller 未知，故本轮不 breaking-remove。
-`aox_attempt_authority_slot_claim@3`、`aox_attempt_preflight@5`与Host supervision `@3`只闭合
-campaign/ordinal/session/root/policy；current conductor execution contract `@2`先闭合exact session与
+`aox_attempt_authority_slot_claim@3`、`aox_attempt_preflight@5`与
+`aox_supervised_host_receipt@4`只闭合
+campaign/ordinal/session/root/policy；current `aox_public_conductor_execution_contract@3`先闭合exact session与
 唯一pinned message，task与scientific authorization再通过专用命令于首个public sealed
-drain/terminal/workspace read后late-bind。execution contract `@1`只读，public drain只按Host schema
+drain/terminal/workspace read后late-bind，并声明attempt-start claim contract。execution contract `@1/@2`只读，public drain只按Host schema
 `1..100` signals/steps与hidden enqueue关闭验证，不把历史`1/8`写成qualification policy。
 historical single-slot diagnostic plan/consumption仍永久`acceptance_eligible=false`，但current
 product无mint/consume命令。未来单独批准的Codex conductor只经public Host API/CLI编排；该
@@ -283,7 +284,10 @@ unchanged guard，严格先于slot claim与root factory；actual Podman/rootless
 `aox_sandbox_scientific_backend_probe@2`失败不能被config-only digest掩盖。AOX admission scenario把
 active normative requirement、实现schema与该source call order闭合；focused regression以fake probes
 证明failure不创建claim/root，真实non-live process回归证明pre-ready frame绑定PID/PGID/start-time并完成
-process-group retirement。上述证明不执行live Podman、provider、HPC或MICU。
+process-group retirement。另以真实no-replace publication证明single start、publish race只保留winner、
+pre/post-claim MICU drift在process creation前停止、child重验claim/epoch、无PID spawn只产生最小blocked
+outcome，且current/legacy schema不能互相adopt；该claim必须绑定并由child重验同一process epoch。上述证明
+不执行live Podman、provider、HPC或MICU。
 
 若 current authority 已消费，但 pinned profile/effective-config 在 slot claim 与 root 前失败，CLI
 只在 claim 不存在且 campaign root absent/empty 时封存 source-bound
@@ -293,10 +297,10 @@ runner/HPC/browser effect，且不得生成 launch/attempt identity。r75 发生
 因此保持 blocked/noncanonical，不允许回填。
 
 claim/root后、child-ready前的sandbox bootstrap failure只有在
-`aox_supervised_host_pre_ready_failure@1`证明live process identity、exact descendant retirement、fresh
-root、zero control-plane/mutation/effect与unchanged MICU后，才可进入
-`aox_formal_slot_failure@2 / closure_mode=pre_child_ready`。`public_host`分支继续使用retirement-readiness。
-qualification同时证明CLI两个source option互斥、current `@2` finalizer/verifier可达、历史`@1`只读且
+`aox_supervised_host_pre_ready_failure@2`证明live process identity、start claim、exact descendant retirement、fresh
+root、zero control-plane/mutation/effect与unchanged claim-derived MICU baseline后，才可进入
+`aox_formal_slot_failure@3 / closure_mode=pre_child_ready`。`public_host`分支继续使用retirement-readiness。
+qualification同时证明CLI source shape、current `@3` finalizer/verifier可达、历史`@1/@2`只读且
 不能crossgrade。r76缺少该receipt，继续blocked/noncanonical，不回填。
 
 historical `aox_closure_stage_*` plan/consumption/root/source/parity/live/decision schemas
