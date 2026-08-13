@@ -11,6 +11,10 @@ from openzyme_host_cli import receipts
 from openzyme_host_cli.receipts import PublicReceiptError
 from openzyme_host_cli.receipts import append_public_api_receipt
 from openzyme_host_cli.receipts import canonical_digest
+from openzyme_host_cli.receipts import canonical_json_bytes
+from openzyme_host_cli.receipts import converge_public_api_mutation_receipt
+from openzyme_host_cli.receipts import converge_public_response
+from openzyme_host_cli.receipts import require_current_public_receipt_chain
 from openzyme_host_cli.receipts import seal_public_response
 
 
@@ -36,6 +40,7 @@ def test_receipt_chain_is_private_contiguous_and_message_safe(tmp_path: Path) ->
             "skill_keys": ["workflow:aox@1.0.0#sha256:" + "a" * 64],
         },
         response=_Response(200, {"status": "accepted"}),
+        idempotency_key="test-message-1",
     )
     second = append_public_api_receipt(
         chain,
@@ -113,6 +118,7 @@ def test_failed_response_is_receipted_but_cannot_be_rewritten(tmp_path: Path) ->
         route="/v3/sessions",
         request_body={"project_id": "p", "objective": "o"},
         response=_Response(409, {"error": {"code": "conflict"}}),
+        idempotency_key="test-session-conflict",
     )
     assert receipt["status_code"] == 409
     assert receipt["request_digest"] == canonical_digest(receipt["request"])
@@ -161,9 +167,7 @@ def test_event_response_seals_parsed_sse_semantics(tmp_path: Path) -> None:
         receipt=receipt,
         response=[{"cursor": 1, "event_type": "session.created"}],
     )
-    assert sealed["response_semantic_digest"] == receipt[
-        "response_semantic_digest"
-    ]
+    assert sealed["response_semantic_digest"] == receipt["response_semantic_digest"]
 
 
 def test_failed_response_receipt_and_seal_share_sanitized_semantics(
@@ -238,3 +242,163 @@ def test_receipt_and_response_bounds_fail_before_append_or_seal(
             receipt=first,
             response={"payload": "too large"},
         )
+
+
+def test_mutation_receipt_converges_only_same_idempotent_response(
+    tmp_path: Path,
+) -> None:
+    chain = tmp_path / "mutation-receipts.jsonl"
+    request = {"project_id": "p", "objective": "o"}
+    first = append_public_api_receipt(
+        chain,
+        method="POST",
+        route="/v3/sessions",
+        request_body=request,
+        response=_Response(200, {"session_id": "sess"}),
+        idempotency_key="formal-session-create",
+    )
+    converged = append_public_api_receipt(
+        chain,
+        method="POST",
+        route="/v3/sessions",
+        request_body=request,
+        response=_Response(200, {"session_id": "sess"}),
+        idempotency_key="formal-session-create",
+    )
+
+    assert converged == first
+    assert len(chain.read_text(encoding="utf-8").splitlines()) == 1
+    with pytest.raises(PublicReceiptError, match="exact reconciliation"):
+        append_public_api_receipt(
+            chain,
+            method="POST",
+            route="/v3/sessions",
+            request_body=request,
+            response=_Response(200, {"session_id": "different"}),
+            idempotency_key="formal-session-create",
+        )
+
+
+def test_terminal_owner_reconciliation_is_append_only_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    chain = tmp_path / "reconciled.jsonl"
+    request = {"project_id": "p", "objective": "o"}
+    unknown = append_public_api_receipt(
+        chain,
+        method="POST",
+        route="/v3/sessions",
+        request_body=request,
+        response=_Response(500, {"error": {"code": "response_lost"}}),
+        idempotency_key="session-reconcile",
+    )
+    terminal = converge_public_api_mutation_receipt(
+        chain,
+        method="POST",
+        route="/v3/sessions",
+        request_body=request,
+        response_payload={"session_id": "sess_reconciled"},
+        status_code=200,
+        idempotency_key="session-reconcile",
+    )
+    repeated = converge_public_api_mutation_receipt(
+        chain,
+        method="POST",
+        route="/v3/sessions",
+        request_body=request,
+        response_payload={"session_id": "sess_reconciled"},
+        status_code=200,
+        idempotency_key="session-reconcile",
+    )
+
+    assert unknown["effect_certainty"] == "unproven"
+    assert terminal["sequence"] == 2
+    assert terminal["effect_certainty"] == "terminal_known"
+    assert repeated == terminal
+    assert len(chain.read_text(encoding="utf-8").splitlines()) == 2
+    with pytest.raises(PublicReceiptError, match="differs"):
+        converge_public_api_mutation_receipt(
+            chain,
+            method="POST",
+            route="/v3/sessions",
+            request_body=request,
+            response_payload={"session_id": "sess_drift"},
+            status_code=200,
+            idempotency_key="session-reconcile",
+        )
+
+    response_path = tmp_path / "reconciled-response.json"
+    first_envelope = converge_public_response(
+        response_path,
+        receipt=terminal,
+        response={"session_id": "sess_reconciled"},
+    )
+    second_envelope = converge_public_response(
+        response_path,
+        receipt=terminal,
+        response={"session_id": "sess_reconciled"},
+    )
+    assert second_envelope == first_envelope
+    with pytest.raises(PublicReceiptError, match="semantic digest|differs"):
+        converge_public_response(
+            response_path,
+            receipt=terminal,
+            response={"session_id": "sess_drift"},
+        )
+
+
+def test_mutation_observation_receipt_binds_encoded_query_identity(
+    tmp_path: Path,
+) -> None:
+    chain = tmp_path / "observation.jsonl"
+    route = (
+        "/v3/mutation-operations/observe?session_id=sess+one&"
+        "command_type=task.update&scope_ref=task%3Atask+one&"
+        "idempotency_key=observe%3Aone&request_digest=sha256%3A"
+        + "a" * 64
+    )
+    receipt = append_public_api_receipt(
+        chain,
+        method="GET",
+        route=route,
+        request_body=None,
+        response=_Response(200, {"status": "unproven"}),
+    )
+
+    assert receipt["request"] == {
+        "command_type": "task.update",
+        "idempotency_key": "observe:one",
+        "request_digest": "sha256:" + "a" * 64,
+        "scope_ref": "task:task one",
+        "session_id": "sess one",
+    }
+
+
+def test_historical_receipt_chain_is_read_only(tmp_path: Path) -> None:
+    chain = tmp_path / "historical-receipts.jsonl"
+    current = append_public_api_receipt(
+        chain,
+        method="GET",
+        route="/v3/runtime/health",
+        request_body=None,
+        response=_Response(200, {"status": "ready"}),
+    )
+    historical = {
+        key: value
+        for key, value in current.items()
+        if key in receipts.PUBLIC_API_RECEIPT_V2_FIELDS
+    }
+    historical["schema_id"] = "openzyme_public_api_receipt@2"
+    chain.write_bytes(canonical_json_bytes(historical) + b"\n")
+
+    with pytest.raises(PublicReceiptError, match="read-only"):
+        require_current_public_receipt_chain(chain)
+    with pytest.raises(PublicReceiptError, match="read-only"):
+        append_public_api_receipt(
+            chain,
+            method="GET",
+            route="/v3/runtime/health",
+            request_body=None,
+            response=_Response(200, {"status": "ready"}),
+        )
+    assert chain.read_bytes() == canonical_json_bytes(historical) + b"\n"

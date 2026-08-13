@@ -43,9 +43,7 @@ from openzyme_host_api.harness_owner_constraints import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-SOURCE_FILE = (
-    "apps/openzyme-host-api/tests/architecture_qualification/test_registry.py"
-)
+SOURCE_FILE = "apps/openzyme-host-api/tests/architecture_qualification/test_registry.py"
 CONTRACT_FILE = (
     "openspec/changes/establish-v3-executable-architecture-qualification/"
     "specs/executable-architecture-qualification/spec.md"
@@ -97,9 +95,7 @@ def _valid_registry() -> dict[str, object]:
                 "scenario_id": scenario_id,
                 "selections": ["full"],
                 "source_files": [SOURCE_FILE],
-                "test_selector": (
-                    f"{SOURCE_FILE}::test_scenario[{family}]"
-                ),
+                "test_selector": (f"{SOURCE_FILE}::test_scenario[{family}]"),
             }
         )
     return {
@@ -129,7 +125,9 @@ def _valid_registry() -> dict[str, object]:
             {
                 "effect_ledger_required": True,
                 "port_id": "llm.chat",
-                "production_seams": ["openzyme_runtime.RuntimeFoundation.model_factory"],
+                "production_seams": [
+                    "openzyme_runtime.RuntimeFoundation.model_factory"
+                ],
                 "qualification_mode": "controlled_adapter",
             }
         ],
@@ -155,9 +153,7 @@ def _valid_registry() -> dict[str, object]:
         },
         "registry_id": REGISTRY_ID,
         "required_families": list(REQUIRED_FAMILIES),
-        "required_scenario_ids": [
-            f"{family}.baseline" for family in REQUIRED_FAMILIES
-        ],
+        "required_scenario_ids": [f"{family}.baseline" for family in REQUIRED_FAMILIES],
         "scenarios": scenarios,
         "schema_id": REGISTRY_SCHEMA_ID,
     }
@@ -184,8 +180,7 @@ def test_registry_accepts_canonical_closed_document() -> None:
 def test_scripted_aox_reachability_alone_cannot_close_current_admission() -> None:
     registry = load_invariant_registry(repo_root=REPO_ROOT)
     scenarios = {
-        str(item["scenario_id"]): item
-        for item in registry.payload["scenarios"]
+        str(item["scenario_id"]): item for item in registry.payload["scenarios"]
     }
 
     scripted_id = "evidence-projection.aox-run-class-disjoint-closure"
@@ -202,8 +197,7 @@ def test_scripted_aox_reachability_alone_cannot_close_current_admission() -> Non
         for scenario_id in transformation_ids
     )
     assert {
-        str(scenarios[scenario_id]["family"])
-        for scenario_id in transformation_ids
+        str(scenarios[scenario_id]["family"]) for scenario_id in transformation_ids
     } == {"strategy-neutrality", "world-fidelity"}
 
 
@@ -217,6 +211,19 @@ def test_current_aox_start_guard_is_in_qualification_implementation_identity() -
             "apps/openzyme-host-api/src/openzyme_host_api/"
             "aox_host_supervision_evidence.py"
         ),
+    } <= set(implementation_files)
+
+
+def test_aox_profile_descriptor_owners_are_in_qualification_identity() -> None:
+    registry = load_invariant_registry(repo_root=REPO_ROOT)
+    implementation_files = registry.payload["implementation_files"]
+    assert isinstance(implementation_files, list)
+    assert {
+        "apps/openzyme-host-api/src/openzyme_host_api/aox_config_contract.py",
+        ("apps/openzyme-host-api/src/openzyme_host_api/aox_cutover_runtime_config.py"),
+        "packages/openzyme-runtime/src/openzyme_runtime/environment_contract.py",
+        "packages/openzyme-runtime/src/openzyme_runtime/reliability.py",
+        "packages/openzyme-runtime/src/openzyme_runtime/settings.py",
     } <= set(implementation_files)
 
 
@@ -260,7 +267,9 @@ def test_registry_rejects_unknown_profile_and_unreadable_source() -> None:
     implementation_files = payload["implementation_files"]
     assert isinstance(implementation_files, list)
     implementation_files.append("missing/qualification.py")
-    with pytest.raises(ArchitectureQualificationRegistryError, match="does not resolve"):
+    with pytest.raises(
+        ArchitectureQualificationRegistryError, match="does not resolve"
+    ):
         _validate(payload)
 
 
@@ -292,7 +301,9 @@ def test_registry_rejects_duplicate_invariant_and_scenario_ids() -> None:
         records = payload[record_key]
         assert isinstance(records, list)
         records.insert(1, deepcopy(records[0]))
-        with pytest.raises(ArchitectureQualificationRegistryError, match="duplicate id"):
+        with pytest.raises(
+            ArchitectureQualificationRegistryError, match="duplicate id"
+        ):
             _validate(payload)
 
 
@@ -483,7 +494,9 @@ def test_boundary_resolver_rejects_symbol_and_equality_drift() -> None:
         }
     )
     registry = _validate(payload)
-    with pytest.raises(ArchitectureQualificationBoundaryError, match="equality drifted"):
+    with pytest.raises(
+        ArchitectureQualificationBoundaryError, match="equality drifted"
+    ):
         resolve_boundary_relation(
             registry,
             boundary_id="sandbox-control-frame-bytes",
@@ -499,7 +512,9 @@ def test_boundary_resolver_rejects_symbol_and_equality_drift() -> None:
     assert isinstance(owner, dict)
     owner["symbol"] = "MISSING_OWNER_LIMIT"
     registry = _validate(payload)
-    with pytest.raises(ArchitectureQualificationBoundaryError, match="cannot be resolved"):
+    with pytest.raises(
+        ArchitectureQualificationBoundaryError, match="cannot be resolved"
+    ):
         resolve_boundary_relation(
             registry,
             boundary_id="sandbox-control-frame-bytes",

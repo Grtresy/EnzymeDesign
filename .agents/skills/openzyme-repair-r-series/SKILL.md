@@ -48,6 +48,8 @@ description: 在 EnzymeDesign 仓库中诊断并在一次明确批准后实施 O
 
 缺少一个从未创建的 attempt、selection 或 bundle 不是 evidence gap。分别记录 failure commit、当前 HEAD、实际命令次数、handle resume、blocked audit、已创建和明确未创建的状态，以及 MICU/provider/HPC/Chrome/external effect。
 
+不要把一个 typed failure 或 `terminal` 默认扩大成 task、attempt、slot 或 campaign 停止。先核对它声明的 exact occurrence、effect certainty、retry eligibility、terminal scope、request/operation/idempotency identity、exact handle/receipt、authority、fencing 与剩余 budget。`no_effect` 加显式 disposition 或 completed exact reconciliation 后，agent 可以在当前授权内显式选择 identity-distinct 新 occurrence；unknown/external effect 只允许 exact public reconciliation。修复 Harness 时不得用 auto-fill、auto-retry、loop、replacement dispatch、策略 hook 或 AOX shadow FSM 代替这些通用事实。
+
 ## 保持证据层级
 
 始终分开记录：
@@ -112,10 +114,11 @@ Deletion-first 是删除 shadow truth、重复 owner、dead compatibility 和策
 4. 涉及 Harness、runtime、protocol、supervision、public contract 或 V3 架构时，更新 active OpenSpec、主架构文档和相关稳定文档；同步修正 `AGENTS.md` 等仓库级现行指导中的冲突语义。
 5. 同步更新适用的技术债台账和源码 marker。只有完整触发条件、生产路径和回归证据均闭合时才能标记已偿还；不得静默删除未完成项。兼容 surface 的删除必须满足 caller evidence 和 sunset gate。
 6. 保持 agent 策略自由。测试真实身份、权限、状态变换、因果保真和 effect 边界，不固定 action order、exact trace 或科学策略。
-7. 按本次风险选择 production composition 和负向控制，不机械复制固定测试清单；保留历史 SQLite/schema/evidence 的只读兼容与 current non-adoption gate。
-8. 为本次漂移建立跨来源语义闭合：从实现导出的 current owner/schema/capability 约束 active OpenSpec、稳定文档和仓库指导；`openspec validate --strict` 只证明单个 change 合法，不能替代该检查。
-9. 运行 focused tests、Ruff、适用的 strict OpenSpec、non-live eval 和 exact-worktree mainline。不得启动 fresh admission、真实 rNN、任何 live marker 或外部系统。
-10. 审查完整 diff、陈旧符号、unrelated changes、生产代码净变化和技术债净变化。仅在获批时创建清晰的中文 Conventional Commit，并确认工作树状态。
+7. 对 continuation 修复，验证 occurrence-local terminal、exact idempotent convergence、receipt-written/envelope-missing crash window、no-effect disposition/new-identity gate、unknown-effect reconciliation 与 authority/budget 负控；只有最后且唯一的 current successful mutation 可 exact 重入，GET、历史/较早/多个缺口与 drift 必须 fail closed；不得把某一 runner/provider 的 action 顺序写成 Harness 策略。
+8. 按本次风险选择 production composition 和负向控制，不机械复制固定测试清单；保留历史 SQLite/schema/evidence 的只读兼容与 current non-adoption gate。
+9. 为本次漂移建立跨来源语义闭合：从实现导出的 current owner/schema/capability 约束 active OpenSpec、稳定文档和仓库指导；`openspec validate --strict` 只证明单个 change 合法，不能替代该检查。配置 profile 必须由 settings/reliability resolver 实际消费的 executable descriptors 与 runtime normalizer constraint owner 导出；不得在 candidate、skill、文档或测试中复制 env prefix/name allowlist 第二真值，且 credential identity 只绑定 presence、unlisted environment 不得进入 candidate identity。
+10. 运行 focused tests、Ruff、适用的 strict OpenSpec、non-live eval 和 exact-worktree mainline。不得启动 fresh admission、真实 rNN、任何 live marker 或外部系统。
+11. 审查完整 diff、陈旧符号、unrelated changes、生产代码净变化和技术债净变化。仅在获批时创建清晰的中文 Conventional Commit，并确认工作树状态。
 
 ## 停止并报告
 

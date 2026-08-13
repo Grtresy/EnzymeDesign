@@ -39,6 +39,86 @@ def _document_identity(*, session_id: str, attempt_id: str, artifact_id: str) ->
     ).removeprefix("sha256:")[:32]
 
 
+def aox_fault_injection_request_digest(
+    *,
+    session_id: str,
+    attempt_id: str,
+    artifact_id: str,
+    idempotency_key: str,
+) -> str:
+    return canonical_digest(
+        {
+            "session_id": session_id,
+            "attempt_id": attempt_id,
+            "artifact_id": artifact_id,
+            "idempotency_key": idempotency_key,
+        }
+    )
+
+
+def observe_authority_bound_aox_reference_byte_flip(
+    repositories: CoreRepositories,
+    *,
+    session_id: str,
+    attempt_id: str,
+    artifact_id: str,
+    actor_ref: str,
+    idempotency_key: str,
+) -> tuple[str, dict[str, Any] | None]:
+    """Read the exact durable fault owner without touching its capability."""
+
+    identity = _document_identity(
+        session_id=session_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+    )
+    claim = repositories.engine_documents.get(f"aox_fault_claim_{identity}")
+    receipt = repositories.engine_documents.get(f"aox_fault_receipt_{identity}")
+    expected_request_digest = aox_fault_injection_request_digest(
+        session_id=session_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        idempotency_key=idempotency_key,
+    )
+    if receipt is not None:
+        payload = dict(receipt.payload)
+        if not all(
+            (
+                payload.get("schema_id") == FAULT_INJECTION_RECEIPT_SCHEMA_ID,
+                payload.get("session_id") == session_id,
+                payload.get("attempt_id") == attempt_id,
+                payload.get("target_artifact_id") == artifact_id,
+                payload.get("actor_ref") == actor_ref,
+                payload.get("idempotency_key") == idempotency_key,
+                payload.get("request_digest") == expected_request_digest,
+            )
+        ):
+            raise ScientificAttemptError(
+                "aox_fault_injection_observation_drift",
+                "durable AOX fault receipt differs from the exact request identity",
+            )
+        return "terminal", payload
+    if claim is not None:
+        payload = dict(claim.payload)
+        if not all(
+            (
+                payload.get("schema_id") == FAULT_INJECTION_CLAIM_SCHEMA_ID,
+                payload.get("session_id") == session_id,
+                payload.get("attempt_id") == attempt_id,
+                payload.get("target_artifact_id") == artifact_id,
+                payload.get("actor_ref") == actor_ref,
+                payload.get("idempotency_key") == idempotency_key,
+                payload.get("request_digest") == expected_request_digest,
+            )
+        ):
+            raise ScientificAttemptError(
+                "aox_fault_injection_observation_drift",
+                "durable AOX fault claim differs from the exact request identity",
+            )
+        return "claimed", None
+    return "unobserved", None
+
+
 def _target_path(
     *, storage_uri: str, blob_root: Path | None
 ) -> tuple[Path, os.stat_result]:
@@ -216,13 +296,11 @@ def inject_authority_bound_aox_reference_byte_flip(
             "aox_fault_target_contract_invalid",
             "exact AOX fault target bytes do not reproduce the fixed HMM reference set",
         )
-    request_digest = canonical_digest(
-        {
-            "session_id": session_id,
-            "attempt_id": attempt_id,
-            "artifact_id": artifact_id,
-            "idempotency_key": idempotency_key,
-        }
+    request_digest = aox_fault_injection_request_digest(
+        session_id=session_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        idempotency_key=idempotency_key,
     )
     claimed_at = utc_now_iso()
     claim_payload = {
@@ -347,5 +425,7 @@ __all__ = [
     "FAULT_INJECTION_CLAIM_SCHEMA_ID",
     "FAULT_INJECTION_RECEIPT_SCHEMA_ID",
     "FAULT_TARGET_RELATIVE_PATH",
+    "aox_fault_injection_request_digest",
     "inject_authority_bound_aox_reference_byte_flip",
+    "observe_authority_bound_aox_reference_byte_flip",
 ]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 import hashlib
@@ -14,11 +15,12 @@ from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import MutationWriterKind
 
+from .environment_contract import EnvironmentFieldDescriptor
+from .environment_contract import field_map
+
 
 RELIABILITY_REFACTOR_SETTINGS_SCHEMA_VERSION = "reliability_refactor_settings@1"
-RELIABILITY_SHADOW_OBSERVATION_SCHEMA_VERSION = (
-    "reliability_shadow_observation@1"
-)
+RELIABILITY_SHADOW_OBSERVATION_SCHEMA_VERSION = "reliability_shadow_observation@1"
 _SAFE_ROUTE_POLICY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{0,191}")
 _RUNNER_PHASES = frozenset(
     {
@@ -57,6 +59,69 @@ class MutationClosureMode(StrEnum):
     GENERIC_V1 = "generic_v1"
 
 
+RELIABILITY_ENVIRONMENT_FIELDS = (
+    EnvironmentFieldDescriptor(
+        setting_path="reliability.shadow_observability",
+        environment_names=("OPENZYME_RELIABILITY_SHADOW_OBSERVABILITY",),
+        value_kind="string",
+        safe_generic_default=ShadowObservabilityMode.DISABLED.value,
+        strip_value=True,
+        accepted_values=tuple(sorted(item.value for item in ShadowObservabilityMode)),
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="reliability.controlled_operation_owner_policy",
+        environment_names=("OPENZYME_RELIABILITY_CONTROLLED_OPERATION_OWNER_POLICY",),
+        value_kind="string",
+        safe_generic_default=ControlledOperationOwnerPolicy.LEGACY_ONLY_V1.value,
+        strip_value=True,
+        accepted_values=tuple(
+            sorted(item.value for item in ControlledOperationOwnerPolicy)
+        ),
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="reliability.durable_execution_route_allowlist",
+        environment_names=("OPENZYME_RELIABILITY_DURABLE_EXECUTION_ROUTE_ALLOWLIST",),
+        value_kind="string_list",
+        safe_generic_default=[],
+        list_normalization="sorted_unique",
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="reliability.runtime_drain_contract",
+        environment_names=("OPENZYME_RELIABILITY_RUNTIME_DRAIN_CONTRACT",),
+        value_kind="string",
+        safe_generic_default=RuntimeDrainContract.COMMAND_V1.value,
+        strip_value=True,
+        accepted_values=tuple(sorted(item.value for item in RuntimeDrainContract)),
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="reliability.mutation_closure_mode",
+        environment_names=("OPENZYME_RELIABILITY_MUTATION_CLOSURE_MODE",),
+        value_kind="string",
+        safe_generic_default=MutationClosureMode.LEGACY_V1.value,
+        strip_value=True,
+        accepted_values=tuple(sorted(item.value for item in MutationClosureMode)),
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="reliability.shadow_max_observations",
+        environment_names=("OPENZYME_RELIABILITY_SHADOW_MAX_OBSERVATIONS",),
+        value_kind="integer",
+        safe_generic_default=256,
+    ),
+)
+_RELIABILITY_ENVIRONMENT_FIELD_MAP = field_map(RELIABILITY_ENVIRONMENT_FIELDS)
+
+
+def reliability_environment_fields() -> tuple[EnvironmentFieldDescriptor, ...]:
+    return RELIABILITY_ENVIRONMENT_FIELDS
+
+
+def _resolved_environment_field(
+    setting_path: str,
+    environ: Mapping[str, str],
+) -> object:
+    return _RELIABILITY_ENVIRONMENT_FIELD_MAP[setting_path].resolve(environ)
+
+
 @dataclass(frozen=True, slots=True)
 class ReliabilityRefactorSettings:
     shadow_observability: ShadowObservabilityMode = ShadowObservabilityMode.DISABLED
@@ -87,49 +152,54 @@ class ReliabilityRefactorSettings:
                 )
 
     @classmethod
-    def from_env(cls) -> "ReliabilityRefactorSettings":
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+    ) -> "ReliabilityRefactorSettings":
+        source = os.environ if environ is None else environ
         allowlist = tuple(
-            sorted(
-                {
-                    item.strip()
-                    for item in (
-                        os.getenv(
-                            "OPENZYME_RELIABILITY_DURABLE_EXECUTION_ROUTE_ALLOWLIST"
-                        )
-                        or ""
-                    ).split(",")
-                    if item.strip()
-                }
+            _resolved_environment_field(
+                "reliability.durable_execution_route_allowlist",
+                source,
             )
         )
         return cls(
-            shadow_observability=_enum_from_env(
-                ShadowObservabilityMode,
-                "OPENZYME_RELIABILITY_SHADOW_OBSERVABILITY",
-                ShadowObservabilityMode.DISABLED,
+            shadow_observability=ShadowObservabilityMode(
+                _resolved_environment_field(
+                    "reliability.shadow_observability",
+                    source,
+                )
             ),
-            controlled_operation_owner_policy=_enum_from_env(
-                ControlledOperationOwnerPolicy,
-                "OPENZYME_RELIABILITY_CONTROLLED_OPERATION_OWNER_POLICY",
-                ControlledOperationOwnerPolicy.LEGACY_ONLY_V1,
+            controlled_operation_owner_policy=ControlledOperationOwnerPolicy(
+                _resolved_environment_field(
+                    "reliability.controlled_operation_owner_policy",
+                    source,
+                )
             ),
             durable_execution_route_allowlist=allowlist,
-            runtime_drain_contract=_enum_from_env(
-                RuntimeDrainContract,
-                "OPENZYME_RELIABILITY_RUNTIME_DRAIN_CONTRACT",
-                RuntimeDrainContract.COMMAND_V1,
+            runtime_drain_contract=RuntimeDrainContract(
+                _resolved_environment_field(
+                    "reliability.runtime_drain_contract",
+                    source,
+                )
             ),
-            mutation_closure_mode=_enum_from_env(
-                MutationClosureMode,
-                "OPENZYME_RELIABILITY_MUTATION_CLOSURE_MODE",
-                MutationClosureMode.LEGACY_V1,
+            mutation_closure_mode=MutationClosureMode(
+                _resolved_environment_field(
+                    "reliability.mutation_closure_mode",
+                    source,
+                )
             ),
             shadow_max_observations=int(
-                os.getenv("OPENZYME_RELIABILITY_SHADOW_MAX_OBSERVATIONS") or "256"
+                _resolved_environment_field(
+                    "reliability.shadow_max_observations",
+                    source,
+                )
             ),
         )
 
-    def owner_mode_for_route(self, route_policy_id: str) -> ControlledOperationOwnerMode:
+    def owner_mode_for_route(
+        self, route_policy_id: str
+    ) -> ControlledOperationOwnerMode:
         if _SAFE_ROUTE_POLICY_PATTERN.fullmatch(route_policy_id) is None:
             raise ValueError("route_policy_id is invalid")
         if (
@@ -166,21 +236,6 @@ class ReliabilityRefactorSettings:
             separators=(",", ":"),
         ).encode("utf-8")
         return "sha256:" + hashlib.sha256(encoded).hexdigest()
-
-
-def _enum_from_env[EnumT: StrEnum](
-    enum_type: type[EnumT],
-    env_name: str,
-    default: EnumT,
-) -> EnumT:
-    raw = os.getenv(env_name)
-    if raw in {None, ""}:
-        return default
-    try:
-        return enum_type(str(raw).strip())
-    except ValueError as exc:
-        allowed = ", ".join(item.value for item in enum_type)
-        raise ValueError(f"{env_name} must be one of: {allowed}") from exc
 
 
 class ReliabilityShadowObservationKind(StrEnum):
@@ -259,9 +314,7 @@ class ReliabilityShadowObserver:
             subject=signal_id,
             dimensions={
                 "signal_hold_ms": _bounded_milliseconds(signal_hold_ms),
-                "session_lease_hold_ms": _bounded_milliseconds(
-                    session_lease_hold_ms
-                ),
+                "session_lease_hold_ms": _bounded_milliseconds(session_lease_hold_ms),
             },
         )
 
@@ -316,9 +369,7 @@ class ReliabilityShadowObserver:
             subject=projection_name,
             dimensions={
                 "removed_field_count": removed_field_count,
-                "residual_private_marker_detected": (
-                    residual_private_marker_detected
-                ),
+                "residual_private_marker_detected": (residual_private_marker_detected),
             },
         )
 
@@ -335,9 +386,7 @@ class ReliabilityShadowObserver:
     ) -> None:
         if not self.enabled:
             return
-        subject_digest = "sha256:" + hashlib.sha256(
-            subject.encode("utf-8")
-        ).hexdigest()
+        subject_digest = "sha256:" + hashlib.sha256(subject.encode("utf-8")).hexdigest()
         with self._lock:
             self._sequence += 1
             self._observations.append(

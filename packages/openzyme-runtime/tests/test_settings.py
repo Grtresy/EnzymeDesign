@@ -16,6 +16,9 @@ from openzyme_runtime import get_settings
 from openzyme_runtime import HostApiSettings
 from openzyme_runtime import ControlledOperationOwnerPolicy
 from openzyme_runtime import MutationClosureMode
+from openzyme_runtime import openzyme_settings_environment_contract
+from openzyme_runtime import openzyme_settings_source_projection
+from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime import RuntimeDrainContract
 from openzyme_runtime import ShadowObservabilityMode
 from openzyme_runtime import reset_settings_cache
@@ -130,7 +133,9 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
     assert settings.llm.model == DEFAULT_OPENAI_COMPAT_MODEL
     assert settings.llm.base_url == DEFAULT_OPENAI_COMPAT_BASE_URL
     assert settings.llm.extra_body == DEFAULT_OPENAI_COMPAT_EXTRA_BODY
-    assert settings.llm.default_headers == {"User-Agent": DEFAULT_OPENAI_COMPAT_USER_AGENT}
+    assert settings.llm.default_headers == {
+        "User-Agent": DEFAULT_OPENAI_COMPAT_USER_AGENT
+    }
     assert settings.llm.use_responses_api is DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API
     assert settings.llm.max_tokens is None
     assert settings.llm.structured_output_method == DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD
@@ -172,8 +177,7 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
     )
     assert settings.reliability.durable_execution_route_allowlist == ()
     assert (
-        settings.reliability.runtime_drain_contract
-        is RuntimeDrainContract.COMMAND_V1
+        settings.reliability.runtime_drain_contract is RuntimeDrainContract.COMMAND_V1
     )
     assert settings.reliability.mutation_closure_mode is MutationClosureMode.LEGACY_V1
     assert settings.reliability.shadow_max_observations == 256
@@ -187,9 +191,8 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
     assert settings.test.live_llm.max_tokens is None
     assert settings.test.live_llm.timeout is None
     assert settings.test.live_llm.max_retries is None
-    assert (
-        settings.test.live_llm.token_ledger_path
-        == str(DEFAULT_LIVE_MICU_TOKEN_LEDGER_PATH)
+    assert settings.test.live_llm.token_ledger_path == str(
+        DEFAULT_LIVE_MICU_TOKEN_LEDGER_PATH
     )
 
 
@@ -202,6 +205,59 @@ def test_host_api_profiles_fail_closed_for_unsafe_or_unconfigured_deployment() -
             bind_port=8000,
             deployment_profile="shared",
         )
+    with pytest.raises(
+        ValueError,
+        match="OPENZYME_HOST_DEPLOYMENT_PROFILE must be 'local-dev' or 'shared'",
+    ):
+        HostApiSettings.from_env({"OPENZYME_HOST_DEPLOYMENT_PROFILE": "unsupported"})
+
+
+def test_environment_descriptor_is_consumed_by_settings_and_safe_projection() -> None:
+    source = {
+        "OPENZYME_LLM_API_KEY": "credential-one",
+        "OPENZYME_LLM_MODEL": "descriptor-model",
+        "OPENZYME_RELIABILITY_DURABLE_EXECUTION_ROUTE_ALLOWLIST": (
+            "route:b,route:a,route:a"
+        ),
+        "OPENZYME_UNLISTED_PROFILE_HINT": "ignored",
+    }
+    settings = OpenZymeSettings.from_env(source)
+    projection = openzyme_settings_source_projection(source)
+    fields = {
+        field["setting_path"]: field
+        for field in openzyme_settings_environment_contract()
+    }
+
+    assert settings.llm.model == "descriptor-model"
+    assert settings.reliability.durable_execution_route_allowlist == (
+        "route:a",
+        "route:b",
+    )
+    assert projection["llm.api_key"] == {"present": True}
+    assert projection["llm.model"] == "descriptor-model"
+    assert projection["reliability.durable_execution_route_allowlist"] == [
+        "route:a",
+        "route:b",
+    ]
+    assert "OPENZYME_UNLISTED_PROFILE_HINT" not in repr(projection)
+    assert fields["llm.model"]["safe_generic_default"] == (DEFAULT_OPENAI_COMPAT_MODEL)
+    assert fields["llm.model"]["environment_names"] == ["OPENZYME_LLM_MODEL"]
+
+
+def test_environment_source_projection_keeps_invalid_non_secret_identity_stable() -> (
+    None
+):
+    projection = openzyme_settings_source_projection(
+        {"OPENZYME_LLM_CONTEXT_WINDOW_TOKENS": "not-an-integer"}
+    )
+
+    assert projection["llm.context_window_tokens"]["resolution"] == "invalid"
+    assert projection["llm.context_window_tokens"]["input_digest"].startswith("sha256:")
+
+
+def test_environment_descriptor_preserves_json_object_error_semantics() -> None:
+    with pytest.raises(ValueError, match="^Expected a JSON object\\.$"):
+        OpenZymeSettings.from_env({"OPENZYME_LLM_EXTRA_BODY": "[]"})
 
 
 def test_settings_honor_env_overrides(monkeypatch) -> None:
@@ -211,7 +267,10 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("OPENZYME_LLM_BASE_URL", "https://example.test/v1")
     monkeypatch.setenv("OPENZYME_LLM_USER_AGENT", "openzyme-test-agent")
     monkeypatch.setenv("OPENZYME_LLM_USE_RESPONSES_API", "false")
-    monkeypatch.setenv("OPENZYME_LLM_EXTRA_BODY", '{"provider":"bigmodel","reasoning":{"enabled":true}}')
+    monkeypatch.setenv(
+        "OPENZYME_LLM_EXTRA_BODY",
+        '{"provider":"bigmodel","reasoning":{"enabled":true}}',
+    )
     monkeypatch.setenv("OPENZYME_LLM_MAX_TOKENS", "900")
     monkeypatch.setenv("OPENZYME_LLM_TIMEOUT", "42")
     monkeypatch.setenv("OPENZYME_LLM_MAX_RETRIES", "5")
@@ -226,7 +285,9 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("OPENZYME_LLM_TOKENIZER_ENABLED", "true")
     monkeypatch.setenv("OPENZYME_LLM_REPORT_REVIEW_TIMEOUT", "90")
     monkeypatch.setenv("OPENZYME_LLM_REPORT_REVIEW_MAX_TOKENS", "300")
-    monkeypatch.setenv("OPENZYME_LLM_REPORT_REVIEW_STRUCTURED_OUTPUT_METHOD", "function_calling")
+    monkeypatch.setenv(
+        "OPENZYME_LLM_REPORT_REVIEW_STRUCTURED_OUTPUT_METHOD", "function_calling"
+    )
     monkeypatch.setenv("OPENZYME_LLM_V3_HARNESS_LOOP_MAX_RETRIES", "2")
     monkeypatch.setenv("OPENZYME_RESEARCH_MAX_UNITS", "7")
     monkeypatch.setenv("TAVILY_API_KEY", "tavily-key")
@@ -288,8 +349,12 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("OPENZYME_TEST_LIVE_LLM_TIMEOUT", "120")
     monkeypatch.setenv("OPENZYME_TEST_LIVE_LLM_MAX_TOKENS", "500")
     monkeypatch.setenv("OPENZYME_TEST_LIVE_LLM_MAX_RETRIES", "0")
-    monkeypatch.setenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_METHOD", "function_calling")
-    monkeypatch.setenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS", "0.5")
+    monkeypatch.setenv(
+        "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_METHOD", "function_calling"
+    )
+    monkeypatch.setenv(
+        "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS", "0.5"
+    )
     monkeypatch.setenv(
         "OPENZYME_TEST_LIVE_LLM_TOKEN_LEDGER_PATH",
         "/tmp/openzyme-live-token-ledger.sqlite3",
@@ -301,7 +366,10 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     assert settings.llm.api_key == "llm-key"
     assert settings.llm.model == "custom-model"
     assert settings.llm.base_url == "https://example.test/v1"
-    assert settings.llm.extra_body == {"provider": "bigmodel", "reasoning": {"enabled": True}}
+    assert settings.llm.extra_body == {
+        "provider": "bigmodel",
+        "reasoning": {"enabled": True},
+    }
     assert settings.llm.default_headers == {"User-Agent": "openzyme-test-agent"}
     assert settings.llm.use_responses_api is False
     assert settings.llm.max_tokens == 900
@@ -360,7 +428,9 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
         "research_provider": 15,
         "execution_provider": 16,
     }
-    assert settings.reliability.shadow_observability is ShadowObservabilityMode.SHADOW_V1
+    assert (
+        settings.reliability.shadow_observability is ShadowObservabilityMode.SHADOW_V1
+    )
     assert (
         settings.reliability.controlled_operation_owner_policy
         is ControlledOperationOwnerPolicy.ROUTE_ALLOWLIST_V1
@@ -395,8 +465,12 @@ def test_settings_default_bigmodel_extra_body_can_be_overridden(monkeypatch) -> 
     _disable_env_file_loading(monkeypatch)
     monkeypatch.setenv("OPENZYME_LLM_API_KEY", "llm-key")
     monkeypatch.setenv("OPENZYME_LLM_MODEL", "glm-5.1")
-    monkeypatch.setenv("OPENZYME_LLM_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4")
-    monkeypatch.setenv("OPENZYME_LLM_EXTRA_BODY", '{"provider":"custom","mode":"strict"}')
+    monkeypatch.setenv(
+        "OPENZYME_LLM_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4"
+    )
+    monkeypatch.setenv(
+        "OPENZYME_LLM_EXTRA_BODY", '{"provider":"custom","mode":"strict"}'
+    )
 
     reset_settings_cache()
     settings = get_settings()
@@ -408,7 +482,9 @@ def test_settings_default_bigmodel_extra_body_for_explicit_glm(monkeypatch) -> N
     _disable_env_file_loading(monkeypatch)
     monkeypatch.setenv("OPENZYME_LLM_API_KEY", "llm-key")
     monkeypatch.setenv("OPENZYME_LLM_MODEL", "glm-5.1")
-    monkeypatch.setenv("OPENZYME_LLM_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4")
+    monkeypatch.setenv(
+        "OPENZYME_LLM_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4"
+    )
     monkeypatch.delenv("OPENZYME_LLM_EXTRA_BODY", raising=False)
 
     reset_settings_cache()

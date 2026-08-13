@@ -30,6 +30,8 @@ GENERIC_RUNTIME_SOURCES = (
     "packages/openzyme-core/src/openzyme_core/teammates.py",
     "packages/openzyme-runtime/src/openzyme_runtime/tooling.py",
 )
+
+
 def _canonical(payload: object) -> bytes:
     return (
         json.dumps(
@@ -86,8 +88,12 @@ def test_owner_registry_is_canonical_closed_and_source_resolved() -> None:
     assert isinstance(constraints, list)
     assert {item["constraint_id"] for item in constraints} >= {
         "aox.attempt-start",
+        "aox.authority-consumption",
+        "aox.config-candidate",
         "aox.offline-go",
         "aox.product-closure",
+        "host.public-mutation-receipt",
+        "runner.reserved-execution",
         "runtime.explicit-drain",
         "scientific.attempt-admission",
         "scientific.attempt-closure",
@@ -95,6 +101,39 @@ def test_owner_registry_is_canonical_closed_and_source_resolved() -> None:
         "task.delegation",
         "telemetry.reliability-shadow",
     }
+
+
+def test_r_series_continuation_owners_are_effect_and_occurrence_scoped() -> None:
+    registry = load_harness_owner_constraint_registry(REPO_ROOT)
+    constraints = {
+        item["constraint_id"]: item for item in registry.payload["constraints"]
+    }
+
+    config = constraints["aox.config-candidate"]
+    assert config["owner_symbol"] == "build_aox_config_candidate"
+    assert "executable profile descriptor" in config["effect_semantics"]
+    assert "runtime-normalizer constraints" in config["lifecycle"]
+    assert "no_effect" in config["error_semantics"]
+    assert set(config["forbidden_edges"]) >= {
+        "automatic-candidate-rewrite",
+        "automatic-validation-retry",
+        "candidate-identity-reuse",
+    }
+
+    authority = constraints["aox.authority-consumption"]
+    assert authority["owner_symbol"] == "consume_aox_attempt_authority_plan"
+    assert "exactly converged" in authority["lifecycle"]
+    assert "budget" in authority["error_semantics"]
+
+    mutation = constraints["host.public-mutation-receipt"]
+    assert mutation["owner_symbol"] == "append_public_api_receipt"
+    assert "current receipt or exact receipt convergence" in mutation["lifecycle"]
+    assert "terminal-scope-widening" in mutation["forbidden_edges"]
+
+    reservation = constraints["runner.reserved-execution"]
+    assert reservation["owner_symbol"] == "submit_reserved_execution"
+    assert "explicitly resumed" in reservation["effect_semantics"]
+    assert "automatic-dispatch-replay" in reservation["forbidden_edges"]
 
 
 def test_attempt_start_owner_is_attempt_scoped_and_strategy_neutral() -> None:
@@ -144,9 +183,9 @@ def test_repository_guidance_uses_current_task_business_exit_owner() -> None:
 
 
 def test_r_series_repair_skill_requires_bounded_technical_debt_review() -> None:
-    skill = (
-        REPO_ROOT / ".agents/skills/openzyme-repair-r-series/SKILL.md"
-    ).read_text(encoding="utf-8")
+    skill = (REPO_ROOT / ".agents/skills/openzyme-repair-r-series/SKILL.md").read_text(
+        encoding="utf-8"
+    )
     goal = (REPO_ROOT / "docs/v3/aox-r-series-codex-goal.md").read_text(
         encoding="utf-8"
     )
@@ -234,8 +273,7 @@ def test_qualification_and_telemetry_are_non_authoritative_dependencies() -> Non
             assert "architecture_qualification" not in source
 
     telemetry = (
-        REPO_ROOT
-        / "packages/openzyme-runtime/src/openzyme_runtime/reliability.py"
+        REPO_ROOT / "packages/openzyme-runtime/src/openzyme_runtime/reliability.py"
     ).read_text(encoding="utf-8")
     for forbidden in (
         "task.finish",

@@ -73,6 +73,9 @@ from openzyme_domain import MutationWriterKind
 from openzyme_domain import SandboxRunRecord
 from openzyme_domain import SandboxRunStatus
 from openzyme_domain import RetryEligibility
+from openzyme_domain import RuntimeCommandRecord
+from openzyme_domain import RuntimeCommandStatus
+from openzyme_domain import RuntimeCommandType
 from openzyme_domain import Session
 from openzyme_domain import SessionStatus
 from openzyme_domain import SessionArtifactRecord
@@ -91,6 +94,7 @@ from openzyme_core import DurableControlledOperationAdmission
 from openzyme_core import DurableControlledOperationAdmissionService
 from openzyme_core import DurableEventRepository
 from openzyme_core import RuntimeWriteFencingError
+from openzyme_core import runtime_command_request_digest
 from openzyme_core import SandboxProcessHostAuthority
 from openzyme_core import SessionTurnHostAuthority
 from openzyme_core import SandboxWorkspaceService
@@ -112,6 +116,21 @@ from openzyme_engines import ResearchUnitPlan as EngineResearchUnitPlan
 from openzyme_engines.execution import ExecutionStartResult
 from openzyme_host_api.aox_scientific_contract import (
     AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY,
+)
+from openzyme_host_api.aox_cutover_evidence import canonical_digest
+from openzyme_host_api.aox_cutover_evidence import FAULT_ARTIFACT_BYTE_FLIP_ID
+from openzyme_host_api.aox_fault_injection import (
+    FAULT_INJECTION_CLAIM_DOCUMENT_KIND,
+    FAULT_INJECTION_CLAIM_SCHEMA_ID,
+    FAULT_INJECTION_RECEIPT_SCHEMA_ID,
+    aox_fault_injection_request_digest,
+)
+from openzyme_host_api.aox_public_product_closure import (
+    FAULT_INJECTION_RECEIPT_DOCUMENT_KIND,
+)
+from openzyme_host_api.host_mutation_observation import (
+    HOST_MUTATION_ORIGINAL_STATUS_CODES,
+    observe_host_mutation_operation,
 )
 from openzyme_host_api.v3_service import V3EventStore
 from openzyme_host_api.v3_service import V3HostApiService
@@ -582,6 +601,369 @@ def test_v3_task_create_idempotency_replays_response_and_rejects_collision(
     assert conflict.status_code == 409
     assert conflict.json()["error"]["code"] == "idempotency_conflict"
     assert "different request" in conflict.json()["error"]["message"]
+
+
+def test_v3_host_mutation_observation_reads_existing_production_owners(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bootstrap, foundation = _build_client(monkeypatch)
+    del bootstrap
+    provider = SQLiteRepositoryProvider(str(tmp_path / "mutation-observe.sqlite3"))
+    dependencies = HostApiDependencies(
+        foundation=foundation,
+        security_policy=_local_test_security(),
+        v3_repository_provider=provider,
+        v3_background_runtime_enabled=False,
+    )
+    session_id = "sess_mutation_observe"
+    project_id = "proj_mutation_observe"
+
+    def observe(client: TestClient, **params: str):
+        return client.get("/v3/mutation-operations/observe", params=params)
+
+    with TestClient(create_app(dependencies)) as client:
+        created = client.post(
+            "/v3/sessions",
+            headers={"Idempotency-Key": "observe-session-create"},
+            json={
+                "session_id": session_id,
+                "project_id": project_id,
+                "objective": "Read existing durable mutation owners.",
+            },
+        )
+        assert created.status_code == 200
+        task = client.post(
+            "/v3/tasks",
+            headers={"Idempotency-Key": "observe-task-create"},
+            json={
+                "session_id": session_id,
+                "task_id": "task_mutation_observe",
+                "subject": "Observe exact task receipt",
+            },
+        )
+        assert task.status_code == 200
+        with provider.read() as reader:
+            task_owner = reader.repositories.command_receipts.find(
+                scope_ref=f"session:{session_id}",
+                command_type="task.create",
+                idempotency_key="observe-task-create",
+            )
+            assert task_owner is not None
+            before_counts = tuple(
+                int(
+                    reader.connection.execute(
+                        f"SELECT COUNT(*) FROM {table}"
+                    ).fetchone()[0]
+                )
+                for table in (
+                    "command_receipt_records",
+                    "runtime_command_records",
+                    "scientific_attempt_authorization_records",
+                    "engine_documents",
+                )
+            )
+        task_observation = observe(
+            client,
+            session_id=session_id,
+            command_type="task.create",
+            scope_ref=f"session:{session_id}",
+            idempotency_key="observe-task-create",
+            request_digest=task_owner.request_digest,
+        )
+        assert task_observation.status_code == 200
+        assert task_observation.json()["status"] == "terminal"
+        assert task_observation.json()["response"] == task.json()
+
+        absent = observe(
+            client,
+            session_id=session_id,
+            command_type="task.create",
+            scope_ref=f"session:{session_id}",
+            idempotency_key="observe-absent",
+            request_digest="sha256:" + "a" * 64,
+        )
+        assert absent.status_code == 200
+        assert absent.json()["status"] == "unproven"
+        assert absent.json()["effect_certainty"] == "unproven"
+        assert absent.json()["reconciliation_required"] is True
+        with provider.read() as reader:
+            after_counts = tuple(
+                int(
+                    reader.connection.execute(
+                        f"SELECT COUNT(*) FROM {table}"
+                    ).fetchone()[0]
+                )
+                for table in (
+                    "command_receipt_records",
+                    "runtime_command_records",
+                    "scientific_attempt_authorization_records",
+                    "engine_documents",
+                )
+            )
+        assert after_counts == before_counts
+
+        runtime_digest = runtime_command_request_digest(
+            session_id=session_id,
+            command_type=RuntimeCommandType.RUNTIME_DRAIN,
+            max_signals=3,
+            max_steps_per_agent=8,
+            auto_enqueue_ready_tasks=False,
+        )
+        with provider.connection_scope() as owner:
+            owner.repositories.runtime_commands.add(
+                RuntimeCommandRecord(
+                    command_id="runtime_observe_in_progress",
+                    session_id=session_id,
+                    command_type=RuntimeCommandType.RUNTIME_DRAIN,
+                    request_digest=runtime_digest,
+                    idempotency_key="runtime-observe-in-progress",
+                    status=RuntimeCommandStatus.ACCEPTED,
+                    max_signals=3,
+                    max_steps_per_agent=8,
+                    auto_enqueue_ready_tasks=False,
+                    state_version=1,
+                    fencing_token=0,
+                    accepted_at="2026-08-13T00:00:00+00:00",
+                )
+            )
+            owner.repositories.runtime_commands.add(
+                RuntimeCommandRecord(
+                    command_id="runtime_observe_terminal",
+                    session_id=session_id,
+                    command_type=RuntimeCommandType.RUNTIME_DRAIN,
+                    request_digest=runtime_digest,
+                    idempotency_key="runtime-observe-terminal",
+                    status=RuntimeCommandStatus.COMPLETED,
+                    max_signals=3,
+                    max_steps_per_agent=8,
+                    auto_enqueue_ready_tasks=False,
+                    state_version=2,
+                    fencing_token=1,
+                    accepted_at="2026-08-13T00:00:00+00:00",
+                    started_at="2026-08-13T00:00:01+00:00",
+                    completed_at="2026-08-13T00:00:02+00:00",
+                )
+            )
+        in_progress = observe(
+            client,
+            session_id=session_id,
+            command_type="runtime.drain",
+            scope_ref=f"session:{session_id}",
+            idempotency_key="runtime-observe-in-progress",
+            request_digest=runtime_digest,
+        )
+        assert in_progress.status_code == 200
+        assert in_progress.json()["status"] == "in_progress"
+        assert in_progress.json()["effect_certainty"] == "unproven"
+        terminal_runtime = observe(
+            client,
+            session_id=session_id,
+            command_type="runtime.drain",
+            scope_ref=f"session:{session_id}",
+            idempotency_key="runtime-observe-terminal",
+            request_digest=runtime_digest,
+        )
+        assert terminal_runtime.status_code == 200
+        assert terminal_runtime.json()["status"] == "terminal"
+
+        lane = client.post(
+            "/v3/lanes",
+            headers={"Idempotency-Key": "observe-lane"},
+            json={
+                "session_id": session_id,
+                "lane_id": "lane_mutation_observe",
+                "name": "formal",
+            },
+        )
+        assert lane.status_code == 200
+        authorization = client.post(
+            f"/v3/sessions/{session_id}/scientific-attempt-authorizations",
+            headers={"Idempotency-Key": "observe-scientific-authority"},
+            json={
+                "task_id": "task_mutation_observe",
+                "campaign_id": "campaign_mutation_observe",
+                "workflow_id": "aox_blank_world",
+                "root_ref": "formal-slots/observe/1/root",
+                "grantor_kind": "operator",
+                "allowed_scopes": ["formal"],
+                "allowed_effect_classes": ["provider", "hpc"],
+                "max_attempts": 1,
+                "max_micu": 10,
+                "max_cost_microunits": 20,
+                "max_wall_time_seconds": 30,
+                "expires_at": "2099-01-01T00:00:00+00:00",
+            },
+        )
+        assert authorization.status_code == 200, authorization.text
+        authorization_digest = authorization.json()["record"]["request_digest"]
+        scientific = observe(
+            client,
+            session_id=session_id,
+            command_type="scientific.authorization.grant",
+            scope_ref=f"session:{session_id}",
+            idempotency_key="observe-scientific-authority",
+            request_digest=authorization_digest,
+        )
+        assert scientific.status_code == 200
+        assert scientific.json()["status"] == "terminal"
+        with provider.read() as reader:
+            service = V3HostApiService(
+                repositories=reader.repositories,
+                event_store=V3EventStore(reader.repositories),
+            )
+            principal_drift = observe_host_mutation_operation(
+                service,
+                principal_id="user:different",
+                session_id=session_id,
+                command_type="scientific.authorization.grant",
+                scope_ref=f"session:{session_id}",
+                idempotency_key="observe-scientific-authority",
+                expected_request_digest=authorization_digest,
+            )
+        assert principal_drift["status"] == "unproven"
+
+        attempt_id = "attempt_mutation_observe"
+        artifact_id = "artifact_mutation_observe"
+        fault_key = "observe-fault"
+        fault_digest = aox_fault_injection_request_digest(
+            session_id=session_id,
+            attempt_id=attempt_id,
+            artifact_id=artifact_id,
+            idempotency_key=fault_key,
+        )
+        identity = canonical_digest(
+            {
+                "session_id": session_id,
+                "attempt_id": attempt_id,
+                "artifact_id": artifact_id,
+                "injection_id": FAULT_ARTIFACT_BYTE_FLIP_ID,
+            }
+        ).removeprefix("sha256:")[:32]
+        claim_payload = {
+            "schema_id": FAULT_INJECTION_CLAIM_SCHEMA_ID,
+            "session_id": session_id,
+            "attempt_id": attempt_id,
+            "target_artifact_id": artifact_id,
+            "actor_ref": "user:local-dev",
+            "idempotency_key": fault_key,
+            "request_digest": fault_digest,
+        }
+        with provider.connection_scope() as owner:
+            owner.repositories.engine_documents.save(
+                EngineDocumentRecord(
+                    document_id=f"aox_fault_claim_{identity}",
+                    session_id=session_id,
+                    document_kind=FAULT_INJECTION_CLAIM_DOCUMENT_KIND,
+                    payload=claim_payload,
+                    created_at="2026-08-13T00:00:00+00:00",
+                    updated_at="2026-08-13T00:00:00+00:00",
+                )
+            )
+        claimed = observe(
+            client,
+            session_id=session_id,
+            command_type="aox.reference-fault.inject",
+            scope_ref=f"session:{session_id}",
+            idempotency_key=fault_key,
+            request_digest=fault_digest,
+            attempt_id=attempt_id,
+            artifact_id=artifact_id,
+        )
+        assert claimed.status_code == 200
+        assert claimed.json()["status"] == "in_progress"
+        receipt_payload = {
+            **claim_payload,
+            "schema_id": FAULT_INJECTION_RECEIPT_SCHEMA_ID,
+        }
+        with provider.connection_scope() as owner:
+            owner.repositories.engine_documents.save(
+                EngineDocumentRecord(
+                    document_id=f"aox_fault_receipt_{identity}",
+                    session_id=session_id,
+                    document_kind=FAULT_INJECTION_RECEIPT_DOCUMENT_KIND,
+                    payload=receipt_payload,
+                    created_at="2026-08-13T00:00:01+00:00",
+                    updated_at="2026-08-13T00:00:01+00:00",
+                )
+            )
+        completed_fault = observe(
+            client,
+            session_id=session_id,
+            command_type="aox.reference-fault.inject",
+            scope_ref=f"session:{session_id}",
+            idempotency_key=fault_key,
+            request_digest=fault_digest,
+            attempt_id=attempt_id,
+            artifact_id=artifact_id,
+        )
+        assert completed_fault.status_code == 200
+        assert completed_fault.json()["status"] == "terminal"
+
+        request_drift = observe(
+            client,
+            session_id=session_id,
+            command_type="task.create",
+            scope_ref=f"session:{session_id}",
+            idempotency_key="observe-task-create",
+            request_digest="sha256:" + "f" * 64,
+        )
+        assert request_drift.status_code == 409
+        session_drift = observe(
+            client,
+            session_id="sess_different",
+            command_type="task.create",
+            scope_ref=f"session:{session_id}",
+            idempotency_key="observe-task-create",
+            request_digest=task_owner.request_digest,
+        )
+        assert session_drift.status_code == 400
+
+
+def test_host_mutation_original_status_codes_match_registered_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bootstrap, foundation = _build_client(monkeypatch)
+    del bootstrap
+    app = create_app(
+        HostApiDependencies(
+            foundation=foundation,
+            security_policy=_local_test_security(),
+        )
+    )
+    command_routes = {
+        "session.create": ("/v3/sessions", "POST"),
+        "conversation.message.post": (
+            "/v3/sessions/{session_id}/messages",
+            "POST",
+        ),
+        "task.create": ("/v3/tasks", "POST"),
+        "task.update": ("/v3/tasks/{task_id}", "PATCH"),
+        "lane.create": ("/v3/lanes", "POST"),
+        "lane.claim": ("/v3/lanes/{lane_id}/claim", "POST"),
+        "lane.keep": ("/v3/lanes/{lane_id}/keep", "POST"),
+        "lane.remove": ("/v3/lanes/{lane_id}/remove", "POST"),
+        "approval.resolve": ("/v3/approvals/{approval_id}/resolve", "POST"),
+        "runtime.drain": ("/v3/sessions/{session_id}/runtime/drain", "POST"),
+        "scientific.authorization.grant": (
+            "/v3/sessions/{session_id}/scientific-attempt-authorizations",
+            "POST",
+        ),
+        "aox.reference-fault.inject": (
+            "/v3/sessions/{session_id}/aox-fault-injections/reference-byte-flip",
+            "POST",
+        ),
+    }
+    registered = {
+        command_type: next(
+            (route.status_code or 200)
+            for route in app.routes
+            if getattr(route, "path", None) == path
+            and method in (getattr(route, "methods", None) or set())
+        )
+        for command_type, (path, method) in command_routes.items()
+    }
+    assert registered == HOST_MUTATION_ORIGINAL_STATUS_CODES
 
 
 def test_v3_public_contract_rejects_unknown_and_client_owned_actor_fields(

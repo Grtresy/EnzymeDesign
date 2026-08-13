@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 from typing import Protocol
+from urllib.parse import urlencode
 from uuid import uuid4
 
 import httpx
@@ -12,6 +13,7 @@ from openzyme_runtime import sanitize_public_diagnostic_payload
 
 from .receipts import append_public_api_receipt
 from .receipts import parse_sse_events
+from .receipts import require_current_public_receipt_chain
 
 
 class ResponseProtocol(Protocol):
@@ -81,7 +83,9 @@ class HostApiClient:
         receipt_chain: Path | None = None,
     ) -> None:
         self._owns_session = session is None
-        self._session = session or httpx.Client(base_url=base_url.rstrip("/"), timeout=30.0)
+        self._session = session or httpx.Client(
+            base_url=base_url.rstrip("/"), timeout=30.0
+        )
         self._base_url = base_url.rstrip("/")
         self._auth_token = auth_token
         self._receipt_chain = receipt_chain
@@ -100,13 +104,16 @@ class HostApiClient:
         idempotency_key: str | None = None,
         event_stream: bool = False,
     ) -> Any:
+        if self._receipt_chain is not None:
+            require_current_public_receipt_chain(self._receipt_chain)
         headers: dict[str, str] = {}
         if self._auth_token:
             headers["Authorization"] = f"Bearer {self._auth_token}"
-        if method != "GET":
-            headers["Idempotency-Key"] = (
-                idempotency_key or f"cli-{uuid4().hex}"
-            )
+        effective_idempotency_key = (
+            None if method == "GET" else idempotency_key or f"cli-{uuid4().hex}"
+        )
+        if effective_idempotency_key is not None:
+            headers["Idempotency-Key"] = effective_idempotency_key
         if method == "GET":
             response = self._session.get(path, headers=headers)
         elif method == "PATCH":
@@ -121,6 +128,7 @@ class HostApiClient:
                 route=path,
                 request_body=json_body,
                 response=response,
+                idempotency_key=effective_idempotency_key,
             )
         payload = _public_response_payload(response, event_stream=event_stream)
         if response.status_code >= 400:
@@ -138,18 +146,26 @@ class HostApiClient:
         objective: str,
         title: str | None = None,
         session_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"project_id": project_id, "objective": objective}
         if title:
             body["title"] = title
         if session_id:
             body["session_id"] = session_id
-        return self._request_json("POST", "/v3/sessions", json_body=body)
+        return self._request_json(
+            "POST",
+            "/v3/sessions",
+            json_body=body,
+            idempotency_key=idempotency_key,
+        )
 
     def get_v3_workspace(self, session_id: str) -> dict[str, Any]:
         return self._request_json("GET", f"/v3/sessions/{session_id}/workspace")
 
-    def get_v3_events(self, session_id: str, *, after_cursor: int) -> list[dict[str, Any]]:
+    def get_v3_events(
+        self, session_id: str, *, after_cursor: int
+    ) -> list[dict[str, Any]]:
         return self._request_json(
             "GET",
             f"/v3/sessions/{session_id}/events?replay=1&after_cursor={after_cursor}",
@@ -192,6 +208,33 @@ class HostApiClient:
         return self._request_json(
             "GET",
             f"/v3/sessions/{session_id}/runtime/commands/{command_id}",
+        )
+
+    def observe_v3_mutation_operation(
+        self,
+        *,
+        session_id: str,
+        command_type: str,
+        scope_ref: str,
+        idempotency_key: str,
+        request_digest: str,
+        attempt_id: str | None = None,
+        artifact_id: str | None = None,
+    ) -> dict[str, Any]:
+        query = {
+            "session_id": session_id,
+            "command_type": command_type,
+            "scope_ref": scope_ref,
+            "idempotency_key": idempotency_key,
+            "request_digest": request_digest,
+        }
+        if attempt_id is not None:
+            query["attempt_id"] = attempt_id
+        if artifact_id is not None:
+            query["artifact_id"] = artifact_id
+        return self._request_json(
+            "GET",
+            f"/v3/mutation-operations/observe?{urlencode(query)}",
         )
 
     def get_v3_scientific_attempts(self, session_id: str) -> dict[str, Any]:
@@ -250,6 +293,7 @@ class HostApiClient:
         task_id: str | None = None,
         lane_id: str | None = None,
         skill_keys: list[str] | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"message": message}
         if task_id:
@@ -258,29 +302,102 @@ class HostApiClient:
             body["lane_id"] = lane_id
         if skill_keys:
             body["skill_keys"] = list(skill_keys)
-        return self._request_json("POST", f"/v3/sessions/{session_id}/messages", json_body=body)
+        return self._request_json(
+            "POST",
+            f"/v3/sessions/{session_id}/messages",
+            json_body=body,
+            idempotency_key=idempotency_key,
+        )
 
-    def create_v3_task(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._request_json("POST", "/v3/tasks", json_body=payload)
+    def create_v3_task(
+        self,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            "/v3/tasks",
+            json_body=payload,
+            idempotency_key=idempotency_key,
+        )
 
-    def update_v3_task(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._request_json("PATCH", f"/v3/tasks/{task_id}", json_body=payload)
+    def update_v3_task(
+        self,
+        task_id: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "PATCH",
+            f"/v3/tasks/{task_id}",
+            json_body=payload,
+            idempotency_key=idempotency_key,
+        )
 
-    def create_v3_lane(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._request_json("POST", "/v3/lanes", json_body=payload)
+    def create_v3_lane(
+        self,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            "/v3/lanes",
+            json_body=payload,
+            idempotency_key=idempotency_key,
+        )
 
-    def claim_v3_lane(self, lane_id: str) -> dict[str, Any]:
-        return self._request_json("POST", f"/v3/lanes/{lane_id}/claim", json_body={})
+    def claim_v3_lane(
+        self,
+        lane_id: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            f"/v3/lanes/{lane_id}/claim",
+            json_body={},
+            idempotency_key=idempotency_key,
+        )
 
-    def keep_v3_lane(self, lane_id: str) -> dict[str, Any]:
-        return self._request_json("POST", f"/v3/lanes/{lane_id}/keep", json_body={})
+    def keep_v3_lane(
+        self,
+        lane_id: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            f"/v3/lanes/{lane_id}/keep",
+            json_body={},
+            idempotency_key=idempotency_key,
+        )
 
-    def remove_v3_lane(self, lane_id: str) -> dict[str, Any]:
-        return self._request_json("POST", f"/v3/lanes/{lane_id}/remove", json_body={})
+    def remove_v3_lane(
+        self,
+        lane_id: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            f"/v3/lanes/{lane_id}/remove",
+            json_body={},
+            idempotency_key=idempotency_key,
+        )
 
-    def resolve_v3_approval(self, approval_id: str, decision: str) -> dict[str, Any]:
+    def resolve_v3_approval(
+        self,
+        approval_id: str,
+        decision: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
         return self._request_json(
             "POST",
             f"/v3/approvals/{approval_id}/resolve",
             json_body={"decision": decision},
+            idempotency_key=idempotency_key,
         )

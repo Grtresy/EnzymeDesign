@@ -21,7 +21,12 @@ uv --project apps/openzyme-host-cli run openzyme runtime health
 ## Public evidence receipts
 
 Codex-conducted AOX tests use the same thin public client. `--receipt-chain` appends one canonical
-`openzyme_public_api_receipt@2` JSONL record for every Host response, including non-2xx responses;
+`openzyme_public_api_receipt@3` JSONL record for every Host response, including non-2xx responses.
+The record binds normalized request identity, caller-selected mutation idempotency, effect certainty,
+retry eligibility, reconciliation requirement and an occurrence-local terminal scope. An identical
+last request/response converges on the existing receipt; response drift requires exact reconciliation.
+Historical homogeneous `@2` chains remain readable under their original closed shape, but the client
+rejects them before issuing a current request and never mixes or appends `@3` records to them.
 `--seal-response` publishes the current semantic response once and requires the same receipt chain.
 Neither option drives runtime or interprets business terminal state.
 
@@ -35,10 +40,19 @@ uv --project apps/openzyme-host-cli run openzyme \
   --selection-id selection_123
 ```
 
-The public conductor can also seal one-shot `sessions events`, `approvals pending`, workspace,
+The formal public conductor supplies an explicit idempotency key for every mutation; the generic CLI
+may still generate a key when it is used outside that source-bound formal contract. The public conductor
+can also seal one-shot `sessions events`, `approvals pending`, workspace,
 runtime-command status and approval-resolution responses. Receipt storage must be an existing real
 private directory; the chain is continuous, locked and fsynced, while sealed responses are
 no-replace. These are evidence facts, not authority to approve or continue a run.
+
+`operations observe` is the generic read-only surface for one exact supported Host
+mutation. It requires the original command type, owner scope, idempotency key and
+owner request digest; the AOX fault owner also requires its attempt/artifact identity.
+It reads an existing command receipt, runtime command, scientific authorization or
+fault-injection owner and never submits, resumes, retries or creates operation state.
+An absent or drifting owner remains unproven.
 
 ## Configuration
 

@@ -31,6 +31,7 @@ from .live_token_ledger import LiveMicuTokenLedger
 from .live_token_ledger import LiveMicuTokenPolicyMigrationError
 from .live_token_ledger import LiveMicuTokenReservationConfigurationError
 from .live_token_ledger import migrate_legacy_live_micu_token_policy
+from .live_token_ledger import resolve_live_micu_token_ledger_path
 from .live_token_ledger import summarize_live_micu_token_ledger
 from .provider_tools import openai_tool_from_spec
 from .provider_tools import ProviderToolAdapter
@@ -96,6 +97,7 @@ from .engine_spi import CapabilityEngine
 from .engine_spi import EngineDescriptor
 from .engine_spi import EngineDocumentRecord
 from .engine_spi import EngineRegistry
+from .environment_contract import canonical_digest
 from .checkpointer import MissingLangGraphPostgresDependencyError
 from .checkpointer import PostgresCheckpointerConfig
 from .checkpointer import PostgresCheckpointerFactory
@@ -134,6 +136,9 @@ from .settings import DEFAULT_OPENAI_COMPAT_MODEL
 from .settings import DEFAULT_OPENAI_COMPAT_USER_AGENT
 from .settings import DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API
 from .settings import ExecutionSettings
+from .settings import HOST_API_DEPLOYMENT_PROFILES
+from .settings import HOST_API_LOCAL_DEPLOYMENT_PROFILE
+from .settings import HOST_API_LOOPBACK_BIND_HOSTS
 from .settings import HostApiSettings
 from .settings import HostApiPrincipalSettings
 from .settings import HostCliSettings
@@ -150,6 +155,10 @@ from .settings import TracingSettings
 from .settings import V3BackgroundRuntimeSettings
 from .settings import get_settings
 from .settings import load_env_files
+from .settings import openzyme_settings_environment_contract
+from .settings import openzyme_settings_environment_fields
+from .settings import openzyme_settings_source_projection
+from .settings import resolve_openzyme_settings_environment_field
 from .settings import reset_settings_cache
 from .test_gates import live_e2e_skip_reason
 from .test_gates import live_hpc_skip_reason
@@ -176,6 +185,7 @@ from .tooling import validate_arguments_against_schema
 __all__ = [
     "AgentStepContext",
     "CanonicalResearchSnapshot",
+    "canonical_digest",
     "ChatModelFactory",
     "CapabilityEngine",
     "ArtifactBoundaryError",
@@ -209,6 +219,9 @@ __all__ = [
     "ExecutionSuccessCheckDraft",
     "ExecutionSettings",
     "get_settings",
+    "HOST_API_DEPLOYMENT_PROFILES",
+    "HOST_API_LOCAL_DEPLOYMENT_PROFILE",
+    "HOST_API_LOOPBACK_BIND_HOSTS",
     "HostApiSettings",
     "HostApiPrincipalSettings",
     "HostCliSettings",
@@ -238,6 +251,7 @@ __all__ = [
     "LiveMicuTokenPolicyMigrationError",
     "LiveMicuTokenReservationConfigurationError",
     "migrate_legacy_live_micu_token_policy",
+    "resolve_live_micu_token_ledger_path",
     "MissingLangChainDependencyError",
     "MissingLangChainProviderDependencyError",
     "MissingLangGraphPostgresDependencyError",
@@ -250,6 +264,9 @@ __all__ = [
     "LimiterRegistry",
     "SyncConcurrencyLimiter",
     "OpenZymeSettings",
+    "openzyme_settings_environment_contract",
+    "openzyme_settings_environment_fields",
+    "openzyme_settings_source_projection",
     "PRIVATE_ARTIFACT_KEYS",
     "PostgresCheckpointerConfig",
     "PostgresCheckpointerFactory",
@@ -288,6 +305,7 @@ __all__ = [
     "ReportDraft",
     "register_artifact_boundary_tools",
     "reset_settings_cache",
+    "resolve_openzyme_settings_environment_field",
     "S12_ROUTE_POLICIES",
     "StructuredOutputInvoker",
     "StaticResearchToolProvider",

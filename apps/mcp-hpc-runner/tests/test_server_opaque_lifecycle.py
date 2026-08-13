@@ -126,7 +126,21 @@ def test_reserved_execution_is_idempotent_restart_safe_and_no_effect(
 
     assert replay == reserved
     assert re.fullmatch(r"[0-9a-f]{32}", reserved["run_id"])
-    assert observation == {
+    assert {
+        key: observation[key]
+        for key in (
+            "run_id",
+            "status",
+            "selected_mode",
+            "phase",
+            "effect_certainty",
+            "retry_eligibility",
+            "reconciliation_required",
+            "retryable",
+            "runner_attempt_receipt_digest",
+            "artifacts",
+        )
+    } == {
         "run_id": reserved["run_id"],
         "status": "reserved",
         "selected_mode": "ssh",
@@ -135,11 +149,12 @@ def test_reserved_execution_is_idempotent_restart_safe_and_no_effect(
         "retry_eligibility": "same_phase_safe",
         "reconciliation_required": False,
         "retryable": True,
-        "runner_attempt_receipt_digest": observation[
-            "runner_attempt_receipt_digest"
-        ],
+        "runner_attempt_receipt_digest": observation["runner_attempt_receipt_digest"],
         "artifacts": {},
     }
+    assert observation["reservation_identity_digest"] == reserved["identity_digest"]
+    assert observation["request_digest"] == _reservation_identity()["request_digest"]
+    assert observation["operation_id"] == "op_durable_001"
     assert re.fullmatch(
         r"sha256:[0-9a-f]{64}",
         observation["runner_attempt_receipt_digest"],
@@ -208,6 +223,24 @@ def test_reserved_execution_dispatch_uses_exact_handle_and_rejects_replay(
             retry_eligibility=RunnerRetryEligibility.TERMINAL,
             reason_code="fake_terminal",
         )
+        attempt = server.attempt_journal.load_bound(
+            str(spec.run_id),
+            spec,
+            selected_mode="ssh",
+        )
+        server.store.write_json(
+            str(spec.run_id),
+            "run_result_metadata.json",
+            {
+                "status": "completed",
+                "exit_code": 0,
+                "runner_attempt_safe_receipt_digest": attempt.safe_receipt_digest,
+                "runner_phase": attempt.phase.value,
+                "effect_certainty": attempt.effect_certainty.value,
+                "retry_eligibility": attempt.retry_eligibility.value,
+                "reconciliation_required": attempt.reconciliation_required,
+            },
+        )
         return RunResult(
             run_id=str(spec.run_id),
             requested_mode="ssh",
@@ -228,14 +261,15 @@ def test_reserved_execution_dispatch_uses_exact_handle_and_rejects_replay(
     assert captured["spec"].run_id == reserved["run_id"]
     durable_identity = captured["spec"].metadata["openzyme_durable_execution"]
     assert durable_identity["execution_id"] == "exec_durable_001"
-    assert durable_identity["reservation_identity_digest"] == reserved[
-        "identity_digest"
-    ]
-    with pytest.raises(ValueError, match="already crossed dispatch"):
-        server.submit_reserved_execution(
-            run_id=reserved["run_id"],
-            runspec=_runspec(),
-        )
+    assert (
+        durable_identity["reservation_identity_digest"] == reserved["identity_digest"]
+    )
+    converged = server.submit_reserved_execution(
+        run_id=reserved["run_id"],
+        runspec=_runspec(),
+    )
+    assert converged["status"] == "completed"
+    assert converged["run_id"] == reserved["run_id"]
 
 
 def test_reserved_execution_restart_routes_only_proven_pre_effect_same_run_resume(
@@ -276,6 +310,24 @@ def test_reserved_execution_restart_routes_only_proven_pre_effect_same_run_resum
             retry_eligibility=RunnerRetryEligibility.TERMINAL,
             reason_code="simulated_resume_terminal",
         )
+        attempt = restarted.attempt_journal.load_bound(
+            str(spec.run_id),
+            spec,
+            selected_mode="ssh",
+        )
+        restarted.store.write_json(
+            str(spec.run_id),
+            "run_result_metadata.json",
+            {
+                "status": "completed",
+                "exit_code": 0,
+                "runner_attempt_safe_receipt_digest": attempt.safe_receipt_digest,
+                "runner_phase": attempt.phase.value,
+                "effect_certainty": attempt.effect_certainty.value,
+                "retry_eligibility": attempt.retry_eligibility.value,
+                "reconciliation_required": attempt.reconciliation_required,
+            },
+        )
         return RunResult(
             run_id=str(spec.run_id),
             requested_mode="ssh",
@@ -287,19 +339,25 @@ def test_reserved_execution_restart_routes_only_proven_pre_effect_same_run_resum
         )
 
     restarted.ssh_runner.resume_pre_effect = resume_same_run  # type: ignore[method-assign]
-    result = restarted.submit_reserved_execution(
+    observation = restarted.submit_reserved_execution(
         run_id=reserved["run_id"],
         runspec=_runspec(),
     )
+    assert observation["status"] == "running"
+    assert observation["effect_certainty"] == "no_effect"
+    assert resume_count == 0
+
+    result = restarted.resume_reserved_execution(reserved["run_id"])
 
     assert result["run_id"] == reserved["run_id"]
     assert result["status"] == "completed"
     assert resume_count == 1
-    with pytest.raises(ValueError, match="already crossed dispatch"):
-        restarted.submit_reserved_execution(
-            run_id=reserved["run_id"],
-            runspec=_runspec(),
-        )
+    converged = restarted.submit_reserved_execution(
+        run_id=reserved["run_id"],
+        runspec=_runspec(),
+    )
+    assert converged["status"] == "completed"
+    assert resume_count == 1
 
 
 def test_reserved_execution_rejects_identity_drift(tmp_path: Path) -> None:
@@ -354,9 +412,7 @@ def test_exec_run_assigns_opaque_id_and_hides_internal_handle_fields(
         captured["spec"] = spec
         assert spec.run_id is not None
         output = (
-            server.store.ensure_run_layout(spec.run_id)["outputs"]
-            / "a"
-            / "result.json"
+            server.store.ensure_run_layout(spec.run_id)["outputs"] / "a" / "result.json"
         )
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text("{}", encoding="utf-8")
@@ -370,11 +426,7 @@ def test_exec_run_assigns_opaque_id_and_hides_internal_handle_fields(
             job_id="12345",
             stdout="unbounded-internal-stdout",
             stderr="",
-            artifacts={
-                f"mcp_runs/{spec.run_id}/out/a/result.json": (
-                    str(output)
-                )
-            },
+            artifacts={f"mcp_runs/{spec.run_id}/out/a/result.json": (str(output))},
             logs={"stdout": {"inline": "bounded"}},
             metadata={"remote_command": ["secret"]},
         )
@@ -425,9 +477,7 @@ def test_exec_run_projects_transport_failure_code_without_partial_artifacts(
             exit_code=255,
             error_code="SSH_CONNECTION_TIMEOUT",
             artifacts={
-                "mcp_runs/private/out/partial.fasta": (
-                    "/private/runner/partial.fasta"
-                )
+                "mcp_runs/private/out/partial.fasta": ("/private/runner/partial.fasta")
             },
             logs={"stderr": {"inline": "private transport diagnostic"}},
             metadata={
@@ -491,9 +541,7 @@ def test_exec_run_binds_runner_contract_and_projects_closed_toolchain_identity(
                     "tool_id": "bio_tools.mafft",
                     "adapter_id": "bio_tools.mafft",
                     "command_template_id": "bio_tools_mafft_sif_v1",
-                    "runner_contract_digest": runtime_request[
-                        "runner_contract_digest"
-                    ],
+                    "runner_contract_digest": runtime_request["runner_contract_digest"],
                     "image_digest": digest,
                     "sif_path": "/private/runner/mafft.sif",
                     "future_private_field": "must-not-cross-boundary",
@@ -527,9 +575,7 @@ def test_exec_run_binds_runner_contract_and_projects_closed_toolchain_identity(
         "tool_id": "bio_tools.mafft",
         "adapter_id": "bio_tools.mafft",
         "command_template_id": "bio_tools_mafft_sif_v1",
-        "runner_contract_digest": bound["tool_contract"][
-            "runner_contract_digest"
-        ],
+        "runner_contract_digest": bound["tool_contract"]["runner_contract_digest"],
         "image_digest": digest,
     }
     assert "/private/runner" not in str(result)
@@ -940,8 +986,7 @@ def test_lifecycle_responses_hide_raw_handles_and_fetch_uses_persisted_runspec(
         captured["fetch_spec"] = spec
         captured["fetch_handle"] = handle
         output = (
-            server.store.ensure_run_layout(handle.run_id)["outputs"]
-            / "result.json"
+            server.store.ensure_run_layout(handle.run_id)["outputs"] / "result.json"
         )
         output.write_text("{}", encoding="utf-8")
         return RunResult(
@@ -951,11 +996,7 @@ def test_lifecycle_responses_hide_raw_handles_and_fetch_uses_persisted_runspec(
             remote_run_dir=handle.remote_run_dir,
             status="completed",
             job_id=handle.job_id,
-            artifacts={
-                f"{handle.remote_run_dir}/out/result.json": (
-                    str(output)
-                )
-            },
+            artifacts={f"{handle.remote_run_dir}/out/result.json": (str(output))},
         )
 
     server.slurm_runner.logs = fake_logs  # type: ignore[method-assign]

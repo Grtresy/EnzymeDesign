@@ -2010,6 +2010,70 @@ launcher 变化、非只读命令及第二次 escalation 均 fail closed。quali
 source 的核心计数/负控。production Python、ledger/authority/effect/provenance/isolation 均不变，也不新增
 fallback、observer、shadow truth、state machine 或科学 action policy。
 
+### 2026-08-13 effect-aware R-series continuation
+
+旧 R-series operator guidance 把一个 source-bound typed failure 的 `terminal` 过度扩大为 task、attempt、slot
+甚至 campaign 停止；同时配置预检没有公共 candidate identity owner，pin 的 runner handle 虽可取得却没有
+public exact query/resume/reconcile surface，authority consumption 与 Host receipt 也没有把重复调用收敛到同一
+logical occurrence。结果是 agent 看不到足够的世界约束，只能在 blanket stop 与猜测式重发之间二选一。
+
+前向 correction 复用通用 effect taxonomy、opaque operation identity、fencing 与 idempotency owner，不增加
+AOX retry FSM。`aox_config_contract@1` 与 credential-free `aox_config_candidate@1` 把 current profile source、
+ledger、runner config identity 原子绑定；`check-config@2` 的 `no_effect/terminal` 只终结 exact candidate，agent
+可显式处置后发布 identity-distinct candidate 并再次显式验证，系统不得补值或循环。pin 改为 reserve-first，
+duplicate submit 只观察；public `pin-operation` 对 exact handle 提供 query/resume/reconcile：query 只读，只有 pre-effect
+`no_effect/same_phase_safe` 可显式 resume 同一 occurrence，reconcile 只恢复 exact durable outcome 而不重放 payload；unknown/dispatch-in-doubt 必须 exact reconcile。
+
+authority consumption 的 durable sibling 对同一 plan/request 可返回 existing exact receipt，并在
+`aox_attempt_authority_consume_receipt@2` 投影 exact-three、`max_attempts=1`、资源 ceiling、effect、terminal scope、
+handle 与 idempotency；任何 source/authority/budget drift 都拒绝。formal conductor execution contract 升级为
+`@4`，为 canonical entry 派生 deterministic keys，并规定 later mutation 必须 caller-selected explicit key；
+`openzyme_public_api_receipt@3` 绑定 request identity、effect certainty、retry eligibility 与 occurrence-local
+terminal scope。lost response 只有在 exact request 与 response 都一致时收敛到最后一条 receipt，response drift
+要求 reconciliation，不能追加第二个逻辑 mutation。若 crash window 已写入 current successful mutation receipt
+但尚未封存 response envelope，wrapper 只允许最后且唯一缺 envelope 的 `terminal_known/terminal` occurrence 以
+exact command/request/idempotency 重入并补封同一 response；GET、历史 receipt、较早或多个缺口、unknown effect
+及任何 identity/request/response drift 均 fail closed。该闭合直接复用 receipt chain 与 response envelope owner，
+不新增 continuation 状态机或 shadow truth。
+
+新 occurrence 的统一 gate 是 `no_effect + explicit disposition` 或 completed exact reconciliation，再独立核对
+source identity、authority 与剩余 budget。`terminal` 默认只描述 current config candidate、runner operation、
+authority consumption、Host read/mutation occurrence；它不自动写 task/attempt/slot/campaign 终态。保留
+exact-three、每 slot `max_attempts=1`、preflight canonical NO-GO 与 preflight failure schema 原合同，也不增加
+auto-fill、auto-retry、hidden poll、loop、replacement dispatch、策略选择或科学 attempt 计数。
+
+动作适用性由机器逐资源声明：pin 是 query/resume/reconcile；authority consumption 与 formal Host mutation 是
+query/reconcile 且 `resume=false`。后两者只读 deterministic sibling 或既有 generic command receipt、runtime
+command、scientific authorization、AOX fault claim/receipt。Host 的 generic observation endpoint 与 thin CLI
+不创建 operation owner；conductor 只在 source owner 已返回 exact terminal response 后追加 reconcile receipt。
+业务 occurrence view 仅折叠同 identity、相邻的一条 unproven receipt 与唯一 terminal successor；raw receipt/
+response/failure/sequence/digest 仍完整进入 forensic 与 bundle。multiple terminal、intervening receipt、earlier
+known effect、cross-identity/request drift 或 unsealed response 均拒绝，因此没有引入 shadow owner 或 recovery FSM。
+
+### 2026-08-13 executable AOX profile descriptor
+
+上一版 `aox_config_contract@1` 只公开 candidate lifecycle，而 candidate 另行以 `OPENZYME_*` prefix 和一份
+特殊 name allowlist 扫描 environment。这使实际 `OpenZymeSettings.from_env` / reliability resolver、candidate
+identity 和 operator 可发现合同形成三份字段真值；raw credential value 也参与 source digest，导致只替换同一
+credential slot 的具体 secret 就伪造 identity-distinct candidate，却仍不能从 public contract 得知 required field、
+safe default 或 AOX conditional constraints。
+
+前向设计把 field truth 收口为 `packages/openzyme-runtime` 中由 settings/reliability resolver 实际消费的
+`EnvironmentFieldDescriptor` instances；generic descriptor type 只提供解析、canonical projection 与 public metadata
+机制，不持有任何 AOX 字段清单。每个 instance 拥有 stable `setting_path`、有序 env aliases、value kind、安全通用
+默认值、candidate relevance、empty/strip/list normalization 与 identity mode。AOX closed runtime normalizer 继续拥有 eligibility constraint
+constants，并由 `aox_environment_profile_requirements()` 将同一 constants 投影为 exact/allowed/range/conditional
+machine requirements；`config-contract` 组合两者，required field 缺失或 requirement projection drift 立即返回
+`aox_config_contract_source_drift`。因此 field mapping、constraint owner 与 validation path 可交叉验证，而不是让
+文档、skill 或 candidate 复制另一张表。
+
+candidate identity 只消费 descriptor 列出的 relevant fields。credential 使用 presence projection；private
+non-credential 使用 canonical value digest；普通值使用 canonical resolved value；invalid non-secret input 使用 input
+digest，以便 malformed occurrence 仍可获得稳定 identity 再由 `check-config` 拒绝；unlisted environment 完全忽略。
+ledger 与 runner-config path 不进入普通 field projection，而由既有 `_path_identity` 独立绑定 configured/resolved path、
+regular-file 与 content digest。该设计不改变 publication/validation effect semantics、schema id 或 pin/live authority；
+也不把 descriptor 变成自动填值、自动修复或策略 owner。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

@@ -16,6 +16,10 @@ from types import SimpleNamespace
 from typing import Any
 
 from openzyme_pipeline import aox_finalization
+from openzyme_host_cli.receipts import PUBLIC_API_RECEIPT_SCHEMA_ID
+from openzyme_host_cli.receipts import PUBLIC_RESPONSE_ENVELOPE_SCHEMA_ID
+from openzyme_host_cli.receipts import PublicReceiptError
+from openzyme_host_cli.receipts import validate_public_api_receipt
 
 from .aox_attempt_authority import authority_grant_identity
 from .aox_attempt_authority import authority_grant_payload
@@ -69,30 +73,19 @@ from .aox_public_conductor_contract import (
 from .aox_public_conductor_contract import (
     PUBLIC_CONDUCTOR_TITLE as PUBLIC_CONDUCTOR_TITLE,
 )
+from .aox_public_conductor_contract import effective_public_receipts
 from .aox_public_conductor_contract import validate_bounded_drain_receipts
 from .aox_public_conductor_contract import validate_canonical_entry_receipts
 
 
 PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID = "aox_public_conductor_bundle@4"
 LEGACY_PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID = "aox_public_conductor_bundle@3"
-PUBLIC_API_RECEIPT_SCHEMA_ID = "openzyme_public_api_receipt@2"
-PUBLIC_RESPONSE_ENVELOPE_SCHEMA_ID = "openzyme_public_host_response@1"
+LEGACY_PUBLIC_API_RECEIPT_SCHEMA_ID = "openzyme_public_api_receipt@2"
 PUBLIC_CONDUCTOR_ATTESTATION_DIR = "aox-public-conductor"
 PUBLIC_CONDUCTOR_BUNDLE_FILENAME = "attempt-bundle.json"
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _ANY = object()
-_RECEIPT_FIELDS = {
-    "schema_id",
-    "sequence",
-    "method",
-    "route",
-    "status_code",
-    "request",
-    "request_digest",
-    "response_digest",
-    "response_semantic_digest",
-}
 _RESPONSE_FIELDS = {
     "schema_id",
     "receipt",
@@ -135,7 +128,8 @@ _STATIC_SOURCE_NAMES = {
     "micu-after.json",
 }
 _LEGACY_STATIC_SOURCE_NAMES = _STATIC_SOURCE_NAMES - {
-    "attempt-start-claim.json", "execution-contract.json",
+    "attempt-start-claim.json",
+    "execution-contract.json",
 }
 _STATIC_SOURCE_NAMES.add("execution-contract.json")
 _HANDOFF_SOURCE_NAME = re.compile(r"handoff-response-[0-9]{4}\.json")
@@ -150,24 +144,34 @@ _TERMINAL_RUNTIME_COMMAND_STATUSES = {
     "cancelled",
 }
 
+
 def _content_digest(content: bytes) -> str:
     return "sha256:" + hashlib.sha256(content).hexdigest()
+
 
 def _fail(code: str, message: str, *, identity: str) -> None:
     raise CutoverEvidenceError(code, message, details={"identity": identity})
 
+
 def _safe_relative_path(value: str) -> str:
     path = PurePosixPath(value)
-    if not all((
-        value,
-        "\\" not in value,
-        "\x00" not in value,
-        not path.is_absolute(),
-        path.as_posix() == value,
-        all(part not in {"", ".", ".."} for part in path.parts),
-    )):
-        _fail("public_conductor_artifact_path_invalid", "unsafe artifact path", identity="deliverables.relative_path")
+    if not all(
+        (
+            value,
+            "\\" not in value,
+            "\x00" not in value,
+            not path.is_absolute(),
+            path.as_posix() == value,
+            all(part not in {"", ".", ".."} for part in path.parts),
+        )
+    ):
+        _fail(
+            "public_conductor_artifact_path_invalid",
+            "unsafe artifact path",
+            identity="deliverables.relative_path",
+        )
     return value
+
 
 def _read_bound_artifact_file(
     artifact_root: Path, relative_path: str, *, identity: str
@@ -176,20 +180,32 @@ def _read_bound_artifact_file(
     path = root / _safe_relative_path(relative_path)
     try:
         root_meta, path_meta = root.lstat(), path.lstat()
-        resolved_root, resolved_path = root.resolve(strict=True), path.resolve(strict=True)
+        resolved_root, resolved_path = (
+            root.resolve(strict=True),
+            path.resolve(strict=True),
+        )
     except OSError as exc:
         raise CutoverEvidenceError(
             "public_conductor_artifact_unreadable",
             "public conductor artifact root or source is unreadable",
             details={"identity": identity},
         ) from exc
-    if not all((
-        stat.S_ISDIR(root_meta.st_mode), not stat.S_ISLNK(root_meta.st_mode),
-        resolved_root == root, stat.S_ISREG(path_meta.st_mode),
-        not stat.S_ISLNK(path_meta.st_mode), resolved_path == path,
-        resolved_root in resolved_path.parents,
-    )):
-        _fail("public_conductor_artifact_path_invalid", "artifact is outside its real root", identity=identity)
+    if not all(
+        (
+            stat.S_ISDIR(root_meta.st_mode),
+            not stat.S_ISLNK(root_meta.st_mode),
+            resolved_root == root,
+            stat.S_ISREG(path_meta.st_mode),
+            not stat.S_ISLNK(path_meta.st_mode),
+            resolved_path == path,
+            resolved_root in resolved_path.parents,
+        )
+    ):
+        _fail(
+            "public_conductor_artifact_path_invalid",
+            "artifact is outside its real root",
+            identity=identity,
+        )
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
         opened, chunks = os.fstat(descriptor), []
@@ -198,8 +214,13 @@ def _read_bound_artifact_file(
     finally:
         os.close(descriptor)
     if (opened.st_dev, opened.st_ino) != (path_meta.st_dev, path_meta.st_ino):
-        _fail("public_conductor_artifact_identity_drift", "artifact identity changed", identity=identity)
+        _fail(
+            "public_conductor_artifact_identity_drift",
+            "artifact identity changed",
+            identity=identity,
+        )
     return path, b"".join(chunks)
+
 
 def _load_canonical_object(
     path: Path, *, identity: str, max_bytes: int | None = None
@@ -220,18 +241,27 @@ def _load_canonical_object(
             "public conductor source is not readable canonical JSON",
             details={"identity": identity},
         ) from exc
-    if not all((
-        stat.S_ISREG(metadata.st_mode), not stat.S_ISLNK(metadata.st_mode),
-        isinstance(value, dict),
-        isinstance(value, dict) and content == canonical_json_bytes(value) + b"\n",
-    )):
-        _fail("public_conductor_source_noncanonical", "source is not canonical JSON", identity=identity)
+    if not all(
+        (
+            stat.S_ISREG(metadata.st_mode),
+            not stat.S_ISLNK(metadata.st_mode),
+            isinstance(value, dict),
+            isinstance(value, dict) and content == canonical_json_bytes(value) + b"\n",
+        )
+    ):
+        _fail(
+            "public_conductor_source_noncanonical",
+            "source is not canonical JSON",
+            identity=identity,
+        )
     return dict(value), content
+
 
 def _load_receipt_chain(
     path: Path,
     *,
     allow_failure_responses: bool = False,
+    required_schema_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], bytes]:
     try:
         metadata, content = path.lstat(), path.read_bytes()
@@ -272,27 +302,21 @@ def _load_receipt_chain(
                 "public Host receipt chain contains invalid JSONL",
                 details={"identity": f"receipt_chain[{sequence}]"},
             ) from exc
+        try:
+            normalized = validate_public_api_receipt(raw, sequence=sequence)
+        except PublicReceiptError:
+            normalized = None
         status_code = raw.get("status_code") if isinstance(raw, dict) else None
         status_valid = type(status_code) is int and (
             200 <= status_code < 300
             or (allow_failure_responses and 400 <= status_code < 600)
         )
-        valid = isinstance(raw, dict) and all(
+        valid = normalized is not None and all(
             (
-                set(raw) == _RECEIPT_FIELDS,
-                raw.get("schema_id") == PUBLIC_API_RECEIPT_SCHEMA_ID,
-                raw.get("sequence") == sequence,
+                required_schema_id is None
+                or normalized.get("schema_id") == required_schema_id,
                 canonical_json_bytes(raw) == line,
-                raw.get("request_digest") == canonical_digest(raw.get("request")),
                 status_valid,
-                all(
-                    _DIGEST.fullmatch(str(raw.get(name) or ""))
-                    for name in (
-                        "request_digest",
-                        "response_digest",
-                        "response_semantic_digest",
-                    )
-                ),
             )
         )
         if not valid:
@@ -301,8 +325,15 @@ def _load_receipt_chain(
                 "receipt chain is not closed under the selected response mode",
                 identity=f"receipt_chain[{sequence}]",
             )
-        records.append(dict(raw))
+        records.append(dict(normalized))
+    if len({record["schema_id"] for record in records}) != 1:
+        _fail(
+            "public_receipt_chain_invalid",
+            "historical and current public receipt schemas cannot share one chain",
+            identity="receipt_chain",
+        )
     return records, content
+
 
 def _load_response_envelope(
     path: Path, *, identity: str, receipts: Sequence[Mapping[str, Any]]
@@ -314,32 +345,61 @@ def _load_response_envelope(
     )
     receipt = value.get("receipt")
     payload = {key: item for key, item in value.items() if key != "envelope_digest"}
-    if not (isinstance(receipt, dict) and all((
-        set(value) == _RESPONSE_FIELDS,
-        value.get("schema_id") == PUBLIC_RESPONSE_ENVELOPE_SCHEMA_ID,
-        set(receipt) == _RECEIPT_FIELDS,
-        value.get("response_semantic_digest") == canonical_digest(value.get("response")),
-        receipt.get("response_semantic_digest") == value.get("response_semantic_digest"),
-        value.get("envelope_digest") == canonical_digest(payload),
-        sum(dict(item) == receipt for item in receipts) == 1,
-    ))):
-        _fail("public_response_binding_invalid", "response does not bind one receipt", identity=identity)
+    try:
+        normalized_receipt = validate_public_api_receipt(receipt)
+    except PublicReceiptError:
+        normalized_receipt = None
+    if not (
+        normalized_receipt is not None
+        and all(
+            (
+                set(value) == _RESPONSE_FIELDS,
+                value.get("schema_id") == PUBLIC_RESPONSE_ENVELOPE_SCHEMA_ID,
+                value.get("response_semantic_digest")
+                == canonical_digest(value.get("response")),
+                normalized_receipt.get("response_semantic_digest")
+                == value.get("response_semantic_digest"),
+                value.get("envelope_digest") == canonical_digest(payload),
+                sum(dict(item) == normalized_receipt for item in receipts) == 1,
+            )
+        )
+    ):
+        _fail(
+            "public_response_binding_invalid",
+            "response does not bind one receipt",
+            identity=identity,
+        )
     return value, content
 
+
 def _validate_startup(
-    startup: Mapping[str, Any], *, preflight: Mapping[str, Any],
+    startup: Mapping[str, Any],
+    *,
+    preflight: Mapping[str, Any],
     attempt_start_claim_digest: str | None = None,
 ) -> dict[str, Any]:
     value, slot = dict(startup), dict(preflight["slot"])
     slot_claim = dict(preflight["slot_claim"])
     policy = dict(slot.get("authority_policy") or {})
     fields = {
-        "schema_id", "base_url", "launch_id", "attempt_kind", "session_id",
-        "root_ref", "authority_policy_digest", "campaign_id",
-        "preflight_receipt_digest", "attempt_start_claim_digest", "process_epoch",
-        "child_pid", "child_pgid",
-        "child_start_time_ticks", "timeout_seconds", "sandbox_bootstrap",
-        "started_at", "receipt_digest",
+        "schema_id",
+        "base_url",
+        "launch_id",
+        "attempt_kind",
+        "session_id",
+        "root_ref",
+        "authority_policy_digest",
+        "campaign_id",
+        "preflight_receipt_digest",
+        "attempt_start_claim_digest",
+        "process_epoch",
+        "child_pid",
+        "child_pgid",
+        "child_start_time_ticks",
+        "timeout_seconds",
+        "sandbox_bootstrap",
+        "started_at",
+        "receipt_digest",
     }
     if attempt_start_claim_digest is None:
         fields.remove("attempt_start_claim_digest")
@@ -358,7 +418,8 @@ def _validate_startup(
     payload = {key: item for key, item in value.items() if key != "receipt_digest"}
     try:
         validate_supervised_host_sandbox_bootstrap(
-            value.get("sandbox_bootstrap"), binding=supervised_host_sandbox_binding(preflight),
+            value.get("sandbox_bootstrap"),
+            binding=supervised_host_sandbox_binding(preflight),
         )
     except (HostSupervisionError, KeyError, TypeError, ValueError) as exc:
         raise CutoverEvidenceError(
@@ -366,21 +427,34 @@ def _validate_startup(
             "Host startup does not bind one exact sandbox bootstrap",
             details={"identity": "host_startup.sandbox_bootstrap"},
         ) from exc
-    if not all((
-        set(value) == fields,
-        value.get("schema_id") == (HOST_STARTUP_SCHEMA_ID if attempt_start_claim_digest
-                                    else "aox_supervised_host_startup@4"),
-        str(value.get("base_url") or "").startswith("http://127.0.0.1:"),
-        all(value.get(key) == expected for key, expected in bindings.items()),
-        all(type(value.get(key)) is int and value[key] > 0 for key in (
-            "child_pid", "child_pgid", "child_start_time_ticks"
-        )),
-        value.get("child_pid") == value.get("child_pgid"),
-        bool(value.get("process_epoch")), bool(value.get("started_at")),
-        value.get("receipt_digest") == canonical_digest(payload),
-    )):
-        _fail("host_startup_receipt_invalid", "Host startup does not bind preflight", identity="host_startup")
+    if not all(
+        (
+            set(value) == fields,
+            value.get("schema_id")
+            == (
+                HOST_STARTUP_SCHEMA_ID
+                if attempt_start_claim_digest
+                else "aox_supervised_host_startup@4"
+            ),
+            str(value.get("base_url") or "").startswith("http://127.0.0.1:"),
+            all(value.get(key) == expected for key, expected in bindings.items()),
+            all(
+                type(value.get(key)) is int and value[key] > 0
+                for key in ("child_pid", "child_pgid", "child_start_time_ticks")
+            ),
+            value.get("child_pid") == value.get("child_pgid"),
+            bool(value.get("process_epoch")),
+            bool(value.get("started_at")),
+            value.get("receipt_digest") == canonical_digest(payload),
+        )
+    ):
+        _fail(
+            "host_startup_receipt_invalid",
+            "Host startup does not bind preflight",
+            identity="host_startup",
+        )
     return value
+
 
 def _validate_control_slot_binding(
     *,
@@ -391,14 +465,16 @@ def _validate_control_slot_binding(
     parts = {
         name: dict(control.get(name) or {})
         for name in (
-            "attempt_authority", "admission_request", "attempt", "selection",
-            "closure_request", "closure",
+            "attempt_authority",
+            "admission_request",
+            "attempt",
+            "selection",
+            "closure_request",
+            "closure",
         )
     }
     policy = dict(slot.get("authority_policy") or {})
-    admission, attempt = (
-        parts[name] for name in ("admission_request", "attempt")
-    )
+    admission, attempt = (parts[name] for name in ("admission_request", "attempt"))
     execution_task_id = str(attempt.get("task_id") or "")
     try:
         envelope_id, request_digest, _request = authority_grant_identity(
@@ -427,7 +503,8 @@ def _validate_control_slot_binding(
             "request_digest": request_digest,
         },
         "admission_request": {
-            **shared, "envelope_id": envelope_id,
+            **shared,
+            "envelope_id": envelope_id,
             "scope": slot.get("scope"),
         },
         "attempt": {
@@ -447,24 +524,34 @@ def _validate_control_slot_binding(
     valid = all(
         all(parts[name].get(key) == item for key, item in bindings.items())
         for name, bindings in expected.items()
-    ) and all((
-        bool(execution_task_id),
-        bool(attempt_id), bool(lane_id), bool(admission_id), bool(admission_key),
-        bool(selection_id),
-        attempt.get("admission_request_id") == admission_id,
-        attempt.get("lane_id") == admission.get("lane_id") == lane_id,
-        attempt.get("idempotency_key") == admission_key,
-        admission.get("actor_ref") == attempt.get("created_by"),
-        bool(admission.get("actor_ref")),
-        selection.get("attempt_id") == attempt_id,
-        closure_request.get("attempt_id") == attempt_id,
-        closure_request.get("selection_id") == selection_id,
-        closure.get("attempt_id") == attempt_id,
-        closure.get("selection_id") == selection_id,
-        closure.get("closure_request_id") == closure_request.get("closure_request_id"),
-    ))
+    ) and all(
+        (
+            bool(execution_task_id),
+            bool(attempt_id),
+            bool(lane_id),
+            bool(admission_id),
+            bool(admission_key),
+            bool(selection_id),
+            attempt.get("admission_request_id") == admission_id,
+            attempt.get("lane_id") == admission.get("lane_id") == lane_id,
+            attempt.get("idempotency_key") == admission_key,
+            admission.get("actor_ref") == attempt.get("created_by"),
+            bool(admission.get("actor_ref")),
+            selection.get("attempt_id") == attempt_id,
+            closure_request.get("attempt_id") == attempt_id,
+            closure_request.get("selection_id") == selection_id,
+            closure.get("attempt_id") == attempt_id,
+            closure.get("selection_id") == selection_id,
+            closure.get("closure_request_id")
+            == closure_request.get("closure_request_id"),
+        )
+    )
     if not valid:
-        _fail("public_conductor_control_slot_mismatch", "closed control differs from authority", identity="closed_evidence.scientific_attempt_control")
+        _fail(
+            "public_conductor_control_slot_mismatch",
+            "closed control differs from authority",
+            identity="closed_evidence.scientific_attempt_control",
+        )
     return {
         "attempt_id": attempt_id,
         "lane_id": lane_id,
@@ -548,8 +635,7 @@ def _validate_runtime_command_handoffs(
             envelope
             for envelope in sealed_statuses
             if isinstance(envelope.get("response"), dict)
-            and envelope["response"].get("status")
-            in _TERMINAL_RUNTIME_COMMAND_STATUSES
+            and envelope["response"].get("status") in _TERMINAL_RUNTIME_COMMAND_STATUSES
         ]
         if not all(
             (
@@ -572,8 +658,7 @@ def _validate_runtime_command_handoffs(
         terminal_receipt = dict(terminal_envelope["receipt"])
         if not all(
             (
-                terminal_response.get("schema_version")
-                == "runtime_command_status@1",
+                terminal_response.get("schema_version") == "runtime_command_status@1",
                 terminal_response.get("session_id") == session_id,
                 terminal_response.get("command_id") == command_id,
                 terminal_response.get("command_type") == "runtime.drain",
@@ -594,9 +679,7 @@ def _validate_runtime_command_handoffs(
             and dict(event.get("payload") or {}).get("command_id") == command_id
         ]
         finished_payload = (
-            dict(finished[0].get("payload") or {})
-            if len(finished) == 1
-            else {}
+            dict(finished[0].get("payload") or {}) if len(finished) == 1 else {}
         )
         terminal_event_projection = {
             key: terminal_response.get(key)
@@ -630,6 +713,7 @@ def _validate_runtime_command_handoffs(
         )
     return command_handoffs, envelope_by_sequence, used_handoff_sequences
 
+
 def _validate_receipt_chain(
     receipts: Sequence[Mapping[str, Any]],
     *,
@@ -642,13 +726,16 @@ def _validate_receipt_chain(
     product_closure: Mapping[str, Any] | None = None,
     final_receipts: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> None:
-    records = [dict(item) for item in receipts]
-    if [item.get("sequence") for item in records] != list(range(1, len(records) + 1)):
+    raw_records = [dict(item) for item in receipts]
+    if [item.get("sequence") for item in raw_records] != list(
+        range(1, len(raw_records) + 1)
+    ):
         _fail(
             "public_conductor_command_order_invalid",
             "command sequence is discontinuous",
             identity="receipt_chain",
         )
+    records = effective_public_receipts(raw_records)
     actual = _validate_control_slot_binding(
         slot=slot,
         campaign_id=campaign_id,
@@ -677,7 +764,7 @@ def _validate_receipt_chain(
         f"/v3/sessions/{session_id}/scientific-attempt-admissions/finalize",
         f"/v3/sessions/{session_id}/scientific-attempt-closures/finalize",
     }
-    if any(item.get("route") in forbidden_actor_routes for item in records):
+    if any(item.get("route") in forbidden_actor_routes for item in raw_records):
         _fail(
             "public_conductor_actor_boundary_invalid",
             "Codex conductor receipts must not claim agent mutations or Host finalizers",
@@ -939,22 +1026,31 @@ def _validate_receipt_chain(
             identity="receipt_chain",
         )
 
+
 def _control_projection(
-    control: Mapping[str, Any], *, attempt_kind: str,
-    receipts: Sequence[Mapping[str, Any]], supervision: Mapping[str, Any]
+    control: Mapping[str, Any],
+    *,
+    attempt_kind: str,
+    receipts: Sequence[Mapping[str, Any]],
+    supervision: Mapping[str, Any],
 ) -> dict[str, Any]:
     universe = dict(control.get("operation_universe") or {}).get("occurrences") or []
     operations = [dict(item) for item in universe if isinstance(item, dict)]
-    adoptions = [dict(item) for item in control.get("adoptions") or [] if isinstance(item, dict)]
+    adoptions = [
+        dict(item) for item in control.get("adoptions") or [] if isinstance(item, dict)
+    ]
     materials = [
-        dict(item) for item in control.get("materializations") or [] if isinstance(item, dict)
+        dict(item)
+        for item in control.get("materializations") or []
+        if isinstance(item, dict)
     ]
     artifacts = {
         str(item.get("source_artifact_id")): {
             "artifact_id": item.get("source_artifact_id"),
             "content_digest": item.get("source_artifact_digest"),
         }
-        for item in materials if item.get("source_artifact_id")
+        for item in materials
+        if item.get("source_artifact_id")
     }
     return {
         "attempt_id": dict(control.get("attempt") or {}).get("attempt_id"),
@@ -963,20 +1059,33 @@ def _control_projection(
             "public_api_receipts": [dict(item) for item in receipts],
             "attempt_supervision": dict(supervision),
         },
-        "operations": [{
-            "operation_id": item.get("operation_id"), "scope": "formal",
-            "canonical_ref_kind": "controlled_operation",
-            "status": item.get("operation_status"),
-        } for item in operations],
+        "operations": [
+            {
+                "operation_id": item.get("operation_id"),
+                "scope": "formal",
+                "canonical_ref_kind": "controlled_operation",
+                "status": item.get("operation_status"),
+            }
+            for item in operations
+        ],
         "artifacts": list(artifacts.values()),
-        "scientific_checks": {"aox_chain": {"operation_roles": {
-            str(item.get("workflow_role")): item.get("operation_id") for item in adoptions
-        }}},
+        "scientific_checks": {
+            "aox_chain": {
+                "operation_roles": {
+                    str(item.get("workflow_role")): item.get("operation_id")
+                    for item in adoptions
+                }
+            }
+        },
     }
 
+
 def _validate_control(
-    control: Mapping[str, Any], *, attempt_kind: str,
-    receipts: Sequence[Mapping[str, Any]], supervision: Mapping[str, Any]
+    control: Mapping[str, Any],
+    *,
+    attempt_kind: str,
+    receipts: Sequence[Mapping[str, Any]],
+    supervision: Mapping[str, Any],
 ) -> dict[str, Any]:
     projection = _control_projection(
         control, attempt_kind=attempt_kind, receipts=receipts, supervision=supervision
@@ -988,75 +1097,116 @@ def _validate_control(
         _fail(issue.code, issue.message, identity=issue.identity)
     return projection
 
+
 def _validate_finalization(
-    receipt: Mapping[str, Any], deliverables: Sequence[Mapping[str, Any]],
-    *, control: Mapping[str, Any]
+    receipt: Mapping[str, Any],
+    deliverables: Sequence[Mapping[str, Any]],
+    *,
+    control: Mapping[str, Any],
 ) -> tuple[dict[str, bytes], dict[str, Any]]:
     value = dict(receipt)
-    attempt, selection = (dict(control.get(name) or {}) for name in ("attempt", "selection"))
+    attempt, selection = (
+        dict(control.get(name) or {}) for name in ("attempt", "selection")
+    )
     bindings = {
         "attempt_id": attempt.get("attempt_id"),
         "selection_id": selection.get("selection_id"),
-        "execution_task_id": attempt.get("task_id"), "agent_id": selection.get("actor_ref"),
+        "execution_task_id": attempt.get("task_id"),
+        "agent_id": selection.get("actor_ref"),
     }
     payload = {key: item for key, item in value.items() if key != "receipt_digest"}
-    if not all((
-        set(value) == _FINALIZATION_FIELDS,
-        value.get("schema_id") == aox_finalization.FINALIZATION_RECEIPT_SCHEMA_ID,
-        value.get("status") == "passed",
-        all(value.get(key) == expected for key, expected in bindings.items()),
-        value.get("receipt_digest") == canonical_digest(payload),
-    )):
-        _fail("aox_finalization_receipt_invalid", "finalization identity is invalid", identity="closed_evidence.finalization_receipt")
+    if not all(
+        (
+            set(value) == _FINALIZATION_FIELDS,
+            value.get("schema_id") == aox_finalization.FINALIZATION_RECEIPT_SCHEMA_ID,
+            value.get("status") == "passed",
+            all(value.get(key) == expected for key, expected in bindings.items()),
+            value.get("receipt_digest") == canonical_digest(payload),
+        )
+    ):
+        _fail(
+            "aox_finalization_receipt_invalid",
+            "finalization identity is invalid",
+            identity="closed_evidence.finalization_receipt",
+        )
     refs, metadata = value.get("artifacts"), value.get("validation_metadata")
-    if not (isinstance(refs, list) and isinstance(metadata, dict)
-            and set(metadata) == S15_AOX_HMM_FIXED_DELIVERABLES
-            and all(isinstance(item, dict) for item in metadata.values())):
-        _fail("aox_finalization_receipt_invalid", "finalization preimage is incomplete", identity="closed_evidence.finalization_receipt")
+    if not (
+        isinstance(refs, list)
+        and isinstance(metadata, dict)
+        and set(metadata) == S15_AOX_HMM_FIXED_DELIVERABLES
+        and all(isinstance(item, dict) for item in metadata.values())
+    ):
+        _fail(
+            "aox_finalization_receipt_invalid",
+            "finalization preimage is incomplete",
+            identity="closed_evidence.finalization_receipt",
+        )
     exported: dict[str, dict[str, Any]] = {}
     contents: dict[str, bytes] = {}
     fields = {"artifact_id", "relative_path", "content_digest", "content_base64"}
     for raw in deliverables:
         if not isinstance(raw, dict) or set(raw) != fields:
-            _fail("aox_closed_deliverable_invalid", "malformed deliverable", identity="closed_evidence.deliverables")
+            _fail(
+                "aox_closed_deliverable_invalid",
+                "malformed deliverable",
+                identity="closed_evidence.deliverables",
+            )
         path = _safe_relative_path(str(raw["relative_path"]))
         try:
             content = base64.b64decode(str(raw["content_base64"]), validate=True)
         except (ValueError, binascii.Error) as exc:
             raise CutoverEvidenceError(
                 "aox_closed_deliverable_invalid",
-                "closed deliverable is not canonical base64", details={"identity": path},
+                "closed deliverable is not canonical base64",
+                details={"identity": path},
             ) from exc
         if path in exported or _content_digest(content) != raw.get("content_digest"):
-            _fail("aox_closed_deliverable_digest_mismatch", "deliverable bytes drifted", identity=path)
+            _fail(
+                "aox_closed_deliverable_digest_mismatch",
+                "deliverable bytes drifted",
+                identity=path,
+            )
         exported[path], contents[path] = dict(raw), content
     refs_by_path = {
         str(item.get("relative_path") or ""): dict(item)
-        for item in refs if isinstance(item, dict)
+        for item in refs
+        if isinstance(item, dict)
     }
-    if not all((
-        set(exported) == S15_AOX_HMM_FIXED_DELIVERABLES,
-        set(refs_by_path) == S15_AOX_HMM_FIXED_DELIVERABLES,
-        all(
-            {key: exported[path].get(key) for key in (
-                "artifact_id", "relative_path", "content_digest"
-            )} == refs_by_path[path]
-            for path in refs_by_path
-        ),
-    )):
-        _fail("aox_closed_deliverable_set_invalid", "deliverable set differs from receipt", identity="closed_evidence.deliverables")
+    if not all(
+        (
+            set(exported) == S15_AOX_HMM_FIXED_DELIVERABLES,
+            set(refs_by_path) == S15_AOX_HMM_FIXED_DELIVERABLES,
+            all(
+                {
+                    key: exported[path].get(key)
+                    for key in ("artifact_id", "relative_path", "content_digest")
+                }
+                == refs_by_path[path]
+                for path in refs_by_path
+            ),
+        )
+    ):
+        _fail(
+            "aox_closed_deliverable_set_invalid",
+            "deliverable set differs from receipt",
+            identity="closed_evidence.deliverables",
+        )
     try:
         texts = {path: content.decode() for path, content in contents.items()}
     except UnicodeDecodeError as exc:
         raise CutoverEvidenceError(
-            "aox_finalization_artifact_unreadable", "AOX final deliverables must be UTF-8",
+            "aox_finalization_artifact_unreadable",
+            "AOX final deliverables must be UTF-8",
             details={"identity": "closed_evidence.deliverables"},
         ) from exc
     metadata_by_path = {str(path): dict(item) for path, item in metadata.items()}
     validation = validate_aox_final_artifacts(set(contents), texts, metadata_by_path)
     if validation.get("passed") is not True or value.get("validation") != validation:
         _fail(
-            str(validation.get("earliest_error_code") or "aox_finalization_validation_drift"),
+            str(
+                validation.get("earliest_error_code")
+                or "aox_finalization_validation_drift"
+            ),
             "offline AOX validation differs from Host finalization",
             identity="closed_evidence.finalization_receipt.validation",
         )
@@ -1071,28 +1221,44 @@ def _validate_finalization(
         )
     except AoxBundleFinalizationError as exc:
         raise CutoverEvidenceError(
-            exc.error_code, exc.public_message,
+            exc.error_code,
+            exc.public_message,
             details={"identity": "closed_evidence.finalization_receipt"},
         ) from exc
     identity_fields = (
-        "session_id", "execution_task_id", "agent_id", "attempt_id", "selection_id",
-        "sandbox_workspace_id", "sandbox_run_id", "source_snapshot_artifact_id",
+        "session_id",
+        "execution_task_id",
+        "agent_id",
+        "attempt_id",
+        "selection_id",
+        "sandbox_workspace_id",
+        "sandbox_run_id",
+        "source_snapshot_artifact_id",
         "source_tree_digest",
     )
     bundle_preimage = {
         "schema_id": aox_finalization.FINAL_BUNDLE_PROFILE_ID,
         **{key: value[key] for key in identity_fields},
-        "items": [{
-            "relative_path": path, "content_digest": _content_digest(contents[path]),
-            "kind": "sequence" if path.endswith(".fasta") else "result",
-            "metadata_digest": canonical_digest(metadata[path]),
-        } for path in sorted(contents)],
+        "items": [
+            {
+                "relative_path": path,
+                "content_digest": _content_digest(contents[path]),
+                "kind": "sequence" if path.endswith(".fasta") else "result",
+                "metadata_digest": canonical_digest(metadata[path]),
+            }
+            for path in sorted(contents)
+        ],
         "calculation_receipts": [calculations[key] for key in sorted(calculations)],
         "validation_digest": canonical_digest(validation),
     }
     if value.get("bundle_digest") != canonical_digest(bundle_preimage):
-        _fail("aox_finalization_receipt_bundle_drift", "finalization bundle drifted", identity="closed_evidence.finalization_receipt.bundle_digest")
+        _fail(
+            "aox_finalization_receipt_bundle_drift",
+            "finalization bundle drifted",
+            identity="closed_evidence.finalization_receipt.bundle_digest",
+        )
     return contents, validation
+
 
 def _validate_closed_export(
     export: Mapping[str, Any],
@@ -1232,16 +1398,30 @@ def _validate_closed_export(
     }
     return {}, None, failure, projection
 
+
 def _validate_events(events: object, *, session_id: str) -> list[dict[str, Any]]:
-    if not isinstance(events, list) or not all(isinstance(item, dict) for item in events):
-        _fail("public_event_replay_invalid", "event replay is not an object list", identity="events_response")
+    if not isinstance(events, list) or not all(
+        isinstance(item, dict) for item in events
+    ):
+        _fail(
+            "public_event_replay_invalid",
+            "event replay is not an object list",
+            identity="events_response",
+        )
     records = [dict(item) for item in events]
     cursors = [item.get("cursor") for item in records]
-    if (any(item.get("session_id") != session_id for item in records)
-            or any(type(cursor) is not int or cursor <= 0 for cursor in cursors)
-            or cursors != sorted(set(cursors))):
-        _fail("public_event_replay_invalid", "event replay is not ordered", identity="events_response")
+    if (
+        any(item.get("session_id") != session_id for item in records)
+        or any(type(cursor) is not int or cursor <= 0 for cursor in cursors)
+        or cursors != sorted(set(cursors))
+    ):
+        _fail(
+            "public_event_replay_invalid",
+            "event replay is not ordered",
+            identity="events_response",
+        )
     return records
+
 
 def _source_payload(
     *,
@@ -1265,8 +1445,11 @@ def _source_payload(
     if current:
         _, start_claim = load_bound_attempt_start_claim(preflight_path)
     elif ledger_before_path is None:
-        _fail("attempt_start_claim_missing", "current finalization requires start claim",
-              identity="attempt_start_claim")
+        _fail(
+            "attempt_start_claim_missing",
+            "current finalization requires start claim",
+            identity="attempt_start_claim",
+        )
     else:
         start_claim = {}
     preflight_value, preflight_bytes = _load_canonical_object(
@@ -1297,8 +1480,11 @@ def _source_payload(
         preflight_path.parent / HOST_STARTUP_FILENAME, identity="host_startup"
     )
     startup = _validate_startup(
-        startup_value, preflight=preflight,
-        attempt_start_claim_digest=(str(start_claim["claim_digest"]) if current else None),
+        startup_value,
+        preflight=preflight,
+        attempt_start_claim_digest=(
+            str(start_claim["claim_digest"]) if current else None
+        ),
     )
     supervision_value, supervision_bytes = _load_canonical_object(
         preflight_path.parent / HOST_SUPERVISION_FILENAME, identity="host_supervision"
@@ -1311,7 +1497,9 @@ def _source_payload(
         root_ref=str(slot["root_ref"]),
         campaign_id=str(preflight["campaign_id"]),
         authority_policy_digest=str(slot["authority_policy_digest"]),
-        attempt_start_claim_digest=(str(start_claim["claim_digest"]) if current else None),
+        attempt_start_claim_digest=(
+            str(start_claim["claim_digest"]) if current else None
+        ),
     )
     supervision_bindings = {
         "preflight_receipt_digest": preflight.get("receipt_digest"),
@@ -1329,7 +1517,15 @@ def _source_payload(
             "Host supervision source drifted",
             identity="host_supervision",
         )
-    receipts, receipt_bytes = _load_receipt_chain(receipt_chain_path)
+    receipts, receipt_bytes = _load_receipt_chain(
+        receipt_chain_path,
+        allow_failure_responses=current,
+        required_schema_id=(
+            PUBLIC_API_RECEIPT_SCHEMA_ID
+            if current
+            else LEGACY_PUBLIC_API_RECEIPT_SCHEMA_ID
+        ),
+    )
     if not (1 <= len(handoff_response_paths) <= _MAX_HANDOFF_RESPONSES):
         _fail(
             "public_terminal_handoff_invalid",
@@ -1447,7 +1643,9 @@ def _source_payload(
         before_bytes = canonical_json_bytes(before) + b"\n"
     else:
         assert ledger_before_path is not None
-        before, before_bytes = _load_canonical_object(ledger_before_path, identity="micu_before")
+        before, before_bytes = _load_canonical_object(
+            ledger_before_path, identity="micu_before"
+        )
     after, after_bytes = _load_canonical_object(
         ledger_after_path, identity="micu_after"
     )
@@ -1481,10 +1679,12 @@ def _source_payload(
             preflight_path.parent / ATTEMPT_CONDUCTOR_CONTRACT_FILENAME,
             identity="execution_contract",
         )
-        source_bytes.update({
-            "attempt-start-claim.json": canonical_json_bytes(start_claim) + b"\n",
-            "execution-contract.json": contract_bytes,
-        })
+        source_bytes.update(
+            {
+                "attempt-start-claim.json": canonical_json_bytes(start_claim) + b"\n",
+                "execution-contract.json": contract_bytes,
+            }
+        )
     source_bytes.update(handoff_source_bytes)
     attestations = [
         {
@@ -1506,9 +1706,14 @@ def _source_payload(
     closure = dict(closed.get("product_closure") or {})
     source_linked_report = dict(closure.get("source_linked_report") or {})
     payload = {
-        "schema_id": (ATTEMPT_BUNDLE_SCHEMA_ID_V4 if current else ATTEMPT_BUNDLE_SCHEMA_ID_V3),
-        "bundle_profile": (PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID if current else
-                           LEGACY_PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID),
+        "schema_id": (
+            ATTEMPT_BUNDLE_SCHEMA_ID_V4 if current else ATTEMPT_BUNDLE_SCHEMA_ID_V3
+        ),
+        "bundle_profile": (
+            PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID
+            if current
+            else LEGACY_PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID
+        ),
         "attempt_id": actual["attempt_id"],
         "attempt_kind": kind,
         "sealed_at": sealed_at,
@@ -1589,6 +1794,7 @@ def _source_payload(
     )
     return payload, files
 
+
 def _fsync_directory(path: Path) -> None:
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
@@ -1596,11 +1802,18 @@ def _fsync_directory(path: Path) -> None:
     finally:
         os.close(descriptor)
 
+
 def finalize_and_seal_public_conductor_bundle(
-    *, identity_path: Path, preflight_path: Path, receipt_chain_path: Path,
-    workspace_response_path: Path, event_response_path: Path,
-    evidence_response_path: Path, handoff_response_paths: Sequence[Path],
-    ledger_after_path: Path, sealed_at: str | None = None,
+    *,
+    identity_path: Path,
+    preflight_path: Path,
+    receipt_chain_path: Path,
+    workspace_response_path: Path,
+    event_response_path: Path,
+    evidence_response_path: Path,
+    handoff_response_paths: Sequence[Path],
+    ledger_after_path: Path,
+    sealed_at: str | None = None,
 ) -> tuple[Path, str]:
     preflight_path = preflight_path.expanduser().resolve(strict=True)
     attempt_root = preflight_path.parent.parent
@@ -1614,7 +1827,8 @@ def finalize_and_seal_public_conductor_bundle(
             identity="attempt_bundle",
         )
     payload, files = _source_payload(
-        identity_path=identity_path, preflight_path=preflight_path,
+        identity_path=identity_path,
+        preflight_path=preflight_path,
         receipt_chain_path=receipt_chain_path,
         workspace_response_path=workspace_response_path,
         event_response_path=event_response_path,
@@ -1623,7 +1837,9 @@ def finalize_and_seal_public_conductor_bundle(
         ledger_after_path=ledger_after_path,
         sealed_at=sealed_at or datetime.now(UTC).isoformat(),
     )
-    temporary = Path(tempfile.mkdtemp(prefix=".aox-public-conductor-", dir=artifact_root))
+    temporary = Path(
+        tempfile.mkdtemp(prefix=".aox-public-conductor-", dir=artifact_root)
+    )
     try:
         for relative, content in sorted(files.items()):
             path = temporary / _safe_relative_path(relative)
@@ -1635,7 +1851,8 @@ def finalize_and_seal_public_conductor_bundle(
             path.chmod(0o400)
         directories = sorted(
             (path for path in temporary.rglob("*") if path.is_dir()),
-            key=lambda path: len(path.parts), reverse=True,
+            key=lambda path: len(path.parts),
+            reverse=True,
         )
         for directory in directories:
             _fsync_directory(directory)
@@ -1658,11 +1875,13 @@ def finalize_and_seal_public_conductor_bundle(
     bundle_digest = canonical_digest(payload)
     _write_append_only_bytes(
         destination,
-        canonical_json_bytes({"payload": payload, "bundle_digest": bundle_digest}) + b"\n",
+        canonical_json_bytes({"payload": payload, "bundle_digest": bundle_digest})
+        + b"\n",
         error_code="public_conductor_bundle_append_only",
         error_message="public conductor bundle already exists",
     )
     return destination, bundle_digest
+
 
 def verify_public_conductor_bundle(
     bundle_path: Path, *, artifact_root: Path
@@ -1682,14 +1901,20 @@ def verify_public_conductor_bundle(
         attempt_kind = str(payload.get("attempt_kind") or "") or None
         declared_digest = str(envelope.get("bundle_digest") or "") or None
         current = payload.get("bundle_profile") == PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID
-        if not all((
+        if not all(
+            (
                 set(envelope) == {"payload", "bundle_digest"},
-                (payload.get("schema_id"), payload.get("bundle_profile")) in {
+                (payload.get("schema_id"), payload.get("bundle_profile"))
+                in {
                     (ATTEMPT_BUNDLE_SCHEMA_ID_V4, PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID),
-                    (ATTEMPT_BUNDLE_SCHEMA_ID_V3, LEGACY_PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID),
+                    (
+                        ATTEMPT_BUNDLE_SCHEMA_ID_V3,
+                        LEGACY_PUBLIC_CONDUCTOR_BUNDLE_PROFILE_ID,
+                    ),
                 },
                 declared_digest == canonical_digest(payload),
-            )):
+            )
+        ):
             _fail(
                 "bundle_digest_mismatch",
                 "public conductor bundle schema or digest does not reproduce",
@@ -1723,7 +1948,10 @@ def verify_public_conductor_bundle(
         if (
             not static_names.issubset(sources)
             or not (1 <= len(handoff_source_names) <= _MAX_HANDOFF_RESPONSES)
-            or any(_HANDOFF_SOURCE_NAME.fullmatch(name) is None for name in handoff_source_names)
+            or any(
+                _HANDOFF_SOURCE_NAME.fullmatch(name) is None
+                for name in handoff_source_names
+            )
         ):
             _fail(
                 "public_conductor_attestation_invalid",
@@ -1754,10 +1982,18 @@ def verify_public_conductor_bundle(
                 ("host-supervision.json", reconstructed["supervision"]),
             ]
             if current:
-                source_pairs.extend([
-                    ("attempt-start-claim.json", evidence / ATTEMPT_START_CLAIM_FILENAME),
-                    ("execution-contract.json", evidence / ATTEMPT_CONDUCTOR_CONTRACT_FILENAME),
-                ])
+                source_pairs.extend(
+                    [
+                        (
+                            "attempt-start-claim.json",
+                            evidence / ATTEMPT_START_CLAIM_FILENAME,
+                        ),
+                        (
+                            "execution-contract.json",
+                            evidence / ATTEMPT_CONDUCTOR_CONTRACT_FILENAME,
+                        ),
+                    ]
+                )
             for source_name, destination in source_pairs:
                 shutil.copyfile(sources[source_name], destination)
                 destination.chmod(0o600)
@@ -1822,6 +2058,7 @@ def verify_public_conductor_bundle(
         attempt_kind=attempt_kind,
         issues=tuple(issues),
     )
+
 
 def evaluate_public_conductor_campaign(
     records: Sequence[Any], *, decided_at: str | None = None
@@ -1907,8 +2144,7 @@ def evaluate_public_conductor_campaign(
         }
         plans = {str(authority.get("plan_digest") or "") for authority in authorities}
         slot_claim_digests = [
-            str(authority.get("slot_claim_digest") or "")
-            for authority in authorities
+            str(authority.get("slot_claim_digest") or "") for authority in authorities
         ]
         ordinals = [slot.get("ordinal") for slot in slots]
         if len(identities) != 1 or "" in identities:
@@ -1982,9 +2218,7 @@ def evaluate_public_conductor_campaign(
             ],
             "admission_idempotency_key": [
                 str(
-                    dict(control.get("admission_request") or {}).get(
-                        "idempotency_key"
-                    )
+                    dict(control.get("admission_request") or {}).get("idempotency_key")
                     or ""
                 )
                 for control in controls

@@ -7,6 +7,8 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from openzyme_runtime import DEFAULT_PROVIDER_LIMITS
+from openzyme_runtime import HOST_API_LOCAL_DEPLOYMENT_PROFILE
+from openzyme_runtime import HOST_API_LOOPBACK_BIND_HOSTS
 from openzyme_runtime import is_micu_provider_url
 from openzyme_runtime import LIVE_MICU_TOKEN_HARD_LIMIT
 
@@ -29,6 +31,24 @@ AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS = 3_600
 AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS = 2.0 * AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
 AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS = AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS
 AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN = 1
+AOX_TRUSTED_DEPLOYMENT_PROFILE = HOST_API_LOCAL_DEPLOYMENT_PROFILE
+AOX_TRUSTED_BIND_HOSTS = HOST_API_LOOPBACK_BIND_HOSTS
+AOX_EXECUTION_BACKEND = "hpc"
+AOX_CONTEXT_WINDOW_MAX_TOKENS = 200_000
+AOX_ALLOWED_CONTROLLED_OPERATION_OWNER_POLICIES = frozenset(
+    {"durable_only_v1", "route_allowlist_v1"}
+)
+AOX_DURABLE_ONLY_OWNER_POLICY = "durable_only_v1"
+AOX_ALLOWED_SHADOW_OBSERVABILITY_MODES = frozenset({"disabled", "shadow_v1"})
+AOX_RUNTIME_DRAIN_CONTRACT = "command_v1"
+AOX_MUTATION_CLOSURE_MODE = "generic_v1"
+AOX_SHADOW_MAX_OBSERVATIONS_MINIMUM = 1
+AOX_SHADOW_MAX_OBSERVATIONS_MAXIMUM = 4_096
+AOX_REQUIRED_LIVE_TEST_SETTING_PATHS = (
+    "test.enable_live_llm",
+    "test.enable_live_hpc",
+    "test.enable_live_e2e",
+)
 AOX_DURABLE_ROUTE_POLICY_IDS = frozenset(
     {
         "bio.ncbi_fetch_proteins.provider:v1",
@@ -40,6 +60,275 @@ AOX_DURABLE_ROUTE_POLICY_IDS = frozenset(
         "bio_tools.hmmalign.hpc:v1",
     }
 )
+
+
+def aox_environment_profile_requirements() -> dict[str, dict[str, object]]:
+    """Project AOX eligibility from the same constants used by normalization."""
+
+    requirements: dict[str, dict[str, object]] = {
+        "host_api.deployment_profile": {
+            "safe_generic_default_eligible": True,
+            "requirements": [
+                {"kind": "exact_value", "value": AOX_TRUSTED_DEPLOYMENT_PROFILE}
+            ],
+        },
+        "host_api.bind_host": {
+            "safe_generic_default_eligible": True,
+            "requirements": [
+                {
+                    "kind": "allowed_values",
+                    "values": sorted(AOX_TRUSTED_BIND_HOSTS),
+                    "when": {
+                        "setting_path": "host_api.deployment_profile",
+                        "equals": AOX_TRUSTED_DEPLOYMENT_PROFILE,
+                    },
+                }
+            ],
+        },
+        "host_api.principals": {
+            "safe_generic_default_eligible": True,
+            "requirements": [{"kind": "credential_presence", "present": False}],
+        },
+        "execution.backend": {
+            "safe_generic_default_eligible": False,
+            "requirements": [{"kind": "exact_value", "value": AOX_EXECUTION_BACKEND}],
+        },
+        "execution.hpc_runner_config": {
+            "safe_generic_default_eligible": False,
+            "requirements": [
+                {
+                    "kind": "path",
+                    "required": True,
+                    "regular_file": True,
+                    "symbolic_link": False,
+                    "repo_contained": True,
+                    "content_bound": True,
+                }
+            ],
+        },
+        "llm.api_key": {
+            "safe_generic_default_eligible": False,
+            "requirements": [{"kind": "credential_presence", "present": True}],
+        },
+        "llm.base_url": {
+            "safe_generic_default_eligible": True,
+            "requirements": [
+                {
+                    "kind": "predicate",
+                    "predicate_id": "canonical_credential_free_micu_http_endpoint",
+                }
+            ],
+        },
+        "llm.context_window_tokens": {
+            "safe_generic_default_eligible": False,
+            "requirements": [
+                {
+                    "kind": "integer_range",
+                    "required": True,
+                    "minimum": 1,
+                    "maximum": AOX_CONTEXT_WINDOW_MAX_TOKENS,
+                }
+            ],
+        },
+        "llm.default_output_tokens": {
+            "safe_generic_default_eligible": True,
+            "requirements": [
+                {
+                    "kind": "optional_integer_range",
+                    "minimum": 1,
+                    "maximum": LIVE_MICU_TOKEN_HARD_LIMIT,
+                },
+                {
+                    "kind": "less_than_or_equal_to",
+                    "setting_path": "llm.context_window_tokens",
+                    "when_present": True,
+                },
+            ],
+        },
+        "research.pubmed_email": {
+            "safe_generic_default_eligible": False,
+            "requirements": [{"kind": "non_empty_private_identity", "required": True}],
+        },
+        "test.live_llm.token_ledger_path": {
+            "safe_generic_default_eligible": True,
+            "requirements": [
+                {
+                    "kind": "exact_selected_path_identity",
+                    "selection": "--ledger-path-or-canonical-setting",
+                }
+            ],
+        },
+        "reliability.controlled_operation_owner_policy": {
+            "safe_generic_default_eligible": False,
+            "requirements": [
+                {
+                    "kind": "allowed_values",
+                    "values": sorted(AOX_ALLOWED_CONTROLLED_OPERATION_OWNER_POLICIES),
+                }
+            ],
+        },
+        "reliability.durable_execution_route_allowlist": {
+            "safe_generic_default_eligible": False,
+            "requirements": [
+                {"kind": "sorted_unique_string_list"},
+                {
+                    "kind": "contains_all",
+                    "values": sorted(AOX_DURABLE_ROUTE_POLICY_IDS),
+                    "unless": {
+                        "setting_path": (
+                            "reliability.controlled_operation_owner_policy"
+                        ),
+                        "equals": AOX_DURABLE_ONLY_OWNER_POLICY,
+                    },
+                },
+            ],
+        },
+        "reliability.runtime_drain_contract": {
+            "safe_generic_default_eligible": True,
+            "requirements": [
+                {"kind": "exact_value", "value": AOX_RUNTIME_DRAIN_CONTRACT}
+            ],
+        },
+        "reliability.mutation_closure_mode": {
+            "safe_generic_default_eligible": False,
+            "requirements": [
+                {"kind": "exact_value", "value": AOX_MUTATION_CLOSURE_MODE}
+            ],
+        },
+        "reliability.shadow_observability": {
+            "safe_generic_default_eligible": True,
+            "requirements": [
+                {
+                    "kind": "allowed_values",
+                    "values": sorted(AOX_ALLOWED_SHADOW_OBSERVABILITY_MODES),
+                }
+            ],
+        },
+        "reliability.shadow_max_observations": {
+            "safe_generic_default_eligible": True,
+            "requirements": [
+                {
+                    "kind": "integer_range",
+                    "minimum": AOX_SHADOW_MAX_OBSERVATIONS_MINIMUM,
+                    "maximum": AOX_SHADOW_MAX_OBSERVATIONS_MAXIMUM,
+                }
+            ],
+        },
+    }
+    for setting_path in AOX_REQUIRED_LIVE_TEST_SETTING_PATHS:
+        requirements[setting_path] = {
+            "safe_generic_default_eligible": False,
+            "requirements": [{"kind": "exact_value", "value": True}],
+        }
+    for setting_path in (
+        "llm.context_warn_ratio",
+        "llm.context_auto_compact_ratio",
+        "llm.context_emergency_ratio",
+    ):
+        requirements[setting_path] = {
+            "safe_generic_default_eligible": True,
+            "requirements": [
+                {
+                    "kind": "number_range",
+                    "minimum_exclusive": 0.0,
+                    "maximum_inclusive": 1.0,
+                },
+                {
+                    "kind": "ordered_group",
+                    "setting_paths": [
+                        "llm.context_warn_ratio",
+                        "llm.context_auto_compact_ratio",
+                        "llm.context_emergency_ratio",
+                    ],
+                    "operator": "strictly_increasing",
+                },
+            ],
+        }
+    requirements["llm.model"] = {
+        "safe_generic_default_eligible": True,
+        "requirements": [{"kind": "canonical_non_empty_string"}],
+    }
+    requirements["llm.temperature"] = {
+        "safe_generic_default_eligible": True,
+        "requirements": [{"kind": "finite_number_range", "minimum_inclusive": 0.0}],
+    }
+    for name in sorted(DEFAULT_PROVIDER_LIMITS):
+        requirements[f"limits.provider_limits.{name}"] = {
+            "safe_generic_default_eligible": True,
+            "requirements": [{"kind": "integer_range", "minimum": 1}],
+        }
+    for setting_path in (
+        "research.max_units",
+        "research.max_research_iterations",
+        "research.max_react_tool_calls",
+        "research.max_concurrent_research_units",
+        "research.tavily_max_results",
+        "research.provider_max_attempts",
+    ):
+        requirements[setting_path] = {
+            "safe_generic_default_eligible": True,
+            "requirements": [{"kind": "integer_range", "minimum": 1}],
+        }
+    for setting_path in (
+        "research.tavily_timeout_seconds",
+        "research.provider_timeout_seconds",
+        "test.live_llm.timeout",
+    ):
+        requirements[setting_path] = {
+            "safe_generic_default_eligible": True,
+            "requirements": [
+                {
+                    "kind": "optional_finite_number_range"
+                    if setting_path.startswith("test.")
+                    else "finite_number_range",
+                    "minimum_exclusive": 0.0,
+                }
+            ],
+        }
+    requirements["research.tavily_topic"] = {
+        "safe_generic_default_eligible": True,
+        "requirements": [{"kind": "canonical_non_empty_string"}],
+    }
+    requirements["research.mcp_tool_allowlist"] = {
+        "safe_generic_default_eligible": True,
+        "requirements": [{"kind": "unique_canonical_string_list"}],
+    }
+    requirements["test.live_llm.max_tokens"] = {
+        "safe_generic_default_eligible": True,
+        "requirements": [
+            {
+                "kind": "optional_integer_range",
+                "minimum": 1,
+                "maximum": LIVE_MICU_TOKEN_HARD_LIMIT,
+            }
+        ],
+    }
+    requirements["test.live_llm.structured_output_method"] = {
+        "safe_generic_default_eligible": True,
+        "requirements": [{"kind": "optional_canonical_non_empty_string"}],
+    }
+    requirements["test.live_llm.structured_output_retry_backoff_seconds"] = {
+        "safe_generic_default_eligible": True,
+        "requirements": [
+            {
+                "kind": "optional_finite_number_range",
+                "minimum_inclusive": 0.0,
+            }
+        ],
+    }
+    return requirements
+
+
+def validate_aox_environment_profile_requirements(
+    requirements: Mapping[str, Mapping[str, object]],
+) -> None:
+    """Reject a projected constraint set that drifted from runtime normalization."""
+
+    if dict(requirements) != aox_environment_profile_requirements():
+        raise ValueError(
+            "AOX environment profile requirements drifted from runtime normalization"
+        )
+
 
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PURPOSE_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
@@ -59,9 +348,7 @@ _LEGACY_TOP_LEVEL_FIELDS = frozenset(
 )
 _V2_TOP_LEVEL_FIELDS = _LEGACY_TOP_LEVEL_FIELDS | {"reliability"}
 _V3_TOP_LEVEL_FIELDS = _V2_TOP_LEVEL_FIELDS | {"scientific_workflow_contract"}
-_V4_TOP_LEVEL_FIELDS = (
-    _V3_TOP_LEVEL_FIELDS - {"driver"}
-) | {"conductor"}
+_V4_TOP_LEVEL_FIELDS = (_V3_TOP_LEVEL_FIELDS - {"driver"}) | {"conductor"}
 _TOP_LEVEL_FIELDS = _V3_TOP_LEVEL_FIELDS - {"driver"}
 _HOST_FIELDS = frozenset(
     {
@@ -564,7 +851,10 @@ def normalize_aox_blank_world_runtime_config(
     storage_profile = _string(
         host["storage_profile"], path="effective_config.host.storage_profile"
     )
-    if deployment_profile != "local-dev" or storage_profile != "single_process_sqlite":
+    if (
+        deployment_profile != AOX_TRUSTED_DEPLOYMENT_PROFILE
+        or storage_profile != "single_process_sqlite"
+    ):
         raise AoxRuntimeConfigSchemaError(
             "effective_config.host",
             "must bind the trusted local-dev single-process SQLite profile",
@@ -596,9 +886,10 @@ def normalize_aox_blank_world_runtime_config(
         root["execution"], fields=_EXECUTION_FIELDS, path="effective_config.execution"
     )
     backend = _string(execution["backend"], path="effective_config.execution.backend")
-    if backend != "hpc":
+    if backend != AOX_EXECUTION_BACKEND:
         raise AoxRuntimeConfigSchemaError(
-            "effective_config.execution.backend", "must be hpc"
+            "effective_config.execution.backend",
+            f"must be {AOX_EXECUTION_BACKEND}",
         )
     normalized_execution = {
         "backend": backend,
@@ -644,10 +935,12 @@ def normalize_aox_blank_world_runtime_config(
             "effective_config.llm.context_window_tokens",
             "must be an explicit conservative provider override for blank-world live cutover",
         )
-    if context_window > 200_000:
+    if context_window > AOX_CONTEXT_WINDOW_MAX_TOKENS:
         raise AoxRuntimeConfigSchemaError(
             "effective_config.llm.context_window_tokens",
-            "must not exceed the 200000-token conservative blank-world live ceiling",
+            "must not exceed the "
+            f"{AOX_CONTEXT_WINDOW_MAX_TOKENS}-token conservative blank-world live "
+            "ceiling",
         )
     default_output = _optional_integer(
         llm["default_output_tokens"],
@@ -873,7 +1166,7 @@ def normalize_aox_blank_world_runtime_config(
         owner_policy = _string(
             reliability["controlled_operation_owner_policy"],
             path=("effective_config.reliability.controlled_operation_owner_policy"),
-            allowed=frozenset({"route_allowlist_v1", "durable_only_v1"}),
+            allowed=AOX_ALLOWED_CONTROLLED_OPERATION_OWNER_POLICIES,
         )
         durable_routes = _string_list(
             reliability["durable_execution_route_allowlist"],
@@ -885,7 +1178,7 @@ def normalize_aox_blank_world_runtime_config(
                 "must be sorted",
             )
         missing_routes = sorted(AOX_DURABLE_ROUTE_POLICY_IDS - set(durable_routes))
-        if owner_policy != "durable_only_v1" and missing_routes:
+        if owner_policy != AOX_DURABLE_ONLY_OWNER_POLICY and missing_routes:
             raise AoxRuntimeConfigSchemaError(
                 "effective_config.reliability.durable_execution_route_allowlist",
                 "must include every AOX provider and HPC route",
@@ -893,18 +1186,18 @@ def normalize_aox_blank_world_runtime_config(
         runtime_drain_contract = _string(
             reliability["runtime_drain_contract"],
             path="effective_config.reliability.runtime_drain_contract",
-            allowed=frozenset({"command_v1"}),
+            allowed=frozenset({AOX_RUNTIME_DRAIN_CONTRACT}),
         )
         mutation_closure_mode = _string(
             reliability["mutation_closure_mode"],
             path="effective_config.reliability.mutation_closure_mode",
-            allowed=frozenset({"generic_v1"}),
+            allowed=frozenset({AOX_MUTATION_CLOSURE_MODE}),
         )
         normalized_reliability = {
             "shadow_observability": _string(
                 reliability["shadow_observability"],
                 path="effective_config.reliability.shadow_observability",
-                allowed=frozenset({"disabled", "shadow_v1"}),
+                allowed=AOX_ALLOWED_SHADOW_OBSERVABILITY_MODES,
             ),
             "controlled_operation_owner_policy": owner_policy,
             "durable_execution_route_allowlist": durable_routes,
@@ -913,8 +1206,8 @@ def normalize_aox_blank_world_runtime_config(
             "shadow_max_observations": _integer(
                 reliability["shadow_max_observations"],
                 path="effective_config.reliability.shadow_max_observations",
-                minimum=1,
-                maximum=4_096,
+                minimum=AOX_SHADOW_MAX_OBSERVATIONS_MINIMUM,
+                maximum=AOX_SHADOW_MAX_OBSERVATIONS_MAXIMUM,
             ),
         }
 
@@ -1084,7 +1377,9 @@ def normalize_aox_blank_world_runtime_config(
                 minimum=AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS,
             ),
             "max_drains": _integer(
-                driver["max_drains"], path="effective_config.driver.max_drains", minimum=1
+                driver["max_drains"],
+                path="effective_config.driver.max_drains",
+                minimum=1,
             ),
             "max_signals_per_drain": _integer(
                 driver["max_signals_per_drain"],

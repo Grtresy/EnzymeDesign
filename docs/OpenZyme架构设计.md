@@ -1125,7 +1125,7 @@ reachability/qualification证明，不写回 Host runtime config。
 fresh exact plan/consumption
   -> atomic one-use slot claim（先于任何 root）
   -> preflight 验证全部 identity 后才创建唯一 private root
-  -> source-bound conductor execution contract@2（exact session + one pinned entry）
+  -> source-bound conductor execution contract@4（exact session + one pinned entry + mutation identity）
   -> policy-free supervised loopback Host
   -> formal public-host 先闭合 exact session create 与唯一 pinned message
   -> Codex 再逐步选择 drain/status/approval/read APIs
@@ -1140,11 +1140,17 @@ fresh exact plan/consumption
 
 `serve-attempt` 只监督固定 Host process group，不发送业务命令或判断 terminal；Host 继续独占
 canonical state、approval、fencing、effect、quiescence 与隔离。preflight发布的 current
-`aox_public_conductor_execution_contract@3` 不含绝对路径或科学策略，但精确绑定 session create、
-raw canonical message、唯一 pinned `workflow_ref`、start-claim contract、入口 cardinality、专用 late-bound grant 和公开
-drain 上下界。`public-host` 在 Host 调用前强制前两项，入口闭合后拒绝第二条 message 与 generic formal
+`aox_public_conductor_execution_contract@4` 不含绝对路径或科学策略，但精确绑定 session create、
+raw canonical message、唯一 pinned `workflow_ref`、start-claim contract、入口 cardinality、专用 late-bound grant、公开
+drain 上下界与 deterministic entry idempotency keys。`public-host` 在 Host 调用前强制前两项，入口闭合后拒绝第二条 message 与 generic formal
 authorize；其余合法 public command 只机械绑定同一 Host/session、receipt chain 与一次 sealed response，
-推进节奏仍由 Codex 选择。历史 execution contract `@1/@2` 只读且不能驱动新动作。`serve-attempt`
+推进节奏仍由 Codex 选择；每条 mutation 必须由 caller 给出 explicit idempotency key，`openzyme_public_api_receipt@3`
+绑定 request identity、effect/retry/reconciliation 与 occurrence-local terminal scope。lost response 只有在 exact
+request/response 都一致时收敛到 existing receipt；若 current successful mutation receipt 已耐久写入但 envelope
+尚未封存，只允许最后且唯一缺 envelope 的 exact command/request/idempotency 重入并补封同一 response。
+未封存 GET、历史 receipt、较早或多个缺口、unknown/reconcile-required effect 及任何 drift 均 fail closed，不能
+推进下一 public action。历史 execution contract
+`@1/@2/@3` 与 public receipt `@2` 只读且不能驱动新动作。`serve-attempt`
 在 `process.start()` 前对 exact clean root 与 pinned MICU baseline 原子发布唯一
 `aox_attempt_start_claim@1` 并立即重读账本；child、startup/supervision 与 finalizer 均重验同一 claim/epoch。
 closed evidence export 要求
@@ -1418,17 +1424,33 @@ Codex 测试操作员可以自由检查当前代码、公开回执和封存状�
 证据未给出内部原因时，应如实保留不确定性并停在现有授权边界；这一规则约束的是证据与动作之间的关系，
 不规定 agent 的调查顺序。
 
-public `openzyme-aox-cutover check-config` 是 pin 前唯一可执行的配置闭合入口。它复用 production
-settings resolver、ledger identity、effective-config builder 与 closed normalizer，只返回
-`aox_cutover_config_check@1` 的 schema id 和 config digest；不读取 qualification，不写 state，不创建
-runner，也不产生 SSH/provider/MICU/Chrome effect。Codex 不得再直接 import Host private
-settings/builder/service 来自证配置。静态源码检查仍可帮助理解合同，但只属于推论。
+public `openzyme-aox-cutover config-contract` 是可执行配置描述符与候选生命周期的单一 machine-readable
+owner。它把实际由 `OpenZymeSettings.from_env` / reliability resolver 消费的 canonical field descriptors
+投影为 `setting_path`、有序环境变量别名、value kind、安全通用默认值、candidate relevance、规范化/身份投影规则及 AOX eligibility
+条件；AOX 条件直接来自 closed runtime normalizer 的同一常量 owner，缺字段或投影约束漂移以
+`aox_config_contract_source_drift` fail closed。`config-candidate` 只绑定这些明确列出的 AOX-relevant sources；
+未列出的 ambient environment 不参与身份，credential 只绑定 presence，其他 private value 只绑定 canonical
+digest，ledger 与 runner-config 则单独绑定 resolved path/content identity。credential 值在 presence 不变时不会
+产生新 candidate identity；相关非敏感值、credential presence 或 path/content identity 变化才会改变身份。
+候选以 credential-free `aox_config_candidate@1` atomic no-replace 发布，不做语义验证。publication 未安装或已完整清理时是
+`no_effect/terminal`；安装后的 durability/cleanup 无法证明时是 `unproven/reconcile_required`，都绑定同一
+candidate identity 与 publication occurrence，不能自动续写或重发。`check-config --candidate` 复用 production
+settings resolver、ledger identity、effective-config builder 与 closed normalizer，重算 source identity，成功返回
+`aox_cutover_config_check@2` 的 candidate/contract/config digest；不读取 qualification，不写产品 state，不创建
+runner，也不产生 SSH/provider/MICU/Chrome effect。失败公开 `no_effect/terminal/config_candidate_occurrence`，
+只终结 exact candidate。Agent 可显式处置后从 current contract 构造 identity-distinct candidate 再发出一条
+validation；Harness 不得自动补值、重发或复用 rejected identity。Codex 不得直接 import Host private
+settings/builder/service 来替代这些 public owner。
 
 `pin` 与 `check-config` 的 effect 边界不同：`pin` 会通过 forced SSH 依次执行 MAFFT、CD-HIT、
 hmmbuild、hmmalign 的 deterministic non-scientific fixture，并产生真实 runner staging/output；因此准备
-授权必须如实覆盖 runner attestation，不能描述为“未接触 HPC”。一次 terminal pin failure 后立即停止；
-goal 为满足状态协议进行的后续只读审计不等于再次执行 pin，报告必须分开列出
-`pin_execution_count` 与 `blocked_audit_count`。
+授权必须如实覆盖 runner attestation，不能描述为“未接触 HPC”。pin 为每个 toolchain operation 先建立
+deterministic opaque reservation；重复 submit 只观察，不 resume/replay。公开 failure 与显式 pin-operation receipt 绑定 exact
+handle、receipt locator、source/request/operation/approval identity、phase、effect、retry、reconciliation、
+preparation authority 与 occurrence-local terminal scope。Agent 只能通过 public `pin-operation
+--action query|resume|reconcile` 显式处理同一 handle：query 只读取，pre-effect `no_effect/same_phase_safe` 才能 resume，
+reconcile 只恢复 exact durable outcome 而不重放 payload；unknown/dispatch-in-doubt 先 exact reconcile；新 occurrence 还要求 no-effect disposition 或 reconciliation、
+fresh authority 与 budget。不得 auto-retry、loop 或 replacement dispatch。
 
 ### 9.10 qualification 本地执行能力边界
 
@@ -1465,6 +1487,22 @@ resolve，但不重复请求人工批准。
 formal slot failure receipt 与 canonical NO-GO。进程退休、连接拒绝或 conductor prose都不能替代
 这两类封存终局。
 
+相同规则适用于配置候选、runner operation、authority consumption 与 public Host request：`terminal` 默认只终结
+其 exact occurrence，不自动终结 task、scientific attempt、slot 或 campaign。每个后续 mutation 都必须先核对
+effect certainty、request/operation identity、lifecycle、authority、fencing 与剩余 budget；unknown effect 只允许
+exact query/reconcile。新 occurrence 只能在 `no_effect + explicit disposition` 或 completed exact reconciliation
+之后，由 agent 显式选择并单独计数。
+
+机器合同按资源公开动作适用性：runner pin operation 是 `query=true/resume=true/reconcile=true`；authority
+consumption 与 formal Host mutation 是 `query=true/resume=false/reconcile=true`。后两者的 query/reconcile
+严格只读现有 owner；通用 `GET /v3/mutation-operations/observe` 只把 command receipt、runtime command、
+scientific authorization 或 AOX fault claim/receipt 的当前事实投影出来，不能创建 owner、推进 lifecycle 或重放
+payload。formal `host-operation reconcile` 只在 exact owner 已证明 terminal response 时追加收敛证据；若 raw receipt
+chain 是同一 request identity 的一条相邻 `unproven/reconcile_required` 与唯一后一条 terminal receipt，业务发生次数
+投影可把它们视为一次已收敛 occurrence。raw JSONL、response envelope、failure observation、sequence、digest 与
+审计 bundle 始终逐条保留；多 terminal、插入其他 receipt、known-effect 前件、identity/request drift 或任一未封存
+response 都 fail closed。该投影不是新 owner、writer 或 retry FSM。
+
 ### 9.12 pinned launch profile 与 pre-claim failure closure
 
 pin、authority、preflight 与 supervised Host 必须共享同一份非敏感 launch truth。current pin
@@ -1475,6 +1513,13 @@ preflight `@5` 共同绑定 profile digest。profile 覆盖完整非敏感 effec
 digest。preflight/Host 从 profile 恢复非敏感字段，ambient 只补 credential，其他 ambient launch
 变量不能覆盖 pinned 值；extra-body digest/shared principal 冲突、profile 内 legacy owner 或 digest
 漂移都在 claim/root/listener 前显式失败。
+
+`consume-authority` 的 deterministic sibling 仍是 one-use canonical owner，但 same exact plan/request 在 publication
+race 或 lost response 后可完整重验 existing receipt 并收敛，不产生第二次 authority effect。public
+`aox_attempt_authority_consume_receipt@2` 投影 request/idempotency、exact handle/locator、
+`terminal_known/terminal/authority_consumption_occurrence`、exact-three、每 slot `max_attempts=1` 与 MICU/cost/
+wall-time ceiling，并明确 scientific attempt count 为零。existing receipt 的 source、plan、authority 或 budget
+任一漂移都 fail closed，不覆盖、不换 target、不重置 ledger，也不创建 Host/session/root。
 
 若 authority 已消费而 profile/effective-config 在 slot claim 前失败，且 claim 不存在、campaign attempt
 root absent/empty，preflight 同步封存 source-bound `aox_formal_preflight_failure@1`，证明零
@@ -1519,13 +1564,14 @@ receipt chain 缺少唯一 canonical message 与 pinned workflow entry，因而�
 `formal_slot_failure_public_entry_invalid` 拒绝 failure seal。没有合法 failure bundle 就没有 canonical
 GO/NO-GO；r77、slot 2/3 与其 frozen evidence 均不得重试、回填或改写。
 
-current `aox_public_conductor_execution_contract@3` 把 mechanical entry 真值从操作员记忆收回 source-bound
+current `aox_public_conductor_execution_contract@4` 把 mechanical entry 真值从操作员记忆收回 source-bound
 contract：第一条成功 public action 只能是 exact session create，第二条只能是 raw canonical message 加
 preflight 唯一 `workflow_ref`，后续任何 session message 都在 Host 调用和 receipt/response 写入前拒绝。
 generic `public-host scientific authorize` 同样拒绝；专用 `grant-task-authority` 只能从已封存的 bounded
 drain admission、唯一 terminal response 与 post-mutation workspace 中验证 caller 指定的唯一 execution
-task，再用 consumed slot 派生 canonical grant payload/idempotency key。current `@3` 另外声明
-`aox_attempt_start_claim@1` 的固定文件/schema；历史 contract `@1/@2` 只读且不能执行。
+task，再用 consumed slot 派生 canonical grant payload/idempotency key。current `@4` 另外声明
+`aox_attempt_start_claim@1` 的固定文件/schema 与 canonical entry keys；
+历史 contract `@1/@2/@3` 只读且不能执行。
 
 这条 guard 只固定正式测试不可变化的入口与 authority 真实性，不固定 scientific action、drain 次数或
 推进策略。每次 drain 可在 public Host 的 `1..100` signals/steps 闭集中选择，必须关闭 hidden ready-task
@@ -1614,7 +1660,7 @@ prestart evidence且所有 effect roots为空，读取 pinned ledger，no-replac
 execution contract、完整 MICU baseline 与 process epoch 的 claim，并立即重读同一 ledger。污染、drift、
 既有 claim 或 exclusive-create race 均在 process creation 前停止；没有 campaign-global lock、automatic
 replay 或 successor。child在 foundation前重验 claim digest、epoch和closed phase。current
-`aox_public_conductor_execution_contract@3`、`aox_supervised_host_startup@5`、
+`aox_public_conductor_execution_contract@4`、`aox_supervised_host_startup@5`、
 `aox_supervised_host_child_ready@3`、`aox_supervised_host_child_pre_ready_failure@2`、
 `aox_supervised_host_receipt@4`、`aox_supervised_host_pre_ready_failure@2`、
 `aox_supervised_host_fatal@2`、`aox_formal_slot_failure@3`、profile

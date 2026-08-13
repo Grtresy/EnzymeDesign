@@ -6,6 +6,7 @@ from pathlib import Path
 import stat
 
 import pytest
+import openzyme_host_api.aox_attempt_authority as authority
 from openzyme_host_api.aox_attempt_authority import (
     AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID,
 )
@@ -14,6 +15,9 @@ from openzyme_host_api.aox_attempt_authority import (
 )
 from openzyme_host_api.aox_attempt_authority import (
     attempt_authority_consumption_path,
+)
+from openzyme_host_api.aox_attempt_authority import (
+    attempt_authority_consumption_operation_identity,
 )
 from openzyme_host_api.aox_attempt_authority import attempt_authority_slot_claim_path
 from openzyme_host_api.aox_attempt_authority import authority_grant_identity
@@ -27,6 +31,9 @@ from openzyme_host_api.aox_attempt_authority import (
 from openzyme_host_api.aox_attempt_authority import claim_aox_attempt_authority_slot
 from openzyme_host_api.aox_attempt_authority import (
     load_aox_attempt_authority_plan,
+)
+from openzyme_host_api.aox_attempt_authority import (
+    observe_aox_attempt_authority_consumption,
 )
 from openzyme_host_api.aox_attempt_authority import (
     load_aox_attempt_authority_slot_claim,
@@ -152,6 +159,59 @@ def test_authority_plan_binds_three_one_use_launch_slots() -> None:
         assert str(slot["root_ref"]).startswith(
             f"formal-slots/{plan['campaign_id']}/{slot['ordinal']}/"
         )
+
+
+def test_authority_consumption_observation_is_strictly_read_only_and_exact(
+    tmp_path: Path,
+) -> None:
+    plan, *_ = _plan()
+    plan_path = tmp_path / "authority.json"
+    plan_path.write_bytes(authority.canonical_json_bytes(plan) + b"\n")
+    plan_path.chmod(0o600)
+    target = attempt_authority_consumption_path(plan_path)
+    operation = attempt_authority_consumption_operation_identity(
+        plan,
+        plan_path=plan_path,
+    )
+    before = sorted(path.name for path in tmp_path.iterdir())
+
+    assert (
+        observe_aox_attempt_authority_consumption(plan, plan_path=plan_path) is None
+    )
+    assert sorted(path.name for path in tmp_path.iterdir()) == before
+    assert not target.exists()
+    assert operation == {
+        "request_digest": canonical_digest(
+            {
+                "operation": "consume_aox_attempt_authority_plan",
+                "plan_digest": plan["plan_digest"],
+                "campaign_id": plan["campaign_id"],
+                "consumption_file": target.name,
+            }
+        ),
+        "idempotency_key": f"{plan['campaign_id']}:consume-authority",
+        "exact_handle": target.name,
+        "receipt_locator": target.name,
+    }
+
+    consumed = consume_aox_attempt_authority_plan(
+        plan,
+        plan_path=plan_path,
+        path=target,
+    )
+    assert observe_aox_attempt_authority_consumption(
+        plan,
+        plan_path=plan_path,
+    ) == consumed
+    assert target.stat().st_mode & 0o077 == 0
+
+    drifted = {**consumed, "plan_digest": "sha256:" + "f" * 64}
+    target.chmod(0o600)
+    target.write_bytes(authority.canonical_json_bytes(drifted) + b"\n")
+    target.chmod(0o600)
+    with pytest.raises(CutoverEvidenceError) as error:
+        observe_aox_attempt_authority_consumption(plan, plan_path=plan_path)
+    assert error.value.code == "attempt_authority_consumption_invalid"
 
 
 def test_authority_plan_rejects_resealed_semantic_expansion() -> None:
@@ -290,13 +350,48 @@ def test_private_authority_file_has_one_deterministic_consumption_target(
     }
     assert stat.S_IMODE(consumption_path.stat().st_mode) == 0o400
 
-    with pytest.raises(CutoverEvidenceError) as reused:
-        consume_aox_attempt_authority_plan(
-            loaded,
-            plan_path=plan_path,
-            path=consumption_path,
-        )
-    assert reused.value.code == "attempt_authority_publish_target_invalid"
+    converged = consume_aox_attempt_authority_plan(
+        loaded,
+        plan_path=plan_path,
+        path=consumption_path,
+    )
+    assert converged == receipt
+
+
+def test_authority_consumption_converges_after_exact_publish_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, identity, prerequisites, qualification = _plan()
+    plan_path = tmp_path / "authority.json"
+    publish_aox_attempt_authority_plan(plan, plan_path)
+    loaded = load_aox_attempt_authority_plan(
+        plan_path,
+        identity=identity,
+        allowed_prerequisites=prerequisites,
+        architecture_qualification=qualification,
+        launch_profile=_launch_profile(),
+    )
+    consumption_path = attempt_authority_consumption_path(plan_path)
+
+    def publish_then_lose_race(path: Path, content: bytes) -> None:
+        path.write_bytes(content)
+        path.chmod(0o400)
+        raise FileExistsError("simulated exact no-replace race")
+
+    monkeypatch.setattr(
+        authority,
+        "publish_private_canonical_authority",
+        publish_then_lose_race,
+    )
+
+    receipt = consume_aox_attempt_authority_plan(
+        loaded,
+        plan_path=plan_path,
+        path=consumption_path,
+    )
+    assert receipt["plan_digest"] == loaded["plan_digest"]
+    assert stat.S_IMODE(consumption_path.stat().st_mode) == 0o400
 
 
 def test_authority_slots_are_atomically_claimed_once_across_campaign_roots(

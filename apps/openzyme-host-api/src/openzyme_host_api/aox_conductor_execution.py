@@ -19,6 +19,8 @@ from .aox_attempt_preflight import (
 from .aox_attempt_start import (
     load_bound_attempt_start_claim,
 )
+from .aox_attempt_authority import AOX_ATTEMPT_AUTHORITY_GRANTOR_REF
+from .aox_attempt_authority import authority_grant_payload
 from .aox_authority_storage import publish_private_canonical_authority
 from .aox_cutover_evidence import CutoverEvidenceError
 from .aox_cutover_evidence import canonical_digest
@@ -26,8 +28,14 @@ from .aox_cutover_evidence import canonical_json_bytes
 from .aox_host_supervision import HOST_STARTUP_FILENAME
 from .aox_host_supervision import HOST_SUPERVISION_FATAL_FILENAME
 from .aox_host_supervision import HOST_SUPERVISION_FILENAME
+from .host_mutation_observation import HOST_MUTATION_ORIGINAL_STATUS_CODES
+from .host_mutation_observation import host_mutation_request_digest
 from .aox_public_conductor_contract import PUBLIC_CONDUCTOR_PROJECT_ID
 from .aox_public_conductor_contract import entry_message_request
+from .aox_public_conductor_contract import entry_message_idempotency_key
+from .aox_public_conductor_contract import effective_public_receipts
+from .aox_public_conductor_contract import public_receipt_occurrence_sequence
+from .aox_public_conductor_contract import session_create_idempotency_key
 from .aox_public_conductor_contract import runtime_drain_constraints
 from .aox_public_conductor_contract import session_create_request
 from .aox_public_conductor_contract import validate_bounded_drain_receipts
@@ -37,22 +45,22 @@ from .aox_public_conductor_contract import workflow_ref_from_preflight
 from .aox_public_conductor_bundle import _load_canonical_object
 from .aox_public_conductor_bundle import _load_receipt_chain
 from .aox_public_conductor_bundle import _load_response_envelope
+from .aox_public_conductor_bundle import PUBLIC_API_RECEIPT_SCHEMA_ID
 from .aox_public_conductor_bundle import _validate_events
 from .aox_public_conductor_bundle import _validate_runtime_command_handoffs
 from .aox_public_conductor_bundle import _validate_startup
 
 
-CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID = "aox_public_conductor_execution_contract@3"
+CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID = "aox_public_conductor_execution_contract@4"
 LEGACY_CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_IDS = frozenset(
     {
         "aox_public_conductor_execution_contract@1",
         "aox_public_conductor_execution_contract@2",
+        "aox_public_conductor_execution_contract@3",
     }
 )
 CONDUCTOR_EXECUTION_CONTRACT_FILENAME = ATTEMPT_CONDUCTOR_CONTRACT_FILENAME
-CONDUCTOR_RETIREMENT_READINESS_SCHEMA_ID = (
-    "aox_public_conductor_retirement_readiness@1"
-)
+CONDUCTOR_RETIREMENT_READINESS_SCHEMA_ID = "aox_public_conductor_retirement_readiness@1"
 CONDUCTOR_RETIREMENT_READINESS_FILENAME = (
     "aox-public-conductor-retirement-readiness.json"
 )
@@ -72,6 +80,8 @@ _CONTRACT_FIELDS = {
     "late_bound_authority_command",
     "session_create_request",
     "entry_message_request",
+    "session_create_idempotency_key",
+    "entry_message_idempotency_key",
     "entry_message_count",
     "runtime_drain_constraints",
     "receipt_chain_name",
@@ -192,13 +202,21 @@ def build_conductor_execution_contract(
         "session_id": session_id,
         "project_id": PUBLIC_CONDUCTOR_PROJECT_ID,
         "public_cli_command": "openzyme-aox-cutover public-host",
-        "late_bound_authority_command": (
-            "openzyme-aox-cutover grant-task-authority"
-        ),
+        "late_bound_authority_command": ("openzyme-aox-cutover grant-task-authority"),
         "session_create_request": (
             session_create_request(session_id) if isinstance(session_id, str) else {}
         ),
         "entry_message_request": entry_message_request(workflow_ref),
+        "session_create_idempotency_key": (
+            session_create_idempotency_key(session_id)
+            if isinstance(session_id, str)
+            else ""
+        ),
+        "entry_message_idempotency_key": (
+            entry_message_idempotency_key(session_id, workflow_ref)
+            if isinstance(session_id, str)
+            else ""
+        ),
         "entry_message_count": 1,
         "runtime_drain_constraints": runtime_drain_constraints(),
         "receipt_chain_name": PUBLIC_API_RECEIPT_CHAIN_FILENAME,
@@ -332,7 +350,8 @@ def load_active_public_host_context(
         identity="host_startup",
     )
     startup = _validate_startup(
-        startup_value, preflight=preflight,
+        startup_value,
+        preflight=preflight,
         attempt_start_claim_digest=str(start_claim["claim_digest"]),
     )
     return preflight, contract, startup, evidence_root
@@ -368,13 +387,201 @@ def _current_receipts(
             "public Host receipt chain cannot be inspected before the next action",
             details={"identity": "receipt_chain"},
         ) from exc
-    receipts, _ = _load_receipt_chain(path, allow_failure_responses=True)
+    receipts, _ = _load_receipt_chain(
+        path,
+        allow_failure_responses=True,
+        required_schema_id=PUBLIC_API_RECEIPT_SCHEMA_ID,
+    )
     return receipts
+
+
+def _sealed_response_sequences(
+    *,
+    evidence_root: Path,
+    receipts: Sequence[Mapping[str, Any]],
+) -> set[int]:
+    sequences: set[int] = set()
+    for path in sorted(
+        candidate
+        for candidate in evidence_root.iterdir()
+        if candidate.name.startswith(PUBLIC_RESPONSE_PREFIX)
+        and candidate.name.endswith(PUBLIC_RESPONSE_SUFFIX)
+    ):
+        envelope, _ = _load_response_envelope(
+            path,
+            identity=f"sealed_response:{path.name}",
+            receipts=receipts,
+        )
+        sequence = int(dict(envelope["receipt"])["sequence"])
+        if sequence in sequences:
+            _fail(
+                "public_conductor_response_duplicate",
+                "one public receipt has multiple sealed response envelopes",
+                identity=f"receipt_chain[{sequence}]",
+            )
+        sequences.add(sequence)
+    return sequences
+
+
+def _pending_mutation_receipt(
+    *,
+    evidence_root: Path,
+    receipts: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Return the sole resumable receipt-written/envelope-missing occurrence."""
+
+    if not receipts:
+        return None
+    sealed = _sealed_response_sequences(
+        evidence_root=evidence_root,
+        receipts=receipts,
+    )
+    missing = [
+        dict(receipt)
+        for receipt in receipts
+        if int(receipt["sequence"]) not in sealed
+    ]
+    if not missing:
+        return None
+    last = dict(receipts[-1])
+    if len(missing) != 1 or missing[0] != last:
+        _fail(
+            "public_conductor_response_set_incomplete",
+            "only the last durable mutation may lack its sealed response",
+            identity="sealed_responses",
+        )
+    if last.get("method") not in {"POST", "PATCH"}:
+        _fail(
+            "public_conductor_response_set_incomplete",
+            "a read occurrence without its sealed response cannot be replayed",
+            identity=f"receipt_chain[{last.get('sequence')}]",
+        )
+    if last.get("schema_id") != PUBLIC_API_RECEIPT_SCHEMA_ID:
+        _fail(
+            "public_conductor_mutation_continuation_legacy_invalid",
+            "historical mutation receipts cannot drive current continuation",
+            identity=f"receipt_chain[{last.get('sequence')}]",
+        )
+    if not all(
+        (
+            last.get("effect_certainty") == "terminal_known",
+            last.get("retry_eligibility") == "terminal",
+            last.get("reconciliation_required") is False,
+            last.get("terminal_scope") == "host_mutation_occurrence",
+            type(last.get("status_code")) is int,
+            200 <= last["status_code"] < 400,
+        )
+    ):
+        _fail(
+            "public_conductor_mutation_reconciliation_required",
+            "a nonterminal or unknown-effect mutation requires exact reconciliation",
+            identity=f"receipt_chain[{last.get('sequence')}]",
+        )
+    return last
+
+
+def _require_no_unreconciled_mutation(receipts: Sequence[Mapping[str, Any]]) -> None:
+    for receipt in effective_public_receipts(receipts):
+        if receipt.get("method") not in {"POST", "PATCH"}:
+            continue
+        if not all(
+            (
+                receipt.get("schema_id") == PUBLIC_API_RECEIPT_SCHEMA_ID,
+                receipt.get("effect_certainty") == "terminal_known",
+                receipt.get("retry_eligibility") == "terminal",
+                receipt.get("reconciliation_required") is False,
+                receipt.get("terminal_scope") == "host_mutation_occurrence",
+            )
+        ):
+            _fail(
+                "public_conductor_mutation_reconciliation_required",
+                "current execution cannot advance past an unknown mutation effect",
+                identity=f"receipt_chain[{receipt.get('sequence')}]",
+            )
+
+
+def validate_public_host_reconciliation(
+    *,
+    contract: Mapping[str, Any],
+    evidence_root: Path,
+    descriptor: Mapping[str, Any],
+) -> None:
+    """Admit receipt convergence only for one exact observed mutation."""
+
+    receipts = _current_receipts(evidence_root=evidence_root, contract=contract)
+    sealed = _sealed_response_sequences(
+        evidence_root=evidence_root,
+        receipts=receipts,
+    )
+    if sealed != {int(receipt["sequence"]) for receipt in receipts}:
+        _fail(
+            "public_conductor_reconciliation_response_set_incomplete",
+            "Host mutation reconciliation requires all prior responses to be sealed",
+            identity="sealed_responses",
+        )
+    effective_public_receipts(receipts)
+    matching = [
+        receipt
+        for receipt in receipts
+        if receipt.get("method") == descriptor.get("method")
+        and receipt.get("route") == descriptor.get("route")
+        and receipt.get("request") == descriptor.get("request")
+        and receipt.get("idempotency_key") == descriptor.get("idempotency_key")
+    ]
+    unreconciled = [
+        receipt
+        for receipt in receipts
+        if receipt.get("method") in {"POST", "PATCH"}
+        and receipt.get("effect_certainty") != "terminal_known"
+    ]
+    if unreconciled and not (
+        len(unreconciled) == 1
+        and unreconciled[0] in matching
+        and int(unreconciled[0]["sequence"]) == len(receipts)
+    ):
+        _fail(
+            "public_conductor_mutation_reconciliation_mismatch",
+            "only the exact unresolved Host mutation may be reconciled",
+            identity="receipt_chain",
+        )
+    if matching:
+        if any(
+            receipt.get("effect_certainty") == "terminal_known"
+            for receipt in matching
+        ) or unreconciled:
+            return
+    _require_no_unreconciled_mutation(receipts)
+    progress = _canonical_entry_progress(receipts, contract=contract)
+    forwarded_action = str(descriptor.get("command_type"))
+    if progress == "session_create":
+        if forwarded_action != "session.create":
+            _fail(
+                "public_conductor_session_create_required",
+                "the first reconciled formal mutation must be the canonical session",
+                identity="host_operation",
+            )
+        return
+    if progress == "entry_message":
+        if forwarded_action != "conversation.message.post":
+            _fail(
+                "public_conductor_entry_message_required",
+                "the second reconciled formal mutation must be the canonical message",
+                identity="host_operation",
+            )
+        return
+    if forwarded_action in {"session.create", "conversation.message.post"}:
+        _fail(
+            "public_conductor_entry_already_closed",
+            "formal execution permits exactly one canonical session entry",
+            identity="host_operation",
+        )
 
 
 def _canonical_entry_progress(
     receipts: Sequence[Mapping[str, Any]], *, contract: Mapping[str, Any]
 ) -> str:
+    raw_receipts = [dict(receipt) for receipt in receipts]
+    receipts = effective_public_receipts(raw_receipts)
     session_id = str(contract["session_id"])
     workflow_ref = _contract_workflow_ref(contract)
     if not receipts:
@@ -382,7 +589,11 @@ def _canonical_entry_progress(
     if len(receipts) == 1:
         receipt = dict(receipts[0])
         if not (
-            receipt.get("sequence") == 1
+            public_receipt_occurrence_sequence(
+                receipt,
+                receipts=raw_receipts,
+            )
+            == 1
             and receipt.get("method") == "POST"
             and receipt.get("route") == "/v3/sessions"
             and receipt.get("request") == session_create_request(session_id)
@@ -456,6 +667,375 @@ def _closed_cli_options(
     return values
 
 
+def _required_cli_option(
+    options: Mapping[str, str | list[str]],
+    name: str,
+) -> str:
+    value = options.get(name)
+    if not isinstance(value, str) or not value:
+        _fail(
+            "public_conductor_command_arguments_invalid",
+            "formal mutation lacks a required option",
+            identity=f"host_cli_args.{name}",
+        )
+    return value
+
+
+def _mutation_request_from_command(
+    forwarded: Sequence[str],
+    *,
+    contract: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Rebuild the exact receipt identity for one supported Host mutation."""
+
+    action = tuple(forwarded[:2])
+    session_id = str(contract["session_id"])
+    method: str
+    route: str
+    request: dict[str, Any]
+    owner_request: dict[str, Any]
+    command_type: str
+    scope_ref: str
+    options: dict[str, str | list[str]]
+    if action == ("sessions", "create"):
+        _validate_session_create_command(forwarded, contract=contract)
+        options = _closed_cli_options(
+            forwarded[2:],
+            allowed=frozenset({"objective", "title", "idempotency-key"}),
+        )
+        method, route, request = "POST", "/v3/sessions", session_create_request(
+            session_id
+        )
+        owner_request = dict(request)
+        command_type = "session.create"
+        scope_ref = (
+            f"principal:{AOX_ATTEMPT_AUTHORITY_GRANTOR_REF}:"
+            f"project:{PUBLIC_CONDUCTOR_PROJECT_ID}"
+        )
+    elif action == ("sessions", "message"):
+        _validate_entry_message_command(forwarded, contract=contract)
+        options = _closed_cli_options(
+            forwarded[2:],
+            allowed=frozenset(
+                {"message", "skill-key", "task-id", "lane-id", "idempotency-key"}
+            ),
+            repeated=frozenset({"skill-key"}),
+        )
+        method = "POST"
+        route = f"/v3/sessions/{session_id}/messages"
+        request = {
+            "message_digest": "sha256:"
+            + hashlib.sha256(str(options["message"]).encode()).hexdigest(),
+            "skill_keys": list(options["skill-key"]),
+            "task_id": options.get("task-id"),
+            "lane_id": options.get("lane-id"),
+        }
+        owner_request = {
+            "message": str(options["message"]),
+            "task_id": options.get("task-id"),
+            "lane_id": options.get("lane-id"),
+            "skill_keys": list(options["skill-key"]),
+        }
+        command_type = "conversation.message.post"
+        scope_ref = f"session:{session_id}"
+    elif action == ("tasks", "create"):
+        options = _closed_cli_options(
+            forwarded[2:],
+            allowed=frozenset(
+                {
+                    "task-id",
+                    "subject",
+                    "description",
+                    "priority",
+                    "kind",
+                    "lane-id",
+                    "idempotency-key",
+                }
+            ),
+        )
+        method, route = "POST", "/v3/tasks"
+        request = {
+            "session_id": session_id,
+            "subject": _required_cli_option(options, "subject"),
+            "description": str(options.get("description", "")),
+            "priority": str(options.get("priority", "normal")),
+            "kind": str(options.get("kind", "general")),
+        }
+        for option, field in (("task-id", "task_id"), ("lane-id", "lane_id")):
+            if option in options:
+                request[field] = str(options[option])
+        owner_request = {
+            "session_id": session_id,
+            "subject": request["subject"],
+            "description": request["description"],
+            "task_id": request.get("task_id"),
+            "priority": request["priority"],
+            "kind": request["kind"],
+            "status": "todo",
+            "lane_id": request.get("lane_id"),
+            "blocked_by": [],
+        }
+        command_type = "task.create"
+        scope_ref = f"session:{session_id}"
+    elif action == ("tasks", "update"):
+        options = _closed_cli_options(
+            forwarded[2:],
+            allowed=frozenset(
+                {
+                    "task-id",
+                    "status",
+                    "subject",
+                    "description",
+                    "priority",
+                    "lane-id",
+                    "idempotency-key",
+                }
+            ),
+        )
+        method = "PATCH"
+        route = f"/v3/tasks/{_required_cli_option(options, 'task-id')}"
+        request = {
+            option.replace("-", "_"): str(options[option])
+            for option in ("status", "subject", "description", "priority", "lane-id")
+            if option in options
+        }
+        owner_request = dict(request)
+        command_type = "task.update"
+        scope_ref = f"task:{_required_cli_option(options, 'task-id')}"
+    elif action == ("lanes", "create"):
+        options = _closed_cli_options(
+            forwarded[2:],
+            allowed=frozenset(
+                {"lane-id", "name", "cwd", "branch-name", "idempotency-key"}
+            ),
+        )
+        method, route = "POST", "/v3/lanes"
+        request = {
+            "session_id": session_id,
+            "name": _required_cli_option(options, "name"),
+            "cwd": str(options.get("cwd", ".")),
+        }
+        for option, field in (
+            ("lane-id", "lane_id"),
+            ("branch-name", "branch_name"),
+        ):
+            if option in options:
+                request[field] = str(options[option])
+        owner_request = {
+            "session_id": session_id,
+            "name": request["name"],
+            "cwd": request["cwd"],
+            "lane_id": request.get("lane_id"),
+            "branch_name": request.get("branch_name"),
+        }
+        command_type = "lane.create"
+        scope_ref = f"session:{session_id}"
+    elif action in {
+        ("lanes", "claim"),
+        ("lanes", "keep"),
+        ("lanes", "remove"),
+    }:
+        options = _closed_cli_options(
+            forwarded[2:],
+            allowed=frozenset({"lane-id", "idempotency-key"}),
+        )
+        lane_id = _required_cli_option(options, "lane-id")
+        method, route, request = "POST", f"/v3/lanes/{lane_id}/{action[1]}", {}
+        owner_request = {}
+        command_type = f"lane.{action[1]}"
+        scope_ref = f"lane:{lane_id}"
+    elif action == ("approvals", "resolve"):
+        options = _closed_cli_options(
+            forwarded[2:],
+            allowed=frozenset({"approval-id", "decision", "idempotency-key"}),
+        )
+        approval_id = _required_cli_option(options, "approval-id")
+        decision = _required_cli_option(options, "decision")
+        if decision not in {"approved", "rejected"}:
+            _fail(
+                "public_conductor_command_arguments_invalid",
+                "formal approval decision is invalid",
+                identity="host_cli_args.decision",
+            )
+        method = "POST"
+        route = f"/v3/approvals/{approval_id}/resolve"
+        request = {"decision": decision}
+        owner_request = {
+            "decision": decision,
+            "actor_ref": AOX_ATTEMPT_AUTHORITY_GRANTOR_REF,
+        }
+        command_type = "approval.resolve"
+        scope_ref = f"approval:{approval_id}"
+    elif action == ("runtime", "drain"):
+        options = _closed_cli_options(
+            forwarded[2:],
+            allowed=frozenset(
+                {"max-signals", "max-steps-per-agent", "idempotency-key"}
+            ),
+        )
+        try:
+            request = {
+                "max_signals": int(options.get("max-signals", "3")),
+                "max_steps_per_agent": int(
+                    options.get("max-steps-per-agent", "8")
+                ),
+                "auto_enqueue_ready_tasks": False,
+            }
+        except (TypeError, ValueError) as exc:
+            raise CutoverEvidenceError(
+                "public_conductor_drain_request_invalid",
+                "formal runtime drain bounds are not integers",
+                details={"identity": "host_cli_args.runtime.drain"},
+            ) from exc
+        validate_bounded_drain_request(
+            request,
+            identity="host_cli_args.runtime.drain",
+        )
+        method = "POST"
+        route = f"/v3/sessions/{session_id}/runtime/drain"
+        owner_request = dict(request)
+        command_type = "runtime.drain"
+        scope_ref = f"session:{session_id}"
+    elif action == ("scientific", "authorize"):
+        options = _closed_cli_options(
+            forwarded[2:],
+            allowed=frozenset({"payload-json", "idempotency-key"}),
+        )
+        try:
+            payload = json.loads(_required_cli_option(options, "payload-json"))
+        except json.JSONDecodeError as exc:
+            raise CutoverEvidenceError(
+                "public_conductor_command_arguments_invalid",
+                "formal scientific authorization payload is not JSON",
+                details={"identity": "host_cli_args.payload-json"},
+            ) from exc
+        if not isinstance(payload, dict):
+            _fail(
+                "public_conductor_command_arguments_invalid",
+                "formal scientific authorization payload is not one object",
+                identity="host_cli_args.payload-json",
+            )
+        method = "POST"
+        route = f"/v3/sessions/{session_id}/scientific-attempt-authorizations"
+        request = dict(payload)
+        owner_request = dict(payload)
+        command_type = "scientific.authorization.grant"
+        scope_ref = f"session:{session_id}"
+    elif action == ("scientific", "inject-aox-reference-fault"):
+        options = _closed_cli_options(
+            forwarded[2:],
+            allowed=frozenset(
+                {"attempt-id", "artifact-id", "idempotency-key"}
+            ),
+        )
+        method = "POST"
+        route = f"/v3/sessions/{session_id}/aox-fault-injections/reference-byte-flip"
+        request = {
+            "attempt_id": _required_cli_option(options, "attempt-id"),
+            "artifact_id": _required_cli_option(options, "artifact-id"),
+        }
+        owner_request = dict(request)
+        command_type = "aox.reference-fault.inject"
+        scope_ref = f"session:{session_id}"
+    else:
+        return None
+    idempotency_key = _required_cli_option(options, "idempotency-key")
+    return {
+        "method": method,
+        "route": route,
+        "request": request,
+        "request_body": (
+            owner_request
+            if command_type == "conversation.message.post"
+            else request
+        ),
+        "idempotency_key": idempotency_key,
+        "command_type": command_type,
+        "scope_ref": scope_ref,
+        "owner_request_digest": host_mutation_request_digest(
+            principal_id=AOX_ATTEMPT_AUTHORITY_GRANTOR_REF,
+            session_id=session_id,
+            command_type=command_type,
+            scope_ref=scope_ref,
+            idempotency_key=idempotency_key,
+            request_payload=owner_request,
+        ),
+        "attempt_id": owner_request.get("attempt_id"),
+        "artifact_id": owner_request.get("artifact_id"),
+        "original_status_code": HOST_MUTATION_ORIGINAL_STATUS_CODES[command_type],
+    }
+
+
+def describe_public_host_mutation(
+    forwarded: Sequence[str],
+    *,
+    contract: Mapping[str, Any],
+    preflight: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Describe one exact formal mutation without issuing it."""
+
+    _require_explicit_mutation_idempotency(forwarded)
+    descriptor = _mutation_request_from_command(forwarded, contract=contract)
+    if descriptor is None:
+        _fail(
+            "public_conductor_mutation_observation_unsupported",
+            "formal mutation has no durable public observation owner",
+            identity="host_cli_args",
+        )
+    if tuple(forwarded[:2]) == ("scientific", "authorize"):
+        if preflight is None:
+            _fail(
+                "public_conductor_authority_observation_unbound",
+                "scientific authorization observation requires its consumed slot",
+                identity="preflight.slot",
+            )
+        request = dict(descriptor["request"])
+        task_id = request.get("task_id")
+        if not isinstance(task_id, str) or request != authority_grant_payload(
+            dict(preflight["slot"]),
+            campaign_id=str(preflight["campaign_id"]),
+            task_id=task_id,
+        ):
+            _fail(
+                "public_conductor_authority_observation_unbound",
+                "scientific authorization differs from the consumed slot",
+                identity="host_cli_args.scientific.authorize",
+            )
+    return descriptor
+
+
+def _require_exact_pending_mutation(
+    receipt: Mapping[str, Any],
+    *,
+    expected: Mapping[str, Any] | None,
+) -> None:
+    request = expected.get("request") if isinstance(expected, Mapping) else None
+    identity = (
+        {
+            "method": expected["method"],
+            "route": expected["route"],
+            "request_digest": canonical_digest(request),
+            "idempotency_key": expected["idempotency_key"],
+        }
+        if isinstance(expected, Mapping)
+        else None
+    )
+    if not (
+        isinstance(expected, Mapping)
+        and receipt.get("method") == expected.get("method")
+        and receipt.get("route") == expected.get("route")
+        and receipt.get("request") == request
+        and receipt.get("request_digest") == canonical_digest(request)
+        and receipt.get("idempotency_key") == expected.get("idempotency_key")
+        and receipt.get("request_identity_digest") == canonical_digest(identity)
+    ):
+        _fail(
+            "public_conductor_mutation_continuation_mismatch",
+            "pending mutation continuation requires the exact command and identity",
+            identity=f"receipt_chain[{receipt.get('sequence')}]",
+        )
+
+
 def _validate_session_create_command(
     forwarded: Sequence[str], *, contract: Mapping[str, Any]
 ) -> None:
@@ -466,12 +1046,14 @@ def _validate_session_create_command(
             identity="host_cli_args",
         )
     options = _closed_cli_options(
-        forwarded[2:], allowed=frozenset({"objective", "title"})
+        forwarded[2:],
+        allowed=frozenset({"objective", "title", "idempotency-key"}),
     )
     expected = dict(contract["session_create_request"])
     if options != {
         "objective": expected["objective"],
         "title": expected["title"],
+        "idempotency-key": contract["session_create_idempotency_key"],
     }:
         _fail(
             "public_conductor_session_create_invalid",
@@ -491,13 +1073,16 @@ def _validate_entry_message_command(
         )
     options = _closed_cli_options(
         forwarded[2:],
-        allowed=frozenset({"message", "skill-key", "task-id", "lane-id"}),
+        allowed=frozenset(
+            {"message", "skill-key", "task-id", "lane-id", "idempotency-key"}
+        ),
         repeated=frozenset({"skill-key"}),
     )
     expected = dict(contract["entry_message_request"])
     if options != {
         "message": expected["message"],
         "skill-key": list(expected["skill_keys"]),
+        "idempotency-key": contract["entry_message_idempotency_key"],
     }:
         _fail(
             "public_conductor_entry_message_invalid",
@@ -509,9 +1094,7 @@ def _validate_entry_message_command(
 def _validate_drain_command(forwarded: Sequence[str]) -> None:
     options = _closed_cli_options(
         forwarded[2:],
-        allowed=frozenset(
-            {"max-signals", "max-steps-per-agent", "idempotency-key"}
-        ),
+        allowed=frozenset({"max-signals", "max-steps-per-agent", "idempotency-key"}),
     )
     try:
         request = {
@@ -529,6 +1112,48 @@ def _validate_drain_command(forwarded: Sequence[str]) -> None:
         request,
         identity="host_cli_args.runtime.drain",
     )
+
+
+_FORMAL_MUTATION_ACTIONS = frozenset(
+    {
+        ("sessions", "create"),
+        ("sessions", "message"),
+        ("tasks", "create"),
+        ("tasks", "update"),
+        ("lanes", "create"),
+        ("lanes", "claim"),
+        ("lanes", "keep"),
+        ("lanes", "remove"),
+        ("approvals", "resolve"),
+        ("runtime", "drain"),
+        ("scientific", "authorize"),
+        ("scientific", "inject-aox-reference-fault"),
+    }
+)
+
+
+def _require_explicit_mutation_idempotency(forwarded: Sequence[str]) -> None:
+    if tuple(forwarded[:2]) not in _FORMAL_MUTATION_ACTIONS:
+        return
+    values: list[str] = []
+    cursor = 2
+    while cursor < len(forwarded):
+        token = forwarded[cursor]
+        if token.startswith("--idempotency-key="):
+            values.append(token.split("=", 1)[1])
+        elif token == "--idempotency-key":
+            cursor += 1
+            if cursor < len(forwarded):
+                values.append(forwarded[cursor])
+            else:
+                values.append("")
+        cursor += 1
+    if len(values) != 1 or not values[0]:
+        _fail(
+            "public_conductor_idempotency_identity_required",
+            "every formal Host mutation requires one caller-selected idempotency identity",
+            identity="host_cli_args.idempotency-key",
+        )
 
 
 def validate_public_host_command(
@@ -550,6 +1175,17 @@ def validate_public_host_command(
             identity="host_cli_args",
         )
     receipts = _current_receipts(evidence_root=evidence_root, contract=contract)
+    pending = _pending_mutation_receipt(
+        evidence_root=evidence_root,
+        receipts=receipts,
+    )
+    if pending is not None:
+        _require_exact_pending_mutation(
+            pending,
+            expected=_mutation_request_from_command(forwarded, contract=contract),
+        )
+        return
+    _require_no_unreconciled_mutation(receipts)
     progress = _canonical_entry_progress(receipts, contract=contract)
     if progress == "session_create":
         _validate_session_create_command(forwarded, contract=contract)
@@ -574,6 +1210,7 @@ def validate_public_host_command(
             "formal scientific authority must use grant-task-authority",
             identity="host_cli_args.scientific.authorize",
         )
+    _require_explicit_mutation_idempotency(forwarded)
     if action == ["runtime", "drain"]:
         _validate_drain_command(forwarded)
 
@@ -610,16 +1247,16 @@ def _pregrant_terminal_sequences(
         upper_bound = (
             int(ordered_drains[index + 1]["sequence"])
             if index + 1 < len(ordered_drains)
-            else len(receipts) + 1
+            else max(int(receipt["sequence"]) for receipt in receipts) + 1
         )
         terminals = [
             status
             for status in statuses
             if drain_sequence < int(status["sequence"]) < upper_bound
             and status.get("route") == status_route
-            and dict(envelopes.get(int(status["sequence"]), {}).get("response") or {}).get(
-                "status"
-            )
+            and dict(
+                envelopes.get(int(status["sequence"]), {}).get("response") or {}
+            ).get("status")
             in _TERMINAL_RUNTIME_COMMAND_STATUSES
         ]
         if not (
@@ -661,7 +1298,8 @@ def resolve_pregrant_execution_task(
     evidence_root: Path,
     task_id: str,
 ) -> dict[str, Any]:
-    receipts = _current_receipts(evidence_root=evidence_root, contract=contract)
+    raw_receipts = _current_receipts(evidence_root=evidence_root, contract=contract)
+    receipts = effective_public_receipts(raw_receipts)
     session_id = str(contract["session_id"])
     validate_canonical_entry_receipts(
         receipts,
@@ -670,9 +1308,40 @@ def resolve_pregrant_execution_task(
         code="public_conductor_pregrant_state_invalid",
     )
     grant_route = f"/v3/sessions/{session_id}/scientific-attempt-authorizations"
-    if any(
-        receipt.get("method") == "POST" and receipt.get("route") == grant_route
+    pending = _pending_mutation_receipt(
+        evidence_root=evidence_root,
+        receipts=raw_receipts,
+    )
+    slot = dict(preflight.get("slot") or {})
+    policy = dict(slot.get("authority_policy") or {})
+    pending_sequence: int | None = None
+    if pending is not None:
+        _require_exact_pending_mutation(
+            pending,
+            expected={
+                "method": "POST",
+                "route": grant_route,
+                "request": authority_grant_payload(
+                    slot,
+                    campaign_id=str(preflight.get("campaign_id") or ""),
+                    task_id=task_id,
+                ),
+                "idempotency_key": str(policy.get("idempotency_key") or ""),
+            },
+        )
+        pending_sequence = int(pending["sequence"])
+    _require_no_unreconciled_mutation(
+        receipts[:-1] if pending_sequence is not None else receipts
+    )
+    grant_receipts = [
+        dict(receipt)
         for receipt in receipts
+        if receipt.get("method") == "POST" and receipt.get("route") == grant_route
+    ]
+    if grant_receipts and not (
+        pending_sequence is not None
+        and len(grant_receipts) == 1
+        and int(grant_receipts[0]["sequence"]) == pending_sequence
     ):
         _fail(
             "public_conductor_authority_already_granted",
@@ -681,7 +1350,8 @@ def resolve_pregrant_execution_task(
         )
     envelopes, _, _ = _response_descriptors(
         evidence_root=evidence_root,
-        receipts=receipts,
+        receipts=raw_receipts,
+        allowed_missing_sequence=pending_sequence,
     )
     terminal_sequences = _pregrant_terminal_sequences(
         receipts=receipts,
@@ -692,7 +1362,8 @@ def resolve_pregrant_execution_task(
     mutation_sequences = [
         int(receipt["sequence"])
         for receipt in receipts
-        if receipt.get("method") in {"POST", "PATCH", "PUT", "DELETE"}
+        if receipt.get("method") in {"POST", "PATCH"}
+        and int(receipt["sequence"]) != pending_sequence
     ]
     workspace_receipts = [
         dict(receipt)
@@ -701,8 +1372,7 @@ def resolve_pregrant_execution_task(
         and receipt.get("route") == workspace_route
         and int(receipt["sequence"]) > max(terminal_sequences)
         and (
-            not mutation_sequences
-            or int(receipt["sequence"]) > max(mutation_sequences)
+            not mutation_sequences or int(receipt["sequence"]) > max(mutation_sequences)
         )
     ]
     if len(workspace_receipts) != 1:
@@ -735,7 +1405,6 @@ def resolve_pregrant_execution_task(
             "operator-selected task is not the unique canonical execution task",
             identity="pregrant_workspace",
         )
-    slot = dict(preflight.get("slot") or {})
     if slot.get("session_id") != session_id:
         _fail(
             "public_task_late_binding_invalid",
@@ -749,6 +1418,7 @@ def _response_descriptors(
     *,
     evidence_root: Path,
     receipts: Sequence[Mapping[str, Any]],
+    allowed_missing_sequence: int | None = None,
 ) -> tuple[dict[int, dict[str, Any]], dict[int, Path], list[dict[str, Any]]]:
     envelopes: dict[int, dict[str, Any]] = {}
     paths: dict[int, Path] = {}
@@ -786,6 +1456,14 @@ def _response_descriptors(
             }
         )
     expected_sequences = {int(receipt["sequence"]) for receipt in receipts}
+    if allowed_missing_sequence is not None:
+        if allowed_missing_sequence not in expected_sequences:
+            _fail(
+                "public_conductor_response_set_incomplete",
+                "allowed missing response does not bind a current receipt",
+                identity="sealed_responses",
+            )
+        expected_sequences.remove(allowed_missing_sequence)
     if set(envelopes) != expected_sequences:
         _fail(
             "public_conductor_response_set_incomplete",
@@ -806,8 +1484,7 @@ def _final_public_reads(
     workspace_sequences = [
         int(receipt["sequence"])
         for receipt in receipts
-        if receipt.get("method") == "GET"
-        and receipt.get("route") == workspace_route
+        if receipt.get("method") == "GET" and receipt.get("route") == workspace_route
     ]
     event_sequences = [
         int(receipt["sequence"])
@@ -826,7 +1503,7 @@ def _final_public_reads(
     mutation_sequences = [
         int(receipt["sequence"])
         for receipt in receipts
-        if receipt.get("method") in {"POST", "PATCH", "PUT", "DELETE"}
+        if receipt.get("method") in {"POST", "PATCH"}
     ]
     if mutation_sequences and min(workspace_sequence, event_sequence) <= max(
         mutation_sequences
@@ -890,9 +1567,7 @@ def _handoff_sequences(
                 identity="runtime_handoffs",
             )
         return set()
-    candidate_sequences = {
-        int(receipt["sequence"]) for receipt in (*drains, *statuses)
-    }
+    candidate_sequences = {int(receipt["sequence"]) for receipt in (*drains, *statuses)}
     handoff_envelopes = [
         dict(envelopes[sequence]) for sequence in sorted(candidate_sequences)
     ]
@@ -938,8 +1613,8 @@ def _build_retirement_readiness(
     require_active_host: bool,
 ) -> dict[str, Any]:
     if require_active_host:
-        preflight, contract, startup, evidence_root = (
-            load_active_public_host_context(preflight_path)
+        preflight, contract, startup, evidence_root = load_active_public_host_context(
+            preflight_path
         )
     else:
         evidence_root, contract, preflight = load_conductor_execution_contract(
@@ -951,23 +1626,26 @@ def _build_retirement_readiness(
             identity="host_startup",
         )
         startup = _validate_startup(
-            startup_value, preflight=preflight,
+            startup_value,
+            preflight=preflight,
             attempt_start_claim_digest=str(start_claim["claim_digest"]),
         )
     receipt_chain_path = evidence_root / str(contract["receipt_chain_name"])
     receipts, receipt_bytes = _load_receipt_chain(
         receipt_chain_path,
         allow_failure_responses=True,
+        required_schema_id=PUBLIC_API_RECEIPT_SCHEMA_ID,
     )
+    effective_receipts = effective_public_receipts(receipts)
     session_id = str(contract["session_id"])
     validate_canonical_entry_receipts(
-        receipts,
+        effective_receipts,
         session_id=session_id,
         workflow_ref=_contract_workflow_ref(contract),
         code="public_conductor_retirement_entry_invalid",
     )
     validate_bounded_drain_receipts(
-        receipts,
+        effective_receipts,
         session_id=session_id,
         code="public_conductor_retirement_drain_invalid",
     )
@@ -976,12 +1654,12 @@ def _build_retirement_readiness(
         receipts=receipts,
     )
     workspace_sequence, event_sequence, workspace, events = _final_public_reads(
-        receipts=receipts,
+        receipts=effective_receipts,
         envelopes=envelopes,
         session_id=session_id,
     )
     handoff_sequences = _handoff_sequences(
-        receipts=receipts,
+        receipts=effective_receipts,
         envelopes=envelopes,
         events=events,
         session_id=session_id,
@@ -989,11 +1667,11 @@ def _build_retirement_readiness(
     )
     attempt_state = workspace.get("scientific_attempts")
     attempt_count = (
-        attempt_state.get("attempt_count")
-        if isinstance(attempt_state, dict)
-        else None
+        attempt_state.get("attempt_count") if isinstance(attempt_state, dict) else None
     )
-    attempts = attempt_state.get("attempts") if isinstance(attempt_state, dict) else None
+    attempts = (
+        attempt_state.get("attempts") if isinstance(attempt_state, dict) else None
+    )
     if not (
         type(attempt_count) is int
         and attempt_count in {0, 1}
@@ -1042,15 +1720,15 @@ def _build_retirement_readiness(
             "last_sequence": len(receipts),
         },
         "sealed_responses": response_descriptors,
-        "final_workspace_response_name": response_paths[
-            workspace_sequence
-        ].name,
+        "final_workspace_response_name": response_paths[workspace_sequence].name,
         "final_event_response_name": response_paths[event_sequence].name,
         "handoff_response_names": [
             response_paths[sequence].name for sequence in sorted(handoff_sequences)
         ],
         "evidence_response_name": (
-            None if evidence_sequence is None else response_paths[evidence_sequence].name
+            None
+            if evidence_sequence is None
+            else response_paths[evidence_sequence].name
         ),
         "sealed_at": sealed_at,
     }
@@ -1129,9 +1807,7 @@ def retirement_readiness_sources(
         preflight_path=preflight_path,
     )
     evidence_root = readiness_path.expanduser().resolve(strict=True).parent
-    descriptor_names = {
-        str(item["name"]) for item in value["sealed_responses"]
-    }
+    descriptor_names = {str(item["name"]) for item in value["sealed_responses"]}
 
     def source(name: object, *, identity: str) -> Path:
         if not isinstance(name, str) or name not in descriptor_names:

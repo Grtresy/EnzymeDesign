@@ -35,12 +35,17 @@ violation 和 exit outcome。
 | `RuntimeFoundation`、`ExecutionAdapter` | KEEP | Host foundation 与 execution adapter 的 active shared seam |
 | `openzyme-tools` catalog/registry | KEEP | Host foundation 与 execution implementation 的 authoritative caller |
 | `HpcRunnerExecutionAdapter` | KEEP | Host foundation 的 runner adapter；opaque run id 只收紧生命周期参数，没有消除 adapter |
+| runner `reserve/submit/query/resume/reconcile` opaque lifecycle | KEEP | current generic runner owner；duplicate submit 不 resume/replay；query 只读，resume 只推进同一 safe pre-effect occurrence，reconcile 只恢复 exact durable outcome，不能降级为 raw job/runspec lifecycle |
 | runtime `RepoBackedHpcCatalogProvider` shim | RETIRE-BLOCKED | 主实现已在 `openzyme-tools`，runtime 仍公开 re-export；外部 import 状态 unknown |
 | `LegacyFunctionToolRuntime` | RETIRE-BLOCKED | core router 仍包装未迁移的 function handlers，不能提前删除 |
 | `DesignTool` / `DesignToolContext` | RETIRE-BLOCKED | 仓库 production 只剩公开 re-export，但外部 import 状态 unknown |
 | `ToolSpec.to_openai_tool` | RETIRE-BLOCKED | provider compatibility catalog 仍有 production call |
 | `execution.pipeline.start` | DEPRECATE | sandbox-first 是稳定 authoring path，但 engine runtime、migration/eval/projection 仍持有显式兼容语义 |
 | AOX `--attempt-authority-consumption` | DEPRECATE | consume/preflight 正常路径已从 canonical plan owner 推导 exact sibling；专用 argv scanner 排除 parser owner definition，当前仓库 production caller 为零；参数只保留为相等性断言，外部 caller 状态 unknown |
+| AOX `aox_config_contract@1` / `aox_config_candidate@1` / `aox_cutover_config_check@2` | KEEP | current public config-candidate owner；validation 为 no-effect，publication durability 无法证明时保留 unproven/reconcile-required；历史 `check@1` 只作为冻结输出解释，不得静默 promotion |
+| AOX `aox_attempt_authority_consume_receipt@2` | KEEP | current public consume projection绑定 exact request/idempotency/handle、exact-three、每 slot `max_attempts=1` 与 budget/effect facts；`@1` 仅冻结输出解释，不存在 current writer 或 promotion reader |
+| AOX `aox_public_conductor_execution_contract@4` | KEEP | current formal mechanical-entry contract新增 deterministic session/message idempotency identities；`@1/@2/@3` 仅历史只读且不得驱动新动作 |
+| Host `openzyme_public_api_receipt@3` | KEEP | current request-identity/effect/terminal-scope receipt；仅最后且唯一的 current successful mutation 可在 receipt-written/envelope-missing window exact 收敛；reader 仅按 homogeneous `@2` 原 shape 核验历史 chain，禁止 historical/current 混链、续写或补 idempotency |
 | `ExecutionOutcome.remote_run_dir` | DEPRECATE | DTO 构造仍写入；不得把该字段重新变成 agent/runner 授权边界 |
 | `ExecutionOutcome.job_id` | RETIRE-BLOCKED | 仓库无 production read，但公开 DTO 的外部 caller 状态 unknown |
 | raw runner `job_id` / `remote_run_dir` / `runspec` lifecycle call shape | RETIRED | active production caller 为零；opaque server handle 是唯一产品生命周期授权 |

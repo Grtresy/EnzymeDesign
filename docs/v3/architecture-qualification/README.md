@@ -82,12 +82,12 @@ literals，不依赖或恢复已删除的 closure-stage production modules。
 `evidence-projection.aox-fresh-host-sandbox-bootstrap`，并以
 `aox_public_conductor_runtime_qualification@1` observation收口真实 production
 composition：场景通过`HostApiDependencies/create_app()`组成actual FastAPI应用，以current
-conductor execution contract `@3`和thin Host CLI调用public route，使用file-backed SQLite和只注入agent边界的deterministic
+conductor execution contract `@4`和thin Host CLI调用public route，使用file-backed SQLite和只注入agent边界的deterministic
 model/runtime先调用production Host bootstrap，在session/model前证明全空registry、唯一immutable
 image row、source receipt与public ready status，再建立exact session、唯一canonical message + pinned
 workflow entry、首个非写死`1/8`的bounded drain、sealed terminal、唯一execution-task read与专用
 late-bound authority。缺pin和第二条message必须在Host调用、receipt append和response target消费前拒绝；
-legacy execution contract `@1/@2`不得驱动current action。execution assignee随后经production lane/scientific tool handler
+legacy execution contract `@1/@2/@3`不得驱动current action。execution assignee随后经production lane/scientific tool handler
 从`scientific.attempt.inspect`读取真实envelope并创建lane/admission；不存在model envelope side
 channel或master lane fixture。wrong task与wrong actor在零attempt状态被拒绝，Host internal finalizer才
 生成late-bound identity，独立reader再证明持久化。场景还证明terminal response与唯一
@@ -105,7 +105,7 @@ public route或receipt，也不把non-live witness升级为cutover evidence。
 scientific mutation/finalizer、automatic runner/observer及其CLI/client/dead Core入口确实缺席，
 而非靠一个source symbol宣称positive reachability。当前场景同时要求 public conductor 暴露
 `public-host`、`grant-task-authority`、`seal-conductor-state`、`seal-slot-failure`、
-`verify-slot-failure`：preflight 必须发布source-bound execution contract `@3`，formal public command
+`verify-slot-failure`：preflight 必须发布source-bound execution contract `@4`，formal public command
 先固定exact single entry和真实late-bound grant，再只绑定identity/receipt/response而保留后续caller
 策略；退休前 readiness 必须重验 one-to-one response、bounded handoff 与最终 public reads。缺少该
 readiness 时 supervisor 拒绝操作员退休并保持原 Host 可读。pre-attempt formal failure 的 finalizer、
@@ -242,14 +242,18 @@ closure-stage commands 已退役，不能通过 qualification report 恢复。
 
 qualification 不读取 deployment settings，也不证明 runner 当前可达。full admission 之后、`pin`
 之前，operator 必须先从当前 AOX 合同装配完整 command-scoped launch profile，再只通过 public
-`openzyme-aox-cutover check-config` 运行 production effective-config 解析。未经装配的 ambient
-environment 不是 profile；已知普通 Host 默认值不符合当前闭集时，不得用一条无 profile 的首次检查
-制造可预见失败。批准 fresh `pin` 的 preparation 覆盖把合同明确要求的非敏感值临时用于第一次检查和
-随后 `pin`，两者必须保持相同环境映射与 ledger identity。该命令不接收 qualification report、不写
-state、不连接 runner，只生成 `aox_cutover_config_check@1`。它不能被 private builder import、静态
-源码检查或 pass boolean 替代，也不能冒充 admission/pin。完整 profile 的首次检查失败后不得补值或
-corrected retry。随后 `pin` 的 forced-SSH deterministic fixture 是首次真实 runner effect，必须由
-准备授权明确覆盖。
+`openzyme-aox-cutover config-contract` 提供唯一 machine-readable executable profile descriptor 与 candidate
+lifecycle：字段映射来自实际 settings/reliability resolver，AOX eligibility 来自 closed normalizer 的同一约束
+owner；任一 required field 缺失或 constraint projection drift 都 fail closed。`config-candidate` 只绑定 descriptor
+列出的 AOX-relevant environment、ledger 与 runner-config identity；unlisted environment 被忽略，credential 只绑定
+presence，private non-credential 只绑定 digest，paths 单独绑定 resolved path/content identity，并以 credential-free、
+mode-private atomic no-replace `aox_config_candidate@1` 发布。`check-config --candidate` 运行 production
+effective-config 解析并重验 source identity，只生成 `aox_cutover_config_check@2`，不接收 qualification
+report、不写产品 state、不连接 runner。失败的 `no_effect/terminal` 只终结
+`config_candidate_occurrence`；agent 可显式处置后依据 current contract 发布 identity-distinct candidate，再
+执行一条新的 explicit validation。qualification 必须拒绝 automatic fill/retry、rejected identity reuse、
+private builder import 与 runner/provider probe。通过的 candidate 也不能冒充 admission/pin；随后 `pin` 的
+forced-SSH deterministic fixture 是首次真实 runner effect，必须由准备授权明确覆盖。
 
 pin transaction marker 是 `aox_cutover_pin_commit@3`，public pin receipt 是
 `aox_cutover_pin_receipt@3`。transaction 还包含 credential-free
@@ -272,9 +276,14 @@ assertion 保持兼容、错误 assertion 在 receipt/claim/root/effect 前拒�
 basename。旧 `--attempt-authority-consumption` 的外部 caller 未知，故本轮不 breaking-remove。
 `aox_attempt_authority_slot_claim@3`、`aox_attempt_preflight@5`与
 `aox_supervised_host_receipt@4`只闭合
-campaign/ordinal/session/root/policy；current `aox_public_conductor_execution_contract@3`先闭合exact session与
+campaign/ordinal/session/root/policy；current `aox_public_conductor_execution_contract@4`先闭合exact session与
 唯一pinned message，task与scientific authorization再通过专用命令于首个public sealed
-drain/terminal/workspace read后late-bind，并声明attempt-start claim contract。execution contract `@1/@2`只读，public drain只按Host schema
+drain/terminal/workspace read后late-bind，并声明attempt-start claim contract与deterministic entry keys。
+execution contract `@1/@2/@3`只读，public `openzyme_public_api_receipt@3`
+绑定 request identity、effect/retry/reconciliation 与 occurrence-local terminal scope；相同 request/response
+只收敛到一条 receipt。receipt-written/envelope-missing window 仅允许最后且唯一的 current successful
+mutation 以 exact command/request/idempotency 重入；GET、历史/较早/多个缺口、unknown effect 或 drift 均
+fail closed。public drain只按Host schema
 `1..100` signals/steps与hidden enqueue关闭验证，不把历史`1/8`写成qualification policy。
 historical single-slot diagnostic plan/consumption仍永久`acceptance_eligible=false`，但current
 product无mint/consume命令。未来单独批准的Codex conductor只经public Host API/CLI编排；该

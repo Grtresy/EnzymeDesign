@@ -21,7 +21,9 @@ from .receipts import seal_public_response
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="openzyme", description="OpenZyme V3 Host CLI")
+    parser = argparse.ArgumentParser(
+        prog="openzyme", description="OpenZyme V3 Host CLI"
+    )
     parser.add_argument("--host", dest="base_url", help="Host API base URL")
     parser.add_argument("--project-id", help="Default project ID")
     parser.add_argument("--session-id", help="Default V3 session ID")
@@ -47,17 +49,29 @@ def _build_parser() -> argparse.ArgumentParser:
     sessions = subparsers.add_parser("sessions", help="Session commands")
     session_sub = sessions.add_subparsers(dest="sessions_command", required=True)
     session_create = session_sub.add_parser("create", help="Create a V3 session")
-    session_create.add_argument("--project-id", dest="command_project_id", help="Project ID override")
-    session_create.add_argument("--session-id", dest="command_session_id", help="Session ID override")
+    session_create.add_argument(
+        "--project-id", dest="command_project_id", help="Project ID override"
+    )
+    session_create.add_argument(
+        "--session-id", dest="command_session_id", help="Session ID override"
+    )
     session_create.add_argument("--objective", required=True, help="Session objective")
     session_create.add_argument("--title", help="Session title")
+    session_create.add_argument("--idempotency-key")
     session_show = session_sub.add_parser("show", help="Show V3 workspace")
-    session_show.add_argument("--session-id", dest="command_session_id", help="Session ID override")
-    session_message = session_sub.add_parser("message", help="Send a message to a V3 session")
-    session_message.add_argument("--session-id", dest="command_session_id", help="Session ID override")
+    session_show.add_argument(
+        "--session-id", dest="command_session_id", help="Session ID override"
+    )
+    session_message = session_sub.add_parser(
+        "message", help="Send a message to a V3 session"
+    )
+    session_message.add_argument(
+        "--session-id", dest="command_session_id", help="Session ID override"
+    )
     session_message.add_argument("--message", required=True, help="User message")
     session_message.add_argument("--task-id", help="Focused task ID")
     session_message.add_argument("--lane-id", help="Focused lane ID")
+    session_message.add_argument("--idempotency-key")
     session_message.add_argument(
         "--skill-key",
         action="append",
@@ -78,13 +92,16 @@ def _build_parser() -> argparse.ArgumentParser:
     tasks = subparsers.add_parser("tasks", help="Task board commands")
     task_sub = tasks.add_subparsers(dest="tasks_command", required=True)
     task_create = task_sub.add_parser("create", help="Create a V3 task")
-    task_create.add_argument("--session-id", dest="command_session_id", help="Session ID override")
+    task_create.add_argument(
+        "--session-id", dest="command_session_id", help="Session ID override"
+    )
     task_create.add_argument("--task-id", help="Task ID override")
     task_create.add_argument("--subject", required=True)
     task_create.add_argument("--description", default="")
     task_create.add_argument("--priority", default="normal")
     task_create.add_argument("--kind", default="general")
     task_create.add_argument("--lane-id")
+    task_create.add_argument("--idempotency-key")
     task_update = task_sub.add_parser("update", help="Update a V3 task")
     task_update.add_argument("--task-id", required=True)
     task_update.add_argument("--status")
@@ -92,27 +109,37 @@ def _build_parser() -> argparse.ArgumentParser:
     task_update.add_argument("--description")
     task_update.add_argument("--priority")
     task_update.add_argument("--lane-id")
+    task_update.add_argument("--idempotency-key")
 
     lanes = subparsers.add_parser("lanes", help="Lane commands")
     lane_sub = lanes.add_subparsers(dest="lanes_command", required=True)
     lane_create = lane_sub.add_parser("create", help="Create a V3 lane")
-    lane_create.add_argument("--session-id", dest="command_session_id", help="Session ID override")
+    lane_create.add_argument(
+        "--session-id", dest="command_session_id", help="Session ID override"
+    )
     lane_create.add_argument("--lane-id")
     lane_create.add_argument("--name", required=True)
     lane_create.add_argument("--cwd", default=".")
     lane_create.add_argument("--branch-name")
+    lane_create.add_argument("--idempotency-key")
     lane_claim = lane_sub.add_parser("claim", help="Claim a V3 lane")
     lane_claim.add_argument("--lane-id", required=True)
+    lane_claim.add_argument("--idempotency-key")
     lane_keep = lane_sub.add_parser("keep", help="Release/keep a V3 lane for later")
     lane_keep.add_argument("--lane-id", required=True)
+    lane_keep.add_argument("--idempotency-key")
     lane_remove = lane_sub.add_parser("remove", help="Remove a V3 lane")
     lane_remove.add_argument("--lane-id", required=True)
+    lane_remove.add_argument("--idempotency-key")
 
     approvals = subparsers.add_parser("approvals", help="Approval commands")
     approval_sub = approvals.add_subparsers(dest="approvals_command", required=True)
     approval_resolve = approval_sub.add_parser("resolve", help="Resolve a V3 approval")
     approval_resolve.add_argument("--approval-id", required=True)
-    approval_resolve.add_argument("--decision", choices=("approved", "rejected"), required=True)
+    approval_resolve.add_argument(
+        "--decision", choices=("approved", "rejected"), required=True
+    )
+    approval_resolve.add_argument("--idempotency-key")
     approval_pending = approval_sub.add_parser(
         "pending",
         help="List pending approvals for one session",
@@ -200,6 +227,30 @@ def _build_parser() -> argparse.ArgumentParser:
     scientific_fault.add_argument("--attempt-id", required=True)
     scientific_fault.add_argument("--artifact-id", required=True)
     scientific_fault.add_argument("--idempotency-key", required=True)
+
+    operations = subparsers.add_parser(
+        "operations",
+        help="Read existing durable Host operation facts without replay",
+    )
+    operation_sub = operations.add_subparsers(
+        dest="operations_command",
+        required=True,
+    )
+    operation_observe = operation_sub.add_parser(
+        "observe",
+        help="Observe one exact durable mutation owner",
+    )
+    operation_observe.add_argument(
+        "--session-id",
+        dest="command_session_id",
+        help="Session identity for the original mutation",
+    )
+    operation_observe.add_argument("--command-type", required=True)
+    operation_observe.add_argument("--scope-ref", required=True)
+    operation_observe.add_argument("--idempotency-key", required=True)
+    operation_observe.add_argument("--request-digest", required=True)
+    operation_observe.add_argument("--attempt-id")
+    operation_observe.add_argument("--artifact-id")
     return parser
 
 
@@ -267,14 +318,18 @@ def run_cli(
         if args.resource == "sessions":
             if args.sessions_command == "create":
                 project_id = _require_value(
-                    getattr(args, "command_project_id", None) or args.project_id or config.project_id,
+                    getattr(args, "command_project_id", None)
+                    or args.project_id
+                    or config.project_id,
                     "--project-id",
                 )
                 payload = client.create_v3_session(
                     project_id=project_id,
                     objective=args.objective,
                     title=args.title,
-                    session_id=getattr(args, "command_session_id", None) or args.session_id,
+                    session_id=getattr(args, "command_session_id", None)
+                    or args.session_id,
+                    idempotency_key=args.idempotency_key,
                 )
                 return _emit_response(
                     args=args,
@@ -301,6 +356,7 @@ def run_cli(
                     task_id=args.task_id,
                     lane_id=args.lane_id,
                     skill_keys=args.skill_key,
+                    idempotency_key=args.idempotency_key,
                 )
                 renderer = render_v3_command_result
             if args.sessions_command == "events":
@@ -336,7 +392,10 @@ def run_cli(
                     payload_body["task_id"] = args.task_id
                 if args.lane_id:
                     payload_body["lane_id"] = args.lane_id
-                payload = client.create_v3_task(payload_body)
+                payload = client.create_v3_task(
+                    payload_body,
+                    idempotency_key=args.idempotency_key,
+                )
                 return _emit_response(
                     args=args,
                     client=client,
@@ -353,7 +412,11 @@ def run_cli(
                 value = getattr(args, field)
                 if value is not None:
                     payload_body[field] = value
-            payload = client.update_v3_task(args.task_id, payload_body)
+            payload = client.update_v3_task(
+                args.task_id,
+                payload_body,
+                idempotency_key=args.idempotency_key,
+            )
             return _emit_response(
                 args=args,
                 client=client,
@@ -381,13 +444,25 @@ def run_cli(
                     payload_body["lane_id"] = args.lane_id
                 if args.branch_name:
                     payload_body["branch_name"] = args.branch_name
-                payload = client.create_v3_lane(payload_body)
+                payload = client.create_v3_lane(
+                    payload_body,
+                    idempotency_key=args.idempotency_key,
+                )
             elif args.lanes_command == "claim":
-                payload = client.claim_v3_lane(args.lane_id)
+                payload = client.claim_v3_lane(
+                    args.lane_id,
+                    idempotency_key=args.idempotency_key,
+                )
             elif args.lanes_command == "keep":
-                payload = client.keep_v3_lane(args.lane_id)
+                payload = client.keep_v3_lane(
+                    args.lane_id,
+                    idempotency_key=args.idempotency_key,
+                )
             else:
-                payload = client.remove_v3_lane(args.lane_id)
+                payload = client.remove_v3_lane(
+                    args.lane_id,
+                    idempotency_key=args.idempotency_key,
+                )
             return _emit_response(
                 args=args,
                 client=client,
@@ -408,7 +483,11 @@ def run_cli(
                 )
                 payload = client.get_v3_pending_approvals(session_id)
             else:
-                payload = client.resolve_v3_approval(args.approval_id, args.decision)
+                payload = client.resolve_v3_approval(
+                    args.approval_id,
+                    args.decision,
+                    idempotency_key=args.idempotency_key,
+                )
             return _emit_response(
                 args=args,
                 client=client,
@@ -422,17 +501,14 @@ def run_cli(
                 renderer = render_v3_runtime_health
             else:
                 session_id = _require_value(
-                    getattr(args, "command_session_id", None)
-                    or args.session_id,
+                    getattr(args, "command_session_id", None) or args.session_id,
                     "--session-id",
                 )
                 if args.runtime_command == "drain":
                     if args.max_signals <= 0:
                         raise ValueError("--max-signals must be positive")
                     if args.max_steps_per_agent <= 0:
-                        raise ValueError(
-                            "--max-steps-per-agent must be positive"
-                        )
+                        raise ValueError("--max-steps-per-agent must be positive")
                     payload = client.drain_v3_runtime(
                         session_id,
                         max_signals=args.max_signals,
@@ -485,6 +561,27 @@ def run_cli(
                 raise ValueError(
                     f"unsupported scientific command: {args.scientific_command}"
                 )
+            return _emit_response(
+                args=args,
+                client=client,
+                payload=payload,
+                rendered=render_json(payload),
+                stdout=stdout,
+            )
+        if args.resource == "operations":
+            session_id = _require_value(
+                getattr(args, "command_session_id", None) or args.session_id,
+                "--session-id",
+            )
+            payload = client.observe_v3_mutation_operation(
+                session_id=session_id,
+                command_type=args.command_type,
+                scope_ref=args.scope_ref,
+                idempotency_key=args.idempotency_key,
+                request_digest=args.request_digest,
+                attempt_id=args.attempt_id,
+                artifact_id=args.artifact_id,
+            )
             return _emit_response(
                 args=args,
                 client=client,

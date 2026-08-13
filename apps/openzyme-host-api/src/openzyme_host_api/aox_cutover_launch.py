@@ -165,9 +165,7 @@ class AoxCutoverLaunchError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.details = {} if details is None else dict(details)
-        self.public_details = (
-            {} if public_details is None else dict(public_details)
-        )
+        self.public_details = {} if public_details is None else dict(public_details)
 
 
 def _toolchain_pin_public_failure_details(
@@ -176,6 +174,9 @@ def _toolchain_pin_public_failure_details(
     stage: str,
     result: Mapping[str, object] | None = None,
     exception: Exception | None = None,
+    request_digest: str | None = None,
+    reservation_identity_digest: str | None = None,
+    runner_run_id: str | None = None,
 ) -> dict[str, object]:
     """Project only closed, source-bound runner facts across the public boundary."""
 
@@ -184,30 +185,62 @@ def _toolchain_pin_public_failure_details(
         "tool_id": tool_id,
         "stage": stage,
         "effect_certainty": "unproven",
+        "phase": "allocated",
+        "retry_eligibility": "reconcile_required",
+        "reconciliation_required": True,
+        "terminal_scope": "runner_operation_occurrence",
+        "authority_scope": "preparation_only",
+        "scientific_attempt_counted": False,
     }
     if result is not None:
         effect_certainty = result.get("effect_certainty")
-        if effect_certainty in _PUBLIC_RUNNER_EFFECT_CERTAINTIES:
+        if (
+            isinstance(effect_certainty, str)
+            and effect_certainty in _PUBLIC_RUNNER_EFFECT_CERTAINTIES
+        ):
             details["effect_certainty"] = effect_certainty
-        runner_run_id = result.get("run_id")
+        phase = result.get("phase")
+        if isinstance(phase, str):
+            details["phase"] = phase
+        retry_eligibility = result.get("retry_eligibility")
+        if isinstance(retry_eligibility, str):
+            details["retry_eligibility"] = retry_eligibility
+        reconciliation_required = result.get("reconciliation_required")
+        if isinstance(reconciliation_required, bool):
+            details["reconciliation_required"] = reconciliation_required
+        runner_run_id = str(result.get("run_id") or runner_run_id or "")
+        request_digest = str(result.get("request_digest") or request_digest or "")
+        reservation_identity_digest = str(
+            result.get("reservation_identity_digest")
+            or reservation_identity_digest
+            or ""
+        )
         if (
             isinstance(runner_run_id, str)
             and _PUBLIC_RUNNER_ID_PATTERN.fullmatch(runner_run_id) is not None
         ):
             details["runner_run_id"] = runner_run_id
-        runner_attempt_receipt_digest = result.get(
-            "runner_attempt_receipt_digest"
-        )
+        runner_attempt_receipt_digest = result.get("runner_attempt_receipt_digest")
         if (
             isinstance(runner_attempt_receipt_digest, str)
             and _DIGEST_PATTERN.fullmatch(runner_attempt_receipt_digest) is not None
         ):
-            details["runner_attempt_receipt_digest"] = (
-                runner_attempt_receipt_digest
-            )
+            details["runner_attempt_receipt_digest"] = runner_attempt_receipt_digest
         error_code = result.get("error_code")
     else:
         error_code = getattr(exception, "error_code", None)
+    if request_digest is not None and _DIGEST_PATTERN.fullmatch(request_digest):
+        details["request_digest"] = request_digest
+    if reservation_identity_digest is not None and _DIGEST_PATTERN.fullmatch(
+        reservation_identity_digest
+    ):
+        details["reservation_identity_digest"] = reservation_identity_digest
+        details["idempotency_key"] = reservation_identity_digest
+    if (
+        runner_run_id is not None
+        and _PUBLIC_RUNNER_ID_PATTERN.fullmatch(runner_run_id) is not None
+    ):
+        details["runner_run_id"] = runner_run_id
     if (
         isinstance(error_code, str)
         and _PUBLIC_RUNNER_ERROR_CODE_PATTERN.fullmatch(error_code) is not None
@@ -250,13 +283,15 @@ class AoxCutoverLaunchSnapshot:
 
 
 class _McpHpcServer(Protocol):
-    def call_tool(
-        self,
-        name: str,
-        arguments: dict[str, Any] | None,
-    ) -> dict[str, Any]: ...
+    def reserve_execution(self, identity: dict[str, Any]) -> dict[str, str]: ...
 
-    def resolve_artifact_ref(self, artifact_ref: str) -> str: ...
+    def submit_reserved_execution(
+        self,
+        *,
+        run_id: str,
+        runspec: dict[str, Any],
+        mode_override: str | None = None,
+    ) -> dict[str, Any]: ...
 
 
 def _canonical_digest(payload: object) -> str:
@@ -1237,11 +1272,43 @@ def _compile_toolchain_pin_request(
     )
 
 
+def _toolchain_pin_reservation_identity(
+    *,
+    route_name: str,
+    tool_id: str,
+    adapter_id: str,
+    runspec: Mapping[str, object],
+    source_identity_digest: str,
+) -> dict[str, str]:
+    request_digest = _canonical_digest(runspec)
+    source_suffix = source_identity_digest.removeprefix("sha256:")[:24]
+    return {
+        "schema_version": "runner_execution_reservation_identity@1",
+        "execution_id": f"aox-pin-{source_suffix}",
+        "operation_id": f"aox-pin-{route_name}",
+        "operation_digest": _canonical_digest(
+            {
+                "capability_id": "aox.toolchain-pin",
+                "route_name": route_name,
+                "tool_id": tool_id,
+                "adapter_id": adapter_id,
+                "request_digest": request_digest,
+            }
+        ),
+        "approval_digest": source_identity_digest,
+        "route_policy_id": "aox-toolchain-pin",
+        "adapter_policy_id": adapter_id,
+        "request_digest": request_digest,
+        "execution_mode": "ssh",
+    }
+
+
 def attest_aox_toolchain_image_digests(
     *,
     server: _McpHpcServer,
     repo_root: Path,
     runner_contract_expectations: Mapping[str, object],
+    source_identity_digest: str,
 ) -> dict[str, str]:
     """Attest all AOX SIF bytes in the SSH shell that executes real payloads.
 
@@ -1251,6 +1318,12 @@ def attest_aox_toolchain_image_digests(
     discovery receipt, or Slurm metadata is accepted as an image identity.
     """
 
+    if _DIGEST_PATTERN.fullmatch(source_identity_digest) is None:
+        raise AoxCutoverLaunchError(
+            "aox_launch_toolchain_pin_source_identity_invalid",
+            "AOX toolchain pin requires one exact source identity digest",
+        )
+
     expected_contracts = _runner_expectations_by_tool_id(runner_contract_expectations)
     input_sequences = _pin_fixture(repo_root, "input_sequences.fasta")
     model_alignment = _pin_fixture(repo_root, "msa.sto")
@@ -1259,6 +1332,9 @@ def attest_aox_toolchain_image_digests(
     image_digests: dict[str, str] = {}
 
     for route_name in _TOOLCHAIN_PIN_ORDER:
+        reservation_identity: dict[str, str] | None = None
+        reservation_identity_digest: str | None = None
+        runner_run_id: str | None = None
         expected = AOX_TOOLCHAIN_RUNTIME_CONTRACTS[route_name]
         tool_id = str(expected["tool_id"])
         if route_name in {"mafft", "cd-hit"}:
@@ -1300,12 +1376,20 @@ def attest_aox_toolchain_image_digests(
                 artifacts=artifacts,
                 tool_inputs=tool_inputs,
             )
-            result = server.call_tool(
-                "exec.run",
-                {
-                    "runspec": request["runspec"],
-                    "mode_override": "ssh",
-                },
+            reservation_identity = _toolchain_pin_reservation_identity(
+                route_name=route_name,
+                tool_id=tool_id,
+                adapter_id=str(expected["adapter_id"]),
+                runspec=dict(request["runspec"]),
+                source_identity_digest=source_identity_digest,
+            )
+            reservation = server.reserve_execution(reservation_identity)
+            runner_run_id = str(reservation["run_id"])
+            reservation_identity_digest = str(reservation["identity_digest"])
+            result = server.submit_reserved_execution(
+                run_id=runner_run_id,
+                runspec=dict(request["runspec"]),
+                mode_override="ssh",
             )
         except AoxCutoverLaunchError:
             raise
@@ -1321,6 +1405,13 @@ def attest_aox_toolchain_image_digests(
                     tool_id=tool_id,
                     stage="runner_call",
                     exception=exc,
+                    request_digest=(
+                        None
+                        if reservation_identity is None
+                        else str(reservation_identity["request_digest"])
+                    ),
+                    reservation_identity_digest=reservation_identity_digest,
+                    runner_run_id=runner_run_id,
                 ),
             ) from exc
         if (
@@ -1330,6 +1421,12 @@ def attest_aox_toolchain_image_digests(
             or result.get("exit_code") != 0
             or result.get("selected_mode") != "ssh"
             or result.get("error_code") is not None
+            or result.get("request_digest") != reservation_identity["request_digest"]
+            or result.get("reservation_identity_digest") != reservation_identity_digest
+            or _DIGEST_PATTERN.fullmatch(
+                str(result.get("runner_attempt_receipt_digest") or "")
+            )
+            is None
         ):
             raise AoxCutoverLaunchError(
                 "aox_launch_toolchain_pin_execution_failed",
@@ -1339,6 +1436,9 @@ def attest_aox_toolchain_image_digests(
                     tool_id=tool_id,
                     stage="runner_result",
                     result=result if isinstance(result, Mapping) else None,
+                    request_digest=str(reservation_identity["request_digest"]),
+                    reservation_identity_digest=reservation_identity_digest,
+                    runner_run_id=runner_run_id,
                 ),
             )
         runtime_identity = result.get("toolchain_runtime_identity")
@@ -1350,6 +1450,14 @@ def attest_aox_toolchain_image_digests(
                 "aox_launch_toolchain_pin_identity_missing",
                 "AOX toolchain pin lacks its closed same-shell runtime identity",
                 details={"tool_id": tool_id},
+                public_details=_toolchain_pin_public_failure_details(
+                    tool_id=tool_id,
+                    stage="runner_result",
+                    result=result,
+                    request_digest=str(reservation_identity["request_digest"]),
+                    reservation_identity_digest=reservation_identity_digest,
+                    runner_run_id=runner_run_id,
+                ),
             )
         expected_runner = expected_contracts[tool_id]
         expected_identity = {
@@ -1371,6 +1479,14 @@ def attest_aox_toolchain_image_digests(
                 "aox_launch_toolchain_pin_identity_mismatch",
                 "AOX toolchain pin identity differs from the effective runner contract",
                 details={"tool_id": tool_id, "fields": mismatched},
+                public_details=_toolchain_pin_public_failure_details(
+                    tool_id=tool_id,
+                    stage="runner_result",
+                    result=result,
+                    request_digest=str(reservation_identity["request_digest"]),
+                    reservation_identity_digest=reservation_identity_digest,
+                    runner_run_id=runner_run_id,
+                ),
             )
         image_digest = _require_digest(
             runtime_identity.get("image_digest"),
@@ -1387,6 +1503,14 @@ def attest_aox_toolchain_image_digests(
                 "aox_launch_toolchain_pin_output_invalid",
                 "AOX toolchain pin did not return its exact declared output closure",
                 details={"tool_id": tool_id},
+                public_details=_toolchain_pin_public_failure_details(
+                    tool_id=tool_id,
+                    stage="runner_result",
+                    result=result,
+                    request_digest=str(reservation_identity["request_digest"]),
+                    reservation_identity_digest=reservation_identity_digest,
+                    runner_run_id=runner_run_id,
+                ),
             )
         materialized_outputs: dict[str, Path] = {}
         for output_path in sorted(expected_output_paths):
@@ -1402,6 +1526,14 @@ def attest_aox_toolchain_image_digests(
                         "output_id": output_path,
                         "failure_type": type(exc).__name__,
                     },
+                    public_details=_toolchain_pin_public_failure_details(
+                        tool_id=tool_id,
+                        stage="runner_result",
+                        result=result,
+                        request_digest=str(reservation_identity["request_digest"]),
+                        reservation_identity_digest=reservation_identity_digest,
+                        runner_run_id=runner_run_id,
+                    ),
                 ) from exc
             local_path = Path(str(local_value)).expanduser()
             if local_path.is_symlink() or not local_path.is_file():
@@ -1409,6 +1541,14 @@ def attest_aox_toolchain_image_digests(
                     "aox_launch_toolchain_pin_output_invalid",
                     "AOX toolchain pin output was not materialized as a regular file",
                     details={"tool_id": tool_id, "output_id": output_path},
+                    public_details=_toolchain_pin_public_failure_details(
+                        tool_id=tool_id,
+                        stage="runner_result",
+                        result=result,
+                        request_digest=str(reservation_identity["request_digest"]),
+                        reservation_identity_digest=reservation_identity_digest,
+                        runner_run_id=runner_run_id,
+                    ),
                 )
             materialized_outputs[output_path] = local_path.resolve()
         if route_name == "hmmbuild":
@@ -1471,6 +1611,13 @@ def pin_aox_cutover_launch(
         server=server,
         repo_root=resolved_root,
         runner_contract_expectations=runner_expectations,
+        source_identity_digest=_canonical_digest(
+            {
+                "architecture_qualification": architecture_qualification,
+                "config_digest": effective_config.digest,
+                "git_commit": actual_identity["git_commit"],
+            }
+        ),
     )
     prerequisites = build_aox_cutover_allowed_prerequisites(
         identity=actual_identity,

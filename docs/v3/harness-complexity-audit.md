@@ -219,6 +219,8 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
 
   追加修正记录：post-r79 HMMER incident 证明“operation 已 durable”仍不足以让 provider adapter 在单次 dispatch callback 内安全等待完整外部 job。现行修复没有新增 HMMER state machine 或 AOX driver，而是在同一个 `ControlledOperationExecution` owner 下增加 Host-private immutable dispatch/observation receipts：submit-once 后立即绑定 exact job 与 absolute deadline，后续 bounded slice 只 poll/reconcile 同一 handle，`RETRY` 非终态，terminal success 才 materialize，timeout 形成 typed terminal handoff。restart 不重置 deadline；accepted submit 在 receipt commit 前丢 callback 的窗口保持 `dispatch_in_doubt`，禁止 replay。
 
+  2026-08-13 追加修正记录：toolchain pin 复用 generic runner reservation/attempt journal，而不是增加 AOX retry state。deterministic reservation 绑定 execution/operation/request/approval/runspec/source identity；duplicate submit 只返回 current observation，public exact handle 的 query 为只读，resume 仅在同 occurrence 的 pre-effect `no_effect/same_phase_safe` 前进，reconcile 只恢复该 occurrence 的 exact durable outcome 而不重放 payload。unknown/dispatch-in-doubt 不创建 replacement；新 occurrence 仍要求 disposition/reconciliation、authority 与 budget。
+
   剩余债务：EBI 当前接口没有由 OpenZyme request digest 驱动的 idempotency key 或反查 job 能力，因此“provider 接受 submit”和“Host canonical receipt commit”无法成为跨系统原子事务。该窗口只能显式保留歧义；若未来 provider 提供 idempotency/query contract，应在版本化 adapter receipt 中接入，而不是增加猜测、自动 successor 或 AOX 专用 observer。append-only poll receipts 已按 frozen deadline/interval 限制数量，但生产数据保留/压缩策略仍应随通用 canonical-history retention 一并治理，不能由 HMMER 路径私自删除。
 
 - [x] Harness 将大小故障统一提升为 turn death，agent 无法修复或明确拒绝。
@@ -269,6 +271,19 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   仅在 attempt、operation、execution、continuation、failure、task 与 session 内唯一
   pending zero-attempt owner signal 全部 exact 时允许一次 later drain。该 handoff 不创建
   recovery machine、不 replay effect、不选择 agent 策略，任何 drift 仍 fail closed。
+
+  2026-08-13 追加修正记录：配置候选、runner operation、authority consumption 与 public Host request 的
+  typed `terminal` 统一收窄为 exact occurrence terminal scope。public facts 同时给出 effect certainty、
+  retry eligibility、request/operation/idempotency identity、exact handle/receipt、authority 与 budget；
+  `no_effect + explicit disposition` 或 completed exact reconciliation 后，agent 才能显式选择下一
+  identity-distinct occurrence。Harness 不 auto-fill/retry/loop/replacement dispatch，也不把 boundary terminal
+  自动写成 task/attempt/slot/campaign 终态。
+
+  2026-08-13 配置描述符追加修正：删除 config candidate 自有的 `OPENZYME_*` prefix/name allowlist 第二真值，
+  由 settings/reliability resolver 实际消费同一组 executable field descriptors；public `config-contract` 只投影
+  这些 descriptors 与 runtime normalizer 的同源 AOX eligibility。candidate 忽略 unlisted environment，credential
+  仅按 presence、private non-credential 按 digest、ledger/runner path 按独立 path/content identity 绑定。缺字段或
+  约束投影漂移 fail closed；未新增配置 FSM、fallback 或 agent action policy。
 
 - [x] Exact-occurrence AOX gate 把任何中间试错永久等同于最终 scientific failure。
 
@@ -436,6 +451,11 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   负例。外部 caller 状态 unknown，因此本轮不 breaking-remove 参数。该收口减少 shadow truth，不替 agent
   选择任何 scientific action、task、drain cadence 或失败策略。
 
+  2026-08-13 追加修正记录：同一 exact plan/request 在 no-replace publication race 或 response loss 后，
+  public consume owner 完整重验 existing sibling 并收敛到同一 receipt/idempotency；source、plan、authority、
+  exact-three、每 slot `max_attempts=1` 或资源 ceiling 漂移仍拒绝。该收敛不消费第二次 authority、不创建
+  root/Host/scientific attempt，也不改变 retained compatibility argument 的 sunset gate。
+
 - [x] R 系列 validation skill 与 response filename 是否形成第二套 operator workflow truth。
 
   skill复制launcher/handle/runbook且r83 tester让locator覆盖typed `claimed`，共同形成隐式operator状态机。
@@ -452,6 +472,10 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   pre-claim launch failure kind 时，必须引入准确命名的 current schema/stage 闭集，并将 `@1`
   保留为只读兼容；不得在原 schema 下静默改写历史 stage 语义。代码搜索标记：
   `AOX-DEBT-PREFLIGHT-STAGE-V2`。
+
+  2026-08-13 config candidate、pin occurrence、public mutation receipt 与 continuation 审查没有修改
+  `FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID`、对应 writer/verifier，也没有增加 pre-claim launch failure kind，
+  因而未命中本项版本升级触发器；该债务继续显式保留。
 
 - [ ] AOX Host supervision 与 formal slot-failure 模块是否需要先拆分纯证据职责。
 
@@ -480,6 +504,12 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   现有 public import/re-export、JSON bytes、digest、schema、error code 与历史只读兼容，并用
   等价回归证明没有 evidence contract 漂移。代码搜索标记：
   `AOX-DEBT-EVIDENCE-MODULE-SPLIT`。
+
+  2026-08-13 effect-aware continuation 审查：formal Host 的 receipt-written/envelope-missing
+  crash window 直接复用 current receipt chain、request identity 与 response envelope owner，只增加
+  “最后且唯一 current successful mutation”机械校验和 production-composition/负向回归；没有新增
+  process/root/SQLite responsibility、closure mode、evidence reconstruction branch 或 AOX continuation FSM，
+  因而未命中本项拆分触发器。GET、历史/较早/多个缺口、unknown effect 和 drift 保持 fail closed。
 
 ## 4. 后续工作流
 

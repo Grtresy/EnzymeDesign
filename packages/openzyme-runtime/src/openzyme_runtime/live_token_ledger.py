@@ -16,8 +16,11 @@ from urllib.parse import urlparse
 LIVE_MICU_TOKEN_HARD_LIMIT = 500_000_000
 _LEGACY_LIVE_MICU_TOKEN_HARD_LIMIT = 100_000_000
 _REPO_ROOT = Path(__file__).resolve().parents[4]
+DEFAULT_LIVE_MICU_TOKEN_LEDGER_RELATIVE_PATH = Path(
+    ".openzyme/live_micu_token_ledger.sqlite3"
+)
 DEFAULT_LIVE_MICU_TOKEN_LEDGER_PATH = (
-    _REPO_ROOT / ".openzyme/live_micu_token_ledger.sqlite3"
+    _REPO_ROOT / DEFAULT_LIVE_MICU_TOKEN_LEDGER_RELATIVE_PATH
 )
 LIVE_MICU_TOKEN_LEDGER_PATH_ENV = "OPENZYME_TEST_LIVE_LLM_TOKEN_LEDGER_PATH"
 
@@ -331,12 +334,17 @@ class LiveMicuTokenLedger:
         return 0 if row is None else int(row[0])
 
 
-def configured_live_micu_token_ledger_path() -> Path:
-    configured = os.getenv(LIVE_MICU_TOKEN_LEDGER_PATH_ENV)
+def resolve_live_micu_token_ledger_path(configured: str | None) -> Path:
     if not configured:
         return DEFAULT_LIVE_MICU_TOKEN_LEDGER_PATH
     path = Path(configured)
     return path if path.is_absolute() else _REPO_ROOT / path
+
+
+def configured_live_micu_token_ledger_path() -> Path:
+    return resolve_live_micu_token_ledger_path(
+        os.getenv(LIVE_MICU_TOKEN_LEDGER_PATH_ENV)
+    )
 
 
 def migrate_legacy_live_micu_token_policy(
@@ -448,12 +456,20 @@ def usage_token_counts(usage: dict[str, Any] | None) -> UsageTokenCounts | None:
     total_tokens = _first_non_negative_int(usage, "total_tokens", "total_token_count")
     if input_tokens is not None and output_tokens is not None:
         return UsageTokenCounts(input_tokens=input_tokens, output_tokens=output_tokens)
-    if total_tokens is not None and input_tokens is not None and total_tokens >= input_tokens:
+    if (
+        total_tokens is not None
+        and input_tokens is not None
+        and total_tokens >= input_tokens
+    ):
         return UsageTokenCounts(
             input_tokens=input_tokens,
             output_tokens=total_tokens - input_tokens,
         )
-    if total_tokens is not None and output_tokens is not None and total_tokens >= output_tokens:
+    if (
+        total_tokens is not None
+        and output_tokens is not None
+        and total_tokens >= output_tokens
+    ):
         return UsageTokenCounts(
             input_tokens=total_tokens - output_tokens,
             output_tokens=output_tokens,
@@ -476,7 +492,9 @@ def summarize_live_micu_token_ledger(
         state = connection.execute(
             "SELECT hard_limit_tokens FROM live_micu_token_state WHERE id = 1"
         ).fetchone()
-        hard_limit = fallback_limit if state is None else min(int(state[0]), fallback_limit)
+        hard_limit = (
+            fallback_limit if state is None else min(int(state[0]), fallback_limit)
+        )
         totals = connection.execute(
             """
             SELECT COUNT(*) AS attempt_count,
@@ -714,6 +732,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "DEFAULT_LIVE_MICU_TOKEN_LEDGER_PATH",
+    "DEFAULT_LIVE_MICU_TOKEN_LEDGER_RELATIVE_PATH",
     "LIVE_MICU_TOKEN_HARD_LIMIT",
     "LiveMicuTokenBudgetExceededError",
     "LiveMicuTokenLedger",
@@ -725,6 +744,7 @@ __all__ = [
     "estimate_llm_request_tokens",
     "is_micu_provider_url",
     "migrate_legacy_live_micu_token_policy",
+    "resolve_live_micu_token_ledger_path",
     "summarize_live_micu_token_ledger",
     "usage_token_counts",
 ]

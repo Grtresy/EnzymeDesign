@@ -541,7 +541,7 @@ def test_aox_automatic_run_surfaces_are_retired(
         qualification_preflight
     )
     assert conductor_contract["schema_id"] == (
-        "aox_public_conductor_execution_contract@3"
+        "aox_public_conductor_execution_contract@4"
     )
     assert conductor_contract["attempt_start_claim_schema_id"] == (
         "aox_attempt_start_claim@1"
@@ -614,22 +614,68 @@ def test_aox_automatic_run_surfaces_are_retired(
             return runner_outputs[-1]
 
         create_request = dict(conductor_contract["session_create_request"])
-        created = dict(
-            run_bound(
-                "session-create",
-                [
-                    "sessions",
-                    "create",
-                    "--objective",
-                    str(create_request["objective"]),
-                    "--title",
-                    str(create_request["title"]),
-                ],
+        create_forwarded = [
+            "sessions",
+            "create",
+            "--objective",
+            str(create_request["objective"]),
+            "--title",
+            str(create_request["title"]),
+            "--idempotency-key",
+            str(conductor_contract["session_create_idempotency_key"]),
+        ]
+        original_seal_public_response = host_cli.seal_public_response
+
+        def crash_after_receipt(*args: object, **kwargs: object) -> object:
+            del args, kwargs
+            raise OSError("simulated response-envelope crash window")
+
+        monkeypatch.setattr(
+            host_cli,
+            "seal_public_response",
+            crash_after_receipt,
+        )
+        crash_stdout = StringIO()
+        crash_stderr = StringIO()
+
+        def crash_window_runner(argv: list[str]) -> int:
+            return host_cli.run_cli(
+                argv,
+                session=composition.client,
+                stdout=crash_stdout,
+                stderr=crash_stderr,
             )
+
+        crash_result = aox_cutover_cli.run_bound_public_host_command(
+            contract=conductor_contract,
+            startup=qualification_startup,
+            evidence_root=conductor_evidence_root,
+            response_name="crashed-session-create",
+            forwarded=create_forwarded,
+            host_cli_runner=crash_window_runner,
+        )
+        assert crash_result == 2
+        assert "simulated response-envelope crash window" in crash_stderr.getvalue()
+        monkeypatch.setattr(
+            host_cli,
+            "seal_public_response",
+            original_seal_public_response,
         )
         receipt_chain_path = conductor_evidence_root / str(
             conductor_contract["receipt_chain_name"]
         )
+        assert len(receipt_chain_path.read_text().splitlines()) == 1
+        assert not (
+            conductor_evidence_root / "public-response-crashed-session-create.json"
+        ).exists()
+
+        created = dict(
+            run_bound(
+                "session-create",
+                create_forwarded,
+            )
+        )
+        assert len(receipt_chain_path.read_text().splitlines()) == 1
         pre_rejection_receipts = receipt_chain_path.read_bytes()
         pre_rejection_calls = runner_calls
         with pytest.raises(CutoverEvidenceError) as missing_pin:
@@ -665,6 +711,8 @@ def test_aox_automatic_run_surfaces_are_retired(
                     str(entry_request["message"]),
                     "--skill-key",
                     workflow_ref,
+                    "--idempotency-key",
+                    str(conductor_contract["entry_message_idempotency_key"]),
                 ],
             )
         )
@@ -683,6 +731,8 @@ def test_aox_automatic_run_surfaces_are_retired(
                     str(entry_request["message"]),
                     "--skill-key",
                     workflow_ref,
+                    "--idempotency-key",
+                    str(conductor_contract["entry_message_idempotency_key"]),
                 ],
                 host_cli_runner=qualification_host_cli_runner,
             )

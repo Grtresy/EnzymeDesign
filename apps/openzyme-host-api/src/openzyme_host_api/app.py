@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from decimal import Decimal
 from decimal import InvalidOperation
-import hashlib
 import json
 from contextlib import asynccontextmanager
 from contextlib import contextmanager
@@ -101,6 +100,9 @@ from openzyme_domain import RuntimeCommandRecord
 from openzyme_domain import MutationWriterKind
 from openzyme_domain import SessionRuntimeLease
 from openzyme_domain.control_plane import utc_now_iso
+
+from .host_mutation_observation import host_command_request_digest
+from .host_mutation_observation import observe_host_mutation_operation
 
 
 class CreateV3SessionRequest(BaseModel):
@@ -308,6 +310,29 @@ class V3RuntimeCommandResponse(BaseModel):
     error_code: str | None = None
     safe_error_summary: str | None = None
     safe_retry_hint: str | None = None
+
+
+class V3HostMutationObservationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_id: Literal["host_mutation_operation_observation@1"] = (
+        "host_mutation_operation_observation@1"
+    )
+    session_id: str
+    command_type: str
+    scope_ref: str
+    idempotency_key: str
+    request_digest: str | None = None
+    status: Literal["terminal", "in_progress", "unproven"]
+    response: dict[str, Any] | None = None
+    effect_certainty: Literal["terminal_known", "unproven"]
+    retry_eligibility: Literal["terminal", "reconcile_required"]
+    reconciliation_required: bool
+    terminal_scope: Literal["host_mutation_occurrence"] = (
+        "host_mutation_occurrence"
+    )
+    query_read_only: Literal[True] = True
+    resume_applicable: Literal[False] = False
 
 
 class V3TaskMutationResponse(BaseModel):
@@ -1114,20 +1139,10 @@ def _execute_idempotent_command_scoped(
     normalized_key = idempotency_key.strip()
     if not normalized_key or len(normalized_key) > 256:
         raise ValueError("Idempotency-Key must contain 1 to 256 characters")
-    digest_payload = {
-        "command_type": command_type,
-        "scope_ref": scope_ref,
-        "request": request_payload,
-    }
-    request_digest = (
-        "sha256:"
-        + hashlib.sha256(
-            json.dumps(
-                digest_payload,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
+    request_digest = host_command_request_digest(
+        command_type=command_type,
+        scope_ref=scope_ref,
+        request_payload=request_payload,
     )
     existing = service.repositories.command_receipts.find(
         scope_ref=scope_ref,
@@ -1755,6 +1770,58 @@ def create_app(
                 if command is None:
                     raise KeyError(f"runtime command {command_id!r} does not exist")
                 return _project_runtime_command(command)
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.get(
+        "/v3/mutation-operations/observe",
+        response_model=V3HostMutationObservationResponse,
+        responses={404: {"model": ApiErrorResponse}},
+    )
+    def observe_v3_host_mutation_operation(
+        request: Request,
+        session_id: str,
+        command_type: str,
+        scope_ref: str,
+        idempotency_key: str,
+        request_digest: str,
+        attempt_id: str | None = None,
+        artifact_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Observe an existing durable mutation owner without replaying it."""
+
+        try:
+            principal = _request_principal(request)
+            if security.shared and not principal.has_role("operator", "admin"):
+                raise HTTPException(
+                    status_code=403,
+                    detail="operator role is required",
+                )
+            with dependencies.v3_service_scope(mode="read") as service:
+                if service.repositories.sessions.get(session_id) is not None:
+                    _require_session_access(
+                        service,
+                        principal=principal,
+                        security=security,
+                        session_id=session_id,
+                    )
+                elif security.shared:
+                    raise _http_exception(
+                        404,
+                        code="session_not_found",
+                        message="session does not exist",
+                    )
+                return observe_host_mutation_operation(
+                    service,
+                    principal_id=principal.principal_id,
+                    session_id=session_id,
+                    command_type=command_type,
+                    scope_ref=scope_ref,
+                    idempotency_key=idempotency_key,
+                    expected_request_digest=request_digest,
+                    attempt_id=attempt_id,
+                    artifact_id=artifact_id,
+                )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 

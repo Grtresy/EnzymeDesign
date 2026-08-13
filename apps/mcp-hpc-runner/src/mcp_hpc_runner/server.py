@@ -107,8 +107,7 @@ def _reject_caller_transport_overrides(value: object, *, path: str = "runspec") 
             item_path = f"{path}.{raw_key}"
             if key in _FORBIDDEN_CALLER_TRANSPORT_KEYS:
                 raise ValueError(
-                    "runner-owned SSH transport field cannot be supplied: "
-                    + item_path
+                    "runner-owned SSH transport field cannot be supplied: " + item_path
                 )
             _reject_caller_transport_overrides(item, path=item_path)
     elif isinstance(value, list):
@@ -301,7 +300,9 @@ class MCPHpcServer:
             raw.get("schema_version")
             != _RUNNER_EXECUTION_RESERVATION_IDENTITY_SCHEMA_VERSION
         ):
-            raise ValueError("runner execution reservation identity schema is unsupported")
+            raise ValueError(
+                "runner execution reservation identity schema is unsupported"
+            )
         identifiers = {
             key: str(raw.get(key) or "")
             for key in (
@@ -315,7 +316,9 @@ class MCPHpcServer:
             _PUBLIC_ID_PATTERN.fullmatch(value) is None
             for value in identifiers.values()
         ):
-            raise ValueError("runner execution reservation contains an invalid identity")
+            raise ValueError(
+                "runner execution reservation contains an invalid identity"
+            )
         digests = {
             key: str(raw.get(key) or "")
             for key in (
@@ -357,8 +360,7 @@ class MCPHpcServer:
             except FileExistsError:
                 record = self.store.read_reservation(identity_hex)
         if (
-            record.get("schema_version")
-            != _RUNNER_EXECUTION_RESERVATION_SCHEMA_VERSION
+            record.get("schema_version") != _RUNNER_EXECUTION_RESERVATION_SCHEMA_VERSION
             or record.get("identity") != normalized
             or record.get("identity_digest") != identity_digest
             or _PUBLIC_ID_PATTERN.fullmatch(str(record.get("run_id") or "")) is None
@@ -388,12 +390,9 @@ class MCPHpcServer:
             dict(record.get("identity") or {})
         )
         identity_digest = self._canonical_digest(identity)
-        indexed = self.store.read_reservation(
-            identity_digest.removeprefix("sha256:")
-        )
+        indexed = self.store.read_reservation(identity_digest.removeprefix("sha256:"))
         if (
-            record.get("schema_version")
-            != _RUNNER_EXECUTION_RESERVATION_SCHEMA_VERSION
+            record.get("schema_version") != _RUNNER_EXECUTION_RESERVATION_SCHEMA_VERSION
             or record.get("identity_digest") != identity_digest
             or record.get("run_id") != run_id
             or indexed != record
@@ -401,11 +400,38 @@ class MCPHpcServer:
             raise ValueError("runner execution reservation record is inconsistent")
         return record
 
+    def _reservation_source_identity(self, run_id: str) -> dict[str, str]:
+        reservation = self._load_execution_reservation(run_id)
+        identity = dict(reservation["identity"])
+        return {
+            "reservation_identity_digest": str(reservation["identity_digest"]),
+            "execution_id": str(identity["execution_id"]),
+            "operation_id": str(identity["operation_id"]),
+            "operation_digest": str(identity["operation_digest"]),
+            "approval_digest": str(identity["approval_digest"]),
+            "route_policy_id": str(identity["route_policy_id"]),
+            "adapter_policy_id": str(identity["adapter_policy_id"]),
+            "request_digest": str(identity["request_digest"]),
+        }
+
+    def _with_reservation_source_identity(
+        self,
+        run_id: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        source_identity = self._reservation_source_identity(run_id)
+        for key, value in source_identity.items():
+            if key in result and result[key] != value:
+                raise ValueError("reserved runner source identity drift")
+        return {**result, **source_identity}
+
     def _reserved_runspec(self, raw: Any, *, run_id: str) -> RunSpec:
         if not isinstance(raw, dict):
             raise ValueError("runspec must be an object")
         if "run_id" in raw:
-            raise ValueError("RunSpec.run_id is server-generated and must not be supplied")
+            raise ValueError(
+                "RunSpec.run_id is server-generated and must not be supplied"
+            )
         _reject_caller_transport_overrides(raw)
         reservation = self._load_execution_reservation(run_id)
         identity = dict(reservation["identity"])
@@ -415,7 +441,9 @@ class MCPHpcServer:
             raise ValueError("reserved runner execution mode drift")
         metadata = dict(spec.metadata or {})
         if "openzyme_durable_execution" in metadata:
-            raise ValueError("runner-owned durable execution identity cannot be supplied")
+            raise ValueError(
+                "runner-owned durable execution identity cannot be supplied"
+            )
         metadata["openzyme_durable_execution"] = {
             "execution_id": identity["execution_id"],
             "operation_id": identity["operation_id"],
@@ -443,7 +471,12 @@ class MCPHpcServer:
         runspec: dict[str, Any],
         mode_override: str | None = None,
     ) -> dict[str, Any]:
-        """Dispatch one previously reserved run, refusing every replay."""
+        """Dispatch one previously reserved run or converge on its observation.
+
+        The first call may dispatch.  Repeating the exact bound request never
+        resumes or replays it: callers receive the current source-bound
+        observation and must choose an explicit resume/reconcile operation.
+        """
 
         with self._reservation_locks_guard:
             reservation_lock = self._reservation_locks.setdefault(
@@ -451,10 +484,13 @@ class MCPHpcServer:
                 threading.Lock(),
             )
         with reservation_lock:
-            return self._submit_reserved_execution_locked(
-                run_id=run_id,
-                runspec=runspec,
-                mode_override=mode_override,
+            return self._with_reservation_source_identity(
+                run_id,
+                self._submit_reserved_execution_locked(
+                    run_id=run_id,
+                    runspec=runspec,
+                    mode_override=mode_override,
+                ),
             )
 
     def _submit_reserved_execution_locked(
@@ -483,7 +519,10 @@ class MCPHpcServer:
                 binding,
             )
         except FileExistsError:
-            if self.store.read_json(run_id, "reserved_dispatch_binding.json") != binding:
+            if (
+                self.store.read_json(run_id, "reserved_dispatch_binding.json")
+                != binding
+            ):
                 raise ValueError("reserved runner dispatch binding drift")
         runspec_path = self.store.run_root(run_id) / "metadata" / "runspec.json"
         if runspec_path.exists():
@@ -495,22 +534,56 @@ class MCPHpcServer:
         else:
             self.store.write_json_once(run_id, "runspec.json", spec.to_dict())
         if self.attempt_journal.has_attempt(run_id):
-            attempt = self.attempt_journal.load_bound(
+            self.attempt_journal.load_bound(
                 run_id,
                 spec,
                 selected_mode=selected,
             )
+            return self.inspect_reserved_execution(run_id)
+        return self._dispatch_spec(spec, mode_override=mode_override)
+
+    def resume_reserved_execution(self, run_id: str) -> dict[str, Any]:
+        """Explicitly resume the same reserved occurrence only before effect."""
+
+        with self._reservation_locks_guard:
+            reservation_lock = self._reservation_locks.setdefault(
+                str(run_id),
+                threading.Lock(),
+            )
+        with reservation_lock:
+            self._load_execution_reservation(run_id)
+            spec = self._load_runspec_for_run(run_id)
+            binding = self.store.read_json(
+                run_id,
+                "reserved_dispatch_binding.json",
+            )
+            selected_mode = str(binding.get("selected_mode") or "")
+            if selected_mode not in {"ssh", "sbatch"}:
+                raise ValueError("reserved runner recovery mode is invalid")
+            if not self.attempt_journal.has_attempt(run_id):
+                return self._with_reservation_source_identity(
+                    run_id,
+                    self._dispatch_spec(spec, mode_override=selected_mode),
+                )
+            attempt = self.attempt_journal.load_bound(
+                run_id,
+                spec,
+                selected_mode=selected_mode,
+            )
             if (
                 attempt.state is RunnerAttemptState.ACTIVE
                 and attempt.effect_certainty is RunnerEffectCertainty.NO_EFFECT
+                and attempt.retry_eligibility is RunnerRetryEligibility.SAME_PHASE_SAFE
                 and runner_phase_precedes(
                     attempt.phase,
                     RunnerAttemptPhase.DISPATCHING,
                 )
             ):
-                return self._resume_spec(spec, selected_mode=selected)
-            raise ValueError("reserved runner execution already crossed dispatch")
-        return self._dispatch_spec(spec, mode_override=mode_override)
+                return self._with_reservation_source_identity(
+                    run_id,
+                    self._resume_spec(spec, selected_mode=selected_mode),
+                )
+            return self.inspect_reserved_execution(run_id)
 
     def _resume_spec(self, spec: RunSpec, *, selected_mode: str) -> dict[str, Any]:
         if selected_mode == "ssh":
@@ -522,9 +595,7 @@ class MCPHpcServer:
         return self._project_run_result(
             result,
             authoritative_mode=selected_mode,
-            runtime_request=dict(
-                spec.metadata.get("toolchain_runtime_request") or {}
-            )
+            runtime_request=dict(spec.metadata.get("toolchain_runtime_request") or {})
             or None,
         )
 
@@ -542,9 +613,7 @@ class MCPHpcServer:
         return self._project_run_result(
             result,
             authoritative_mode=selected,
-            runtime_request=dict(
-                spec.metadata.get("toolchain_runtime_request") or {}
-            )
+            runtime_request=dict(spec.metadata.get("toolchain_runtime_request") or {})
             or None,
         )
 
@@ -553,6 +622,7 @@ class MCPHpcServer:
 
         reservation = self._load_execution_reservation(run_id)
         identity = dict(reservation["identity"])
+        source_identity = self._reservation_source_identity(run_id)
         runspec_path = self.store.run_root(run_id) / "metadata" / "runspec.json"
         if not runspec_path.exists() and not self.attempt_journal.has_attempt(run_id):
             return {
@@ -572,6 +642,7 @@ class MCPHpcServer:
                     }
                 ),
                 "artifacts": {},
+                **source_identity,
             }
         spec = self._load_runspec_for_run(run_id)
         selected_mode = (
@@ -597,15 +668,17 @@ class MCPHpcServer:
                     }
                 ),
                 "artifacts": {},
+                **source_identity,
             }
         attempt = self.attempt_journal.load_bound(
             run_id,
             spec,
             selected_mode=selected_mode,
         )
-        if selected_mode == "sbatch" and (
-            self.store.run_root(run_id) / "metadata" / "job_handle.json"
-        ).exists():
+        if (
+            selected_mode == "sbatch"
+            and (self.store.run_root(run_id) / "metadata" / "job_handle.json").exists()
+        ):
             status = self._project_job_status(
                 self.slurm_runner.status(self._load_handle(run_id)).to_dict()
             )
@@ -614,6 +687,7 @@ class MCPHpcServer:
                 "status": status.get("state"),
                 "selected_mode": "sbatch",
                 "artifacts": {},
+                **source_identity,
             }
         try:
             metadata = self.store.read_json(run_id, "run_result_metadata.json")
@@ -659,26 +733,29 @@ class MCPHpcServer:
                     and item.get("remote_path")
                     and item.get("local_path")
                 }
-            return self._project_run_result(
-                {
-                    "run_id": run_id,
-                    "status": status,
-                    "selected_mode": selected_mode,
-                    "exit_code": metadata.get("exit_code"),
-                    "error_code": error_code,
-                    "artifacts": artifacts,
-                    "logs": {},
-                    "metadata": metadata,
-                    "toolchain_runtime_identity": metadata.get(
-                        "toolchain_runtime_identity"
-                    ),
-                },
-                authoritative_mode=selected_mode,
-                runtime_request=dict(
-                    spec.metadata.get("toolchain_runtime_request") or {}
-                )
-                or None,
-            )
+            return {
+                **self._project_run_result(
+                    {
+                        "run_id": run_id,
+                        "status": status,
+                        "selected_mode": selected_mode,
+                        "exit_code": metadata.get("exit_code"),
+                        "error_code": error_code,
+                        "artifacts": artifacts,
+                        "logs": {},
+                        "metadata": metadata,
+                        "toolchain_runtime_identity": metadata.get(
+                            "toolchain_runtime_identity"
+                        ),
+                    },
+                    authoritative_mode=selected_mode,
+                    runtime_request=dict(
+                        spec.metadata.get("toolchain_runtime_request") or {}
+                    )
+                    or None,
+                ),
+                **source_identity,
+            }
         status = (
             "failed"
             if attempt.state
@@ -704,6 +781,7 @@ class MCPHpcServer:
             "runner_attempt_receipt_digest": attempt.safe_receipt_digest,
             "error_code": attempt.safe_failure_code,
             "artifacts": {},
+            **source_identity,
         }
 
     def recover_reserved_execution_outcome(self, run_id: str) -> dict[str, Any]:
@@ -730,20 +808,25 @@ class MCPHpcServer:
             ).to_dict()
         else:
             raise ValueError("reserved runner recovery mode is invalid")
-        return self._project_run_result(
-            result,
-            authoritative_mode=selected_mode,
-            runtime_request=dict(
-                spec.metadata.get("toolchain_runtime_request") or {}
-            )
-            or None,
+        return self._with_reservation_source_identity(
+            run_id,
+            self._project_run_result(
+                result,
+                authoritative_mode=selected_mode,
+                runtime_request=dict(
+                    spec.metadata.get("toolchain_runtime_request") or {}
+                )
+                or None,
+            ),
         )
 
     def _public_runspec(self, raw: Any) -> RunSpec:
         if not isinstance(raw, dict):
             raise ValueError("runspec must be an object")
         if "run_id" in raw:
-            raise ValueError("RunSpec.run_id is server-generated and must not be supplied")
+            raise ValueError(
+                "RunSpec.run_id is server-generated and must not be supplied"
+            )
         _reject_caller_transport_overrides(raw)
         spec = RunSpec.from_dict(raw)
         spec.run_id = self._new_run_id()
@@ -847,9 +930,7 @@ class MCPHpcServer:
                 f"No persisted RunSpec exists for run_id {run_id!r}"
             ) from exc
         if spec.run_id != run_id:
-            raise ValueError(
-                f"Persisted RunSpec does not belong to run_id {run_id!r}"
-            )
+            raise ValueError(f"Persisted RunSpec does not belong to run_id {run_id!r}")
         return spec
 
     def _validate_attempt_for_existing_run(
@@ -933,7 +1014,9 @@ class MCPHpcServer:
         if self.attempt_journal.has_attempt(run_id):
             selected_mode = (
                 "sbatch"
-                if (self.store.run_root(run_id) / "metadata" / "job_handle.json").exists()
+                if (
+                    self.store.run_root(run_id) / "metadata" / "job_handle.json"
+                ).exists()
                 else "ssh"
             )
             attempt = self.attempt_journal.load_bound(
@@ -962,7 +1045,9 @@ class MCPHpcServer:
             if int(item.get("returncode", 1)) == 0
         }
         if relative.as_posix() not in manifest_paths:
-            raise ValueError("runner artifact is absent from the verified output manifest")
+            raise ValueError(
+                "runner artifact is absent from the verified output manifest"
+            )
         return str(target)
 
     def _project_run_result(
@@ -1050,12 +1135,15 @@ class MCPHpcServer:
                 effect = RunnerEffectCertainty(str(metadata["effect_certainty"]))
                 retry = RunnerRetryEligibility(str(metadata["retry_eligibility"]))
             except ValueError as exc:
-                raise ValueError("runner attempt envelope contains an unknown value") from exc
+                raise ValueError(
+                    "runner attempt envelope contains an unknown value"
+                ) from exc
             reconciliation = metadata["reconciliation_required"]
             receipt = str(metadata["runner_attempt_safe_receipt_digest"])
-            if not isinstance(reconciliation, bool) or _DIGEST_PATTERN.fullmatch(
-                receipt
-            ) is None:
+            if (
+                not isinstance(reconciliation, bool)
+                or _DIGEST_PATTERN.fullmatch(receipt) is None
+            ):
                 raise ValueError("runner attempt envelope is invalid")
             if reconciliation != (
                 effect is RunnerEffectCertainty.DISPATCH_IN_DOUBT
@@ -1095,10 +1183,11 @@ class MCPHpcServer:
                         and retry is RunnerRetryEligibility.TERMINAL
                     )
                 if not valid_success:
-                    raise ValueError("runner successful attempt envelope is inconsistent")
+                    raise ValueError(
+                        "runner successful attempt envelope is inconsistent"
+                    )
             if effect is RunnerEffectCertainty.DISPATCH_IN_DOUBT and (
-                phase is not RunnerAttemptPhase.DISPATCHING
-                or status != "failed"
+                phase is not RunnerAttemptPhase.DISPATCHING or status != "failed"
             ):
                 raise ValueError("runner ambiguous attempt envelope is inconsistent")
             if not status_observation and status in {
@@ -1153,11 +1242,7 @@ class MCPHpcServer:
                 RunnerRetryEligibility.SAME_PHASE_SAFE,
                 RunnerRetryEligibility.VERIFY_THEN_RETRY,
             },
-            **(
-                {}
-                if receipt is None
-                else {"runner_attempt_receipt_digest": receipt}
-            ),
+            **({} if receipt is None else {"runner_attempt_receipt_digest": receipt}),
         }
 
     @staticmethod

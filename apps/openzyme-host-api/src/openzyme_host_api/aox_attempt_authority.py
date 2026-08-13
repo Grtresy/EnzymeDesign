@@ -20,9 +20,7 @@ from .aox_scientific_contract import AOX_SELECTED_CHAIN_WORKFLOW_ID
 
 
 AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID = "aox_live_attempt_authority_plan@4"
-AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID = (
-    "aox_live_attempt_authority_consumption@5"
-)
+AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID = "aox_live_attempt_authority_consumption@5"
 AOX_ATTEMPT_AUTHORITY_SLOT_CLAIM_SCHEMA_ID = "aox_attempt_authority_slot_claim@3"
 AOX_ATTEMPT_AUTHORITY_GRANTOR_REF = "user:local-dev"
 
@@ -81,9 +79,7 @@ def _timestamp(value: object, *, code: str, label: str) -> datetime:
 
 
 def _future_timestamp(value: object) -> datetime:
-    parsed = _timestamp(
-        value, code="attempt_authority_expiry_invalid", label="expiry"
-    )
+    parsed = _timestamp(value, code="attempt_authority_expiry_invalid", label="expiry")
     _require(
         parsed > datetime.now(UTC),
         "attempt_authority_expired",
@@ -112,7 +108,9 @@ def _load_private_canonical(path: Path, *, unreadable_code: str) -> dict[str, An
     return dict(value)
 
 
-def _resource_limits(policy: Mapping[str, object], *, ordinal: int) -> tuple[int, int, int]:
+def _resource_limits(
+    policy: Mapping[str, object], *, ordinal: int
+) -> tuple[int, int, int]:
     resources = (
         policy.get("max_micu"),
         policy.get("max_cost_microunits"),
@@ -173,15 +171,18 @@ def build_aox_attempt_authority_plan(
     prerequisite_digest = canonical_digest(dict(allowed_prerequisites))
     qualification_digest = canonical_digest(dict(architecture_qualification))
     pinned_launch_profile_digest = launch_profile_digest(launch_profile)
-    campaign_id = "aox_campaign_" + canonical_digest(
-        {
-            "identity_digest": identity_digest,
-            "allowed_prerequisite_digest": prerequisite_digest,
-            "architecture_qualification_digest": qualification_digest,
-            "launch_profile_digest": pinned_launch_profile_digest,
-            "nonce": secrets.token_hex(32),
-        }
-    ).removeprefix("sha256:")[:24]
+    campaign_id = (
+        "aox_campaign_"
+        + canonical_digest(
+            {
+                "identity_digest": identity_digest,
+                "allowed_prerequisite_digest": prerequisite_digest,
+                "architecture_qualification_digest": qualification_digest,
+                "launch_profile_digest": pinned_launch_profile_digest,
+                "nonce": secrets.token_hex(32),
+            }
+        ).removeprefix("sha256:")[:24]
+    )
     slots: list[dict[str, Any]] = []
     for ordinal, attempt_kind in enumerate(("positive", "positive", "fault"), 1):
         nonce = secrets.token_hex(16)
@@ -269,9 +270,7 @@ def validate_aox_attempt_authority_plan(
         )
     expected_digests = {
         "identity_digest": canonical_digest(dict(identity)),
-        "allowed_prerequisite_digest": canonical_digest(
-            dict(allowed_prerequisites)
-        ),
+        "allowed_prerequisite_digest": canonical_digest(dict(allowed_prerequisites)),
         "architecture_qualification_digest": canonical_digest(
             dict(architecture_qualification)
         ),
@@ -398,21 +397,52 @@ def load_aox_attempt_authority_plan(
     )
 
 
-def publish_aox_attempt_authority_plan(
-    plan: Mapping[str, object], path: Path
-) -> None:
+def publish_aox_attempt_authority_plan(plan: Mapping[str, object], path: Path) -> None:
     if plan.get("schema_id") != AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID:
         _reject(
             "attempt_authority_plan_class_mismatch",
             "formal publisher accepts only the current task-free plan",
         )
-    publish_private_canonical_authority(
-        path, canonical_json_bytes(dict(plan)) + b"\n"
-    )
+    publish_private_canonical_authority(path, canonical_json_bytes(dict(plan)) + b"\n")
 
 
 def attempt_authority_consumption_path(plan_path: Path) -> Path:
     return plan_path.with_name(f"{plan_path.name}.consumed.json")
+
+
+def attempt_authority_consumption_operation_identity(
+    plan: Mapping[str, object], *, plan_path: Path
+) -> dict[str, str]:
+    handle = attempt_authority_consumption_path(plan_path).name
+    request_digest = canonical_digest(
+        {
+            "operation": "consume_aox_attempt_authority_plan",
+            "plan_digest": plan.get("plan_digest"),
+            "campaign_id": plan.get("campaign_id"),
+            "consumption_file": handle,
+        }
+    )
+    return {
+        "request_digest": request_digest,
+        "idempotency_key": f"{plan.get('campaign_id')}:consume-authority",
+        "exact_handle": handle,
+        "receipt_locator": handle,
+    }
+
+
+def observe_aox_attempt_authority_consumption(
+    plan: Mapping[str, object], *, plan_path: Path
+) -> dict[str, Any] | None:
+    """Read the deterministic consumption sibling without publishing it."""
+
+    path = attempt_authority_consumption_path(plan_path)
+    if not path.exists() and not path.is_symlink():
+        return None
+    return load_aox_attempt_authority_consumption(
+        path,
+        plan=plan,
+        plan_path=plan_path,
+    )
 
 
 def attempt_authority_slot_claim_path(plan_path: Path, ordinal: int) -> Path:
@@ -452,7 +482,28 @@ def consume_aox_attempt_authority_plan(
         "consumption_file": path.name,
         "consumed_at": _utc_now(),
     }
-    publish_private_canonical_authority(path, canonical_json_bytes(receipt) + b"\n")
+    if path.exists() or path.is_symlink():
+        return load_aox_attempt_authority_consumption(
+            path,
+            plan=plan,
+            plan_path=plan_path,
+        )
+    try:
+        publish_private_canonical_authority(
+            path,
+            canonical_json_bytes(receipt) + b"\n",
+        )
+    except (CutoverEvidenceError, FileExistsError):
+        # A concurrent exact request may have won the no-replace publication.
+        # Converge only if that durable receipt validates byte-for-byte against
+        # the same current plan; every drift still raises.
+        if not path.exists() or path.is_symlink():
+            raise
+        return load_aox_attempt_authority_consumption(
+            path,
+            plan=plan,
+            plan_path=plan_path,
+        )
     return receipt
 
 
@@ -502,23 +553,31 @@ def _claim_identity(
     root_identity = canonical_digest(
         {"campaign_root": str(campaign_root.expanduser().absolute())}
     )
-    launch_id = "formal-slot-" + canonical_digest(
-        {
-            "campaign_id": plan.get("campaign_id"),
-            "ordinal": ordinal,
-            "session_id": slot.get("session_id"),
-            "root_ref": slot.get("root_ref"),
-            "authority_policy_digest": slot.get("authority_policy_digest"),
-            "campaign_root_identity": root_identity,
-        }
-    ).removeprefix("sha256:")[:24]
+    launch_id = (
+        "formal-slot-"
+        + canonical_digest(
+            {
+                "campaign_id": plan.get("campaign_id"),
+                "ordinal": ordinal,
+                "session_id": slot.get("session_id"),
+                "root_ref": slot.get("root_ref"),
+                "authority_policy_digest": slot.get("authority_policy_digest"),
+                "campaign_root_identity": root_identity,
+            }
+        ).removeprefix("sha256:")[:24]
+    )
     return launch_id, root_identity
 
 
 def _claim_payload(
-    *, plan: Mapping[str, object], consumption: Mapping[str, object],
-    slot: Mapping[str, object], plan_path: Path, ordinal: int,
-    campaign_root: Path, claimed_at: object,
+    *,
+    plan: Mapping[str, object],
+    consumption: Mapping[str, object],
+    slot: Mapping[str, object],
+    plan_path: Path,
+    ordinal: int,
+    campaign_root: Path,
+    claimed_at: object,
 ) -> dict[str, Any]:
     launch_id, root_identity = _claim_identity(
         plan=plan, slot=slot, ordinal=ordinal, campaign_root=campaign_root
@@ -558,8 +617,7 @@ def claim_aox_attempt_authority_slot(
         or len(slots) != 3
         or type(ordinal) is not int
         or ordinal not in {1, 2, 3}
-        or consumption.get("schema_id")
-        != AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID
+        or consumption.get("schema_id") != AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID
         or consumption.get("plan_digest") != plan.get("plan_digest")
     ):
         _reject(
@@ -574,13 +632,16 @@ def claim_aox_attempt_authority_slot(
         )
     claim_path = attempt_authority_slot_claim_path(plan_path, ordinal)
     payload = _claim_payload(
-        plan=plan, consumption=consumption, slot=slot, plan_path=plan_path,
-        ordinal=ordinal, campaign_root=campaign_root, claimed_at=_utc_now(),
+        plan=plan,
+        consumption=consumption,
+        slot=slot,
+        plan_path=plan_path,
+        ordinal=ordinal,
+        campaign_root=campaign_root,
+        claimed_at=_utc_now(),
     )
     claim = {**payload, "claim_digest": canonical_digest(payload)}
-    publish_private_canonical_authority(
-        claim_path, canonical_json_bytes(claim) + b"\n"
-    )
+    publish_private_canonical_authority(claim_path, canonical_json_bytes(claim) + b"\n")
     return claim
 
 
@@ -608,18 +669,19 @@ def load_aox_attempt_authority_slot_claim(
         else {}
     )
     expected = _claim_payload(
-        plan=plan, consumption=consumption, slot=slot, plan_path=plan_path,
-        ordinal=ordinal, campaign_root=campaign_root,
+        plan=plan,
+        consumption=consumption,
+        slot=slot,
+        plan_path=plan_path,
+        ordinal=ordinal,
+        campaign_root=campaign_root,
         claimed_at=normalized.get("claimed_at"),
     )
-    payload = {
-        key: value for key, value in normalized.items() if key != "claim_digest"
-    }
+    payload = {key: value for key, value in normalized.items() if key != "claim_digest"}
     valid = all(
         (
             plan.get("schema_id") == AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID,
-            consumption.get("schema_id")
-            == AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID,
+            consumption.get("schema_id") == AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID,
             set(normalized) == _CLAIM_FIELDS,
             payload == expected,
             normalized.get("claim_digest") == canonical_digest(payload),

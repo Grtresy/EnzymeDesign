@@ -2885,12 +2885,12 @@ The only positive production path is now:
 1. an atomic private no-replace claim of exact plan slot 1, 2 or 3 before any root exists, followed by
    consumed-slot `preflight`, which validates every authority/pin/qualification/config/root binding,
    copies the claim into evidence and seals `aox_attempt_preflight@5` plus
-   `aox_public_conductor_execution_contract@3` with `preflight_complete_host_not_started`;
+   `aox_public_conductor_execution_contract@4` with `preflight_complete_host_not_started`;
 2. policy-free `serve-attempt`, which first publishes the unique `aox_attempt_start_claim@1` over the
    exact clean root, MICU baseline and process epoch, then starts the fixed loopback Host and proves local
    retirement but sends no business command;
 3. explicit Codex calls through public Host CLI/API, each conductor-owned request appended as
-   `openzyme_public_api_receipt@2`, with every bounded drain followed by command settlement and final
+   `openzyme_public_api_receipt@3`, with every bounded drain followed by command settlement and final
    workspace/events/evidence responses sealed once; CLI JSON handoffs are flushed;
 4. public exact closed-attempt/selection export `aox_closed_attempt_evidence@2`, whose canonical
    control/events/product closure proves agent-owned scientific writes and Host-owned finalization,
@@ -3310,6 +3310,17 @@ requires a future separately approved exact-three plan after a fresh clean full
 admission and pin, public-only Codex coordination, three eligible bundles and a
 sealed offline reducer decision. No prior consumed plan is authority.
 
+The current exact-operation applicability is resource-specific. Pin exposes
+read-only query, same-occurrence safe resume and reconcile. Authority consumption
+and formal Host mutation expose query and reconcile only (`resume=false`). The Host
+observer reads an existing command receipt, runtime command, scientific authorization
+or AOX fault claim/receipt; it never creates an owner or replays a payload. A terminal
+owner observation may append an exact reconciliation receipt. Business progress may
+collapse only one adjacent unproven receipt plus its single exact terminal successor;
+raw JSONL, response envelopes, failure observations, sequence and bundle digests remain
+complete. Multiple terminals, an intervening receipt, identity/request drift or any
+unsealed response fails closed.
+
 ### 2026-08-06 preplan runner-attestation blocker and forward correction
 
 A fresh preparation on clean commit
@@ -3324,21 +3335,23 @@ blocked preparation, not a canonical NO-GO. Later goal continuations were
 read-only blocked audits, not additional pin executions, and no state from that
 transaction is reusable.
 
-The forward contract adds side-effect-free public
-`openzyme-aox-cutover check-config`, backed by the same production settings and
-effective-config normalizer as `pin`. It emits only
-`aox_cutover_config_check@1` schema/digest facts and never creates a runner or
-state. Before its first invocation, Codex resolves the complete command-scoped
-launch profile from the current closed schema and operator contract; an unset
-ambient environment is not an assembled profile. For current
+The current forward contract exposes `config-contract` as the sole machine-readable executable profile descriptor and
+candidate lifecycle owner. Its field map is projected from the descriptors actually consumed by the settings and
+reliability resolvers, while AOX eligibility is projected from the same constraint owners used by the closed runtime
+normalizer. Missing fields or constraint-projection drift fail closed. `config-candidate` binds only listed AOX-relevant
+sources: unlisted environment is ignored, credential values contribute presence only, private non-credential values
+contribute canonical digests, and ledger/runner paths retain separate resolved-path and content identities. It publishes
+a credential-free atomic no-replace source snapshot, and side-effect-free public
+`check-config --candidate` backed by the same production settings and effective-config normalizer as `pin`.
+Successful validation emits `aox_cutover_config_check@2` with candidate/contract/config identity and never creates a
+runner or product state. A typed failure is `no_effect/terminal/config_candidate_occurrence`: it rejects only that exact
+candidate. Codex may explicitly disposition it, construct an identity-distinct candidate from the current contract and
+issue a new validation action; the harness never fills values, retries or reuses a rejected identity. For current
 `aox_blank_world_runtime_config@5`, the non-secret reliability vector is
 `durable_only_v1`, `command_v1`, and `generic_v1`. A preparation authorization
-that includes fresh `pin` covers applying those contract-required values
-atomically to the first `check-config` and the following `pin`; neither command
-may use a different environment mapping or ledger identity. Codex must not run
-an unprofiled check to discover an already-known default mismatch, replace the
-public check with private Host imports, or patch and retry after a terminal
-check failure. `pin` remains the first real external attestation: it executes four deterministic,
+that includes fresh `pin` covers applying those contract-required values to candidate construction/validation and the
+following `pin`; pin must re-resolve the validated source identity. Codex must not replace the public owner with private
+Host imports. `pin` remains the first real external attestation: it executes four deterministic,
 non-scientific fixtures through forced SSH and may create runner staging and
 output, although it does not create a formal scientific attempt or Slurm
 workload.
@@ -3351,9 +3364,18 @@ certainty and an optional validated runner machine code. Its sandbox branch
 preserves only `kind=sandbox_runtime` plus one allowlisted Podman/image/SDK
 preflight code. Paths, credentials, commands, stdout/stderr,
 raw messages and exception chains remain
-private. A terminal pin failure stops the preparation without automatic retry,
-and reports must separate actual command execution counts from read-only goal
-audit counts.
+private. A pin failure never triggers automatic retry. Each toolchain operation is reserve-first and exposes an exact
+handle/receipt/source/request/operation identity with effect and retry facts. Public `pin-operation
+--action query|resume|reconcile` acts only on that occurrence: query is read-only, pre-effect `no_effect/same_phase_safe` permits an
+explicit same-occurrence resume, and reconcile recovers only the exact durable outcome without payload replay; uncertain effect requires exact reconciliation; a replacement occurrence requires
+disposition/reconciliation plus fresh authority and budget. Reports must separate actual command execution counts from
+read-only goal audit counts.
+
+Formal public mutation continuation also closes the local receipt/envelope crash window without a second state machine.
+When the current successful mutation receipt is durable but its response envelope is missing, the wrapper accepts only
+the exact same command/request/idempotency if that receipt is both last and the sole missing envelope; the Host response
+must converge exactly before the envelope is sealed. An unsealed GET, a historical receipt, an earlier or multiple gap,
+unknown/reconcile-required effect, or request/identity/response drift blocks every successor action.
 
 ### 2026-08-06 qualification 本地执行能力闭合
 
@@ -3729,7 +3751,7 @@ caller-supplied `micu-before`。因此 root/ledger 检查与 process creation �
 前向 current `serve-attempt` 在 process creation 前重验 closed attempt root和exact initial evidence set，
 证明artifact/blob/HPC/sandbox effect roots为空，从pinned launch profile解析canonical ledger，读取完整安全
 baseline，随后no-replace发布唯一`aox_attempt_start_claim@1`。claim绑定launch、preflight、slot claim、
-launch profile、`aox_public_conductor_execution_contract@3`、ledger identity、baseline与process epoch；
+launch profile、`aox_public_conductor_execution_contract@4`、ledger identity、baseline与process epoch；
 parent立即重读同一ledger并要求canonical equality。污染、drift、既有claim或publish collision均停止，
 不增加campaign-global lock、automatic replay、替代slot或successor。child在foundation前重验exact claim
 digest、epoch、preflight与closed phase。
@@ -3739,7 +3761,7 @@ current `aox_supervised_host_startup@5`、`aox_supervised_host_child_ready@3`、
 `aox_supervised_host_receipt@4`与`aox_supervised_host_fatal@2`均绑定该claim。public finalizer生成profile
 `aox_public_conductor_bundle@4` / `aox_blank_world_attempt_bundle@4`，formal failure生成
 `aox_formal_slot_failure@3`；两者的MICU before只从claim派生并各只读取一次after。历史execution contract
-`@1/@2`、formal failure `@1/@2`、public bundle/profile `@3`及其原source shape保持只读，不能驱动新执行、
+`@1/@2/@3`、formal failure `@1/@2`、public bundle/profile `@3`及其原source shape保持只读，不能驱动新执行、
 adopt或crossgrade。
 
 若`process.start()`在可验证child PID出现前抛错，parent只封存`aox_host_spawn_outcome@1`：绑定claim/epoch、
@@ -3749,3 +3771,28 @@ receipt schema/constants与纯validator已拆入独立evidence模块，process�
 没有新增第二个owner。non-live qualification覆盖single-start、publish race、claim前后MICU drift、child binding、
 no-PID blocker与current/legacy non-adoption；该repair不授权fresh qualification/admission、下一rNN、live、
 MICU、provider、HPC或Chrome。
+
+### 2026-08-13 effect-aware continuation contract
+
+current R-series continuation 以 exact occurrence 为默认 terminal scope，而不是 blanket task/attempt/slot/campaign
+停止。`config-contract@1` / `config-candidate@1`、runner opaque reservation、authority consume receipt `@2`、
+conductor execution contract `@4` 与 public Host receipt `@3` 分别拥有自己的 identity、lifecycle、effect、
+error 和 persistence；owner/constraint registry 把这些边界设为 qualification source identity。通用规则是：
+unknown 或 dispatch-in-doubt 只允许 exact query/reconcile；新 occurrence 只在 `no_effect + explicit disposition`
+或 completed exact reconciliation 后，由 agent 在 current authority 和 remaining budget 内显式选择。任何
+terminal observation 都不自动写 task、scientific attempt、slot 或 campaign 终态。
+
+配置 continuation 的 profile truth 只由 settings/reliability executable descriptors 与 runtime normalizer constraint
+owner 组成；`config-contract` 只是它们的 public projection。prefix/name allowlist、文档 fragment 或 skill 不得复制
+字段真值。candidate source identity 忽略未列出的 ambient environment，API/token credential 只按 presence 绑定；
+因此只有 canonical relevant value、presence 或 ledger/runner path/content identity 变化才可形成 identity-distinct
+candidate，不能用替换同 presence 的 credential 值伪称新 occurrence。
+
+同一 exact authority plan/request 若在 no-replace publication 后丢失响应，`consume-authority` 完整重验 durable
+sibling 并返回 `consumption_receipt_closed`，不猜测当前 caller 是创建还是观察 exact durable receipt，保持 exact-three、每 slot `max_attempts=1`、MICU/cost/wall-time
+ceilings 与 scientific-attempt count=false；drift 不得覆盖或换 target。formal session create、entry message 和
+later mutations 都要求 caller-selected idempotency identity；同一 request/response 可收敛到 last durable receipt，
+response drift 必须 reconciliation。系统不 auto-fill、auto-retry、hidden poll/loop、replacement dispatch、
+strategy selection 或 scientific action。preflight canonical NO-GO 与 `aox_formal_preflight_failure@1` schema 保持
+不变；本 forward repair 不回填任何 frozen rNN，也不授权 preparation、qualification、admission、live、MICU、
+provider、HPC 或 Chrome。

@@ -46,11 +46,22 @@ from openzyme_host_api.aox_public_conductor_bundle import PUBLIC_API_RECEIPT_SCH
 from openzyme_host_api.aox_public_conductor_bundle import PUBLIC_CONDUCTOR_MESSAGE
 from openzyme_host_api.aox_public_conductor_bundle import PUBLIC_CONDUCTOR_OBJECTIVE
 from openzyme_host_api.aox_public_conductor_bundle import PUBLIC_CONDUCTOR_TITLE
-from openzyme_host_api.aox_public_conductor_bundle import PUBLIC_RESPONSE_ENVELOPE_SCHEMA_ID
+from openzyme_host_api.aox_public_conductor_bundle import (
+    PUBLIC_RESPONSE_ENVELOPE_SCHEMA_ID,
+)
 from openzyme_host_api.aox_public_conductor_bundle import _load_receipt_chain
 from openzyme_host_api.aox_public_conductor_bundle import _read_bound_artifact_file
 from openzyme_host_api.aox_public_conductor_bundle import _validate_control_slot_binding
 from openzyme_host_api.aox_public_conductor_bundle import _validate_receipt_chain
+from openzyme_host_api.aox_public_conductor_contract import (
+    effective_public_receipts,
+)
+from openzyme_host_api.aox_public_conductor_contract import (
+    entry_message_idempotency_key,
+)
+from openzyme_host_api.aox_public_conductor_contract import (
+    session_create_idempotency_key,
+)
 from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime.reliability import ControlledOperationOwnerPolicy
 
@@ -180,7 +191,44 @@ def _receipt(
     request: object,
     *,
     status_code: int = 200,
+    idempotency_key: str | None = None,
 ) -> dict[str, object]:
+    effective_idempotency_key = (
+        None if method == "GET" else idempotency_key or f"test-mutation-{sequence}"
+    )
+    request_digest = canonical_digest(request)
+    request_identity_digest = canonical_digest(
+        {
+            "method": method,
+            "route": route,
+            "request_digest": request_digest,
+            "idempotency_key": effective_idempotency_key,
+        }
+    )
+    effect = (
+        {
+            "effect_certainty": "no_effect",
+            "retry_eligibility": "terminal",
+            "reconciliation_required": False,
+            "terminal_scope": "host_read_occurrence",
+        }
+        if method == "GET"
+        else (
+            {
+                "effect_certainty": "terminal_known",
+                "retry_eligibility": "terminal",
+                "reconciliation_required": False,
+                "terminal_scope": "host_mutation_occurrence",
+            }
+            if 200 <= status_code < 400
+            else {
+                "effect_certainty": "unproven",
+                "retry_eligibility": "reconcile_required",
+                "reconciliation_required": True,
+                "terminal_scope": "host_mutation_occurrence",
+            }
+        )
+    )
     return {
         "schema_id": PUBLIC_API_RECEIPT_SCHEMA_ID,
         "sequence": sequence,
@@ -188,10 +236,131 @@ def _receipt(
         "route": route,
         "status_code": status_code,
         "request": request,
-        "request_digest": canonical_digest(request),
+        "request_digest": request_digest,
+        "idempotency_key": effective_idempotency_key,
+        "request_identity_digest": request_identity_digest,
         "response_digest": canonical_digest({"raw": sequence}),
         "response_semantic_digest": canonical_digest({"semantic": sequence}),
+        **effect,
     }
+
+
+def test_effective_public_receipts_collapses_only_one_exact_adjacent_convergence(
+) -> None:
+    request = {"session_id": "sess_reconciled"}
+    unresolved = _receipt(
+        1,
+        "POST",
+        "/v3/sessions",
+        request,
+        status_code=500,
+        idempotency_key="session-reconcile",
+    )
+    terminal = _receipt(
+        2,
+        "POST",
+        "/v3/sessions",
+        request,
+        idempotency_key="session-reconcile",
+    )
+    raw = [unresolved, terminal]
+
+    assert effective_public_receipts(raw) == [terminal]
+    assert raw == [unresolved, terminal]
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        [
+            _receipt(
+                1,
+                "POST",
+                "/v3/sessions",
+                {"session_id": "sess"},
+                idempotency_key="same",
+            ),
+            _receipt(
+                2,
+                "POST",
+                "/v3/sessions",
+                {"session_id": "sess"},
+                idempotency_key="same",
+            ),
+        ],
+        [
+            _receipt(
+                1,
+                "POST",
+                "/v3/sessions",
+                {"session_id": "sess"},
+                status_code=500,
+                idempotency_key="same",
+            ),
+            _receipt(2, "GET", "/v3/runtime/health", {}),
+            _receipt(
+                3,
+                "POST",
+                "/v3/sessions",
+                {"session_id": "sess"},
+                idempotency_key="same",
+            ),
+        ],
+    ],
+)
+def test_effective_public_receipts_rejects_ambiguous_or_intervening_chains(
+    records: list[dict[str, object]],
+) -> None:
+    with pytest.raises(CutoverEvidenceError) as error:
+        effective_public_receipts(records)
+
+    assert error.value.code == (
+        "public_conductor_mutation_reconciliation_chain_invalid"
+    )
+
+
+def test_effective_public_receipts_does_not_fold_cross_identity_or_request_drift(
+) -> None:
+    unresolved = _receipt(
+        1,
+        "POST",
+        "/v3/sessions",
+        {"session_id": "sess"},
+        status_code=500,
+        idempotency_key="first",
+    )
+    other_identity = _receipt(
+        2,
+        "POST",
+        "/v3/sessions",
+        {"session_id": "sess"},
+        idempotency_key="second",
+    )
+    assert effective_public_receipts([unresolved, other_identity]) == [
+        unresolved,
+        other_identity,
+    ]
+    with pytest.raises(CutoverEvidenceError) as unresolved_error:
+        aox_conductor_execution._require_no_unreconciled_mutation(
+            [unresolved, other_identity]
+        )
+    assert unresolved_error.value.code == (
+        "public_conductor_mutation_reconciliation_required"
+    )
+
+    drifted = _receipt(
+        2,
+        "POST",
+        "/v3/sessions",
+        {"session_id": "sess-drifted"},
+        idempotency_key="first",
+    )
+    drifted["request_identity_digest"] = unresolved["request_identity_digest"]
+    with pytest.raises(CutoverEvidenceError) as drift_error:
+        effective_public_receipts([unresolved, drifted])
+    assert drift_error.value.code == (
+        "public_conductor_mutation_reconciliation_chain_invalid"
+    )
 
 
 def _receipt_chain(
@@ -215,6 +384,7 @@ def _receipt_chain(
                 "objective": PUBLIC_CONDUCTOR_OBJECTIVE,
                 "title": PUBLIC_CONDUCTOR_TITLE,
             },
+            idempotency_key=session_create_idempotency_key(session_id),
         ),
         _receipt(
             2,
@@ -226,6 +396,10 @@ def _receipt_chain(
                 "task_id": None,
                 "lane_id": None,
             },
+            idempotency_key=entry_message_idempotency_key(
+                session_id,
+                "workflow:aox@1.0.0#sha256:" + "c" * 64,
+            ),
         ),
         _receipt(
             3,
@@ -595,15 +769,9 @@ def test_public_terminal_handoff_rejects_unsealed_status_and_ambiguous_task() ->
     handoffs[2]["receipt"]["response_semantic_digest"] = canonical_digest(
         handoffs[2]["response"]
     )
-    handoffs[2]["response_semantic_digest"] = canonical_digest(
-        handoffs[2]["response"]
-    )
+    handoffs[2]["response_semantic_digest"] = canonical_digest(handoffs[2]["response"])
     handoffs[2]["envelope_digest"] = canonical_digest(
-        {
-            key: value
-            for key, value in handoffs[2].items()
-            if key != "envelope_digest"
-        }
+        {key: value for key, value in handoffs[2].items() if key != "envelope_digest"}
     )
     with pytest.raises(CutoverEvidenceError) as ambiguous_task:
         _validate_receipt_chain(
@@ -644,6 +812,62 @@ def test_public_receipt_loader_enforces_record_and_byte_bounds(
     with pytest.raises(CutoverEvidenceError) as byte_error:
         _load_receipt_chain(path)
     assert byte_error.value.code == "public_receipt_chain_invalid"
+
+
+def test_public_receipt_loader_rejects_historical_receipt_for_current_execution(
+    tmp_path: Path,
+) -> None:
+    receipt = _receipt(1, "GET", "/v3/runtime/health", {})
+    receipt["schema_id"] = "openzyme_public_api_receipt@2"
+    for field in (
+        "idempotency_key",
+        "request_identity_digest",
+        "effect_certainty",
+        "retry_eligibility",
+        "reconciliation_required",
+        "terminal_scope",
+    ):
+        receipt.pop(field)
+    path = tmp_path / "historical-receipt.jsonl"
+    path.write_bytes(canonical_json_bytes(receipt) + b"\n")
+    path.chmod(0o600)
+
+    records, _ = _load_receipt_chain(path)
+    assert records == [receipt]
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        _load_receipt_chain(
+            path,
+            required_schema_id="openzyme_public_api_receipt@3",
+        )
+    assert error.value.code == "public_receipt_chain_invalid"
+
+
+def test_public_receipt_loader_rejects_mixed_schema_chain(tmp_path: Path) -> None:
+    current = _receipt(1, "GET", "/v3/runtime/health", {})
+    historical = _receipt(2, "GET", "/v3/runtime/health", {})
+    historical["schema_id"] = "openzyme_public_api_receipt@2"
+    for field in (
+        "idempotency_key",
+        "request_identity_digest",
+        "effect_certainty",
+        "retry_eligibility",
+        "reconciliation_required",
+        "terminal_scope",
+    ):
+        historical.pop(field)
+    path = tmp_path / "mixed-receipts.jsonl"
+    path.write_bytes(
+        canonical_json_bytes(current)
+        + b"\n"
+        + canonical_json_bytes(historical)
+        + b"\n"
+    )
+    path.chmod(0o600)
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        _load_receipt_chain(path)
+    assert error.value.code == "public_receipt_chain_invalid"
 
 
 def test_public_receipts_bind_explicit_approved_decision() -> None:
@@ -935,7 +1159,9 @@ def test_start_claim_atomic_collision_preserves_first_claim(
     def race_publish(destination: Path, _: bytes) -> None:
         destination.write_bytes(canonical_json_bytes(first) + b"\n")
         destination.chmod(0o400)
-        raise CutoverEvidenceError("attempt_authority_publish_target_invalid", "lost race")
+        raise CutoverEvidenceError(
+            "attempt_authority_publish_target_invalid", "lost race"
+        )
 
     monkeypatch.setattr(
         attempt_start, "publish_private_canonical_authority", race_publish
@@ -979,10 +1205,19 @@ def test_spawn_failure_seals_minimal_terminal_blocker(
     blocker_path = path.parent / host_supervision.HOST_SPAWN_OUTCOME_FILENAME
     blocker = json.loads(blocker_path.read_text(encoding="utf-8"))
     assert set(blocker) == {
-        "schema_id", "launch_id", "attempt_start_claim_digest",
-        "process_epoch", "failure_code", "failure_type",
-        "child_identity_available", "effect_certainty", "retry_eligibility",
-        "next_attempt_blocked", "micu_after", "observed_at", "receipt_digest",
+        "schema_id",
+        "launch_id",
+        "attempt_start_claim_digest",
+        "process_epoch",
+        "failure_code",
+        "failure_type",
+        "child_identity_available",
+        "effect_certainty",
+        "retry_eligibility",
+        "next_attempt_blocked",
+        "micu_after",
+        "observed_at",
+        "receipt_digest",
     }
     assert blocker["schema_id"] == "aox_host_spawn_outcome@1"
     assert blocker["failure_code"] == "host_spawn_outcome_unproven"
@@ -1017,9 +1252,13 @@ def test_spawn_failure_with_visible_pid_does_not_seal_no_pid_outcome(
         Pipe=lambda *, duplex: (parent, child),
         Process=lambda **kwargs: process,
     )
-    monkeypatch.setattr(host_supervision.multiprocessing, "get_context", lambda _: spawn)
+    monkeypatch.setattr(
+        host_supervision.multiprocessing, "get_context", lambda _: spawn
+    )
     monkeypatch.setattr(host_supervision.os, "getpgid", lambda _: 1729)
-    monkeypatch.setattr(host_supervision, "_retire_process_group", lambda *_, **__: True)
+    monkeypatch.setattr(
+        host_supervision, "_retire_process_group", lambda *_, **__: True
+    )
 
     with pytest.raises(host_supervision.HostSupervisionError) as error:
         with host_supervision.supervised_attempt_host(path):
@@ -1029,31 +1268,33 @@ def test_spawn_failure_with_visible_pid_does_not_seal_no_pid_outcome(
     assert not (path.parent / host_supervision.HOST_SPAWN_OUTCOME_FILENAME).exists()
 
 
-def test_execution_contract_v3_binds_start_claim_and_public_drain_bounds(
+def test_execution_contract_v4_binds_start_claim_and_public_drain_bounds(
     tmp_path: Path,
 ) -> None:
     preflight_path, preflight, _ = _preflight_fixture(tmp_path)
 
     _, contract, loaded_preflight = (
-        aox_conductor_execution.load_conductor_execution_contract(
-            preflight_path
-        )
+        aox_conductor_execution.load_conductor_execution_contract(preflight_path)
     )
 
-    workflow_ref = dict(
-        dict(preflight["root_proof"])["allowed_prerequisites"]
-    )["workflow_ref"]
+    workflow_ref = dict(dict(preflight["root_proof"])["allowed_prerequisites"])[
+        "workflow_ref"
+    ]
     assert loaded_preflight == preflight
-    assert contract["schema_id"] == "aox_public_conductor_execution_contract@3"
+    assert contract["schema_id"] == "aox_public_conductor_execution_contract@4"
     assert contract["attempt_start_claim_name"] == "aox-attempt-start-claim.json"
     assert contract["attempt_start_claim_schema_id"] == "aox_attempt_start_claim@1"
     assert contract["late_bound_authority_command"] == (
         "openzyme-aox-cutover grant-task-authority"
     )
     assert contract["entry_message_count"] == 1
-    assert dict(contract["entry_message_request"])["skill_keys"] == [
-        workflow_ref
-    ]
+    assert contract["session_create_idempotency_key"] == (
+        session_create_idempotency_key(str(contract["session_id"]))
+    )
+    assert contract["entry_message_idempotency_key"] == (
+        entry_message_idempotency_key(str(contract["session_id"]), workflow_ref)
+    )
+    assert dict(contract["entry_message_request"])["skill_keys"] == [workflow_ref]
     assert contract["runtime_drain_constraints"] == {
         "max_signals": {"minimum": 1, "maximum": 100},
         "max_steps_per_agent": {"minimum": 1, "maximum": 100},
@@ -1075,9 +1316,7 @@ def test_execution_contract_v1_is_historical_and_non_admissible(
     _write_canonical(contract_path, contract)
 
     with pytest.raises(CutoverEvidenceError) as error:
-        aox_conductor_execution.load_conductor_execution_contract(
-            preflight_path
-        )
+        aox_conductor_execution.load_conductor_execution_contract(preflight_path)
 
     assert error.value.code == (
         "public_conductor_execution_contract_legacy_non_admissible"
@@ -1089,15 +1328,11 @@ def test_public_host_guard_enforces_exact_single_entry_and_bounded_drain(
 ) -> None:
     preflight_path, preflight, _ = _preflight_fixture(tmp_path)
     evidence_root, contract, _ = (
-        aox_conductor_execution.load_conductor_execution_contract(
-            preflight_path
-        )
+        aox_conductor_execution.load_conductor_execution_contract(preflight_path)
     )
     session_id = str(contract["session_id"])
     workflow_ref = str(
-        dict(dict(preflight["root_proof"])["allowed_prerequisites"])[
-            "workflow_ref"
-        ]
+        dict(dict(preflight["root_proof"])["allowed_prerequisites"])["workflow_ref"]
     )
     create_command = [
         "sessions",
@@ -1106,6 +1341,8 @@ def test_public_host_guard_enforces_exact_single_entry_and_bounded_drain(
         PUBLIC_CONDUCTOR_OBJECTIVE,
         "--title",
         PUBLIC_CONDUCTOR_TITLE,
+        "--idempotency-key",
+        str(contract["session_create_idempotency_key"]),
     ]
     aox_conductor_execution.validate_public_host_command(
         contract=contract,
@@ -1124,9 +1361,43 @@ def test_public_host_guard_enforces_exact_single_entry_and_bounded_drain(
             "objective": PUBLIC_CONDUCTOR_OBJECTIVE,
             "title": PUBLIC_CONDUCTOR_TITLE,
         },
+        idempotency_key=str(contract["session_create_idempotency_key"]),
     )
     receipt_path.write_bytes(canonical_json_bytes(session_receipt) + b"\n")
     receipt_path.chmod(0o600)
+
+    # A crash after receipt append but before response sealing may re-enter only
+    # the exact same current mutation.
+    aox_conductor_execution.validate_public_host_command(
+        contract=contract,
+        evidence_root=evidence_root,
+        forwarded=create_command,
+    )
+    with pytest.raises(CutoverEvidenceError) as pending_entry:
+        aox_conductor_execution.validate_public_host_command(
+            contract=contract,
+            evidence_root=evidence_root,
+            forwarded=[
+                "sessions",
+                "message",
+                "--message",
+                PUBLIC_CONDUCTOR_MESSAGE,
+                "--skill-key",
+                workflow_ref,
+                "--idempotency-key",
+                str(contract["entry_message_idempotency_key"]),
+            ],
+        )
+    assert pending_entry.value.code == (
+        "public_conductor_mutation_continuation_mismatch"
+    )
+    session_response = {"semantic": 1}
+    session_receipt["response_semantic_digest"] = canonical_digest(session_response)
+    _seal_response(
+        evidence_root / "public-response-session-create.json",
+        receipt=session_receipt,
+        response=session_response,
+    )
 
     with pytest.raises(CutoverEvidenceError) as missing_pin:
         aox_conductor_execution.validate_public_host_command(
@@ -1137,6 +1408,8 @@ def test_public_host_guard_enforces_exact_single_entry_and_bounded_drain(
                 "message",
                 "--message",
                 PUBLIC_CONDUCTOR_MESSAGE,
+                "--idempotency-key",
+                str(contract["entry_message_idempotency_key"]),
             ],
         )
     assert missing_pin.value.code == "public_conductor_entry_message_invalid"
@@ -1148,6 +1421,8 @@ def test_public_host_guard_enforces_exact_single_entry_and_bounded_drain(
         PUBLIC_CONDUCTOR_MESSAGE,
         "--skill-key",
         workflow_ref,
+        "--idempotency-key",
+        str(contract["entry_message_idempotency_key"]),
     ]
     aox_conductor_execution.validate_public_host_command(
         contract=contract,
@@ -1164,12 +1439,20 @@ def test_public_host_guard_enforces_exact_single_entry_and_bounded_drain(
             "task_id": None,
             "lane_id": None,
         },
+        idempotency_key=str(contract["entry_message_idempotency_key"]),
     )
     receipt_path.write_bytes(
         canonical_json_bytes(session_receipt)
         + b"\n"
         + canonical_json_bytes(message_receipt)
         + b"\n"
+    )
+    message_response = {"semantic": 2}
+    message_receipt["response_semantic_digest"] = canonical_digest(message_response)
+    _seal_response(
+        evidence_root / "public-response-entry-message.json",
+        receipt=message_receipt,
+        response=message_response,
     )
 
     for rejected in (
@@ -1202,6 +1485,23 @@ def test_public_host_guard_enforces_exact_single_entry_and_bounded_drain(
         )
         assert selected == later_action
 
+    with pytest.raises(CutoverEvidenceError) as missing_idempotency:
+        aox_conductor_execution.validate_public_host_command(
+            contract=contract,
+            evidence_root=evidence_root,
+            forwarded=[
+                "runtime",
+                "drain",
+                "--max-signals",
+                "1",
+                "--max-steps-per-agent",
+                "8",
+            ],
+        )
+    assert missing_idempotency.value.code == (
+        "public_conductor_idempotency_identity_required"
+    )
+
     for max_signals, max_steps_per_agent in ((1, 16), (2, 16), (3, 7)):
         aox_conductor_execution.validate_public_host_command(
             contract=contract,
@@ -1213,6 +1513,8 @@ def test_public_host_guard_enforces_exact_single_entry_and_bounded_drain(
                 str(max_signals),
                 "--max-steps-per-agent",
                 str(max_steps_per_agent),
+                "--idempotency-key",
+                f"test-drain-{max_signals}-{max_steps_per_agent}",
             ],
         )
     with pytest.raises(CutoverEvidenceError) as unbounded:
@@ -1226,9 +1528,434 @@ def test_public_host_guard_enforces_exact_single_entry_and_bounded_drain(
                 "101",
                 "--max-steps-per-agent",
                 "16",
+                "--idempotency-key",
+                "test-drain-unbounded",
             ],
         )
     assert unbounded.value.code == "public_conductor_drain_request_invalid"
+
+
+def test_public_host_guard_rejects_unknown_effect_or_unsealed_read_continuation(
+    tmp_path: Path,
+) -> None:
+    preflight_path, _, _ = _preflight_fixture(tmp_path)
+    evidence_root, contract, _ = (
+        aox_conductor_execution.load_conductor_execution_contract(preflight_path)
+    )
+    session_id = str(contract["session_id"])
+    receipt_path = evidence_root / str(contract["receipt_chain_name"])
+    create_command = [
+        "sessions",
+        "create",
+        "--objective",
+        PUBLIC_CONDUCTOR_OBJECTIVE,
+        "--title",
+        PUBLIC_CONDUCTOR_TITLE,
+        "--idempotency-key",
+        str(contract["session_create_idempotency_key"]),
+    ]
+    failed = _receipt(
+        1,
+        "POST",
+        "/v3/sessions",
+        {
+            "session_id": session_id,
+            "project_id": "aox-blank-world-cutover",
+            "objective": PUBLIC_CONDUCTOR_OBJECTIVE,
+            "title": PUBLIC_CONDUCTOR_TITLE,
+        },
+        status_code=500,
+        idempotency_key=str(contract["session_create_idempotency_key"]),
+    )
+    receipt_path.write_bytes(canonical_json_bytes(failed) + b"\n")
+    receipt_path.chmod(0o600)
+
+    with pytest.raises(CutoverEvidenceError) as unknown_effect:
+        aox_conductor_execution.validate_public_host_command(
+            contract=contract,
+            evidence_root=evidence_root,
+            forwarded=create_command,
+        )
+    assert unknown_effect.value.code == (
+        "public_conductor_mutation_reconciliation_required"
+    )
+    failed_response = {"semantic": 1}
+    failed["response_semantic_digest"] = canonical_digest(failed_response)
+    _seal_response(
+        evidence_root / "public-response-failed-session-create.json",
+        receipt=failed,
+        response=failed_response,
+    )
+    with pytest.raises(CutoverEvidenceError) as sealed_unknown_effect:
+        aox_conductor_execution.validate_public_host_command(
+            contract=contract,
+            evidence_root=evidence_root,
+            forwarded=["runtime", "health"],
+        )
+    assert sealed_unknown_effect.value.code == (
+        "public_conductor_mutation_reconciliation_required"
+    )
+
+    (evidence_root / "public-response-failed-session-create.json").unlink()
+    read = _receipt(1, "GET", "/v3/runtime/health", {})
+    receipt_path.write_bytes(canonical_json_bytes(read) + b"\n")
+    with pytest.raises(CutoverEvidenceError) as unsealed_read:
+        aox_conductor_execution.validate_public_host_command(
+            contract=contract,
+            evidence_root=evidence_root,
+            forwarded=["runtime", "health"],
+        )
+    assert unsealed_read.value.code == "public_conductor_response_set_incomplete"
+
+
+def test_host_reconciliation_rejects_unsealed_or_different_unresolved_receipts(
+    tmp_path: Path,
+) -> None:
+    preflight_path, preflight, _ = _preflight_fixture(tmp_path)
+    evidence_root, contract, _ = (
+        aox_conductor_execution.load_conductor_execution_contract(preflight_path)
+    )
+    create_command = [
+        "sessions",
+        "create",
+        "--objective",
+        PUBLIC_CONDUCTOR_OBJECTIVE,
+        "--title",
+        PUBLIC_CONDUCTOR_TITLE,
+        "--idempotency-key",
+        str(contract["session_create_idempotency_key"]),
+    ]
+    descriptor = aox_conductor_execution.describe_public_host_mutation(
+        create_command,
+        contract=contract,
+        preflight=preflight,
+    )
+    receipt_path = evidence_root / str(contract["receipt_chain_name"])
+    unresolved = _receipt(
+        1,
+        "POST",
+        "/v3/sessions",
+        descriptor["request"],
+        status_code=500,
+        idempotency_key="different-session-create",
+    )
+    receipt_path.write_bytes(canonical_json_bytes(unresolved) + b"\n")
+    receipt_path.chmod(0o600)
+
+    with pytest.raises(CutoverEvidenceError) as unsealed:
+        aox_conductor_execution.validate_public_host_reconciliation(
+            contract=contract,
+            evidence_root=evidence_root,
+            descriptor=descriptor,
+        )
+    assert unsealed.value.code == (
+        "public_conductor_reconciliation_response_set_incomplete"
+    )
+
+    _seal_response(
+        evidence_root / "public-response-unresolved.json",
+        receipt=unresolved,
+        response={"semantic": 1},
+    )
+    with pytest.raises(CutoverEvidenceError) as different:
+        aox_conductor_execution.validate_public_host_reconciliation(
+            contract=contract,
+            evidence_root=evidence_root,
+            descriptor=descriptor,
+        )
+    assert different.value.code == (
+        "public_conductor_mutation_reconciliation_mismatch"
+    )
+
+    unresolved["idempotency_key"] = descriptor["idempotency_key"]
+    unresolved["request_identity_digest"] = canonical_digest(
+        {
+            "method": unresolved["method"],
+            "route": unresolved["route"],
+            "request_digest": unresolved["request_digest"],
+            "idempotency_key": unresolved["idempotency_key"],
+        }
+    )
+    receipt_path.write_bytes(canonical_json_bytes(unresolved) + b"\n")
+    (evidence_root / "public-response-unresolved.json").unlink()
+    _seal_response(
+        evidence_root / "public-response-unresolved.json",
+        receipt=unresolved,
+        response={"semantic": 1},
+    )
+    aox_conductor_execution.validate_public_host_reconciliation(
+        contract=contract,
+        evidence_root=evidence_root,
+        descriptor=descriptor,
+    )
+
+
+def test_reconciled_session_occurrence_admits_the_canonical_entry_message(
+    tmp_path: Path,
+) -> None:
+    preflight_path, preflight, _ = _preflight_fixture(tmp_path)
+    evidence_root, contract, _ = (
+        aox_conductor_execution.load_conductor_execution_contract(preflight_path)
+    )
+    create_command = [
+        "sessions",
+        "create",
+        "--objective",
+        PUBLIC_CONDUCTOR_OBJECTIVE,
+        "--title",
+        PUBLIC_CONDUCTOR_TITLE,
+        "--idempotency-key",
+        str(contract["session_create_idempotency_key"]),
+    ]
+    descriptor = aox_conductor_execution.describe_public_host_mutation(
+        create_command,
+        contract=contract,
+        preflight=preflight,
+    )
+    unresolved = _receipt(
+        1,
+        "POST",
+        "/v3/sessions",
+        descriptor["request"],
+        status_code=500,
+        idempotency_key=str(descriptor["idempotency_key"]),
+    )
+    terminal = _receipt(
+        2,
+        "POST",
+        "/v3/sessions",
+        descriptor["request"],
+        idempotency_key=str(descriptor["idempotency_key"]),
+    )
+    unresolved_response = {"error": {"code": "response_lost"}}
+    terminal_response = {
+        "session_id": contract["session_id"],
+        "status": "created",
+    }
+    unresolved["response_semantic_digest"] = canonical_digest(unresolved_response)
+    terminal["response_semantic_digest"] = canonical_digest(terminal_response)
+    receipt_path = evidence_root / str(contract["receipt_chain_name"])
+    receipt_path.write_bytes(
+        canonical_json_bytes(unresolved)
+        + b"\n"
+        + canonical_json_bytes(terminal)
+        + b"\n"
+    )
+    receipt_path.chmod(0o600)
+    _seal_response(
+        evidence_root / "public-response-session-unproven.json",
+        receipt=unresolved,
+        response=unresolved_response,
+    )
+    _seal_response(
+        evidence_root / "public-response-session-terminal.json",
+        receipt=terminal,
+        response=terminal_response,
+    )
+    workflow_ref = str(
+        dict(dict(preflight["root_proof"])["allowed_prerequisites"])[
+            "workflow_ref"
+        ]
+    )
+
+    aox_conductor_execution.validate_public_host_command(
+        contract=contract,
+        evidence_root=evidence_root,
+        forwarded=[
+            "sessions",
+            "message",
+            "--message",
+            PUBLIC_CONDUCTOR_MESSAGE,
+            "--skill-key",
+            workflow_ref,
+            "--idempotency-key",
+            str(contract["entry_message_idempotency_key"]),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("forwarded", "method", "route_suffix", "expected_request"),
+    [
+        (
+            ["tasks", "create", "--subject", "subject", "--idempotency-key", "key"],
+            "POST",
+            "/v3/tasks",
+            {
+                "session_id": "<session>",
+                "subject": "subject",
+                "description": "",
+                "priority": "normal",
+                "kind": "general",
+            },
+        ),
+        (
+            [
+                "tasks",
+                "update",
+                "--task-id",
+                "task-1",
+                "--status",
+                "blocked",
+                "--lane-id",
+                "lane-1",
+                "--idempotency-key",
+                "key",
+            ],
+            "PATCH",
+            "/v3/tasks/task-1",
+            {"status": "blocked", "lane_id": "lane-1"},
+        ),
+        (
+            ["lanes", "create", "--name", "lane", "--idempotency-key", "key"],
+            "POST",
+            "/v3/lanes",
+            {"session_id": "<session>", "name": "lane", "cwd": "."},
+        ),
+        (
+            ["lanes", "claim", "--lane-id", "lane-1", "--idempotency-key", "key"],
+            "POST",
+            "/v3/lanes/lane-1/claim",
+            {},
+        ),
+        (
+            [
+                "approvals",
+                "resolve",
+                "--approval-id",
+                "approval-1",
+                "--decision",
+                "approved",
+                "--idempotency-key",
+                "key",
+            ],
+            "POST",
+            "/v3/approvals/approval-1/resolve",
+            {"decision": "approved"},
+        ),
+        (
+            [
+                "runtime",
+                "drain",
+                "--max-signals",
+                "2",
+                "--max-steps-per-agent",
+                "7",
+                "--idempotency-key",
+                "key",
+            ],
+            "POST",
+            "/runtime/drain",
+            {
+                "max_signals": 2,
+                "max_steps_per_agent": 7,
+                "auto_enqueue_ready_tasks": False,
+            },
+        ),
+        (
+            [
+                "scientific",
+                "inject-aox-reference-fault",
+                "--attempt-id",
+                "attempt-1",
+                "--artifact-id",
+                "artifact-1",
+                "--idempotency-key",
+                "key",
+            ],
+            "POST",
+            "/aox-fault-injections/reference-byte-flip",
+            {"attempt_id": "attempt-1", "artifact_id": "artifact-1"},
+        ),
+    ],
+)
+def test_public_host_guard_resumes_each_supported_exact_mutation_shape(
+    tmp_path: Path,
+    forwarded: list[str],
+    method: str,
+    route_suffix: str,
+    expected_request: dict[str, object],
+) -> None:
+    preflight_path, preflight, _ = _preflight_fixture(tmp_path)
+    evidence_root, contract, _ = (
+        aox_conductor_execution.load_conductor_execution_contract(preflight_path)
+    )
+    session_id = str(contract["session_id"])
+    workflow_ref = str(
+        dict(dict(preflight["root_proof"])["allowed_prerequisites"])["workflow_ref"]
+    )
+    entry_receipts = [
+        _receipt(
+            1,
+            "POST",
+            "/v3/sessions",
+            {
+                "session_id": session_id,
+                "project_id": "aox-blank-world-cutover",
+                "objective": PUBLIC_CONDUCTOR_OBJECTIVE,
+                "title": PUBLIC_CONDUCTOR_TITLE,
+            },
+            idempotency_key=str(contract["session_create_idempotency_key"]),
+        ),
+        _receipt(
+            2,
+            "POST",
+            f"/v3/sessions/{session_id}/messages",
+            {
+                "message_digest": _digest_bytes(PUBLIC_CONDUCTOR_MESSAGE.encode()),
+                "skill_keys": [workflow_ref],
+                "task_id": None,
+                "lane_id": None,
+            },
+            idempotency_key=str(contract["entry_message_idempotency_key"]),
+        ),
+    ]
+    for sequence, receipt in enumerate(entry_receipts, 1):
+        response = {"semantic": sequence}
+        receipt["response_semantic_digest"] = canonical_digest(response)
+        _seal_response(
+            evidence_root / f"public-response-entry-{sequence}.json",
+            receipt=receipt,
+            response=response,
+        )
+    normalized_request = {
+        key: session_id if value == "<session>" else value
+        for key, value in expected_request.items()
+    }
+    route = (
+        f"/v3/sessions/{session_id}{route_suffix}"
+        if route_suffix.startswith(("/runtime/", "/aox-"))
+        else route_suffix
+    )
+    pending = _receipt(
+        3,
+        method,
+        route,
+        normalized_request,
+        idempotency_key="key",
+    )
+    receipt_path = evidence_root / str(contract["receipt_chain_name"])
+    receipt_path.write_bytes(
+        b"".join(
+            canonical_json_bytes(receipt) + b"\n"
+            for receipt in (*entry_receipts, pending)
+        )
+    )
+    receipt_path.chmod(0o600)
+
+    aox_conductor_execution.validate_public_host_command(
+        contract=contract,
+        evidence_root=evidence_root,
+        forwarded=forwarded,
+    )
+    drifted = [*forwarded[:-1], "different-key"]
+    with pytest.raises(CutoverEvidenceError) as drift:
+        aox_conductor_execution.validate_public_host_command(
+            contract=contract,
+            evidence_root=evidence_root,
+            forwarded=drifted,
+        )
+    assert drift.value.code == "public_conductor_mutation_continuation_mismatch"
 
 
 def _write_canonical(path: Path, value: object) -> None:
@@ -1285,8 +2012,8 @@ def _startup_receipt(
         **identity_payload,
         "runtime_identity_digest": canonical_digest(identity_payload),
     }
-    image_ref = (
-        "localhost/openzyme-pipeline-sandbox@" + str(prerequisites["image_digest"])
+    image_ref = "localhost/openzyme-pipeline-sandbox@" + str(
+        prerequisites["image_digest"]
     )
     registry_record = sandbox_image_record(
         image_ref=image_ref,
@@ -1368,15 +2095,14 @@ def _formal_slot_failure_fixture(
     terminal_after_final_reads: bool = False,
     typed_cause: bool = True,
     nonterminal_count: int = 0,
+    reconciled_session: bool = False,
 ) -> dict[str, object]:
     assert nonterminal_count >= 0
     tmp_path.mkdir(parents=True, exist_ok=True)
     preflight_path, preflight, identity_path = _preflight_fixture(tmp_path)
     evidence_root = preflight_path.parent
     slot = dict(preflight["slot"])
-    _, start_claim, _ = claim_attempt_start(
-        preflight_path, process_epoch="epoch-aox"
-    )
+    _, start_claim, _ = claim_attempt_start(preflight_path, process_epoch="epoch-aox")
     startup = _startup_receipt(preflight=preflight, start_claim=start_claim)
     supervision = _bound_supervision_receipt(
         preflight=preflight,
@@ -1388,19 +2114,34 @@ def _formal_slot_failure_fixture(
     session_id = str(slot["session_id"])
     command_id = "runtime_command_failed"
     status_url = f"/v3/sessions/{session_id}/runtime/commands/{command_id}"
+    sequence_offset = int(reconciled_session)
+    session_request = {
+        "session_id": session_id,
+        "project_id": "aox-blank-world-cutover",
+        "objective": PUBLIC_CONDUCTOR_OBJECTIVE,
+        "title": PUBLIC_CONDUCTOR_TITLE,
+    }
+    unresolved_session_receipt = (
+        _receipt(
+            1,
+            "POST",
+            "/v3/sessions",
+            session_request,
+            status_code=500,
+            idempotency_key=session_create_idempotency_key(session_id),
+        )
+        if reconciled_session
+        else None
+    )
     session_receipt = _receipt(
-        1,
+        1 + sequence_offset,
         "POST",
         "/v3/sessions",
-        {
-            "session_id": session_id,
-            "project_id": "aox-blank-world-cutover",
-            "objective": PUBLIC_CONDUCTOR_OBJECTIVE,
-            "title": PUBLIC_CONDUCTOR_TITLE,
-        },
+        session_request,
+        idempotency_key=session_create_idempotency_key(session_id),
     )
     entry_receipt = _receipt(
-        2,
+        2 + sequence_offset,
         "POST",
         f"/v3/sessions/{session_id}/messages",
         {
@@ -1409,9 +2150,13 @@ def _formal_slot_failure_fixture(
             "task_id": None,
             "lane_id": None,
         },
+        idempotency_key=entry_message_idempotency_key(
+            session_id,
+            "workflow:aox@1.0.0#sha256:" + "c" * 64,
+        ),
     )
     drain_receipt = _receipt(
-        3,
+        3 + sequence_offset,
         "POST",
         f"/v3/sessions/{session_id}/runtime/drain",
         {
@@ -1423,10 +2168,18 @@ def _formal_slot_failure_fixture(
     )
     nonterminal_receipts = [
         _receipt(sequence, "GET", status_url, {})
-        for sequence in range(4, 4 + nonterminal_count)
+        for sequence in range(
+            4 + sequence_offset,
+            4 + sequence_offset + nonterminal_count,
+        )
     ]
-    terminal_sequence = 4 + nonterminal_count + (2 if terminal_after_final_reads else 0)
-    workspace_sequence = 4 + nonterminal_count
+    terminal_sequence = (
+        4
+        + sequence_offset
+        + nonterminal_count
+        + (2 if terminal_after_final_reads else 0)
+    )
+    workspace_sequence = 4 + sequence_offset + nonterminal_count
     if not terminal_after_final_reads:
         workspace_sequence = terminal_sequence + 1
     terminal_receipt = _receipt(
@@ -1447,7 +2200,13 @@ def _formal_slot_failure_fixture(
         f"/v3/sessions/{session_id}/events?replay=1&after_cursor=0",
         {"replay": True, "after_cursor": 0},
     )
-    records = [session_receipt, entry_receipt, drain_receipt, *nonterminal_receipts]
+    records = [
+        *([unresolved_session_receipt] if unresolved_session_receipt else []),
+        session_receipt,
+        entry_receipt,
+        drain_receipt,
+        *nonterminal_receipts,
+    ]
     records.extend(
         [workspace_receipt, event_receipt, terminal_receipt]
         if terminal_after_final_reads
@@ -1456,7 +2215,7 @@ def _formal_slot_failure_fixture(
     if late_mutation:
         records.append(
             _receipt(
-                7 + nonterminal_count,
+                7 + sequence_offset + nonterminal_count,
                 "POST",
                 f"/v3/sessions/{session_id}/pending-approvals/approval-late/resolve",
                 {
@@ -1491,9 +2250,7 @@ def _formal_slot_failure_fixture(
         "started_at": "2026-08-06T00:00:01+00:00",
         "completed_at": "2026-08-06T00:00:02+00:00",
         "bounded_outcome_summary": {"scheduler_status": "failed"},
-        "error_code": (
-            "runtime_scheduler_batch_failed" if typed_cause else None
-        ),
+        "error_code": ("runtime_scheduler_batch_failed" if typed_cause else None),
         "safe_error_summary": "The bounded runtime scheduler batch failed.",
         "safe_retry_hint": "Inspect current session facts.",
     }
@@ -1527,9 +2284,7 @@ def _formal_slot_failure_fixture(
         },
         "scientific_attempts": {
             "attempt_count": len(attempt_ids),
-            "attempts": [
-                {"attempt_id": attempt_id} for attempt_id in attempt_ids
-            ],
+            "attempts": [{"attempt_id": attempt_id} for attempt_id in attempt_ids],
         },
         "failure_observations": [failure_observation] if typed_cause else [],
     }
@@ -1584,6 +2339,16 @@ def _formal_slot_failure_fixture(
         ),
     ]
     responses = {
+        **(
+            {
+                "public-response-session-create-unproven.json": (
+                    unresolved_session_receipt,
+                    {"error": {"code": "response_lost"}},
+                )
+            }
+            if unresolved_session_receipt
+            else {}
+        ),
         "public-response-session-create.json": (
             session_receipt,
             {"session_id": session_id, "status": "created"},
@@ -1650,9 +2415,7 @@ def test_pregrant_task_binding_uses_one_sealed_post_drain_execution_task(
     sources = _formal_slot_failure_fixture(tmp_path, monkeypatch)
     preflight = json.loads(sources["preflight"].read_text(encoding="utf-8"))
     evidence_root, contract, _ = (
-        aox_conductor_execution.load_conductor_execution_contract(
-            sources["preflight"]
-        )
+        aox_conductor_execution.load_conductor_execution_contract(sources["preflight"])
     )
 
     task = aox_conductor_execution.resolve_pregrant_execution_task(
@@ -1671,6 +2434,56 @@ def test_pregrant_task_binding_uses_one_sealed_post_drain_execution_task(
             task_id="task_other",
         )
     assert wrong_task.value.code == "public_task_late_binding_invalid"
+
+
+def test_pregrant_task_binding_resumes_only_exact_unsealed_authority_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _formal_slot_failure_fixture(tmp_path, monkeypatch)
+    preflight = json.loads(sources["preflight"].read_text(encoding="utf-8"))
+    evidence_root, contract, _ = (
+        aox_conductor_execution.load_conductor_execution_contract(sources["preflight"])
+    )
+    slot = dict(preflight["slot"])
+    policy = dict(slot["authority_policy"])
+    records = [
+        json.loads(line)
+        for line in sources["receipt_chain"].read_text(encoding="utf-8").splitlines()
+    ]
+    grant = _receipt(
+        len(records) + 1,
+        "POST",
+        (
+            f"/v3/sessions/{contract['session_id']}/"
+            "scientific-attempt-authorizations"
+        ),
+        authority_grant_payload(
+            slot,
+            campaign_id=str(preflight["campaign_id"]),
+            task_id="task_execution",
+        ),
+        idempotency_key=str(policy["idempotency_key"]),
+    )
+    with sources["receipt_chain"].open("ab") as handle:
+        handle.write(canonical_json_bytes(grant) + b"\n")
+
+    task = aox_conductor_execution.resolve_pregrant_execution_task(
+        preflight=preflight,
+        contract=contract,
+        evidence_root=evidence_root,
+        task_id="task_execution",
+    )
+    assert task == {"task_id": "task_execution", "kind": "execution"}
+
+    with pytest.raises(CutoverEvidenceError) as drift:
+        aox_conductor_execution.resolve_pregrant_execution_task(
+            preflight=preflight,
+            contract=contract,
+            evidence_root=evidence_root,
+            task_id="task_other",
+        )
+    assert drift.value.code == "public_conductor_mutation_continuation_mismatch"
 
 
 @pytest.mark.parametrize("nonterminal_count", [0, 1, 7, 254])
@@ -1704,9 +2517,7 @@ def test_conductor_retirement_readiness_closes_zero_attempt_public_state(
         f"public-response-observation-{index}-terminal.json"
         for index in range(1, nonterminal_count + 1)
     }
-    assert observation_names <= {
-        item["name"] for item in readiness["sealed_responses"]
-    }
+    assert observation_names <= {item["name"] for item in readiness["sealed_responses"]}
     assert observation_names.isdisjoint(readiness["handoff_response_names"])
     assert readiness["evidence_response_name"] is None
     _write_canonical(
@@ -1732,6 +2543,7 @@ def test_conductor_retirement_readiness_closes_zero_attempt_public_state(
     assert resolved["workspace"] == sources["workspace"]
     assert resolved["events"] == sources["events"]
 
+
 def test_conductor_retirement_readiness_requires_fresh_reads_after_terminal_handoff(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1750,16 +2562,11 @@ def test_conductor_retirement_readiness_requires_fresh_reads_after_terminal_hand
         )
     assert stale_error.value.code == "public_terminal_handoff_invalid"
     assert not (
-        evidence_root
-        / aox_conductor_execution.CONDUCTOR_RETIREMENT_READINESS_FILENAME
+        evidence_root / aox_conductor_execution.CONDUCTOR_RETIREMENT_READINESS_FILENAME
     ).exists()
 
-    workspace = json.loads(sources["workspace"].read_text(encoding="utf-8"))[
-        "response"
-    ]
-    stale_events = json.loads(sources["events"].read_text(encoding="utf-8"))[
-        "response"
-    ]
+    workspace = json.loads(sources["workspace"].read_text(encoding="utf-8"))["response"]
+    stale_events = json.loads(sources["events"].read_text(encoding="utf-8"))["response"]
     terminal = json.loads(sources["handoffs"][1].read_text(encoding="utf-8"))[
         "response"
     ]
@@ -1854,10 +2661,8 @@ def test_conductor_retirement_readiness_rejects_missing_or_late_evidence(
 
     drift = _formal_slot_failure_fixture(tmp_path / "drift", monkeypatch)
     (drift["evidence_root"] / "aox-host-supervision.json").unlink()
-    readiness_path, _ = (
-        aox_conductor_execution.seal_conductor_retirement_readiness(
-            drift["preflight"]
-        )
+    readiness_path, _ = aox_conductor_execution.seal_conductor_retirement_readiness(
+        drift["preflight"]
     )
     with drift["receipt_chain"].open("ab") as handle:
         handle.write(b"{}\n")
@@ -1891,12 +2696,8 @@ def test_conductor_retirement_readiness_preserves_sealed_public_failure(
         {},
         status_code=503,
     )
-    failure_receipt["response_semantic_digest"] = canonical_digest(
-        failure_response
-    )
-    failure_path = (
-        sources["evidence_root"] / "public-response-pending-failure.json"
-    )
+    failure_receipt["response_semantic_digest"] = canonical_digest(failure_response)
+    failure_path = sources["evidence_root"] / "public-response-pending-failure.json"
     _seal_response(
         failure_path,
         receipt=failure_receipt,
@@ -1933,6 +2734,47 @@ def test_conductor_retirement_readiness_preserves_sealed_public_failure(
         handoff_response_paths=sources["handoffs"],
         ledger_after_path=sources["ledger_after"],
     )
+    assert sealed_path.name == formal_slot_failure.FORMAL_SLOT_FAILURE_FILENAME
+
+
+def test_reconciled_session_composes_through_readiness_and_slot_failure_sealing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _formal_slot_failure_fixture(
+        tmp_path,
+        monkeypatch,
+        reconciled_session=True,
+    )
+    supervision_path = sources["evidence_root"] / "aox-host-supervision.json"
+    supervision = json.loads(supervision_path.read_text(encoding="utf-8"))
+    supervision_path.unlink()
+
+    readiness_path, readiness = (
+        aox_conductor_execution.seal_conductor_retirement_readiness(
+            sources["preflight"]
+        )
+    )
+
+    assert readiness["closure_mode"] == "slot_failure"
+    assert readiness["receipt_chain"]["record_count"] == 7
+    assert len(readiness["sealed_responses"]) == 7
+    _write_canonical(supervision_path, supervision)
+    supervision_path.chmod(0o600)
+    resolved = aox_conductor_execution.retirement_readiness_sources(
+        readiness_path,
+        preflight_path=sources["preflight"],
+    )
+    sealed_path, _ = formal_slot_failure.finalize_and_seal_formal_slot_failure(
+        identity_path=sources["identity"],
+        preflight_path=sources["preflight"],
+        receipt_chain_path=resolved["receipt_chain"],
+        workspace_response_path=resolved["workspace"],
+        event_response_path=resolved["events"],
+        handoff_response_paths=resolved["handoffs"],
+        ledger_after_path=sources["ledger_after"],
+    )
+
     assert sealed_path.name == formal_slot_failure.FORMAL_SLOT_FAILURE_FILENAME
 
 
@@ -2095,7 +2937,9 @@ def _pre_ready_failure_fixture(
         **frame_payload,
         "terminal_digest": canonical_digest(frame_payload),
     }
-    timeout = float(dict(preflight["slot"])["authority_policy"]["max_wall_time_seconds"])
+    timeout = float(
+        dict(preflight["slot"])["authority_policy"]["max_wall_time_seconds"]
+    )
     receipt = host_supervision._seal_pre_ready_failure(
         preflight_path=preflight_path,
         preflight=preflight,
@@ -2108,12 +2952,17 @@ def _pre_ready_failure_fixture(
         term_grace_seconds=15.0,
         kill_grace_seconds=10.0,
     )
-    pre_ready_path = preflight_path.parent / host_supervision.HOST_PRE_READY_FAILURE_FILENAME
-    assert host_supervision.validate_supervised_host_pre_ready_failure(
-        receipt,
-        preflight=preflight,
-        attempt_start_claim_digest=str(start_claim["claim_digest"]),
-    ) == receipt
+    pre_ready_path = (
+        preflight_path.parent / host_supervision.HOST_PRE_READY_FAILURE_FILENAME
+    )
+    assert (
+        host_supervision.validate_supervised_host_pre_ready_failure(
+            receipt,
+            preflight=preflight,
+            attempt_start_claim_digest=str(start_claim["claim_digest"]),
+        )
+        == receipt
+    )
     ledger_after = preflight_path.parent / "micu-after.json"
     _write_canonical(ledger_after, start_claim["micu_before"])
     ledger_after.chmod(0o600)
@@ -2136,14 +2985,12 @@ def test_pre_ready_formal_slot_failure_seals_without_synthetic_host_state(
 ) -> None:
     sources = _pre_ready_failure_fixture(tmp_path, monkeypatch)
 
-    path, digest = (
-        formal_slot_failure.finalize_and_seal_pre_ready_formal_slot_failure(
-            identity_path=sources["identity"],
-            preflight_path=sources["preflight"],
-            pre_ready_failure_path=sources["pre_ready_failure"],
-            ledger_after_path=sources["ledger_after"],
-            sealed_at="2026-08-09T00:00:00+00:00",
-        )
+    path, digest = formal_slot_failure.finalize_and_seal_pre_ready_formal_slot_failure(
+        identity_path=sources["identity"],
+        preflight_path=sources["preflight"],
+        pre_ready_failure_path=sources["pre_ready_failure"],
+        ledger_after_path=sources["ledger_after"],
+        sealed_at="2026-08-09T00:00:00+00:00",
     )
 
     envelope = json.loads(path.read_text(encoding="utf-8"))
@@ -2216,9 +3063,7 @@ def test_pre_ready_formal_slot_failure_rejects_micu_drift_and_later_host_source(
             pre_ready_failure_path=later["pre_ready_failure"],
             ledger_after_path=later["ledger_after"],
         )
-    assert source_error.value.code == (
-        "formal_slot_failure_pre_ready_source_conflict"
-    )
+    assert source_error.value.code == ("formal_slot_failure_pre_ready_source_conflict")
 
 
 def test_pre_ready_supervision_refuses_nonempty_control_plane(
@@ -2244,16 +3089,10 @@ def test_pre_ready_supervision_receipt_rejects_terminal_frame_drift(
 ) -> None:
     sources = _pre_ready_failure_fixture(tmp_path, monkeypatch)
     preflight = json.loads(sources["preflight"].read_text(encoding="utf-8"))
-    receipt = json.loads(
-        sources["pre_ready_failure"].read_text(encoding="utf-8")
-    )
+    receipt = json.loads(sources["pre_ready_failure"].read_text(encoding="utf-8"))
     receipt["child_start_time_ticks"] += 1
     receipt["receipt_digest"] = canonical_digest(
-        {
-            key: value
-            for key, value in receipt.items()
-            if key != "receipt_digest"
-        }
+        {key: value for key, value in receipt.items() if key != "receipt_digest"}
     )
 
     with pytest.raises(CutoverEvidenceError) as error:
@@ -2393,9 +3232,7 @@ def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(
         tmp_path,
         slot=slot,
     )
-    _, start_claim, _ = claim_attempt_start(
-        preflight_path, process_epoch="epoch-aox"
-    )
+    _, start_claim, _ = claim_attempt_start(preflight_path, process_epoch="epoch-aox")
     startup = _startup_receipt(preflight=preflight, start_claim=start_claim)
     supervision = _bound_supervision_receipt(
         preflight=preflight,
@@ -2551,8 +3388,9 @@ def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(
     assert verification.attempt_kind == "fault"
     assert bundle_payload["schema_id"] == "aox_blank_world_attempt_bundle@4"
     assert bundle_payload["bundle_profile"] == "aox_public_conductor_bundle@4"
-    assert bundle_payload["authority"]["attempt_start_claim_digest"] == (
-        start_claim["claim_digest"]
+    assert (
+        bundle_payload["authority"]["attempt_start_claim_digest"]
+        == (start_claim["claim_digest"])
     )
     assert bundle_payload["micu_ledger"]["before"] == start_claim["micu_before"]
     assert (
@@ -2581,10 +3419,7 @@ def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(
     assert append_only_error.value.code == "public_conductor_bundle_append_only"
 
     attestation = (
-        artifact_root
-        / "aox-public-conductor"
-        / "attestations"
-        / "identity.json"
+        artifact_root / "aox-public-conductor" / "attestations" / "identity.json"
     )
     attestation.chmod(0o600)
     attestation.write_bytes(b"{}\n")
@@ -2593,9 +3428,7 @@ def test_fault_finalizer_seals_once_and_reverifies_from_exact_sources(
         artifact_root=artifact_root,
     )
     assert tampered.passed is False
-    assert tampered.issues[0].code == (
-        "public_conductor_attestation_digest_mismatch"
-    )
+    assert tampered.issues[0].code == ("public_conductor_attestation_digest_mismatch")
 
 
 def test_campaign_reducer_keeps_unproven_public_fault_contract_no_go(
@@ -2613,8 +3446,7 @@ def test_campaign_reducer_keeps_unproven_public_fault_contract_no_go(
             "identity": {"identity_digest": "sha256:" + "a" * 64},
             "clean_world": {"root_identity": "sha256:" + str(index + 4) * 64},
             "product_path": {
-                "public_api_receipt_chain_digest": "sha256:"
-                + str(index + 7) * 64
+                "public_api_receipt_chain_digest": "sha256:" + str(index + 7) * 64
             },
             "authority": {
                 "campaign_id": "aox_campaign_test",
@@ -2624,8 +3456,7 @@ def test_campaign_reducer_keeps_unproven_public_fault_contract_no_go(
                     "ordinal": index + 1,
                     "session_id": f"session-{index}",
                     "root_ref": f"formal-slots/aox_campaign_test/{index + 1}/root",
-                    "authority_policy_digest": "sha256:"
-                    + str(index + 4) * 64,
+                    "authority_policy_digest": "sha256:" + str(index + 4) * 64,
                 },
             },
             "scientific_attempt_control": {
@@ -2702,9 +3533,7 @@ def test_campaign_reducer_keeps_unproven_public_fault_contract_no_go(
                 verification=verification,
             )
         )
-    by_path = {
-        record.bundle_path: record.verification for record in records
-    }
+    by_path = {record.bundle_path: record.verification for record in records}
     monkeypatch.setattr(
         conductor_bundle,
         "verify_public_conductor_bundle",
@@ -2756,9 +3585,9 @@ def test_campaign_reducer_keeps_unproven_public_fault_contract_no_go(
     assert claim_collision["blocker"]["code"] == "campaign_slot_claim_collision"
 
     payloads[1]["authority"]["slot_claim_digest"] = "sha256:" + "5" * 64
-    payloads[1]["authority"]["slot"]["root_ref"] = payloads[0]["authority"][
-        "slot"
-    ]["root_ref"]
+    payloads[1]["authority"]["slot"]["root_ref"] = payloads[0]["authority"]["slot"][
+        "root_ref"
+    ]
     _write_canonical(
         records[1].bundle_path,
         {"payload": payloads[1], "bundle_digest": records[1].bundle_digest},
@@ -2830,19 +3659,24 @@ def _supervision_receipt() -> dict[str, object]:
     return {**payload, "receipt_digest": canonical_digest(payload)}
 
 
-def test_policy_free_supervision_receipt_accepts_campaign_id_and_rejects_writers() -> None:
+def test_policy_free_supervision_receipt_accepts_campaign_id_and_rejects_writers() -> (
+    None
+):
     receipt = _supervision_receipt()
 
-    assert validate_supervised_host_receipt(
-        receipt,
-        launch_id="formal-slot-" + "f" * 24,
-        attempt_kind="positive",
-        session_id="sess_aox",
-        root_ref="formal-slots/aox_campaign_test/1/fixture",
-        campaign_id="aox_campaign_test",
-        authority_policy_digest="sha256:" + "a" * 64,
-        attempt_start_claim_digest="sha256:" + "f" * 64,
-    ) == receipt
+    assert (
+        validate_supervised_host_receipt(
+            receipt,
+            launch_id="formal-slot-" + "f" * 24,
+            attempt_kind="positive",
+            session_id="sess_aox",
+            root_ref="formal-slots/aox_campaign_test/1/fixture",
+            campaign_id="aox_campaign_test",
+            authority_policy_digest="sha256:" + "a" * 64,
+            attempt_start_claim_digest="sha256:" + "f" * 64,
+        )
+        == receipt
+    )
 
     tampered = deepcopy(receipt)
     tampered["active_mutation_writer_count"] = 1

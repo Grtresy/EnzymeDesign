@@ -31,6 +31,7 @@ from .aox_host_supervision import HOST_SUPERVISION_FILENAME
 from .aox_host_supervision import validate_supervised_host_pre_ready_failure
 from .aox_host_supervision import validate_supervised_host_receipt
 from .aox_public_conductor_bundle import PUBLIC_CONDUCTOR_BUNDLE_FILENAME
+from .aox_public_conductor_bundle import PUBLIC_API_RECEIPT_SCHEMA_ID
 from .aox_public_conductor_bundle import _content_digest
 from .aox_public_conductor_bundle import _load_canonical_object
 from .aox_public_conductor_bundle import _load_receipt_chain
@@ -40,6 +41,7 @@ from .aox_public_conductor_bundle import _validate_runtime_command_handoffs
 from .aox_public_conductor_bundle import _validate_startup
 from .aox_public_conductor_contract import validate_bounded_drain_receipts
 from .aox_public_conductor_contract import validate_canonical_entry_receipts
+from .aox_public_conductor_contract import effective_public_receipts
 
 
 FORMAL_SLOT_FAILURE_SCHEMA_ID = "aox_formal_slot_failure@3"
@@ -679,10 +681,12 @@ def _build_payload(
         receipt_chain_path,
         identity="formal_slot_failure.receipt_chain",
     )
-    receipts, receipt_bytes = _load_receipt_chain(
+    raw_receipts, receipt_bytes = _load_receipt_chain(
         receipt_chain_path,
         allow_failure_responses=True,
+        required_schema_id=PUBLIC_API_RECEIPT_SCHEMA_ID,
     )
+    receipts = effective_public_receipts(raw_receipts)
     session_id = str(slot["session_id"])
     validate_canonical_entry_receipts(
         receipts,
@@ -697,7 +701,7 @@ def _build_payload(
     }
     if any(
         any(fragment in str(receipt.get("route") or "") for fragment in forbidden_fragments)
-        for receipt in receipts
+        for receipt in raw_receipts
     ):
         _fail(
             "formal_slot_failure_actor_boundary_invalid",
@@ -716,12 +720,12 @@ def _build_payload(
     workspace_envelope, _ = _load_response_envelope(
         workspace_response_path,
         identity="formal_slot_failure.workspace",
-        receipts=receipts,
+        receipts=raw_receipts,
     )
     event_envelope, _ = _load_response_envelope(
         event_response_path,
         identity="formal_slot_failure.events",
-        receipts=receipts,
+        receipts=raw_receipts,
     )
     workspace = workspace_envelope.get("response")
     events = _validate_events(event_envelope.get("response"), session_id=session_id)

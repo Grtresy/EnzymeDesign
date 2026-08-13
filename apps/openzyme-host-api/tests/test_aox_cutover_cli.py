@@ -86,6 +86,18 @@ def test_cli_json_handoff_is_flushed(
     assert json.loads(str(observed["value"])) == {"status": "host_ready"}
 
 
+def test_config_contract_help_names_profile_descriptor(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        cli.build_parser().parse_args(["config-contract", "--help"])
+
+    assert error.value.code == 0
+    assert "profile descriptor and candidate lifecycle contract" in " ".join(
+        capsys.readouterr().out.split()
+    )
+
+
 def test_decide_accepts_verified_slot_failure_without_attempt_bundle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -493,13 +505,211 @@ def test_public_host_rejects_evidence_and_identity_overrides(tmp_path: Path) -> 
     args = SimpleNamespace(
         preflight_receipt=tmp_path / "aox-attempt-preflight.json",
         response_name="bad",
-        host_cli_args=["--", "--receipt-chain", str(tmp_path / "other"), "sessions", "show"],
+        host_cli_args=[
+            "--",
+            "--receipt-chain",
+            str(tmp_path / "other"),
+            "sessions",
+            "show",
+        ],
     )
 
     with pytest.raises(cli.CutoverEvidenceError) as error:
         cli._public_host(args)
 
     assert error.value.code == "public_conductor_command_boundary_invalid"
+
+
+def test_host_operation_queries_without_writes_and_reconciles_idempotently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = {
+        "project_id": "aox-blank-world-cutover",
+        "session_id": "session-formal",
+        "receipt_chain_name": "public-api-receipts.jsonl",
+        "retirement_readiness_name": "retirement-readiness.json",
+    }
+    descriptor = {
+        "method": "POST",
+        "route": "/v3/tasks",
+        "request": {
+            "session_id": "session-formal",
+            "subject": "exact",
+            "description": "",
+            "priority": "normal",
+            "kind": "general",
+        },
+        "request_body": {
+            "session_id": "session-formal",
+            "subject": "exact",
+            "description": "",
+            "priority": "normal",
+            "kind": "general",
+        },
+        "idempotency_key": "task-exact",
+        "command_type": "task.create",
+        "scope_ref": "session:session-formal",
+        "owner_request_digest": "sha256:" + "a" * 64,
+        "attempt_id": None,
+        "artifact_id": None,
+        "original_status_code": 200,
+    }
+    terminal = {
+        "schema_id": "host_mutation_operation_observation@1",
+        "session_id": "session-formal",
+        "command_type": "task.create",
+        "scope_ref": "session:session-formal",
+        "idempotency_key": "task-exact",
+        "request_digest": "sha256:" + "a" * 64,
+        "status": "terminal",
+        "response": {"task": {"task_id": "task-exact"}},
+        "query_read_only": True,
+        "resume_applicable": False,
+    }
+    outputs: list[dict[str, object]] = []
+    client_calls: list[dict[str, object]] = []
+
+    class FakeObservationClient:
+        def __init__(self, base_url: str) -> None:
+            assert base_url == "http://127.0.0.1:41234"
+
+        def observe_v3_mutation_operation(self, **kwargs):  # type: ignore[no-untyped-def]
+            client_calls.append(dict(kwargs))
+            return dict(terminal)
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        cli,
+        "load_active_public_host_context",
+        lambda path: (
+            {"slot": {}},
+            contract,
+            {"base_url": "http://127.0.0.1:41234"},
+            tmp_path,
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "describe_public_host_mutation",
+        lambda *args, **kwargs: dict(descriptor),
+    )
+    monkeypatch.setattr(cli, "HostApiClient", FakeObservationClient)
+    monkeypatch.setattr(
+        cli,
+        "validate_public_host_reconciliation",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(cli, "_print", lambda payload: outputs.append(dict(payload)))
+    query_args = SimpleNamespace(
+        preflight_receipt=tmp_path / "preflight.json",
+        action="query",
+        response_name=None,
+        host_cli_args=["--", "tasks", "create", "--subject", "exact"],
+    )
+
+    assert cli._host_operation(query_args) == 0
+    assert sorted(path.name for path in tmp_path.iterdir()) == []
+    assert outputs[-1]["status"] == "terminal"
+    assert client_calls[-1]["request_digest"] == descriptor["owner_request_digest"]
+
+    reconcile_args = SimpleNamespace(
+        **{**vars(query_args), "action": "reconcile", "response_name": "task-exact"}
+    )
+    assert cli._host_operation(reconcile_args) == 0
+    first_chain = (tmp_path / "public-api-receipts.jsonl").read_bytes()
+    first_response = (tmp_path / "public-response-task-exact.json").read_bytes()
+    assert outputs[-1]["status"] == "receipt_converged"
+    assert cli._host_operation(reconcile_args) == 0
+    assert (tmp_path / "public-api-receipts.jsonl").read_bytes() == first_chain
+    assert (tmp_path / "public-response-task-exact.json").read_bytes() == first_response
+
+
+def test_host_operation_unknown_and_digest_drift_fail_without_evidence_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = {
+        "project_id": "aox-blank-world-cutover",
+        "session_id": "session-formal",
+        "receipt_chain_name": "public-api-receipts.jsonl",
+        "retirement_readiness_name": "retirement-readiness.json",
+    }
+    descriptor = {
+        "method": "POST",
+        "route": "/v3/tasks/task-exact",
+        "request": {"status": "in_progress"},
+        "request_body": {"status": "in_progress"},
+        "idempotency_key": "task-update-exact",
+        "command_type": "task.update",
+        "scope_ref": "task:task-exact",
+        "owner_request_digest": "sha256:" + "a" * 64,
+        "attempt_id": None,
+        "artifact_id": None,
+        "original_status_code": 200,
+    }
+    observation = {
+        "schema_id": "host_mutation_operation_observation@1",
+        "session_id": "session-formal",
+        "command_type": "task.update",
+        "scope_ref": "task:task-exact",
+        "idempotency_key": "task-update-exact",
+        "request_digest": "sha256:" + "a" * 64,
+        "status": "unproven",
+        "response": None,
+        "query_read_only": True,
+        "resume_applicable": False,
+    }
+
+    class FakeObservationClient:
+        def __init__(self, base_url: str) -> None:
+            del base_url
+
+        def observe_v3_mutation_operation(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            return dict(observation)
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        cli,
+        "load_active_public_host_context",
+        lambda path: (
+            {"slot": {}},
+            contract,
+            {"base_url": "http://127.0.0.1:41234"},
+            tmp_path,
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "describe_public_host_mutation",
+        lambda *args, **kwargs: dict(descriptor),
+    )
+    monkeypatch.setattr(cli, "HostApiClient", FakeObservationClient)
+    monkeypatch.setattr(cli, "_print", lambda payload: None)
+    args = SimpleNamespace(
+        preflight_receipt=tmp_path / "preflight.json",
+        action="reconcile",
+        response_name="task-update-exact",
+        host_cli_args=["--", "tasks", "update", "--task-id", "task-exact"],
+    )
+
+    assert cli._host_operation(args) == 2
+    assert sorted(path.name for path in tmp_path.iterdir()) == []
+
+    observation.update(
+        status="terminal",
+        request_digest="sha256:" + "b" * 64,
+        response={"task": {"task_id": "task-exact"}},
+    )
+    with pytest.raises(cli.CutoverEvidenceError) as error:
+        cli._host_operation(args)
+    assert error.value.code == "public_conductor_mutation_observation_drift"
+    assert sorted(path.name for path in tmp_path.iterdir()) == []
 
 
 def test_late_bound_grant_derives_canonical_public_payload(
@@ -531,9 +741,7 @@ def test_late_bound_grant_derives_canonical_public_payload(
         "project_id": "aox-blank-world-cutover",
         "session_id": "session-formal",
         "receipt_chain_name": "public-api-receipts.jsonl",
-        "retirement_readiness_name": (
-            "aox-public-conductor-retirement-readiness.json"
-        ),
+        "retirement_readiness_name": ("aox-public-conductor-retirement-readiness.json"),
     }
     startup = {"base_url": "http://127.0.0.1:41234"}
     response = tmp_path / "public-response-authority-grant.json"
@@ -541,8 +749,10 @@ def test_late_bound_grant_derives_canonical_public_payload(
     monkeypatch.setattr(
         cli,
         "resolve_pregrant_execution_task",
-        lambda **kwargs: observed.update(binding=kwargs)
-        or {"task_id": "task_execution", "kind": "execution"},
+        lambda **kwargs: (
+            observed.update(binding=kwargs)
+            or {"task_id": "task_execution", "kind": "execution"}
+        ),
     )
     monkeypatch.setattr(
         cli,
@@ -647,9 +857,7 @@ def test_serve_attempt_refuses_retirement_then_reuses_same_host_lease(
         "retirement_admitted",
         "retired",
     ]
-    assert outputs[1]["failure_code"] == (
-        "public_conductor_response_set_incomplete"
-    )
+    assert outputs[1]["failure_code"] == ("public_conductor_response_set_incomplete")
 
 
 def test_consume_authority_only_seals_consumption_receipt(
@@ -664,8 +872,23 @@ def test_consume_authority_only_seals_consumption_receipt(
     assert args.attempt_authority_consumption.is_file()
     assert not (tmp_path / "campaign").exists()
     output = json.loads(capsys.readouterr().out)
-    assert output["status"] == "consumed_without_execution"
-    assert output["schema_id"] == "aox_attempt_authority_consume_receipt@1"
+    assert output["status"] == "consumption_receipt_closed"
+    assert output["schema_id"] == "aox_attempt_authority_consume_receipt@2"
+    assert output["effect_certainty"] == "terminal_known"
+    assert output["retry_eligibility"] == "terminal"
+    assert output["terminal_scope"] == "authority_consumption_occurrence"
+    assert output["authority_slot_count"] == 3
+    assert output["max_attempts_per_slot"] == 1
+    assert output["max_micu_per_slot"] == 1
+    assert output["max_cost_microunits_per_slot"] == 1
+    assert output["max_wall_time_seconds_per_slot"] == 100_000
+    assert output["scientific_attempt_counted"] is False
+
+    assert cli._consume_authority(args) == 0
+    converged = json.loads(capsys.readouterr().out)
+    assert converged["status"] == "consumption_receipt_closed"
+    assert converged["consumption_digest"] == output["consumption_digest"]
+    assert converged["idempotency_key"] == output["idempotency_key"]
 
 
 def test_public_authorize_then_consume_derives_target_without_prefill(
@@ -699,9 +922,7 @@ def test_public_authorize_then_consume_derives_target_without_prefill(
     )
 
     assert authorize_args.handler(authorize_args) == 0
-    assert json.loads(capsys.readouterr().out)["status"] == (
-        "published_not_consumed"
-    )
+    assert json.loads(capsys.readouterr().out)["status"] == ("published_not_consumed")
 
     consume_args = parser.parse_args(
         [
@@ -723,7 +944,7 @@ def test_public_authorize_then_consume_derives_target_without_prefill(
     assert expected.is_file()
     assert stat.S_IMODE(expected.stat().st_mode) == 0o400
     assert json.loads(capsys.readouterr().out)["status"] == (
-        "consumed_without_execution"
+        "consumption_receipt_closed"
     )
 
 
@@ -754,7 +975,7 @@ def test_consume_authority_derives_full_plan_basename_through_public_parser(
     assert stat.S_IMODE(expected.stat().st_mode) == 0o400
     assert not (tmp_path / "campaign").exists()
     assert json.loads(capsys.readouterr().out)["status"] == (
-        "consumed_without_execution"
+        "consumption_receipt_closed"
     )
 
 
@@ -790,10 +1011,10 @@ def test_consume_authority_rejects_existing_derived_target_without_effect(
     else:
         target.symlink_to(tmp_path / "missing-consumption-target")
 
-    with pytest.raises(AoxCutoverLaunchError) as error:
+    with pytest.raises(cli.CutoverEvidenceError) as error:
         args.handler(args)
 
-    assert error.value.code == "aox_launch_pin_output_exists"
+    assert error.value.code == "attempt_authority_consumption_unreadable"
     if existing_kind == "file":
         assert target.read_bytes() == b"preexisting"
     else:
@@ -832,8 +1053,7 @@ def test_preflight_config_failure_seals_before_claim_or_root(
         public_details={
             "kind": "schema_field",
             "identity": (
-                "effective_config.reliability."
-                "controlled_operation_owner_policy"
+                "effective_config.reliability.controlled_operation_owner_policy"
             ),
         },
     )
@@ -870,9 +1090,7 @@ def test_preflight_config_failure_seals_before_claim_or_root(
     monkeypatch.setattr(
         cli,
         "create_blank_world_roots",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError((args, kwargs))
-        ),
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError((args, kwargs))),
     )
 
     with pytest.raises(AoxCutoverLaunchError) as error:
@@ -884,9 +1102,7 @@ def test_preflight_config_failure_seals_before_claim_or_root(
     assert observed["prepare"]["architecture_qualification_report"] == (
         consume_args.architecture_qualification_report
     )
-    assert observed["launch_profile"]["schema_id"] == (
-        "aox_cutover_launch_profile@1"
-    )
+    assert observed["launch_profile"]["schema_id"] == ("aox_cutover_launch_profile@1")
     assert observed["failure"] == {
         "schema_id": "aox_cutover_launch_failure@3",
         "status": "failed",
@@ -894,8 +1110,7 @@ def test_preflight_config_failure_seals_before_claim_or_root(
         "failure_details": {
             "kind": "schema_field",
             "identity": (
-                "effective_config.reliability."
-                "controlled_operation_owner_policy"
+                "effective_config.reliability.controlled_operation_owner_policy"
             ),
         },
     }
@@ -1068,6 +1283,151 @@ def test_pin_uses_policy_free_conductor_and_writes_safe_no_replace_json(
     assert str(tmp_path) not in json.dumps(output, sort_keys=True)
 
 
+@pytest.mark.parametrize(
+    ("action", "runner_method"),
+    (
+        ("query", "inspect_reserved_execution"),
+        ("resume", "resume_reserved_execution"),
+        ("reconcile", "recover_reserved_execution_outcome"),
+    ),
+)
+def test_pin_operation_uses_one_exact_reserved_occurrence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    action: str,
+    runner_method: str,
+) -> None:
+    observed: dict[str, object] = {}
+
+    class Runner:
+        def __init__(self, config_path: Path) -> None:
+            observed["config_path"] = config_path
+
+        def _observe(self, run_id: str, method: str) -> dict[str, object]:
+            observed["run_id"] = run_id
+            observed["runner_method"] = method
+            return {
+                "run_id": run_id,
+                "status": "reserved",
+                "selected_mode": "ssh",
+                "phase": "allocated",
+                "effect_certainty": "no_effect",
+                "retry_eligibility": "same_phase_safe",
+                "reconciliation_required": False,
+                "retryable": True,
+                "runner_attempt_receipt_digest": "sha256:" + "1" * 64,
+                "reservation_identity_digest": "sha256:" + "2" * 64,
+                "request_digest": "sha256:" + "3" * 64,
+                "execution_id": "aox-pin-source",
+                "operation_id": "aox-pin-mafft",
+                "operation_digest": "sha256:" + "4" * 64,
+                "approval_digest": "sha256:" + "5" * 64,
+                "route_policy_id": "aox-toolchain-pin",
+                "adapter_policy_id": "bio_tools.mafft.hpc:v1",
+                "artifacts": {},
+            }
+
+        def inspect_reserved_execution(self, run_id: str) -> dict[str, object]:
+            return self._observe(run_id, "inspect_reserved_execution")
+
+        def resume_reserved_execution(self, run_id: str) -> dict[str, object]:
+            return self._observe(run_id, "resume_reserved_execution")
+
+        def recover_reserved_execution_outcome(self, run_id: str) -> dict[str, object]:
+            return self._observe(run_id, "recover_reserved_execution_outcome")
+
+    monkeypatch.setattr(cli, "MCPHpcServer", Runner)
+    args = cli.build_parser().parse_args(
+        [
+            "pin-operation",
+            "--action",
+            action,
+            "--runner-config",
+            str(tmp_path / "runner.toml"),
+            "--run-id",
+            "run_aox_pin_mafft",
+        ]
+    )
+
+    assert args.handler(args) == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert observed["run_id"] == "run_aox_pin_mafft"
+    assert observed["runner_method"] == runner_method
+    assert receipt["schema_id"] == "aox_toolchain_pin_public_operation@1"
+    assert receipt["effect_certainty"] == "no_effect"
+    assert receipt["retry_eligibility"] == "same_phase_safe"
+    assert receipt["scientific_attempt_counted"] is False
+
+
+def test_pin_operation_rejects_removed_recover_alias() -> None:
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(
+            [
+                "pin-operation",
+                "--action",
+                "recover",
+                "--runner-config",
+                "runner.toml",
+                "--run-id",
+                "run_aox_pin_mafft",
+            ]
+        )
+
+
+def test_config_candidate_outputs_the_exact_persisted_candidate(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    target = tmp_path / "candidate.json"
+    argv = ["config-candidate", "--output", str(target)]
+
+    assert cli.main(argv) == 0
+    stdout = json.loads(capsys.readouterr().out)
+    assert stdout["schema_id"] == "aox_config_candidate@1"
+    assert stdout == json.loads(target.read_text(encoding="utf-8"))
+
+    assert cli.main(argv) == 2
+    failure = json.loads(capsys.readouterr().err)
+    assert failure["schema_id"] == "aox_cutover_launch_failure@3"
+    assert failure["failure_code"] == "aox_config_candidate_output_exists"
+    assert failure["failure_details"]["candidate_id"] == stdout["candidate_id"]
+
+
+def test_config_candidate_preserves_unproven_publication_effect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def reject_publication(path: Path, payload: object) -> Path:
+        del path, payload
+        raise cli.AoxConfigContractError(
+            "aox_config_candidate_publication_in_doubt",
+            "private publication detail",
+        )
+
+    monkeypatch.setattr(cli, "publish_aox_config_candidate", reject_publication)
+
+    assert (
+        cli.main(
+            [
+                "config-candidate",
+                "--output",
+                str(tmp_path / "candidate.json"),
+            ]
+        )
+        == 2
+    )
+    failure = json.loads(capsys.readouterr().err)
+    assert failure["failure_details"]["effect_certainty"] == "unproven"
+    assert failure["failure_details"]["retry_eligibility"] == "reconcile_required"
+    assert failure["failure_details"]["reconciliation_required"] is True
+    assert failure["failure_details"]["terminal_scope"] == (
+        "config_candidate_publication_occurrence"
+    )
+    assert "private publication detail" not in json.dumps(failure)
+
+
 def test_check_config_uses_public_production_builder_without_runner_or_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1107,12 +1467,44 @@ def test_check_config_uses_public_production_builder_without_runner_or_state(
         "ledger_path": args.ledger_path,
     }
     assert not list(tmp_path.iterdir())
-    assert json.loads(capsys.readouterr().out) == {
-        "schema_id": "aox_cutover_config_check@1",
-        "status": "valid",
-        "effective_config_schema_id": "aox_blank_world_runtime_config@5",
-        "config_digest": "sha256:" + "a" * 64,
-    }
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["schema_id"] == "aox_cutover_config_check@2"
+    assert receipt["status"] == "valid"
+    assert receipt["effective_config_schema_id"] == ("aox_blank_world_runtime_config@5")
+    assert receipt["config_digest"] == "sha256:" + "a" * 64
+    assert receipt["candidate_id"].startswith("aox-config-")
+    assert receipt["contract_digest"].startswith("sha256:")
+    assert receipt["candidate_digest"].startswith("sha256:")
+
+
+def test_check_config_source_drift_rejects_the_supplied_candidate_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _check_config_args(tmp_path)
+    candidate = cli.build_aox_config_candidate(
+        ledger_path=args.ledger_path,
+        environ={"OPENZYME_TEST_ENABLE_LIVE_E2E": "0"},
+    )
+    candidate_path = tmp_path / "candidate.json"
+    cli.publish_aox_config_candidate(candidate_path, candidate)
+    args.candidate = candidate_path
+    monkeypatch.setenv("OPENZYME_TEST_ENABLE_LIVE_E2E", "1")
+
+    with pytest.raises(AoxCutoverLaunchError) as error:
+        cli._check_config(args)
+
+    assert error.value.code == "aox_config_candidate_source_drift"
+    assert error.value.public_details["candidate_id"] == candidate["candidate_id"]
+    assert error.value.public_details["exact_handle"] == candidate["candidate_id"]
+
+    malformed = tmp_path / "malformed-candidate.json"
+    malformed.write_text("not-json\n", encoding="utf-8")
+    args.candidate = malformed
+    with pytest.raises(AoxCutoverLaunchError) as malformed_error:
+        cli._check_config(args)
+    assert malformed_error.value.code == "aox_config_candidate_unreadable"
+    assert malformed_error.value.public_details == {}
 
 
 def test_pin_refuses_existing_output_before_runner_bootstrap(
@@ -1195,9 +1587,7 @@ def test_pin_staging_failure_cleans_already_staged_temporary(
         cli._write_pin_outputs_atomic_no_replace(
             identity_target=tmp_path / "identity.json",
             prerequisites_target=tmp_path / "prerequisites.json",
-            profile_target=(
-                tmp_path / cli.AOX_CUTOVER_LAUNCH_PROFILE_FILENAME
-            ),
+            profile_target=(tmp_path / cli.AOX_CUTOVER_LAUNCH_PROFILE_FILENAME),
             identity={"git_commit": "a" * 40},
             prerequisites={"git_commit": "a" * 40},
             launch_profile=_launch_profile(),
@@ -1396,7 +1786,13 @@ def test_cli_projects_only_closed_runner_attestation_details(
                 "kind": "runner_attestation",
                 "tool_id": "bio_tools.mafft",
                 "stage": "runner_result",
+                "phase": "terminal",
                 "effect_certainty": "no_effect",
+                "retry_eligibility": "terminal",
+                "reconciliation_required": False,
+                "terminal_scope": "runner_operation_occurrence",
+                "authority_scope": "preparation_only",
+                "scientific_attempt_counted": False,
                 "runner_run_id": "run_aox_pin_mafft",
                 "runner_attempt_receipt_digest": "sha256:" + "b" * 64,
                 "runner_error_code": "SSH_CONNECTION_TIMEOUT",
@@ -1428,7 +1824,13 @@ def test_cli_projects_only_closed_runner_attestation_details(
             "kind": "runner_attestation",
             "tool_id": "bio_tools.mafft",
             "stage": "runner_result",
+            "phase": "terminal",
             "effect_certainty": "no_effect",
+            "retry_eligibility": "terminal",
+            "reconciliation_required": False,
+            "terminal_scope": "runner_operation_occurrence",
+            "authority_scope": "preparation_only",
+            "scientific_attempt_counted": False,
             "runner_run_id": "run_aox_pin_mafft",
             "runner_attempt_receipt_digest": "sha256:" + "b" * 64,
             "runner_error_code": "SSH_CONNECTION_TIMEOUT",

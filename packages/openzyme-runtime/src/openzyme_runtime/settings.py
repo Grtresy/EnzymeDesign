@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
 from functools import lru_cache
@@ -10,9 +11,15 @@ from pathlib import Path
 from typing import Any
 
 from .limits import DEFAULT_PROVIDER_LIMITS
+from .environment_contract import credential_safe_source_projection
+from .environment_contract import EnvironmentFieldDescriptor
+from .environment_contract import field_map
 from .live_token_ledger import DEFAULT_LIVE_MICU_TOKEN_LEDGER_PATH
-from .live_token_ledger import configured_live_micu_token_ledger_path
+from .live_token_ledger import DEFAULT_LIVE_MICU_TOKEN_LEDGER_RELATIVE_PATH
+from .live_token_ledger import LIVE_MICU_TOKEN_LEDGER_PATH_ENV
+from .live_token_ledger import resolve_live_micu_token_ledger_path
 from .reliability import ReliabilityRefactorSettings
+from .reliability import reliability_environment_fields
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -30,6 +37,9 @@ DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS = 1.0
 DEFAULT_HOST_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_HOST_API_BIND_HOST = "127.0.0.1"
 DEFAULT_HOST_API_BIND_PORT = 8000
+HOST_API_LOCAL_DEPLOYMENT_PROFILE = "local-dev"
+HOST_API_DEPLOYMENT_PROFILES = frozenset({HOST_API_LOCAL_DEPLOYMENT_PROFILE, "shared"})
+HOST_API_LOOPBACK_BIND_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 LIMIT_ENV_VARS = {
     "global": "OPENZYME_LIMIT_GLOBAL_CONCURRENCY",
     "session": "OPENZYME_LIMIT_SESSION_CONCURRENCY",
@@ -51,37 +61,521 @@ LLM_PURPOSES = (
 )
 
 
-def _parse_bool(value: str | None, default: bool = False) -> bool:
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on", "local"}
+_LLM_PURPOSE_ENVIRONMENT_FIELD_SPECS = (
+    ("max_tokens", "optional_integer"),
+    ("timeout", "optional_number"),
+    ("max_retries", "optional_integer"),
+    ("structured_output_method", "string"),
+    ("structured_output_retry_backoff_seconds", "optional_number"),
+)
 
 
-def _parse_int(value: str | None, default: int) -> int:
-    if value in {None, ""}:
-        return default
-    return int(value)
+def _purpose_environment_fields() -> tuple[EnvironmentFieldDescriptor, ...]:
+    fields: list[EnvironmentFieldDescriptor] = []
+    for purpose in LLM_PURPOSES:
+        for field_name, value_kind in _LLM_PURPOSE_ENVIRONMENT_FIELD_SPECS:
+            fields.append(
+                EnvironmentFieldDescriptor(
+                    setting_path=f"llm.purpose_policies.{purpose}.{field_name}",
+                    environment_names=(
+                        f"OPENZYME_LLM_{purpose.upper()}_{field_name.upper()}",
+                    ),
+                    value_kind=value_kind,
+                    safe_generic_default=None,
+                )
+            )
+    return tuple(fields)
 
 
-def _parse_float(value: str | None, default: float) -> float:
-    if value in {None, ""}:
-        return default
-    return float(value)
+_OPENZYME_SETTINGS_ENVIRONMENT_FIELDS = (
+    EnvironmentFieldDescriptor(
+        setting_path="llm.api_key",
+        environment_names=("OPENZYME_LLM_API_KEY", "MICU_API_KEY"),
+        value_kind="credential",
+        safe_generic_default=None,
+        identity_mode="credential_presence",
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="llm.model",
+        environment_names=("OPENZYME_LLM_MODEL",),
+        value_kind="string",
+        safe_generic_default=DEFAULT_OPENAI_COMPAT_MODEL,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="llm.base_url",
+        environment_names=("OPENZYME_LLM_BASE_URL",),
+        value_kind="string",
+        safe_generic_default=DEFAULT_OPENAI_COMPAT_BASE_URL,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="llm.extra_body",
+        environment_names=("OPENZYME_LLM_EXTRA_BODY",),
+        value_kind="json_object",
+        safe_generic_default=None,
+        identity_mode="private_digest",
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="llm.default_headers",
+        environment_names=("OPENZYME_LLM_USER_AGENT",),
+        value_kind="private_string",
+        safe_generic_default=DEFAULT_OPENAI_COMPAT_USER_AGENT,
+        identity_mode="private_digest",
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="llm.use_responses_api",
+        environment_names=("OPENZYME_LLM_USE_RESPONSES_API",),
+        value_kind="boolean",
+        safe_generic_default=DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="llm.max_tokens",
+        environment_names=("OPENZYME_LLM_MAX_TOKENS",),
+        value_kind="optional_integer",
+        safe_generic_default=None,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="llm.timeout",
+        environment_names=("OPENZYME_LLM_TIMEOUT",),
+        value_kind="optional_number",
+        safe_generic_default=None,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="llm.max_retries",
+        environment_names=("OPENZYME_LLM_MAX_RETRIES",),
+        value_kind="integer",
+        safe_generic_default=5,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="llm.temperature",
+        environment_names=("OPENZYME_LLM_TEMPERATURE",),
+        value_kind="number",
+        safe_generic_default=0.0,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="llm.structured_output_method",
+        environment_names=("OPENZYME_LLM_STRUCTURED_OUTPUT_METHOD",),
+        value_kind="string",
+        safe_generic_default=DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="llm.structured_output_retry_backoff_seconds",
+        environment_names=("OPENZYME_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS",),
+        value_kind="number",
+        safe_generic_default=DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="llm.context_window_tokens",
+        environment_names=("OPENZYME_LLM_CONTEXT_WINDOW_TOKENS",),
+        value_kind="optional_integer",
+        safe_generic_default=None,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="llm.default_output_tokens",
+        environment_names=("OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS",),
+        value_kind="optional_integer",
+        safe_generic_default=None,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="llm.context_warn_ratio",
+        environment_names=("OPENZYME_LLM_CONTEXT_WARN_RATIO",),
+        value_kind="number",
+        safe_generic_default=0.80,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="llm.context_auto_compact_ratio",
+        environment_names=("OPENZYME_LLM_CONTEXT_AUTO_COMPACT_RATIO",),
+        value_kind="number",
+        safe_generic_default=0.85,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="llm.context_emergency_ratio",
+        environment_names=("OPENZYME_LLM_CONTEXT_EMERGENCY_RATIO",),
+        value_kind="number",
+        safe_generic_default=0.90,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="llm.tokenizer_enabled",
+        environment_names=("OPENZYME_LLM_TOKENIZER_ENABLED",),
+        value_kind="boolean",
+        safe_generic_default=False,
+        empty_uses_fallback=False,
+    ),
+    *_purpose_environment_fields(),
+    EnvironmentFieldDescriptor(
+        setting_path="research.max_units",
+        environment_names=("OPENZYME_RESEARCH_MAX_UNITS",),
+        value_kind="integer",
+        safe_generic_default=3,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="research.allow_clarification",
+        environment_names=("OPENZYME_RESEARCH_ALLOW_CLARIFICATION",),
+        value_kind="boolean",
+        safe_generic_default=False,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="research.max_research_iterations",
+        environment_names=("OPENZYME_RESEARCH_MAX_ITERATIONS",),
+        value_kind="integer",
+        safe_generic_default=3,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="research.max_react_tool_calls",
+        environment_names=("OPENZYME_RESEARCH_MAX_REACT_TOOL_CALLS",),
+        value_kind="integer",
+        safe_generic_default=4,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="research.max_concurrent_research_units",
+        environment_names=("OPENZYME_RESEARCH_MAX_CONCURRENT_UNITS",),
+        value_kind="integer",
+        safe_generic_default=3,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="research.tavily_api_key",
+        environment_names=("TAVILY_API_KEY",),
+        value_kind="credential",
+        safe_generic_default=None,
+        identity_mode="credential_presence",
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="research.tavily_max_results",
+        environment_names=("OPENZYME_TAVILY_MAX_RESULTS",),
+        value_kind="integer",
+        safe_generic_default=3,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="research.tavily_topic",
+        environment_names=("OPENZYME_TAVILY_TOPIC",),
+        value_kind="string",
+        safe_generic_default="general",
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="research.mcp_tool_allowlist",
+        environment_names=("OPENZYME_RESEARCH_MCP_TOOL_ALLOWLIST",),
+        value_kind="string_list",
+        safe_generic_default=[],
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="research.tavily_timeout_seconds",
+        environment_names=("OPENZYME_TAVILY_TIMEOUT_SECONDS",),
+        value_kind="number",
+        safe_generic_default=30.0,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="research.pubmed_email",
+        environment_names=("OPENZYME_NCBI_EMAIL", "NCBI_EMAIL"),
+        value_kind="private_string",
+        safe_generic_default=None,
+        identity_mode="private_digest",
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="research.pubmed_tool",
+        environment_names=("OPENZYME_NCBI_TOOL", "NCBI_TOOL"),
+        value_kind="string",
+        safe_generic_default="openzyme",
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="research.pubmed_api_key",
+        environment_names=("OPENZYME_NCBI_API_KEY", "NCBI_API_KEY"),
+        value_kind="credential",
+        safe_generic_default=None,
+        identity_mode="credential_presence",
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="research.semantic_scholar_api_key",
+        environment_names=("SEMANTIC_SCHOLAR_API_KEY",),
+        value_kind="credential",
+        safe_generic_default=None,
+        identity_mode="credential_presence",
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="research.provider_timeout_seconds",
+        environment_names=("OPENZYME_RESEARCH_PROVIDER_TIMEOUT_SECONDS",),
+        value_kind="number",
+        safe_generic_default=30.0,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="research.provider_max_attempts",
+        environment_names=("OPENZYME_RESEARCH_PROVIDER_MAX_ATTEMPTS",),
+        value_kind="integer",
+        safe_generic_default=3,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="tracing.enabled",
+        environment_names=("OPENZYME_LANGSMITH_TRACING", "LANGSMITH_TRACING"),
+        value_kind="boolean",
+        safe_generic_default=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="tracing.project_name",
+        environment_names=("OPENZYME_LANGSMITH_PROJECT", "LANGSMITH_PROJECT"),
+        value_kind="private_string",
+        safe_generic_default="openzyme-v3",
+        identity_mode="private_digest",
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="host_cli.base_url",
+        environment_names=("OPENZYME_HOST_BASE_URL",),
+        value_kind="string",
+        safe_generic_default=DEFAULT_HOST_BASE_URL,
+        empty_uses_fallback=False,
+        candidate_identity=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="host_cli.project_id",
+        environment_names=("OPENZYME_PROJECT_ID",),
+        value_kind="string",
+        safe_generic_default=None,
+        candidate_identity=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="host_cli.output_format",
+        environment_names=("OPENZYME_OUTPUT_FORMAT",),
+        value_kind="string",
+        safe_generic_default="text",
+        empty_uses_fallback=False,
+        candidate_identity=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="host_cli.auth_token",
+        environment_names=("OPENZYME_HOST_AUTH_TOKEN",),
+        value_kind="credential",
+        safe_generic_default=None,
+        identity_mode="credential_presence",
+        candidate_identity=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="host_api.bind_host",
+        environment_names=("OPENZYME_HOST_API_HOST",),
+        value_kind="string",
+        safe_generic_default=DEFAULT_HOST_API_BIND_HOST,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="host_api.bind_port",
+        environment_names=("OPENZYME_HOST_API_PORT",),
+        value_kind="integer",
+        safe_generic_default=DEFAULT_HOST_API_BIND_PORT,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="host_api.deployment_profile",
+        environment_names=("OPENZYME_HOST_DEPLOYMENT_PROFILE",),
+        value_kind="string",
+        safe_generic_default=HOST_API_LOCAL_DEPLOYMENT_PROFILE,
+        empty_uses_fallback=False,
+        strip_value=True,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="host_api.principals",
+        environment_names=("OPENZYME_HOST_AUTH_PRINCIPALS_JSON",),
+        value_kind="private_string",
+        safe_generic_default=None,
+        identity_mode="credential_presence",
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="host_api.debug_enabled",
+        environment_names=("OPENZYME_HOST_DEBUG_ENABLED",),
+        value_kind="boolean",
+        safe_generic_default=False,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="v3_background_runtime.enabled",
+        environment_names=("OPENZYME_V3_BACKGROUND_RUNTIME_ENABLED",),
+        value_kind="boolean",
+        safe_generic_default=True,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="v3_background_runtime.poll_interval_seconds",
+        environment_names=("OPENZYME_V3_BACKGROUND_RUNTIME_POLL_INTERVAL_SECONDS",),
+        value_kind="number",
+        safe_generic_default=2.0,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="v3_background_runtime.max_signals_per_tick",
+        environment_names=("OPENZYME_V3_BACKGROUND_RUNTIME_MAX_SIGNALS_PER_TICK",),
+        value_kind="integer",
+        safe_generic_default=3,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="v3_background_runtime.max_steps_per_agent",
+        environment_names=("OPENZYME_V3_BACKGROUND_RUNTIME_MAX_STEPS_PER_AGENT",),
+        value_kind="integer",
+        safe_generic_default=12,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="v3_background_runtime.shutdown_timeout_seconds",
+        environment_names=("OPENZYME_V3_BACKGROUND_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS",),
+        value_kind="number",
+        safe_generic_default=10.0,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="execution.backend",
+        environment_names=("OPENZYME_EXECUTION_BACKEND",),
+        value_kind="string",
+        safe_generic_default="disabled",
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="execution.hpc_runner_config",
+        environment_names=("OPENZYME_HPC_RUNNER_CONFIG", "HPC_RUNNER_CONFIG"),
+        value_kind="path",
+        safe_generic_default=None,
+        identity_mode="path_identity",
+    ),
+    *(
+        EnvironmentFieldDescriptor(
+            setting_path=f"limits.provider_limits.{name}",
+            environment_names=(LIMIT_ENV_VARS[name],),
+            value_kind="integer",
+            safe_generic_default=default,
+        )
+        for name, default in sorted(DEFAULT_PROVIDER_LIMITS.items())
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="test.enable_live_llm",
+        environment_names=("OPENZYME_TEST_ENABLE_LIVE_LLM",),
+        value_kind="boolean",
+        safe_generic_default=False,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="test.enable_live_tavily",
+        environment_names=("OPENZYME_TEST_ENABLE_LIVE_TAVILY",),
+        value_kind="boolean",
+        safe_generic_default=False,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="test.enable_live_hpc",
+        environment_names=("OPENZYME_TEST_ENABLE_LIVE_HPC",),
+        value_kind="boolean",
+        safe_generic_default=False,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="test.enable_live_e2e",
+        environment_names=("OPENZYME_TEST_ENABLE_LIVE_E2E",),
+        value_kind="boolean",
+        safe_generic_default=False,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="test.enable_quality_eval",
+        environment_names=("OPENZYME_TEST_ENABLE_QUALITY_EVAL",),
+        value_kind="boolean",
+        safe_generic_default=False,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="test.upload_langsmith",
+        environment_names=("OPENZYME_TEST_UPLOAD_LANGSMITH",),
+        value_kind="boolean",
+        safe_generic_default=False,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="test.live_llm.max_tokens",
+        environment_names=("OPENZYME_TEST_LIVE_LLM_MAX_TOKENS",),
+        value_kind="optional_integer",
+        safe_generic_default=None,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="test.live_llm.timeout",
+        environment_names=("OPENZYME_TEST_LIVE_LLM_TIMEOUT",),
+        value_kind="optional_number",
+        safe_generic_default=None,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="test.live_llm.max_retries",
+        environment_names=("OPENZYME_TEST_LIVE_LLM_MAX_RETRIES",),
+        value_kind="optional_integer",
+        safe_generic_default=None,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="test.live_llm.structured_output_method",
+        environment_names=("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_METHOD",),
+        value_kind="string",
+        safe_generic_default=None,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="test.live_llm.structured_output_retry_backoff_seconds",
+        environment_names=(
+            "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS",
+        ),
+        value_kind="optional_number",
+        safe_generic_default=None,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="test.live_llm.token_ledger_path",
+        environment_names=(LIVE_MICU_TOKEN_LEDGER_PATH_ENV,),
+        value_kind="path",
+        safe_generic_default=str(DEFAULT_LIVE_MICU_TOKEN_LEDGER_RELATIVE_PATH),
+        identity_mode="path_identity",
+    ),
+    *reliability_environment_fields(),
+)
+_OPENZYME_SETTINGS_ENVIRONMENT_FIELD_MAP = field_map(
+    _OPENZYME_SETTINGS_ENVIRONMENT_FIELDS
+)
 
 
-def _parse_optional_float(value: str | None) -> float | None:
-    if value in {None, ""}:
-        return None
-    return float(value)
+def openzyme_settings_environment_fields() -> tuple[EnvironmentFieldDescriptor, ...]:
+    """Return the exact environment descriptors consumed by the AOX profile."""
+
+    return _OPENZYME_SETTINGS_ENVIRONMENT_FIELDS
 
 
-def _parse_json_object(value: str | None) -> dict[str, Any] | None:
-    if value in {None, ""}:
-        return None
-    parsed = json.loads(value)
-    if not isinstance(parsed, dict):
-        raise ValueError("Expected a JSON object.")
-    return parsed
+def openzyme_settings_environment_contract() -> list[dict[str, object]]:
+    return [
+        field.public_metadata()
+        for field in sorted(
+            _OPENZYME_SETTINGS_ENVIRONMENT_FIELDS,
+            key=lambda item: item.setting_path,
+        )
+    ]
+
+
+def openzyme_settings_source_projection(
+    environ: Mapping[str, str],
+) -> dict[str, object]:
+    return credential_safe_source_projection(
+        tuple(
+            field
+            for field in _OPENZYME_SETTINGS_ENVIRONMENT_FIELDS
+            if field.candidate_identity
+        ),
+        environ,
+    )
+
+
+def resolve_openzyme_settings_environment_field(
+    setting_path: str,
+    environ: Mapping[str, str],
+) -> object:
+    return _OPENZYME_SETTINGS_ENVIRONMENT_FIELD_MAP[setting_path].resolve(environ)
+
+
+def _environment_field(
+    setting_path: str,
+    environ: Mapping[str, str],
+) -> object:
+    return resolve_openzyme_settings_environment_field(setting_path, environ)
 
 
 def _default_llm_extra_body(*, model: str, base_url: str) -> dict[str, Any] | None:
@@ -172,9 +666,13 @@ class LlmSettings:
     def policy_for_purpose(self, purpose: str | None) -> ResolvedLlmPolicy:
         override = self.purpose_policies.get(purpose or "", LlmPurposePolicy())
         return ResolvedLlmPolicy(
-            max_tokens=self.max_tokens if override.max_tokens is None else override.max_tokens,
+            max_tokens=self.max_tokens
+            if override.max_tokens is None
+            else override.max_tokens,
             timeout=self.timeout if override.timeout is None else override.timeout,
-            max_retries=self.max_retries if override.max_retries is None else override.max_retries,
+            max_retries=self.max_retries
+            if override.max_retries is None
+            else override.max_retries,
             structured_output_method=(
                 self.structured_output_method
                 if override.structured_output_method is None
@@ -188,21 +686,19 @@ class LlmSettings:
         )
 
     @classmethod
-    def from_env(cls) -> "LlmSettings":
-        user_agent_raw = os.getenv("OPENZYME_LLM_USER_AGENT")
-        user_agent = (
-            DEFAULT_OPENAI_COMPAT_USER_AGENT
-            if user_agent_raw is None
-            else user_agent_raw.strip() or None
-        )
-        api_key = (
-            os.getenv("OPENZYME_LLM_API_KEY")
-            or os.getenv("MICU_API_KEY")
-            or None
-        )
-        model = os.getenv("OPENZYME_LLM_MODEL") or DEFAULT_OPENAI_COMPAT_MODEL
-        base_url = os.getenv("OPENZYME_LLM_BASE_URL") or DEFAULT_OPENAI_COMPAT_BASE_URL
-        extra_body = _parse_json_object(os.getenv("OPENZYME_LLM_EXTRA_BODY"))
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+    ) -> "LlmSettings":
+        source = os.environ if environ is None else environ
+        user_agent_value = _environment_field("llm.default_headers", source)
+        user_agent = str(user_agent_value).strip() or None
+        api_key_value = _environment_field("llm.api_key", source)
+        api_key = None if api_key_value is None else str(api_key_value)
+        model = str(_environment_field("llm.model", source))
+        base_url = str(_environment_field("llm.base_url", source))
+        extra_body_value = _environment_field("llm.extra_body", source)
+        extra_body = None if extra_body_value is None else dict(extra_body_value)
         if extra_body is None:
             extra_body = _default_llm_extra_body(model=model, base_url=base_url)
         return cls(
@@ -210,80 +706,80 @@ class LlmSettings:
             model=model,
             base_url=base_url,
             extra_body=extra_body,
-            default_headers={"User-Agent": user_agent} if user_agent is not None else None,
-            use_responses_api=_parse_bool(
-                os.getenv("OPENZYME_LLM_USE_RESPONSES_API"),
-                DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API,
+            default_headers={"User-Agent": user_agent}
+            if user_agent is not None
+            else None,
+            use_responses_api=bool(_environment_field("llm.use_responses_api", source)),
+            max_tokens=_optional_int_value(
+                _environment_field("llm.max_tokens", source)
             ),
-            max_tokens=(
-                None
-                if os.getenv("OPENZYME_LLM_MAX_TOKENS") in {None, ""}
-                else _parse_int(os.getenv("OPENZYME_LLM_MAX_TOKENS"), 0)
+            timeout=_optional_float_value(_environment_field("llm.timeout", source)),
+            max_retries=int(_environment_field("llm.max_retries", source)),
+            temperature=float(_environment_field("llm.temperature", source)),
+            structured_output_method=str(
+                _environment_field("llm.structured_output_method", source)
             ),
-            timeout=_parse_optional_float(os.getenv("OPENZYME_LLM_TIMEOUT")),
-            max_retries=_parse_int(os.getenv("OPENZYME_LLM_MAX_RETRIES"), 5),
-            temperature=_parse_float(os.getenv("OPENZYME_LLM_TEMPERATURE"), 0.0),
-            structured_output_method=os.getenv(
-                "OPENZYME_LLM_STRUCTURED_OUTPUT_METHOD",
-                DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD,
+            structured_output_retry_backoff_seconds=float(
+                _environment_field(
+                    "llm.structured_output_retry_backoff_seconds",
+                    source,
+                )
             ),
-            structured_output_retry_backoff_seconds=_parse_float(
-                os.getenv("OPENZYME_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS"),
-                DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS,
+            purpose_policies=_load_llm_purpose_policies(source),
+            context_window_tokens=_optional_int_value(
+                _environment_field("llm.context_window_tokens", source)
             ),
-            purpose_policies=_load_llm_purpose_policies(),
-            context_window_tokens=(
-                None
-                if os.getenv("OPENZYME_LLM_CONTEXT_WINDOW_TOKENS") in {None, ""}
-                else _parse_int(os.getenv("OPENZYME_LLM_CONTEXT_WINDOW_TOKENS"), 0)
+            default_output_tokens=_optional_int_value(
+                _environment_field("llm.default_output_tokens", source)
             ),
-            default_output_tokens=(
-                None
-                if os.getenv("OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS") in {None, ""}
-                else _parse_int(os.getenv("OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS"), 0)
+            context_warn_ratio=float(
+                _environment_field("llm.context_warn_ratio", source)
             ),
-            context_warn_ratio=_parse_float(
-                os.getenv("OPENZYME_LLM_CONTEXT_WARN_RATIO"),
-                0.80,
+            context_auto_compact_ratio=float(
+                _environment_field("llm.context_auto_compact_ratio", source)
             ),
-            context_auto_compact_ratio=_parse_float(
-                os.getenv("OPENZYME_LLM_CONTEXT_AUTO_COMPACT_RATIO"),
-                0.85,
+            context_emergency_ratio=float(
+                _environment_field("llm.context_emergency_ratio", source)
             ),
-            context_emergency_ratio=_parse_float(
-                os.getenv("OPENZYME_LLM_CONTEXT_EMERGENCY_RATIO"),
-                0.90,
-            ),
-            tokenizer_enabled=_parse_bool(
-                os.getenv("OPENZYME_LLM_TOKENIZER_ENABLED"),
-                False,
-            ),
+            tokenizer_enabled=bool(_environment_field("llm.tokenizer_enabled", source)),
         )
 
 
-def _load_llm_purpose_policies() -> dict[str, LlmPurposePolicy]:
+def _optional_int_value(value: object) -> int | None:
+    return None if value is None else int(value)
+
+
+def _optional_float_value(value: object) -> float | None:
+    return None if value is None else float(value)
+
+
+def _optional_string_value(value: object) -> str | None:
+    return None if value is None else str(value)
+
+
+def _load_llm_purpose_policies(
+    environ: Mapping[str, str],
+) -> dict[str, LlmPurposePolicy]:
     policies: dict[str, LlmPurposePolicy] = {}
     for purpose in LLM_PURPOSES:
-        env_prefix = f"OPENZYME_LLM_{purpose.upper()}_"
+        prefix = f"llm.purpose_policies.{purpose}"
         policy = LlmPurposePolicy(
-            max_tokens=(
-                None
-                if os.getenv(f"{env_prefix}MAX_TOKENS") in {None, ""}
-                else _parse_int(os.getenv(f"{env_prefix}MAX_TOKENS"), 0)
+            max_tokens=_optional_int_value(
+                _environment_field(f"{prefix}.max_tokens", environ)
             ),
-            timeout=_parse_optional_float(os.getenv(f"{env_prefix}TIMEOUT")),
-            max_retries=(
-                None
-                if os.getenv(f"{env_prefix}MAX_RETRIES") in {None, ""}
-                else _parse_int(os.getenv(f"{env_prefix}MAX_RETRIES"), 0)
+            timeout=_optional_float_value(
+                _environment_field(f"{prefix}.timeout", environ)
             ),
-            structured_output_method=os.getenv(f"{env_prefix}STRUCTURED_OUTPUT_METHOD") or None,
-            structured_output_retry_backoff_seconds=(
-                None
-                if os.getenv(f"{env_prefix}STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS") in {None, ""}
-                else _parse_float(
-                    os.getenv(f"{env_prefix}STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS"),
-                    0.0,
+            max_retries=_optional_int_value(
+                _environment_field(f"{prefix}.max_retries", environ)
+            ),
+            structured_output_method=_optional_string_value(
+                _environment_field(f"{prefix}.structured_output_method", environ)
+            ),
+            structured_output_retry_backoff_seconds=_optional_float_value(
+                _environment_field(
+                    f"{prefix}.structured_output_retry_backoff_seconds",
+                    environ,
                 )
             ),
         )
@@ -325,45 +821,53 @@ class ResearchSettings:
         return bool(self.tavily_api_key)
 
     @classmethod
-    def from_env(cls) -> "ResearchSettings":
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+    ) -> "ResearchSettings":
+        source = os.environ if environ is None else environ
         return cls(
-            max_units=_parse_int(os.getenv("OPENZYME_RESEARCH_MAX_UNITS"), 3),
-            allow_clarification=_parse_bool(os.getenv("OPENZYME_RESEARCH_ALLOW_CLARIFICATION"), False),
-            max_research_iterations=_parse_int(os.getenv("OPENZYME_RESEARCH_MAX_ITERATIONS"), 3),
-            max_react_tool_calls=_parse_int(os.getenv("OPENZYME_RESEARCH_MAX_REACT_TOOL_CALLS"), 4),
-            max_concurrent_research_units=_parse_int(os.getenv("OPENZYME_RESEARCH_MAX_CONCURRENT_UNITS"), 3),
-            tavily_api_key=os.getenv("TAVILY_API_KEY"),
-            tavily_max_results=_parse_int(os.getenv("OPENZYME_TAVILY_MAX_RESULTS"), 3),
-            tavily_topic=os.getenv("OPENZYME_TAVILY_TOPIC", "general"),
+            max_units=int(_environment_field("research.max_units", source)),
+            allow_clarification=bool(
+                _environment_field("research.allow_clarification", source)
+            ),
+            max_research_iterations=int(
+                _environment_field("research.max_research_iterations", source)
+            ),
+            max_react_tool_calls=int(
+                _environment_field("research.max_react_tool_calls", source)
+            ),
+            max_concurrent_research_units=int(
+                _environment_field("research.max_concurrent_research_units", source)
+            ),
+            tavily_api_key=_optional_string_value(
+                _environment_field("research.tavily_api_key", source)
+            ),
+            tavily_max_results=int(
+                _environment_field("research.tavily_max_results", source)
+            ),
+            tavily_topic=str(_environment_field("research.tavily_topic", source)),
             mcp_tool_allowlist=tuple(
-                item.strip()
-                for item in (os.getenv("OPENZYME_RESEARCH_MCP_TOOL_ALLOWLIST") or "").split(",")
-                if item.strip()
+                _environment_field("research.mcp_tool_allowlist", source)
             ),
-            tavily_timeout_seconds=_parse_float(
-                os.getenv("OPENZYME_TAVILY_TIMEOUT_SECONDS"),
-                30.0,
+            tavily_timeout_seconds=float(
+                _environment_field("research.tavily_timeout_seconds", source)
             ),
-            pubmed_email=(
-                os.getenv("OPENZYME_NCBI_EMAIL") or os.getenv("NCBI_EMAIL")
+            pubmed_email=_optional_string_value(
+                _environment_field("research.pubmed_email", source)
             ),
-            pubmed_tool=(
-                os.getenv("OPENZYME_NCBI_TOOL")
-                or os.getenv("NCBI_TOOL")
-                or "openzyme"
+            pubmed_tool=str(_environment_field("research.pubmed_tool", source)),
+            pubmed_api_key=_optional_string_value(
+                _environment_field("research.pubmed_api_key", source)
             ),
-            pubmed_api_key=(
-                os.getenv("OPENZYME_NCBI_API_KEY")
-                or os.getenv("NCBI_API_KEY")
+            semantic_scholar_api_key=_optional_string_value(
+                _environment_field("research.semantic_scholar_api_key", source)
             ),
-            semantic_scholar_api_key=os.getenv("SEMANTIC_SCHOLAR_API_KEY"),
-            provider_timeout_seconds=_parse_float(
-                os.getenv("OPENZYME_RESEARCH_PROVIDER_TIMEOUT_SECONDS"),
-                30.0,
+            provider_timeout_seconds=float(
+                _environment_field("research.provider_timeout_seconds", source)
             ),
-            provider_max_attempts=_parse_int(
-                os.getenv("OPENZYME_RESEARCH_PROVIDER_MAX_ATTEMPTS"),
-                3,
+            provider_max_attempts=int(
+                _environment_field("research.provider_max_attempts", source)
             ),
         )
 
@@ -374,17 +878,14 @@ class TracingSettings:
     project_name: str
 
     @classmethod
-    def from_env(cls) -> "TracingSettings":
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+    ) -> "TracingSettings":
+        source = os.environ if environ is None else environ
         return cls(
-            enabled=_parse_bool(
-                os.getenv("OPENZYME_LANGSMITH_TRACING") or os.getenv("LANGSMITH_TRACING"),
-                default=False,
-            ),
-            project_name=(
-                os.getenv("OPENZYME_LANGSMITH_PROJECT")
-                or os.getenv("LANGSMITH_PROJECT")
-                or "openzyme-v3"
-            ),
+            enabled=bool(_environment_field("tracing.enabled", source)),
+            project_name=str(_environment_field("tracing.project_name", source)),
         )
 
 
@@ -396,12 +897,20 @@ class HostCliSettings:
     auth_token: str | None = field(default=None, repr=False)
 
     @classmethod
-    def from_env(cls) -> "HostCliSettings":
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+    ) -> "HostCliSettings":
+        source = os.environ if environ is None else environ
         return cls(
-            base_url=os.getenv("OPENZYME_HOST_BASE_URL", DEFAULT_HOST_BASE_URL),
-            project_id=os.getenv("OPENZYME_PROJECT_ID") or None,
-            output_format=os.getenv("OPENZYME_OUTPUT_FORMAT", "text"),
-            auth_token=os.getenv("OPENZYME_HOST_AUTH_TOKEN") or None,
+            base_url=str(_environment_field("host_cli.base_url", source)),
+            project_id=_optional_string_value(
+                _environment_field("host_cli.project_id", source)
+            ),
+            output_format=str(_environment_field("host_cli.output_format", source)),
+            auth_token=_optional_string_value(
+                _environment_field("host_cli.auth_token", source)
+            ),
         )
 
 
@@ -417,20 +926,19 @@ class HostApiPrincipalSettings:
 class HostApiSettings:
     bind_host: str
     bind_port: int
-    deployment_profile: str = "local-dev"
+    deployment_profile: str = HOST_API_LOCAL_DEPLOYMENT_PROFILE
     principals: tuple[HostApiPrincipalSettings, ...] = ()
     debug_enabled: bool = False
 
     def __post_init__(self) -> None:
-        if self.deployment_profile not in {"local-dev", "shared"}:
+        if self.deployment_profile not in HOST_API_DEPLOYMENT_PROFILES:
             raise ValueError(
                 "OPENZYME_HOST_DEPLOYMENT_PROFILE must be 'local-dev' or 'shared'"
             )
-        if self.deployment_profile == "local-dev" and self.bind_host not in {
-            "127.0.0.1",
-            "localhost",
-            "::1",
-        }:
+        if (
+            self.deployment_profile == HOST_API_LOCAL_DEPLOYMENT_PROFILE
+            and self.bind_host not in HOST_API_LOOPBACK_BIND_HOSTS
+        ):
             raise ValueError(
                 "local-dev Host API must bind to a loopback address; use the "
                 "shared profile for a remotely reachable service"
@@ -447,20 +955,23 @@ class HostApiSettings:
             raise ValueError("Host API bearer tokens must be unique")
 
     @classmethod
-    def from_env(cls) -> "HostApiSettings":
-        deployment_profile = os.getenv(
-            "OPENZYME_HOST_DEPLOYMENT_PROFILE", "local-dev"
-        ).strip()
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+    ) -> "HostApiSettings":
+        source = os.environ if environ is None else environ
         return cls(
-            bind_host=os.getenv("OPENZYME_HOST_API_HOST", DEFAULT_HOST_API_BIND_HOST),
-            bind_port=_parse_int(os.getenv("OPENZYME_HOST_API_PORT"), DEFAULT_HOST_API_BIND_PORT),
-            deployment_profile=deployment_profile,
+            bind_host=str(_environment_field("host_api.bind_host", source)),
+            bind_port=int(_environment_field("host_api.bind_port", source)),
+            deployment_profile=str(
+                _environment_field("host_api.deployment_profile", source)
+            ),
             principals=_parse_host_api_principals(
-                os.getenv("OPENZYME_HOST_AUTH_PRINCIPALS_JSON")
+                _optional_string_value(
+                    _environment_field("host_api.principals", source)
+                )
             ),
-            debug_enabled=_parse_bool(
-                os.getenv("OPENZYME_HOST_DEBUG_ENABLED"), default=False
-            ),
+            debug_enabled=bool(_environment_field("host_api.debug_enabled", source)),
         )
 
 
@@ -486,7 +997,9 @@ def _parse_host_api_principals(
                 "Host API principal_id must be non-empty and start with 'user:'"
             )
         if len(token) < 32:
-            raise ValueError("Host API bearer tokens must contain at least 32 characters")
+            raise ValueError(
+                "Host API bearer tokens must contain at least 32 characters"
+            )
         if token != token.strip() or any(char.isspace() for char in token):
             raise ValueError("Host API bearer tokens cannot contain whitespace")
         if not isinstance(roles_raw, list) or not roles_raw:
@@ -500,7 +1013,9 @@ def _parse_host_api_principals(
                 f"unsupported Host API principal role: {sorted(roles - valid_roles)[0]}"
             )
         if "" in project_ids:
-            raise ValueError("Host API principal project_ids cannot contain empty values")
+            raise ValueError(
+                "Host API principal project_ids cannot contain empty values"
+            )
         principals.append(
             HostApiPrincipalSettings(
                 principal_id=principal_id,
@@ -521,14 +1036,22 @@ class V3BackgroundRuntimeSettings:
     shutdown_timeout_seconds: float
 
     @classmethod
-    def from_env(cls) -> "V3BackgroundRuntimeSettings":
-        max_signals_per_tick = _parse_int(
-            os.getenv("OPENZYME_V3_BACKGROUND_RUNTIME_MAX_SIGNALS_PER_TICK"),
-            3,
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+    ) -> "V3BackgroundRuntimeSettings":
+        source = os.environ if environ is None else environ
+        max_signals_per_tick = int(
+            _environment_field(
+                "v3_background_runtime.max_signals_per_tick",
+                source,
+            )
         )
-        max_steps_per_agent = _parse_int(
-            os.getenv("OPENZYME_V3_BACKGROUND_RUNTIME_MAX_STEPS_PER_AGENT"),
-            12,
+        max_steps_per_agent = int(
+            _environment_field(
+                "v3_background_runtime.max_steps_per_agent",
+                source,
+            )
         )
         if max_signals_per_tick <= 0:
             raise ValueError(
@@ -538,13 +1061,17 @@ class V3BackgroundRuntimeSettings:
             raise ValueError(
                 "OPENZYME_V3_BACKGROUND_RUNTIME_MAX_STEPS_PER_AGENT must be positive"
             )
-        poll_interval_seconds = _parse_float(
-            os.getenv("OPENZYME_V3_BACKGROUND_RUNTIME_POLL_INTERVAL_SECONDS"),
-            2.0,
+        poll_interval_seconds = float(
+            _environment_field(
+                "v3_background_runtime.poll_interval_seconds",
+                source,
+            )
         )
-        shutdown_timeout_seconds = _parse_float(
-            os.getenv("OPENZYME_V3_BACKGROUND_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS"),
-            10.0,
+        shutdown_timeout_seconds = float(
+            _environment_field(
+                "v3_background_runtime.shutdown_timeout_seconds",
+                source,
+            )
         )
         if poll_interval_seconds <= 0:
             raise ValueError(
@@ -555,10 +1082,7 @@ class V3BackgroundRuntimeSettings:
                 "OPENZYME_V3_BACKGROUND_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS must be positive"
             )
         return cls(
-            enabled=_parse_bool(
-                os.getenv("OPENZYME_V3_BACKGROUND_RUNTIME_ENABLED"),
-                default=True,
-            ),
+            enabled=bool(_environment_field("v3_background_runtime.enabled", source)),
             poll_interval_seconds=poll_interval_seconds,
             max_signals_per_tick=max_signals_per_tick,
             max_steps_per_agent=max_steps_per_agent,
@@ -572,13 +1096,15 @@ class ExecutionSettings:
     hpc_runner_config: str | None
 
     @classmethod
-    def from_env(cls) -> "ExecutionSettings":
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+    ) -> "ExecutionSettings":
+        source = os.environ if environ is None else environ
         return cls(
-            backend=os.getenv("OPENZYME_EXECUTION_BACKEND", "disabled"),
-            hpc_runner_config=(
-                os.getenv("OPENZYME_HPC_RUNNER_CONFIG")
-                or os.getenv("HPC_RUNNER_CONFIG")
-                or None
+            backend=str(_environment_field("execution.backend", source)),
+            hpc_runner_config=_optional_string_value(
+                _environment_field("execution.hpc_runner_config", source)
             ),
         )
 
@@ -588,10 +1114,14 @@ class LimiterSettings:
     provider_limits: dict[str, int]
 
     @classmethod
-    def from_env(cls) -> "LimiterSettings":
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+    ) -> "LimiterSettings":
+        source = os.environ if environ is None else environ
         limits: dict[str, int] = {}
-        for name, default in DEFAULT_PROVIDER_LIMITS.items():
-            value = _parse_int(os.getenv(LIMIT_ENV_VARS[name]), default)
+        for name in DEFAULT_PROVIDER_LIMITS:
+            value = int(_environment_field(f"limits.provider_limits.{name}", source))
             if value <= 0:
                 raise ValueError(f"{LIMIT_ENV_VARS[name]} must be positive")
             limits[name] = value
@@ -612,33 +1142,38 @@ class LiveLlmTestSettings:
     token_ledger_path: str = str(DEFAULT_LIVE_MICU_TOKEN_LEDGER_PATH)
 
     @classmethod
-    def from_env(cls) -> "LiveLlmTestSettings":
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+    ) -> "LiveLlmTestSettings":
+        source = os.environ if environ is None else environ
+        configured_ledger = _optional_string_value(
+            _environment_field("test.live_llm.token_ledger_path", source)
+        )
         return cls(
-            max_tokens=(
-                None
-                if os.getenv("OPENZYME_TEST_LIVE_LLM_MAX_TOKENS") in {None, ""}
-                else _parse_int(os.getenv("OPENZYME_TEST_LIVE_LLM_MAX_TOKENS"), 0)
+            max_tokens=_optional_int_value(
+                _environment_field("test.live_llm.max_tokens", source)
             ),
-            timeout=_parse_optional_float(os.getenv("OPENZYME_TEST_LIVE_LLM_TIMEOUT")),
-            max_retries=(
-                None
-                if os.getenv("OPENZYME_TEST_LIVE_LLM_MAX_RETRIES") in {None, ""}
-                else _parse_int(os.getenv("OPENZYME_TEST_LIVE_LLM_MAX_RETRIES"), 0)
+            timeout=_optional_float_value(
+                _environment_field("test.live_llm.timeout", source)
             ),
-            structured_output_method=(
-                os.getenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_METHOD") or None
+            max_retries=_optional_int_value(
+                _environment_field("test.live_llm.max_retries", source)
             ),
-            structured_output_retry_backoff_seconds=(
-                None
-                if os.getenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS")
-                in {None, ""}
-                else _parse_float(
-                    os.getenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS"),
-                    0.0,
+            structured_output_method=_optional_string_value(
+                _environment_field(
+                    "test.live_llm.structured_output_method",
+                    source,
                 )
             ),
-            token_ledger_path=(
-                str(configured_live_micu_token_ledger_path())
+            structured_output_retry_backoff_seconds=_optional_float_value(
+                _environment_field(
+                    "test.live_llm.structured_output_retry_backoff_seconds",
+                    source,
+                )
+            ),
+            token_ledger_path=str(
+                resolve_live_micu_token_ledger_path(configured_ledger)
             ),
         )
 
@@ -654,15 +1189,23 @@ class TestSettings:
     live_llm: LiveLlmTestSettings
 
     @classmethod
-    def from_env(cls) -> "TestSettings":
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+    ) -> "TestSettings":
+        source = os.environ if environ is None else environ
         return cls(
-            enable_live_llm=_parse_bool(os.getenv("OPENZYME_TEST_ENABLE_LIVE_LLM")),
-            enable_live_tavily=_parse_bool(os.getenv("OPENZYME_TEST_ENABLE_LIVE_TAVILY")),
-            enable_live_hpc=_parse_bool(os.getenv("OPENZYME_TEST_ENABLE_LIVE_HPC")),
-            enable_live_e2e=_parse_bool(os.getenv("OPENZYME_TEST_ENABLE_LIVE_E2E")),
-            enable_quality_eval=_parse_bool(os.getenv("OPENZYME_TEST_ENABLE_QUALITY_EVAL")),
-            upload_langsmith=_parse_bool(os.getenv("OPENZYME_TEST_UPLOAD_LANGSMITH")),
-            live_llm=LiveLlmTestSettings.from_env(),
+            enable_live_llm=bool(_environment_field("test.enable_live_llm", source)),
+            enable_live_tavily=bool(
+                _environment_field("test.enable_live_tavily", source)
+            ),
+            enable_live_hpc=bool(_environment_field("test.enable_live_hpc", source)),
+            enable_live_e2e=bool(_environment_field("test.enable_live_e2e", source)),
+            enable_quality_eval=bool(
+                _environment_field("test.enable_quality_eval", source)
+            ),
+            upload_langsmith=bool(_environment_field("test.upload_langsmith", source)),
+            live_llm=LiveLlmTestSettings.from_env(source),
         )
 
 
@@ -682,19 +1225,26 @@ class OpenZymeSettings:
     )
 
     @classmethod
-    def from_env(cls) -> "OpenZymeSettings":
-        load_env_files()
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+    ) -> "OpenZymeSettings":
+        if environ is None:
+            load_env_files()
+            source = os.environ
+        else:
+            source = environ
         return cls(
-            llm=LlmSettings.from_env(),
-            research=ResearchSettings.from_env(),
-            tracing=TracingSettings.from_env(),
-            host_cli=HostCliSettings.from_env(),
-            host_api=HostApiSettings.from_env(),
-            v3_background_runtime=V3BackgroundRuntimeSettings.from_env(),
-            execution=ExecutionSettings.from_env(),
-            limits=LimiterSettings.from_env(),
-            test=TestSettings.from_env(),
-            reliability=ReliabilityRefactorSettings.from_env(),
+            llm=LlmSettings.from_env(source),
+            research=ResearchSettings.from_env(source),
+            tracing=TracingSettings.from_env(source),
+            host_cli=HostCliSettings.from_env(source),
+            host_api=HostApiSettings.from_env(source),
+            v3_background_runtime=V3BackgroundRuntimeSettings.from_env(source),
+            execution=ExecutionSettings.from_env(source),
+            limits=LimiterSettings.from_env(source),
+            test=TestSettings.from_env(source),
+            reliability=ReliabilityRefactorSettings.from_env(source),
         )
 
 
@@ -719,6 +1269,9 @@ __all__ = [
     "DEFAULT_OPENAI_COMPAT_USER_AGENT",
     "DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API",
     "ExecutionSettings",
+    "HOST_API_DEPLOYMENT_PROFILES",
+    "HOST_API_LOCAL_DEPLOYMENT_PROFILE",
+    "HOST_API_LOOPBACK_BIND_HOSTS",
     "HostApiSettings",
     "HostApiPrincipalSettings",
     "HostCliSettings",
@@ -735,5 +1288,9 @@ __all__ = [
     "V3BackgroundRuntimeSettings",
     "get_settings",
     "load_env_files",
+    "openzyme_settings_environment_contract",
+    "openzyme_settings_environment_fields",
+    "openzyme_settings_source_projection",
+    "resolve_openzyme_settings_environment_field",
     "reset_settings_cache",
 ]

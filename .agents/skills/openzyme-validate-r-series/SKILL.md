@@ -32,6 +32,11 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZym
 
 所有可变值、能力、schema、文件名、命令参数和合法顺序都从 current source 与机器合同动态解析，不硬编码 rNN、identity、配置、次数、poll cadence、下一动作或 terminal 含义。
 
+涉及配置候选时，先读取 public `config-contract` 的 executable `profile_fields`、identity projection 与 AOX
+eligibility；不得扫描 `OPENZYME_*`、import private settings/builder、读取 skill fragment 或历史 profile 来补字段。
+unlisted environment 不参与 candidate，credential 只按 presence 绑定，private non-credential 按 digest 绑定，
+ledger/runner path 另行绑定 path/content identity；同 presence 的 credential 值变化不构成 identity-distinct candidate。
+
 ## 不可协商不变量
 
 - exact authorization、identity、authority、budget、deadline 与 effect 范围必须闭合；
@@ -40,13 +45,15 @@ description: 在 EnzymeDesign 仓库中准备、执行或裁决全新的 OpenZym
 - 只使用 current public surface 和 source-bound evidence，不读写 private SQLite 或调用 private service/runner/provider/HPC 接口；
 - receipt/provenance append-only，不删除、覆盖、回填或把人类标签升级为 canonical fact；
 - 不创建 hidden poll/retry、observer、automatic driver、replacement action、synthetic wakeup、automatic approval、response veto 或 fallback；
-- runtime/tool/process terminal 只证明其 own boundary，不自动终结 task、attempt、slot 或 campaign；
+- config candidate、operation、request、runtime/tool/process terminal 默认只证明 current occurrence；不自动终结 task、attempt、slot 或 campaign；
 - offline verifier/reducer 是唯一 GO/NO-GO 权威，prose、filename、exit code、fixture 或局部状态不能替代。
 
 ## 执行与裁决
 
-每个阶段先形成最小可核验合同：当前 identity、权限、effects、机器能力、evidence sinks、bounds 与停止条件。只在合同闭合时执行一条获批动作；随后读取 typed response、canonical state/events 和 effect facts，由 Codex 自行选择下一步或停止。
+每个阶段先形成最小可核验合同：当前 identity、权限、effects、机器能力、evidence sinks、bounds 与停止条件。只在合同闭合时执行一条获批动作；随后读取 typed response、canonical state/events、effect certainty、retry eligibility、terminal scope、exact handle/receipt、authority 与剩余 budget，由 Codex 自行选择下一步或停止。
 
 严格区分封存观测、源码推论和未证实假设。保留 earliest source-bound typed cause、effect certainty 与 outer wrapper；不把 operation failure、非终态观察或命名错误自动升级成 campaign failure。
 
-到达人工门、typed blocker、unknown effect、identity/authority drift 或证据能力缺失时，报告 exact identity、已发生/未发生 effects、预算变化、可复用性与所需决定，然后停止。只有 current offline verifier/reducer 的 canonical GO/NO-GO 才是正式终局；不得自动 repair、提交或开始下一 rNN。
+typed blocker 或 `terminal` 只终结其声明的 exact occurrence。`no_effect` occurrence 可由 agent 显式 disposition；若 current machine contract 提供 identity-distinct candidate、exact same-occurrence resume 或其他合法 capability，agent 可在同一获批 authority/effect/budget 闭集内显式选择一条新 action。系统不得自动补值、重发、循环、换 identity、替代 dispatch 或选择策略。
+
+current machine contract 必须逐资源公开 action applicability：pin operation 支持 query/resume/reconcile，但 resume 只推进同一 `no_effect/same_phase_safe` occurrence；authority consumption 与 formal Host mutation 只支持 read-only query 和 exact reconcile，`resume=false`，reconcile 只恢复 exact durable outcome 而不重放 payload。unknown/external effect 只能 exact reconcile。receipt 已写入但 envelope 缺失时，也只有 current contract 明示的最后且唯一 successful mutation 可用 exact command/request/idempotency 重入，GET、历史/较早/多个缺口或任何 drift 都停止。没有 exact handle、reconciliation 仍不闭合、identity/authority/fencing drift、预算耗尽、人工门或必需证据能力确实不存在时，报告 exact facts 与所需决定并停止。只有 current offline verifier/reducer 的 canonical GO/NO-GO 才是正式终局；不得自动 repair、提交或开始下一 rNN。

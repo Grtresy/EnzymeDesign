@@ -15,10 +15,23 @@ goal 只回答“本轮要达到什么结果、允许哪些阶段和外部影响
 
 平台执行许可不是第二轮业务授权。已获批准的动作需要本地 IPC、远程 runner 或其他平台能力时，Codex 通过工具机制申请；实际 target、operation、预算、identity 或 effect 扩大时，才返回新的人工授权门。
 
-platform recovery 与产品 retry 分开计数。只有 current source 证明只读、零 external effect 的 preparation
+platform recovery 与产品 continuation 分开计数。只有 current source 证明只读、零 external effect 的 preparation
 命令，才能在 ordinary sandbox 明确拒绝且无产品结果/effect 后，以完全相同 launcher/inputs 做一次提权
-恢复；产品 typed failure、unknown effect 或第二次升级一律停止。已知需要平台能力的 qualification、`pin`
-与 `preflight` 必须首次执行前提权。完整边界以 validation skill 与 active OpenSpec 为准。
+恢复；产品 typed result、unknown effect 或第二次升级不得使用该 permission-only recovery 重发同一 occurrence。
+后续只能按 current machine contract 的 effect、identity、lifecycle、authority 与 budget gate 显式选择；已知需要
+平台能力的 qualification、`pin` 与 `preflight` 必须首次执行前提权。
+
+typed failure 或 `terminal` 默认只终结 receipt 声明的 exact config candidate、operation、request 或 runtime
+occurrence，不自动终结 task、attempt、slot 或 campaign。`no_effect` occurrence 经 agent 显式 disposition，或
+exact reconciliation 完成后，才可在当前批准的 authority/effect/budget 闭集内显式选择 identity-distinct 新
+occurrence；unknown/dispatch-in-doubt 只允许 exact public query/reconcile。系统不得 auto-fill、retry、
+loop、换 identity、replacement dispatch、选择策略或把一次失败计为 scientific attempt。完整边界以 validation
+skill 与 active OpenSpec 为准。
+
+配置动作必须先从 public `config-contract` 读取 executable `profile_fields` 和 AOX eligibility，不得以
+`OPENZYME_*` 前缀扫描、私有 settings import、skill fragment 或历史 profile 猜测字段。candidate 只绑定 contract
+列出的 relevant sources：unlisted environment 忽略，credential 只绑定 presence，private non-credential 绑定 digest，
+ledger/runner path 单独绑定 path/content identity；同 presence 的 credential 内容变化不是 identity-distinct candidate。
 
 ## 修复 goal
 
@@ -52,7 +65,7 @@ fresh session 必须从以下入口重新推导，不使用历史 prompt 或旧 
 
 ## 正式 public conductor
 
-preflight 必须在 slot claim/root 前从 pinned profile重跑 full actual Podman/image/SDK/scientific-backend resolver与immediate unchanged guard；config-only equality不是 admission。actual runtime失败只走current pre-claim failure，不创建claim/root、不换slot、不retry。guard通过后，preflight再创建slot claim、blank-world root和prelaunch receipt，并发布source-bound、无绝对路径的current `aox_public_conductor_execution_contract@3`。`serve-attempt`在process creation前重验closed root/evidence和empty effect roots，从pinned ledger读取baseline，原子no-replace发布唯一attempt-start claim并立即重读ledger；child重验同一claim digest与process epoch。污染、ledger drift、既有claim或publish race均停止，不使用global lock、不replay或换slot。Codex只使用该合同声明的formal public CLI入口：前两次成功动作必须逐字闭合exact session create与唯一raw canonical message + pinned `workflow_ref`；之后禁止第二条message，scientific authority只经专用late-bound grant。入口闭合后，CLI透传由Codex选择的其余合法public Host command，并机械绑定同一receipt chain与一次sealed response，不选择科学动作、drain cadence或形成自动循环。历史contract `@1/@2`不能执行。
+preflight 必须在 slot claim/root 前从 pinned profile重跑 full actual Podman/image/SDK/scientific-backend resolver与immediate unchanged guard；config-only equality不是 admission。actual runtime失败只走current pre-claim failure，不创建claim/root、不自动换slot或重发。guard通过后，preflight再创建slot claim、blank-world root和prelaunch receipt，并发布source-bound、无绝对路径的current `aox_public_conductor_execution_contract@4`。它绑定exact session/entry request 与 deterministic entry idempotency keys；历史contract `@1/@2/@3`不能执行。`serve-attempt`在process creation前重验closed root/evidence和empty effect roots，从pinned ledger读取baseline，原子no-replace发布唯一attempt-start claim并立即重读ledger；child重验同一claim digest与process epoch。污染、ledger drift、既有claim或publish race按其 exact occurrence/effect facts fail closed，不使用global lock、不replay或换slot。Codex只使用合同声明的formal public CLI入口：前两次成功动作必须逐字闭合exact session create与唯一raw canonical message + pinned `workflow_ref`；之后禁止第二条message，scientific authority只经专用late-bound grant。入口闭合后，每条 public mutation 都由 caller 提供 explicit idempotency identity，`openzyme_public_api_receipt@3`绑定request/effect/retry/reconciliation/terminal scope；相同request/response只收敛到existing receipt。receipt 已写入但 envelope 缺失时，仅最后且唯一的 current successful mutation 可用 exact command/request/idempotency 重入；GET、历史/较早/多个缺口、unknown effect 或 drift 均停止并要求 exact reconciliation。CLI透传由Codex选择的其余合法public Host command，不选择科学动作、drain cadence或形成自动循环。
 
 若process creation在可验证child PID出现前失败，只接受current typed spawn blocker并停止；external effect
 保持unproven、retry terminal且successor blocked，不得合成startup/supervision、formal closure、zero effect

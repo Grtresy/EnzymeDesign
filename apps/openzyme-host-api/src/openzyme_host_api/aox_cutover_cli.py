@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import hashlib
 import json
 import os
@@ -9,9 +10,14 @@ import re
 import sys
 import tempfile
 
+from mcp_hpc_runner.server import MCPHpcServer
 from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime import REPO_ROOT
+from openzyme_host_cli.client import HostApiClient
+from openzyme_host_cli.client import HostApiError
 from openzyme_host_cli.cli import run_cli as run_host_cli
+from openzyme_host_cli.receipts import converge_public_api_mutation_receipt
+from openzyme_host_cli.receipts import converge_public_response
 from openzyme_engines import PODMAN_SANDBOX_PREFLIGHT_FAILURE_CODES
 
 from .aox_architecture_qualification import AoxArchitectureQualificationError
@@ -29,8 +35,10 @@ from .aox_attempt_authority import authority_grant_payload
 from .aox_attempt_authority import claim_aox_attempt_authority_slot
 from .aox_attempt_authority import consume_aox_attempt_authority_plan
 from .aox_attempt_authority import attempt_authority_consumption_path
+from .aox_attempt_authority import attempt_authority_consumption_operation_identity
 from .aox_attempt_authority import load_aox_attempt_authority_plan
 from .aox_attempt_authority import load_aox_attempt_authority_consumption
+from .aox_attempt_authority import observe_aox_attempt_authority_consumption
 from .aox_attempt_authority import publish_aox_attempt_authority_plan
 from .aox_attempt_preflight import build_attempt_preflight_receipt
 from .aox_attempt_preflight import publish_attempt_launch_profile
@@ -40,6 +48,7 @@ from .aox_conductor_execution import (
     CONDUCTOR_RETIREMENT_READINESS_FILENAME,
 )
 from .aox_conductor_execution import bound_public_response_path
+from .aox_conductor_execution import describe_public_host_mutation
 from .aox_conductor_execution import load_active_public_host_context
 from .aox_conductor_execution import load_conductor_retirement_readiness
 from .aox_conductor_execution import publish_conductor_execution_contract
@@ -47,6 +56,7 @@ from .aox_conductor_execution import retirement_readiness_sources
 from .aox_conductor_execution import resolve_pregrant_execution_task
 from .aox_conductor_execution import seal_conductor_retirement_readiness
 from .aox_conductor_execution import validate_public_host_command
+from .aox_conductor_execution import validate_public_host_reconciliation
 from .aox_cutover_evidence import AttemptRunRecord
 from .aox_cutover_evidence import create_blank_world_roots
 from .aox_cutover_evidence import CutoverEvidenceError
@@ -54,6 +64,12 @@ from .aox_cutover_evidence import evaluate_campaign
 from .aox_cutover_evidence import safe_micu_ledger_snapshot
 from .aox_cutover_evidence import seal_campaign_decision
 from .aox_cutover_evidence import verify_attempt_bundle
+from .aox_config_contract import AoxConfigContractError
+from .aox_config_contract import aox_config_contract
+from .aox_config_contract import build_aox_config_candidate
+from .aox_config_contract import load_aox_config_candidate
+from .aox_config_contract import publish_aox_config_candidate
+from .aox_config_contract import require_current_aox_config_candidate
 from .aox_cutover_launch import AoxCutoverLaunchError
 from .aox_cutover_launch import build_aox_cutover_effective_config
 from .aox_cutover_launch import pin_aox_cutover_launch
@@ -154,6 +170,39 @@ _PUBLIC_RUNNER_ERROR_CODE_PATTERN = re.compile(
 _PUBLIC_RUNNER_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _PUBLIC_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 _PUBLIC_RUNNER_STAGES = frozenset({"runner_call", "runner_result"})
+_PUBLIC_RUNNER_STATUSES = frozenset(
+    {
+        "reserved",
+        "submitted",
+        "queued",
+        "pending",
+        "running",
+        "in_progress",
+        "completed",
+        "succeeded",
+        "success",
+        "cancelled",
+        "canceled",
+        "failed",
+    }
+)
+_PUBLIC_RUNNER_PHASES = frozenset(
+    {
+        "allocated",
+        "transport_ready",
+        "remote_layout_ready",
+        "input_staging",
+        "inputs_verified",
+        "preflight_passed",
+        "dispatch_prepared",
+        "dispatching",
+        "remote_pending",
+        "remote_terminal",
+        "outputs_fetching",
+        "outputs_verified",
+        "terminal",
+    }
+)
 _PUBLIC_RUNNER_EFFECT_CERTAINTIES = frozenset(
     {
         "no_effect",
@@ -163,6 +212,39 @@ _PUBLIC_RUNNER_EFFECT_CERTAINTIES = frozenset(
         "unproven",
     }
 )
+_PUBLIC_RETRY_ELIGIBILITIES = frozenset(
+    {"same_phase_safe", "verify_then_retry", "reconcile_required", "terminal"}
+)
+_PUBLIC_TERMINAL_SCOPE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,95}_occurrence$")
+_PUBLIC_CONFIG_CANDIDATE_ID_PATTERN = re.compile(r"^aox-config-[0-9a-f]{32}$")
+
+
+def _config_candidate_public_details(
+    candidate: Mapping[str, object],
+    *,
+    publication: bool = False,
+    effect_certainty: str = "no_effect",
+) -> dict[str, object]:
+    reconciliation_required = effect_certainty == "unproven"
+    return {
+        "kind": "config_candidate",
+        "phase": "publication" if publication else "validation",
+        "effect_certainty": effect_certainty,
+        "retry_eligibility": (
+            "reconcile_required" if reconciliation_required else "terminal"
+        ),
+        "reconciliation_required": reconciliation_required,
+        "terminal_scope": (
+            "config_candidate_publication_occurrence"
+            if publication
+            else "config_candidate_occurrence"
+        ),
+        "request_digest": candidate["profile_source_digest"],
+        "idempotency_key": candidate["candidate_id"],
+        "exact_handle": candidate["candidate_id"],
+        "contract_digest": candidate["contract_digest"],
+        "candidate_id": candidate["candidate_id"],
+    }
 
 
 def _public_launch_failure_details(
@@ -170,34 +252,129 @@ def _public_launch_failure_details(
 ) -> dict[str, object] | None:
     raw = exc.public_details
     kind = raw.get("kind") if raw else None
-    if kind == "runner_attestation":
-        if not set(raw).issubset(
-            {
-                "kind",
-                "tool_id",
-                "stage",
-                "effect_certainty",
-                "runner_error_code",
-                "runner_run_id",
-                "runner_attempt_receipt_digest",
-            }
+    if kind == "config_candidate":
+        expected_fields = {
+            "kind",
+            "phase",
+            "effect_certainty",
+            "retry_eligibility",
+            "reconciliation_required",
+            "terminal_scope",
+            "request_digest",
+            "idempotency_key",
+            "exact_handle",
+            "contract_digest",
+            "candidate_id",
+        }
+        if set(raw) != expected_fields:
+            return None
+        if (
+            not isinstance(raw.get("phase"), str)
+            or raw["phase"] not in {"validation", "publication"}
+            or any(
+                not isinstance(raw.get(key), str)
+                or _PUBLIC_DIGEST_PATTERN.fullmatch(str(raw[key])) is None
+                for key in ("request_digest", "contract_digest")
+            )
+            or any(
+                not isinstance(raw.get(key), str)
+                or _PUBLIC_CONFIG_CANDIDATE_ID_PATTERN.fullmatch(str(raw[key])) is None
+                for key in ("idempotency_key", "exact_handle", "candidate_id")
+            )
+            or raw.get("idempotency_key") != raw.get("candidate_id")
+            or raw.get("exact_handle") != raw.get("candidate_id")
         ):
+            return None
+        expected_occurrence_facts = (
+            (
+                "no_effect",
+                "terminal",
+                False,
+                "config_candidate_occurrence",
+            )
+            if raw["phase"] == "validation"
+            else (
+                (
+                    "unproven",
+                    "reconcile_required",
+                    True,
+                    "config_candidate_publication_occurrence",
+                )
+                if raw["effect_certainty"] == "unproven"
+                else (
+                    "no_effect",
+                    "terminal",
+                    False,
+                    "config_candidate_publication_occurrence",
+                )
+            )
+        )
+        if (
+            raw["effect_certainty"],
+            raw["retry_eligibility"],
+            raw["reconciliation_required"],
+            raw["terminal_scope"],
+        ) != expected_occurrence_facts:
+            return None
+        return dict(raw)
+    if kind == "runner_attestation":
+        required = {
+            "kind",
+            "tool_id",
+            "stage",
+            "phase",
+            "effect_certainty",
+            "retry_eligibility",
+            "reconciliation_required",
+            "terminal_scope",
+            "authority_scope",
+            "scientific_attempt_counted",
+        }
+        optional = {
+            "runner_error_code",
+            "runner_run_id",
+            "runner_attempt_receipt_digest",
+            "request_digest",
+            "reservation_identity_digest",
+            "idempotency_key",
+        }
+        if not required <= set(raw) or not set(raw) <= required | optional:
             return None
         tool_id = raw.get("tool_id")
         stage = raw.get("stage")
+        phase = raw.get("phase")
         effect_certainty = raw.get("effect_certainty")
+        retry_eligibility = raw.get("retry_eligibility")
+        reconciliation_required = raw.get("reconciliation_required")
         if (
             not isinstance(tool_id, str)
             or _PUBLIC_RUNNER_TOOL_ID_PATTERN.fullmatch(tool_id) is None
+            or not isinstance(stage, str)
             or stage not in _PUBLIC_RUNNER_STAGES
+            or not isinstance(phase, str)
+            or phase not in _PUBLIC_RUNNER_PHASES
+            or not isinstance(effect_certainty, str)
             or effect_certainty not in _PUBLIC_RUNNER_EFFECT_CERTAINTIES
+            or not isinstance(retry_eligibility, str)
+            or retry_eligibility not in _PUBLIC_RETRY_ELIGIBILITIES
+            or not isinstance(reconciliation_required, bool)
+            or reconciliation_required != (retry_eligibility == "reconcile_required")
+            or raw.get("terminal_scope") != "runner_operation_occurrence"
+            or raw.get("authority_scope") != "preparation_only"
+            or raw.get("scientific_attempt_counted") is not False
         ):
             return None
         normalized_runner: dict[str, object] = {
             "kind": kind,
             "tool_id": tool_id,
             "stage": stage,
+            "phase": phase,
             "effect_certainty": effect_certainty,
+            "retry_eligibility": retry_eligibility,
+            "reconciliation_required": reconciliation_required,
+            "terminal_scope": "runner_operation_occurrence",
+            "authority_scope": "preparation_only",
+            "scientific_attempt_counted": False,
         }
         if "runner_run_id" in raw:
             runner_run_id = raw["runner_run_id"]
@@ -208,20 +385,34 @@ def _public_launch_failure_details(
                 return None
             normalized_runner["runner_run_id"] = runner_run_id
         if "runner_attempt_receipt_digest" in raw:
-            runner_attempt_receipt_digest = raw[
-                "runner_attempt_receipt_digest"
-            ]
+            runner_attempt_receipt_digest = raw["runner_attempt_receipt_digest"]
             if (
                 not isinstance(runner_attempt_receipt_digest, str)
-                or _PUBLIC_DIGEST_PATTERN.fullmatch(
-                    runner_attempt_receipt_digest
-                )
+                or _PUBLIC_DIGEST_PATTERN.fullmatch(runner_attempt_receipt_digest)
                 is None
             ):
                 return None
             normalized_runner["runner_attempt_receipt_digest"] = (
                 runner_attempt_receipt_digest
             )
+        for key in (
+            "request_digest",
+            "reservation_identity_digest",
+            "idempotency_key",
+        ):
+            if key not in raw:
+                continue
+            value = raw[key]
+            if (
+                not isinstance(value, str)
+                or _PUBLIC_DIGEST_PATTERN.fullmatch(value) is None
+            ):
+                return None
+            normalized_runner[key] = value
+        if "idempotency_key" in raw and raw.get("idempotency_key") != raw.get(
+            "reservation_identity_digest"
+        ):
+            return None
         if "runner_error_code" in raw:
             runner_error_code = raw["runner_error_code"]
             if (
@@ -447,9 +638,7 @@ def _write_pin_outputs_atomic_no_replace(
     staged: list[tuple[Path, Path]] = []
     installed: list[Path] = []
     if not (
-        identity_target.parent
-        == prerequisites_target.parent
-        == profile_target.parent
+        identity_target.parent == prerequisites_target.parent == profile_target.parent
     ):
         raise AoxCutoverLaunchError(
             "aox_launch_pin_output_parent_mismatch",
@@ -610,16 +799,81 @@ def _load_pinned_declarations(
     )
 
 
+def _config_contract(args: argparse.Namespace) -> int:
+    del args
+    _print(aox_config_contract())
+    return 0
+
+
+def _config_candidate(args: argparse.Namespace) -> int:
+    candidate = build_aox_config_candidate(ledger_path=args.ledger_path)
+    try:
+        publish_aox_config_candidate(args.output, candidate)
+    except AoxConfigContractError as exc:
+        raise AoxCutoverLaunchError(
+            exc.code,
+            "AOX config candidate could not be atomically published",
+            public_details=_config_candidate_public_details(
+                candidate,
+                publication=True,
+                effect_certainty=(
+                    "unproven"
+                    if exc.code == "aox_config_candidate_publication_in_doubt"
+                    else "no_effect"
+                ),
+            ),
+        ) from exc
+    _print(candidate)
+    return 0
+
+
 def _check_config(args: argparse.Namespace) -> int:
-    settings, ledger_path = _configured_settings_and_ledger(args.ledger_path)
-    effective_config = build_aox_cutover_effective_config(
-        settings,
-        ledger_path=ledger_path,
-    )
+    current_candidate = build_aox_config_candidate(ledger_path=args.ledger_path)
+    candidate: dict[str, str] | None = current_candidate
+    try:
+        if args.candidate is not None:
+            candidate = None
+            candidate = load_aox_config_candidate(args.candidate)
+            candidate = require_current_aox_config_candidate(
+                candidate,
+                ledger_path=args.ledger_path,
+            )
+        assert candidate is not None
+        settings, ledger_path = _configured_settings_and_ledger(args.ledger_path)
+        effective_config = build_aox_cutover_effective_config(
+            settings,
+            ledger_path=ledger_path,
+        )
+    except AoxConfigContractError as exc:
+        raise AoxCutoverLaunchError(
+            exc.code,
+            "AOX config candidate failed its public lifecycle contract",
+            public_details=(
+                None
+                if candidate is None
+                else _config_candidate_public_details(candidate)
+            ),
+        ) from exc
+    except AoxCutoverLaunchError as exc:
+        raise AoxCutoverLaunchError(
+            exc.code,
+            "AOX config candidate failed semantic validation",
+            details=exc.details,
+            public_details=_config_candidate_public_details(candidate),
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - configuration values remain private
+        raise AoxCutoverLaunchError(
+            "aox_config_candidate_semantic_invalid",
+            "AOX config candidate could not be parsed or semantically validated",
+            public_details=_config_candidate_public_details(current_candidate),
+        ) from exc
     _print(
         {
-            "schema_id": "aox_cutover_config_check@1",
+            "schema_id": "aox_cutover_config_check@2",
             "status": "valid",
+            "candidate_id": candidate["candidate_id"],
+            "contract_digest": candidate["contract_digest"],
+            "candidate_digest": _canonical_digest(candidate),
             "effective_config_schema_id": effective_config.payload["schema_id"],
             "config_digest": effective_config.digest,
         }
@@ -685,6 +939,98 @@ def _pin(args: argparse.Namespace) -> int:
     return 0
 
 
+def _pin_operation(args: argparse.Namespace) -> int:
+    try:
+        server = MCPHpcServer(args.runner_config)
+        operation = getattr(
+            server,
+            {
+                "query": "inspect_reserved_execution",
+                "resume": "resume_reserved_execution",
+                "reconcile": "recover_reserved_execution_outcome",
+            }[args.action],
+        )
+        result = operation(args.run_id)
+    except Exception as exc:  # noqa: BLE001 - runner internals remain private
+        raise AoxCutoverLaunchError(
+            "aox_toolchain_pin_operation_failed",
+            "AOX toolchain pin operation failed inside the trusted runner boundary",
+            public_details={
+                "kind": "runner_attestation",
+                "tool_id": "aox.toolchain-pin",
+                "stage": "runner_call",
+                "phase": "allocated",
+                "effect_certainty": "unproven",
+                "retry_eligibility": "reconcile_required",
+                "reconciliation_required": True,
+                "terminal_scope": "runner_operation_occurrence",
+                "authority_scope": "preparation_only",
+                "scientific_attempt_counted": False,
+                "runner_run_id": args.run_id,
+            },
+        ) from exc
+    required_digests = (
+        "reservation_identity_digest",
+        "request_digest",
+        "operation_digest",
+        "approval_digest",
+        "runner_attempt_receipt_digest",
+    )
+    if (
+        not isinstance(result, dict)
+        or result.get("run_id") != args.run_id
+        or not isinstance(result.get("status"), str)
+        or result["status"] not in _PUBLIC_RUNNER_STATUSES
+        or not isinstance(result.get("effect_certainty"), str)
+        or result["effect_certainty"] not in _PUBLIC_RUNNER_EFFECT_CERTAINTIES
+        or not isinstance(result.get("retry_eligibility"), str)
+        or result["retry_eligibility"] not in _PUBLIC_RETRY_ELIGIBILITIES
+        or not isinstance(result.get("phase"), str)
+        or result["phase"] not in _PUBLIC_RUNNER_PHASES
+        or not isinstance(result.get("reconciliation_required"), bool)
+        or result["reconciliation_required"]
+        != (result.get("retry_eligibility") == "reconcile_required")
+        or any(
+            not isinstance(result.get(key), str)
+            or _PUBLIC_RUNNER_ID_PATTERN.fullmatch(str(result[key])) is None
+            for key in ("execution_id", "operation_id")
+        )
+        or any(
+            not isinstance(result.get(key), str)
+            or _PUBLIC_DIGEST_PATTERN.fullmatch(str(result[key])) is None
+            for key in required_digests
+        )
+    ):
+        raise AoxCutoverLaunchError(
+            "aox_toolchain_pin_operation_observation_invalid",
+            "AOX toolchain pin operation returned an invalid source observation",
+        )
+    _print(
+        {
+            "schema_id": "aox_toolchain_pin_public_operation@1",
+            "status": result["status"],
+            "action": args.action,
+            "runner_run_id": args.run_id,
+            "execution_id": str(result["execution_id"]),
+            "operation_id": str(result["operation_id"]),
+            "operation_digest": str(result["operation_digest"]),
+            "request_digest": str(result["request_digest"]),
+            "reservation_identity_digest": str(result["reservation_identity_digest"]),
+            "idempotency_key": str(result["reservation_identity_digest"]),
+            "approval_digest": str(result["approval_digest"]),
+            "receipt_locator": str(result["runner_attempt_receipt_digest"]),
+            "phase": str(result["phase"]),
+            "effect_certainty": str(result["effect_certainty"]),
+            "retry_eligibility": str(result["retry_eligibility"]),
+            "reconciliation_required": result["reconciliation_required"],
+            "terminal_scope": "runner_operation_occurrence",
+            "authority_scope": "preparation_only",
+            "scientific_attempt_counted": False,
+        }
+    )
+    return 0
+
+
 def _preflight(args: argparse.Namespace) -> int:
     current_qualification = verify_aox_architecture_qualification_report(
         args.architecture_qualification_report,
@@ -694,9 +1040,7 @@ def _preflight(args: argparse.Namespace) -> int:
         prerequisites,
         pinned_qualification,
         launch_profile,
-    ) = _load_pinned_declarations(
-        args.identity, args.allowed_prerequisites
-    )
+    ) = _load_pinned_declarations(args.identity, args.allowed_prerequisites)
     architecture_qualification = require_matching_architecture_qualification_receipt(
         pinned_qualification,
         current_qualification,
@@ -779,9 +1123,7 @@ def _preflight(args: argparse.Namespace) -> int:
         slot_claim,
         roots=roots,
     )
-    launch_profile_path = publish_attempt_launch_profile(
-        launch_profile, roots=roots
-    )
+    launch_profile_path = publish_attempt_launch_profile(launch_profile, roots=roots)
     receipt = build_attempt_preflight_receipt(
         identity=identity,
         allowed_prerequisites=prerequisites,
@@ -1053,6 +1395,152 @@ def _public_host(args: argparse.Namespace) -> int:
     )
 
 
+def _host_operation(args: argparse.Namespace) -> int:
+    forwarded = list(args.host_cli_args)
+    if forwarded and forwarded[0] == "--":
+        forwarded = forwarded[1:]
+    if not forwarded:
+        raise CutoverEvidenceError(
+            "public_conductor_command_missing",
+            "host-operation requires the exact original Host mutation after --",
+            details={"identity": "host_cli_args"},
+        )
+    _validate_public_host_overrides(forwarded)
+    preflight, contract, startup, evidence_root = load_active_public_host_context(
+        args.preflight_receipt
+    )
+    descriptor = describe_public_host_mutation(
+        forwarded,
+        contract=contract,
+        preflight=preflight,
+    )
+    client = HostApiClient(str(startup["base_url"]))
+    try:
+        observation = client.observe_v3_mutation_operation(
+            session_id=str(contract["session_id"]),
+            command_type=str(descriptor["command_type"]),
+            scope_ref=str(descriptor["scope_ref"]),
+            idempotency_key=str(descriptor["idempotency_key"]),
+            request_digest=str(descriptor["owner_request_digest"]),
+            attempt_id=(
+                None
+                if descriptor.get("attempt_id") is None
+                else str(descriptor["attempt_id"])
+            ),
+            artifact_id=(
+                None
+                if descriptor.get("artifact_id") is None
+                else str(descriptor["artifact_id"])
+            ),
+        )
+    except HostApiError as exc:
+        raise CutoverEvidenceError(
+            "public_conductor_mutation_observation_failed",
+            "public Host mutation owner could not be observed",
+            details={"status_code": exc.status_code},
+        ) from exc
+    finally:
+        client.close()
+    if not all(
+        (
+            observation.get("schema_id")
+            == "host_mutation_operation_observation@1",
+            observation.get("session_id") == contract["session_id"],
+            observation.get("command_type") == descriptor["command_type"],
+            observation.get("scope_ref") == descriptor["scope_ref"],
+            observation.get("idempotency_key") == descriptor["idempotency_key"],
+            observation.get("query_read_only") is True,
+            observation.get("resume_applicable") is False,
+        )
+    ):
+        raise CutoverEvidenceError(
+            "public_conductor_mutation_observation_drift",
+            "public Host mutation observation has a different identity",
+            details={"identity": "host_operation"},
+        )
+    terminal = observation.get("status") == "terminal"
+    if terminal and observation.get("request_digest") != descriptor.get(
+        "owner_request_digest"
+    ):
+        raise CutoverEvidenceError(
+            "public_conductor_mutation_observation_drift",
+            "durable Host mutation owner has different request facts",
+            details={"identity": "host_operation.request_digest"},
+        )
+    result: dict[str, object] = {
+        "schema_id": "aox_host_mutation_operation@1",
+        "action": args.action,
+        "status": "terminal" if terminal else "reconcile_required",
+        "observation": observation,
+        "request_identity": {
+            "method": descriptor["method"],
+            "route": descriptor["route"],
+            "request_digest": _canonical_digest(descriptor["request"]),
+            "idempotency_key": descriptor["idempotency_key"],
+        },
+        "action_applicability": {
+            "query": True,
+            "resume": False,
+            "reconcile": True,
+        },
+    }
+    if args.action == "query" or not terminal:
+        _print(result)
+        return 0 if args.action == "query" else 2
+    if not args.response_name:
+        raise CutoverEvidenceError(
+            "public_conductor_reconciliation_response_name_required",
+            "terminal Host reconciliation requires one sealed response name",
+            details={"identity": "response_name"},
+        )
+    response = observation.get("response")
+    if not isinstance(response, dict):
+        raise CutoverEvidenceError(
+            "public_conductor_mutation_observation_unproven",
+            "durable Host mutation owner lacks a terminal response",
+            details={"identity": "host_operation.response"},
+        )
+    validate_public_host_reconciliation(
+        contract=contract,
+        evidence_root=evidence_root,
+        descriptor=descriptor,
+    )
+    receipt = converge_public_api_mutation_receipt(
+        evidence_root / str(contract["receipt_chain_name"]),
+        method=str(descriptor["method"]),
+        route=str(descriptor["route"]),
+        request_body=dict(descriptor["request_body"]),
+        response_payload=response,
+        status_code=int(descriptor["original_status_code"]),
+        idempotency_key=str(descriptor["idempotency_key"]),
+    )
+    try:
+        response_path = bound_public_response_path(
+            evidence_root=evidence_root,
+            contract=contract,
+            response_name=args.response_name,
+        )
+    except CutoverEvidenceError as exc:
+        if exc.code != "public_conductor_response_target_exists":
+            raise
+        response_path = evidence_root / f"public-response-{args.response_name}.json"
+    envelope = converge_public_response(
+        response_path,
+        receipt=receipt,
+        response=response,
+    )
+    result.update(
+        {
+            "status": "receipt_converged",
+            "receipt": receipt,
+            "response_file": response_path.name,
+            "response_envelope_digest": envelope["envelope_digest"],
+        }
+    )
+    _print(result)
+    return 0
+
+
 def _grant_task_authority(args: argparse.Namespace) -> int:
     preflight, contract, startup, evidence_root = load_active_public_host_context(
         args.preflight_receipt
@@ -1068,9 +1556,7 @@ def _grant_task_authority(args: argparse.Namespace) -> int:
 
 
 def _seal_conductor_state(args: argparse.Namespace) -> int:
-    path, readiness = seal_conductor_retirement_readiness(
-        args.preflight_receipt
-    )
+    path, readiness = seal_conductor_retirement_readiness(args.preflight_receipt)
     _print(
         {
             "schema_id": "aox_public_conductor_retirement_ready@1",
@@ -1119,13 +1605,11 @@ def _finalize_and_seal(args: argparse.Namespace) -> int:
 
 def _seal_slot_failure(args: argparse.Namespace) -> int:
     if args.pre_ready_failure is not None:
-        failure_path, failure_digest = (
-            finalize_and_seal_pre_ready_formal_slot_failure(
-                identity_path=args.identity,
-                preflight_path=args.preflight_receipt,
-                pre_ready_failure_path=args.pre_ready_failure,
-                ledger_after_path=args.ledger_after,
-            )
+        failure_path, failure_digest = finalize_and_seal_pre_ready_formal_slot_failure(
+            identity_path=args.identity,
+            preflight_path=args.preflight_receipt,
+            pre_ready_failure_path=args.pre_ready_failure,
+            ledger_after_path=args.ledger_after,
         )
     else:
         sources = retirement_readiness_sources(
@@ -1238,9 +1722,7 @@ def _authorize(args: argparse.Namespace) -> int:
         prerequisites,
         pinned_qualification,
         launch_profile,
-    ) = _load_pinned_declarations(
-        args.identity, args.allowed_prerequisites
-    )
+    ) = _load_pinned_declarations(args.identity, args.allowed_prerequisites)
     qualification = require_matching_architecture_qualification_receipt(
         pinned_qualification,
         current_qualification,
@@ -1315,31 +1797,97 @@ def _consume_authority(args: argparse.Namespace) -> int:
         launch_profile=launch_profile,
     )
     plan_path = args.attempt_authority_plan.expanduser().resolve(strict=True)
-    target = _pin_output_target(
-        args.attempt_authority_consumption
-        or attempt_authority_consumption_path(plan_path)
+    expected_target = attempt_authority_consumption_path(plan_path)
+    target = Path(
+        os.path.abspath(
+            (args.attempt_authority_consumption or expected_target).expanduser()
+        )
     )
     receipt = consume_aox_attempt_authority_plan(
         plan,
         plan_path=plan_path,
         path=target,
     )
+    slots = [dict(item) for item in plan["slots"]]
+    policies = [dict(item["authority_policy"]) for item in slots]
+    operation = attempt_authority_consumption_operation_identity(
+        plan,
+        plan_path=plan_path,
+    )
     _print(
         {
-            "schema_id": "aox_attempt_authority_consume_receipt@1",
-            "status": "consumed_without_execution",
+            "schema_id": "aox_attempt_authority_consume_receipt@2",
+            "status": "consumption_receipt_closed",
             "campaign_id": plan["campaign_id"],
             "plan_digest": plan["plan_digest"],
+            **operation,
             "consumption_digest": _canonical_digest(receipt),
             "output_file": target.name,
+            "effect_certainty": "terminal_known",
+            "retry_eligibility": "terminal",
+            "terminal_scope": "authority_consumption_occurrence",
+            "authority_slot_count": len(slots),
+            "max_attempts_per_slot": policies[0]["max_attempts"],
+            "max_micu_per_slot": policies[0]["max_micu"],
+            "max_cost_microunits_per_slot": policies[0]["max_cost_microunits"],
+            "max_wall_time_seconds_per_slot": policies[0]["max_wall_time_seconds"],
+            "scientific_attempt_counted": False,
         }
     )
     return 0
 
 
-def _required_path_arguments(
-    parser: argparse.ArgumentParser, *names: str
-) -> None:
+def _authority_operation(args: argparse.Namespace) -> int:
+    (
+        identity,
+        prerequisites,
+        architecture_qualification,
+        launch_profile,
+    ) = _load_authority_declarations(args)
+    plan = load_aox_attempt_authority_plan(
+        args.attempt_authority_plan,
+        identity=identity,
+        allowed_prerequisites=prerequisites,
+        architecture_qualification=architecture_qualification,
+        launch_profile=launch_profile,
+    )
+    plan_path = args.attempt_authority_plan.expanduser().resolve(strict=True)
+    operation = attempt_authority_consumption_operation_identity(
+        plan,
+        plan_path=plan_path,
+    )
+    receipt = observe_aox_attempt_authority_consumption(
+        plan,
+        plan_path=plan_path,
+    )
+    terminal = receipt is not None
+    _print(
+        {
+            "schema_id": "aox_attempt_authority_operation@1",
+            "action": args.action,
+            "status": "terminal" if terminal else "unconsumed",
+            "campaign_id": plan["campaign_id"],
+            "plan_digest": plan["plan_digest"],
+            **operation,
+            "consumption_digest": (
+                _canonical_digest(receipt) if receipt is not None else None
+            ),
+            "effect_certainty": "terminal_known" if terminal else "no_effect",
+            "retry_eligibility": "terminal" if terminal else "not_applicable",
+            "reconciliation_required": False,
+            "terminal_scope": "authority_consumption_occurrence",
+            "query_read_only": True,
+            "action_applicability": {
+                "query": True,
+                "resume": False,
+                "reconcile": True,
+            },
+        }
+    )
+    return 0
+
+
+def _required_path_arguments(parser: argparse.ArgumentParser, *names: str) -> None:
     for name in names:
         parser.add_argument(f"--{name.replace('_', '-')}", required=True, type=Path)
 
@@ -1350,11 +1898,45 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    config_contract_help = (
+        "print the machine-readable AOX profile descriptor and candidate "
+        "lifecycle contract"
+    )
+    config_contract = subparsers.add_parser(
+        "config-contract",
+        help=config_contract_help,
+        description=config_contract_help,
+    )
+    config_contract.set_defaults(handler=_config_contract)
+
+    config_candidate = subparsers.add_parser(
+        "config-candidate",
+        help=(
+            "atomically publish one credential-free identity for the current "
+            "AOX profile sources without semantically validating it"
+        ),
+    )
+    config_candidate.add_argument("--output", required=True, type=Path)
+    config_candidate.add_argument(
+        "--ledger-path",
+        type=Path,
+        help="candidate-specific MICU ledger identity override",
+    )
+    config_candidate.set_defaults(handler=_config_candidate)
+
     check_config = subparsers.add_parser(
         "check-config",
         help=(
             "validate the current AOX effective configuration locally without "
             "runner attestation or persistent state"
+        ),
+    )
+    check_config.add_argument(
+        "--candidate",
+        type=Path,
+        help=(
+            "explicit candidate published by config-candidate; when omitted, "
+            "validate an ephemeral candidate with the same identity contract"
         ),
     )
     check_config.add_argument(
@@ -1400,6 +1982,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     pin.set_defaults(handler=_pin)
+
+    pin_operation = subparsers.add_parser(
+        "pin-operation",
+        help=(
+            "query, explicitly resume, or reconcile one exact reserved "
+            "toolchain-pin operation without creating a replacement occurrence"
+        ),
+    )
+    pin_operation.add_argument(
+        "--action",
+        required=True,
+        choices=("query", "resume", "reconcile"),
+    )
+    pin_operation.add_argument("--runner-config", required=True, type=Path)
+    pin_operation.add_argument("--run-id", required=True)
+    pin_operation.set_defaults(handler=_pin_operation)
 
     authorize = subparsers.add_parser(
         "authorize",
@@ -1507,6 +2105,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     public_host.set_defaults(handler=_public_host)
 
+    host_operation = subparsers.add_parser(
+        "host-operation",
+        help=(
+            "query or reconcile one exact formal Host mutation through its "
+            "existing durable owner without replay"
+        ),
+    )
+    _required_path_arguments(host_operation, "preflight_receipt")
+    host_operation.add_argument(
+        "--action",
+        required=True,
+        choices=("query", "reconcile"),
+    )
+    host_operation.add_argument(
+        "--response-name",
+        help="required for reconcile; opaque locator for the converged response",
+    )
+    host_operation.add_argument(
+        "host_cli_args",
+        nargs=argparse.REMAINDER,
+        help="the exact original supported thin Host mutation after --",
+    )
+    host_operation.set_defaults(handler=_host_operation)
+
     grant_task_authority = subparsers.add_parser(
         "grant-task-authority",
         help=(
@@ -1569,9 +2191,7 @@ def build_parser() -> argparse.ArgumentParser:
         "preflight_receipt",
         "ledger_after",
     )
-    slot_failure_source = seal_slot_failure.add_mutually_exclusive_group(
-        required=True
-    )
+    slot_failure_source = seal_slot_failure.add_mutually_exclusive_group(required=True)
     slot_failure_source.add_argument(
         "--retirement-readiness",
         type=Path,
@@ -1680,6 +2300,30 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     consume_authority.set_defaults(handler=_consume_authority)
+
+    authority_operation = subparsers.add_parser(
+        "authority-operation",
+        help=(
+            "query or reconcile the deterministic authority consumption receipt "
+            "without consuming or resuming it"
+        ),
+    )
+    authority_operation.add_argument(
+        "--action",
+        required=True,
+        choices=("query", "reconcile"),
+    )
+    authority_operation.add_argument("--identity", required=True, type=Path)
+    authority_operation.add_argument(
+        "--architecture-qualification-report", required=True, type=Path
+    )
+    authority_operation.add_argument(
+        "--allowed-prerequisites", required=True, type=Path
+    )
+    authority_operation.add_argument(
+        "--attempt-authority-plan", required=True, type=Path
+    )
+    authority_operation.set_defaults(handler=_authority_operation)
 
     return parser
 

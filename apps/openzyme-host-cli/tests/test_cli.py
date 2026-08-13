@@ -4,8 +4,15 @@ from io import StringIO
 import json
 from pathlib import Path
 
+import pytest
+
+from openzyme_host_cli.client import HostApiClient
 from openzyme_host_cli.cli import _build_parser
 from openzyme_host_cli.cli import run_cli
+from openzyme_host_cli.receipts import PUBLIC_API_RECEIPT_V2_FIELDS
+from openzyme_host_cli.receipts import PublicReceiptError
+from openzyme_host_cli.receipts import append_public_api_receipt
+from openzyme_host_cli.receipts import canonical_json_bytes
 from openzyme_runtime import reset_settings_cache
 
 
@@ -30,6 +37,16 @@ class FakeSession:
                         "control_plane": {"status": "ready", "details": {}},
                         "model": {"status": "unavailable", "details": {}},
                     },
+                },
+            )
+        if url.startswith("/v3/mutation-operations/observe?"):
+            return FakeResponse(
+                200,
+                {
+                    "schema_id": "host_mutation_operation_observation@1",
+                    "status": "unproven",
+                    "query_read_only": True,
+                    "resume_applicable": False,
                 },
             )
         if url.startswith("/v3/sessions/") and url.endswith("/workspace"):
@@ -173,6 +190,75 @@ class FailingSession(FakeSession):
                 },
             )
         return super().get(url, **kwargs)
+
+
+def test_client_rejects_historical_chain_before_http(tmp_path: Path) -> None:
+    chain = tmp_path / "historical.jsonl"
+    current = append_public_api_receipt(
+        chain,
+        method="GET",
+        route="/v3/runtime/health",
+        request_body=None,
+        response=FakeResponse(200, {"status": "ready"}),
+    )
+    historical = {
+        key: value for key, value in current.items() if key in PUBLIC_API_RECEIPT_V2_FIELDS
+    }
+    historical["schema_id"] = "openzyme_public_api_receipt@2"
+    chain.write_bytes(canonical_json_bytes(historical) + b"\n")
+    session = FakeSession()
+    client = HostApiClient(
+        "http://127.0.0.1:8000",
+        session=session,
+        receipt_chain=chain,
+    )
+
+    with pytest.raises(PublicReceiptError, match="read-only"):
+        client.get_v3_runtime_health()
+    assert session.calls == []
+
+
+def test_cli_encodes_exact_mutation_observation_identity() -> None:
+    stdout = StringIO()
+    stderr = StringIO()
+    session = FakeSession()
+    request_digest = "sha256:" + "a" * 64
+
+    exit_code = run_cli(
+        [
+            "--session-id",
+            "sess observe/1",
+            "--format",
+            "json",
+            "operations",
+            "observe",
+            "--command-type",
+            "task.update",
+            "--scope-ref",
+            "task:task observe/1",
+            "--idempotency-key",
+            "observe:key/1",
+            "--request-digest",
+            request_digest,
+        ],
+        session=session,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert exit_code == 0, stderr.getvalue()
+    assert session.calls == [
+        (
+            "GET",
+            "/v3/mutation-operations/observe?"
+            "session_id=sess+observe%2F1&command_type=task.update&"
+            "scope_ref=task%3Atask+observe%2F1&"
+            "idempotency_key=observe%3Akey%2F1&"
+            f"request_digest=sha256%3A{'a' * 64}",
+            None,
+        )
+    ]
+    assert json.loads(stdout.getvalue())["query_read_only"] is True
 
 
 def build_v3_workspace() -> dict[str, object]:

@@ -33,7 +33,11 @@ Allowed prerequisites MUST contain exactly `git_commit`, `config_digest`, `workf
 
 `pin` SHALL be the canonical supported operator bootstrap for one reviewable authority declaration transaction. It MUST use the production compiler and trusted Host's forced-SSH runner to execute deterministic non-scientific MAFFT, CD-HIT, hmmbuild, and chained hmmalign payloads, deriving all four toolchain image digests only from runner-issued same-shell runtime identities. Its writer MUST publish the exact-seven identity, exact-nine prerequisites, and one closed credential-free `aox_cutover_launch_profile@1` with mode `0600` in one existing real transaction directory outside the checkout whose three payload targets and fixed marker target do not yet exist, fsync all payloads, and last-publish one exact closed `aox_cutover_pin_commit@3` marker binding all three basenames and digests. The profile MUST contain the complete non-sensitive effective settings and ledger identity used by `pin`, MUST persist open LLM extra-body content only as a digest, and MUST exclude API keys, emails, tokens, Host principals, credentials and credential-bearing URLs. Current `aox_live_attempt_authority_plan@4`, `aox_live_attempt_authority_consumption@5`, and `aox_attempt_preflight@5` MUST bind the same profile digest. Authority consumption MUST validate the committed transaction before producing its receipt; a pre-marker crash MAY leave orphan payloads, but those payloads MUST NOT be consumable. Because the marker is unsigned, its acceptance proves only transaction integrity and consistency, not producer provenance, directory-wide freshness, or consumer-time file mode; trusted operation, an explicit preflight before any root, and runner-issued identities on later live operations remain mandatory.
 
+Each toolchain pin operation MUST first reserve one deterministic opaque runner occurrence bound to exact execution/operation/request/approval/runspec and source identities. `submit_reserved_execution` MAY dispatch only the first exact submission; a duplicate exact submission SHALL return the current observation and MUST NOT resume, replay or create a replacement run. Public failure and explicit `aox_toolchain_pin_public_operation@1` evidence MUST expose safe phase, effect certainty, retry eligibility, reconciliation flag, occurrence-local terminal scope, preparation-only authority scope, scientific-attempt count=false, exact run handle, receipt locator, reservation/request/operation/approval digests. `openzyme-aox-cutover pin-operation --action query|resume|reconcile` SHALL be the public continuation surface for the exact handle: query is read-only; resume MAY advance only the same occurrence while it remains pre-effect `no_effect/same_phase_safe`; reconcile SHALL recover only the runner's exact durable outcome and MUST NOT replay the payload. `dispatch_in_doubt`, `unproven` or reconcile-required facts MUST be reconciled before another occurrence. A new occurrence is admissible only after `no_effect` plus explicit disposition or completed exact reconciliation and fresh authority/budget admission; no shell or runner may auto-retry, loop, select a strategy or dispatch a replacement.
+
 For authority consumption and preflight, the normal public command path MUST derive the exact `<plan-name>.consumed.json` sibling from the canonical resolved authority-plan path, preserving the plan's complete basename regardless of suffix or embedded dots. The retained `--attempt-authority-consumption` option MAY serve only as an exact compatibility assertion against that owner-derived path; it MUST NOT rebind the receipt, search for an alternative, strip a suffix, or enable a fallback. A mismatching assertion MUST fail before receipt publication, slot claim, root creation, or any Host, runtime, MICU, provider, runner, HPC, or browser effect.
+
+`consume-authority` SHALL return `aox_attempt_authority_consume_receipt@2` with exact plan/request/idempotency identity, deterministic handle/receipt locator, `effect_certainty=terminal_known`, `retry_eligibility=terminal`, `terminal_scope=authority_consumption_occurrence`, exact-three slot count, `max_attempts=1` and the source-bound MICU/cost/wall-time ceilings. A first valid call MAY atomically publish the deterministic no-replace consumption; the same exact request after a publication race or lost response MUST load and fully revalidate the durable receipt and converge without consuming authority twice. Existing receipt drift, source drift, authority/budget mismatch or different plan identity MUST fail closed. Neither new nor converged consumption counts as a scientific attempt or creates Host/session/root/external effect.
 
 Preflight and the supervised Host MUST reconstruct all non-sensitive launch settings from that pinned profile instead of re-resolving an ambient launch profile. Ambient state MAY supply only credentials that the profile deliberately excludes; ambient non-sensitive launch variables MUST be ignored and MUST NOT override the pinned values. A changed LLM extra-body digest, a shared Host principal, a credential-bearing URL, a legacy controlled-operation owner inside the profile, or any profile/config digest drift MUST fail closed. No hidden default, ambient fallback or profile rewrite is permitted.
 
@@ -45,6 +49,18 @@ Before consuming one-use formal authority, the operator MUST establish that the 
 - **WHEN** an operator invokes `pin`, authorizes an exact plan, consumes it through the matching policy-free command, and a separately approved conductor performs preflight under the exact same effective settings
 - **THEN** pin obtains the four runner-issued direct-SSH toolchain identities, publishes identity/prerequisites/profile plus the marker as one consumer-visible transaction, and preflight reconstructs the exact pinned non-sensitive settings, independently computes the exact-seven actual identity and safe effective-config preimage before root creation, requires field-for-field equality, and makes that same config preimage/digest available for later attempt launch evidence without starting an attempt
 
+#### Scenario: Duplicate pin submission observes without replay
+- **WHEN** the exact bound submit request for one reserved toolchain operation is presented after that reservation already has an attempt journal entry
+- **THEN** the runner returns the exact current source-bound observation with the same handle and identities, and performs no implicit resume, replay or replacement dispatch
+
+#### Scenario: Explicitly continue one safe pre-effect pin occurrence
+- **WHEN** a public pin failure exposes the exact handle with `effect_certainty=no_effect`, `retry_eligibility=same_phase_safe` and a pre-dispatch phase, and the agent explicitly selects `pin-operation --action resume` within preparation authority and budget
+- **THEN** only that same occurrence may advance and all later query, resume or reconcile observations converge on its exact operation and receipt identity; terminal scope remains `runner_operation_occurrence`, not task, attempt, slot or campaign
+
+#### Scenario: Reconcile uncertain pin effect before new work
+- **WHEN** the exact pin operation is `dispatch_in_doubt`, `unproven` or `reconcile_required`
+- **THEN** only exact query or reconcile against its existing handle is admissible until effect is known; no new reservation, replacement dispatch, automatic retry or scientific-attempt count is inferred
+
 #### Scenario: Reject an uncommitted or drifted pin transaction
 - **WHEN** the three declarations are cross-directory, symlinked, missing their fixed marker, have an open or malformed marker, or no longer match its bound basenames/digests
 - **THEN** authority consumption or preflight fails before constructing launch/session state or creating an attempt root; an orphan payload from a pre-marker crash is never reinterpreted as committed input
@@ -53,6 +69,18 @@ Before consuming one-use formal authority, the operator MUST establish that the 
 - **WHEN** the public `consume-authority` or `preflight` command receives a canonical authority plan whose basename is default, suffixless, dotted, or otherwise non-default, with no compatibility assertion
 - **THEN** it derives exactly `<complete-plan-basename>.consumed.json` in the same real parent directory and never requires the operator to reconstruct that deterministic target
 - **AND** when a retained `--attempt-authority-consumption` assertion differs from that derived path, the command returns a typed failure with no consumption receipt, slot claim, attempt root, or external effect
+
+#### Scenario: Converge an exact authority consumption receipt
+- **WHEN** the deterministic consumption sibling already contains the valid receipt for the same exact current plan and request identity
+- **THEN** `consume-authority` returns `status=consumption_receipt_closed` with the same handle, idempotency, authority and budget facts, performs no second authority effect, and does not increment a scientific attempt; the projection does not guess whether this caller created or observed the exact durable receipt
+
+#### Scenario: Reject a drifting pre-existing consumption receipt
+- **WHEN** the deterministic sibling exists but does not fully validate against the exact current plan, source, authority or budgets
+- **THEN** consumption fails closed without overwrite, fallback target, new plan, root, Host, scientific attempt or external effect
+
+#### Scenario: Query or reconcile authority without consuming or resuming it
+- **WHEN** the agent explicitly invokes `authority-operation --action query|reconcile` for one exact current plan
+- **THEN** the machine result declares `query=true`, `resume=false`, `reconcile=true`, reads only the deterministic sibling, and either returns its exact terminal receipt or `unconsumed/no_effect`; it MUST NOT publish a receipt, consume authority, create a root or resume an occurrence
 
 #### Scenario: Seal a consumed-authority configuration failure before slot claim
 - **WHEN** one current formal authority plan has been consumed, its exact slot is still unclaimed, its campaign attempt root is absent or empty, and reconstruction of the bound launch profile or current effective configuration fails with a safe public launch error
@@ -125,9 +153,11 @@ qualification failure code、report、product defect 或 canonical NO-GO。
 - **THEN** 该权限不自动授权 `check-config` 之外的配置动作或 forced-SSH `pin`；`check-config` 仍为普通 sandbox 内无副作用解析，`pin` 仍要求其独立 preparation external-effect 授权
 
 ### Requirement: 可验证且脱敏的启动配置与失败因果
-`openzyme-aox-cutover check-config` SHALL 是无持久化和无外部副作用的公开配置预检。它 MUST 使用与 `pin` 相同的 production settings resolver、ledger identity resolution、effective-config builder 与 closed normalizer，并且成功时只返回闭合 `aox_cutover_config_check@1`：`schema_id`、`status=valid`、`effective_config_schema_id` 与 `config_digest`。它 MUST NOT 接收或生成 qualification、identity、prerequisite、authority 或 state，不得实例化 runner、连接 SSH、执行 fixture 或接触 provider/MICU/Chrome。该 receipt 只证明本次本地配置解析；`pin` MUST 重新计算配置，且该 receipt 不得冒充 admission、pin、runner availability 或 external-effect 证明。测试操作员不得直接 import private settings/builder/service 来替代该公开命令。
+`openzyme-aox-cutover config-contract` SHALL 是 AOX executable profile descriptor 与配置候选生命周期的唯一公开机器合同 owner，并返回闭合 `aox_config_contract@1`。其 `profile_fields` MUST 直接投影 production settings/reliability resolver 实际消费的 canonical descriptors，逐字段提供 stable `setting_path`、有序 environment aliases、value kind、安全通用默认值、candidate relevance、empty/strip/list normalization、identity projection 及 AOX eligibility/conditional requirements；AOX requirements MUST 由 closed runtime normalizer 使用的同一 constraint owner 导出。required descriptor 缺失或 requirement projection 与 runtime owner 漂移时 MUST 以 `aox_config_contract_source_drift` fail closed，不得 fallback 到 env prefix/name scan、private builder、文档或 skill fragment。
 
-fresh preparation MUST 在首次 `check-config` 之前，从 current closed schema 与 operator contract 解析并原子装配完整 command-scoped launch profile。未经装配的 ambient environment 不得冒充该 profile；若普通 Host 默认值已由当前合同证明不合格，测试操作员不得先执行无 profile 的 public check 来试探。批准 fresh `pin` 的 preparation SHALL 覆盖把合同明确要求的非敏感值临时应用到首次 `check-config` 与随后 `pin`；两者 MUST 使用相同的环境映射、ledger identity 与 source identity。完整 profile 的首次 public check 失败后 MUST fail closed，不得逐字段补值或 corrected retry。当前 schema 变化时，测试操作员 MUST 在首次命令前重新推导 profile，不得机械复用历史取值。
+`config-candidate` MUST 只从上述 descriptors 列出的 AOX-relevant source、ledger identity 与 runner-config identity 构造 credential-free `aox_config_candidate@1`：unlisted environment MUST 被忽略；credential value MUST 只投影 presence；private non-credential value MUST 只投影 canonical digest；普通非敏感值 MUST 投影 canonical resolved value；ledger/runner paths MUST 独立绑定 resolved path/content identity。只改变 credential 内容而 presence 不变 MUST NOT 改变 candidate identity；canonical relevant value、credential presence 或 path/content identity 变化 MUST 改变 source identity。候选以 source digest 派生 `candidate_id` 并以 mode-private atomic no-replace 文件发布；它只建立候选身份，不做语义验证、自动补值或外部探测。`check-config` SHALL 是无持久化和无外部副作用的公开验证动作，MUST 使用与 `pin` 相同的 production settings resolver、ledger identity resolution、effective-config builder 与 closed normalizer，并在显式 `--candidate` 存在时重算并要求 source identity 未漂移；未给出 candidate 时 MAY 按同一合同验证一个 ephemeral candidate。成功时只返回闭合 `aox_cutover_config_check@2`，绑定 `candidate_id`、contract/candidate digest、effective-config schema 与 `config_digest`。这些命令 MUST NOT 接收或生成 qualification、launch identity、prerequisite、authority 或产品 state，不得实例化 runner、连接 SSH、执行 fixture 或接触 provider/MICU/Chrome；其输出不得冒充 admission、pin、runner availability 或 external-effect 证明。
+
+一次配置验证失败 MUST 公开 `effect_certainty=no_effect`、`retry_eligibility=terminal`、`reconciliation_required=false`、`terminal_scope=config_candidate_occurrence`、exact candidate handle/idempotency identity 与 current contract digest，并且只终结该候选 occurrence。candidate publication 在未安装 target 或已完整清理时 MUST 公开 `no_effect/terminal/reconciliation_required=false` 与 `config_candidate_publication_occurrence`；若安装后的 durability/cleanup 无法证明，MUST 公开 `unproven/reconcile_required/reconciliation_required=true` 和同一 exact candidate identity，不得把它改写成成功、无副作用或可自动重发。Harness/CLI MUST NOT 自动改写 profile、自动重发 validation/publication、复用被拒候选 identity 或探测 runner/provider。Agent MAY 在现有权限与预算内，根据 current machine contract 显式调整自己的 command-scoped profile，原子发布 identity-distinct 新 candidate，再以一条新的显式 `check-config` 验证；这不是旧 occurrence 的 retry，也不得自动授权 `pin`。current contract/schema 变化时必须重新构造候选，不得机械复用历史 identity。
 
 当前 `openzyme-aox-cutover` 启动命令 SHALL 以闭合的 `aox_cutover_launch_failure@3` 公开失败。该对象 MUST 包含 `schema_id`、`status` 与 `failure_code`；只有失败源明确标记为可公开时，才 MAY 增加 closed tagged-union `failure_details`。schema branch MUST 使用 `kind=schema_field`，并只保留逻辑字段标识 `identity` 以及可选的 `missing`、`unexpected`。runner branch MUST 使用 `kind=runner_attestation`，并只保留 AOX contract `tool_id`、可选安全 `runner_run_id`、可选 `runner_attempt_receipt_digest`、`stage=runner_call|runner_result`、closed effect certainty 与可选的安全 machine `runner_error_code`；code 只能是全大写执行码或全小写 source-causal code，不接受混合大小写或自由文本。sandbox runtime branch MUST 使用 exact `kind=sandbox_runtime` 与一个 `failure_code`，且后者只能是 `pipeline_sdk_source_unavailable`、`podman_binary_unavailable`、`podman_rootless_preflight_failed`、`sandbox_image_identity_invalid`、`sandbox_image_unavailable` 或 `sandbox_runtime_identity_drift`。它不得包含配置值、Host/runner 路径、凭据、原始消息、stderr/stdout、异常表示或异常链。内部 `details` 不得因存在而自动升级为公开证据。历史 `aox_cutover_launch_failure@1/@2` 只可作为冻结记录读取，不得冒充当前失败 receipt。
 
@@ -139,11 +169,23 @@ AOX 有效配置中的 `research.mcp_enabled=true` SHALL 来自 Host 的权威�
 
 #### Scenario: 公开预检不通过私有实现自证
 - **WHEN** Codex 准备一次 fresh pin 并需要证明当前启动配置可被 AOX 闭集接受
-- **THEN** 它调用 public `check-config` 并保存脱敏 receipt；不得 import 或执行 `openzyme_host_api.aox_cutover_launch`、private foundation/service 或 settings builder，且预检不产生 runner、provider、MICU、authority 或 repository effect
+- **THEN** 它先从 public `config-contract.profile_fields` 读取完整字段、safe defaults 与 AOX requirements，通过 public `config-candidate` 建立 credential-free exact candidate identity，再显式调用 public `check-config --candidate` 并保存脱敏 receipt；不得扫描环境变量前缀、import 或执行 `openzyme_host_api.aox_cutover_launch`、private foundation/service 或 settings builder，且候选构造与验证均不产生 runner、provider、MICU、authority 或产品 repository effect
 
-#### Scenario: 首次公开预检使用完整启动配置
-- **WHEN** current AOX closed schema 要求的非敏感 reliability policy 与普通 Host 默认值不同，且用户已经批准包含 fresh `pin` 的 preparation
-- **THEN** Codex 在发出任何检查命令前从 current contract 装配完整 command-scoped profile，只执行一次携带该 profile 的 public `check-config`，并把完全相同的 profile 用于随后 `pin`；它不得先运行无 profile 的检查来制造已知失败，也不得在 terminal failure 后补值重试
+#### Scenario: 字段或约束跨来源漂移必须拒绝合同
+- **WHEN** AOX eligibility 引用了 settings/reliability resolver 不存在的 required field，或公开 requirement projection 与 runtime normalizer constraint owner 不一致
+- **THEN** `config-contract` 以 `aox_config_contract_source_drift` 拒绝生成机器合同；不得静默遗漏字段、采用第二份 env allowlist 或继续构造 candidate
+
+#### Scenario: credential-safe candidate identity 忽略无关环境
+- **WHEN** 两次 candidate construction 只有 unlisted environment 或已存在 credential 的具体值不同
+- **THEN** 两次 source/candidate identity 相同且任何公开对象都不包含 credential value；若 credential presence、canonical relevant value 或 ledger/runner path/content identity 不同，source/candidate identity 必须不同
+
+#### Scenario: 配置失败只终结 exact candidate occurrence
+- **WHEN** current candidate 的 public `check-config` 返回 source-bound semantic failure
+- **THEN** receipt 将该 exact candidate 标记为 `no_effect/terminal/config_candidate_occurrence`；系统不得自动补值、自动重发或复用其 identity，agent 可显式处置该 occurrence，并在仍有权限和预算时从 current contract 发布 identity-distinct 新 candidate 后再发出一条新的显式 validation action
+
+#### Scenario: 配置候选与 pin 保持权限分离
+- **WHEN** identity-distinct 新 candidate 通过 public validation
+- **THEN** 该结果只证明该候选的本地配置闭合；`pin` 仍重新解析相同 source identity 并要求独立 preparation external-effect 授权，且系统不得自动从 validation success 进入 runner dispatch
 
 #### Scenario: 保留 runner 最早类型化原因
 - **WHEN** forced-SSH toolchain pin 返回 terminal runner result，且其中有安全 `error_code` 与 effect certainty
@@ -705,12 +747,16 @@ be rejected when rebound, replayed, symlinked, drifted or reused after any
 session/attempt state exists.
 
 Within the session, no operator authority MAY be granted to a speculative task.
-The current `aox_public_conductor_execution_contract@3` SHALL bind the exact session
+The current `aox_public_conductor_execution_contract@4` SHALL bind the exact session
 creation request and exactly one raw entry-message request whose `skill_keys` contain
 only the preflight-pinned workflow reference, plus the canonical
-`aox_attempt_start_claim@1` filename and schema. The formal wrapper MUST require those as
+`aox_attempt_start_claim@1` filename and schema. It MUST also bind deterministic
+caller-selected idempotency keys for both canonical entry mutations and the closed
+mutation-continuation contract: same request identity converges only on the same logical
+mutation; unknown effect requires exact reconciliation; a new occurrence requires
+`no_effect` plus explicit disposition or completed exact reconciliation. The formal wrapper MUST require those as
 the first two successful public actions, reject a missing/different pin and every later
-session message before calling Host, and treat historical execution contracts `@1/@2` as
+session message before calling Host, and treat historical execution contracts `@1/@2/@3` as
 read-only and non-admissible for new execution. After the canonical entry, the Codex
 conductor SHALL submit one bounded drain, seal both its public admission response and
 its one public terminal status response, and then seal a public canonical workspace
@@ -842,20 +888,51 @@ the full `aox_fault_negative_state_closure@1`. Final public workspace/events and
 sealed export MUST reproduce those same facts.
 
 The thin Host CLI SHALL be able to append every public response, including non-2xx
-responses, as canonical JSONL `openzyme_public_api_receipt@2`. Each record is the
-exact closed object `schema_id`, `sequence`, `method`, `route`, `status_code`,
-`request`, `request_digest`, `response_digest`, and
-`response_semantic_digest`; message text SHALL be represented only by its digest
+responses, as canonical JSONL `openzyme_public_api_receipt@3`. Each record SHALL bind
+`schema_id`, `sequence`, `method`, `route`, `status_code`, normalized `request`,
+`request_digest`, caller-selected mutation `idempotency_key`,
+`request_identity_digest`, `response_digest`, `response_semantic_digest`,
+`effect_certainty`, `retry_eligibility`, `reconciliation_required`, and
+occurrence-local `terminal_scope`; message text SHALL be represented only by its digest
 plus exact skill/task/lane semantics. The chain MUST be continuous, mode-private,
 single-linked, locked, fully written and fsynced. A requested final response MAY
 be sealed once as `openzyme_public_host_response@1` only when it reproduces the
-same semantic digest.
+same semantic digest. GET receipts MUST be `no_effect/terminal/host_read_occurrence`.
+Successful mutations MUST be `terminal_known/terminal/host_mutation_occurrence`;
+failed mutations MUST be `unproven/reconcile_required/host_mutation_occurrence`.
+The exact same request identity and response MAY converge on the last durable receipt
+without appending a second logical mutation; response drift MUST fail exact reconciliation.
+If the process stops after that current successful mutation receipt is durable but before its
+response envelope is sealed, the formal wrapper MAY re-enter only when that receipt is the
+sole missing envelope, is the last record, proves `terminal_known/terminal` with no
+reconciliation required, and the caller repeats the exact command, normalized request and
+idempotency identity. The Host response MUST then converge byte-for-byte and seal the missing
+envelope. An unsealed GET, a historical receipt, any earlier/multiple missing envelope,
+identity or request drift, response drift, or any current `unproven`/reconcile-required
+mutation MUST fail closed and MUST NOT advance to another public action.
+Historical `@2` chains remain readable only under their original closed shape.
+
+The Host MUST expose one generic read-only observation for supported formal mutations,
+bound to the original session, command type, owner scope, idempotency key and owner
+request digest (plus exact attempt/artifact identity for the AOX fault owner). It MUST
+reuse the existing command-receipt, runtime-command, scientific-authorization or
+fault-claim/receipt owner and MUST NOT create state, resume, retry or replay. Its machine
+contract MUST declare `query=true`, `resume=false`, `reconcile=true`. The formal wrapper
+MAY append a terminal reconciliation receipt only after this owner proves the exact
+terminal response. Business entry/progress/finalization MAY treat one adjacent
+`unproven/reconcile_required` receipt and its single exact terminal successor as one
+occurrence only when method, route, request, request digest, idempotency and request
+identity all match. Multiple terminal receipts, an intervening receipt, an earlier known
+effect, cross-identity/request drift or any unsealed raw response MUST fail closed. Raw
+JSONL, response envelopes, failure observations, sequence, record count/digest and bundle
+sources MUST remain complete and unmodified.
 
 Formal preflight SHALL publish one source-bound
-`aox_public_conductor_execution_contract@3` that derives the exact
+`aox_public_conductor_execution_contract@4` that derives the exact
 Host/project/session binding, exact canonical session/entry requests, one pinned
 workflow reference, the dedicated late-bound authority command, public runtime-drain
-bounds, the start-claim contract, and relative receipt/response evidence names from the consumed slot. Formal
+bounds, the start-claim contract, deterministic entry mutation idempotency keys,
+and relative receipt/response evidence names from the consumed slot. Formal
 drains MAY choose any integer `max_signals` and `max_steps_per_agent` accepted by the
 public Host schema (`1..100` for each), but MUST keep
 `auto_enqueue_ready_tasks=false`; historical fixed `1/8` cadence is not an evidence
@@ -1004,8 +1081,16 @@ package and MUST NOT be a production caller.
 - **THEN** the command and offline evidence validators accept that bounded request; an out-of-range value, extra field or enabled hidden enqueue fails closed without choosing a replacement cadence
 
 #### Scenario: Reject a historical execution contract for current actions
-- **WHEN** an `aox_public_conductor_execution_contract@1` or `@2` artifact is presented to the current formal wrapper
-- **THEN** it remains historical read-only evidence and cannot issue a Host action or be silently promoted to current `@3`
+- **WHEN** an `aox_public_conductor_execution_contract@1`, `@2` or `@3` artifact is presented to the current formal wrapper
+- **THEN** it remains historical read-only evidence and cannot issue a Host action or be silently promoted to current `@4`
+
+#### Scenario: Formal mutation requires explicit request identity
+- **WHEN** the formal conductor requests any Host mutation after canonical entry
+- **THEN** it supplies exactly one caller-selected idempotency key, and the `@3` receipt binds that key to method, route, normalized request and response; omission or drift is rejected before a new logical mutation can be adopted
+
+#### Scenario: Lost response converges through the exact receipt
+- **WHEN** a caller repeats the same request identity after a response was durably appended but its response envelope was not sealed
+- **THEN** an identical Host response converges on the existing last receipt and can seal the exact response, while a different response requires reconciliation and MUST NOT append or infer a replacement outcome
 
 #### Scenario: Bind the formal authority only to the canonical execution task
 - **WHEN** the single canonical pinned entry has produced one sealed bounded drain, its sealed terminal status and a public workspace containing exactly one execution task
@@ -1072,7 +1157,7 @@ No policy-free shell may auto-approve an operation, and no browser-specific help
 screen observation or private resolve call is required or accepted as a GO
 substitute.
 
-The append-only evidence shell MAY seal canonical `openzyme_public_api_receipt@2`
+The append-only evidence shell MAY seal canonical `openzyme_public_api_receipt@3`
 records, the final public
 workspace snapshot, full event replay, process-supervision retirement receipt,
 artifact roots and MICU snapshots. It MUST preserve request/response semantic
@@ -1322,8 +1407,12 @@ issuances. Resuming the exact yielded outer-cell or inner-session handle is not 
 closed, and a late result is non-adoptable.
 
 Full qualification, Podman-transitive `pin`, and formal `preflight` belong to effect classes with known sandbox-external
-requirements. They MUST request narrowly scoped `require_escalated` permission before their first issuance and MUST stop
-after that invocation fails; the read-only recovery rule MUST NOT be used as a permission probe or second attempt.
+requirements. They MUST request narrowly scoped `require_escalated` permission before their first issuance; the
+read-only recovery rule MUST NOT be used as a permission probe or second attempt. After any product invocation, continuation
+MUST use its source-bound effect certainty, exact request/operation/handle/receipt identity, authority and remaining budget.
+`unknown` or `dispatch_in_doubt` MUST use exact query/reconciliation; `no_effect` MAY permit only an explicit same-occurrence
+resume or, after explicit disposition, a separately authorized new occurrence. No failure may trigger automatic replay,
+replacement dispatch, identity rewrite or strategy selection.
 Platform permission MUST NOT expand preparation/live business authority, identity, budget, or external-effect scope.
 
 #### Scenario: Recover one read-only launcher rejection
