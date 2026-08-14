@@ -70,8 +70,10 @@ def registered_artifact_ref(response: dict[str, Any]) -> dict[str, str]:
     registration metadata.  Callers must not recursively search that envelope,
     because the same artifact can appear in more than one provenance projection.
     ``provider_file_ref`` and ``fetched_output_ref`` already return terminal
-    canonical refs; pass those values directly to their consumer instead of
-    chaining them through this selector.
+    canonical artifact-catalog refs; do not chain them through this selector.
+    A catalog ref is not an ``hpc_stage_ref``: before passing its artifact to
+    ``bio_tools.*``, call ``ws.stage_artifact(ref["artifact_id"], ...)`` and pass
+    that exact return value unchanged.
     """
 
     if response.get("schema_id") != ARTIFACT_REGISTRATION_RESPONSE_SCHEMA_ID:
@@ -83,9 +85,11 @@ def registered_artifact_ref(response: dict[str, Any]) -> dict[str, str]:
                 "use it directly instead of passing it to registered_artifact_ref",
                 error_code="artifact_ref_already_canonical",
                 hint=(
-                    "provider_file_ref and fetched_output_ref are terminal selectors. "
-                    "registered_artifact_ref accepts only the direct response returned "
-                    "by artifacts.register."
+                    "provider_file_ref and fetched_output_ref return terminal "
+                    "artifact-catalog refs, while registered_artifact_ref accepts only "
+                    "the direct response returned by artifacts.register. A catalog ref "
+                    "is not an hpc_stage_ref; call ws.stage_artifact(ref['artifact_id'], "
+                    "...) before passing the exact returned stage ref to bio_tools.*."
                 ),
             )
         raise _projection_error(
@@ -236,8 +240,11 @@ def provider_file_ref(
 ) -> dict[str, str]:
     """Return one terminal canonical ref from a provider transcript manifest.
 
-    The returned ``artifact_id``/``content_digest`` pair is ready for direct
-    staging or downstream consumption.  Do not pass it through another selector.
+    The returned ``artifact_id``/``content_digest`` pair is a terminal canonical
+    artifact-catalog ref.  Pass it directly only to a consumer that explicitly
+    accepts that pair.  Before using its artifact with ``bio_tools.*``, call
+    ``ws.stage_artifact(ref["artifact_id"], ...)`` and pass the exact returned
+    ``hpc_stage_ref`` unchanged.  Do not pass it through another selector.
     """
 
     if not relative_path_suffix.startswith("/"):
@@ -302,8 +309,13 @@ def fetched_output_ref(
 ) -> dict[str, str]:
     """Return one terminal canonical ref from the direct ``fetch_refs`` list.
 
-    The returned ``artifact_id``/``content_digest`` pair is ready for direct
-    staging or downstream consumption.  Do not pass it through another selector.
+    The returned ``artifact_id``/``content_digest`` pair is a terminal canonical
+    artifact-catalog ref, not an ``hpc_stage_ref``.  Pass it directly only to a
+    consumer that explicitly accepts that pair.  Before using its artifact with
+    ``bio_tools.*``, call ``ws.stage_artifact(ref["artifact_id"], ...)`` and pass
+    the exact returned ``hpc_stage_ref`` unchanged.  Do not rename
+    ``content_digest`` or hand-write a stage descriptor, and do not pass the ref
+    through another selector.
     """
 
     expected_path = _required_text(

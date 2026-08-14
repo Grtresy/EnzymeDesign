@@ -46,6 +46,9 @@ from openzyme_host_api.aox_attempt_preflight import ATTEMPT_START_CLAIM_SCHEMA_I
 from openzyme_host_api.aox_conductor_execution import (
     CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID,
 )
+from openzyme_host_api.aox_conductor_execution import (
+    LEGACY_CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_IDS,
+)
 from openzyme_host_api.aox_cutover_evidence import ATTEMPT_BUNDLE_SCHEMA_ID_V4
 from openzyme_host_api.aox_cutover_launch import (
     AOX_SANDBOX_SCIENTIFIC_BACKEND_PROBE_SCHEMA_ID,
@@ -178,6 +181,15 @@ _ATTEMPT_START_CONTRACT_SOURCES = {
         ATTEMPT_BUNDLE_SCHEMA_ID_V4,
     ),
 }
+_CURRENT_CONDUCTOR_CONTRACT_SOURCES = (
+    _REPO_ROOT / "docs/OpenZyme架构设计.md",
+    _REPO_ROOT / "docs/v3/README.md",
+    _REPO_ROOT / "docs/v3/04-public-interfaces.md",
+    _REPO_ROOT / "docs/v3/aox-hmm-blank-world-cutover.md",
+    _REPO_ROOT / "docs/v3/architecture-qualification/README.md",
+    _REPO_ROOT / "docs/v3/aox-r-series-codex-goal.md",
+    _ACTIVE_CUTOVER_SPEC,
+)
 _VALIDATION_GOAL = _REPO_ROOT / "docs/v3/aox-r-series-codex-goal.md"
 
 
@@ -222,6 +234,34 @@ def _assert_attempt_start_guard_sources() -> list[str]:
         if phrase not in validation_goal:
             raise AssertionError(f"validation goal omits current guard contract: {phrase}")
     checked.append(str(_VALIDATION_GOAL.relative_to(_REPO_ROOT)))
+    return checked
+
+
+def _assert_current_conductor_contract_sources() -> list[str]:
+    checked: list[str] = []
+    for path in _CURRENT_CONDUCTOR_CONTRACT_SOURCES:
+        document = path.read_text(encoding="utf-8")
+        if CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID not in document:
+            raise AssertionError(
+                f"{path} omits current conductor contract "
+                f"{CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_ID}"
+            )
+        checked.append(str(path.relative_to(_REPO_ROOT)))
+
+    stable_index = (_REPO_ROOT / "docs/v3/README.md").read_text(encoding="utf-8")
+    missing_legacy = sorted(
+        schema_id
+        for schema_id in LEGACY_CONDUCTOR_EXECUTION_CONTRACT_SCHEMA_IDS
+        if schema_id not in stable_index
+    )
+    if missing_legacy:
+        raise AssertionError(
+            f"docs/v3/README.md omits read-only conductor history: {missing_legacy}"
+        )
+    if "只读且不得驱动新执行" not in stable_index:
+        raise AssertionError(
+            "docs/v3/README.md omits the read-only historical conductor rule"
+        )
     return checked
 
 
@@ -533,7 +573,9 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
     spec_document = spec_bytes.decode("utf-8")
     schema_contract = _assert_current_schema_contract(spec_document)
     cross_source_guard_contracts = _assert_attempt_start_guard_sources()
+    current_conductor_contracts = _assert_current_conductor_contract_sources()
     assert cross_source_guard_contracts
+    assert current_conductor_contracts
     contract_drift_mutations = {
         "conductor_shadow_truth": _replace_once(
             spec_document,

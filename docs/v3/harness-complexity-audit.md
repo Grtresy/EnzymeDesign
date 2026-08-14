@@ -368,6 +368,15 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   canonical truth 和 eligibility。Harness 不自动 retry/replay，也不从历史 failure 推断当前
   业务终态。
 
+  2026-08-14 c001 复审：current Host boundary 正确封存
+  `hpc_stage_ref_required/no_effect`，并在 operation admission/external dispatch 前停止，说明 r66 的 runtime
+  因果修复没有回归；但 selector docstring 的“downstream consumption”措辞与 AOX workflow 示例缺少
+  fetched-output→stage→hmmbuild 邻接步骤，仍给 agent 留下 catalog/stage identity 猜测空间。bounded
+  deletion-first 修复只删除这处歧义：收紧 SDK docstring/hint、补 exact workflow staging chain、重算 digest，
+  不修改 validator、failure chain、recovery 或 orchestration。README 的 conductor `@3` 漂移另以 production
+  `@4` constant 驱动的跨来源 regression 封闭。该修复减少重复真值与策略摩擦，不把 staging 变成隐式
+  fallback，也不替 agent 选择科学步骤或 cadence。
+
 - [x] AOX observer/driver 是否仍是 safety mechanism，还是把测试策略写进 Harness 的重复控制面。
 
   证据：r67 的首个 provider request 使用 malformed `output_dir`；agent 在同 turn 修正后，
@@ -477,6 +486,10 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   `FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID`、对应 writer/verifier，也没有增加 pre-claim launch failure kind，
   因而未命中本项版本升级触发器；该债务继续显式保留。
 
+  2026-08-14 c001 审查只修订 sandbox SDK authoring 文案与 workflow knowledge，没有修改
+  `FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID`、writer/verifier 或 pre-claim failure kind；
+  `AOX-DEBT-PREFLIGHT-STAGE-V2` 触发器仍未命中，本债务继续保留。
+
 - [ ] AOX Host supervision 与 formal slot-failure 模块是否需要先拆分纯证据职责。
 
   当前债务：`aox_host_supervision.py` 同时包含 POSIX process supervision、root/SQLite
@@ -510,6 +523,10 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   “最后且唯一 current successful mutation”机械校验和 production-composition/负向回归；没有新增
   process/root/SQLite responsibility、closure mode、evidence reconstruction branch 或 AOX continuation FSM，
   因而未命中本项拆分触发器。GET、历史/较早/多个缺口、unknown effect 和 drift 保持 fail closed。
+
+  2026-08-14 c001 审查没有修改 supervision/finalizer/DB，没有增加 process/root/SQLite/receipt
+  responsibility、closure mode 或 reconstruction branch；`AOX-DEBT-EVIDENCE-MODULE-SPLIT` 触发器未命中，
+  本债务继续显式保留。
 
 ## 4. 后续工作流
 

@@ -356,6 +356,16 @@ Provider outputs SHALL be selected from the unique transcript-manifest entry end
 
 The sandbox SDK SHALL expose strict direct-field selectors for provider files, artifact registration results, and fetched outputs. A selector SHALL read only its documented canonical field, require one canonical artifact id/digest, and reject missing, duplicated, malformed, or nested-only data without recursive fallback or external I/O. A completed controlled-operation response SHALL be reusable from attempt-local sandbox working state after a local source/parser error; such a local error SHALL NOT authorize another controlled operation for the same reached SDK method.
 
+A selector's `artifact_id` / `content_digest` result SHALL remain an artifact-catalog
+reference and MUST NOT be treated as an `hpc_stage_ref`. Before the selected artifact
+is passed to any `bio_tools.*` staged-input parameter, executor source MUST call the
+current `HpcWorkspace.stage_artifact(artifact_id, workspace_path=...)` owner and pass
+that exact returned stage reference unchanged. Source MUST NOT rename
+`content_digest` to `artifact_digest`, synthesize a stage descriptor, or rely on an
+implicit staging fallback. The Host SHALL remain the canonical validator and SHALL
+reject a catalog ref at this boundary as source-bound
+`hpc_stage_ref_required/no_effect` before operation admission or external dispatch.
+
 The sandbox process SHALL treat `/workspace/input` as a Host-managed read-only mount. Caller source SHALL NOT create, write, copy, or pre-create a materialization target or its parents there; `artifacts.materialize()` SHALL create and authorize the requested target and missing parents through the Host boundary, after which source may read only the returned path. Mutable scratch SHALL use `/workspace/work` and registerable output SHALL use `/workspace/output`. `EROFS`, target drift, or a local input mutation attempt SHALL fail closed without remount, alternate-path fallback, or duplicate controlled operation.
 
 #### Scenario: Execute through the installed calculation map
@@ -373,6 +383,10 @@ The sandbox process SHALL treat `/workspace/input` as a Host-managed read-only m
 #### Scenario: Select a rich response without counting nested provenance twice
 - **WHEN** one provider or fetched artifact appears once in its canonical direct list and again in a nested provenance projection
 - **THEN** the strict SDK selector returns the one canonical id/digest pair without walking the nested copy or replaying the completed operation
+
+#### Scenario: Stage a fetched output before a downstream bio-tool
+- **WHEN** executor source selects the canonical MAFFT output through `artifacts.fetched_output_ref(...)` and uses that artifact as hmmbuild input
+- **THEN** it passes the selected `artifact_id` to `workspace.stage_artifact(...)` and passes that exact returned `hpc_stage_ref` unchanged to hmmbuild; a renamed digest or hand-written catalog/stage mapping is rejected before admission and dispatch with no external effect
 
 #### Scenario: Materialize into the Host-managed input tree
 - **WHEN** executor source requests a nested `/workspace/input/...` materialization target

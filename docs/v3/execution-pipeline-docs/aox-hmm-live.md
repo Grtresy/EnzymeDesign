@@ -386,6 +386,21 @@ mafft_output = artifacts.fetched_output_ref(
     workspace.fetch_outputs(mafft_operation),
     declared_output_path="bio_tools/mafft/alignment.fasta",
 )
+mafft_stage = workspace.stage_artifact(
+    mafft_output["artifact_id"],
+    workspace_path="aox_hmm/mafft_alignment.fasta",
+)
+hmmbuild_operation = bio_tools.hmmbuild(
+    alignment=mafft_stage,
+    placement=workspace,
+    expected_outputs=[
+        {
+            "path": "bio_tools/hmmbuild/model.hmm",
+            "kind": "result",
+            "format": "hmm",
+        }
+    ],
+)
 ```
 
 The fixed AOX runner declarations use the same closed pairs: MAFFT and
@@ -400,9 +415,13 @@ The three selectors above are mutually exclusive by response origin:
 `provider_file_ref` consumes a provider operation response,
 `fetched_output_ref` consumes `workspace.fetch_outputs(...)`, and
 `registered_artifact_ref` consumes only the direct response of
-`artifacts.register(...)`. The first two already return terminal canonical
-refs. Do not chain selectors, pass their result into
-`registered_artifact_ref`, or construct a synthetic registration envelope.
+`artifacts.register(...)`. The selectors return terminal canonical
+artifact-catalog refs, not `hpc_stage_ref` values. Do not chain selectors, pass their
+result into `registered_artifact_ref`, rename `content_digest` to
+`artifact_digest`, or construct a synthetic registration or stage envelope.
+When a selected artifact becomes a `bio_tools.*` input, pass its `artifact_id`
+to `workspace.stage_artifact(...)` and pass that exact returned stage ref
+unchanged, as the MAFFT-to-hmmbuild example above does.
 
 `provider_file_ref` reads only
 `result_summary.transcript_manifest.files`, `registered_artifact_ref` reads only

@@ -2074,6 +2074,36 @@ ledger 与 runner-config path 不进入普通 field projection，而由既有 `_
 regular-file 与 content digest。该设计不改变 publication/validation effect semantics、schema id 或 pin/live authority；
 也不把 descriptor 变成自动填值、自动修复或策略 owner。
 
+### 2026-08-14 c001 artifact-catalog ref / HPC stage ref authoring correction
+
+c001 campaign `aox_campaign_9b88525edafde6cb643da624` 只启动 formal slot 1；唯一 attempt
+`attempt_8f5b8e0430c5bfb036abea08` 保持 active/open，selection
+`selection_8430d343987b39ca03687857` 保持 draft，slot 2/3、bundle、attestation tree、decision 均未创建。
+封存 source 先把 `artifacts.fetched_output_ref(...)` 返回的 catalog ref 改名为
+`artifact_id` / `artifact_digest` 后直接交给 `bio_tools.hmmbuild`，而没有调用
+`workspace.stage_artifact(...)`。Host 因而在 operation admission 与 external dispatch 前封存
+`failure_c9bfd006a706eedb3878`：`hpc_stage_ref_required/no_effect/same_phase_safe`；hmmbuild controlled
+operation 数为零。Host/process 虽已退休，但 `nonterminal_mutation_scope_count=1` 使 finalizer 唯一一次调用以
+`host_supervision_receipt_invalid` 拒绝，故不存在合法 sealed failure input，offline verifier/reducer 未运行。
+这些都是 frozen observation，不得回填、恢复、重试或升级为 canonical GO/NO-GO。
+
+current source 裁决与该观测相容：`bio_tools` validator 已正确要求 exact `hpc_stage_ref`，既有 runtime
+failure chain、authority/fencing/effect/provenance/isolation 与 recovery boundary 无缺陷；事故主要是 agent
+misuse。repository 的事故耦合缺陷只在 authoring/discoverability：selector docstring 曾把 catalog ref 描述为
+可直接 downstream consumption，pinned AOX workflow 又只展示 MAFFT output selection 而没有展示进入 hmmbuild
+前的 staging；`docs/v3/README.md` 还把 production current conductor 误写成历史 `@3`。因此本 slice 不修改
+`bio_tools.py`、Host validator/runtime/protocol/finalizer/DB/public API，也不新增 implicit staging、digest rename
+fallback、automatic retry/wake 或第二条 entry。
+
+前向修复保持 selector I/O 与 canonical owner 不变，只收紧 SDK 文案和 structured hint；workflow knowledge
+显式展示 catalog ref → `workspace.stage_artifact(...)` → exact stage ref → hmmbuild，并重算 knowledge/manifest
+digest；production constant 驱动的跨来源 regression 要求 stable docs/OpenSpec/current goal 使用 conductor `@4`，
+且 README 完整列出 `@1/@2/@3` 只读 non-adoption。本改动删除的是重复猜测空间而非 agent 策略：agent 仍选择
+科学步骤与 cadence，Harness 只忠实呈现 runner 的真实 input identity constraint。两个既有技术债触发器
+`AOX-DEBT-PREFLIGHT-STAGE-V2` 与 `AOX-DEBT-EVIDENCE-MODULE-SPLIT` 均未命中；本次不扩张其偿债范围。
+对应 test resource manifest 只刷新获批测试文件的 source-closure digest 与 manifest self-digest，collection、
+resource class、proof nodes 和 audited-resource dispositions 均不变。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

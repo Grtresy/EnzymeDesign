@@ -1678,6 +1678,29 @@ r83 索引：sealed status仅为`claimed`，含`terminal`的caller locator导致
 `potentially_recoverable_but_unverified`、blocked/noncanonical且不访问/恢复。前向wrapper只append-only持久化
 locator，retirement按receipt/payload选handoff；规范与测试见public interface、active delta spec和qualification README，产品runtime不变。
 
+### 9.20 c001 catalog ref / HPC stage ref authoring boundary
+
+c001 在 clean HEAD `e47fe4ce24f7e08a7cf202eab970a5ab54ea9cdf` 只建立 formal slot 1。唯一 attempt
+`attempt_8f5b8e0430c5bfb036abea08` 仍 active/open，selection
+`selection_8430d343987b39ca03687857` 仍 draft；slot 2/3、bundle、attestation tree 与 decision 未创建。
+封存 executor source 把 `artifacts.fetched_output_ref(...)` 的 catalog ref 改名后直接传给 hmmbuild，未先经
+`workspace.stage_artifact(...)`。canonical Host validator 在 operation admission/external dispatch 前正确封存
+`hpc_stage_ref_required/no_effect/same_phase_safe`，hmmbuild operation 数为零。Host 已退休不等于 evidence
+closure：`nonterminal_mutation_scope_count=1` 使 finalizer 唯一一次调用 fail closed，所以 c001 保持
+blocked/noncanonical，不得恢复、回填、重试或作为 successor authority。
+
+canonical ownership 不变：artifact selector 只拥有 `artifact_id` / `content_digest` catalog identity；
+`HpcWorkspace.stage_artifact` 拥有 staged input identity；Host validator 独占 admission 与 typed effect boundary。
+前向修复只删除 agent-facing 歧义：SDK docstring/hint 和 pinned AOX workflow 明示 catalog ref 必须先 staging，
+禁止 `content_digest` → `artifact_digest` 改名或手写 stage descriptor；workflow knowledge/manifest digest 随内容
+更新。`docs/v3/README.md` 的 current conductor `@3` 漂移同时修正为生产常量
+`aox_public_conductor_execution_contract@4`，跨来源 regression 保证历史 `@1/@2/@3` 只读。
+
+这不改变字段、异常、I/O、runtime、protocol、finalizer、DB 或 public API，不新增 implicit staging、fallback、
+auto retry/wake、第二条 entry 或科学策略 owner。Harness 仅结构化呈现真实 input constraint；agent 仍自由选择
+合法科学步骤与 bounded cadence。既有 preflight stage 命名债和 supervision/module split 债的触发器均未命中，
+因此继续显式保留而不在本 slice 扩张。
+
 ---
 
 ## 10. Legacy Boundary

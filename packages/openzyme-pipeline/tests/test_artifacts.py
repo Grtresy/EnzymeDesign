@@ -517,9 +517,24 @@ def test_registered_artifact_ref_rejects_already_selected_canonical_ref() -> Non
     assert error.value.stage == "artifacts.response_selection"
     assert error.value.retryable is False
     assert "already a canonical artifact ref" in str(error.value)
-    assert "provider_file_ref and fetched_output_ref are terminal selectors" in str(
-        error.value.hint
-    )
+    hint = str(error.value.hint)
+    assert "terminal artifact-catalog refs" in hint
+    assert "not an hpc_stage_ref" in hint
+    assert "ws.stage_artifact(ref['artifact_id'], ...)" in hint
+    assert "bio_tools.*" in hint
+
+
+def test_artifact_ref_guidance_distinguishes_catalog_and_hpc_stage_refs() -> None:
+    provider_guidance = str(artifacts.provider_file_ref.__doc__)
+    fetched_guidance = str(artifacts.fetched_output_ref.__doc__)
+
+    for guidance in (provider_guidance, fetched_guidance):
+        assert "artifact-catalog ref" in guidance
+        assert "ws.stage_artifact" in guidance
+        assert "hpc_stage_ref" in guidance
+        assert "bio_tools.*" in guidance
+    assert "Do not rename" in fetched_guidance
+    assert "hand-write a stage descriptor" in fetched_guidance
 
 
 def test_provider_file_ref_reads_only_direct_transcript_manifest() -> None:

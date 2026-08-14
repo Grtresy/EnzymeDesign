@@ -3,6 +3,11 @@
 r83 index: sealed `claimed` plus a misleading locator caused `operator_false_stop`; it remains
 `potentially_recoverable_but_unverified`, blocked/noncanonical, frozen/unrecovered, with all later facts unknown. See [Public interfaces](04-public-interfaces.md) and the active delta spec.
 
+c001 index: slot 1 retained one active/open attempt and draft selection; a direct
+catalog-ref-to-hmmbuild call failed as `hpc_stage_ref_required/no_effect` before
+admission or dispatch, and a nonterminal mutation scope prevented failure sealing.
+It remains frozen, blocked/noncanonical, and is not recovered or backfilled below.
+
 Status: r43-r67 are permanent NO-GO evidence. r68-r77 retain their documented prelaunch/pre-admission/pre-runtime/evidence-blocker classifications and none is a canonical NO-GO. r78 consumed authority once and then failed slot 1 preflight before claim/root/Host because the actual rootless Podman resolver returned `podman_rootless_preflight_failed`; its source-bound preflight-failure verifier and reducer closed canonical `NO-GO` with decision digest `sha256:7fb899562369d6d96e6cba490b2d862943c1359fa972389e9b1d9fd374216c84`. r79 then started only slot 1, admitted one open scientific attempt with no selection or provider/HPC operation, and stopped after its second bounded command expired because a post-scope heartbeat lacked mutation writer authority. r79 has no sealed scientific evidence export and no canonical GO/NO-GO decision. r80 published and received approval for an exact plan, but its sole `consume-authority` invocation supplied a suffix-stripped sibling and typed-failed before receipt publication; authority remained unconsumed with zero product execution. r81 started slot 1 and admitted one open attempt, but retained no selection, provider/HPC operation or report before the Host retired at the authority deadline; it is blocked/noncanonical and has no canonical GO/NO-GO decision. r82 exposed a preflight-to-process-start guard gap and remains frozen/noncanonical; it is not backfilled, retried or reusable. None of r68-r82 state or the old persistent goal is reusable. Current forward contracts additionally bind every late-scope command heartbeat to an exact short writer, derive authority-consumption siblings from the canonical plan owner, settle ordinary known-effect failures exactly once, distinguish workflow and document registry ownership, expose bounded artifact missing-path locality, and atomically bind each Host start to one attempt-scoped claim, process epoch and pinned MICU baseline while preserving real-fence, expired-claim no-replay, no-replace and wrong-assertion fail-closed semantics. These capabilities do not backfill, retry or alter any frozen run. Local live cutover remains **NO-GO**: this implementation does not authorize any next rNN, diagnostic/formal attempt, slot 2/3, MICU/provider/HPC/Chrome access, or reuse of any prior plan, slot, authority, root, session, effect, receipt or evidence.
 
 Historical incident and older command/observer/driver/browser/diagnostic-authority/public-finalizer sections intentionally describe the runtime contract that existed during those attempts. They are evidence, not the current product contract; in particular, every older `run-live`, `run-diagnostic-live`, diagnostic authority command, observer, barrier, rollover, no-wakeup, public generic scientific mutation/finalizer, `chrome-once`, browser-helper and ambient dev/eval image-registration instruction is retired even where a historical section called it current at that time. Current command, execution, continuation, transport, quiescence, sandbox Host-call, failure recovery, late-bound task/scientific-attempt selection, fresh supervised Host bootstrap and qualification semantics are defined by the post-r70/post-r71 sections below, [Runtime/HPC reliability](07-runtime-hpc-reliability.md), [Failure recovery and scientific attempts](08-failure-recovery-and-scientific-attempts.md), [Executable architecture qualification](architecture-qualification/README.md), stable V3 documents and current code.
@@ -17,7 +22,7 @@ effect, active process/writer, incomplete disposition, authority/resource breach
 or cross-attempt reuse. Historical `@2/@3` verification remains frozen; no prior run
 fact can be upgraded, backfilled, or adopted.
 The current workflow knowledge identity is
-`workflow:aox-hmm-live@2.0.0#sha256:e1f66087c5e632d8e5cc93f38fda6ed1947d77ab5f9c3f7a6ae0358b9d9b447e`;
+`workflow:aox-hmm-live@2.0.0#sha256:cdd77451f83c39f1a39fd0a2d43b682e43519be17d7b47d5c2cf21d6869766fa`;
 the next live launch must still bind that ref to a fresh clean commit,
 qualification report, pin and authority plan.
 
@@ -3796,3 +3801,34 @@ response drift 必须 reconciliation。系统不 auto-fill、auto-retry、hidden
 strategy selection 或 scientific action。preflight canonical NO-GO 与 `aox_formal_preflight_failure@1` schema 保持
 不变；本 forward repair 不回填任何 frozen rNN，也不授权 preparation、qualification、admission、live、MICU、
 provider、HPC 或 Chrome。
+
+### 2026-08-14 c001 artifact-catalog ref / HPC stage ref correction
+
+c001 campaign `aox_campaign_9b88525edafde6cb643da624` 的唯一 formal slot 1 绑定 launch
+`formal-slot-be41f223f1ebea0d8389a3fa`、session
+`sess_aox_formal_ffcec8565dd7abe16b88dbe1c68e12ea` 与 attempt
+`attempt_8f5b8e0430c5bfb036abea08`。attempt 仍 active/open，selection
+`selection_8430d343987b39ca03687857` 仍 draft；slot 2/3、bundle、attestation tree 与 decision 都是
+not created。封存 source 把 fetched MAFFT catalog ref 改写为
+`artifact_id` / `artifact_digest` 并直接调用 hmmbuild，没有先取得
+`workspace.stage_artifact(...)` 的 exact return。最早 typed cause
+`failure_c9bfd006a706eedb3878` 因而是
+`hpc_stage_ref_required/no_effect/same_phase_safe`；`operation_admitted=false`、
+`external_dispatch_started=false`，hmmbuild operation 数为零。后续 budget exhaustion 与 conductor entry
+closed 都没有新 effect，也不替换最早 cause。
+
+Host PID/PGID 已退休、SQLite checkpoint/integrity 通过，但
+`nonterminal_mutation_scope_count=1` 使 finalizer 唯一一次调用以
+`host_supervision_receipt_invalid` 拒绝。没有合法 sealed bundle/failure input，所以 offline verifier/reducer
+未运行；这不是 canonical GO/NO-GO，也不能用 process settlement 代替 evidence closure。既有 NCBI 与 MAFFT
+terminal-known effects、MICU ledger 和 receipt chain 只属于 frozen c001，不可恢复、重放、回填或移入 successor。
+
+current runtime validator 与失败链符合合同，故不修改 `bio_tools.py`、Host/runtime/protocol/finalizer/DB/API。
+前向修复只收紧 selector docstring/structured hint，并把 pinned AOX workflow 的 MAFFT→hmmbuild 示例改成
+catalog ref → `workspace.stage_artifact(...)` → exact `hpc_stage_ref`；禁止 digest 改名、手写 descriptor、
+implicit staging 或 fallback。current workflow knowledge digest 是
+`sha256:7955c4056e39c32d187b4d0d9fc8c7e72f3399d7d762b26b1486f39c64752c7e`，manifest selection 是
+`workflow:aox-hmm-live@2.0.0#sha256:cdd77451f83c39f1a39fd0a2d43b682e43519be17d7b47d5c2cf21d6869766fa`。
+stable README 同步 production current conductor `@4`，并把 `@1/@2/@3` 固定为只读；agent 仍拥有科学
+策略与 bounded cadence，Harness 只忠实呈现 identity/admission 约束。本 repair 不授权 c001 recovery、
+qualification/admission、successor、live、MICU、provider、HPC 或 Chrome。

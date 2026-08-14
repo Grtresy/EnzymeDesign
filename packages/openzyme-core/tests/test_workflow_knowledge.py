@@ -114,7 +114,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
 
     assert manifest.selection_ref == (
         "workflow:aox-hmm-live@2.0.0#"
-        "sha256:e1f66087c5e632d8e5cc93f38fda6ed1947d77ab5f9c3f7a6ae0358b9d9b447e"
+        "sha256:cdd77451f83c39f1a39fd0a2d43b682e43519be17d7b47d5c2cf21d6869766fa"
     )
     pack = registry.resolve(manifest.selection_ref)
     documents = {document.doc_id: document for document in pack.documents}
@@ -122,7 +122,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         doc_id: document.content_sha256 for doc_id, document in documents.items()
     } == {
         "aox-hmm-live": (
-            "sha256:95be94b1bfd9475bb118681c319c5fb8eaa25c122d423b0f78448331cdd2eda4"
+            "sha256:7955c4056e39c32d187b4d0d9fc8c7e72f3399d7d762b26b1486f39c64752c7e"
         ),
         "aox-motif-rule-score-v1": (
             "sha256:9c6f1f62a77dcade8e8b24c4e23af391e3b308a96bbac43783b8dbf4f7c2d376"
@@ -228,6 +228,11 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         "artifacts.provider_file_ref",
         "artifacts.registered_artifact_ref",
         "artifacts.fetched_output_ref",
+        "mafft_stage = workspace.stage_artifact(",
+        "alignment=mafft_stage",
+        "not `hpc_stage_ref` values",
+        "rename `content_digest` to\n`artifact_digest`",
+        "pass that exact returned stage ref\nunchanged",
         "`/workspace/work` checkpoints",
         '`validation_profile="fasta_zero_records@1"`',
         "exact zero-byte regular file",
