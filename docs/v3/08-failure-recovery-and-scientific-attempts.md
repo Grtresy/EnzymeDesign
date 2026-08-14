@@ -241,11 +241,15 @@ plan `@4`、consumption `@5` 与 `aox_attempt_preflight@5` 共同绑定 pin tran
 `aox_cutover_launch_profile@1`。preflight必须在claim前从该profile执行full actual
 Podman/image/SDK/`aox_sandbox_scientific_backend_probe@2` resolver与immediate unchanged guard；
 config-only比较不构成admission。若 authority 已消费后 profile/effective-config/actual runtime 在 claim 前失败，只能在
-slot claim 不存在且 campaign attempt root absent/empty 时封存 `aox_formal_preflight_failure@1`；它必须
+slot claim 不存在且 campaign attempt root absent/empty 时封存 `aox_formal_preflight_failure@2`；它必须以
+`failed_stage=actual_launch_guard_pre_slot_claim` 和 current `aox_cutover_launch_failure@4.failure_cause`
+保留 source-authorized schema/sandbox 最早原因，并
 闭合零 root/Host/session/attempt/MICU/provider/runner/HPC/browser effect。纯离线 verifier 与专用
 `aox_blank_world_campaign_preflight_failure_decision@1` reducer 可以形成 canonical NO-GO，但 attempt
 identity/digest 必须为空。缺少 current plan/profile/consumption bytes 的历史 r75 仍是 evidence blocker，
-不能因新 capability 被追溯升级。
+不能因新 capability 被追溯升级。历史 `aox_formal_preflight_failure@1` 与其
+`effective_config_pre_slot_claim` stage 只按原 shape 读取；outer receipt/effect closure 不能覆盖 nested typed
+cause，nested cause 也不能冒充 occurrence、authority 或 effect proof。
 
 r70在上述首个drain之前停止：authority/slot/root/session/receipt已消费，但没有runtime command、
 scientific authorization、admission或attempt。这是pre-runtime conductor blocked而不是canonical

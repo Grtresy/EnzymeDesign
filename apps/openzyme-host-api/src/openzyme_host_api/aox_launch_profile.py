@@ -29,7 +29,7 @@ from openzyme_runtime.settings import V3BackgroundRuntimeSettings
 from openzyme_runtime.settings import load_env_files
 
 from .aox_cutover_evidence import canonical_digest
-from .aox_cutover_launch import AoxCutoverLaunchError
+from .aox_launch_failure import AoxCutoverLaunchError
 
 
 AOX_CUTOVER_LAUNCH_PROFILE_SCHEMA_ID = "aox_cutover_launch_profile@1"
@@ -148,7 +148,7 @@ def _reject(code: str, message: str, *, identity: str) -> None:
         code,
         message,
         details={"identity": identity},
-        public_details={"kind": "schema_field", "identity": identity},
+        public_cause={"kind": "schema_field", "identity": identity},
     )
 
 

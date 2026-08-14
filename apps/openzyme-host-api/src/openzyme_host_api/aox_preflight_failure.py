@@ -9,8 +9,6 @@ import re
 import stat
 from typing import Any
 
-from openzyme_engines import PODMAN_SANDBOX_PREFLIGHT_FAILURE_CODES
-
 from .aox_architecture_qualification import (
     AoxArchitectureQualificationError,
     normalize_architecture_qualification_receipt,
@@ -37,22 +35,24 @@ from .aox_launch_profile import (
     normalize_aox_cutover_launch_profile,
 )
 from .aox_live_run_class import AoxLiveRunClass
+from .aox_launch_failure import AOX_CUTOVER_LAUNCH_FAILURE_SCHEMA_ID
+from .aox_launch_failure import LEGACY_AOX_CUTOVER_LAUNCH_FAILURE_SCHEMA_ID
+from .aox_launch_failure import AoxLaunchFailureSchemaError
+from .aox_launch_failure import normalize_aox_cutover_launch_failure
 
 
-# AOX-DEBT-PREFLIGHT-STAGE-V2: `@1` retains its historical
-# `effective_config_pre_slot_claim` stage. Before adding another pre-claim launch
-# failure kind or changing this writer/verifier, follow the trigger recorded in
-# docs/v3/harness-complexity-audit.md and introduce a current schema while keeping
-# `@1` read-only compatible.
-FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID = "aox_formal_preflight_failure@1"
+FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID = "aox_formal_preflight_failure@2"
+LEGACY_FORMAL_PREFLIGHT_FAILURE_SCHEMA_IDS = frozenset(
+    {"aox_formal_preflight_failure@1"}
+)
+_FORMAL_PREFLIGHT_FAILURE_STAGE = "actual_launch_guard_pre_slot_claim"
+_LEGACY_FORMAL_PREFLIGHT_FAILURE_STAGE = "effective_config_pre_slot_claim"
 FORMAL_PREFLIGHT_FAILURE_DECISION_SCHEMA_ID = (
     "aox_blank_world_campaign_preflight_failure_decision@1"
 )
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _ERROR_CODE = re.compile(r"[a-z][a-z0-9_.-]{0,127}")
-_SCHEMA_PATH = re.compile(r"[A-Za-z][A-Za-z0-9_.\[\]-]{0,255}")
-_SCHEMA_FIELD = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}")
 _RECEIPT_FIELDS = {
     "schema_id",
     "sealed_at",
@@ -212,88 +212,53 @@ def formal_preflight_failure_path(plan_path: Path, ordinal: int) -> Path:
     )
 
 
-def _normalize_public_failure(value: Mapping[str, object]) -> dict[str, object]:
-    failure = dict(value)
-    required = {"schema_id", "status", "failure_code"}
-    if frozenset(failure) not in {
-        frozenset(required),
-        frozenset(required | {"failure_details"}),
-    }:
+def _normalize_preflight_launch_failure(
+    value: Mapping[str, object],
+    *,
+    legacy: bool = False,
+) -> dict[str, object]:
+    try:
+        failure = normalize_aox_cutover_launch_failure(
+            value,
+            allow_legacy_v3=legacy,
+        )
+    except AoxLaunchFailureSchemaError as exc:
         _fail(
             "formal_preflight_failure_cause_invalid",
             "preflight failure cause is not the closed public schema",
-            identity="failure",
+            identity=exc.identity,
         )
-    if (
-        failure.get("schema_id") != "aox_cutover_launch_failure@3"
-        or failure.get("status") != "failed"
-        or _ERROR_CODE.fullmatch(str(failure.get("failure_code") or "")) is None
-    ):
-        _fail(
-            "formal_preflight_failure_cause_invalid",
-            "preflight failure cause is not a typed launch failure",
-            identity="failure",
-        )
-    details = failure.get("failure_details")
-    if details is None:
-        return failure
-    if not isinstance(details, dict):
-        _fail(
-            "formal_preflight_failure_cause_invalid",
-            "preflight failure details are not a safe closed projection",
-            identity="failure.failure_details",
-        )
-    if details.get("kind") == "sandbox_runtime":
-        if (
-            set(details) != {"kind", "failure_code"}
-            or details.get("failure_code")
-            not in PODMAN_SANDBOX_PREFLIGHT_FAILURE_CODES
-        ):
+    if legacy:
+        if failure["schema_id"] != LEGACY_AOX_CUTOVER_LAUNCH_FAILURE_SCHEMA_ID:
             _fail(
                 "formal_preflight_failure_cause_invalid",
-                "preflight sandbox runtime details are not a closed typed cause",
-                identity="failure.failure_details",
+                "historical preflight evidence requires the historical launch schema",
+                identity="failure.schema_id",
             )
-        return failure
-    if details.get("kind") != "schema_field":
-        _fail(
-            "formal_preflight_failure_cause_invalid",
-            "preflight failure details are not a safe schema-field projection",
-            identity="failure.failure_details",
-        )
-    if not set(details).issubset({"kind", "identity", "missing", "unexpected"}):
-        _fail(
-            "formal_preflight_failure_cause_invalid",
-            "preflight failure details contain an open field",
-            identity="failure.failure_details",
-        )
-    field_identity = details.get("identity")
-    if (
-        not isinstance(field_identity, str)
-        or _SCHEMA_PATH.fullmatch(field_identity) is None
-    ):
-        _fail(
-            "formal_preflight_failure_cause_invalid",
-            "preflight failure field identity is unsafe",
-            identity="failure.failure_details.identity",
-        )
-    for key in ("missing", "unexpected"):
-        fields = details.get(key)
-        if fields is None:
-            continue
-        if (
-            not isinstance(fields, list)
-            or fields != sorted(set(fields))
-            or any(
-                not isinstance(field, str) or _SCHEMA_FIELD.fullmatch(field) is None
-                for field in fields
-            )
-        ):
+        projection = failure.get("failure_details")
+    else:
+        if failure["schema_id"] != AOX_CUTOVER_LAUNCH_FAILURE_SCHEMA_ID:
             _fail(
                 "formal_preflight_failure_cause_invalid",
-                "preflight failure field set is unsafe",
-                identity=f"failure.failure_details.{key}",
+                "current preflight evidence requires the current launch schema",
+                identity="failure.schema_id",
             )
+        if "failure_occurrence" in failure:
+            _fail(
+                "formal_preflight_failure_cause_invalid",
+                "preflight launch guard cannot adopt another occurrence identity",
+                identity="failure.failure_occurrence",
+            )
+        projection = failure.get("failure_cause")
+    if isinstance(projection, Mapping) and projection.get("kind") not in {
+        "schema_field",
+        "sandbox_runtime",
+    }:
+        _fail(
+            "formal_preflight_failure_cause_invalid",
+            "preflight launch guard accepts only schema or sandbox causes",
+            identity="failure",
+        )
     return failure
 
 
@@ -417,6 +382,13 @@ def _validate_receipt(
             "formal preflight failure is not the current closed schema",
             identity="formal_preflight_failure",
         )
+    legacy = receipt.get("schema_id") in LEGACY_FORMAL_PREFLIGHT_FAILURE_SCHEMA_IDS
+    if receipt.get("schema_id") != FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID and not legacy:
+        _fail(
+            "formal_preflight_failure_schema_invalid",
+            "formal preflight failure schema is unsupported",
+            identity="formal_preflight_failure.schema_id",
+        )
     plan, consumption, slot = _validate_embedded_sources(receipt, receipt_path=path)
     identity = _normalize_identity(dict(receipt.get("identity") or {}))
     prerequisites = normalize_aox_cutover_prerequisites(
@@ -430,7 +402,10 @@ def _validate_receipt(
     profile = normalize_aox_cutover_launch_profile(
         dict(receipt.get("launch_profile") or {})
     )
-    failure = _normalize_public_failure(dict(receipt.get("failure") or {}))
+    failure = _normalize_preflight_launch_failure(
+        dict(receipt.get("failure") or {}),
+        legacy=legacy,
+    )
     plan_payload = {key: item for key, item in plan.items() if key != "plan_digest"}
     expected_consumption = {
         "schema_id": AOX_ATTEMPT_AUTHORITY_CONSUMPTION_SCHEMA_ID,
@@ -474,11 +449,15 @@ def _validate_receipt(
     payload = {key: item for key, item in receipt.items() if key != "receipt_digest"}
     semantics_valid = all(
         (
-            receipt.get("schema_id") == FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID,
             receipt.get("run_class") == AoxLiveRunClass.FORMAL_ACCEPTANCE.value,
             receipt.get("acceptance_eligible") is False,
             receipt.get("state_reusable") is False,
-            receipt.get("failed_stage") == "effective_config_pre_slot_claim",
+            receipt.get("failed_stage")
+            == (
+                _LEGACY_FORMAL_PREFLIGHT_FAILURE_STAGE
+                if legacy
+                else _FORMAL_PREFLIGHT_FAILURE_STAGE
+            ),
             _aware_timestamp(receipt.get("sealed_at")),
             receipt.get("campaign_id") == plan.get("campaign_id"),
             receipt.get("plan_digest") == plan.get("plan_digest"),
@@ -548,7 +527,7 @@ def seal_formal_preflight_failure(
         "run_class": AoxLiveRunClass.FORMAL_ACCEPTANCE.value,
         "acceptance_eligible": False,
         "state_reusable": False,
-        "failed_stage": "effective_config_pre_slot_claim",
+        "failed_stage": _FORMAL_PREFLIGHT_FAILURE_STAGE,
         "campaign_id": plan.get("campaign_id"),
         "plan_digest": plan.get("plan_digest"),
         "consumption_digest": canonical_digest(consumption),
@@ -569,7 +548,7 @@ def seal_formal_preflight_failure(
         "launch_profile": dict(launch_profile),
         "authority_plan": plan,
         "authority_consumption": consumption,
-        "failure": _normalize_public_failure(failure),
+        "failure": _normalize_preflight_launch_failure(failure),
         "effect_closure": dict(_EFFECT_CLOSURE),
     }
     receipt = {**payload, "receipt_digest": canonical_digest(payload)}
@@ -655,11 +634,11 @@ def evaluate_formal_preflight_failure(
         identity="formal_preflight_failure",
     )
     failure = dict(receipt["failure"])
-    details = failure.get("failure_details")
-    if isinstance(details, dict) and details.get("kind") == "sandbox_runtime":
-        blocker_identity = f"sandbox_runtime.{details['failure_code']}"
-    elif isinstance(details, dict) and details.get("identity"):
-        blocker_identity = str(details["identity"])
+    cause = failure.get("failure_cause", failure.get("failure_details"))
+    if isinstance(cause, dict) and cause.get("kind") == "sandbox_runtime":
+        blocker_identity = f"sandbox_runtime.{cause['failure_code']}"
+    elif isinstance(cause, dict) and cause.get("identity"):
+        blocker_identity = str(cause["identity"])
     else:
         blocker_identity = "effective_config"
     decision: dict[str, Any] = {
@@ -738,6 +717,7 @@ def seal_formal_preflight_failure_decision(
 __all__ = [
     "FORMAL_PREFLIGHT_FAILURE_DECISION_SCHEMA_ID",
     "FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID",
+    "LEGACY_FORMAL_PREFLIGHT_FAILURE_SCHEMA_IDS",
     "FormalPreflightFailureVerification",
     "evaluate_formal_preflight_failure",
     "formal_preflight_failure_path",

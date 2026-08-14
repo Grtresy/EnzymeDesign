@@ -90,6 +90,7 @@ def test_owner_registry_is_canonical_closed_and_source_resolved() -> None:
         "aox.attempt-start",
         "aox.authority-consumption",
         "aox.config-candidate",
+        "aox.launch-failure",
         "aox.offline-go",
         "aox.product-closure",
         "host.public-mutation-receipt",
@@ -119,6 +120,28 @@ def test_r_series_continuation_owners_are_effect_and_occurrence_scoped() -> None
         "automatic-validation-retry",
         "candidate-identity-reuse",
     }
+
+    failure = constraints["aox.launch-failure"]
+    assert failure["owner_symbol"] == "aox_cutover_launch_failure_payload"
+    assert "failure_occurrence" in failure["lifecycle"]
+    assert "failure_cause" in failure["error_semantics"]
+    assert set(failure["forbidden_edges"]) >= {
+        "cause-overwrite-by-occurrence",
+        "private-details-projection",
+    }
+    cli_source = (
+        REPO_ROOT
+        / "apps/openzyme-host-api/src/openzyme_host_api/aox_cutover_cli.py"
+    ).read_text(encoding="utf-8")
+    preflight_source = (
+        REPO_ROOT
+        / "apps/openzyme-host-api/src/openzyme_host_api/aox_preflight_failure.py"
+    ).read_text(encoding="utf-8")
+    assert "public_details" not in cli_source
+    assert "_public_launch_failure_details" not in cli_source
+    assert "aox_cutover_launch_failure_payload" in cli_source
+    assert "_normalize_public_failure" not in preflight_source
+    assert "normalize_aox_cutover_launch_failure" in preflight_source
 
     authority = constraints["aox.authority-consumption"]
     assert authority["owner_symbol"] == "consume_aox_attempt_authority_plan"

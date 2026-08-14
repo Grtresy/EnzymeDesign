@@ -18,7 +18,6 @@ from openzyme_host_cli.client import HostApiError
 from openzyme_host_cli.cli import run_cli as run_host_cli
 from openzyme_host_cli.receipts import converge_public_api_mutation_receipt
 from openzyme_host_cli.receipts import converge_public_response
-from openzyme_engines import PODMAN_SANDBOX_PREFLIGHT_FAILURE_CODES
 
 from .aox_architecture_qualification import AoxArchitectureQualificationError
 from .aox_architecture_qualification import (
@@ -70,11 +69,12 @@ from .aox_config_contract import build_aox_config_candidate
 from .aox_config_contract import load_aox_config_candidate
 from .aox_config_contract import publish_aox_config_candidate
 from .aox_config_contract import require_current_aox_config_candidate
-from .aox_cutover_launch import AoxCutoverLaunchError
 from .aox_cutover_launch import build_aox_cutover_effective_config
 from .aox_cutover_launch import pin_aox_cutover_launch
 from .aox_cutover_launch import prepare_aox_cutover_launch
 from .aox_cutover_launch import validate_aox_authority_wall_time
+from .aox_launch_failure import AoxCutoverLaunchError
+from .aox_launch_failure import aox_cutover_launch_failure_payload
 from .aox_launch_profile import AOX_CUTOVER_LAUNCH_PROFILE_FILENAME
 from .aox_launch_profile import build_aox_cutover_launch_profile
 from .aox_launch_profile import launch_profile_digest
@@ -159,17 +159,8 @@ def _print(payload: object) -> None:
     )
 
 
-_PUBLIC_SCHEMA_PATH_PATTERN = re.compile(
-    r"^effective_config(?:\.[A-Za-z0-9_-]+|\[[0-9]+\])*$"
-)
-_PUBLIC_SCHEMA_FIELD_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,255}$")
-_PUBLIC_RUNNER_TOOL_ID_PATTERN = re.compile(r"^[a-z][a-z0-9._-]{0,127}$")
-_PUBLIC_RUNNER_ERROR_CODE_PATTERN = re.compile(
-    r"(?:[A-Z][A-Z0-9_]{0,63}|[a-z][a-z0-9_]{0,95})"
-)
 _PUBLIC_RUNNER_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _PUBLIC_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
-_PUBLIC_RUNNER_STAGES = frozenset({"runner_call", "runner_result"})
 _PUBLIC_RUNNER_STATUSES = frozenset(
     {
         "reserved",
@@ -215,11 +206,7 @@ _PUBLIC_RUNNER_EFFECT_CERTAINTIES = frozenset(
 _PUBLIC_RETRY_ELIGIBILITIES = frozenset(
     {"same_phase_safe", "verify_then_retry", "reconcile_required", "terminal"}
 )
-_PUBLIC_TERMINAL_SCOPE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,95}_occurrence$")
-_PUBLIC_CONFIG_CANDIDATE_ID_PATTERN = re.compile(r"^aox-config-[0-9a-f]{32}$")
-
-
-def _config_candidate_public_details(
+def _config_candidate_public_occurrence(
     candidate: Mapping[str, object],
     *,
     publication: bool = False,
@@ -245,232 +232,6 @@ def _config_candidate_public_details(
         "contract_digest": candidate["contract_digest"],
         "candidate_id": candidate["candidate_id"],
     }
-
-
-def _public_launch_failure_details(
-    exc: AoxCutoverLaunchError,
-) -> dict[str, object] | None:
-    raw = exc.public_details
-    kind = raw.get("kind") if raw else None
-    if kind == "config_candidate":
-        expected_fields = {
-            "kind",
-            "phase",
-            "effect_certainty",
-            "retry_eligibility",
-            "reconciliation_required",
-            "terminal_scope",
-            "request_digest",
-            "idempotency_key",
-            "exact_handle",
-            "contract_digest",
-            "candidate_id",
-        }
-        if set(raw) != expected_fields:
-            return None
-        if (
-            not isinstance(raw.get("phase"), str)
-            or raw["phase"] not in {"validation", "publication"}
-            or any(
-                not isinstance(raw.get(key), str)
-                or _PUBLIC_DIGEST_PATTERN.fullmatch(str(raw[key])) is None
-                for key in ("request_digest", "contract_digest")
-            )
-            or any(
-                not isinstance(raw.get(key), str)
-                or _PUBLIC_CONFIG_CANDIDATE_ID_PATTERN.fullmatch(str(raw[key])) is None
-                for key in ("idempotency_key", "exact_handle", "candidate_id")
-            )
-            or raw.get("idempotency_key") != raw.get("candidate_id")
-            or raw.get("exact_handle") != raw.get("candidate_id")
-        ):
-            return None
-        expected_occurrence_facts = (
-            (
-                "no_effect",
-                "terminal",
-                False,
-                "config_candidate_occurrence",
-            )
-            if raw["phase"] == "validation"
-            else (
-                (
-                    "unproven",
-                    "reconcile_required",
-                    True,
-                    "config_candidate_publication_occurrence",
-                )
-                if raw["effect_certainty"] == "unproven"
-                else (
-                    "no_effect",
-                    "terminal",
-                    False,
-                    "config_candidate_publication_occurrence",
-                )
-            )
-        )
-        if (
-            raw["effect_certainty"],
-            raw["retry_eligibility"],
-            raw["reconciliation_required"],
-            raw["terminal_scope"],
-        ) != expected_occurrence_facts:
-            return None
-        return dict(raw)
-    if kind == "runner_attestation":
-        required = {
-            "kind",
-            "tool_id",
-            "stage",
-            "phase",
-            "effect_certainty",
-            "retry_eligibility",
-            "reconciliation_required",
-            "terminal_scope",
-            "authority_scope",
-            "scientific_attempt_counted",
-        }
-        optional = {
-            "runner_error_code",
-            "runner_run_id",
-            "runner_attempt_receipt_digest",
-            "request_digest",
-            "reservation_identity_digest",
-            "idempotency_key",
-        }
-        if not required <= set(raw) or not set(raw) <= required | optional:
-            return None
-        tool_id = raw.get("tool_id")
-        stage = raw.get("stage")
-        phase = raw.get("phase")
-        effect_certainty = raw.get("effect_certainty")
-        retry_eligibility = raw.get("retry_eligibility")
-        reconciliation_required = raw.get("reconciliation_required")
-        if (
-            not isinstance(tool_id, str)
-            or _PUBLIC_RUNNER_TOOL_ID_PATTERN.fullmatch(tool_id) is None
-            or not isinstance(stage, str)
-            or stage not in _PUBLIC_RUNNER_STAGES
-            or not isinstance(phase, str)
-            or phase not in _PUBLIC_RUNNER_PHASES
-            or not isinstance(effect_certainty, str)
-            or effect_certainty not in _PUBLIC_RUNNER_EFFECT_CERTAINTIES
-            or not isinstance(retry_eligibility, str)
-            or retry_eligibility not in _PUBLIC_RETRY_ELIGIBILITIES
-            or not isinstance(reconciliation_required, bool)
-            or reconciliation_required != (retry_eligibility == "reconcile_required")
-            or raw.get("terminal_scope") != "runner_operation_occurrence"
-            or raw.get("authority_scope") != "preparation_only"
-            or raw.get("scientific_attempt_counted") is not False
-        ):
-            return None
-        normalized_runner: dict[str, object] = {
-            "kind": kind,
-            "tool_id": tool_id,
-            "stage": stage,
-            "phase": phase,
-            "effect_certainty": effect_certainty,
-            "retry_eligibility": retry_eligibility,
-            "reconciliation_required": reconciliation_required,
-            "terminal_scope": "runner_operation_occurrence",
-            "authority_scope": "preparation_only",
-            "scientific_attempt_counted": False,
-        }
-        if "runner_run_id" in raw:
-            runner_run_id = raw["runner_run_id"]
-            if (
-                not isinstance(runner_run_id, str)
-                or _PUBLIC_RUNNER_ID_PATTERN.fullmatch(runner_run_id) is None
-            ):
-                return None
-            normalized_runner["runner_run_id"] = runner_run_id
-        if "runner_attempt_receipt_digest" in raw:
-            runner_attempt_receipt_digest = raw["runner_attempt_receipt_digest"]
-            if (
-                not isinstance(runner_attempt_receipt_digest, str)
-                or _PUBLIC_DIGEST_PATTERN.fullmatch(runner_attempt_receipt_digest)
-                is None
-            ):
-                return None
-            normalized_runner["runner_attempt_receipt_digest"] = (
-                runner_attempt_receipt_digest
-            )
-        for key in (
-            "request_digest",
-            "reservation_identity_digest",
-            "idempotency_key",
-        ):
-            if key not in raw:
-                continue
-            value = raw[key]
-            if (
-                not isinstance(value, str)
-                or _PUBLIC_DIGEST_PATTERN.fullmatch(value) is None
-            ):
-                return None
-            normalized_runner[key] = value
-        if "idempotency_key" in raw and raw.get("idempotency_key") != raw.get(
-            "reservation_identity_digest"
-        ):
-            return None
-        if "runner_error_code" in raw:
-            runner_error_code = raw["runner_error_code"]
-            if (
-                not isinstance(runner_error_code, str)
-                or _PUBLIC_RUNNER_ERROR_CODE_PATTERN.fullmatch(runner_error_code)
-                is None
-            ):
-                return None
-            normalized_runner["runner_error_code"] = runner_error_code
-        return normalized_runner
-    if kind == "sandbox_runtime":
-        if set(raw) != {"kind", "failure_code"}:
-            return None
-        failure_code = raw.get("failure_code")
-        if failure_code not in PODMAN_SANDBOX_PREFLIGHT_FAILURE_CODES:
-            return None
-        return {"kind": kind, "failure_code": failure_code}
-    if kind != "schema_field" or not set(raw).issubset(
-        {"kind", "identity", "missing", "unexpected"}
-    ):
-        return None
-    identity = raw.get("identity")
-    if (
-        not isinstance(identity, str)
-        or _PUBLIC_SCHEMA_PATH_PATTERN.fullmatch(identity) is None
-    ):
-        return None
-    normalized: dict[str, object] = {"kind": kind, "identity": identity}
-    for key in ("missing", "unexpected"):
-        if key not in raw:
-            continue
-        values = raw[key]
-        if (
-            not isinstance(values, (list, tuple))
-            or any(
-                not isinstance(value, str)
-                or _PUBLIC_SCHEMA_FIELD_PATTERN.fullmatch(value) is None
-                for value in values
-            )
-            or list(values) != sorted(set(values))
-        ):
-            return None
-        normalized[key] = list(values)
-    return normalized
-
-
-def _launch_failure_payload(
-    exc: AoxCutoverLaunchError,
-) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "schema_id": "aox_cutover_launch_failure@3",
-        "status": "failed",
-        "failure_code": exc.code,
-    }
-    public_details = _public_launch_failure_details(exc)
-    if public_details is not None:
-        payload["failure_details"] = public_details
-    return payload
 
 
 def _configured_settings_and_ledger(
@@ -813,7 +574,7 @@ def _config_candidate(args: argparse.Namespace) -> int:
         raise AoxCutoverLaunchError(
             exc.code,
             "AOX config candidate could not be atomically published",
-            public_details=_config_candidate_public_details(
+            public_occurrence=_config_candidate_public_occurrence(
                 candidate,
                 publication=True,
                 effect_certainty=(
@@ -848,10 +609,10 @@ def _check_config(args: argparse.Namespace) -> int:
         raise AoxCutoverLaunchError(
             exc.code,
             "AOX config candidate failed its public lifecycle contract",
-            public_details=(
+            public_occurrence=(
                 None
                 if candidate is None
-                else _config_candidate_public_details(candidate)
+                else _config_candidate_public_occurrence(candidate)
             ),
         ) from exc
     except AoxCutoverLaunchError as exc:
@@ -859,13 +620,14 @@ def _check_config(args: argparse.Namespace) -> int:
             exc.code,
             "AOX config candidate failed semantic validation",
             details=exc.details,
-            public_details=_config_candidate_public_details(candidate),
+            public_occurrence=_config_candidate_public_occurrence(candidate),
+            public_cause=exc.public_cause,
         ) from exc
     except Exception as exc:  # noqa: BLE001 - configuration values remain private
         raise AoxCutoverLaunchError(
             "aox_config_candidate_semantic_invalid",
             "AOX config candidate could not be parsed or semantically validated",
-            public_details=_config_candidate_public_details(current_candidate),
+            public_occurrence=_config_candidate_public_occurrence(current_candidate),
         ) from exc
     _print(
         {
@@ -955,7 +717,7 @@ def _pin_operation(args: argparse.Namespace) -> int:
         raise AoxCutoverLaunchError(
             "aox_toolchain_pin_operation_failed",
             "AOX toolchain pin operation failed inside the trusted runner boundary",
-            public_details={
+            public_occurrence={
                 "kind": "runner_attestation",
                 "tool_id": "aox.toolchain-pin",
                 "stage": "runner_call",
@@ -1089,7 +851,7 @@ def _preflight(args: argparse.Namespace) -> int:
             launch_profile=launch_profile,
             authority_plan=plan,
             authority_consumption=consumption,
-            failure=_launch_failure_payload(exc),
+            failure=aox_cutover_launch_failure_payload(exc),
         )
         _print(
             {
@@ -2335,17 +2097,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(handler(args))
     except (AoxArchitectureQualificationError, AoxCutoverLaunchError) as exc:
-        # 启动失败可能包裹含私有定位信息或凭据的异常。只有错误源明确标记为
-        # 可公开的字段级详情才能越过操作员边界；异常链本身始终保持封闭。
-        payload: dict[str, object] = (
-            _launch_failure_payload(exc)
+        # 启动失败可能包裹含私有定位信息或凭据的异常。只有错误源明确授权的
+        # occurrence/cause 投影才能越过操作员边界；异常链本身始终保持封闭。
+        launch_error = (
+            exc
             if isinstance(exc, AoxCutoverLaunchError)
-            else {
-                "schema_id": "aox_cutover_launch_failure@3",
-                "status": "failed",
-                "failure_code": exc.code,
-            }
+            else AoxCutoverLaunchError(exc.code, "architecture qualification failed")
         )
+        payload = aox_cutover_launch_failure_payload(launch_error)
         print(
             json.dumps(
                 payload,

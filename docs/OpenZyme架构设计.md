@@ -1407,14 +1407,16 @@ ec69fd8 上的 `pin` 仅执行一次，公开回执只证明
 `OPENZYME_RESEARCH_MCP_ENABLED` 没有进入 AOX 的有效配置构造，不能据此推定本次根因。该状态属于
 prelaunch blocked，而非 canonical NO-GO；没有 root、session、attempt 或外部 effect，也没有重试权限。
 
-当前 `openzyme-aox-cutover` 以 `aox_cutover_launch_failure@3` 公开失败。稳定的
-`failure_code` 始终保留；只有失败源明确声明可公开的 closed tagged-union 原因，才会通过
-`failure_details` 输出。`kind=schema_field` 只允许逻辑 schema 字段 `identity/missing/unexpected`；
-`kind=runner_attestation` 只允许 exact AOX `tool_id`、可选安全 run/attempt-receipt identity、
-`runner_call|runner_result`、closed effect certainty 与可选安全 `runner_error_code`；
-`kind=sandbox_runtime`只允许一个来自Podman/SDK preflight闭集的`failure_code`。内部 `details`、
-配置值、Host/runner 路径、凭据、消息与
-异常链不会自动越过公开边界。历史 `@1/@2` 只作为冻结记录读取。无产品消费者的
+当前 `openzyme-aox-cutover` 以 `aox_cutover_launch_failure@4` 公开失败。稳定的
+`failure_code` 始终保留；一个 AOX-family canonical normalizer 将正交事实分别投影到可选的
+`failure_occurrence` 与 `failure_cause`。前者只接受 `config_candidate` 或 `runner_attestation` 的
+identity/lifecycle/effect/retry/terminal-scope 事实；后者只接受 `schema_field` 的逻辑
+`identity/missing/unexpected`、Podman/SDK allowlist 的 `sandbox_runtime.failure_code`，或闭合的
+`runner_error.failure_code`。两个投影独立脱敏：一个分支含未知字段或不安全值时只丢弃该分支，不能覆盖
+另一个已经 source-authorized 的安全事实。因此 `check-config` 的 semantic failure 可以同时保留 exact
+candidate occurrence 与字段级原因，runner failure 也可同时保留 operation occurrence 与 machine cause。
+内部 `details`、配置值、Host/runner 路径、凭据、消息、stdout/stderr 与异常链不会自动越过公开边界。
+历史 `@1/@2/@3` 只作为冻结记录读取，current writer 不得降级。无产品消费者的
 `ResearchSettings.mcp_enabled` 已删除；AOX 的 `research.mcp_enabled=true` 继续由 Host 权威配置
 明确投影，避免并存的环境影子真值。
 
@@ -1522,10 +1524,13 @@ wall-time ceiling，并明确 scientific attempt count 为零。existing receipt
 任一漂移都 fail closed，不覆盖、不换 target、不重置 ledger，也不创建 Host/session/root。
 
 若 authority 已消费而 profile/effective-config 在 slot claim 前失败，且 claim 不存在、campaign attempt
-root absent/empty，preflight 同步封存 source-bound `aox_formal_preflight_failure@1`，证明零
+root absent/empty，preflight 同步封存 source-bound `aox_formal_preflight_failure@2`，其
+`failed_stage=actual_launch_guard_pre_slot_claim`，并嵌入 current launch failure 的 safe cause，证明零
 claim/root/Host/session/attempt/MICU/provider/runner/HPC/browser effect。纯离线 verifier 与专用 decision
 可据此形成 canonical NO-GO；它不创建 `launch_id`、attempt bundle 或 successor。r75 发生时没有这些
-current source bytes，故继续是 blocked/noncanonical 历史证据，不能回填。
+current source bytes，故继续是 blocked/noncanonical 历史证据，不能回填。历史
+`aox_formal_preflight_failure@1 / failed_stage=effective_config_pre_slot_claim` 只按原 shape 读取，不能由
+current writer 采用或跨版本重写。
 
 ### 9.13 actual launch 与 child-ready 前失败闭合
 

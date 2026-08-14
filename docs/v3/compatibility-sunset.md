@@ -43,6 +43,8 @@ violation 和 exit outcome。
 | `execution.pipeline.start` | DEPRECATE | sandbox-first 是稳定 authoring path，但 engine runtime、migration/eval/projection 仍持有显式兼容语义 |
 | AOX `--attempt-authority-consumption` | DEPRECATE | consume/preflight 正常路径已从 canonical plan owner 推导 exact sibling；专用 argv scanner 排除 parser owner definition，当前仓库 production caller 为零；参数只保留为相等性断言，外部 caller 状态 unknown |
 | AOX `aox_config_contract@1` / `aox_config_candidate@1` / `aox_cutover_config_check@2` | KEEP | current public config-candidate owner；validation 为 no-effect，publication durability 无法证明时保留 unproven/reconcile-required；历史 `check@1` 只作为冻结输出解释，不得静默 promotion |
+| AOX `aox_cutover_launch_failure@4` | KEEP | current writer 由唯一 AOX-family normalizer 分开投影 `failure_occurrence` 与 `failure_cause`；历史 `@1/@2/@3` 仅冻结记录/显式兼容 reader，不得由 current writer adoption 或 crossgrade |
+| AOX `aox_formal_preflight_failure@2` | KEEP | current writer 使用 `actual_launch_guard_pre_slot_claim` 并嵌入 launch failure `@4`；历史 `@1 / effective_config_pre_slot_claim` 连同 nested `@3` 只按原 shape 读取，不得续写或升级 |
 | AOX `aox_attempt_authority_consume_receipt@2` | KEEP | current public consume projection绑定 exact request/idempotency/handle、exact-three、每 slot `max_attempts=1` 与 budget/effect facts；`@1` 仅冻结输出解释，不存在 current writer 或 promotion reader |
 | AOX `aox_public_conductor_execution_contract@4` | KEEP | current formal mechanical-entry contract新增 deterministic session/message idempotency identities；`@1/@2/@3` 仅历史只读且不得驱动新动作 |
 | Host `openzyme_public_api_receipt@3` | KEEP | current request-identity/effect/terminal-scope receipt；仅最后且唯一的 current successful mutation 可在 receipt-written/envelope-missing window exact 收敛；reader 仅按 homogeneous `@2` 原 shape 核验历史 chain，禁止 historical/current 混链、续写或补 idempotency |

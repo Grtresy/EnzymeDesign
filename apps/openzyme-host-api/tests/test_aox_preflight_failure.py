@@ -32,6 +32,7 @@ from openzyme_host_api.aox_launch_profile import build_aox_cutover_launch_profil
 from openzyme_host_api.aox_preflight_failure import (
     FORMAL_PREFLIGHT_FAILURE_DECISION_SCHEMA_ID,
     FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID,
+    LEGACY_FORMAL_PREFLIGHT_FAILURE_SCHEMA_IDS,
     evaluate_formal_preflight_failure,
     formal_preflight_failure_path,
     seal_formal_preflight_failure,
@@ -165,10 +166,10 @@ def _sources(
 
 def _failure() -> dict[str, object]:
     return {
-        "schema_id": "aox_cutover_launch_failure@3",
+        "schema_id": "aox_cutover_launch_failure@4",
         "status": "failed",
         "failure_code": "aox_launch_effective_config_schema_invalid",
-        "failure_details": {
+        "failure_cause": {
             "kind": "schema_field",
             "identity": (
                 "effective_config.reliability.controlled_operation_owner_policy"
@@ -205,10 +206,10 @@ def test_preflight_failure_preserves_closed_sandbox_runtime_cause(
     tmp_path: Path,
 ) -> None:
     failure = {
-        "schema_id": "aox_cutover_launch_failure@3",
+        "schema_id": "aox_cutover_launch_failure@4",
         "status": "failed",
         "failure_code": "aox_launch_sandbox_preflight_failed",
-        "failure_details": {
+        "failure_cause": {
             "kind": "sandbox_runtime",
             "failure_code": "podman_rootless_preflight_failed",
         },
@@ -229,7 +230,7 @@ def test_preflight_failure_preserves_closed_sandbox_runtime_cause(
     }
 
     tampered = json.loads(path.read_text(encoding="utf-8"))
-    tampered["failure"]["failure_details"]["failure_code"] = (
+    tampered["failure"]["failure_cause"]["failure_code"] = (
         "private_runtime_/home/operator"
     )
     path.chmod(0o600)
@@ -251,6 +252,7 @@ def test_preflight_failure_closes_consumed_authority_without_launch(
     assert verification.failure_digest == digest
     receipt = json.loads(path.read_text(encoding="utf-8"))
     assert receipt["schema_id"] == FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID
+    assert receipt["failed_stage"] == "actual_launch_guard_pre_slot_claim"
     assert "launch_id" not in receipt
     assert receipt["effect_closure"] == {
         "effect_certainty": "no_effect",
@@ -280,6 +282,48 @@ def test_preflight_failure_closes_consumed_authority_without_launch(
         seal_formal_preflight_failure_decision(decision, decision_path)
         == decision["decision_digest"]
     )
+
+
+def test_preflight_failure_reads_v1_without_promoting_legacy_writer(
+    tmp_path: Path,
+) -> None:
+    path, _, _ = _seal(tmp_path / "historical-reader")
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    receipt["schema_id"] = next(iter(LEGACY_FORMAL_PREFLIGHT_FAILURE_SCHEMA_IDS))
+    receipt["failed_stage"] = "effective_config_pre_slot_claim"
+    cause = receipt["failure"].pop("failure_cause")
+    receipt["failure"]["schema_id"] = "aox_cutover_launch_failure@3"
+    receipt["failure"]["failure_details"] = cause
+    payload = {
+        key: value for key, value in receipt.items() if key != "receipt_digest"
+    }
+    receipt["receipt_digest"] = (
+        "sha256:" + hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+    )
+    path.chmod(0o600)
+    path.write_bytes(canonical_json_bytes(receipt) + b"\n")
+    path.chmod(0o400)
+
+    assert verify_formal_preflight_failure(path).passed is True
+    assert evaluate_formal_preflight_failure(path)["blocker"]["identity"] == (
+        "effective_config.reliability.controlled_operation_owner_policy"
+    )
+
+    sources = _sources(tmp_path / "current-writer")
+    with pytest.raises(CutoverEvidenceError) as historical:
+        seal_formal_preflight_failure(
+            plan_path=sources["plan_path"],
+            campaign_root=tmp_path / "current-writer-campaign",
+            slot_ordinal=1,
+            identity=sources["identity"],
+            allowed_prerequisites=sources["prerequisites"],
+            architecture_qualification=sources["qualification"],
+            launch_profile=sources["profile"],
+            authority_plan=sources["plan"],
+            authority_consumption=sources["consumption"],
+            failure=receipt["failure"],
+        )
+    assert historical.value.code == "formal_preflight_failure_cause_invalid"
 
 
 def test_preflight_failure_rejects_claimed_or_nonpristine_slot(

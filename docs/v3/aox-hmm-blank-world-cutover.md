@@ -3832,3 +3832,31 @@ implicit staging 或 fallback。current workflow knowledge digest 是
 stable README 同步 production current conductor `@4`，并把 `@1/@2/@3` 固定为只读；agent 仍拥有科学
 策略与 bounded cadence，Harness 只忠实呈现 identity/admission 约束。本 repair 不授权 c001 recovery、
 qualification/admission、successor、live、MICU、provider、HPC 或 Chrome。
+
+### 2026-08-14 c002 preparation causal-envelope correction
+
+c002 在 clean `0b0d0dbb159ef2d6a6db809ad093f39f0318465f` 上停于 `rNN=none`。qualification 的
+15 scenarios / 16 invariants admission eligible report 与唯一 credential-safe config candidate 已发布；
+`check-config` 只执行一次，公开返回 `aox_launch_effective_config_schema_invalid`，但旧
+`aox_cutover_launch_failure@3.failure_details` 只保留了
+`config_candidate/no_effect/terminal/config_candidate_occurrence`，没有字段级 cause。因此 frozen
+observation 只能证明 exact schema field unproven；plan、authority、slot、session、task、attempt、bundle 与
+decision 均未创建，pin/preflight/live/provider/HPC/Chrome/MICU effect 均为零。该 occurrence terminal 且不
+授权补配置、retry、loop 或恢复；current source 的机制解释不得回填 frozen public evidence。
+
+根因是 AOX public-launch owner family 的 schema 组合缺陷：runtime normalizer 已 source-authorize 安全
+`schema_field` cause，但 `check-config` wrapper 用 candidate lifecycle 替换同一 `public_details` 单槽；CLI
+serializer 随后不可能同时输出 occurrence 与 cause。前向 current writer 升级为
+`aox_cutover_launch_failure@4`，由 `aox_launch_failure.py` 的唯一 normalizer 分别验证可选
+`failure_occurrence` 与 `failure_cause`。candidate/runner lifecycle 不再与 schema/sandbox/runner machine cause
+互斥；任一投影非法只省略该投影，绝不投影 secret、配置值、路径、原始消息、stdout/stderr 或异常链。
+OpenZyme 继续由 production settings/profile owner 读取 protected environment，Codex 只消费 public
+contract/candidate/check/failure，不能 import private builder 自证、读取 env、auto-fill 或按字段试错重发。
+
+同一修复命中 `AOX-DEBT-PREFLIGHT-STAGE-V2`：current formal preflight writer/verifier 升级为
+`aox_formal_preflight_failure@2 / failed_stage=actual_launch_guard_pre_slot_claim` 并嵌入 launch `@4` 的
+schema/sandbox cause；历史 preflight `@1 / effective_config_pre_slot_claim` 与 nested launch `@3` 保持严格
+只读，不能 crossgrade。该改动没有增加 process/root/SQLite responsibility、closure mode 或 evidence
+reconstruction branch，故未命中 `AOX-DEBT-EVIDENCE-MODULE-SPLIT`。修复只运行 focused non-live tests、
+owner/qualification regressions、Ruff、compatibility audit 与 strict OpenSpec；不恢复 c002、不运行 fresh
+qualification/admission/config preparation/pin/preflight/live，也不访问 provider/HPC/Chrome/MICU。

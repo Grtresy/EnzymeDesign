@@ -71,6 +71,11 @@ from openzyme_host_api.aox_cutover_runtime_config import (
 from openzyme_host_api.aox_launch_profile import (
     AOX_CUTOVER_LAUNCH_PROFILE_SCHEMA_ID,
 )
+from openzyme_host_api.aox_launch_failure import (
+    AOX_CUTOVER_LAUNCH_FAILURE_SCHEMA_ID,
+    AoxCutoverLaunchError,
+    aox_cutover_launch_failure_payload,
+)
 from openzyme_host_api.aox_formal_slot_failure import (
     FORMAL_SLOT_FAILURE_SCHEMA_ID,
 )
@@ -322,7 +327,11 @@ def _assert_current_schema_contract(document: str) -> dict[str, str]:
         document,
         "可验证且脱敏的启动配置与失败因果",
     )
-    if "sandbox runtime branch MUST 使用 exact `kind=sandbox_runtime`" not in launch_failure:
+    if f"`{AOX_CUTOVER_LAUNCH_FAILURE_SCHEMA_ID}`" not in launch_failure:
+        raise AssertionError("active launch failure schema is stale")
+    if "`failure_occurrence` 与 `failure_cause`" not in launch_failure:
+        raise AssertionError("active launch failure is not compositional")
+    if "`failure_cause` MUST 只使用" not in launch_failure:
         raise AssertionError("active launch failure omits the sandbox runtime branch")
     for failure_code in (
         "pipeline_sdk_source_unavailable",
@@ -409,6 +418,7 @@ def _assert_current_schema_contract(document: str) -> dict[str, str]:
         ),
         "qualification_report_schema_id": QUALIFICATION_REPORT_SCHEMA_ID,
         "runtime_config_schema_id": AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID,
+        "launch_failure_schema_id": AOX_CUTOVER_LAUNCH_FAILURE_SCHEMA_ID,
         "launch_profile_schema_id": AOX_CUTOVER_LAUNCH_PROFILE_SCHEMA_ID,
         "authority_plan_schema_id": AOX_ATTEMPT_AUTHORITY_PLAN_SCHEMA_ID,
         "authority_consumption_schema_id": (
@@ -616,6 +626,11 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
             ),
             "one unbound ambient launch profile",
         ),
+        "launch_failure_composition_removed": _replace_once(
+            spec_document,
+            "`failure_occurrence` 与 `failure_cause`",
+            "`failure_details`",
+        ),
         "preflight_failure_closure_removed": _replace_once(
             spec_document,
             f"one source-bound `{FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID}` sibling",
@@ -759,9 +774,38 @@ def test_aox_admission_precedes_roots_and_receipt_closes_exact_identity(
         "aox_live_attempt_authority_consumption@5"
     )
     assert ATTEMPT_PREFLIGHT_SCHEMA_ID == "aox_attempt_preflight@5"
-    assert FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID == "aox_formal_preflight_failure@1"
+    assert AOX_CUTOVER_LAUNCH_FAILURE_SCHEMA_ID == "aox_cutover_launch_failure@4"
+    assert FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID == "aox_formal_preflight_failure@2"
     assert FORMAL_PREFLIGHT_FAILURE_DECISION_SCHEMA_ID == (
         "aox_blank_world_campaign_preflight_failure_decision@1"
+    )
+    candidate_id = "aox-config-" + "c" * 32
+    launch_failure = aox_cutover_launch_failure_payload(
+        AoxCutoverLaunchError(
+            "aox_launch_effective_config_schema_invalid",
+            "safe",
+            public_occurrence={
+                "kind": "config_candidate",
+                "phase": "validation",
+                "effect_certainty": "no_effect",
+                "retry_eligibility": "terminal",
+                "reconciliation_required": False,
+                "terminal_scope": "config_candidate_occurrence",
+                "request_digest": _digest("8"),
+                "idempotency_key": candidate_id,
+                "exact_handle": candidate_id,
+                "contract_digest": _digest("9"),
+                "candidate_id": candidate_id,
+            },
+            public_cause={
+                "kind": "schema_field",
+                "identity": "effective_config.reliability.owner_policy",
+            },
+        )
+    )
+    assert launch_failure["failure_occurrence"]["candidate_id"] == candidate_id
+    assert launch_failure["failure_cause"]["identity"] == (
+        "effective_config.reliability.owner_policy"
     )
     host_supervision_source = (
         _REPO_ROOT

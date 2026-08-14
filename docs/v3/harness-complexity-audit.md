@@ -470,7 +470,7 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   skill复制launcher/handle/runbook且r83 tester让locator覆盖typed `claimed`，共同形成隐式operator状态机。
   现已改为thin skill、payload-owned handoff及`0..N`/Event回归，无poll/retry或runtime变化；r83仍frozen、blocked/noncanonical、未恢复。
 
-- [ ] AOX formal preflight failure 的 current stage 是否仍能准确表达实际 launch 边界。
+- [x] AOX formal preflight failure 的 current stage 是否仍能准确表达实际 launch 边界。
 
   当前债务：`aox_formal_preflight_failure@1` 的 `failed_stage` 保留
   `effective_config_pre_slot_claim` 历史措辞，但 current preflight 已在 claim 前执行完整
@@ -489,6 +489,13 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   2026-08-14 c001 审查只修订 sandbox SDK authoring 文案与 workflow knowledge，没有修改
   `FORMAL_PREFLIGHT_FAILURE_SCHEMA_ID`、writer/verifier 或 pre-claim failure kind；
   `AOX-DEBT-PREFLIGHT-STAGE-V2` 触发器仍未命中，本债务继续保留。
+
+  2026-08-14 c002 触发式偿债：公开 launch failure 从互斥 `failure_details` 升级为正交
+  `failure_occurrence + failure_cause`，并修改 formal preflight writer/verifier，因此命中触发器。current
+  writer 升级为 `aox_formal_preflight_failure@2` 与准确的
+  `actual_launch_guard_pre_slot_claim`；`@1 / effective_config_pre_slot_claim` 保持严格只读，nested launch
+  `@3` 也不得被 current writer adoption。shared AOX launch-failure normalizer、current/legacy regression 与
+  source-bound receipt digest 验证共同闭合该触发条件，本债务至此清偿，不再保留源码 marker。
 
 - [ ] AOX Host supervision 与 formal slot-failure 模块是否需要先拆分纯证据职责。
 

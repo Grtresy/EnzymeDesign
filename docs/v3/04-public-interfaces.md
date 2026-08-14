@@ -753,10 +753,12 @@ settlement全部成立，才封存 `aox_supervised_host_pre_ready_failure@2`；�
 effect、cause或MICU时继续是 evidence blocker。
 
 authority 已消费、slot 尚未 claim 且 campaign root absent/empty 时，profile/effective-config 的 typed
-失败写入 deterministic private sibling `aox_formal_preflight_failure@1`。公开命令仍返回原失败；纯离线
+失败写入 deterministic private sibling `aox_formal_preflight_failure@2`，并以
+`failed_stage=actual_launch_guard_pre_slot_claim` 准确标识 full launch guard。公开命令仍返回原失败；纯离线
 `verify-preflight-failure` 与 `decide --preflight-failure` 只在 receipt 重建成功、零 claim/root/Host/
 session/attempt/MICU/provider/runner/HPC/browser effect 闭合时写入专用 canonical NO-GO。该路径没有
-`launch_id` 或 attempt bundle，也不能回填缺少 current source bytes 的历史 r75。
+`launch_id` 或 attempt bundle，也不能回填缺少 current source bytes 的历史 r75。历史
+`aox_formal_preflight_failure@1 / effective_config_pre_slot_claim` 只读，不能被 current writer 采用。
 
 ### 9.2 historical post-r69 late-bound scientific admission
 
@@ -864,21 +866,23 @@ identity-distinct candidate 再验证，Harness 不得自动补值、重发或�
 pin 或 runner availability 证明；Codex conductor 不得用 private module import 替代 public owner。
 
 `openzyme-aox-cutover` 的当前启动失败回执是闭合对象
-`aox_cutover_launch_failure@3`，必含 `schema_id`、`status` 与 `failure_code`。仅当失败源明确提供
-可公开原因时，回执才增加 closed tagged-union `failure_details`。`kind=schema_field` 只允许逻辑字段
-`identity` 以及可选的 `missing`、`unexpected`；`kind=runner_attestation` 只允许 AOX `tool_id`、可选
-安全 `runner_run_id`、可选 `runner_attempt_receipt_digest`、`stage=runner_call|runner_result`、closed
-effect certainty 与可选安全 `runner_error_code`；code 只接受
-全大写执行码或全小写 source-causal code，不接受混合大小写或自由文本。`kind=sandbox_runtime`只允许
-exact `failure_code`，其闭集是 `pipeline_sdk_source_unavailable`、`podman_binary_unavailable`、
-`podman_rootless_preflight_failed`、`sandbox_image_identity_invalid`、`sandbox_image_unavailable`与
-`sandbox_runtime_identity_drift`。配置值、
-Host/runner 路径、凭据、原始消息、异常表示和异常链始终留在私有边界。内部 `details` 的存在本身不
-构成公开许可。历史 `aox_cutover_launch_failure@1/@2` 只能作为冻结记录读取，不能冒充当前回执。
+`aox_cutover_launch_failure@4`，必含 `schema_id`、`status` 与 `failure_code`。只有错误源明确授权的
+安全事实才可进入两个彼此独立的可选投影：`failure_occurrence` 只接受
+`kind=config_candidate|runner_attestation` 的 exact identity、lifecycle、effect、retry 与 terminal-scope；
+`failure_cause` 只接受 `kind=schema_field|sandbox_runtime|runner_error`。schema cause 只允许逻辑
+`identity` 及排序去重的可选 `missing/unexpected`；sandbox cause 只允许既有 Podman/SDK closed code；
+runner cause 只允许全大写执行码或全小写 source-causal code。一个投影非法时只省略该投影，不能吞掉
+另一个已验证事实。因而 `check-config` semantic failure 同时返回 candidate occurrence 与字段级 cause，
+runner result 同时返回 attestation occurrence 与安全 machine cause；无安全 code 的 runner exception 只保留
+`unproven/reconcile_required` occurrence。配置值、Host/runner 路径、凭据、原始消息、stdout/stderr、
+异常表示和异常链始终留在私有边界。内部 `details` 的存在本身不构成公开许可。历史
+`aox_cutover_launch_failure@1/@2/@3` 只能作为冻结记录读取，不能冒充 current receipt。
 
-AOX 有效配置中的 `research.mcp_enabled=true` 是 Host 权威能力投影，不读取
+OpenZyme 自己通过 production settings/profile owner 读取 protected environment；Codex 只消费
+credential-safe public contract/candidate/check/failure，不得读取 env、自动补配置、按字段试错重发或把 secret
+投影为 cause。AOX 有效配置中的 `research.mcp_enabled=true` 是 Host 权威能力投影，不读取
 `OPENZYME_RESEARCH_MCP_ENABLED`，也不再经过 `ResearchSettings.mcp_enabled`。若公开回执没有给出
-`failure_details`，操作员必须保留 `exact_identity_unproven`；源码检查可以形成或排除假设，却不能把
+`failure_cause`，操作员必须保留 `exact_identity_unproven`；源码检查可以形成或排除假设，却不能把
 假设升级为权威原因（canonical cause），更不能据此执行纠正后重试（corrected retry）、授权消费
 （authority consumption）或其他状态变更。
 

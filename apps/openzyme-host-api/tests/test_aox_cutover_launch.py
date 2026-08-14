@@ -344,7 +344,7 @@ def test_effective_config_maps_closed_schema_failure_to_launch_error(
 
     assert error.value.code == "aox_launch_effective_config_schema_invalid"
     assert error.value.details == {"identity": "effective_config.llm"}
-    assert error.value.public_details == {
+    assert error.value.public_cause == {
         "kind": "schema_field",
         "identity": "effective_config.llm",
     }
@@ -401,14 +401,17 @@ def test_toolchain_pin_preserves_safe_runner_failure_cause(
         )
 
     assert error.value.code == "aox_launch_toolchain_pin_execution_failed"
-    assert error.value.public_details["effect_certainty"] == "no_effect"
-    assert error.value.public_details["retry_eligibility"] == "terminal"
-    assert error.value.public_details["terminal_scope"] == (
+    assert error.value.public_occurrence["effect_certainty"] == "no_effect"
+    assert error.value.public_occurrence["retry_eligibility"] == "terminal"
+    assert error.value.public_occurrence["terminal_scope"] == (
         "runner_operation_occurrence"
     )
-    assert error.value.public_details["runner_run_id"] == "run_aox_pin_mafft"
-    assert error.value.public_details["runner_error_code"] == runner_error_code
-    assert error.value.public_details["scientific_attempt_counted"] is False
+    assert error.value.public_occurrence["runner_run_id"] == "run_aox_pin_mafft"
+    assert error.value.public_cause == {
+        "kind": "runner_error",
+        "failure_code": runner_error_code,
+    }
+    assert error.value.public_occurrence["scientific_attempt_counted"] is False
 
 
 def test_toolchain_pin_does_not_publish_unsealed_runner_exception_text(
@@ -433,13 +436,16 @@ def test_toolchain_pin_does_not_publish_unsealed_runner_exception_text(
             source_identity_digest="sha256:" + "e" * 64,
         )
 
-    assert error.value.public_details["kind"] == "runner_attestation"
-    assert error.value.public_details["tool_id"] == "bio_tools.mafft"
-    assert error.value.public_details["stage"] == "runner_call"
-    assert error.value.public_details["effect_certainty"] == "unproven"
-    assert error.value.public_details["retry_eligibility"] == "reconcile_required"
-    assert "capabilities" not in error.value.public_details
-    assert "private runner locator" not in json.dumps(error.value.public_details)
+    assert error.value.public_occurrence["kind"] == "runner_attestation"
+    assert error.value.public_occurrence["tool_id"] == "bio_tools.mafft"
+    assert error.value.public_occurrence["stage"] == "runner_call"
+    assert error.value.public_occurrence["effect_certainty"] == "unproven"
+    assert error.value.public_occurrence["retry_eligibility"] == (
+        "reconcile_required"
+    )
+    assert error.value.public_cause == {}
+    assert "capabilities" not in error.value.public_occurrence
+    assert "private runner locator" not in json.dumps(error.value.public_occurrence)
 
 
 def test_effective_config_uses_canonical_host_mcp_capability(

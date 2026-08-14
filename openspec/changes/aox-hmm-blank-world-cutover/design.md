@@ -2104,6 +2104,39 @@ digest；production constant 驱动的跨来源 regression 要求 stable docs/Op
 对应 test resource manifest 只刷新获批测试文件的 source-closure digest 与 manifest self-digest，collection、
 resource class、proof nodes 和 audited-resource dispositions 均不变。
 
+### 2026-08-14 c002 compositional preparation failure envelope
+
+c002 是 `rNN=none` preparation blocker：qualification 与 credential-safe candidate 已完成，但唯一 public
+`check-config` 以 `aox_launch_effective_config_schema_invalid` 终止。冻结 `@3` 只含 candidate lifecycle，
+field identity 仍 unproven；没有 plan/authority/slot/session/task/attempt/bundle/decision 或 external effect，不得
+据 current source 回填、补配置或重试。current source 的 exact defect 是 `_check_config()` 捕获已经带安全
+schema cause 的 `AoxCutoverLaunchError` 后，用 `_config_candidate_public_details()` 替换同一
+`public_details`；CLI 的互斥 union 使 downstream 无法恢复 cause。
+
+前向设计不引入通用 V3 failure schema，而复用现有 compositional doctrine，在 AOX family 建立唯一
+`aox_launch_failure.py` owner。`AoxCutoverLaunchError` 的 private `details` 与两个显式授权投影分离：
+
+- `public_occurrence` 只承载 `config_candidate` 或 `runner_attestation` 的 identity/lifecycle/effect/retry facts；
+- `public_cause` 只承载 `schema_field`、`sandbox_runtime` 或 `runner_error` 的闭合集；
+- current serializer 只写 `aox_cutover_launch_failure@4.failure_occurrence/failure_cause`，两个投影独立验证，
+  任一非法只省略该投影；private details、值、路径、credential、raw message、stdout/stderr 与 chain 均不投影；
+- check-config wrapper 添加 candidate occurrence 时保留 inner cause；runner producer 把 result occurrence 与 safe
+  code 分开，无 safe code 的 exception 只保留 unproven occurrence；schema/sandbox launch guard 可 cause-only；
+- historical launch `@1/@2/@3` 不由 current writer 采用；只在既有 frozen/offline compatibility seam 按原 shape
+  读取。
+
+这个 public-contract 改动命中 `AOX-DEBT-PREFLIGHT-STAGE-V2`。current formal preflight writer/verifier 升级为
+`aox_formal_preflight_failure@2`，stage 改为 `actual_launch_guard_pre_slot_claim`，并只嵌入 current `@4` 的
+schema/sandbox cause。历史 `@1 / effective_config_pre_slot_claim` 与 nested launch `@3` 由显式 legacy branch
+只读；writer 不降级、不 crossgrade，decision schema 不变。未增加 process/root/SQLite responsibility、closure
+mode 或 reconstruction branch，因此 `AOX-DEBT-EVIDENCE-MODULE-SPLIT` 未触发。
+
+OpenZyme 仍独占 protected environment 的读取和 effective config 解析；Codex 只消费 public
+`config-contract/config-candidate/check-config` 与 credential-safe failure。不存在 env fallback、auto-fill、
+corrected retry/loop、secret projection、frozen c002 recovery 或 authority/pin/live side effect。qualification
+regression 必须组合真实 wrapper 语义，证明 candidate occurrence 与 schema cause 同时可见；static registry 绑定
+shared owner，不能再用两个互不相交的 serializer unit tests 代替 composition。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

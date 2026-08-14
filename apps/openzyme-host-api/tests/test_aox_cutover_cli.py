@@ -1050,7 +1050,7 @@ def test_preflight_config_failure_seals_before_claim_or_root(
     launch_error = AoxCutoverLaunchError(
         "aox_launch_effective_config_schema_invalid",
         "closed preflight failure",
-        public_details={
+        public_cause={
             "kind": "schema_field",
             "identity": (
                 "effective_config.reliability.controlled_operation_owner_policy"
@@ -1104,10 +1104,10 @@ def test_preflight_config_failure_seals_before_claim_or_root(
     )
     assert observed["launch_profile"]["schema_id"] == ("aox_cutover_launch_profile@1")
     assert observed["failure"] == {
-        "schema_id": "aox_cutover_launch_failure@3",
+        "schema_id": "aox_cutover_launch_failure@4",
         "status": "failed",
         "failure_code": "aox_launch_effective_config_schema_invalid",
-        "failure_details": {
+        "failure_cause": {
             "kind": "schema_field",
             "identity": (
                 "effective_config.reliability.controlled_operation_owner_policy"
@@ -1389,9 +1389,9 @@ def test_config_candidate_outputs_the_exact_persisted_candidate(
 
     assert cli.main(argv) == 2
     failure = json.loads(capsys.readouterr().err)
-    assert failure["schema_id"] == "aox_cutover_launch_failure@3"
+    assert failure["schema_id"] == "aox_cutover_launch_failure@4"
     assert failure["failure_code"] == "aox_config_candidate_output_exists"
-    assert failure["failure_details"]["candidate_id"] == stdout["candidate_id"]
+    assert failure["failure_occurrence"]["candidate_id"] == stdout["candidate_id"]
 
 
 def test_config_candidate_preserves_unproven_publication_effect(
@@ -1419,10 +1419,12 @@ def test_config_candidate_preserves_unproven_publication_effect(
         == 2
     )
     failure = json.loads(capsys.readouterr().err)
-    assert failure["failure_details"]["effect_certainty"] == "unproven"
-    assert failure["failure_details"]["retry_eligibility"] == "reconcile_required"
-    assert failure["failure_details"]["reconciliation_required"] is True
-    assert failure["failure_details"]["terminal_scope"] == (
+    assert failure["failure_occurrence"]["effect_certainty"] == "unproven"
+    assert failure["failure_occurrence"]["retry_eligibility"] == (
+        "reconcile_required"
+    )
+    assert failure["failure_occurrence"]["reconciliation_required"] is True
+    assert failure["failure_occurrence"]["terminal_scope"] == (
         "config_candidate_publication_occurrence"
     )
     assert "private publication detail" not in json.dumps(failure)
@@ -1495,8 +1497,10 @@ def test_check_config_source_drift_rejects_the_supplied_candidate_identity(
         cli._check_config(args)
 
     assert error.value.code == "aox_config_candidate_source_drift"
-    assert error.value.public_details["candidate_id"] == candidate["candidate_id"]
-    assert error.value.public_details["exact_handle"] == candidate["candidate_id"]
+    assert error.value.public_occurrence["candidate_id"] == (
+        candidate["candidate_id"]
+    )
+    assert error.value.public_occurrence["exact_handle"] == candidate["candidate_id"]
 
     malformed = tmp_path / "malformed-candidate.json"
     malformed.write_text("not-json\n", encoding="utf-8")
@@ -1504,7 +1508,60 @@ def test_check_config_source_drift_rejects_the_supplied_candidate_identity(
     with pytest.raises(AoxCutoverLaunchError) as malformed_error:
         cli._check_config(args)
     assert malformed_error.value.code == "aox_config_candidate_unreadable"
-    assert malformed_error.value.public_details == {}
+    assert malformed_error.value.public_occurrence == {}
+
+
+def test_check_config_preserves_candidate_occurrence_and_schema_cause(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    raw_settings = SimpleNamespace(
+        test=SimpleNamespace(
+            live_llm=SimpleNamespace(token_ledger_path=str(ledger_path))
+        )
+    )
+    private_value = "private-effective-config-value"
+    monkeypatch.setattr(
+        OpenZymeSettings,
+        "from_env",
+        classmethod(lambda cls: raw_settings),
+    )
+
+    def reject_config(settings: object, *, ledger_path: Path) -> object:
+        del settings, ledger_path
+        raise AoxCutoverLaunchError(
+            "aox_launch_effective_config_schema_invalid",
+            "safe schema failure",
+            details={"private": private_value},
+            public_cause={
+                "kind": "schema_field",
+                "identity": "effective_config.reliability.owner_policy",
+                "missing": ["enabled"],
+            },
+        )
+
+    monkeypatch.setattr(cli, "build_aox_cutover_effective_config", reject_config)
+
+    assert (
+        cli.main(["check-config", "--ledger-path", str(ledger_path)])
+        == 2
+    )
+    failure = json.loads(capsys.readouterr().err)
+    assert failure["schema_id"] == "aox_cutover_launch_failure@4"
+    assert failure["failure_occurrence"]["kind"] == "config_candidate"
+    assert failure["failure_occurrence"]["phase"] == "validation"
+    assert failure["failure_occurrence"]["effect_certainty"] == "no_effect"
+    assert failure["failure_occurrence"]["terminal_scope"] == (
+        "config_candidate_occurrence"
+    )
+    assert failure["failure_cause"] == {
+        "kind": "schema_field",
+        "identity": "effective_config.reliability.owner_policy",
+        "missing": ["enabled"],
+    }
+    assert private_value not in json.dumps(failure)
 
 
 def test_pin_refuses_existing_output_before_runner_bootstrap(
@@ -1684,7 +1741,7 @@ def test_cli_redacts_chained_launch_failure(
                 "aox_launch_toolchain_pin_execution_failed",
                 "safe boundary message",
                 details={"private": private_value},
-                public_details={
+                public_cause={
                     "kind": "schema_field",
                     "identity": "effective_config.llm",
                     "private": private_value,
@@ -1710,13 +1767,13 @@ def test_cli_redacts_chained_launch_failure(
     assert captured.out == ""
     assert private_value not in captured.err
     assert json.loads(captured.err) == {
-        "schema_id": "aox_cutover_launch_failure@3",
+        "schema_id": "aox_cutover_launch_failure@4",
         "status": "failed",
         "failure_code": "aox_launch_toolchain_pin_execution_failed",
     }
 
 
-def test_cli_projects_only_explicit_public_launch_failure_details(
+def test_cli_projects_only_explicit_public_launch_failure_cause(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1732,7 +1789,7 @@ def test_cli_projects_only_explicit_public_launch_failure_details(
                 "identity": "effective_config.llm",
                 "private": private_value,
             },
-            public_details={
+            public_cause={
                 "kind": "schema_field",
                 "identity": "effective_config.llm",
                 "missing": ["enabled"],
@@ -1759,10 +1816,10 @@ def test_cli_projects_only_explicit_public_launch_failure_details(
     assert captured.out == ""
     assert private_value not in captured.err
     assert json.loads(captured.err) == {
-        "schema_id": "aox_cutover_launch_failure@3",
+        "schema_id": "aox_cutover_launch_failure@4",
         "status": "failed",
         "failure_code": "aox_launch_effective_config_schema_invalid",
-        "failure_details": {
+        "failure_cause": {
             "kind": "schema_field",
             "identity": "effective_config.llm",
             "missing": ["enabled"],
@@ -1771,7 +1828,7 @@ def test_cli_projects_only_explicit_public_launch_failure_details(
     }
 
 
-def test_cli_projects_only_closed_runner_attestation_details(
+def test_cli_projects_only_closed_runner_occurrence_and_cause(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1782,7 +1839,7 @@ def test_cli_projects_only_closed_runner_attestation_details(
             "aox_launch_toolchain_pin_execution_failed",
             "safe boundary message",
             details={"private": "runner-private-path"},
-            public_details={
+            public_occurrence={
                 "kind": "runner_attestation",
                 "tool_id": "bio_tools.mafft",
                 "stage": "runner_result",
@@ -1795,7 +1852,10 @@ def test_cli_projects_only_closed_runner_attestation_details(
                 "scientific_attempt_counted": False,
                 "runner_run_id": "run_aox_pin_mafft",
                 "runner_attempt_receipt_digest": "sha256:" + "b" * 64,
-                "runner_error_code": "SSH_CONNECTION_TIMEOUT",
+            },
+            public_cause={
+                "kind": "runner_error",
+                "failure_code": "SSH_CONNECTION_TIMEOUT",
             },
         )
 
@@ -1817,10 +1877,10 @@ def test_cli_projects_only_closed_runner_attestation_details(
     assert result == 2
     assert "runner-private-path" not in captured.err
     assert json.loads(captured.err) == {
-        "schema_id": "aox_cutover_launch_failure@3",
+        "schema_id": "aox_cutover_launch_failure@4",
         "status": "failed",
         "failure_code": "aox_launch_toolchain_pin_execution_failed",
-        "failure_details": {
+        "failure_occurrence": {
             "kind": "runner_attestation",
             "tool_id": "bio_tools.mafft",
             "stage": "runner_result",
@@ -1833,7 +1893,10 @@ def test_cli_projects_only_closed_runner_attestation_details(
             "scientific_attempt_counted": False,
             "runner_run_id": "run_aox_pin_mafft",
             "runner_attempt_receipt_digest": "sha256:" + "b" * 64,
-            "runner_error_code": "SSH_CONNECTION_TIMEOUT",
+        },
+        "failure_cause": {
+            "kind": "runner_error",
+            "failure_code": "SSH_CONNECTION_TIMEOUT",
         },
     }
 
@@ -1841,12 +1904,11 @@ def test_cli_projects_only_closed_runner_attestation_details(
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("runner_error_code", "Private_Path"),
         ("runner_run_id", "../../private"),
         ("runner_attempt_receipt_digest", "sha256:not-a-digest"),
     ],
 )
-def test_cli_rejects_unclosed_runner_attestation_details(
+def test_cli_rejects_unclosed_runner_occurrence(
     field: str,
     value: str,
 ) -> None:
@@ -1855,18 +1917,29 @@ def test_cli_rejects_unclosed_runner_attestation_details(
         "tool_id": "bio_tools.mafft",
         "stage": "runner_result",
         "effect_certainty": "no_effect",
-        "runner_error_code": "transport_connect_failed",
         "runner_run_id": "run_aox_pin_mafft",
         "runner_attempt_receipt_digest": "sha256:" + "b" * 64,
+        "phase": "terminal",
+        "retry_eligibility": "terminal",
+        "reconciliation_required": False,
+        "terminal_scope": "runner_operation_occurrence",
+        "authority_scope": "preparation_only",
+        "scientific_attempt_counted": False,
     }
     details[field] = value
     error = AoxCutoverLaunchError(
         "aox_launch_toolchain_pin_execution_failed",
         "safe boundary message",
-        public_details=details,
+        public_occurrence=details,
+        public_cause={
+            "kind": "runner_error",
+            "failure_code": "transport_connect_failed",
+        },
     )
 
-    assert cli._public_launch_failure_details(error) is None
+    payload = cli.aox_cutover_launch_failure_payload(error)
+    assert "failure_occurrence" not in payload
+    assert payload["failure_cause"]["failure_code"] == "transport_connect_failed"
 
 
 def test_cli_redacts_unexpected_settings_failure(

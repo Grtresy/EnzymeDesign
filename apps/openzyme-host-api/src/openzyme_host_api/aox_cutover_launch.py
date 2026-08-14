@@ -50,6 +50,7 @@ from .aox_cutover_runtime_config import AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS
 from .aox_cutover_runtime_config import AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
 from .aox_cutover_runtime_config import AoxRuntimeConfigSchemaError
 from .aox_cutover_runtime_config import normalize_aox_blank_world_runtime_config
+from .aox_launch_failure import AoxCutoverLaunchError
 from .aox_scientific_contract import AOX_SELECTED_CHAIN_CONTRACT_V2
 from .aox_scientific_contract import (
     AOX_SELECTED_CHAIN_WORKFLOW_CONTRACT_DIGEST,
@@ -139,9 +140,6 @@ _WORKFLOW_REF_PATTERN = re.compile(
     r"^workflow:[a-z0-9][a-z0-9._-]{0,127}"
     r"@[0-9]+\.[0-9]+\.[0-9]+#sha256:[0-9a-f]{64}$"
 )
-_PUBLIC_RUNNER_ERROR_CODE_PATTERN = re.compile(
-    r"(?:[A-Z][A-Z0-9_]{0,63}|[a-z][a-z0-9_]{0,95})"
-)
 _PUBLIC_RUNNER_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _PUBLIC_RUNNER_EFFECT_CERTAINTIES = frozenset(
     {
@@ -153,22 +151,7 @@ _PUBLIC_RUNNER_EFFECT_CERTAINTIES = frozenset(
 )
 
 
-class AoxCutoverLaunchError(RuntimeError):
-    def __init__(
-        self,
-        code: str,
-        message: str,
-        *,
-        details: Mapping[str, object] | None = None,
-        public_details: Mapping[str, object] | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.code = code
-        self.details = {} if details is None else dict(details)
-        self.public_details = {} if public_details is None else dict(public_details)
-
-
-def _toolchain_pin_public_failure_details(
+def _toolchain_pin_public_failure_projections(
     *,
     tool_id: str,
     stage: str,
@@ -177,7 +160,7 @@ def _toolchain_pin_public_failure_details(
     request_digest: str | None = None,
     reservation_identity_digest: str | None = None,
     runner_run_id: str | None = None,
-) -> dict[str, object]:
+) -> dict[str, Mapping[str, object]]:
     """Project only closed, source-bound runner facts across the public boundary."""
 
     details: dict[str, object] = {
@@ -241,12 +224,15 @@ def _toolchain_pin_public_failure_details(
         and _PUBLIC_RUNNER_ID_PATTERN.fullmatch(runner_run_id) is not None
     ):
         details["runner_run_id"] = runner_run_id
-    if (
-        isinstance(error_code, str)
-        and _PUBLIC_RUNNER_ERROR_CODE_PATTERN.fullmatch(error_code) is not None
-    ):
-        details["runner_error_code"] = error_code
-    return details
+    projections: dict[str, Mapping[str, object]] = {
+        "public_occurrence": details
+    }
+    if isinstance(error_code, str):
+        projections["public_cause"] = {
+            "kind": "runner_error",
+            "failure_code": error_code,
+        }
+    return projections
 
 
 @dataclass(frozen=True, slots=True)
@@ -480,7 +466,7 @@ def _probe_sandbox_runtime_identity() -> Mapping[str, object]:
     preflight = PodmanPipelineSandboxRunner().preflight()
     if not preflight.ok or not isinstance(preflight.runtime_identity, dict):
         failure_code = preflight.failure_code
-        public_details = (
+        public_cause = (
             {"kind": "sandbox_runtime", "failure_code": failure_code}
             if failure_code in PODMAN_SANDBOX_PREFLIGHT_FAILURE_CODES
             else None
@@ -488,7 +474,7 @@ def _probe_sandbox_runtime_identity() -> Mapping[str, object]:
         raise AoxCutoverLaunchError(
             "aox_launch_sandbox_preflight_failed",
             "AOX cutover sandbox runtime identity is unavailable",
-            public_details=public_details,
+            public_cause=public_cause,
         )
     return dict(preflight.runtime_identity)
 
@@ -1129,12 +1115,12 @@ def build_aox_cutover_effective_config(
             expected_runner_contracts=AOX_TOOLCHAIN_RUNTIME_CONTRACTS,
         )
     except AoxRuntimeConfigSchemaError as exc:
-        public_details = exc.details()
+        schema_details = exc.details()
         raise AoxCutoverLaunchError(
             "aox_launch_effective_config_schema_invalid",
             "AOX cutover effective configuration violates its closed schema",
-            details=public_details,
-            public_details={"kind": "schema_field", **public_details},
+            details=schema_details,
+            public_cause={"kind": "schema_field", **schema_details},
         ) from exc
     return AoxCutoverEffectiveConfig(
         settings=effective,
@@ -1401,7 +1387,7 @@ def attest_aox_toolchain_image_digests(
                     "tool_id": tool_id,
                     "failure_type": type(exc).__name__,
                 },
-                public_details=_toolchain_pin_public_failure_details(
+                **_toolchain_pin_public_failure_projections(
                     tool_id=tool_id,
                     stage="runner_call",
                     exception=exc,
@@ -1432,7 +1418,7 @@ def attest_aox_toolchain_image_digests(
                 "aox_launch_toolchain_pin_execution_failed",
                 "AOX toolchain pin did not complete as an authoritative SSH run",
                 details={"tool_id": tool_id},
-                public_details=_toolchain_pin_public_failure_details(
+                **_toolchain_pin_public_failure_projections(
                     tool_id=tool_id,
                     stage="runner_result",
                     result=result if isinstance(result, Mapping) else None,
@@ -1450,7 +1436,7 @@ def attest_aox_toolchain_image_digests(
                 "aox_launch_toolchain_pin_identity_missing",
                 "AOX toolchain pin lacks its closed same-shell runtime identity",
                 details={"tool_id": tool_id},
-                public_details=_toolchain_pin_public_failure_details(
+                **_toolchain_pin_public_failure_projections(
                     tool_id=tool_id,
                     stage="runner_result",
                     result=result,
@@ -1479,7 +1465,7 @@ def attest_aox_toolchain_image_digests(
                 "aox_launch_toolchain_pin_identity_mismatch",
                 "AOX toolchain pin identity differs from the effective runner contract",
                 details={"tool_id": tool_id, "fields": mismatched},
-                public_details=_toolchain_pin_public_failure_details(
+                **_toolchain_pin_public_failure_projections(
                     tool_id=tool_id,
                     stage="runner_result",
                     result=result,
@@ -1503,7 +1489,7 @@ def attest_aox_toolchain_image_digests(
                 "aox_launch_toolchain_pin_output_invalid",
                 "AOX toolchain pin did not return its exact declared output closure",
                 details={"tool_id": tool_id},
-                public_details=_toolchain_pin_public_failure_details(
+                **_toolchain_pin_public_failure_projections(
                     tool_id=tool_id,
                     stage="runner_result",
                     result=result,
@@ -1526,7 +1512,7 @@ def attest_aox_toolchain_image_digests(
                         "output_id": output_path,
                         "failure_type": type(exc).__name__,
                     },
-                    public_details=_toolchain_pin_public_failure_details(
+                    **_toolchain_pin_public_failure_projections(
                         tool_id=tool_id,
                         stage="runner_result",
                         result=result,
@@ -1541,7 +1527,7 @@ def attest_aox_toolchain_image_digests(
                     "aox_launch_toolchain_pin_output_invalid",
                     "AOX toolchain pin output was not materialized as a regular file",
                     details={"tool_id": tool_id, "output_id": output_path},
-                    public_details=_toolchain_pin_public_failure_details(
+                    **_toolchain_pin_public_failure_projections(
                         tool_id=tool_id,
                         stage="runner_result",
                         result=result,

@@ -301,10 +301,19 @@ outcome，且current/legacy schema不能互相adopt；该claim必须绑定并由
 
 若 current authority 已消费，但 pinned profile/effective-config 在 slot claim 与 root 前失败，CLI
 只在 claim 不存在且 campaign root absent/empty 时封存 source-bound
-`aox_formal_preflight_failure@1`。`verify-preflight-failure` 与
+`aox_formal_preflight_failure@2 / failed_stage=actual_launch_guard_pre_slot_claim`。它嵌入 current
+`aox_cutover_launch_failure@4`，并由同一 AOX-family normalizer 分开验证 occurrence 与 cause；formal
+preflight 只采用 schema/sandbox cause，不采用另一个 lifecycle occurrence。`verify-preflight-failure` 与
 `decide --preflight-failure` 是纯离线专用 NO-GO 路径，必须证明零 Host/session/attempt/MICU/provider/
 runner/HPC/browser effect，且不得生成 launch/attempt identity。r75 发生时没有该 current receipt 链，
-因此保持 blocked/noncanonical，不允许回填。
+因此保持 blocked/noncanonical，不允许回填。历史 `aox_formal_preflight_failure@1` 与 nested launch
+failure `@3` 只读，不能被 current writer adoption。
+
+AOX admission 与 owner-constraint regressions 还必须直接组合 `check-config` adapter：当 runtime normalizer
+给出 source-authorized schema cause 时，public `@4` 同时保留 exact candidate
+`no_effect/terminal/config_candidate_occurrence`，不得由 lifecycle wrapper 覆盖 cause。该断言补足通用
+`world-fidelity.earliest-cause-visible` 只覆盖 task/runtime envelope 的空白；它不运行 qualification、读取
+protected environment 值、调用 runner 或产生任何 external effect。
 
 claim/root后、child-ready前的sandbox bootstrap failure只有在
 `aox_supervised_host_pre_ready_failure@2`证明live process identity、start claim、exact descendant retirement、fresh

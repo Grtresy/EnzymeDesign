@@ -84,9 +84,10 @@ Before consuming one-use formal authority, the operator MUST establish that the 
 
 #### Scenario: Seal a consumed-authority configuration failure before slot claim
 - **WHEN** one current formal authority plan has been consumed, its exact slot is still unclaimed, its campaign attempt root is absent or empty, and reconstruction of the bound launch profile or current effective configuration fails with a safe public launch error
-- **THEN** preflight atomically seals one source-bound `aox_formal_preflight_failure@1` sibling that embeds and revalidates the identity, prerequisites, qualification, launch profile, authority plan and consumption bytes; it proves no slot claim, attempt root, Host, session, scientific attempt, MICU, provider, runner, HPC or browser effect, and the original preflight command still returns the typed failure
+- **THEN** preflight atomically seals one source-bound `aox_formal_preflight_failure@2` sibling with `failed_stage=actual_launch_guard_pre_slot_claim` that embeds and revalidates the identity, prerequisites, qualification, launch profile, authority plan, consumption bytes and current safe launch cause; it proves no slot claim, attempt root, Host, session, scientific attempt, MICU, provider, runner, HPC or browser effect, and the original preflight command still returns the typed failure
 - **AND** pure `verify-preflight-failure` plus `decide --preflight-failure` MAY append one `aox_blank_world_campaign_preflight_failure_decision@1` canonical `NO-GO` with empty attempt ids/digests, but MUST NOT invent a `launch_id`, scientific attempt bundle or campaign success
-- **AND** a historical failure lacking these source-bound current-schema bytes MUST remain its original blocked/noncanonical evidence and MUST NOT be retroactively backfilled
+- **AND** historical `aox_formal_preflight_failure@1 / effective_config_pre_slot_claim` with nested launch failure `@3` MAY remain readable only by its explicit historical verifier branch; current writers MUST NOT emit, adopt, crossgrade or retroactively backfill it
+- **AND** a historical failure lacking these source-bound current-schema bytes MUST NOT be retroactively backfilled
 
 #### Scenario: Reject launch or inter-attempt drift
 - **WHEN** the checkout is dirty, a declared field is missing/extra/malformed, or checkout/workflow/scoring/image/SDK/effective configuration differs initially or before a later attempt
@@ -159,13 +160,19 @@ qualification failure code、report、product defect 或 canonical NO-GO。
 
 一次配置验证失败 MUST 公开 `effect_certainty=no_effect`、`retry_eligibility=terminal`、`reconciliation_required=false`、`terminal_scope=config_candidate_occurrence`、exact candidate handle/idempotency identity 与 current contract digest，并且只终结该候选 occurrence。candidate publication 在未安装 target 或已完整清理时 MUST 公开 `no_effect/terminal/reconciliation_required=false` 与 `config_candidate_publication_occurrence`；若安装后的 durability/cleanup 无法证明，MUST 公开 `unproven/reconcile_required/reconciliation_required=true` 和同一 exact candidate identity，不得把它改写成成功、无副作用或可自动重发。Harness/CLI MUST NOT 自动改写 profile、自动重发 validation/publication、复用被拒候选 identity 或探测 runner/provider。Agent MAY 在现有权限与预算内，根据 current machine contract 显式调整自己的 command-scoped profile，原子发布 identity-distinct 新 candidate，再以一条新的显式 `check-config` 验证；这不是旧 occurrence 的 retry，也不得自动授权 `pin`。current contract/schema 变化时必须重新构造候选，不得机械复用历史 identity。
 
-当前 `openzyme-aox-cutover` 启动命令 SHALL 以闭合的 `aox_cutover_launch_failure@3` 公开失败。该对象 MUST 包含 `schema_id`、`status` 与 `failure_code`；只有失败源明确标记为可公开时，才 MAY 增加 closed tagged-union `failure_details`。schema branch MUST 使用 `kind=schema_field`，并只保留逻辑字段标识 `identity` 以及可选的 `missing`、`unexpected`。runner branch MUST 使用 `kind=runner_attestation`，并只保留 AOX contract `tool_id`、可选安全 `runner_run_id`、可选 `runner_attempt_receipt_digest`、`stage=runner_call|runner_result`、closed effect certainty 与可选的安全 machine `runner_error_code`；code 只能是全大写执行码或全小写 source-causal code，不接受混合大小写或自由文本。sandbox runtime branch MUST 使用 exact `kind=sandbox_runtime` 与一个 `failure_code`，且后者只能是 `pipeline_sdk_source_unavailable`、`podman_binary_unavailable`、`podman_rootless_preflight_failed`、`sandbox_image_identity_invalid`、`sandbox_image_unavailable` 或 `sandbox_runtime_identity_drift`。它不得包含配置值、Host/runner 路径、凭据、原始消息、stderr/stdout、异常表示或异常链。内部 `details` 不得因存在而自动升级为公开证据。历史 `aox_cutover_launch_failure@1/@2` 只可作为冻结记录读取，不得冒充当前失败 receipt。
+当前 `openzyme-aox-cutover` 启动命令 SHALL 以闭合的 `aox_cutover_launch_failure@4` 公开失败。该对象 MUST 包含 `schema_id`、`status` 与 `failure_code`，并 MAY 独立包含 `failure_occurrence` 与 `failure_cause`。`failure_occurrence` MUST 只使用 `kind=config_candidate|runner_attestation` 并保留 exact identity、lifecycle、effect、retry、reconciliation 与 terminal-scope；`failure_cause` MUST 只使用 `kind=schema_field|sandbox_runtime|runner_error`。schema cause 只保留逻辑 `identity` 与可选排序去重的 `missing/unexpected`；sandbox cause 只保留 `pipeline_sdk_source_unavailable`、`podman_binary_unavailable`、`podman_rootless_preflight_failed`、`sandbox_image_identity_invalid`、`sandbox_image_unavailable` 或 `sandbox_runtime_identity_drift`；runner cause 只接受全大写执行码或全小写 source-causal code。两个投影 MUST 独立闭合与脱敏：一个投影非法只能省略该投影，不得覆盖另一个合法投影。配置值、Host/runner 路径、凭据、原始消息、stderr/stdout、异常表示或异常链 MUST NOT 被投影；内部 `details` 不构成公开许可。历史 `aox_cutover_launch_failure@1/@2/@3` 只可作为冻结记录或显式历史 reader 输入，不得冒充 current receipt。
+
+OpenZyme SHALL 由 production settings/profile owner 读取 protected environment；Codex 只消费 credential-safe public contract/candidate/check/failure。任何 operator flow MUST NOT 要求 Codex 读取 env、自动补配置、按字段 retry/loop、从异常链提取 secret，或用 private builder 替代 public owner。
 
 AOX 有效配置中的 `research.mcp_enabled=true` SHALL 来自 Host 的权威能力投影，不得从无产品消费者的 `OPENZYME_RESEARCH_MCP_ENABLED` 环境开关或 `ResearchSettings` 影子字段推导。Codex 测试操作员 MUST 区分封存观测、依据当前源码形成的推论与尚未证实的假设；没有公开内部事实时必须保留 `exact_identity_unproven`，不得仅凭假设请求或执行纠正后重试（corrected retry）、授权消费（authority consumption）或其他状态变更。
 
 #### Scenario: 保留字段级原因而不泄露配置值
 - **WHEN** 有效配置违反闭合 schema，且 schema 校验器给出安全的逻辑字段标识
-- **THEN** `check-config` 或 `pin` 在解析实际身份、创建 attempt root 或产生 MICU/provider/runner effect 之前返回 `aox_cutover_launch_failure@3`，以 `failure_code=aox_launch_effective_config_schema_invalid` 保留外层原因，并只在 `failure_details.kind=schema_field` 中投影获准的字段标识
+- **THEN** `check-config` 或 `pin` 在解析实际身份、创建 attempt root 或产生 MICU/provider/runner effect 之前返回 `aox_cutover_launch_failure@4`，以 `failure_code=aox_launch_effective_config_schema_invalid` 保留外层原因，并只在 `failure_cause.kind=schema_field` 中投影获准的字段标识
+
+#### Scenario: 同时保留配置 occurrence 与字段 cause
+- **WHEN** `check-config` 已建立 exact credential-safe candidate identity，随后 production runtime normalizer 给出 source-authorized schema-field cause
+- **THEN** 同一 `@4` 同时包含 `failure_occurrence.kind=config_candidate` 的 `no_effect/terminal/config_candidate_occurrence` 与 `failure_cause.kind=schema_field`；wrapper MUST NOT 让任一正交事实覆盖另一事实
 
 #### Scenario: 公开预检不通过私有实现自证
 - **WHEN** Codex 准备一次 fresh pin 并需要证明当前启动配置可被 AOX 闭集接受
@@ -189,19 +196,19 @@ AOX 有效配置中的 `research.mcp_enabled=true` SHALL 来自 Host 的权威�
 
 #### Scenario: 保留 runner 最早类型化原因
 - **WHEN** forced-SSH toolchain pin 返回 terminal runner result，且其中有安全 `error_code` 与 effect certainty
-- **THEN** CLI 返回 `aox_cutover_launch_failure@3`，保留外层 `aox_launch_toolchain_pin_execution_failed`，并在 `failure_details.kind=runner_attestation` 中投影 exact tool、可用的 run/receipt identity、result stage、effect certainty 与同一 source-bound `runner_error_code`；不得把它压平为只有 digest 或 generic wrapper
+- **THEN** CLI 返回 `aox_cutover_launch_failure@4`，保留外层 `aox_launch_toolchain_pin_execution_failed`，在 `failure_occurrence.kind=runner_attestation` 投影 exact tool、可用的 run/receipt identity、result stage 与 effect certainty，并在独立 `failure_cause.kind=runner_error` 保留同一 source-bound machine code；不得把它压平为只有 digest 或 generic wrapper
 
 #### Scenario: 保留 actual sandbox runtime 原因
 - **WHEN** preflight 的 full actual launch resolver在slot claim前发现Podman binary/rootless/image、Pipeline SDK或pinned runtime identity不可用或漂移
-- **THEN** CLI保留外层 `aox_launch_sandbox_preflight_failed`，并只在 `failure_details.kind=sandbox_runtime` 投影allowlisted `failure_code`；不得公开command、路径、stdout/stderr或异常链，且不得创建claim/root
+- **THEN** CLI保留外层 `aox_launch_sandbox_preflight_failed`，并只在 `failure_cause.kind=sandbox_runtime` 投影allowlisted `failure_code`；不得公开command、路径、stdout/stderr或异常链，且不得创建claim/root
 
 #### Scenario: runner 调用异常保持 effect 未证明
 - **WHEN** runner boundary 在返回闭合 result 前抛出异常
-- **THEN** CLI 只公开 exact tool、`stage=runner_call` 与 `effect_certainty=unproven`，仅在异常本身携带符合安全 machine-code schema 的 code 时公开该 code，且不输出异常类型、消息、路径或 chain
+- **THEN** CLI 只在 `failure_occurrence` 公开 exact tool、`stage=runner_call` 与 `effect_certainty=unproven`；仅在异常本身携带符合安全 machine-code schema 的 code 时增加独立 `failure_cause`，且不输出异常类型、消息、路径或 chain
 
 #### Scenario: 内部详情不自动成为公开证据
-- **WHEN** 启动错误内部 `details` 含有私有值、路径、凭据或任意异常文本，但错误源没有明确提供 `public_details`
-- **THEN** CLI 只公开稳定的 `failure_code`，不输出 `failure_details`，也不泄露异常链
+- **WHEN** 启动错误内部 `details` 含有私有值、路径、凭据或任意异常文本，但错误源没有明确提供 `public_occurrence` 或 `public_cause`
+- **THEN** CLI 只公开稳定的 `failure_code`，不输出两个 public projection，也不泄露异常链
 
 #### Scenario: 未证明的假设不得授权纠正后重试
 - **WHEN** 冻结的公开失败只有外层 wrapper，源码检查只能缩小可能原因而不能证明精确身份
