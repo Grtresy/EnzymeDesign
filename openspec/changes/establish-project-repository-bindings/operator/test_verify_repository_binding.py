@@ -50,6 +50,7 @@ def isolated_git_repository(
     _write(repository, "docs/架构.md", "baseline\n")
     _write(repository, "mainline.toml", "profile = 'test'\n")
     _write(repository, "test.lock", "locked\n")
+    _write(repository, ".gitignore", "local-only.lock\n")
     _git(repository, "add", "--all")
     _git(repository, "commit", "-m", "baseline")
 
@@ -662,6 +663,44 @@ def test_staged_acceptance_only_addition_preserves_mainline_identity(
     VERIFIER._verify_mainline_source_identity(
         _receipt_with_source_identity(mainline_source_identity),
         revision=None,
+        changed=changed,
+    )
+
+
+def test_publication_preserves_sealed_environment_only_lock_identity(
+    isolated_git_repository: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        VERIFIER,
+        "MAINLINE_LOCK_PATHS",
+        ("local-only.lock", "test.lock"),
+    )
+    _write(
+        isolated_git_repository,
+        "src/implementation.py",
+        "VALUE = 'published implementation'\n",
+    )
+    _write(isolated_git_repository, "local-only.lock", "environment lock\n")
+    source_identity = _current_source_identity()
+    assert source_identity["locks"][0]["kind"] == "file"
+
+    _git(isolated_git_repository, "add", "src/implementation.py")
+    _git(isolated_git_repository, "commit", "-m", "publish implementation")
+    publication_revision = _git(isolated_git_repository, "rev-parse", "HEAD")
+    changed = _git(
+        isolated_git_repository,
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--name-only",
+        VERIFIER.BASELINE_REVISION,
+        publication_revision,
+    ).splitlines()
+
+    VERIFIER._verify_mainline_source_identity(
+        _receipt_with_source_identity(source_identity),
+        revision=publication_revision,
         changed=changed,
     )
 

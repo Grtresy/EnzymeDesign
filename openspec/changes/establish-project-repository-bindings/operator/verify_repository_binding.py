@@ -535,8 +535,18 @@ def _verify_mainline_source_identity(
         if paths != sorted(paths) or len(paths) != len(set(paths)):
             raise ValueError(f"C1 mainline {group} paths are not sorted and unique")
         for item in entries:
-            if item != _snapshot_file_identity(item["path"], revision):
-                raise ValueError(f"C1 mainline source identity drift: {item['path']}")
+            published_identity = _snapshot_file_identity(item["path"], revision)
+            if item == published_identity:
+                continue
+            if (
+                revision is not None
+                and group == "locks"
+                and published_identity["kind"] == "missing"
+                and _snapshot_file_identity(item["path"], BASELINE_REVISION)["kind"]
+                == "missing"
+            ):
+                continue
+            raise ValueError(f"C1 mainline source identity drift: {item['path']}")
     if tuple(item["path"] for item in source["configurations"]) != (
         MAINLINE_CONFIGURATION_PATHS
     ):
