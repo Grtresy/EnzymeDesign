@@ -1,0 +1,469 @@
+{
+  "schema_id": "aox_artifact_cutover_frozen_inventory@1",
+  "legacy_change": {
+    "change_id": "aox-hmm-blank-world-cutover",
+    "source_path": "openspec/changes/aox-hmm-blank-world-cutover",
+    "frozen_source_revision": "e47fe4ce24f7e08a7cf202eab970a5ab54ea9cdf",
+    "frozen_change_tree": {
+      "file_count": 7,
+      "total_bytes": 541953,
+      "tree_digest": "sha256:735ef9389368b4ab8eaf5f5d021fc6979badcde66b03f8ce431fb9573b6c055f"
+    },
+    "governance_snapshot_revision": "3c7774345baa4fd0635586faa27e7d7fa2156868",
+    "governance_change_tree": {
+      "file_count": 7,
+      "total_bytes": 553161,
+      "tree_digest": "sha256:d843607c812964d4cbe7cb7305f1e62f5cc40816aa663a9cd3d8bdd96e519f30"
+    },
+    "current_status": "active_legacy_change_with_six_pending_live_tasks",
+    "artifact_catalog_staging_delta": "historical_only_never_sync_to_main_specs"
+  },
+  "legacy_tasks": [
+    {
+      "task_id": "8.3",
+      "source_path": "openspec/changes/aox-hmm-blank-world-cutover/tasks.md",
+      "schema_or_id": "openspec_task:8.3",
+      "digest": "sha256:f9f193cb8160d9b294d1a3573c51bc1aab58d574e3b82bc91e1082cf3a530c9e",
+      "status": "pending_unexecuted"
+    },
+    {
+      "task_id": "8.4",
+      "source_path": "openspec/changes/aox-hmm-blank-world-cutover/tasks.md",
+      "schema_or_id": "openspec_task:8.4",
+      "digest": "sha256:79c30850512ce78215581c2fd0492073340b13659d5a96c1a1c2e14d71bd1f0b",
+      "status": "pending_unexecuted"
+    },
+    {
+      "task_id": "8.5",
+      "source_path": "openspec/changes/aox-hmm-blank-world-cutover/tasks.md",
+      "schema_or_id": "openspec_task:8.5",
+      "digest": "sha256:aef398547cbb910f85e3942f3da0bec5f761364b8f185da377e08a9f1edcd434",
+      "status": "pending_unexecuted"
+    },
+    {
+      "task_id": "8.6",
+      "source_path": "openspec/changes/aox-hmm-blank-world-cutover/tasks.md",
+      "schema_or_id": "openspec_task:8.6",
+      "digest": "sha256:4eafa9636a17325f5808371b1e2783e8b735b6fbb47a73c4e0e2075869cf15f9",
+      "status": "pending_unexecuted"
+    },
+    {
+      "task_id": "8.7",
+      "source_path": "openspec/changes/aox-hmm-blank-world-cutover/tasks.md",
+      "schema_or_id": "openspec_task:8.7",
+      "digest": "sha256:be804ca7c70549ad526e806fc0d9f1b36e6d33e060519ffc8b8f10438636fbb2",
+      "status": "pending_unexecuted"
+    },
+    {
+      "task_id": "8.8",
+      "source_path": "openspec/changes/aox-hmm-blank-world-cutover/tasks.md",
+      "schema_or_id": "openspec_task:8.8",
+      "digest": "sha256:63993ef06da7e08969e11471e713ac710084d2206d29e04c4b4862df23b4e2d6",
+      "status": "pending_unexecuted"
+    }
+  ],
+  "c001": {
+    "incident_id": "c001",
+    "source_revision": "e47fe4ce24f7e08a7cf202eab970a5ab54ea9cdf",
+    "campaign_id": "aox_campaign_9b88525edafde6cb643da624",
+    "launch_id": "formal-slot-be41f223f1ebea0d8389a3fa",
+    "session_id": "sess_aox_formal_ffcec8565dd7abe16b88dbe1c68e12ea",
+    "attempt_id": "attempt_8f5b8e0430c5bfb036abea08",
+    "selection_id": "selection_8430d343987b39ca03687857",
+    "earliest_failure_id": "failure_c9bfd006a706eedb3878",
+    "root_ref": "formal-slots/aox_campaign_9b88525edafde6cb643da624/1/ffcec8565dd7abe16b88dbe1c68e12ea",
+    "attempt_status": "active_open_frozen",
+    "selection_status": "draft_frozen",
+    "slot_2_status": "not_created",
+    "slot_3_status": "not_created",
+    "bundle_status": "not_created",
+    "attestation_tree_status": "not_created",
+    "campaign_decision_status": "not_created",
+    "failure_code": "hpc_stage_ref_required",
+    "failure_effect_certainty": "no_effect",
+    "failure_retry_eligibility": "same_phase_safe",
+    "hmmbuild_operation_count": 0,
+    "operation_admitted": false,
+    "external_dispatch_started": false,
+    "finalizer_status": "rejected_host_supervision_receipt_invalid",
+    "nonterminal_mutation_scope_count": 1,
+    "canonical_outcome": "blocked_noncanonical_frozen_incident"
+  },
+  "source_snapshots": {
+    "c001_root": {
+      "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa",
+      "file_count": 174,
+      "total_bytes": 12032076,
+      "tree_digest": "sha256:cef6b23d006e77723ac2c73517a5529e6fcfc040602c0cc89aa948bf9696a1ec",
+      "excluded_runtime_sidecars": [
+        {
+          "path": "control-plane.sqlite3-shm",
+          "size": 32768,
+          "status": "sqlite_runtime_sidecar_non_authoritative"
+        },
+        {
+          "path": "control-plane.sqlite3-wal",
+          "size": 0,
+          "status": "sqlite_runtime_sidecar_non_authoritative"
+        }
+      ]
+    },
+    "control_plane_database": {
+      "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/control-plane.sqlite3",
+      "schema_or_id": "c001_control_plane_sqlite_snapshot",
+      "file_digest": "sha256:34566cc2d6581035d5a0a3fb40fd8565aca3350c9c37fb679bca9e17de6aab9a",
+      "size": 4673536,
+      "status": "frozen_read_only_source"
+    },
+    "external_documents": [
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-qualification/architecture-qualification-report.json",
+        "schema_or_id": "openzyme_v3_architecture_qualification_report@3",
+        "identity": "sha256:db99c7db747913d5d4f9bf784a284d710e3622da80018e91d3719d6cda37eb12",
+        "file_digest": "sha256:90dbe7b45255854c9c82a63afd6b20331115f66a1fe46e80a4646d714e04d503",
+        "status": "selected_qualification_source_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-config-candidate.json",
+        "schema_or_id": "aox_config_candidate@1",
+        "identity": "aox-config-e059ba83095cbc8605bb0be9c8d94b16",
+        "file_digest": "sha256:c40284985307535a6c80047454fd6f9cc6c222564d46cd0faf531b860e0b3bbd",
+        "status": "superseded_preparation_candidate_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-config-candidate-02.json",
+        "schema_or_id": "aox_config_candidate@1",
+        "identity": "aox-config-2c2e3ecb1050c96818c949c0da606762",
+        "file_digest": "sha256:0bbc94bd4767475717d9a5c1e8f5581febd0843e4ee3c9798aebe9c156ec4272",
+        "status": "selected_preparation_candidate_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-pin.json",
+        "schema_or_id": "aox_cutover_pin_identity",
+        "identity": "sha256:1832fb9207ab7a49c4c04c9c8bffc989dbce6311906e085c54ea2d6ce146c2be",
+        "file_digest": "sha256:5581fa35ff3a6670cbc743c5542f8b1eb4df195be27c2dc26fa39f9bd364a176",
+        "status": "consumed_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-prerequisites.json",
+        "schema_or_id": "aox_cutover_allowed_prerequisites",
+        "identity": "sha256:bacbd8592715054ab0e42f5d29ad65283719f227271600d68e41971001a96225",
+        "file_digest": "sha256:96ea8957ce45c5700d5cc1017265137110cc0ae553d31f80322a676fb6996318",
+        "status": "consumed_frozen"
+      }
+    ]
+  },
+  "identity_sets": {
+    "authorities": [
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-authority.json",
+        "schema_or_id": "aox_live_attempt_authority_plan@4",
+        "identity": "sha256:77bf3c9f44d25b4a597f60d1a151af939db8a307b6d23659bd8c2d3ed16e10fe",
+        "digest": "sha256:099eddb7a314fd8aeb6d9ed4b750645b753bd949a1a7e4a2cc3a3f930e979f65",
+        "status": "consumed_nonreusable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-authority.json.consumed.json",
+        "schema_or_id": "aox_live_attempt_authority_consumption@5",
+        "identity": "sha256:995884afdc08ccdda032f5901c09a1d0fa2fd72e1d567d482141aab3dbc538d9",
+        "digest": "sha256:a744963f46347fb2c2e67703af303fcc5aa68fc4a5ce35f43060ef8146d0aa7f",
+        "status": "consumed_nonreusable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-authority.json.slot-1.claimed.json",
+        "schema_or_id": "aox_attempt_authority_slot_claim@3",
+        "identity": "sha256:61d152a1721a2b0f206b94c5968aacbf3e72d0aa907a752af3a296235cae8a48",
+        "digest": "sha256:a9eeaf6459842d8df996004e7810dfce1f64236a3b60c9e138b37a017c8f1181",
+        "status": "claimed_nonreusable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/control-plane.sqlite3#scientific_attempt_authorization_records",
+        "schema_or_id": "scientific_attempt_authorization@1",
+        "identity": "attempt_authority_1b65d6349c54e0e5cfa26107",
+        "digest": "sha256:969028812d3b1e1f3ad5b1a35642692ea5847686bcdbeba257b18289bcb415ce",
+        "status": "exhausted_nonreusable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/control-plane.sqlite3#mutation_scope_records",
+        "schema_or_id": "mutation_scope@1",
+        "identity": "mutation_scope_attempt_8f5b8e0430c5bfb036abea08",
+        "digest": "sha256:5bfb92b47351f24d035afb44439ead1da075093f8ff7fdc6f58cf20ccec699c8",
+        "status": "open_nonterminal_nonreusable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/control-plane.sqlite3#approval_requests",
+        "schema_or_id": "controlled_operation_approval_set",
+        "identity": "appr_6ceb84afb93d+appr_782a626dfc25",
+        "digest": "sha256:adfab4e9c478c7e4af8fe3c5ba43e0c82e72eb6b62ecc985d2df6dabf228cb7c",
+        "status": "approved_historical_nonreusable_frozen"
+      }
+    ],
+    "roots": [
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/evidence/aox-attempt-preflight.json#root_proof",
+        "schema_or_id": "aox_blank_world_root_proof@3",
+        "identity": "sha256:086e199033793611f24db31c74c15069ff2cf770fa7596d0dae22a9994609075",
+        "digest": "sha256:0f1368bdac2cfbf9f572413405ecd75a1dedeb7b1d27570030ac196ef92cfe8b",
+        "status": "frozen_nonreusable"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-authority.json.slot-1.claimed.json#campaign_root_identity",
+        "schema_or_id": "aox_campaign_root_identity",
+        "identity": "sha256:5b0a1bd02216cf89bff75ab1ae63cf56b41ef09bc9c7dc3bb826b33576a8b201",
+        "digest": "sha256:a9eeaf6459842d8df996004e7810dfce1f64236a3b60c9e138b37a017c8f1181",
+        "status": "frozen_nonreusable"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa",
+        "schema_or_id": "c001_physical_root_snapshot",
+        "identity": "formal-slots/aox_campaign_9b88525edafde6cb643da624/1/ffcec8565dd7abe16b88dbe1c68e12ea",
+        "digest": "sha256:cef6b23d006e77723ac2c73517a5529e6fcfc040602c0cc89aa948bf9696a1ec",
+        "status": "frozen_nonreusable"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/control-plane.sqlite3#sandbox_workspace_records",
+        "schema_or_id": "sandbox_workspace",
+        "identity": "sw_e4669108e1d11e5e190725a7",
+        "digest": "sha256:1ea8d08b423f9408e77849747c3f8c78611f355a619a2fc9426e5c121537337a",
+        "status": "ready_historical_nonreusable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/control-plane.sqlite3#controlled_operation_records",
+        "schema_or_id": "hpc_workspace",
+        "identity": "hpcws_e23a546b8625a875",
+        "digest": "sha256:13e56f6830fcc70ced3821c4e0c9a65525923f6545bd31a033b1c57eee15908c",
+        "status": "historical_nonreusable_frozen"
+      }
+    ],
+    "receipts": [
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-qualification/architecture-qualification-report.json",
+        "schema_or_id": "aox_architecture_qualification_receipt@3",
+        "identity": "sha256:128848953bc74312951914c43e71b0ee602623d1b37f0e335768da3f772a79be",
+        "digest": "sha256:90dbe7b45255854c9c82a63afd6b20331115f66a1fe46e80a4646d714e04d503",
+        "status": "historical_nonreusable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/evidence/aox-attempt-preflight.json",
+        "schema_or_id": "aox_attempt_preflight@5",
+        "identity": "sha256:60719cda1e83a1671d1756c8380f10a70134599859428a74ddad574015143603",
+        "digest": "sha256:0f1368bdac2cfbf9f572413405ecd75a1dedeb7b1d27570030ac196ef92cfe8b",
+        "status": "historical_nonreusable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/evidence/aox-attempt-start-claim.json",
+        "schema_or_id": "aox_attempt_start_claim@1",
+        "identity": "sha256:e9e4218b01e42c522560e0ae4286355a7f12d182954a66ae657dd995ca89d0a1",
+        "digest": "sha256:84bfb97f883888688fc25d0c93ea5952afc43226666c36c9e9ffe5d426a61d44",
+        "status": "historical_nonreusable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/evidence/aox-host-startup.json",
+        "schema_or_id": "aox_supervised_host_startup@5",
+        "identity": "sha256:0cca3f9edcc1adbc964f995d00a67d982196069076159a0c68e7622e96180d47",
+        "digest": "sha256:e294ed6d2f6e1c19dbb623afe9530ddabf5564bf7030372ef55c0bfdd5316de7",
+        "status": "historical_nonreusable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/evidence/aox-host-supervision.json",
+        "schema_or_id": "aox_supervised_host_receipt@4",
+        "identity": "sha256:8d5d7bd41babe1fbbbe141ded940cf519511fd7c76ff25c6d9a1bc78b46c1b97",
+        "digest": "sha256:a1ee29364d972fa0c20da14e23a21625e6158e3cfd28ac3e93f7270009655db7",
+        "status": "retired_but_invalid_for_finalization_nonreusable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/evidence/aox-public-conductor-contract.json",
+        "schema_or_id": "aox_public_conductor_execution_contract@4",
+        "identity": "sha256:e2604f3d0a9a76b2101a76cd062685b236344dd9b7ded3f63e4bcb55a8e9102d",
+        "digest": "sha256:84386c06316a549ee8b52688f108d2494eaf2248e1bb02f8575d7daf6abe0f74",
+        "status": "historical_nonreusable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/evidence/aox-public-conductor-retirement-readiness.json",
+        "schema_or_id": "aox_public_conductor_retirement_readiness@1",
+        "identity": "sha256:0124d6900dae3b178e6d2af683f0e1ea6fdb18584a740af05c5c1092b37108bc",
+        "digest": "sha256:358b68f575262e191f3707c7497a537ed74d8fdbc4d4eaae82d0c52161511e07",
+        "status": "not_ready_nonreusable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/evidence/public-api-receipts.jsonl",
+        "schema_or_id": "openzyme_public_api_receipt@3[56]",
+        "identity": "sha256:dff0dd4cd72c3b2fedca31473c74069afe2cc279bcc2dc3d9878fe087d780e80",
+        "digest": "sha256:e017cea9708fc2bd0ce1d7f8cc541747ccbcabc787728d994867b9006f198815",
+        "status": "historical_nonreusable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/control-plane.sqlite3#command_receipt_records",
+        "schema_or_id": "command_receipt_records[4]",
+        "identity": "sha256:7dbe5aace1f5fd922c90877aae8a404326425f4a47e3317bb911c3e0ea4edbca",
+        "digest": "sha256:7dbe5aace1f5fd922c90877aae8a404326425f4a47e3317bb911c3e0ea4edbca",
+        "status": "historical_nonreusable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/control-plane.sqlite3#controlled_operation_result_handles",
+        "schema_or_id": "controlled_operation_result_handle@1[2]",
+        "identity": "sha256:acc432261d95568f75d9944dda6ab2f8a6352cbe4d5dfde1e4ad90384b46c2d0",
+        "digest": "sha256:acc432261d95568f75d9944dda6ab2f8a6352cbe4d5dfde1e4ad90384b46c2d0",
+        "status": "terminal_known_historical_nonreusable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/control-plane.sqlite3#controlled_operation_execution_events",
+        "schema_or_id": "controlled_operation_execution_event@1[14]",
+        "identity": "sha256:2b7cbd288f95f7695419580ea6cf163ad217e30a2402d234dd7a4bf7cdfab194",
+        "digest": "sha256:2b7cbd288f95f7695419580ea6cf163ad217e30a2402d234dd7a4bf7cdfab194",
+        "status": "historical_nonreusable_frozen"
+      }
+    ],
+    "byte_manifests": [
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/control-plane.sqlite3#session_artifact_records",
+        "schema_or_id": "session_artifact_records[28]",
+        "identity": "sha256:5c5bee6e9c09da54e46456f5c18e06b17aa38dff92c1ed5b74812a155a84f434",
+        "digest": "sha256:5c5bee6e9c09da54e46456f5c18e06b17aa38dff92c1ed5b74812a155a84f434",
+        "status": "historical_nonadoptable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/control-plane.sqlite3#controlled_operation_result_artifacts",
+        "schema_or_id": "controlled_operation_result_artifact@1[6]",
+        "identity": "sha256:90afea52080e71d3c1befe9c02b358614e7d897ff043718e1f894796e3ccc4e4",
+        "digest": "sha256:90afea52080e71d3c1befe9c02b358614e7d897ff043718e1f894796e3ccc4e4",
+        "status": "historical_nonadoptable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/blobs/sealed/files",
+        "schema_or_id": "sealed_content_addressed_files[9]",
+        "identity": "sha256:a2b3d61d21b772742a38b591f150bc6776ca2af1def9ff2fd6497762632e7363",
+        "digest": "sha256:a2b3d61d21b772742a38b591f150bc6776ca2af1def9ff2fd6497762632e7363",
+        "status": "historical_nonadoptable_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/blobs/sealed/source",
+        "schema_or_id": "sealed_source_tree_manifests[10]",
+        "identity": "sha256:0600045a3a0f68331f7a31d2c856ce7d537d24082ca6b3ad2047199d4daf3d8a",
+        "digest": "sha256:0600045a3a0f68331f7a31d2c856ce7d537d24082ca6b3ad2047199d4daf3d8a",
+        "status": "historical_nonadoptable_frozen"
+      }
+    ],
+    "entities": [
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/control-plane.sqlite3#scientific_attempt_records",
+        "schema_or_id": "scientific_attempt@1",
+        "identity": "attempt_8f5b8e0430c5bfb036abea08",
+        "digest": "sha256:8f5b8e0430c5bfb036abea0873acb5405fff6a6089e249a8075a7b0bf259e8cd",
+        "status": "active_open_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/control-plane.sqlite3#scientific_chain_selection_records",
+        "schema_or_id": "scientific_chain_selection@1",
+        "identity": "selection_8430d343987b39ca03687857",
+        "digest": "sha256:8430d343987b39ca036878576bc3b7669dae430fc232d4fec6dad64a76df488a",
+        "status": "draft_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/control-plane.sqlite3#failure_observation_records",
+        "schema_or_id": "failure_observation@1[15]",
+        "identity": "failure_c9bfd006a706eedb3878",
+        "digest": "sha256:3fc1e501cb409e97840d45b4949a0e38b9902bdafc4952f49cb04d656d1db782",
+        "status": "earliest_typed_cause_no_effect_frozen"
+      },
+      {
+        "source_path": "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/control-plane.sqlite3#controlled_operation_records",
+        "schema_or_id": "controlled_operation_set[2]",
+        "identity": "op_537f9cab9f53+op_e21e8bf2b758",
+        "digest": "sha256:cd7ae0f9724f0672a091373a787cbc1c9f3b8986d2cf57e220bd1a627f464e51+sha256:3818a9adc292f6f0e0a0d6a62e60844c98eac6f52238fc456a7612cd3abcdc42",
+        "status": "terminal_known_historical_frozen"
+      }
+    ]
+  },
+  "completeness_proof": {
+    "legacy_task_ids_exactly_once": true,
+    "c001_identity_unique": true,
+    "omitted_related_identity_count": 0,
+    "source_scopes_scanned": [
+      "git:e47fe4ce24f7e08a7cf202eab970a5ab54ea9cdf:openspec/changes/aox-hmm-blank-world-cutover",
+      "git:3c7774345baa4fd0635586faa27e7d7fa2156868:openspec/changes/aox-hmm-blank-world-cutover",
+      "/tmp/openzyme-rseries-c001-*",
+      "/tmp/aox-rseries-c001*",
+      "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/control-plane.sqlite3",
+      "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/evidence",
+      "/tmp/openzyme-rseries-c001-campaign/formal-slot-be41f223f1ebea0d8389a3fa/blobs/sealed"
+    ],
+    "sqlite_projections": {
+      "approvals": {
+        "count": 2,
+        "digest": "sha256:adfab4e9c478c7e4af8fe3c5ba43e0c82e72eb6b62ecc985d2df6dabf228cb7c"
+      },
+      "artifact_manifests": {
+        "count": 28,
+        "digest": "sha256:5c5bee6e9c09da54e46456f5c18e06b17aa38dff92c1ed5b74812a155a84f434"
+      },
+      "attempt_authority": {
+        "count": 1,
+        "digest": "sha256:969028812d3b1e1f3ad5b1a35642692ea5847686bcdbeba257b18289bcb415ce"
+      },
+      "command_receipts": {
+        "count": 4,
+        "digest": "sha256:7dbe5aace1f5fd922c90877aae8a404326425f4a47e3317bb911c3e0ea4edbca"
+      },
+      "execution_events": {
+        "count": 14,
+        "digest": "sha256:2b7cbd288f95f7695419580ea6cf163ad217e30a2402d234dd7a4bf7cdfab194"
+      },
+      "failures": {
+        "count": 15,
+        "digest": "sha256:3fc1e501cb409e97840d45b4949a0e38b9902bdafc4952f49cb04d656d1db782"
+      },
+      "mutation_authority": {
+        "count": 1,
+        "digest": "sha256:5bfb92b47351f24d035afb44439ead1da075093f8ff7fdc6f58cf20ccec699c8"
+      },
+      "result_artifacts": {
+        "count": 6,
+        "digest": "sha256:90afea52080e71d3c1befe9c02b358614e7d897ff043718e1f894796e3ccc4e4"
+      },
+      "result_handles": {
+        "count": 2,
+        "digest": "sha256:acc432261d95568f75d9944dda6ab2f8a6352cbe4d5dfde1e4ad90384b46c2d0"
+      }
+    },
+    "public_api_receipt_projection": {
+      "count": 56,
+      "sequences": [
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+        21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+        41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56
+      ],
+      "schema_ids": [
+        "openzyme_public_api_receipt@3"
+      ],
+      "projection_digest": "sha256:dff0dd4cd72c3b2fedca31473c74069afe2cc279bcc2dc3d9878fe087d780e80",
+      "file_digest": "sha256:e017cea9708fc2bd0ce1d7f8cc541747ccbcabc787728d994867b9006f198815"
+    },
+    "sealed_byte_projections": {
+      "sealed_files": {
+        "count": 9,
+        "digest": "sha256:a2b3d61d21b772742a38b591f150bc6776ca2af1def9ff2fd6497762632e7363"
+      },
+      "source_trees": {
+        "count": 10,
+        "digest": "sha256:0600045a3a0f68331f7a31d2c856ce7d537d24082ca6b3ad2047199d4daf3d8a"
+      }
+    },
+    "verifier": "operator/verify_supersession.py --verify-legacy-sources",
+    "verification_mode": "read_only_local_no_provider_no_hpc_no_micu_no_chrome"
+  },
+  "current_state": {
+    "observed_at": "2026-08-15T12:52:01Z",
+    "c001_resume_performed": false,
+    "legacy_task_execution_performed": false,
+    "session_created_by_c0": 0,
+    "scientific_attempt_created_by_c0": 0,
+    "provider_requests_by_c0": 0,
+    "hpc_submissions_by_c0": 0,
+    "micu_consumed_by_c0": 0,
+    "chrome_calls_by_c0": 0,
+    "external_effects_by_c0": 0,
+    "canonical_go_no_go_created": false
+  },
+  "inventory_digest": "sha256:13ff7ad2ae5e2c79ff110ba1d95fb2bc282e1d21f763b93d903724457cfbfee6"
+}

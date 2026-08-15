@@ -1,0 +1,71 @@
+{
+  "schema_id": "aox_artifact_cutover_supersession_acceptance@1",
+  "change_id": "supersede-aox-hmm-artifact-cutover",
+  "source_revision": "3c7774345baa4fd0635586faa27e7d7fa2156868",
+  "governance_gate_receipt_digest": "sha256:d18fde4d4635f82fd53f5fed31306feebbdc4bc41f92f7f1070b3123eecf63b0",
+  "manifest_digest": "sha256:e334ca413fc22c618f3661c45f8783fb110c08f0cd50f5eea548825462572d67",
+  "inventory_digest": "sha256:13ff7ad2ae5e2c79ff110ba1d95fb2bc282e1d21f763b93d903724457cfbfee6",
+  "scope_audit": {
+    "status": "passed",
+    "baseline_revision": "3c7774345baa4fd0635586faa27e7d7fa2156868",
+    "changed_path_count": 16,
+    "changed_path_set_digest": "sha256:b1277a2c65167fe8a429088441b32b7fedc945b9dd7aeff966e54b813ab65fd1",
+    "allowed_path_prefixes": [
+      "openspec/changes/supersede-aox-hmm-artifact-cutover/",
+      "docs/OpenZyme架构设计.md",
+      "docs/v3/"
+    ],
+    "forbidden_changed_paths": [],
+    "apps_or_packages_changed": 0,
+    "legacy_change_changed": 0,
+    "c001_or_live_state_changed": 0,
+    "legacy_governance_tree_digest": "sha256:d843607c812964d4cbe7cb7305f1e62f5cc40816aa663a9cd3d8bdd96e519f30"
+  },
+  "focused_tests": {
+    "status": "passed",
+    "pytest_command": ".venv/bin/pytest -q openspec/changes/supersede-aox-hmm-artifact-cutover/operator/test_verify_supersession.py",
+    "passed": 9,
+    "failed": 0,
+    "ruff_command": ".venv/bin/ruff check openspec/changes/supersede-aox-hmm-artifact-cutover/operator/verify_supersession.py openspec/changes/supersede-aox-hmm-artifact-cutover/operator/test_verify_supersession.py",
+    "ruff_result": "passed",
+    "source_verification_command": "python3 openspec/changes/supersede-aox-hmm-artifact-cutover/operator/verify_supersession.py --verify-legacy-sources",
+    "source_verification_result": "passed",
+    "legacy_sources_verified": true,
+    "external_effects": 0
+  },
+  "documentation": {
+    "status": "passed",
+    "paths": [
+      "docs/OpenZyme架构设计.md",
+      "docs/v3/README.md",
+      "docs/v3/aox-artifact-cutover-supersession.md",
+      "docs/v3/aox-hmm-blank-world-cutover.md",
+      "docs/v3/aox-r-series-codex-goal.md",
+      "openspec/changes/supersede-aox-hmm-artifact-cutover/operator/README.md"
+    ]
+  },
+  "openspec_validation": {
+    "status": "passed",
+    "command": "DO_NOT_TRACK=1 openspec validate supersede-aox-hmm-artifact-cutover --type change --strict --no-interactive",
+    "result": "Change 'supersede-aox-hmm-artifact-cutover' is valid"
+  },
+  "mainline_validation": {
+    "status": "passed",
+    "command": "./scripts/check-mainline.sh",
+    "authority_domain": "authoritative_non_live_mainline",
+    "profile_id": "mainline_authoritative",
+    "plan_digest": "sha256:1a605f9f6bbb01f1b45ada41d9ead41b86644b17cc6e60e53604d545114d1a37",
+    "receipt_digest": "sha256:f4bdc05eb1a3062c981f80f2e0c4b9912a51f31a1ce2194528d5df0c3d731c6d",
+    "terminal_status": "pass",
+    "live_eligible": false,
+    "admission_eligible": false
+  },
+  "eligible_successors": [
+    "C1",
+    "C2"
+  ],
+  "legacy_decision": "legacy_no_go",
+  "status": "passed",
+  "issued_at": "2026-08-15T13:13:28Z",
+  "receipt_digest": "sha256:a54cdffbadecda3639129edbcd99f889eee7aa2462df296f6a0780ccf924f4ce"
+}

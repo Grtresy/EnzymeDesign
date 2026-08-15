@@ -1706,6 +1706,29 @@ auto retry/wake、第二条 entry 或科学策略 owner。Harness 仅结构化�
 合法科学步骤与 bounded cadence。既有 preflight stage 命名债和 supervision/module split 债的触发器均未命中，
 因此继续显式保留而不在本 slice 扩张。
 
+### 9.21 AOX/HMM artifact cutover supersession gate
+
+文件化 workspace breaking refactor 开始前，旧 `aox-hmm-blank-world-cutover` 已由独立 C0 change 正式
+supersede。旧 change 的 frozen source pin 是 `e47fe4ce24f7e08a7cf202eab970a5ab54ea9cdf`；c001 保持
+active/open attempt、draft selection、`hpc_stage_ref_required/no_effect` earliest cause、finalizer fail-closed
+与无 canonical campaign decision 的原始状态。tasks 8.3、8.4、8.5、8.6、8.7、8.8 仍逐字 pending，但永久
+不得执行；8.3a 是另一个已 retired-without-execution 的历史项，不属于这六项。
+
+唯一权威裁决由 repository/operator-only `aox_artifact_cutover_supersession@1` 承载。它绑定旧 change Git
+trees、c001 campaign/launch/session/attempt/selection/failure、authority、roots、receipts、SQLite projections、
+artifact records 与 sealed byte manifests，并固定 `legacy_no_go`、`live_authorized=false`、`adoptable=false`、
+`merge_to_main_specs=false`。`aox_artifact_cutover_operator_index@1` 对任何旧入口返回同一个
+`legacy_aox_artifact_cutover_superseded / no_effect` decision，且必须先于 session、attempt、provider、HPC、
+MICU、Chrome 或其他 external effect。该 gate 不修改应用 runtime，不伪造 c001 terminal scientific state，
+也不把 pending tasks 标成 completed。
+
+历史 bytes 后续只可进入 `historical_import_non_adoptable` namespace；byte equivalence 不创建
+`PublishedRevision`、fresh scientific evidence 或 GO。未来 AOX/HMM cutover 必须由另一个明确命名 OpenSpec
+重新绑定 file-workspace source revision、workflow/policy digest、input identity、budget、authorization、attempts、
+receipts 与 campaign decision，任何旧 identity/effect 都不能满足 successor admission。C1/C2 开始前必须验证
+`aox_artifact_cutover_supersession_acceptance@1` 及其 scope/source/digest closure；完整合同见
+`docs/v3/aox-artifact-cutover-supersession.md`。
+
 ---
 
 ## 10. Legacy Boundary

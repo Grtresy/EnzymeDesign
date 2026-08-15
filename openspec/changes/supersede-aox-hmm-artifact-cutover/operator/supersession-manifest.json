@@ -1,0 +1,95 @@
+{
+  "schema_id": "aox_artifact_cutover_supersession@1",
+  "decision_id": "aox-artifact-cutover-supersession-c001-2026-08-15",
+  "legacy_change": {
+    "change_id": "aox-hmm-blank-world-cutover",
+    "source_path": "openspec/changes/aox-hmm-blank-world-cutover",
+    "frozen_source_revision": "e47fe4ce24f7e08a7cf202eab970a5ab54ea9cdf",
+    "governance_snapshot_revision": "3c7774345baa4fd0635586faa27e7d7fa2156868",
+    "status": "superseded"
+  },
+  "c001_identity": {
+    "campaign_id": "aox_campaign_9b88525edafde6cb643da624",
+    "launch_id": "formal-slot-be41f223f1ebea0d8389a3fa",
+    "session_id": "sess_aox_formal_ffcec8565dd7abe16b88dbe1c68e12ea",
+    "attempt_id": "attempt_8f5b8e0430c5bfb036abea08",
+    "selection_id": "selection_8430d343987b39ca03687857",
+    "earliest_failure_id": "failure_c9bfd006a706eedb3878",
+    "canonical_outcome": "blocked_noncanonical_frozen_incident"
+  },
+  "legacy_task_ids": [
+    "8.3",
+    "8.4",
+    "8.5",
+    "8.6",
+    "8.7",
+    "8.8"
+  ],
+  "frozen_inventory": {
+    "schema_id": "aox_artifact_cutover_frozen_inventory@1",
+    "path": "operator/frozen-inventory.json",
+    "digest": "sha256:13ff7ad2ae5e2c79ff110ba1d95fb2bc282e1d21f763b93d903724457cfbfee6"
+  },
+  "decision": "legacy_no_go",
+  "live_authorized": false,
+  "adoptable": false,
+  "merge_to_main_specs": false,
+  "legacy_identity_disposition": {
+    "authority": {
+      "recoverable": false,
+      "replayable": false,
+      "replacement_allowed": false,
+      "successor_admission_input": false
+    },
+    "roots": {
+      "recoverable": false,
+      "replayable": false,
+      "replacement_allowed": false,
+      "successor_admission_input": false
+    },
+    "receipts": {
+      "recoverable": false,
+      "replayable": false,
+      "replacement_allowed": false,
+      "successor_admission_input": false
+    },
+    "bytes": {
+      "recoverable": false,
+      "replayable": false,
+      "replacement_allowed": false,
+      "successor_admission_input": false
+    },
+    "tasks": {
+      "recoverable": false,
+      "replayable": false,
+      "replacement_allowed": false,
+      "successor_admission_input": false
+    }
+  },
+  "historical_migration": {
+    "classification": "historical_import_non_adoptable",
+    "may_create_published_revision": false,
+    "may_create_fresh_scientific_evidence": false,
+    "may_satisfy_go": false,
+    "must_retain_supersession_identity": true
+  },
+  "fresh_successor_admission": {
+    "requires_separately_named_openspec_change": true,
+    "required_fresh_identities": [
+      "source_revision",
+      "workflow_digest",
+      "policy_digest",
+      "input_identities",
+      "budget",
+      "authorization",
+      "attempts",
+      "receipts",
+      "campaign_decision"
+    ],
+    "legacy_identity_may_satisfy_requirement": false,
+    "file_workspace_architecture_required": true
+  },
+  "decided_by": "user-authorized-codex-goal:019ffde2-b70c-76b3-919f-77493797fbcb",
+  "decided_at": "2026-08-15T12:52:01Z",
+  "manifest_digest": "sha256:e334ca413fc22c618f3661c45f8783fb110c08f0cd50f5eea548825462572d67"
+}

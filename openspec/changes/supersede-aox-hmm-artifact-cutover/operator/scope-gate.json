@@ -1,0 +1,34 @@
+{
+  "schema_id": "c0_scope_gate@1",
+  "change_id": "supersede-aox-hmm-artifact-cutover",
+  "baseline_revision": "3c7774345baa4fd0635586faa27e7d7fa2156868",
+  "allowed_path_prefixes": [
+    "openspec/changes/supersede-aox-hmm-artifact-cutover/",
+    "docs/OpenZyme架构设计.md",
+    "docs/v3/"
+  ],
+  "forbidden_path_prefixes": [
+    "apps/",
+    "packages/",
+    "openspec/changes/aox-hmm-blank-world-cutover/",
+    ".openzyme/"
+  ],
+  "forbidden_actions": [
+    "modify_application_code",
+    "modify_legacy_change",
+    "modify_c001_state_or_bytes",
+    "execute_legacy_task_8_3_through_8_8",
+    "create_or_resume_session",
+    "create_or_resume_scientific_attempt",
+    "provider_access",
+    "hpc_access",
+    "micu_consumption",
+    "chrome_access",
+    "external_effect"
+  ],
+  "live_authorized": false,
+  "external_effects_authorized": false,
+  "issued_by": "codex-goal:019ffde2-b70c-76b3-919f-77493797fbcb",
+  "issued_at": "2026-08-15T12:52:01Z",
+  "gate_digest": "sha256:181ba63e8236b44d92564df3ba57a1efa66b0ed5988ecad3fb7944295ce4f7ee"
+}

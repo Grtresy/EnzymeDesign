@@ -1,5 +1,10 @@
 # AOX/HMM blank-world cutover evidence contract
 
+> **Superseded historical contract.** `supersede-aox-hmm-artifact-cutover` 已将本 change、c001、旧
+> authority/roots/receipts/bytes 与 tasks 8.3--8.8 裁决为 `legacy_no_go`。它们不可恢复、重放、replacement、
+> adoption 或同步 main specs；本页以下内容只用于历史取证。当前治理入口见
+> [AOX/HMM artifact cutover supersession](aox-artifact-cutover-supersession.md)。
+
 r83 index: sealed `claimed` plus a misleading locator caused `operator_false_stop`; it remains
 `potentially_recoverable_but_unverified`, blocked/noncanonical, frozen/unrecovered, with all later facts unknown. See [Public interfaces](04-public-interfaces.md) and the active delta spec.
 

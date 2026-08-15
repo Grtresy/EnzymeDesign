@@ -1,0 +1,43 @@
+{
+  "schema_id": "aox_artifact_cutover_operator_index@1",
+  "entries": [
+    {
+      "change_id": "aox-hmm-blank-world-cutover",
+      "status": "historical_read_only",
+      "decision": "superseded",
+      "supersession_manifest_path": "operator/supersession-manifest.json",
+      "supersession_manifest_digest": "sha256:e334ca413fc22c618f3661c45f8783fb110c08f0cd50f5eea548825462572d67",
+      "archive_allowed": true,
+      "main_spec_sync_allowed": false,
+      "live_entry_allowed": false
+    }
+  ],
+  "closed_admission_decision": {
+    "schema_id": "aox_artifact_cutover_admission_decision@1",
+    "code": "legacy_aox_artifact_cutover_superseded",
+    "decision": "rejected_superseded",
+    "legacy_decision": "legacy_no_go",
+    "external_effect": "no_effect",
+    "rejected_before": [
+      "live_preflight",
+      "session_creation",
+      "scientific_attempt_creation",
+      "provider_access",
+      "hpc_access",
+      "micu_consumption",
+      "chrome_access",
+      "any_external_effect"
+    ],
+    "applies_to": [
+      "legacy_change",
+      "c001",
+      "legacy_authority",
+      "legacy_roots",
+      "legacy_receipts",
+      "legacy_bytes",
+      "legacy_tasks_8_3_through_8_8",
+      "legacy_main_spec_sync"
+    ]
+  },
+  "index_digest": "sha256:78e005039d9c7d639c2a28ac8c7eed55fe277f36e6b4e5c910b5c37a9d090574"
+}

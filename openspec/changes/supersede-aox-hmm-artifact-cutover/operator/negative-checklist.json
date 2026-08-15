@@ -1,0 +1,52 @@
+{
+  "schema_id": "aox_artifact_cutover_negative_checklist@1",
+  "manifest_digest": "sha256:e334ca413fc22c618f3661c45f8783fb110c08f0cd50f5eea548825462572d67",
+  "checks": [
+    {
+      "check_id": "c001_resume",
+      "presented_identity": "attempt_8f5b8e0430c5bfb036abea08",
+      "decision": "rejected_superseded",
+      "reason_code": "legacy_aox_artifact_cutover_superseded",
+      "external_effect": "no_effect"
+    },
+    {
+      "check_id": "legacy_tasks_8_3_through_8_8",
+      "presented_identity": "openspec_tasks:8.3,8.4,8.5,8.6,8.7,8.8",
+      "decision": "rejected_superseded",
+      "reason_code": "legacy_aox_artifact_cutover_superseded",
+      "external_effect": "no_effect"
+    },
+    {
+      "check_id": "legacy_authority_reuse",
+      "presented_identity": "sha256:77bf3c9f44d25b4a597f60d1a151af939db8a307b6d23659bd8c2d3ed16e10fe",
+      "decision": "rejected_superseded",
+      "reason_code": "legacy_aox_artifact_cutover_superseded",
+      "external_effect": "no_effect"
+    },
+    {
+      "check_id": "legacy_byte_adoption",
+      "presented_identity": "sha256:a2b3d61d21b772742a38b591f150bc6776ca2af1def9ff2fd6497762632e7363",
+      "decision": "rejected_superseded",
+      "reason_code": "legacy_aox_artifact_cutover_superseded",
+      "external_effect": "no_effect"
+    },
+    {
+      "check_id": "legacy_main_spec_sync",
+      "presented_identity": "aox-hmm-blank-world-cutover:artifact-catalog-staging-delta",
+      "decision": "rejected_superseded",
+      "reason_code": "legacy_aox_artifact_cutover_superseded",
+      "external_effect": "no_effect"
+    }
+  ],
+  "effect_summary": {
+    "sessions_created": 0,
+    "scientific_attempts_created": 0,
+    "provider_requests": 0,
+    "hpc_submissions": 0,
+    "micu_consumed": 0,
+    "chrome_calls": 0,
+    "legacy_task_transitions": 0,
+    "external_effects": 0
+  },
+  "checklist_digest": "sha256:dd4b690a854513be50330e2a7ded2b9f5537b9eff23c3b3634bbae0e4f835306"
+}

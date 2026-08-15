@@ -1,5 +1,11 @@
 # AOX R 系列 Codex 验证与修复目标
 
+> **Retired for execution.** `supersede-aox-hmm-artifact-cutover` 已将旧 AOX/HMM cutover、c001 与
+> 8.3--8.8 固定为 `legacy_no_go`。本页仅保留历史 operator 合同，不能再据此创建 preparation、fresh rNN、
+> repair、session、attempt 或任何 live effect。未来 AOX/HMM cutover 必须先建立另一个明确命名的 OpenSpec、
+> file-workspace source pin、全新 authority/receipts/campaign decision 和对应 runbook。当前治理入口见
+> [AOX/HMM artifact cutover supersession](aox-artifact-cutover-supersession.md)。
+
 本页只定义如何启动 `openzyme-validate-r-series`、`openzyme-repair-r-series`，以及 goal 应承载的授权信息。产品合同、CLI 参数、schema、配置值、证据结构和终局规则以 `docs/v3/README.md` 路由的稳定文档、active OpenSpec 与当前 public CLI 为准，不复制到 goal 或 skill。
 
 ## 验证 goal

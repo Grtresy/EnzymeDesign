@@ -34,10 +34,11 @@ V3 的核心立场：
 - [runtime-hpc-reliability-operations.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/runtime-hpc-reliability-operations.md)：persistent SSH、durable operation、command drain 与 mutation scope 的启用、审计和回滚 runbook。
 - [architecture-proposals/README.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/architecture-proposals/README.md)：实施中发现、会影响 agent 发挥的大架构调整、umbrella 关系和生命周期索引；已实现 proposal 随对应 OpenSpec 归档，当前合同以稳定文档、代码和 OpenSpec checkpoint 为准。
 
-AOX/HMM live cutover：
+AOX/HMM cutover 与历史封存：
 
-- [aox-hmm-blank-world-cutover.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-hmm-blank-world-cutover.md)
-- [aox-r-series-codex-goal.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-r-series-codex-goal.md)：fresh / pre-next-rNN public-only、stateless Codex operator goal；只读诊断、repair 批准与 live 批准严格分离，科学策略保留给 OpenZyme agents。
+- [aox-artifact-cutover-supersession.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-artifact-cutover-supersession.md)：当前权威 C0 治理入口；旧 AOX/HMM artifact cutover、c001 与 8.3--8.8 已固定为 legacy NO-GO、不可恢复、不可采纳且不得同步 main specs。
+- [aox-hmm-blank-world-cutover.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-hmm-blank-world-cutover.md)：只读历史合同与 incident 索引，不再是可执行 live change。
+- [aox-r-series-codex-goal.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-r-series-codex-goal.md)：只读历史 operator runbook；不得再由旧 change 启动 fresh R-series、repair 或 live，未来 cutover 必须使用另一个新 OpenSpec 和新 runbook。
 - [aox-closure-stage-live-diagnostic.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/aox-closure-stage-live-diagnostic.md)：只读历史封存页。r65 已删除其 authority/reconstruction/live/CLI 可执行链；历史 SQLite/evidence 仍可离线核验，但永久不能进入 formal acceptance。
 - 新 production attempt 使用 claim-bound selected-chain `aox_blank_world_attempt_bundle@4`；
   历史 `@2` verifier 与 r48-r59 NO-GO evidence 保持冻结。r56 后的 target contract
