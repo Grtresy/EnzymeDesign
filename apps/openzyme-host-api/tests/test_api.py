@@ -142,6 +142,7 @@ def test_v3_event_store_preserves_public_payload_and_filters_private_visibility(
     repositories = _build_v3_engine_repositories()
     event_store = V3EventStore(repositories)
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=event_store,
     )
@@ -370,6 +371,7 @@ def test_v3_durable_events_survive_host_restart_and_replay_from_cursor(
     del bootstrap_client
     provider = SQLiteRepositoryProvider(str(tmp_path / "durable-events.sqlite3"))
     first_dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=foundation,
         v3_repository_provider=provider,
     )
@@ -388,6 +390,7 @@ def test_v3_durable_events_survive_host_restart_and_replay_from_cursor(
         assert first_event["cursor"] > 0
 
     second_dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=foundation,
         v3_repository_provider=provider,
     )
@@ -415,6 +418,7 @@ def test_v3_event_replay_pages_past_one_thousand_and_filters_private_rows(
     del bootstrap_client
     provider = SQLiteRepositoryProvider(str(tmp_path / "event-pages.sqlite3"))
     dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=foundation,
         security_policy=_local_test_security(),
         v3_repository_provider=provider,
@@ -611,6 +615,7 @@ def test_v3_host_mutation_observation_reads_existing_production_owners(
     del bootstrap
     provider = SQLiteRepositoryProvider(str(tmp_path / "mutation-observe.sqlite3"))
     dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=foundation,
         security_policy=_local_test_security(),
         v3_repository_provider=provider,
@@ -809,6 +814,7 @@ def test_v3_host_mutation_observation_reads_existing_production_owners(
         assert scientific.json()["status"] == "terminal"
         with provider.read() as reader:
             service = V3HostApiService(
+                allow_unpinned_repository_sessions_for_tests=True,
                 repositories=reader.repositories,
                 event_store=V3EventStore(reader.repositories),
             )
@@ -927,6 +933,7 @@ def test_host_mutation_original_status_codes_match_registered_routes(
     del bootstrap
     app = create_app(
         HostApiDependencies(
+            v3_allow_unpinned_repository_sessions_for_tests=True,
             foundation=foundation,
             security_policy=_local_test_security(),
         )
@@ -1305,6 +1312,7 @@ def test_v3_workspace_api_projects_closed_sandbox_stdio_metadata(
     del bootstrap_client
     provider = SQLiteRepositoryProvider(str(tmp_path / "stdio-metadata.sqlite3"))
     dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=foundation,
         security_policy=_local_test_security(),
         v3_repository_provider=provider,
@@ -1400,6 +1408,7 @@ def test_v3_pending_approval_and_resolve_stay_bounded_with_large_artifact_metada
     del bootstrap_client
     provider = SQLiteRepositoryProvider(str(tmp_path / "bounded-workspace.sqlite3"))
     dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=foundation,
         security_policy=_local_test_security(),
         v3_repository_provider=provider,
@@ -1501,6 +1510,7 @@ def test_v3_runtime_health_marks_local_fixtures_non_cutover() -> None:
     client = TestClient(
         create_app(
             HostApiDependencies(
+                v3_allow_unpinned_repository_sessions_for_tests=True,
                 foundation=build_local_eval_foundation(),
                 security_policy=_local_test_security(),
                 v3_pipeline_sandbox_runner=FixtureNonCutoverPipelineSandboxRunner(),
@@ -1528,6 +1538,7 @@ def test_v3_event_insert_failure_rolls_back_local_command(
     with pytest.raises(RuntimeError, match="forced durable event failure"):
         with provider.write() as owner:
             service = V3HostApiService(
+                allow_unpinned_repository_sessions_for_tests=True,
                 repositories=owner.repositories,
                 event_store=V3EventStore(owner.repositories),
             )
@@ -1550,6 +1561,7 @@ def test_v3_execution_callback_scope_inherits_runtime_fence(
     del bootstrap_client
     provider = SQLiteRepositoryProvider(str(tmp_path / "callback-fence.sqlite3"))
     dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=foundation,
         v3_repository_provider=provider,
     )
@@ -1606,6 +1618,7 @@ def test_v3_sandbox_process_host_context_does_not_inherit_released_turn_lease(
     del bootstrap_client
     provider = SQLiteRepositoryProvider(str(tmp_path / "host-context.sqlite3"))
     dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=foundation,
         v3_repository_provider=provider,
     )
@@ -1684,6 +1697,7 @@ def test_v3_execution_engine_uses_configured_blank_world_roots(
     sandbox_root = tmp_path / "sandboxes"
     blob_root = tmp_path / "blobs"
     dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=foundation,
         v3_repository_provider=provider,
         v3_sandbox_workspace_root=sandbox_root,
@@ -1720,6 +1734,7 @@ def test_v3_timed_out_callback_cannot_apply_late_business_effect(
     del bootstrap_client
     provider = SQLiteRepositoryProvider(str(tmp_path / "late-effect-fence.sqlite3"))
     dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=foundation,
         v3_repository_provider=provider,
     )
@@ -3056,6 +3071,7 @@ def _build_client(
         TestClient(
             create_app(
                 HostApiDependencies(
+                    v3_allow_unpinned_repository_sessions_for_tests=True,
                     foundation=foundation,
                     security_policy=_local_test_security(),
                 )
@@ -3071,6 +3087,7 @@ def _build_v3_llm_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
         TestClient(
             create_app(
                 HostApiDependencies(
+                    v3_allow_unpinned_repository_sessions_for_tests=True,
                     foundation=replace(
                         foundation, model_factory=FakeHarnessModelFactory()
                     ),
@@ -3093,6 +3110,7 @@ def _build_v3_engine_llm_client(
     command_client = TestClient(
         create_app(
             HostApiDependencies(
+                v3_allow_unpinned_repository_sessions_for_tests=True,
                 foundation=replace(foundation, model_factory=model_factory),
                 v3_repository_provider=provider,
                 v3_pipeline_sandbox_runner=FixtureNonCutoverPipelineSandboxRunner(),
@@ -3122,6 +3140,7 @@ def test_scientific_transition_finalizer_reports_nonretryable_host_failure(
 ) -> None:
     repositories = _build_v3_engine_repositories()
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         scientific_workflow_contract_registry=(
@@ -3383,6 +3402,7 @@ def _build_v3_pressure_client(
     command_client = TestClient(
         create_app(
             HostApiDependencies(
+                v3_allow_unpinned_repository_sessions_for_tests=True,
                 foundation=replace(foundation, model_factory=model_factory),
                 v3_repository_provider=provider,
                 v3_background_runtime_enabled=False,
@@ -3585,6 +3605,7 @@ def test_v3_task_crud_does_not_implicitly_drain_agent_runtime() -> None:
     )
     model_factory = FakeEngineHarnessModelFactory()
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         model_factory=model_factory,
@@ -3688,7 +3709,11 @@ def test_v3_drain_runtime_does_not_auto_claim_by_default() -> None:
             current_correlation_id=None,
         )
     )
-    service = V3HostApiService(repositories=repositories, event_store=V3EventStore())
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        allow_unpinned_repository_sessions_for_tests=True,
+    )
 
     service.drain_runtime(session_id="sess_drain_no_auto_claim")
 
@@ -3730,7 +3755,11 @@ def test_v3_drain_runtime_explicit_auto_claim_still_enqueues_ready_task() -> Non
             current_correlation_id=None,
         )
     )
-    service = V3HostApiService(repositories=repositories, event_store=V3EventStore())
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        allow_unpinned_repository_sessions_for_tests=True,
+    )
 
     service.drain_runtime(
         session_id="sess_drain_auto_claim",
@@ -3778,6 +3807,7 @@ def test_v3_drain_runtime_uses_configured_scheduler_limits(monkeypatch) -> None:
 
     monkeypatch.setattr("openzyme_host_api.v3_service.AgentRuntimeScheduler", FakeScheduler)
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         scheduler_limits={"global": 7, "session": 5, "agent": 3},
@@ -3817,6 +3847,7 @@ def test_v3_manual_drain_returns_locked_when_background_owns_session() -> None:
     ).lease
     assert lease is not None
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         model_factory=object(),
@@ -3855,6 +3886,7 @@ def test_v3_background_runtime_skips_when_manual_drain_owns_session() -> None:
     )
     event_store = V3EventStore()
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=event_store,
         model_factory=object(),
@@ -3892,6 +3924,7 @@ def test_v3_session_runtime_lease_does_not_block_other_sessions() -> None:
         lease_seconds=60,
     )
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         model_factory=object(),
@@ -3917,6 +3950,7 @@ def test_v3_post_message_only_enqueues_master_signal() -> None:
     repositories = _build_v3_engine_repositories()
     model_factory = FakeHarnessModelFactory()
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         model_factory=model_factory,
@@ -3962,6 +3996,7 @@ def test_v3_message_skill_focus_survives_explicit_drain_without_expanding_author
     engine_registry = EngineRegistry()
     engine_registry.register(WorkflowFocusExecutionEngine())
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         engine_registry=engine_registry,
@@ -4018,6 +4053,7 @@ def test_v3_master_fails_closed_before_provider_on_corrupt_user_focus_source() -
     repositories = _build_v3_engine_repositories()
     model_factory = FakeHarnessModelFactory()
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         model_factory=model_factory,
@@ -4070,6 +4106,7 @@ def test_v3_master_accepts_legacy_user_conversation_without_skill_keys() -> None
     )
     model_factory = FocusRecordingModelFactory()
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         model_factory=model_factory,
@@ -4119,6 +4156,7 @@ def test_v3_master_restores_each_user_message_focus_without_sticky_union() -> No
     generic_ref = workflow_refs["generic-sandbox-execution"]
     model_factory = FocusRecordingModelFactory()
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         model_factory=model_factory,
@@ -4161,6 +4199,7 @@ def test_v3_master_protocol_inbox_does_not_grant_workflow_authority() -> None:
     )
     model_factory = FocusRecordingModelFactory()
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         model_factory=model_factory,
@@ -4204,6 +4243,7 @@ def test_v3_background_runtime_processes_message_without_manual_drain(
     client, foundation = _build_client(monkeypatch)
     del client
     dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=replace(foundation, model_factory=FakeHarnessModelFactory()),
         security_policy=_local_test_security(),
         v3_background_runtime_enabled=True,
@@ -4558,6 +4598,7 @@ def test_v3_durable_rollback_stops_admission_but_retains_active_drain_capability
         ),
     )
     dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=foundation,
         v3_legacy_repositories_for_tests=_build_v3_engine_repositories(),
     )
@@ -4624,6 +4665,7 @@ def test_v3_background_runtime_once_releases_operation_lock_while_scheduler_runs
             return BlockingScheduler()
 
     service = LockAwareService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         model_factory=object(),
@@ -4672,6 +4714,7 @@ def test_v3_drain_runtime_releases_operation_lock_while_scheduler_runs() -> None
             return []
 
     service = LockAwareService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         model_factory=object(),
@@ -4706,6 +4749,7 @@ def test_v3_blocking_provider_does_not_hold_sqlite_write_transaction(
     entered = threading.Event()
     release = threading.Event()
     dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=replace(
             foundation,
             model_factory=BlockingHarnessModelFactory(entered, release),
@@ -4785,6 +4829,7 @@ def test_v3_background_runtime_runs_teammate_and_master_followup_without_manual_
     )
     model_factory = FakeEngineHarnessModelFactory()
     dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=replace(foundation, model_factory=model_factory),
         security_policy=_local_test_security(),
         v3_repository_provider=repository_provider,
@@ -4987,6 +5032,7 @@ def test_v3_background_runtime_debug_exposes_model_factory_disabled_reason(
     del client
     app = create_app(
         HostApiDependencies(
+            v3_allow_unpinned_repository_sessions_for_tests=True,
             foundation=foundation,
             security_policy=_local_test_security(),
             v3_background_runtime_enabled=True,
@@ -5006,6 +5052,7 @@ def test_v3_master_agents_and_signals_are_session_scoped() -> None:
     repositories = _build_v3_engine_repositories()
     model_factory = FakeEchoHarnessModelFactory()
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         model_factory=model_factory,
@@ -5049,6 +5096,7 @@ def test_v3_runtime_drain_claims_master_signal_and_runs_master_loop() -> None:
     repositories = _build_v3_engine_repositories()
     model_factory = FakeEchoHarnessModelFactory()
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         model_factory=model_factory,
@@ -5078,6 +5126,7 @@ def test_v3_runtime_replay_extends_sanitized_trace_events_without_duplicates() -
     repositories = _build_v3_engine_repositories()
     event_store = V3EventStore()
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=event_store,
     )
@@ -5163,6 +5212,7 @@ def test_v3_resolve_unassigned_approval_enqueues_master_wakeup() -> None:
     repositories = _build_v3_engine_repositories()
     model_factory = FakeHarnessModelFactory()
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         model_factory=model_factory,
@@ -5204,6 +5254,7 @@ def test_v3_resolve_unassigned_approval_enqueues_master_wakeup() -> None:
 def test_v3_resolve_sdk_controlled_operation_uses_continuation_not_agent_wakeup(tmp_path: Path) -> None:
     repositories = _build_v3_engine_repositories()
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         model_factory=FakeHarnessModelFactory(),
@@ -5439,6 +5490,7 @@ def test_v3_resolve_durable_controlled_operation_advances_only_canonical_executi
     repositories = _build_v3_engine_repositories()
     durable_notifier = RuntimeSignalNotifier()
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         model_factory=FakeHarnessModelFactory(),
@@ -5800,6 +5852,7 @@ def test_v3_resolve_durable_controlled_operation_advances_only_canonical_executi
 def test_v3_recover_abandoned_sdk_continuation_fails_closed(tmp_path: Path) -> None:
     repositories = _build_v3_engine_repositories()
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         model_factory=FakeHarnessModelFactory(),
@@ -5994,6 +6047,7 @@ def test_hpc_operation_failed_after_approval_returns_to_executor_for_diagnostic(
     registry.register(FailedHpcExecutionEngine(repositories))
     model_factory = DiagnosticExecutorModelFactory()
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
         engine_registry=registry,
@@ -6094,6 +6148,7 @@ def _build_v3_echo_llm_client(monkeypatch) -> tuple[TestClient, RuntimeFoundatio
         TestClient(
             create_app(
                 HostApiDependencies(
+                    v3_allow_unpinned_repository_sessions_for_tests=True,
                     foundation=replace(
                         foundation, model_factory=FakeEchoHarnessModelFactory()
                     ),
@@ -6537,6 +6592,7 @@ def test_v3_llm_response_event_is_available_before_message_command_finishes() ->
     event_store = V3EventStore()
     model_factory = BlockingTraceModelFactory()
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=event_store,
         model_factory=model_factory,
@@ -6880,13 +6936,14 @@ def test_debug_llm_calls_endpoint_lists_details_and_clears_records(
     client, foundation = _build_client(monkeypatch)
     debug_client = TestClient(
         create_app(
-                HostApiDependencies(
-                    foundation=replace(
-                        foundation, model_factory=DebugRecordingModelFactory()
-                    ),
-                    security_policy=_local_test_security(),
-                    v3_background_runtime_enabled=False,
-                )
+            HostApiDependencies(
+                v3_allow_unpinned_repository_sessions_for_tests=True,
+                foundation=replace(
+                    foundation, model_factory=DebugRecordingModelFactory()
+                ),
+                security_policy=_local_test_security(),
+                v3_background_runtime_enabled=False,
+            )
         )
     )
     _start_runtime_command_client(debug_client, request)

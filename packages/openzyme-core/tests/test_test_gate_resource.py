@@ -107,13 +107,25 @@ def test_initial_resource_entries_bind_exact_modules_and_safe_closure() -> None:
     module_paths = tuple(spec.module_path for spec in INITIAL_RESOURCE_ENTRY_SPECS)
     assert len(module_paths) == len(set(module_paths))
     assert all(
-        spec.resource_class in {"parallel_pure", "parallel_temp_root"}
+        spec.resource_class
+        in {"parallel_pure", "parallel_temp_root", "bounded_service"}
         for spec in INITIAL_RESOURCE_ENTRY_SPECS
+    )
+    native = next(
+        spec
+        for spec in INITIAL_RESOURCE_ENTRY_SPECS
+        if spec.entry_id == "host_api_repository_native_clients_bounded_service"
+    )
+    assert native.resource_class == "bounded_service"
+    assert native.proof_node_ids == (
+        "packages/openzyme-core/tests/test_test_gate_resource.py"
+        "::test_initial_resource_entries_bind_exact_modules_and_safe_closure",
     )
     for spec in INITIAL_RESOURCE_ENTRY_SPECS:
         source = REPOSITORY_ROOT / spec.module_path
         assert source.is_file()
-        audit_parallel_candidate_source(source)
+        if spec.resource_class in {"parallel_pure", "parallel_temp_root"}:
+            audit_parallel_candidate_source(source)
         assert spec.fixture_paths
         assert all((REPOSITORY_ROOT / path).is_file() for path in spec.fixture_paths)
         assert spec.proof_node_ids
@@ -219,6 +231,41 @@ def test_unclassified_nodes_remain_serial_unknown() -> None:
     )
     assert serial == ("test_b.py::test_b",)
     assert parallel == ("test_a.py::test_a",)
+
+
+def test_bounded_service_manifest_entry_remains_in_serial_partition(
+    tmp_path: Path,
+) -> None:
+    repo_root, collection, parallel_spec = _synthetic_resource_fixture(tmp_path)
+    bounded_spec = ResourceEntrySpec(
+        entry_id=parallel_spec.entry_id,
+        module_path=parallel_spec.module_path,
+        resource_class="bounded_service",
+        fixture_paths=parallel_spec.fixture_paths,
+        proof_node_ids=parallel_spec.proof_node_ids,
+        audited_resources=parallel_spec.audited_resources,
+    )
+    config = load_config(CONFIG_PATH)
+    manifest = build_resource_manifest(
+        repo_root=repo_root,
+        collection_records=collection,
+        specs=(bounded_spec,),
+    )
+    assignments = verify_resource_manifest(
+        manifest,
+        repo_root=repo_root,
+        collection_records=collection,
+        config=config,
+    )
+
+    serial, parallel = resource_partition(
+        residual_nodes=tuple(sorted(assignments)),
+        assignments=assignments,
+        config=config,
+    )
+
+    assert serial == tuple(sorted(assignments))
+    assert parallel == ()
 
 
 def test_parallel_mode_fails_when_pinned_xdist_is_absent(monkeypatch) -> None:

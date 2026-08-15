@@ -59,6 +59,9 @@ _TOP_LEVEL_FIELDS = {
     "entries",
     "self_digest",
 }
+_MANIFEST_RESOURCE_CLASSES = frozenset(
+    {"parallel_pure", "parallel_temp_root", "bounded_service"}
+)
 
 
 class ResourceManifestError(RuntimeError):
@@ -152,6 +155,67 @@ def _parallel_temp_root_entry(
 
 
 INITIAL_RESOURCE_ENTRY_SPECS: tuple[ResourceEntrySpec, ...] = (
+    ResourceEntrySpec(
+        entry_id="host_api_repository_native_clients_bounded_service",
+        module_path=(
+            "apps/openzyme-host-api/tests/test_repository_native_clients.py"
+        ),
+        resource_class="bounded_service",
+        fixture_paths=(
+            *_HOST_FIXTURES,
+            "apps/openzyme-host-api/tests/repository_test_support.py",
+        ),
+        proof_node_ids=(_RESOURCE_PROOF_NODE,),
+        audited_resources=tuple(
+            sorted(
+                (
+                    ("cache", "worker_isolated", "cache provider disabled"),
+                    ("cwd", "process_local", "tests do not change process cwd"),
+                    (
+                        "environment",
+                        "explicit_subprocess_environments",
+                        "native clients and service children use explicit environments",
+                    ),
+                    (
+                        "filesystem",
+                        "test_temp_root",
+                        "TLS, Git, LFS, SQLite, and clones use tmp_path",
+                    ),
+                    ("micu", "forbidden", "no MICU ledger or token consumer"),
+                    (
+                        "port",
+                        "loopback_ephemeral_bounded_listener",
+                        "one loopback TLS listener uses an ephemeral test port",
+                    ),
+                    (
+                        "process",
+                        "joined_uvicorn_thread_and_native_clients",
+                        "server thread is joined and native clients are awaited",
+                    ),
+                    (
+                        "qualification",
+                        "forbidden",
+                        "no qualification output or admission consumer",
+                    ),
+                    (
+                        "sandbox",
+                        "forbidden",
+                        "no live sandbox or HPC workspace",
+                    ),
+                    (
+                        "signal",
+                        "forbidden",
+                        "no process signal or process-group operation",
+                    ),
+                    (
+                        "sqlite",
+                        "test_temp_root",
+                        "file database is exclusive to the test tmp_path",
+                    ),
+                )
+            )
+        ),
+    ),
     ResourceEntrySpec(
         entry_id="host_api_api_temp_root",
         module_path="apps/openzyme-host-api/tests/test_api.py",
@@ -599,9 +663,9 @@ def build_resource_manifest(
     if len(entry_ids) != len(set(entry_ids)):
         raise ResourceManifestError("resource entry specs must be unique")
     for spec in normalized_specs:
-        if spec.resource_class not in {"parallel_pure", "parallel_temp_root"}:
+        if spec.resource_class not in _MANIFEST_RESOURCE_CLASSES:
             raise ResourceManifestError(
-                f"entry {spec.entry_id!r} is not parallel eligible"
+                f"entry {spec.entry_id!r} has no manifest resource class"
             )
         module_nodes = _module_nodes(collection_records, spec.module_path)
         if not module_nodes:
@@ -742,7 +806,7 @@ def verify_resource_manifest(
             not isinstance(entry_id, str)
             or not entry_id
             or not isinstance(module_path, str)
-            or resource_class not in config.resource_policy.parallel_eligible_classes
+            or resource_class not in _MANIFEST_RESOURCE_CLASSES
             or resource_class not in RESOURCE_CLASSES
         ):
             raise ResourceManifestError(f"resource entry {index} identity is invalid")
@@ -775,7 +839,8 @@ def verify_resource_manifest(
             raise ResourceManifestError(
                 f"resource entry {entry_id!r} source closure is not exact"
             )
-        audit_parallel_candidate_source(root / module_path)
+        if resource_class in config.resource_policy.parallel_eligible_classes:
+            audit_parallel_candidate_source(root / module_path)
         _verify_file_records(
             entry["fixture_closure"],
             repo_root=root,

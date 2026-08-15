@@ -1,0 +1,115 @@
+{
+  "schema_id": "project_repository_standard_protocol_implementation@1",
+  "change_id": "establish-project-repository-bindings",
+  "source_revision": "9b78ec6a883f90ec4239d113e9300098120f68bd",
+  "issued_at": "2026-08-15T18:45:32Z",
+  "implementation": {
+    "repository_backend": "host_owned_bare_repositories",
+    "git": "smart_http_v2_over_https",
+    "lfs": "batch_api_v2_basic_transfer",
+    "transport_boundary": "independent_repository_tls_app",
+    "git_protocol_header_forwarded": true,
+    "server_side_ref_acl": "pre_receive_hook"
+  },
+  "durable_storage": {
+    "bare_git_root": "explicit_deployment_setting",
+    "lfs_object_root": "explicit_deployment_setting",
+    "backup_root": "explicit_deployment_setting",
+    "atomic_lfs_promote": true,
+    "read_after_write_verification": true
+  },
+  "authority": {
+    "git_lfs_shared_repository_identity": true,
+    "scoped_bearer_required": true,
+    "claims_bound_to": [
+      "binding_id",
+      "binding_version",
+      "repository_id",
+      "session_id",
+      "agent_member_id",
+      "workspace_generation",
+      "capability_lease_id",
+      "protocols",
+      "ref_classes"
+    ],
+    "long_lived_secret_outside_workspace": true,
+    "upstream_is_separate_authority": true
+  },
+  "forbidden_fallbacks": {
+    "agent_facing_custom_file_rpc": false,
+    "ambient_checkout": false,
+    "ambient_cwd": false,
+    "ambient_remote": false,
+    "local_directory_remote": false,
+    "temporary_repository": false,
+    "upstream_on_internal_failure": false
+  },
+  "product_boundaries": {
+    "agent_clone_provisioning_implemented": false,
+    "workspace_publication_implemented": false,
+    "production_capability_lease_issuance_proven": false,
+    "upstream_effects": 0
+  },
+  "implementation_files": [
+    {
+      "path": "apps/openzyme-host-api/pyproject.toml",
+      "sha256": "sha256:f1752c68c4173507d813ec77397bd7db811f5df2d354164f8762237d3f66af91",
+      "size": 1669
+    },
+    {
+      "path": "apps/openzyme-host-api/src/openzyme_host_api/repository_admin_cli.py",
+      "sha256": "sha256:6553f489d2e13ecf203bce67c3c63e37e3c4f9197846f18b9f90272385b32e02",
+      "size": 15504
+    },
+    {
+      "path": "apps/openzyme-host-api/src/openzyme_host_api/repository_service_preflight.py",
+      "sha256": "sha256:84d6d26de018aa90a70a464e463fb7a13ed948652a055e5be0da7b46d11191bd",
+      "size": 13416
+    },
+    {
+      "path": "apps/openzyme-host-api/src/openzyme_host_api/repository_transport.py",
+      "sha256": "sha256:9e220190c081f3df54e8c596f744315376c1c219808f515964d998ab127a53dc",
+      "size": 29329
+    },
+    {
+      "path": "packages/openzyme-core/src/openzyme_core/repository_credentials.py",
+      "sha256": "sha256:d13eb6e82680dd6a91241877f93925fbb6701b406c496eedc3696b49af87e88d",
+      "size": 28063
+    },
+    {
+      "path": "packages/openzyme-core/src/openzyme_core/repository_owner_refs.py",
+      "sha256": "sha256:151f84db3b10be154a89623dbf5adcda75348ed6d9159381f91325ba73f9c7e4",
+      "size": 3184
+    },
+    {
+      "path": "packages/openzyme-core/src/openzyme_core/repository_pre_receive_hook.sh",
+      "sha256": "sha256:9774b2beaba8baba9a0aa0989be2bb937486cf488a1691da2f9d45ed2a8743f9",
+      "size": 1868
+    },
+    {
+      "path": "packages/openzyme-core/src/openzyme_core/repository_retention.py",
+      "sha256": "sha256:732e09648caac04bf8b19631dea2d2e7dbbdd5e4aab61613357e60fa9d3c9860",
+      "size": 14573
+    },
+    {
+      "path": "packages/openzyme-core/src/openzyme_core/repository_storage.py",
+      "sha256": "sha256:c1e66c12b3ad826b5de1c20adbe79f184ae40e5a96d558af8dd18d94ddc00744",
+      "size": 27037
+    },
+    {
+      "path": "packages/openzyme-runtime/src/openzyme_runtime/settings.py",
+      "sha256": "sha256:46f1b8b8e8ef18a1ccc352ede8701c37436b9395b49b5c2218245dbf8c0780cb",
+      "size": 56063
+    }
+  ],
+  "test_files": [
+    "apps/openzyme-host-api/tests/test_repository_native_clients.py",
+    "apps/openzyme-host-api/tests/test_repository_operations.py",
+    "apps/openzyme-host-api/tests/test_repository_transport.py",
+    "packages/openzyme-core/tests/test_repository_credentials.py",
+    "packages/openzyme-core/tests/test_repository_retention.py",
+    "packages/openzyme-core/tests/test_repository_storage.py"
+  ],
+  "status": "passed",
+  "receipt_digest": "sha256:186b16518dfd794e205ad53222ee8b9558d2d20aacfc63052a14dbfd3b5ba826"
+}

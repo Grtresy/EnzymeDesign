@@ -20,6 +20,7 @@ from openzyme_runtime import openzyme_settings_environment_contract
 from openzyme_runtime import openzyme_settings_source_projection
 from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime import RuntimeDrainContract
+from openzyme_runtime import RepositoryServiceSettings
 from openzyme_runtime import ShadowObservabilityMode
 from openzyme_runtime import reset_settings_cache
 
@@ -72,6 +73,18 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         "OPENZYME_HOST_DEPLOYMENT_PROFILE",
         "OPENZYME_HOST_AUTH_PRINCIPALS_JSON",
         "OPENZYME_HOST_DEBUG_ENABLED",
+        "OPENZYME_REPOSITORY_HTTPS_ORIGIN",
+        "OPENZYME_REPOSITORY_BARE_ROOT",
+        "OPENZYME_REPOSITORY_LFS_ROOT",
+        "OPENZYME_REPOSITORY_BACKUP_ROOT",
+        "OPENZYME_REPOSITORY_CREDENTIAL_SIGNING_KEY_FILE",
+        "OPENZYME_REPOSITORY_TLS_CERTIFICATE_FILE",
+        "OPENZYME_REPOSITORY_TLS_PRIVATE_KEY_FILE",
+        "OPENZYME_REPOSITORY_BINDING_INVENTORY_FILE",
+        "OPENZYME_REPOSITORY_GIT_EXECUTABLE",
+        "OPENZYME_REPOSITORY_GIT_LFS_EXECUTABLE",
+        "OPENZYME_REPOSITORY_GIT_HTTP_BACKEND",
+        "OPENZYME_REPOSITORY_CREDENTIAL_TTL_SECONDS",
         "OPENZYME_LANGSMITH_TRACING",
         "LANGSMITH_TRACING",
         "OPENZYME_TEST_ENABLE_LIVE_LLM",
@@ -164,6 +177,7 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
     assert settings.host_api.bind_port == DEFAULT_HOST_API_BIND_PORT
     assert settings.host_api.deployment_profile == "local-dev"
     assert settings.host_api.debug_enabled is False
+    assert settings.repository_service is None
     assert settings.execution.backend == "disabled"
     assert settings.v3_background_runtime.enabled is True
     assert settings.v3_background_runtime.poll_interval_seconds == 2.0
@@ -210,6 +224,72 @@ def test_host_api_profiles_fail_closed_for_unsafe_or_unconfigured_deployment() -
         match="OPENZYME_HOST_DEPLOYMENT_PROFILE must be 'local-dev' or 'shared'",
     ):
         HostApiSettings.from_env({"OPENZYME_HOST_DEPLOYMENT_PROFILE": "unsupported"})
+
+
+def test_repository_service_settings_require_one_complete_explicit_configuration(
+    tmp_path,
+) -> None:
+    with pytest.raises(ValueError, match="configuration is partial"):
+        RepositoryServiceSettings.from_env(
+            {"OPENZYME_REPOSITORY_HTTPS_ORIGIN": "https://localhost:8443"}
+        )
+
+    settings = RepositoryServiceSettings.from_env(
+        {
+            "OPENZYME_REPOSITORY_HTTPS_ORIGIN": "https://localhost:8443",
+            "OPENZYME_REPOSITORY_BARE_ROOT": str(tmp_path / "git"),
+            "OPENZYME_REPOSITORY_LFS_ROOT": str(tmp_path / "lfs"),
+            "OPENZYME_REPOSITORY_BACKUP_ROOT": str(tmp_path / "backup"),
+            "OPENZYME_REPOSITORY_CREDENTIAL_SIGNING_KEY_FILE": str(
+                tmp_path / "token.key"
+            ),
+            "OPENZYME_REPOSITORY_TLS_CERTIFICATE_FILE": str(tmp_path / "tls.crt"),
+            "OPENZYME_REPOSITORY_TLS_PRIVATE_KEY_FILE": str(tmp_path / "tls.key"),
+            "OPENZYME_REPOSITORY_BINDING_INVENTORY_FILE": str(
+                tmp_path / "bindings.json"
+            ),
+            "OPENZYME_REPOSITORY_GIT_EXECUTABLE": "/usr/bin/git",
+            "OPENZYME_REPOSITORY_GIT_LFS_EXECUTABLE": "/usr/bin/git-lfs",
+            "OPENZYME_REPOSITORY_GIT_HTTP_BACKEND": (
+                "/usr/lib/git-core/git-http-backend"
+            ),
+            "OPENZYME_REPOSITORY_CREDENTIAL_TTL_SECONDS": "120",
+        }
+    )
+
+    assert settings is not None
+    assert settings.https_origin == "https://localhost:8443"
+    assert settings.bare_repository_root == tmp_path / "git"
+    assert settings.credential_ttl_seconds == 120
+
+
+def test_repository_service_settings_reject_plaintext_and_relative_roots(
+    tmp_path,
+) -> None:
+    complete = {
+        "OPENZYME_REPOSITORY_HTTPS_ORIGIN": "http://localhost:8443",
+        "OPENZYME_REPOSITORY_BARE_ROOT": str(tmp_path / "git"),
+        "OPENZYME_REPOSITORY_LFS_ROOT": str(tmp_path / "lfs"),
+        "OPENZYME_REPOSITORY_BACKUP_ROOT": str(tmp_path / "backup"),
+        "OPENZYME_REPOSITORY_CREDENTIAL_SIGNING_KEY_FILE": str(tmp_path / "token.key"),
+        "OPENZYME_REPOSITORY_TLS_CERTIFICATE_FILE": str(tmp_path / "tls.crt"),
+        "OPENZYME_REPOSITORY_TLS_PRIVATE_KEY_FILE": str(tmp_path / "tls.key"),
+        "OPENZYME_REPOSITORY_BINDING_INVENTORY_FILE": str(tmp_path / "bindings.json"),
+        "OPENZYME_REPOSITORY_GIT_EXECUTABLE": "/usr/bin/git",
+        "OPENZYME_REPOSITORY_GIT_LFS_EXECUTABLE": "/usr/bin/git-lfs",
+        "OPENZYME_REPOSITORY_GIT_HTTP_BACKEND": "/usr/lib/git-core/git-http-backend",
+    }
+    with pytest.raises(ValueError, match="HTTPS origin"):
+        RepositoryServiceSettings.from_env(complete)
+    complete["OPENZYME_REPOSITORY_HTTPS_ORIGIN"] = (
+        "https://embedded:credential@localhost:8443"
+    )
+    with pytest.raises(ValueError, match="must not embed credentials"):
+        RepositoryServiceSettings.from_env(complete)
+    complete["OPENZYME_REPOSITORY_HTTPS_ORIGIN"] = "https://localhost:8443"
+    complete["OPENZYME_REPOSITORY_BARE_ROOT"] = "relative/git"
+    with pytest.raises(ValueError, match="must be absolute"):
+        RepositoryServiceSettings.from_env(complete)
 
 
 def test_environment_descriptor_is_consumed_by_settings_and_safe_projection() -> None:

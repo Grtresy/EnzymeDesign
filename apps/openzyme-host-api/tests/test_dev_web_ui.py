@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from openzyme_core import connect_sqlite
 from openzyme_host_api.dev_web_ui import _build_v3_repository_provider
 from openzyme_host_api.dev_web_ui import build_parser
@@ -12,7 +14,11 @@ def test_web_ui_parser_exposes_only_v3_sqlite_database() -> None:
     assert "v3_sqlite_db" in destinations
     assert "configured" not in destinations
     assert "fixture_non_cutover" in destinations
-    assert build_parser().parse_args([]).fixture_non_cutover is False
+    defaults = build_parser().parse_args([])
+    assert defaults.fixture_non_cutover is False
+    assert defaults.v3_sqlite_db == (
+        Path.home() / ".local" / "state" / "openzyme" / "control-plane.sqlite3"
+    )
 
 
 def test_build_v3_repository_provider_reports_legacy_sqlite_database(tmp_path) -> None:

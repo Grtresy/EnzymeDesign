@@ -15,6 +15,7 @@ from .reliability import ContinuationDeliveryState
 from .reliability import ContinuationResumeStrategy
 from .reliability import CONTINUATION_STATE_SCHEMA_VERSION
 from .reliability import ControlledOperationOwnerMode
+from .repository_bindings import SessionRepositoryBindingStatus
 
 
 def utc_now_iso() -> str:
@@ -301,6 +302,9 @@ class Session:
     status: SessionStatus
     created_at: str
     updated_at: str
+    repository_binding_status: SessionRepositoryBindingStatus = (
+        SessionRepositoryBindingStatus.REPOSITORY_BINDING_REQUIRED
+    )
 
     @classmethod
     def create(
@@ -310,6 +314,9 @@ class Session:
         title: str,
         objective: str,
         status: SessionStatus = SessionStatus.ACTIVE,
+        repository_binding_status: SessionRepositoryBindingStatus = (
+            SessionRepositoryBindingStatus.REPOSITORY_BINDING_REQUIRED
+        ),
     ) -> "Session":
         now = utc_now_iso()
         return cls(
@@ -320,11 +327,13 @@ class Session:
             status=status,
             created_at=now,
             updated_at=now,
+            repository_binding_status=repository_binding_status,
         )
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["status"] = self.status.value
+        data["repository_binding_status"] = self.repository_binding_status.value
         data.pop("member_id", None)
         return data
 

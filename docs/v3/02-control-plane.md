@@ -23,6 +23,7 @@ SQLite schema 兼容策略：
 SQLite connection / transaction ownership：
 
 - `SQLiteRepositoryProvider` 只接受 file-backed database，并在 composition 时校验/初始化当前 schema；产品路径不使用 `:memory:` 作为跨线程状态锚点
+- repository service 的 file-backed control-plane database 必须是 Host uid 持有的普通非 symlink 文件且 mode 精确为 `0600`；新文件按 `0600` 创建，已有权限漂移直接使 preflight 失败，不由启动路径静默 chmod
 - 每个 request、background worker、scheduler agent turn 和 sandbox SDK callback 在其实际线程内获得独立、默认 thread-affine connection，并由 scope 关闭；不得把 request thread 的 connection 交给 `asyncio.to_thread`
 - read scope 开启 `query_only`，不抢占 write lock；短 canonical command 使用 `BEGIN IMMEDIATE` Unit of Work，repository 内部 `commit` 在 owning UoW 中被抑制，异常统一 rollback
 - 会跨 LLM/provider/runner/sandbox 的流程使用非长事务 connection scope；repository 写入仍是短提交，不能用一个 write UoW 包住外部等待
@@ -32,6 +33,7 @@ SQLite connection / transaction ownership：
 - `021_v3_durable_event_outbox` 将 durable event、command receipt 与 append-only/immutable triggers 纳入 current schema；缺少任一项同样 fail fast
 - `022_v3_session_access_control` 将 session principal/role 授权事实纳入 current schema；授权不能只存在于 API token claims、浏览器状态或 project 字符串比较
 - `026` 至 `031` 将 canonical controlled-operation execution、runtime command/continuation、mutation scope/writer/receipt、immutable dispatch request、result artifact set 与 external snapshot 纳入 current schema；缺少 closed enum、identity、append-only 或 writer-fence trigger 的数据库不是 current-version input
+- `038_v3_project_repository_bindings` 增加 immutable binding versions、project active pointer、mapping receipts、session pins、credential issuance、private namespace/hold/retirement 与 binding retirement；repository identity ownership、pinned-session consistency、receipt owner identity 和 referenced-retirement 由 FK/unique/trigger fail closed
 
 ## 2. Canonical Objects
 
@@ -57,6 +59,52 @@ SQLite connection / transaction ownership：
 共享部署中，`SessionAccessRecord(session_id, principal_id, access_role, created_at)` 是 session 可见性与写权限的 canonical truth。每个 session 恰有一个 owner，未来可以显式增加 collaborator/viewer；同 project 不自动获得 session access。session row、owner access row、`session.created` durable event 与 command receipt 必须在一个短 write UoW 中提交或整体回滚。
 
 认证 principal 与 agent identity 是两套命名空间：外部用户使用 `user:<opaque-id>`，resident agent 使用 `agent:<role>:<opaque-id>`。审批审计、lane claim 和 user message context 使用服务端认证得到的 user principal，不能接受客户端伪造 actor。
+
+### 2.1.1 ProjectRepositoryBinding / SessionRepositoryBindingPin
+
+`ProjectRepositoryBinding` 是 project repository universe 的 immutable version。canonical fields
+包括：
+
+- `binding_id + project_id + binding_version + repository_id`
+- internal Git/LFS service id 与 endpoint
+- 独立 upstream identity/URL
+- object format、default base ref 与 exact base commit
+- private/publication/historical namespace policy
+- policy version/digest、canonical digest、created by/at
+
+同一 `repository_id` 只能归属一个 project；一个 project 只有一个 active pointer，但旧
+version不会因 rollover 被改写。lifecycle 是 `registered | active | retired` 的 repository
+派生状态；retirement 必须先证明 active/session/mapping/credential/private-namespace references
+全为零并写 immutable receipt，不能靠 UPDATE binding row 表达。
+
+`SessionRepositoryBindingPin` 保存 session 创建/显式 legacy mapping 时解析到的 exact
+`binding_id + version + repository_id + resolved_base_commit + binding_canonical_digest`。新
+session row 与 pin 在一个 write UoW 内提交；`repository_binding_status=pinned` 却没有 pin、
+pin 与 session/project/binding/receipt identity 不一致均由 migration trigger 拒绝。既有 rows
+默认保持 `repository_binding_required`，只有 operator mapping command 及其 immutable receipt
+可以闭合。
+
+session restore 和后续 agent workspace/publication/HPC/historical migration prerequisite只从
+pin读取，不重解 active pointer。binding 原 base ref 后续前进不影响旧 session，只要 pinned
+commit object仍存在；配置 identity、canonical digest 或 object drift 则显式失败，不从 ambient
+Git state、临时 repository 或 upstream补全。
+
+`repository_credential_issuance_records` 只保存 token digest 与 closed claims，不保存 bearer。
+claims 绑定 binding/session/agent/workspace generation/capability lease/protocol/ref classes；
+revocation/expiry 是显式状态。任何 Git/LFS write scope 在签发与每次认证时都必须找到 exact
+`binding + session + agent + generation` 的 `open` private namespace，以及 owner ref 等于 claims
+lease id 的未释放 `active_capability_lease` hold；namespace close/retire 或 hold release 后，旧 bearer
+不能再次写。C1 本机验收只显式创建并释放 acceptance-only hold，不声明 production lease；C2
+负责正式 hold 的创建/释放 owner。private namespace、hold 和 terminal receipt 行保存 retention
+authority，agent 永远没有 delete owner。
+
+publication 与 historical refs 不经 agent bearer：`RepositoryOwnerRefService` 分别要求固定的
+Host publication owner 与 migration historical owner，先消费 publication create-only / historical
+create-or-fast-forward ACL，再要求每个新目标都是 commit object，并对 bare repository 执行原子
+exact-old/new CAS。agent pre-receive hook 同样拒绝 blob、tree 或 tag 目标，确保 private ref 与
+retirement receipt 保存的确实是逐步 commit trace。这里仅建立 C4 与
+历史迁移将消费的内部 authority primitive，不创建 publication workflow、migration orchestration
+或 upstream effect。
 
 ### 2.2 Task
 
@@ -452,7 +500,7 @@ ambiguous 永远 fail closed。
 
 V3 control plane 的 canonical 关系默认如下：
 
-- `session` 是 task、lane、approval、inbox、memory、agent member、runtime signal、engine invocation、artifact、run、report draft 与 report 的顶层锚点
+- `session` 是 repository binding pin、task、lane、approval、inbox、memory、agent member、runtime signal、engine invocation、artifact、run、report draft 与 report 的顶层锚点
 - `task` 是 teammate delegation、lane focus、approval、engine invocation、artifact lineage、report draft、report 与 protocol thread 的默认业务锚点
 - `lane` 只表达隔离执行上下文；它不能替代 task 业务语义，也不能成为 artifact 可见性的唯一边界
 - `approval` 绑定具体 requested action、task/lane/invocation/step 与 plan digest；approval resolve 是唯一用户级 approval 状态入口
@@ -479,10 +527,12 @@ V3 的 UI / CLI 不直接读取 raw internal state，而是读取一个统一 pr
 - `capabilities`
 - `runtime_state`
 - `activity_feed`
+- `repository_binding`
 
 其中推荐的阅读关系是：
 
 - `conversation` 看用户与 master agent 的往来
+- `repository_binding` 看当前 session 的 immutable binding id/version、safe service identity、object format、exact base、policy digest、lifecycle 与 allowed ref classes；它不显示 Host root、upstream URL、private endpoint 或 credential
 - `task_board` 看内部工作如何被拆解和推进
 - `delegation` 看 resident team roster、teammate 生命周期、哪些 teammate 正在推进哪些 task、持有哪些 correlation thread、是否有 unread wakeup
 - `lane_board` / `capabilities` 看 task 在什么执行上下文里运行

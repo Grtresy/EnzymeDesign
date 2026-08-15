@@ -30,6 +30,7 @@ V3 Host Control Plane
   +--> memory / compaction
   +--> inbox / team protocols
   +--> delegation / agent roster
+  +--> project repository binding / session pin
   +--> shared workspace / artifact catalog
   +--> projection engine
   |
@@ -58,6 +59,7 @@ Agent Harness Kernel
 Persistence + Infra
   |
   +--> relational store
+  +--> Host-owned bare Git + repository-scoped LFS
   +--> artifact store
   +--> event log
   +--> mcp-hpc-runner / SSH / Slurm
@@ -73,6 +75,7 @@ V3 的产品主语义是：
 - `lane / workspace isolation`
 - `approval + inbox + team protocols`
 - `capability engines` 被 harness 按需调用
+- immutable project repository binding 与 per-session exact base pin
 - `report draft` 作为可恢复、可修订、可发布的中间交付物
 - `workspace projection` 统一对外暴露当前状态
 - 显式 `local-dev` / `shared` deployment profile，以及持久化 session ownership
@@ -96,11 +99,13 @@ V3 里不再要求所有产品动作都投射为顶层 phase。
 
 - 管理 `session` 生命周期
 - 持久化 `task / lane / approval / inbox / memory / agent roster / engine invocation`
+- 持久化 immutable repository binding versions、active pointer、legacy mapping receipt 与 per-session exact pin
 - 持久化 `artifact catalog / report draft / report / run` 并将其暴露为 session 共享工作面
 - 提供统一 API / streaming / projection
 - 将用户动作与 control-plane 变化转换为 agent wakeup signal
 - 为 UI / CLI 提供 canonical workspace snapshot
 - 在 shared profile 执行 Bearer AuthN、project allowlist、session owner/collaborator AuthZ、operator command gate 与服务端 actor attribution
+- 启动 configured Host 时，在 background worker 前验证 repository durable roots、active bindings、exact base 与 inventory；新 session 在 workspace provisioning 前原子 pin active binding
 
 不负责：
 
@@ -109,6 +114,27 @@ V3 里不再要求所有产品动作都投射为顶层 phase。
 - 深研究推理细节
 - HPC 执行编排细节
 - 报告具体写作、修订与发布细节
+
+### 3.1.1 Repository service
+
+repository service 属于 Host infrastructure 与 control-plane authority 的交界面，不是新的
+agent tool protocol。control plane 持有 immutable binding/session pin/credential issuance/
+retention receipt；独立 TLS app 持有 bare Git/LFS roots、signing key、TLS key 和标准协议
+transport。普通 `/v3` app 与 repository app 复用同一 SQLite truth，但认证面分离：前者使用
+产品 principal，后者只接受 repository-scoped bearer。
+
+internal remote 通过 Git smart HTTP v2 over HTTPS 和 Git LFS Batch API v2/basic 提供协作；
+upstream origin 只作为 binding 中的独立 identity，不是 internal service 的 fallback。agent
+private namespace精确绑定 `session + agent_member + workspace_generation`，只允许 create 与
+fast-forward；写 credential 还要求 exact namespace 为 `open` 并存在同 lease id 的未释放
+`active_capability_lease` hold，签发与每次写认证都重验。publication 是 Host create-only，
+historical 是 migration-owner；两条内部 owner writer 都先消费 ACL，再以 exact old/new CAS
+原子更新 bare refs。retention owner
+只能在完整 generation 关闭、deadline 已过且无 hold 后先写 terminal receipt 再整代删除。
+
+C1 只建立 repository universe 与 protocol/service boundary。C2 才闭合 production
+capability lease；C3/C4 才创建 per-agent worktree 与 publish/sync。因此 target architecture
+不得把已通过的 local native-client acceptance 描述为 agent workspace 已切换完成。
 
 ### 3.2 Agent Harness Kernel
 
@@ -204,6 +230,8 @@ restore context
 
 ```text
 create session
+  -> resolve one active ProjectRepositoryBinding and verify exact base object
+  -> atomically persist session + SessionRepositoryBindingPin
   -> ensure resident agent:master
   -> user message is persisted and queues agent:master wakeup
   -> scheduler claims master signal

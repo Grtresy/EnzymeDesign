@@ -1,0 +1,26 @@
+{
+  "binding_id": "binding_openzyme_local_v1",
+  "binding_version": 1,
+  "canonical_digest": "sha256:5f288ba53bbb0654e38abb185923231ea1ff9e535ba17bd4708746c9cf015d61",
+  "created_at": "2026-08-15T15:59:51Z",
+  "created_by": "operator:codex-c1",
+  "default_base_commit": "9b78ec6a883f90ec4239d113e9300098120f68bd",
+  "default_base_ref": "refs/heads/dev",
+  "internal_git_endpoint": "https://localhost:8443/repositories/openzyme.git",
+  "internal_git_service_id": "openzyme_git_local",
+  "lfs_endpoint": "https://localhost:8443/repositories/openzyme.git/info/lfs",
+  "lfs_service_id": "openzyme_lfs_local",
+  "object_format": "sha1",
+  "project_id": "openzyme",
+  "ref_namespace_policy": {
+    "historical_prefix": "refs/openzyme/historical",
+    "private_prefix": "refs/openzyme/private",
+    "publication_prefix": "refs/openzyme/publications"
+  },
+  "repository_id": "openzyme",
+  "repository_policy_digest": "sha256:a473ba91392bb815154423d17f95badb9c54e71b942a6f02fe157b63b04a3481",
+  "repository_policy_version": "repository-policy-v1",
+  "schema_version": "project_repository_binding@1",
+  "upstream_identity": "github_grtresy_enzymedesign",
+  "upstream_url": "git@github.com:Grtresy/EnzymeDesign.git"
+}

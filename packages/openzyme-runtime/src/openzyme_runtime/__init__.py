@@ -150,6 +150,7 @@ from .settings import OpenZymeSettings
 from .settings import REPO_ROOT
 from .settings import ResolvedLlmPolicy
 from .settings import ResearchSettings
+from .settings import RepositoryServiceSettings
 from .settings import TestSettings
 from .settings import TracingSettings
 from .settings import V3BackgroundRuntimeSettings
@@ -295,6 +296,7 @@ __all__ = [
     "ResearchTurnRecord",
     "REPO_ROOT",
     "ResearchSettings",
+    "RepositoryServiceSettings",
     "ReliabilityRefactorSettings",
     "ReliabilityShadowObservation",
     "ReliabilityShadowObservationKind",

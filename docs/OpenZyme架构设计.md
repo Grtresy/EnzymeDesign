@@ -32,6 +32,7 @@ V3 稳定文档入口见：
 - [docs/v3/06-top-level-llm-loop.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/06-top-level-llm-loop.md)
 - [docs/v3/07-runtime-hpc-reliability.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/07-runtime-hpc-reliability.md)
 - [docs/v3/runtime-hpc-reliability-operations.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/runtime-hpc-reliability-operations.md)
+- [docs/v3/repository-service-operations.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/repository-service-operations.md)
 
 本文档是主线架构入口；`docs/v3/` 是 V3 主题细则。若两者与当前代码实现出现差异，必须同时核对代码、V3 稳定文档与最近验收事实后修正文档或实现，不能用旧 workflow 叙述压过当前 V3 代码事实。
 
@@ -43,7 +44,7 @@ V3 稳定文档入口见：
 
 当前主线保留的主要应用：
 
-- `apps/openzyme-host-api`：FastAPI Host API，包含 V3 `/v3` 产品接口；作为 HTTP/SSE composition root 装配 repositories、engine registry、runtime foundation、background worker 和 runner server，评测/fixture 模块仅保留迁移兼容，不再作为新增 V3 runtime/eval 逻辑落点
+- `apps/openzyme-host-api`：FastAPI Host API，包含 V3 `/v3` 产品接口；作为 HTTP/SSE composition root 装配 repositories、engine registry、runtime foundation、background worker 和 runner server；同一 app package 还提供独立的 TLS repository transport/admin CLI，Git/LFS route 不进入 `/v3` auth middleware；评测/fixture 模块仅保留迁移兼容，不再作为新增 V3 runtime/eval 逻辑落点
 - `apps/openzyme-host-cli`：Thin CLI client
 - `apps/openzyme-web-ui`：浏览器工作区 UI
 - `apps/mcp-hpc-runner`：SSH/Slurm/HPC runner 边界
@@ -84,6 +85,7 @@ V3 的产品真状态由 Host control plane 持久化，并通过 workspace proj
 - `runtime_command`
 - `continuation_state / continuation_delivery`
 - `mutation_scope / mutation_writer / quiescence_receipt`
+- `project_repository_binding / session_repository_binding_pin`
 - `engine_invocation`
 - `artifact`
 - `run`
@@ -137,6 +139,34 @@ snapshot 复制成 session memory。历史自动 compaction 在 prompt projectio
 generated volatile/authority sections，原 row 保持 immutable。每个 master/teammate prompt
 都从当前 canonical focus 显式投影 exact `Current authorized workflow refs`，包括空集合；
 memory、task text 与 protocol text 均只作为历史事实，不能扩张该集合。
+
+### 3.3.1 Project repository binding 是 session 的 immutable 世界约束
+
+C1 在 control plane 中加入 immutable、versioned `ProjectRepositoryBinding` 与
+`SessionRepositoryBindingPin`。binding 同时封存 internal Git/LFS service identity、独立
+upstream identity、object format、default base ref/exact commit、ref namespace policy 和
+canonical digest；一个 repository identity 只归属一个 project。新 session 必须在任何
+workspace provisioning 前解析唯一 active version，并在同一 transaction 写 session row 与
+exact pin。active version 后续 rollover 只影响新 session；restore、agent workspace、
+publication、HPC workspace 与 historical migration 都只读原 session pin，不能改读 project
+latest、ambient checkout 或 local directory。
+
+Host-owned repository service 使用 durable bare Git root、repository-scoped LFS root 与独立
+backup root，并通过另一个 HTTPS process 暴露标准 Git smart HTTP v2 和 Git LFS Batch
+API v2/basic。agent bearer 必须绑定 binding/session/agent/workspace generation/capability
+lease/protocol/ref class；Git/LFS 写凭据只在同一 generation 的 private namespace 为 `open`、
+且存在同 lease id 的未释放 capability-lease hold 时签发并在每次写认证时重验。agent private
+ref 只允许指向 commit object 并执行 create/fast-forward；Host publication 与 migration
+historical namespace 使用两个不同的机器 owner，并通过原子 exact-old/new ref writer 分别执行
+create-only 与 create/fast-forward，且同样拒绝非 commit 目标。该内部 primitive 不等于 C4
+publication workflow。public workspace 只投影 binding id/version、safe
+service identity、object format、exact base、policy digest、lifecycle 与 allowed ref classes，
+不投影 Host path、upstream URL、private endpoint、signing key 或 token。
+
+internal remote 不持有 upstream effect authority；本地 Git/LFS 失败时不得 fallback 到
+GitHub，也不得自动 push、开 PR 或 release。当前 C1 已证明本地 protocol/restart/logical
+restore，但还没有 C2 production capability lease issuance、C3 agent worktree 或 C4
+publish/sync。local backup 与 Git/LFS 同一 filesystem 的演练不构成 production DR 证明。
 
 ### 3.4 No Hidden Fallback
 

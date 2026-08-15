@@ -459,6 +459,7 @@ def test_app_can_mount_ui_when_dist_exists(tmp_path) -> None:
     (dist_dir / "debug.html").write_text("<html><body>debug</body></html>")
 
     dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=build_local_eval_foundation(),
         v3_background_runtime_enabled=False,
     )

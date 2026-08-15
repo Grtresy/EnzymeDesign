@@ -1,0 +1,76 @@
+{
+  "baseline": {
+    "auth_surface": {
+      "repository_transport": "absent",
+      "v3_local_dev": "loopback_fixed_principal",
+      "v3_shared": "bearer_principal_and_session_access"
+    },
+    "current_sqlite_schema_version": 37,
+    "host_repository_binding_service": "absent",
+    "repository_binding_tables": [],
+    "session_repository_binding_status": "absent"
+  },
+  "c0_acceptance": {
+    "receipt_digest": "sha256:a54cdffbadecda3639129edbcd99f889eee7aa2462df296f6a0780ccf924f4ce",
+    "status": "passed",
+    "verifier_command": "python3 openspec/changes/supersede-aox-hmm-artifact-cutover/operator/verify_supersession.py --require-acceptance --verify-legacy-sources"
+  },
+  "change_id": "establish-project-repository-bindings",
+  "focused_test_baseline": [
+    "packages/openzyme-domain/tests",
+    "packages/openzyme-core/tests/test_migrations.py",
+    "packages/openzyme-core/tests/test_protocols.py",
+    "apps/openzyme-host-api/tests/test_api.py -k v3",
+    "packages/openzyme-runtime/tests/test_settings.py"
+  ],
+  "issued_at": "2026-08-15T15:59:00Z",
+  "openspec_artifact_digests": {
+    "design.md": "sha256:1f2631575553cea84b8543625796aa64831f219c3c4cee90f1d222f743b2147f",
+    "proposal.md": "sha256:0c6982b3b0eeb6919a50f879ab3d1d589a4ee6f68c831da7a6fe1a4daf7c9a6f",
+    "specs/project-repository-binding/spec.md": "sha256:2dad251ab0eed10497ae57e49206bd8b96e82069f7ae85b8050e69c72b2b37ef",
+    "tasks.md": "sha256:6e599b1d032e5ea215f2e07f8d0973ba9194d9683b0929d6af5470a254127107"
+  },
+  "receipt_digest": "sha256:514bcbbe9b1707a86c72d49579d21cf43dd409e3daa1b9eb0a71576ccd850185",
+  "schema_id": "project_repository_binding_implementation_baseline@1",
+  "source_files": [
+    {
+      "path": "packages/openzyme-core/src/openzyme_core/migration_assets.py",
+      "sha256": "sha256:86c928ee1527dfb7adf60b16876297c5e0b45037551ac82968eea3657f7f8d6e"
+    },
+    {
+      "path": "packages/openzyme-domain/src/openzyme_domain/control_plane.py",
+      "sha256": "sha256:670cdb869963c94c44341960888b66f4a24dce2296b164b130380cf3dd84cf17"
+    },
+    {
+      "path": "packages/openzyme-core/src/openzyme_core/repositories.py",
+      "sha256": "sha256:1a9b47f523f9bfe5430a008955ad1d8f905f155834e04ed1f67f811f19c2431f"
+    },
+    {
+      "path": "apps/openzyme-host-api/src/openzyme_host_api/app.py",
+      "sha256": "sha256:327ed1a29db327625af3de7d0a52c0144f8b8897c05cc0939609e0f18ec2fc89"
+    },
+    {
+      "path": "apps/openzyme-host-api/src/openzyme_host_api/v3_service.py",
+      "sha256": "sha256:5b5bd9cba179121bda22c53ab2e95186f8da08bccdf4aa07bfcf172f6cf27c0d"
+    },
+    {
+      "path": "docs/v3/02-control-plane.md",
+      "sha256": "sha256:68c9de655e7c60b58bf1d9eb7d3ff0ec15efa3940521b8e61566f5f9ca90841d"
+    },
+    {
+      "path": "docs/v3/04-public-interfaces.md",
+      "sha256": "sha256:9171890f4836682ef068a5b8a473e9ca57b87c032feaf76df24c9b78b9d488a8"
+    }
+  ],
+  "source_revision": "9b78ec6a883f90ec4239d113e9300098120f68bd",
+  "successor_gate": {
+    "c1_and_c2_may_be_implemented_independently": true,
+    "c3_blocked_until": [
+      "C1 acceptance",
+      "C2 acceptance"
+    ],
+    "c4_blocked_until": [
+      "C3 acceptance"
+    ]
+  }
+}

@@ -286,6 +286,46 @@ HOST_MUTATION_GLOBAL_EXCLUSIONS: Final[tuple[dict[str, str], ...]] = (
         "table_name": "scientific_attempt_closure_records",
         "reason": "post_quiescence_immutable_seal_bound_to_exact_receipt",
     },
+    {
+        "table_name": "project_repository_binding_versions",
+        "reason": "host_operator_immutable_repository_binding_versions",
+    },
+    {
+        "table_name": "project_repository_active_bindings",
+        "reason": "host_operator_repository_binding_activation_authority",
+    },
+    {
+        "table_name": "project_repository_binding_lifecycle_events",
+        "reason": "host_operator_append_only_repository_binding_lifecycle",
+    },
+    {
+        "table_name": "project_repository_binding_retirement_receipts",
+        "reason": "host_operator_immutable_repository_binding_retirement_receipts",
+    },
+    {
+        "table_name": "repository_binding_mapping_receipts",
+        "reason": "host_operator_immutable_legacy_repository_mapping_receipts",
+    },
+    {
+        "table_name": "session_repository_binding_pins",
+        "reason": "host_owned_immutable_session_repository_identity",
+    },
+    {
+        "table_name": "repository_credential_issuance_records",
+        "reason": "host_repository_security_credential_ledger",
+    },
+    {
+        "table_name": "repository_private_namespace_records",
+        "reason": "host_repository_retention_namespace_authority",
+    },
+    {
+        "table_name": "repository_private_namespace_holds",
+        "reason": "host_repository_retention_hold_authority",
+    },
+    {
+        "table_name": "repository_private_namespace_retirement_receipts",
+        "reason": "host_repository_retention_immutable_retirement_receipts",
+    },
 )
 
 HOST_MUTATION_COVERAGE_MANIFEST: Final[dict[str, object]] = {

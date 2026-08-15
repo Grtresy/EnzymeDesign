@@ -119,6 +119,43 @@ from .report_drafts import register_report_draft_tools
 from .runtime_consistency import RuntimeConsistencyService
 from .runtime_consistency import RuntimeConsistencyWarning
 from .runtime_consistency import RuntimeStateAudit
+from .repository_binding_service import ProjectRepositoryBindingService
+from .repository_binding_service import RepositoryBindingDriftError
+from .repository_binding_service import RepositoryPrerequisite
+from .repository_binding_service import ResolvedSessionRepositoryBinding
+from .repository_credentials import ActiveCapabilityLeaseAssertion
+from .repository_credentials import GitRefAclValidator
+from .repository_credentials import GitRefUpdate
+from .repository_credentials import IssuedRepositoryCredential
+from .repository_credentials import REPOSITORY_CREDENTIAL_SCHEMA_VERSION
+from .repository_credentials import RepositoryCredentialBroker
+from .repository_credentials import RepositoryCredentialClaims
+from .repository_credentials import RepositoryCredentialError
+from .repository_credentials import RepositoryCredentialExpiredError
+from .repository_credentials import RepositoryCredentialProtocol
+from .repository_credentials import RepositoryCredentialRejectedError
+from .repository_credentials import RepositoryRefAclError
+from .repository_credentials import private_ref_prefix
+from .repository_owner_refs import HOST_PUBLICATION_REF_OWNER
+from .repository_owner_refs import MIGRATION_HISTORICAL_REF_OWNER
+from .repository_owner_refs import RepositoryOwnerRefService
+from .repository_owner_refs import RepositoryRefOwnerIdentity
+from .repository_owner_refs import RepositoryRefOwnerKind
+from .repository_owner_refs import RepositoryRefOwnerRejectedError
+from .repository_retention import RepositoryPrivateNamespace
+from .repository_retention import RepositoryPrivateNamespaceHoldKind
+from .repository_retention import RepositoryPrivateNamespaceRetentionService
+from .repository_retention import RepositoryPrivateNamespaceStatus
+from .repository_retention import RepositoryRetentionError
+from .repository_storage import DurableLfsObjectStore
+from .repository_storage import DurableRepositoryRootManager
+from .repository_storage import DurableRootFact
+from .repository_storage import LfsObjectMismatchError
+from .repository_storage import RepositoryBaseCommitError
+from .repository_storage import RepositoryIdentityMismatchError
+from .repository_storage import RepositoryRootBoundary
+from .repository_storage import RepositoryRootRejectedError
+from .repository_storage import RepositoryStorageError
 from .sandbox_workspace import SandboxWorkspaceService
 from .sandbox_workspace import derive_sandbox_workspace_id
 from .sandbox_workspace import normalize_immutable_image_id
@@ -171,6 +208,10 @@ from .repositories import LaneLifecycleEventRecord
 from .repositories import LaneLifecycleEventRepository
 from .repositories import MemoryEntryRepository
 from .repositories import OwnershipError
+from .repositories import ProjectRepositoryBindingRepository
+from .repositories import RepositoryBindingConflictError
+from .repositories import RepositoryBindingRequiredError
+from .repositories import RepositoryBindingRetiredError
 from .repositories import TaskDependencyCycleError
 from .repositories import TaskWriteIntent
 from .repositories import TaskWriteIntentError
@@ -204,6 +245,7 @@ from .repositories import SessionArtifactRepository
 from .repositories import SessionRuntimeLeaseAcquireResult
 from .repositories import SessionRuntimeLeaseRepository
 from .repositories import SessionRepository
+from .repositories import SessionRepositoryBindingPinRepository
 from .repositories import SessionAccessRecord
 from .repositories import SessionAccessRepository
 from .repositories import SQLiteRepositoryProvider
@@ -435,6 +477,14 @@ __all__ = [
     "DurableEventConflictError",
     "DurableEventRecord",
     "DurableEventRepository",
+    "DurableLfsObjectStore",
+    "DurableRepositoryRootManager",
+    "DurableRootFact",
+    "ActiveCapabilityLeaseAssertion",
+    "GitRefAclValidator",
+    "GitRefUpdate",
+    "HOST_PUBLICATION_REF_OWNER",
+    "IssuedRepositoryCredential",
     "DurableControlledOperationWriteError",
     "ControlledOperationWriteFencingError",
     "FileAuditEntryRepository",
@@ -459,6 +509,7 @@ __all__ = [
     "LiveProcessRegistry",
     "LiveProcessRegistryConflictError",
     "LiveProcessRegistryEntry",
+    "LfsObjectMismatchError",
     "LlmConversationDriver",
     "LlmTraceStep",
     "LlmTraceToolCall",
@@ -486,8 +537,11 @@ __all__ = [
     "HOST_MUTATION_POLICY_DIGEST",
     "HOST_MUTATION_POLICY_ID",
     "MUTATION_LOCAL_SETTLEMENT_SCHEMA_ID",
+    "MIGRATION_HISTORICAL_REF_OWNER",
     "ModelContextProfile",
     "OwnershipError",
+    "ProjectRepositoryBindingRepository",
+    "ProjectRepositoryBindingService",
     "OptimisticStateConflictError",
     "is_transient_sqlite_contention",
     "ProtocolService",
@@ -514,6 +568,35 @@ __all__ = [
     "ResearchGapRepository",
     "ResearchSourceRefRepository",
     "ResearchSummaryRepository",
+    "RepositoryBindingConflictError",
+    "RepositoryBindingDriftError",
+    "RepositoryBindingRequiredError",
+    "RepositoryBindingRetiredError",
+    "RepositoryPrerequisite",
+    "RepositoryBaseCommitError",
+    "REPOSITORY_CREDENTIAL_SCHEMA_VERSION",
+    "RepositoryCredentialBroker",
+    "RepositoryCredentialClaims",
+    "RepositoryCredentialError",
+    "RepositoryCredentialExpiredError",
+    "RepositoryCredentialProtocol",
+    "RepositoryCredentialRejectedError",
+    "RepositoryIdentityMismatchError",
+    "RepositoryOwnerRefService",
+    "RepositoryPrivateNamespace",
+    "RepositoryPrivateNamespaceHoldKind",
+    "RepositoryPrivateNamespaceRetentionService",
+    "RepositoryPrivateNamespaceStatus",
+    "RepositoryRefAclError",
+    "RepositoryRefOwnerIdentity",
+    "RepositoryRefOwnerKind",
+    "RepositoryRefOwnerRejectedError",
+    "RepositoryRootBoundary",
+    "RepositoryRootRejectedError",
+    "RepositoryRetentionError",
+    "RepositoryStorageError",
+    "ResolvedSessionRepositoryBinding",
+    "private_ref_prefix",
     "ReliabilityRepositoryError",
     "RunRecordRepository",
     "RuntimeWriteFencingError",
@@ -566,6 +649,7 @@ __all__ = [
     "SessionArtifactRepository",
     "SessionProjectionBuilder",
     "SessionRepository",
+    "SessionRepositoryBindingPinRepository",
     "SessionRestoreContext",
     "SessionRuntimeContext",
     "SessionRuntimeSnapshot",

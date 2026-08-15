@@ -161,13 +161,14 @@ def test_live_v3_master_message_e2e_reaches_report(tmp_path) -> None:
     session_id = "sess_live_v3_e2e"
     with TestClient(
         create_app(
-        HostApiDependencies(
-            foundation=foundation,
-            security_policy=HostSecurityPolicy(
-                deployment_profile="local-dev",
-                principals_by_digest={},
-                debug_enabled=True,
-            ),
+            HostApiDependencies(
+                v3_allow_unpinned_repository_sessions_for_tests=True,
+                foundation=foundation,
+                security_policy=HostSecurityPolicy(
+                    deployment_profile="local-dev",
+                    principals_by_digest={},
+                    debug_enabled=True,
+                ),
                 v3_repository_provider=v3_repository_provider,
                 v3_background_runtime_enabled=True,
             )

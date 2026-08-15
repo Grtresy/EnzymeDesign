@@ -46,6 +46,7 @@ def _dependencies(
     if model_factory is not None:
         foundation = replace(foundation, model_factory=model_factory)
     return HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=replace(
             foundation,
             settings=replace(
@@ -336,6 +337,7 @@ def test_r55_shaped_runtime_drain_settles_closed_teammate_budget_replan_handoff(
     )
     with provider.connection_scope() as scope:
         service = V3HostApiService(
+            allow_unpinned_repository_sessions_for_tests=True,
             repositories=scope.repositories,
             event_store=V3EventStore(scope.repositories),
             model_factory=_LoopingModelFactory(),
@@ -526,6 +528,7 @@ def test_runtime_drain_fails_when_budget_replan_wakeup_is_missing(
     )
     with provider.connection_scope() as scope:
         service = V3HostApiService(
+            allow_unpinned_repository_sessions_for_tests=True,
             repositories=scope.repositories,
             event_store=V3EventStore(scope.repositories),
             model_factory=_LoopingModelFactory(),
@@ -555,6 +558,7 @@ def test_runtime_drain_keeps_master_budget_exhaustion_failed(
     )
     with provider.connection_scope() as scope:
         service = V3HostApiService(
+            allow_unpinned_repository_sessions_for_tests=True,
             repositories=scope.repositories,
             event_store=V3EventStore(scope.repositories),
             model_factory=_LoopingModelFactory(),
@@ -595,6 +599,7 @@ def test_runtime_drain_preserves_core_receipt_across_projection_failures(
     )
     with provider.connection_scope() as scope:
         service = V3HostApiService(
+            allow_unpinned_repository_sessions_for_tests=True,
             repositories=scope.repositories,
             event_store=V3EventStore(scope.repositories),
             model_factory=object(),
@@ -715,6 +720,7 @@ def test_runtime_consistency_warnings_remain_read_only_across_drains(
     task_id = "task_runtime_consistency_projection"
     with provider.connection_scope() as scope:
         service = V3HostApiService(
+            allow_unpinned_repository_sessions_for_tests=True,
             repositories=scope.repositories,
             event_store=V3EventStore(scope.repositories),
             model_factory=object(),
@@ -1147,6 +1153,7 @@ def test_runtime_api_downgrade_is_rejected_while_a_command_is_active(
 
     foundation = build_local_eval_foundation()
     sync_dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=replace(
             foundation,
             settings=replace(
@@ -1169,6 +1176,7 @@ def test_runtime_api_downgrade_is_rejected_while_a_command_is_active(
 def test_retired_sync_runtime_api_has_no_fallback_without_active_rows() -> None:
     foundation = build_local_eval_foundation()
     sync_dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=replace(
             foundation,
             settings=replace(

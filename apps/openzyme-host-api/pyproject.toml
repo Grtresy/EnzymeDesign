@@ -24,6 +24,7 @@ dependencies = [
 
 [project.scripts]
 openzyme-aox-cutover = "openzyme_host_api.aox_cutover_cli:main"
+openzyme-repository = "openzyme_host_api.repository_admin_cli:main"
 
 [project.optional-dependencies]
 dev = [

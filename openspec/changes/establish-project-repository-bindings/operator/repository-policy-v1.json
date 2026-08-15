@@ -1,0 +1,52 @@
+{
+  "credential_authority": {
+    "binding_fields": [
+      "binding_id",
+      "binding_version",
+      "repository_id",
+      "session_id",
+      "agent_member_id",
+      "workspace_generation",
+      "capability_lease_id",
+      "protocols",
+      "ref_classes"
+    ],
+    "host_signing_key_private": true,
+    "replay_failed_command": false
+  },
+  "git_object_format": "sha1",
+  "git_protocol": "smart_http_v2_over_https",
+  "lfs_protocol": "batch_v2_basic",
+  "policy_version": "repository-policy-v1",
+  "read_visibility": {
+    "historical_refs": "hidden_from_agent",
+    "other_private_refs": "hidden_from_agent",
+    "own_private_generation": "visible",
+    "publication_refs": "visible"
+  },
+  "ref_acl": {
+    "agent_private": {
+      "allowed_updates": [
+        "create",
+        "fast_forward"
+      ],
+      "deletion": false,
+      "maximum_refs_per_push": 1
+    },
+    "historical": {
+      "owner": "migration_owner"
+    },
+    "publication": {
+      "create_only": true,
+      "owner": "host"
+    },
+    "retention": {
+      "delete_scope": "complete_closed_workspace_generation",
+      "receipt_before_delete": true,
+      "selective_pruning": false
+    }
+  },
+  "schema_version": "repository_policy@1",
+  "storage_fallbacks": [],
+  "upstream_effect_authority": "separate_controlled_external_operation"
+}

@@ -230,6 +230,7 @@ def test_seeded_v3_master_message_execution_smoke_reaches_report(tmp_path) -> No
     client = TestClient(
         create_app(
             HostApiDependencies(
+                v3_allow_unpinned_repository_sessions_for_tests=True,
                 foundation=foundation,
                 v3_repository_provider=v3_repository_provider,
             )

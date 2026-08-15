@@ -11,6 +11,7 @@ import pytest
 
 from openzyme_core import CoreRepositories
 from openzyme_core import HOST_MUTATION_COVERAGE_DIGEST
+from openzyme_core import HOST_MUTATION_COVERAGE_MANIFEST
 from openzyme_core import MutationResourceCategory
 from openzyme_core import MutationScopeError
 from openzyme_core import MutationScopeService
@@ -29,6 +30,39 @@ from openzyme_domain import TaskStatus
 
 
 NOW = "2026-07-21T00:00:00+00:00"
+
+REPOSITORY_AUTHORITY_GLOBAL_EXCLUSIONS = {
+    "project_repository_binding_versions": (
+        "host_operator_immutable_repository_binding_versions"
+    ),
+    "project_repository_active_bindings": (
+        "host_operator_repository_binding_activation_authority"
+    ),
+    "project_repository_binding_lifecycle_events": (
+        "host_operator_append_only_repository_binding_lifecycle"
+    ),
+    "project_repository_binding_retirement_receipts": (
+        "host_operator_immutable_repository_binding_retirement_receipts"
+    ),
+    "repository_binding_mapping_receipts": (
+        "host_operator_immutable_legacy_repository_mapping_receipts"
+    ),
+    "session_repository_binding_pins": (
+        "host_owned_immutable_session_repository_identity"
+    ),
+    "repository_credential_issuance_records": (
+        "host_repository_security_credential_ledger"
+    ),
+    "repository_private_namespace_records": (
+        "host_repository_retention_namespace_authority"
+    ),
+    "repository_private_namespace_holds": (
+        "host_repository_retention_hold_authority"
+    ),
+    "repository_private_namespace_retirement_receipts": (
+        "host_repository_retention_immutable_retirement_receipts"
+    ),
+}
 
 
 def _repositories(
@@ -50,6 +84,25 @@ def _repositories(
 
 def _service(repositories: CoreRepositories) -> MutationScopeService:
     return MutationScopeService(repositories, now=lambda: NOW)
+
+
+def test_repository_authority_tables_are_explicitly_outside_session_mutation_scope() -> None:
+    exclusions = {
+        item["table_name"]: item["reason"]
+        for item in HOST_MUTATION_COVERAGE_MANIFEST["global_exclusions"]
+    }
+    assert {
+        table_name: exclusions[table_name]
+        for table_name in REPOSITORY_AUTHORITY_GLOBAL_EXCLUSIONS
+    } == REPOSITORY_AUTHORITY_GLOBAL_EXCLUSIONS
+
+    _, repositories, session = _repositories()
+    scope = _service(repositories).open_scope(
+        session_id=session.session_id,
+        scope_kind=MutationScopeKind.SESSION,
+        scope_ref=session.session_id,
+    )
+    assert scope.writer_coverage_manifest_digest == HOST_MUTATION_COVERAGE_DIGEST
 
 
 def test_scope_freeze_receipt_seal_and_new_generation_are_monotonic() -> None:

@@ -20,7 +20,7 @@ def _default_ui_dist() -> Path:
 
 
 def _default_v3_sqlite_db() -> Path:
-    return Path("/tmp/openzyme-web-ui-v3.sqlite3")
+    return Path.home() / ".local" / "state" / "openzyme" / "control-plane.sqlite3"
 
 
 def _build_v3_repository_provider(

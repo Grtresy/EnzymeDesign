@@ -61,6 +61,7 @@ def _headers(token: str, *, key: str | None = None) -> dict[str, str]:
 
 def test_shared_profile_authenticates_and_persists_session_ownership() -> None:
     dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=build_local_eval_foundation(),
         security_policy=_shared_policy(),
     )
@@ -159,6 +160,7 @@ def test_shared_profile_authenticates_and_persists_session_ownership() -> None:
 
 def test_shared_profile_derives_approval_actor_and_rejects_forged_actor() -> None:
     dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=build_local_eval_foundation(),
         security_policy=_shared_policy(),
     )
@@ -213,6 +215,7 @@ def test_shared_profile_derives_approval_actor_and_rejects_forged_actor() -> Non
 
 def test_shared_debug_surface_is_disabled_or_operator_only_and_sanitized() -> None:
     disabled_dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=build_local_eval_foundation(),
         security_policy=_shared_policy(debug_enabled=False),
     )
@@ -239,6 +242,7 @@ def test_shared_debug_surface_is_disabled_or_operator_only_and_sanitized() -> No
     span.finish(response={"content": "result at /tmp/private/output.json"})
 
     enabled_dependencies = HostApiDependencies(
+        v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=build_local_eval_foundation(),
         security_policy=_shared_policy(debug_enabled=True),
     )

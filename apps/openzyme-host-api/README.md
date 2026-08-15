@@ -12,6 +12,34 @@ This app exposes the V3 Host-side API surface for:
 - V3 session events consumed by the Web UI
 - exact closed scientific-attempt/selection evidence export for a public offline conductor
 
+## Repository service
+
+当完整 `OPENZYME_REPOSITORY_*` block 已配置时，V3 Host startup 会在启动后台 worker
+之前验证 active project bindings、durable roots、exact base commits 与 inventory。新 session
+必须在同一 transaction 写入 exact repository binding pin；未配置 service、缺 active binding
+或 legacy session 未 mapping 时返回显式 `repository_binding_required`，不会使用当前 checkout。
+
+Git smart HTTP v2 与 Git LFS Batch v2/basic 由独立 TLS app 提供，不挂在 `/v3` 的
+local-dev/shared auth middleware 下：
+
+```sh
+uv run openzyme-repository preflight --database-path /absolute/control-plane.sqlite3
+uv run openzyme-repository serve --database-path /absolute/control-plane.sqlite3
+uv run openzyme-repository audit --database-path /absolute/control-plane.sqlite3
+```
+
+独立 app 的 `GET https://<repository-origin>/health` 每次重新执行完整 repository
+preflight；preflight 领域识别出的 durable storage、identity、inventory 或 configuration
+drift 返回 `503 repository_service_preflight_failed`。未被领域层归一的 OS、subprocess 或
+SSL fault 继续显式成为 `500`，transport 不用 catch-all 改写。该 route 只返回安全的
+协议/摘要事实，并且不能由
+`GET /v3/runtime/health` 的 control-plane 投影替代。
+
+它只接受 binding/session/agent/workspace-generation/lease/protocol/ref-scope 绑定的短期
+repository bearer；不会暴露 Host roots/signing key，也不会在 internal remote 失败时切换到
+upstream。bootstrap、activation、mapping、retirement 和 restore rehearsal 见
+[repository service 运维合同](../../docs/v3/repository-service-operations.md)。
+
 ## AOX public conductor boundary
 
 The current AOX production path has no automatic run command. `openzyme-aox-cutover preflight`

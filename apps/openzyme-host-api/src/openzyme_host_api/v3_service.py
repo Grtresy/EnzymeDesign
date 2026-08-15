@@ -45,6 +45,9 @@ from openzyme_core import AgentRuntimeSettlementDisposition
 from openzyme_core import ArtifactBoundaryService
 from openzyme_core import canonical_digest
 from openzyme_core import persist_conversation_message
+from openzyme_core import ProjectRepositoryBindingService
+from openzyme_core import RepositoryBindingRequiredError
+from openzyme_core import RepositoryPrerequisite
 from openzyme_core import RuntimeDrainCoreReceipt
 from openzyme_core import RuntimeDrainProjectionOutcome
 from openzyme_core import ScientificAttemptError
@@ -384,6 +387,8 @@ class V3HostApiService:
         ]
         | None
     ) = None
+    repository_binding_service: ProjectRepositoryBindingService | None = None
+    allow_unpinned_repository_sessions_for_tests: bool = False
     operation_lock: threading.RLock = field(default_factory=threading.RLock)
 
     def __post_init__(self) -> None:
@@ -504,16 +509,28 @@ class V3HostApiService:
             objective=objective,
             status=SessionStatus.ACTIVE,
         )
-        self.repositories.sessions.save(session)
-        self._ensure_master_agent(session.session_id)
-        events = [
-            _event(
-                "session.created",
-                session.session_id,
-                {"session": session.to_dict()},
-            )
-        ]
-        self.event_store.append(session.session_id, events)
+        binding_service = self.repository_binding_service
+        with self.repositories.atomic(prefix="create_session_membership_and_event"):
+            if binding_service is None:
+                if not self.allow_unpinned_repository_sessions_for_tests:
+                    raise RepositoryBindingRequiredError(
+                        "Host repository binding service is not configured"
+                    )
+                self.repositories.sessions.save(session)
+            else:
+                binding_service.create_pinned_session(session)
+            self._ensure_master_agent(session.session_id)
+            stored_session = self.repositories.sessions.get(session.session_id)
+            if stored_session is None:
+                raise RuntimeError("created session cannot be reread")
+            events = [
+                _event(
+                    "session.created",
+                    session.session_id,
+                    {"session": stored_session.to_dict()},
+                )
+            ]
+            self.event_store.append(session.session_id, events)
         return {
             "session_id": session.session_id,
             "workspace": self.workspace(session.session_id),
@@ -644,6 +661,10 @@ class V3HostApiService:
 
     def workspace(self, session_id: str) -> dict[str, Any]:
         with self.operation_lock:
+            self._require_session_repository_binding(
+                session_id,
+                prerequisite="session_restore",
+            )
             return (
                 SessionProjectionBuilder(
                     self.repositories,
@@ -654,6 +675,24 @@ class V3HostApiService:
                 .build_session_workspace(session_id)
                 .to_dict()
             )
+
+    def _require_session_repository_binding(
+        self,
+        session_id: str,
+        *,
+        prerequisite: RepositoryPrerequisite,
+    ) -> None:
+        binding_service = self.repository_binding_service
+        if binding_service is None:
+            if not self.allow_unpinned_repository_sessions_for_tests:
+                raise RepositoryBindingRequiredError(
+                    "Host repository binding service is not configured"
+                )
+            return
+        binding_service.require_session_binding(
+            session_id,
+            prerequisite=prerequisite,
+        )
 
     def scientific_attempt_control(self) -> ScientificAttemptService:
         return ScientificAttemptService(
@@ -1343,6 +1382,10 @@ class V3HostApiService:
         lane_id: str | None = None,
         skill_keys: tuple[str, ...] = (),
     ) -> SessionRuntimeContext:
+        self._require_session_repository_binding(
+            session_id,
+            prerequisite="agent_workspace",
+        )
         return SessionRuntimeContext(
             repositories=self.repositories,
             event_sink=self._event_sink(),
@@ -1769,6 +1812,10 @@ class V3HostApiService:
     ) -> V3CommandResult:
         if self.repositories.sessions.get(session_id) is None:
             raise KeyError(f"session {session_id!r} does not exist")
+        self._require_session_repository_binding(
+            session_id,
+            prerequisite="agent_workspace",
+        )
         self._ensure_master_agent(session_id)
         events: list[dict[str, Any]] = []
         message_id = None

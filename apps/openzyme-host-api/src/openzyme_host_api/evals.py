@@ -3439,6 +3439,7 @@ def _run_v3_design_cutover_scenario(
                 security_policy=_eval_security_policy(),
                 v3_repository_provider=v3_repository_provider,
                 v3_background_runtime_enabled=True,
+                v3_allow_unpinned_repository_sessions_for_tests=True,
             )
         )
         with TestClient(app) as client:
@@ -3613,6 +3614,7 @@ def _run_v3_aox_hmm_prompt_scenario(
             "security_policy": _eval_security_policy(),
             "v3_repository_provider": v3_repository_provider,
             "v3_background_runtime_enabled": True,
+            "v3_allow_unpinned_repository_sessions_for_tests": True,
         }
         if use_fixture_dependencies:
             dependencies_kwargs.update(
@@ -4008,6 +4010,7 @@ def _run_v3_live_task_plan_scenario(*, upload_results: bool = False) -> dict[str
                 security_policy=_eval_security_policy(),
                 v3_repository_provider=build_v3_eval_repository_provider(temp_dir),
                 v3_background_runtime_enabled=True,
+                v3_allow_unpinned_repository_sessions_for_tests=True,
             )
         )
         with TestClient(app) as client:

@@ -86,6 +86,7 @@ def test_live_v3_message_loop_can_create_a_task_via_real_llm() -> None:
     )
     app = create_app(
         HostApiDependencies(
+            v3_allow_unpinned_repository_sessions_for_tests=True,
             foundation=foundation,
             security_policy=HostSecurityPolicy(
                 deployment_profile="local-dev",

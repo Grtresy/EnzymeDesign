@@ -254,6 +254,9 @@ def test_migration_asset_is_available() -> None:
     provider_receipt_sql = get_migration_sql(
         "037_v3_controlled_operation_provider_receipts"
     )
+    repository_binding_sql = get_migration_sql(
+        "038_v3_project_repository_bindings"
+    )
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -390,6 +393,18 @@ def test_migration_asset_is_available() -> None:
         "controlled_operation_provider_observation_receipts_immutable_update"
         in provider_receipt_sql
     )
+    assert "CREATE TABLE project_repository_binding_versions" in repository_binding_sql
+    assert "CREATE TABLE session_repository_binding_pins" in repository_binding_sql
+    assert "repository_binding_status" in repository_binding_sql
+    assert "project_repository_binding_versions_immutable_update" in (
+        repository_binding_sql
+    )
+    retirement_guard = repository_binding_sql.split(
+        "CREATE TRIGGER project_repository_binding_retirement_receipt_unreferenced",
+        maxsplit=1,
+    )[1].split("END;", maxsplit=1)[0]
+    assert "FROM repository_credential_issuance_records" in retirement_guard
+    assert "FROM repository_private_namespace_records" in retirement_guard
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -428,6 +443,7 @@ def test_migration_asset_is_available() -> None:
         "035_v3_scientific_attempt_closure_response",
         "036_v3_failure_recovery_dispositions",
         "037_v3_controlled_operation_provider_receipts",
+        "038_v3_project_repository_bindings",
     )
 
 

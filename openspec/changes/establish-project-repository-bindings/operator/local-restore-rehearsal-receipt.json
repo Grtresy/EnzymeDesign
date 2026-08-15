@@ -1,0 +1,37 @@
+{
+  "acceptance_profile": "local_development",
+  "backup_inventory_digest": "sha256:37f0121fdc9a8d0fe10ccad1c076ef12b4208a1dcbc7b0bf06b4453dea4c5ecb",
+  "created_at": "2026-08-15T19:31:19Z",
+  "created_by": "operator:codex-c1",
+  "database_identity_digest": "sha256:f4a8dd659fe2167f8c825ec314dfcaffb07f2bffa28fbf33cf17b6630ecbd321",
+  "failure_domain_devices": {
+    "backup": 65024,
+    "bare_git": 65024,
+    "lfs_objects": 65024
+  },
+  "failure_domain_separated": false,
+  "not_verified": [
+    "filesystem_loss_survival",
+    "host_loss_survival",
+    "offsite_disaster_recovery",
+    "production_rpo_rto"
+  ],
+  "production_disaster_recovery_proven": false,
+  "receipt_digest": "sha256:abbd97ab53685ffd15ae621864e4375552701963be859e9d97704331bb2a1984",
+  "receipt_id": "c1-local-restore-20260816-004",
+  "rehearsal_class": "local_same_filesystem_logical_restore",
+  "rehearsal_root_digest": "sha256:88beeed1e29b0d69779c69d8c8bcbeb555a0d8e2a37c9eb6640641479a3c319b",
+  "restarted_preflight_inventory_digest": "sha256:2e9733c1db9496e29e980066e2d83b4063ef8fe0e4d695271620539b12361496",
+  "restarted_state_digest": "sha256:eb7cd657ddf0c3286f53c83325bb045b52bf57514deff39d1cae92fad5872df9",
+  "restored_preflight_inventory_digest": "sha256:2e9733c1db9496e29e980066e2d83b4063ef8fe0e4d695271620539b12361496",
+  "restored_state_digest": "sha256:eb7cd657ddf0c3286f53c83325bb045b52bf57514deff39d1cae92fad5872df9",
+  "schema_version": "repository_restore_rehearsal@1",
+  "source_preflight_inventory_digest": "sha256:2e9733c1db9496e29e980066e2d83b4063ef8fe0e4d695271620539b12361496",
+  "source_state_digest": "sha256:eb7cd657ddf0c3286f53c83325bb045b52bf57514deff39d1cae92fad5872df9",
+  "status": "passed_for_local_development",
+  "verified_properties": [
+    "provider_reconstruction_persistence",
+    "logical_backup_restore_mechanics",
+    "binding_ref_lfs_session_pin_acl_identity_stability"
+  ]
+}

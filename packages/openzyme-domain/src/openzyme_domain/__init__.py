@@ -122,6 +122,16 @@ from .control_plane import SessionStatus
 from .control_plane import Task
 from .control_plane import TaskPriority
 from .control_plane import TaskStatus
+from .repository_bindings import GitObjectFormat
+from .repository_bindings import PROJECT_REPOSITORY_BINDING_SCHEMA_VERSION
+from .repository_bindings import ProjectRepositoryBinding
+from .repository_bindings import RepositoryBindingDriftKind
+from .repository_bindings import RepositoryBindingLifecycleStatus
+from .repository_bindings import RepositoryRefClass
+from .repository_bindings import RepositoryRefNamespacePolicy
+from .repository_bindings import SESSION_REPOSITORY_BINDING_PIN_SCHEMA_VERSION
+from .repository_bindings import SessionRepositoryBindingPin
+from .repository_bindings import SessionRepositoryBindingStatus
 
 __all__ = [
     "AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE",
@@ -164,6 +174,7 @@ __all__ = [
     "FailureClass",
     "FailureObservation",
     "FailureRecoverability",
+    "GitObjectFormat",
     "SCIENTIFIC_ARTIFACT_MATERIALIZATION_SCHEMA_VERSION",
     "SCIENTIFIC_ATTEMPT_ADMISSION_REQUEST_SCHEMA_VERSION",
     "SCIENTIFIC_ATTEMPT_AUTHORIZATION_SCHEMA_VERSION",
@@ -205,6 +216,8 @@ __all__ = [
     "MutationWriter",
     "MutationWriterKind",
     "MutationWriterState",
+    "PROJECT_REPOSITORY_BINDING_SCHEMA_VERSION",
+    "ProjectRepositoryBinding",
     "ExternalEffectCertainty",
     "QUIESCENCE_RECEIPT_SCHEMA_VERSION",
     "QUIESCENCE_SNAPSHOT_SCHEMA_VERSION",
@@ -223,10 +236,17 @@ __all__ = [
     "ResearchSourceRef",
     "ResearchSummary",
     "ResearchSummaryStatus",
+    "RepositoryBindingDriftKind",
+    "RepositoryBindingLifecycleStatus",
+    "RepositoryRefClass",
+    "RepositoryRefNamespacePolicy",
     "SessionReportDraftRecord",
     "SessionReportDraftStatus",
     "SessionReportRecord",
     "SessionReportStatus",
+    "SESSION_REPOSITORY_BINDING_PIN_SCHEMA_VERSION",
+    "SessionRepositoryBindingPin",
+    "SessionRepositoryBindingStatus",
     "ArtifactKind",
     "RunStatus",
     "RUNTIME_COMMAND_SCHEMA_VERSION",

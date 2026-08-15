@@ -43,6 +43,7 @@ def _fault_service(
     blob_root = tmp_path / "blobs"
     blob_root.mkdir()
     service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(repositories),
         artifact_blob_root=blob_root,

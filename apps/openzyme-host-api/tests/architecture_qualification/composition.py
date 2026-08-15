@@ -701,6 +701,7 @@ class ProductionCompositionFactory:
         if model_factory is not None:
             foundation = replace(foundation, model_factory=model_factory)
         dependencies = HostApiDependencies(
+            v3_allow_unpinned_repository_sessions_for_tests=True,
             foundation=foundation,
             v3_repository_provider=provider,
             v3_background_runtime_enabled=False,

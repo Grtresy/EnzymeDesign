@@ -10,6 +10,7 @@ from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import MemoryKind
+from openzyme_domain import RepositoryRefClass
 from openzyme_runtime import sanitize_public_diagnostic_text
 
 from .artifact_projection import PRIVATE_ARTIFACT_KEYS
@@ -138,6 +139,7 @@ class DelegationProjection:
 @dataclass(frozen=True, slots=True)
 class SessionWorkspaceProjection:
     session: dict[str, Any]
+    repository_binding: dict[str, Any]
     conversation: tuple[dict[str, Any], ...]
     task_board: dict[str, Any]
     lane_board: dict[str, Any]
@@ -162,6 +164,7 @@ class SessionWorkspaceProjection:
     def to_dict(self) -> dict[str, Any]:
         return {
             "session": self.session,
+            "repository_binding": self.repository_binding,
             "conversation": list(self.conversation),
             "task_board": self.task_board,
             "lane_board": self.lane_board,
@@ -196,6 +199,32 @@ class SessionProjectionBuilder:
         session = self.repositories.sessions.get(session_id)
         if session is None:
             raise ValueError(f"session {session_id!r} does not exist")
+        pin = self.repositories.session_repository_binding_pins.get(session_id)
+        if pin is None:
+            repository_binding = {
+                "status": session.repository_binding_status.value,
+            }
+        else:
+            binding = self.repositories.project_repository_bindings.get(pin.binding_id)
+            if binding is None:
+                raise RuntimeError("session repository binding is missing")
+            repository_binding = binding.safe_projection(
+                lifecycle_status=(
+                    self.repositories.project_repository_bindings.lifecycle_status(
+                        binding.binding_id
+                    )
+                ),
+                allowed_ref_classes=(
+                    RepositoryRefClass.READ,
+                    RepositoryRefClass.PRIVATE,
+                ),
+            )
+            repository_binding.update(
+                {
+                    "status": session.repository_binding_status.value,
+                    "resolved_base_commit": pin.resolved_base_commit,
+                }
+            )
         task_board = (
             TaskBoardService(self.repositories).build_projection(session_id).to_dict()
         )
@@ -284,6 +313,7 @@ class SessionProjectionBuilder:
         )
         return SessionWorkspaceProjection(
             session=session.to_dict(),
+            repository_binding=repository_binding,
             conversation=conversation,
             task_board=task_board,
             lane_board=lane_board,

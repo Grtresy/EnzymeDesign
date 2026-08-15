@@ -1,0 +1,85 @@
+{
+  "created_at": "2026-08-15T18:42:26Z",
+  "created_by": "operator:codex-c1",
+  "database_identity_digest": "sha256:f4a8dd659fe2167f8c825ec314dfcaffb07f2bffa28fbf33cf17b6630ecbd321",
+  "deployment_profile": "approved_local_development",
+  "https_origin": "https://localhost:8443",
+  "preflight": {
+    "active_bindings": [
+      {
+        "base_commit": "9b78ec6a883f90ec4239d113e9300098120f68bd",
+        "binding_id": "binding_openzyme_local_v1",
+        "binding_version": 1,
+        "object_format": "sha1",
+        "policy_digest": "sha256:a473ba91392bb815154423d17f95badb9c54e71b942a6f02fe157b63b04a3481",
+        "project_id": "openzyme",
+        "repository_id": "openzyme"
+      }
+    ],
+    "database": {
+      "mode": "0600",
+      "owner_gid": 1000,
+      "owner_uid": 1000,
+      "path_digest": "sha256:f4a8dd659fe2167f8c825ec314dfcaffb07f2bffa28fbf33cf17b6630ecbd321"
+    },
+    "git_binary_digest": "sha256:00c84136d8294294580daa32f25b3e83ddb8341e9b5b70722e4c9a973ba5f749",
+    "git_http_backend_digest": "sha256:30b7bc48e29fe75e328aa30b7b7d71067ceaa4fab0ff436362fa02a911049783",
+    "git_lfs_binary_digest": "sha256:ce21d04c6416edec8f483387ad0abdb0e219464f0eb6081e06d829597d0a522d",
+    "git_lfs_version": "git-lfs/3.3.0 (GitHub; linux amd64; go 1.19.8)",
+    "git_version": "git version 2.39.5",
+    "inventory_digest": "sha256:2e9733c1db9496e29e980066e2d83b4063ef8fe0e4d695271620539b12361496",
+    "pre_receive_hook_digest": "sha256:9774b2beaba8baba9a0aa0989be2bb937486cf488a1691da2f9d45ed2a8743f9",
+    "root_facts": [
+      {
+        "device": 65024,
+        "inode": 33200627,
+        "kind": "bare_git",
+        "mode": "0700",
+        "owner_gid": 1000,
+        "owner_uid": 1000,
+        "path_digest": "sha256:a2f32a92d06cd341c83707ecb77ced3475da85541c176a8af19569141539fbb5"
+      },
+      {
+        "device": 65024,
+        "inode": 33200628,
+        "kind": "lfs_objects",
+        "mode": "0700",
+        "owner_gid": 1000,
+        "owner_uid": 1000,
+        "path_digest": "sha256:4d3e955f431da8e9ccd225b0284a2ec94aec9b59f892d65a49e948f9248b3a42"
+      },
+      {
+        "device": 65024,
+        "inode": 33840714,
+        "kind": "backup",
+        "mode": "0700",
+        "owner_gid": 1000,
+        "owner_uid": 1000,
+        "path_digest": "sha256:bf62d55ece8da68df2f44f804649f8cc136bea648441e82c50f078720638c5a5"
+      }
+    ],
+    "schema_version": "repository_service_preflight@1",
+    "tls": {
+      "certificate_sha256": "sha256:97c7a445a64717b6d372dca3898d3014217db99787d37e2fe381723423e7c7d5",
+      "hostname": "localhost",
+      "not_after": "Aug 12 13:48:15 2036 GMT"
+    }
+  },
+  "receipt_digest": "sha256:353128aa547c78b5284ef74d8db32216b0bc745e12fbb54789294083824e56f8",
+  "receipt_id": "c1-local-durable-root-20260816-003",
+  "root_policy": {
+    "distinct_root_identities": true,
+    "failure_domain_separated": false,
+    "forbidden_authority_roots_rejected": [
+      "/tmp",
+      "/var/tmp",
+      "host_checkout",
+      "process_cwd"
+    ],
+    "owner_only_permissions": true,
+    "production_disaster_recovery_proven": false,
+    "writable_fsync_probe_passed": true
+  },
+  "schema_id": "project_repository_durable_root_preflight@1",
+  "status": "passed_for_local_development"
+}

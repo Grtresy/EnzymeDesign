@@ -32,6 +32,7 @@ V3 的核心立场：
 - [harness-complexity-audit.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/harness-complexity-audit.md)
 - [compatibility-sunset.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/compatibility-sunset.md)
 - [runtime-hpc-reliability-operations.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/runtime-hpc-reliability-operations.md)：persistent SSH、durable operation、command drain 与 mutation scope 的启用、审计和回滚 runbook。
+- [repository-service-operations.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/repository-service-operations.md)：project repository binding、独立 HTTPS Git/LFS transport、session pin、credential boundary、activation/retirement 与 backup/restore runbook。
 - [architecture-proposals/README.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/architecture-proposals/README.md)：实施中发现、会影响 agent 发挥的大架构调整、umbrella 关系和生命周期索引；已实现 proposal 随对应 OpenSpec 归档，当前合同以稳定文档、代码和 OpenSpec checkpoint 为准。
 
 AOX/HMM cutover 与历史封存：

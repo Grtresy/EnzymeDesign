@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .limits import DEFAULT_PROVIDER_LIMITS
 from .environment_contract import credential_safe_source_projection
@@ -388,6 +389,99 @@ _OPENZYME_SETTINGS_ENVIRONMENT_FIELDS = (
         value_kind="boolean",
         safe_generic_default=False,
         empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="repository_service.https_origin",
+        environment_names=("OPENZYME_REPOSITORY_HTTPS_ORIGIN",),
+        value_kind="string",
+        safe_generic_default=None,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="repository_service.bare_repository_root",
+        environment_names=("OPENZYME_REPOSITORY_BARE_ROOT",),
+        value_kind="private_string",
+        safe_generic_default=None,
+        identity_mode="private_digest",
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="repository_service.lfs_object_root",
+        environment_names=("OPENZYME_REPOSITORY_LFS_ROOT",),
+        value_kind="private_string",
+        safe_generic_default=None,
+        identity_mode="private_digest",
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="repository_service.backup_root",
+        environment_names=("OPENZYME_REPOSITORY_BACKUP_ROOT",),
+        value_kind="private_string",
+        safe_generic_default=None,
+        identity_mode="private_digest",
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="repository_service.credential_signing_key_file",
+        environment_names=("OPENZYME_REPOSITORY_CREDENTIAL_SIGNING_KEY_FILE",),
+        value_kind="private_string",
+        safe_generic_default=None,
+        identity_mode="private_digest",
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="repository_service.tls_certificate_file",
+        environment_names=("OPENZYME_REPOSITORY_TLS_CERTIFICATE_FILE",),
+        value_kind="private_string",
+        safe_generic_default=None,
+        identity_mode="private_digest",
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="repository_service.tls_private_key_file",
+        environment_names=("OPENZYME_REPOSITORY_TLS_PRIVATE_KEY_FILE",),
+        value_kind="private_string",
+        safe_generic_default=None,
+        identity_mode="private_digest",
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="repository_service.binding_inventory_file",
+        environment_names=("OPENZYME_REPOSITORY_BINDING_INVENTORY_FILE",),
+        value_kind="private_string",
+        safe_generic_default=None,
+        identity_mode="private_digest",
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="repository_service.git_executable",
+        environment_names=("OPENZYME_REPOSITORY_GIT_EXECUTABLE",),
+        value_kind="private_string",
+        safe_generic_default=None,
+        identity_mode="private_digest",
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="repository_service.git_lfs_executable",
+        environment_names=("OPENZYME_REPOSITORY_GIT_LFS_EXECUTABLE",),
+        value_kind="private_string",
+        safe_generic_default=None,
+        identity_mode="private_digest",
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="repository_service.git_http_backend",
+        environment_names=("OPENZYME_REPOSITORY_GIT_HTTP_BACKEND",),
+        value_kind="private_string",
+        safe_generic_default=None,
+        identity_mode="private_digest",
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="repository_service.credential_ttl_seconds",
+        environment_names=("OPENZYME_REPOSITORY_CREDENTIAL_TTL_SECONDS",),
+        value_kind="integer",
+        safe_generic_default=300,
     ),
     EnvironmentFieldDescriptor(
         setting_path="v3_background_runtime.enabled",
@@ -975,6 +1069,115 @@ class HostApiSettings:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class RepositoryServiceSettings:
+    https_origin: str
+    bare_repository_root: Path
+    lfs_object_root: Path
+    backup_root: Path
+    credential_signing_key_file: Path
+    tls_certificate_file: Path
+    tls_private_key_file: Path
+    binding_inventory_file: Path
+    git_executable: Path
+    git_lfs_executable: Path
+    git_http_backend: Path
+    credential_ttl_seconds: int = 300
+
+    def __post_init__(self) -> None:
+        parsed = urlsplit(self.https_origin)
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise ValueError("OPENZYME_REPOSITORY_HTTPS_ORIGIN must be an HTTPS origin")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError(
+                "OPENZYME_REPOSITORY_HTTPS_ORIGIN must not embed credentials"
+            )
+        if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+            raise ValueError(
+                "OPENZYME_REPOSITORY_HTTPS_ORIGIN must not include path, query, or fragment"
+            )
+        for field_name in (
+            "bare_repository_root",
+            "lfs_object_root",
+            "backup_root",
+            "credential_signing_key_file",
+            "tls_certificate_file",
+            "tls_private_key_file",
+            "binding_inventory_file",
+            "git_executable",
+            "git_lfs_executable",
+            "git_http_backend",
+        ):
+            path = getattr(self, field_name)
+            if not path.is_absolute():
+                raise ValueError(f"repository service {field_name} must be absolute")
+        if len(
+            {
+                self.bare_repository_root.resolve(strict=False),
+                self.lfs_object_root.resolve(strict=False),
+                self.backup_root.resolve(strict=False),
+            }
+        ) != 3:
+            raise ValueError("repository Git, LFS, and backup roots must be distinct")
+        if self.credential_ttl_seconds <= 0:
+            raise ValueError(
+                "OPENZYME_REPOSITORY_CREDENTIAL_TTL_SECONDS must be positive"
+            )
+
+    @classmethod
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+    ) -> "RepositoryServiceSettings | None":
+        source = os.environ if environ is None else environ
+        required_paths = {
+            "https_origin": "repository_service.https_origin",
+            "bare_repository_root": "repository_service.bare_repository_root",
+            "lfs_object_root": "repository_service.lfs_object_root",
+            "backup_root": "repository_service.backup_root",
+            "credential_signing_key_file": (
+                "repository_service.credential_signing_key_file"
+            ),
+            "tls_certificate_file": "repository_service.tls_certificate_file",
+            "tls_private_key_file": "repository_service.tls_private_key_file",
+            "binding_inventory_file": "repository_service.binding_inventory_file",
+            "git_executable": "repository_service.git_executable",
+            "git_lfs_executable": "repository_service.git_lfs_executable",
+            "git_http_backend": "repository_service.git_http_backend",
+        }
+        resolved = {
+            field_name: _optional_string_value(_environment_field(setting_path, source))
+            for field_name, setting_path in required_paths.items()
+        }
+        configured = {name for name, value in resolved.items() if value is not None}
+        if not configured:
+            return None
+        missing = sorted(set(resolved) - configured)
+        if missing:
+            raise ValueError(
+                "repository service configuration is partial; missing: "
+                + ", ".join(missing)
+            )
+        return cls(
+            https_origin=str(resolved["https_origin"]),
+            bare_repository_root=Path(str(resolved["bare_repository_root"])),
+            lfs_object_root=Path(str(resolved["lfs_object_root"])),
+            backup_root=Path(str(resolved["backup_root"])),
+            credential_signing_key_file=Path(
+                str(resolved["credential_signing_key_file"])
+            ),
+            tls_certificate_file=Path(str(resolved["tls_certificate_file"])),
+            tls_private_key_file=Path(str(resolved["tls_private_key_file"])),
+            binding_inventory_file=Path(str(resolved["binding_inventory_file"])),
+            git_executable=Path(str(resolved["git_executable"])),
+            git_lfs_executable=Path(str(resolved["git_lfs_executable"])),
+            git_http_backend=Path(str(resolved["git_http_backend"])),
+            credential_ttl_seconds=int(
+                _environment_field("repository_service.credential_ttl_seconds", source)
+            ),
+        )
+
+
 def _parse_host_api_principals(
     value: str | None,
 ) -> tuple[HostApiPrincipalSettings, ...]:
@@ -1223,6 +1426,7 @@ class OpenZymeSettings:
     reliability: ReliabilityRefactorSettings = field(
         default_factory=ReliabilityRefactorSettings
     )
+    repository_service: RepositoryServiceSettings | None = None
 
     @classmethod
     def from_env(
@@ -1245,6 +1449,7 @@ class OpenZymeSettings:
             limits=LimiterSettings.from_env(source),
             test=TestSettings.from_env(source),
             reliability=ReliabilityRefactorSettings.from_env(source),
+            repository_service=RepositoryServiceSettings.from_env(source),
         )
 
 
@@ -1283,6 +1488,7 @@ __all__ = [
     "REPO_ROOT",
     "ResolvedLlmPolicy",
     "ResearchSettings",
+    "RepositoryServiceSettings",
     "ReliabilityRefactorSettings",
     "TracingSettings",
     "V3BackgroundRuntimeSettings",

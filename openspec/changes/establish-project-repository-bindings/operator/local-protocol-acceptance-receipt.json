@@ -1,0 +1,48 @@
+{
+  "acceptance_profile": "approved_local_development",
+  "binding": {
+    "binding_id": "binding_openzyme_local_v1",
+    "binding_version": 1,
+    "canonical_digest": "sha256:5f288ba53bbb0654e38abb185923231ea1ff9e535ba17bd4708746c9cf015d61",
+    "exact_base_commit": "9b78ec6a883f90ec4239d113e9300098120f68bd",
+    "repository_id": "openzyme"
+  },
+  "created_at": "2026-08-15T19:30:44Z",
+  "created_by": "operator:codex-c1",
+  "credential_authority": {
+    "active_lease_hold_id": "repository-hold-c1-local-protocol-20260816-005",
+    "active_lease_hold_released_at": "2026-08-15T19:31:11.747997+00:00",
+    "credential_id": "repository_credential_64312748e2664f828ce684efec962237",
+    "lease_assertion_class": "c1_acceptance_only",
+    "lease_id": "acceptance-only:c1-local-protocol-20260816-005",
+    "namespace_id": "repository-namespace-c1-local-protocol-20260816-002",
+    "production_capability_lease_issuance_proven": false,
+    "revoked_at": "2026-08-15T19:31:11.863057+00:00",
+    "token_recorded": false
+  },
+  "native_protocol": {
+    "dynamic_https_health_verified": true,
+    "git": "smart_http_v2_over_https",
+    "https_origin": "https://localhost:8443",
+    "lfs": "batch_v2_basic",
+    "lfs_oid": "d71fee0eb37bd2a42257f5ceacb185723da59116175d6507794f518e323de9a2",
+    "lfs_size": 1474560,
+    "private_ref": "refs/openzyme/private/s-onsxg427mmyv63dpmnqwyx3bmnrwk4dumfxggzi/a-mftwk3tuhjsxqzldov2g64q/g1/c1-local-protocol-20260816-005",
+    "released_lease_hold_write_rejected": true,
+    "revoked_credential_rejected": true,
+    "service_restart_verified": true,
+    "terminal_commit": "45d340896fa537e15b9d9e93b6c5cea0ab1753c2"
+  },
+  "preflight_inventory_digest": "sha256:2e9733c1db9496e29e980066e2d83b4063ef8fe0e4d695271620539b12361496",
+  "receipt_digest": "sha256:c8556cc83e22b9f3b1878c4536bf111751a5cb59b9f3812e2bd4b710bc30f066",
+  "receipt_id": "c1-local-protocol-20260816-005",
+  "schema_id": "project_repository_binding_local_protocol_acceptance@1",
+  "session_pin": {
+    "binding_id": "binding_openzyme_local_v1",
+    "binding_version": 1,
+    "resolved_base_commit": "9b78ec6a883f90ec4239d113e9300098120f68bd",
+    "session_id": "sess_c1_local_acceptance"
+  },
+  "status": "passed",
+  "upstream_effects": 0
+}

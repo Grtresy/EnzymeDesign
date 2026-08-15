@@ -8,7 +8,9 @@ from datetime import datetime
 from datetime import timedelta
 from enum import Enum
 from enum import StrEnum
+import hashlib
 import json
+import os
 import sqlite3
 from typing import Any
 from typing import Callable
@@ -50,6 +52,10 @@ from openzyme_domain import ResearchGap
 from openzyme_domain import ResearchSourceRef
 from openzyme_domain import ResearchSummary
 from openzyme_domain import ResearchSummaryStatus
+from openzyme_domain import GitObjectFormat
+from openzyme_domain import ProjectRepositoryBinding
+from openzyme_domain import RepositoryBindingLifecycleStatus
+from openzyme_domain import RepositoryRefNamespacePolicy
 from openzyme_domain import RunRecord
 from openzyme_domain import SandboxImageCompatibility
 from openzyme_domain import SandboxImageRecord
@@ -64,6 +70,8 @@ from openzyme_domain import SessionReportDraftStatus
 from openzyme_domain import SessionReportRecord
 from openzyme_domain import SessionReportStatus
 from openzyme_domain import SessionStatus
+from openzyme_domain import SessionRepositoryBindingPin
+from openzyme_domain import SessionRepositoryBindingStatus
 from openzyme_domain import SourceRefKind
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
@@ -149,6 +157,24 @@ class DurableEventConflictError(ValueError):
 
 class CommandIdempotencyConflictError(ValueError):
     """Raised when an idempotency key is reused with a different request."""
+
+
+class RepositoryBindingConflictError(ValueError):
+    """Raised when an immutable binding identity is reused for other content."""
+
+    error_code = "repository_binding_conflict"
+
+
+class RepositoryBindingRequiredError(ValueError):
+    """Raised when an operation has no exact active or pinned repository binding."""
+
+    error_code = "repository_binding_required"
+
+
+class RepositoryBindingRetiredError(ValueError):
+    """Raised when an operator attempts to activate a retired binding version."""
+
+    error_code = "repository_binding_retired"
 
 
 class RuntimeWriteFencingError(RuntimeError):
@@ -788,20 +814,35 @@ class SessionRepository:
 
     def save(self, session: Session) -> None:
         _require_enum_member(session.status, SessionStatus, "Session.status")
+        _require_enum_member(
+            session.repository_binding_status,
+            SessionRepositoryBindingStatus,
+            "Session.repository_binding_status",
+        )
         _validate_runtime_write_fence(
             self.connection,
             expected_session_id=session.session_id,
         )
         self.connection.execute(
             """
-            INSERT INTO sessions (session_id, project_id, title, objective, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sessions (
+                session_id,
+                project_id,
+                title,
+                objective,
+                status,
+                created_at,
+                updated_at,
+                repository_binding_status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 project_id = excluded.project_id,
                 title = excluded.title,
                 objective = excluded.objective,
                 status = excluded.status,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                repository_binding_status = excluded.repository_binding_status
             """,
             (
                 session.session_id,
@@ -811,6 +852,7 @@ class SessionRepository:
                 session.status.value,
                 session.created_at,
                 session.updated_at,
+                session.repository_binding_status.value,
             ),
         )
         _commit(self.connection)
@@ -830,6 +872,9 @@ class SessionRepository:
             status=SessionStatus(row["status"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            repository_binding_status=SessionRepositoryBindingStatus(
+                row["repository_binding_status"]
+            ),
         )
 
     def list_by_project(self, project_id: str) -> list[Session]:
@@ -846,9 +891,513 @@ class SessionRepository:
                 status=SessionStatus(row["status"]),
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
+                repository_binding_status=SessionRepositoryBindingStatus(
+                    row["repository_binding_status"]
+                ),
             )
             for row in rows
         ]
+
+
+def _row_to_project_repository_binding(
+    row: sqlite3.Row,
+) -> ProjectRepositoryBinding:
+    return ProjectRepositoryBinding(
+        binding_id=row["binding_id"],
+        project_id=row["project_id"],
+        binding_version=int(row["binding_version"]),
+        repository_id=row["repository_id"],
+        internal_git_service_id=row["internal_git_service_id"],
+        internal_git_endpoint=row["internal_git_endpoint"],
+        lfs_service_id=row["lfs_service_id"],
+        lfs_endpoint=row["lfs_endpoint"],
+        upstream_identity=row["upstream_identity"],
+        upstream_url=row["upstream_url"],
+        object_format=GitObjectFormat(row["object_format"]),
+        default_base_ref=row["default_base_ref"],
+        default_base_commit=row["default_base_commit"],
+        ref_namespace_policy=RepositoryRefNamespacePolicy(
+            private_prefix=row["private_ref_prefix"],
+            publication_prefix=row["publication_ref_prefix"],
+            historical_prefix=row["historical_ref_prefix"],
+        ),
+        repository_policy_version=row["repository_policy_version"],
+        repository_policy_digest=row["repository_policy_digest"],
+        canonical_digest=row["canonical_digest"],
+        schema_version=row["schema_version"],
+        created_at=row["created_at"],
+        created_by=row["created_by"],
+    )
+
+
+@dataclass(slots=True)
+class ProjectRepositoryBindingRepository:
+    connection: sqlite3.Connection
+
+    def add(self, binding: ProjectRepositoryBinding) -> ProjectRepositoryBinding:
+        existing = self.get(binding.binding_id)
+        if existing is not None:
+            if existing == binding:
+                return existing
+            raise RepositoryBindingConflictError(
+                f"binding_id {binding.binding_id!r} already identifies other content"
+            )
+        version = self.get_project_version(
+            binding.project_id,
+            binding.binding_version,
+        )
+        if version is not None:
+            raise RepositoryBindingConflictError(
+                "project repository binding version already exists with another identity"
+            )
+        with _sqlite_savepoint(self.connection, prefix="repository_binding_add"):
+            self.connection.execute(
+                """
+                INSERT INTO project_repository_binding_versions (
+                    binding_id,
+                    project_id,
+                    binding_version,
+                    repository_id,
+                    internal_git_service_id,
+                    internal_git_endpoint,
+                    lfs_service_id,
+                    lfs_endpoint,
+                    upstream_identity,
+                    upstream_url,
+                    object_format,
+                    default_base_ref,
+                    default_base_commit,
+                    private_ref_prefix,
+                    publication_ref_prefix,
+                    historical_ref_prefix,
+                    repository_policy_version,
+                    repository_policy_digest,
+                    canonical_digest,
+                    schema_version,
+                    created_at,
+                    created_by
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    binding.binding_id,
+                    binding.project_id,
+                    binding.binding_version,
+                    binding.repository_id,
+                    binding.internal_git_service_id,
+                    binding.internal_git_endpoint,
+                    binding.lfs_service_id,
+                    binding.lfs_endpoint,
+                    binding.upstream_identity,
+                    binding.upstream_url,
+                    binding.object_format.value,
+                    binding.default_base_ref,
+                    binding.default_base_commit,
+                    binding.ref_namespace_policy.private_prefix,
+                    binding.ref_namespace_policy.publication_prefix,
+                    binding.ref_namespace_policy.historical_prefix,
+                    binding.repository_policy_version,
+                    binding.repository_policy_digest,
+                    binding.canonical_digest,
+                    binding.schema_version,
+                    binding.created_at,
+                    binding.created_by,
+                ),
+            )
+            self._append_lifecycle_event(
+                binding,
+                status=RepositoryBindingLifecycleStatus.REGISTERED,
+                actor_ref=binding.created_by,
+                created_at=binding.created_at,
+                reason="binding version registered",
+            )
+        _commit(self.connection)
+        return binding
+
+    def get(self, binding_id: str) -> ProjectRepositoryBinding | None:
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM project_repository_binding_versions
+            WHERE binding_id = ?
+            """,
+            (binding_id,),
+        ).fetchone()
+        return None if row is None else _row_to_project_repository_binding(row)
+
+    def get_project_version(
+        self,
+        project_id: str,
+        binding_version: int,
+    ) -> ProjectRepositoryBinding | None:
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM project_repository_binding_versions
+            WHERE project_id = ? AND binding_version = ?
+            """,
+            (project_id, binding_version),
+        ).fetchone()
+        return None if row is None else _row_to_project_repository_binding(row)
+
+    def list_by_project(self, project_id: str) -> list[ProjectRepositoryBinding]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM project_repository_binding_versions
+            WHERE project_id = ?
+            ORDER BY binding_version
+            """,
+            (project_id,),
+        ).fetchall()
+        return [_row_to_project_repository_binding(row) for row in rows]
+
+    def get_active(self, project_id: str) -> ProjectRepositoryBinding | None:
+        row = self.connection.execute(
+            """
+            SELECT binding.*
+            FROM project_repository_active_bindings AS active
+            JOIN project_repository_binding_versions AS binding
+              ON binding.project_id = active.project_id
+             AND binding.binding_id = active.binding_id
+             AND binding.binding_version = active.binding_version
+            WHERE active.project_id = ?
+            """,
+            (project_id,),
+        ).fetchone()
+        return None if row is None else _row_to_project_repository_binding(row)
+
+    def list_active(self) -> list[ProjectRepositoryBinding]:
+        rows = self.connection.execute(
+            """
+            SELECT binding.*
+            FROM project_repository_active_bindings AS active
+            JOIN project_repository_binding_versions AS binding
+              ON binding.project_id = active.project_id
+             AND binding.binding_id = active.binding_id
+             AND binding.binding_version = active.binding_version
+            ORDER BY binding.project_id
+            """
+        ).fetchall()
+        return [_row_to_project_repository_binding(row) for row in rows]
+
+    def activate(
+        self,
+        binding_id: str,
+        *,
+        actor_ref: str,
+        activated_at: str,
+    ) -> ProjectRepositoryBinding:
+        binding = self.get(binding_id)
+        if binding is None:
+            raise RepositoryBindingRequiredError(
+                f"repository binding {binding_id!r} does not exist"
+            )
+        if self.lifecycle_status(binding_id) is RepositoryBindingLifecycleStatus.RETIRED:
+            raise RepositoryBindingRetiredError(
+                f"repository binding {binding_id!r} is retired"
+            )
+        active_row = self.connection.execute(
+            """
+            SELECT binding_id, binding_version, activation_generation
+            FROM project_repository_active_bindings
+            WHERE project_id = ?
+            """,
+            (binding.project_id,),
+        ).fetchone()
+        if (
+            active_row is not None
+            and active_row["binding_id"] == binding.binding_id
+            and int(active_row["binding_version"]) == binding.binding_version
+        ):
+            return binding
+        generation = (
+            1 if active_row is None else int(active_row["activation_generation"]) + 1
+        )
+        with _sqlite_savepoint(self.connection, prefix="repository_binding_activate"):
+            self.connection.execute(
+                """
+                INSERT INTO project_repository_active_bindings (
+                    project_id,
+                    binding_id,
+                    binding_version,
+                    activation_generation,
+                    activated_at,
+                    activated_by
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_id) DO UPDATE SET
+                    binding_id = excluded.binding_id,
+                    binding_version = excluded.binding_version,
+                    activation_generation = excluded.activation_generation,
+                    activated_at = excluded.activated_at,
+                    activated_by = excluded.activated_by
+                """,
+                (
+                    binding.project_id,
+                    binding.binding_id,
+                    binding.binding_version,
+                    generation,
+                    activated_at,
+                    actor_ref,
+                ),
+            )
+            self._append_lifecycle_event(
+                binding,
+                status=RepositoryBindingLifecycleStatus.ACTIVE,
+                actor_ref=actor_ref,
+                created_at=activated_at,
+                reason=f"activation generation {generation}",
+            )
+        _commit(self.connection)
+        return binding
+
+    def lifecycle_status(self, binding_id: str) -> RepositoryBindingLifecycleStatus:
+        binding = self.get(binding_id)
+        if binding is None:
+            raise RepositoryBindingRequiredError(
+                f"repository binding {binding_id!r} does not exist"
+            )
+        retired = self.connection.execute(
+            """
+            SELECT 1
+            FROM project_repository_binding_retirement_receipts
+            WHERE binding_id = ? AND binding_version = ?
+            """,
+            (binding.binding_id, binding.binding_version),
+        ).fetchone()
+        if retired is not None:
+            return RepositoryBindingLifecycleStatus.RETIRED
+        active = self.connection.execute(
+            """
+            SELECT 1
+            FROM project_repository_active_bindings
+            WHERE project_id = ? AND binding_id = ? AND binding_version = ?
+            """,
+            (binding.project_id, binding.binding_id, binding.binding_version),
+        ).fetchone()
+        if active is not None:
+            return RepositoryBindingLifecycleStatus.ACTIVE
+        return RepositoryBindingLifecycleStatus.REGISTERED
+
+    def _append_lifecycle_event(
+        self,
+        binding: ProjectRepositoryBinding,
+        *,
+        status: RepositoryBindingLifecycleStatus,
+        actor_ref: str,
+        created_at: str,
+        reason: str,
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO project_repository_binding_lifecycle_events (
+                event_id,
+                project_id,
+                binding_id,
+                binding_version,
+                status,
+                actor_ref,
+                reason,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"repository_binding_event_{uuid4().hex}",
+                binding.project_id,
+                binding.binding_id,
+                binding.binding_version,
+                status.value,
+                actor_ref,
+                reason,
+                created_at,
+            ),
+        )
+
+
+def _row_to_session_repository_binding_pin(
+    row: sqlite3.Row,
+) -> SessionRepositoryBindingPin:
+    return SessionRepositoryBindingPin(
+        session_id=row["session_id"],
+        project_id=row["project_id"],
+        binding_id=row["binding_id"],
+        binding_version=int(row["binding_version"]),
+        repository_id=row["repository_id"],
+        resolved_base_commit=row["resolved_base_commit"],
+        binding_canonical_digest=row["binding_canonical_digest"],
+        mapping_receipt_id=row["mapping_receipt_id"],
+        schema_version=row["schema_version"],
+        pinned_at=row["pinned_at"],
+    )
+
+
+@dataclass(slots=True)
+class SessionRepositoryBindingPinRepository:
+    connection: sqlite3.Connection
+
+    def add(
+        self,
+        pin: SessionRepositoryBindingPin,
+    ) -> SessionRepositoryBindingPin:
+        existing = self.get(pin.session_id)
+        if existing is not None:
+            if existing == pin:
+                return existing
+            raise RepositoryBindingConflictError(
+                f"session {pin.session_id!r} already has another immutable repository pin"
+            )
+        self._add_uncommitted(pin)
+        _commit(self.connection)
+        return pin
+
+    def _add_uncommitted(self, pin: SessionRepositoryBindingPin) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO session_repository_binding_pins (
+                session_id,
+                project_id,
+                binding_id,
+                binding_version,
+                repository_id,
+                resolved_base_commit,
+                binding_canonical_digest,
+                mapping_receipt_id,
+                schema_version,
+                pinned_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                pin.session_id,
+                pin.project_id,
+                pin.binding_id,
+                pin.binding_version,
+                pin.repository_id,
+                pin.resolved_base_commit,
+                pin.binding_canonical_digest,
+                pin.mapping_receipt_id,
+                pin.schema_version,
+                pin.pinned_at,
+            ),
+        )
+
+    def get(self, session_id: str) -> SessionRepositoryBindingPin | None:
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM session_repository_binding_pins
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        return None if row is None else _row_to_session_repository_binding_pin(row)
+
+    def require(self, session_id: str) -> SessionRepositoryBindingPin:
+        pin = self.get(session_id)
+        if pin is None:
+            raise RepositoryBindingRequiredError(
+                f"session {session_id!r} requires an explicit repository binding mapping"
+            )
+        return pin
+
+    def map_legacy_session(
+        self,
+        *,
+        session_id: str,
+        binding: ProjectRepositoryBinding,
+        operator_ref: str,
+        mapping_reason: str,
+        mapped_at: str,
+        receipt_id: str,
+    ) -> tuple[SessionRepositoryBindingPin, dict[str, Any]]:
+        session_row = self.connection.execute(
+            "SELECT project_id, repository_binding_status FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session_row is None:
+            raise RepositoryBindingRequiredError(f"session {session_id!r} does not exist")
+        if session_row["project_id"] != binding.project_id:
+            raise RepositoryBindingConflictError(
+                "legacy session project does not match repository binding project"
+            )
+        if session_row["repository_binding_status"] != (
+            SessionRepositoryBindingStatus.REPOSITORY_BINDING_REQUIRED.value
+        ):
+            raise RepositoryBindingConflictError(
+                f"session {session_id!r} already has a repository binding pin"
+            )
+        receipt_payload = {
+            "schema_version": "repository_binding_mapping_receipt@1",
+            "receipt_id": receipt_id,
+            "session_id": session_id,
+            "project_id": binding.project_id,
+            "binding_id": binding.binding_id,
+            "binding_version": binding.binding_version,
+            "resolved_base_commit": binding.default_base_commit,
+            "binding_canonical_digest": binding.canonical_digest,
+            "operator_ref": operator_ref,
+            "mapping_reason": mapping_reason,
+            "created_at": mapped_at,
+        }
+        receipt_json = json.dumps(
+            receipt_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        receipt_digest = (
+            f"sha256:{hashlib.sha256(receipt_json.encode('utf-8')).hexdigest()}"
+        )
+        pin = SessionRepositoryBindingPin(
+            session_id=session_id,
+            project_id=binding.project_id,
+            binding_id=binding.binding_id,
+            binding_version=binding.binding_version,
+            repository_id=binding.repository_id,
+            resolved_base_commit=binding.default_base_commit,
+            binding_canonical_digest=binding.canonical_digest,
+            mapping_receipt_id=receipt_id,
+            pinned_at=mapped_at,
+        )
+        with _sqlite_savepoint(self.connection, prefix="legacy_repository_mapping"):
+            self.connection.execute(
+                """
+                INSERT INTO repository_binding_mapping_receipts (
+                    receipt_id,
+                    session_id,
+                    project_id,
+                    binding_id,
+                    binding_version,
+                    resolved_base_commit,
+                    binding_canonical_digest,
+                    operator_ref,
+                    mapping_reason,
+                    receipt_digest,
+                    receipt_json,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    receipt_id,
+                    session_id,
+                    binding.project_id,
+                    binding.binding_id,
+                    binding.binding_version,
+                    binding.default_base_commit,
+                    binding.canonical_digest,
+                    operator_ref,
+                    mapping_reason,
+                    receipt_digest,
+                    receipt_json,
+                    mapped_at,
+                ),
+            )
+            self._add_uncommitted(pin)
+        _commit(self.connection)
+        return pin, {**receipt_payload, "receipt_digest": receipt_digest}
 
 
 @dataclass(slots=True)
@@ -5984,6 +6533,8 @@ class ResearchGapRepository:
 @dataclass(slots=True)
 class CoreRepositories:
     sessions: SessionRepository
+    project_repository_bindings: ProjectRepositoryBindingRepository
+    session_repository_binding_pins: SessionRepositoryBindingPinRepository
     session_access: SessionAccessRepository
     tasks: TaskRepository
     lanes: LaneRepository
@@ -6256,6 +6807,10 @@ class CoreRepositories:
 
         return cls(
             sessions=SessionRepository(connection),
+            project_repository_bindings=ProjectRepositoryBindingRepository(connection),
+            session_repository_binding_pins=SessionRepositoryBindingPinRepository(
+                connection
+            ),
             session_access=SessionAccessRepository(connection),
             tasks=TaskRepository(connection),
             lanes=LaneRepository(connection),
@@ -6499,6 +7054,13 @@ class SQLiteRepositoryProvider:
             )
         if self.busy_timeout_ms <= 0:
             raise ValueError("busy_timeout_ms must be positive")
+        if not self.uri and not os.path.exists(database_path):
+            descriptor = os.open(
+                database_path,
+                os.O_CREAT | os.O_EXCL | os.O_RDWR,
+                0o600,
+            )
+            os.close(descriptor)
         connection = self._connect()
         try:
             apply_sqlite_migrations(connection)

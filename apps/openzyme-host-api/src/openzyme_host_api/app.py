@@ -56,6 +56,7 @@ from .aox_bundle_finalizer import finalize_aox_deliverable_bundle
 from .durable_routes import build_host_hpc_route_adapters
 from .durable_routes import build_host_provider_route_adapters
 from .runtime_commands import HostRuntimeCommandExecutor
+from .repository_service_preflight import preflight_repository_service
 from .sandbox_host_gateway import ExecutionEngineSandboxHostGateway
 from .sandbox_host_gateway import HostSandboxCallContextFactory
 from .tracing import host_request_trace_context
@@ -72,6 +73,7 @@ from openzyme_core import ControlledOperationRouteAdapter
 from openzyme_core import CommandIdempotencyConflictError
 from openzyme_core import CommandReceiptRecord
 from openzyme_core import EngineRegistry
+from openzyme_core import DurableRepositoryRootManager
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import SessionAccessRecord
 from openzyme_core import RuntimeCommandWorker
@@ -83,6 +85,13 @@ from openzyme_core import ScientificAttemptError
 from openzyme_core import LiveProcessRegistry
 from openzyme_core import MutationWriterTurnFactory
 from openzyme_core import MutationScopeService
+from openzyme_core import ProjectRepositoryBindingService
+from openzyme_core import RepositoryBindingConflictError
+from openzyme_core import RepositoryBindingDriftError
+from openzyme_core import RepositoryBindingRequiredError
+from openzyme_core import RepositoryBindingRetiredError
+from openzyme_core import RepositoryRootBoundary
+from openzyme_core import RepositoryStorageError
 from openzyme_core import current_mutation_write_authority
 from openzyme_core import project_runtime_command
 from openzyme_core import recover_unattached_continuations
@@ -631,6 +640,8 @@ class HostApiDependencies:
     v3_allow_bio_fixture_adapter: bool = False
     v3_sandbox_workspace_root: Path | None = None
     v3_artifact_blob_root: Path | None = None
+    v3_repository_root_boundary: RepositoryRootBoundary | None = None
+    v3_allow_unpinned_repository_sessions_for_tests: bool = False
     _owned_v3_temp_directory: tempfile.TemporaryDirectory[str] | None = field(
         default=None,
         init=False,
@@ -652,7 +663,25 @@ class HostApiDependencies:
                 "v3_legacy_repositories_for_tests, not both"
             )
         if self.v3_legacy_repositories_for_tests is None:
+            settings = getattr(self.foundation, "settings", None)
+            if (
+                self.v3_repository_provider is None
+                and settings is not None
+                and settings.repository_service is not None
+            ):
+                raise ValueError(
+                    "configured repository service requires an explicit durable "
+                    "V3 SQLite repository provider"
+                )
             self._ensure_v3_repository_provider()
+        settings = getattr(self.foundation, "settings", None)
+        if (
+            self.v3_repository_root_boundary is not None
+            and (settings is None or settings.repository_service is None)
+        ):
+            raise ValueError(
+                "repository root boundary requires repository service configuration"
+            )
 
     def _ensure_v3_repository_provider(self) -> SQLiteRepositoryProvider:
         provider = self.v3_repository_provider
@@ -744,6 +773,9 @@ class HostApiDependencies:
         repositories: CoreRepositories,
     ) -> V3HostApiService:
         durable_route_adapters = self.build_v3_durable_route_adapters()
+        repository_binding_service = self.build_repository_binding_service(
+            repositories
+        )
         return V3HostApiService(
             repositories=repositories,
             event_store=V3EventStore(repositories),
@@ -776,7 +808,48 @@ class HostApiDependencies:
             scientific_workflow_contract_registry=(
                 AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
             ),
+            repository_binding_service=repository_binding_service,
+            allow_unpinned_repository_sessions_for_tests=(
+                self.v3_allow_unpinned_repository_sessions_for_tests
+            ),
         )
+
+    def build_repository_binding_service(
+        self,
+        repositories: CoreRepositories,
+    ) -> ProjectRepositoryBindingService | None:
+        settings = getattr(self.foundation, "settings", None)
+        repository_settings = (
+            None if settings is None else settings.repository_service
+        )
+        if repository_settings is None:
+            return None
+        boundary = self.v3_repository_root_boundary
+        if boundary is None:
+            boundary = RepositoryRootBoundary.production(
+                host_checkout=Path(__file__).resolve().parents[4],
+                process_cwd=Path.cwd(),
+            )
+        roots = DurableRepositoryRootManager(repository_settings, boundary)
+        return ProjectRepositoryBindingService(repositories, roots)
+
+    def preflight_repository_bindings(self) -> tuple[dict[str, object], ...]:
+        settings = getattr(self.foundation, "settings", None)
+        repository_settings = (
+            None if settings is None else settings.repository_service
+        )
+        if repository_settings is None:
+            return ()
+        with self.v3_repository_scope(mode="read") as repositories:
+            service = self.build_repository_binding_service(repositories)
+            if service is None:
+                raise RuntimeError("repository binding service composition failed")
+        report = preflight_repository_service(
+            settings=repository_settings,
+            provider=self._ensure_v3_repository_provider(),
+            roots=service.roots,
+        )
+        return report.active_bindings
 
     def build_v3_durable_route_adapters(
         self,
@@ -975,6 +1048,37 @@ def _as_http_error(exc: Exception) -> HTTPException:
         return _http_exception(404, code="resource_not_found", message=str(exc))
     if isinstance(exc, CommandIdempotencyConflictError):
         return _http_exception(409, code="idempotency_conflict", message=str(exc))
+    if isinstance(exc, RepositoryBindingRequiredError):
+        return _http_exception(
+            409,
+            code="repository_binding_required",
+            message=str(exc),
+        )
+    if isinstance(exc, RepositoryBindingRetiredError):
+        return _http_exception(
+            409,
+            code="repository_binding_retired",
+            message=str(exc),
+        )
+    if isinstance(exc, RepositoryBindingConflictError):
+        return _http_exception(
+            409,
+            code="repository_binding_conflict",
+            message=str(exc),
+        )
+    if isinstance(exc, RepositoryBindingDriftError):
+        return _http_exception(
+            409,
+            code=exc.error_code,
+            message=str(exc),
+            details={"drift": [item.value for item in exc.drift]},
+        )
+    if isinstance(exc, RepositoryStorageError):
+        return _http_exception(
+            503,
+            code=exc.error_code,
+            message="repository durable storage is unavailable",
+        )
     if isinstance(exc, ScientificAttemptError):
         status_code = (
             403
@@ -1303,6 +1407,7 @@ def create_app(
     async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         app.state.v3_background_runtime = background_runtime
         app.state.v3_durable_work = durable_work
+        app.state.repository_bindings = dependencies.preflight_repository_bindings()
         with dependencies.v3_service_scope(mode="write") as service:
             service.recover_abandoned_sdk_continuations()
         recover_unattached_continuations(
@@ -1493,10 +1598,21 @@ def create_app(
             if sandbox_preflight is not None and bool(sandbox_preflight.ok)
             else "unavailable"
         )
+        repository_bindings = tuple(
+            getattr(request.app.state, "repository_bindings", ())
+        )
+        repository_status = "ready" if repository_bindings else "unavailable"
         components = {
             "control_plane": RuntimeComponentHealth(
                 status="ready",
                 details={"storage": "single_process_sqlite"},
+            ),
+            "repository_service": RuntimeComponentHealth(
+                status=repository_status,
+                details={
+                    "active_binding_count": len(repository_bindings),
+                    "configured": repository_status == "ready",
+                },
             ),
             "model": RuntimeComponentHealth(status=model_status),
             "background_runtime": RuntimeComponentHealth(

@@ -37,7 +37,52 @@ Public JSON contract 由 Host API 的 request/response DTO 双向校验。未知
 
 公开诊断采用 fail-closed sanitizer contract。ToolResult、workspace/run read model、runtime signal、`harness.failed`、event、eval 与 HTTP error 中由 schema 指定的 diagnostic/locator field，在 durable/public 落点前先把精确 sandbox workspace/control-socket Host root 映射为 `/workspace` 和 `/openzyme/control.sock`，再删除当前已测试的 high-risk Unix/HPC roots、Windows drive、UNC、`file://`、private/special-use URL、storage/runner locator 与 credential corpus。sanitizer 本身必须有界：credential-URI 候选只能从 scheme token 的真实左边界开始，完整 `64 KiB` benign scalar 必须在注册的 identity-bound child deadline 内完成且保持完整不变；长 benign 前缀后的 credential URI 仍须脱敏，不允许用截断、替代实现或 deadline 放宽掩盖复杂度缺陷。该 producer sanitizer 不声称识别任意自由文本中的所有 private path，也不得无类型改写 user conversation、scientific evidence 或 report 正文；更完整的 typed/versioned 边界见 [deferred proposal](architecture-proposals/canonical-public-diagnostic-boundary.md)。public projection 对历史 diagnostic 与 schema-declared locator field 再次投影；无法确认安全时退化为稳定 redacted diagnostic。原始异常与完整 stdout/stderr bytes 只能留在受保护 Host-private log，public event/API 只得到 sanitized summary、raw-byte digest/size、truncation marker 与 opaque non-readable ref。AOX verifier 对 surviving Host path/private locator 的独立严格拒绝不得因 sanitizer 存在而放宽。
 
-`GET /v3/runtime/health` 是经过脱敏的产品运维投影，返回 `v3.runtime_health.v1`、整体 `ready|degraded`、deployment/storage profile，以及 control plane、model、background runtime、execution、research、sandbox 的公开状态。它不得返回 worker identity、原始 exception、Host path、runner 配置或 secret；更深诊断仍属于受 operator/admin gate 保护的 `/debug/*`。`fixture_non_cutover`、`unavailable` 与 `disabled` 必须与 `ready` 区分，不能为获得绿色 health 而把 fixture 伪装成真实 provider。
+`GET /v3/runtime/health` 是经过脱敏的产品运维投影，返回 `v3.runtime_health.v1`、整体 `ready|degraded`、deployment/storage profile，以及 control plane、repository service、model、background runtime、execution、research、sandbox 的公开状态。configured repository component只投影 `configured=true`、ready 状态与 active binding count；它不得返回 binding endpoint、root、binary/key/certificate path或credential。整个 health 不得返回 worker identity、原始 exception、Host path、runner 配置或 secret；更深诊断仍属于受 operator/admin gate 保护的 `/debug/*`。`fixture_non_cutover`、`unavailable` 与 `disabled` 必须与 `ready` 区分，不能为获得绿色 health 而把 fixture 伪装成真实 provider。
+
+`POST /v3/sessions` 在 configured product Host 中必须先解析 project 的唯一 active
+`ProjectRepositoryBinding`、验证 internal bare repository 可读取 exact base commit，再在同一
+write UoW 创建 session、`SessionRepositoryBindingPin`、owner/master/event。任一前置失败都不
+留下 session；Host 未配置 repository service、project 无 active binding、base/object/endpoint
+drift 或 legacy session 未 mapping 返回稳定 repository error，不使用当前 checkout 或 project
+latest作为 fallback。测试若需要旧 unpinned fixture，必须在依赖装配处显式启用
+`v3_allow_unpinned_repository_sessions_for_tests`，production/default composition固定关闭。
+
+`GET /v3/sessions/{session_id}/workspace` 顶层增加 `repository_binding` safe projection：只包含
+schema、binding id/version、repository/service safe identity、object format、exact/resolved base、
+policy digest、lifecycle、pin status与allowed ref classes。Host filesystem roots、upstream URL、
+private Git/LFS endpoint、signing/TLS secret和bearer都不得进入 projection。workspace read先按
+`session_restore` prerequisite重验 immutable pin与pinned commit；旧 active version rollover不会
+移动已存在 session。
+
+Git/LFS 并不是 `/v3` endpoint。独立 `openzyme-repository serve` TLS app 暴露：
+
+```text
+GET      /health
+GET|POST /repositories/{repository_id}.git/{Git smart HTTP path}
+POST     /repositories/{repository_id}.git/info/lfs/objects/batch
+PUT|GET  /repositories/{repository_id}.git/info/lfs/objects/{oid}
+POST     /repositories/{repository_id}.git/info/lfs/objects/{oid}/verify
+```
+
+独立 transport 的 `GET /health` 只能经 HTTPS 访问。它每次请求都重新执行 repository
+preflight，核对 control-plane database、durable roots、配置 inventory、TLS identity、固定
+Git/Git LFS/backend executable、active binding、exact base、bare `HEAD` 与 pre-receive hook；
+preflight 领域识别出的 storage/identity/inventory/configuration drift 返回稳定
+`503 repository_service_preflight_failed`，不会用缓存的绿色状态或临时服务替代；未被领域层
+归一的 OS、subprocess 或 SSL fault 继续显式成为 `500`，不会被 catch-all 改写。成功响应只公开
+`repository_transport_health@1`、协议版本、basic transfer、active
+binding count、inventory digest 与 hook digest，不公开 root、endpoint、binary/key/certificate path
+或 credential。它与 `GET /v3/runtime/health` 的 control-plane 安全投影是两个独立证明面：后者
+不能替代真实 TLS listener/协议 transport 的 health。该动态 health 与 native-client acceptance
+共同构成协议证明：前者证明当前 listener/preflight identity，后者实际执行 Git v2 与 LFS
+Batch/basic；health response 本身不伪装成每次都上传一个测试对象。
+
+这些 route 只接受 repository Bearer；不继承 local-dev principal、shared user token、`/debug`
+gate或`Idempotency-Key` middleware。credential audience同时核对 immutable binding/version、
+session pin、repository、agent、workspace generation、capability lease、protocol与ref class。
+到期/撤销/identity drift 返回明确 `401`，不会自动续签、重放原 Git/LFS command、切 endpoint或
+fallback upstream。native Git read只广告 publication和调用者自己的 private refs；agent write
+只允许 exact private generation 的单 ref create/fast-forward。
 
 `POST /v3/sessions/{session_id}/messages` 是用户消息 ingress。它持久化用户消息并排队 `agent:master` wakeup signal，正常产品推进由 background runtime worker claim signal 后完成。显式 `skill_keys` 经去重后绑定到同一 canonical user conversation document；worker 从 signal 的 exact source message 恢复该 focus，因此 admission 与 background/manual drain 解耦不会丢失 workflow 授权。`/runtime/drain` 自身不能提交或扩张 `skill_keys` / `workflow_refs`。该请求不提供 `max_steps` 字段，也不允许调用方控制本次后台 turn。后台 worker 的 agent turn budget 来自 `OPENZYME_V3_BACKGROUND_RUNTIME_MAX_STEPS_PER_AGENT`，debug/manual `/runtime/drain` 的 turn budget 则来自 `max_steps_per_agent`。
 
