@@ -1,0 +1,193 @@
+{
+  "schema_id": "agent_capability_authority_matrix@1",
+  "change_id": "establish-agent-capability-leases",
+  "authorities": [
+    {
+      "authority_id": "agent_capability_lease",
+      "canonical_owner": "AgentCapabilityLease",
+      "lifecycle": [
+        "pending_workspace",
+        "active",
+        "revoked"
+      ],
+      "owns": [
+        "exact_generation_agent_admission",
+        "closed_profile_and_target_eligibility",
+        "credential_derivation_eligibility"
+      ],
+      "does_not_own": [
+        "scheduler_progress",
+        "canonical_mutation",
+        "durable_external_effect",
+        "human_approval_resolution",
+        "scientific_attempt_or_ceilings",
+        "runtime_mechanical_budget",
+        "publication"
+      ]
+    },
+    {
+      "authority_id": "session_runtime_lease",
+      "canonical_owner": "SessionRuntimeLease",
+      "lifecycle": [
+        "acquired",
+        "heartbeating",
+        "released_or_expired"
+      ],
+      "owns": [
+        "bounded_scheduler_progress"
+      ],
+      "does_not_own": [
+        "agent_capability",
+        "canonical_mutation",
+        "durable_external_effect",
+        "scientific_attempt_or_ceilings"
+      ]
+    },
+    {
+      "authority_id": "controlled_operation_execution",
+      "canonical_owner": "ControlledOperationExecution",
+      "lifecycle": [
+        "awaiting_approval",
+        "ready",
+        "claimed",
+        "dispatching",
+        "waiting_external",
+        "result_staging",
+        "result_ready",
+        "reconcile_required",
+        "terminal"
+      ],
+      "owns": [
+        "one_durable_external_operation",
+        "dispatch_fence_and_effect_certainty"
+      ],
+      "does_not_own": [
+        "agent_capability",
+        "scheduler_progress",
+        "scientific_attempt_or_ceilings"
+      ]
+    },
+    {
+      "authority_id": "mutation_writer",
+      "canonical_owner": "MutationWriter",
+      "lifecycle": [
+        "registered",
+        "retiring",
+        "retired",
+        "rejected"
+      ],
+      "owns": [
+        "canonical_mutation_writer_admission",
+        "scope_generation_and_fence"
+      ],
+      "does_not_own": [
+        "agent_capability",
+        "scheduler_progress",
+        "durable_external_effect",
+        "scientific_attempt_or_ceilings"
+      ]
+    },
+    {
+      "authority_id": "approval_request",
+      "canonical_owner": "ApprovalRequest",
+      "lifecycle": [
+        "pending",
+        "approved",
+        "rejected",
+        "expired",
+        "cancelled"
+      ],
+      "owns": [
+        "subject_bound_human_resolution"
+      ],
+      "does_not_own": [
+        "agent_capability",
+        "scheduler_progress",
+        "canonical_mutation",
+        "durable_external_effect_without_execution_owner",
+        "scientific_attempt_or_ceilings"
+      ]
+    },
+    {
+      "authority_id": "scientific_attempt_authorization",
+      "canonical_owner": "ScientificAttemptAuthorization",
+      "lifecycle": [
+        "active",
+        "exhausted",
+        "expired",
+        "revoked"
+      ],
+      "owns": [
+        "scientific_attempt_scope",
+        "scientific_effect_class",
+        "attempt_micu_cost_and_wall_time_ceilings"
+      ],
+      "does_not_own": [
+        "agent_capability",
+        "scheduler_progress",
+        "canonical_mutation",
+        "durable_external_effect_without_execution_owner",
+        "runtime_mechanical_budget"
+      ]
+    }
+  ],
+  "cross_product": [
+    {
+      "left": "agent_capability_lease",
+      "right": "session_runtime_lease",
+      "relationship": "orthogonal",
+      "substitution": "forbidden_both_directions"
+    },
+    {
+      "left": "agent_capability_lease",
+      "right": "controlled_operation_execution",
+      "relationship": "orthogonal",
+      "substitution": "forbidden_both_directions"
+    },
+    {
+      "left": "agent_capability_lease",
+      "right": "mutation_writer",
+      "relationship": "orthogonal",
+      "substitution": "forbidden_both_directions"
+    },
+    {
+      "left": "agent_capability_lease",
+      "right": "approval_request",
+      "relationship": "orthogonal",
+      "substitution": "forbidden_both_directions"
+    },
+    {
+      "left": "agent_capability_lease",
+      "right": "scientific_attempt_authorization",
+      "relationship": "orthogonal",
+      "substitution": "forbidden_both_directions"
+    }
+  ],
+  "automatic_effects": {
+    "creates_controlled_operation_execution": false,
+    "changes_controlled_operation_execution": false,
+    "creates_mutation_writer": false,
+    "resolves_or_reopens_approval": false,
+    "creates_or_consumes_scientific_authorization": false,
+    "changes_task_terminal_state": false
+  },
+  "budget_ownership": {
+    "scientific_ceiling_owner": "ScientificAttemptAuthorization",
+    "scientific_ceilings": [
+      "attempts",
+      "micu",
+      "cost_microunits",
+      "wall_time_seconds"
+    ],
+    "mechanical_runtime_constraints": [
+      "prompt",
+      "context",
+      "step"
+    ],
+    "universal_budget_owner": null,
+    "capability_lease_may_enlarge_budget": false,
+    "budget_may_imply_capability_lease": false
+  },
+  "publication_owner_present_in_c2": false,
+  "matrix_digest": "sha256:85f5ca3170329f5406bf8eb8532a85fa5c1e7d74367f7414341953e4c3aeb9e9"
+}

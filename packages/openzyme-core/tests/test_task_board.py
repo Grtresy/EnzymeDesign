@@ -34,6 +34,7 @@ from openzyme_core import connect_sqlite
 from openzyme_core import register_task_board_tools
 from openzyme_core import run_agent_harness_loop
 from openzyme_core.agent_identity import create_agent_member
+from openzyme_core.task_evidence import task_finish_evidence_contract_details
 
 
 def _build_repositories() -> CoreRepositories:
@@ -166,11 +167,11 @@ def test_task_board_finish_command_is_the_explicit_business_exit() -> None:
     )
 
     assert outcome.task.status is TaskStatus.COMPLETED
-    document = repositories.engine_documents.get(outcome.finish_ref)
-    assert document is not None
-    assert document.document_kind == "task_finish"
-    assert document.payload["summary"] == "Finished explicitly."
-    assert document.payload["finished_by"] == "agent:master"
+    finishes = repositories.revision_path_handoffs.list_task_finishes(task.task_id)
+    assert len(finishes) == 1
+    assert finishes[0]["finish_ref"] == outcome.finish_ref
+    assert finishes[0]["summary"] == "Finished explicitly."
+    assert finishes[0]["finished_by"] == "agent:master"
 
 
 def test_task_board_finish_rejects_a_second_exit_until_explicit_resume() -> None:
@@ -207,13 +208,7 @@ def test_task_board_finish_rejects_a_second_exit_until_explicit_resume() -> None
     assert saved is not None
     assert saved.status is TaskStatus.BLOCKED
     assert len(
-        [
-            document
-            for document in repositories.engine_documents.list_by_session(
-                session.session_id
-            )
-            if document.document_kind == "task_finish"
-        ]
+        repositories.revision_path_handoffs.list_task_finishes(task.task_id)
     ) == 1
     assert first.task.status is TaskStatus.BLOCKED
 
@@ -260,12 +255,7 @@ def test_task_board_finish_rollback_does_not_emit_events() -> None:
     saved = repositories.tasks.get(task.task_id)
     assert saved is not None
     assert saved.status is TaskStatus.IN_PROGRESS
-    assert not any(
-        document.document_kind == "task_finish"
-        for document in repositories.engine_documents.list_by_session(
-            session.session_id
-        )
-    )
+    assert not repositories.revision_path_handoffs.list_task_finishes(task.task_id)
     assert events == []
 
 
@@ -726,24 +716,7 @@ def test_task_finish_rejects_bare_evidence_id_with_canonical_contract() -> None:
     assert result.error_code == "invalid_task_finish_evidence_refs"
     assert result.details == {
         "task_id": "task_finish_evidence",
-        "evidence_refs": ["artifact_123"],
-        "expected_format": "<kind>:<id>",
-        "supported_kinds": [
-            "artifact",
-            "document",
-            "invocation",
-            "message",
-            "protocol",
-            "report",
-            "run",
-            "sandbox_run",
-            "scientific_closure",
-        ],
-        "examples": [
-            "artifact:<artifact_id>",
-            "report:<report_id>",
-            "scientific_closure:<closure_id>",
-        ],
+        **task_finish_evidence_contract_details(),
     }
     assert result.hint is None
     task = repositories.tasks.get("task_finish_evidence")

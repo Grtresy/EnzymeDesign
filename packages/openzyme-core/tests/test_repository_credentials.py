@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from dataclasses import replace
 from datetime import UTC
 from datetime import datetime
@@ -9,11 +10,11 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
+import sqlite3
 import subprocess
 
 import pytest
 
-from openzyme_core import ActiveCapabilityLeaseAssertion
 from openzyme_core import CoreRepositories
 from openzyme_core import DurableRepositoryRootManager
 from openzyme_core import GitRefAclValidator
@@ -33,12 +34,20 @@ from openzyme_core import RepositoryStorageError
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_core import private_ref_prefix
+from openzyme_core.agent_capability_service import AgentCapabilityLeaseService
+from openzyme_core.agent_capability_service import AgentWorkspaceReadinessProof
+from openzyme_domain import AgentCapabilityLease
+from openzyme_domain import AgentCapabilityLeaseStatus
+from openzyme_domain import AgentMember
+from openzyme_domain import AgentMemberStatus
 from openzyme_domain import GitObjectFormat
 from openzyme_domain import ProjectRepositoryBinding
 from openzyme_domain import RepositoryRefClass
 from openzyme_domain import RepositoryRefNamespacePolicy
 from openzyme_domain import Session
 from openzyme_domain import SessionRepositoryBindingPin
+from openzyme_domain import AgentWorkspaceGenerationReservation
+from openzyme_domain import canonical_capability_digest
 from openzyme_runtime import RepositoryServiceSettings
 
 
@@ -149,7 +158,82 @@ def _binding(commit: str) -> ProjectRepositoryBinding:
     )
 
 
-def _pin(connection, binding: ProjectRepositoryBinding) -> SessionRepositoryBindingPin:
+@dataclass(frozen=True, slots=True)
+class _RepositoryReadinessProvider:
+    provider_id: str = "test.repository-workspace@1"
+
+    def verify_readiness(
+        self,
+        reservation: AgentWorkspaceGenerationReservation,
+    ) -> AgentWorkspaceReadinessProof:
+        return AgentWorkspaceReadinessProof(
+            provider_id=self.provider_id,
+            reservation_id=reservation.reservation_id,
+            reservation_fingerprint=reservation.immutable_fingerprint,
+            session_id=reservation.session_id,
+            agent_member_id=reservation.agent_member_id,
+            agent_id=reservation.agent_id,
+            workspace_generation=reservation.workspace_generation,
+            readiness_ref=f"test-ready:{reservation.reservation_id}",
+            readiness_digest=canonical_capability_digest(
+                {
+                    "provider_id": self.provider_id,
+                    "reservation_id": reservation.reservation_id,
+                }
+            ),
+            observed_at=NOW.isoformat(),
+        )
+
+
+def _active_lease(
+    repositories: CoreRepositories,
+    *,
+    session_id: str,
+    agent_member_id: str,
+    agent_id: str,
+    workspace_generation: int,
+) -> AgentCapabilityLease:
+    now = NOW.isoformat()
+    repositories.agents.save(
+        AgentMember(
+            member_id=agent_member_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            lane_id=None,
+            task_id=None,
+            name=agent_id,
+            role="executor",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at=now,
+            updated_at=now,
+            runtime_state="idle",
+            idle_since=now,
+        )
+    )
+    provider = _RepositoryReadinessProvider()
+    service = AgentCapabilityLeaseService(
+        repositories,
+        readiness_providers={provider.provider_id: provider},
+    )
+    issuance = service.reserve_and_issue(
+        session_id=session_id,
+        agent_id=agent_id,
+        idempotency_key=f"{agent_member_id}-generation-{workspace_generation}",
+        actor_ref="test:repository-credential-issue",
+        workspace_generation=workspace_generation,
+    )
+    return service.activate_with_provider(
+        lease_id=issuance.lease.lease_id,
+        provider_id=provider.provider_id,
+        actor_ref="test:repository-credential-activate",
+    ).lease
+
+
+def _pin(
+    connection,
+    binding: ProjectRepositoryBinding,
+) -> tuple[SessionRepositoryBindingPin, AgentCapabilityLease]:
     repositories = CoreRepositories.from_connection(connection)
     repositories.project_repository_bindings.add(binding)
     session = Session.create(
@@ -170,6 +254,13 @@ def _pin(connection, binding: ProjectRepositoryBinding) -> SessionRepositoryBind
         pinned_at=NOW.isoformat(),
     )
     repositories.session_repository_binding_pins.add(pin)
+    lease = _active_lease(
+        repositories,
+        session_id=session.session_id,
+        agent_member_id="executor_01",
+        agent_id="agent:executor:credentials",
+        workspace_generation=2,
+    )
     connection.execute(
         """
         INSERT INTO repository_private_namespace_records (
@@ -204,24 +295,21 @@ def _pin(connection, binding: ProjectRepositoryBinding) -> SessionRepositoryBind
         (
             "hold_credentials_default",
             "namespace_credentials_default",
-            "lease_c1_001",
+            lease.lease_id,
             "2026-08-15T15:59:00+00:00",
         ),
     )
     connection.commit()
-    return pin
+    return pin, lease
 
 
-def _lease(**overrides: object) -> ActiveCapabilityLeaseAssertion:
-    values: dict[str, object] = {
-        "lease_id": "lease_c1_001",
-        "session_id": "sess_credentials",
-        "agent_member_id": "executor_01",
-        "workspace_generation": 2,
-        "expires_at": (NOW + timedelta(minutes=10)).isoformat(),
+def _credential_owner_args(lease: AgentCapabilityLease) -> dict[str, object]:
+    return {
+        "capability_lease_id": lease.lease_id,
+        "expected_agent_member_id": lease.agent_member_id,
+        "expected_agent_id": lease.agent_id,
+        "expected_workspace_generation": lease.workspace_generation,
     }
-    values.update(overrides)
-    return ActiveCapabilityLeaseAssertion(**values)  # type: ignore[arg-type]
 
 
 def _broker(
@@ -241,19 +329,19 @@ def test_credential_binds_pin_lease_protocol_repository_and_generation(
     apply_sqlite_migrations(connection)
     settings = _settings(tmp_path / "service")
     binding = _binding("1" * 40)
-    pin = _pin(connection, binding)
+    pin, lease = _pin(connection, binding)
     broker = _broker(connection, settings)
 
     issued = broker.issue(
         binding=binding,
         pin=pin,
-        lease=_lease(),
         protocols=(
             RepositoryCredentialProtocol.GIT_READ,
             RepositoryCredentialProtocol.GIT_WRITE,
         ),
         ref_classes=(RepositoryRefClass.READ, RepositoryRefClass.PRIVATE),
         now=NOW,
+        **_credential_owner_args(lease),
     )
     claims = broker.authenticate(
         issued.token,
@@ -264,7 +352,7 @@ def test_credential_binds_pin_lease_protocol_repository_and_generation(
 
     assert claims.binding_id == pin.binding_id
     assert claims.workspace_generation == 2
-    assert claims.capability_lease_id == "lease_c1_001"
+    assert claims.capability_lease_id == lease.lease_id
     assert private_ref_prefix(
         binding,
         session_id=claims.session_id,
@@ -293,12 +381,12 @@ def test_expiry_tamper_revocation_and_reissue_fail_explicitly(tmp_path: Path) ->
     apply_sqlite_migrations(connection)
     settings = _settings(tmp_path / "service")
     binding = _binding("1" * 40)
-    pin = _pin(connection, binding)
+    pin, lease = _pin(connection, binding)
     broker = _broker(connection, settings)
     arguments = {
         "binding": binding,
         "pin": pin,
-        "lease": _lease(),
+        **_credential_owner_args(lease),
         "protocols": (RepositoryCredentialProtocol.LFS_READ,),
         "ref_classes": (RepositoryRefClass.READ,),
         "now": NOW,
@@ -327,6 +415,34 @@ def test_expiry_tamper_revocation_and_reissue_fail_explicitly(tmp_path: Path) ->
     with pytest.raises(RepositoryCredentialRejectedError, match="revoked"):
         broker.authenticate(
             first.token,
+            protocol=RepositoryCredentialProtocol.LFS_READ,
+            repository_id=binding.repository_id,
+            now=NOW,
+        )
+    AgentCapabilityLeaseService(
+        CoreRepositories.from_connection(connection)
+    ).revoke_exact(lease.lease_id, actor_ref="operator:test-revoke")
+    assert connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM repository_credential_issuance_records
+        WHERE capability_lease_id = ? AND revoked_at IS NULL
+        """,
+        (lease.lease_id,),
+    ).fetchone()[0] == 0
+    assert connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM repository_private_namespace_holds
+        WHERE hold_kind = 'active_capability_lease'
+          AND owner_ref = ?
+          AND released_at IS NULL
+        """,
+        (lease.lease_id,),
+    ).fetchone()[0] == 0
+    with pytest.raises(RepositoryCredentialRejectedError, match="revoked"):
+        broker.authenticate(
+            second.token,
             protocol=RepositoryCredentialProtocol.LFS_READ,
             repository_id=binding.repository_id,
             now=NOW,
@@ -375,14 +491,14 @@ def test_malformed_bearer_encoding_and_json_are_stable_rejections(
         )
 
     binding = _binding("1" * 40)
-    pin = _pin(connection, binding)
+    pin, lease = _pin(connection, binding)
     issued = broker.issue(
         binding=binding,
         pin=pin,
-        lease=_lease(),
         protocols=(RepositoryCredentialProtocol.GIT_READ,),
         ref_classes=(RepositoryRefClass.READ,),
         now=NOW,
+        **_credential_owner_args(lease),
     )
     claims = issued.claims.to_payload()
     claims["unexpected_claim"] = "must not be ignored"
@@ -413,20 +529,24 @@ def test_write_credentials_require_open_namespace_and_active_lease_hold(
     apply_sqlite_migrations(connection)
     settings = _settings(tmp_path / "service")
     binding = _binding("1" * 40)
-    pin = _pin(connection, binding)
+    pin, lease = _pin(connection, binding)
     broker = _broker(connection, settings)
 
+    missing_namespace_lease = _active_lease(
+        CoreRepositories.from_connection(connection),
+        session_id=pin.session_id,
+        agent_member_id="executor_missing",
+        agent_id="agent:executor:missing",
+        workspace_generation=3,
+    )
     with pytest.raises(RepositoryCredentialRejectedError, match="namespace record"):
         broker.issue(
             binding=binding,
             pin=pin,
-            lease=_lease(
-                agent_member_id="executor_missing",
-                workspace_generation=3,
-            ),
             protocols=(RepositoryCredentialProtocol.GIT_WRITE,),
             ref_classes=(RepositoryRefClass.PRIVATE,),
             now=NOW,
+            **_credential_owner_args(missing_namespace_lease),
         )
 
     checkout = tmp_path / "checkout"
@@ -442,6 +562,13 @@ def test_write_credentials_require_open_namespace_and_active_lease_hold(
         ),
     )
     retention = RepositoryPrivateNamespaceRetentionService(connection, roots)
+    no_hold_lease = _active_lease(
+        CoreRepositories.from_connection(connection),
+        session_id=pin.session_id,
+        agent_member_id="executor_no_hold",
+        agent_id="agent:executor:no-hold",
+        workspace_generation=4,
+    )
     retention.open_namespace(
         binding=binding,
         pin=pin,
@@ -455,25 +582,22 @@ def test_write_credentials_require_open_namespace_and_active_lease_hold(
         broker.issue(
             binding=binding,
             pin=pin,
-            lease=_lease(
-                agent_member_id="executor_no_hold",
-                workspace_generation=4,
-            ),
             protocols=(RepositoryCredentialProtocol.LFS_WRITE,),
             ref_classes=(RepositoryRefClass.PRIVATE,),
             now=NOW,
+            **_credential_owner_args(no_hold_lease),
         )
 
     issued = broker.issue(
         binding=binding,
         pin=pin,
-        lease=_lease(),
         protocols=(
             RepositoryCredentialProtocol.GIT_READ,
             RepositoryCredentialProtocol.GIT_WRITE,
         ),
         ref_classes=(RepositoryRefClass.READ, RepositoryRefClass.PRIVATE),
         now=NOW,
+        **_credential_owner_args(lease),
     )
     retention.close_namespace(
         "namespace_credentials_default",
@@ -497,25 +621,24 @@ def test_write_credentials_require_open_namespace_and_active_lease_hold(
     )
 
 
-def test_credential_issuance_respects_owning_unit_of_work(tmp_path: Path) -> None:
+def test_credential_issuance_requires_its_own_commit_boundary(tmp_path: Path) -> None:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)
     settings = _settings(tmp_path / "service")
     binding = _binding("1" * 40)
-    pin = _pin(connection, binding)
+    pin, lease = _pin(connection, binding)
     repositories = CoreRepositories.from_connection(connection)
 
-    with pytest.raises(RuntimeError, match="rollback issuance"):
+    with pytest.raises(RepositoryCredentialRejectedError, match="BEGIN IMMEDIATE"):
         with repositories.atomic(prefix="credential_issuance"):
             _broker(connection, settings).issue(
                 binding=binding,
                 pin=pin,
-                lease=_lease(),
                 protocols=(RepositoryCredentialProtocol.GIT_READ,),
                 ref_classes=(RepositoryRefClass.READ,),
                 now=NOW,
+                **_credential_owner_args(lease),
             )
-            raise RuntimeError("rollback issuance")
 
     assert (
         connection.execute(
@@ -525,6 +648,62 @@ def test_credential_issuance_respects_owning_unit_of_work(tmp_path: Path) -> Non
     )
 
 
+def test_credential_and_hold_closure_rolls_back_with_lease_revoke_failure(
+    tmp_path: Path,
+) -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    settings = _settings(tmp_path / "service")
+    binding = _binding("1" * 40)
+    pin, lease = _pin(connection, binding)
+    issued = _broker(connection, settings).issue(
+        binding=binding,
+        pin=pin,
+        protocols=(RepositoryCredentialProtocol.GIT_WRITE,),
+        ref_classes=(RepositoryRefClass.PRIVATE,),
+        now=NOW,
+        **_credential_owner_args(lease),
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER test_reject_capability_revoke
+        BEFORE UPDATE OF status ON agent_capability_lease_records
+        WHEN NEW.status = 'revoked'
+        BEGIN
+            SELECT RAISE(ABORT, 'injected capability revoke failure');
+        END
+        """
+    )
+    connection.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected capability"):
+        AgentCapabilityLeaseService(
+            CoreRepositories.from_connection(connection)
+        ).revoke_exact(lease.lease_id, actor_ref="operator:test-revoke")
+
+    canonical = CoreRepositories.from_connection(
+        connection
+    ).agent_capability_leases.get(lease.lease_id)
+    assert canonical is not None
+    assert canonical.status is AgentCapabilityLeaseStatus.ACTIVE
+    assert connection.execute(
+        """
+        SELECT revoked_at
+        FROM repository_credential_issuance_records
+        WHERE credential_id = ?
+        """,
+        (issued.claims.credential_id,),
+    ).fetchone()[0] is None
+    assert connection.execute(
+        """
+        SELECT released_at
+        FROM repository_private_namespace_holds
+        WHERE hold_kind = 'active_capability_lease' AND owner_ref = ?
+        """,
+        (lease.lease_id,),
+    ).fetchone()[0] is None
+
+
 def test_agent_credential_rejects_host_owned_ref_classes_and_bad_lease(
     tmp_path: Path,
 ) -> None:
@@ -532,7 +711,7 @@ def test_agent_credential_rejects_host_owned_ref_classes_and_bad_lease(
     apply_sqlite_migrations(connection)
     settings = _settings(tmp_path / "service")
     binding = _binding("1" * 40)
-    pin = _pin(connection, binding)
+    pin, lease = _pin(connection, binding)
     broker = _broker(connection, settings)
 
     for ref_class in (
@@ -543,28 +722,33 @@ def test_agent_credential_rejects_host_owned_ref_classes_and_bad_lease(
             broker.issue(
                 binding=binding,
                 pin=pin,
-                lease=_lease(),
                 protocols=(RepositoryCredentialProtocol.GIT_WRITE,),
                 ref_classes=(ref_class,),
                 now=NOW,
+                **_credential_owner_args(lease),
             )
-    with pytest.raises(RepositoryCredentialRejectedError, match="not active"):
+    AgentCapabilityLeaseService(
+        CoreRepositories.from_connection(connection)
+    ).revoke_exact(lease.lease_id, actor_ref="operator:test-revoke")
+    with pytest.raises(RepositoryCredentialRejectedError, match="revoked"):
         broker.issue(
             binding=binding,
             pin=pin,
-            lease=_lease(expires_at=(NOW - timedelta(seconds=1)).isoformat()),
             protocols=(RepositoryCredentialProtocol.GIT_READ,),
             ref_classes=(RepositoryRefClass.READ,),
             now=NOW,
+            **_credential_owner_args(lease),
         )
-    with pytest.raises(RepositoryCredentialRejectedError, match="session"):
+    mismatched_owner = _credential_owner_args(lease)
+    mismatched_owner["expected_agent_member_id"] = "member_other"
+    with pytest.raises(RepositoryCredentialRejectedError, match="identity"):
         broker.issue(
             binding=binding,
             pin=pin,
-            lease=_lease(session_id="other_session"),
             protocols=(RepositoryCredentialProtocol.GIT_READ,),
             ref_classes=(RepositoryRefClass.READ,),
             now=NOW,
+            **mismatched_owner,
         )
 
 
@@ -592,16 +776,16 @@ def test_ref_acl_allows_only_private_create_and_fast_forward(tmp_path: Path) -> 
     )
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)
-    pin = _pin(connection, binding)
+    pin, lease = _pin(connection, binding)
     claims = (
         _broker(connection, settings)
         .issue(
             binding=binding,
             pin=pin,
-            lease=_lease(),
             protocols=(RepositoryCredentialProtocol.GIT_WRITE,),
             ref_classes=(RepositoryRefClass.PRIVATE,),
             now=NOW,
+            **_credential_owner_args(lease),
         )
         .claims
     )
@@ -943,14 +1127,14 @@ def test_pin_scope_drift_is_rejected_before_issuance(tmp_path: Path) -> None:
     apply_sqlite_migrations(connection)
     settings = _settings(tmp_path / "service")
     binding = _binding("1" * 40)
-    pin = _pin(connection, binding)
+    pin, lease = _pin(connection, binding)
 
     with pytest.raises(RepositoryCredentialRejectedError, match="pin"):
         _broker(connection, settings).issue(
             binding=binding,
             pin=replace(pin, binding_canonical_digest=f"sha256:{'2' * 64}"),
-            lease=_lease(),
             protocols=(RepositoryCredentialProtocol.GIT_READ,),
             ref_classes=(RepositoryRefClass.READ,),
             now=NOW,
+            **_credential_owner_args(lease),
         )

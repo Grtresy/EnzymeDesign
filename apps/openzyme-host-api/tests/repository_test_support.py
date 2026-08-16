@@ -10,7 +10,6 @@ import shutil
 import subprocess
 from urllib.parse import urlsplit
 
-from openzyme_core import ActiveCapabilityLeaseAssertion
 from openzyme_core import DurableRepositoryRootManager
 from openzyme_core import IssuedRepositoryCredential
 from openzyme_core import RepositoryCredentialBroker
@@ -19,12 +18,22 @@ from openzyme_core import RepositoryPrivateNamespaceHoldKind
 from openzyme_core import RepositoryPrivateNamespaceRetentionService
 from openzyme_core import RepositoryRootBoundary
 from openzyme_core import SQLiteRepositoryProvider
+from openzyme_core.agent_capability_service import AgentCapabilityLeaseService
+from openzyme_core.agent_capability_service import AgentWorkspaceReadinessProof
+from openzyme_domain import AgentMember
+from openzyme_domain import AgentMemberStatus
+from openzyme_domain import AgentWorkspaceGenerationReservation
 from openzyme_domain import GitObjectFormat
+from openzyme_domain import GitLfsBindingPolicy
+from openzyme_domain import GitLfsPathRepresentation
+from openzyme_domain import GitLfsPathRule
+from openzyme_domain import GitLfsRetentionClass
 from openzyme_domain import ProjectRepositoryBinding
 from openzyme_domain import RepositoryRefClass
 from openzyme_domain import RepositoryRefNamespacePolicy
 from openzyme_domain import Session
 from openzyme_domain import SessionRepositoryBindingPin
+from openzyme_domain import canonical_capability_digest
 from openzyme_host_api.repository_service_preflight import (
     build_repository_binding_inventory,
 )
@@ -43,6 +52,34 @@ class RepositoryTestFixture:
     pin: SessionRepositoryBindingPin
     source_repository: Path
     credential: IssuedRepositoryCredential
+
+
+@dataclass(frozen=True, slots=True)
+class _RepositoryTestReadinessProvider:
+    observed_at: str
+    provider_id: str = "test.repository-workspace@1"
+
+    def verify_readiness(
+        self,
+        reservation: AgentWorkspaceGenerationReservation,
+    ) -> AgentWorkspaceReadinessProof:
+        return AgentWorkspaceReadinessProof(
+            provider_id=self.provider_id,
+            reservation_id=reservation.reservation_id,
+            reservation_fingerprint=reservation.immutable_fingerprint,
+            session_id=reservation.session_id,
+            agent_member_id=reservation.agent_member_id,
+            agent_id=reservation.agent_id,
+            workspace_generation=reservation.workspace_generation,
+            readiness_ref=f"test-ready:{reservation.reservation_id}",
+            readiness_digest=canonical_capability_digest(
+                {
+                    "provider_id": self.provider_id,
+                    "reservation_id": reservation.reservation_id,
+                }
+            ),
+            observed_at=self.observed_at,
+        )
 
 
 def _required_executable(name: str) -> Path:
@@ -146,6 +183,7 @@ def _source(root: Path, *, git: Path) -> tuple[Path, str]:
 
 def _binding(commit: str, *, https_origin: str) -> ProjectRepositoryBinding:
     git_endpoint = f"{https_origin}/repositories/repo_openzyme.git"
+    lfs_policy = build_git_lfs_test_policy(https_origin=https_origin)
     return ProjectRepositoryBinding.create(
         binding_id="binding_repository_test_v1",
         project_id="openzyme",
@@ -166,9 +204,38 @@ def _binding(commit: str, *, https_origin: str) -> ProjectRepositoryBinding:
             historical_prefix="refs/openzyme/historical",
         ),
         repository_policy_version="repository-policy-v1",
-        repository_policy_digest=f"sha256:{'1' * 64}",
+        repository_policy_digest=lfs_policy.policy_digest,
         created_at="2026-08-15T18:00:00+00:00",
         created_by="operator:c1",
+    )
+
+
+def build_git_lfs_test_policy(*, https_origin: str) -> GitLfsBindingPolicy:
+    git_endpoint = f"{https_origin}/repositories/repo_openzyme.git"
+    return GitLfsBindingPolicy.create(
+        binding_id="binding_repository_test_v1",
+        binding_version=1,
+        repository_id="repo_openzyme",
+        lfs_service_id="lfs_openzyme_local",
+        lfs_endpoint=f"{git_endpoint}/info/lfs",
+        object_format="sha256",
+        path_rules=(
+            GitLfsPathRule(
+                rule_id="large_binary",
+                pattern="*.bin",
+                representation=GitLfsPathRepresentation.LFS_REQUIRED,
+            ),
+        ),
+        ordinary_blob_threshold_bytes=1024 * 1024,
+        max_object_bytes=64 * 1024 * 1024,
+        max_workspace_bytes=256 * 1024 * 1024,
+        max_repository_bytes=1024 * 1024 * 1024,
+        published_retention_class=GitLfsRetentionClass.PUBLISHED,
+        private_retention_class=GitLfsRetentionClass.PRIVATE,
+        private_retention_seconds=86_400,
+        policy_version="repository-policy-v1",
+        created_at="2026-08-15T18:00:00+00:00",
+        created_by="operator:c5",
     )
 
 
@@ -176,8 +243,8 @@ def issue_repository_credential(
     fixture: RepositoryTestFixture,
     *,
     agent_member_id: str,
+    role: str,
     workspace_generation: int,
-    lease_id: str,
 ) -> IssuedRepositoryCredential:
     return _issue_repository_credential(
         provider=fixture.provider,
@@ -187,8 +254,8 @@ def issue_repository_credential(
         pin=fixture.pin,
         session=fixture.session,
         agent_member_id=agent_member_id,
+        role=role,
         workspace_generation=workspace_generation,
-        lease_id=lease_id,
     )
 
 
@@ -201,11 +268,59 @@ def _issue_repository_credential(
     pin: SessionRepositoryBindingPin,
     session: Session,
     agent_member_id: str,
+    role: str,
     workspace_generation: int,
-    lease_id: str,
 ) -> IssuedRepositoryCredential:
     now = datetime.now(tz=UTC)
     with provider.write() as scope:
+        agent = AgentMember(
+            member_id=agent_member_id,
+            agent_id=agent_member_id,
+            session_id=session.session_id,
+            lane_id=None,
+            task_id=None,
+            name=agent_member_id,
+            role=role,
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at=now.isoformat(),
+            updated_at=now.isoformat(),
+            runtime_state="idle",
+            idle_since=now.isoformat(),
+        )
+        existing_agent = scope.repositories.agents.get(
+            session.session_id,
+            agent.agent_id,
+        )
+        if existing_agent is None:
+            scope.repositories.agents.save(agent)
+        elif (
+            existing_agent.member_id != agent_member_id
+            or existing_agent.role != role
+            or existing_agent.parent_agent_id is not None
+        ):
+            raise RuntimeError("repository test agent identity drifted")
+        readiness_provider = _RepositoryTestReadinessProvider(now.isoformat())
+        capability_service = AgentCapabilityLeaseService(
+            scope.repositories,
+            readiness_providers={
+                readiness_provider.provider_id: readiness_provider,
+            },
+        )
+        issuance = capability_service.reserve_and_issue(
+            session_id=session.session_id,
+            agent_id=agent.agent_id,
+            idempotency_key=(
+                f"repository-test:{agent_member_id}:g{workspace_generation}"
+            ),
+            actor_ref="test:repository-credential-issue",
+            workspace_generation=workspace_generation,
+        )
+        lease = capability_service.activate_with_provider(
+            lease_id=issuance.lease.lease_id,
+            provider_id=readiness_provider.provider_id,
+            actor_ref="test:repository-credential-activate",
+        ).lease
         retention = RepositoryPrivateNamespaceRetentionService(
             scope.connection,
             roots,
@@ -247,16 +362,17 @@ def _issue_repository_credential(
               AND owner_ref = ?
               AND released_at IS NULL
             """,
-            (namespace_id, lease_id),
+            (namespace_id, lease.lease_id),
         ).fetchone()
         if active_hold is None:
             retention.add_hold(
                 namespace_id,
                 hold_kind=(RepositoryPrivateNamespaceHoldKind.ACTIVE_CAPABILITY_LEASE),
-                owner_ref=lease_id,
+                owner_ref=lease.lease_id,
                 created_at=now.isoformat(),
-                hold_id=f"hold_{namespace_id}_{lease_id}",
+                hold_id=f"hold_{namespace_id}_{lease.lease_id}",
             )
+    with provider.connection_scope() as scope:
         return RepositoryCredentialBroker(
             connection=scope.connection,
             signing_key_path=settings.credential_signing_key_file,
@@ -264,13 +380,10 @@ def _issue_repository_credential(
         ).issue(
             binding=binding,
             pin=pin,
-            lease=ActiveCapabilityLeaseAssertion(
-                lease_id=lease_id,
-                session_id=session.session_id,
-                agent_member_id=agent_member_id,
-                workspace_generation=workspace_generation,
-                expires_at=(now + timedelta(minutes=15)).isoformat(),
-            ),
+            capability_lease_id=lease.lease_id,
+            expected_agent_member_id=lease.agent_member_id,
+            expected_agent_id=lease.agent_id,
+            expected_workspace_generation=lease.workspace_generation,
             protocols=(
                 RepositoryCredentialProtocol.GIT_READ,
                 RepositoryCredentialProtocol.GIT_WRITE,
@@ -312,6 +425,9 @@ def build_repository_test_fixture(
     with provider.write() as scope:
         repositories = scope.repositories
         repositories.project_repository_bindings.add(binding)
+        repositories.git_lfs.add_policy(
+            build_git_lfs_test_policy(https_origin=https_origin)
+        )
         repositories.project_repository_bindings.activate(
             binding.binding_id,
             actor_ref="operator:c1",
@@ -352,8 +468,8 @@ def build_repository_test_fixture(
         pin=pin,
         session=session,
         agent_member_id="agent:executor",
+        role="executor",
         workspace_generation=1,
-        lease_id="lease_repository_test_executor",
     )
     return RepositoryTestFixture(
         settings=settings,
@@ -375,5 +491,6 @@ def build_repository_test_fixture(
 __all__ = [
     "RepositoryTestFixture",
     "build_repository_test_fixture",
+    "build_git_lfs_test_policy",
     "issue_repository_credential",
 ]

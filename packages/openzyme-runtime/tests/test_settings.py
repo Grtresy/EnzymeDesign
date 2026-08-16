@@ -1,5 +1,6 @@
 import pytest
 
+from openzyme_runtime import AgentCapsuleSettings
 from openzyme_runtime import DEFAULT_HOST_BASE_URL
 from openzyme_runtime import DEFAULT_HOST_API_BIND_HOST
 from openzyme_runtime import DEFAULT_HOST_API_BIND_PORT
@@ -85,6 +86,8 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         "OPENZYME_REPOSITORY_GIT_LFS_EXECUTABLE",
         "OPENZYME_REPOSITORY_GIT_HTTP_BACKEND",
         "OPENZYME_REPOSITORY_CREDENTIAL_TTL_SECONDS",
+        "OPENZYME_AGENT_CAPSULE_DEPLOYMENT_NETWORK",
+        "OPENZYME_AGENT_CAPSULE_PODMAN_BINARY",
         "OPENZYME_LANGSMITH_TRACING",
         "LANGSMITH_TRACING",
         "OPENZYME_TEST_ENABLE_LIVE_LLM",
@@ -178,6 +181,7 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
     assert settings.host_api.deployment_profile == "local-dev"
     assert settings.host_api.debug_enabled is False
     assert settings.repository_service is None
+    assert settings.agent_capsule is None
     assert settings.execution.backend == "disabled"
     assert settings.v3_background_runtime.enabled is True
     assert settings.v3_background_runtime.poll_interval_seconds == 2.0
@@ -290,6 +294,32 @@ def test_repository_service_settings_reject_plaintext_and_relative_roots(
     complete["OPENZYME_REPOSITORY_BARE_ROOT"] = "relative/git"
     with pytest.raises(ValueError, match="must be absolute"):
         RepositoryServiceSettings.from_env(complete)
+
+
+def test_agent_capsule_requires_complete_explicit_runtime_configuration() -> None:
+    assert AgentCapsuleSettings.from_env({}) is None
+    with pytest.raises(ValueError, match="configuration is partial"):
+        AgentCapsuleSettings.from_env(
+            {"OPENZYME_AGENT_CAPSULE_DEPLOYMENT_NETWORK": "openzyme-agent"}
+        )
+    with pytest.raises(ValueError, match="absolute path"):
+        AgentCapsuleSettings.from_env(
+            {
+                "OPENZYME_AGENT_CAPSULE_DEPLOYMENT_NETWORK": "openzyme-agent",
+                "OPENZYME_AGENT_CAPSULE_PODMAN_BINARY": "podman",
+            }
+        )
+
+    settings = AgentCapsuleSettings.from_env(
+        {
+            "OPENZYME_AGENT_CAPSULE_DEPLOYMENT_NETWORK": "openzyme-agent",
+            "OPENZYME_AGENT_CAPSULE_PODMAN_BINARY": "/usr/bin/podman",
+        }
+    )
+
+    assert settings is not None
+    assert settings.deployment_network == "openzyme-agent"
+    assert str(settings.podman_binary) == "/usr/bin/podman"
 
 
 def test_environment_descriptor_is_consumed_by_settings_and_safe_projection() -> None:

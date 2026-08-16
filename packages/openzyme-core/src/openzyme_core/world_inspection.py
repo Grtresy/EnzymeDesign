@@ -17,6 +17,8 @@ from openzyme_runtime import ToolResult
 from openzyme_runtime import ToolSideEffect
 
 from .artifact_projection import project_artifact_for_agent
+from .agent_capability_projection import AgentCapabilityPublicProjector
+from .agent_capability_projection import project_agent_runtime_signal_for_public
 from .controlled_operation_projection import project_controlled_operation_summary
 from .controlled_operation_projection import is_controlled_operation_artifact_public
 from .harness import SessionRuntimeContext
@@ -429,6 +431,7 @@ class WorldInspectionService:
         task_board = TaskBoardService(self.context.repositories).build_projection(session_id)
         tasks = self.context.repositories.tasks.list_by_session(session_id)
         agents = self.context.repositories.agents.list_by_session(session_id)
+        capability_projector = AgentCapabilityPublicProjector(self.context.repositories)
         signals = self.context.repositories.runtime_signals.list_by_session(session_id)
         approvals = self.context.repositories.approvals.list_by_session(session_id)
         invocations = self.context.repositories.invocations.list_by_session(session_id)
@@ -497,7 +500,7 @@ class WorldInspectionService:
         if "agents" in sections:
             payload["agents"] = [
                 {
-                    **agent.to_dict(),
+                    **capability_projector.project_agent(agent),
                     "pending_signal_count": sum(
                         1
                         for signal in signals
@@ -527,7 +530,7 @@ class WorldInspectionService:
         if "runtime_signals" in sections:
             payload["runtime_signals"] = {
                 "items": [
-                    signal.to_dict()
+                    project_agent_runtime_signal_for_public(signal)
                     for signal in signals
                     if (
                         (task_id is None or signal.task_id == task_id)
@@ -680,16 +683,23 @@ class WorldInspectionService:
             artifacts = self.context.repositories.artifacts.list_by_invocation(
                 session_id, invocation.invocation_id
             )
+            research_files = self.context.repositories.revision_path_handoffs.list_research_indexes(
+                session_id=session_id,
+                invocation_id=invocation.invocation_id,
+            )
             evidence = self.context.repositories.research_evidence.list_by_invocation(
-                session_id, invocation.invocation_id
+                session_id,
+                invocation.invocation_id,
             )
             source_refs = (
                 self.context.repositories.research_source_refs.list_by_invocation(
-                    session_id, invocation.invocation_id
+                    session_id,
+                    invocation.invocation_id,
                 )
             )
             gaps = self.context.repositories.research_gaps.list_by_invocation(
-                session_id, invocation.invocation_id
+                session_id,
+                invocation.invocation_id,
             )
             engine_name = _safe_engine_name(invocation.engine_name)
             item = {
@@ -716,10 +726,15 @@ class WorldInspectionService:
                 ),
                 "source_ref_count": len(source_refs),
                 "source_ref_ids": _bounded_safe_refs(
-                    [source_ref.source_ref_id for source_ref in source_refs]
+                    [record.source_ref_id for record in source_refs]
                 ),
                 "gap_count": len(gaps),
-                "gap_ids": _bounded_safe_refs([gap.gap_id for gap in gaps]),
+                "gap_ids": _bounded_safe_refs([record.gap_id for record in gaps]),
+                "research_file_count": len(research_files),
+                "research_file_ref_ids": _bounded_safe_refs(
+                    [str(record["ref_id"]) for record in research_files]
+                ),
+                "research_content_contract": "published_revision_path_refs_only",
             }
             candidate_grouped = {
                 key: list(items) for key, items in grouped.items()

@@ -1,0 +1,42 @@
+{
+  "schema_id": "artifact_subsystem_removal_source_only_gate@1",
+  "change_id": "remove-artifact-control-plane-and-storage",
+  "decision": "removal_contract_source_allowed_destructive_removal_forbidden",
+  "direct_predecessor": {
+    "change_id": "migrate-historical-artifacts-to-git-lfs",
+    "source_gate_sha256": "698feaa5e318b7677845e2019bd7a0e5f4e6460180c816014a02e7030568014a",
+    "formal_completion_receipt": "missing",
+    "historical_global_migration_receipt": "missing",
+    "historical_target_fresh_readback": "not_proven",
+    "legacy_source_preservation": "required"
+  },
+  "current_blocking_facts": {
+    "formal_prerequisite_receipt_count": 0,
+    "required_formal_prerequisite_receipt_count": 13,
+    "production_source_files_with_legacy_surface": 72,
+    "migration_files_with_legacy_schema_surface": 21,
+    "public_file_workspace_epoch": "not_activated",
+    "maintenance_quiescence_receipt": "missing",
+    "database_and_storage_backup_receipt": "missing"
+  },
+  "allowed": [
+    "pure_removal_manifest_source",
+    "pure_admission_verifier_source",
+    "non_mutating_dry_run_contract_source",
+    "explicit_schema_and_storage_inventory_source",
+    "deferred_tests_and_documentation_source",
+    "static_source_audit"
+  ],
+  "forbidden": [
+    "register_or_execute_destructive_database_migration",
+    "drop_or_rebuild_current_table_column_trigger_or_index",
+    "delete_or_move_legacy_storage_object",
+    "remove_current_runtime_domain_tool_sdk_api_or_ui_surface",
+    "activate_file_workspace_public_epoch",
+    "issue_quiescence_backup_migration_or_removal_receipt",
+    "remote_git_or_lfs_readback",
+    "provider_hpc_network_or_live_effect",
+    "tests_build_validation_before_all_changes"
+  ],
+  "hard_stop": "source_only_gate_never_grants_migration_authority_or_physical_deletion"
+}

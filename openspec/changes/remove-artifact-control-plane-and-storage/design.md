@@ -2,6 +2,15 @@
 
 前 13 个 changes 已按依赖顺序建立 repository binding、独立 agent Git workspace、Git LFS、immutable workspace publication、agent capability lease、file-native sandbox、executor HPC workspace、revision-bound external job、revision/path research/report/task handoff、旧 AOX cutover supersession、scientific deliverable file identity、file-only public surface和全量 historical Git/LFS migration。本 change执行用户选择 6B 的最后一步：物理删除 artifact domain、database structures、legacy storage objects和 current runtime code。
 
+> **当前实施边界：** 上述“已建立”目前仅表示候选源码按依赖顺序存在，不能
+> 等同于正式激活或验收。`artifact_subsystem_removal_source_only_gate@1` 记录了
+> 0/13 正式前置 receipt、缺失的历史全局 receipt、未激活的 public epoch，以及
+> 仍含 legacy surface 的 current source/schema 盘点。随 change 保存的
+> `operator/offline_removal_contract.py` 只构造确定性 manifest 和 dry-run；它位于
+> runtime/package/migration discovery 之外，不做 I/O，不签发 authority，也不执行
+> DDL 或 storage mutation。真实 6B 删除必须在未来一次独立、明确授权的 offline
+> maintenance window 中重新取证并通过全部 gate。
+
 删除不是兼容性清理。`SessionArtifactRecord` 目前仍被多张历史表、FK、trigger、repository、sandbox/controlled-operation/scientific/HPC路径和 storage URI依赖；SQLite又不能安全地仅用若干 `DROP COLUMN`完成深 FK重构。必须在 offline maintenance window中先消费 exact historical migration receipt、重验 bytes/lineage覆盖，再执行 forward schema rebuild和storage deletion。最终 current product、runtime、fresh-install schema、API、SDK、UI和 tests均不得保留 artifact fallback。
 
 ## Goals / Non-Goals

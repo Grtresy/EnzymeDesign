@@ -11,6 +11,7 @@ function ensureWorkspace(workspace) {
   workspace.activity_feed ??= [];
   workspace.artifacts ??= [];
   workspace.artifact_index ??= [];
+  workspace.research_files ??= [];
   workspace.sandbox_runs ??= [];
   workspace.report_drafts ??= [];
   workspace.reports ??= [];

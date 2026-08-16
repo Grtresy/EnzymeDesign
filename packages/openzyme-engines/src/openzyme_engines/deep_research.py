@@ -20,17 +20,7 @@ from openzyme_runtime import ToolValidationError
 from openzyme_runtime import validate_arguments_against_schema
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
-from openzyme_domain import ArtifactKind
-from openzyme_domain import MemoryEntry
-from openzyme_domain import MemoryKind
-from openzyme_domain import MemoryScopeKind
-from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SourceRefKind
-from openzyme_domain import ResearchEvidence
-from openzyme_domain import ResearchGap
-from openzyme_domain import ResearchSourceRef
-from openzyme_domain import ResearchSummary
-from openzyme_domain import ResearchSummaryStatus
 from openzyme_domain.control_plane import utc_now_iso
 
 from .deep_research_contracts import EvidenceSynthesisItem
@@ -133,33 +123,135 @@ class NormalizedResearchDossier:
 class ResearchStartResult:
     invocation: EngineInvocation
     dossier: NormalizedResearchDossier
-    artifact_refs: tuple[SessionArtifactRecord, ...] = ()
-
-
-def _artifact_ref_payload(artifact: SessionArtifactRecord) -> dict[str, Any]:
-    return {
-        "artifact_id": artifact.artifact_id,
-        "kind": artifact.kind.value,
-        "title": artifact.title,
-        "description": artifact.description,
-        "relative_path": artifact.relative_path,
-        "task_id": artifact.task_id,
-        "lane_id": artifact.lane_id,
-        "invocation_id": artifact.invocation_id,
-        "metadata": {} if artifact.metadata is None else dict(artifact.metadata),
-    }
 
 
 def _tool_payload(
     invocation: EngineInvocation,
     dossier: NormalizedResearchDossier,
-    artifact_refs: tuple[SessionArtifactRecord, ...],
+    *,
+    workspace_files: tuple[dict[str, object], ...],
 ) -> dict[str, Any]:
-    payload = dossier.to_dict()
-    payload["invocation_id"] = invocation.invocation_id
-    payload["engine_status"] = invocation.status.value
-    payload["artifact_refs"] = [_artifact_ref_payload(artifact) for artifact in artifact_refs]
-    return payload
+    return {
+        "schema_version": "deep_research_workspace_result@1",
+        "invocation_id": invocation.invocation_id,
+        "engine_status": invocation.status.value,
+        "research_status": dossier.status,
+        "completion_reason": dossier.completion_reason,
+        "summary": dossier.summary[:2048],
+        "evidence_count": len(dossier.evidence_items),
+        "source_ref_count": len(dossier.source_refs),
+        "gap_count": len(dossier.unresolved_gaps),
+        "workspace_files": list(workspace_files),
+        "publication_required_for_handoff": True,
+        "artifact_alias_created": False,
+        "engine_document_body_created": False,
+    }
+
+
+def _write_research_workspace_files(
+    runtime_context: Any,
+    result: ResearchStartResult,
+) -> tuple[dict[str, object], ...]:
+    dossier = result.dossier
+    root = f"research/{result.invocation.invocation_id}"
+    file_payloads: tuple[tuple[str, dict[str, Any]], ...] = (
+        (
+            "source-snapshots.json",
+            {
+                "schema_version": "research_source_snapshots@1",
+                "sources": [dict(item) for item in dossier.source_refs],
+            },
+        ),
+        (
+            "citations.json",
+            {
+                "schema_version": "research_citations@1",
+                "citations": [
+                    {
+                        "source_index": index,
+                        "title": item.get("title"),
+                        "doi": item.get("doi"),
+                        "pmid": item.get("pmid"),
+                    }
+                    for index, item in enumerate(dossier.source_refs)
+                ],
+            },
+        ),
+        (
+            "notes.json",
+            {
+                "schema_version": "research_notes@1",
+                "raw_notes": list(dossier.raw_notes),
+                "recent_turns": [dict(item) for item in dossier.recent_turns],
+            },
+        ),
+        (
+            "analysis.json",
+            {
+                "schema_version": "research_analysis@1",
+                "status": dossier.status,
+                "completion_reason": dossier.completion_reason,
+                "research_brief": dossier.research_brief,
+                "summary": dossier.summary,
+                "evidence_items": [item.to_dict() for item in dossier.evidence_items],
+                "unresolved_gaps": list(dossier.unresolved_gaps),
+                "clarification_question": dossier.clarification_question,
+            },
+        ),
+        (
+            "dossier.json",
+            {
+                "schema_version": "research_dossier_manifest@1",
+                "invocation_id": result.invocation.invocation_id,
+                "files": [
+                    "source-snapshots.json",
+                    "citations.json",
+                    "notes.json",
+                    "analysis.json",
+                ],
+                "source_count": len(dossier.source_refs),
+                "evidence_count": len(dossier.evidence_items),
+                "gap_count": len(dossier.unresolved_gaps),
+            },
+        ),
+    )
+    written = tuple(
+        runtime_context.write_workspace_json(
+            repository_path=f"{root}/{filename}",
+            payload=payload,
+        )
+        for filename, payload in file_payloads
+    )
+    runtime_context.emit(
+        "research.workspace_files_written",
+        {
+            "invocation_id": result.invocation.invocation_id,
+            "files": list(written),
+            "publication_required": True,
+        },
+    )
+    return written
+
+
+def _persist_research_workspace_files(
+    engine: "DeepResearchEngine",
+    runtime_context: Any,
+    result: ResearchStartResult,
+) -> tuple[ResearchStartResult, tuple[dict[str, object], ...]]:
+    try:
+        workspace_files = _write_research_workspace_files(runtime_context, result)
+    except Exception as exc:
+        if result.invocation.status is EngineInvocationStatus.RUNNING:
+            engine.fail_workspace_persistence(result.invocation)
+        raise DeepResearchRuntimeError(
+            "deep research workspace file persistence failed"
+        ) from exc
+    if result.invocation.status is EngineInvocationStatus.RUNNING:
+        result = ResearchStartResult(
+            invocation=engine.complete_workspace_persistence(result.invocation),
+            dossier=result.dossier,
+        )
+    return result, workspace_files
 
 
 class DeepResearchRunner(Protocol):
@@ -176,6 +268,8 @@ class DeepResearchRunner(Protocol):
 
 class DeepResearchRuntimeError(RuntimeError):
     """Raised when deep research infrastructure/model/provider execution fails."""
+
+    error_code = "deep_research_workspace_integrity_error"
 
 
 @dataclass(slots=True)
@@ -332,7 +426,7 @@ class DeepResearchEngine:
             requires_approval=False,
             supports_background=True,
             idempotency_key_shape="{task_id}:deep_research:{nonce}",
-            produces_artifact_types=("research_dossier",),
+            produces_artifact_types=(),
             capability_key="deep_research",
         )
 
@@ -348,7 +442,10 @@ class DeepResearchEngine:
         invocation_id: str | None = None,
         lane_id: str | None = None,
         idempotency_key: str | None = None,
+        defer_success_until_workspace_persisted: bool = True,
     ) -> ResearchStartResult:
+        if len(brief.encode("utf-8")) > 8_192:
+            raise ValueError("deep research brief exceeds 8192 bytes")
         session = self._require_session(session_id)
         task = self._require_task(session_id, task_id)
         effective_lane_id = task.lane_id if lane_id is None else lane_id
@@ -384,9 +481,24 @@ class DeepResearchEngine:
             "engine.invocation.started",
             {"invocation_id": invocation_id, "engine_name": self.descriptor.engine_name, "task_id": task_id},
         )
-        return self._execute(session=session, task=task, invocation=invocation)
+        return self._execute(
+            session=session,
+            task=task,
+            invocation=invocation,
+            defer_success_until_workspace_persisted=(
+                defer_success_until_workspace_persisted
+            ),
+        )
 
-    def resume_research(self, *, invocation_id: str, resolution: str) -> ResearchStartResult:
+    def resume_research(
+        self,
+        *,
+        invocation_id: str,
+        resolution: str,
+        defer_success_until_workspace_persisted: bool = True,
+    ) -> ResearchStartResult:
+        if len(resolution.encode("utf-8")) > 8_192:
+            raise ValueError("deep research resolution exceeds 8192 bytes")
         invocation = self._require_invocation(invocation_id)
         session = self._require_session(invocation.session_id)
         task = self._require_task(invocation.session_id, str(invocation.task_id))
@@ -425,31 +537,38 @@ class DeepResearchEngine:
             "engine.invocation.updated",
             {"invocation_id": invocation.invocation_id, "engine_name": invocation.engine_name, "status": "running"},
         )
-        return self._execute(session=session, task=task, invocation=running_invocation)
+        return self._execute(
+            session=session,
+            task=task,
+            invocation=running_invocation,
+            defer_success_until_workspace_persisted=(
+                defer_success_until_workspace_persisted
+            ),
+        )
 
     def get_research_status(self, invocation_id: str) -> dict[str, Any]:
         invocation = self._require_invocation(invocation_id)
         payload = invocation.to_dict()
         payload["engine_status"] = invocation.status.value
-        payload["artifact_refs"] = [
-            _artifact_ref_payload(artifact)
-            for artifact in self._artifact_refs_for_invocation(
-                invocation.session_id, invocation_id
-            )
+        root = f"research/{invocation.invocation_id}"
+        payload["workspace_layout"] = [
+            f"{root}/source-snapshots.json",
+            f"{root}/citations.json",
+            f"{root}/notes.json",
+            f"{root}/analysis.json",
+            f"{root}/dossier.json",
         ]
-        summary = self.repositories.research_summaries.get_by_invocation(invocation.session_id, invocation_id)
-        if summary is not None:
-            payload["canonical_summary"] = summary.to_dict()
+        payload["artifact_alias_created"] = False
+        payload["persistent_content_authority"] = "workspace_file_then_publication"
+        payload["legacy_research_content_read"] = False
         return payload
 
     def get_research_dossier(self, invocation_id: str) -> NormalizedResearchDossier:
-        invocation = self._require_invocation(invocation_id)
-        if invocation.output_ref is None:
-            raise ValueError(f"invocation {invocation_id!r} does not have an output dossier yet")
-        document = self.repositories.engine_documents.get(invocation.output_ref)
-        if document is None:
-            raise ValueError(f"output document {invocation.output_ref!r} does not exist")
-        return self._dossier_from_payload(document.payload)
+        self._require_invocation(invocation_id)
+        raise ValueError(
+            "research dossier bytes are not stored in EngineDocument; inspect the "
+            "producer workspace file or an exact published RevisionPathRef@1"
+        )
 
     def _execute(
         self,
@@ -457,6 +576,7 @@ class DeepResearchEngine:
         session: Any,
         task: Any,
         invocation: EngineInvocation,
+        defer_success_until_workspace_persisted: bool,
     ) -> ResearchStartResult:
         input_payload = self._require_input_payload(invocation)
         research_brief = str(input_payload["brief"])
@@ -470,6 +590,11 @@ class DeepResearchEngine:
                 resolution=resolution,
             )
             dossier = NormalizedResearchDossier.from_runner_payload(runner_output)
+            if dossier.artifacts:
+                raise ValueError(
+                    "deep research runner returned artifact-era file manifests; "
+                    "provider files must be written directly into the researcher workspace"
+                )
         except Exception as exc:
             failure_dossier = _runtime_failure_dossier(
                 research_brief=research_brief,
@@ -503,6 +628,9 @@ class DeepResearchEngine:
             task=task,
             invocation=invocation,
             dossier=dossier,
+            defer_until_workspace_persisted=(
+                defer_success_until_workspace_persisted
+            ),
         )
 
     def _is_controlled_domain_failure(self, dossier: NormalizedResearchDossier) -> bool:
@@ -523,71 +651,86 @@ class DeepResearchEngine:
         task: Any,
         invocation: EngineInvocation,
         dossier: NormalizedResearchDossier,
+        defer_until_workspace_persisted: bool,
     ) -> ResearchStartResult:
-        now = utc_now_iso()
-        output_id = _new_document_id("eng_out")
-        self.repositories.engine_documents.save(
-            self._document_record(
-                document_id=output_id,
-                session_id=session.session_id,
-                invocation_id=invocation.invocation_id,
-                document_kind="deep_research_dossier",
-                payload=dossier.to_dict(),
-                created_at=now,
-                updated_at=now,
+        if defer_until_workspace_persisted:
+            return ResearchStartResult(invocation=invocation, dossier=dossier)
+        return ResearchStartResult(
+            invocation=self.complete_workspace_persistence(invocation),
+            dossier=dossier,
+        )
+
+    def complete_workspace_persistence(
+        self,
+        invocation: EngineInvocation,
+    ) -> EngineInvocation:
+        current = self._require_invocation(invocation.invocation_id)
+        if current != invocation or current.status is not EngineInvocationStatus.RUNNING:
+            raise DeepResearchRuntimeError(
+                "deep research invocation changed before workspace persistence completed"
             )
-        )
-        self._rewrite_canonical_research(
-            invocation=invocation,
-            dossier=dossier,
-            updated_at=now,
-        )
-        artifact_refs = self._persist_artifacts(
-            session_id=session.session_id,
-            task_id=task.task_id,
-            lane_id=invocation.lane_id,
-            invocation_id=invocation.invocation_id,
-            output_ref=output_id,
-            dossier=dossier,
-            created_at=now,
-        )
+        now = utc_now_iso()
         updated_invocation = EngineInvocation(
-            invocation_id=invocation.invocation_id,
-            session_id=invocation.session_id,
-            task_id=invocation.task_id,
-            lane_id=invocation.lane_id,
-            engine_name=invocation.engine_name,
+            invocation_id=current.invocation_id,
+            session_id=current.session_id,
+            task_id=current.task_id,
+            lane_id=current.lane_id,
+            engine_name=current.engine_name,
             status=EngineInvocationStatus.SUCCEEDED,
-            input_ref=invocation.input_ref,
-            output_ref=output_id,
-            approval_id=invocation.approval_id,
-            idempotency_key=invocation.idempotency_key,
-            started_at=invocation.started_at,
+            input_ref=current.input_ref,
+            output_ref=None,
+            approval_id=current.approval_id,
+            idempotency_key=current.idempotency_key,
+            started_at=current.started_at,
             finished_at=now,
         )
         self.repositories.invocations.save(updated_invocation)
-        self.repositories.memory.save(
-            MemoryEntry(
-                memory_id=f"mem_{uuid4().hex[:12]}",
-                session_id=session.session_id,
-                scope_kind=MemoryScopeKind.TASK,
-                scope_ref=task.task_id,
-                kind=MemoryKind.SUMMARY,
-                summary=dossier.summary,
-                source_range=f"engine:{invocation.invocation_id}",
-                importance=7,
-                created_at=now,
-            )
-        )
         self._emit(
             "engine.invocation.completed",
-            {"invocation_id": invocation.invocation_id, "engine_name": invocation.engine_name, "status": "succeeded"},
+            {
+                "invocation_id": current.invocation_id,
+                "engine_name": current.engine_name,
+                "status": "succeeded",
+                "workspace_files_persisted": True,
+            },
         )
-        return ResearchStartResult(
-            invocation=updated_invocation,
-            dossier=dossier,
-            artifact_refs=artifact_refs,
+        return updated_invocation
+
+    def fail_workspace_persistence(
+        self,
+        invocation: EngineInvocation,
+    ) -> EngineInvocation:
+        current = self._require_invocation(invocation.invocation_id)
+        if current != invocation or current.status is not EngineInvocationStatus.RUNNING:
+            raise DeepResearchRuntimeError(
+                "deep research invocation changed before workspace persistence failed"
+            )
+        now = utc_now_iso()
+        failed_invocation = EngineInvocation(
+            invocation_id=current.invocation_id,
+            session_id=current.session_id,
+            task_id=current.task_id,
+            lane_id=current.lane_id,
+            engine_name=current.engine_name,
+            status=EngineInvocationStatus.FAILED,
+            input_ref=current.input_ref,
+            output_ref=None,
+            approval_id=current.approval_id,
+            idempotency_key=current.idempotency_key,
+            started_at=current.started_at,
+            finished_at=now,
         )
+        self.repositories.invocations.save(failed_invocation)
+        self._emit(
+            "engine.invocation.completed",
+            {
+                "invocation_id": current.invocation_id,
+                "engine_name": current.engine_name,
+                "status": "failed",
+                "error_code": "workspace_file_persistence_failed",
+            },
+        )
+        return failed_invocation
 
     def _complete_failure(
         self,
@@ -598,32 +741,6 @@ class DeepResearchEngine:
         dossier: NormalizedResearchDossier,
     ) -> ResearchStartResult:
         now = utc_now_iso()
-        output_id = _new_document_id("eng_out")
-        self.repositories.engine_documents.save(
-            self._document_record(
-                document_id=output_id,
-                session_id=session.session_id,
-                invocation_id=invocation.invocation_id,
-                document_kind="deep_research_dossier",
-                payload=dossier.to_dict(),
-                created_at=now,
-                updated_at=now,
-            )
-        )
-        self._rewrite_canonical_research(
-            invocation=invocation,
-            dossier=dossier,
-            updated_at=now,
-        )
-        artifact_refs = self._persist_artifacts(
-            session_id=session.session_id,
-            task_id=task.task_id,
-            lane_id=invocation.lane_id,
-            invocation_id=invocation.invocation_id,
-            output_ref=output_id,
-            dossier=dossier,
-            created_at=now,
-        )
         failed_invocation = EngineInvocation(
             invocation_id=invocation.invocation_id,
             session_id=invocation.session_id,
@@ -632,7 +749,7 @@ class DeepResearchEngine:
             engine_name=invocation.engine_name,
             status=EngineInvocationStatus.FAILED,
             input_ref=invocation.input_ref,
-            output_ref=output_id,
+            output_ref=None,
             approval_id=invocation.approval_id,
             idempotency_key=invocation.idempotency_key,
             started_at=invocation.started_at,
@@ -646,185 +763,7 @@ class DeepResearchEngine:
         return ResearchStartResult(
             invocation=failed_invocation,
             dossier=dossier,
-            artifact_refs=artifact_refs,
         )
-
-    def _rewrite_canonical_research(
-        self,
-        *,
-        invocation: EngineInvocation,
-        dossier: NormalizedResearchDossier,
-        updated_at: str,
-    ) -> None:
-        session_id = invocation.session_id
-        summary_id = f"{invocation.invocation_id}:summary"
-        self.repositories.research_source_refs.delete_by_invocation(session_id, invocation.invocation_id)
-        self.repositories.research_evidence.delete_by_invocation(session_id, invocation.invocation_id)
-        self.repositories.research_gaps.delete_by_invocation(session_id, invocation.invocation_id)
-        summary_status = {
-            "completed": ResearchSummaryStatus.COMPLETED,
-            "partial": ResearchSummaryStatus.PARTIAL,
-            "needs_clarification": ResearchSummaryStatus.NEEDS_CLARIFICATION,
-            "failed": ResearchSummaryStatus.FAILED,
-        }[dossier.status]
-        existing = self.repositories.research_summaries.get_by_invocation(session_id, invocation.invocation_id)
-        created_at = updated_at if existing is None else existing.created_at
-        self.repositories.research_summaries.save(
-            ResearchSummary(
-                summary_id=summary_id,
-                session_id=session_id,
-                task_id=invocation.task_id,
-                lane_id=invocation.lane_id,
-                invocation_id=invocation.invocation_id,
-                status=summary_status,
-                completion_reason=dossier.completion_reason,
-                research_brief=dossier.research_brief,
-                summary=dossier.summary,
-                clarification_question=dossier.clarification_question,
-                created_at=created_at,
-                updated_at=updated_at,
-            )
-        )
-        self._emit(
-            "research.summary.updated",
-            {"invocation_id": invocation.invocation_id, "summary_id": summary_id, "status": summary_status.value},
-        )
-        for evidence_index, evidence_item in enumerate(dossier.evidence_items, start=1):
-            evidence_id = f"{invocation.invocation_id}:evidence:{evidence_index}"
-            self.repositories.research_evidence.save(
-                ResearchEvidence(
-                    evidence_id=evidence_id,
-                    session_id=session_id,
-                    task_id=invocation.task_id,
-                    lane_id=invocation.lane_id,
-                    invocation_id=invocation.invocation_id,
-                    summary_id=summary_id,
-                    summary=evidence_item.summary,
-                    query=evidence_item.query,
-                    confidence_label=evidence_item.confidence_label,
-                    created_at=updated_at,
-                )
-            )
-            self._emit(
-                "research.evidence.recorded",
-                {"invocation_id": invocation.invocation_id, "evidence_id": evidence_id},
-            )
-            for source_index, source in enumerate(evidence_item.sources, start=1):
-                self.repositories.research_source_refs.save(
-                    ResearchSourceRef(
-                        source_ref_id=f"{evidence_id}:source:{source_index}",
-                        session_id=session_id,
-                        task_id=invocation.task_id,
-                        lane_id=invocation.lane_id,
-                        invocation_id=invocation.invocation_id,
-                        evidence_id=evidence_id,
-                        title=str(source["title"]),
-                        locator=str(source["locator"]),
-                        kind=SourceRefKind(str(source["kind"])),
-                        snippet=None if source.get("snippet") is None else str(source["snippet"]),
-                        created_at=updated_at,
-                    )
-                )
-        for gap_index, gap in enumerate(dossier.unresolved_gaps, start=1):
-            self.repositories.research_gaps.save(
-                ResearchGap(
-                    gap_id=f"{invocation.invocation_id}:gap:{gap_index}",
-                    session_id=session_id,
-                    task_id=invocation.task_id,
-                    lane_id=invocation.lane_id,
-                    invocation_id=invocation.invocation_id,
-                    summary_id=summary_id,
-                    summary=gap,
-                    created_at=updated_at,
-                )
-            )
-
-    def _persist_artifacts(
-        self,
-        *,
-        session_id: str,
-        task_id: str | None,
-        lane_id: str | None,
-        invocation_id: str,
-        output_ref: str,
-        dossier: NormalizedResearchDossier,
-        created_at: str,
-    ) -> tuple[SessionArtifactRecord, ...]:
-        from pathlib import PurePosixPath
-
-        persisted: list[SessionArtifactRecord] = []
-        dossier_artifact = SessionArtifactRecord(
-            artifact_id=f"{invocation_id}:dossier",
-            session_id=session_id,
-            task_id=task_id,
-            lane_id=lane_id,
-            invocation_id=invocation_id,
-            run_id=None,
-            kind=ArtifactKind.RESEARCH_DOSSIER,
-            storage_uri=f"engine-document://{output_ref}",
-            relative_path=f"deep-research/{invocation_id}/dossier.json",
-            title="Deep research dossier",
-            description="Normalized deep research dossier output.",
-            metadata={
-                "output_ref": output_ref,
-                "status": dossier.status,
-                "completion_reason": dossier.completion_reason,
-                "evidence_count": len(dossier.evidence_items),
-                "source_ref_count": len(dossier.source_refs),
-                "gap_count": len(dossier.unresolved_gaps),
-                "produced_by": "deep_research",
-            },
-            created_at=created_at,
-        )
-        self.repositories.artifacts.save(dossier_artifact)
-        persisted.append(dossier_artifact)
-        for index, item in enumerate(dossier.artifacts, start=1):
-            filename = str(item.get("filename") or f"artifact_{index}")
-            title = str(item.get("title") or PurePosixPath(filename).name)
-            artifact = SessionArtifactRecord(
-                artifact_id=f"{invocation_id}:artifact:{index}",
-                session_id=session_id,
-                task_id=task_id,
-                lane_id=lane_id,
-                invocation_id=invocation_id,
-                run_id=None,
-                kind=ArtifactKind(str(item.get("kind") or "other")),
-                storage_uri=str(item.get("storage_uri") or item.get("source_locator") or f"research://{filename}"),
-                relative_path=filename,
-                title=title,
-                description=None if item.get("description") is None else str(item.get("description")),
-                metadata={
-                    "provider": item.get("provider"),
-                    "external_id": item.get("external_id"),
-                    "format": item.get("format"),
-                    "source_locator": item.get("source_locator"),
-                    "produced_by": "deep_research",
-                    **({} if item.get("metadata") is None else dict(item.get("metadata"))),
-                },
-                created_at=created_at,
-            )
-            self.repositories.artifacts.save(artifact)
-            persisted.append(artifact)
-        return tuple(persisted)
-
-    def _artifact_refs_for_invocation(
-        self, session_id: str, invocation_id: str
-    ) -> tuple[SessionArtifactRecord, ...]:
-        artifacts = self.repositories.artifacts.list_by_invocation(session_id, invocation_id)
-
-        def sort_key(artifact: SessionArtifactRecord) -> tuple[int, int, str]:
-            if artifact.artifact_id == f"{invocation_id}:dossier":
-                return (0, 0, artifact.artifact_id)
-            prefix = f"{invocation_id}:artifact:"
-            if artifact.artifact_id.startswith(prefix):
-                try:
-                    index = int(artifact.artifact_id.removeprefix(prefix))
-                except ValueError:
-                    index = 0
-                return (1, index, artifact.artifact_id)
-            return (2, 0, artifact.artifact_id)
-
-        return tuple(sorted(artifacts, key=sort_key))
 
     def _require_session(self, session_id: str) -> Any:
         session = self.repositories.sessions.get(session_id)
@@ -875,29 +814,6 @@ class DeepResearchEngine:
             updated_at=updated_at,
         )
 
-    def _dossier_from_payload(self, payload: dict[str, Any]) -> NormalizedResearchDossier:
-        return NormalizedResearchDossier(
-            status=str(payload["status"]),
-            completion_reason=str(payload["completion_reason"]),
-            research_brief=str(payload["research_brief"]),
-            summary=str(payload["summary"]),
-            evidence_items=tuple(
-                ResearchEvidenceItem(
-                    summary=str(item["summary"]),
-                    query=str(item["query"]),
-                    confidence_label=None if item.get("confidence_label") is None else str(item["confidence_label"]),
-                    sources=tuple(dict(source) for source in item.get("sources", [])),
-                )
-                for item in payload.get("evidence_items", [])
-            ),
-            source_refs=tuple(dict(source) for source in payload.get("source_refs", [])),
-            unresolved_gaps=tuple(str(gap) for gap in payload.get("unresolved_gaps", [])),
-            artifacts=tuple(dict(item) for item in payload.get("artifacts", [])),
-            raw_notes=tuple(str(note) for note in payload.get("raw_notes", [])),
-            clarification_question=payload.get("clarification_question"),
-            recent_turns=tuple(dict(turn) for turn in payload.get("recent_turns", [])),
-        )
-
     def _emit(self, event_type: str, payload: dict[str, Any]) -> None:
         if self.event_emitter is not None:
             self.event_emitter(event_type, payload)
@@ -938,7 +854,7 @@ def _deep_research_start_spec() -> ToolSpec:
             "type": "object",
             "properties": {
                 "task_id": {"type": "string"},
-                "brief": {"type": "string"},
+                "brief": {"type": "string", "maxLength": 8192},
             },
             "required": ["task_id", "brief"],
             "additionalProperties": False,
@@ -954,7 +870,7 @@ def _deep_research_resume_spec() -> ToolSpec:
             "type": "object",
             "properties": {
                 "invocation_id": {"type": "string"},
-                "resolution": {"type": "string"},
+                "resolution": {"type": "string", "maxLength": 8192},
             },
             "required": ["invocation_id", "resolution"],
             "additionalProperties": False,
@@ -978,7 +894,10 @@ def _deep_research_status_spec() -> ToolSpec:
 def _deep_research_dossier_spec() -> ToolSpec:
     return ToolSpec(
         tool_name="deep_research.dossier",
-        description="Read the current dossier output for a deep research invocation.",
+        description=(
+            "Locate the dossier in the current private Git workspace without "
+            "returning dossier bytes; publish an exact revision before handoff."
+        ),
         input_schema={
             "type": "object",
             "properties": {"invocation_id": {"type": "string"}},
@@ -1035,13 +954,23 @@ class DeepResearchStartRuntime:
             invocation_id=None,
             lane_id=invocation.lane_id,
             idempotency_key=None,
+            defer_success_until_workspace_persisted=True,
+        )
+        result, workspace_files = _persist_research_workspace_files(
+            self.engine,
+            runtime_context,
+            result,
         )
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
             ok=result.invocation.status is EngineInvocationStatus.SUCCEEDED,
             content=json.dumps(
-                _tool_payload(result.invocation, result.dossier, result.artifact_refs),
+                _tool_payload(
+                    result.invocation,
+                    result.dossier,
+                    workspace_files=workspace_files,
+                ),
                 sort_keys=True,
             ),
             task_id=result.invocation.task_id,
@@ -1088,17 +1017,27 @@ class DeepResearchResumeRuntime:
         invocation: ToolInvocation,
         runtime_context: Any,
     ) -> ToolResult:
-        del step_context, runtime_context
+        del step_context
         result = self.engine.resume_research(
             invocation_id=str(invocation.arguments["invocation_id"]),
             resolution=str(invocation.arguments["resolution"]),
+            defer_success_until_workspace_persisted=True,
+        )
+        result, workspace_files = _persist_research_workspace_files(
+            self.engine,
+            runtime_context,
+            result,
         )
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
             ok=result.invocation.status is EngineInvocationStatus.SUCCEEDED,
             content=json.dumps(
-                _tool_payload(result.invocation, result.dossier, result.artifact_refs),
+                _tool_payload(
+                    result.invocation,
+                    result.dossier,
+                    workspace_files=workspace_files,
+                ),
                 sort_keys=True,
             ),
             task_id=result.invocation.task_id,
@@ -1194,19 +1133,23 @@ class DeepResearchDossierRuntime:
         invocation: ToolInvocation,
         runtime_context: Any,
     ) -> ToolResult:
-        del step_context, runtime_context
+        del step_context
         invocation_id = str(invocation.arguments["invocation_id"])
         engine_invocation = self.engine._require_invocation(invocation_id)
-        dossier = self.engine.get_research_dossier(invocation_id)
-        artifact_refs = self.engine._artifact_refs_for_invocation(
-            engine_invocation.session_id, invocation_id
-        )
+        status = self.engine.get_research_status(invocation_id)
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
             ok=True,
             content=json.dumps(
-                _tool_payload(engine_invocation, dossier, artifact_refs),
+                {
+                    "schema_version": "deep_research_workspace_lookup@1",
+                    "invocation_id": engine_invocation.invocation_id,
+                    "engine_status": engine_invocation.status.value,
+                    "workspace_layout": status["workspace_layout"],
+                    "content_bytes_in_control_plane": False,
+                    "publication_required_for_handoff": True,
+                },
                 sort_keys=True,
             ),
         )

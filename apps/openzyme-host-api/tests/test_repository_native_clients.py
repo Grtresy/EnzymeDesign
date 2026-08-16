@@ -226,6 +226,8 @@ def _repository_request(
     path: str,
     token: str,
     body: bytes | None = None,
+    extra_headers: dict[str, str] | None = None,
+    content_type: str = "application/octet-stream",
 ) -> tuple[int, bytes]:
     connection = http.client.HTTPSConnection(
         "localhost",
@@ -238,13 +240,53 @@ def _repository_request(
     headers = {"Authorization": f"Bearer {token}"}
     if body is not None:
         headers["Content-Length"] = str(len(body))
-        headers["Content-Type"] = "application/octet-stream"
+        headers["Content-Type"] = content_type
+    if extra_headers is not None:
+        headers.update(extra_headers)
     connection.request(method, path, body=body, headers=headers)
     response = connection.getresponse()
     payload = response.read()
     status = response.status
     connection.close()
     return status, payload
+
+
+def _reserve_lfs_upload(
+    fixture: RepositoryTestFixture,
+    *,
+    port: int,
+    token: str,
+    oid: str,
+    size: int,
+) -> dict[str, str]:
+    body = json.dumps(
+        {
+            "operation": "upload",
+            "transfers": ["basic"],
+            "hash_algo": "sha256",
+            "objects": [{"oid": oid, "size": size}],
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    status, payload = _repository_request(
+        fixture,
+        port=port,
+        method="POST",
+        path=(
+            f"/repositories/{fixture.binding.repository_id}.git/"
+            "info/lfs/objects/batch"
+        ),
+        token=token,
+        body=body,
+        content_type="application/vnd.git-lfs+json",
+    )
+    assert status == 200
+    action = json.loads(payload)["objects"][0]["actions"]["upload"]
+    return {
+        str(name): str(value)
+        for name, value in action["header"].items()
+        if name.lower() != "authorization"
+    }
 
 
 def _end_write_authority(
@@ -348,6 +390,13 @@ def test_native_issued_write_bearer_expires_with_namespace_authority(
 
         accepted_lfs_content = b"write authority open\n" * 1024
         accepted_lfs_oid = hashlib.sha256(accepted_lfs_content).hexdigest()
+        accepted_upload_headers = _reserve_lfs_upload(
+            fixture,
+            port=port,
+            token=token,
+            oid=accepted_lfs_oid,
+            size=len(accepted_lfs_content),
+        )
         accepted_status, _ = _repository_request(
             fixture,
             port=port,
@@ -355,6 +404,7 @@ def test_native_issued_write_bearer_expires_with_namespace_authority(
             path=f"{lfs_path}/{accepted_lfs_oid}",
             token=token,
             body=accepted_lfs_content,
+            extra_headers=accepted_upload_headers,
         )
         assert accepted_status == 200
 
@@ -463,8 +513,8 @@ def test_native_git_v2_acl_lfs_and_restart(tmp_path: Path) -> None:
     researcher_credential = issue_repository_credential(
         fixture,
         agent_member_id="agent:researcher",
+        role="researcher",
         workspace_generation=1,
-        lease_id="lease_repository_test_researcher",
     )
     executor_prefix = private_ref_prefix(
         fixture.binding,

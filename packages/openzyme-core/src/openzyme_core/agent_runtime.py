@@ -23,11 +23,17 @@ from openzyme_domain import InboxStatus
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
 from openzyme_domain import RetryEligibility
+from openzyme_domain import SessionRuntimeLease
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import classify_llm_provider_error
 from openzyme_runtime import sanitize_public_diagnostic_text
 from openzyme_runtime import record_failure_observation
 
+from .agent_capability_service import ActiveAgentCapabilityLeaseValidator
+from .agent_capability_service import AgentCapabilityError
+from .agent_capability_service import AgentCapabilityProvisioningRequiredError
+from .agent_capability_service import AgentRetirementRequestedError
+from .agent_git_workspace_recovery import AgentGitWorkspaceRecoveryError
 from .harness import HarnessInput
 from .harness import HarnessResult
 from .harness import HarnessStatus
@@ -44,6 +50,8 @@ from .scientific_attempt_lifecycle import ScientificAttemptLifecycleResolver
 from .runtime_wake_facts import CanonicalWakeFacts
 from .runtime_wake_facts import CanonicalWakeFactsError
 from .runtime_wake_facts import CanonicalWakeFactsProjector
+from .runtime_signal_occurrences import AgentRuntimeSignalOccurrenceService
+from .repositories import OwnershipError
 from .task_board import TaskBoardService
 from .teammate_roster import teammate_role_for_task_kind
 from .teammates import finalize_teammate_result
@@ -78,8 +86,7 @@ def _successful_host_transition_handoff(result: HarnessResult) -> bool:
     return any(
         tool_result.ok
         and tool_result.terminates_turn
-        and tool_result.terminal_action
-        in _HOST_FINALIZED_SCIENTIFIC_TRANSITION_ACTIONS
+        and tool_result.terminal_action in _HOST_FINALIZED_SCIENTIFIC_TRANSITION_ACTIONS
         for tool_result in result.tool_results
     )
 
@@ -192,51 +199,42 @@ class AgentRuntimeService:
         source_ref: str | None = None,
         notify: bool = True,
     ) -> AgentRuntimeSignal | None:
-        agent = self.context.repositories.agents.get(session_id, agent_id)
-        if agent is None:
-            return None
-        existing = self.context.repositories.runtime_signals.find_pending_duplicate(
-            session_id=session_id,
-            agent_id=agent_id,
-            reason=reason,
-            source_ref=source_ref,
-        )
-        if existing is not None:
-            if notify:
-                self._notify_signal(existing.session_id)
-            return existing
-        signal = AgentRuntimeSignal(
+        occurrence = AgentRuntimeSignalOccurrenceService(
+            self.context.repositories
+        ).enqueue(
             signal_id=_new_id("sig"),
             session_id=session_id,
             agent_id=agent_id,
+            reason=reason,
             task_id=task_id,
             lane_id=lane_id,
             correlation_id=correlation_id,
-            reason=reason,
             source_ref=source_ref,
-            status=AgentRuntimeSignalStatus.PENDING,
             created_at=utc_now_iso(),
         )
-        self.context.repositories.runtime_signals.save(signal)
-        self.context.emit(
-            "signal.queued",
-            {
-                "signal_id": signal.signal_id,
-                "agent_id": signal.agent_id,
-                "reason": signal.reason.value,
-                "task_id": signal.task_id,
-                "lane_id": signal.lane_id,
-                "correlation_id": signal.correlation_id,
-                "source_ref": signal.source_ref,
-            },
-        )
+        signal = occurrence.signal
+        if occurrence.created:
+            self.context.emit(
+                "signal.queued",
+                {
+                    "signal_id": signal.signal_id,
+                    "agent_id": signal.agent_id,
+                    "reason": signal.reason.value,
+                    "task_id": signal.task_id,
+                    "lane_id": signal.lane_id,
+                    "correlation_id": signal.correlation_id,
+                    "source_ref": signal.source_ref,
+                    "capability_lease_id": signal.capability_lease_id,
+                    "workspace_generation": signal.workspace_generation,
+                },
+            )
         if notify:
             self._notify_signal(signal.session_id)
         return signal
 
     def _notify_signal(self, session_id: str) -> None:
         notifier = self.context.signal_notifier
-        if notifier is not None and hasattr(notifier, "notify"):
+        if notifier is not None:
             notifier.notify(session_id)
 
     def auto_enqueue_ready_tasks(
@@ -285,21 +283,69 @@ class AgentRuntimeService:
         self, signal: AgentRuntimeSignal, *, max_steps: int = 8
     ) -> AgentRuntimeOutcome:
         now = utc_now_iso()
-        if signal.status is AgentRuntimeSignalStatus.CLAIMED:
-            claimed = signal
-        else:
-            claimed = self.context.repositories.runtime_signals.claim_next(
-                session_id=signal.session_id,
-                claimed_by="runtime:wake_agent",
-                lease_seconds=300,
-                signal_ids={signal.signal_id},
-                **self._signal_lease_claim_kwargs(),
+        canonical = self.context.repositories.runtime_signals.get(signal.signal_id)
+        if canonical is None:
+            return AgentRuntimeOutcome(
+                signal=signal,
+                task=None,
+                agent=None,
+                ok=False,
+                summary="canonical runtime signal does not exist",
+                teammate_status="runtime_signal_not_found",
             )
+        session_lease = self._active_session_runtime_lease(canonical)
+        if canonical.status is AgentRuntimeSignalStatus.CLAIMED:
+            owns_claim = session_lease is not None and (
+                canonical.session_lease_token,
+                canonical.session_fencing_token,
+            ) == (
+                session_lease.lease_token,
+                session_lease.fencing_token,
+            )
+            capability_rejection = self._capability_turn_gate(
+                canonical,
+                settle_claimed=owns_claim,
+            )
+            if capability_rejection is not None:
+                return capability_rejection
+            if not owns_claim:
+                return self._runtime_lease_blocker(canonical)
+            claimed = canonical
+        else:
+            capability_rejection = self._capability_turn_gate(
+                canonical,
+                settle_claimed=False,
+            )
+            if capability_rejection is not None:
+                return capability_rejection
+            if session_lease is None:
+                return self._runtime_lease_blocker(canonical)
+            try:
+                claimed = self.context.repositories.runtime_signals.claim_next(
+                    session_id=canonical.session_id,
+                    claimed_by="runtime:wake_agent",
+                    session_lease_token=session_lease.lease_token,
+                    session_fencing_token=session_lease.fencing_token,
+                    lease_seconds=300,
+                    signal_ids={canonical.signal_id},
+                )
+            except OwnershipError:
+                current = (
+                    self.context.repositories.runtime_signals.get(canonical.signal_id)
+                    or canonical
+                )
+                return self._runtime_lease_blocker(current)
             if claimed is None:
                 current = (
-                    self.context.repositories.runtime_signals.get(signal.signal_id)
-                    or signal
+                    self.context.repositories.runtime_signals.get(canonical.signal_id)
+                    or canonical
                 )
+                capability_rejection = self._capability_turn_gate(
+                    current,
+                    settle_claimed=False,
+                )
+                if capability_rejection is not None:
+                    return capability_rejection
                 return AgentRuntimeOutcome(
                     signal=current,
                     task=None,
@@ -308,6 +354,26 @@ class AgentRuntimeService:
                     summary="signal is not claimable",
                     teammate_status="signal_not_claimable",
                 )
+            claimed = (
+                self.context.repositories.runtime_signals.get(claimed.signal_id)
+                or claimed
+            )
+            if claimed.status is not AgentRuntimeSignalStatus.CLAIMED:
+                return AgentRuntimeOutcome(
+                    signal=claimed,
+                    task=None,
+                    agent=None,
+                    ok=False,
+                    summary="canonical runtime signal is no longer claimed",
+                    teammate_status="signal_not_claimable",
+                )
+            capability_rejection = self._capability_turn_gate(
+                claimed,
+                settle_claimed=True,
+            )
+            if capability_rejection is not None:
+                return capability_rejection
+        signal = claimed
         self.context.emit(
             "signal.claimed",
             {
@@ -324,6 +390,9 @@ class AgentRuntimeService:
                 claimed,
                 error_message="agent not found",
             )
+            retirement_rejection = self._retirement_requested_outcome(failed)
+            if retirement_rejection is not None:
+                return retirement_rejection
             return AgentRuntimeOutcome(
                 signal=failed,
                 task=None,
@@ -331,6 +400,12 @@ class AgentRuntimeService:
                 ok=False,
                 summary="agent not found",
             )
+        workspace_restore_rejection = self._workspace_restore_turn_gate(
+            claimed,
+            agent,
+        )
+        if workspace_restore_rejection is not None:
+            return workspace_restore_rejection
         wake_facts, wake_facts_rejection = self._canonical_wake_facts_preflight(
             claimed,
             agent,
@@ -365,6 +440,9 @@ class AgentRuntimeService:
                 claimed,
                 error_message=summary,
             )
+            retirement_rejection = self._retirement_requested_outcome(failed)
+            if retirement_rejection is not None:
+                return retirement_rejection
             agent = self._update_agent(
                 agent,
                 status=AgentMemberStatus.IDLE,
@@ -462,27 +540,6 @@ class AgentRuntimeService:
             wakeup_reason=signal.reason.value,
         )
         _require_consistent_harness_approval_wait(result)
-        summary, final_status = finalize_teammate_result(
-            self.context,
-            agent_id=agent.agent_id,
-            task_id=task.task_id,
-            correlation_id=correlation_id,
-            result=result,
-        )
-        if result.status is HarnessStatus.WAITING_APPROVAL:
-            assert result.pending_approval_id is not None
-            if not self._pending_approval_is_durable_continuation_owned(
-                session_id=agent.session_id,
-                task_id=task.task_id,
-                approval_id=result.pending_approval_id,
-            ):
-                task = service.block_for_approval(task.task_id)
-            ok = True
-        elif final_status in {AgentMemberStatus.IDLE, AgentMemberStatus.BLOCKED}:
-            ok = True
-        else:
-            ok = False
-
         budget_observation = (
             self._budget_exhaustion_observation(
                 claimed,
@@ -498,6 +555,35 @@ class AgentRuntimeService:
         with self.context.repositories.atomic(
             prefix="agent_runtime_outcome_settlement"
         ):
+            post_turn_capability_rejection = self._capability_turn_gate(
+                claimed,
+                settle_claimed=True,
+            )
+            if post_turn_capability_rejection is not None:
+                return post_turn_capability_rejection
+            summary, final_status = finalize_teammate_result(
+                self.context,
+                agent_id=agent.agent_id,
+                task_id=task.task_id,
+                correlation_id=correlation_id,
+                result=result,
+            )
+            if result.status is HarnessStatus.WAITING_APPROVAL:
+                assert result.pending_approval_id is not None
+                if not self._pending_approval_is_durable_continuation_owned(
+                    session_id=agent.session_id,
+                    task_id=task.task_id,
+                    approval_id=result.pending_approval_id,
+                ):
+                    task = service.block_for_approval(task.task_id)
+                ok = True
+            elif final_status in {
+                AgentMemberStatus.IDLE,
+                AgentMemberStatus.BLOCKED,
+            }:
+                ok = True
+            else:
+                ok = False
             if ok:
                 completed, signal_write_ok = self._complete_signal(claimed)
             else:
@@ -634,6 +720,192 @@ class AgentRuntimeService:
             outputs=tuple(result.outputs),
             waiting_approval_id=result.pending_approval_id,
             settlement=settlement,
+        )
+
+    def _active_session_runtime_lease(
+        self,
+        signal: AgentRuntimeSignal,
+    ) -> SessionRuntimeLease | None:
+        lease = self.context.session_runtime_lease
+        if lease is None or lease.session_id != signal.session_id:
+            return None
+        if not self.context.repositories.session_runtime_leases.is_active(
+            session_id=signal.session_id,
+            lease_token=lease.lease_token,
+            fencing_token=lease.fencing_token,
+        ):
+            return None
+        return lease
+
+    def _runtime_lease_blocker(
+        self,
+        signal: AgentRuntimeSignal,
+    ) -> AgentRuntimeOutcome:
+        return AgentRuntimeOutcome(
+            signal=signal,
+            task=None,
+            agent=None,
+            ok=False,
+            summary="exact active session runtime lease is required",
+            teammate_status="session_runtime_lease_required",
+        )
+
+    def _capability_turn_gate(
+        self,
+        signal: AgentRuntimeSignal,
+        *,
+        settle_claimed: bool,
+    ) -> AgentRuntimeOutcome | None:
+        try:
+            if (
+                signal.capability_lease_id is None
+                or signal.workspace_generation is None
+            ):
+                raise AgentCapabilityProvisioningRequiredError(
+                    "runtime signal has no exact capability occurrence binding"
+                )
+            ActiveAgentCapabilityLeaseValidator(
+                self.context.repositories
+            ).require_current_agent(
+                session_id=signal.session_id,
+                agent_id=signal.agent_id,
+                expected_lease_id=signal.capability_lease_id,
+                expected_workspace_generation=signal.workspace_generation,
+                service_id="agent_runtime",
+                protocol="bounded_turn",
+                operation_class="agent_runtime",
+            )
+        except AgentCapabilityError as exc:
+            rejected = signal
+            status = exc.error_code
+            if settle_claimed:
+                if isinstance(exc, AgentRetirementRequestedError):
+                    lease_kwargs = self._signal_lease_write_kwargs()
+                    lease_token = lease_kwargs.get("expected_session_lease_token")
+                    fencing_token = lease_kwargs.get(
+                        "expected_session_fencing_token"
+                    )
+                    failed = (
+                        None
+                        if lease_token is None or fencing_token is None
+                        else (
+                            self.context.repositories.runtime_signals
+                            .settle_retirement_requested(
+                                signal.signal_id,
+                                expected_session_lease_token=str(lease_token),
+                                expected_session_fencing_token=int(fencing_token),
+                            )
+                        )
+                    )
+                else:
+                    failed = self.context.repositories.runtime_signals.fail(
+                        signal.signal_id,
+                        error_message=exc.error_code,
+                        retryable=False,
+                        **self._signal_lease_write_kwargs(),
+                    )
+                if failed is None:
+                    rejected = (
+                        self.context.repositories.runtime_signals.get(signal.signal_id)
+                        or signal
+                    )
+                    status = "capability_gate_settlement_rejected"
+                else:
+                    rejected = failed
+            self.context.emit(
+                "runtime.capability_rejected",
+                {
+                    "signal_id": rejected.signal_id,
+                    "agent_id": rejected.agent_id,
+                    "error_code": exc.error_code,
+                    "settled": rejected.status.is_terminal,
+                },
+            )
+            return AgentRuntimeOutcome(
+                signal=rejected,
+                task=None,
+                agent=None,
+                ok=False,
+                summary=(
+                    "agent runtime is blocked pending exact capability provisioning"
+                    if exc.error_code == "provisioning_required"
+                    else "agent runtime capability occurrence was rejected"
+                ),
+                teammate_status=status,
+            )
+        return None
+
+    def _workspace_restore_turn_gate(
+        self,
+        signal: AgentRuntimeSignal,
+        agent: AgentMember,
+    ) -> AgentRuntimeOutcome | None:
+        assert signal.workspace_generation is not None
+        workspace = self.context.repositories.agent_git_workspaces.get_by_generation(
+            session_id=signal.session_id,
+            agent_member_id=agent.member_id,
+            workspace_generation=signal.workspace_generation,
+        )
+        recovery = self.context.agent_git_workspace_recovery_service
+        if workspace is None and recovery is None:
+            # Compatibility for pre-C3 test fixtures that have no Git workspace
+            # occurrence at all. A persisted C3 workspace never bypasses restore.
+            return None
+        error_code = "agent_git_workspace_restore_required"
+        if workspace is not None and recovery is not None:
+            try:
+                restored = recovery.restore(workspace.workspace_id)
+            except AgentGitWorkspaceRecoveryError:
+                restored = None
+            if restored is not None and restored.status.value == "ready":
+                return None
+            if restored is not None and restored.blocker_code is not None:
+                error_code = restored.blocker_code.value
+        failed, _, _ = self._fail_signal(
+            signal,
+            error_message=error_code,
+            retryable=False,
+        )
+        current_agent = self.context.repositories.agents.get(
+            agent.session_id,
+            agent.agent_id,
+        )
+        self.context.emit(
+            "runtime.workspace_restore_rejected",
+            {
+                "signal_id": failed.signal_id,
+                "agent_id": agent.agent_id,
+                "workspace_generation": signal.workspace_generation,
+                "error_code": error_code,
+            },
+        )
+        return AgentRuntimeOutcome(
+            signal=failed,
+            task=None,
+            agent=current_agent,
+            ok=False,
+            summary="agent Git workspace restore was rejected",
+            teammate_status=error_code,
+        )
+
+    @staticmethod
+    def _retirement_requested_outcome(
+        signal: AgentRuntimeSignal,
+        *,
+        task: Task | None = None,
+    ) -> AgentRuntimeOutcome | None:
+        if (
+            signal.status is not AgentRuntimeSignalStatus.FAILED
+            or signal.error_message != AgentRetirementRequestedError.error_code
+        ):
+            return None
+        return AgentRuntimeOutcome(
+            signal=signal,
+            task=task,
+            agent=None,
+            ok=False,
+            summary="agent runtime capability occurrence was rejected",
+            teammate_status=AgentRetirementRequestedError.error_code,
         )
 
     def _form_budget_replan_handoff_settlement(
@@ -774,9 +1046,7 @@ class AgentRuntimeService:
                 session_id=claimed.session_id,
                 message=None,
                 wake_instructions=(
-                    None
-                    if wake_facts is None
-                    else wake_facts.render_instructions()
+                    None if wake_facts is None else wake_facts.render_instructions()
                 ),
                 max_steps=max_steps,
                 restore_focus=RestoreFocus(
@@ -806,103 +1076,158 @@ class AgentRuntimeService:
             ),
             sandbox_workspace_root=self.context.sandbox_workspace_root,
             artifact_blob_root=self.context.artifact_blob_root,
-            artifact_bundle_finalizer=(
-                self.context.artifact_bundle_finalizer
-            ),
+            artifact_bundle_finalizer=(self.context.artifact_bundle_finalizer),
             signal_notifier=self.context.signal_notifier,
             reliability_shadow_observer=self.context.reliability_shadow_observer,
             reliability_settings=self.context.reliability_settings,
             durable_route_adapter_policy_ids=(
                 self.context.durable_route_adapter_policy_ids
             ),
+            agent_workspace_readiness_providers=(
+                self.context.agent_workspace_readiness_providers
+            ),
+            delegation_readiness_provider_id=(
+                self.context.delegation_readiness_provider_id
+            ),
+            agent_capsule_process_runner=(
+                self.context.agent_capsule_process_runner
+            ),
+            agent_process_credential_router=(
+                self.context.agent_process_credential_router
+            ),
+            executor_hpc_workspace_service=(
+                self.context.executor_hpc_workspace_service
+            ),
+            workspace_checkpoint_git_reader=(
+                self.context.workspace_checkpoint_git_reader
+            ),
+            agent_git_workspace_recovery_service=(
+                self.context.agent_git_workspace_recovery_service
+            ),
             mutation_writer_scope_factory=(self.context.mutation_writer_scope_factory),
         )
         _require_consistent_harness_approval_wait(result)
-        budget_observation = (
-            self._budget_exhaustion_observation(
-                claimed,
-                max_steps=max_steps,
-            )
-            if result.status is HarnessStatus.MAX_STEPS_EXCEEDED
-            else None
+        return self._settle_master_turn(
+            claimed=claimed,
+            agent=agent,
+            result=result,
+            max_steps=max_steps,
         )
-        ok = result.status not in {
-            HarnessStatus.FAILED,
-            HarnessStatus.MAX_STEPS_EXCEEDED,
-        }
-        if ok:
-            completed, signal_write_ok = self._complete_signal(claimed)
-        else:
-            completed, signal_write_ok, _ = self._fail_signal(
+
+    def _settle_master_turn(
+        self,
+        *,
+        claimed: AgentRuntimeSignal,
+        agent: AgentMember,
+        result: HarnessResult,
+        max_steps: int,
+    ) -> AgentRuntimeOutcome:
+        with self.context.repositories.atomic(
+            prefix="agent_runtime_master_outcome_settlement"
+        ):
+            post_turn_capability_rejection = self._capability_turn_gate(
                 claimed,
-                error_message=(
-                    AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
-                    if budget_observation is not None
-                    else (result.outputs[-1] if result.outputs else result.status.value)
-                ),
-                retryable=(
-                    False
-                    if budget_observation is not None
-                    else _is_retryable_runtime_error(result.error)
-                ),
-                emit=False,
-                observation=budget_observation,
+                settle_claimed=True,
             )
-        if not signal_write_ok:
-            ok = False
-            summary = (
-                "session runtime lease fencing rejected; signal write was not applied"
+            if post_turn_capability_rejection is not None:
+                return post_turn_capability_rejection
+            budget_observation = (
+                self._budget_exhaustion_observation(
+                    claimed,
+                    max_steps=max_steps,
+                )
+                if result.status is HarnessStatus.MAX_STEPS_EXCEEDED
+                else None
             )
-        else:
-            summary = result.outputs[-1] if result.outputs else result.status.value
-        event_type = (
-            "signal.completed"
-            if ok and signal_write_ok
-            else (
-                "signal.retry_scheduled"
-                if signal_write_ok
-                and completed.status is AgentRuntimeSignalStatus.PENDING
-                else "signal.failed"
+            ok = result.status not in {
+                HarnessStatus.FAILED,
+                HarnessStatus.MAX_STEPS_EXCEEDED,
+            }
+            if ok:
+                completed, signal_write_ok = self._complete_signal(claimed)
+            else:
+                completed, signal_write_ok, _ = self._fail_signal(
+                    claimed,
+                    error_message=(
+                        AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
+                        if budget_observation is not None
+                        else (
+                            result.outputs[-1]
+                            if result.outputs
+                            else result.status.value
+                        )
+                    ),
+                    retryable=(
+                        False
+                        if budget_observation is not None
+                        else _is_retryable_runtime_error(result.error)
+                    ),
+                    emit=False,
+                    observation=budget_observation,
+                )
+            if not signal_write_ok:
+                ok = False
+                summary = (
+                    "session runtime lease fencing rejected; "
+                    "signal write was not applied"
+                )
+            else:
+                summary = (
+                    result.outputs[-1] if result.outputs else result.status.value
+                )
+            event_type = (
+                "signal.completed"
+                if ok and signal_write_ok
+                else (
+                    "signal.retry_scheduled"
+                    if signal_write_ok
+                    and completed.status is AgentRuntimeSignalStatus.PENDING
+                    else "signal.failed"
+                )
             )
-        )
-        if signal_write_ok:
+            if signal_write_ok:
+                self.context.emit(
+                    event_type,
+                    {
+                        "signal_id": completed.signal_id,
+                        "agent_id": completed.agent_id,
+                        "status": completed.status.value,
+                        "error_message": completed.error_message,
+                    },
+                )
+            agent = self._update_agent(
+                self.context.repositories.agents.get(
+                    agent.session_id,
+                    agent.agent_id,
+                )
+                or agent,
+                status=AgentMemberStatus.IDLE,
+                runtime_state="idle",
+                last_active_at=utc_now_iso(),
+                idle_since=utc_now_iso(),
+            )
             self.context.emit(
-                event_type,
+                "agent.idle",
                 {
-                    "signal_id": completed.signal_id,
-                    "agent_id": completed.agent_id,
-                    "status": completed.status.value,
-                    "error_message": completed.error_message,
+                    "agent_id": agent.agent_id,
+                    "signal_id": claimed.signal_id,
+                    "task_id": claimed.task_id,
                 },
             )
-        agent = self._update_agent(
-            self.context.repositories.agents.get(agent.session_id, agent.agent_id)
-            or agent,
-            status=AgentMemberStatus.IDLE,
-            runtime_state="idle",
-            last_active_at=utc_now_iso(),
-            idle_since=utc_now_iso(),
-        )
-        self.context.emit(
-            "agent.idle",
-            {
-                "agent_id": agent.agent_id,
-                "signal_id": claimed.signal_id,
-                "task_id": claimed.task_id,
-            },
-        )
-        return AgentRuntimeOutcome(
-            signal=completed,
-            task=None
-            if claimed.task_id is None
-            else self.context.repositories.tasks.get(claimed.task_id),
-            agent=agent,
-            ok=ok,
-            summary=summary,
-            teammate_status=result.status.value,
-            outputs=tuple(result.outputs),
-            waiting_approval_id=result.pending_approval_id,
-        )
+            return AgentRuntimeOutcome(
+                signal=completed,
+                task=(
+                    None
+                    if claimed.task_id is None
+                    else self.context.repositories.tasks.get(claimed.task_id)
+                ),
+                agent=agent,
+                ok=ok,
+                summary=summary,
+                teammate_status=result.status.value,
+                outputs=tuple(result.outputs),
+                waiting_approval_id=result.pending_approval_id,
+            )
 
     def _canonical_wake_facts_preflight(
         self,
@@ -913,9 +1238,9 @@ class AgentRuntimeService:
         AgentRuntimeOutcome | None,
     ]:
         try:
-            facts = CanonicalWakeFactsProjector(
-                self.context.repositories
-            ).project(claimed)
+            facts = CanonicalWakeFactsProjector(self.context.repositories).project(
+                claimed
+            )
         except CanonicalWakeFactsError as exc:
             failed, signal_write_ok, _ = self._fail_signal(
                 claimed,
@@ -923,6 +1248,16 @@ class AgentRuntimeService:
                 retryable=False,
                 emit=False,
             )
+            retirement_rejection = self._retirement_requested_outcome(
+                failed,
+                task=(
+                    None
+                    if failed.task_id is None
+                    else self.context.repositories.tasks.get(failed.task_id)
+                ),
+            )
+            if retirement_rejection is not None:
+                return None, retirement_rejection
             agent = self._update_agent(
                 agent,
                 status=AgentMemberStatus.IDLE,
@@ -1077,6 +1412,16 @@ class AgentRuntimeService:
                 self.context.repositories.runtime_signals.get(claimed.signal_id)
                 or claimed
             )
+            retirement_rejection = self._capability_turn_gate(
+                current,
+                settle_claimed=True,
+            )
+            if (
+                retirement_rejection is not None
+                and retirement_rejection.teammate_status
+                == AgentRetirementRequestedError.error_code
+            ):
+                return retirement_rejection.signal, True
             self._emit_signal_fencing_rejected(current, attempted_status="completed")
             return current, False
         return completed, True
@@ -1182,6 +1527,16 @@ class AgentRuntimeService:
                 self.context.repositories.runtime_signals.get(claimed.signal_id)
                 or claimed
             )
+            retirement_rejection = self._capability_turn_gate(
+                current,
+                settle_claimed=True,
+            )
+            if (
+                retirement_rejection is not None
+                and retirement_rejection.teammate_status
+                == AgentRetirementRequestedError.error_code
+            ):
+                return retirement_rejection.signal, True, failure_observation
             self._emit_signal_fencing_rejected(current, attempted_status="failed")
             return current, False, failure_observation
         if emit:
@@ -1370,6 +1725,12 @@ class AgentRuntimeService:
             claimed,
             error_message=summary,
         )
+        retirement_rejection = self._retirement_requested_outcome(
+            failed,
+            task=task,
+        )
+        if retirement_rejection is not None:
+            return retirement_rejection
         updated_agent = self._update_agent(
             agent,
             status=AgentMemberStatus.IDLE,
@@ -1397,6 +1758,12 @@ class AgentRuntimeService:
         teammate_status: str,
     ) -> AgentRuntimeOutcome:
         completed, signal_write_ok = self._complete_signal(claimed)
+        retirement_rejection = self._retirement_requested_outcome(
+            completed,
+            task=task,
+        )
+        if retirement_rejection is not None:
+            return retirement_rejection
         updated_agent = self._update_agent(
             agent,
             status=AgentMemberStatus.IDLE,
@@ -1427,19 +1794,12 @@ class AgentRuntimeService:
             else "stale_signal_write_rejected",
         )
 
-    def _signal_lease_claim_kwargs(self) -> dict[str, Any]:
-        lease = self.context.session_runtime_lease
-        if lease is None:
-            return {}
-        return {
-            "session_lease_token": lease.lease_token,
-            "session_fencing_token": lease.fencing_token,
-        }
-
     def _signal_lease_write_kwargs(self) -> dict[str, Any]:
         lease = self.context.session_runtime_lease
         if lease is None:
-            return {}
+            raise RuntimeError(
+                "runtime signal settlement requires a session runtime lease"
+            )
         return {
             "expected_session_lease_token": lease.lease_token,
             "expected_session_fencing_token": lease.fencing_token,
@@ -1672,34 +2032,31 @@ class AgentRuntimeService:
         correlation_id: str,
         notify: bool = True,
     ) -> AgentRuntimeSignal | None:
-        existing = self.context.repositories.runtime_signals.find_source_signal(
+        claims = ActiveAgentCapabilityLeaseValidator(
+            self.context.repositories
+        ).require_current_agent(
             session_id=session_id,
             agent_id="agent:master",
-            reason=AgentRuntimeSignalReason.MANUAL_RESUME,
-            source_ref=source_signal.signal_id,
+            service_id="agent_runtime",
+            protocol="teammate_followup",
+            operation_class="agent_runtime",
         )
-        if existing is not None:
+        matching = [
+            candidate
+            for candidate in self.context.repositories.runtime_signals.list_by_session(
+                session_id
+            )
+            if candidate.agent_id == "agent:master"
+            and candidate.reason is AgentRuntimeSignalReason.MANUAL_RESUME
+            and candidate.source_ref == source_signal.signal_id
+            and candidate.capability_lease_id == claims.lease.lease_id
+            and candidate.workspace_generation == claims.lease.workspace_generation
+        ]
+        if matching:
+            existing = matching[0]
             if notify and not existing.status.is_terminal:
                 self._notify_signal(existing.session_id)
             return existing
-        if self.context.repositories.agents.get(session_id, "agent:master") is None:
-            now = utc_now_iso()
-            self.context.repositories.agents.save(
-                AgentMember(
-                    agent_id="agent:master",
-                    session_id=session_id,
-                    lane_id=None,
-                    task_id=None,
-                    name="OpenZyme",
-                    role="master",
-                    status=AgentMemberStatus.IDLE,
-                    parent_agent_id=None,
-                    created_at=now,
-                    updated_at=now,
-                    runtime_state="idle",
-                    idle_since=now,
-                )
-            )
         return self.enqueue_signal(
             session_id=session_id,
             agent_id="agent:master",

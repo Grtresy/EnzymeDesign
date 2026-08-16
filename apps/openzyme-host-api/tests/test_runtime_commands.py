@@ -35,6 +35,9 @@ from openzyme_host_api.v3_service import V3EventStore
 from openzyme_host_api.v3_service import V3RuntimeDrainResult
 from openzyme_runtime import ReliabilityRefactorSettings
 from openzyme_runtime import RuntimeDrainContract
+from tests.agent_capability_test_support import provision_ready_agent_capability
+from tests.agent_capability_test_support import ready_host_dependencies_kwargs
+from tests.agent_capability_test_support import ready_v3_service_kwargs
 
 
 def _dependencies(
@@ -46,6 +49,7 @@ def _dependencies(
     if model_factory is not None:
         foundation = replace(foundation, model_factory=model_factory)
     return HostApiDependencies(
+        **ready_host_dependencies_kwargs(),
         v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=replace(
             foundation,
@@ -216,6 +220,13 @@ def _seed_teammate_budget_signal(
             assigned_ref=agent.agent_id,
         )
     )
+    lease_id = provision_ready_agent_capability(
+        service.repositories,
+        session_id=session_id,
+        agent_id=agent.agent_id,
+    )
+    lease = service.repositories.agent_capability_leases.get(lease_id)
+    assert lease is not None
     signal_id = f"signal_{session_id}"
     service.repositories.runtime_signals.save(
         AgentRuntimeSignal(
@@ -226,6 +237,8 @@ def _seed_teammate_budget_signal(
             reason=AgentRuntimeSignalReason.MANUAL_RESUME,
             status=AgentRuntimeSignalStatus.PENDING,
             created_at="2026-07-24T12:00:00+00:00",
+            capability_lease_id=lease.lease_id,
+            workspace_generation=lease.workspace_generation,
         )
     )
     return task_id, signal_id
@@ -337,6 +350,7 @@ def test_r55_shaped_runtime_drain_settles_closed_teammate_budget_replan_handoff(
     )
     with provider.connection_scope() as scope:
         service = V3HostApiService(
+            **ready_v3_service_kwargs(),
             allow_unpinned_repository_sessions_for_tests=True,
             repositories=scope.repositories,
             event_store=V3EventStore(scope.repositories),
@@ -528,6 +542,7 @@ def test_runtime_drain_fails_when_budget_replan_wakeup_is_missing(
     )
     with provider.connection_scope() as scope:
         service = V3HostApiService(
+            **ready_v3_service_kwargs(),
             allow_unpinned_repository_sessions_for_tests=True,
             repositories=scope.repositories,
             event_store=V3EventStore(scope.repositories),
@@ -558,6 +573,7 @@ def test_runtime_drain_keeps_master_budget_exhaustion_failed(
     )
     with provider.connection_scope() as scope:
         service = V3HostApiService(
+            **ready_v3_service_kwargs(),
             allow_unpinned_repository_sessions_for_tests=True,
             repositories=scope.repositories,
             event_store=V3EventStore(scope.repositories),
@@ -746,6 +762,13 @@ def test_runtime_consistency_warnings_remain_read_only_across_drains(
             task_id=task_id,
         )
         service.repositories.tasks.save(replace(task, assigned_ref=agent.agent_id))
+        lease_id = provision_ready_agent_capability(
+            service.repositories,
+            session_id=session_id,
+            agent_id=agent.agent_id,
+        )
+        lease = service.repositories.agent_capability_leases.get(lease_id)
+        assert lease is not None
         service.repositories.runtime_signals.save(
             AgentRuntimeSignal(
                 signal_id="signal_runtime_consistency_failed",
@@ -758,6 +781,8 @@ def test_runtime_consistency_warnings_remain_read_only_across_drains(
                 completed_at="2026-07-24T00:00:01+00:00",
                 attempt_count=1,
                 error_message="provider turn failed",
+                capability_lease_id=lease.lease_id,
+                workspace_generation=lease.workspace_generation,
             )
         )
 

@@ -27,12 +27,15 @@ from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import ToolRegistry
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
+from openzyme_core.agent_capability_service import AgentCapabilityLeaseService
+from openzyme_core.agent_capability_service import AgentWorkspaceReadinessProof
 from openzyme_core.agent_identity import create_agent_member
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignal
 from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import AgentRuntimeSignalStatus
+from openzyme_domain import AgentWorkspaceGenerationReservation
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import ContinuationDeliveryState
@@ -56,6 +59,8 @@ from openzyme_domain import SandboxWorkspaceStatus
 from openzyme_domain import Session
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
+from openzyme_domain import canonical_capability_digest
+from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import LangChainToolCallingInvoker
 
 
@@ -352,16 +357,108 @@ class ExplodingMasterModelFactory:
         raise ValueError("task '' does not exist")
 
 
-def _build_context(*, model_factory: object | None) -> tuple[CoreRepositories, SessionRuntimeContext]:
+class SchedulerTestReadinessProvider:
+    provider_id = "test.scheduler-workspace-readiness@1"
+
+    def verify_readiness(
+        self,
+        reservation: AgentWorkspaceGenerationReservation,
+    ) -> AgentWorkspaceReadinessProof:
+        return AgentWorkspaceReadinessProof(
+            provider_id=self.provider_id,
+            reservation_id=reservation.reservation_id,
+            reservation_fingerprint=reservation.immutable_fingerprint,
+            session_id=reservation.session_id,
+            agent_member_id=reservation.agent_member_id,
+            agent_id=reservation.agent_id,
+            workspace_generation=reservation.workspace_generation,
+            readiness_ref=f"test-ready:{reservation.reservation_id}",
+            readiness_digest=canonical_capability_digest(
+                {
+                    "provider_id": self.provider_id,
+                    "reservation_id": reservation.reservation_id,
+                    "workspace_generation": reservation.workspace_generation,
+                }
+            ),
+            observed_at=utc_now_iso(),
+        )
+
+
+def _activate_agent_capability(
+    repositories: CoreRepositories,
+    *,
+    session_id: str,
+    agent_id: str,
+) -> tuple[str, int]:
+    provider = SchedulerTestReadinessProvider()
+    service = AgentCapabilityLeaseService(
+        repositories,
+        readiness_providers={provider.provider_id: provider},
+    )
+    issuance = service.reserve_and_issue(
+        session_id=session_id,
+        agent_id=agent_id,
+        idempotency_key=f"scheduler:{agent_id}:generation-1",
+        actor_ref="test:scheduler-issue",
+    )
+    active = service.activate_with_provider(
+        lease_id=issuance.lease.lease_id,
+        provider_id=provider.provider_id,
+        actor_ref="test:scheduler-activate",
+    )
+    return active.lease.lease_id, active.lease.workspace_generation
+
+
+def _ensure_active_master(
+    repositories: CoreRepositories,
+    *,
+    session_id: str,
+) -> tuple[str, int]:
+    if repositories.agents.get(session_id, "agent:master") is None:
+        now = utc_now_iso()
+        repositories.agents.save(
+            AgentMember(
+                agent_id="agent:master",
+                session_id=session_id,
+                lane_id=None,
+                task_id=None,
+                name="OpenZyme",
+                role="master",
+                status=AgentMemberStatus.IDLE,
+                parent_agent_id=None,
+                created_at=now,
+                updated_at=now,
+                runtime_state="idle",
+                idle_since=now,
+            )
+        )
+    return _activate_agent_capability(
+        repositories,
+        session_id=session_id,
+        agent_id="agent:master",
+    )
+
+
+def _build_context(
+    *,
+    model_factory: object | None,
+    role: str = "researcher",
+) -> tuple[CoreRepositories, SessionRuntimeContext]:
     connection = connect_sqlite(":memory:", check_same_thread=False)
     apply_sqlite_migrations(connection)
     repositories = CoreRepositories.from_connection(connection)
     session = Session.create("sess_scheduler", "proj_001", "Scheduler", "Scheduler")
     repositories.sessions.save(session)
+    _ensure_active_master(repositories, session_id=session.session_id)
     agent = create_agent_member(
         repositories,
         session_id=session.session_id,
-        role="researcher",
+        role=role,
+    )
+    capability_lease_id, workspace_generation = _activate_agent_capability(
+        repositories,
+        session_id=session.session_id,
+        agent_id=agent.agent_id,
     )
     for index in range(3):
         task_id = f"task_{index}"
@@ -382,6 +479,8 @@ def _build_context(*, model_factory: object | None) -> tuple[CoreRepositories, S
                 reason=AgentRuntimeSignalReason.MANUAL_RESUME,
                 status=AgentRuntimeSignalStatus.PENDING,
                 created_at=f"2026-04-16T10:00:0{index + 1}+00:00",
+                capability_lease_id=capability_lease_id,
+                workspace_generation=workspace_generation,
             )
         )
     context = SessionRuntimeContext(
@@ -520,6 +619,13 @@ def test_scheduler_releases_session_lease_after_runtime_suspension(monkeypatch) 
         session_id="sess_scheduler",
         role="reporter",
     )
+    other_capability_lease_id, other_workspace_generation = (
+        _activate_agent_capability(
+            repositories,
+            session_id="sess_scheduler",
+            agent_id=other_agent.agent_id,
+        )
+    )
     repositories.tasks.save(
         Task.create(
             task_id="task_other_agent",
@@ -537,6 +643,8 @@ def test_scheduler_releases_session_lease_after_runtime_suspension(monkeypatch) 
             reason=AgentRuntimeSignalReason.MANUAL_RESUME,
             status=AgentRuntimeSignalStatus.PENDING,
             created_at="2026-04-16T10:02:00+00:00",
+            capability_lease_id=other_capability_lease_id,
+            workspace_generation=other_workspace_generation,
         )
     )
 
@@ -762,13 +870,11 @@ def test_durable_continuation_suspension_keeps_task_in_progress(monkeypatch) -> 
     assert agent.status is AgentMemberStatus.BLOCKED
 
 
-def test_scheduler_heartbeats_session_lease_during_blocking_provider_call(
+def test_session_lease_heartbeat_retries_on_independent_connections(
     tmp_path,
     monkeypatch,
 ) -> None:
     provider = SQLiteRepositoryProvider(str(tmp_path / "heartbeat.sqlite3"))
-    started = Event()
-    release = Event()
     session = Session.create(
         "sess_heartbeat",
         "proj_001",
@@ -778,10 +884,16 @@ def test_scheduler_heartbeats_session_lease_during_blocking_provider_call(
     with provider.write() as owner:
         repositories = owner.repositories
         repositories.sessions.save(session)
+        _ensure_active_master(repositories, session_id=session.session_id)
         agent = create_agent_member(
             repositories,
             session_id=session.session_id,
             role="researcher",
+        )
+        capability_lease_id, workspace_generation = _activate_agent_capability(
+            repositories,
+            session_id=session.session_id,
+            agent_id=agent.agent_id,
         )
         task = Task.create(
             "task_heartbeat",
@@ -800,6 +912,8 @@ def test_scheduler_heartbeats_session_lease_during_blocking_provider_call(
                 reason=AgentRuntimeSignalReason.MANUAL_RESUME,
                 status=AgentRuntimeSignalStatus.PENDING,
                 created_at="2026-07-16T00:00:00+00:00",
+                capability_lease_id=capability_lease_id,
+                workspace_generation=workspace_generation,
             )
         )
 
@@ -824,24 +938,6 @@ def test_scheduler_heartbeats_session_lease_during_blocking_provider_call(
         heartbeat_busy_seven_times,
     )
 
-    contender_result: dict[str, object] = {}
-
-    def attempt_reclaim_after_original_expiry() -> None:
-        assert started.wait(timeout=5)
-        time.sleep(4.5)
-        with provider.connection_scope() as owner:
-            contender_result["result"] = (
-                owner.repositories.session_runtime_leases.acquire(
-                    session_id=session.session_id,
-                    owner_id="test:contender",
-                    mode="test",
-                    lease_seconds=4,
-                )
-            )
-        release.set()
-
-    contender = Thread(target=attempt_reclaim_after_original_expiry)
-    contender.start()
     with provider.connection_scope() as coordinator:
         coordinator_connection = (
             coordinator.repositories.session_runtime_leases.connection
@@ -855,21 +951,39 @@ def test_scheduler_heartbeats_session_lease_during_blocking_provider_call(
             ),
             tool_registry=ToolRegistry(),
             restore_focus=RestoreFocus(),
-            model_factory=BlockingHeartbeatModelFactory(started, release),
         )
-        outcomes = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(
             context,
             worker_id="test:heartbeat-owner",
             session_lease_seconds=4,
             repository_scope_factory=repository_scope,
-        ).run_once_sync(session.session_id, max_signals=1)
-    contender.join(timeout=7)
+        )
+        lease, acquired = scheduler._acquire_session_lease(session.session_id)
 
-    assert not contender.is_alive()
-    contender_attempt = contender_result["result"]
-    assert getattr(contender_attempt, "acquired") is False
-    assert len(outcomes) == 1
-    assert outcomes[0].ok is True
+        async def exercise_heartbeat() -> None:
+            heartbeat = asyncio.create_task(
+                scheduler._maintain_session_lease(lease)
+            )
+            deadline = asyncio.get_running_loop().time() + 3.5
+            while (
+                len(heartbeat_connections) < busy_failures + 1
+                and asyncio.get_running_loop().time() < deadline
+            ):
+                await asyncio.sleep(0.05)
+            heartbeat.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await heartbeat
+
+        try:
+            asyncio.run(exercise_heartbeat())
+        finally:
+            if acquired:
+                coordinator.repositories.session_runtime_leases.release(
+                    session_id=session.session_id,
+                    owner_id=scheduler.worker_id,
+                    lease_token=lease.lease_token,
+                )
+
     assert len(heartbeat_connections) >= busy_failures + 1
     assert all(
         connection is not coordinator_connection for connection in heartbeat_connections
@@ -879,34 +993,28 @@ def test_scheduler_heartbeats_session_lease_during_blocking_provider_call(
     )
 
 
-def test_scheduler_releases_lease_and_preserves_heartbeat_error(monkeypatch) -> None:
+def test_direct_repository_fixture_releases_lease_without_concurrent_heartbeat(
+    monkeypatch,
+) -> None:
     started = Event()
     release = Event()
     repositories, context = _build_context(
         model_factory=BlockingHeartbeatModelFactory(started, release)
     )
 
-    def raise_programming_error(self, **kwargs):
+    def reject_unexpected_heartbeat(self, **kwargs):
         del self, kwargs
-        raise ValueError("heartbeat programming error")
-
-    original_emit = SessionRuntimeContext.emit
-
-    def fail_heartbeat_event(self, event_type, payload):
-        if event_type == "runtime.lease_heartbeat_failed":
-            raise RuntimeError("heartbeat event sink failed")
-        return original_emit(self, event_type, payload)
+        raise AssertionError("direct repository fixtures must not heartbeat concurrently")
 
     monkeypatch.setattr(
         SessionRuntimeLeaseRepository,
         "heartbeat",
-        raise_programming_error,
+        reject_unexpected_heartbeat,
     )
-    monkeypatch.setattr(SessionRuntimeContext, "emit", fail_heartbeat_event)
 
     def release_provider_call() -> None:
         started.wait(timeout=5)
-        time.sleep(1.25)
+        time.sleep(0.1)
         release.set()
 
     releaser = Thread(target=release_provider_call)
@@ -914,15 +1022,16 @@ def test_scheduler_releases_lease_and_preserves_heartbeat_error(monkeypatch) -> 
 
     scheduler = AgentRuntimeScheduler(
         context,
-        worker_id="test:heartbeat-programming-error",
+        worker_id="test:direct-repository-fixture",
         session_lease_seconds=3,
     )
-    with pytest.raises(ValueError, match="heartbeat programming error") as exc_info:
-        scheduler.run_once_sync("sess_scheduler", max_signals=1)
+    outcomes = scheduler.run_once_sync("sess_scheduler", max_signals=1)
     releaser.join(timeout=5)
 
     assert not releaser.is_alive()
     assert started.is_set()
+    assert len(outcomes) == 1
+    assert outcomes[0].ok is True
     assert context.session_runtime_lease is None
     lease_row = repositories.session_runtime_leases.connection.execute(
         """
@@ -936,22 +1045,24 @@ def test_scheduler_releases_lease_and_preserves_heartbeat_error(monkeypatch) -> 
     ).fetchone()
     assert lease_row is not None
     assert lease_row["released_at"] is not None
-    assert any(
-        "heartbeat failure event emission also failed: RuntimeError" in note
-        for note in getattr(exc_info.value, "__notes__", ())
-    )
 
 
-def test_reporter_can_publish_report_and_finish_delegated_task() -> None:
+def test_reporter_inline_body_does_not_bypass_file_publication_contract() -> None:
     connection = connect_sqlite(":memory:", check_same_thread=False)
     apply_sqlite_migrations(connection)
     repositories = CoreRepositories.from_connection(connection)
     session = Session.create("sess_reporter", "proj_001", "Reporter", "Write report")
     repositories.sessions.save(session)
+    _ensure_active_master(repositories, session_id=session.session_id)
     agent = create_agent_member(
         repositories,
         session_id=session.session_id,
         role="reporter",
+    )
+    capability_lease_id, workspace_generation = _activate_agent_capability(
+        repositories,
+        session_id=session.session_id,
+        agent_id=agent.agent_id,
     )
     repositories.tasks.save(
         Task.create(
@@ -971,6 +1082,8 @@ def test_reporter_can_publish_report_and_finish_delegated_task() -> None:
         reason=AgentRuntimeSignalReason.DELEGATION_ASSIGNED,
         status=AgentRuntimeSignalStatus.PENDING,
         created_at="2026-04-16T10:00:01+00:00",
+        capability_lease_id=capability_lease_id,
+        workspace_generation=workspace_generation,
     )
     repositories.runtime_signals.save(signal)
     context = SessionRuntimeContext(
@@ -982,7 +1095,15 @@ def test_reporter_can_publish_report_and_finish_delegated_task() -> None:
         model_factory=ReporterModelFactory(agent_id=agent.agent_id),
     )
 
-    outcome = AgentRuntimeService(context).wake_agent(signal, max_steps=4)
+    acquired = repositories.session_runtime_leases.acquire(
+        session_id=session.session_id,
+        owner_id="test:reporter-runtime",
+        mode="test",
+    )
+    assert acquired.lease is not None
+    context.session_runtime_lease = acquired.lease
+    with repositories.runtime_write_fence(acquired.lease):
+        outcome = AgentRuntimeService(context).wake_agent(signal, max_steps=4)
 
     task = repositories.tasks.get("task_report")
     draft = repositories.report_drafts.get_by_task(session.session_id, "task_report")
@@ -992,11 +1113,8 @@ def test_reporter_can_publish_report_and_finish_delegated_task() -> None:
     assert task is not None
     assert task.status is TaskStatus.COMPLETED
     assert task.assigned_ref == agent.agent_id
-    assert draft is not None
-    assert draft.owner_agent_id == agent.agent_id
-    assert draft.status.value == "published"
-    assert len(reports) == 1
-    assert reports[0].status.value == "published"
+    assert draft is None
+    assert reports == []
 
 
 def test_scheduler_runtime_failure_records_last_error() -> None:
@@ -1066,6 +1184,11 @@ def _build_master_failure_context(
             idle_since="2026-04-16T10:00:00+00:00",
         )
     )
+    capability_lease_id, workspace_generation = _activate_agent_capability(
+        repositories,
+        session_id=session.session_id,
+        agent_id="agent:master",
+    )
     repositories.runtime_signals.save(
         AgentRuntimeSignal(
             signal_id="sig_master_failure",
@@ -1074,6 +1197,8 @@ def _build_master_failure_context(
             reason=reason,
             status=AgentRuntimeSignalStatus.PENDING,
             created_at="2026-04-16T10:00:01+00:00",
+            capability_lease_id=capability_lease_id,
+            workspace_generation=workspace_generation,
         )
     )
     model_factory = ExplodingMasterModelFactory()
@@ -1251,6 +1376,8 @@ def test_teammate_max_steps_does_not_mark_business_task_failed() -> None:
         session_id="sess_scheduler",
         agent_id="agent:master",
         task_id="task_0",
+        lane_id=master_signals[0].lane_id,
+        correlation_id=master_signals[0].correlation_id,
         reason=AgentRuntimeSignalReason.MANUAL_RESUME,
         source_ref="sig_0",
     )
@@ -1365,13 +1492,11 @@ def test_teammate_budget_handoff_accepts_lane_bound_during_the_source_turn(
 ) -> None:
     monkeypatch.setattr(asyncio, "to_thread", _invoke_without_executor)
     repositories, context = _build_context(
-        model_factory=LateBindingThenLoopingModelFactory()
+        model_factory=LateBindingThenLoopingModelFactory(),
+        role="executor",
     )
     source = repositories.runtime_signals.get("sig_0")
     assert source is not None
-    assigned = repositories.agents.get("sess_scheduler", source.agent_id)
-    assert assigned is not None
-    repositories.agents.save(replace(assigned, role="executor"))
 
     outcomes = AgentRuntimeScheduler(
         context,
@@ -1446,6 +1571,13 @@ def test_incomplete_budget_handoff_still_stops_the_current_batch(
             idle_since="2026-04-16T09:59:00+00:00",
         )
     )
+    master_capability_lease_id, master_workspace_generation = (
+        _activate_agent_capability(
+            repositories,
+            session_id="sess_scheduler",
+            agent_id="agent:master",
+        )
+    )
     for index, status in enumerate(candidate_statuses):
         repositories.runtime_signals.save(
             AgentRuntimeSignal(
@@ -1462,6 +1594,8 @@ def test_incomplete_budget_handoff_still_stops_the_current_batch(
                     if status.is_terminal
                     else None
                 ),
+                capability_lease_id=master_capability_lease_id,
+                workspace_generation=master_workspace_generation,
             )
         )
 

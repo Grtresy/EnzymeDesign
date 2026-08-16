@@ -28,18 +28,26 @@ from pydantic import Field
 
 from openzyme_core import DurableLfsObjectStore
 from openzyme_core import DurableRepositoryRootManager
+from openzyme_core import GitLfsPolicyError
+from openzyme_core import GitLfsQuotaExceededError
+from openzyme_core import GitLfsRepositoryError
 from openzyme_core import LfsObjectMismatchError
 from openzyme_core import RepositoryCredentialBroker
 from openzyme_core import RepositoryCredentialClaims
 from openzyme_core import RepositoryCredentialError
 from openzyme_core import RepositoryCredentialProtocol
 from openzyme_core import RepositoryCredentialRejectedError
+from openzyme_core import RepositoryProvisionCredentialBroker
+from openzyme_core import RepositoryProvisionCredentialClaims
 from openzyme_core import RepositoryRootBoundary
 from openzyme_core import RepositoryStorageError
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import private_ref_prefix
 from openzyme_runtime import RepositoryServiceSettings
 from openzyme_domain import ProjectRepositoryBinding
+from openzyme_domain import GitLfsBindingPolicy
+from openzyme_domain import GitLfsObjectReadReceipt
+from openzyme_domain import canonical_lfs_digest
 from openzyme_domain import RepositoryBindingLifecycleStatus
 from openzyme_domain import RepositoryRefClass
 
@@ -53,6 +61,7 @@ LFS_JSON_MEDIA_TYPE = "application/vnd.git-lfs+json"
 _GIT_STREAM_CHUNK_BYTES = 64 * 1024
 _GIT_CGI_HEADER_LIMIT_BYTES = 64 * 1024
 _GIT_STDERR_LIMIT_BYTES = 64 * 1024
+_LFS_UPLOAD_SESSION_HEADER = "X-OpenZyme-Lfs-Upload-Session"
 
 
 class RepositoryTransportError(RuntimeError):
@@ -96,7 +105,7 @@ class LfsVerifyRequest(BaseModel):
 @dataclass(frozen=True, slots=True)
 class AuthenticatedRepositoryRequest:
     token: str
-    claims: RepositoryCredentialClaims
+    claims: RepositoryCredentialClaims | RepositoryProvisionCredentialClaims
     binding: ProjectRepositoryBinding
 
 
@@ -140,12 +149,24 @@ class RepositoryTransportDependencies:
                 signing_key_path=self.settings.credential_signing_key_file,
                 credential_ttl_seconds=self.settings.credential_ttl_seconds,
             )
-            claims = broker.authenticate(
-                resolved_token,
-                protocol=protocol,
-                repository_id=repository_id,
-                now=datetime.now(tz=UTC),
-            )
+            if resolved_token.startswith("ozprovision1."):
+                claims = RepositoryProvisionCredentialBroker(
+                    connection=repositories.sessions.connection,
+                    signing_key_path=self.settings.credential_signing_key_file,
+                    credential_ttl_seconds=self.settings.credential_ttl_seconds,
+                ).authenticate(
+                    resolved_token,
+                    protocol=protocol,
+                    repository_id=repository_id,
+                    now=datetime.now(tz=UTC),
+                )
+            else:
+                claims = broker.authenticate(
+                    resolved_token,
+                    protocol=protocol,
+                    repository_id=repository_id,
+                    now=datetime.now(tz=UTC),
+                )
             binding = repositories.project_repository_bindings.get(claims.binding_id)
             if binding is None:
                 raise RepositoryCredentialRejectedError(
@@ -505,6 +526,72 @@ def _lfs_error(status_code: int, message: str) -> JSONResponse:
     )
 
 
+def _lfs_policy(
+    dependencies: RepositoryTransportDependencies,
+    authenticated: AuthenticatedRepositoryRequest,
+) -> GitLfsBindingPolicy:
+    with dependencies.repository_provider.read() as scope:
+        policy = scope.repositories.git_lfs.get_policy(
+            binding_id=authenticated.binding.binding_id,
+            binding_version=authenticated.binding.binding_version,
+        )
+    if (
+        policy is None
+        or policy.repository_id != authenticated.binding.repository_id
+        or policy.lfs_service_id != authenticated.binding.lfs_service_id
+        or policy.lfs_endpoint != authenticated.binding.lfs_endpoint
+        or policy.policy_version
+        != authenticated.binding.repository_policy_version
+        or policy.policy_digest
+        != authenticated.binding.repository_policy_digest
+    ):
+        raise GitLfsPolicyError(
+            "repository binding has no exact immutable Git LFS policy"
+        )
+    return policy
+
+
+def _lfs_read_receipt(
+    *,
+    authenticated: AuthenticatedRepositoryRequest,
+    oid: str,
+    size: int,
+    observed_at: str,
+) -> GitLfsObjectReadReceipt:
+    scope_digest = authenticated.claims.claims_digest
+    stable = canonical_lfs_digest(
+        {
+            "binding_id": authenticated.binding.binding_id,
+            "binding_version": authenticated.binding.binding_version,
+            "repository_id": authenticated.binding.repository_id,
+            "credential_id": authenticated.claims.credential_id,
+            "oid": oid,
+            "size": size,
+            "observed_at": observed_at,
+        }
+    ).split(":", 1)[1]
+    return GitLfsObjectReadReceipt.create(
+        receipt_id=f"lfs_read_{stable[:32]}",
+        binding_id=authenticated.binding.binding_id,
+        binding_version=authenticated.binding.binding_version,
+        repository_id=authenticated.binding.repository_id,
+        lfs_endpoint_identity=canonical_lfs_digest(
+            {
+                "lfs_service_id": authenticated.binding.lfs_service_id,
+                "lfs_endpoint": authenticated.binding.lfs_endpoint,
+                "binding_id": authenticated.binding.binding_id,
+                "binding_version": authenticated.binding.binding_version,
+            }
+        ),
+        authorization_scope_digest=scope_digest,
+        oid=oid,
+        declared_size=size,
+        observed_size=size,
+        observed_sha256=oid,
+        observed_at=observed_at,
+    )
+
+
 def create_repository_transport_app(
     dependencies: RepositoryTransportDependencies,
 ) -> FastAPI:
@@ -597,6 +684,30 @@ def create_repository_transport_app(
             media_type=LFS_JSON_MEDIA_TYPE,
         )
 
+    @app.exception_handler(GitLfsRepositoryError)
+    async def git_lfs_repository_error(
+        request: Request,
+        exc: GitLfsRepositoryError,
+    ) -> JSONResponse:
+        del request
+        status_code = 507 if isinstance(exc, GitLfsQuotaExceededError) else 409
+        payload: dict[str, object] = {
+            "message": str(exc),
+            "code": exc.error_code,
+            "fallback_performed": False,
+        }
+        if isinstance(exc, GitLfsQuotaExceededError):
+            payload["quota"] = {
+                "scope": exc.scope,
+                "limit_bytes": exc.limit_bytes,
+                "requested_bytes": exc.requested_bytes,
+            }
+        return JSONResponse(
+            status_code=status_code,
+            content=payload,
+            media_type=LFS_JSON_MEDIA_TYPE,
+        )
+
     @app.get("/health")
     def repository_health(request: Request) -> JSONResponse:
         if request.url.scheme != "https":
@@ -652,6 +763,7 @@ def create_repository_transport_app(
             repository_id=repository_id,
             protocol=protocol,
         )
+        policy = _lfs_policy(dependencies, authenticated)
         store = DurableLfsObjectStore(dependencies.roots())
         objects: list[dict[str, Any]] = []
         for item in payload.objects:
@@ -659,7 +771,17 @@ def create_repository_transport_app(
             href = f"{authenticated.binding.lfs_endpoint}/objects/{item.oid}"
             headers = {"Authorization": f"Bearer {authenticated.token}"}
             if payload.operation == "download":
-                if store.has_object(repository_id, item.oid, size=item.size):
+                with dependencies.repository_provider.read() as scope:
+                    metadata_exists = scope.repositories.git_lfs.has_object_metadata(
+                        policy=policy,
+                        oid=item.oid,
+                        size_bytes=item.size,
+                    )
+                if metadata_exists and store.has_object(
+                    repository_id,
+                    item.oid,
+                    size=item.size,
+                ):
                     store.verify(repository_id, item.oid, size=item.size)
                     projected["actions"] = {
                         "download": {"href": href, "header": headers}
@@ -669,16 +791,61 @@ def create_repository_transport_app(
                         "code": 404,
                         "message": "Git LFS object does not exist",
                     }
-            elif not store.has_object(repository_id, item.oid):
-                projected["actions"] = {
-                    "upload": {"href": href, "header": headers},
-                    "verify": {
-                        "href": f"{href}/verify",
-                        "header": headers,
-                    },
-                }
             else:
-                store.verify(repository_id, item.oid, size=item.size)
+                if not isinstance(authenticated.claims, RepositoryCredentialClaims):
+                    raise RepositoryCredentialRejectedError(
+                        "provision credentials cannot reserve Git LFS uploads"
+                    )
+                with dependencies.repository_provider.read() as scope:
+                    metadata_exists = scope.repositories.git_lfs.has_object_metadata(
+                        policy=policy,
+                        oid=item.oid,
+                        size_bytes=item.size,
+                    )
+                if metadata_exists:
+                    store.verify(repository_id, item.oid, size=item.size)
+                    with dependencies.repository_provider.write() as scope:
+                        scope.repositories.git_lfs.link_workspace_object(
+                            policy=policy,
+                            claims=authenticated.claims,
+                            oid=item.oid,
+                            observed_via="upload",
+                            created_at=datetime.now(tz=UTC).isoformat(),
+                        )
+                else:
+                    try:
+                        with dependencies.repository_provider.write() as scope:
+                            upload_session = scope.repositories.git_lfs.reserve_upload(
+                                policy=policy,
+                                claims=authenticated.claims,
+                                oid=item.oid,
+                                size_bytes=item.size,
+                                now=datetime.now(tz=UTC),
+                            )
+                    except GitLfsQuotaExceededError as exc:
+                        projected["error"] = {
+                            "code": 507,
+                            "message": str(exc),
+                            "openzyme_code": exc.error_code,
+                            "quota_scope": exc.scope,
+                            "limit_bytes": exc.limit_bytes,
+                            "requested_bytes": exc.requested_bytes,
+                            "fallback_performed": False,
+                        }
+                    else:
+                        upload_headers = {
+                            **headers,
+                            _LFS_UPLOAD_SESSION_HEADER: (
+                                upload_session.upload_session_id
+                            ),
+                        }
+                        projected["actions"] = {
+                            "upload": {"href": href, "header": upload_headers},
+                            "verify": {
+                                "href": f"{href}/verify",
+                                "header": upload_headers,
+                            },
+                        }
             objects.append(projected)
         return JSONResponse(
             content={"transfer": "basic", "objects": objects},
@@ -691,12 +858,21 @@ def create_repository_transport_app(
         oid: str,
         request: Request,
         authorization: Annotated[str | None, Header()] = None,
+        upload_session_id: Annotated[
+            str | None,
+            Header(alias=_LFS_UPLOAD_SESSION_HEADER),
+        ] = None,
     ) -> Response:
-        dependencies.authenticate(
+        authenticated = dependencies.authenticate(
             authorization,
             repository_id=repository_id,
             protocol=RepositoryCredentialProtocol.LFS_WRITE,
         )
+        if not isinstance(authenticated.claims, RepositoryCredentialClaims):
+            raise RepositoryCredentialRejectedError(
+                "provision credentials cannot upload Git LFS objects"
+            )
+        policy = _lfs_policy(dependencies, authenticated)
         if len(oid) != 64 or any(
             character not in "0123456789abcdef" for character in oid
         ):
@@ -705,6 +881,34 @@ def create_repository_transport_app(
         if content_length is None or not content_length.isdigit():
             raise HTTPException(status_code=411, detail="Content-Length is required")
         expected_size = int(content_length)
+        if upload_session_id is None:
+            raise RepositoryTransportRequestError(
+                "Git LFS upload requires the exact Batch API upload session"
+            )
+        with dependencies.repository_provider.read() as scope:
+            upload_session = scope.repositories.git_lfs.get_upload_session(
+                upload_session_id
+            )
+        if (
+            upload_session is None
+            or upload_session.status.value != "reserved"
+            or upload_session.binding_id != policy.binding_id
+            or upload_session.binding_version != policy.binding_version
+            or upload_session.repository_id != repository_id
+            or upload_session.session_id != authenticated.claims.session_id
+            or upload_session.agent_member_id
+            != authenticated.claims.agent_member_id
+            or upload_session.workspace_generation
+            != authenticated.claims.workspace_generation
+            or upload_session.credential_id != authenticated.claims.credential_id
+            or upload_session.oid != oid
+            or upload_session.declared_size != expected_size
+            or datetime.fromisoformat(upload_session.expires_at)
+            <= datetime.now(tz=UTC)
+        ):
+            raise GitLfsRepositoryError(
+                "Git LFS upload session is missing, expired, terminal, or scope-drifted"
+            )
         store = DurableLfsObjectStore(dependencies.roots())
         incoming = store.repository_root(repository_id) / "incoming"
         incoming.mkdir(mode=0o700, exist_ok=True)
@@ -714,19 +918,41 @@ def create_repository_transport_app(
             async for chunk in request.stream():
                 stream.write(chunk)
                 observed_size += len(chunk)
+                if observed_size > expected_size:
+                    break
             stream.flush()
             os.fsync(stream.fileno())
         if observed_size != expected_size:
             incoming_path.unlink()
+            with dependencies.repository_provider.write() as scope:
+                scope.repositories.git_lfs.abort_upload(
+                    upload_session_id=upload_session.upload_session_id,
+                    completed_at=datetime.now(tz=UTC).isoformat(),
+                )
             raise RepositoryTransportRequestError(
                 "Git LFS upload byte count does not match Content-Length"
             )
-        store.promote_incoming(
-            repository_id,
-            oid,
-            size=expected_size,
-            incoming_path=incoming_path,
-        )
+        try:
+            store.promote_incoming(
+                repository_id,
+                oid,
+                size=expected_size,
+                incoming_path=incoming_path,
+            )
+        except Exception:
+            if incoming_path.exists():
+                incoming_path.unlink()
+            with dependencies.repository_provider.write() as scope:
+                scope.repositories.git_lfs.abort_upload(
+                    upload_session_id=upload_session.upload_session_id,
+                    completed_at=datetime.now(tz=UTC).isoformat(),
+                )
+            raise
+        with dependencies.repository_provider.write() as scope:
+            scope.repositories.git_lfs.commit_upload(
+                upload_session=upload_session,
+                completed_at=datetime.now(tz=UTC).isoformat(),
+            )
         return Response(status_code=200)
 
     @app.post("/repositories/{repository_id}.git/info/lfs/objects/{oid}/verify")
@@ -735,12 +961,21 @@ def create_repository_transport_app(
         oid: str,
         payload: LfsVerifyRequest,
         authorization: Annotated[str | None, Header()] = None,
+        upload_session_id: Annotated[
+            str | None,
+            Header(alias=_LFS_UPLOAD_SESSION_HEADER),
+        ] = None,
     ) -> Response:
-        dependencies.authenticate(
+        authenticated = dependencies.authenticate(
             authorization,
             repository_id=repository_id,
             protocol=RepositoryCredentialProtocol.LFS_WRITE,
         )
+        if not isinstance(authenticated.claims, RepositoryCredentialClaims):
+            raise RepositoryCredentialRejectedError(
+                "provision credentials cannot verify Git LFS uploads"
+            )
+        policy = _lfs_policy(dependencies, authenticated)
         if oid != payload.oid:
             raise RepositoryTransportRequestError(
                 "Git LFS verify path and payload oid differ"
@@ -750,6 +985,38 @@ def create_repository_transport_app(
             oid,
             size=payload.size,
         )
+        if upload_session_id is None:
+            raise RepositoryTransportRequestError(
+                "Git LFS verify requires the exact Batch API upload session"
+            )
+        with dependencies.repository_provider.read() as scope:
+            upload_session = scope.repositories.git_lfs.get_upload_session(
+                upload_session_id
+            )
+            metadata_exists = scope.repositories.git_lfs.has_object_metadata(
+                policy=policy,
+                oid=oid,
+                size_bytes=payload.size,
+            )
+        if (
+            upload_session is None
+            or upload_session.status.value != "committed"
+            or upload_session.binding_id != policy.binding_id
+            or upload_session.binding_version != policy.binding_version
+            or upload_session.repository_id != repository_id
+            or upload_session.session_id != authenticated.claims.session_id
+            or upload_session.agent_member_id
+            != authenticated.claims.agent_member_id
+            or upload_session.workspace_generation
+            != authenticated.claims.workspace_generation
+            or upload_session.credential_id != authenticated.claims.credential_id
+            or upload_session.oid != oid
+            or upload_session.declared_size != payload.size
+            or not metadata_exists
+        ):
+            raise GitLfsRepositoryError(
+                "Git LFS verify has no exact committed upload receipt"
+            )
         return Response(status_code=200)
 
     @app.get("/repositories/{repository_id}.git/info/lfs/objects/{oid}")
@@ -758,11 +1025,12 @@ def create_repository_transport_app(
         oid: str,
         authorization: Annotated[str | None, Header()] = None,
     ) -> Response:
-        dependencies.authenticate(
+        authenticated = dependencies.authenticate(
             authorization,
             repository_id=repository_id,
             protocol=RepositoryCredentialProtocol.LFS_READ,
         )
+        policy = _lfs_policy(dependencies, authenticated)
         if len(oid) != 64 or any(
             character not in "0123456789abcdef" for character in oid
         ):
@@ -771,7 +1039,31 @@ def create_repository_transport_app(
         path = store.object_path(repository_id, oid)
         if not path.is_file():
             return _lfs_error(404, "Git LFS object does not exist")
+        with dependencies.repository_provider.read() as scope:
+            if not scope.repositories.git_lfs.has_object_metadata(
+                policy=policy,
+                oid=oid,
+                size_bytes=path.stat().st_size,
+            ):
+                return _lfs_error(404, "Git LFS object does not exist")
         store.verify(repository_id, oid, size=path.stat().st_size)
+        observed_at = datetime.now(tz=UTC).isoformat()
+        receipt = _lfs_read_receipt(
+            authenticated=authenticated,
+            oid=oid,
+            size=path.stat().st_size,
+            observed_at=observed_at,
+        )
+        with dependencies.repository_provider.write() as scope:
+            scope.repositories.git_lfs.add_object_read_receipt(receipt)
+            if isinstance(authenticated.claims, RepositoryCredentialClaims):
+                scope.repositories.git_lfs.link_workspace_object(
+                    policy=policy,
+                    claims=authenticated.claims,
+                    oid=oid,
+                    observed_via="download",
+                    created_at=observed_at,
+                )
         return FileResponse(path, media_type="application/octet-stream")
 
     @app.api_route(

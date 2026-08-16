@@ -17,6 +17,7 @@ from typing import AsyncIterator
 from typing import Callable
 from typing import Iterator
 from typing import Literal
+from typing import Mapping
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -55,6 +56,16 @@ from .aox_scientific_contract import (
 from .aox_bundle_finalizer import finalize_aox_deliverable_bundle
 from .durable_routes import build_host_hpc_route_adapters
 from .durable_routes import build_host_provider_route_adapters
+from .executor_hpc_workspaces import CommandExecutorHpcCredentialProvider
+from .executor_hpc_workspaces import McpExecutorHpcWorkspaceProvisioner
+from .executor_hpc_workspaces import SubprocessExecutorHpcCredentialCommandExecutor
+from .workspace_revision_execution import (
+    RunnerSchedulerCredentialIssuer,
+)
+from .workspace_revision_execution import (
+    UnavailableRunnerSchedulerCredentialIssuer,
+)
+from .workspace_revision_execution import WorkspaceRevisionExecutionDurableWorker
 from .runtime_commands import HostRuntimeCommandExecutor
 from .repository_service_preflight import preflight_repository_service
 from .sandbox_host_gateway import ExecutionEngineSandboxHostGateway
@@ -73,6 +84,22 @@ from openzyme_core import ControlledOperationRouteAdapter
 from openzyme_core import CommandIdempotencyConflictError
 from openzyme_core import CommandReceiptRecord
 from openzyme_core import EngineRegistry
+from openzyme_core import AgentCapabilityCredentialProviderUnavailableError
+from openzyme_core import AgentCapabilityError
+from openzyme_core import AgentProcessCredentialRouter
+from openzyme_core import ExecutorHpcAgentProcessCredentialProvider
+from openzyme_core import ExecutorHpcWorkspaceService
+from openzyme_core import AgentRetirementCleanupProviderUnavailableError
+from openzyme_core import AgentWorkspaceReadinessProvider
+from openzyme_core import AgentWorkspaceReadinessProviderUnavailableError
+from openzyme_core import AgentGitWorkspaceRecoveryService
+from openzyme_core import PodmanAgentGitWorkspaceObservationProvider
+from openzyme_core import PodmanAgentCapsuleProcessRunner
+from openzyme_execution import WorkspaceRevisionRunnerAdapter
+from openzyme_core import PodmanAgentWorkspaceVolumeBackend
+from openzyme_core import RepositoryAgentProcessCredentialProvider
+from openzyme_core import RepositoryCredentialBroker
+from openzyme_core import SubprocessCapsuleCommandExecutor
 from openzyme_core import DurableRepositoryRootManager
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import SessionAccessRecord
@@ -105,9 +132,14 @@ from openzyme_engines import ProviderHttpBioDatabaseAdapter
 from openzyme_engines import build_engine_registry
 from openzyme_engines.execution import ExecutionArtifactRef as V3ExecutionArtifactRef
 from openzyme_domain import RunStatus
+from openzyme_domain import ControlledOperation
+from openzyme_domain import ControlledOperationOwnerMode
+from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import RuntimeCommandRecord
 from openzyme_domain import MutationWriterKind
 from openzyme_domain import SessionRuntimeLease
+from openzyme_domain import WorkspaceRevisionCleanObservation
+from openzyme_domain import WorkspaceRevisionExecutionRequest
 from openzyme_domain.control_plane import utc_now_iso
 
 from .host_mutation_observation import host_command_request_digest
@@ -121,6 +153,14 @@ class CreateV3SessionRequest(BaseModel):
     objective: str = Field(min_length=1, max_length=100_000)
     title: str | None = None
     session_id: str | None = None
+
+
+class AdmitWorkspaceRevisionExecutionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation: dict[str, Any]
+    execution_request: dict[str, Any]
+    clean_observation: dict[str, Any]
 
 
 class PostV3MessageRequest(BaseModel):
@@ -642,6 +682,19 @@ class HostApiDependencies:
     v3_artifact_blob_root: Path | None = None
     v3_repository_root_boundary: RepositoryRootBoundary | None = None
     v3_allow_unpinned_repository_sessions_for_tests: bool = False
+    v3_agent_workspace_readiness_providers: Mapping[
+        str, AgentWorkspaceReadinessProvider
+    ] = field(default_factory=dict)
+    v3_session_creation_readiness_provider_id: str | None = None
+    v3_delegation_readiness_provider_id: str | None = None
+    v3_agent_capsule_process_runner: Any | None = None
+    v3_agent_process_credential_router: Any | None = None
+    v3_executor_hpc_credential_provider: Any | None = None
+    v3_executor_hpc_workspace_provisioner: Any | None = None
+    v3_executor_hpc_workspace_settlement_inspector: Any | None = None
+    v3_workspace_revision_runner_adapter: WorkspaceRevisionRunnerAdapter | None = None
+    v3_scheduler_credential_issuer: RunnerSchedulerCredentialIssuer | None = None
+    v3_agent_git_workspace_recovery_service: Any | None = None
     _owned_v3_temp_directory: tempfile.TemporaryDirectory[str] | None = field(
         default=None,
         init=False,
@@ -649,6 +702,16 @@ class HostApiDependencies:
     )
 
     def __post_init__(self) -> None:
+        if self.v3_workspace_revision_runner_adapter is None:
+            runner_server = getattr(self.foundation.execution_adapter, "server", None)
+            if runner_server is not None:
+                self.v3_workspace_revision_runner_adapter = (
+                    WorkspaceRevisionRunnerAdapter(runner_server)
+                )
+        if self.v3_scheduler_credential_issuer is None:
+            self.v3_scheduler_credential_issuer = (
+                UnavailableRunnerSchedulerCredentialIssuer()
+            )
         if self.security_policy is None:
             settings = getattr(self.foundation, "settings", None)
             self.security_policy = HostSecurityPolicy.from_settings(
@@ -776,6 +839,20 @@ class HostApiDependencies:
         repository_binding_service = self.build_repository_binding_service(
             repositories
         )
+        agent_capsule_process_runner = self.build_agent_capsule_process_runner()
+        executor_hpc_workspace_service = self.build_executor_hpc_workspace_service(
+            repositories
+        )
+        agent_process_credential_router = self.build_agent_process_credential_router(
+            repositories,
+            executor_hpc_workspace_service=executor_hpc_workspace_service,
+        )
+        agent_git_workspace_recovery_service = (
+            self.build_agent_git_workspace_recovery_service(
+                repositories,
+                agent_capsule_process_runner,
+            )
+        )
         return V3HostApiService(
             repositories=repositories,
             event_store=V3EventStore(repositories),
@@ -809,9 +886,166 @@ class HostApiDependencies:
                 AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
             ),
             repository_binding_service=repository_binding_service,
+            agent_workspace_readiness_providers=(
+                self.v3_agent_workspace_readiness_providers
+            ),
+            session_creation_readiness_provider_id=(
+                self.v3_session_creation_readiness_provider_id
+            ),
+            delegation_readiness_provider_id=(
+                self.v3_delegation_readiness_provider_id
+            ),
+            agent_capsule_process_runner=agent_capsule_process_runner,
+            agent_process_credential_router=agent_process_credential_router,
+            executor_hpc_workspace_service=executor_hpc_workspace_service,
+            workspace_checkpoint_git_reader=(
+                None
+                if repository_binding_service is None
+                else repository_binding_service.roots
+            ),
+            agent_git_workspace_recovery_service=(
+                agent_git_workspace_recovery_service
+            ),
             allow_unpinned_repository_sessions_for_tests=(
                 self.v3_allow_unpinned_repository_sessions_for_tests
             ),
+        )
+
+    def build_agent_capsule_process_runner(self) -> Any | None:
+        if self.v3_agent_capsule_process_runner is not None:
+            return self.v3_agent_capsule_process_runner
+        settings = getattr(self.foundation, "settings", None)
+        capsule_settings = None if settings is None else settings.agent_capsule
+        if capsule_settings is None:
+            return None
+        return PodmanAgentCapsuleProcessRunner(
+            executor=SubprocessCapsuleCommandExecutor(),
+            deployment_network=capsule_settings.deployment_network,
+            podman_binary=str(capsule_settings.podman_binary),
+        )
+
+    def build_agent_git_workspace_recovery_service(
+        self,
+        repositories: CoreRepositories,
+        process_runner: Any | None,
+    ) -> Any | None:
+        if self.v3_agent_git_workspace_recovery_service is not None:
+            return self.v3_agent_git_workspace_recovery_service
+        settings = getattr(self.foundation, "settings", None)
+        capsule_settings = None if settings is None else settings.agent_capsule
+        if capsule_settings is None or process_runner is None:
+            return None
+        volume_backend = PodmanAgentWorkspaceVolumeBackend(
+            executor=SubprocessCapsuleCommandExecutor(),
+            podman_binary=str(capsule_settings.podman_binary),
+        )
+        return AgentGitWorkspaceRecoveryService(
+            repositories=repositories,
+            volume_backend=volume_backend,
+            observation_provider=PodmanAgentGitWorkspaceObservationProvider(
+                process_runner=process_runner
+            ),
+        )
+
+    def build_agent_process_credential_router(
+        self,
+        repositories: CoreRepositories,
+        *,
+        executor_hpc_workspace_service: ExecutorHpcWorkspaceService | None = None,
+    ) -> Any | None:
+        if self.v3_agent_process_credential_router is not None:
+            return self.v3_agent_process_credential_router
+        settings = getattr(self.foundation, "settings", None)
+        repository_settings = (
+            None if settings is None else settings.repository_service
+        )
+        providers = {}
+        if repository_settings is not None:
+            broker = RepositoryCredentialBroker(
+                connection=repositories.connection,
+                signing_key_path=repository_settings.credential_signing_key_file,
+                credential_ttl_seconds=repository_settings.credential_ttl_seconds,
+            )
+            for binding in repositories.project_repository_bindings.list_active():
+                for service_id in (
+                    binding.internal_git_service_id,
+                    binding.lfs_service_id,
+                ):
+                    providers[service_id] = RepositoryAgentProcessCredentialProvider(
+                        repositories=repositories,
+                        broker=broker,
+                        service_id=service_id,
+                    )
+        if executor_hpc_workspace_service is not None:
+            for target in (
+                repositories.executor_hpc_workspaces.list_target_qualifications()
+            ):
+                service_id = f"hpc-native:{target.target_profile_id}"
+                providers[service_id] = ExecutorHpcAgentProcessCredentialProvider(
+                    service=executor_hpc_workspace_service,
+                    service_id=service_id,
+                    target_profile_id=target.target_profile_id,
+                )
+        return None if not providers else AgentProcessCredentialRouter(providers=providers)
+
+    def build_executor_hpc_workspace_service(
+        self,
+        repositories: CoreRepositories,
+    ) -> ExecutorHpcWorkspaceService | None:
+        provisioner = self.v3_executor_hpc_workspace_provisioner
+        if provisioner is None:
+            runner_server = getattr(
+                self.foundation.execution_adapter,
+                "server",
+                None,
+            )
+            if runner_server is not None:
+                provisioner = McpExecutorHpcWorkspaceProvisioner(
+                    repositories=repositories,
+                    server=runner_server,
+                )
+        credential_provider = self.v3_executor_hpc_credential_provider
+        settings = getattr(self.foundation, "settings", None)
+        execution_settings = None if settings is None else settings.execution
+        if (
+            credential_provider is None
+            and execution_settings is not None
+            and execution_settings.hpc_credential_provider_id is not None
+            and execution_settings.hpc_authenticator_id is not None
+        ):
+            credential_provider = CommandExecutorHpcCredentialProvider(
+                provider_id=execution_settings.hpc_credential_provider_id,
+                authenticator_id=execution_settings.hpc_authenticator_id,
+                issue_command=execution_settings.hpc_credential_issue_command,
+                revoke_command=execution_settings.hpc_credential_revoke_command,
+                executor=SubprocessExecutorHpcCredentialCommandExecutor(),
+                timeout_seconds=(
+                    execution_settings.hpc_credential_timeout_seconds
+                ),
+            )
+        settlement_inspector = self.v3_executor_hpc_workspace_settlement_inspector
+        if (
+            provisioner is None
+            and credential_provider is None
+            and settlement_inspector is None
+        ):
+            # C8/C9 are source-complete candidate capabilities.  A plain Host
+            # composition must not expose native executor/HPC workspace tools
+            # until an operator supplies an explicit external boundary.
+            return None
+        cleaner = (
+            provisioner
+            if provisioner is not None
+            and callable(getattr(provisioner, "cleanup", None))
+            and callable(getattr(provisioner, "reconcile_cleanup", None))
+            else None
+        )
+        return ExecutorHpcWorkspaceService(
+            repositories=repositories,
+            provisioner=provisioner,
+            credential_provider=credential_provider,
+            cleaner=cleaner,
+            settlement_inspector=settlement_inspector,
         )
 
     def build_repository_binding_service(
@@ -1092,6 +1326,17 @@ def _as_http_error(exc: Exception) -> HTTPException:
             hint=exc.hint,
             details=exc.details,
         )
+    if isinstance(
+        exc,
+        (
+            AgentCapabilityCredentialProviderUnavailableError,
+            AgentRetirementCleanupProviderUnavailableError,
+            AgentWorkspaceReadinessProviderUnavailableError,
+        ),
+    ):
+        return _http_exception(503, code=exc.error_code, message=str(exc))
+    if isinstance(exc, AgentCapabilityError):
+        return _http_exception(409, code=exc.error_code, message=str(exc))
     if isinstance(exc, ValueError):
         return _http_exception(400, code="invalid_request", message=str(exc))
     if isinstance(exc, MissingLlmConfigurationError):
@@ -1290,6 +1535,19 @@ def _request_principal(request: Request) -> HostPrincipal:
             message="request is not authenticated",
         )
     return principal
+
+
+def _controlled_operation_from_dict(value: dict[str, Any]) -> ControlledOperation:
+    expected = set(ControlledOperation.__dataclass_fields__)
+    if not isinstance(value, dict) or set(value) != expected:
+        raise ValueError("controlled operation admission fields are closed")
+    data = dict(value)
+    data["status"] = ControlledOperationStatus(data["status"])
+    data["owner_mode"] = ControlledOperationOwnerMode(data["owner_mode"])
+    data["input_artifact_digests"] = tuple(data["input_artifact_digests"])
+    data["input_artifact_ids"] = tuple(data["input_artifact_ids"])
+    data["stage_refs"] = tuple(dict(item) for item in data["stage_refs"])
+    return ControlledOperation(**data)
 
 
 def _require_project_access(principal: HostPrincipal, project_id: str) -> None:
@@ -2059,6 +2317,52 @@ def create_app(
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
+    @app.post("/v3/sessions/{session_id}/workspace-revision-executions")
+    def admit_v3_workspace_revision_execution(
+        session_id: str,
+        payload: AdmitWorkspaceRevisionExecutionRequest,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        """Admit one exact revision-bound executor job without pending approval."""
+
+        try:
+            principal = _request_principal(request)
+            operation = _controlled_operation_from_dict(payload.operation)
+            execution_request = WorkspaceRevisionExecutionRequest.from_dict(
+                payload.execution_request
+            )
+            clean_observation = WorkspaceRevisionCleanObservation.from_dict(
+                payload.clean_observation
+            )
+            if (
+                session_id != operation.session_id
+                or session_id != execution_request.session_id
+                or operation.idempotency_key != idempotency_key
+            ):
+                raise ValueError(
+                    "workspace execution session or idempotency identity mismatch"
+                )
+            with dependencies.v3_service_scope(mode="write") as service:
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=session_id,
+                )
+                execution = service.admit_workspace_revision_execution(
+                    operation=operation,
+                    request=execution_request,
+                    clean_observation=clean_observation,
+                )
+            return {
+                "schema_version": "v3.workspace_revision_execution_admission.v1",
+                "execution": execution.to_dict(),
+                "pending_human_approval_created": False,
+            }
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
     @app.post("/v3/sessions/{session_id}/aox-fault-injections/reference-byte-flip")
     def inject_v3_aox_reference_fault(
         session_id: str,
@@ -2576,6 +2880,14 @@ def _build_durable_work_supervisor(
         enabled_override if enabled_override is not None else durable_worker_required
     )
     adapters = dependencies.build_v3_durable_route_adapters()
+    active_route_ids = dependencies.active_v3_durable_route_ids()
+    if (
+        "workspace_revision_execution@1" in active_route_ids
+        and dependencies.v3_workspace_revision_runner_adapter is None
+    ):
+        raise RuntimeError(
+            "active workspace revision executions require the revision runner adapter"
+        )
     coordinators: dict[str, V3DurableWorkCoordinator] = {}
     coordinator_lock = threading.Lock()
 
@@ -2594,8 +2906,33 @@ def _build_durable_work_supervisor(
                         mutation_writer_scope_factory=(
                             dependencies.v3_mutation_writer_scope
                         ),
+                        excluded_route_policy_ids=frozenset(
+                            {"workspace_revision_execution@1"}
+                        ),
                     )
                 )
+                if dependencies.v3_workspace_revision_runner_adapter is not None:
+                    scheduler_credential_issuer = (
+                        dependencies.v3_scheduler_credential_issuer
+                    )
+                    if scheduler_credential_issuer is None:
+                        raise RuntimeError(
+                            "workspace revision scheduler credential issuer is missing"
+                        )
+                    workers.append(
+                        WorkspaceRevisionExecutionDurableWorker(
+                            repository_scope_factory=(
+                                dependencies.v3_repository_scope
+                            ),
+                            runner=(
+                                dependencies.v3_workspace_revision_runner_adapter
+                            ),
+                            scheduler_credential_issuer=(
+                                scheduler_credential_issuer
+                            ),
+                            worker_id=f"{worker_id}:workspace-revision-execution",
+                        )
+                    )
             if owner_policy != "legacy_only_v1" or active_continuation_count > 0:
                 workers.append(
                     ContinuationDeliveryWorker(

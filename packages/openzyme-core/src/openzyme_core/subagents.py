@@ -6,6 +6,12 @@ from uuid import uuid4
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
 
+from .agent_capability_projection import AgentCapabilityPublicProjector
+from .agent_capability_projection import project_agent_runtime_signal_for_public
+from .agent_capability_service import ActiveAgentCapabilityLeaseValidator
+from .agent_capability_service import AgentCapabilityAdmissionRejectedError
+from .agent_capability_service import AgentCapabilityError
+from .agent_capability_service import AgentCapabilityLeaseService
 from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolRegistry
@@ -43,6 +49,8 @@ def _protocol_service(context: SessionRuntimeContext) -> ProtocolService:
         context.repositories,
         event_emitter=lambda event_type, payload: context.emit(event_type, payload),
         signal_notifier=context.signal_notifier,
+        workspace_readiness_providers=(context.agent_workspace_readiness_providers),
+        delegation_readiness_provider_id=(context.delegation_readiness_provider_id),
     )
 
 
@@ -77,7 +85,9 @@ def _workflow_selection_error(
 
 
 def register_subagent_tools(registry: ToolRegistry) -> None:
-    def delegate_task_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+    def delegate_task_handler(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> ToolResult:
         arguments = invocation.arguments
         service = TaskBoardService(context.repositories, event_emitter=context.emit)
         task = service.get_task(str(arguments["task_id"]))
@@ -91,7 +101,9 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
                 lane_id=None,
             )
         try:
-            agent_role = str(arguments.get("agent_role") or default_agent_role_for_task(task))
+            agent_role = str(
+                arguments.get("agent_role") or default_agent_role_for_task(task)
+            )
         except ValueError as exc:
             return ToolResult(
                 call_id=invocation.call_id,
@@ -346,15 +358,8 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
                         ),
                     )
                 agent_ref = None
-            if agent_ref is None:
-                agent = create_agent_member(
-                    context.repositories,
-                    session_id=task.session_id,
-                    role=agent_role,  # type: ignore[arg-type]
-                    lane_id=task.lane_id,
-                    task_id=task.task_id,
-                )
-            else:
+            agent = None
+            if agent_ref is not None:
                 resolution = resolve_agent_reference(
                     context.repositories,
                     session_id=task.session_id,
@@ -417,81 +422,233 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
                 summary=str(exc),
                 error_code="invalid_agent_identity",
             )
-        agent_id = agent.agent_id
         correlation_id = str(arguments.get("correlation_id") or _new_id("corr"))
         instructions = str(
             arguments.get("instructions") or task.description or task.subject
         )
         protocol = _protocol_service(context)
-        payload_ref = protocol.persist_payload(
-            session_id=task.session_id,
-            document_kind="delegation_request",
-            payload={
-                "task_id": task.task_id,
-                "instructions": instructions,
-                "role": agent_role,
-                "agent_id": agent_id,
-                "nickname": agent.nickname,
-                "display_name": display_name_for_agent(agent),
-                "handle": handle_for_agent(agent),
-                "workflow_refs": list(workflow_refs),
-                "workflow_manifests": workflow_manifests,
-            },
+        transaction_events: list[tuple[str, dict[str, object]]] = []
+
+        def transaction_emitter(
+            event_type: str,
+            payload: dict[str, object],
+        ) -> None:
+            transaction_events.append((event_type, dict(payload)))
+
+        transactional_protocol = ProtocolService(
+            context.repositories,
+            event_emitter=transaction_emitter,
+            workspace_readiness_providers=(context.agent_workspace_readiness_providers),
+            delegation_readiness_provider_id=(context.delegation_readiness_provider_id),
         )
-        task = service.claim_task(
-            task.task_id,
-            assigned_ref=agent_id,
+        transactional_task_board = TaskBoardService(
+            context.repositories,
+            event_emitter=transaction_emitter,
         )
-        delegation = protocol.delegate(
-            session_id=task.session_id,
-            agent_id=agent_id,
-            name=display_name_for_agent(agent),
-            role=agent_role,
-            payload_ref=payload_ref,
-            task_id=task.task_id,
-            lane_id=task.lane_id,
-            correlation_id=correlation_id,
-            nickname=agent.nickname,
-            display_name=display_name_for_agent(agent),
-            handle=handle_for_agent(agent),
-        )
-        signals = [
-            signal.to_dict()
-            for signal in context.repositories.runtime_signals.list_by_session(
-                task.session_id
+        try:
+            if context.agent_id is None:
+                raise AgentCapabilityAdmissionRejectedError(
+                    "task.delegate requires the canonical caller agent identity"
+                )
+            parent_agent_id = require_canonical_agent_id(context.agent_id)
+            with context.repositories.atomic(prefix="task_delegate"):
+                parent_claims = ActiveAgentCapabilityLeaseValidator(
+                    context.repositories
+                ).require_current_agent(
+                    session_id=task.session_id,
+                    agent_id=parent_agent_id,
+                    service_id="agent_delegation",
+                    protocol="task_delegate",
+                    operation_class="delegation",
+                )
+                created_agent = agent is None
+                if agent is None:
+                    agent = create_agent_member(
+                        context.repositories,
+                        session_id=task.session_id,
+                        role=agent_role,  # type: ignore[arg-type]
+                        lane_id=task.lane_id,
+                        task_id=task.task_id,
+                        parent_agent_id=parent_agent_id,
+                    )
+                    issuance = AgentCapabilityLeaseService(
+                        context.repositories
+                    ).reserve_and_issue(
+                        session_id=task.session_id,
+                        agent_id=agent.agent_id,
+                        idempotency_key=(
+                            f"delegation:{correlation_id}:{agent.agent_id}:generation-1"
+                        ),
+                        actor_ref=f"tool:{parent_agent_id}:task.delegate",
+                        parent_lease_id=parent_claims.lease.lease_id,
+                    )
+                else:
+                    current_agent = context.repositories.agents.get(
+                        task.session_id,
+                        agent.agent_id,
+                    )
+                    if current_agent is None:
+                        raise AgentCapabilityAdmissionRejectedError(
+                            "resolved teammate no longer exists"
+                        )
+                    agent = current_agent
+                    issuance = None
+                agent_id = agent.agent_id
+                payload_ref = transactional_protocol.persist_payload(
+                    session_id=task.session_id,
+                    document_kind="delegation_request",
+                    payload={
+                        "task_id": task.task_id,
+                        "instructions": instructions,
+                        "role": agent_role,
+                        "agent_id": agent_id,
+                        "nickname": agent.nickname,
+                        "display_name": display_name_for_agent(agent),
+                        "handle": handle_for_agent(agent),
+                        "workflow_refs": list(workflow_refs),
+                        "workflow_manifests": workflow_manifests,
+                    },
+                )
+                task = transactional_task_board.claim_task(
+                    task.task_id,
+                    assigned_ref=agent_id,
+                )
+                delegation, signal = transactional_protocol.delegate_locked(
+                    session_id=task.session_id,
+                    agent_id=agent_id,
+                    name=display_name_for_agent(agent),
+                    role=agent_role,
+                    payload_ref=payload_ref,
+                    task_id=task.task_id,
+                    lane_id=task.lane_id,
+                    parent_agent_id=parent_agent_id,
+                    correlation_id=correlation_id,
+                    nickname=agent.nickname,
+                    display_name=display_name_for_agent(agent),
+                    handle=handle_for_agent(agent),
+                    created_agent=created_agent,
+                )
+                child_member_id = delegation.agent.member_id
+                if child_member_id is None:
+                    raise RuntimeError(
+                        "delegated teammate lost its canonical member identity"
+                    )
+                reservation = context.repositories.agent_workspace_generation_reservations.get_current(
+                    session_id=task.session_id,
+                    agent_member_id=child_member_id,
+                )
+                if reservation is None:
+                    raise AgentCapabilityAdmissionRejectedError(
+                        "delegated teammate has no current workspace generation"
+                    )
+                lease = context.repositories.agent_capability_leases.get_by_generation(
+                    session_id=task.session_id,
+                    agent_member_id=child_member_id,
+                    workspace_generation=reservation.workspace_generation,
+                )
+                if lease is None:
+                    raise AgentCapabilityAdmissionRejectedError(
+                        "delegated teammate has no current capability lease"
+                    )
+                if issuance is not None and lease.lease_id != issuance.lease.lease_id:
+                    raise AgentCapabilityAdmissionRejectedError(
+                        "delegated teammate capability issuance changed identity"
+                    )
+            for event_type, event_payload in transaction_events:
+                context.emit(event_type, event_payload)
+            protocol.notify_signal(signal.session_id)
+        except AgentCapabilityError as exc:
+            error_code = exc.error_code
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=False,
+                content=json.dumps(
+                    {
+                        "task_id": task.task_id,
+                        "status": error_code,
+                        "error_code": error_code,
+                        "reason": str(exc),
+                    },
+                    sort_keys=True,
+                ),
+                task_id=task.task_id,
+                lane_id=task.lane_id,
+                status=error_code,
+                summary=str(exc),
+                error_code=error_code,
+                hint=(
+                    "Provision and activate the exact caller/child workspace "
+                    "generation before requesting runnable delegation."
+                ),
             )
-            if signal.agent_id == agent_id
-            and signal.correlation_id == correlation_id
-            and signal.source_ref == delegation.request_message.message_id
-        ]
-        status = "wakeup_queued" if signals else "wakeup_not_created"
-        ok = bool(signals)
+        except AgentIdentityError as exc:
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=False,
+                content=str(exc),
+                task_id=task.task_id,
+                lane_id=task.lane_id,
+                status="invalid_agent_identity",
+                summary=str(exc),
+                error_code="invalid_agent_identity",
+            )
+        capability_projector = AgentCapabilityPublicProjector(context.repositories)
+        signals = [project_agent_runtime_signal_for_public(signal)]
+        agent_projection = capability_projector.project_agent(delegation.agent)
+        runnable = bool(agent_projection["runnable"])
+        blocker_code = agent_projection["blocker_code"]
+        if runnable:
+            status = "wakeup_queued"
+        else:
+            assert isinstance(blocker_code, str)
+            status = blocker_code
+        provisioning_required = status == "provisioning_required"
         payload = {
             "task": task.to_dict(),
-            "agent": delegation.agent.to_dict(),
+            "agent": agent_projection,
             "agent_ref": handle_for_agent(delegation.agent),
             "correlation_id": correlation_id,
             "delegation_message_id": delegation.request_message.message_id,
             "signals": signals,
-            "wakeup_queued": ok,
+            "wakeup_queued": runnable,
+            "signal_non_runnable": not runnable,
+            "signal_pending_provisioning": provisioning_required,
             "status": status,
         }
-        summary = (
-            f"Delegation queued for {agent_id} with {len(signals)} wakeup signal(s)."
-        )
+        if runnable:
+            summary = f"Delegation queued for {agent_id}."
+            hint = None
+        elif provisioning_required:
+            summary = (
+                f"Delegation for {agent_id} is durable and awaiting exact "
+                "workspace provisioning."
+            )
+            hint = (
+                "C3 must submit readiness for this exact generation before "
+                "the queued signal can be claimed."
+            )
+        else:
+            summary = (
+                f"Delegation for {agent_id} is durable but non-runnable: "
+                f"canonical admission blocker {status}."
+            )
+            hint = (
+                "Resolve the canonical admission blocker; do not retry, "
+                "downgrade, or substitute another workspace or route."
+            )
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
-            ok=ok,
+            ok=True,
             content=json.dumps(payload, sort_keys=True),
             task_id=task.task_id,
             lane_id=task.lane_id,
             status=status,
             summary=summary,
-            error_code=None if ok else "wakeup_signal_missing",
-            hint=None
-            if ok
-            else "The delegation was persisted, but no runtime wakeup signal was created.",
+            error_code=None,
+            hint=hint,
             details={
                 "agent_id": agent_id,
                 "correlation_id": correlation_id,

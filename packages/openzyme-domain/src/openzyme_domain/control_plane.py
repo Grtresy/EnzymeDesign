@@ -31,6 +31,12 @@ CONTROL_PLANE_ENTITY_NAMES = (
     "MemoryEntry",
     "AgentMember",
     "AgentRuntimeSignal",
+    "AgentWorkspaceGenerationReservation",
+    "AgentCapabilityLease",
+    "AgentCapabilityLeaseLifecycleEvent",
+    "AgentRetirementRequest",
+    "AgentRetirementCleanupProofRecord",
+    "AgentRetirementRecord",
     "SessionRuntimeLease",
     "EngineInvocation",
     "RunRecord",
@@ -190,6 +196,7 @@ class SandboxWorkspaceStatus(StrEnum):
     QUOTA_EXCEEDED = "quota_exceeded"
     MISSING_IMAGE = "missing_image"
     IMAGE_INCOMPATIBLE = "image_incompatible"
+    FROZEN_LEGACY = "frozen_legacy"
 
 
 class SandboxRunStatus(StrEnum):
@@ -486,9 +493,9 @@ class AgentMember:
     name: str
     role: str
     status: AgentMemberStatus
-    parent_agent_id: str | None
     created_at: str
     updated_at: str
+    parent_agent_id: str | None = None
     runtime_state: str | None = None
     current_correlation_id: str | None = None
     wakeup_reason: str | None = None
@@ -527,6 +534,25 @@ class AgentRuntimeSignal:
     last_error: str | None = None
     session_lease_token: str | None = None
     session_fencing_token: int | None = None
+    capability_lease_id: str | None = None
+    workspace_generation: int | None = None
+
+    def __post_init__(self) -> None:
+        if (self.capability_lease_id is None) != (self.workspace_generation is None):
+            raise ValueError(
+                "capability_lease_id and workspace_generation must be provided together"
+            )
+        if self.capability_lease_id is not None and (
+            not self.capability_lease_id
+            or self.capability_lease_id != self.capability_lease_id.strip()
+        ):
+            raise ValueError("capability_lease_id must be a non-empty identifier")
+        if self.workspace_generation is not None and (
+            not isinstance(self.workspace_generation, int)
+            or isinstance(self.workspace_generation, bool)
+            or self.workspace_generation <= 0
+        ):
+            raise ValueError("workspace_generation must be a positive integer")
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -876,6 +902,9 @@ class SessionReportRecord:
     stage_summary: str
     created_at: str
     updated_at: str
+    content_ref_id: str | None = None
+    report_version: int = 1
+    supersedes_report_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)

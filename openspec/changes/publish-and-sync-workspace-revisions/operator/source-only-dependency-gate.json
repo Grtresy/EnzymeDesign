@@ -1,0 +1,76 @@
+{
+  "schema_id": "workspace_publication_source_only_dependency_gate@1",
+  "change_id": "publish-and-sync-workspace-revisions",
+  "gate_scope": "ordered_source_implementation_only",
+  "observed_head": "8ae3d73b3054f2058ff33ea183f62c811b9272a3",
+  "predecessor_gate": {
+    "path": "openspec/changes/provision-independent-agent-git-workspaces/operator/source-only-dependency-gate.json",
+    "file_sha256": "sha256:7183538f2a5153baac37f8cf961e494def54dfbe8283c32a02a2f8ef53f67545",
+    "acceptance_proven": false,
+    "final_source_revision_bound": false
+  },
+  "capability_lease_interfaces": {
+    "domain_sha256": "sha256:601a7422e26f8093b9fa410077afbcf2a002bf2f79387bd033ae9bd47ffb4ca8",
+    "service_sha256": "sha256:71ae3f73c3294446651d2e72a35015e53cc3cc3516e9186eb3e9c62d1f59224b",
+    "migration_sha256": "sha256:74146f6aab10c32368e572050a71c2a68a9a0a6ae551700d8d4528bdb8ecae85",
+    "exact_active_lease_validator_observed": true,
+    "publication_route_implemented_by_c2": false
+  },
+  "agent_git_workspace_interfaces": {
+    "workspace_domain_sha256": "sha256:a42682756e97ba5d975b56c5a093adf6a42abef6ae58d7b73271e711ea37d74e",
+    "checkpoint_domain_sha256": "sha256:bdf4ebdb289f1254d18dbae69725dbd1b8216f347f54249d453ff8ddd1ef0bbf",
+    "workspace_service_sha256": "sha256:b41e34cb8eea1c0119ab0a553ece86330557f351277c182c4114629dd62e8656",
+    "capsule_runtime_sha256": "sha256:4f9bd56a06a0b56312af4b6c386dab644c06901f2fd77c2b1008d5bc26d0d62b",
+    "checkpoint_service_sha256": "sha256:d6e219d2f3f5b8b5771effc3daea5565c5cec256abfb2faf959cc9681f349d03",
+    "migration_sha256": "sha256:4d87dbad40b79398b7bde01cc3afbd180e507d6b61be191cf6237e6245cc577b",
+    "ready_workspace_seam_observed": true,
+    "clean_checkpoint_seam_observed": true,
+    "published_revision_implemented_by_c3": false
+  },
+  "controlled_operation_baseline": {
+    "canonical_owner": "ControlledOperationExecution",
+    "owner_mode": "durable_async_v1",
+    "execution_lease_and_fence_required": true,
+    "effect_certainties": [
+      "no_effect",
+      "dispatch_in_doubt",
+      "effect_known",
+      "terminal_known"
+    ],
+    "dispatch_in_doubt_requires_reconciliation": true,
+    "automatic_replay_from_dispatch_in_doubt": false,
+    "publication_specific_effect_fsm_allowed": false
+  },
+  "publication_policy_decisions": {
+    "whole_repository_only": true,
+    "host_only_create_if_absent_ref": true,
+    "per_publication_human_approval": false,
+    "upstream_effect_authorized": false,
+    "private_ref_scan_creates_shared_truth": false
+  },
+  "deferred_predecessor_acceptance": [
+    "agent_capability_lease_acceptance@1",
+    "agent_git_workspace_acceptance@1"
+  ],
+  "permitted_actions": [
+    "continue_c4_domain_and_migration_source_implementation",
+    "continue_c4_service_tool_projection_source_implementation",
+    "add_deferred_validation_tests_without_running_them",
+    "update_architecture_and_openspec_documents"
+  ],
+  "forbidden_actions": [
+    "invoke_workspace_publish",
+    "issue_publication_credential",
+    "perform_remote_git_io",
+    "create_or_update_publication_ref",
+    "run_live_or_external_effect",
+    "claim_predecessor_or_current_acceptance",
+    "satisfy_production_or_cutover_gate",
+    "select_legacy_artifact_or_branch_fallback"
+  ],
+  "external_effects": 0,
+  "acceptance_proven": false,
+  "final_source_revision_bound": false,
+  "production_effect_authorized": false,
+  "live_authorized": false
+}

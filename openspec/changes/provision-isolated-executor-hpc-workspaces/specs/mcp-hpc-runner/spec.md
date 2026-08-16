@@ -89,7 +89,7 @@ If deterministic validation fails, the runner MUST fail before payload. Any auto
 - **THEN** the run terminates before payload without reprovisioning, path guessing, or backend fallback
 
 ### Requirement: Runner server owns a persistent authenticated SSH transport pool
-Each long-lived runner server MUST own a per-transport-identity OpenSSH ControlMaster/ControlPersist pool for runner-owned provisioning, workspace validation, preflight, controlled payload, and lifecycle operations. The control socket MUST live under a runner-owned mode-`0700` private root and MUST be bound to an ownership nonce and generation. Runner SSH commands and probes MUST obtain centrally compiled options for the same identity while retaining isolated channels, cwd/env, timeouts, stdout/stderr, and exit status. Agent-native SSH/rsync/scp sessions authorized by an executor capability lease MUST remain separate from this private pool, and the runner MUST NOT expose an interactive persistent shell or its ControlPath.
+Each long-lived runner server MUST own a per-transport-identity OpenSSH ControlMaster/ControlPersist pool for runner-owned provisioning, workspace validation, preflight, and lifecycle operations. The control socket MUST live under a runner-owned mode-`0700` private root and MUST be bound to an ownership nonce and generation. Runner SSH commands and probes MUST obtain centrally compiled options for the same identity while retaining isolated channels, cwd/env, timeouts, stdout/stderr, and exit status. Neither this transport credential nor agent-native SSH/rsync/scp credentials implemented by this change SHALL carry scheduler-submit authority. Agent-native sessions MUST remain separate from the private pool, MUST be authenticated into only the exact OS/root isolation identity, and MUST NOT receive runner ControlPath or sidecar access. The runner MUST NOT expose an interactive persistent shell or its ControlPath. A later controlled payload may use an isolated runner channel only after `execute-hpc-jobs-from-workspace-revisions` separately provides and the target consumes the exact one-occurrence `sbatch` credential; actual scheduler issuance and target-side unregistered-submit rejection remain hard-gated to that change.
 
 #### Scenario: Reuse one runner transport
 - **WHEN** provisioning, validation, preflight, payload, and lifecycle operations target the same healthy runner transport identity
@@ -97,7 +97,11 @@ Each long-lived runner server MUST own a per-transport-identity OpenSSH ControlM
 
 #### Scenario: Agent opens a native SSH session
 - **WHEN** an executor uses its lease-scoped native SSH credential
-- **THEN** the connection does not receive or reuse the runner-private ControlMaster socket
+- **THEN** the connection authenticates only to its exact protected workspace root, does not receive or reuse the runner-private ControlMaster socket, and receives no scheduler-submit authority
+
+#### Scenario: Runner transport exists before the job change
+- **WHEN** the runner has a healthy provisioning/validation ControlMaster but no C9 one-occurrence submit credential
+- **THEN** it can perform only the admitted workspace lifecycle operations and cannot invoke native `sbatch`
 
 #### Scenario: Limit concurrent runner channels
 - **WHEN** runner-owned operations exceed the configured per-target channel budget

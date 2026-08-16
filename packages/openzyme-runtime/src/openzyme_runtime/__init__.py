@@ -139,6 +139,7 @@ from .settings import ExecutionSettings
 from .settings import HOST_API_DEPLOYMENT_PROFILES
 from .settings import HOST_API_LOCAL_DEPLOYMENT_PROFILE
 from .settings import HOST_API_LOOPBACK_BIND_HOSTS
+from .settings import AgentCapsuleSettings
 from .settings import HostApiSettings
 from .settings import HostApiPrincipalSettings
 from .settings import HostCliSettings
@@ -184,6 +185,7 @@ from .tooling import sanitize_tool_result_diagnostics
 from .tooling import validate_arguments_against_schema
 
 __all__ = [
+    "AgentCapsuleSettings",
     "AgentStepContext",
     "CanonicalResearchSnapshot",
     "canonical_digest",

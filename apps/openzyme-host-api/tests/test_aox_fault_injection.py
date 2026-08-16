@@ -28,6 +28,7 @@ from openzyme_host_api.aox_scientific_contract import (
 )
 from openzyme_host_api.v3_service import V3EventStore
 from openzyme_host_api.v3_service import V3HostApiService
+from tests.agent_capability_test_support import provision_ready_agent_capability
 
 
 def _digest(content: bytes) -> str:
@@ -81,6 +82,7 @@ def _fault_service(
     now = "2026-08-01T00:00:00+00:00"
     repositories.agents.save(
         AgentMember(
+            member_id="member_aox_exact_fault_executor",
             agent_id=actor_ref,
             session_id=session_id,
             lane_id=lane_id,
@@ -93,6 +95,17 @@ def _fault_service(
             updated_at=now,
             runtime_state="idle",
         )
+    )
+    master_lease_id = provision_ready_agent_capability(
+        repositories,
+        session_id=session_id,
+        agent_id="agent:master",
+    )
+    provision_ready_agent_capability(
+        repositories,
+        session_id=session_id,
+        agent_id=actor_ref,
+        parent_lease_id=master_lease_id,
     )
     service.claim_lane(lane_id, claimed_ref=actor_ref)
     grant = service.grant_scientific_attempt_authorization(

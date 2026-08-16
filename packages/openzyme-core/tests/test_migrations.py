@@ -4,6 +4,7 @@ import pytest
 import openzyme_core.migration_assets as migration_assets
 
 from openzyme_core import CURRENT_SQLITE_SCHEMA_VERSION
+from openzyme_core import CoreRepositories
 from openzyme_core import MIGRATION_IDS
 from openzyme_core import SQLiteSchemaMismatchError
 from openzyme_core import apply_sqlite_migrations
@@ -257,6 +258,8 @@ def test_migration_asset_is_available() -> None:
     repository_binding_sql = get_migration_sql(
         "038_v3_project_repository_bindings"
     )
+    capability_lease_sql = get_migration_sql("039_v3_agent_capability_leases")
+    agent_git_workspace_sql = get_migration_sql("040_v3_agent_git_workspaces")
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -405,6 +408,36 @@ def test_migration_asset_is_available() -> None:
     )[1].split("END;", maxsplit=1)[0]
     assert "FROM repository_credential_issuance_records" in retirement_guard
     assert "FROM repository_private_namespace_records" in retirement_guard
+    assert "CREATE TABLE agent_workspace_generation_reservations" in (
+        capability_lease_sql
+    )
+    assert "CREATE TABLE agent_capability_lease_records" in capability_lease_sql
+    assert "CREATE TABLE agent_capability_lease_lifecycle_events" in (
+        capability_lease_sql
+    )
+    assert "CREATE TABLE agent_retirement_records" in capability_lease_sql
+    assert "ADD COLUMN capability_lease_id" in capability_lease_sql
+    assert (
+        "openzyme_agent_capability_readiness_activation_allowed"
+        in capability_lease_sql
+    )
+    assert (
+        "openzyme_runtime_signal_capability_admission_allowed"
+        in capability_lease_sql
+    )
+    assert "CREATE TABLE agent_git_workspace_records" in agent_git_workspace_sql
+    assert "CREATE TABLE repository_provision_credential_records" in (
+        agent_git_workspace_sql
+    )
+    assert "CREATE TABLE agent_workspace_state_observations" in (
+        agent_git_workspace_sql
+    )
+    assert "CREATE TABLE verified_workspace_checkpoint_records" in (
+        agent_git_workspace_sql
+    )
+    assert "agent_git_workspace_ready_requires_pending_intent" in (
+        agent_git_workspace_sql
+    )
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -444,6 +477,17 @@ def test_migration_asset_is_available() -> None:
         "036_v3_failure_recovery_dispositions",
         "037_v3_controlled_operation_provider_receipts",
         "038_v3_project_repository_bindings",
+        "039_v3_agent_capability_leases",
+        "040_v3_agent_git_workspaces",
+        "041_v3_workspace_publications",
+        "042_v3_git_lfs_work_products",
+        "043_v3_revision_path_handoffs",
+        "044_v3_executor_hpc_workspaces",
+        "045_v3_workspace_revision_executions",
+        "046_v3_scientific_file_deliverables",
+        "047_v3_file_workspace_internal_contract",
+        "048_v3_file_workspace_public_contract",
+        "049_v3_historical_artifact_git_lfs_migration",
     )
 
 
@@ -503,6 +547,28 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "quiescence_receipt_records",
         "durable_event_records",
         "command_receipt_records",
+        "agent_workspace_generation_reservations",
+        "agent_capability_lease_records",
+        "agent_capability_lease_lifecycle_events",
+        "agent_retirement_records",
+        "agent_git_workspace_records",
+        "repository_provision_credential_records",
+        "agent_workspace_state_observations",
+        "verified_workspace_checkpoint_records",
+        "workspace_publication_intents",
+        "published_revisions",
+        "git_lfs_binding_policies",
+        "git_lfs_object_records",
+        "git_lfs_workspace_object_links",
+        "git_lfs_upload_sessions",
+        "git_lfs_object_read_receipts",
+        "git_lfs_closure_manifests",
+        "git_lfs_closure_verifications",
+        "git_lfs_closure_verification_entries",
+        "git_lfs_publication_intent_proofs",
+        "git_lfs_publication_closures",
+        "git_lfs_publication_pins",
+        "git_lfs_gc_candidate_receipts",
     }.issubset(table_names)
     task_columns = {
         row[1] for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
@@ -554,6 +620,8 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "last_error",
         "session_lease_token",
         "session_fencing_token",
+        "capability_lease_id",
+        "workspace_generation",
     }.issubset(signal_columns)
     lease_columns = {
         row[1]
@@ -659,6 +727,21 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "mutation_guard_failure_recovery_disposition_records_insert",
         "mutation_guard_failure_recovery_disposition_records_update",
         "mutation_guard_failure_recovery_disposition_records_delete",
+        "agent_workspace_generation_strictly_increases",
+        "agent_workspace_generation_insert_requires_reserved",
+        "agent_workspace_generation_ready_requires_activation_authority",
+        "agent_capability_lease_insert_requires_pending",
+        "agent_capability_lease_state_transition",
+        "agent_capability_lease_activation_requires_activation_authority",
+        "agent_capability_lease_activated_event_requires_activation_authority",
+        "agent_capability_lease_events_append_only_update",
+        "agent_capability_lease_events_append_only_delete",
+        "repository_credential_requires_active_capability_lease",
+        "repository_capability_hold_requires_active_lease",
+        "agent_runtime_signal_capability_binding_matches",
+        "agent_runtime_signal_capability_binding_immutable",
+        "agent_runtime_signal_claim_requires_capability_admission",
+        "agent_runtime_signal_claim_requires_claimable_state",
     }.issubset(trigger_names)
 
 
@@ -891,6 +974,339 @@ def test_sqlite_migrations_are_idempotent_for_current_connection() -> None:
     assert user_version == CURRENT_SQLITE_SCHEMA_VERSION
 
 
+def test_sqlite_migrations_upgrade_v37_through_v38_and_v39() -> None:
+    connection = connect_sqlite(":memory:")
+    _initialize_sqlite_at_version(connection, version=37)
+
+    apply_sqlite_migrations(connection)
+
+    assert (
+        connection.execute("PRAGMA user_version").fetchone()[0]
+        == CURRENT_SQLITE_SCHEMA_VERSION
+    )
+    assert (
+        connection.execute(
+            """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'agent_capability_lease_records'
+        """
+        ).fetchone()
+        is not None
+    )
+    signal_columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(agent_runtime_signals)"
+        ).fetchall()
+    }
+    assert {"capability_lease_id", "workspace_generation"}.issubset(signal_columns)
+
+
+def test_v39_preserves_c1_acceptance_rows_without_promoting_them() -> None:
+    connection = connect_sqlite(":memory:")
+    _initialize_sqlite_at_version(connection, version=38)
+    connection.execute(
+        """
+        INSERT INTO sessions (
+            session_id, project_id, title, objective, status, created_at, updated_at
+        ) VALUES (
+            'session_c1_history', 'project_c1', 'C1 history', 'Preserve audit rows',
+            'active', 'now', 'now'
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO agent_members (
+            member_id, agent_id, session_id, name, role, status, created_at, updated_at
+        ) VALUES (
+            'member_c1_history', 'agent:master', 'session_c1_history',
+            'master', 'master', 'active', 'now', 'now'
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO project_repository_binding_versions (
+            binding_id, project_id, binding_version, repository_id,
+            internal_git_service_id, internal_git_endpoint,
+            lfs_service_id, lfs_endpoint, upstream_identity, upstream_url,
+            object_format, default_base_ref, default_base_commit,
+            private_ref_prefix, publication_ref_prefix, historical_ref_prefix,
+            repository_policy_version, repository_policy_digest,
+            canonical_digest, created_at, created_by
+        ) VALUES (
+            'binding_c1', 'project_c1', 1, 'repository_c1',
+            'git_c1', 'https://localhost/repository_c1.git',
+            'lfs_c1', 'https://localhost/repository_c1.git/info/lfs',
+            'upstream_c1', 'git@example.test:repository_c1.git',
+            'sha1', 'refs/heads/main', '1111111111111111111111111111111111111111',
+            'refs/openzyme/private', 'refs/openzyme/publications',
+            'refs/openzyme/historical', 'repository-policy-v1',
+            'sha256:1111111111111111111111111111111111111111111111111111111111111111',
+            'sha256:2222222222222222222222222222222222222222222222222222222222222222',
+            'now', 'operator:c1'
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO session_repository_binding_pins (
+            session_id, project_id, binding_id, binding_version, repository_id,
+            resolved_base_commit, binding_canonical_digest, pinned_at
+        ) VALUES (
+            'session_c1_history', 'project_c1', 'binding_c1', 1, 'repository_c1',
+            '1111111111111111111111111111111111111111',
+            'sha256:2222222222222222222222222222222222222222222222222222222222222222',
+            'now'
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO repository_credential_issuance_records (
+            credential_id, token_digest, binding_id, binding_version,
+            repository_id, session_id, agent_member_id, workspace_generation,
+            capability_lease_id, protocols_json, ref_classes_json, claims_digest,
+            issued_at, expires_at
+        ) VALUES (
+            'credential_c1_history', 'sha256:credential-c1-history',
+            'binding_c1', 1, 'repository_c1', 'session_c1_history',
+            'member_c1_history', 1, 'acceptance_only_lease',
+            '["git_read"]', '["read"]', 'sha256:claims-c1-history',
+            'now', 'later'
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO repository_private_namespace_records (
+            namespace_id, binding_id, binding_version, session_id,
+            agent_member_id, workspace_generation, namespace_prefix, status,
+            retention_deadline, opened_at
+        ) VALUES (
+            'namespace_c1_history', 'binding_c1', 1, 'session_c1_history',
+            'member_c1_history', 1, 'refs/openzyme/private/c1-history', 'open',
+            'later', 'now'
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO repository_private_namespace_holds (
+            hold_id, namespace_id, hold_kind, owner_ref, created_at
+        ) VALUES (
+            'hold_c1_history', 'namespace_c1_history',
+            'active_capability_lease', 'acceptance_only_lease', 'now'
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO agent_runtime_signals (
+            signal_id, session_id, agent_id, reason, status, created_at
+        ) VALUES (
+            'signal_c1_history', 'session_c1_history', 'agent:master',
+            'manual_resume', 'pending', 'now'
+        )
+        """
+    )
+    connection.commit()
+
+    apply_sqlite_migrations(connection)
+
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM repository_credential_issuance_records"
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM repository_private_namespace_holds"
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM agent_capability_lease_records"
+        ).fetchone()[0]
+        == 0
+    )
+    assert tuple(
+        connection.execute(
+            """
+            SELECT capability_lease_id, workspace_generation
+            FROM agent_runtime_signals
+            WHERE signal_id = 'signal_c1_history'
+            """
+        ).fetchone()
+    ) == (None, None)
+    repositories = CoreRepositories.from_connection(connection)
+    runtime_lease = repositories.session_runtime_leases.acquire(
+        session_id="session_c1_history",
+        owner_id="worker:c1-history",
+        mode="test",
+    ).lease
+    assert runtime_lease is not None
+    with repositories.runtime_write_fence(runtime_lease):
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="canonical capability admission",
+        ):
+            connection.execute(
+                """
+                UPDATE agent_runtime_signals
+                SET status = 'claimed',
+                    claimed_at = 'now',
+                    claimed_by = 'worker:c1-history',
+                    claim_expires_at = 'later',
+                    attempt_count = attempt_count + 1,
+                    session_lease_token = ?,
+                    session_fencing_token = ?
+                WHERE signal_id = 'signal_c1_history'
+                """,
+                (runtime_lease.lease_token, runtime_lease.fencing_token),
+            )
+    connection.rollback()
+    assert tuple(
+        connection.execute(
+            """
+            SELECT status, attempt_count, session_lease_token,
+                   session_fencing_token
+            FROM agent_runtime_signals
+            WHERE signal_id = 'signal_c1_history'
+            """
+        ).fetchone()
+    ) == ("pending", 0, None, None)
+    with pytest.raises(sqlite3.IntegrityError, match="exact active"):
+        connection.execute(
+            """
+            INSERT INTO repository_credential_issuance_records (
+                credential_id, token_digest, binding_id, binding_version,
+                repository_id, session_id, agent_member_id, workspace_generation,
+                capability_lease_id, protocols_json, ref_classes_json,
+                claims_digest, issued_at, expires_at
+            ) VALUES (
+                'credential_after_c2', 'sha256:credential-after-c2',
+                'binding_c1', 1, 'repository_c1', 'session_c1_history',
+                'member_c1_history', 1, 'acceptance_only_lease',
+                '["git_read"]', '["read"]', 'sha256:claims-after-c2',
+                'now', 'later'
+            )
+            """
+        )
+    connection.rollback()
+    with pytest.raises(sqlite3.IntegrityError, match="exact active"):
+        connection.execute(
+            """
+            INSERT INTO repository_private_namespace_holds (
+                hold_id, namespace_id, hold_kind, owner_ref, created_at
+            ) VALUES (
+                'hold_after_c2', 'namespace_c1_history',
+                'active_capability_lease', 'acceptance_only_lease', 'now'
+            )
+            """
+        )
+    connection.rollback()
+    with pytest.raises(sqlite3.IntegrityError, match="occurrence binding mismatch"):
+        connection.execute(
+            """
+            INSERT INTO agent_runtime_signals (
+                signal_id, session_id, agent_id, reason, status, created_at
+            ) VALUES (
+                'signal_after_c2', 'session_c1_history', 'agent:master',
+                'manual_resume', 'pending', 'now'
+            )
+            """
+        )
+
+
+def test_v39_rejects_new_reservation_or_lease_in_terminal_session() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    connection.execute(
+        """
+        INSERT INTO sessions (
+            session_id, project_id, title, objective, status, created_at, updated_at
+        ) VALUES ('session_terminal', 'project_1', 'Terminal', 'Terminal',
+                  'active', 'now', 'now')
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO agent_members (
+            member_id, agent_id, session_id, name, role, status, created_at, updated_at
+        ) VALUES
+            ('member_master', 'agent:master', 'session_terminal',
+             'master', 'master', 'active', 'now', 'now'),
+            ('member_child', 'agent:child', 'session_terminal',
+             'child', 'researcher', 'active', 'now', 'now')
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO agent_workspace_generation_reservations (
+            reservation_id, session_id, agent_member_id, agent_id,
+            workspace_generation, status, state_version, reserved_at, updated_at,
+            immutable_fingerprint, canonical_digest
+        ) VALUES (
+            'reservation_master', 'session_terminal', 'member_master',
+            'agent:master', 1, 'reserved', 1, 'now', 'now',
+            'sha256:1111111111111111111111111111111111111111111111111111111111111111',
+            'sha256:2222222222222222222222222222222222222222222222222222222222222222'
+        )
+        """
+    )
+    connection.execute(
+        "UPDATE sessions SET status = 'completed' WHERE session_id = 'session_terminal'"
+    )
+    connection.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="invalid or retired"):
+        connection.execute(
+            """
+            INSERT INTO agent_workspace_generation_reservations (
+                reservation_id, session_id, agent_member_id, agent_id,
+                workspace_generation, status, state_version, reserved_at, updated_at,
+                immutable_fingerprint, canonical_digest
+            ) VALUES (
+                'reservation_child', 'session_terminal', 'member_child',
+                'agent:child', 1, 'reserved', 1, 'now', 'now',
+                'sha256:3333333333333333333333333333333333333333333333333333333333333333',
+                'sha256:4444444444444444444444444444444444444444444444444444444444444444'
+            )
+            """
+        )
+    connection.rollback()
+    with pytest.raises(sqlite3.IntegrityError, match="invalid, unreserved, or retired"):
+        connection.execute(
+            """
+            INSERT INTO agent_capability_lease_records (
+                lease_id, session_id, agent_member_id, agent_id,
+                workspace_generation, profile, capabilities_json,
+                capability_set_digest, target_ids_json, target_scope_digest,
+                policy_version, policy_digest, idempotency_key, status,
+                state_version, issued_at, updated_at, immutable_fingerprint,
+                canonical_digest
+            ) VALUES (
+                'lease_terminal', 'session_terminal', 'member_master',
+                'agent:master', 1, 'general',
+                '["filesystem_read","filesystem_write","shell_process","git","git_lfs","ordinary_network","upload","download"]',
+                'sha256:5555555555555555555555555555555555555555555555555555555555555555',
+                '["repository:openzyme"]',
+                'sha256:6666666666666666666666666666666666666666666666666666666666666666',
+                'policy-v1',
+                'sha256:7777777777777777777777777777777777777777777777777777777777777777',
+                'issue-terminal', 'pending_workspace', 1, 'now', 'now',
+                'sha256:8888888888888888888888888888888888888888888888888888888888888888',
+                'sha256:9999999999999999999999999999999999999999999999999999999999999999'
+            )
+            """
+        )
+
+
 def test_sqlite_migrations_upgrade_v25_without_fabricating_durable_authority() -> None:
     connection = connect_sqlite(":memory:")
     _initialize_sqlite_at_version(connection, version=25)
@@ -996,4 +1412,16 @@ def test_sqlite_migrations_reject_current_version_with_missing_tables() -> None:
     connection.execute(f"PRAGMA user_version = {CURRENT_SQLITE_SCHEMA_VERSION}")
 
     with pytest.raises(SQLiteSchemaMismatchError, match="missing required tables"):
+        apply_sqlite_migrations(connection)
+
+
+def test_sqlite_migrations_require_agent_retirement_state_guard() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    connection.execute("DROP TRIGGER agent_member_retirement_state_requires_record")
+
+    with pytest.raises(
+        SQLiteSchemaMismatchError,
+        match="agent_member_retirement_state_requires_record",
+    ):
         apply_sqlite_migrations(connection)

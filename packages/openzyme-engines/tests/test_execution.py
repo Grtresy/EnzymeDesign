@@ -5777,7 +5777,7 @@ def test_pipeline_bio_tools_runner_failures_preserve_taxonomy(
     assert error["hpc_failure"]["error_code"] == runner_code
 
 
-def test_pipeline_bio_tools_real_runner_stack_projects_transport_timeout_closed(
+def test_legacy_artifact_pipeline_is_rejected_before_runner_dispatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5891,30 +5891,14 @@ def test_pipeline_bio_tools_real_runner_stack_projects_transport_timeout_closed(
     assert failed.invocation.status is EngineInvocationStatus.FAILED
     assert failed.parsed_result is not None
     error = failed.parsed_result.structured_findings["error"]
-    assert error["type"] == "hpc_operation_failed"
-    assert error["stage"] == "remote_execution"
-    assert error["retryable"] is False
-    assert error["hpc_failure"]["error_code"] == "DISPATCH_IN_DOUBT"
-    assert error["hpc_failure"]["phase"] == "dispatching"
-    assert error["hpc_failure"]["effect_certainty"] == "dispatch_in_doubt"
-    assert error["hpc_failure"]["retry_eligibility"] == "reconcile_required"
-    assert error["hpc_failure"]["reconciliation_required"] is True
-    assert "stderr_excerpt" not in error["hpc_failure"]
+    assert error["type"] == "hpc_staging_failed"
+    assert "forbids artifact staging/fetch fields" in error["details"]["reason"]
     assert private_stderr.strip() not in str(error)
     assert repositories.artifacts.list_by_invocation(
         "sess_001", "inv_real_stack_transport"
     ) == []
-    assert "artifact_fetch" not in observed_stages
-
-    metadata_paths = list(
-        runner_artifact_root.glob("*/metadata/run_result_metadata.json")
-    )
-    assert len(metadata_paths) == 1
-    runner_metadata = json.loads(metadata_paths[0].read_text(encoding="utf-8"))
-    assert runner_metadata["runner_phase"] == "dispatching"
-    assert runner_metadata["effect_certainty"] == "dispatch_in_doubt"
-    assert runner_metadata["retry_eligibility"] == "reconcile_required"
-    assert runner_metadata["reconciliation_required"] is True
+    assert observed_stages == []
+    assert not list(runner_artifact_root.glob("*/metadata/run_result_metadata.json"))
 
 
 def test_pipeline_bio_tools_missing_declared_output_does_not_synthesize_artifact() -> (
@@ -6552,7 +6536,9 @@ def test_pipeline_stage_artifact_requires_s08_sealed_digest() -> None:
     assert error["stage"] == "hpc_stage_validation"
 
 
-def test_pipeline_stage_artifact_accepts_rcsb_downloaded_sealed_artifact() -> None:
+def test_rcsb_download_requires_file_workspace_and_never_creates_stage_artifact() -> (
+    None
+):
     repositories = _build_repositories()
     session = _seed_session(repositories)
     registry = ToolRegistry()
@@ -6567,6 +6553,7 @@ def test_pipeline_stage_artifact_accepts_rcsb_downloaded_sealed_artifact() -> No
         tool_registry=registry,
         restore_focus=RestoreFocus(task_id="task_001"),
     )
+    artifacts_before = repositories.artifacts.list_by_session(session.session_id)
     download = registry.dispatch(
         context,
         ToolInvocation(
@@ -6577,48 +6564,9 @@ def test_pipeline_stage_artifact_accepts_rcsb_downloaded_sealed_artifact() -> No
             lane_id="lane_001",
         ),
     )
-    assert download.ok is True
-    download_payload = json.loads(download.content)
-    artifact_id = str(download_payload["artifacts"][0]["artifact_id"])
-    artifact = repositories.artifacts.get(artifact_id)
-    assert artifact is not None
-    metadata = dict(artifact.metadata or {})
-    assert metadata["content_digest"] == metadata["sealed_digest"]
-
-    workspace = _workspace_payload("rcsb_download")
-    code_artifact_id = _pipeline_source_id(
-        repositories,
-        "code_stage_rcsb_download",
-        "from openzyme_pipeline import hpc\n"
-        "# Runtime sandbox fixture stages the downloaded RCSB artifact.\n",
-    )
-    sandbox = BioSandboxRunner(
-        (
-            (
-                "hpc.stage_artifact",
-                {
-                    "hpc_workspace": workspace,
-                    "artifact_id": artifact_id,
-                    "workspace_path": "inputs/structure.pdb",
-                },
-            ),
-        )
-    )
-    engine = ExecutionEngine(
-        repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox
-    )
-
-    result = engine.start_pipeline(
-        session_id="sess_001",
-        task_id="task_001",
-        invocation_id="inv_pipeline_stage_rcsb_download",
-        code_artifact_id=code_artifact_id,
-        inputs={"artifact_ids": [artifact_id]},
-    )
-
-    assert result.invocation.status is EngineInvocationStatus.SUCCEEDED
-    assert sandbox.results[0]["artifact_id"] == artifact_id
-    assert sandbox.results[0]["artifact_digest"] == metadata["content_digest"]
+    assert download.ok is False
+    assert download.error_code == "workspace_file_handoff_failed"
+    assert repositories.artifacts.list_by_session(session.session_id) == artifacts_before
 
 
 def test_pipeline_stage_ref_digest_mismatch_is_rejected() -> None:

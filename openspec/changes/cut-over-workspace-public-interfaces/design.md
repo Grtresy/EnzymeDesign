@@ -99,3 +99,6 @@ activation前必须将仍采用 artifact public contract的 session分类为：�
 ## Open Questions
 
 无。产品选择已由 1A、2A、3A、4A、5A、6B 固定；public contract采用一次性 breaking cutover，旧客户端和 artifact-era session均不获得 fallback。
+> **源码阶段：** `file_workspace_public_source_only_cutover_gate@1` 将 Host、CLI、
+> SDK、UI 和 projection 视为同一待验 release bundle；在 combined final source
+> 统一验收前，不允许其中任何组件独立激活或为 artifact-era session 提供在线兼容。

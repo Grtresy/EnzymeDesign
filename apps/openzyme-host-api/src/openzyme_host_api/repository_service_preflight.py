@@ -298,6 +298,15 @@ def preflight_repository_service(
 
     with provider.read() as scope:
         bindings = tuple(scope.repositories.project_repository_bindings.list_active())
+        lfs_policies = {
+            (binding.binding_id, binding.binding_version): (
+                scope.repositories.git_lfs.get_policy(
+                    binding_id=binding.binding_id,
+                    binding_version=binding.binding_version,
+                )
+            )
+            for binding in bindings
+        }
     if not bindings:
         raise RepositoryIdentityMismatchError(
             "repository service has no active project binding"
@@ -312,6 +321,18 @@ def preflight_repository_service(
     origin = settings.https_origin.rstrip("/")
     binding_facts: list[dict[str, object]] = []
     for binding in bindings:
+        lfs_policy = lfs_policies[(binding.binding_id, binding.binding_version)]
+        if (
+            lfs_policy is None
+            or lfs_policy.repository_id != binding.repository_id
+            or lfs_policy.lfs_service_id != binding.lfs_service_id
+            or lfs_policy.lfs_endpoint != binding.lfs_endpoint
+            or lfs_policy.policy_version != binding.repository_policy_version
+            or lfs_policy.policy_digest != binding.repository_policy_digest
+        ):
+            raise RepositoryServicePreflightError(
+                "active binding has no exact immutable Git LFS policy"
+            )
         if binding.internal_git_endpoint != (
             f"{origin}/repositories/{binding.repository_id}.git"
         ):
@@ -334,6 +355,14 @@ def preflight_repository_service(
                 "object_format": binding.object_format.value,
                 "base_commit": binding.default_base_commit,
                 "policy_digest": binding.repository_policy_digest,
+                "lfs_object_format": lfs_policy.object_format,
+                "ordinary_blob_threshold_bytes": (
+                    lfs_policy.ordinary_blob_threshold_bytes
+                ),
+                "max_object_bytes": lfs_policy.max_object_bytes,
+                "max_workspace_bytes": lfs_policy.max_workspace_bytes,
+                "max_repository_bytes": lfs_policy.max_repository_bytes,
+                "private_retention_seconds": lfs_policy.private_retention_seconds,
             }
         )
 

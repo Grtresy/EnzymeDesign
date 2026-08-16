@@ -18,11 +18,16 @@ import stat
 from typing import Any
 from uuid import uuid4
 
+from openzyme_domain import AgentCapability
 from openzyme_domain import ProjectRepositoryBinding
 from openzyme_domain import RepositoryRefClass
 from openzyme_domain import SessionRepositoryBindingPin
 
 from .repository_storage import DurableRepositoryRootManager
+from .agent_capability_service import ActiveAgentCapabilityLeaseValidator
+from .agent_capability_service import AgentCapabilityAdmissionRequest
+from .agent_capability_service import AgentCapabilityError
+from .repositories import CoreRepositories
 from .repositories import _commit
 
 
@@ -373,29 +378,21 @@ class RepositoryCredentialBroker:
         *,
         binding: ProjectRepositoryBinding,
         pin: SessionRepositoryBindingPin,
-        lease: ActiveCapabilityLeaseAssertion,
+        capability_lease_id: str,
+        expected_agent_member_id: str,
+        expected_agent_id: str,
+        expected_workspace_generation: int,
         protocols: tuple[RepositoryCredentialProtocol, ...],
         ref_classes: tuple[RepositoryRefClass, ...],
         now: datetime,
     ) -> IssuedRepositoryCredential:
         now = now.astimezone(UTC)
-        lease.assert_active(now=now)
         if self.credential_ttl_seconds <= 0:
             raise ValueError("credential_ttl_seconds must be positive")
-        if (
-            pin.binding_id != binding.binding_id
-            or pin.binding_version != binding.binding_version
-            or pin.repository_id != binding.repository_id
-            or pin.binding_canonical_digest != binding.canonical_digest
-            or pin.resolved_base_commit != binding.default_base_commit
-        ):
-            raise RepositoryCredentialRejectedError(
-                "session repository pin does not match the requested binding"
-            )
-        if lease.session_id != pin.session_id:
-            raise RepositoryCredentialRejectedError(
-                "capability lease session does not match repository pin"
-            )
+        if not capability_lease_id or not expected_agent_member_id or not expected_agent_id:
+            raise ValueError("canonical capability lease owner identity is required")
+        if expected_workspace_generation <= 0:
+            raise ValueError("expected_workspace_generation must be positive")
         if any(
             item
             in {
@@ -418,91 +415,125 @@ class RepositoryCredentialBroker:
             raise RepositoryCredentialRejectedError(
                 "repository write credentials require the private ref class"
             )
-        if any(
-            item in protocols
-            for item in (
-                RepositoryCredentialProtocol.GIT_WRITE,
-                RepositoryCredentialProtocol.LFS_WRITE,
+        repositories = CoreRepositories.from_connection(self.connection)
+        if repositories.in_managed_transaction:
+            raise RepositoryCredentialRejectedError(
+                "repository credential issuance must own its BEGIN IMMEDIATE transaction"
             )
-        ):
-            self._require_open_write_namespace(
+        issued: IssuedRepositoryCredential
+        with repositories.atomic(prefix="repository_credential_issue"):
+            canonical_binding = repositories.project_repository_bindings.get(
+                binding.binding_id
+            )
+            canonical_pin = repositories.session_repository_binding_pins.get(
+                pin.session_id
+            )
+            if canonical_binding != binding or canonical_pin != pin:
+                raise RepositoryCredentialRejectedError(
+                    "repository binding or session pin is not canonical"
+                )
+            if (
+                pin.binding_id != binding.binding_id
+                or pin.binding_version != binding.binding_version
+                or pin.repository_id != binding.repository_id
+                or pin.binding_canonical_digest != binding.canonical_digest
+                or pin.resolved_base_commit != binding.default_base_commit
+            ):
+                raise RepositoryCredentialRejectedError(
+                    "session repository pin does not match the requested binding"
+                )
+            self._validate_canonical_lease(
+                repositories=repositories,
+                lease_id=capability_lease_id,
+                session_id=pin.session_id,
+                agent_member_id=expected_agent_member_id,
+                agent_id=expected_agent_id,
+                workspace_generation=expected_workspace_generation,
+                protocols=protocols,
+            )
+            if any(
+                item in protocols
+                for item in (
+                    RepositoryCredentialProtocol.GIT_WRITE,
+                    RepositoryCredentialProtocol.LFS_WRITE,
+                )
+            ):
+                self._require_open_write_namespace(
+                    binding_id=binding.binding_id,
+                    binding_version=binding.binding_version,
+                    session_id=pin.session_id,
+                    agent_member_id=expected_agent_member_id,
+                    workspace_generation=expected_workspace_generation,
+                    capability_lease_id=capability_lease_id,
+                    expected_prefix=private_ref_prefix(
+                        binding,
+                        session_id=pin.session_id,
+                        agent_member_id=expected_agent_member_id,
+                        workspace_generation=expected_workspace_generation,
+                    ),
+                )
+            expires_at = now + timedelta(seconds=self.credential_ttl_seconds)
+            claims = RepositoryCredentialClaims(
+                credential_id=f"repository_credential_{uuid4().hex}",
                 binding_id=binding.binding_id,
                 binding_version=binding.binding_version,
+                repository_id=binding.repository_id,
                 session_id=pin.session_id,
-                agent_member_id=lease.agent_member_id,
-                workspace_generation=lease.workspace_generation,
-                capability_lease_id=lease.lease_id,
-                expected_prefix=private_ref_prefix(
-                    binding,
-                    session_id=pin.session_id,
-                    agent_member_id=lease.agent_member_id,
-                    workspace_generation=lease.workspace_generation,
+                agent_member_id=expected_agent_member_id,
+                workspace_generation=expected_workspace_generation,
+                capability_lease_id=capability_lease_id,
+                protocols=protocols,
+                ref_classes=ref_classes,
+                issued_at=now.isoformat(),
+                expires_at=expires_at.isoformat(),
+            )
+            payload_bytes = _canonical_json(claims.to_payload())
+            signature = hmac.new(
+                self._signing_key(), payload_bytes, hashlib.sha256
+            ).digest()
+            token = f"ozrepo1.{_b64encode(payload_bytes)}.{_b64encode(signature)}"
+            token_digest = _digest_bytes(token.encode("ascii"))
+            self.connection.execute(
+                """
+                INSERT INTO repository_credential_issuance_records (
+                    credential_id,
+                    token_digest,
+                    binding_id,
+                    binding_version,
+                    repository_id,
+                    session_id,
+                    agent_member_id,
+                    workspace_generation,
+                    capability_lease_id,
+                    protocols_json,
+                    ref_classes_json,
+                    claims_digest,
+                    issued_at,
+                    expires_at,
+                    revoked_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                """,
+                (
+                    claims.credential_id,
+                    token_digest,
+                    claims.binding_id,
+                    claims.binding_version,
+                    claims.repository_id,
+                    claims.session_id,
+                    claims.agent_member_id,
+                    claims.workspace_generation,
+                    claims.capability_lease_id,
+                    json.dumps([item.value for item in claims.protocols]),
+                    json.dumps([item.value for item in claims.ref_classes]),
+                    claims.claims_digest,
+                    claims.issued_at,
+                    claims.expires_at,
                 ),
             )
-        expires_at = min(
-            now + timedelta(seconds=self.credential_ttl_seconds),
-            _parse_utc(lease.expires_at, field_name="capability lease expires_at"),
-        )
-        claims = RepositoryCredentialClaims(
-            credential_id=f"repository_credential_{uuid4().hex}",
-            binding_id=binding.binding_id,
-            binding_version=binding.binding_version,
-            repository_id=binding.repository_id,
-            session_id=pin.session_id,
-            agent_member_id=lease.agent_member_id,
-            workspace_generation=lease.workspace_generation,
-            capability_lease_id=lease.lease_id,
-            protocols=protocols,
-            ref_classes=ref_classes,
-            issued_at=now.isoformat(),
-            expires_at=expires_at.isoformat(),
-        )
-        payload_bytes = _canonical_json(claims.to_payload())
-        signature = hmac.new(
-            self._signing_key(), payload_bytes, hashlib.sha256
-        ).digest()
-        token = f"ozrepo1.{_b64encode(payload_bytes)}.{_b64encode(signature)}"
-        token_digest = _digest_bytes(token.encode("ascii"))
-        self.connection.execute(
-            """
-            INSERT INTO repository_credential_issuance_records (
-                credential_id,
-                token_digest,
-                binding_id,
-                binding_version,
-                repository_id,
-                session_id,
-                agent_member_id,
-                workspace_generation,
-                capability_lease_id,
-                protocols_json,
-                ref_classes_json,
-                claims_digest,
-                issued_at,
-                expires_at,
-                revoked_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-            """,
-            (
-                claims.credential_id,
-                token_digest,
-                claims.binding_id,
-                claims.binding_version,
-                claims.repository_id,
-                claims.session_id,
-                claims.agent_member_id,
-                claims.workspace_generation,
-                claims.capability_lease_id,
-                json.dumps([item.value for item in claims.protocols]),
-                json.dumps([item.value for item in claims.ref_classes]),
-                claims.claims_digest,
-                claims.issued_at,
-                claims.expires_at,
-            ),
-        )
-        _commit(self.connection)
-        return IssuedRepositoryCredential(token=token, claims=claims)
+            _commit(self.connection)
+            issued = IssuedRepositoryCredential(token=token, claims=claims)
+        return issued
 
     def authenticate(
         self,
@@ -573,6 +604,21 @@ class RepositoryCredentialBroker:
             raise RepositoryCredentialRejectedError(
                 "repository bearer credential does not authorize this protocol"
             )
+        repositories = CoreRepositories.from_connection(self.connection)
+        agent = repositories.agents.get_by_member_id(claims.agent_member_id)
+        if agent is None or agent.session_id != claims.session_id:
+            raise RepositoryCredentialRejectedError(
+                "repository bearer credential agent owner is not canonical"
+            )
+        self._validate_canonical_lease(
+            repositories=repositories,
+            lease_id=claims.capability_lease_id,
+            session_id=claims.session_id,
+            agent_member_id=claims.agent_member_id,
+            agent_id=agent.agent_id,
+            workspace_generation=claims.workspace_generation,
+            protocols=(protocol,),
+        )
         if protocol in {
             RepositoryCredentialProtocol.GIT_WRITE,
             RepositoryCredentialProtocol.LFS_WRITE,
@@ -586,6 +632,47 @@ class RepositoryCredentialBroker:
                 capability_lease_id=claims.capability_lease_id,
             )
         return claims
+
+    def _validate_canonical_lease(
+        self,
+        *,
+        repositories: CoreRepositories,
+        lease_id: str,
+        session_id: str,
+        agent_member_id: str,
+        agent_id: str,
+        workspace_generation: int,
+        protocols: tuple[RepositoryCredentialProtocol, ...],
+    ) -> None:
+        required: list[AgentCapability] = []
+        if protocols:
+            required.append(AgentCapability.GIT)
+        if any(
+            protocol
+            in {
+                RepositoryCredentialProtocol.LFS_READ,
+                RepositoryCredentialProtocol.LFS_WRITE,
+            }
+            for protocol in protocols
+        ):
+            required.append(AgentCapability.GIT_LFS)
+        try:
+            ActiveAgentCapabilityLeaseValidator(repositories).validate(
+                AgentCapabilityAdmissionRequest(
+                    lease_id=lease_id,
+                    session_id=session_id,
+                    agent_member_id=agent_member_id,
+                    agent_id=agent_id,
+                    workspace_generation=workspace_generation,
+                    service_id="project_repository_service",
+                    target_id="repository:session-pinned",
+                    protocol="+".join(protocol.value for protocol in protocols),
+                    operation_class="repository_credential",
+                    required_capabilities=tuple(required),
+                )
+            )
+        except AgentCapabilityError as exc:
+            raise RepositoryCredentialRejectedError(str(exc)) from exc
 
     def revoke(self, credential_id: str, *, revoked_at: str) -> None:
         cursor = self.connection.execute(

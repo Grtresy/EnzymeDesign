@@ -1,0 +1,94 @@
+{
+  "schema_id": "executor_hpc_workspace_source_only_dependency_gate@1",
+  "change_id": "provision-isolated-executor-hpc-workspaces",
+  "gate_scope": "ordered_source_implementation_only",
+  "observed_head": "8ae3d73b3054f2058ff33ea183f62c811b9272a3",
+  "immutable_c1_acceptance": {
+    "path": "openspec/changes/establish-project-repository-bindings/operator/acceptance-receipt.json",
+    "file_sha256": "sha256:f3b548cada970890c5a43a4a764207fe1672a0ae94701de06fbff1db693f1b4f",
+    "schema_id": "project_repository_binding_acceptance@1",
+    "source_revision": "9b78ec6a883f90ec4239d113e9300098120f68bd"
+  },
+  "predecessor_source_gates": [
+    {
+      "change_id": "establish-agent-capability-leases",
+      "path": "openspec/changes/establish-agent-capability-leases/operator/prerequisite-bindings.json",
+      "file_sha256": "sha256:9f15c4d98132245ab114490a08ed67127a973191c51613d544f95d7ba61de1ca",
+      "acceptance_proven": false,
+      "final_source_revision_bound": false
+    },
+    {
+      "change_id": "provision-independent-agent-git-workspaces",
+      "path": "openspec/changes/provision-independent-agent-git-workspaces/operator/source-only-dependency-gate.json",
+      "file_sha256": "sha256:7183538f2a5153baac37f8cf961e494def54dfbe8283c32a02a2f8ef53f67545",
+      "acceptance_proven": false,
+      "final_source_revision_bound": false
+    },
+    {
+      "change_id": "publish-and-sync-workspace-revisions",
+      "path": "openspec/changes/publish-and-sync-workspace-revisions/operator/source-only-dependency-gate.json",
+      "file_sha256": "sha256:dfc00b26923b391b81aaf36c3ca40fbea1bfd51619eaa335990285692c72172f",
+      "acceptance_proven": false,
+      "final_source_revision_bound": false
+    },
+    {
+      "change_id": "support-git-lfs-work-products",
+      "path": "openspec/changes/support-git-lfs-work-products/operator/source-only-dependency-gate.json",
+      "file_sha256": "sha256:4d259412922d6edff11e8046da3caf3faa8a99655f2f9d93210c92b7383d7ff2",
+      "acceptance_proven": false,
+      "final_source_revision_bound": false
+    },
+    {
+      "change_id": "migrate-research-report-and-task-handoffs-to-files",
+      "path": "openspec/changes/migrate-research-report-and-task-handoffs-to-files/operator/source-only-dependency-gate.json",
+      "file_sha256": "sha256:685d3f0fba7c637abac36757e204c828db3f378f0f2d9c7f4244f60abb84fdc7",
+      "acceptance_proven": false,
+      "final_source_revision_bound": false
+    }
+  ],
+  "current_interface_identities": {
+    "agent_capability_domain_sha256": "sha256:601a7422e26f8093b9fa410077afbcf2a002bf2f79387bd033ae9bd47ffb4ca8",
+    "agent_capability_service_sha256": "sha256:71ae3f73c3294446651d2e72a35015e53cc3cc3516e9186eb3e9c62d1f59224b",
+    "agent_workspace_domain_sha256": "sha256:a42682756e97ba5d975b56c5a093adf6a42abef6ae58d7b73271e711ea37d74e",
+    "workspace_publication_domain_sha256": "sha256:9e05b4281dff24f8fddee47597808370a6b813d22bdbba3c31db22379d65f06a",
+    "git_lfs_domain_sha256": "sha256:c009208ea37d8c38239c66493afbe0ee41d039813fbcce7b855177faf34ced1b",
+    "revision_path_domain_sha256": "sha256:9f720f9c0ab5731f05b0097964dfc01112c54049e2d6d29ab3022ebc3b0b0fff",
+    "revision_path_service_sha256": "sha256:439e2ffe4ca74c8330d78ffd4dffcec3167a4e8bf613af11eacd045b72ddc929",
+    "revision_path_migration_sha256": "sha256:1e627bfbab838f491d0303e3ca70492ba305c10e8f87217d479fc50d71ca7053",
+    "runner_config_baseline_sha256": "sha256:c23a731df3bf35db3e5a73c23e04437bfaa00d1e6ad168c301fa9e8a7f2683fa",
+    "runner_models_baseline_sha256": "sha256:81b4795357b6e1edbddc4e9406f4830236a6f3f7c5103228d106892c827c9fda",
+    "runner_server_baseline_sha256": "sha256:bdbd17dea71e5b3a2b16367f67f433e76a321ca8b4e5d4f80874b26ba8232b20",
+    "runner_staging_baseline_sha256": "sha256:f18c8ed8f09bb9a69070a926301e92610efb8255f4e00ba18ec12139e4cadaab"
+  },
+  "deferred_predecessor_acceptance": [
+    "agent_capability_lease_acceptance@1",
+    "agent_git_workspace_acceptance@1",
+    "workspace_publication_acceptance@1",
+    "git_lfs_work_product_acceptance@1",
+    "revision_path_handoff_acceptance@1"
+  ],
+  "permitted_actions": [
+    "continue_executor_hpc_workspace_source_implementation",
+    "add_domain_repository_migration_runner_and_credential_provider_source",
+    "remove_current_artifact_staging_and_fetch_source_paths",
+    "add_deferred_native_and_negative_qualification_tests_without_running_them",
+    "update_architecture_and_openspec_documents"
+  ],
+  "forbidden_actions": [
+    "issue_ssh_repository_or_lfs_credential",
+    "connect_to_hpc_target_or_start_runner",
+    "create_inspect_mutate_or_delete_remote_workspace",
+    "perform_git_lfs_ssh_rsync_scp_or_remote_file_io",
+    "invoke_workspace_publication_protocol_task_or_report_mutation",
+    "submit_cancel_or_reconcile_scheduler_job",
+    "run_live_or_external_effect",
+    "claim_predecessor_or_current_acceptance",
+    "satisfy_production_or_cutover_gate",
+    "fallback_to_artifact_staging_hpc_stage_ref_or_host_file_gateway"
+  ],
+  "external_effects": 0,
+  "acceptance_proven": false,
+  "final_source_revision_bound": false,
+  "production_effect_authorized": false,
+  "live_authorized": false
+}

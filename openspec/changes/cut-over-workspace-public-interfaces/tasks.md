@@ -1,3 +1,9 @@
+## 0. 连续源码迁移 gate
+
+- [x] 0.1 重读 C10/C11 当前 source gates，确认 formal completion/activation receipts 缺失，public epoch 不可推进。
+- [x] 0.2 生成 `file_workspace_public_source_only_cutover_gate@1`，只授权 public domain/projection/Host/CLI/SDK/UI candidate、拒绝路径、延后测试和文档源码。
+- [x] 0.3 明确禁止 online session mutation、public activation、remote/provider/HPC/continuation/approval effect 与提前 migration/test/build/validation。
+
 ## 1. 精确前序 receipt 与 cutover 准入
 
 - [ ] 1.1 新增准入验证器，要求 `migrate-scientific-deliverables-to-files` 与 `replace-sandbox-artifact-boundaries-with-files` 的精确完成 receipt 和已激活 contract identity；拒绝缺失、不匹配、已 superseded 或仅部分验收的 receipt。
@@ -7,7 +13,7 @@
 
 ## 2. 文件优先的 Host schema、projection 与 media contract
 
-- [ ] 2.1 定义带版本的 `file_workspace_public@1` response/event/restore schema，为 authorized workspace status、private revision fact、immutable publication、report、scientific deliverable、external job/result、capability lease 与 owner-scoped executor workspace view 提供有界 typed section。
+- [x] 2.1 定义带版本的 `file_workspace_public@1` response/event/restore schema，为 authorized workspace status、private revision fact、immutable publication、report、scientific deliverable、external job/result、capability lease 与 owner-scoped executor workspace view 提供有界 typed section。
 - [ ] 2.2 重构 canonical workspace projection builder，使每个 section 均来自其 typed owner repository，并删除 `artifacts`、`artifact_index`、storage/catalog/materialization field、artifact-derived status 与 legacy section alias。
 - [ ] 2.3 重构 `/v3` Host response model、endpoint、content negotiation、pagination、authorization 与 error envelope，使其只输出新 contract，并在不存在 dual serialization 的情况下拒绝旧 media/schema/catalog version。
 - [ ] 2.4 用 typed workspace-generation、revision、publication、report、scientific-deliverable、external-job/result 与 lease event 替换 current artifact lifecycle event；legacy event decoding 仅允许离线历史迁移路径使用。
@@ -15,9 +21,9 @@
 
 ## 3. 按 owner 限定的 executor locator 与隐私边界
 
-- [ ] 3.1 实现独立授权的 executor-workspace view，仅返回 owning executor 自身的 workspace id/generation、login alias 与 native SSH/rsync/scp CRUD 所需的 workspace path。
-- [ ] 3.2 对该 view 强制执行 subject、membership、capability lease、workspace generation 与 owner 检查，确保 executor 无法检查其他 agent 的 alias/path，且非 owner 不会收到带 locator 的 projection。
-- [ ] 3.3 从所有 general/shared/workspace/job/result projection 与 event 中删除 login alias、workspace path、Host path、Git credential、private ref/token、SSH target、Slurm id、remote directory、raw job handle、transport state 与 raw backend log。
+- [x] 3.1 实现独立授权的 executor-workspace view，仅返回 owning executor 自身的 workspace id/generation、login alias 与 native SSH/rsync/scp CRUD 所需的 workspace path。
+- [x] 3.2 对该 view 强制执行 subject、membership、capability lease、workspace generation 与 owner 检查，确保 executor 无法检查其他 agent 的 alias/path，且非 owner 不会收到带 locator 的 projection。
+- [x] 3.3 从所有 general/shared/workspace/job/result projection 与 event 中删除 login alias、workspace path、Host path、Git credential、private ref/token、SSH target、Slurm id、remote directory、raw job handle、transport state 与 raw backend log。
 - [ ] 3.4 为获准的 owner view 增加有界 redaction、path allowlist、secret scanning、count/size budget 与 Host-private diagnostic，同时不得将其退化为通用 locator catalog。
 - [ ] 3.5 当 producer 后续使 private workspace 变为 dirty 时，仍保留已经验证的 immutable publication/path handoff；cleanliness check 只适用于创建新 publication 或直接从 private source launch，不得针对后续 workspace state 隐式重新验证既有 handoff。
 

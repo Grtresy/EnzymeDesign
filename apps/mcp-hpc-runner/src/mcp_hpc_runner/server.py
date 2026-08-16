@@ -5,7 +5,6 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 import sys
-import threading
 from typing import Any
 from urllib.parse import quote
 from urllib.parse import unquote
@@ -17,18 +16,25 @@ from .attempts import RunnerAttemptPhase
 from .attempts import RunnerAttemptState
 from .attempts import RunnerEffectCertainty
 from .attempts import RunnerRetryEligibility
-from .attempts import runner_phase_precedes
 from .config import RunnerConfig, load_config
 from .contract_manifest import ToolContract, load_contract_manifest
 from .errors import FailureMapper
 from .mode import select_execution_mode
 from .models import JobHandle, RunSpec
+from .models import ExecutorWorkspaceRunSpec
+from .models import WORKSPACE_RUNSPEC_SCHEMA_VERSION
+from .executor_workspaces import ExecutorWorkspaceCleanupRequest
+from .executor_workspaces import ExecutorWorkspaceProvisionRequest
+from .executor_workspaces import ExecutorWorkspaceProvisioningService
 from .remote import CommandRunner
 from .slurm import SlurmRunner
 from .ssh_runner import SSHRunner
 from .staging import StagingManager
 from .store import ArtifactStore
 from .transport import SshTransportManager
+from .workspace_revision_jobs import SchedulerOccurrenceCredential
+from .workspace_revision_jobs import WorkspaceRevisionJobService
+from .workspace_revision_jobs import WorkspaceRevisionSourcePrepareRequest
 from .validation import ensure_valid_runspec
 from .validation import safe_relative_path
 
@@ -124,6 +130,14 @@ class MCPHpcServer:
             self.config,
             self.command_runner,
         )
+        self.workspace_revision_jobs = WorkspaceRevisionJobService(
+            self.config,
+            self.transport_manager,
+        )
+        self.executor_workspace_provisioning = ExecutorWorkspaceProvisioningService(
+            self.config,
+            self.transport_manager,
+        )
         self.attempt_journal = RunnerAttemptJournal(
             self.store,
             self.config,
@@ -136,8 +150,6 @@ class MCPHpcServer:
         self._tool_contracts_by_adapter = {
             contract.adapter_id: contract for contract in load_contract_manifest()
         }
-        self._reservation_locks_guard = threading.Lock()
-        self._reservation_locks: dict[str, threading.Lock] = {}
         self.staging = StagingManager(
             self.config,
             self.store,
@@ -172,36 +184,260 @@ class MCPHpcServer:
         }
 
     def _tools(self) -> list[dict[str, Any]]:
-        opaque_run_id_schema = {
-            "type": "object",
-            "required": ["run_id"],
-            "additionalProperties": False,
-            "properties": {"run_id": {"type": "string"}},
-        }
         public_runspec_schema = {
             "type": "object",
-            "not": {"required": ["run_id"]},
-        }
-        return [
-            {
-                "name": "exec.run",
-                "description": "Execute a RunSpec using ssh|sbatch|auto selection",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["runspec"],
-                    "additionalProperties": False,
-                    "properties": {
-                        "runspec": public_runspec_schema,
-                        "mode_override": {
-                            "type": "string",
-                            "enum": ["ssh", "sbatch", "auto"],
+            "required": [
+                "schema_version",
+                "execution_id",
+                "operation_id",
+                "dispatch_id",
+                "runner_run_id",
+                "executor_hpc_workspace_id",
+                "executor_hpc_workspace_generation",
+                "repository_binding_id",
+                "repository_binding_version",
+                "repository_binding_digest",
+                "repository_policy_digest",
+                "source_manifest_id",
+                "source_request_id",
+                "source_commit",
+                "source_tree",
+                "lfs_closure_manifest_digest",
+                "source_manifest",
+                "source_manifest_digest",
+                "source_owner_identity_digest",
+                "source_manifest_created_at",
+                "target_profile_digest",
+                "runner_policy_digest",
+                "toolchain_digest",
+                "cwd",
+                "command",
+                "command_digest",
+                "environment_policy_digest",
+                "resource_digest",
+                "selected_mode",
+                "scheduler_marker",
+                "payload_digest",
+                "absolute_deadline",
+                "resources",
+            ],
+            "additionalProperties": False,
+            "properties": {
+                "schema_version": {
+                    "type": "string",
+                    "const": WORKSPACE_RUNSPEC_SCHEMA_VERSION,
+                },
+                "execution_id": {"type": "string"},
+                "operation_id": {"type": "string"},
+                "dispatch_id": {"type": "string"},
+                "runner_run_id": {"type": "string"},
+                "executor_hpc_workspace_id": {"type": "string"},
+                "executor_hpc_workspace_generation": {
+                    "type": "integer",
+                    "minimum": 1,
+                },
+                "repository_binding_id": {"type": "string"},
+                "repository_binding_version": {
+                    "type": "integer",
+                    "minimum": 1,
+                },
+                "repository_binding_digest": {"type": "string"},
+                "repository_policy_digest": {"type": "string"},
+                "source_manifest_id": {"type": "string"},
+                "source_request_id": {"type": "string"},
+                "source_commit": {"type": "string"},
+                "source_tree": {"type": "string"},
+                "lfs_closure_manifest_digest": {"type": "string"},
+                "source_manifest": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "required": [
+                            "schema_version",
+                            "path",
+                            "object_id",
+                            "mode",
+                            "size_bytes",
+                            "content_digest",
+                            "lfs_oid",
+                        ],
+                        "additionalProperties": False,
+                        "properties": {
+                            "schema_version": {
+                                "type": "string",
+                                "const": "compute_source_manifest_entry@1",
+                            },
+                            "path": {"type": "string"},
+                            "object_id": {"type": "string"},
+                            "mode": {"type": "string"},
+                            "size_bytes": {"type": "integer", "minimum": 0},
+                            "content_digest": {"type": "string"},
+                            "lfs_oid": {"type": ["string", "null"]},
                         },
                     },
                 },
+                "source_manifest_digest": {"type": "string"},
+                "source_owner_identity_digest": {"type": "string"},
+                "source_manifest_created_at": {"type": "string"},
+                "target_profile_digest": {"type": "string"},
+                "runner_policy_digest": {"type": "string"},
+                "toolchain_digest": {"type": "string"},
+                "cwd": {"type": "string"},
+                "command": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {"type": "string"},
+                },
+                "command_digest": {"type": "string"},
+                "environment_policy_digest": {"type": "string"},
+                "resource_digest": {"type": "string"},
+                "selected_mode": {
+                    "type": "string",
+                    "enum": ["ssh", "sbatch"],
+                },
+                "scheduler_marker": {"type": "string"},
+                "payload_digest": {"type": "string"},
+                "absolute_deadline": {"type": "string"},
+                "resources": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "cpus": {"type": "integer", "minimum": 1},
+                        "mem_mb": {"type": "integer", "minimum": 1},
+                        "gpus": {"type": "integer", "minimum": 0},
+                        "time_minutes": {"type": "integer", "minimum": 1},
+                        "partition": {"type": ["string", "null"]},
+                    },
+                },
+            },
+        }
+        provision_request_schema = {
+            "type": "object",
+            "required": ["request"],
+            "additionalProperties": False,
+            "properties": {
+                "request": {
+                    "type": "object",
+                    "required": [
+                        "schema_version",
+                        "intent_id",
+                        "intent_digest",
+                        "workspace_id",
+                        "target_profile_digest",
+                        "repository_endpoint",
+                        "repository_remote_digest",
+                        "base_commit",
+                        "owner_identity_digest",
+                        "idempotency_key",
+                        "absolute_deadline",
+                    ],
+                    "additionalProperties": False,
+                    "properties": {
+                        "schema_version": {
+                            "type": "string",
+                            "const": "executor_workspace_provision_request@1",
+                        },
+                        "intent_id": {"type": "string"},
+                        "intent_digest": {"type": "string"},
+                        "workspace_id": {"type": "string"},
+                        "target_profile_digest": {"type": "string"},
+                        "repository_endpoint": {"type": "string"},
+                        "repository_remote_digest": {"type": "string"},
+                        "base_commit": {"type": "string"},
+                        "owner_identity_digest": {"type": "string"},
+                        "idempotency_key": {"type": "string"},
+                        "absolute_deadline": {"type": "string"},
+                    },
+                }
+            },
+        }
+        cleanup_request_schema = {
+            "type": "object",
+            "required": ["request"],
+            "additionalProperties": False,
+            "properties": {
+                "request": {
+                    "type": "object",
+                    "required": [
+                        "schema_version",
+                        "provision_request",
+                        "cleanup_intent_id",
+                        "cleanup_intent_digest",
+                        "workspace_state_version",
+                        "settlement_proof_digest",
+                        "idempotency_key",
+                        "unsettled_effect_count",
+                    ],
+                    "additionalProperties": False,
+                    "properties": {
+                        "schema_version": {
+                            "type": "string",
+                            "const": "executor_workspace_cleanup_request@1",
+                        },
+                        "provision_request": provision_request_schema["properties"][
+                            "request"
+                        ],
+                        "cleanup_intent_id": {"type": "string"},
+                        "cleanup_intent_digest": {"type": "string"},
+                        "workspace_state_version": {
+                            "type": "integer",
+                            "minimum": 1,
+                        },
+                        "settlement_proof_digest": {"type": "string"},
+                        "idempotency_key": {"type": "string"},
+                        "unsettled_effect_count": {"type": "integer", "const": 0},
+                    },
+                }
+            },
+        }
+        return [
+            {
+                "name": "workspace.provision",
+                "description": (
+                    "Compare-and-create one exact executor login workspace"
+                ),
+                "inputSchema": provision_request_schema,
             },
             {
-                "name": "job.submit",
-                "description": "Submit a RunSpec as an sbatch job",
+                "name": "workspace.inspect",
+                "description": (
+                    "Inspect the exact provision intent without replacement creation"
+                ),
+                "inputSchema": provision_request_schema,
+            },
+            {
+                "name": "workspace.verify",
+                "description": "Verify exact remote root and independent clone identity",
+                "inputSchema": provision_request_schema,
+            },
+            {
+                "name": "workspace.cleanup",
+                "description": "Delete only the exact settled executor workspace handle",
+                "inputSchema": cleanup_request_schema,
+            },
+            {
+                "name": "workspace.cleanup.inspect",
+                "description": "Reconcile only the exact cleanup intent and handle",
+                "inputSchema": cleanup_request_schema,
+            },
+            {
+                "name": "workspace.job.prepare",
+                "description": (
+                    "Validate an exact login revision and atomically prepare its Gitless tree"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["request"],
+                    "additionalProperties": False,
+                    "properties": {"request": {"type": "object"}},
+                },
+            },
+            {
+                "name": "exec.run",
+                "description": (
+                    "Dispatch one qualified direct workspace-revision occurrence"
+                ),
                 "inputSchema": {
                     "type": "object",
                     "required": ["runspec"],
@@ -210,40 +446,94 @@ class MCPHpcServer:
                 },
             },
             {
-                "name": "job.status",
-                "description": "Query status by opaque server-issued run_id",
-                "inputSchema": opaque_run_id_schema,
+                "name": "job.submit",
+                "description": (
+                    "Dispatch one protected Slurm occurrence with a one-use credential"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["runspec", "scheduler_credential"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "runspec": public_runspec_schema,
+                        "scheduler_credential": {"type": "object"},
+                    },
+                },
             },
             {
-                "name": "job.logs",
-                "description": "Fetch remote slurm log tails",
+                "name": "job.reconcile",
+                "description": "Reconcile only the frozen dispatch ledger occurrence",
                 "inputSchema": {
                     "type": "object",
                     "required": ["run_id"],
                     "additionalProperties": False,
+                    "properties": {"run_id": {"type": "string"}},
+                },
+            },
+            {
+                "name": "job.observe",
+                "description": "Append one bounded observation for the exact handle",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["run_id", "observation_index"],
+                    "additionalProperties": False,
                     "properties": {
                         "run_id": {"type": "string"},
-                        "tail_lines": {
+                        "observation_index": {
                             "type": "integer",
                             "minimum": 1,
-                            "maximum": self.config.limits.max_tail_lines,
-                            "default": 200,
                         },
                     },
                 },
             },
             {
                 "name": "job.cancel",
-                "description": "Cancel a submitted Slurm job by opaque run_id",
-                "inputSchema": opaque_run_id_schema,
-            },
-            {
-                "name": "job.fetch_artifacts",
                 "description": (
-                    "Download persisted declared outputs by opaque run_id and "
-                    "validate success checks"
+                    "Request cancellation of the exact handle without claiming settlement"
                 ),
-                "inputSchema": opaque_run_id_schema,
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["run_id", "cancellation"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "run_id": {"type": "string"},
+                        "cancellation": {
+                            "type": "object",
+                            "required": [
+                                "schema_version",
+                                "cancellation_id",
+                                "execution_id",
+                                "handle_id",
+                                "execution_state_version",
+                                "execution_fencing_token",
+                                "idempotency_key",
+                                "reason_digest",
+                                "created_at",
+                            ],
+                            "additionalProperties": False,
+                            "properties": {
+                                "schema_version": {
+                                    "type": "string",
+                                    "const": "workspace_job_cancellation_intent@1",
+                                },
+                                "cancellation_id": {"type": "string"},
+                                "execution_id": {"type": "string"},
+                                "handle_id": {"type": "string"},
+                                "execution_state_version": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                },
+                                "execution_fencing_token": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                },
+                                "idempotency_key": {"type": "string"},
+                                "reason_digest": {"type": "string"},
+                                "created_at": {"type": "string"},
+                            },
+                        },
+                    },
+                },
             },
         ]
 
@@ -340,47 +630,10 @@ class MCPHpcServer:
         }
 
     def reserve_execution(self, identity: dict[str, Any]) -> dict[str, str]:
-        """Reserve one server-issued opaque run id without remote side effects."""
-
-        normalized = self._validated_reservation_identity(identity)
-        identity_digest = self._canonical_digest(normalized)
-        identity_hex = identity_digest.removeprefix("sha256:")
-        try:
-            record = self.store.read_reservation(identity_hex)
-        except FileNotFoundError:
-            candidate = {
-                "schema_version": _RUNNER_EXECUTION_RESERVATION_SCHEMA_VERSION,
-                "identity": normalized,
-                "identity_digest": identity_digest,
-                "run_id": self._new_run_id(),
-            }
-            try:
-                self.store.write_reservation_once(identity_hex, candidate)
-                record = candidate
-            except FileExistsError:
-                record = self.store.read_reservation(identity_hex)
-        if (
-            record.get("schema_version") != _RUNNER_EXECUTION_RESERVATION_SCHEMA_VERSION
-            or record.get("identity") != normalized
-            or record.get("identity_digest") != identity_digest
-            or _PUBLIC_ID_PATTERN.fullmatch(str(record.get("run_id") or "")) is None
-        ):
-            raise ValueError("runner execution reservation identity drift")
-        run_id = str(record["run_id"])
-        self.store.ensure_run_layout(run_id)
-        try:
-            self.store.write_json_once(
-                run_id,
-                "execution_reservation.json",
-                dict(record),
-            )
-        except FileExistsError:
-            if self.store.read_json(run_id, "execution_reservation.json") != record:
-                raise ValueError("runner execution reservation record drift")
-        return {
-            "run_id": run_id,
-            "identity_digest": identity_digest,
-        }
+        del identity
+        raise ValueError(
+            "workspace_revision_execution_required: C8 does not admit a new run reservation"
+        )
 
     def _load_execution_reservation(self, run_id: str) -> dict[str, Any]:
         if _PUBLIC_ID_PATTERN.fullmatch(str(run_id)) is None:
@@ -425,45 +678,6 @@ class MCPHpcServer:
                 raise ValueError("reserved runner source identity drift")
         return {**result, **source_identity}
 
-    def _reserved_runspec(self, raw: Any, *, run_id: str) -> RunSpec:
-        if not isinstance(raw, dict):
-            raise ValueError("runspec must be an object")
-        if "run_id" in raw:
-            raise ValueError(
-                "RunSpec.run_id is server-generated and must not be supplied"
-            )
-        _reject_caller_transport_overrides(raw)
-        reservation = self._load_execution_reservation(run_id)
-        identity = dict(reservation["identity"])
-        spec = RunSpec.from_dict(raw)
-        requested_mode = str(identity["execution_mode"])
-        if requested_mode != "auto" and spec.execution_mode != requested_mode:
-            raise ValueError("reserved runner execution mode drift")
-        metadata = dict(spec.metadata or {})
-        if "openzyme_durable_execution" in metadata:
-            raise ValueError(
-                "runner-owned durable execution identity cannot be supplied"
-            )
-        metadata["openzyme_durable_execution"] = {
-            "execution_id": identity["execution_id"],
-            "operation_id": identity["operation_id"],
-            "operation_digest": identity["operation_digest"],
-            "approval_digest": identity["approval_digest"],
-            "route_policy_id": identity["route_policy_id"],
-            "adapter_policy_id": identity["adapter_policy_id"],
-            "request_digest": identity["request_digest"],
-            "reservation_identity_digest": reservation["identity_digest"],
-        }
-        spec.metadata = metadata
-        spec.run_id = run_id
-        self._bind_runner_toolchain_contract(spec)
-        ensure_valid_runspec(
-            spec,
-            limits=self.config.limits,
-            allowed_partitions=self.config.slurm.allowed_partitions,
-        )
-        return spec
-
     def submit_reserved_execution(
         self,
         *,
@@ -471,150 +685,17 @@ class MCPHpcServer:
         runspec: dict[str, Any],
         mode_override: str | None = None,
     ) -> dict[str, Any]:
-        """Dispatch one previously reserved run or converge on its observation.
+        """Reject dispatch until C9 installs revision-bound job admission."""
 
-        The first call may dispatch.  Repeating the exact bound request never
-        resumes or replays it: callers receive the current source-bound
-        observation and must choose an explicit resume/reconcile operation.
-        """
-
-        with self._reservation_locks_guard:
-            reservation_lock = self._reservation_locks.setdefault(
-                str(run_id),
-                threading.Lock(),
-            )
-        with reservation_lock:
-            return self._with_reservation_source_identity(
-                run_id,
-                self._submit_reserved_execution_locked(
-                    run_id=run_id,
-                    runspec=runspec,
-                    mode_override=mode_override,
-                ),
-            )
-
-    def _submit_reserved_execution_locked(
-        self,
-        *,
-        run_id: str,
-        runspec: dict[str, Any],
-        mode_override: str | None,
-    ) -> dict[str, Any]:
-
-        spec = self._reserved_runspec(runspec, run_id=run_id)
-        selected = select_execution_mode(spec, self.config, mode_override)
-        binding = {
-            "schema_version": "runner_reserved_dispatch_binding@1",
-            "run_id": run_id,
-            "reservation_identity_digest": self._load_execution_reservation(run_id)[
-                "identity_digest"
-            ],
-            "runspec_digest": self._canonical_digest(spec.to_dict()),
-            "selected_mode": selected,
-        }
-        try:
-            self.store.write_json_once(
-                run_id,
-                "reserved_dispatch_binding.json",
-                binding,
-            )
-        except FileExistsError:
-            if (
-                self.store.read_json(run_id, "reserved_dispatch_binding.json")
-                != binding
-            ):
-                raise ValueError("reserved runner dispatch binding drift")
-        runspec_path = self.store.run_root(run_id) / "metadata" / "runspec.json"
-        if runspec_path.exists():
-            persisted_spec = RunSpec.from_dict(
-                self.store.read_json(run_id, "runspec.json")
-            )
-            if persisted_spec.to_dict() != spec.to_dict():
-                raise ValueError("reserved runner persisted RunSpec drift")
-        else:
-            self.store.write_json_once(run_id, "runspec.json", spec.to_dict())
-        if self.attempt_journal.has_attempt(run_id):
-            self.attempt_journal.load_bound(
-                run_id,
-                spec,
-                selected_mode=selected,
-            )
-            return self.inspect_reserved_execution(run_id)
-        return self._dispatch_spec(spec, mode_override=mode_override)
-
-    def resume_reserved_execution(self, run_id: str) -> dict[str, Any]:
-        """Explicitly resume the same reserved occurrence only before effect."""
-
-        with self._reservation_locks_guard:
-            reservation_lock = self._reservation_locks.setdefault(
-                str(run_id),
-                threading.Lock(),
-            )
-        with reservation_lock:
-            self._load_execution_reservation(run_id)
-            spec = self._load_runspec_for_run(run_id)
-            binding = self.store.read_json(
-                run_id,
-                "reserved_dispatch_binding.json",
-            )
-            selected_mode = str(binding.get("selected_mode") or "")
-            if selected_mode not in {"ssh", "sbatch"}:
-                raise ValueError("reserved runner recovery mode is invalid")
-            if not self.attempt_journal.has_attempt(run_id):
-                return self._with_reservation_source_identity(
-                    run_id,
-                    self._dispatch_spec(spec, mode_override=selected_mode),
-                )
-            attempt = self.attempt_journal.load_bound(
-                run_id,
-                spec,
-                selected_mode=selected_mode,
-            )
-            if (
-                attempt.state is RunnerAttemptState.ACTIVE
-                and attempt.effect_certainty is RunnerEffectCertainty.NO_EFFECT
-                and attempt.retry_eligibility is RunnerRetryEligibility.SAME_PHASE_SAFE
-                and runner_phase_precedes(
-                    attempt.phase,
-                    RunnerAttemptPhase.DISPATCHING,
-                )
-            ):
-                return self._with_reservation_source_identity(
-                    run_id,
-                    self._resume_spec(spec, selected_mode=selected_mode),
-                )
-            return self.inspect_reserved_execution(run_id)
-
-    def _resume_spec(self, spec: RunSpec, *, selected_mode: str) -> dict[str, Any]:
-        if selected_mode == "ssh":
-            result = self.ssh_runner.resume_pre_effect(spec).to_dict()
-        elif selected_mode == "sbatch":
-            result = self.slurm_runner.resume_pre_effect(spec).to_dict()
-        else:
-            raise ValueError("reserved runner recovery mode is invalid")
-        return self._project_run_result(
-            result,
-            authoritative_mode=selected_mode,
-            runtime_request=dict(spec.metadata.get("toolchain_runtime_request") or {})
-            or None,
+        ExecutorWorkspaceRunSpec.from_dict(runspec)
+        raise ValueError(
+            "workspace_revision_execution_required: workspace provisioning does not authorize job dispatch"
         )
 
-    def _dispatch_spec(
-        self,
-        spec: RunSpec,
-        *,
-        mode_override: str | None,
-    ) -> dict[str, Any]:
-        selected = select_execution_mode(spec, self.config, mode_override)
-        if selected == "ssh":
-            result = self.ssh_runner.exec_run(spec).to_dict()
-        else:
-            result = self.slurm_runner.submit(spec).to_dict()
-        return self._project_run_result(
-            result,
-            authoritative_mode=selected,
-            runtime_request=dict(spec.metadata.get("toolchain_runtime_request") or {})
-            or None,
+    def resume_reserved_execution(self, run_id: str) -> dict[str, Any]:
+        del run_id
+        raise ValueError(
+            "workspace_revision_execution_required: C8 closes every payload resume path"
         )
 
     def inspect_reserved_execution(self, run_id: str) -> dict[str, Any]:
@@ -785,39 +866,9 @@ class MCPHpcServer:
         }
 
     def recover_reserved_execution_outcome(self, run_id: str) -> dict[str, Any]:
-        """Resume result recovery for one exact run without replaying its payload."""
-
-        self._load_execution_reservation(run_id)
-        spec = self._load_runspec_for_run(run_id)
-        selected_mode = (
-            "sbatch"
-            if (self.store.run_root(run_id) / "metadata" / "job_handle.json").exists()
-            else select_execution_mode(spec, self.config, None)
-        )
-        self.attempt_journal.load_bound(
-            run_id,
-            spec,
-            selected_mode=selected_mode,
-        )
-        if selected_mode == "ssh":
-            result = self.ssh_runner.recover_terminal_outcome(spec).to_dict()
-        elif selected_mode == "sbatch":
-            result = self.slurm_runner.fetch_artifacts(
-                spec,
-                self._load_handle(run_id),
-            ).to_dict()
-        else:
-            raise ValueError("reserved runner recovery mode is invalid")
-        return self._with_reservation_source_identity(
-            run_id,
-            self._project_run_result(
-                result,
-                authoritative_mode=selected_mode,
-                runtime_request=dict(
-                    spec.metadata.get("toolchain_runtime_request") or {}
-                )
-                or None,
-            ),
+        del run_id
+        raise ValueError(
+            "workspace_revision_execution_required: C8 removes Host output-fetch recovery"
         )
 
     def _public_runspec(self, raw: Any) -> RunSpec:
@@ -1341,92 +1392,120 @@ class MCPHpcServer:
 
     def call_tool(self, name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
         args = arguments or {}
-        if name == "exec.run":
+        if name in {"workspace.provision", "workspace.inspect", "workspace.verify"}:
             self._require_arguments(
                 name,
                 args,
-                required=frozenset({"runspec"}),
-                allowed=frozenset({"runspec", "mode_override"}),
+                required=frozenset({"request"}),
+                allowed=frozenset({"request"}),
             )
-            spec = self._public_runspec(args["runspec"])
-            return self._dispatch_spec(
-                spec,
-                mode_override=args.get("mode_override"),
+            request = ExecutorWorkspaceProvisionRequest.from_dict(args["request"])
+            if name == "workspace.provision":
+                return self.executor_workspace_provisioning.provision(request)
+            if name == "workspace.verify":
+                return self.executor_workspace_provisioning.verify(request)
+            return {
+                "schema_version": "executor_workspace_inspection@1",
+                "workspace": self.executor_workspace_provisioning.inspect(request),
+                "replacement_created": False,
+            }
+        if name in {"workspace.cleanup", "workspace.cleanup.inspect"}:
+            self._require_arguments(
+                name,
+                args,
+                required=frozenset({"request"}),
+                allowed=frozenset({"request"}),
             )
+            request = ExecutorWorkspaceCleanupRequest.from_dict(args["request"])
+            if name == "workspace.cleanup":
+                return self.executor_workspace_provisioning.cleanup(request)
+            return {
+                "schema_version": "executor_workspace_cleanup_inspection@1",
+                "cleanup": self.executor_workspace_provisioning.inspect_cleanup(
+                    request
+                ),
+                "replacement_targeted": False,
+            }
+        if name == "workspace.job.prepare":
+            self._require_arguments(
+                name,
+                args,
+                required=frozenset({"request"}),
+                allowed=frozenset({"request"}),
+            )
+            request = WorkspaceRevisionSourcePrepareRequest.from_dict(args["request"])
+            return self.workspace_revision_jobs.prepare_source(request)
 
-        if name == "job.submit":
+        if name == "exec.run":
             self._require_arguments(
                 name,
                 args,
                 required=frozenset({"runspec"}),
                 allowed=frozenset({"runspec"}),
             )
-            spec = self._public_runspec(args["runspec"])
-            spec.execution_mode = "sbatch"
-            return self._project_run_result(
-                self.slurm_runner.submit(spec).to_dict(),
-                authoritative_mode="sbatch",
-                runtime_request=None,
+            spec = ExecutorWorkspaceRunSpec.from_dict(args["runspec"])
+            if spec.selected_mode != "ssh":
+                raise ValueError("exec.run requires the frozen ssh mode")
+            return self.workspace_revision_jobs.dispatch(spec)
+
+        if name == "job.submit":
+            self._require_arguments(
+                name,
+                args,
+                required=frozenset({"runspec", "scheduler_credential"}),
+                allowed=frozenset({"runspec", "scheduler_credential"}),
+            )
+            spec = ExecutorWorkspaceRunSpec.from_dict(args["runspec"])
+            if spec.selected_mode != "sbatch":
+                raise ValueError("job.submit requires the frozen sbatch mode")
+            credential = SchedulerOccurrenceCredential.from_dict(
+                args["scheduler_credential"]
+            )
+            return self.workspace_revision_jobs.dispatch(
+                spec,
+                scheduler_credential=credential,
             )
 
-        if name == "job.status":
+        if name == "job.reconcile":
             self._require_arguments(
                 name,
                 args,
                 required=frozenset({"run_id"}),
                 allowed=frozenset({"run_id"}),
             )
-            run_id = str(args["run_id"])
-            handle = self._load_handle(run_id)
-            self._validate_attempt_for_existing_run(run_id)
-            return self._project_job_status(self.slurm_runner.status(handle).to_dict())
+            return self.workspace_revision_jobs.reconcile_run(str(args["run_id"]))
 
-        if name == "job.logs":
+        if name == "job.observe":
             self._require_arguments(
                 name,
                 args,
-                required=frozenset({"run_id"}),
-                allowed=frozenset({"run_id", "tail_lines"}),
+                required=frozenset({"run_id", "observation_index"}),
+                allowed=frozenset({"run_id", "observation_index"}),
             )
-            run_id = str(args["run_id"])
-            handle = self._load_handle(run_id)
-            self._validate_attempt_for_existing_run(run_id)
-            result = self.slurm_runner.logs(
-                handle, tail_lines=int(args.get("tail_lines", 200))
+            observation_index = args["observation_index"]
+            if not isinstance(observation_index, int) or isinstance(
+                observation_index,
+                bool,
+            ):
+                raise ValueError("observation_index must be an integer")
+            return self.workspace_revision_jobs.observe_run(
+                str(args["run_id"]),
+                index=observation_index,
             )
-            return self._project_job_logs(result)
 
         if name == "job.cancel":
             self._require_arguments(
                 name,
                 args,
-                required=frozenset({"run_id"}),
-                allowed=frozenset({"run_id"}),
+                required=frozenset({"run_id", "cancellation"}),
+                allowed=frozenset({"run_id", "cancellation"}),
             )
-            run_id = str(args["run_id"])
-            handle = self._load_handle(run_id)
-            self._validate_attempt_for_existing_run(run_id)
-            return self._project_run_result(
-                self.slurm_runner.cancel(handle).to_dict(),
-                authoritative_mode="sbatch",
-                runtime_request=None,
-            )
-
-        if name == "job.fetch_artifacts":
-            self._require_arguments(
-                name,
-                args,
-                required=frozenset({"run_id"}),
-                allowed=frozenset({"run_id"}),
-            )
-            run_id = str(args["run_id"])
-            handle = self._load_handle(run_id)
-            spec = self._load_runspec_for_run(run_id)
-            self._validate_attempt_for_existing_run(run_id, spec=spec)
-            return self._project_run_result(
-                self.slurm_runner.fetch_artifacts(spec, handle).to_dict(),
-                authoritative_mode="sbatch",
-                runtime_request=None,
+            cancellation = args["cancellation"]
+            if not isinstance(cancellation, dict):
+                raise ValueError("cancellation must be an object")
+            return self.workspace_revision_jobs.cancel_run(
+                str(args["run_id"]),
+                cancellation=cancellation,
             )
 
         raise ValueError(f"Unknown tool: {name}")

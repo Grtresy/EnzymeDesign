@@ -1,3 +1,9 @@
+## 0. 连续源码迁移 gate
+
+- [x] 0.1 重读 public-cutover source gate，确认 completion receipt 与 active public epoch 尚未证明，migration execution 不可开始。
+- [x] 0.2 生成 `historical_artifact_migration_source_only_gate@1`，只授权 historical domain/repository/schema/inventory/unit/verifier、延后测试与文档源码。
+- [x] 0.3 明确禁止 snapshot/freeze、remote Git/LFS、reference rewrite、migration execution、current adoption 与任何 source deletion。
+
 ## 1. 精确 public-cutover receipt 与 writer-freeze 门禁
 
 - [ ] 1.1 新增 migration admission，要求 `cut-over-workspace-public-interfaces` 的精确 completion receipt、已激活的 `file_workspace_public@1` epoch、catalog/schema/build identity 与 zero-legacy-public-surface proof；不得用 flag、推断的 deployment state 或部分验收替代。
@@ -14,10 +20,10 @@
 
 ## 3. 确定性 unit 与真实 byte source resolution
 
-- [ ] 3.1 将 frozen inventory 划分为 deterministic project/session migration unit，具有稳定 ordering、unit id、target repository binding/policy、namespace 与 retry identity；拒绝 ambiguous 或 cross-owner assignment。
+- [x] 3.1 将 frozen inventory 划分为 deterministic project/session migration unit，具有稳定 ordering、unit id、target repository binding/policy、namespace 与 retry identity；拒绝 ambiguous 或 cross-owner assignment。
 - [ ] 3.2 为每种已清点 storage scheme 与 canonical tree 实现 allowlisted、path-safe reader，将 alias 解析到唯一 frozen source object，并拒绝 traversal、symlink escape、mutable remote target 与 ambient-path fallback。
 - [ ] 3.3 读取每个 expected file/tree member 的每一个实际 byte，并重算 legacy digest、size、canonical tree membership 与 lineage；任一 missing、corrupt、short、conflicting 或 unreadable byte 都使整个 unit 失效。
-- [ ] 3.4 在 Host-owned append-only historical namespace 中推导 deterministic normalized target path，并拒绝 path collision、大小写/Unicode normalization conflict、reserved path 或任何会覆盖已有 immutable ref 的 mapping。
+- [x] 3.4 在 Host-owned append-only historical namespace 中推导 deterministic normalized target path，并拒绝 path collision、大小写/Unicode normalization conflict、reserved path 或任何会覆盖已有 immutable ref 的 mapping。
 
 ## 4. 不可变 Git/LFS 写入与 fresh read-back
 
@@ -28,7 +34,7 @@
 
 ## 5. 历史 mapping 与完整 reference rewrite
 
-- [ ] 5.1 新增不可变且带版本的 `HistoricalArtifactRef`/mapping model，绑定每个 original id、kind、digest、owner、lineage、source identity、unit、historical commit/tree/path、Git blob 或 LFS OID/size、verification result 与永久 non-adoption eligibility。
+- [x] 5.1 新增不可变且带版本的 `HistoricalArtifactRef`/mapping model，绑定每个 original id、kind、digest、owner、lineage、source identity、unit、historical commit/tree/path、Git blob 或 LFS OID/size、verification result 与永久 non-adoption eligibility。
 - [ ] 5.2 对 bytes 相同但 owner、attempt、role 或 reference graph 不同的 legacy identity 保留独立 mapping，同时允许底层复用 content-addressed Git/LFS object。
 - [ ] 5.3 为每个仍存续的 report、research、task、protocol、controlled-operation、sandbox、scientific 与 HPC FK/reference 生成精确 rewrite plan；按用途选择正确的 typed revision/path/result/scientific/historical identity，不得使用单一通用 replacement type。
 - [ ] 5.4 完成 target read-back 后，原子重新验证 source row version、writer fence、inventory generation 与 target identity，再在单个 transaction 中写入全部 mapping、全部存续 typed reference replacement 和一个 per-unit receipt。

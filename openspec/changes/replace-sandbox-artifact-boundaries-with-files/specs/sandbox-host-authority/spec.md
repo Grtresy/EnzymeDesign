@@ -1,5 +1,8 @@
 ## MODIFIED Requirements
 
+连续源码实现阶段只允许建立 control-plane-only candidate gateway。正式 gateway
+替换与 public activation 必须等待 combined final source 的统一非 live 验收。
+
 ### Requirement: The typed gateway is the only engine-facing sandbox callback boundary
 The control server MUST invoke a typed `SandboxHostGateway` with its current `SandboxHostCallContext` only for a closed set of canonical control-plane effects, including approval, workspace publication, controlled external-job records, continuation settlement, protocol/task mutations, and bounded runtime inspection. A control-plane adapter or durable execution callback MUST bind repository access to that supplied context. The gateway MUST NOT proxy ordinary file CRUD, artifact/catalog operations, source snapshots, native network transfer, Git/Git LFS transport, SSH, scp, rsync, HPC staging, or output fetch. The production path MUST NOT choose authority through reflected bound methods, `Callable[..., ...]`, competing repository-scope factories, or an optional `Any` repository parameter.
 

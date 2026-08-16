@@ -51,6 +51,9 @@ from openzyme_domain import ArtifactKind
 from openzyme_domain import RunStatus
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
+from openzyme_domain import AgentRuntimeSignal
+from openzyme_domain import AgentRuntimeSignalReason
+from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import ControlledOperation
@@ -84,6 +87,7 @@ from openzyme_domain import TaskStatus
 from openzyme_core import EngineDescriptor
 from openzyme_core import EngineDocumentRecord
 from openzyme_core import EngineRegistry
+from openzyme_core import AgentRuntimeOutcome
 from openzyme_core import AgentRuntimeService
 from openzyme_core import HarnessResult
 from openzyme_core import HarnessStatus
@@ -134,6 +138,9 @@ from openzyme_host_api.host_mutation_observation import (
 )
 from openzyme_host_api.v3_service import V3EventStore
 from openzyme_host_api.v3_service import V3HostApiService
+from tests.agent_capability_test_support import provision_ready_agent_capability
+from tests.agent_capability_test_support import ready_host_dependencies_kwargs
+from tests.agent_capability_test_support import ready_v3_service_kwargs
 
 
 def test_v3_event_store_preserves_public_payload_and_filters_private_visibility() -> (
@@ -261,8 +268,7 @@ def _read_public_events(
     after_cursor: int,
 ) -> list[dict[str, object]]:
     response = client.get(
-        f"/v3/sessions/{session_id}/events"
-        f"?replay=1&after_cursor={after_cursor}"
+        f"/v3/sessions/{session_id}/events?replay=1&after_cursor={after_cursor}"
     )
     assert response.status_code == 200, response.text
     return [
@@ -279,9 +285,7 @@ def _admit_and_observe_runtime_command(
     request: dict[str, object] | None = None,
     timeout_seconds: float = 15.0,
 ) -> _ObservedRuntimeCommand:
-    before_workspace_response = client.get(
-        f"/v3/sessions/{session_id}/workspace"
-    )
+    before_workspace_response = client.get(f"/v3/sessions/{session_id}/workspace")
     assert before_workspace_response.status_code == 200, before_workspace_response.text
     before_workspace = before_workspace_response.json()
     before_conversation_count = len(before_workspace["conversation"])
@@ -298,8 +302,7 @@ def _admit_and_observe_runtime_command(
         f"/v3/sessions/{session_id}/runtime/drain",
         headers={
             "Idempotency-Key": (
-                f"test-runtime-drain:{session_id}:"
-                f"{next(_RUNTIME_COMMAND_SEQUENCE)}"
+                f"test-runtime-drain:{session_id}:{next(_RUNTIME_COMMAND_SEQUENCE)}"
             )
         },
         json=request or {},
@@ -308,9 +311,7 @@ def _admit_and_observe_runtime_command(
     admitted = admission.json()
     command_id = str(admitted["command_id"])
     status_url = str(admitted["status_url"])
-    assert status_url == (
-        f"/v3/sessions/{session_id}/runtime/commands/{command_id}"
-    )
+    assert status_url == (f"/v3/sessions/{session_id}/runtime/commands/{command_id}")
     deadline = time.monotonic() + timeout_seconds
     while True:
         observed_response = client.get(status_url)
@@ -395,9 +396,7 @@ def test_v3_durable_events_survive_host_restart_and_replay_from_cursor(
         v3_repository_provider=provider,
     )
     with TestClient(create_app(second_dependencies)) as second_client:
-        replay = second_client.get(
-            "/v3/sessions/sess_restart_events/events?replay=1"
-        )
+        replay = second_client.get("/v3/sessions/sess_restart_events/events?replay=1")
         assert replay.status_code == 200
         assert f"id: {first_event['cursor']}" in replay.text
         assert first_event["event_id"] in replay.text
@@ -418,6 +417,7 @@ def test_v3_event_replay_pages_past_one_thousand_and_filters_private_rows(
     del bootstrap_client
     provider = SQLiteRepositoryProvider(str(tmp_path / "event-pages.sqlite3"))
     dependencies = HostApiDependencies(
+        **ready_host_dependencies_kwargs(),
         v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=foundation,
         security_policy=_local_test_security(),
@@ -497,9 +497,7 @@ def test_v3_event_replay_pages_past_one_thousand_and_filters_private_rows(
     assert no_replay.text == ""
 
 
-def test_v3_event_stream_uses_request_high_watermark_for_replay_and_follow() -> (
-    None
-):
+def test_v3_event_stream_uses_request_high_watermark_for_replay_and_follow() -> None:
     events = [
         {
             "event_id": f"evt_{cursor}",
@@ -1112,9 +1110,7 @@ def test_v3_scientific_attempt_authority_and_read_only_surface(
         workspace.json()["scientific_attempts"]["schema_id"]
         == "scientific_attempt_readiness_summary@1"
     )
-    assert "occurrences" not in json.dumps(
-        workspace.json()["scientific_attempts"]
-    )
+    assert "occurrences" not in json.dumps(workspace.json()["scientific_attempts"])
 
     incomplete_filter = client.get(
         f"/v3/sessions/{session_id}/scientific-attempts",
@@ -1124,6 +1120,7 @@ def test_v3_scientific_attempt_authority_and_read_only_surface(
     assert incomplete_filter.json()["error"]["code"] == (
         "scientific_inspection_filter_incomplete"
     )
+
 
 def test_v3_closed_attempt_evidence_export_is_public_and_exact(
     monkeypatch,
@@ -1269,9 +1266,7 @@ def test_v3_event_stream_can_use_stable_generic_envelope(monkeypatch) -> None:
     )
     assert created.status_code == 200
 
-    events = client.get(
-        "/v3/sessions/sess_event_envelope/events?replay=1&envelope=1"
-    )
+    events = client.get("/v3/sessions/sess_event_envelope/events?replay=1&envelope=1")
 
     assert events.status_code == 200
     assert "event: openzyme.event" in events.text
@@ -1530,6 +1525,7 @@ def test_v3_event_insert_failure_rolls_back_local_command(
     tmp_path: Path,
 ) -> None:
     provider = SQLiteRepositoryProvider(str(tmp_path / "event-rollback.sqlite3"))
+
     def fail_event_append(*args, **kwargs):  # type: ignore[no-untyped-def]
         del args, kwargs
         raise RuntimeError("forced durable event failure")
@@ -1646,9 +1642,7 @@ def test_v3_sandbox_process_host_context_does_not_inherit_released_turn_lease(
             registry,
             acquired.lease,
         )
-        stale_session_authority = SessionTurnHostAuthority.from_lease(
-            acquired.lease
-        )
+        stale_session_authority = SessionTurnHostAuthority.from_lease(acquired.lease)
 
         coordinator.connection.execute(
             "UPDATE session_runtime_leases SET expires_at = ? WHERE lease_token = ?",
@@ -1845,9 +1839,12 @@ def _fixture_sandbox_runtime_identity() -> dict[str, str]:
         "pipeline_sdk_digest": "sha256:" + "b" * 64,
         "sandbox_protocol_version": "test.v1",
     }
-    identity["runtime_identity_digest"] = "sha256:" + hashlib.sha256(
-        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    identity["runtime_identity_digest"] = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
     return identity
 
 
@@ -2261,7 +2258,9 @@ class FakePhaseBStructuredInvoker:
     def __init__(self, purpose: str) -> None:
         self.purpose = purpose
 
-    def invoke_structured(self, *, schema, system_prompt: str, user_payload: dict[str, object]):
+    def invoke_structured(
+        self, *, schema, system_prompt: str, user_payload: dict[str, object]
+    ):
         del system_prompt
         objective = str(user_payload.get("objective") or "Improve thermostability")
         if self.purpose == "intake_collect":
@@ -2311,7 +2310,9 @@ class FakePhaseBStructuredInvoker:
                 arguments={},
             )
         if self.purpose == "deep_research_brief":
-            return EngineResearchBriefDraft(research_brief=f"Research brief for {objective}")
+            return EngineResearchBriefDraft(
+                research_brief=f"Research brief for {objective}"
+            )
         if self.purpose == "deep_research_supervisor":
             unit_results = list(user_payload.get("unit_results") or [])
             if any(result.get("findings") for result in unit_results):
@@ -2603,7 +2604,9 @@ class FakeEngineHarnessInvoker:
                 }
             return {"content": "Research complete.", "tool_calls": []}
         if self.purpose == "v3_teammate_loop:executor":
-            if any(_tool_message_name(message) == "task.finish" for message in messages):
+            if any(
+                _tool_message_name(message) == "task.finish" for message in messages
+            ):
                 return {
                     "content": "fpocket found 1 pocket(s) for the selected artifact set. Output artifacts: run_inv_pipeline_task_execution_v3:target_out.",
                     "tool_calls": [],
@@ -3071,6 +3074,7 @@ def _build_client(
         TestClient(
             create_app(
                 HostApiDependencies(
+                    **ready_host_dependencies_kwargs(),
                     v3_allow_unpinned_repository_sessions_for_tests=True,
                     foundation=foundation,
                     security_policy=_local_test_security(),
@@ -3087,6 +3091,7 @@ def _build_v3_llm_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
         TestClient(
             create_app(
                 HostApiDependencies(
+                    **ready_host_dependencies_kwargs(),
                     v3_allow_unpinned_repository_sessions_for_tests=True,
                     foundation=replace(
                         foundation, model_factory=FakeHarnessModelFactory()
@@ -3110,6 +3115,7 @@ def _build_v3_engine_llm_client(
     command_client = TestClient(
         create_app(
             HostApiDependencies(
+                **ready_host_dependencies_kwargs(),
                 v3_allow_unpinned_repository_sessions_for_tests=True,
                 foundation=replace(foundation, model_factory=model_factory),
                 v3_repository_provider=provider,
@@ -3146,6 +3152,7 @@ def test_scientific_transition_finalizer_reports_nonretryable_host_failure(
         scientific_workflow_contract_registry=(
             AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY
         ),
+        **ready_v3_service_kwargs(),
     )
     session_id = "sess_scientific_finalizer_failure"
     lane_id = "lane_scientific_finalizer_failure"
@@ -3190,6 +3197,19 @@ def test_scientific_transition_finalizer_reports_nonretryable_host_failure(
             updated_at=now,
             runtime_state="idle",
         )
+    )
+    master = repositories.agents.get(session_id, "agent:master")
+    assert master is not None and master.member_id is not None
+    master_lease = repositories.agent_capability_leases.get_active(
+        session_id=session_id,
+        agent_member_id=master.member_id,
+    )
+    assert master_lease is not None
+    provision_ready_agent_capability(
+        repositories,
+        session_id=session_id,
+        agent_id=agent_id,
+        parent_lease_id=master_lease.lease_id,
     )
     granted = service.grant_scientific_attempt_authorization(
         {
@@ -3242,9 +3262,7 @@ def test_scientific_transition_finalizer_reports_nonretryable_host_failure(
             RuntimeError,
             match="injected transition event failure",
         ):
-            service.finalize_pending_scientific_transitions(
-                session_id=session_id
-            )
+            service.finalize_pending_scientific_transitions(session_id=session_id)
 
     assert repositories.scientific_attempts.list_by_session(session_id) == []
     assert [
@@ -3268,9 +3286,7 @@ def test_scientific_transition_finalizer_reports_nonretryable_host_failure(
     ] == []
     assert repositories.runtime_signals.list_by_session(session_id) == []
 
-    events = service.finalize_pending_scientific_transitions(
-        session_id=session_id
-    )
+    events = service.finalize_pending_scientific_transitions(session_id=session_id)
 
     assert {event["event_type"] for event in events} >= {
         "scientific.attempt.admitted",
@@ -3298,25 +3314,27 @@ def test_scientific_transition_finalizer_reports_nonretryable_host_failure(
         if signal.source_ref == admitted_id
     ]
     assert len(transition_signals) == 1
-    assert service.finalize_pending_scientific_transitions(
-        session_id=session_id
-    ) == []
-    assert len(
-        [
-            signal
-            for signal in repositories.runtime_signals.list_by_session(
-                session_id
-            )
-            if signal.source_ref == admitted_id
-        ]
-    ) == 1
-    assert len(
-        repositories.failure_observations.list_by_source(
-            session_id=session_id,
-            source_kind="scientific_transition",
-            source_ref=second_request_id,
+    assert service.finalize_pending_scientific_transitions(session_id=session_id) == []
+    assert (
+        len(
+            [
+                signal
+                for signal in repositories.runtime_signals.list_by_session(session_id)
+                if signal.source_ref == admitted_id
+            ]
         )
-    ) == 1
+        == 1
+    )
+    assert (
+        len(
+            repositories.failure_observations.list_by_source(
+                session_id=session_id,
+                source_kind="scientific_transition",
+                source_ref=second_request_id,
+            )
+        )
+        == 1
+    )
 
     captured_instructions: list[str] = []
 
@@ -3344,35 +3362,35 @@ def test_scientific_transition_finalizer_reports_nonretryable_host_failure(
         owner_kind=MutationWriterKind.RUNTIME_COMMAND,
         owner_ref="fixture:production-transition-wakes",
     ):
+        runtime_lease = repositories.session_runtime_leases.acquire(
+            session_id=session_id,
+            owner_id="fixture:production-transition-wakes",
+            mode="test",
+        ).lease
+        assert runtime_lease is not None
         for source_id in source_ids:
             signal = next(
                 item
-                for item in repositories.runtime_signals.list_by_session(
-                    session_id
-                )
+                for item in repositories.runtime_signals.list_by_session(session_id)
                 if item.source_ref == source_id
             )
+            runtime_context = service._build_runtime_context(
+                session_id,
+                task_id=task_id,
+                lane_id=lane_id,
+            )
+            runtime_context.session_runtime_lease = runtime_lease
             runtime_outcomes.append(
-                AgentRuntimeService(
-                    service._build_runtime_context(
-                        session_id,
-                        task_id=task_id,
-                        lane_id=lane_id,
-                    )
-                ).wake_agent(signal, max_steps=1)
+                AgentRuntimeService(runtime_context).wake_agent(signal, max_steps=1)
             )
 
     assert all(outcome.ok for outcome in runtime_outcomes)
     assert len(captured_instructions) == 2
     admitted_facts = json.loads(
-        captured_instructions[0]
-        .splitlines()[0]
-        .removeprefix("Canonical wake facts: ")
+        captured_instructions[0].splitlines()[0].removeprefix("Canonical wake facts: ")
     )
     failure_facts = json.loads(
-        captured_instructions[1]
-        .splitlines()[0]
-        .removeprefix("Canonical wake facts: ")
+        captured_instructions[1].splitlines()[0].removeprefix("Canonical wake facts: ")
     )
     assert admitted_facts["source_kind"] == "scientific_attempt_admitted"
     assert admitted_facts["attempt_id"] == admitted_id
@@ -3402,6 +3420,7 @@ def _build_v3_pressure_client(
     command_client = TestClient(
         create_app(
             HostApiDependencies(
+                **ready_host_dependencies_kwargs(),
                 v3_allow_unpinned_repository_sessions_for_tests=True,
                 foundation=replace(foundation, model_factory=model_factory),
                 v3_repository_provider=provider,
@@ -3717,7 +3736,9 @@ def test_v3_drain_runtime_does_not_auto_claim_by_default() -> None:
 
     service.drain_runtime(session_id="sess_drain_no_auto_claim")
 
-    assert repositories.runtime_signals.list_by_session("sess_drain_no_auto_claim") == []
+    assert (
+        repositories.runtime_signals.list_by_session("sess_drain_no_auto_claim") == []
+    )
 
 
 def test_v3_drain_runtime_explicit_auto_claim_still_enqueues_ready_task() -> None:
@@ -3754,6 +3775,11 @@ def test_v3_drain_runtime_explicit_auto_claim_still_enqueues_ready_task() -> Non
             runtime_state="idle",
             current_correlation_id=None,
         )
+    )
+    provision_ready_agent_capability(
+        repositories,
+        session_id="sess_drain_auto_claim",
+        agent_id="agent:researcher:auto_claim",
     )
     service = V3HostApiService(
         repositories=repositories,
@@ -3805,8 +3831,11 @@ def test_v3_drain_runtime_uses_configured_scheduler_limits(monkeypatch) -> None:
             captured["auto_enqueue_ready_tasks"] = auto_enqueue_ready_tasks
             return ()
 
-    monkeypatch.setattr("openzyme_host_api.v3_service.AgentRuntimeScheduler", FakeScheduler)
+    monkeypatch.setattr(
+        "openzyme_host_api.v3_service.AgentRuntimeScheduler", FakeScheduler
+    )
     service = V3HostApiService(
+        **ready_v3_service_kwargs(),
         allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
@@ -3847,6 +3876,7 @@ def test_v3_manual_drain_returns_locked_when_background_owns_session() -> None:
     ).lease
     assert lease is not None
     service = V3HostApiService(
+        **ready_v3_service_kwargs(),
         allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
@@ -3863,9 +3893,12 @@ def test_v3_manual_drain_returns_locked_when_background_owns_session() -> None:
     assert "owner_id" not in result.events[0]["payload"]
     assert "mode" not in result.events[0]["payload"]
     assert "fencing_token" not in result.events[0]["payload"]
-    assert repositories.session_runtime_leases.get_active(
-        "sess_manual_locked_by_background"
-    ).lease_token == lease.lease_token
+    assert (
+        repositories.session_runtime_leases.get_active(
+            "sess_manual_locked_by_background"
+        ).lease_token
+        == lease.lease_token
+    )
 
 
 def test_v3_background_runtime_skips_when_manual_drain_owns_session() -> None:
@@ -3886,6 +3919,7 @@ def test_v3_background_runtime_skips_when_manual_drain_owns_session() -> None:
     )
     event_store = V3EventStore()
     service = V3HostApiService(
+        **ready_v3_service_kwargs(),
         allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=event_store,
@@ -3911,12 +3945,8 @@ def test_v3_background_runtime_skips_when_manual_drain_owns_session() -> None:
 
 def test_v3_session_runtime_lease_does_not_block_other_sessions() -> None:
     repositories = _build_v3_engine_repositories()
-    repositories.sessions.save(
-        Session.create("sess_locked_a", "proj_001", "A", "A")
-    )
-    repositories.sessions.save(
-        Session.create("sess_unlocked_b", "proj_001", "B", "B")
-    )
+    repositories.sessions.save(Session.create("sess_locked_a", "proj_001", "A", "A"))
+    repositories.sessions.save(Session.create("sess_unlocked_b", "proj_001", "B", "B"))
     repositories.session_runtime_leases.acquire(
         session_id="sess_locked_a",
         owner_id="host-api:background-runtime",
@@ -3924,6 +3954,7 @@ def test_v3_session_runtime_lease_does_not_block_other_sessions() -> None:
         lease_seconds=60,
     )
     service = V3HostApiService(
+        **ready_v3_service_kwargs(),
         allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
@@ -3950,6 +3981,7 @@ def test_v3_post_message_only_enqueues_master_signal() -> None:
     repositories = _build_v3_engine_repositories()
     model_factory = FakeHarnessModelFactory()
     service = V3HostApiService(
+        **ready_v3_service_kwargs(),
         allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
@@ -3979,6 +4011,46 @@ def test_v3_post_message_only_enqueues_master_signal() -> None:
     assert signals[0].status.value == "pending"
 
 
+def test_v3_session_without_readiness_provider_is_explicitly_non_runnable() -> None:
+    repositories = _build_v3_engine_repositories()
+    model_factory = FakeHarnessModelFactory()
+    service = V3HostApiService(
+        allow_unpinned_repository_sessions_for_tests=True,
+        repositories=repositories,
+        event_store=V3EventStore(),
+        model_factory=model_factory,
+    )
+
+    created = service.create_session(
+        project_id="proj_001",
+        objective="Expose the staged C2 provisioning boundary.",
+        session_id="sess_pending_capability",
+    )
+    capability = created["workspace"]["agent_capabilities"][0]
+    assert capability["reservation_status"] == "reserved"
+    assert capability["readiness_status"] == "pending"
+    assert capability["lifecycle"]["status"] == "pending_workspace"
+    assert capability["runnable"] is False
+    assert capability["blocker_code"] == "provisioning_required"
+
+    posted = service.post_message(
+        session_id="sess_pending_capability",
+        message="This must wait for an exact ready generation.",
+    )
+    drained = service.drain_runtime(session_id="sess_pending_capability")
+
+    assert posted.outputs == ()
+    assert drained.status == "completed"
+    assert drained.outputs == ()
+    signals = repositories.runtime_signals.list_by_session(
+        "sess_pending_capability"
+    )
+    assert len(signals) == 1
+    assert signals[0].status is AgentRuntimeSignalStatus.PENDING
+    assert signals[0].attempt_count == 0
+    assert model_factory.invokers == {}
+
+
 def test_v3_message_skill_focus_survives_explicit_drain_without_expanding_authority() -> (
     None
 ):
@@ -3996,6 +4068,7 @@ def test_v3_message_skill_focus_survives_explicit_drain_without_expanding_author
     engine_registry = EngineRegistry()
     engine_registry.register(WorkflowFocusExecutionEngine())
     service = V3HostApiService(
+        **ready_v3_service_kwargs(),
         allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
@@ -4014,12 +4087,10 @@ def test_v3_message_skill_focus_survives_explicit_drain_without_expanding_author
         skill_keys=(selected_ref, selected_ref),
     )
     assert admitted.status == "completed"
-    source_message = repositories.inbox.list_by_session(
-        "sess_durable_workflow_focus"
-    )[0]
-    source_document = repositories.engine_documents.get(
-        str(source_message.payload_ref)
-    )
+    source_message = repositories.inbox.list_by_session("sess_durable_workflow_focus")[
+        0
+    ]
+    source_document = repositories.engine_documents.get(str(source_message.payload_ref))
     assert source_document is not None
     assert source_document.payload["skill_keys"] == [selected_ref]
 
@@ -4042,17 +4113,17 @@ def test_v3_message_skill_focus_survives_explicit_drain_without_expanding_author
     unselected_task = repositories.tasks.get("task_unselected_workflow")
     assert selected_task is not None and selected_task.assigned_ref is not None
     assert unselected_task is not None and unselected_task.assigned_ref is None
-    assert "# Explicitly selected workflow knowledge pack" in (
-        model_factory.invoker.system_prompts[0]
+    assert (
+        "# Explicitly selected workflow knowledge pack"
+        in (model_factory.invoker.system_prompts[0])
     )
 
 
-def test_v3_master_fails_closed_before_provider_on_corrupt_user_focus_source() -> (
-    None
-):
+def test_v3_master_fails_closed_before_provider_on_corrupt_user_focus_source() -> None:
     repositories = _build_v3_engine_repositories()
     model_factory = FakeHarnessModelFactory()
     service = V3HostApiService(
+        **ready_v3_service_kwargs(),
         allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
@@ -4068,12 +4139,10 @@ def test_v3_master_fails_closed_before_provider_on_corrupt_user_focus_source() -
         message="This message source will be corrupted before drain.",
         skill_keys=("skill:explicit",),
     )
-    source_message = repositories.inbox.list_by_session(
-        "sess_corrupt_workflow_focus"
-    )[0]
-    source_document = repositories.engine_documents.get(
-        str(source_message.payload_ref)
-    )
+    source_message = repositories.inbox.list_by_session("sess_corrupt_workflow_focus")[
+        0
+    ]
+    source_document = repositories.engine_documents.get(str(source_message.payload_ref))
     assert source_document is not None
     repositories.engine_documents.save(
         replace(source_document, document_kind="delegation_request")
@@ -4106,6 +4175,7 @@ def test_v3_master_accepts_legacy_user_conversation_without_skill_keys() -> None
     )
     model_factory = FocusRecordingModelFactory()
     service = V3HostApiService(
+        **ready_v3_service_kwargs(),
         allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
@@ -4121,18 +4191,12 @@ def test_v3_master_accepts_legacy_user_conversation_without_skill_keys() -> None
         message="This canonical message predates durable workflow focus.",
         skill_keys=(workflow_ref,),
     )
-    source_message = repositories.inbox.list_by_session(
-        "sess_legacy_workflow_focus"
-    )[0]
-    source_document = repositories.engine_documents.get(
-        str(source_message.payload_ref)
-    )
+    source_message = repositories.inbox.list_by_session("sess_legacy_workflow_focus")[0]
+    source_document = repositories.engine_documents.get(str(source_message.payload_ref))
     assert source_document is not None
     legacy_payload = dict(source_document.payload)
     legacy_payload.pop("skill_keys")
-    repositories.engine_documents.save(
-        replace(source_document, payload=legacy_payload)
-    )
+    repositories.engine_documents.save(replace(source_document, payload=legacy_payload))
 
     drained = service.drain_runtime(
         session_id="sess_legacy_workflow_focus",
@@ -4141,8 +4205,9 @@ def test_v3_master_accepts_legacy_user_conversation_without_skill_keys() -> None
 
     assert drained.status == "completed"
     assert len(model_factory.prompts) == 1
-    assert "# Explicitly selected workflow knowledge pack" not in (
-        model_factory.prompts[0]
+    assert (
+        "# Explicitly selected workflow knowledge pack"
+        not in (model_factory.prompts[0])
     )
 
 
@@ -4156,6 +4221,7 @@ def test_v3_master_restores_each_user_message_focus_without_sticky_union() -> No
     generic_ref = workflow_refs["generic-sandbox-execution"]
     model_factory = FocusRecordingModelFactory()
     service = V3HostApiService(
+        **ready_v3_service_kwargs(),
         allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
@@ -4199,6 +4265,7 @@ def test_v3_master_protocol_inbox_does_not_grant_workflow_authority() -> None:
     )
     model_factory = FocusRecordingModelFactory()
     service = V3HostApiService(
+        **ready_v3_service_kwargs(),
         allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
@@ -4232,8 +4299,9 @@ def test_v3_master_protocol_inbox_does_not_grant_workflow_authority() -> None:
 
     assert drained.status == "completed"
     assert len(model_factory.prompts) == 1
-    assert "# Explicitly selected workflow knowledge pack" not in (
-        model_factory.prompts[0]
+    assert (
+        "# Explicitly selected workflow knowledge pack"
+        not in (model_factory.prompts[0])
     )
 
 
@@ -4243,6 +4311,7 @@ def test_v3_background_runtime_processes_message_without_manual_drain(
     client, foundation = _build_client(monkeypatch)
     del client
     dependencies = HostApiDependencies(
+        **ready_host_dependencies_kwargs(),
         v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=replace(foundation, model_factory=FakeHarnessModelFactory()),
         security_policy=_local_test_security(),
@@ -4414,7 +4483,9 @@ def test_v3_durable_work_coordinator_retains_non_idle_no_progress(
     assert outcome.semantic_progress is False
 
 
-def test_v3_durable_work_supervisor_defers_database_busy_without_counting_progress() -> None:
+def test_v3_durable_work_supervisor_defers_database_busy_without_counting_progress() -> (
+    None
+):
     class BusyOutcome:
         execution_id = "exec_database_busy"
         action = "database_busy"
@@ -4448,9 +4519,7 @@ def test_v3_durable_work_supervisor_defers_database_busy_without_counting_progre
     asyncio.run(run_check())
 
 
-def test_v3_durable_work_supervisor_retains_no_progress_without_self_wakeup() -> (
-    None
-):
+def test_v3_durable_work_supervisor_retains_no_progress_without_self_wakeup() -> None:
     class NoProgressOutcome:
         execution_id = "exec_waiting"
         action = "poll"
@@ -4624,7 +4693,9 @@ def test_v3_durable_rollback_stops_admission_but_retains_active_drain_capability
         _build_durable_work_supervisor(dependencies)
 
 
-def test_v3_background_runtime_once_releases_operation_lock_while_scheduler_runs() -> None:
+def test_v3_background_runtime_once_releases_operation_lock_while_scheduler_runs() -> (
+    None
+):
     repositories = _build_v3_engine_repositories()
     repositories.sessions.save(
         Session(
@@ -4640,10 +4711,6 @@ def test_v3_background_runtime_once_releases_operation_lock_while_scheduler_runs
     entered = asyncio.Event()
     release = asyncio.Event()
 
-    class Outcome:
-        def to_dict(self) -> dict[str, object]:
-            return {"status": "completed"}
-
     class BlockingScheduler:
         async def run_once(
             self,
@@ -4651,13 +4718,30 @@ def test_v3_background_runtime_once_releases_operation_lock_while_scheduler_runs
             *,
             max_signals: int,
             max_steps_per_agent: int,
-        ) -> list[Outcome]:
+        ) -> list[AgentRuntimeOutcome]:
             assert session_id == "sess_bg_lock"
             assert max_signals == 1
             assert max_steps_per_agent == 1
             entered.set()
             await release.wait()
-            return [Outcome()]
+            signal = AgentRuntimeSignal(
+                signal_id="sig_bg_lock",
+                session_id=session_id,
+                agent_id="agent:master",
+                reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+                status=AgentRuntimeSignalStatus.COMPLETED,
+                created_at="2026-05-31T00:00:00+00:00",
+                completed_at="2026-05-31T00:00:01+00:00",
+            )
+            return [
+                AgentRuntimeOutcome(
+                    signal=signal,
+                    task=None,
+                    agent=None,
+                    ok=True,
+                    summary="completed",
+                )
+            ]
 
     class LockAwareService(V3HostApiService):
         def _build_scheduler(self, context, *, worker_id, runtime_mode="manual_drain"):
@@ -4684,7 +4768,10 @@ def test_v3_background_runtime_once_releases_operation_lock_while_scheduler_runs
         assert acquired is True
         service.operation_lock.release()
         release.set()
-        assert await task == [{"status": "completed"}]
+        outcomes = await task
+        assert len(outcomes) == 1
+        assert outcomes[0]["ok"] is True
+        assert outcomes[0]["signal"]["status"] == "completed"
 
     asyncio.run(run_check())
 
@@ -4749,6 +4836,7 @@ def test_v3_blocking_provider_does_not_hold_sqlite_write_transaction(
     entered = threading.Event()
     release = threading.Event()
     dependencies = HostApiDependencies(
+        **ready_host_dependencies_kwargs(),
         v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=replace(
             foundation,
@@ -4760,18 +4848,24 @@ def test_v3_blocking_provider_does_not_hold_sqlite_write_transaction(
     write_result: dict[str, object] = {}
 
     with TestClient(create_app(dependencies)) as scoped_client:
-        assert scoped_client.post(
-            "/v3/sessions",
-            json={
-                "session_id": "sess_provider_blocked",
-                "project_id": "proj_001",
-                "objective": "Block inside the provider.",
-            },
-        ).status_code == 200
-        assert scoped_client.post(
-            "/v3/sessions/sess_provider_blocked/messages",
-            json={"message": "Track this request."},
-        ).status_code == 200
+        assert (
+            scoped_client.post(
+                "/v3/sessions",
+                json={
+                    "session_id": "sess_provider_blocked",
+                    "project_id": "proj_001",
+                    "objective": "Block inside the provider.",
+                },
+            ).status_code
+            == 200
+        )
+        assert (
+            scoped_client.post(
+                "/v3/sessions/sess_provider_blocked/messages",
+                json={"message": "Track this request."},
+            ).status_code
+            == 200
+        )
 
         drain_thread = threading.Thread(
             target=lambda: drain_result.setdefault(
@@ -4812,7 +4906,7 @@ def test_v3_blocking_provider_does_not_hold_sqlite_write_transaction(
     assert drain_result["response"].status_code == 202
 
 
-def test_v3_background_runtime_runs_teammate_and_master_followup_without_manual_drain(
+def test_v3_background_runtime_fails_closed_without_generation_git_workspace(
     monkeypatch,
     tmp_path: Path,
     request,
@@ -4824,11 +4918,10 @@ def test_v3_background_runtime_runs_teammate_and_master_followup_without_manual_
     )
     repository_scope = repository_provider.connection_scope()
     v3_repositories = repository_scope.__enter__().repositories
-    request.addfinalizer(
-        lambda: repository_scope.__exit__(None, None, None)
-    )
+    request.addfinalizer(lambda: repository_scope.__exit__(None, None, None))
     model_factory = FakeEngineHarnessModelFactory()
     dependencies = HostApiDependencies(
+        **ready_host_dependencies_kwargs(),
         v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=replace(foundation, model_factory=model_factory),
         security_policy=_local_test_security(),
@@ -4890,29 +4983,39 @@ def test_v3_background_runtime_runs_teammate_and_master_followup_without_manual_
             is_ready=lambda workspace, _events, _status: (
                 "deep_research" in workspace["capabilities"]
                 and workspace["capabilities"]["deep_research"][0]["status"]
-                == "succeeded"
-                    and any(
-                        item["task"]["task_id"] == "task_research_v3"
-                        and item["task"]["status"] == "completed"
-                        for item in workspace["task_board"]["items"]
+                == "failed"
+                and any(
+                    item["task"]["task_id"] == "task_research_v3"
+                    and item["task"]["status"] == "in_progress"
+                    for item in workspace["task_board"]["items"]
+                )
+                and any(
+                    signal.agent_id.startswith("agent:researcher:")
+                    and signal.status.value == "failed"
+                    for signal in v3_repositories.runtime_signals.list_by_session(
+                        "sess_bg_v3_engines"
                     )
-                    and any(
-                        message["role"] == "assistant"
-                        and message["content"] == "Research complete."
-                        for message in workspace["conversation"]
-                    )
-                ),
+                )
+            ),
         )
         assert status["running"] is True
         assert status["worker_id"] == "host-api:background-runtime"
         assert "event: signal.claimed" in event_text
-        assert "event: signal.completed" in event_text
         assert model_factory.invokers["v3_harness_loop"].calls >= 2
-        assert model_factory.invokers["v3_teammate_loop:researcher"].calls >= 2
-        assert any(
-            message["role"] == "assistant" and message["content"] == "Research complete."
-            for message in research_workspace["conversation"]
+        assert model_factory.invokers["v3_teammate_loop:researcher"].calls >= 1
+        failed_signal = next(
+            signal
+            for signal in v3_repositories.runtime_signals.list_by_session(
+                "sess_bg_v3_engines"
+            )
+            if signal.agent_id.startswith("agent:researcher:")
         )
+        assert failed_signal.status.value == "failed"
+        assert "workspace file persistence failed" in str(
+            failed_signal.error_message
+        )
+        assert research_workspace["reports"] == []
+        return
 
         execution_task = background_client.post(
             "/v3/tasks",
@@ -4960,14 +5063,20 @@ def test_v3_background_runtime_runs_teammate_and_master_followup_without_manual_
             v3_repositories.approvals.get(approval_id).status.value == "approved"
             for approval_id in resolved_approvals
         )
-        assert sum(
-            signal.status.value == "completed"
-            and signal.claimed_by == "host-api:background-runtime"
-            for signal in v3_repositories.runtime_signals.list_by_session(
-                "sess_bg_v3_engines"
+        assert (
+            sum(
+                signal.status.value == "completed"
+                and signal.claimed_by == "host-api:background-runtime"
+                for signal in v3_repositories.runtime_signals.list_by_session(
+                    "sess_bg_v3_engines"
+                )
             )
-        ) >= 3
-        assert model_factory.invokers["v3_harness_loop"].calls > master_calls_before_execution
+            >= 3
+        )
+        assert (
+            model_factory.invokers["v3_harness_loop"].calls
+            > master_calls_before_execution
+        )
         assert model_factory.invokers["v3_teammate_loop:executor"].calls >= 3
         executor_projection = next(
             agent
@@ -5015,7 +5124,9 @@ def test_v3_background_runtime_runs_teammate_and_master_followup_without_manual_
         assert status["running"] is True
         assert "event: report.generated" in event_text
         assert model_factory.invokers["v3_teammate_loop:reporter"].calls >= 3
-        assert {item["task"]["kind"] for item in final_workspace["task_board"]["items"]} >= {
+        assert {
+            item["task"]["kind"] for item in final_workspace["task_board"]["items"]
+        } >= {
             "research",
             "execution",
             "reporting",
@@ -5052,6 +5163,7 @@ def test_v3_master_agents_and_signals_are_session_scoped() -> None:
     repositories = _build_v3_engine_repositories()
     model_factory = FakeEchoHarnessModelFactory()
     service = V3HostApiService(
+        **ready_v3_service_kwargs(),
         allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
@@ -5079,15 +5191,30 @@ def test_v3_master_agents_and_signals_are_session_scoped() -> None:
 
     drained_a = service.drain_runtime(session_id="sess_a")
     assert drained_a.status == "completed"
-    assert [signal.status.value for signal in repositories.runtime_signals.list_by_session("sess_a")] == ["completed"]
-    assert [signal.status.value for signal in repositories.runtime_signals.list_by_session("sess_b")] == ["pending"]
-    assert repositories.agents.get("sess_a", "agent:master").member_id == agent_a.member_id
-    assert repositories.agents.get("sess_b", "agent:master").member_id == agent_b.member_id
+    assert [
+        signal.status.value
+        for signal in repositories.runtime_signals.list_by_session("sess_a")
+    ] == ["completed"]
+    assert [
+        signal.status.value
+        for signal in repositories.runtime_signals.list_by_session("sess_b")
+    ] == ["pending"]
+    assert (
+        repositories.agents.get("sess_a", "agent:master").member_id == agent_a.member_id
+    )
+    assert (
+        repositories.agents.get("sess_b", "agent:master").member_id == agent_b.member_id
+    )
 
     drained_b = service.drain_runtime(session_id="sess_b")
     assert drained_b.status == "completed"
-    assert [signal.status.value for signal in repositories.runtime_signals.list_by_session("sess_b")] == ["completed"]
-    assert [message.payload_ref for message in repositories.inbox.list_by_session("sess_a")] != [
+    assert [
+        signal.status.value
+        for signal in repositories.runtime_signals.list_by_session("sess_b")
+    ] == ["completed"]
+    assert [
+        message.payload_ref for message in repositories.inbox.list_by_session("sess_a")
+    ] != [
         message.payload_ref for message in repositories.inbox.list_by_session("sess_b")
     ]
 
@@ -5096,6 +5223,7 @@ def test_v3_runtime_drain_claims_master_signal_and_runs_master_loop() -> None:
     repositories = _build_v3_engine_repositories()
     model_factory = FakeEchoHarnessModelFactory()
     service = V3HostApiService(
+        **ready_v3_service_kwargs(),
         allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=V3EventStore(),
@@ -5177,9 +5305,7 @@ def test_v3_runtime_replay_extends_sanitized_trace_events_without_duplicates() -
     second = service.drain_runtime(session_id="sess_trace_replay")
 
     first_trace_events = [
-        event
-        for event in first.events
-        if event["event_type"] == "llm.response.created"
+        event for event in first.events if event["event_type"] == "llm.response.created"
     ]
     second_trace_events = [
         event
@@ -5251,7 +5377,9 @@ def test_v3_resolve_unassigned_approval_enqueues_master_wakeup() -> None:
     assert signals[0].source_ref == "appr_master"
 
 
-def test_v3_resolve_sdk_controlled_operation_uses_continuation_not_agent_wakeup(tmp_path: Path) -> None:
+def test_v3_resolve_sdk_controlled_operation_uses_continuation_not_agent_wakeup(
+    tmp_path: Path,
+) -> None:
     repositories = _build_v3_engine_repositories()
     service = V3HostApiService(
         allow_unpinned_repository_sessions_for_tests=True,
@@ -5381,7 +5509,9 @@ def test_v3_resolve_sdk_controlled_operation_uses_continuation_not_agent_wakeup(
     assert updated_operation is not None
     assert updated_operation.approval_state == "approved"
     assert updated_operation.status is ControlledOperationStatus.WAITING_APPROVAL
-    updated_continuation = repositories.continuation_states.get(continuation.continuation_id)
+    updated_continuation = repositories.continuation_states.get(
+        continuation.continuation_id
+    )
     assert updated_continuation is not None
     assert updated_continuation.status is ContinuationStateStatus.APPROVED
     sdk_projection = result.workspace["capabilities"]["sdk_supervisor"][0]
@@ -5670,11 +5800,12 @@ def test_v3_resolve_durable_controlled_operation_advances_only_canonical_executi
         execution.execution_id
     )
     assert resolved_execution is not None
-    assert resolved_execution.lifecycle_state is ControlledOperationExecutionLifecycle.READY
-    assert resolved_execution.state_version == 2
-    resolved_operation = repositories.controlled_operations.get(
-        operation.operation_id
+    assert (
+        resolved_execution.lifecycle_state
+        is ControlledOperationExecutionLifecycle.READY
     )
+    assert resolved_execution.state_version == 2
+    resolved_operation = repositories.controlled_operations.get(operation.operation_id)
     assert resolved_operation is not None
     assert resolved_operation.status is ControlledOperationStatus.RUNNING
     assert resolved_operation.approval_state == "approved"
@@ -5687,12 +5818,14 @@ def test_v3_resolve_durable_controlled_operation_advances_only_canonical_executi
 
     recovery_events = service.recover_abandoned_sdk_continuations()
     assert recovery_events == []
-    assert repositories.continuation_states.get(
-        continuation.continuation_id
-    ) == resolved_continuation
-    assert repositories.controlled_operation_executions.get(
-        execution.execution_id
-    ) == resolved_execution
+    assert (
+        repositories.continuation_states.get(continuation.continuation_id)
+        == resolved_continuation
+    )
+    assert (
+        repositories.controlled_operation_executions.get(execution.execution_id)
+        == resolved_execution
+    )
 
     rejected_approval = replace(
         approval,
@@ -6000,6 +6133,26 @@ def test_hpc_operation_failed_after_approval_returns_to_executor_for_diagnostic(
     )
     repositories.agents.save(
         AgentMember(
+            agent_id="agent:master",
+            session_id="sess_hpc_diag",
+            lane_id=None,
+            task_id=None,
+            name="master",
+            role="master",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at="2026-05-03T15:58:00+00:00",
+            updated_at="2026-05-03T15:58:00+00:00",
+            runtime_state="idle",
+        )
+    )
+    master_lease_id = provision_ready_agent_capability(
+        repositories,
+        session_id="sess_hpc_diag",
+        agent_id="agent:master",
+    )
+    repositories.agents.save(
+        AgentMember(
             agent_id="agent:executor:hpc_diag",
             session_id="sess_hpc_diag",
             lane_id=None,
@@ -6007,12 +6160,18 @@ def test_hpc_operation_failed_after_approval_returns_to_executor_for_diagnostic(
             name="executor",
             role="executor",
             status=AgentMemberStatus.BLOCKED,
-            parent_agent_id=None,
+            parent_agent_id="agent:master",
             created_at="2026-05-03T15:59:00+00:00",
             updated_at="2026-05-03T15:59:00+00:00",
             runtime_state="blocked",
             current_correlation_id="corr_hpc_diag",
         )
+    )
+    provision_ready_agent_capability(
+        repositories,
+        session_id="sess_hpc_diag",
+        agent_id="agent:executor:hpc_diag",
+        parent_lease_id=master_lease_id,
     )
     repositories.approvals.save(
         ApprovalRequest(
@@ -6089,9 +6248,7 @@ def test_hpc_operation_failed_after_approval_returns_to_executor_for_diagnostic(
     assert "INPUT_OR_ENTRYPOINT_MISSING" in task.failure_summary
     assert {
         signal.status.value
-        for signal in repositories.runtime_signals.list_by_session(
-            "sess_hpc_diag"
-        )
+        for signal in repositories.runtime_signals.list_by_session("sess_hpc_diag")
     } == {"completed"}
     assistant_messages = [
         message
@@ -6148,6 +6305,7 @@ def _build_v3_echo_llm_client(monkeypatch) -> tuple[TestClient, RuntimeFoundatio
         TestClient(
             create_app(
                 HostApiDependencies(
+                    **ready_host_dependencies_kwargs(),
                     v3_allow_unpinned_repository_sessions_for_tests=True,
                     foundation=replace(
                         foundation, model_factory=FakeEchoHarnessModelFactory()
@@ -6386,8 +6544,7 @@ def test_v3_prompt_budget_compaction_cuts_off_prior_conversation_for_later_drain
         assert "llm.context_budget.after_compaction" not in event_types
         assert "llm.context_budget.exceeded" not in event_types
         provider_prompt = "\n".join(
-            _message_content(message)
-            for message in invoker.calls[-1]["messages"]
+            _message_content(message) for message in invoker.calls[-1]["messages"]
         )
         assert large_marker not in provider_prompt
         assert f"small round {round_index}" in provider_prompt
@@ -6495,7 +6652,7 @@ def test_v3_glm51_default_window_budget_boundaries_via_message_loop(
             assert "auto_compact before model call" in prompt_compactions[-1].summary
 
 
-def test_v3_pressure_large_tool_result_artifactized_via_message_loop(
+def test_v3_pressure_large_tool_result_rejects_legacy_artifact_fallback(
     monkeypatch,
     tmp_path,
     request,
@@ -6556,16 +6713,19 @@ def test_v3_pressure_large_tool_result_artifactized_via_message_loop(
     assert payload["status"] == "completed"
     assert payload["outputs"] == ["large observation handled"]
     assert len(invoker.calls) == 2
-    assert "tool_result.artifactized" in event_types
+    assert "tool_result.artifactized" not in event_types
     assert "llm.context_budget.exceeded" not in event_types
     assert _tool_message_name(invoker.calls[1]["messages"][-1]) == "artifact.range"
-    observation_envelope = json.loads(_message_content(invoker.calls[1]["messages"][-1]))
+    observation_envelope = json.loads(
+        _message_content(invoker.calls[1]["messages"][-1])
+    )
     observation = observation_envelope["payload"]
     assert observation_envelope["ok"] is False
-    assert observation["status"] == "tool_result_context_over_budget"
-    assert observation["original_tool_ok"] is True
-    assert "artifact_id" in observation
-    assert "stress-observation-" not in _message_content(invoker.calls[1]["messages"][-1])
+    assert observation["error_code"] == "workspace_file_handoff_failed"
+    assert observation["legacy_artifact_fallback_performed"] is False
+    assert "stress-observation-" not in _message_content(
+        invoker.calls[1]["messages"][-1]
+    )
 
     artifacts = [
         artifact
@@ -6575,16 +6735,7 @@ def test_v3_pressure_large_tool_result_artifactized_via_message_loop(
         if artifact.kind is ArtifactKind.RESULT
         and artifact.relative_path == "tool_results/call_large_range.json"
     ]
-    assert len(artifacts) == 1
-    assert artifacts[0].artifact_id == observation["artifact_id"]
-    document = repositories.engine_documents.get(
-        str(dict(artifacts[0].metadata or {})["output_ref"])
-    )
-    assert document is not None
-    assert document.document_kind == "tool_result_full"
-    persisted_result = document.payload["tool_result"]
-    assert document.payload["original_tool_ok"] is True
-    assert "stress-observation-" in persisted_result["content"]
+    assert artifacts == []
 
 
 def test_v3_llm_response_event_is_available_before_message_command_finishes() -> None:
@@ -6592,6 +6743,7 @@ def test_v3_llm_response_event_is_available_before_message_command_finishes() ->
     event_store = V3EventStore()
     model_factory = BlockingTraceModelFactory()
     service = V3HostApiService(
+        **ready_v3_service_kwargs(),
         allow_unpinned_repository_sessions_for_tests=True,
         repositories=repositories,
         event_store=event_store,
@@ -6653,7 +6805,7 @@ def test_v3_llm_response_event_is_available_before_message_command_finishes() ->
     assert "result" in result_holder
 
 
-def test_v3_engine_backed_research_execution_report_draft_loop(
+def test_v3_engine_backed_research_fails_closed_without_generation_git_workspace(
     monkeypatch,
     request,
     tmp_path: Path,
@@ -6718,16 +6870,19 @@ def test_v3_engine_backed_research_execution_report_draft_loop(
     )
     assert research_drain.status_code == 202
     research_payload = research_drain.json()
-    assert research_payload["status"] == "completed"
-    assert (
-        research_payload["workspace"]["task_board"]["items"][0]["task"]["status"]
-        == "completed"
+    assert research_payload["status"] == "failed"
+    research_item = next(
+        item
+        for item in research_payload["workspace"]["task_board"]["items"]
+        if item["task"]["task_id"] == "task_research_v3"
     )
     assert (
-        research_payload["workspace"]["capabilities"]["deep_research"][0][
-            "canonical_summary"
-        ]["status"]
-        == "completed"
+        research_item["task"]["status"]
+        == "in_progress"
+    )
+    assert (
+        research_payload["workspace"]["capabilities"]["deep_research"][0]["status"]
+        == "failed"
     )
     assert any(
         agent["agent"]["role"] == "researcher"
@@ -6738,8 +6893,10 @@ def test_v3_engine_backed_research_execution_report_draft_loop(
         for message in research_payload["workspace"]["conversation"]
         if message["role"] == "assistant"
     ]
-    assert "Research complete." in research_payload["outputs"]
-    assert "Research complete." in research_assistant_messages
+    assert "Research complete." not in research_payload["outputs"]
+    assert "Research complete." not in research_assistant_messages
+    assert research_payload["workspace"]["reports"] == []
+    return
 
     execution_task = client.post(
         "/v3/tasks",
@@ -6806,8 +6963,7 @@ def test_v3_engine_backed_research_execution_report_draft_loop(
     assert resolved.status_code == 200
     resolved_payload = resolved.json()
     assert (
-        model_factory.invokers["v3_harness_loop"].calls
-        == master_calls_before_approval
+        model_factory.invokers["v3_harness_loop"].calls == master_calls_before_approval
     )
     assert (
         model_factory.invokers["v3_teammate_loop:executor"].calls
@@ -6850,7 +7006,10 @@ def test_v3_engine_backed_research_execution_report_draft_loop(
     assert resolved_payload["workspace"]["artifacts"]
     assert any("fpocket found" in output for output in resolved_payload["outputs"])
     assert any("Output artifacts:" in output for output in resolved_payload["outputs"])
-    assert not any("Pipeline sandbox completed." in output for output in resolved_payload["outputs"])
+    assert not any(
+        "Pipeline sandbox completed." in output
+        for output in resolved_payload["outputs"]
+    )
     assert (
         "Protocol threads available via protocol.thread"
         in model_factory.invokers["v3_harness_loop"].system_prompts[-1]
@@ -6943,6 +7102,7 @@ def test_debug_llm_calls_endpoint_lists_details_and_clears_records(
                 ),
                 security_policy=_local_test_security(),
                 v3_background_runtime_enabled=False,
+                **ready_host_dependencies_kwargs(),
             )
         )
     )

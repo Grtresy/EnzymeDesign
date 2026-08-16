@@ -1,0 +1,47 @@
+{
+  "schema_id": "file_workspace_source_only_deletion_gate@1",
+  "change_id": "replace-sandbox-artifact-boundaries-with-files",
+  "decision": "source_implementation_allowed_deletion_and_activation_forbidden",
+  "direct_predecessors": [
+    {
+      "change_id": "migrate-research-report-and-task-handoffs-to-files",
+      "source_gate_sha256": "685d3f0fba7c637abac36757e204c828db3f378f0f2d9c7f4244f60abb84fdc7",
+      "formal_completion_receipt": "missing"
+    },
+    {
+      "change_id": "execute-hpc-jobs-from-workspace-revisions",
+      "source_gate_sha256": "d982b50295f5cd7fe7a5ba8e5565239337346e9323e1cf8401754cea66dbcd8c",
+      "formal_completion_receipt": "missing"
+    },
+    {
+      "change_id": "migrate-scientific-deliverables-to-files",
+      "source_gate_sha256": "46713ece130e7233dab226962c5fd86e4e15ce3522e87438c4a959bd6e34deca",
+      "formal_completion_receipt": "missing"
+    }
+  ],
+  "observed_current_surface": {
+    "source_file_count": 56,
+    "inventory": "operator/current-artifact-surface-inventory.json",
+    "classification": "legacy_current_and_historical_surface_requires_owner_by_owner_cutover"
+  },
+  "allowed": [
+    "candidate_file_workspace_contract_source",
+    "candidate_tool_catalog_source",
+    "control_plane_only_gateway_source",
+    "stale_contract_rejection_source",
+    "owner_inventory_and_deferred_test_source",
+    "documentation_source",
+    "static_source_audit"
+  ],
+  "forbidden": [
+    "public_contract_epoch_activation",
+    "artifact_or_stage_writer_activation",
+    "deletion_of_historical_rows_or_bytes",
+    "publication_or_remote_git_or_lfs_effect",
+    "provider_or_hpc_or_network_effect",
+    "task_or_report_or_scientific_terminal_effect",
+    "migration_execution",
+    "test_or_build_or_openspec_validation_before_all_changes"
+  ],
+  "successor_gate": "cut-over-workspace-public-interfaces"
+}

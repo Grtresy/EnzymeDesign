@@ -1,3 +1,9 @@
+## 0. 连续源码迁移 gate
+
+- [x] 0.1 读取 immutable AOX supersession receipt、C7/C9/publication/Git LFS 当前 source gates 与 scientific attempt/source identities，确认除 supersession 外的正式 predecessor receipts 尚未生成。
+- [x] 0.2 生成 `scientific_deliverable_source_only_dependency_gate@1`，只授权 domain/repository/migration/resolver/finalizer/offline-verifier、延后测试与文档源码，明确禁止 activation、remote Git/LFS、publication、provider/HPC、scientific/task/report/campaign/live effect。
+- [x] 0.3 将 source-only gate 写入 proposal/design/spec；正式 1.1--1.4 与 completion receipt 继续延后到 combined final source 的统一验收。
+
 ## 1. 精确前序 receipt 与非 live 门禁
 
 - [ ] 1.1 新增准入验证器，要求 `supersede-aox-hmm-artifact-cutover`、`migrate-research-report-and-task-handoffs-to-files`、`execute-hpc-jobs-from-workspace-revisions`、`publish-and-sync-workspace-revisions` 和 `support-git-lfs-work-products` 的精确完成 receipt 及其声明的 contract/schema identity；启用科学文件 writer 前，拒绝任何缺失、不匹配、已 superseded 或未经验证的 receipt。
@@ -7,21 +13,21 @@
 
 ## 2. 科学交付物领域模型、schema 与 repository
 
-- [ ] 2.1 新增不可变且带版本的 `ScientificDeliverableRef`、bundle manifest 和 validation receipt domain model，绑定 repository policy/version、publication/ref、commit/tree、normalized path、Git blob 或 LFS OID/size、content digest、role/format、producer operation/result、attempt、sealed selection、workspace generation 与 publisher。
-- [ ] 2.2 为 scientific deliverable ref、exact role bundle 和 validation receipt 新增 forward schema migration，落实唯一性、不可变性、attempt/selection/publication ownership、normalized-path 与 Git-versus-LFS identity constraint；不得新增可空的 artifact compatibility column。
-- [ ] 2.3 实现以原子方式创建和读取新 identity 的 repository；幂等重放返回完全相同的 identity，并拒绝 identity mutation、cross-project publication、cross-attempt lineage、stale selection head 或冲突的 idempotency payload。
+- [x] 2.1 新增不可变且带版本的 `ScientificDeliverableRef`、bundle manifest 和 validation receipt domain model，绑定 repository policy/version、publication/ref、commit/tree、normalized path、Git blob 或 LFS OID/size、content digest、role/format、producer operation/result、attempt、sealed selection、workspace generation 与 publisher。
+- [x] 2.2 为 scientific deliverable ref、exact role bundle 和 validation receipt 新增 forward schema migration，落实唯一性、不可变性、attempt/selection/publication ownership、normalized-path 与 Git-versus-LFS identity constraint；不得新增可空的 artifact compatibility column。
+- [x] 2.3 实现以原子方式创建和读取新 identity 的 repository；幂等重放返回完全相同的 identity，并拒绝 identity mutation、cross-project publication、cross-attempt lineage、stale selection head 或冲突的 idempotency payload。
 - [ ] 2.4 用 typed deliverable、bundle、selection、closure 和 verification reference 替换 scientific task evidence 与 projection payload；artifact id、artifact-set digest、storage URI 和 `HpcStageRef` 不得再作为有效的 current evidence。
 
 ## 3. 不可变 Git/LFS 解析与原子定稿
 
-- [ ] 3.1 实现只读 scientific resolver，仅解析 pinned internal `PublishedRevision` 与 normalized repository-relative path，并验证 commit、tree membership、Git blob 或 LFS pointer/OID/size、actual bytes 和 canonical digest；不得回退到 ambient checkout 或 Host-local path。
-- [ ] 3.2 根据 publication identity、exact path/role manifest、actual-byte validation、producer lineage、attempt、sealed selection、actor、fence 和 mutation authority 构造 deterministic validation preimage，并提供稳定 digest 供 transaction-time revalidation。
-- [ ] 3.3 实现短事务 finalization：插入完整 deliverable set、bundle 和 validation receipt 前，重新验证 immutable publication identity、selection head、attempt state、actor、fence、mutation authority 与 preimage digest。
-- [ ] 3.4 当 path、byte、LFS、format、role、selection、attempt、fence 或 authority 发生任何漂移时，保证零 partial record；exact replay 返回原始 ref 和 receipt，且不读取或写入 artifact storage。
+- [x] 3.1 实现只读 scientific resolver，仅解析 pinned internal `PublishedRevision` 与 normalized repository-relative path，并验证 commit、tree membership、Git blob 或 LFS pointer/OID/size、actual bytes 和 canonical digest；不得回退到 ambient checkout 或 Host-local path。
+- [x] 3.2 根据 publication identity、exact path/role manifest、actual-byte validation、producer lineage、attempt、sealed selection、actor、fence 和 mutation authority 构造 deterministic validation preimage，并提供稳定 digest 供 transaction-time revalidation。
+- [x] 3.3 实现短事务 finalization：插入完整 deliverable set、bundle 和 validation receipt 前，重新验证 immutable publication identity、selection head、attempt state、actor、fence、mutation authority 与 preimage digest。
+- [x] 3.4 当 path、byte、LFS、format、role、selection、attempt、fence 或 authority 发生任何漂移时，保证零 partial record；exact replay 返回原始 ref 和 receipt，且不读取或写入 artifact storage。
 
 ## 4. AOX 精确 17-role 文件 bundle
 
-- [ ] 4.1 将 active AOX deliverable contract 编码为封闭、带版本且恰含 17 个命名 role 的 manifest；每个 role 具有唯一 normalized path 与显式 format contract，并拒绝缺失、额外、重复、大小写/Unicode 冲突或从扩展名推断的 role。
+- [x] 4.1 将 active AOX deliverable contract 编码为封闭、带版本且恰含 17 个命名 role 的 manifest；每个 role 具有唯一 normalized path 与显式 format contract，并拒绝缺失、额外、重复、大小写/Unicode 冲突或从扩展名推断的 role。
 - [ ] 4.2 重构 AOX candidate、filter 与 conditional-empty validation，使其读取精确的 published Git/LFS bytes，并要求声明的 typed empty-result contract 与 receipt；不得以缺失文件、零字节文件、placeholder 或 sentinel 表达空结果。
 - [ ] 4.3 重构 AOX bundle finalizer，在一次原子提交 17 个 ref 和一个 deterministic receipt 前，验证全部 17 个 role、source revision、producer operation/result、attempt、sealed selection、byte contract 与 aggregate manifest。
 - [ ] 4.4 重构 AOX evidence export、public product closure 与 architecture qualification input，使其消费 `ScientificDeliverableRef` identity 和实际 immutable bytes，不得重建 artifact set 或翻译 legacy bundle schema。

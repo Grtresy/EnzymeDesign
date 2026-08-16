@@ -10,10 +10,14 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from openzyme_core import SQLiteRepositoryProvider
+from openzyme_core import AgentWorkspaceReadinessProof
 from openzyme_core import DurableRouteObservationKind
+from openzyme_core import SQLiteRepositoryProvider
+from openzyme_domain import AgentWorkspaceGenerationReservation
 from openzyme_domain import ArtifactKind
 from openzyme_domain import SessionArtifactRecord
+from openzyme_domain import canonical_capability_digest
+from openzyme_domain.control_plane import utc_now_iso
 from openzyme_host_api.app import HostApiDependencies
 from openzyme_host_api.app import create_app
 from openzyme_host_api.architecture_qualification import canonical_json_bytes
@@ -360,6 +364,41 @@ QUALIFICATION_SANDBOX_SDK_DIGEST = "sha256:" + "b" * 64
 QUALIFICATION_SANDBOX_PREFLIGHT_DIGEST = "sha256:" + "c" * 64
 
 
+@dataclass(frozen=True, slots=True)
+class QualificationWorkspaceReadinessProvider:
+    provider_id: str = "test.architecture-qualification-workspace-readiness@1"
+    qualification_fixture_non_cutover: bool = True
+
+    def verify_readiness(
+        self,
+        reservation: AgentWorkspaceGenerationReservation,
+    ) -> AgentWorkspaceReadinessProof:
+        return AgentWorkspaceReadinessProof(
+            provider_id=self.provider_id,
+            reservation_id=reservation.reservation_id,
+            reservation_fingerprint=reservation.immutable_fingerprint,
+            session_id=reservation.session_id,
+            agent_member_id=reservation.agent_member_id,
+            agent_id=reservation.agent_id,
+            workspace_generation=reservation.workspace_generation,
+            readiness_ref=f"qualification-ready:{reservation.reservation_id}",
+            readiness_digest=canonical_capability_digest(
+                {
+                    "provider_id": self.provider_id,
+                    "reservation_id": reservation.reservation_id,
+                    "reservation_fingerprint": reservation.immutable_fingerprint,
+                    "qualification_fixture_non_cutover": True,
+                }
+            ),
+            observed_at=utc_now_iso(),
+        )
+
+
+QUALIFICATION_WORKSPACE_READINESS_PROVIDER = (
+    QualificationWorkspaceReadinessProvider()
+)
+
+
 @dataclass(slots=True)
 class DeniedPipelineSandboxRunner:
     port: ControlledExternalPort
@@ -704,6 +743,17 @@ class ProductionCompositionFactory:
             v3_allow_unpinned_repository_sessions_for_tests=True,
             foundation=foundation,
             v3_repository_provider=provider,
+            v3_agent_workspace_readiness_providers={
+                QUALIFICATION_WORKSPACE_READINESS_PROVIDER.provider_id: (
+                    QUALIFICATION_WORKSPACE_READINESS_PROVIDER
+                )
+            },
+            v3_session_creation_readiness_provider_id=(
+                QUALIFICATION_WORKSPACE_READINESS_PROVIDER.provider_id
+            ),
+            v3_delegation_readiness_provider_id=(
+                QUALIFICATION_WORKSPACE_READINESS_PROVIDER.provider_id
+            ),
             v3_background_runtime_enabled=False,
             v3_durable_work_enabled=True,
             v3_durable_route_adapters={
@@ -798,6 +848,7 @@ def assert_production_owner_shape(composition: ProductionComposition) -> None:
         foundation.execution_adapter,
         dependencies.v3_bio_adapter,
         dependencies.v3_pipeline_sandbox_runner,
+        *dependencies.v3_agent_workspace_readiness_providers.values(),
     )
     for boundary in controlled_boundaries:
         if not bool(getattr(boundary, "qualification_fixture_non_cutover", False)):
@@ -846,8 +897,10 @@ __all__ = [
     "QUALIFICATION_SANDBOX_IMAGE_DIGEST",
     "QUALIFICATION_SANDBOX_PREFLIGHT_DIGEST",
     "QUALIFICATION_SANDBOX_SDK_DIGEST",
+    "QUALIFICATION_WORKSPACE_READINESS_PROVIDER",
     "ProductionComposition",
     "ProductionCompositionFactory",
+    "QualificationWorkspaceReadinessProvider",
     "QualificationRoots",
     "QualificationLostCallbackProviderRouteAdapter",
     "assert_production_owner_shape",

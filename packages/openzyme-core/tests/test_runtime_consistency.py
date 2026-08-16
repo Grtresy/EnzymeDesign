@@ -1,6 +1,7 @@
 import pytest
 
 from openzyme_domain import AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
+from openzyme_core import AgentCapabilityLeaseService
 from openzyme_core import CoreRepositories
 from openzyme_core import RuntimeConsistencyService
 from openzyme_core import apply_sqlite_migrations
@@ -47,6 +48,7 @@ def _repositories() -> CoreRepositories:
     )
     repositories.agents.save(
         AgentMember(
+            member_id="member_executor_consistency",
             agent_id=EXECUTOR_AGENT_ID,
             session_id="sess_consistency",
             lane_id=None,
@@ -59,7 +61,24 @@ def _repositories() -> CoreRepositories:
             updated_at=NOW,
         )
     )
+    AgentCapabilityLeaseService(repositories).reserve_and_issue(
+        session_id="sess_consistency",
+        agent_id=EXECUTOR_AGENT_ID,
+        idempotency_key="runtime-consistency:executor:generation-1",
+        actor_ref="test:runtime-consistency-capability",
+    )
     return repositories
+
+
+def _runtime_signal_binding(repositories: CoreRepositories) -> dict[str, object]:
+    leases = repositories.agent_capability_leases.list_by_session(
+        "sess_consistency"
+    )
+    assert len(leases) == 1
+    return {
+        "capability_lease_id": leases[0].lease_id,
+        "workspace_generation": leases[0].workspace_generation,
+    }
 
 
 def _codes(audit) -> set[str]:
@@ -80,6 +99,7 @@ def test_historical_text_only_agent_turn_failure_keeps_task_unchanged() -> None:
             completed_at=NOW,
             error_message="max_steps_exceeded",
             last_error="executor exceeded the delegated work step budget.",
+            **_runtime_signal_binding(repositories),
         )
     )
     agent = repositories.agents.get("sess_consistency", EXECUTOR_AGENT_ID)
@@ -122,6 +142,7 @@ def test_structured_budget_failure_classifies_without_error_text_matching() -> N
             completed_at=NOW,
             attempt_count=1,
             error_message="opaque terminal signal",
+            **_runtime_signal_binding(repositories),
         )
     )
     observation = record_failure_observation(
@@ -178,6 +199,7 @@ def test_structured_generic_failure_ignores_legacy_max_step_text() -> None:
             completed_at=NOW,
             attempt_count=1,
             error_message="max_steps_exceeded",
+            **_runtime_signal_binding(repositories),
         )
     )
     record_failure_observation(
@@ -454,6 +476,7 @@ def test_in_progress_task_with_failed_runtime_work_gets_attention_only() -> None
             created_at=NOW,
             completed_at=NOW,
             error_message="runtime_exception",
+            **_runtime_signal_binding(repositories),
         )
     )
     repositories.invocations.save(

@@ -28,6 +28,126 @@ class MutationResourceCategory(StrEnum):
     LEDGER = "ledger"
 
 
+class AgentCapabilityReadinessActivationError(RuntimeError):
+    """A readiness activation lost its exact transaction-local authority."""
+
+    error_code = "agent_capability_readiness_activation_fenced"
+    retryable = False
+
+
+class AgentRetirementLifecycleAuthorityError(RuntimeError):
+    """An agent retirement phase lost its exact service-only authority."""
+
+    error_code = "agent_retirement_lifecycle_fenced"
+    retryable = False
+
+
+@dataclass(frozen=True, slots=True)
+class AgentCapabilityReadinessActivationAuthority:
+    """Exact one-transaction authority derived from a verified readiness proof.
+
+    This authority is deliberately separate from ``MutationWriteAuthority``.  A
+    generic mutation writer may persist ordinary canonical state, but it cannot
+    promote a workspace generation or capability lease into runnable authority.
+    """
+
+    reservation_id: str
+    lease_id: str
+    session_id: str
+    agent_member_id: str
+    agent_id: str
+    workspace_generation: int
+    provider_id: str
+    readiness_ref: str
+    readiness_digest: str
+    activated_at: str
+    reservation_previous_state_version: int
+    lease_previous_state_version: int
+    reservation_canonical_digest: str
+    lease_canonical_digest: str
+    event_id: str
+    event_digest: str
+    actor_ref: str
+
+    def __post_init__(self) -> None:
+        for value, field_name in (
+            (self.reservation_id, "reservation_id"),
+            (self.lease_id, "lease_id"),
+            (self.session_id, "session_id"),
+            (self.agent_member_id, "agent_member_id"),
+            (self.agent_id, "agent_id"),
+            (self.provider_id, "provider_id"),
+            (self.readiness_ref, "readiness_ref"),
+            (self.activated_at, "activated_at"),
+            (self.event_id, "event_id"),
+            (self.actor_ref, "actor_ref"),
+        ):
+            if not value or value != value.strip():
+                raise ValueError(f"{field_name} must not be empty or padded")
+        if self.workspace_generation <= 0:
+            raise ValueError("workspace_generation must be positive")
+        if self.reservation_previous_state_version <= 0:
+            raise ValueError("reservation_previous_state_version must be positive")
+        if self.lease_previous_state_version <= 0:
+            raise ValueError("lease_previous_state_version must be positive")
+        for digest, field_name in (
+            (self.readiness_digest, "readiness_digest"),
+            (self.reservation_canonical_digest, "reservation_canonical_digest"),
+            (self.lease_canonical_digest, "lease_canonical_digest"),
+            (self.event_digest, "event_digest"),
+        ):
+            if len(digest) != 71 or not digest.startswith("sha256:"):
+                raise ValueError(f"{field_name} must be a sha256 digest")
+            if any(
+                character not in "0123456789abcdef"
+                for character in digest.removeprefix("sha256:")
+            ):
+                raise ValueError(f"{field_name} must use lowercase hexadecimal")
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRetirementLifecycleAuthority:
+    """Exact one-transaction authority for one retirement lifecycle insert."""
+
+    phase: str
+    record_id: str
+    record_digest: str
+    request_id: str
+    request_digest: str
+    session_id: str
+    agent_member_id: str
+    agent_id: str
+    workspace_generation: int
+    capability_lease_id: str
+
+    def __post_init__(self) -> None:
+        if self.phase not in {"request", "cleanup_proof", "final"}:
+            raise ValueError("unsupported agent retirement lifecycle phase")
+        for value, field_name in (
+            (self.record_id, "record_id"),
+            (self.request_id, "request_id"),
+            (self.session_id, "session_id"),
+            (self.agent_member_id, "agent_member_id"),
+            (self.agent_id, "agent_id"),
+            (self.capability_lease_id, "capability_lease_id"),
+        ):
+            if not value or value != value.strip():
+                raise ValueError(f"{field_name} must not be empty or padded")
+        if self.workspace_generation <= 0:
+            raise ValueError("workspace_generation must be positive")
+        for digest, field_name in (
+            (self.record_digest, "record_digest"),
+            (self.request_digest, "request_digest"),
+        ):
+            if len(digest) != 71 or not digest.startswith("sha256:"):
+                raise ValueError(f"{field_name} must be a sha256 digest")
+            if any(
+                character not in "0123456789abcdef"
+                for character in digest.removeprefix("sha256:")
+            ):
+                raise ValueError(f"{field_name} must use lowercase hexadecimal")
+
+
 @dataclass(frozen=True, slots=True)
 class MutationCoverageEntry:
     table_name: str
@@ -122,8 +242,25 @@ HOST_MUTATION_POLICY_DIGEST: Final = canonical_digest(HOST_MUTATION_POLICY)
 
 
 _DIRECT_COVERAGE: tuple[tuple[str, MutationResourceCategory], ...] = (
+    (
+        "agent_capability_lease_lifecycle_events",
+        MutationResourceCategory.EVENT_OUTBOX,
+    ),
+    ("agent_capability_lease_records", MutationResourceCategory.CANONICAL_SQLITE),
+    ("agent_git_workspace_records", MutationResourceCategory.CANONICAL_SQLITE),
+    ("agent_retirement_requests", MutationResourceCategory.CANONICAL_SQLITE),
+    (
+        "agent_retirement_cleanup_proofs",
+        MutationResourceCategory.CANONICAL_SQLITE,
+    ),
     ("agent_members", MutationResourceCategory.CANONICAL_SQLITE),
+    ("agent_retirement_records", MutationResourceCategory.CANONICAL_SQLITE),
     ("agent_runtime_signals", MutationResourceCategory.CANONICAL_SQLITE),
+    ("agent_workspace_state_observations", MutationResourceCategory.CANONICAL_SQLITE),
+    (
+        "agent_workspace_generation_reservations",
+        MutationResourceCategory.CANONICAL_SQLITE,
+    ),
     ("approval_requests", MutationResourceCategory.CANONICAL_SQLITE),
     ("command_receipt_records", MutationResourceCategory.LEDGER),
     ("continuation_state_records", MutationResourceCategory.CANONICAL_SQLITE),
@@ -162,6 +299,19 @@ _DIRECT_COVERAGE: tuple[tuple[str, MutationResourceCategory], ...] = (
     ("failure_observation_records", MutationResourceCategory.CANONICAL_SQLITE),
     ("failure_hypothesis_records", MutationResourceCategory.CANONICAL_SQLITE),
     (
+        "executor_hpc_workspace_provision_intents",
+        MutationResourceCategory.CANONICAL_SQLITE,
+    ),
+    (
+        "executor_hpc_workspace_records",
+        MutationResourceCategory.CANONICAL_SQLITE,
+    ),
+    (
+        "executor_hpc_credential_claims",
+        MutationResourceCategory.CANONICAL_SQLITE,
+    ),
+    ("workspace_revision_execution_requests", MutationResourceCategory.CANONICAL_SQLITE),
+    (
         "failure_recovery_disposition_records",
         MutationResourceCategory.CANONICAL_SQLITE,
     ),
@@ -169,6 +319,10 @@ _DIRECT_COVERAGE: tuple[tuple[str, MutationResourceCategory], ...] = (
     ("lane_lifecycle_events", MutationResourceCategory.EVENT_OUTBOX),
     ("lanes", MutationResourceCategory.CANONICAL_SQLITE),
     ("memory_entries", MutationResourceCategory.CANONICAL_SQLITE),
+    ("protocol_file_handoff_records", MutationResourceCategory.CANONICAL_SQLITE),
+    ("research_file_index_records", MutationResourceCategory.CANONICAL_SQLITE),
+    ("repository_provision_credential_records", MutationResourceCategory.CANONICAL_SQLITE),
+    ("revision_path_refs", MutationResourceCategory.CANONICAL_SQLITE),
     ("runtime_command_records", MutationResourceCategory.CANONICAL_SQLITE),
     (
         "sandbox_command_log_artifacts",
@@ -211,7 +365,18 @@ _DIRECT_COVERAGE: tuple[tuple[str, MutationResourceCategory], ...] = (
     ("scientific_attempt_records", MutationResourceCategory.CANONICAL_SQLITE),
     ("scientific_attempt_run_bindings", MutationResourceCategory.CANONICAL_SQLITE),
     ("sessions", MutationResourceCategory.CANONICAL_SQLITE),
+    ("task_finish_evidence_records", MutationResourceCategory.CANONICAL_SQLITE),
+    ("task_finish_records", MutationResourceCategory.CANONICAL_SQLITE),
     ("tasks", MutationResourceCategory.CANONICAL_SQLITE),
+    ("verified_workspace_checkpoint_records", MutationResourceCategory.CANONICAL_SQLITE),
+    ("workspace_publication_execution_events", MutationResourceCategory.CANONICAL_SQLITE),
+    ("workspace_publication_execution_records", MutationResourceCategory.CANONICAL_SQLITE),
+    ("workspace_publication_intents", MutationResourceCategory.CANONICAL_SQLITE),
+    ("workspace_publication_outbox_records", MutationResourceCategory.CANONICAL_SQLITE),
+    ("published_revisions", MutationResourceCategory.CANONICAL_SQLITE),
+    ("git_lfs_quota_reservations", MutationResourceCategory.ARTIFACT_PUBLICATION),
+    ("git_lfs_upload_sessions", MutationResourceCategory.ARTIFACT_PUBLICATION),
+    ("git_lfs_workspace_object_links", MutationResourceCategory.ARTIFACT_PUBLICATION),
 )
 
 HOST_MUTATION_COVERAGE_ENTRIES: Final[tuple[MutationCoverageEntry, ...]] = tuple(
@@ -222,6 +387,101 @@ HOST_MUTATION_COVERAGE_ENTRIES: Final[tuple[MutationCoverageEntry, ...]] = tuple
         table_name="task_dependencies",
         resource_category=MutationResourceCategory.CANONICAL_SQLITE,
         session_binding="task_id_to_tasks",
+    ),
+    MutationCoverageEntry(
+        table_name="executor_hpc_workspace_provision_receipts",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="workspace_id_to_executor_hpc_workspace",
+    ),
+    MutationCoverageEntry(
+        table_name="executor_hpc_workspace_cleanup_intents",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="workspace_id_to_executor_hpc_workspace",
+    ),
+    MutationCoverageEntry(
+        table_name="executor_hpc_workspace_cleanup_receipts",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="workspace_id_to_executor_hpc_workspace",
+    ),
+    MutationCoverageEntry(
+        table_name="workspace_revision_clean_observations",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="request_id_to_workspace_revision_execution",
+    ),
+    MutationCoverageEntry(
+        table_name="compute_source_manifests",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="request_id_to_workspace_revision_execution",
+    ),
+    MutationCoverageEntry(
+        table_name="workspace_job_dispatch_intents",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="request_id_to_workspace_revision_execution",
+    ),
+    MutationCoverageEntry(
+        table_name="scheduler_credential_occurrences",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="execution_id_to_controlled_operation_execution",
+    ),
+    MutationCoverageEntry(
+        table_name="workspace_external_job_handles",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="dispatch_id_to_workspace_job_dispatch",
+    ),
+    MutationCoverageEntry(
+        table_name="workspace_external_job_observations",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="execution_id_to_controlled_operation_execution",
+    ),
+    MutationCoverageEntry(
+        table_name="workspace_job_cancellation_intents",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="execution_id_to_controlled_operation_execution",
+    ),
+    MutationCoverageEntry(
+        table_name="workspace_job_cancellation_receipts",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="cancellation_id_to_workspace_job_cancellation",
+    ),
+    MutationCoverageEntry(
+        table_name="workspace_job_results",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="execution_id_to_controlled_operation_execution",
+    ),
+    MutationCoverageEntry(
+        table_name="workspace_job_result_revision_links",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="result_id_to_workspace_job_result",
+    ),
+    MutationCoverageEntry(
+        table_name="protocol_file_handoff_entries",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="handoff_id_to_protocol_file_handoffs",
+    ),
+    MutationCoverageEntry(
+        table_name="workspace_publication_remote_receipts",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="intent_id_to_workspace_publication_intents",
+    ),
+    MutationCoverageEntry(
+        table_name="workspace_publication_supersedes_links",
+        resource_category=MutationResourceCategory.CANONICAL_SQLITE,
+        session_binding="successor_publication_id_to_published_revisions",
+    ),
+    MutationCoverageEntry(
+        table_name="git_lfs_publication_intent_proofs",
+        resource_category=MutationResourceCategory.ARTIFACT_PUBLICATION,
+        session_binding="intent_id_to_workspace_publication_intents",
+    ),
+    MutationCoverageEntry(
+        table_name="git_lfs_publication_closures",
+        resource_category=MutationResourceCategory.ARTIFACT_PUBLICATION,
+        session_binding="publication_id_to_published_revisions",
+    ),
+    MutationCoverageEntry(
+        table_name="git_lfs_publication_pins",
+        resource_category=MutationResourceCategory.ARTIFACT_PUBLICATION,
+        session_binding="publication_id_to_published_revisions",
     ),
     MutationCoverageEntry(
         table_name="artifact_materialization_records",
@@ -270,9 +530,10 @@ HOST_MUTATION_COVERAGE_ENTRIES: Final[tuple[MutationCoverageEntry, ...]] = tuple
     ),
 )
 
-# These records are deliberately Host-global rather than session-scoped.  They are
-# named in the manifest so adding an unclassified canonical table changes coverage
-# validation instead of silently weakening a receipt.
+# These records are either deliberately Host-global or inactive source-only
+# candidate schemas.  They are named in the manifest so adding an unclassified
+# canonical table changes coverage validation instead of silently weakening a
+# receipt.  A candidate table must move into guarded coverage before activation.
 HOST_MUTATION_GLOBAL_EXCLUSIONS: Final[tuple[dict[str, str], ...]] = (
     {
         "table_name": "artifact_blob_gc_queue",
@@ -325,6 +586,122 @@ HOST_MUTATION_GLOBAL_EXCLUSIONS: Final[tuple[dict[str, str], ...]] = (
     {
         "table_name": "repository_private_namespace_retirement_receipts",
         "reason": "host_repository_retention_immutable_retirement_receipts",
+    },
+    {
+        "table_name": "git_lfs_binding_policies",
+        "reason": "host_operator_immutable_repository_lfs_policy",
+    },
+    {
+        "table_name": "git_lfs_object_records",
+        "reason": "host_global_repository_lfs_object_catalog",
+    },
+    {
+        "table_name": "git_lfs_object_read_receipts",
+        "reason": "host_global_immutable_lfs_object_attestations",
+    },
+    {
+        "table_name": "git_lfs_closure_manifests",
+        "reason": "host_global_immutable_lfs_closure_cache",
+    },
+    {
+        "table_name": "git_lfs_closure_entries",
+        "reason": "host_global_immutable_lfs_closure_cache_entries",
+    },
+    {
+        "table_name": "git_lfs_closure_verifications",
+        "reason": "host_global_immutable_lfs_verification_cache",
+    },
+    {
+        "table_name": "git_lfs_closure_verification_entries",
+        "reason": "host_global_immutable_lfs_verification_cache_entries",
+    },
+    {
+        "table_name": "git_lfs_private_reachability_receipts",
+        "reason": "host_repository_retention_lfs_reachability_authority",
+    },
+    {
+        "table_name": "git_lfs_gc_candidate_receipts",
+        "reason": "host_global_lfs_gc_candidate_ledger",
+    },
+    {
+        "table_name": "git_lfs_gc_candidate_items",
+        "reason": "host_global_lfs_gc_candidate_item_ledger",
+    },
+    {
+        "table_name": "git_lfs_gc_deletion_receipts",
+        "reason": "host_global_lfs_gc_deletion_ledger",
+    },
+    {
+        "table_name": "executor_hpc_target_qualifications",
+        "reason": "host_operator_immutable_executor_target_qualification",
+    },
+    {
+        "table_name": "workspace_job_target_qualifications",
+        "reason": "host_operator_immutable_job_target_qualification",
+    },
+    {
+        "table_name": "scientific_file_effect_adoption_records",
+        "reason": "inactive_source_only_scientific_file_candidate",
+    },
+    {
+        "table_name": "scientific_deliverable_ref_records",
+        "reason": "inactive_source_only_scientific_file_candidate",
+    },
+    {
+        "table_name": "scientific_deliverable_bundle_records",
+        "reason": "inactive_source_only_scientific_file_candidate",
+    },
+    {
+        "table_name": "scientific_deliverable_bundle_entry_records",
+        "reason": "inactive_source_only_scientific_file_candidate",
+    },
+    {
+        "table_name": "scientific_deliverable_validation_receipt_records",
+        "reason": "inactive_source_only_scientific_file_candidate",
+    },
+    {
+        "table_name": "scientific_contract_epoch_records",
+        "reason": "host_operator_inactive_scientific_contract_epoch",
+    },
+    {
+        "table_name": "file_workspace_contract_epoch_records",
+        "reason": "host_operator_inactive_file_workspace_contract_epoch",
+    },
+    {
+        "table_name": "file_workspace_surface_freeze_records",
+        "reason": "host_operator_inactive_file_workspace_freeze_receipt",
+    },
+    {
+        "table_name": "file_workspace_public_epoch_records",
+        "reason": "host_operator_inactive_file_workspace_public_epoch",
+    },
+    {
+        "table_name": "file_workspace_session_contract_records",
+        "reason": "inactive_source_only_session_contract_candidate",
+    },
+    {
+        "table_name": "historical_artifact_inventory_records",
+        "reason": "offline_operator_historical_migration_candidate",
+    },
+    {
+        "table_name": "historical_artifact_migration_unit_records",
+        "reason": "offline_operator_historical_migration_candidate",
+    },
+    {
+        "table_name": "historical_artifact_ref_records",
+        "reason": "offline_operator_historical_migration_candidate",
+    },
+    {
+        "table_name": "historical_artifact_reference_rewrite_records",
+        "reason": "offline_operator_historical_migration_candidate",
+    },
+    {
+        "table_name": "historical_artifact_migration_unit_receipts",
+        "reason": "offline_operator_historical_migration_candidate",
+    },
+    {
+        "table_name": "historical_artifact_migration_global_receipts",
+        "reason": "offline_operator_historical_migration_candidate",
     },
 )
 
@@ -428,6 +805,10 @@ def writer_allows_resource(
 
 
 __all__ = [
+    "AgentCapabilityReadinessActivationAuthority",
+    "AgentCapabilityReadinessActivationError",
+    "AgentRetirementLifecycleAuthority",
+    "AgentRetirementLifecycleAuthorityError",
     "HOST_MUTATION_COVERAGE_DIGEST",
     "HOST_MUTATION_COVERAGE_ENTRIES",
     "HOST_MUTATION_COVERAGE_MANIFEST",

@@ -1,5 +1,18 @@
 ## ADDED Requirements
 
+### Requirement: Source implementation does not promote deferred predecessor acceptance
+During the explicitly ordered continuous migration, source implementation MAY begin from a `revision_path_handoff_source_only_dependency_gate@1` before final C2--C5 acceptance receipts are issued. The gate MUST bind immutable C1 acceptance, current C2--C5 source/schema/policy/interface identities, and every deferred predecessor validation task. It MUST state `acceptance_proven=false`, `final_source_revision_bound=false`, `production_effect_authorized=false`, and `live_authorized=false`.
+
+The gate permits only continued source, deferred-test, and documentation work. It MUST NOT be consumed as a capability lease, credential, publication, handoff, report publication, task evidence, runtime command, production proof, live authorization, or remote-effect authorization. Final acceptance SHALL re-read the combined final source and require formal C1--C5 receipts plus every validation declared by this change.
+
+#### Scenario: Continue source work under unified deferred validation
+- **WHEN** immutable C1 acceptance and current C2--C5 source interfaces are snapshotted while final combined predecessor validation remains deferred
+- **THEN** source migration may continue without publishing, delivering a protocol message, transitioning a task, issuing a credential, performing Git/LFS I/O, running live work, or causing an external effect
+
+#### Scenario: Present the source-only gate as runtime authority
+- **WHEN** a caller presents the gate to publish a workspace or report, send a handoff, finish a task, fetch a revision, issue a credential, or authorize production work
+- **THEN** the system rejects it and performs no fallback, retry, state transition, transfer, publication, delivery, or task mutation
+
 ### Requirement: Revision path references have closed immutable identity
 Every file handoff MUST use a versioned `RevisionPathRef` bound to a canonical `PublishedRevision`, repository binding version, exact commit and tree, normalized repository-relative path, entry kind, and exact Git object identity. A regular Git file MUST bind its blob OID and size; an LFS file MUST additionally bind its pointer blob OID, LFS OID, and size; a directory MUST bind its tree OID and canonical path-manifest digest. The system MUST reject absolute paths, traversal, mutable branches, private refs, URLs, Host paths, and identity drift.
 

@@ -222,8 +222,8 @@ def test_retirement_requires_closed_generation_deadline_and_no_holds(
         )
     hold_id = service.add_hold(
         namespace.namespace_id,
-        hold_kind=RepositoryPrivateNamespaceHoldKind.ACTIVE_CAPABILITY_LEASE,
-        owner_ref="lease:c1",
+        hold_kind=RepositoryPrivateNamespaceHoldKind.AUDIT_HOLD,
+        owner_ref="audit:c1",
         created_at="2026-08-15T18:31:00+00:00",
     )
     with pytest.raises(RepositoryRetentionError, match="active retention holds"):

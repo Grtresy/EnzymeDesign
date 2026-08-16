@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import dataclass
 from dataclasses import replace
 from datetime import UTC
 from datetime import datetime
@@ -69,6 +70,8 @@ from openzyme_core import register_scientific_attempt_tools
 from openzyme_core import register_task_board_tools
 from openzyme_core import resolve_scientific_attempt_lifecycle
 from openzyme_core import scientific_attempt_tool_descriptors
+from openzyme_core.agent_capability_service import AgentCapabilityLeaseService
+from openzyme_core.agent_capability_service import AgentWorkspaceReadinessProof
 from openzyme_core.runtime_wake_facts import CanonicalWakeFactsError
 from openzyme_core.runtime_wake_facts import CanonicalWakeFactsProjector
 from openzyme_core.runtime_wake_facts import CanonicalWakeFactsReason
@@ -79,6 +82,7 @@ from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignal
 from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import AgentRuntimeSignalStatus
+from openzyme_domain import AgentWorkspaceGenerationReservation
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import ArtifactKind
@@ -120,6 +124,7 @@ from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
+from openzyme_domain import canonical_capability_digest
 
 
 NOW = "2026-07-23T00:00:00+00:00"
@@ -161,6 +166,35 @@ TEST_WORKFLOW_CONTRACT_REGISTRY = ScientificWorkflowContractRegistry(
         ),
     ),
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _ScientificWorkspaceReadinessProvider:
+    provider_id: str = "test.scientific-workspace-readiness@1"
+
+    def verify_readiness(
+        self,
+        reservation: AgentWorkspaceGenerationReservation,
+    ) -> AgentWorkspaceReadinessProof:
+        return AgentWorkspaceReadinessProof(
+            provider_id=self.provider_id,
+            reservation_id=reservation.reservation_id,
+            reservation_fingerprint=reservation.immutable_fingerprint,
+            session_id=reservation.session_id,
+            agent_member_id=reservation.agent_member_id,
+            agent_id=reservation.agent_id,
+            workspace_generation=reservation.workspace_generation,
+            readiness_ref=f"test-ready:{reservation.reservation_id}",
+            readiness_digest=canonical_capability_digest(
+                {
+                    "provider_id": self.provider_id,
+                    "reservation_id": reservation.reservation_id,
+                    "reservation_fingerprint": reservation.immutable_fingerprint,
+                    "workspace_generation": reservation.workspace_generation,
+                }
+            ),
+            observed_at=NOW,
+        )
 
 
 class _RepositoryProxy:
@@ -210,6 +244,21 @@ def _world(
         assigned_ref="agent:scientist",
         lane_id=lane.lane_id,
     )
+    master = AgentMember(
+        member_id="member_scientific_master",
+        agent_id="agent:master",
+        session_id=session.session_id,
+        lane_id=None,
+        task_id=None,
+        name="OpenZyme",
+        role="master",
+        status=AgentMemberStatus.IDLE,
+        parent_agent_id=None,
+        created_at=NOW,
+        updated_at=NOW,
+        runtime_state="idle",
+        idle_since=NOW,
+    )
     agent = AgentMember(
         member_id="member_scientific",
         agent_id="agent:scientist",
@@ -217,9 +266,9 @@ def _world(
         lane_id=lane.lane_id,
         task_id=task.task_id,
         name="scientist",
-        role="scientist",
+        role="researcher",
         status=AgentMemberStatus.ACTIVE,
-        parent_agent_id=None,
+        parent_agent_id=master.agent_id,
         created_at=NOW,
         updated_at=NOW,
     )
@@ -243,14 +292,85 @@ def _world(
     repositories.sessions.save(session)
     repositories.lanes.save(lane)
     repositories.tasks.seed_fixture(task)
+    repositories.agents.save(master)
     repositories.agents.save(agent)
     repositories.sandbox_workspaces.save(workspace)
+    readiness = _ScientificWorkspaceReadinessProvider()
+    capability_service = AgentCapabilityLeaseService(
+        repositories,
+        readiness_providers={readiness.provider_id: readiness},
+    )
+    master_issuance = capability_service.reserve_and_issue(
+        session_id=session.session_id,
+        agent_id=master.agent_id,
+        idempotency_key="scientific-master-generation-1",
+        actor_ref="test:scientific-master-issue",
+    )
+    master_activation = capability_service.activate_with_provider(
+        lease_id=master_issuance.lease.lease_id,
+        provider_id=readiness.provider_id,
+        actor_ref="test:scientific-master-activate",
+    )
+    scientist_issuance = capability_service.reserve_and_issue(
+        session_id=session.session_id,
+        agent_id=agent.agent_id,
+        idempotency_key="scientific-researcher-generation-1",
+        actor_ref="test:scientific-researcher-issue",
+        parent_lease_id=master_activation.lease.lease_id,
+    )
+    capability_service.activate_with_provider(
+        lease_id=scientist_issuance.lease.lease_id,
+        provider_id=readiness.provider_id,
+        actor_ref="test:scientific-researcher-activate",
+    )
     service = ScientificAttemptService(
         repositories,
         now=lambda: NOW,
         workflow_contract_registry=TEST_WORKFLOW_CONTRACT_REGISTRY,
     )
     return repositories, service
+
+
+def _active_capability_binding(
+    repositories: CoreRepositories,
+    *,
+    agent_id: str,
+) -> tuple[str, int]:
+    agent = repositories.agents.get("sess_scientific", agent_id)
+    assert agent is not None
+    assert agent.member_id is not None
+    reservation = repositories.agent_workspace_generation_reservations.get_current(
+        session_id=agent.session_id,
+        agent_member_id=agent.member_id,
+    )
+    assert reservation is not None
+    lease = repositories.agent_capability_leases.get_active(
+        session_id=agent.session_id,
+        agent_member_id=agent.member_id,
+    )
+    assert lease is not None
+    assert lease.workspace_generation == reservation.workspace_generation
+    return lease.lease_id, reservation.workspace_generation
+
+
+def _attach_session_runtime_lease(
+    context: SessionRuntimeContext,
+    *,
+    owner_id: str,
+) -> None:
+    with MutationScopeService(context.repositories).writer_turn(
+        session_id="sess_scientific",
+        owner_kind=MutationWriterKind.RUNTIME_COMMAND,
+        owner_ref=owner_id,
+    ):
+        acquired = context.repositories.session_runtime_leases.acquire(
+            session_id="sess_scientific",
+            owner_id=owner_id,
+            mode="test",
+        )
+    assert acquired.acquired is True
+    assert acquired.lease is not None
+    context.session_runtime_lease = acquired.lease
 
 
 def _grant(
@@ -2693,6 +2813,10 @@ def test_exact_closure_notification_for_terminal_task_uses_stale_signal_path(
         model_factory=object(),
         scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
     )
+    _attach_session_runtime_lease(
+        context,
+        owner_id="test:closure-notification-terminal-runtime",
+    )
     runtime = AgentRuntimeService(context)
     with service.mutation_scopes.writer_turn(
         session_id=attempt.session_id,
@@ -2779,6 +2903,10 @@ def test_exact_closure_notification_wakes_open_task_through_ordinary_model_path(
         model_factory=object(),
         scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
     )
+    _attach_session_runtime_lease(
+        context,
+        owner_id="test:closure-notification-ordinary-runtime",
+    )
     with service.mutation_scopes.writer_turn(
         session_id=attempt.session_id,
         owner_kind=MutationWriterKind.RUNTIME_COMMAND,
@@ -2861,6 +2989,10 @@ def test_exact_admission_wake_projects_canonical_facts_before_task_prose(
         model_factory=object(),
         scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
     )
+    _attach_session_runtime_lease(
+        context,
+        owner_id="test:admission-canonical-wake-runtime",
+    )
     with service.mutation_scopes.writer_turn(
         session_id=attempt.session_id,
         owner_kind=MutationWriterKind.RUNTIME_COMMAND,
@@ -2905,22 +3037,7 @@ def test_exact_admission_wake_reaches_master_as_ephemeral_context(
     repositories.tasks.seed_fixture(
         replace(task, assigned_ref="agent:master")
     )
-    repositories.agents.save(
-        AgentMember(
-            agent_id="agent:master",
-            session_id=task.session_id,
-            lane_id=task.lane_id,
-            task_id=task.task_id,
-            name="OpenZyme",
-            role="master",
-            status=AgentMemberStatus.IDLE,
-            parent_agent_id=None,
-            created_at=NOW,
-            updated_at=NOW,
-            runtime_state="idle",
-            idle_since=NOW,
-        )
-    )
+    assert repositories.agents.get(task.session_id, "agent:master") is not None
     authority = _grant(service)
     admission = service.request_attempt_admission(
         envelope_id=authority.envelope_id,
@@ -2981,6 +3098,10 @@ def test_exact_admission_wake_reaches_master_as_ephemeral_context(
         scientific_workflow_contract_registry=(
             TEST_WORKFLOW_CONTRACT_REGISTRY
         ),
+    )
+    _attach_session_runtime_lease(
+        context,
+        owner_id="test:master-canonical-admission-wake-runtime",
     )
     with service.mutation_scopes.writer_turn(
         session_id=attempt.session_id,
@@ -3079,6 +3200,10 @@ def test_scientific_transition_handoff_has_only_host_finalized_successor(
         tool_registry=ToolRegistry(),
         restore_focus=RestoreFocus(),
         model_factory=object(),
+    )
+    _attach_session_runtime_lease(
+        context,
+        owner_id=f"test:transition-successor:{terminal_action or 'ordinary'}",
     )
     runtime = AgentRuntimeService(context)
     with service.mutation_scopes.writer_turn(
@@ -3185,27 +3310,7 @@ def test_unrelated_manual_resume_keeps_master_model_path(
 ) -> None:
     repositories, service = _world()
     attempt = _grant_and_create(service)
-    with service.mutation_scopes.writer_turn(
-        session_id=attempt.session_id,
-        owner_kind=MutationWriterKind.AGENT_TURN,
-        owner_ref="fixture:add-master-for-manual-resume",
-    ):
-        repositories.agents.save(
-            AgentMember(
-                agent_id="agent:master",
-                session_id=attempt.session_id,
-                lane_id=None,
-                task_id=None,
-                name="OpenZyme",
-                role="master",
-                status=AgentMemberStatus.IDLE,
-                parent_agent_id=None,
-                created_at=NOW,
-                updated_at=NOW,
-                runtime_state="idle",
-                idle_since=NOW,
-            )
-        )
+    assert repositories.agents.get(attempt.session_id, "agent:master") is not None
     calls: list[str] = []
 
     def run_master(*_args: Any, **_kwargs: Any) -> HarnessResult:
@@ -3237,6 +3342,10 @@ def test_unrelated_manual_resume_keeps_master_model_path(
         tool_registry=ToolRegistry(),
         restore_focus=RestoreFocus(),
         model_factory=object(),
+    )
+    _attach_session_runtime_lease(
+        context,
+        owner_id=f"test:ordinary-master-resume:{source_ref or 'none'}",
     )
     with service.mutation_scopes.writer_turn(
         session_id=attempt.session_id,
@@ -3314,6 +3423,10 @@ def test_closure_notification_binding_drift_fails_closed_before_model(
         tool_registry=ToolRegistry(),
         restore_focus=RestoreFocus(),
         model_factory=object(),
+    )
+    _attach_session_runtime_lease(
+        context,
+        owner_id="test:invalid-closure-notification-runtime",
     )
     with service.mutation_scopes.writer_turn(
         session_id=attempt.session_id,
@@ -3859,7 +3972,6 @@ def test_successful_scientific_attempt_close_is_a_terminal_turn_action() -> None
         actor_role="scientist",
         scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
     )
-
     with service.mutation_scopes.writer_turn(
         session_id=attempt.session_id,
         owner_kind=MutationWriterKind.AGENT_TURN,
@@ -5284,6 +5396,10 @@ def test_file_backed_runtime_consistency_handles_r54_shaped_draft_head(
         actor_ref="agent:scientist",
         idempotency_key="selection-r54-shaped",
     )
+    capability_lease_id, workspace_generation = _active_capability_binding(
+        repositories,
+        agent_id="agent:scientist",
+    )
     with service.mutation_scopes.writer_turn(
         session_id=attempt.session_id,
         owner_kind=MutationWriterKind.ATTEMPT_DRIVER,
@@ -5301,6 +5417,8 @@ def test_file_backed_runtime_consistency_handles_r54_shaped_draft_head(
                 completed_at=NOW,
                 error_message="max_steps_exceeded",
                 last_error="executor exceeded the delegated work step budget.",
+                capability_lease_id=capability_lease_id,
+                workspace_generation=workspace_generation,
             )
         )
 
@@ -5329,6 +5447,10 @@ def test_budget_exhaustion_observes_current_selection_without_mutation(
         actor_ref="agent:scientist",
         idempotency_key="selection-budget-recovery",
     )
+    capability_lease_id, workspace_generation = _active_capability_binding(
+        repositories,
+        agent_id="agent:scientist",
+    )
     signal = AgentRuntimeSignal(
         signal_id="signal_budget_selection",
         session_id=attempt.session_id,
@@ -5338,6 +5460,8 @@ def test_budget_exhaustion_observes_current_selection_without_mutation(
         reason=AgentRuntimeSignalReason.MANUAL_RESUME,
         status=AgentRuntimeSignalStatus.PENDING,
         created_at=NOW,
+        capability_lease_id=capability_lease_id,
+        workspace_generation=workspace_generation,
     )
 
     def exhaust_turn(
@@ -5373,6 +5497,10 @@ def test_budget_exhaustion_observes_current_selection_without_mutation(
         restore_focus=RestoreFocus(),
         model_factory=object(),
         scientific_workflow_contract_registry=(TEST_WORKFLOW_CONTRACT_REGISTRY),
+    )
+    _attach_session_runtime_lease(
+        context,
+        owner_id="test:budget-recovery-runtime",
     )
 
     with service.mutation_scopes.writer_turn(

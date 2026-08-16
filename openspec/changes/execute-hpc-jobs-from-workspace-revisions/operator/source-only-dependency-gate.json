@@ -1,0 +1,67 @@
+{
+  "schema_id": "workspace_revision_execution_source_only_dependency_gate@1",
+  "change_id": "execute-hpc-jobs-from-workspace-revisions",
+  "gate_scope": "ordered_source_implementation_only",
+  "observed_head": "8ae3d73b3054f2058ff33ea183f62c811b9272a3",
+  "predecessor_source_gates": [
+    {
+      "change_id": "provision-isolated-executor-hpc-workspaces",
+      "path": "openspec/changes/provision-isolated-executor-hpc-workspaces/operator/source-only-dependency-gate.json",
+      "file_sha256": "sha256:429c77b6a520fcd783703f505fca3dec3bc19cceb1b75aad165f5b644580f5be",
+      "acceptance_proven": false,
+      "final_source_revision_bound": false
+    },
+    {
+      "change_id": "support-git-lfs-work-products",
+      "path": "openspec/changes/support-git-lfs-work-products/operator/source-only-dependency-gate.json",
+      "file_sha256": "sha256:4d259412922d6edff11e8046da3caf3faa8a99655f2f9d93210c92b7383d7ff2",
+      "acceptance_proven": false,
+      "final_source_revision_bound": false
+    }
+  ],
+  "current_interface_identities": {
+    "executor_hpc_domain_sha256": "sha256:eec898592c757e5ab4d65a2ac60c67b163ca524a77e28d3f150ba74a622d0c3b",
+    "executor_hpc_service_sha256": "sha256:7720abcee79599f500843e6de4b2e6e2ff5b0b87db0e8596d19ac0bb567adee8",
+    "executor_hpc_repository_sha256": "sha256:9912dfb130095560c394b7ee1a87c3dae89d7aa9f92b72c506cd2d339d87d484",
+    "controlled_operation_execution_sha256": "sha256:9f3a6aa17c0ad2bfc69fc642b3dbf91f0fa0dbd30a854aef22e3e4dd7a31c70d",
+    "scientific_attempts_sha256": "sha256:72468e6ab6e35d3faa44f412c307a52abeb83e2c828847fb031d0fbc314804e1",
+    "runner_models_sha256": "sha256:7fe8233f4d06cb4bfbd21f16427d40314ead1368fd3c0c0fee8bc71e7e69f70c",
+    "runner_server_sha256": "sha256:90ab3666e37bf20f1e092ac6d47e8216440a41eea0f73a0dc0460b259525e6ad"
+  },
+  "openspec_identities": {
+    "proposal_sha256": "sha256:3bd3b91d6394b341293365ca521a317d11b20a2ba12ade8846313d89fb59626d",
+    "design_sha256": "sha256:49da370f130e0c1a144f0c4161524e8bb3cf32ff9e1b274c1642514e8b39763a",
+    "controlled_operation_spec_sha256": "sha256:e5a6d84cb98cc18137147939e709a95b9fd9dd8b03d02a24c6006e234108dcba",
+    "runner_spec_sha256": "sha256:81d3f9303d8102cb2b817667c8edf24c1d9ab7c94a3c4e928b2dff379797ea6b",
+    "workspace_revision_execution_spec_sha256": "sha256:197252e649428f9d295105f58baeeaeccb31db56d5b404cb741b9f5eb423bb7a"
+  },
+  "deferred_predecessor_acceptance": [
+    "agent_capability_lease_acceptance@1",
+    "git_lfs_work_product_acceptance@1",
+    "executor_hpc_workspace_acceptance@1"
+  ],
+  "permitted_actions": [
+    "continue_workspace_revision_execution_source_implementation",
+    "add_domain_repository_migration_runner_host_and_credential_source",
+    "remove_current_artifact_staging_fetch_and_expected_output_source_paths",
+    "add_deferred_dispatch_recovery_and_negative_qualification_tests_without_running_them",
+    "update_architecture_and_openspec_documents"
+  ],
+  "forbidden_actions": [
+    "construct_or_mutate_remote_compute_tree",
+    "issue_or_consume_scheduler_credential",
+    "connect_to_hpc_target_or_start_runner",
+    "submit_poll_cancel_or_reconcile_remote_payload",
+    "perform_git_lfs_ssh_rsync_scp_or_remote_file_io",
+    "invoke_scientific_attempt_task_report_or_publication_mutation",
+    "run_live_or_external_effect",
+    "claim_predecessor_or_current_acceptance",
+    "satisfy_production_or_cutover_gate",
+    "fallback_to_artifact_staging_hpc_stage_ref_expected_outputs_or_host_file_gateway"
+  ],
+  "external_effects": 0,
+  "acceptance_proven": false,
+  "final_source_revision_bound": false,
+  "production_effect_authorized": false,
+  "live_authorized": false
+}

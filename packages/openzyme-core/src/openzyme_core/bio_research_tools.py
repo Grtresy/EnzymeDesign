@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 import json
 import re
 from typing import Any
@@ -9,12 +8,6 @@ from uuid import uuid4
 
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
-from openzyme_domain import ResearchEvidence
-from openzyme_domain import ResearchGap
-from openzyme_domain import ResearchSourceRef
-from openzyme_domain import ResearchSummary
-from openzyme_domain import ResearchSummaryStatus
-from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SourceRefKind
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_research import BioResearchService
@@ -23,7 +16,6 @@ from openzyme_research import EvidenceQuorumResult
 from openzyme_research import ProviderCallResult
 from openzyme_research import ProviderOutcome
 from openzyme_research import ProviderRequestError
-from openzyme_research import ResearchArtifactManifest
 from openzyme_research import ResearchObservation
 from openzyme_research import ResearchUnit
 from openzyme_research import literature_hits_to_findings
@@ -32,22 +24,19 @@ from openzyme_research import safe_literature_evidence_payload
 from openzyme_research import safe_public_locator
 from openzyme_research import structure_hits_to_findings
 
-from .artifact_boundary import ArtifactBoundaryError
-from .artifact_boundary import ArtifactBoundaryService
 from .artifact_projection import sanitize_private_artifact_fields
 from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolRegistry
 from .harness import ToolResult
 from .repositories import EngineDocumentRecord
+from .workspace_file_handoffs import WorkspaceFileHandoffError
+from .workspace_file_handoffs import write_bytes_to_current_agent_workspace
+from .workspace_file_handoffs import write_json_to_current_agent_workspace
 
 
-def _new_artifact_id(prefix: str) -> str:
+def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:12]}"
-
-
-def _content_digest(content: bytes) -> str:
-    return f"sha256:{hashlib.sha256(content).hexdigest()}"
 
 
 def _call_local_literature_quorum(
@@ -85,190 +74,80 @@ def _safe_research_arguments(arguments: dict[str, object]) -> dict[str, object]:
     return safe
 
 
-def _sealed_asset_metadata(
-    asset: DownloadedResearchAsset,
+def _safe_repository_component(value: str, *, fallback: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-.")
+    return (normalized or fallback)[:128]
+
+
+def _research_file_path(
     *,
-    produced_by: str,
-    retrieved_at: str,
-) -> dict[str, Any]:
-    digest = _content_digest(asset.content)
-    provenance = {
-        "provider": asset.provider,
-        "external_id": asset.external_id,
-        "source_locator": safe_public_locator(asset.locator),
-        "format": asset.format,
-        "retrieved_at": retrieved_at,
-        "digest": digest,
-    }
-    return {
-        **({} if asset.metadata is None else dict(asset.metadata)),
-        "provider": asset.provider,
-        "external_id": asset.external_id,
-        "format": asset.format,
-        "source_locator": safe_public_locator(asset.locator),
-        "produced_by": produced_by,
-        "content_digest": digest,
-        "sealed_digest": digest,
-        "retrieved_at": retrieved_at,
-        "provenance": provenance,
-    }
+    invocation_id: str,
+    category: str,
+    filename: str,
+) -> str:
+    return "/".join(
+        (
+            "research",
+            _safe_repository_component(invocation_id, fallback="invocation"),
+            _safe_repository_component(category, fallback="files"),
+            _safe_repository_component(filename, fallback="result.json"),
+        )
+    )
 
 
-def _persist_asset(
+def _write_downloaded_asset(
     context: SessionRuntimeContext,
-    invocation: ToolInvocation,
     *,
     asset: DownloadedResearchAsset,
-    scope_label: str,
-    invocation_id: str | None = None,
-) -> SessionArtifactRecord:
-    now = utc_now_iso()
-    session_id = context.snapshot.session.session_id
-    metadata = _sealed_asset_metadata(
-        asset,
-        produced_by=scope_label,
-        retrieved_at=now,
-    )
-    request_digest = _content_digest(
-        json.dumps(
-            {
-                "provider": asset.provider,
-                "external_id": asset.external_id,
-                "format": asset.format,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    )
-    result = ArtifactBoundaryService(
-        context.repositories,
-        blob_store_root=context.artifact_blob_root,
-    ).seal_external_bytes(
-        session_id=session_id,
+    invocation_id: str,
+) -> dict[str, object]:
+    result = write_bytes_to_current_agent_workspace(
+        context,
+        repository_path=_research_file_path(
+            invocation_id=invocation_id,
+            category="downloads",
+            filename=asset.filename,
+        ),
         content=asset.content,
-        filename=asset.filename,
-        kind=asset.kind,
-        format=asset.format,
-        title=asset.title,
-        description=asset.description,
-        provider=asset.provider,
-        provenance={
-            "request_digest": request_digest,
-            "response_digest": _content_digest(asset.content),
-            "retrieved_at": now,
-            "external_id": asset.external_id,
-            "source_locator": safe_public_locator(asset.locator),
-            "format": asset.format,
-            "digest": _content_digest(asset.content),
-        },
-        metadata=metadata,
-        task_id=invocation.task_id,
-        lane_id=invocation.lane_id,
-        invocation_id=invocation_id,
     )
-    artifact = result.artifact
-    context.emit(
-        "artifact.recorded",
-        {
-            "artifact_id": artifact.artifact_id,
-            "task_id": artifact.task_id,
-            "lane_id": artifact.lane_id,
-            "kind": artifact.kind.value,
-        },
-    )
-    return artifact
+    return {
+        **result.to_dict(),
+        "provider": asset.provider,
+        "external_id": asset.external_id,
+        "format": asset.format,
+        "source_locator": safe_public_locator(asset.locator),
+    }
 
 
-def _persist_literature_evidence(
+def _write_literature_evidence(
     context: SessionRuntimeContext,
-    invocation: ToolInvocation,
     *,
     engine_invocation: EngineInvocation,
     result: ProviderCallResult[Any],
     quorum: EvidenceQuorumResult,
-) -> SessionArtifactRecord:
+) -> dict[str, object]:
     evidence = safe_literature_evidence_payload(result)
     evidence["call_local_literature_quorum"] = quorum.to_dict()
-    content = json.dumps(
-        evidence,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
-    provenance = result.provenance.to_dict()
-    sealed = ArtifactBoundaryService(
-        context.repositories,
-        blob_store_root=context.artifact_blob_root,
-    ).seal_external_bytes(
-        session_id=engine_invocation.session_id,
-        content=content,
-        filename=f"{result.provenance.provider}_literature_evidence.json",
-        kind="result",
-        format="json",
-        title=f"{result.provenance.provider} literature evidence",
-        description="Safe citation metadata and provider call provenance.",
-        provider=result.provenance.provider,
-        provenance=provenance,
-        metadata={
-            "schema_version": "provider_literature_evidence@1",
-            "provider_outcome": result.outcome.value,
-            "citation_count": len(result.items),
-            "cutover_eligible": quorum.cutover_eligible,
-            "quorum_status": quorum.status.value,
-        },
-        task_id=invocation.task_id,
-        lane_id=invocation.lane_id,
-        invocation_id=engine_invocation.invocation_id,
-        license_scope="safe_citation_metadata",
-    )
-    artifact = sealed.artifact
-    context.emit(
-        "artifact.recorded",
-        {
-            "artifact_id": artifact.artifact_id,
-            "task_id": artifact.task_id,
-            "lane_id": artifact.lane_id,
-            "kind": artifact.kind.value,
-        },
-    )
-    return artifact
+    return write_json_to_current_agent_workspace(
+        context,
+        repository_path=_research_file_path(
+            invocation_id=engine_invocation.invocation_id,
+            category="source-snapshots",
+            filename=(
+                f"{result.provenance.provider}-literature-evidence.json"
+            ),
+        ),
+        payload=evidence,
+    ).to_dict()
 
 
-def _provider_artifact_manifest(
-    artifact: SessionArtifactRecord,
-    *,
-    provider: str,
-) -> ResearchArtifactManifest:
-    metadata = dict(artifact.metadata or {})
-    provenance = dict(metadata.get("provenance") or {})
-    return ResearchArtifactManifest(
-        artifact_id=artifact.artifact_id,
-        external_id=f"{provider}:literature_evidence",
-        provider=provider,
-        kind=artifact.kind,
-        format=str(metadata.get("format") or "json"),
-        filename=artifact.relative_path.rsplit("/", 1)[-1],
-        title=str(artifact.title or f"{provider} literature evidence"),
-        description=artifact.description,
-        metadata=metadata,
-        relative_path=artifact.relative_path,
-        content_digest=_metadata_text(metadata, "content_digest"),
-        sealed_digest=_metadata_text(metadata, "sealed_digest"),
-        retrieved_at=None
-        if provenance.get("retrieved_at") is None
-        else str(provenance["retrieved_at"]),
-        provenance=provenance,
-    )
-
-
-def _persist_web_evidence(
+def _write_web_evidence(
     context: SessionRuntimeContext,
-    invocation: ToolInvocation,
     *,
     engine_invocation: EngineInvocation,
     result: ProviderCallResult[Any],
     findings: tuple[Any, ...],
-) -> SessionArtifactRecord:
+) -> dict[str, object]:
     citations: list[dict[str, Any]] = []
     for finding in findings:
         finding_payload = (
@@ -297,46 +176,15 @@ def _persist_web_evidence(
         "failure": None if result.failure is None else result.failure.to_dict(),
         "warnings": list(result.warnings),
     }
-    content = json.dumps(
-        evidence,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
-    sealed = ArtifactBoundaryService(
-        context.repositories,
-        blob_store_root=context.artifact_blob_root,
-    ).seal_external_bytes(
-        session_id=engine_invocation.session_id,
-        content=content,
-        filename="tavily_web_evidence.json",
-        kind="result",
-        format="json",
-        title="Tavily web evidence",
-        description="Safe public source metadata and provider call provenance.",
-        provider=result.provenance.provider,
-        provenance=result.provenance.to_dict(),
-        metadata={
-            "schema_version": "provider_web_evidence@1",
-            "provider_outcome": result.outcome.value,
-            "citation_count": len(citations),
-        },
-        task_id=invocation.task_id,
-        lane_id=invocation.lane_id,
-        invocation_id=engine_invocation.invocation_id,
-        license_scope="safe_public_source_metadata",
-    )
-    artifact = sealed.artifact
-    context.emit(
-        "artifact.recorded",
-        {
-            "artifact_id": artifact.artifact_id,
-            "task_id": artifact.task_id,
-            "lane_id": artifact.lane_id,
-            "kind": artifact.kind.value,
-        },
-    )
-    return artifact
+    return write_json_to_current_agent_workspace(
+        context,
+        repository_path=_research_file_path(
+            invocation_id=engine_invocation.invocation_id,
+            category="source-snapshots",
+            filename="tavily-web-evidence.json",
+        ),
+        payload=evidence,
+    ).to_dict()
 
 
 def _start_research_tool_invocation(
@@ -344,7 +192,10 @@ def _start_research_tool_invocation(
     invocation: ToolInvocation,
 ) -> EngineInvocation:
     now = utc_now_iso()
-    engine_invocation_id = _new_artifact_id("inv_research_tool")
+    safe_arguments = _safe_research_arguments(dict(invocation.arguments))
+    if len(json.dumps(safe_arguments, ensure_ascii=False).encode("utf-8")) > 8_192:
+        raise ValueError("research tool arguments exceed the bounded metadata limit")
+    engine_invocation_id = _new_id("inv_research_tool")
     input_document_id = f"{engine_invocation_id}:input"
     engine_invocation = EngineInvocation(
         invocation_id=engine_invocation_id,
@@ -359,23 +210,46 @@ def _start_research_tool_invocation(
         idempotency_key=f"{invocation.call_id}:{invocation.tool_name}:{engine_invocation_id}",
         started_at=now,
     )
-    context.repositories.invocations.save(engine_invocation)
-    context.repositories.engine_documents.save(
-        EngineDocumentRecord(
-            document_id=input_document_id,
-            session_id=engine_invocation.session_id,
-            invocation_id=engine_invocation.invocation_id,
-            document_kind="research_tool_input",
-            payload={
-                "tool_name": invocation.tool_name,
-                "arguments": _safe_research_arguments(dict(invocation.arguments)),
-                "call_id": invocation.call_id,
-            },
-            created_at=now,
-            updated_at=now,
+    with context.repositories.atomic(prefix="research_tool_start"):
+        context.repositories.invocations.save(engine_invocation)
+        context.repositories.engine_documents.save(
+            EngineDocumentRecord(
+                document_id=input_document_id,
+                session_id=engine_invocation.session_id,
+                invocation_id=engine_invocation.invocation_id,
+                document_kind="research_tool_input",
+                payload={
+                    "tool_name": invocation.tool_name,
+                    "arguments": safe_arguments,
+                    "call_id": invocation.call_id,
+                },
+                created_at=now,
+                updated_at=now,
+            )
         )
-    )
     return engine_invocation
+
+
+def _fail_research_tool_invocation(
+    context: SessionRuntimeContext,
+    engine_invocation: EngineInvocation,
+) -> EngineInvocation:
+    failed = EngineInvocation(
+        invocation_id=engine_invocation.invocation_id,
+        session_id=engine_invocation.session_id,
+        task_id=engine_invocation.task_id,
+        lane_id=engine_invocation.lane_id,
+        engine_name=engine_invocation.engine_name,
+        status=EngineInvocationStatus.FAILED,
+        input_ref=engine_invocation.input_ref,
+        output_ref=None,
+        approval_id=engine_invocation.approval_id,
+        idempotency_key=engine_invocation.idempotency_key,
+        started_at=engine_invocation.started_at,
+        finished_at=utc_now_iso(),
+    )
+    context.repositories.invocations.save(failed)
+    return failed
 
 
 def _finish_research_tool_invocation(
@@ -386,22 +260,20 @@ def _finish_research_tool_invocation(
 ) -> dict[str, Any]:
     now = utc_now_iso()
     observation_payload = sanitize_private_artifact_fields(observation.to_dict())
+    write_result = write_json_to_current_agent_workspace(
+        context,
+        repository_path=_research_file_path(
+            invocation_id=engine_invocation.invocation_id,
+            category="observations",
+            filename="observation.json",
+        ),
+        payload=observation_payload,
+    )
     output_document_id = f"{engine_invocation.invocation_id}:output"
     terminal_status = (
         EngineInvocationStatus.FAILED
         if observation.status.lower() in {"failed", "error"}
         else EngineInvocationStatus.SUCCEEDED
-    )
-    context.repositories.engine_documents.save(
-        EngineDocumentRecord(
-            document_id=output_document_id,
-            session_id=engine_invocation.session_id,
-            invocation_id=engine_invocation.invocation_id,
-            document_kind="research_tool_observation",
-            payload=observation_payload,
-            created_at=now,
-            updated_at=now,
-        )
     )
     completed_invocation = EngineInvocation(
         invocation_id=engine_invocation.invocation_id,
@@ -417,244 +289,33 @@ def _finish_research_tool_invocation(
         started_at=engine_invocation.started_at,
         finished_at=now,
     )
-    context.repositories.invocations.save(completed_invocation)
-    persist_research_observation(
-        context,
-        tool_invocation=invocation,
-        engine_invocation=completed_invocation,
-        observation=observation_payload,
-    )
-    return observation_payload
-
-
-def persist_research_observation(
-    context: SessionRuntimeContext,
-    *,
-    tool_invocation: ToolInvocation,
-    engine_invocation: EngineInvocation,
-    observation: dict[str, Any],
-) -> None:
-    now = utc_now_iso()
-    status = _summary_status(str(observation.get("status") or "completed"))
-    summary_id = f"{engine_invocation.invocation_id}:summary"
-    context.repositories.research_summaries.save(
-        ResearchSummary(
-            summary_id=summary_id,
-            session_id=engine_invocation.session_id,
-            task_id=tool_invocation.task_id,
-            lane_id=tool_invocation.lane_id,
-            invocation_id=engine_invocation.invocation_id,
-            status=status,
-            completion_reason=str(observation.get("status") or "completed"),
-            research_brief=_research_brief(tool_invocation, observation),
-            summary=str(observation.get("summary") or ""),
-            clarification_question=None,
-            created_at=now,
-            updated_at=now,
-        )
-    )
-    for index, finding in enumerate(list(observation.get("findings") or []), start=1):
-        finding_payload = dict(finding)
-        evidence_id = f"{engine_invocation.invocation_id}:evidence:{index}"
-        context.repositories.research_evidence.save(
-            ResearchEvidence(
-                evidence_id=evidence_id,
+    with context.repositories.atomic(prefix="research_tool_finish"):
+        context.repositories.engine_documents.save(
+            EngineDocumentRecord(
+                document_id=output_document_id,
                 session_id=engine_invocation.session_id,
-                task_id=tool_invocation.task_id,
-                lane_id=tool_invocation.lane_id,
                 invocation_id=engine_invocation.invocation_id,
-                summary_id=summary_id,
-                summary=str(finding_payload.get("summary") or ""),
-                query=str(finding_payload.get("query") or ""),
-                confidence_label=None
-                if finding_payload.get("confidence_label") is None
-                else str(finding_payload["confidence_label"]),
+                document_kind="research_tool_file_index",
+                payload={
+                    "schema_version": "research_tool_file_index@1",
+                    "tool_name": invocation.tool_name,
+                    "workspace_file": write_result.to_dict(),
+                },
                 created_at=now,
+                updated_at=now,
             )
         )
-        for source_index, source in enumerate(
-            list(finding_payload.get("sources") or []), start=1
-        ):
-            source_payload = dict(source)
-            provider_provenance = _safe_provider_provenance(
-                source_payload.get("provider_provenance")
-            )
-            locator = safe_public_locator(
-                str(source_payload.get("locator") or "")
-            )
-            context.repositories.research_source_refs.save(
-                ResearchSourceRef(
-                    source_ref_id=f"{evidence_id}:source:{source_index}",
-                    session_id=engine_invocation.session_id,
-                    task_id=tool_invocation.task_id,
-                    lane_id=tool_invocation.lane_id,
-                    invocation_id=engine_invocation.invocation_id,
-                    evidence_id=evidence_id,
-                    title=str(source_payload.get("title") or "Untitled source"),
-                    locator=locator or "",
-                    kind=_source_kind(source_payload.get("kind")),
-                    snippet=None
-                    if source_payload.get("snippet") is None
-                    else str(source_payload["snippet"]),
-                    created_at=now,
-                    provider=_optional_text(source_payload.get("provider")),
-                    external_id=_optional_text(
-                        source_payload.get("external_id")
-                    ),
-                    pmid=_optional_text(source_payload.get("pmid")),
-                    doi=_optional_text(source_payload.get("doi")),
-                    authors=_safe_authors(source_payload.get("authors")),
-                    venue=_optional_text(source_payload.get("venue")),
-                    publication_date=_optional_text(
-                        source_payload.get("publication_date")
-                    ),
-                    retrieved_at=_optional_text(
-                        source_payload.get("retrieved_at")
-                    ),
-                    request_digest=_optional_text(
-                        source_payload.get("request_digest")
-                        or provider_provenance.get("request_digest")
-                    ),
-                    response_digest=_optional_text(
-                        source_payload.get("response_digest")
-                        or provider_provenance.get("response_digest")
-                    ),
-                    provider_provenance=provider_provenance,
-                    evidence_artifact_id=_optional_text(
-                        source_payload.get("evidence_artifact_id")
-                    ),
-                )
-            )
-    for index, gap in enumerate(
-        list(observation.get("unresolved_gaps") or []), start=1
-    ):
-        context.repositories.research_gaps.save(
-            ResearchGap(
-                gap_id=f"{engine_invocation.invocation_id}:gap:{index}",
-                session_id=engine_invocation.session_id,
-                task_id=tool_invocation.task_id,
-                lane_id=tool_invocation.lane_id,
-                invocation_id=engine_invocation.invocation_id,
-                summary_id=summary_id,
-                summary=str(gap),
-                created_at=now,
-            )
-        )
-
-
-def _summary_status(status: str) -> ResearchSummaryStatus:
-    normalized = status.lower()
-    if normalized in {"failed", "error"}:
-        return ResearchSummaryStatus.FAILED
-    if normalized in {"partial", "escalated"}:
-        return ResearchSummaryStatus.PARTIAL
-    if normalized in {"needs_clarification", "clarification_requested"}:
-        return ResearchSummaryStatus.NEEDS_CLARIFICATION
-    return ResearchSummaryStatus.COMPLETED
-
-
-def _source_kind(value: object) -> SourceRefKind:
-    try:
-        return SourceRefKind(str(value))
-    except ValueError:
-        return SourceRefKind.OTHER
-
-
-def _research_brief(invocation: ToolInvocation, observation: dict[str, Any]) -> str:
-    if "query" in invocation.arguments:
-        return str(invocation.arguments["query"])
-    if "accession" in invocation.arguments:
-        return str(invocation.arguments["accession"])
-    if "pdb_id" in invocation.arguments:
-        return str(invocation.arguments["pdb_id"])
-    return str(observation.get("summary") or invocation.tool_name)
-
-
-def _optional_text(value: object) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _safe_authors(value: object) -> tuple[dict[str, Any], ...]:
-    if not isinstance(value, list):
-        return ()
-    authors: list[dict[str, Any]] = []
-    for item in value:
-        if isinstance(item, str) and item.strip():
-            authors.append({"name": item.strip()})
-            continue
-        if not isinstance(item, dict):
-            continue
-        name = _optional_text(item.get("name"))
-        if name is None:
-            continue
-        author: dict[str, Any] = {"name": name}
-        author_type = _optional_text(
-            item.get("author_type") or item.get("authtype")
-        )
-        if author_type is not None:
-            author["author_type"] = author_type
-        authors.append(author)
-    return tuple(authors)
-
-
-def _safe_provider_provenance(value: object) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    allowed = {
-        "provider",
-        "operation",
-        "endpoint_id",
-        "request_digest",
-        "response_digest",
-        "retrieved_at",
-        "response_status",
-        "attempt_count",
-        "attempts",
-        "request_ids",
-        "page_count",
-        "release",
-        "api_version",
-        "truncated",
-        "cache_status",
-        "safe_response_headers",
-        "provider_identity",
+        context.repositories.invocations.save(completed_invocation)
+    return {
+        "schema_version": "research_tool_result@1",
+        "status": observation.status,
+        "summary": observation.summary,
+        "provider": observation.provider,
+        "finding_count": len(observation.findings),
+        "unresolved_gap_count": len(observation.unresolved_gaps),
+        "workspace_file": write_result.to_dict(),
+        "publication_required_for_handoff": True,
     }
-    return sanitize_private_artifact_fields(
-        {str(key): item for key, item in value.items() if str(key) in allowed}
-    )
-
-
-def _artifact_manifest(
-    asset: DownloadedResearchAsset, artifact: SessionArtifactRecord
-) -> ResearchArtifactManifest:
-    metadata = dict(artifact.metadata or {})
-    provenance = metadata.get("provenance")
-    return ResearchArtifactManifest(
-        artifact_id=artifact.artifact_id,
-        external_id=asset.external_id,
-        provider=asset.provider,
-        kind=asset.kind,
-        format=asset.format,
-        filename=asset.filename,
-        title=asset.title,
-        description=asset.description,
-        source_locator=asset.locator,
-        metadata=metadata,
-        storage_uri=artifact.storage_uri,
-        relative_path=artifact.relative_path,
-        content_digest=_metadata_text(metadata, "content_digest"),
-        sealed_digest=_metadata_text(metadata, "sealed_digest"),
-        retrieved_at=_metadata_text(metadata, "retrieved_at"),
-        provenance=None if not isinstance(provenance, dict) else dict(provenance),
-    )
-
-
-def _metadata_text(metadata: dict[str, Any], key: str) -> str | None:
-    value = metadata.get(key)
-    return None if value is None else str(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -695,12 +356,26 @@ class BioResearchToolRegistrar:
             active_invocation = engine_invocation or _start_research_tool_invocation(
                 context, invocation
             )
-            return _payload_result(
-                invocation,
-                _finish_research_tool_invocation(
+            try:
+                payload = _finish_research_tool_invocation(
                     context, invocation, active_invocation, observation
-                ),
-            )
+                )
+            except WorkspaceFileHandoffError as exc:
+                _fail_research_tool_invocation(context, active_invocation)
+                return _payload_result(
+                    invocation,
+                    {
+                        "schema_version": "research_tool_result@1",
+                        "status": "failed",
+                        "workspace_file_written": False,
+                        "publication_required_for_handoff": True,
+                    },
+                    ok=False,
+                    status=exc.error_code,
+                    summary="research observation could not be written",
+                    error_code=exc.error_code,
+                )
+            return _payload_result(invocation, payload)
 
         def _failed_provider_result(
             context: SessionRuntimeContext,
@@ -712,22 +387,34 @@ class BioResearchToolRegistrar:
             summary: str,
             raw_ref: dict[str, object],
             exception_type: str | None = None,
-            artifacts: tuple[ResearchArtifactManifest, ...] = (),
+            workspace_files: tuple[dict[str, object], ...] = (),
         ) -> ToolResult:
             observation = ResearchObservation(
                 status="failed",
                 summary=summary,
                 unresolved_gaps=(summary,),
                 provider=provider,
-                raw_ref=raw_ref,
-                artifacts=artifacts,
+                raw_ref={**raw_ref, "workspace_files": list(workspace_files)},
             )
-            payload = _finish_research_tool_invocation(
-                context,
-                invocation,
-                engine_invocation,
-                observation,
-            )
+            try:
+                payload = _finish_research_tool_invocation(
+                    context,
+                    invocation,
+                    engine_invocation,
+                    observation,
+                )
+            except WorkspaceFileHandoffError as write_exc:
+                _fail_research_tool_invocation(context, engine_invocation)
+                payload = {
+                    "schema_version": "research_tool_result@1",
+                    "status": "failed",
+                    "provider": provider,
+                    "workspace_file_written": False,
+                    "publication_required_for_handoff": True,
+                }
+                error_code = write_exc.error_code
+                summary = "research failure observation could not be written"
+                exception_type = write_exc.__class__.__name__
             return _payload_result(
                 invocation,
                 payload,
@@ -761,28 +448,27 @@ class BioResearchToolRegistrar:
                     result=exc.result,
                 )
                 try:
-                    evidence_artifact = _persist_literature_evidence(
+                    evidence_file = _write_literature_evidence(
                         context,
-                        invocation,
                         engine_invocation=engine_invocation,
                         result=exc.result,
                         quorum=quorum,
                     )
-                except Exception as seal_exc:
+                except WorkspaceFileHandoffError as write_exc:
                     return _failed_provider_result(
                         context,
                         invocation,
                         engine_invocation=engine_invocation,
                         provider=provider,
-                        error_code="artifact_seal_failed",
+                        error_code="workspace_file_write_failed",
                         summary=(
-                            f"{provider} provider failure evidence could not be sealed"
+                            f"{provider} provider failure evidence could not be written"
                         ),
                         raw_ref={
                             "provider_call": exc.result.to_summary_dict(),
-                            "evidence_sealed": False,
+                            "evidence_file_written": False,
                         },
-                        exception_type=seal_exc.__class__.__name__,
+                        exception_type=write_exc.__class__.__name__,
                     )
                 return _failed_provider_result(
                     context,
@@ -795,12 +481,7 @@ class BioResearchToolRegistrar:
                         "provider_call": exc.result.to_summary_dict(),
                         "call_local_literature_quorum": quorum.to_dict(),
                     },
-                    artifacts=(
-                        _provider_artifact_manifest(
-                            evidence_artifact,
-                            provider=provider,
-                        ),
-                    ),
+                    workspace_files=(evidence_file,),
                 )
             except Exception as exc:  # provider SDKs can raise non-standard transport errors
                 summary = (
@@ -844,36 +525,29 @@ class BioResearchToolRegistrar:
                 quorum = None
             if isinstance(provider_result, ProviderCallResult):
                 try:
-                    evidence_artifact = _persist_literature_evidence(
+                    evidence_file = _write_literature_evidence(
                         context,
-                        invocation,
                         engine_invocation=engine_invocation,
                         result=provider_result,
                         quorum=quorum,
                     )
-                except Exception as exc:
+                except WorkspaceFileHandoffError as exc:
                     return _failed_provider_result(
                         context,
                         invocation,
                         engine_invocation=engine_invocation,
                         provider=provider,
-                        error_code="artifact_seal_failed",
-                        summary=f"{provider} provider evidence could not be sealed",
+                        error_code="workspace_file_write_failed",
+                        summary=f"{provider} provider evidence could not be written",
                         raw_ref={
                             "provider_call": provider_call,
-                            "evidence_sealed": False,
+                            "evidence_file_written": False,
                         },
                         exception_type=exc.__class__.__name__,
                     )
-                evidence_artifacts = (
-                    _provider_artifact_manifest(
-                        evidence_artifact,
-                        provider=provider,
-                    ),
-                )
+                evidence_files = (evidence_file,)
             else:
-                evidence_artifact = None
-                evidence_artifacts = ()
+                evidence_files = ()
             if outcome is ProviderOutcome.FAILED:
                 failure = provider_result.failure
                 assert failure is not None
@@ -888,7 +562,7 @@ class BioResearchToolRegistrar:
                         "provider_call": provider_call,
                         "call_local_literature_quorum": quorum.to_dict(),
                     },
-                    artifacts=evidence_artifacts,
+                    workspace_files=evidence_files,
                 )
             if provider == "pubmed" and quorum is None:
                 return _failed_provider_result(
@@ -904,7 +578,7 @@ class BioResearchToolRegistrar:
                         "provider_call": provider_call,
                         "call_local_literature_quorum": None,
                     },
-                    artifacts=evidence_artifacts,
+                    workspace_files=evidence_files,
                 )
             if provider == "pubmed" and not quorum.cutover_eligible:
                 required_member = next(
@@ -935,7 +609,7 @@ class BioResearchToolRegistrar:
                         "provider_call": provider_call,
                         "call_local_literature_quorum": quorum.to_dict(),
                     },
-                    artifacts=evidence_artifacts,
+                    workspace_files=evidence_files,
                 )
             unresolved_gaps: tuple[str, ...] = ()
             observation_status = "completed"
@@ -949,16 +623,11 @@ class BioResearchToolRegistrar:
                     f"{provider} enrichment is degraded for query: {query}",
                 )
             findings = literature_hits_to_findings(hits, query=query)
-            if evidence_artifact is not None:
-                for finding in findings:
-                    for source in list(finding.get("sources") or []):
-                        source["evidence_artifact_id"] = evidence_artifact.artifact_id
             observation = ResearchObservation(
                 status=observation_status,
                 summary=f"Collected {len(hits)} {provider} hits for {query}.",
                 findings=tuple(findings),
                 unresolved_gaps=unresolved_gaps,
-                artifacts=evidence_artifacts,
                 provider=provider,
                 raw_ref={
                     "query": query,
@@ -966,6 +635,7 @@ class BioResearchToolRegistrar:
                     "call_local_literature_quorum": (
                         None if quorum is None else quorum.to_dict()
                     ),
+                    "workspace_files": list(evidence_files),
                 },
             )
             payload = _finish_research_tool_invocation(
@@ -1006,18 +676,18 @@ class BioResearchToolRegistrar:
                     summary=failure.message,
                     raw_ref={"provider_call": exc.result.to_summary_dict()},
                 )
-            except ArtifactBoundaryError as exc:
+            except WorkspaceFileHandoffError as exc:
                 return _failed_provider_result(
                     context,
                     invocation,
                     engine_invocation=engine_invocation,
                     provider=provider,
                     error_code=exc.error_code,
-                    summary=f"{provider} provider evidence could not be sealed",
+                    summary=f"{provider} provider output could not be written",
                     raw_ref={
                         "provider": provider,
                         "outcome": "failed",
-                        "evidence_sealed": False,
+                        "workspace_file_written": False,
                     },
                     exception_type=exc.__class__.__name__,
                 )
@@ -1117,7 +787,7 @@ class BioResearchToolRegistrar:
                         ),
                         provider="uniprot",
                         raw_ref={"record": record.to_dict()},
-                    ),
+                    )
                 ),
             )
 
@@ -1129,18 +799,18 @@ class BioResearchToolRegistrar:
                 asset: DownloadedResearchAsset,
                 engine_invocation: EngineInvocation,
             ) -> ResearchObservation:
-                artifact = _persist_asset(
+                workspace_file = _write_downloaded_asset(
                     context,
-                    invocation,
                     asset=asset,
-                    scope_label="research_tool",
                     invocation_id=engine_invocation.invocation_id,
                 )
                 return ResearchObservation.completed(
                     summary=f"Downloaded FASTA for {accession}.",
-                    artifacts=(_artifact_manifest(asset, artifact),),
                     provider="uniprot",
-                    raw_ref={"accession": accession},
+                    raw_ref={
+                        "accession": accession,
+                        "workspace_files": [workspace_file],
+                    },
                 )
 
             return _provider_observation_call(
@@ -1186,18 +856,19 @@ class BioResearchToolRegistrar:
                 asset: DownloadedResearchAsset,
                 engine_invocation: EngineInvocation,
             ) -> ResearchObservation:
-                artifact = _persist_asset(
+                workspace_file = _write_downloaded_asset(
                     context,
-                    invocation,
                     asset=asset,
-                    scope_label="research_tool",
                     invocation_id=engine_invocation.invocation_id,
                 )
                 return ResearchObservation.completed(
                     summary=f"Downloaded structure file for {pdb_id}.",
-                    artifacts=(_artifact_manifest(asset, artifact),),
                     provider="rcsb_pdb",
-                    raw_ref={"pdb_id": pdb_id, "format": file_format},
+                    raw_ref={
+                        "pdb_id": pdb_id,
+                        "format": file_format,
+                        "workspace_files": [workspace_file],
+                    },
                 )
 
             return _provider_observation_call(
@@ -1407,19 +1078,13 @@ def register_web_research_tools(
                     include_raw_content=include_raw_content,
                 )
                 result = normalize_result(unit=unit, result=provider_result)
-                evidence_artifact = _persist_web_evidence(
+                evidence_file = _write_web_evidence(
                     context,
-                    invocation,
                     engine_invocation=engine_invocation,
                     result=provider_result,
                     findings=result.findings,
                 )
-                artifacts = (
-                    _provider_artifact_manifest(
-                        evidence_artifact,
-                        provider="tavily",
-                    ),
-                )
+                workspace_files = (evidence_file,)
             else:
                 search = getattr(adapter, "web_search")
                 normalize = getattr(adapter, "normalize_search_response")
@@ -1432,7 +1097,7 @@ def register_web_research_tools(
                         include_raw_content=include_raw_content,
                     ),
                 )
-                artifacts = ()
+                workspace_files = ()
         except ProviderRequestError as exc:
             failure = exc.result.failure
             assert failure is not None
@@ -1466,7 +1131,6 @@ def register_web_research_tools(
                 summary=result.summary,
                 findings=result.findings,
                 unresolved_gaps=result.unresolved_gaps,
-                artifacts=artifacts,
                 provider="web",
                 raw_ref={
                     "unit_id": result.unit_id,
@@ -1474,6 +1138,7 @@ def register_web_research_tools(
                     "escalation_reason": result.escalation_reason,
                     "provider_outcome": result.provider_outcome,
                     "provider_call": result.provider_call,
+                    "workspace_files": list(workspace_files),
                 },
             ),
             ok=result.status != "failed",
@@ -1506,7 +1171,7 @@ def register_web_research_tools(
                 ok=False,
                 content=(
                     "web.fetch only reads web page text and does not persist a "
-                    "structure artifact. Use rcsb_pdb.download_structure with "
+                    "structure file. Use rcsb_pdb.download_structure with "
                     f"pdb_id={rcsb_pdb_id!r} for this RCSB structure."
                 ),
                 task_id=invocation.task_id,
@@ -1555,19 +1220,13 @@ def register_web_research_tools(
                         },
                     },
                 )
-                evidence_artifact = _persist_web_evidence(
+                evidence_file = _write_web_evidence(
                     context,
-                    invocation,
                     engine_invocation=engine_invocation,
                     result=provider_result,
                     findings=result.findings,
                 )
-                artifacts = (
-                    _provider_artifact_manifest(
-                        evidence_artifact,
-                        provider="tavily",
-                    ),
-                )
+                workspace_files = (evidence_file,)
             else:
                 fetch = getattr(adapter, "fetch_url")
                 normalize = getattr(adapter, "normalize_fetch_response")
@@ -1582,7 +1241,7 @@ def register_web_research_tools(
                         include_images=include_images,
                     ),
                 )
-                artifacts = ()
+                workspace_files = ()
         except ProviderRequestError as exc:
             failure = exc.result.failure
             assert failure is not None
@@ -1616,7 +1275,6 @@ def register_web_research_tools(
                 summary=result.summary,
                 findings=result.findings,
                 unresolved_gaps=result.unresolved_gaps,
-                artifacts=artifacts,
                 provider="web",
                 raw_ref={
                     "unit_id": result.unit_id,
@@ -1624,6 +1282,7 @@ def register_web_research_tools(
                     "escalation_reason": result.escalation_reason,
                     "provider_outcome": result.provider_outcome,
                     "provider_call": result.provider_call,
+                    "workspace_files": list(workspace_files),
                 },
             ),
             ok=result.status != "failed",
@@ -1635,7 +1294,6 @@ def register_web_research_tools(
 
 
 __all__ = [
-    "persist_research_observation",
     "register_bio_research_tools",
     "register_web_research_tools",
 ]

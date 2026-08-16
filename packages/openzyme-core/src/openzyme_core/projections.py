@@ -4,20 +4,24 @@ from dataclasses import dataclass
 from typing import Any
 
 from openzyme_research import safe_public_locator
-from openzyme_domain import AgentMember
 from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import MemoryKind
 from openzyme_domain import RepositoryRefClass
+from openzyme_domain import TaskEvidenceKind
+from openzyme_domain import TaskEvidenceRef
 from openzyme_runtime import sanitize_public_diagnostic_text
 
 from .artifact_projection import PRIVATE_ARTIFACT_KEYS
 from .artifact_projection import project_artifact_list_item_for_agent
 from .artifact_projection import sanitize_private_artifact_fields
+from .agent_capability_projection import AgentCapabilityPublicProjector
+from .agent_capability_projection import project_agent_runtime_signal_for_public
 from .repositories import CoreRepositories
 from .report_publication import is_published_report_link
+from .revision_path_handoffs import report_evidence_ref
 from .task_board import TaskBoardService
 from .lane_manager import LaneManager
 from .conversation import build_conversation_projection
@@ -92,7 +96,7 @@ class ActivityFeedItem:
 
 @dataclass(frozen=True, slots=True)
 class DelegationProjectionItem:
-    agent: AgentMember
+    agent: dict[str, Any]
     correlation_ids: tuple[str, ...]
     latest_correlation_id: str | None
     latest_message_type: str | None
@@ -108,7 +112,7 @@ class DelegationProjectionItem:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "agent": self.agent.to_dict(),
+            "agent": self.agent,
             "correlation_ids": list(self.correlation_ids),
             "latest_correlation_id": self.latest_correlation_id,
             "latest_message_type": self.latest_message_type,
@@ -146,11 +150,16 @@ class SessionWorkspaceProjection:
     pending_approvals: tuple[dict[str, Any], ...]
     inbox: tuple[dict[str, Any], ...]
     memory: tuple[dict[str, Any], ...]
+    agent_capabilities: tuple[dict[str, Any], ...]
+    agent_git_workspaces: tuple[dict[str, Any], ...]
+    executor_hpc_workspaces: tuple[dict[str, Any], ...]
+    published_revisions: tuple[dict[str, Any], ...]
     delegation: dict[str, Any]
     agent_traces: dict[str, list[dict[str, Any]]]
     activity_feed: tuple[dict[str, Any], ...]
     artifacts: tuple[dict[str, Any], ...]
     artifact_index: tuple[dict[str, Any], ...]
+    research_files: tuple[dict[str, Any], ...]
     sandbox_workspaces: tuple[dict[str, Any], ...]
     sandbox_runs: tuple[dict[str, Any], ...]
     report_drafts: tuple[dict[str, Any], ...]
@@ -171,11 +180,16 @@ class SessionWorkspaceProjection:
             "pending_approvals": list(self.pending_approvals),
             "inbox": list(self.inbox),
             "memory": list(self.memory),
+            "agent_capabilities": list(self.agent_capabilities),
+            "agent_git_workspaces": list(self.agent_git_workspaces),
+            "executor_hpc_workspaces": list(self.executor_hpc_workspaces),
+            "published_revisions": list(self.published_revisions),
             "delegation": self.delegation,
             "agent_traces": self.agent_traces,
             "activity_feed": list(self.activity_feed),
             "artifacts": list(self.artifacts),
             "artifact_index": list(self.artifact_index),
+            "research_files": list(self.research_files),
             "sandbox_workspaces": list(self.sandbox_workspaces),
             "sandbox_runs": list(self.sandbox_runs),
             "report_drafts": list(self.report_drafts),
@@ -251,6 +265,35 @@ class SessionProjectionBuilder:
             )
             for entry in self.repositories.memory.list_by_session(session_id)
         )
+        capability_projector = AgentCapabilityPublicProjector(self.repositories)
+        agents = self.repositories.agents.list_by_session(session_id)
+        agent_capabilities = tuple(
+            capability_projector.project_capability(agent) for agent in agents
+        )
+        agent_git_workspaces = tuple(
+            self._project_agent_git_workspace(workspace)
+            for agent in agents
+            if agent.member_id is not None
+            for workspace in (
+                self.repositories.agent_git_workspaces.get_current(
+                    session_id=session_id,
+                    agent_member_id=agent.member_id,
+                ),
+            )
+            if workspace is not None
+        )
+        executor_hpc_workspaces = tuple(
+            workspace.to_dict(include_owner_locator=False)
+            for workspace in self.repositories.executor_hpc_workspaces.list_by_session(
+                session_id
+            )
+        )
+        published_revisions = tuple(
+            self._project_published_revision(revision)
+            for revision in self.repositories.published_revisions.list_by_session(
+                session_id
+            )
+        )
         delegation = self.build_delegation_projection(session_id).to_dict()
         agent_traces = self.build_agent_traces_projection(session_id)
         activity_feed = self.build_public_activity_feed(session_id)
@@ -260,6 +303,12 @@ class SessionProjectionBuilder:
             if is_controlled_operation_artifact_public(self.repositories, artifact)
         )
         artifact_index = tuple(self._build_artifact_index(artifacts))
+        research_files = tuple(
+            self._project_research_file_index(record)
+            for record in self.repositories.revision_path_handoffs.list_research_indexes(
+                session_id=session_id
+            )
+        )
         sandbox_workspaces = tuple(
             self._sanitize_execution_projection(workspace.to_dict())
             for workspace in self.repositories.sandbox_workspaces.list_by_session(
@@ -320,11 +369,16 @@ class SessionProjectionBuilder:
             pending_approvals=approvals,
             inbox=inbox,
             memory=memory,
+            agent_capabilities=agent_capabilities,
+            agent_git_workspaces=agent_git_workspaces,
+            executor_hpc_workspaces=executor_hpc_workspaces,
+            published_revisions=published_revisions,
             delegation=delegation,
             agent_traces=agent_traces,
             activity_feed=activity_feed,
             artifacts=artifacts,
             artifact_index=artifact_index,
+            research_files=research_files,
             sandbox_workspaces=sandbox_workspaces,
             sandbox_runs=sandbox_runs,
             report_drafts=report_drafts,
@@ -335,6 +389,126 @@ class SessionProjectionBuilder:
             failure_observations=failure_observations,
             scientific_attempts=scientific_attempts,
         )
+
+    def _project_agent_git_workspace(self, workspace: Any) -> dict[str, Any]:
+        workspace_publications = tuple(
+            revision
+            for revision in self.repositories.published_revisions.list_by_session(
+                workspace.session_id
+            )
+            if revision.publisher_workspace_id == workspace.workspace_id
+            and revision.publisher_workspace_generation
+            == workspace.workspace_generation
+        )
+        observation = (
+            self.repositories.agent_workspace_state_observations.latest_for_workspace(
+                workspace.workspace_id
+            )
+        )
+        checkpoint = self.repositories.verified_workspace_checkpoints.latest_for_workspace(
+            workspace.workspace_id
+        )
+        exact_local_head = (
+            workspace.head_commit
+            if observation is None
+            else observation.head_commit
+        )
+        exact_local_tree = (
+            workspace.head_tree if observation is None else observation.head_tree
+        )
+        checkpoint_lag = (
+            None
+            if observation is None
+            else checkpoint is None or checkpoint.commit != observation.head_commit
+        )
+        return {
+            "workspace_id": workspace.workspace_id,
+            "session_id": workspace.session_id,
+            "agent_member_id": workspace.agent_member_id,
+            "agent_id": workspace.agent_id,
+            "workspace_generation": workspace.workspace_generation,
+            "status": workspace.status.value,
+            "repository_binding_id": workspace.repository_binding_id,
+            "repository_binding_version": workspace.repository_binding_version,
+            "dirty_state": (
+                "unknown" if observation is None else observation.dirty_state.value
+            ),
+            "staged": None if observation is None else observation.staged,
+            "unstaged": None if observation is None else observation.unstaged,
+            "untracked": None if observation is None else observation.untracked,
+            "exact_local_head": exact_local_head,
+            "exact_local_tree": exact_local_tree,
+            "state_observed_at": (
+                None if observation is None else observation.observed_at
+            ),
+            "last_verified_private_checkpoint": (
+                None
+                if checkpoint is None
+                else {
+                    "checkpoint_id": checkpoint.checkpoint_id,
+                    "commit": checkpoint.commit,
+                    "tree": checkpoint.tree,
+                    "boundary": checkpoint.boundary.value,
+                    "verified_at": checkpoint.verified_at,
+                    "truth_scope": "owner_private_not_team_shared",
+                }
+            ),
+            "checkpoint_lag": checkpoint_lag,
+            "publication_ids": [
+                revision.publication_id for revision in workspace_publications
+            ],
+            "published_state": (
+                "canonical_publication_exists"
+                if workspace_publications
+                else "private_only"
+            ),
+        }
+
+    def _project_published_revision(self, revision: Any) -> dict[str, Any]:
+        execution = self.repositories.workspace_publication_executions.get(
+            revision.controlled_execution_id
+        )
+        lfs_closure = self.repositories.git_lfs.publication_closure_projection(
+            revision.publication_id
+        )
+        return {
+            "schema_version": revision.schema_version,
+            "publication_id": revision.publication_id,
+            "project_id": revision.project_id,
+            "session_id": revision.session_id,
+            "repository_binding_id": revision.repository_binding_id,
+            "repository_binding_version": revision.repository_binding_version,
+            "repository_id": revision.repository_id,
+            "commit": revision.commit,
+            "tree": revision.tree,
+            "git_parent_commits": list(revision.git_parent_commits),
+            "declared_base_commit": revision.declared_base_commit,
+            "parent_publication_id": revision.parent_publication_id,
+            "publisher_agent_member_id": revision.publisher_agent_member_id,
+            "publisher_agent_id": revision.publisher_agent_id,
+            "publisher_workspace_id": revision.publisher_workspace_id,
+            "publisher_workspace_generation": (
+                revision.publisher_workspace_generation
+            ),
+            "publication_ref": revision.publication_ref,
+            "manifest": revision.manifest.to_dict(),
+            "lfs_closure": lfs_closure,
+            "repository_policy_version": revision.repository_policy_version,
+            "repository_policy_digest": revision.repository_policy_digest,
+            "controlled_execution_id": revision.controlled_execution_id,
+            "remote_receipt_id": revision.remote_receipt_id,
+            "supersedes_publication_id": revision.supersedes_publication_id,
+            "created_at": revision.created_at,
+            "revision_digest": revision.revision_digest,
+            "effect_certainty": (
+                None if execution is None else execution.effect_certainty.value
+            ),
+            "terminal_outcome": (
+                None
+                if execution is None or execution.terminal_outcome is None
+                else execution.terminal_outcome.value
+            ),
+        }
 
     def build_pending_approvals(self, session_id: str) -> tuple[dict[str, Any], ...]:
         """Build the compact canonical approval-control projection.
@@ -377,6 +551,31 @@ class SessionProjectionBuilder:
         )
 
     def _project_report_summary(self, report: Any) -> dict[str, Any]:
+        content_ref = (
+            None
+            if report.content_ref_id is None
+            else self.repositories.revision_path_handoffs.get_ref(
+                report.content_ref_id
+            )
+        )
+        task_evidence_ref = None
+        if report.task_id is not None and content_ref is not None:
+            session = self.repositories.sessions.get(report.session_id)
+            if session is None:
+                raise RuntimeError("report projection lost its owning session")
+            canonical_report_ref = report_evidence_ref(
+                report,
+                project_id=session.project_id,
+            )
+            task_evidence_ref = TaskEvidenceRef(
+                kind=TaskEvidenceKind.REPORT,
+                project_id=session.project_id,
+                session_id=report.session_id,
+                task_id=report.task_id,
+                owner_id=report.report_id,
+                owner_digest=canonical_report_ref.report_digest,
+                report_ref=canonical_report_ref,
+            ).to_dict()
         return self._sanitize_execution_projection(
             {
                 "report_id": report.report_id,
@@ -388,12 +587,25 @@ class SessionProjectionBuilder:
                 "artifact_id": report.artifact_id,
                 "status": report.status.value,
                 "title": report.title,
+                "content_reference": (
+                    None if content_ref is None else content_ref.to_dict()
+                ),
+                "report_version": report.report_version,
+                "supersedes_report_id": report.supersedes_report_id,
+                "workspace_publication_state": "already_published",
+                "report_business_publication_state": report.status.value,
+                "task_evidence_ref": task_evidence_ref,
                 "created_at": report.created_at,
                 "updated_at": report.updated_at,
             }
         )
 
     def _project_report_draft_summary(self, draft: Any) -> dict[str, Any]:
+        content_ref = (
+            None
+            if draft.content_ref is None
+            else self.repositories.revision_path_handoffs.get_ref(draft.content_ref)
+        )
         return self._sanitize_execution_projection(
             {
                 "draft_id": draft.draft_id,
@@ -403,6 +615,13 @@ class SessionProjectionBuilder:
                 "status": draft.status.value,
                 "title": draft.title,
                 "published_report_id": draft.published_report_id,
+                "content_reference": (
+                    None if content_ref is None else content_ref.to_dict()
+                ),
+                "workspace_publication_state": (
+                    "not_bound" if content_ref is None else "already_published"
+                ),
+                "report_business_publication_state": draft.status.value,
                 "created_at": draft.created_at,
                 "updated_at": draft.updated_at,
             }
@@ -546,30 +765,52 @@ class SessionProjectionBuilder:
             provider = self._safe_identifier(raw_member.get("provider"))
             if provider is None:
                 continue
-            member = {
-                "provider": provider,
-                "requirement": self._safe_status(
-                    raw_member.get("requirement"),
-                    allowed={"required", "enrichment"},
-                    default=self._provider_requirement(provider),
-                ),
-                "outcome": self._safe_status(
-                    raw_member.get("outcome"),
-                    allowed={"completed", "empty", "degraded", "failed"},
-                    default="unknown",
-                ),
-                "record_count": self._safe_nonnegative_int(
-                    raw_member.get("record_count")
-                ),
-                "accepted": raw_member.get("accepted") is True,
-                "error_code": self._safe_identifier(raw_member.get("error_code")),
-            }
-            members.append(member)
+            members.append(
+                {
+                    "provider": provider,
+                    "requirement": self._safe_status(
+                        raw_member.get("requirement"),
+                        allowed={"required", "enrichment"},
+                        default=self._provider_requirement(provider),
+                    ),
+                    "outcome": self._safe_status(
+                        raw_member.get("outcome"),
+                        allowed={"completed", "empty", "degraded", "failed"},
+                        default="unknown",
+                    ),
+                    "record_count": self._safe_nonnegative_int(
+                        raw_member.get("record_count")
+                    ),
+                    "accepted": raw_member.get("accepted") is True,
+                    "error_code": self._safe_identifier(raw_member.get("error_code")),
+                }
+            )
         return {
             "status": status,
             "cutover_eligible": value.get("cutover_eligible") is True,
             "members": members,
             "warning_count": len(value.get("warnings") or []),
+        }
+
+    def _project_research_file_index(
+        self,
+        record: dict[str, Any],
+    ) -> dict[str, Any]:
+        ref = self.repositories.revision_path_handoffs.get_ref(str(record["ref_id"]))
+        if ref is None:
+            raise RuntimeError(
+                "research file index does not resolve to an immutable revision path ref"
+            )
+        return {
+            "schema_version": "research_file_projection@1",
+            "index_id": record["index_id"],
+            "invocation_id": record["invocation_id"],
+            "task_id": record["task_id"],
+            "research_kind": record["research_kind"],
+            "bounded_summary": record["bounded_summary"],
+            "created_at": record["created_at"],
+            "revision_path_ref": ref.to_dict(),
+            "content_bytes_in_control_plane": False,
         }
 
     def _project_cutover_artifact(self, artifact: dict[str, Any]) -> dict[str, Any]:
@@ -657,7 +898,12 @@ class SessionProjectionBuilder:
             )
             if projected_quorum is not None:
                 quorum = projected_quorum
-
+        research_files = [
+            self._project_research_file_index(record)
+            for record in self.repositories.revision_path_handoffs.list_research_indexes(
+                session_id=session_id
+            )
+        ]
         citations = [
             self._project_research_source_ref(source_ref)
             for source_ref in self.repositories.research_source_refs.list_by_session(
@@ -685,7 +931,7 @@ class SessionProjectionBuilder:
                 "observed_at": artifact.get("created_at"),
             }
 
-        active = bool(provider_calls) or any(
+        active = bool(research_files) or bool(provider_calls) or any(
             artifact.get("cutover_eligible") is not None
             or str(artifact.get("schema_id") or "").startswith("aox_")
             for artifact in artifact_summaries
@@ -749,56 +995,78 @@ class SessionProjectionBuilder:
                 summary["item_count"] = len(provider_citations)
 
         if quorum is None and active:
-            pubmed = provider_calls["pubmed"]
-            explicit_artifact_eligibility = any(
-                artifact.get("provider") == "pubmed"
-                and artifact.get("cutover_eligible") is True
-                for artifact in artifact_summaries
-            )
-            accepted = (
-                pubmed.get("outcome") == "completed"
-                and pubmed.get("item_count", 0) > 0
-                and any(
-                    citation.get("provider") == "pubmed"
-                    and str(citation.get("pmid") or "").isdigit()
-                    for citation in citations
+            if research_files:
+                quorum = {
+                    "status": "pending_published_research_validation",
+                    "cutover_eligible": False,
+                    "members": [
+                        {
+                            "provider": provider,
+                            "requirement": summary["requirement"],
+                            "outcome": summary["outcome"],
+                            "record_count": summary["item_count"],
+                            "accepted": False,
+                            "error_code": summary.get("error_code"),
+                        }
+                        for provider, summary in provider_calls.items()
+                    ],
+                    "warning_count": sum(
+                        1
+                        for provider in ("semantic_scholar", "tavily")
+                        if provider_calls[provider]["outcome"] != "completed"
+                    ),
+                }
+            else:
+                pubmed = provider_calls["pubmed"]
+                explicit_artifact_eligibility = any(
+                    artifact.get("provider") == "pubmed"
+                    and artifact.get("cutover_eligible") is True
+                    for artifact in artifact_summaries
                 )
-                and explicit_artifact_eligibility
-            )
-            artifact_quorum_status = next(
-                (
-                    artifact.get("quorum_status")
-                    for artifact in reversed(artifact_summaries)
-                    if artifact.get("provider") == "pubmed"
-                    and artifact.get("quorum_status")
-                ),
-                None,
-            )
-            quorum = {
-                "status": artifact_quorum_status
-                or ("failed" if not accepted else "degraded"),
-                "cutover_eligible": accepted,
-                "members": [
-                    {
-                        "provider": provider,
-                        "requirement": summary["requirement"],
-                        "outcome": summary["outcome"],
-                        "record_count": summary["item_count"],
-                        "accepted": (
-                            accepted
-                            if provider == "pubmed"
-                            else summary["outcome"] == "completed"
-                        ),
-                        "error_code": summary.get("error_code"),
-                    }
-                    for provider, summary in provider_calls.items()
-                ],
-                "warning_count": sum(
-                    1
-                    for provider in ("semantic_scholar", "tavily")
-                    if provider_calls[provider]["outcome"] != "completed"
-                ),
-            }
+                accepted = (
+                    pubmed.get("outcome") == "completed"
+                    and pubmed.get("item_count", 0) > 0
+                    and any(
+                        citation.get("provider") == "pubmed"
+                        and str(citation.get("pmid") or "").isdigit()
+                        for citation in citations
+                    )
+                    and explicit_artifact_eligibility
+                )
+                artifact_quorum_status = next(
+                    (
+                        artifact.get("quorum_status")
+                        for artifact in reversed(artifact_summaries)
+                        if artifact.get("provider") == "pubmed"
+                        and artifact.get("quorum_status")
+                    ),
+                    None,
+                )
+                quorum = {
+                    "status": artifact_quorum_status
+                    or ("failed" if not accepted else "degraded"),
+                    "cutover_eligible": accepted,
+                    "members": [
+                        {
+                            "provider": provider,
+                            "requirement": summary["requirement"],
+                            "outcome": summary["outcome"],
+                            "record_count": summary["item_count"],
+                            "accepted": (
+                                accepted
+                                if provider == "pubmed"
+                                else summary["outcome"] == "completed"
+                            ),
+                            "error_code": summary.get("error_code"),
+                        }
+                        for provider, summary in provider_calls.items()
+                    ],
+                    "warning_count": sum(
+                        1
+                        for provider in ("semantic_scholar", "tavily")
+                        if provider_calls[provider]["outcome"] != "completed"
+                    ),
+                }
         elif quorum is None:
             quorum = {
                 "status": "not_evaluated",
@@ -817,23 +1085,38 @@ class SessionProjectionBuilder:
             artifact["artifact_id"]: artifact for artifact in artifact_summaries
         }
         published_drafts_by_report_id: dict[str, dict[str, Any]] = {}
+        native_content_report_ids: set[str] = set()
+        legacy_content_report_ids: set[str] = set()
         for draft_record in self.repositories.report_drafts.list_by_session(session_id):
             draft = draft_record.to_dict()
             report_id = str(draft.get("published_report_id") or "")
             content_ref = str(draft.get("content_ref") or "")
+            revision_ref = (
+                None
+                if not content_ref
+                else self.repositories.revision_path_handoffs.get_ref(content_ref)
+            )
             content_document = (
                 None
                 if not content_ref
                 else self.repositories.engine_documents.get(content_ref)
             )
-            content_available = (
+            native_content_available = (
+                revision_ref is not None and revision_ref.session_id == session_id
+            )
+            legacy_content_available = (
                 content_document is not None
                 and content_document.document_kind == "report_draft_content"
                 and isinstance(content_document.payload, dict)
                 and bool(str(content_document.payload.get("markdown") or "").strip())
             )
+            content_available = native_content_available or legacy_content_available
             if draft.get("status") == "published" and report_id and content_available:
                 published_drafts_by_report_id[report_id] = dict(draft)
+                if native_content_available:
+                    native_content_report_ids.add(report_id)
+                if legacy_content_available:
+                    legacy_content_report_ids.add(report_id)
         report_summaries = [
             {
                 **report,
@@ -854,7 +1137,9 @@ class SessionProjectionBuilder:
                     )
                 ).get("draft_id"),
                 "content_document_bound": report.get("report_id")
-                in published_drafts_by_report_id,
+                in legacy_content_report_ids,
+                "content_revision_bound": report.get("report_id")
+                in native_content_report_ids,
                 "cutover_eligible": (
                     report.get("report_id") in published_drafts_by_report_id
                     and is_published_report_link(
@@ -943,6 +1228,7 @@ class SessionProjectionBuilder:
             ),
             "quorum": quorum,
             "citations": citations,
+            "research_files": research_files,
             "operations": operation_summaries,
             "artifacts": artifact_summaries,
             "reports": report_summaries,
@@ -1050,6 +1336,7 @@ class SessionProjectionBuilder:
         messages = self.repositories.inbox.list_by_session(session_id)
         signals = self.repositories.runtime_signals.list_by_session(session_id)
         protocol = ProtocolService(self.repositories)
+        capability_projector = AgentCapabilityPublicProjector(self.repositories)
         items: list[DelegationProjectionItem] = []
         for agent in self.repositories.agents.list_by_session(session_id):
             agent_messages = [
@@ -1096,7 +1383,7 @@ class SessionProjectionBuilder:
             latest_signal = None if not agent_signals else agent_signals[-1]
             items.append(
                 DelegationProjectionItem(
-                    agent=agent,
+                    agent=capability_projector.project_agent(agent),
                     correlation_ids=correlation_ids,
                     latest_correlation_id=None
                     if latest_message is None
@@ -1127,6 +1414,7 @@ class SessionProjectionBuilder:
 
     def build_activity_feed(self, session_id: str) -> list[ActivityFeedItem]:
         items: list[ActivityFeedItem] = []
+        capability_projector = AgentCapabilityPublicProjector(self.repositories)
         for event in self.repositories.lane_events.list_by_session(session_id):
             items.append(
                 ActivityFeedItem(
@@ -1191,7 +1479,7 @@ class SessionProjectionBuilder:
                 ActivityFeedItem(
                     event_type="agent.spawned",
                     created_at=agent.created_at,
-                    payload=agent.to_dict(),
+                    payload=capability_projector.project_agent(agent),
                 )
             )
             if agent.updated_at != agent.created_at:
@@ -1199,7 +1487,7 @@ class SessionProjectionBuilder:
                     ActivityFeedItem(
                         event_type="agent.status_updated",
                         created_at=agent.updated_at,
-                        payload=agent.to_dict(),
+                        payload=capability_projector.project_agent(agent),
                     )
                 )
         for signal in self.repositories.runtime_signals.list_by_session(session_id):
@@ -1224,7 +1512,7 @@ class SessionProjectionBuilder:
                     created_at=signal.completed_at
                     or signal.claimed_at
                     or signal.created_at,
-                    payload=signal.to_dict(),
+                    payload=project_agent_runtime_signal_for_public(signal),
                 )
             )
         for invocation in self.repositories.invocations.list_by_session(session_id):
@@ -1269,6 +1557,16 @@ class SessionProjectionBuilder:
                     event_type="research.evidence.recorded",
                     created_at=evidence.created_at,
                     payload=evidence.to_dict(),
+                )
+            )
+        for record in self.repositories.revision_path_handoffs.list_research_indexes(
+            session_id=session_id
+        ):
+            items.append(
+                ActivityFeedItem(
+                    event_type="research.file.indexed",
+                    created_at=str(record["created_at"]),
+                    payload=self._project_research_file_index(record),
                 )
             )
         for artifact in self.repositories.artifacts.list_by_session(session_id):
@@ -1411,6 +1709,18 @@ class SessionProjectionBuilder:
                 self._project_research_source_ref(item) for item in source_refs
             ]
             projected["gaps"] = [item.to_dict() for item in gaps]
+        research_files = [
+            self._project_research_file_index(record)
+            for record in self.repositories.revision_path_handoffs.list_research_indexes(
+                session_id=session_id,
+                invocation_id=invocation.invocation_id,
+            )
+        ]
+        if research_files:
+            projected["research_files"] = research_files
+            projected["research_content_contract"] = (
+                "published_revision_path_refs_only"
+            )
         runs = self.repositories.runs.list_by_invocation(
             session_id, invocation.invocation_id
         )
@@ -1491,6 +1801,8 @@ class SessionProjectionBuilder:
 
     def _sanitize_execution_projection(self, value: Any) -> Any:
         private_keys = {
+            "agent_member_id",
+            "member_id",
             "pipeline_code",
             "raw_ref",
             *PRIVATE_ARTIFACT_KEYS,

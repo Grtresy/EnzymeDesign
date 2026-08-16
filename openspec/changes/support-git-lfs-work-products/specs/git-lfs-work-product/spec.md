@@ -1,5 +1,18 @@
 ## ADDED Requirements
 
+### Requirement: Source implementation does not promote deferred predecessor acceptance
+During the explicitly ordered continuous migration, C5 source implementation MAY begin from a `git_lfs_work_product_source_only_dependency_gate@1` before final C2--C4 acceptance receipts are issued. The gate MUST bind the immutable C1 acceptance receipt, current C2--C4 source/schema/policy/interface identities, the existing standard Git LFS Batch API v2/basic-transfer baseline, and every deferred predecessor validation task. It MUST state `acceptance_proven=false`, `final_source_revision_bound=false`, `production_effect_authorized=false`, and `live_authorized=false`.
+
+The gate permits only continued source, deferred-test, and documentation work. It MUST NOT be consumed as a capability lease, repository credential, LFS upload session, quota reservation, object-read proof, publication closure, publication intent, GC authority, production proof, live authorization, or remote-effect authorization. Final C5 acceptance SHALL re-read the combined final source and require the formal C1--C4 receipts plus every validation declared by this change.
+
+#### Scenario: Continue C5 source work under unified deferred validation
+- **WHEN** the C1 acceptance and current C2--C4 interfaces are snapshotted while final combined predecessor validation remains deferred
+- **THEN** C5 may implement source and write tests without starting an LFS writer, performing Git/LFS I/O, publishing, deleting objects, running live work, or causing external effects
+
+#### Scenario: Present the source-only gate as runtime authority
+- **WHEN** a caller presents the gate to issue a credential, reserve quota, upload or read an object, admit a publication, pin a closure, or delete a GC candidate
+- **THEN** the system rejects it and performs no fallback, retry, state transition, transfer, publication, or deletion
+
 ### Requirement: Repository binding fixes the Git LFS policy
 The system MUST bind every Git LFS operation and publication validation to one immutable project repository binding version containing the LFS endpoint identity, path rules, ordinary-blob threshold, quotas, retention classes, object format, and policy digest. A session or publication intent MUST NOT substitute current global defaults when its pinned binding version is missing or differs.
 

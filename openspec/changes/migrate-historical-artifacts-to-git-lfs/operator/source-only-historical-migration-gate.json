@@ -1,0 +1,30 @@
+{
+  "schema_id": "historical_artifact_migration_source_only_gate@1",
+  "change_id": "migrate-historical-artifacts-to-git-lfs",
+  "decision": "migration_implementation_source_allowed_execution_and_deletion_forbidden",
+  "direct_predecessor": {
+    "change_id": "cut-over-workspace-public-interfaces",
+    "source_gate_sha256": "b6292251e7ba4200e87ec64feff0e44a562b6c2b35151f3014e5764bf54fe87e",
+    "formal_completion_receipt": "missing",
+    "public_epoch_activation": "not_proven"
+  },
+  "allowed": [
+    "historical_domain_repository_and_forward_schema_source",
+    "pure_inventory_and_path_reader_source",
+    "deterministic_unit_and_receipt_source",
+    "non_adoption_verifier_source",
+    "deferred_tests_and_documentation_source",
+    "static_source_audit"
+  ],
+  "forbidden": [
+    "database_or_storage_snapshot_execution",
+    "legacy_writer_freeze_execution",
+    "remote_git_or_lfs_write_or_readback",
+    "reference_rewrite_or_migration_execution",
+    "legacy_source_deletion",
+    "current_publication_or_scientific_adoption",
+    "provider_hpc_network_or_live_effect",
+    "tests_build_validation_before_all_changes"
+  ],
+  "hard_stop": "even_a_future_global_migration_receipt_does_not_authorize_physical_removal"
+}

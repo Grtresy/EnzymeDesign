@@ -4,6 +4,7 @@ from pathlib import Path
 
 from openzyme_domain import SessionStatus
 
+from .composition import QUALIFICATION_WORKSPACE_READINESS_PROVIDER
 from .composition import ProductionCompositionFactory
 from .composition import assert_production_owner_shape
 
@@ -31,6 +32,20 @@ def test_file_backed_production_composition_exposes_real_owners_and_projection(
     with composition as running:
         assert running.client is not None
         assert_production_owner_shape(running)
+        assert running.dependencies.v3_agent_workspace_readiness_providers == {
+            QUALIFICATION_WORKSPACE_READINESS_PROVIDER.provider_id: (
+                QUALIFICATION_WORKSPACE_READINESS_PROVIDER
+            )
+        }
+        assert (
+            running.dependencies.v3_session_creation_readiness_provider_id
+            == QUALIFICATION_WORKSPACE_READINESS_PROVIDER.provider_id
+        )
+        assert (
+            running.dependencies.v3_delegation_readiness_provider_id
+            == QUALIFICATION_WORKSPACE_READINESS_PROVIDER.provider_id
+        )
+        assert QUALIFICATION_WORKSPACE_READINESS_PROVIDER.qualification_fixture_non_cutover
         created = _create_session(
             running.client,
             session_id="sess_qualification_composition",

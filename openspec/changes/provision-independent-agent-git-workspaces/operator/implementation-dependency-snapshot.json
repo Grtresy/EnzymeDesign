@@ -1,0 +1,115 @@
+{
+  "schema_id": "agent_capability_lease_implementation_snapshot@1",
+  "change_id": "establish-agent-capability-leases",
+  "consumer_change_id": "provision-independent-agent-git-workspaces",
+  "snapshot_kind": "source_only_non_acceptance_dependency",
+  "observed_head": "8ae3d73b3054f2058ff33ea183f62c811b9272a3",
+  "observed_worktree_status_digest": "sha256:f1ca9814807440746878cd1784d9e9e4e3af4ed9165c74dc7a5c79e6b045969d",
+  "acceptance_proven": false,
+  "final_source_revision_bound": false,
+  "production_effect_authorized": false,
+  "live_authorized": false,
+  "production_readiness_proven": false,
+  "prerequisites": {
+    "c0": {
+      "schema_id": "aox_artifact_cutover_supersession_acceptance@1",
+      "status": "passed",
+      "source_revision": "3c7774345baa4fd0635586faa27e7d7fa2156868",
+      "receipt_digest": "sha256:a54cdffbadecda3639129edbcd99f889eee7aa2462df296f6a0780ccf924f4ce",
+      "file_sha256": "sha256:59cfa310b4040514cc89d8fe19a8f7813908737cf5e403b5759d488a5afdb85a"
+    },
+    "c1": {
+      "schema_id": "project_repository_binding_acceptance@1",
+      "status": "passed",
+      "source_revision": "9b78ec6a883f90ec4239d113e9300098120f68bd",
+      "receipt_digest": "sha256:8ac2a8db6b0bb813df6f32d639456473da784f9444f8e0fe4c2014f19c368010",
+      "file_sha256": "sha256:f3b548cada970890c5a43a4a764207fe1672a0ae94701de06fbff1db693f1b4f",
+      "agent_clone_provisioning_implemented": false,
+      "workspace_publication_implemented": false,
+      "production_capability_lease_issuance_proven": false,
+      "production_disaster_recovery_proven": false,
+      "upstream_effects": 0
+    }
+  },
+  "change_artifacts": {
+    "proposal.md": "sha256:8422ede03c6e531c6445c376ddd06d162bdb3fa4abeea0b8ce892b0da2ea50ec",
+    "design.md": "sha256:5763cdab0f1f32ee1cc521e711904edb47ade136064f73593c803593d2c5a76b",
+    "specs/agent-capability-lease/spec.md": "sha256:e23ab1d5f3a0d6af412d102fe5ebfe4a9059b5e44b675422ae1761dc0e58da17",
+    "tasks.md": "sha256:43ef30d1444982c842f506df21024c518f29056c593094791eaaf1cc00d7f4d9",
+    "operator/capability-policy-v1.json": "sha256:0b8f6fe7367a448b36604240ab7351a1b1d9c1b2075b6ba800a9f566e281fee1"
+  },
+  "implementation_interfaces": {
+    "packages/openzyme-domain/src/openzyme_domain/agent_capability_leases.py": {
+      "sha256": "sha256:601a7422e26f8093b9fa410077afbcf2a002bf2f79387bd033ae9bd47ffb4ca8",
+      "required_symbols": [
+        "AgentWorkspaceGenerationReservation",
+        "AgentCapabilityLease",
+        "AgentCapabilityLeaseStatus"
+      ]
+    },
+    "packages/openzyme-core/src/openzyme_core/migrations/039_v3_agent_capability_leases.sql": {
+      "sha256": "sha256:74146f6aab10c32368e572050a71c2a68a9a0a6ae551700d8d4528bdb8ecae85",
+      "required_facts": [
+        "generation_reservation_storage",
+        "pending_workspace_to_active_lifecycle",
+        "runtime_signal_occurrence_binding"
+      ]
+    },
+    "packages/openzyme-core/src/openzyme_core/agent_capability_repositories.py": {
+      "sha256": "sha256:b1befcd661a06bdaadb8849b4127787e361a604587d044d1edbd1bf740c2cc23",
+      "required_symbols": [
+        "AgentWorkspaceGenerationReservationRepository",
+        "AgentCapabilityLeaseRepository"
+      ]
+    },
+    "packages/openzyme-core/src/openzyme_core/agent_capability_service.py": {
+      "sha256": "sha256:6f250b57f5cc36fcda53b964a4b67d7148c2953c413461ad7c63b3625c44b480",
+      "required_symbols": [
+        "ActiveAgentCapabilityLeaseValidator",
+        "AgentCapabilityLeaseService"
+      ]
+    },
+    "packages/openzyme-core/src/openzyme_core/agent_capability_projection.py": {
+      "sha256": "sha256:c0e9acd25dd5c0e33df7e5b2fd2428363d059868a98f7e27c65cdfa4fb2a881a",
+      "required_facts": [
+        "provisioning_required_projection"
+      ]
+    },
+    "packages/openzyme-core/src/openzyme_core/runtime_signal_occurrences.py": {
+      "sha256": "sha256:3ff561acd70c2a4a19d97228336b0abe5fecad655ccabd59b88af957ee541f10",
+      "required_facts": [
+        "exact_generation_occurrence_binding"
+      ]
+    },
+    "packages/openzyme-core/src/openzyme_core/repository_credentials.py": {
+      "sha256": "sha256:2f4d0edb381fd9be57a1d030932097c285969b934a703acdc49354ffea9b73b9",
+      "required_facts": [
+        "canonical_active_capability_lease_validation",
+        "private_ref_prefix"
+      ]
+    }
+  },
+  "deferred_final_validation_tasks": [
+    "6.1",
+    "6.3",
+    "6.4",
+    "6.5",
+    "6.6"
+  ],
+  "permitted_use": [
+    "read_current_c2_interfaces",
+    "continue_ordered_c3_source_implementation",
+    "replace_snapshot_bindings_with_final_receipt_during_combined_validation"
+  ],
+  "forbidden_promotions": [
+    "acceptance_receipt",
+    "capability_lease",
+    "workspace_readiness_fact",
+    "credential_authority",
+    "production_provisioning_authority",
+    "publication_authority",
+    "execution_authority",
+    "live_authority",
+    "cutover_proof"
+  ]
+}

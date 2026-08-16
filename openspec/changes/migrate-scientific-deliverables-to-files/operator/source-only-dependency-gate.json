@@ -1,0 +1,80 @@
+{
+  "schema_id": "scientific_deliverable_source_only_dependency_gate@1",
+  "change_id": "migrate-scientific-deliverables-to-files",
+  "gate_scope": "ordered_source_implementation_only",
+  "observed_head": "8ae3d73b3054f2058ff33ea183f62c811b9272a3",
+  "immutable_supersession_acceptance": {
+    "path": "openspec/changes/supersede-aox-hmm-artifact-cutover/operator/acceptance-receipt.json",
+    "file_sha256": "sha256:59cfa310b4040514cc89d8fe19a8f7813908737cf5e403b5759d488a5afdb85a",
+    "schema_id": "aox_artifact_cutover_supersession_acceptance@1",
+    "source_revision": "3c7774345baa4fd0635586faa27e7d7fa2156868",
+    "legacy_decision": "legacy_no_go"
+  },
+  "predecessor_source_gates": [
+    {
+      "change_id": "migrate-research-report-and-task-handoffs-to-files",
+      "path": "openspec/changes/migrate-research-report-and-task-handoffs-to-files/operator/source-only-dependency-gate.json",
+      "file_sha256": "sha256:685d3f0fba7c637abac36757e204c828db3f378f0f2d9c7f4244f60abb84fdc7",
+      "acceptance_proven": false,
+      "final_source_revision_bound": false
+    },
+    {
+      "change_id": "execute-hpc-jobs-from-workspace-revisions",
+      "path": "openspec/changes/execute-hpc-jobs-from-workspace-revisions/operator/source-only-dependency-gate.json",
+      "file_sha256": "sha256:d982b50295f5cd7fe7a5ba8e5565239337346e9323e1cf8401754cea66dbcd8c",
+      "acceptance_proven": false,
+      "final_source_revision_bound": false
+    },
+    {
+      "change_id": "publish-and-sync-workspace-revisions",
+      "path": "openspec/changes/publish-and-sync-workspace-revisions/operator/source-only-dependency-gate.json",
+      "file_sha256": "sha256:dfc00b26923b391b81aaf36c3ca40fbea1bfd51619eaa335990285692c72172f",
+      "acceptance_proven": false,
+      "final_source_revision_bound": false
+    },
+    {
+      "change_id": "support-git-lfs-work-products",
+      "path": "openspec/changes/support-git-lfs-work-products/operator/source-only-dependency-gate.json",
+      "file_sha256": "sha256:4d259412922d6edff11e8046da3caf3faa8a99655f2f9d93210c92b7383d7ff2",
+      "acceptance_proven": false,
+      "final_source_revision_bound": false
+    }
+  ],
+  "current_interface_identities": {
+    "scientific_attempt_domain_sha256": "sha256:11943dcc3f1d53c5f0a1b0269475bc8b2fb4c1c6712c8e44f71acb34e785ac71",
+    "scientific_attempt_service_sha256": "sha256:72468e6ab6e35d3faa44f412c307a52abeb83e2c828847fb031d0fbc314804e1",
+    "workspace_publication_domain_sha256": "sha256:9e05b4281dff24f8fddee47597808370a6b813d22bdbba3c31db22379d65f06a",
+    "git_lfs_domain_sha256": "sha256:c009208ea37d8c38239c66493afbe0ee41d039813fbcce7b855177faf34ced1b",
+    "workspace_revision_execution_domain_sha256": "sha256:456c535f89e717b93653c0fd735d29104c509db9bcd3f79c8231f5b57b8ac22d"
+  },
+  "deferred_predecessor_acceptance": [
+    "revision_path_handoff_acceptance@1",
+    "workspace_revision_execution_acceptance@1",
+    "workspace_publication_acceptance@1",
+    "git_lfs_work_product_acceptance@1"
+  ],
+  "permitted_actions": [
+    "continue_scientific_file_contract_source_implementation",
+    "add_domain_repository_migration_resolver_finalizer_and_offline_verifier_source",
+    "remove_current_scientific_artifact_writer_reader_and_projection_source_paths",
+    "add_deferred_non_live_and_negative_tests_without_running_them",
+    "update_architecture_and_openspec_documents"
+  ],
+  "forbidden_actions": [
+    "activate_scientific_file_writer_or_contract_epoch",
+    "create_publication_or_read_remote_git_lfs_bytes",
+    "invoke_provider_hpc_runner_or_external_effect",
+    "grant_fresh_scientific_or_aox_live_authority",
+    "launch_resume_or_recover_legacy_aox_campaign_attempt_or_root",
+    "seal_selection_close_attempt_finish_task_publish_report_or_decide_go_no_go",
+    "run_live_or_external_effect",
+    "claim_predecessor_or_current_acceptance",
+    "satisfy_production_or_cutover_gate",
+    "fallback_to_artifact_id_artifact_set_storage_uri_hpc_stage_ref_or_legacy_bundle"
+  ],
+  "external_effects": 0,
+  "acceptance_proven": false,
+  "final_source_revision_bound": false,
+  "production_effect_authorized": false,
+  "live_authorized": false
+}

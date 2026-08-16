@@ -1,5 +1,9 @@
 # OpenZyme V3 Top-Level LLM Loop
 
+> Revision/path handoff 与候选 file-workspace tool surface 见
+> [file-workspace-migration.md](file-workspace-migration.md)。在原子 cutover 前，下文
+> artifact-era loop 仍是 current 事实，不能与 candidate surface 双写或自动翻译。
+
 ## 1. 目标
 
 本文定义 V3 顶层真实 LLM master-agent harness loop 的实现边界。
@@ -158,7 +162,10 @@ observation facts 保留返回引用，但 observation 关系字段只绑定当�
 
 - 顶层模型优先通过 `task.*` 与 `delegation` 相关工具编排内部工作
 - 顶层模型和 teammate 应优先用 `world.inspect` 读取 task、artifact、approval、operation、outcome、runtime warning、tool schema 和 route policy 等结构化事实；该工具不得提供 recommended_actions 或硬编码 workflow template
-- `task.finish` 是推荐的业务任务出口；成功调用后 harness 立即停止当前 master/teammate loop，不再执行同批后续 tool calls，也不把该 tool result 喂回模型继续探索。同批后续 call 仍按上面的 batch interruption 契约获得持久 no-effect observation。可选 `evidence_refs` 必须使用 schema 显式给出的 closed `<kind>:<id>` wire contract；agent 选择 evidence，repository 解析当前 session ref，runtime 不猜 kind 或补 prefix。`task.update` 保留为普通字段编辑和非终态状态迁移。
+- `task.finish` 是推荐的业务任务出口；成功调用后 harness 立即停止当前 master/teammate loop，不再执行同批后续 tool calls，也不把该 tool result 喂回模型继续探索。同批后续 call 仍按上面的 batch interruption 契约获得持久 no-effect observation。可选 `evidence_refs` 必须使用 schema 显式给出的 closed nested `TaskEvidenceRef@1`；agent 选择 evidence，repository 重验 current session、canonical owner 与 exact task，runtime 不猜 kind、补 prefix、接受裸路径或按 digest 关联。C7 支持 revision path、report 与 controlled result；scientific variant 在 C10 前不可用。`task.update` 保留为普通字段编辑和非终态状态迁移。
+
+- research/deep-research tool success 只有在全部约定 workspace files 已通过 bounded atomic writer 持久化后才成立；tool observation 只回灌 bounded index/path summary。正文、source snapshots、notes、analysis 与 dossier manifest 不进入 prompt document/artifact fallback。
+- `report.publish` 只消费 reporter own exact published path；workspace publication、report 业务 publication、protocol handoff 与 `task.finish` 是四个独立动作。Harness 不因任一前置动作成功而替 agent 推进其余动作。
 - successful `attempt.create` 使用相同 terminal-action/batch-settlement 机制，只记录 admission intent，不写 task terminal。当前 teammate turn 在 request 提交后结束；Host 等 writer 退休再 finalization，并以 exact admitted attempt id 排队 source-bound wake。
 - successful `scientific.attempt.close` 使用同一 terminal-action/batch-settlement 机制，但只记录 closure intent：它不写 task terminal，也不代表 final closure。失败的 close 保持 non-terminal；成功后只有在 requesting `AGENT_TURN` writer 与其 interrupted-call settlement 全部退休后，Host finalizer 才可建立 quiescence 与 immutable closure。
 - `scientific.attempt.close` 不要求或持久化同一 response 的 companion text；assistant answer 走普通 conversation path。Core 只接受 exact attempt task 当前 canonical assignee，并在 request 与 finalization 两处验证 assignment。successful close 只写 immutable intent 并退休 turn，失败/rejected close 不留下部分 closure state。
@@ -375,3 +382,9 @@ top-level loop不得把slot `launch_id`、root name、outer task id、command te
 提升为attempt/lane/admission truth。后续inspect/export/bundle只消费repository中的真实control
 graph。这样outer conductor负责何时提供世界变化，agent负责策略性scientific actions，Host
 负责authority、identity、fencing与effect truth。
+
+## 13. C8 HPC login tools 的模型边界
+
+Executor tool router可在C8 service存在时投影`hpc.workspace.*`四个工具；master、researcher和reporter不借role label获得这些工具。Harness把owner-only workspace view、credential service/audience/protocol和`scheduler_submit_authorized=false`作为结构化事实呈现，不替executor选择何时SSH、如何同步ref或如何处理Git冲突。
+
+`hpc.workspace.sync_source`返回identity后，LLM必须显式通过`workspace.exec`执行所选Git动作；tool success本身不推进publication、handoff、task或job。任何target qualification缺失、lease/generation drift、root/clone drift或C9 admission缺失都以typed rejection返回，router不得改用shared account、Host file gateway、artifact staging、另一个path/credential或legacy execution pipeline。

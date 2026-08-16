@@ -27,6 +27,7 @@ from openzyme_domain import ContinuationDeliveryState
 from openzyme_domain import ContinuationResumeStrategy
 from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import RetryEligibility
+from openzyme_domain import WorkspaceJobResult
 
 from .repositories import CoreRepositories
 from .repositories import _json_dumps
@@ -635,7 +636,12 @@ class ControlledOperationExecutionTransitionService:
         expected_fencing_token: int | None = None,
         result_handle: ControlledOperationResultHandle | None = None,
         result_artifacts: tuple[ControlledOperationResultArtifactRef, ...] = (),
+        workspace_job_result: WorkspaceJobResult | None = None,
     ) -> ControlledOperationExecution:
+        if result_handle is not None and workspace_job_result is not None:
+            raise InvalidExecutionTransitionError(
+                "an execution transition cannot materialize two result contracts"
+            )
         with self.repositories.atomic(
             prefix="controlled_operation_execution_transition"
         ):
@@ -652,6 +658,7 @@ class ControlledOperationExecutionTransitionService:
                 event=event,
                 expected_state_version=expected_state_version,
                 result_handle=result_handle,
+                workspace_job_result=workspace_job_result,
             )
             self.repositories.controlled_operation_executions.replace_if_version(
                 execution,
@@ -666,7 +673,17 @@ class ControlledOperationExecutionTransitionService:
                     result_handle,
                     result_artifacts,
                 )
-            canonical_result = (
+            if workspace_job_result is not None:
+                self.repositories.workspace_revision_executions.add_result(
+                    workspace_job_result
+                )
+            workspace_result = (
+                workspace_job_result
+                or self.repositories.workspace_revision_executions.get_result_by_execution(
+                    execution.execution_id
+                )
+            )
+            legacy_result = (
                 result_handle
                 or self.repositories.controlled_operation_results.get_by_execution_id(
                     execution.execution_id
@@ -676,25 +693,54 @@ class ControlledOperationExecutionTransitionService:
                 ControlledOperationExecutionLifecycle.RESULT_READY,
                 ControlledOperationExecutionLifecycle.TERMINAL,
             }:
-                if (
-                    canonical_result is None
-                    or canonical_result.result_handle_id != execution.result_handle_ref
-                    or canonical_result.result_digest != execution.result_digest
-                    or canonical_result.artifact_set_digest
-                    != execution.artifact_set_digest
-                    or (
+                if execution.route_policy_id == "workspace_revision_execution@1":
+                    result_required = (
                         execution.lifecycle_state
-                        is ControlledOperationExecutionLifecycle.TERMINAL
-                        and canonical_result.terminal_outcome
-                        is not execution.terminal_outcome
+                        is ControlledOperationExecutionLifecycle.RESULT_READY
+                        or execution.effect_certainty
+                        is ExternalEffectCertainty.TERMINAL_KNOWN
                     )
-                ):
-                    raise InvalidExecutionTransitionError(
-                        "result-bearing execution lacks its exact immutable result"
+                    exact_workspace_result = (
+                        workspace_result is not None
+                        and workspace_result.result_id
+                        == execution.result_handle_ref
+                        and workspace_result.result_digest == execution.result_digest
                     )
-                self.repositories.controlled_operation_result_artifacts.assert_exact(
-                    canonical_result
-                )
+                    no_result_identity = (
+                        workspace_result is None
+                        and execution.result_handle_ref is None
+                        and execution.result_digest is None
+                    )
+                    if (
+                        (result_required and not exact_workspace_result)
+                        or (not result_required and not no_result_identity)
+                        or execution.artifact_set_digest is not None
+                        or legacy_result is not None
+                    ):
+                        raise InvalidExecutionTransitionError(
+                            "workspace execution lacks its exact non-artifact result"
+                        )
+                else:
+                    if (
+                        legacy_result is None
+                        or legacy_result.result_handle_id
+                        != execution.result_handle_ref
+                        or legacy_result.result_digest != execution.result_digest
+                        or legacy_result.artifact_set_digest
+                        != execution.artifact_set_digest
+                        or (
+                            execution.lifecycle_state
+                            is ControlledOperationExecutionLifecycle.TERMINAL
+                            and legacy_result.terminal_outcome
+                            is not execution.terminal_outcome
+                        )
+                    ):
+                        raise InvalidExecutionTransitionError(
+                            "result-bearing execution lacks its exact immutable result"
+                        )
+                    self.repositories.controlled_operation_result_artifacts.assert_exact(
+                        legacy_result
+                    )
                 continuation = (
                     self.repositories.continuation_states.get_by_operation_id(
                         execution.operation_id
@@ -702,6 +748,7 @@ class ControlledOperationExecutionTransitionService:
                 )
                 if (
                     continuation is not None
+                    and execution.result_digest is not None
                     and continuation.resume_strategy
                     is ContinuationResumeStrategy.ATTACHED_PROCESS
                     and continuation.delivery_state
@@ -710,12 +757,13 @@ class ControlledOperationExecutionTransitionService:
                     self.repositories.continuation_deliveries.mark_ready(
                         continuation.continuation_id,
                         expected_state_version=continuation.state_version,
-                        result_digest=canonical_result.result_digest,
+                        result_digest=str(execution.result_digest),
                         updated_at=execution.updated_at,
                     )
             self._project_compatibility(
                 execution=execution,
-                result_handle=canonical_result,
+                result_handle=legacy_result,
+                workspace_job_result=workspace_result,
             )
         return execution
 
@@ -727,6 +775,7 @@ class ControlledOperationExecutionTransitionService:
         event: ControlledOperationExecutionEvent,
         expected_state_version: int,
         result_handle: ControlledOperationResultHandle | None,
+        workspace_job_result: WorkspaceJobResult | None = None,
     ) -> None:
         if expected_state_version != current.state_version:
             raise InvalidExecutionTransitionError(
@@ -848,6 +897,28 @@ class ControlledOperationExecutionTransitionService:
                 raise InvalidExecutionTransitionError(
                     "result handle does not exactly match the execution transition"
                 )
+        if workspace_job_result is not None:
+            expected_terminal_outcome = {
+                "succeeded": ControlledOperationExecutionTerminalOutcome.SUCCEEDED,
+                "failed": ControlledOperationExecutionTerminalOutcome.FAILED,
+                "cancelled": ControlledOperationExecutionTerminalOutcome.CANCELLED,
+            }[workspace_job_result.terminal_state.value]
+            if (
+                updated.route_policy_id != "workspace_revision_execution@1"
+                or workspace_job_result.execution_id != updated.execution_id
+                or workspace_job_result.operation_id != updated.operation_id
+                or updated.result_handle_ref != workspace_job_result.result_id
+                or updated.result_digest != workspace_job_result.result_digest
+                or updated.artifact_set_digest is not None
+                or (
+                    updated.lifecycle_state
+                    is ControlledOperationExecutionLifecycle.TERMINAL
+                    and updated.terminal_outcome is not expected_terminal_outcome
+                )
+            ):
+                raise InvalidExecutionTransitionError(
+                    "workspace job result does not exactly match the execution transition"
+                )
         if (
             updated.lifecycle_state
             is ControlledOperationExecutionLifecycle.RESULT_READY
@@ -863,9 +934,22 @@ class ControlledOperationExecutionTransitionService:
         *,
         execution: ControlledOperationExecution,
         result_handle: ControlledOperationResultHandle | None,
+        workspace_job_result: WorkspaceJobResult | None = None,
     ) -> None:
         status = _compatibility_status(execution)
-        result = {} if result_handle is None else result_handle.bounded_result_envelope
+        if result_handle is not None and workspace_job_result is not None:
+            raise InvalidExecutionTransitionError(
+                "compatibility projection received two result identities"
+            )
+        result = (
+            result_handle.bounded_result_envelope
+            if result_handle is not None
+            else (
+                {}
+                if workspace_job_result is None
+                else workspace_job_result.to_safe_dict()
+            )
+        )
         result_summary = result
         if "bounded_summary" in result:
             bounded_summary = result["bounded_summary"]
@@ -897,7 +981,15 @@ class ControlledOperationExecutionTransitionService:
                 None if approval is None else approval.status.value,
                 status.value,
                 _json_dumps(result),
-                None if result_handle is None else result_handle.origin,
+                (
+                    result_handle.origin
+                    if result_handle is not None
+                    else (
+                        None
+                        if workspace_job_result is None
+                        else "host_workspace_revision_execution@1"
+                    )
+                ),
                 _json_dumps(result_summary),
                 execution.error_code,
                 execution.safe_error_summary,
@@ -918,6 +1010,25 @@ class ControlledOperationExecutionTransitionService:
         self.repositories.controlled_operations._sync_terminal_engine_invocation(
             operation
         )
+
+
+def validate_controlled_operation_execution_transition(
+    *,
+    current: ControlledOperationExecution,
+    updated: ControlledOperationExecution,
+    event: ControlledOperationExecutionEvent,
+    expected_state_version: int,
+) -> None:
+    """Apply the canonical execution FSM without selecting a storage adapter."""
+
+    ControlledOperationExecutionTransitionService._validate_transition(
+        current=current,
+        updated=updated,
+        event=event,
+        expected_state_version=expected_state_version,
+        result_handle=None,
+        workspace_job_result=None,
+    )
 
 
 def _compatibility_status(

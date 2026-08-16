@@ -20,10 +20,32 @@ from .controlled_operation_execution import (
 )
 from .controlled_operation_execution import InvalidExecutionTransitionError
 from .controlled_operation_execution import controlled_operation_approval_digest
+from .controlled_operation_execution import (
+    validate_controlled_operation_execution_transition,
+)
 from .controlled_operation_execution import build_controlled_operation_result_handle
 from .controlled_operation_projection import project_controlled_operation_execution
 from .controlled_operation_projection import project_controlled_operation_summary
 from .controlled_operation_projection import is_controlled_operation_artifact_public
+from .workspace_revision_executions import (
+    WORKSPACE_REVISION_EXECUTION_ADAPTER_POLICY_ID,
+)
+from .workspace_revision_executions import WORKSPACE_REVISION_EXECUTION_ROUTE_POLICY_ID
+from .workspace_revision_executions import WORKSPACE_REVISION_RESULT_CONTRACT_DIGEST
+from .workspace_revision_executions import WorkspaceRevisionExecutionAdmission
+from .workspace_revision_executions import WorkspaceRevisionExecutionAdmissionError
+from .workspace_revision_executions import WorkspaceRevisionExecutionAdmissionService
+from .workspace_revision_executions import WorkspaceJobResultRevisionLinkService
+from .workspace_revision_executions import WorkspaceRevisionIndependentApprovalValidator
+from .workspace_revision_execution_worker import IssuedSchedulerCredential
+from .workspace_revision_execution_worker import SchedulerCredentialProvider
+from .workspace_revision_execution_worker import WorkspaceDispatchDisposition
+from .workspace_revision_execution_worker import WorkspaceJobBackend
+from .workspace_revision_execution_worker import WorkspaceJobDispatchResponse
+from .workspace_revision_execution_worker import WorkspaceJobObservationReceipt
+from .workspace_revision_execution_worker import WorkspaceRevisionExecutionWorker
+from .workspace_revision_execution_worker import WorkspaceRevisionExecutionWorkerError
+from .workspace_revision_execution_worker import WorkspaceRevisionSourcePreparer
 from .continuation_delivery import ContinuationDeliveryWorker
 from .continuation_delivery import ContinuationDeliveryWorkerOutcome
 from .continuation_delivery import ContinuationWakeService
@@ -145,6 +167,7 @@ from .repository_owner_refs import RepositoryRefOwnerRejectedError
 from .repository_retention import RepositoryPrivateNamespace
 from .repository_retention import RepositoryPrivateNamespaceHoldKind
 from .repository_retention import RepositoryPrivateNamespaceRetentionService
+from .repository_retention import PrivateNamespaceReachabilityFinalizer
 from .repository_retention import RepositoryPrivateNamespaceStatus
 from .repository_retention import RepositoryRetentionError
 from .repository_storage import DurableLfsObjectStore
@@ -156,6 +179,31 @@ from .repository_storage import RepositoryIdentityMismatchError
 from .repository_storage import RepositoryRootBoundary
 from .repository_storage import RepositoryRootRejectedError
 from .repository_storage import RepositoryStorageError
+from .git_lfs_repositories import GitLfsPolicyError
+from .git_lfs_repositories import GitLfsQuotaExceededError
+from .git_lfs_repositories import GitLfsRepository
+from .git_lfs_repositories import GitLfsRepositoryError
+from .git_lfs_work_products import GitLfsClosureError
+from .git_lfs_work_products import GitLfsGitReader
+from .git_lfs_work_products import GitLfsGarbageCollector
+from .git_lfs_work_products import GitLfsOversizedBlobError
+from .git_lfs_work_products import GitLfsPointerError
+from .git_lfs_work_products import GitLfsPublicationManifestPolicyValidator
+from .git_lfs_work_products import GitLfsPrivateReachabilityFinalizer
+from .git_lfs_work_products import GitLfsRevisionReader
+from .git_lfs_work_products import GitLfsWorkProductError
+from .git_lfs_work_products import PublicationManifestValidation
+from .git_lfs_work_products import RevisionGitAttributes
+from .git_lfs_work_products import publication_authorization_scope_digest
+from .git_lfs_client_qualification import GIT_LFS_CLIENT_QUALIFICATION_SCHEMA_VERSION
+from .git_lfs_client_qualification import GITLESS_COMPUTE_QUALIFICATION_SCHEMA_VERSION
+from .git_lfs_client_qualification import GitLfsClientEnvironment
+from .git_lfs_client_qualification import GitLfsClientQualification
+from .git_lfs_client_qualification import GitLfsClientQualificationError
+from .git_lfs_client_qualification import GitLfsNativeClientProbe
+from .git_lfs_client_qualification import GitlessComputeQualification
+from .git_lfs_client_qualification import qualify_gitless_compute
+from .git_lfs_client_qualification import qualify_native_git_lfs_client
 from .sandbox_workspace import SandboxWorkspaceService
 from .sandbox_workspace import derive_sandbox_workspace_id
 from .sandbox_workspace import normalize_immutable_image_id
@@ -181,6 +229,211 @@ from .artifact_boundary import register_artifact_boundary_tools
 from .artifact_tools import register_artifact_tools
 from .bio_research_tools import register_bio_research_tools
 from .protocol_tools import register_protocol_tools
+from .agent_capability_repositories import (
+    AgentCapabilityLeaseLifecycleEventRepository,
+)
+from .agent_capability_repositories import AgentCapabilityLeaseRepository
+from .agent_capability_repositories import AgentCapabilityRepositoryError
+from .agent_capability_repositories import AgentCapabilityVersionConflictError
+from .agent_capability_repositories import AgentRetirementCleanupProofRepository
+from .agent_capability_repositories import AgentRetirementRecordRepository
+from .agent_capability_repositories import AgentRetirementRequestRepository
+from .agent_capability_repositories import (
+    AgentWorkspaceGenerationReservationRepository,
+)
+from .agent_git_workspace_repositories import AgentGitWorkspaceRepository
+from .agent_git_workspace_repositories import AgentGitWorkspaceRepositoryError
+from .agent_git_workspace_repositories import AgentGitWorkspaceVersionConflictError
+from .agent_git_workspace_service import AgentGitWorkspaceConflictError
+from .agent_git_workspace_service import AgentGitWorkspaceError
+from .agent_git_workspace_service import AgentGitWorkspaceIdentityDriftError
+from .agent_git_workspace_service import AgentGitWorkspaceLifecycleService
+from .agent_git_workspace_service import AgentGitWorkspaceTransitionError
+from .agent_git_workspace_recovery import AgentGitWorkspaceGenerationService
+from .agent_git_workspace_recovery import AgentGitWorkspaceObservationProvider
+from .agent_git_workspace_recovery import AgentGitWorkspaceRecoveryError
+from .agent_git_workspace_recovery import AgentGitWorkspaceRecoveryService
+from .agent_git_workspace_recovery import (
+    PodmanAgentGitWorkspaceObservationProvider,
+)
+from .agent_capsule_image import AGENT_CAPSULE_IMAGE_MANIFEST_SCHEMA_VERSION
+from .agent_capsule_image import AGENT_CAPSULE_IMAGE_QUALIFICATION_SCHEMA_VERSION
+from .agent_capsule_image import AgentCapsuleImageError
+from .agent_capsule_image import AgentCapsuleImageManifest
+from .agent_capsule_image import AgentCapsuleImageQualification
+from .agent_capsule_image import AgentCapsuleImageQualificationError
+from .agent_capsule_image import CapsuleCommandExecutor
+from .agent_capsule_image import CapsuleCommandResult
+from .agent_capsule_image import DEFAULT_AGENT_CAPSULE_IMAGE_FAMILY
+from .agent_capsule_image import SubprocessCapsuleCommandExecutor
+from .agent_capsule_image import build_agent_capsule_image
+from .agent_capsule_image import load_agent_capsule_image_manifest
+from .agent_capsule_image import qualify_agent_capsule_image
+from .agent_capsule_runtime import AGENT_CAPSULE_PROCESS_RESULT_SCHEMA_VERSION
+from .agent_capsule_runtime import AGENT_PROCESS_CREDENTIAL_REQUEST_SCHEMA_VERSION
+from .agent_capsule_runtime import AgentCapsuleAdmissionError
+from .agent_capsule_runtime import AgentCapsuleCredentialError
+from .agent_capsule_runtime import AgentCapsuleProcessResult
+from .agent_capsule_runtime import AgentCapsuleProcessRunner
+from .agent_capsule_runtime import AgentCapsuleRuntimeError
+from .agent_capsule_runtime import AgentCapsuleRuntimeService
+from .agent_capsule_runtime import AgentProcessCredentialProvider
+from .agent_capsule_runtime import AgentProcessCredentialRequest
+from .agent_capsule_runtime import AgentProcessCredentialRouter
+from .agent_capsule_runtime import ExecutorHpcAgentProcessCredentialProvider
+from .agent_capsule_runtime import IssuedAgentProcessCredential
+from .agent_capsule_runtime import PodmanAgentCapsuleProcessRunner
+from .agent_capsule_runtime import RepositoryAgentProcessCredentialProvider
+from .agent_capsule_runtime import agent_capsule_tools_available
+from .agent_capsule_runtime import register_agent_capsule_tools
+from .workspace_checkpoint_repositories import (
+    AgentWorkspaceStateObservationRepository,
+)
+from .workspace_checkpoint_repositories import (
+    VerifiedWorkspaceCheckpointRepository,
+)
+from .workspace_checkpoint_repositories import WorkspaceCheckpointRepositoryError
+from .workspace_checkpoints import WorkspaceCheckpointError
+from .workspace_checkpoints import WorkspaceCheckpointGitReader
+from .workspace_checkpoints import WorkspaceCheckpointService
+from .workspace_publication_repositories import PublishedRevisionRepository
+from .workspace_publication_repositories import (
+    WorkspacePublicationExecutionEventRepository,
+)
+from .workspace_publication_repositories import (
+    WorkspacePublicationExecutionRepository,
+)
+from .workspace_publication_repositories import (
+    WorkspacePublicationIdentityConflictError,
+)
+from .workspace_publication_repositories import WorkspacePublicationIntentRepository
+from .workspace_publication_repositories import (
+    WorkspacePublicationRemoteReceiptRepository,
+)
+from .workspace_publication_repositories import WorkspacePublicationRepositoryError
+from .workspace_publications import CurrentPublicationManifestPolicyValidator
+from .workspace_publications import PublicationManifestPolicyValidator
+from .workspace_publications import WorkspacePublicationError
+from .workspace_publications import WorkspacePublicationGitReader
+from .workspace_publications import WorkspacePublicationIdentityError
+from .workspace_publications import WorkspacePublicationRemoteRoute
+from .workspace_publications import WorkspacePublicationService
+from .workspace_publications import WorkspacePublicationState
+from .workspace_publications import WorkspacePublishCommand
+from .workspace_publication_tools import register_workspace_publication_tools
+from .revision_path_handoffs import REPORT_MEDIA_SUFFIXES
+from .revision_path_handoffs import DirectoryTreeIdentityReader
+from .revision_path_handoffs import RevisionPathHandoffError
+from .revision_path_handoffs import RevisionPathHandoffRepository
+from .revision_path_handoffs import RevisionPathIdentityError
+from .revision_path_handoffs import RevisionPathReferenceService
+from .revision_path_handoffs import TaskEvidenceReferenceService
+from .revision_path_handoffs import report_evidence_ref
+from .executor_hpc_workspace_repositories import ExecutorHpcWorkspaceRepository
+from .executor_hpc_workspace_repositories import (
+    ExecutorHpcWorkspaceRepositoryError,
+)
+from .executor_hpc_workspaces import ExecutorHpcCredentialProvider
+from .executor_hpc_workspaces import ExecutorHpcWorkspaceDispatchInDoubt
+from .executor_hpc_workspaces import ExecutorHpcWorkspaceError
+from .executor_hpc_workspaces import ExecutorHpcWorkspaceExecutionRequired
+from .executor_hpc_workspaces import ExecutorHpcWorkspaceIdentityConflict
+from .executor_hpc_workspaces import ExecutorHpcWorkspaceObservation
+from .executor_hpc_workspaces import ExecutorHpcWorkspaceObservationKind
+from .executor_hpc_workspaces import ExecutorHpcWorkspaceProvisioner
+from .executor_hpc_workspaces import ExecutorHpcWorkspaceProvisioningRequired
+from .executor_hpc_workspaces import ExecutorHpcWorkspaceCleaner
+from .executor_hpc_workspaces import ExecutorHpcWorkspaceSettlementInspector
+from .executor_hpc_workspaces import ExecutorHpcWorkspaceSettlementProof
+from .executor_hpc_workspaces import ExecutorHpcWorkspaceService
+from .executor_hpc_workspaces import IssuedExecutorHpcCredential
+from .executor_hpc_workspaces import UnavailableExecutorHpcCredentialProvider
+from .executor_hpc_workspaces import credential_fingerprint
+from .executor_hpc_workspaces import register_executor_hpc_workspace_tools
+from .executor_hpc_target_qualification import (
+    ExecutorHpcNativeQualificationEvidence,
+)
+from .executor_hpc_target_qualification import (
+    ExecutorHpcNativeQualificationEvidenceVerifier,
+)
+from .executor_hpc_target_qualification import (
+    ExecutorHpcTargetQualificationError,
+)
+from .executor_hpc_target_qualification import (
+    ExecutorHpcTargetQualificationService,
+)
+from .native_revision_path_fetch import NativeRevisionPathFetchError
+from .native_revision_path_fetch import NativeRevisionPathFetchResult
+from .native_revision_path_fetch import NativeRevisionPathFetchService
+from .workspace_file_handoffs import WORKSPACE_FILE_WRITE_MAX_BYTES
+from .workspace_file_handoffs import WorkspaceFileHandoffError
+from .workspace_file_handoffs import WorkspaceFileWriteResult
+from .workspace_file_handoffs import write_bytes_to_current_agent_workspace
+from .workspace_file_handoffs import write_json_to_current_agent_workspace
+from .agent_workspace_volumes import AGENT_WORKSPACE_VOLUME_SCHEMA_VERSION
+from .agent_workspace_volumes import AgentWorkspaceVolumeAllocator
+from .agent_workspace_volumes import AgentWorkspaceVolumeBackend
+from .agent_workspace_volumes import AgentWorkspaceVolumeError
+from .agent_workspace_volumes import AgentWorkspaceVolumeFact
+from .agent_workspace_volumes import AgentWorkspaceVolumeIdentityError
+from .agent_workspace_volumes import PodmanAgentWorkspaceVolumeBackend
+from .agent_workspace_volumes import derive_agent_workspace_volume_id
+from .agent_git_workspace_provisioner import (
+    AGENT_GIT_WORKSPACE_READINESS_CANDIDATE_SCHEMA_VERSION,
+)
+from .agent_git_workspace_provisioner import AgentGitWorkspaceProvisioner
+from .agent_git_workspace_provisioner import AgentGitWorkspaceProvisioningError
+from .agent_git_workspace_provisioner import AgentGitWorkspaceReadinessCandidate
+from .agent_git_workspace_provisioner import AgentWorkspaceCloneResult
+from .agent_git_workspace_provisioner import AgentWorkspaceCloneRunner
+from .agent_git_workspace_provisioner import PodmanAgentWorkspaceCloneRunner
+from .repository_provision_credentials import IssuedRepositoryProvisionCredential
+from .repository_provision_credentials import (
+    REPOSITORY_PROVISION_CREDENTIAL_SCHEMA_VERSION,
+)
+from .repository_provision_credentials import RepositoryProvisionCredentialBroker
+from .repository_provision_credentials import RepositoryProvisionCredentialClaims
+from .agent_capability_projection import (
+    AGENT_CAPABILITY_PUBLIC_PROJECTION_SCHEMA_VERSION,
+)
+from .agent_capability_projection import AgentCapabilityPublicBlockerCode
+from .agent_capability_projection import AgentCapabilityPublicProjectionError
+from .agent_capability_projection import AgentCapabilityPublicProjector
+from .agent_capability_projection import project_agent_capability_for_public
+from .agent_capability_projection import project_agent_runtime_signal_for_public
+from .agent_capability_service import AGENT_CAPABILITY_ADMISSION_SCHEMA_VERSION
+from .agent_capability_service import AGENT_CAPABILITY_POLICY_SCHEMA_VERSION
+from .agent_capability_service import ActiveAgentCapabilityLeaseClaims
+from .agent_capability_service import ActiveAgentCapabilityLeaseValidator
+from .agent_capability_service import AgentCapabilityAdmissionRejectedError
+from .agent_capability_service import AgentCapabilityAdmissionRequest
+from .agent_capability_service import AgentCapabilityConflictError
+from .agent_capability_service import AgentCapabilityCredentialProviderUnavailableError
+from .agent_capability_service import AgentCapabilityError
+from .agent_capability_service import AgentCapabilityIssuance
+from .agent_capability_service import AgentCapabilityLeaseService
+from .agent_capability_service import AgentCapabilityPolicy
+from .agent_capability_service import AgentCapabilityPolicyDriftError
+from .agent_capability_service import AgentCapabilityProvisioningRequiredError
+from .agent_capability_service import AgentCapabilityRetiredError
+from .agent_capability_service import AgentCapabilityRevokedError
+from .agent_capability_service import AgentRetirementActiveClaimError
+from .agent_capability_service import AgentRetirementCleanupProof
+from .agent_capability_service import AgentRetirementCleanupProvider
+from .agent_capability_service import (
+    AgentRetirementCleanupProviderUnavailableError,
+)
+from .agent_capability_service import AgentRetirementRequestedError
+from .agent_capability_service import AgentScopedCredentialIssuer
+from .agent_capability_service import AgentWorkspaceReadinessProof
+from .agent_capability_service import AgentWorkspaceReadinessProvider
+from .agent_capability_service import (
+    AgentWorkspaceReadinessProviderUnavailableError,
+)
+from .agent_capability_service import DEFAULT_AGENT_CAPABILITY_POLICY
+from .agent_capability_service import UnavailableRemoteAgentCredentialIssuer
+from .runtime_signal_occurrences import AgentRuntimeSignalOccurrenceResult
+from .runtime_signal_occurrences import AgentRuntimeSignalOccurrenceService
 from .repositories import AgentMemberRepository
 from .repositories import AgentRuntimeSignalRepository
 from .repositories import ArtifactBlobGcRepository
@@ -278,6 +531,15 @@ from .reliability_repositories import is_transient_sqlite_contention
 from .failure_repositories import FailureObservationConflictError
 from .failure_repositories import FailureObservationRepository
 from .failure_tools import register_failure_tools
+from .file_workspace_contract import FILE_WORKSPACE_SANDBOX_CONTRACT_ID
+from .file_workspace_contract import FILE_WORKSPACE_UNSUPPORTED_ERROR_SCHEMA
+from .file_workspace_contract import CurrentFileWorkspaceContractError
+from .file_workspace_contract import FileWorkspaceHostOperation
+from .file_workspace_contract import FileWorkspaceHostRequest
+from .file_workspace_contract import FileWorkspaceSandboxHostGateway
+from .file_workspace_contract import reject_stale_file_workspace_value
+from .file_workspace_projection import FileWorkspaceProjectionBuilder
+from .file_workspace_projection import file_workspace_public_schema_bundle_digest
 from .scientific_attempt_repositories import (
     ScientificArtifactMaterializationRepository,
 )
@@ -326,6 +588,13 @@ from .scientific_attempts import ScientificOperationAdoptionResult
 from .scientific_attempts import ScientificOperationUniverse
 from .scientific_attempts import scientific_attempt_authorization_identity
 from .scientific_attempts import scientific_attempt_authorization_request
+from .scientific_file_deliverables import ResolvedScientificFile
+from .scientific_file_deliverables import ScientificDeliverableFinalizationResult
+from .scientific_file_deliverables import ScientificDeliverableFinalizationService
+from .scientific_file_deliverables import ScientificFileDeliverableError
+from .scientific_file_deliverables import ScientificPublishedByteReader
+from .scientific_file_deliverables import ScientificPublishedFileResolver
+from .scientific_file_deliverables import ScientificRoleRequirement
 from .report_publication import is_published_report_link
 from .report_publication import is_published_report_status
 from .scientific_selection_evaluation import ScientificSelectionEvaluation
@@ -384,6 +653,8 @@ from .tool_catalog import ToolDescriptor
 from .tool_catalog import builtin_tool_descriptors
 from .tool_catalog import engine_tool_descriptors
 from .tool_catalog import failure_tool_descriptors
+from .tool_catalog import file_workspace_candidate_catalog_digest
+from .tool_catalog import file_workspace_candidate_tool_descriptors
 from .tool_catalog import scientific_attempt_tool_descriptors
 from .tool_catalog import world_tool_descriptors
 from .world_inspection import WorldInspectionService
@@ -401,6 +672,131 @@ from .task_board import register_task_board_tools
 from .llm_driver import LlmConversationDriver
 
 __all__ = [
+    "AGENT_CAPSULE_IMAGE_MANIFEST_SCHEMA_VERSION",
+    "AGENT_CAPSULE_IMAGE_QUALIFICATION_SCHEMA_VERSION",
+    "AGENT_GIT_WORKSPACE_READINESS_CANDIDATE_SCHEMA_VERSION",
+    "AGENT_WORKSPACE_VOLUME_SCHEMA_VERSION",
+    "AgentCapsuleImageError",
+    "AgentCapsuleImageManifest",
+    "AgentCapsuleImageQualification",
+    "AgentCapsuleImageQualificationError",
+    "AgentGitWorkspaceConflictError",
+    "AgentGitWorkspaceError",
+    "AgentGitWorkspaceGenerationService",
+    "AgentGitWorkspaceIdentityDriftError",
+    "AgentGitWorkspaceLifecycleService",
+    "AgentGitWorkspaceObservationProvider",
+    "AgentGitWorkspaceProvisioner",
+    "AgentGitWorkspaceProvisioningError",
+    "AgentGitWorkspaceReadinessCandidate",
+    "AgentGitWorkspaceRecoveryError",
+    "AgentGitWorkspaceRecoveryService",
+    "AgentGitWorkspaceRepository",
+    "AgentGitWorkspaceRepositoryError",
+    "AgentGitWorkspaceTransitionError",
+    "AgentGitWorkspaceVersionConflictError",
+    "AgentWorkspaceCloneResult",
+    "AgentWorkspaceCloneRunner",
+    "AgentWorkspaceVolumeAllocator",
+    "AgentWorkspaceVolumeBackend",
+    "AgentWorkspaceVolumeError",
+    "AgentWorkspaceVolumeFact",
+    "AgentWorkspaceVolumeIdentityError",
+    "CapsuleCommandExecutor",
+    "CapsuleCommandResult",
+    "CurrentPublicationManifestPolicyValidator",
+    "DEFAULT_AGENT_CAPSULE_IMAGE_FAMILY",
+    "IssuedRepositoryProvisionCredential",
+    "PodmanAgentGitWorkspaceObservationProvider",
+    "PodmanAgentWorkspaceCloneRunner",
+    "PodmanAgentWorkspaceVolumeBackend",
+    "PublicationManifestPolicyValidator",
+    "PublishedRevisionRepository",
+    "REPOSITORY_PROVISION_CREDENTIAL_SCHEMA_VERSION",
+    "RepositoryProvisionCredentialBroker",
+    "RepositoryProvisionCredentialClaims",
+    "SubprocessCapsuleCommandExecutor",
+    "WorkspacePublicationError",
+    "WorkspacePublicationExecutionEventRepository",
+    "WorkspacePublicationExecutionRepository",
+    "WorkspacePublicationGitReader",
+    "WorkspacePublicationIdentityConflictError",
+    "WorkspacePublicationIdentityError",
+    "WorkspacePublicationIntentRepository",
+    "WorkspacePublicationRemoteReceiptRepository",
+    "WorkspacePublicationRemoteRoute",
+    "WorkspacePublicationRepositoryError",
+    "WorkspacePublicationService",
+    "WorkspacePublicationState",
+    "WorkspacePublishCommand",
+    "build_agent_capsule_image",
+    "derive_agent_workspace_volume_id",
+    "load_agent_capsule_image_manifest",
+    "qualify_agent_capsule_image",
+    "register_workspace_publication_tools",
+    "validate_controlled_operation_execution_transition",
+    "AGENT_CAPSULE_PROCESS_RESULT_SCHEMA_VERSION",
+    "AGENT_PROCESS_CREDENTIAL_REQUEST_SCHEMA_VERSION",
+    "AgentCapsuleAdmissionError",
+    "AgentCapsuleCredentialError",
+    "AgentCapsuleProcessResult",
+    "AgentCapsuleProcessRunner",
+    "AgentCapsuleRuntimeError",
+    "AgentCapsuleRuntimeService",
+    "AgentProcessCredentialProvider",
+    "AgentProcessCredentialRequest",
+    "AgentProcessCredentialRouter",
+    "ExecutorHpcAgentProcessCredentialProvider",
+    "ExecutorHpcCredentialProvider",
+    "ExecutorHpcNativeQualificationEvidence",
+    "ExecutorHpcNativeQualificationEvidenceVerifier",
+    "ExecutorHpcTargetQualificationError",
+    "ExecutorHpcTargetQualificationService",
+    "ExecutorHpcWorkspaceCleaner",
+    "ExecutorHpcWorkspaceDispatchInDoubt",
+    "ExecutorHpcWorkspaceError",
+    "ExecutorHpcWorkspaceExecutionRequired",
+    "ExecutorHpcWorkspaceIdentityConflict",
+    "ExecutorHpcWorkspaceObservation",
+    "ExecutorHpcWorkspaceObservationKind",
+    "ExecutorHpcWorkspaceProvisioner",
+    "ExecutorHpcWorkspaceProvisioningRequired",
+    "ExecutorHpcWorkspaceRepository",
+    "ExecutorHpcWorkspaceRepositoryError",
+    "ExecutorHpcWorkspaceService",
+    "ExecutorHpcWorkspaceSettlementInspector",
+    "ExecutorHpcWorkspaceSettlementProof",
+    "IssuedExecutorHpcCredential",
+    "UnavailableExecutorHpcCredentialProvider",
+    "credential_fingerprint",
+    "register_executor_hpc_workspace_tools",
+    "IssuedAgentProcessCredential",
+    "PodmanAgentCapsuleProcessRunner",
+    "RepositoryAgentProcessCredentialProvider",
+    "agent_capsule_tools_available",
+    "register_agent_capsule_tools",
+    "NativeRevisionPathFetchError",
+    "NativeRevisionPathFetchResult",
+    "NativeRevisionPathFetchService",
+    "REPORT_MEDIA_SUFFIXES",
+    "DirectoryTreeIdentityReader",
+    "RevisionPathHandoffError",
+    "RevisionPathHandoffRepository",
+    "RevisionPathIdentityError",
+    "RevisionPathReferenceService",
+    "TaskEvidenceReferenceService",
+    "report_evidence_ref",
+    "WORKSPACE_FILE_WRITE_MAX_BYTES",
+    "WorkspaceFileHandoffError",
+    "WorkspaceFileWriteResult",
+    "write_bytes_to_current_agent_workspace",
+    "write_json_to_current_agent_workspace",
+    "AgentWorkspaceStateObservationRepository",
+    "VerifiedWorkspaceCheckpointRepository",
+    "WorkspaceCheckpointRepositoryError",
+    "WorkspaceCheckpointError",
+    "WorkspaceCheckpointGitReader",
+    "WorkspaceCheckpointService",
     "AgentStepContext",
     "ActivityFeedItem",
     "AgentRuntimeOutcome",
@@ -411,7 +807,46 @@ __all__ = [
     "AGENT_RUNTIME_OUTCOME_SETTLEMENT_SCHEMA_VERSION",
     "SessionRuntimeLeaseLockedError",
     "AgentMemberRepository",
+    "AgentCapabilityLeaseLifecycleEventRepository",
+    "AgentCapabilityLeaseRepository",
+    "AGENT_CAPABILITY_ADMISSION_SCHEMA_VERSION",
+    "AGENT_CAPABILITY_POLICY_SCHEMA_VERSION",
+    "AGENT_CAPABILITY_PUBLIC_PROJECTION_SCHEMA_VERSION",
+    "ActiveAgentCapabilityLeaseClaims",
+    "ActiveAgentCapabilityLeaseValidator",
+    "AgentCapabilityAdmissionRejectedError",
+    "AgentCapabilityAdmissionRequest",
+    "AgentCapabilityConflictError",
+    "AgentCapabilityCredentialProviderUnavailableError",
+    "AgentCapabilityError",
+    "AgentCapabilityIssuance",
+    "AgentCapabilityLeaseService",
+    "AgentCapabilityPolicy",
+    "AgentCapabilityPolicyDriftError",
+    "AgentCapabilityProvisioningRequiredError",
+    "AgentCapabilityPublicBlockerCode",
+    "AgentCapabilityPublicProjectionError",
+    "AgentCapabilityPublicProjector",
+    "AgentCapabilityRepositoryError",
+    "AgentCapabilityRetiredError",
+    "AgentCapabilityRevokedError",
+    "AgentRetirementActiveClaimError",
+    "AgentCapabilityVersionConflictError",
+    "AgentRetirementCleanupProofRepository",
+    "AgentRetirementCleanupProof",
+    "AgentRetirementCleanupProvider",
+    "AgentRetirementCleanupProviderUnavailableError",
+    "AgentRetirementRequestedError",
+    "AgentRetirementRecordRepository",
+    "AgentRetirementRequestRepository",
+    "AgentRuntimeSignalOccurrenceResult",
+    "AgentRuntimeSignalOccurrenceService",
     "AgentRuntimeSignalRepository",
+    "AgentScopedCredentialIssuer",
+    "AgentWorkspaceReadinessProof",
+    "AgentWorkspaceReadinessProvider",
+    "AgentWorkspaceReadinessProviderUnavailableError",
+    "AgentWorkspaceGenerationReservationRepository",
     "ArtifactBlobGcRepository",
     "ArtifactBoundaryError",
     "ArtifactBoundaryService",
@@ -430,6 +865,23 @@ __all__ = [
     "ControlledOperationResultArtifactRepository",
     "ControlledOperationResultArtifactRef",
     "ControlledOperationExecutionTransitionService",
+    "WORKSPACE_REVISION_EXECUTION_ADAPTER_POLICY_ID",
+    "WORKSPACE_REVISION_EXECUTION_ROUTE_POLICY_ID",
+    "WORKSPACE_REVISION_RESULT_CONTRACT_DIGEST",
+    "WorkspaceRevisionExecutionAdmission",
+    "WorkspaceRevisionExecutionAdmissionError",
+    "WorkspaceRevisionExecutionAdmissionService",
+    "WorkspaceRevisionIndependentApprovalValidator",
+    "WorkspaceJobResultRevisionLinkService",
+    "IssuedSchedulerCredential",
+    "SchedulerCredentialProvider",
+    "WorkspaceDispatchDisposition",
+    "WorkspaceJobBackend",
+    "WorkspaceJobDispatchResponse",
+    "WorkspaceJobObservationReceipt",
+    "WorkspaceRevisionExecutionWorker",
+    "WorkspaceRevisionExecutionWorkerError",
+    "WorkspaceRevisionSourcePreparer",
     "ControlledOperationExecutionLeaseService",
     "ControlledOperationExecutionWorker",
     "ControlledOperationExecutionWorkerOutcome",
@@ -480,6 +932,27 @@ __all__ = [
     "DurableLfsObjectStore",
     "DurableRepositoryRootManager",
     "DurableRootFact",
+    "GitLfsClosureError",
+    "GIT_LFS_CLIENT_QUALIFICATION_SCHEMA_VERSION",
+    "GITLESS_COMPUTE_QUALIFICATION_SCHEMA_VERSION",
+    "GitLfsClientEnvironment",
+    "GitLfsClientQualification",
+    "GitLfsClientQualificationError",
+    "GitLfsNativeClientProbe",
+    "GitlessComputeQualification",
+    "GitLfsGitReader",
+    "GitLfsGarbageCollector",
+    "GitLfsOversizedBlobError",
+    "GitLfsPointerError",
+    "GitLfsPolicyError",
+    "GitLfsPublicationManifestPolicyValidator",
+    "GitLfsPrivateReachabilityFinalizer",
+    "GitLfsQuotaExceededError",
+    "GitLfsRepository",
+    "GitLfsRepositoryError",
+    "GitLfsRevisionReader",
+    "GitLfsWorkProductError",
+    "DEFAULT_AGENT_CAPABILITY_POLICY",
     "ActiveCapabilityLeaseAssertion",
     "GitRefAclValidator",
     "GitRefUpdate",
@@ -586,6 +1059,7 @@ __all__ = [
     "RepositoryPrivateNamespace",
     "RepositoryPrivateNamespaceHoldKind",
     "RepositoryPrivateNamespaceRetentionService",
+    "PrivateNamespaceReachabilityFinalizer",
     "RepositoryPrivateNamespaceStatus",
     "RepositoryRefAclError",
     "RepositoryRefOwnerIdentity",
@@ -680,6 +1154,13 @@ __all__ = [
     "ScientificAttemptVersionConflictError",
     "ScientificDispositionRepository",
     "ScientificEffectAdoptionRepository",
+    "ScientificDeliverableFinalizationResult",
+    "ScientificDeliverableFinalizationService",
+    "ScientificFileDeliverableError",
+    "ScientificPublishedByteReader",
+    "ScientificPublishedFileResolver",
+    "ScientificRoleRequirement",
+    "ResolvedScientificFile",
     "ScientificOccurrenceSnapshot",
     "ResolvedScientificAttemptLifecycle",
     "ScientificOperationAdoptionResult",
@@ -732,6 +1213,7 @@ __all__ = [
     "ToolRouter",
     "ToolResult",
     "ToolSpec",
+    "UnavailableRemoteAgentCredentialIssuer",
     "WorldInspectionService",
     "apply_sqlite_migrations",
     "build_agent_step_context",
@@ -742,18 +1224,36 @@ __all__ = [
     "derive_sandbox_workspace_id",
     "engine_tool_descriptors",
     "failure_tool_descriptors",
+    "file_workspace_candidate_catalog_digest",
+    "file_workspace_candidate_tool_descriptors",
     "estimate_and_decide_prompt_budget",
     "get_migration_sql",
     "load_recent_conversation",
     "model_context_profile_from_env_or_factory",
     "normalize_immutable_image_id",
     "persist_conversation_message",
+    "PublicationManifestValidation",
+    "RevisionGitAttributes",
+    "publication_authorization_scope_digest",
+    "qualify_gitless_compute",
+    "qualify_native_git_lfs_client",
     "is_published_report_link",
     "is_published_report_status",
     "prompt_budget_config_from_env",
+    "project_agent_capability_for_public",
+    "project_agent_runtime_signal_for_public",
     "project_controlled_operation_execution",
     "project_controlled_operation_summary",
     "recover_unattached_continuations",
+    "FILE_WORKSPACE_SANDBOX_CONTRACT_ID",
+    "FILE_WORKSPACE_UNSUPPORTED_ERROR_SCHEMA",
+    "CurrentFileWorkspaceContractError",
+    "FileWorkspaceHostOperation",
+    "FileWorkspaceHostRequest",
+    "FileWorkspaceSandboxHostGateway",
+    "FileWorkspaceProjectionBuilder",
+    "file_workspace_public_schema_bundle_digest",
+    "reject_stale_file_workspace_value",
     "is_controlled_operation_artifact_public",
     "register_memory_tools",
     "register_docs_tools",

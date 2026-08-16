@@ -22,3 +22,7 @@
 ## Impact
 
 影响 `openzyme-core` sandbox runtime/tool catalog、`openzyme-runtime` artifact boundary、`openzyme-engines` pipeline sandbox、`openzyme-pipeline` SDK、domain records、migrations、prompts、tests 和 execution docs。
+> 连续源码迁移期间，本 change 受
+> `operator/source-only-deletion-gate.json` 约束：允许实现 candidate 内部
+> file-workspace 合同和静态删除准备，但不代表任何前序 receipt 已通过，且禁止
+> public epoch、旧 writer 激活、历史删除与外部效应。

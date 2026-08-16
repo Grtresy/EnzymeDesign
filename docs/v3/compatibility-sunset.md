@@ -1,5 +1,10 @@
 # V3 Compatibility Caller Evidence and Sunset Gates
 
+> Artifact subsystem 的最终退役比普通 symbol sunset 更严格：它还受 historical
+> exact-set migration、offline quiescence、schema rebuild 与 storage-zero receipt 约束。
+> 完整 source-only/GO-NO-GO 合同见
+> [file-workspace-migration.md](file-workspace-migration.md)。零 caller 扫描不能单独授权删除。
+
 本文件记录 V3 当前兼容边界的退役证据与禁止误判的规则。可重复执行的仓库内证据由：
 
 ```bash

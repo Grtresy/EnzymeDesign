@@ -9,6 +9,7 @@ import threading
 import pytest
 
 from openzyme_core import CoreRepositories
+from openzyme_core import AgentCapabilityLeaseService
 from openzyme_core import MemoryEventBus
 from openzyme_core import RestoreFocus
 from openzyme_core import SandboxWorkspaceService
@@ -730,6 +731,12 @@ def test_workspace_activity_feed_redacts_historical_runtime_signal_error() -> No
     repositories = _build_repositories()
     session = _seed_session(repositories)
     agent = _seed_executor(repositories, session)
+    capability = AgentCapabilityLeaseService(repositories).reserve_and_issue(
+        session_id=session.session_id,
+        agent_id=agent.agent_id,
+        idempotency_key="sandbox-workspace:redaction:generation-1",
+        actor_ref="test:sandbox-workspace-capability",
+    )
     repositories.runtime_signals.save(
         AgentRuntimeSignal(
             signal_id="sig_historical_private_error",
@@ -741,6 +748,8 @@ def test_workspace_activity_feed_redacts_historical_runtime_signal_error() -> No
             completed_at="2026-07-18T00:00:01+00:00",
             error_message="failed at /home/operator/private.toml",
             last_error="socket at /tmp/openzyme/private.sock",
+            capability_lease_id=capability.lease.lease_id,
+            workspace_generation=capability.lease.workspace_generation,
         )
     )
 
@@ -749,6 +758,8 @@ def test_workspace_activity_feed_redacts_historical_runtime_signal_error() -> No
     )
     serialized = json.dumps(projection.to_dict(), sort_keys=True)
 
+    assert "sig_historical_private_error" in serialized
     assert "/home/operator" not in serialized
     assert "/tmp/openzyme" not in serialized
-    assert "[redacted-host-path]" in serialized
+    assert "error_message" not in serialized
+    assert "last_error" not in serialized

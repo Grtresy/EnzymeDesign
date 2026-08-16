@@ -20,6 +20,7 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
 
 - Harness 应提供世界，而不是编码业务判断。
 - Control-plane 对象应保持稳定名词：`session`、`task`、`lane`、`approval`、`artifact`、`run`、`report`、`inbox`、`memory` 和 `workspace_projection`。
+- large file 不再引入一个 model-visible CAS/tool family。agent 只看 native Git/LFS 能力、binding policy、quota 与 publication/GC 的 typed facts；stable closure、fresh verification、workspace object links 和 physical object storage 都留在 Host repository boundary。这样保持 dispatch 能力而不增加并列文件真相或把 storage locator 暴露给模型。
 - Tool 应保持原子、可组合；避免把多步策略隐藏在 tool handler 里。
 - Scheduler / runtime 可以唤醒 agent 并执行边界约束，但不应决定业务完成状态或修复策略。
 - Protocol 是通用通信机制，不应拥有领域特定的 diagnostic 或 HPC retry policy。
@@ -536,6 +537,29 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   本债务继续显式保留。
 
 ## 4. 后续工作流
+
+### 3.1 C7 revision-path handoff 收口
+
+- [x] research/report/task handoff 的 current bytes 真相收敛到 exact published revision path；不保留
+  `EngineDocument`、artifact alias 或 session-local body 的 current dual path。
+- [x] file handoff 只建立 participant-bound inbox/wakeup；native fetch、inspect 与 integration 保留给 agent，
+  Harness 不自动 materialize/merge/finish。
+- [x] report workspace publication、report business publication 与 task terminal 分离；`task.finish` 只接受
+  exact task-bound closed evidence。scientific evidence 在 C10 前 fail closed。
+- [x] bounded research writer 与 deep-research completion gate 阻止 partial/inline fallback；session mutation
+  closure覆盖 C7 session-owned rows，但不吸收 repository-global LFS retention/GC。
+
+这些勾选只表示 C7 源码合同已落地；`revision_path_handoff_source_only_dependency_gate@1` 仍声明
+`acceptance_proven=false`，完整 acceptance 等待连续 changes 的统一验证。
+
+### 3.2 C8 isolated executor HPC workspace 收口
+
+- [x] remote workspace identity收敛到一个typed `ExecutorHpcWorkspace`，不再把artifact staging root、ambient cwd或共享login目录伪装成agent workspace。
+- [x] owner locator与公共projection分离；credential、target principal、runner handle/sidecar和其他agent路径不进入shared workspace。
+- [x] provision与cleanup各自拥有immutable intent/receipt和独立response-loss状态；reconciler只查询同一handle/path，target-native isolation command拥有root allocation/verification/cleanup。
+- [x] private/published sync只投影exact ref/commit/tree/LFS identity，Git策略保留给agent；C9前payload与scheduler admission硬关闭，不保留artifact-stage/fetch fallback。
+
+这些勾选只表示C8源码边界；真实target native positive/negative qualification、focused/mainline与strict OpenSpec结果仍由连续changes结束后的统一验证给出，不能从`executor_hpc_workspace_source_only_dependency_gate@1`推断production acceptance。
 
 每次后续简化时：
 

@@ -12,7 +12,7 @@ const sectionLabels = {
   team: "Team",
   tasks: "Tasks",
   lanes: "Lanes",
-  outputs: "Artifacts & Reports",
+  outputs: "Published Files & Reports",
   evidence: "Scientific Evidence",
   attempts: "Scientific Attempts",
   capabilities: "Capabilities",
@@ -451,13 +451,34 @@ export function renderV3Outputs(workspace, viewState = {}) {
     : workspace.artifacts ?? [];
   const drafts = workspace.report_drafts ?? [];
   const reports = workspace.reports ?? [];
+  const researchFiles = workspace.research_files ?? [];
   const selectedArtifact = artifacts.find((artifact) => artifact.artifact_id === viewState.selectedArtifactId) ?? artifacts[0] ?? null;
   const selectedArtifactId = selectedArtifact?.artifact_id ?? "";
-  if (!artifacts.length && !drafts.length && !reports.length) {
-    return `<p class="empty-copy">No artifacts, drafts, or reports yet.</p>`;
+  if (!artifacts.length && !researchFiles.length && !drafts.length && !reports.length) {
+    return `<p class="empty-copy">No published files, artifacts, drafts, or reports yet.</p>`;
   }
   return `
     <div class="stack">
+      ${
+        researchFiles.length
+          ? `<section>
+              <h3>Published Research Files</h3>
+              <ul class="record-list">
+                ${researchFiles
+                  .map(
+                    (file) => `
+                      <li>
+                        <strong>${escapeHtml(file.research_kind ?? "research file")}</strong>
+                        <span>workspace publication: already_published · task transition: none</span>
+                        <small>${escapeHtml(file.revision_path_ref?.path ?? "missing path")} · ${escapeHtml(file.revision_path_ref?.commit ?? "missing commit")}</small>
+                      </li>
+                    `,
+                  )
+                  .join("")}
+              </ul>
+            </section>`
+          : ""
+      }
       ${
         drafts.length
           ? `<section>
@@ -468,7 +489,8 @@ export function renderV3Outputs(workspace, viewState = {}) {
                     (draft) => `
                       <li>
                         <strong>${escapeHtml(draft.title ?? draft.draft_id)}</strong>
-                        <span>${escapeHtml(draft.status ?? "unknown")} · ${escapeHtml(draft.draft_id)}</span>
+                        <span>workspace publication: ${escapeHtml(draft.workspace_publication_state ?? "not_bound")} · report business state: ${escapeHtml(draft.report_business_publication_state ?? draft.status ?? "unknown")}</span>
+                        <small>${escapeHtml(draft.draft_id)} · ${escapeHtml(draft.content_reference?.path ?? "no published body")}</small>
                       </li>
                     `,
                   )
@@ -487,7 +509,8 @@ export function renderV3Outputs(workspace, viewState = {}) {
                     (report) => `
                       <li>
                         <strong>${escapeHtml(report.title ?? report.report_id)}</strong>
-                        <span>${escapeHtml(report.status ?? "unknown")} · ${escapeHtml(report.report_id)}</span>
+                        <span>workspace publication: ${escapeHtml(report.workspace_publication_state ?? "unknown")} · report business state: ${escapeHtml(report.report_business_publication_state ?? report.status ?? "unknown")}</span>
+                        <small>${escapeHtml(report.report_id)} · version ${escapeHtml(report.report_version ?? 1)} · ${escapeHtml(report.content_reference?.path ?? "missing body ref")}</small>
                       </li>
                     `,
                   )
@@ -613,8 +636,8 @@ export function renderV3ScientificEvidence(workspace) {
               (report) => `
                 <li>
                   <strong>${escapeHtml(report.title ?? report.report_id ?? "report")}</strong>
-                  <span>${escapeHtml(report.status ?? "unknown")} · published ${escapeHtml(report.published === true)} · eligible ${escapeHtml(report.cutover_eligible === true)}</span>
-                  <small>${escapeHtml(report.report_id ?? "none")} · artifact ${escapeHtml(report.artifact_id ?? "none")}</small>
+                  <span>workspace publication: ${escapeHtml(report.workspace_publication_state ?? "unknown")} · report publication: ${escapeHtml(report.report_business_publication_state ?? report.status ?? "unknown")} · eligible ${escapeHtml(report.cutover_eligible === true)}</span>
+                  <small>${escapeHtml(report.report_id ?? "none")} · version ${escapeHtml(report.report_version ?? 1)} · ${escapeHtml(report.content_reference?.path ?? "missing body ref")}</small>
                 </li>
               `,
             )
@@ -1097,7 +1120,7 @@ function renderRail(viewState) {
       <button type="button" data-action="select-mobile-pane" data-pane="conversation" aria-label="Conversation" title="Conversation">C</button>
       <button type="button" data-action="select-section" data-session-id="${escapeHtml(viewState.currentSessionId)}" data-section="team" aria-label="Team" title="Team">T</button>
       <button type="button" data-action="select-section" data-session-id="${escapeHtml(viewState.currentSessionId)}" data-section="tasks" aria-label="Tasks" title="Tasks">✓</button>
-      <button type="button" data-action="select-section" data-session-id="${escapeHtml(viewState.currentSessionId)}" data-section="outputs" aria-label="Artifacts and reports" title="Artifacts and reports">A</button>
+      <button type="button" data-action="select-section" data-session-id="${escapeHtml(viewState.currentSessionId)}" data-section="outputs" aria-label="Published files and reports" title="Published files and reports">F</button>
       ${pending ? `<span class="rail-attention" aria-label="${pending} pending approvals">${pending}</span>` : ""}
     </nav>
   `;

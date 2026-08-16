@@ -58,6 +58,7 @@ class TransportCommandRunner(Protocol):
         *,
         timeout: float | None = None,
         stage: str | None = None,
+        input_text: str | None = None,
     ) -> Any: ...
 
 
@@ -650,13 +651,19 @@ class SshTransportManager:
         check: bool = False,
         timeout: float | None = None,
         stage: str | None = None,
+        input_text: str | None = None,
     ) -> Any:
         with self.channel() as channel:
+            kwargs: dict[str, Any] = {
+                "check": check,
+                "timeout": timeout,
+                "stage": stage,
+            }
+            if input_text is not None:
+                kwargs["input_text"] = input_text
             return self.command_runner.run(
                 channel.compiler.ssh(remote_argv),
-                check=check,
-                timeout=timeout,
-                stage=stage,
+                **kwargs,
             )
 
     def run_upload(

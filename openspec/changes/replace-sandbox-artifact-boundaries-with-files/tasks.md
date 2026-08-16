@@ -1,3 +1,9 @@
+## 0. 连续源码迁移 gate
+
+- [x] 0.1 重读三个直接前序 change 的当前 source gate，确认 formal completion receipts 尚未生成，不能签发 deletion-admission receipt。
+- [x] 0.2 生成 `file_workspace_source_only_deletion_gate@1` 与 current surface owner inventory，只授权 candidate contract/catalog/gateway、拒绝路径、延后测试与文档源码。
+- [x] 0.3 明确禁止 public epoch、artifact/stage writer、历史删除、remote/provider/HPC/task/report/scientific/live effect；正式 1.x、6.4、7.x 延后到 combined final source 后统一验收。
+
 ## 1. 前置 change receipts 与删除准入
 
 - [ ] 1.1 用 pure verifier 核验 `migrate-research-report-and-task-handoffs-to-files` change receipt，确认 research、report、task 与 protocol 的全部 current writer/consumer 已切换到 `RevisionPathRef`、`TaskEvidenceRef` 和显式 publication 边界。
@@ -8,10 +14,10 @@
 
 ## 2. Current contract epoch 与残余 writer 冻结
 
-- [ ] 2.1 定义并迁移内部 `file_workspace_sandbox@1` contract identity，绑定 sandbox schema、candidate tool catalog、pipeline SDK、Host gateway allowlist和revision execution schema，禁止同一内部 identity 混用artifact/file authoring；不得在本 change 单独激活 `file_workspace_public@1` Host/CLI/UI epoch。
+- [x] 2.1 定义并迁移内部 `file_workspace_sandbox@1` contract identity，绑定 sandbox schema、candidate tool catalog、pipeline SDK、Host gateway allowlist和revision execution schema，禁止同一内部 identity 混用artifact/file authoring；不得在本 change 单独激活 `file_workspace_public@1` Host/CLI/UI epoch。
 - [ ] 2.2 将所有 current ordinary/research/report/task/protocol/scientific/execution writer指向前置change已经验收的file、revision或control-plane repository，并增加source-bound zero-old-write probe，证明切断前不存在旧artifact/stage writer或未结算旧continuation。
 - [ ] 2.3 冻结current artifact、catalog、source-snapshot、stage与output-fetch mutation writer，保留只读historical rows/bytes供后续迁移；current process、recovery、projection或new receipt不得获得historical writer authority。
-- [ ] 2.4 为旧tool name、SDK method、request field、schema epoch与continuation payload定义明确versioned unsupported-current-contract错误，拒绝artifact id、Host path、catalog ref、`HpcStageRef`与`expected_outputs`且不推断replacement revision/path。
+- [x] 2.4 为旧tool name、SDK method、request field、schema epoch与continuation payload定义明确versioned unsupported-current-contract错误，拒绝artifact id、Host path、catalog ref、`HpcStageRef`与`expected_outputs`且不推断replacement revision/path。
 
 ## 3. Clone-native file workspace 与 capability admission
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 import socket
@@ -19,6 +20,15 @@ from openzyme_runtime import FASTA_ZERO_RECORDS_VALIDATION_PROFILE
 
 
 pytestmark = pytest.mark.podman
+
+
+def test_host_supervised_pipeline_does_not_inherit_native_capsule_network() -> None:
+    source = inspect.getsource(PodmanPipelineSandboxRunner.run_pipeline)
+
+    assert '"--network=none"' in source
+    assert "OPENZYME_AGENT_CAPSULE_DEPLOYMENT_NETWORK" not in source
+    assert "/openzyme/control.sock" in source
+    assert "OPENZYME_SANDBOX_MODE=s10" in source
 
 
 def _send_raw_control_frame(socket_path: Path, payload: bytes) -> dict[str, object]:

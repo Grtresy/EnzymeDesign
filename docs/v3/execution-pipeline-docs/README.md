@@ -1,5 +1,10 @@
 # Execution Pipeline SDK Docs
 
+> Pipeline 从 artifact catalog/staging 迁移到 native file、immutable revision 和
+> executor workspace 的候选合同见
+> [../file-workspace-migration.md](../file-workspace-migration.md)。正式 cutover 前不得把
+> candidate SDK 当作 current runner contract 或隐藏 fallback。
+
 This directory is the searchable documentation set for executor-authored V3 execution pipelines and persistent executor sandboxes.
 
 Executor prompts should not embed the full SDK reference. They should tell the executor to search these docs when editing files in its sandbox, materializing artifacts, writing pipeline code, snapshotting source, and running sandbox dry-run / execution through the Host supervisor.
@@ -46,9 +51,10 @@ Recommended reading paths:
 
 Stable boundary:
 
-- The stable executor-facing `hpc` namespace is placement / remote workspace / declarative stage-fetch.
-- Domain tool operations use `bio_tools`, `structure_tools`, and `docking`. Public executor docs and examples must not expose runner-backed tool shorthands under `hpc`.
-- Regardless of namespace, executor code must use Host-supervised SDK calls and must not call SSH, Slurm, runner config, external network clients, or Host artifact paths directly.
+- C8 stable login data plane 是 owner-scoped `ExecutorHpcWorkspace`。executor 可用 `hpc.workspace.request/inspect/verify/sync_source` 取得 exact workspace 与 revision identity，再通过 `workspace.exec` 的短期 scoped credential 原生使用 SSH、Git/LFS、rsync/scp和root内CRUD；不得读取runner sidecar、其他owner/generation root或Host path。
+- `hpc.workspace.sync_source` 只返回 exact private checkpoint或immutable publication ref/commit/tree/LFS closure；fetch、checkout、merge、rebase、cherry-pick和冲突处理仍由agent显式决定。它不force-update/delete checkpoint，不创建publication、handoff、task terminal或job result。
+- Login/file credential没有`scheduler.submit`/`sbatch` authority。C9前所有runner payload、reservation、resume与job submit均以`workspace_revision_execution_required`硬关闭；不得回退到artifact staging、Host output fetch、shared account或legacy RunSpec。
+- Compute payload 仍不得携带`.git`、Git/LFS binary、repository credential、LFS endpoint或object-store locator；具体revision-to-compute实现属于C9。
 - The Host/runner lifecycle credential is a server-issued opaque `run_id`; raw Slurm job IDs, remote directories, and inline recovery RunSpecs never cross the public runner boundary.
 - A durable SDK call may suspend its exact sandbox process while approval or an external effect is pending. Executor code still observes one request/response call; it must not invent a polling/replay loop, replacement operation, or a new idempotency key to recover transport ambiguity.
 - `ControlledOperationExecution` is the sole external-effect owner. Only a proven pre-effect failure may receive a bounded same-phase recovery; `dispatch_in_doubt` is a fail-closed reconciliation state, not permission to retry.

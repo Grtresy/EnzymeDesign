@@ -93,6 +93,7 @@ class SessionRestoreContext:
     active_invocations: tuple[EngineInvocation, ...]
     failure_observations: tuple[Any, ...]
     artifacts: tuple[SessionArtifactRecord, ...]
+    research_files: tuple[dict[str, Any], ...]
     report_drafts: tuple[SessionReportDraftRecord, ...]
     reports: tuple[SessionReportRecord, ...]
     protocol_threads: tuple[dict[str, Any], ...]
@@ -118,6 +119,7 @@ class SessionRestoreContext:
                 observation.to_dict() for observation in self.failure_observations
             ],
             "artifacts": [project_artifact_for_agent(artifact) for artifact in self.artifacts],
+            "research_files": list(self.research_files),
             "report_drafts": [draft.to_dict() for draft in self.report_drafts],
             "reports": [report.to_dict() for report in self.reports],
             "protocol_threads": list(self.protocol_threads),
@@ -346,6 +348,27 @@ class MemoryService:
         from .protocols import ProtocolService
 
         protocol = ProtocolService(self.repositories)
+        research_files: list[dict[str, Any]] = []
+        for record in self.repositories.revision_path_handoffs.list_research_indexes(
+            session_id=session_id
+        ):
+            ref = self.repositories.revision_path_handoffs.get_ref(
+                str(record["ref_id"])
+            )
+            if ref is None:
+                raise RuntimeError(
+                    "research restore index lost its immutable revision path ref"
+                )
+            research_files.append(
+                {
+                    "schema_version": "research_file_restore@1",
+                    "research_kind": record["research_kind"],
+                    "task_id": record["task_id"],
+                    "invocation_id": record["invocation_id"],
+                    "bounded_summary": record["bounded_summary"],
+                    "revision_path_ref": ref.to_dict(),
+                }
+            )
         correlation_ids = tuple(
             dict.fromkeys(
                 message.correlation_id
@@ -369,6 +392,7 @@ class MemoryService:
                 )
             ),
             artifacts=tuple(self.repositories.artifacts.list_by_session(session_id)),
+            research_files=tuple(research_files),
             report_drafts=tuple(self.repositories.report_drafts.list_by_session(session_id)),
             reports=tuple(self.repositories.reports.list_by_session(session_id)),
             protocol_threads=tuple(

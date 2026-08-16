@@ -1,5 +1,9 @@
 # OpenZyme V3 Capability Engines
 
+> Sandbox/Pipeline/HPC 从 artifact staging 迁移到 native file + immutable revision 的
+> 候选边界见 [file-workspace-migration.md](file-workspace-migration.md)；source-only gate
+> 不授予 dispatch、provider、HPC 或 live authority。
+
 ## 1. 定位
 
 Capability engine 是 V3 harness 可调用的专业子系统。
@@ -14,11 +18,50 @@ Capability engine 是 V3 harness 可调用的专业子系统。
 - provider/tool 调用必须经过 limiter：agent/session/global concurrency、LLM provider、research provider、execution/HPC submission 分别表达
 - 同步 SDK 只能通过受控 `to_thread` 或等价 adapter 包装在 limiter 内运行；线程池大小不是 quota 或 agent 并发策略
 
+### 1.1 Capability lease 不是 engine/tool exposure
+
+C2 `AgentCapabilityLease` 的 general/executor profile 是 closed policy declaration，不是本文所述
+engine runtime 已安装、tool 已对模型暴露或物理 target 已 reachable 的证明。C2 只建立
+generation reservation/readiness、`pending_workspace | active | revoked` lease、policy、
+credential/admission seam 与 immediate runtime/delegation gate。真实 versioned capsule image、native
+filesystem/shell/Git/Git LFS/curl、ordinary network、upload/download 及 reachable/unreachable proof
+属于 C3；publication 属于 C4；real remote-HPC credential/workspace/CRUD 与 ordinary job/
+one-occurrence `sbatch` 属于后继 changes。
+
+C3 未来的 ordinary deployment network 不增加 Host destination allowlist；这项 deferred
+network 语义不放宽 Host-issued credential 的 exact audience/service/target/protocol 校验。
+
+### 1.2 Git LFS 是 repository capability，不是第二个文件 engine
+
+large work product 由 native Git LFS client 通过 binding 固定的 Batch API v2/basic endpoint
+传输。harness 只呈现 policy、quota、credential scope、publication closure 和 typed failure；
+不向 agent 暴露通用 CAS、object-store locator、Host typed file gateway 或 custom pointer。
+agent 仍可自由选择何时下载、编辑、配置 `.gitattributes`、commit 和 private push，但共享文件
+真相只由显式 `workspace.publish` 的 whole-tree validator 创建。
+
+publication validator 是 Host repository capability：它拒绝 malformed pointer、symlink/
+submodule policy drift、missing/corrupt object 和全部 oversized ordinary blobs；它不修改 agent
+工作树或替 agent 选择表示方式。GC 是独立 retention-owner capability，只能消费 exact dry-run
+receipt 并在删除前重验全部 holds/reachability/pins。二者均不能由 engine terminal、tool success、
+runtime idle 或一枚 source-only gate 推导 authority。
+
+engine 或 tool router 在可见性治理之外，还必须尊重 C2 的 exact-generation admission
+gate；旧 tool registration、sandbox record、process、namespace hold 或 `SessionRuntimeLease` 不能使
+`pending_workspace`/missing/revoked lease 的 agent 获得运行权。在 C3 readiness provider 未
+ready 的 staged window 内，正确状态是 `provisioning_required` 与 non-runnable，不是去找一个旧
+engine fallback。
+
 ## 2. Deep Research Engine
 
 ### 2.1 默认定位
 
 `deep_research` 是 V3 的首个重点 capability engine。
+
+C7 后 engine 的 durable deliverable 是 owner workspace 中的 versioned files，而不是内联 dossier 或
+artifact。direct provider observation、source snapshot、citation、notes、analysis 与 dossier manifest 由
+Host-supervised bounded writer 写入；单 invocation 总输入最多 16 MiB，临时文件 owner-only，整文件 digest
+校验后原子 rename。任何写入失败都使 invocation `failed`，不得把 engine 内部 success 提前暴露为
+`succeeded`。显式 `workspace.publish` 和 research index 才使这些文件成为 shared truth。
 
 默认实现形态：
 
@@ -41,7 +84,7 @@ engine 内部 LLM 调用不得自建 provider retry/fallback。`deep_research` �
 - 研究 brief 与 researcher context 分离
 - researcher 子过程并行执行
 - compression / synthesis 作为单独内部阶段
-- 输出 normalized evidence dossier，而不是随意文本
+- 输出一组有界、版本化、可发布的 research files，而不是内联 dossier 或随意文本
 
 对 enzyme design 的默认扩展：
 
@@ -153,6 +196,14 @@ deep research 对 harness 至少提供：
 - `ResearchUnit.topic` 是科学语义主题，不是 provider category。Tavily `web.search.topic` 只暴露 `general` / `news` / `finance` 枚举并默认使用 adapter 配置；非法类别在 provider 前返回 `invalid_tool_arguments`，不能把 scientific subject 透传给 Tavily 或静默替换
 
 ## 3. Execution Engine
+
+本节描述的是现有 Host-supervised execution 路径，不是 C3 未来的 general
+agent capsule。C2 不修改这套 execution/AOX 语义：rootless Podman sandbox 仍保持
+无网络，AOX 仍保持实际 `--network=none` 边界，executor code 仍只通过
+`openzyme_pipeline`/Host supervisor 访问 provider、local tool 与 HPC。它们在自己既有执行
+owner 中继续存在，但不能被当作 active capability lease 缺失时的 compatibility
+fallback，也不能用 C2 profile 声明绕过它们的 approval、execution fence、artifact/provenance
+或 scientific authority。
 
 定位：
 
@@ -277,6 +328,8 @@ Execution effect certainty 是闭集：`no_effect` 只允许同 phase、同 run�
 当前 continuation 只实现 `attached_process`：Host-private registry 绑定 exact sandbox run/workspace、runtime identity、process epoch、tool call、invocation 与 signal。delivery generation、result digest 或 process identity 漂移均 fail closed；Host restart 丢失 live process 时明确标记 delivery recovery failure，保留已完成 execution/result，不重跑 effect。`journaled_sdk_call_boundary` 仅是关闭的 schema 值，任意 Python stack replay 尚未实现。
 
 `mcp-hpc-runner` 的 server 生命周期拥有一个 `SshTransportManager`，按 deployment/config、normalized target、credential/host-key/transport policy 隔离 per-target OpenSSH ControlMaster generation。ssh/scp/rsync 共享同一 option compiler 与 ControlPath，但每个 command 仍是隔离 channel，不依赖持久 shell state。staging 必须重新验证 exact remote file SHA-256 或有界 canonical tree manifest；cache hit 不能代替 bytes 证明。direct SSH 在 payload 已写出后丢失 response 进入 `dispatch_in_doubt`，不允许重发；Slurm 只通过 exact persisted handle poll/reconcile；known terminal 后只恢复 output fetch/verify。完整边界见 [Runtime / HPC 可靠性边界](07-runtime-hpc-reliability.md)。
+
+C8 breaking cutover 后，上一段 staging/fetch 只描述历史 occurrence 的读取语义，不再是新执行入口。新 executor login workspace 在任何 SSH create 前持久化 exact intent，以 runner-private local binding、target sidecar、opaque handle 与 immutable receipt 做 compare-and-create；provision 与 cleanup 的 response-loss 状态分开持久化，只能查询同一 handle/path。remote root 必须由 target-native isolation command 按 OS principal policy分配、验证和清理，runner 不直接 `rm -rf` owner root。agent-native credential只含 login/file/Git/LFS operation class，没有 `scheduler.submit` 或 `sbatch` authority。
 
 SSH/Slurm closed attempt metadata 还必须封存 terminal status、safe machine error code 与
 既有 effect/retry envelope。adapter 只接受 bounded safe identifier，不要求全大写，也不

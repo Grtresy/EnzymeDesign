@@ -6,6 +6,10 @@ Executor-owned HPC login workspace解决了原生文件管理和跨turn持续性
 
 Canonical owner继续是现有`ControlledOperationExecution`。Runner提供subordinate `run_id`、immutable dispatch receipt、append-only observations和Host-private backend handle；不会创建第二套job FSM。
 
+C2只提供canonical capability-lease identity/status/profile与executor eligibility seam；C8提供真实native login/file credential和isolated remote workspace。两者的receipts都不能证明job route已实现。本change拥有ordinary job automatic canonical execution、scientific admitted-attempt binding、runner one-occurrence scheduler credential以及target-side pre-scheduler rejection的真实closure。
+
+连续源码迁移期间使用 `workspace_revision_execution_source_only_dependency_gate@1`。它只绑定当前 C8/LFS/controlled-operation/scientific-attempt/runner source identity，不是 capability lease、target qualification、job admission、execution fence、scheduler credential、dispatch occurrence 或 external handle。它不得触发 compute-tree、SSH、Slurm、direct payload、poll/cancel/reconcile 或任何 remote effect；正式 prerequisite/change receipt 必须在 combined final source 的统一验收中重建。
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -15,6 +19,9 @@ Canonical owner继续是现有`ControlledOperationExecution`。Runner提供subor
 - 为每个 accepted external job（Slurm 或 bounded direct SSH）持久化可权威查询的 `ExternalJobHandle` 与 dispatch receipt。
 - 对response loss使用`dispatch_in_doubt`和exact reconciliation，永不盲目replacement submit。
 - 复用`ControlledOperationExecution`的唯一owner、lease/fence、effect certainty、journal和restart recovery。
+- 让ordinary non-scientific job在exact active executor lease与frozen route policy内直接创建canonical execution，不产生逐命令或逐job human approval。
+- 对scientific route验证exact admitted `ScientificAttempt` state与immutable `ScientificAttemptAdmissionRequest`，而不是把source authorization envelope的当前`ACTIVE`状态误作唯一dispatch gate。
+- 让runner每个frozen Slurm dispatch occurrence只获得一个原子single-use credential，并由target在scheduler acceptance前拒绝ambient或unregistered submit。
 - 移除public `expected_outputs`、declared-output fetch、artifact set/result artifact和自动task completion。
 - 让结果文件留在executor workspace，由agent自由决定检查、传输、commit或publish。
 
@@ -26,12 +33,16 @@ Canonical owner继续是现有`ControlledOperationExecution`。Runner提供subor
 - 不自动识别、筛选、下载、commit或publish job生成的文件。
 - 不把exit zero、job terminal、文件存在或result receipt机械解释为task/scientific success。
 - 不在backend不可用时切换ssh/sbatch、target、command、resources、revision或local execution。
+- 不重新实现C2 lease lifecycle/revoke selectors或C8 native login credential；本change只消费它们的canonical receipt/state并增加独立runner scheduler credential。
+- 不引入通用budget authority；有限pre-effect retry count只是冻结的recovery policy，不能授权job、科学attempt或scheduler submit。
 
 ## Decisions
 
 ### 1. Admission 使用冻结的 workspace revision execution identity
 
-`WorkspaceRevisionExecutionRequest@1`绑定controlled operation/admission digest、executor capability lease id/version、workflow明确要求的可选scientific或operation authorization digest、executor HPC workspace id与generation、repository binding version、source class（`private`或`published`）、commit/tree OID、LFS closure manifest digest、clean-state observation、normalized repository-relative cwd、argv/command digest、environment policy digest、resource request、execution mode、target profile digest、runner policy digest和absolute deadline。普通non-scientific executor job在有效lease与policy内自动创建canonical execution，不逐命令或逐job等待人工approval；若enclosing workflow明确要求scientific authorization，则它仍是额外且正交的dispatch gate。
+`WorkspaceRevisionExecutionRequest@1`绑定controlled operation/admission digest、executor capability lease id/version、workflow contract明确要求的可选scientific admitted-attempt basis（exact `ScientificAttempt.attempt_id`与`state_version`、`admission_request_id`及immutable `ScientificAttemptAdmissionRequest.request_digest`、`envelope_id`、scope/effect/workflow-contract/HPC-target digests）或独立operation approval digest、executor HPC workspace id与generation、repository binding version、source class（`private`或`published`）、commit/tree OID、LFS closure manifest digest、clean-state observation、normalized repository-relative cwd、argv/command digest、environment policy digest、resource request、execution mode、target profile digest、runner policy digest和absolute deadline。
+
+普通non-scientific executor job在C2 seam证明exact active lease且route policy允许后，由本change自动create-or-read唯一canonical execution并直接进入durable dispatch-ready work，不创建pending human approval。若enclosing scientific workflow要求scientific authority，请求必须绑定一个已经canonical admitted且当前workflow contract允许该job的exact `ScientificAttempt` state与其immutable `ScientificAttemptAdmissionRequest`；Host验证attempt、admission request和source envelope identity与session/task/campaign/workflow/scope/effect class/HPC target provenance一致。作为来源的`ScientificAttemptAuthorization` envelope可能因该attempt已消费最后额度而处于`EXHAUSTED`，这不使已admitted attempt失去provenance；不得简单要求source envelope在job dispatch时仍为`ACTIVE`。没有matching admitted attempt/admission request、attempt状态不允许dispatch或identity/scope漂移时零backend effect，capability lease、Slurm fact或role都不能替代该科学basis。独立non-scientific operation approval只有在route policy明确声明时才另行验证。
 
 Admission同时在canonical record和remote login clone验证该commit可读、HEAD/selected revision一致、index与tracked tree干净、policy定义的untracked状态允许、Git attributes/LFS closure有效，且cwd位于revision tree内。任何漂移在dispatch前失败；系统不stash、clean、commit、snapshot、checkout替代ref或复制mutable files。
 
@@ -55,7 +66,11 @@ Compute job只看到该ready tree、明确writable directories与target toolchai
 
 Canonical execution 和 runner 在启动任何 external payload 前分别持久化 immutable dispatch intent，绑定 `dispatch_id`、run id、workspace generation、source manifest、command/resources、mode 和 deadline。Target qualification 必须提供 runner-owned remote dispatch ledger。Slurm mode 还必须提供 scheduler 可权威查询的唯一 marker（例如受保护 comment/name 字段与 `squeue`/`sacct` lookup）；bounded direct SSH mode 必须由 remote wrapper 以同一 dispatch id compare-and-create 一个可查询的 process/terminal receipt。Remote wrapper 对同一 `dispatch_id` 只允许一次 accepted payload，并将 raw scheduler 或 process handle 写入 immutable receipt。
 
-`ExternalJobHandle@1` 绑定 runner run id、dispatch id、target、workspace generation、source revision/manifest、backend kind、accepted time 和 Host-private raw scheduler/process handle。public surface 只暴露 opaque run/execution id 与 safe facts。executor 的普通 login/file credential 不具备绕过 ledger 的 scheduler submission authority；Slurm target 必须拒绝没有 frozen dispatch identity/one-occurrence runner credential 的直接 `sbatch`。
+`ExternalJobHandle@1` 绑定 runner run id、dispatch id、target、workspace generation、source revision/manifest、backend kind、accepted time 和 Host-private raw scheduler/process handle。public surface 只暴露 opaque run/execution id 与 safe facts。
+
+Slurm ledger在scheduler I/O前必须先为exact dispatch id原子reserve一个尚未消费的occurrence。只有持有current execution owner/fence的runner可为该reservation请求短期one-occurrence credential；credential绑定execution、dispatch id、target profile、ledger reservation nonce、scheduler marker、payload/command/resource digest、单一protected submit-wrapper audience与expiry，且不授予login/file/interactive authority。Target wrapper必须在调用native `sbatch`前原子验证并consume该credential和reservation；重复、过期、mismatched或未登记的credential/dispatch全部在scheduler acceptance前拒绝。
+
+C8签发的普通executor login/file credential不包含scheduler authority，也不能进入protected submit wrapper。Target enforcement必须阻止agent login shell、ambient runner credential或任意直接`sbatch`绕过；Host/runner不得通过扫描`squeue`/`sacct`或其他queue state把未登记job采纳为canonical execution。credential已consume但response丢失时仍只按same ledger/marker/handle reconcile，不能签发另一个occurrence credential。
 
 如果 target 不能保证持久 ledger、mode-specific unique marker/handle 与 terminal query，相关 mode 资格失败；系统不降级为 untracked `sbatch`、handle-less direct SSH、另一个 mode 或 local execution。
 
@@ -63,7 +78,9 @@ Canonical execution 和 runner 在启动任何 external payload 前分别持久�
 
 Accepted response、remote ledger 与 Host/runner receipt 无法跨系统事务提交。只要 request 可能到达 scheduler 或 direct wrapper 但缺少 accepted/no-effect proof，execution 进入 `dispatch_in_doubt`，retry eligibility 关闭。Reconciler 在新 execution fence 下只查询同一 dispatch id、remote ledger、mode-specific marker 和 raw handle；找到 matching receipt 后 adopt 该 exact handle，冲突则失败，无法证明则保持 unknown。
 
-Direct SSH 只有在 remote ledger 证明 payload 未接受时才能在有限 pre-effect budget 内重试；传输开始后的 connection loss 只查询同一 dispatch id 的 process/terminal receipt，零自动 replay。Timeout、lease expiry、runner restart、missing local receipt或empty poll都不证明job不存在。无法提供这一 handle/receipt 合同的 target 不允许 direct durable mode。
+Direct SSH 只有在 remote ledger 证明 payload 未接受时才能在有限 pre-effect budget 内重试；传输开始后的 connection loss 只查询同一 dispatch id 的 process/terminal receipt，零自动 replay。Timeout、controlled-operation execution lease expiry、capability lease 撤销或失活、runner restart、missing local receipt或empty poll都不证明job不存在。无法提供这一 handle/receipt 合同的 target 不允许 direct durable mode。
+
+这里的finite pre-effect budget是runner policy中的retry counter，不是agent、operation、scientific或scheduler authority；即使counter尚有余额，缺少exact lease、admitted attempt、execution fence或one-occurrence credential也必须停止。
 
 ### 6. Poll、cancel与restart均围绕exact handle
 
@@ -98,8 +115,8 @@ Agent对remote workspace files和native transfer有策略自由；只有job disp
 ## Migration Plan
 
 1. 完成executor HPC workspace provisioning、native Git/LFS/SSH/rsync、workspace handle receipts与per-run artifact staging删除；未资格target不得进入本change。
-2. 为每个 target 部署并验证 runner-owned dispatch ledger；Slurm mode 验证 unique marker、one-occurrence `sbatch` credential、unregistered-submit rejection、receipt、`squeue`/`sacct` authoritative query，direct mode 验证 process handle/terminal receipt query；共同验证 restart 和 terminal retention。缺一项即关闭对应 mode，不 fallback。
-3. 引入versioned workspace-revision execution request、ExternalJobHandle、source manifest与workspace job result schema；复用现有ControlledOperationExecution tables/owner/lease/fence/journal，而非新增FSM。
+2. 为每个 target 部署并验证 runner-owned dispatch ledger与protected submit wrapper；Slurm mode验证reservation-bound one-occurrence `sbatch` credential签发/原子consume/replay rejection、ordinary login/ambient/unregistered submit在scheduler前拒绝、unique marker、receipt与`squeue`/`sacct` authoritative query，direct mode验证process handle/terminal receipt query；共同验证restart和terminal retention。缺一项即关闭对应mode，不fallback。
+3. 引入versioned workspace-revision execution request、ordinary no-approval admission basis、scientific admitted-attempt basis、ExternalJobHandle、source manifest与workspace job result schema；复用现有ControlledOperationExecution tables/owner/lease/fence/journal，而非新增FSM。
 4. 实现login-side exact revision/LFS validation和atomic Gitless tree builder；验证dirty/untracked、missing LFS、symlink escape、submodule policy、cache drift与compute credential absence。
 5. 将RunSpec/runner API切到workspace generation、revision、cwd、command/resources；删除artifact inputs、`HpcStageRef`、`expected_outputs`、output fetch和artifact result fields。旧schema request明确拒绝，不翻译。
 6. 切换 dispatch/poll/cancel/reconcile 到 immutable intent/marker/handle receipts；覆盖 accepted-response loss、Host/runner restart、duplicate worker、stale fence、direct SSH same-dispatch reconciliation、unregistered `sbatch` rejection 与 absolute deadline 测试。

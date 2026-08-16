@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import hashlib
 import json
+from dataclasses import dataclass
 from dataclasses import replace
 from pathlib import Path
 import socket
@@ -14,6 +15,8 @@ import time
 import pytest
 
 from openzyme_core import ArtifactBoundaryService
+from openzyme_core import AgentCapabilityLeaseService
+from openzyme_core import AgentWorkspaceReadinessProof
 from openzyme_core import ApprovalRequestRepository
 from openzyme_core import CoreRepositories
 from openzyme_core import ContinuationDeliveryWorker
@@ -55,6 +58,7 @@ from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignal
 from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import AgentRuntimeSignalStatus
+from openzyme_domain import AgentWorkspaceGenerationReservation
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import ContinuationDeliveryState
@@ -80,6 +84,7 @@ from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionStatus
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
+from openzyme_domain import canonical_capability_digest
 from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import FailureActorKind
 from openzyme_domain import FailureClass
@@ -960,6 +965,58 @@ def _seed_workspace(
         workspace_root=workspace_root,
     ).create_or_get(session_id=session.session_id, agent_member_id=agent.member_id)
     return session, agent, workspace, workspace_root
+
+
+@dataclass(frozen=True, slots=True)
+class _SandboxWorkspaceReadinessProvider:
+    provider_id: str = "test.sandbox-workspace-readiness@1"
+
+    def verify_readiness(
+        self,
+        reservation: AgentWorkspaceGenerationReservation,
+    ) -> AgentWorkspaceReadinessProof:
+        return AgentWorkspaceReadinessProof(
+            provider_id=self.provider_id,
+            reservation_id=reservation.reservation_id,
+            reservation_fingerprint=reservation.immutable_fingerprint,
+            session_id=reservation.session_id,
+            agent_member_id=reservation.agent_member_id,
+            agent_id=reservation.agent_id,
+            workspace_generation=reservation.workspace_generation,
+            readiness_ref=f"test-ready:{reservation.reservation_id}",
+            readiness_digest=canonical_capability_digest(
+                {
+                    "provider_id": self.provider_id,
+                    "reservation_id": reservation.reservation_id,
+                }
+            ),
+            observed_at="2026-07-31T02:11:42+00:00",
+        )
+
+
+def _provision_ready_capability(
+    repositories: CoreRepositories,
+    *,
+    session_id: str,
+    agent_id: str,
+) -> tuple[str, int]:
+    provider = _SandboxWorkspaceReadinessProvider()
+    service = AgentCapabilityLeaseService(
+        repositories,
+        readiness_providers={provider.provider_id: provider},
+    )
+    issuance = service.reserve_and_issue(
+        session_id=session_id,
+        agent_id=agent_id,
+        idempotency_key=f"sandbox-test:{agent_id}:generation-1",
+        actor_ref="test:sandbox-capability-issue",
+    )
+    active = service.activate_with_provider(
+        lease_id=issuance.lease.lease_id,
+        provider_id=provider.provider_id,
+        actor_ref="test:sandbox-capability-activate",
+    ).lease
+    return active.lease_id, active.workspace_generation
 
 
 class _CallbackSandboxHostGateway:
@@ -2381,6 +2438,11 @@ def test_engine_completed_wake_projects_exact_local_sandbox_cause(
             "attempt_id": None,
         },
     )
+    capability_lease_id, workspace_generation = _provision_ready_capability(
+        repositories,
+        session_id=session.session_id,
+        agent_id=agent.agent_id,
+    )
     signal = AgentRuntimeSignal(
         signal_id="signal_local_wake",
         session_id=session.session_id,
@@ -2394,6 +2456,8 @@ def test_engine_completed_wake_projects_exact_local_sandbox_cause(
         created_at=now,
         claimed_at=now,
         claimed_by="runtime:test",
+        capability_lease_id=capability_lease_id,
+        workspace_generation=workspace_generation,
     )
     repositories.runtime_signals.save(signal)
 
@@ -2839,6 +2903,11 @@ def test_sandbox_exec_durable_route_admits_once_and_never_calls_legacy_adapter(
         repositories,
         tmp_path,
     )
+    _provision_ready_capability(
+        repositories,
+        session_id=session.session_id,
+        agent_id=agent.agent_id,
+    )
     route_policy_id = "bio.ncbi_fetch_proteins.provider:v1"
     fixture_adapter = _DurableProviderFixtureAdapter()
     legacy_adapter_calls: list[str] = []
@@ -3024,6 +3093,11 @@ def test_file_backed_attached_continuation_fetch_uses_process_authority_after_tu
     session, agent, workspace, workspace_root = _seed_workspace(
         repositories,
         tmp_path,
+    )
+    _provision_ready_capability(
+        repositories,
+        session_id=session.session_id,
+        agent_id=agent.agent_id,
     )
     task = Task.create(
         task_id="task_attached_hpc_fetch",
@@ -6083,6 +6157,7 @@ def test_sandbox_exec_podman_backend_uses_isolation_policy(
     )
     command = captured["command"]
     assert "--network=none" in command
+    assert "openzyme-agent-network" not in command
     assert "--read-only" in command
     assert "--memory=2g" in command
     assert "--cpus=2" in command

@@ -1,0 +1,96 @@
+{
+  "schema_id": "agent_git_workspace_source_only_dependency_gate@1",
+  "change_id": "provision-independent-agent-git-workspaces",
+  "gate_scope": "ordered_source_implementation_only",
+  "observed_head": "8ae3d73b3054f2058ff33ea183f62c811b9272a3",
+  "implementation_dependency_snapshot": {
+    "schema_id": "agent_capability_lease_implementation_snapshot@1",
+    "path": "openspec/changes/provision-independent-agent-git-workspaces/operator/implementation-dependency-snapshot.json",
+    "file_sha256": "sha256:94fd638e30200a6073bb3a4737ca4d1ee3b37bda1aaac573e95be24ce2d28103",
+    "acceptance_proven": false,
+    "final_source_revision_bound": false,
+    "production_effect_authorized": false,
+    "live_authorized": false
+  },
+  "immutable_prerequisite_receipts": {
+    "aox_artifact_cutover_supersession_acceptance@1": {
+      "receipt_digest": "sha256:a54cdffbadecda3639129edbcd99f889eee7aa2462df296f6a0780ccf924f4ce",
+      "file_sha256": "sha256:59cfa310b4040514cc89d8fe19a8f7813908737cf5e403b5759d488a5afdb85a",
+      "active_legacy_change_present": false,
+      "legacy_c001_resume": "rejected_superseded",
+      "legacy_tasks_8_3_through_8_8": "rejected_superseded",
+      "legacy_authority_reuse": "rejected_superseded",
+      "live_authorized": false,
+      "external_effects_authorized": false
+    },
+    "project_repository_binding_acceptance@1": {
+      "receipt_digest": "sha256:8ac2a8db6b0bb813df6f32d639456473da784f9444f8e0fe4c2014f19c368010",
+      "file_sha256": "sha256:f3b548cada970890c5a43a4a764207fe1672a0ae94701de06fbff1db693f1b4f",
+      "agent_clone_provisioning_implemented": false,
+      "workspace_publication_implemented": false,
+      "production_capability_lease_issuance_proven": false,
+      "production_disaster_recovery_proven": false
+    }
+  },
+  "repository_dependency_interfaces": {
+    "durable_root_preflight": {
+      "schema_id": "project_repository_durable_root_preflight@1",
+      "status": "passed_for_local_development",
+      "receipt_digest": "sha256:353128aa547c78b5284ef74d8db32216b0bc745e12fbb54789294083824e56f8",
+      "file_sha256": "sha256:a7768fee91af7c8642c2a6b27de4d1e1dc328b7bb8407f49cda68b509e58050b",
+      "production_disaster_recovery_proven": false,
+      "deployment_reachability_proven_by_this_gate": false
+    },
+    "repository_policy": {
+      "schema_id": "repository_policy@1",
+      "file_sha256": "sha256:93832b0cc9f4928a77f4a148becf8dc19793e3b01fa5a95ab05de16defbc4351",
+      "git_protocol": "smart_http_v2_over_https",
+      "lfs_protocol": "batch_v2_basic",
+      "agent_private_ref_allowed_updates": [
+        "create",
+        "fast_forward"
+      ],
+      "agent_private_ref_deletion": false,
+      "storage_fallbacks": []
+    },
+    "source_interfaces": {
+      "packages/openzyme-domain/src/openzyme_domain/repository_bindings.py": "sha256:bacfac08c08232bdbc1e90b6cae16220148b37d39babce5a4e8aae0ed65f492e",
+      "packages/openzyme-core/src/openzyme_core/repository_binding_service.py": "sha256:08c50f825bfb718dfa7784fdfec076021d10f788da1b8c822a19a1a833ca7138",
+      "packages/openzyme-core/src/openzyme_core/repository_storage.py": "sha256:c1e66c12b3ad826b5de1c20adbe79f184ae40e5a96d558af8dd18d94ddc00744",
+      "packages/openzyme-core/src/openzyme_core/repository_credentials.py": "sha256:2f4d0edb381fd9be57a1d030932097c285969b934a703acdc49354ffea9b73b9",
+      "packages/openzyme-core/src/openzyme_core/repository_retention.py": "sha256:732e09648caac04bf8b19631dea2d2e7dbbdd5e4aab61613357e60fa9d3c9860"
+    }
+  },
+  "capability_dependency_interfaces": {
+    "generation_reservation_observed": true,
+    "pending_workspace_lease_intent_observed": true,
+    "active_lease_validator_observed": true,
+    "provisioning_required_projection_observed": true,
+    "legacy_sandbox_authority_accepted": false,
+    "runtime_lease_as_capability_authority_accepted": false,
+    "role_or_tool_exposure_as_authority_accepted": false
+  },
+  "permitted_actions": [
+    "continue_c3_domain_source_implementation",
+    "continue_c3_migration_source_implementation",
+    "continue_c3_service_and_projection_source_implementation",
+    "add_deferred_validation_tests_without_running_them",
+    "update_architecture_and_openspec_documents"
+  ],
+  "forbidden_actions": [
+    "invoke_workspace_provisioner",
+    "create_workspace_volume_or_clone",
+    "activate_capability_lease",
+    "clear_provisioning_required",
+    "issue_process_or_repository_credential",
+    "perform_network_transfer",
+    "run_live_or_external_effect",
+    "claim_predecessor_or_current_acceptance",
+    "satisfy_production_or_cutover_gate",
+    "select_legacy_or_fallback_authority"
+  ],
+  "external_effects": 0,
+  "acceptance_proven": false,
+  "production_effect_authorized": false,
+  "live_authorized": false
+}

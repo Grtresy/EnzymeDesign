@@ -1,0 +1,22 @@
+{
+  "schema_id": "current_artifact_surface_inventory@1",
+  "source_file_count": 56,
+  "owners": {
+    "candidate_model_catalog": "file_workspace_candidate_tool_descriptors",
+    "ordinary_file_io": "agent independent clone plus native OS tools",
+    "publication_and_handoff": "PublishedRevision plus RevisionPathRef",
+    "current_hpc_execution": "workspace revision execution plus external job ledger",
+    "current_scientific_outputs": "ScientificDeliverableRef plus exact role bundle",
+    "canonical_callbacks": "FileWorkspaceSandboxHostGateway",
+    "legacy_database_and_bytes": "future historical migration and artifact removal changes"
+  },
+  "residual_groups": [
+    "legacy runner RunSpec expected_outputs and staging",
+    "legacy AOX artifact evidence and finalizer",
+    "legacy sandbox file and artifact SDK",
+    "legacy artifact projection and repository",
+    "legacy engine materializer publisher and output fetch",
+    "historical evidence readers"
+  ],
+  "admission": "blocked_until_all_residual_groups_have_verified_successor_owner"
+}

@@ -12,7 +12,11 @@ from typing import TYPE_CHECKING
 from typing import BinaryIO
 
 from openzyme_domain import GitObjectFormat
+from openzyme_domain import PublicationManifestEntry
+from openzyme_domain import PublicationManifestObjectKind
 from openzyme_domain import ProjectRepositoryBinding
+from openzyme_domain import WorkspacePublicationManifest
+from openzyme_domain import require_repository_path
 from openzyme_runtime import RepositoryServiceSettings
 
 if TYPE_CHECKING:
@@ -516,6 +520,244 @@ class DurableRepositoryRootManager:
             refs.append((ref_bytes.decode("utf-8"), oid_bytes.decode("ascii")))
         return tuple(refs)
 
+    def read_exact_ref(
+        self,
+        binding: ProjectRepositoryBinding,
+        *,
+        ref_name: str,
+    ) -> str | None:
+        if not ref_name.startswith("refs/") or "\x00" in ref_name:
+            raise RepositoryStorageError("exact ref name is invalid")
+        path = self.verify_bare_repository(binding)
+        result = self._run_git(
+            "--git-dir",
+            str(path),
+            "show-ref",
+            "--verify",
+            "--hash",
+            ref_name,
+            check=False,
+        )
+        if result.returncode == 1:
+            return None
+        if result.returncode != 0:
+            raise RepositoryStorageError(
+                result.stderr.decode("utf-8", errors="replace").strip()
+                or "git show-ref failed"
+            )
+        object_id = result.stdout.decode("ascii").strip()
+        if len(object_id) != binding.object_format.commit_hex_length:
+            raise RepositoryStorageError("exact ref returned an invalid object id")
+        return object_id
+
+    def read_commit_tree(
+        self,
+        binding: ProjectRepositoryBinding,
+        *,
+        commit: str,
+    ) -> str:
+        self.require_commit_object(binding, commit)
+        path = self.verify_bare_repository(binding)
+        tree = (
+            self._run_git(
+                "--git-dir",
+                str(path),
+                "show",
+                "-s",
+                "--format=%T",
+                commit,
+            )
+            .stdout.decode("ascii")
+            .strip()
+        )
+        if len(tree) != binding.object_format.commit_hex_length:
+            raise RepositoryStorageError("commit tree returned an invalid object id")
+        return tree
+
+    def read_commit_parents(
+        self,
+        binding: ProjectRepositoryBinding,
+        *,
+        commit: str,
+    ) -> tuple[str, ...]:
+        self.require_commit_object(binding, commit)
+        path = self.verify_bare_repository(binding)
+        output = self._run_git(
+            "--git-dir",
+            str(path),
+            "show",
+            "-s",
+            "--format=%P",
+            commit,
+        ).stdout.decode("ascii").strip()
+        parents = () if not output else tuple(output.split(" "))
+        if any(
+            len(parent) != binding.object_format.commit_hex_length
+            for parent in parents
+        ):
+            raise RepositoryStorageError("commit parent list is malformed")
+        return parents
+
+    def read_whole_tree_manifest(
+        self,
+        binding: ProjectRepositoryBinding,
+        *,
+        commit: str,
+    ) -> WorkspacePublicationManifest:
+        self.require_commit_object(binding, commit)
+        path = self.verify_bare_repository(binding)
+        output = self._run_git(
+            "--git-dir",
+            str(path),
+            "ls-tree",
+            "-r",
+            "-z",
+            "-l",
+            "--full-tree",
+            commit,
+        ).stdout
+        entries: list[PublicationManifestEntry] = []
+        for raw_entry in output.split(b"\x00"):
+            if not raw_entry:
+                continue
+            metadata, separator, raw_path = raw_entry.partition(b"\t")
+            fields = metadata.split()
+            if separator != b"\t" or len(fields) != 4:
+                raise RepositoryStorageError("git ls-tree returned malformed output")
+            mode, object_kind, object_id, raw_size = fields
+            try:
+                repository_path = raw_path.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise RepositoryStorageError(
+                    "publication manifest requires UTF-8 repository paths"
+                ) from exc
+            kind = PublicationManifestObjectKind(object_kind.decode("ascii"))
+            size_bytes = None if raw_size == b"-" else int(raw_size)
+            entries.append(
+                PublicationManifestEntry(
+                    path=repository_path,
+                    mode=mode.decode("ascii"),
+                    object_kind=kind,
+                    object_id=object_id.decode("ascii"),
+                    size_bytes=size_bytes,
+                )
+            )
+        return WorkspacePublicationManifest.create(tuple(entries))
+
+    def read_blob(
+        self,
+        binding: ProjectRepositoryBinding,
+        *,
+        object_id: str,
+        max_bytes: int,
+    ) -> bytes:
+        if max_bytes <= 0:
+            raise ValueError("max_bytes must be positive")
+        path = self.verify_bare_repository(binding)
+        object_type = self._run_git(
+            "--git-dir",
+            str(path),
+            "cat-file",
+            "-t",
+            object_id,
+        ).stdout.strip()
+        if object_type != b"blob":
+            raise RepositoryStorageError("requested Git object is not a blob")
+        size_bytes = int(
+            self._run_git(
+                "--git-dir",
+                str(path),
+                "cat-file",
+                "-s",
+                object_id,
+            ).stdout.strip()
+        )
+        if size_bytes > max_bytes:
+            raise RepositoryStorageError(
+                "Git blob exceeds the bounded publication reader limit"
+            )
+        value = self._run_git(
+            "--git-dir",
+            str(path),
+            "cat-file",
+            "blob",
+            object_id,
+        ).stdout
+        if len(value) != size_bytes:
+            raise RepositoryStorageError("Git blob read returned an incomplete value")
+        return value
+
+    def read_directory_tree_object(
+        self,
+        *,
+        binding: ProjectRepositoryBinding,
+        commit: str,
+        path: str,
+    ) -> str:
+        require_repository_path(path)
+        self.require_commit_object(binding, commit)
+        repository = self.verify_bare_repository(binding)
+        result = self._run_git(
+            "--git-dir",
+            str(repository),
+            "rev-parse",
+            "--verify",
+            f"{commit}:{path}^{{tree}}",
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RepositoryStorageError(
+                "publication directory path is absent or is not a Git tree"
+            )
+        object_id = result.stdout.decode("ascii").strip()
+        if len(object_id) != binding.object_format.commit_hex_length:
+            raise RepositoryStorageError(
+                "publication directory tree object identity is malformed"
+            )
+        return object_id
+
+    def create_publication_ref_if_absent(
+        self,
+        binding: ProjectRepositoryBinding,
+        *,
+        publication_id: str,
+        ref_name: str,
+        commit: str,
+    ) -> str:
+        expected_ref = (
+            f"{binding.ref_namespace_policy.publication_prefix}/{publication_id}"
+        )
+        if ref_name != expected_ref:
+            raise RepositoryStorageError(
+                "publication ref is outside the exact Host-owned namespace"
+            )
+        self.require_commit_object(binding, commit)
+        path = self.verify_bare_repository(binding)
+        commands = b"".join(
+            (
+                b"start\x00",
+                b"option no-deref\x00",
+                f"create {ref_name}".encode("utf-8") + b"\x00",
+                commit.encode("ascii") + b"\x00",
+                b"prepare\x00",
+                b"commit\x00",
+            )
+        )
+        self._run_git(
+            "--git-dir",
+            str(path),
+            "update-ref",
+            "--stdin",
+            "-z",
+            input_bytes=commands,
+        )
+        observed = self.read_exact_ref(binding, ref_name=ref_name)
+        if observed != commit:
+            raise RepositoryStorageError(
+                "created publication ref does not match the intended commit"
+            )
+        return observed
+
     def require_commit_object(
         self,
         binding: ProjectRepositoryBinding,
@@ -777,6 +1019,17 @@ class DurableLfsObjectStore:
         if digest.hexdigest() != oid:
             raise LfsObjectMismatchError("Git LFS object digest does not match")
         return path
+
+    def delete_exact(self, repository_id: str, oid: str, *, size: int) -> None:
+        path = self.verify(repository_id, oid, size=size)
+        if path.is_symlink():
+            raise RepositoryRootRejectedError("Git LFS object must not be a symlink")
+        path.unlink()
+        directory_fd = os.open(path.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
 
 
 __all__ = [

@@ -1,5 +1,9 @@
 ## ADDED Requirements
 
+连续源码实现阶段由 `file_workspace_source_only_deletion_gate@1` 约束；下列
+requirement 只形成 candidate source，不推进 public contract epoch，也不授权删除
+historical rows/bytes 或执行 remote/provider/HPC effect。
+
 ### Requirement: The agent clone is the ordinary file workspace
 Every sandbox process MUST use the exact independent clone identified by `session + agent_member + workspace_generation` as its ordinary persistent working directory. The agent MUST be able to create, read, modify, remove, and organize files and directories through the operating system and native shell. The capsule MUST NOT mount a Host checkout, Host home or SSH directory, shared `.git`, linked worktree, or ambient cwd as a workspace substitute.
 

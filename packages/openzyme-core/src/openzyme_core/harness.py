@@ -10,15 +10,16 @@ from enum import StrEnum
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any
 from typing import Callable
 from typing import Iterator
+from typing import Mapping
 from typing import Protocol
 from uuid import uuid4
 
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
-from openzyme_domain import ArtifactKind
 from openzyme_domain import EngineInvocation
 from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import FailureActorKind
@@ -34,7 +35,6 @@ from openzyme_domain import MemoryScopeKind
 from openzyme_domain import MutationWriterKind
 from openzyme_domain import RetryEligibility
 from openzyme_domain import Session
-from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionRuntimeLease
 from openzyme_domain import SessionStatus
 from openzyme_domain import Task
@@ -51,6 +51,8 @@ from openzyme_runtime import sanitize_tool_result_diagnostics
 from openzyme_runtime import sanitize_public_diagnostic_text
 from openzyme_runtime import record_failure_observation
 
+from .agent_capability_service import AgentCapabilityLeaseService
+from .agent_capability_service import AgentWorkspaceReadinessProvider
 from .engines import EngineRegistry
 from .mutation_authority import current_mutation_write_authority
 from .mutation_quiescence import MutationScopeService
@@ -576,6 +578,15 @@ class SessionRuntimeContext:
     reliability_shadow_observer: Any | None = None
     reliability_settings: Any | None = None
     durable_route_adapter_policy_ids: dict[str, str] = field(default_factory=dict)
+    agent_workspace_readiness_providers: Mapping[
+        str, AgentWorkspaceReadinessProvider
+    ] = field(default_factory=dict)
+    delegation_readiness_provider_id: str | None = None
+    agent_capsule_process_runner: Any | None = None
+    agent_process_credential_router: Any | None = None
+    executor_hpc_workspace_service: Any | None = None
+    workspace_checkpoint_git_reader: Any | None = None
+    agent_git_workspace_recovery_service: Any | None = None
     assistant_response_recipient: str = "user"
     assistant_response_recipient_kind: InboxParticipantKind = InboxParticipantKind.USER
     persist_conversation: bool = True
@@ -612,6 +623,20 @@ class SessionRuntimeContext:
             document_id=document_id,
             created_at=created_at,
         )
+
+    def write_workspace_json(
+        self,
+        *,
+        repository_path: str,
+        payload: dict[str, Any],
+    ) -> dict[str, object]:
+        from .workspace_file_handoffs import write_json_to_current_agent_workspace
+
+        return write_json_to_current_agent_workspace(
+            self,
+            repository_path=repository_path,
+            payload=payload,
+        ).to_dict()
 
     @contextmanager
     def mutation_writer_scope(
@@ -661,21 +686,7 @@ class SessionRuntimeContext:
         tool_name: str,
         call_id: str,
     ) -> Any:
-        artifact_publishing_tools = {
-            "interpro.query",
-            "pubmed.search",
-            "rcsb_pdb.download_structure",
-            "rcsb_pdb.search",
-            "semantic_scholar.search",
-            "uniprot.download_fasta",
-            "uniprot.lookup",
-            "web.fetch",
-            "web.search",
-        }
-        if (
-            tool_name.startswith(("artifact.", "artifacts.", "deep_research."))
-            or tool_name in artifact_publishing_tools
-        ):
+        if tool_name.startswith(("artifact.", "artifacts.")):
             owner_kind = MutationWriterKind.ARTIFACT_PUBLISHER
         elif tool_name == "report.publish" or tool_name.startswith("report_draft."):
             owner_kind = MutationWriterKind.REPORT_PUBLISHER
@@ -1419,7 +1430,7 @@ def ensure_prompt_budget_before_model_call(
     )
 
 
-def _tool_result_artifact_payload(
+def _persistent_tool_result_payload(
     result: ToolResult, *, reason: str, token_estimate: int
 ) -> dict[str, Any]:
     return {
@@ -1434,115 +1445,97 @@ def _tool_result_artifact_payload(
     }
 
 
-def persist_tool_result_observation_artifact(
+def persist_tool_result_observation_file(
     context: SessionRuntimeContext,
     result: ToolResult,
     *,
     reason: str,
     token_estimate: int,
 ) -> ToolResult:
-    call_digest = hashlib.sha256(result.call_id.encode("utf-8")).hexdigest()[:16]
-    with context.mutation_writer_scope(
-        owner_kind=MutationWriterKind.ARTIFACT_PUBLISHER,
-        owner_ref=f"tool-result-artifact:{call_digest}",
-    ):
-        return _persist_tool_result_observation_artifact_scoped(
+    return _persist_tool_result_observation_file_scoped(
+        context,
+        result,
+        reason=reason,
+        token_estimate=token_estimate,
+    )
+
+
+def _persist_tool_result_observation_file_scoped(
+    context: SessionRuntimeContext,
+    result: ToolResult,
+    *,
+    reason: str,
+    token_estimate: int,
+) -> ToolResult:
+    from .workspace_file_handoffs import WorkspaceFileHandoffError
+    from .workspace_file_handoffs import write_json_to_current_agent_workspace
+
+    safe_call_id = re.sub(r"[^A-Za-z0-9_.-]", "_", result.call_id)[:96]
+    repository_path = f"work-products/tool-results/{safe_call_id}.json"
+    try:
+        written = write_json_to_current_agent_workspace(
             context,
-            result,
-            reason=reason,
-            token_estimate=token_estimate,
-        )
-
-
-def _persist_tool_result_observation_artifact_scoped(
-    context: SessionRuntimeContext,
-    result: ToolResult,
-    *,
-    reason: str,
-    token_estimate: int,
-) -> ToolResult:
-    created_at = utc_now_iso()
-    document_id = _new_id("toolresult")
-    artifact_id = _new_id("art")
-    context.repositories.engine_documents.save(
-        EngineDocumentRecord(
-            document_id=document_id,
-            session_id=context.snapshot.session.session_id,
-            invocation_id=None,
-            document_kind="tool_result_full",
-            payload=_tool_result_artifact_payload(
+            repository_path=repository_path,
+            payload=_persistent_tool_result_payload(
                 result,
                 reason=reason,
                 token_estimate=token_estimate,
             ),
-            created_at=created_at,
-            updated_at=created_at,
         )
-    )
-    artifact = SessionArtifactRecord(
-        artifact_id=artifact_id,
-        session_id=context.snapshot.session.session_id,
-        task_id=result.task_id,
-        lane_id=result.lane_id,
-        invocation_id=None,
-        run_id=None,
-        kind=ArtifactKind.RESULT,
-        storage_uri=f"engine-document://{document_id}",
-        relative_path=f"tool_results/{result.call_id}.json",
-        title=f"Full tool result for {result.tool_name}",
-        description="Full tool result persisted because it exceeded the LLM context budget.",
-        metadata={
-            "document_kind": "tool_result_full",
-            "output_ref": document_id,
-            "tool_name": result.tool_name,
-            "call_id": result.call_id,
-            "original_tool_ok": result.ok,
-            "original_status": result.status or ("ok" if result.ok else "failed"),
-            "reason": reason,
-            "token_estimate": token_estimate,
-        },
-        created_at=created_at,
-    )
-    context.repositories.artifacts.save(artifact)
+    except WorkspaceFileHandoffError as exc:
+        return ToolResult(
+            call_id=result.call_id,
+            tool_name=result.tool_name,
+            ok=False,
+            content=json.dumps(
+                {
+                    "error_code": exc.error_code,
+                    "message": str(exc),
+                    "legacy_artifact_fallback_performed": False,
+                },
+                sort_keys=True,
+            ),
+            task_id=result.task_id,
+            lane_id=result.lane_id,
+            status=exc.error_code,
+            summary=str(exc),
+            error_code=exc.error_code,
+        )
     context.emit(
-        "tool_result.artifactized",
+        "tool_result.workspace_file_written",
         {
             "call_id": result.call_id,
             "tool_name": result.tool_name,
-            "artifact_id": artifact.artifact_id,
-            "document_id": document_id,
-            "reason": reason,
-            "token_estimate": token_estimate,
-            "original_tool_ok": result.ok,
+            **written.to_dict(),
         },
     )
     read_hint = (
-        f'Use artifact.get with artifact_id="{artifact.artifact_id}" for summary, '
-        'then path="output_payload.tool_result", offset=0, limit=30 to page the full result.'
+        f"Inspect {written.repository_path!r} in your private Git clone. "
+        "Commit and call workspace.publish before any cross-agent handoff, "
+        "report publication, or task evidence use."
     )
     observation = {
-        "ok": False,
-        "status": "tool_result_context_over_budget",
-        "error_code": "tool_result_context_over_budget",
+        "ok": result.ok,
+        "status": "tool_result_persisted_to_workspace",
+        "error_code": None if result.ok else result.error_code,
         "original_tool_ok": result.ok,
         "original_status": result.status or ("ok" if result.ok else "failed"),
-        "artifact_id": artifact.artifact_id,
+        "workspace_file": written.to_dict(),
         "read_hint": read_hint,
     }
     return ToolResult(
         call_id=result.call_id,
         tool_name=result.tool_name,
-        ok=False,
+        ok=result.ok,
         content=json.dumps(observation, sort_keys=True),
         task_id=result.task_id,
         lane_id=result.lane_id,
-        status="tool_result_context_over_budget",
-        summary="Full tool result was persisted as an artifact because it exceeded the LLM context budget.",
-        error_code="tool_result_context_over_budget",
+        status="tool_result_persisted_to_workspace",
+        summary="Full tool result was written to the current private Git workspace.",
+        error_code=None if result.ok else result.error_code,
         hint=read_hint,
         details={
-            "artifact_id": artifact.artifact_id,
-            "document_id": document_id,
+            "workspace_file": written.to_dict(),
             "original_tool_ok": result.ok,
             "original_status": result.status or ("ok" if result.ok else "failed"),
             "reason": reason,
@@ -1589,7 +1582,7 @@ def budget_tool_results_for_prompt(
             PromptBudgetAction.EMERGENCY,
         }:
             budgeted.append(
-                persist_tool_result_observation_artifact(
+                persist_tool_result_observation_file(
                     context,
                     result,
                     reason=(
@@ -2027,6 +2020,14 @@ def run_agent_harness_loop(
     reliability_shadow_observer: Any | None = None,
     reliability_settings: Any | None = None,
     durable_route_adapter_policy_ids: dict[str, str] | None = None,
+    agent_workspace_readiness_providers: Mapping[str, AgentWorkspaceReadinessProvider]
+    | None = None,
+    delegation_readiness_provider_id: str | None = None,
+    agent_capsule_process_runner: Any | None = None,
+    agent_process_credential_router: Any | None = None,
+    executor_hpc_workspace_service: Any | None = None,
+    workspace_checkpoint_git_reader: Any | None = None,
+    agent_git_workspace_recovery_service: Any | None = None,
     mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None,
     sandbox_host_binding_factory: (
         Callable[
@@ -2063,6 +2064,17 @@ def run_agent_harness_loop(
         reliability_shadow_observer=reliability_shadow_observer,
         reliability_settings=reliability_settings,
         durable_route_adapter_policy_ids=dict(durable_route_adapter_policy_ids or {}),
+        agent_workspace_readiness_providers=dict(
+            agent_workspace_readiness_providers or {}
+        ),
+        delegation_readiness_provider_id=delegation_readiness_provider_id,
+        agent_capsule_process_runner=agent_capsule_process_runner,
+        agent_process_credential_router=agent_process_credential_router,
+        executor_hpc_workspace_service=executor_hpc_workspace_service,
+        workspace_checkpoint_git_reader=workspace_checkpoint_git_reader,
+        agent_git_workspace_recovery_service=(
+            agent_git_workspace_recovery_service
+        ),
         assistant_response_recipient=harness_input.sender,
         assistant_response_recipient_kind=harness_input.sender_kind,
         persist_conversation=harness_input.persist_conversation,
@@ -2252,8 +2264,18 @@ def run_agent_harness_loop(
                 status=step.session_status,
                 created_at=session.created_at,
                 updated_at=utc_now_iso(),
+                repository_binding_status=session.repository_binding_status,
             )
-            repositories.sessions.save(updated)
+            if updated.status.is_terminal:
+                AgentCapabilityLeaseService(repositories).transition_session_terminal(
+                    updated,
+                    actor_ref=(
+                        "harness:"
+                        f"{harness_input.agent_id or harness_input.sender}:session-terminal"
+                    ),
+                )
+            else:
+                repositories.sessions.save(updated)
             context.emit(
                 "session.updated",
                 {"session_id": updated.session_id, "status": updated.status.value},

@@ -4,6 +4,8 @@ research dossier、检索 source snapshot、超大 tool result、report body 与
 
 本 change 位于 file workspace、Git LFS 与 workspace publication 之后。producer 在自己的 clone 中自由组织内容、commit 并显式 publish；recipient 使用原生 Git/Git LFS fetch exact immutable publication ref，再自行选择 merge、rebase、cherry-pick、copy 或只读检查。Host 不代理文件 bytes，也不自动更新 recipient clone。
 
+在本次明确排序且统一后验验证的连续迁移中，源码实现先消费 `revision_path_handoff_source_only_dependency_gate@1`。该 gate 绑定 C1 正式 receipt、C2--C5 当前 source-only gate 与关键 domain/service/migration identity，并列出全部延后验收；它固定 `acceptance_proven=false`、`final_source_revision_bound=false`、`production_effect_authorized=false`、`live_authorized=false`，唯一作用是允许继续修改源码、编写延后执行的测试和同步文档。它不得作为 capability lease、credential、publication、handoff、report、task evidence、runtime/live 或外部 effect 的 authority，也不得被提升为最终 prerequisite 或 acceptance receipt。
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -80,15 +82,16 @@ workspace、task、protocol 和 report projection 可以暴露 publication id、
 
 ## Migration Plan
 
-1. 先完成 repository binding、capability lease、独立 workspaces、Git LFS 与 explicit `workspace.publish`；这些前置 change 已向 capsule 提供原生文件/Git工具。所有 handoff producer/consumer 必须能 fetch exact publication；统一删除 legacy sandbox/artifact surface 必须在本 change 停止相关 writer 后进行。
-2. 引入 versioned `RevisionPathRef@1` 与 `TaskEvidenceRef@1` schema、repository validation 和 bounded public projection；对 path traversal、identity drift、unauthorized publication 和 LFS mismatch fail closed。
-3. 将 research source snapshot、notes、dossier 与 persistent large tool result writers迁入 workspace files；停止创建对应 generic artifact alias，EngineDocument 仅保留有界索引/ref metadata。
-4. 将 protocol payload 与 recipient consumers切换为 bounded revision/path refs和原生 Git fetch。切换后删除 artifact/content bytes payload reader，不保留缺字段 fallback。
-5. 将 report draft/final body迁入 reporter workspace；要求先 `workspace.publish`，再由 `report.publish` 绑定 exact published file。验证 report 修订与 stale/dirty path rejection。
-6. 将 `task.finish` evidence writer/validator切换为 closed typed union；任何 current `artifact:<id>`、bare path/branch/URL caller使 cutover gate失败。
-7. 更新 projection/event/UI consumers所需的 typed identity，但 public artifact tree 的最终删除由 `cut-over-workspace-public-interfaces` 完成。current writer在本 change 后不得继续制造新 artifact alias。
-8. 旧内容保持冻结只读，等待历史 Git/LFS migration；不得 dual-write、backfill成 current publication或让 legacy bytes满足新 handoff。
-9. 回滚仅在新 typed refs 尚未成为 current writer前允许整套版本回退。切换后采用前向修复并保留已发布 Git/LFS bytes；runtime不得在新 ref解析失败时读取 legacy artifact或EngineDocument副本。
+1. 先记录非验收的 source-only dependency gate，以当前 C2--C5 源码接口继续本 change；最终统一验收必须重新绑定正式前置 receipts、最终 source revision 和本 change 全部验证结果。该 gate 不开放 production writer、publication、protocol delivery、task transition、Git/LFS I/O、live 或外部 effect。
+2. 完成 repository binding、capability lease、独立 workspaces、Git LFS 与 explicit `workspace.publish`；这些前置 change 向 capsule 提供原生文件/Git工具。所有 handoff producer/consumer 必须能 fetch exact publication；统一删除 legacy sandbox/artifact surface 必须在本 change 停止相关 writer 后进行。
+3. 引入 versioned `RevisionPathRef@1` 与 `TaskEvidenceRef@1` schema、repository validation 和 bounded public projection；对 path traversal、identity drift、unauthorized publication 和 LFS mismatch fail closed。
+4. 将 research source snapshot、notes、dossier 与 persistent large tool result writers迁入 workspace files；停止创建对应 generic artifact alias，EngineDocument 仅保留有界索引/ref metadata。
+5. 将 protocol payload 与 recipient consumers切换为 bounded revision/path refs和原生 Git fetch。切换后删除 artifact/content bytes payload reader，不保留缺字段 fallback。
+6. 将 report draft/final body迁入 reporter workspace；要求先 `workspace.publish`，再由 `report.publish` 绑定 exact published file。验证 report 修订与 stale/dirty path rejection。
+7. 将 `task.finish` evidence writer/validator切换为 closed typed union；任何 current `artifact:<id>`、bare path/branch/URL caller使 cutover gate失败。
+8. 更新 projection/event/UI consumers所需的 typed identity，但 public artifact tree 的最终删除由 `cut-over-workspace-public-interfaces` 完成。current writer在本 change 后不得继续制造新 artifact alias。
+9. 旧内容保持冻结只读，等待历史 Git/LFS migration；不得 dual-write、backfill成 current publication或让 legacy bytes满足新 handoff。
+10. 回滚仅在新 typed refs 尚未成为 current writer前允许整套版本回退。切换后采用前向修复并保留已发布 Git/LFS bytes；runtime不得在新 ref解析失败时读取 legacy artifact或EngineDocument副本。
 
 ## Open Questions
 

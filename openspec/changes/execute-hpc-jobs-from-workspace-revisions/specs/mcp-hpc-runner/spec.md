@@ -14,7 +14,7 @@ The system MUST expose an API callable from any orchestration layer and MUST acc
 ### Requirement: Runner exposes two HPC execution modes
 The system SHALL support requests choosing `ssh`, `sbatch`, or `auto` across two frozen admission modes: direct `ssh` for bounded exploratory execution and Slurm `sbatch` for asynchronous jobs. `Auto` selection MUST be resolved and persisted before dispatch and MUST NOT change during recovery. Reuse of authenticated runner transport remains internal and MUST NOT create an interactive persistent shell.
 
-Every accepted `sbatch` run MUST use a qualified unique dispatch marker, runner-owned remote ledger, immutable acceptance receipt, and persisted exact external-job handle. Every accepted direct SSH run MUST likewise use a compare-and-create remote ledger entry and queryable process/terminal receipt under its frozen dispatch id. A run whose handle response is missing after possible acceptance MUST become reconciliation-required, query only that same dispatch identity, and MUST NOT be automatically replayed or changed to another mode, target, or local execution.
+Every accepted `sbatch` run MUST use a qualified unique dispatch marker, runner-owned remote ledger, one reserved dispatch occurrence, one runner-only one-occurrence submit credential, immutable acceptance receipt, and persisted exact external-job handle. After the current execution owner/fence reserves the occurrence, the credential MUST bind execution, dispatch id, target, reservation nonce, marker, payload digest, protected submit-wrapper audience, and expiry. The target wrapper MUST atomically validate and consume it immediately before native `sbatch`; replay, mismatch, ordinary executor login/file credentials, ambient runner credentials, and unregistered dispatch MUST fail before scheduler acceptance. The runner and Host MUST NOT scan and adopt jobs lacking the matching canonical execution/ledger/credential/marker chain. Every accepted direct SSH run MUST likewise use a compare-and-create remote ledger entry and queryable process/terminal receipt under its frozen dispatch id. A run whose handle response is missing after possible acceptance MUST become reconciliation-required, query only that same dispatch identity, and MUST NOT be automatically replayed, issued a replacement occurrence credential, or changed to another mode, target, or local execution.
 
 #### Scenario: Caller forces ssh mode
 - **WHEN** a revision-bound run is admitted with execution mode `ssh`
@@ -22,15 +22,23 @@ Every accepted `sbatch` run MUST use a qualified unique dispatch marker, runner-
 
 #### Scenario: Caller forces sbatch mode
 - **WHEN** a revision-bound run is admitted with execution mode `sbatch`
-- **THEN** the system submits at most once under the frozen dispatch id and returns the opaque runner `run_id` backed by an exact external-job handle
+- **THEN** the current fenced runner reserves and atomically consumes one exact submit credential, submits at most once under the frozen dispatch id, and returns the opaque runner `run_id` backed by an exact external-job handle
 
 #### Scenario: Auto mode selects sbatch for heavy jobs
 - **WHEN** an admitted `auto` request deterministically selects `sbatch` from its frozen resource policy
 - **THEN** the selected mode enters immutable run identity before dispatch and recovery never changes it
 
 #### Scenario: Slurm target is not handle-qualified
-- **WHEN** the target cannot persist and authoritatively query a unique scheduler marker and receipt
+- **WHEN** the target cannot enforce one-occurrence credential consumption, pre-scheduler ambient/unregistered rejection, or persist and authoritatively query a unique scheduler marker and receipt
 - **THEN** `sbatch` admission fails before dispatch and does not fall back to direct SSH or untracked submission
+
+#### Scenario: Ordinary login credential invokes sbatch
+- **WHEN** an executor native login/file credential or an unregistered shell command reaches the protected submit boundary
+- **THEN** the target rejects it before scheduler acceptance and the runner does not adopt any externally observed job
+
+#### Scenario: Submit credential is replayed
+- **WHEN** a consumed, expired, or identity-mismatched one-occurrence credential is presented again
+- **THEN** the target rejects it before `sbatch` and the runner preserves the original occurrence/handle state without minting a replacement
 
 #### Scenario: Direct SSH dispatch becomes ambiguous
 - **WHEN** the direct SSH payload may have been accepted and the connection is lost before a terminal receipt is known
@@ -152,6 +160,8 @@ Before remote work, the runner MUST create a durable runner-attempt identity for
 
 ### Requirement: Runner performs only proven pre-effect bounded recovery
 If the runner performs automatic transport recovery, it MUST first prove payload effect is `no_effect`, the same run/operation/authorization basis/RunSpec/workspace/revision/source manifest/command/resources/target/deadline remains bound, and finite policy budget remains. Recovery MUST be phase-specific, increment its phase or transport generation, and be journaled. It MUST NOT reopen authorization, create a replacement run/job/workspace/compute tree after possible dispatch, change backend or mode, alter command/resources/source, reset deadline, or inspect files as proof of success.
+
+The finite recovery budget is a retry counter only. It MUST NOT act as agent, controlled-operation, scientific-attempt, or scheduler-submit authority and MUST NOT permit issuance of a second occurrence credential after possible dispatch.
 
 #### Scenario: Recover an idempotent source query
 - **WHEN** a revision validation query fails because runner transport is unavailable before dispatch and budget remains

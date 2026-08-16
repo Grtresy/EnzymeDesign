@@ -1,5 +1,9 @@
 # Runtime / HPC 可靠性边界
 
+> Revision-bound external job、executor owner workspace、opaque handle 与 result revision
+> 的候选资源合同见 [file-workspace-migration.md](file-workspace-migration.md)。它不改变
+> occurrence/effect certainty，也不把 timeout、lease release 或 process exit 当作 settlement。
+
 ## 1. 文档定位与当前状态
 
 本文描述已经进入主线实现的 Runtime/HPC 可靠性合同。它是
@@ -20,6 +24,22 @@ terminal、runtime idle 或 quiescence seal 解释为业务 task terminal；业�
 agent 显式调用 `task.finish` 或经已文档化的机械迁移终结。
 
 ## 2. 单一 ownership 链
+
+Git publication create-only ref 复用同一 `ControlledOperationExecution` lifecycle、effect certainty、retry eligibility 与 transition validator，但使用 publication-intent-bound storage adapter，因为旧 sandbox operation SQL identity 强制依赖 sandbox workspace/run。它不是第二套 effect FSM：publication 从 `ready -> claimed -> dispatching` 前持久化 execution lease/fence，dispatch 即进入 `dispatch_in_doubt/reconcile_required`；只有 exact ref observation 才能 terminalize 并 materialize revision。unknown outcome 不能自动重发，different commit 是 terminal integrity conflict。
+
+publication 不复用 sandbox approval/continuation/result-artifact write path，也不创建逐 publication approval。它的 immutable remote receipt绑定 execution dispatch generation/fence、internal Git service、binding version、expected previous absence、new commit/tree 与 server-observed commit；revision、receipt、event/outbox 同一事务完成。该边界不访问 GitHub/upstream，不把 upstream failure 当 internal fallback。
+
+LFS publication proof 在 remote ref dispatch 前已经冻结：stable closure manifest 绑定 exact
+commit/tree/policy/endpoint/authorization，fresh verification 绑定本次 object-read receipts。response
+loss 后 reconcile 只观察原 publication ref，并从原 intent proof materialize pins；不能重新选择
+closure、使用 cache 替代 fresh read、换 endpoint 或重传 unknown-effect upload。空 LFS closure 也有
+显式 proof/link，不能因 object count 为零而丢失 policy 验证事实。
+
+LFS GC 不复用 publication execution FSM，也没有隐式 retry。retention owner 先写 canonical dry-run
+candidate；delete 调用必须提交 exact receipt digest，并重算 repository-wide publication pins、
+workspace-generation links、live upload sessions、whole-generation retirement/LFS reachability receipts
+和 policy identity。candidate 或任一依赖漂移即整批 no-delete。filesystem delete 与 SQLite receipt
+之间若发生本地响应丢失，只能对同一 candidate 做 exact reconciliation，不能扩大 OID 集合。
 
 ```text
 agent / task strategy
@@ -391,7 +411,11 @@ commit/digest-bound receipt贯穿 pin/root/launch/bundle/offline verifier。它�
 启动或 drive session。通过只解除 architecture blocker；不会自动恢复 `rxx`、修改 owner
 policy、重放 operation 或放宽 scientific/live gate。
 
-## 11. 明确延后
+## 11. C8 login workspace 已实现、C9 job execution 仍延后
+
+C8 已增加 canonical `ExecutorHpcWorkspace`、target-native OS principal/root qualification、真实 credential-provider seam、owner-only native locator、exact private/published revision sync identity，以及 provision/cleanup intent、receipt和阶段化 same-handle reconciliation。session end、retirement、lease revoke或generation replacement只停止新credential/admission并进入retention；它们不证明 transfer、process、controlled execution 或外部 job 已settled。cleanup必须先消费 exact zero-unsettled settlement proof，再由target isolation boundary处理同一root。
+
+C8 不提交 payload：current `ExecutorWorkspaceRunSpec` 只接受 workspace/binding/generation/target/cwd/argv/resource identity并明确拒绝 artifact staging/fetch字段；所有新 reservation、execution、job submit和payload resume在C9前硬返回`workspace_revision_execution_required`。C9仍负责 revision-to-compute、one-occurrence scheduler credential、target-side unregistered `sbatch` rejection与普通job admission。
 
 - 任意 Python stack / journaled SDK replay；
 - supervised remote SSH daemon 或 stateful persistent shell；

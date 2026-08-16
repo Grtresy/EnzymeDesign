@@ -1,5 +1,9 @@
 # OpenZyme V3 Agent Runtime
 
+> Agent generation、private Git workspace、capability lease 与 session/runtime truth 的
+> 分离合同见 [file-workspace-migration.md](file-workspace-migration.md)；workspace idle 或
+> source-only gate 不自动完成 task、发布 revision 或授予新 authority。
+
 ## 1. 目标
 
 V3 master 与 teammate 默认都是 resident agent member。master 不在 REST handler 调用栈中同步运行，teammate 也不是一次性 subagent。
@@ -42,7 +46,33 @@ Status 语义：
 - `failed`：发生需要 master 或 operator 处理的异常
 - `shutdown`：完成收尾，默认不再接收普通 wakeup
 
+这些 runtime/display status 都不是 agent retirement truth。只有在 explicit shutdown
+handshake 完成 cleanup 后写入的 immutable `AgentRetirementRecord` 才能表达
+shutdown-completed，并在同一 transaction 中撤销该 exact member 跨 generation 的全部
+pending/active capability leases。`failed`、`shutdown` display state、task terminal、idle、
+runtime failure、max-steps/budget exhaustion、shutdown request 或 process disappearance 都不能合成
+retirement record。
+
 ## 3. Wakeup Sources
+
+### Publication 不形成隐式 runtime edge
+
+agent 可在 own generation clone 中显式建立 publication checkpoint，再调用 `workspace.publish`。capability lease 只证明该 generation 当前可进入 publication admission；frozen intent 与 publication-bound controlled execution 分别提供操作身份和 external-effect owner，三者不可互相替代。dispatch 前 lease revoke 使 execution 以 `no_effect` 关闭；ref create 可能已经发生后再 revoke，只禁止新 dispatch，原 fenced execution仍只 reconcile 预分配 ref。
+
+Git LFS 不增加逐命令 agent approval。active generation-bound lease 与 repository credential 允许
+native Git/LFS/curl/scp/rsync 等已声明能力按 agent 策略运行；这些 bytes、local commits、upload
+sessions 和 private refs 保持 generation 私有。只有 explicit publication admission 才冻结 closure
+proof。runtime signal、tool success、LFS verify 或 private push 不会自动 send handoff、完成 task、
+创建 evidence 或提升 shared workspace。lease revoke/namespace retirement 后旧 credential 立即
+失效，也不能通过缓存 OID 或相同 digest 恢复权限。
+
+`workspace.publication.materialized` durable event 是 shared-truth observation，不自动生成 recipient inbox、runtime signal、dependency transition 或 task terminal。recipient 只有收到显式 protocol handoff 或其他既定 wakeup 后，才读取 exact fetch identity，并在 own clone 中决定是否 fetch 与如何 integrate。merge/rebase/cherry-pick conflict 始终返回给 agent，不由 scheduler 或 Host 自动解决。
+
+C7 的 file handoff 是显式 runtime edge：发送事务同时创建 participant-bound handoff、inbox 与 recipient
+wakeup，但不执行 recipient turn。恢复后 recipient 可 native fetch exact Git/Git LFS publication 到 inspection
+ref，再自主选择如何读取或整合。fetch success、protocol delivery、research/report publication 和 controlled
+operation terminal 都只是事实，不会自动满足 dependency 或写 task terminal；只有 assignee 的 exact
+`task.finish` 可消费 closed task-bound evidence。
 
 runtime / scheduler 应把以下 control-plane 变化转化为 wakeup signal：
 
@@ -80,11 +110,21 @@ session ownership 与 signal claim 是两层不同语义：
 - scheduler 在 blocking provider/tool turn 期间持续 heartbeat；heartbeat 失败后停止 claim 新 signal，正在运行的 worker 只能以 fenced failure 收尾
 - session lease 只管理 runtime 推进权，不判断 task 是否完成或失败
 
+capability provisioning 是第三层、且与上述两层正交的 admission gate：
+
+- scheduler 在 claim 目标 agent signal 或进入 turn/restore 前，先解析 canonical current workspace generation，再按 `session + member + exact generation` 重读 active `AgentCapabilityLease`；
+- missing reservation/readiness、`pending_workspace`、missing/revoked/mismatched lease 使 agent 保持 non-runnable，投影 `provisioning_required` 或更精确 typed lease error；worker 不把这类 signal claim 或运行后再失败。
+- `SessionRuntimeLease`、signal claim、old process、tool exposure、private namespace hold、caller assertion 与 legacy sandbox record 均不能满足该 gate；
+- restore 每次从 canonical repository 重建这组 facts，不从上一 turn/process 复制 lease object、bearer 或 credential authority；
+- C2 只能创建 generation reservation 和 `pending_workspace` lease。在 C3 production provisioner 提交 exact readiness 并激活之前，existing/new master 与 teammates 如实处于 staged non-runnable window，不走 legacy runtime fallback。
+- durable `AgentRetirementRequest` 是独立的 member admission freeze。request commit 后，enqueue、claim 与进入新 turn 都必须当场拒绝；已经 claimed 的 occurrence 仍由原 session runtime token/fence显式写成 terminal，不因 request 被视为 settled。claim/reclaim/complete/fail/release 的数据库迁移均要求同一 transaction-local runtime fence，generic mutation writer 与 raw SQL 不能绕过。cleanup proof 只有在零 claimed signal 后重新验证才可持久化，final retirement transaction还要再次重验零 claim；request/proof/final 三相各自还要求 service-only exact lifecycle authority，普通 mutation writer 不能伪造 cleanup provider。
+
 signal claim 语义：
 
 - worker 只 claim `pending` signal 或 lease 已过期的 `claimed` signal
 - claim 写入 `claimed_by`、`claim_expires_at`，递增 `attempt_count`，并绑定当前 session lease token / fencing token
 - worker 完成 turn 后把 signal 写为 `completed` 或 `failed` 前必须确认仍持有有效 session lease
+- turn 执行期间若 exact member 出现 durable retirement request，success completion不得提交；worker在仍持有原 session lease/fence时把该 claimed occurrence非重试地结算为 `agent_retirement_requested`，再由 cleanup provider重新观察关闭后的世界
 - retryable failure 在 attempt 上限内可释放回 `pending`，否则保持 `failed`
 - stale signal claim recovery 只基于 signal lease，不依赖进程内内存；stale session worker recovery 还必须通过 session lease fencing 拒绝迟到写回
 - 如果 signal 关联的 task 已经进入 `completed` / `failed` / `cancelled` 业务终态，scheduler 必须把该 signal 作为 stale runtime fact 安全消费为 completed，不得再次运行 teammate loop，也不得把它写成 runtime failure
@@ -219,6 +259,15 @@ Teammates also carry human-facing identity fields:
 
 `task.delegate` owns teammate creation and existing-teammate selection. `agent_role` selects capability. Optional `agent_ref` may point at an existing canonical `agent_id`, `@handle`, nickname, or display name. Generated nicknames/handles must avoid collisions across sessions in the same project/root session and add a suffix when a role pool is exhausted.
 
+C2 起 canonical delegation 在任何 child side effect 前重读 caller/parent 自身 current
+generation 的 exact active capability lease。通过后，同一原子 operation 可创建 child
+identity、child generation reservation 与带 parent provenance 的 derived
+`pending_workspace` lease intent；它不把 child 标记为 runnable，不排队可被 claim 的 child
+wakeup。只有 C3 provisioner 为 child 自身 exact generation 提交 verified readiness 并原子
+激活 lease 后，后续显式 runtime tick 才能推进它。parent capsule、workspace、generation、
+token 或 credential 都不是 child fallback；provisioning failure 保留 durable blocker，不自动删除 child
+或重试 provisioning。
+
 Workflow knowledge binding is explicit per delegation：`workflow_refs` may contain only a duplicate-free subset of the caller's currently authorized full workflow selection refs. Omitting the field or passing `[]` means no workflow binding; teammate restore must not inherit parent-focus workflow refs implicitly. Before teammate creation or task claim, runtime resolves the exact manifest snapshot and validates target role, tool and engine requirements. Unauthorized, duplicate, drifted or incompatible refs return structured LLM-readable errors without agent/task/inbox/signal side effects. The persisted delegation payload contains only the selected refs and exact safe manifest snapshots, and teammate restore validates drift again. This exposes real constraints while leaving the agent free to choose which compatible pack, if any, applies to the delegated work.
 
 Delivery success semantics:
@@ -262,6 +311,11 @@ task dependency 是 runtime 调度前置约束而不是 UI hint。任一 depende
 - executor restore context 还应包含其 persistent sandbox workspace 摘要：`sandbox_workspace_id`、最近显式 materialized artifacts、working copy dirty 状态、最近 source snapshot、最近 execution plan/run 与可检索 sandbox docs 关键词
 - `sandbox.exec` 的 canonical `SandboxRun.compatibility` 记录实际 execution backend、配置 image ref、resolved immutable image id/digest、Pipeline SDK source-tree digest、sandbox protocol/manifest/exec-policy version 与组合 `runtime_identity_digest`；adapter continuation 只能从对应 run 继承这组身份，不能由 restore context、workspace projection 或 mutable tag 重建
 - memory summary 与压缩后的 continuity notes
+
+上述 restore payload 只在 exact-generation active capability lease gate 通过后构造。
+`sandbox_workspace_id`、旧 sandbox summary 或模型可见 tool catalog 只是事实/投影，不授权
+runtime。C2 不把 executor restore 中的旧 Host-supervised sandbox 转换为 C3 Git workspace
+readiness，也不因 general/executor profile 声明而改变旧 AOX `--network=none` 边界。
 
 r59 closure-stage 隔离诊断的 historical reconstruction 不导入 source restore prompt、
 LLM trace、assistant message、runtime signal、lease 或 writer。current forward runtime
@@ -395,6 +449,14 @@ Workspace projection 中的 `delegation` 不应只表达最近一次 `task.deleg
 - last active time、idle since
 - shutdown / failed 状态与可诊断摘要
 
+C2 safe capability projection 与 roster 并列，只暴露 lease id、public owner、current
+generation reservation/readiness、closed capability names、safe target/policy digest、parent provenance、
+lifecycle 以及 revocation/retirement facts。pending/missing/revoked/mismatched generation 显示
+`provisioning_required` 且不进入 provider-visible tool catalog/dispatch turn。这不等于 C2 已安装或暴露
+general/executor native tools；真实 capsule/tool exposure 只能在 C3 readiness/activation 后由 C3 的
+versioned runtime facts 支撑。projection 不包含 bearer、credential、private locator/namespace、Host
+path，也不把 private generation bytes 当作 shared truth。
+
 UI 可以保持 conversation-first，不需要把 agent runtime 暴露成运维控制台；但用户和开发者必须能看出 teammate 是 working、idle、blocked、failed 还是 waiting approval。默认用户 workspace 不展示 raw pending signal count、unread inbox count 或 wakeup reason；这些低层字段只属于 event/debug/diagnostic 视图。等待 approval 时，approval card 与 `workspace.pending_approvals` 是 canonical UI 信号；后端不得把 waiting approval 表述成最终完成消息。
 
 ## 9. Runtime qualification contract
@@ -483,3 +545,9 @@ admission facts；不得从旧task prose、slot claim、process receipt或public
 wrong actor、assignment drift或lane缺失分别以typed no-effect failure停止且不创建attempt。
 这让Harness忠实呈现ownership/isolation约束，同时保留executor决定何时建lane、何时请求attempt
 以及后续科学策略的自由。
+
+## 13. Executor native HPC credential lifecycle
+
+Executor restore context只在exact ready C8 workspace且当前lease有效时包含owner login view。`workspace.exec`的credential request必须指定`hpc-native:<target_profile_id>`、opaque workspace audience和一个closed login/file/Git/LFS protocol；router重新核对session/member、local generation、remote generation、target和lease id/version后，才调用真实provider/authenticator。credential只注入单次rootless capsule process environment，stdout/stderr与launch exception按exact secret material脱敏，finally路径执行provider revoke；credential本身不写workspace、conversation、events或public projection。
+
+普通native SSH/Git/LFS/rsync/scp/CRUD保留agent策略自由，但其可达范围由target OS principal/root enforcement决定。runtime不因credential revoke推断已启动transfer/process/job已settled，也不把login mutation自动解释为publication、protocol handoff、task terminal或scientific result。scheduler submission仍等待C9独立authority。

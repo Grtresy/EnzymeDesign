@@ -1,0 +1,37 @@
+{
+  "schema_id": "agent_capability_lease_prerequisite_bindings@1",
+  "change_id": "establish-agent-capability-leases",
+  "source_revision": "57458a67d965bc01c1f878544ddebd4b15d29a62",
+  "c0": {
+    "receipt_path": "openspec/changes/supersede-aox-hmm-artifact-cutover/operator/acceptance-receipt.json",
+    "schema_id": "aox_artifact_cutover_supersession_acceptance@1",
+    "receipt_digest": "sha256:a54cdffbadecda3639129edbcd99f889eee7aa2462df296f6a0780ccf924f4ce",
+    "source_revision": "3c7774345baa4fd0635586faa27e7d7fa2156868",
+    "publication_revision": "9b78ec6a883f90ec4239d113e9300098120f68bd",
+    "manifest_digest": "sha256:e334ca413fc22c618f3661c45f8783fb110c08f0cd50f5eea548825462572d67",
+    "inventory_digest": "sha256:13ff7ad2ae5e2c79ff110ba1d95fb2bc282e1d21f763b93d903724457cfbfee6",
+    "legacy_decision": "legacy_no_go",
+    "legacy_live_work_authorized": false,
+    "legacy_identity_reusable": false,
+    "verifier_command": "uv run python openspec/changes/supersede-aox-hmm-artifact-cutover/operator/verify_supersession.py --require-acceptance"
+  },
+  "c1": {
+    "receipt_path": "openspec/changes/establish-project-repository-bindings/operator/acceptance-receipt.json",
+    "schema_id": "project_repository_binding_acceptance@1",
+    "receipt_digest": "sha256:8ac2a8db6b0bb813df6f32d639456473da784f9444f8e0fe4c2014f19c368010",
+    "source_revision": "9b78ec6a883f90ec4239d113e9300098120f68bd",
+    "publication_revision": "d3a7bd628965ac4f94b163142c80defb21346c16",
+    "source_identity_digest": "sha256:c104c21af55a6e8c982f31ec2fdcfd62a78b633befbb609d5d1f4abe4613fbe7",
+    "implementation_tree_digest": "sha256:9420aa0231c7a2adc59718050f63ba5f992a906522da3e1c1c70de905b941768",
+    "migration_id": "038_v3_project_repository_bindings",
+    "migration_sha256": "sha256:1e1d354341af5a75ce9c55e2c499cb9a8946fd0391f4a540999521439a42364d",
+    "repository_policy_digest": "sha256:a473ba91392bb815154423d17f95badb9c54e71b942a6f02fe157b63b04a3481",
+    "local_protocol_acceptance_digest": "sha256:c8556cc83e22b9f3b1878c4536bf111751a5cb59b9f3812e2bd4b710bc30f066",
+    "lease_assertion_class": "c1_acceptance_only",
+    "production_capability_lease_issuance_proven": false,
+    "verifier_command": "uv run python openspec/changes/establish-project-repository-bindings/operator/verify_repository_binding.py --require-acceptance --verify-current-sources"
+  },
+  "status": "passed",
+  "external_effects": 0,
+  "binding_digest": "sha256:82018f25fe3d60b901b81f550cfcea8f49c95fc26f5fcec620d396e6e98ff780"
+}

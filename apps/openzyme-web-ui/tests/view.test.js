@@ -314,7 +314,10 @@ test("scientific evidence renders fail-closed quorum, continuity, empty result, 
   assert.match(html, /op_aox_001/);
   assert.match(html, /appr_aox_001 \/ approved/);
   assert.match(html, /sha256:33333333333333/);
-  assert.match(html, /published true · eligible false/);
+  assert.match(
+    html,
+    /workspace publication: unknown · report publication: published · eligible false/,
+  );
   assert.match(html, /Healthy empty result/);
   assert.match(html, /offline_verifier_evidence_missing/);
   assert.match(html, /PMID 12345678/);
@@ -350,6 +353,31 @@ test("outputs render folded artifact index entries with version count", () => {
   assert.match(html, /AOX_ref21\.fasta/);
   assert.match(html, /2 versions/);
   assert.doesNotMatch(html, /art_old ·/);
+});
+
+test("outputs distinguish published research files from report publication", () => {
+  const ws = {
+    ...workspace(),
+    artifacts: [],
+    artifact_index: [],
+    research_files: [
+      {
+        index_id: "research_index_001",
+        research_kind: "source_snapshot",
+        revision_path_ref: {
+          path: "research/inv_001/source-snapshots.json",
+          commit: "a".repeat(40),
+        },
+      },
+    ],
+  };
+
+  const html = renderV3Outputs(ws);
+
+  assert.match(html, /Published Research Files/);
+  assert.match(html, /workspace publication: already_published/);
+  assert.match(html, /task transition: none/);
+  assert.match(html, /research\/inv_001\/source-snapshots\.json/);
 });
 
 test("research notebook shell exposes real navigation and responsive panel controls", () => {

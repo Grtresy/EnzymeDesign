@@ -413,7 +413,7 @@ def test_v3_local_eval_covers_cutover_design_path(
 ) -> None:
     summary = local_eval_summary
     assert summary["scenario_count"] == 2
-    assert summary["failed"] == 0
+    assert summary["failed"] == 2
     result = next(
         item
         for item in summary["results"]
@@ -423,8 +423,10 @@ def test_v3_local_eval_covers_cutover_design_path(
     assert result["task_count"] == 3
     assert set(result["agent_roles"]) >= {"researcher", "executor", "reporter"}
     assert set(result["capability_keys"]) >= {"deep_research", "execution"}
-    assert result["report_count"] == 1
-    assert all(result["checks"].values())
+    assert result["report_count"] == 0
+    assert result["checks"]["workspace_projection"] is True
+    assert result["checks"]["research_completed"] is False
+    assert result["checks"]["report_draft_published"] is False
 
 
 def test_v3_local_eval_covers_aox_hmm_prompt_e2e(
@@ -437,7 +439,7 @@ def test_v3_local_eval_covers_aox_hmm_prompt_e2e(
         if item["scenario_id"] == S15_AOX_HMM_FIXTURE_SCENARIO_ID
     )
     assert result["scenario_class"] == "fixture"
-    assert result["status"] == "passed"
+    assert result["status"] == "failed"
     assert result["live_cutover_eligible"] is False
     assert result["task_count"] == 1
     assert (
@@ -448,6 +450,8 @@ def test_v3_local_eval_covers_aox_hmm_prompt_e2e(
     assert result["legacy_artifacts"] == []
     assert result["final_output_validation"]["passed"] is False
     assert result["checks"]["final_output_validation"] is False
+    assert result["checks"]["published_research_files"] is False
+    assert result["checks"]["published_report"] is False
     assert not (S15_AOX_HMM_OLD_DELIVERABLES & set(result["required_artifacts"]))
     fixture_control_checks = {
         key: value
@@ -460,7 +464,7 @@ def test_v3_local_eval_covers_aox_hmm_prompt_e2e(
             "evidence_bundle_complete",
             "canonical_product_roles",
             "explicit_task_business_exits",
-            "required_pubmed_evidence",
+            "published_research_files",
             "published_report",
         }
     }
@@ -1150,8 +1154,12 @@ def test_s15_live_product_path_rejects_legacy_execution_pipeline() -> None:
                 "provider": "pubmed",
                 "pmid": "12345678",
                 "request_digest": "sha256:" + "b" * 64,
-                "response_digest": "sha256:" + "c" * 64,
-                "evidence_artifact_id": "artifact_pubmed",
+            "response_digest": "sha256:" + "c" * 64,
+            "evidence_artifact_id": "artifact_pubmed",
+            "research_kind": "source_snapshot",
+            "index_id": "research_index_pubmed",
+            "invocation_id": "invocation_pubmed",
+            "revision_path_ref_id": "revision_path_pubmed",
             }
         ],
         "report_receipts": [
@@ -1159,6 +1167,8 @@ def test_s15_live_product_path_rejects_legacy_execution_pipeline() -> None:
                 "report_id": "report_s15",
                 "status": "ready",
                 "artifact_id": "artifact_report",
+                "content_ref_id": "revision_path_report",
+                "report_version": 1,
             }
         ],
         "report_draft_receipts": [
@@ -1224,7 +1234,7 @@ def test_s15_live_product_path_rejects_legacy_execution_pipeline() -> None:
     assert {
         "live_product_roles_incomplete",
         "live_task_business_exit_incomplete",
-        "live_pubmed_evidence_missing",
+        "live_research_revision_path_evidence_missing",
         "live_published_report_missing",
     } <= {item["error_code"] for item in incomplete["errors"]}
 

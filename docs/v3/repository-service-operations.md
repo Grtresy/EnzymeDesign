@@ -1,9 +1,11 @@
 # Project repository service 运维合同
 
 本文描述 C1 `establish-project-repository-bindings` 已落地的 Host-owned repository
-service。它是后续独立 agent worktree、发布/同步和 Git LFS 工作产物的基础，但 **C1
-本身不创建 agent clone/worktree、不发布 revision、不访问 upstream，也不提供生产能力租约
-签发入口**。
+service，以及 C2 `establish-agent-capability-leases` 对 production credential 与
+revocation seam 的收口。它们是后续独立 agent Git workspace、发布/同步和 Git LFS
+工作产物的基础，但 **C1/C2 仍不创建 clone/worktree/capsule、不发布 revision、不访问
+upstream，也不实现真实 remote-HPC credential/workspace/job**。C2 中的 general/executor
+capability names 只是 policy declaration，不是这些后继产品能力已可用的证明。
 
 ## 1. 进程与 authority 边界
 
@@ -160,20 +162,63 @@ migration historical writer 使用独立内部 owner，不复用 agent bearer；
 publication create 与 historical create/fast-forward，并通过 bare repository 原子 exact-old/new
 CAS 更新。C1 只提供该内部 primitive，不提供 C4 publication workflow 或历史迁移编排。
 
-`RepositoryCredentialBroker` 要求 immutable session pin 与 typed active capability-lease
-assertion完全一致，credential 绑定 binding id/version、repository、session、agent member、
-workspace generation、lease id、protocol 与 ref classes。token 只在签发响应中短暂存在，
-数据库仅保存 digest/claims，workspace 与 public projection 不保存 token、Host root 或 private
-endpoint。Git/LFS write scope 还要求 exact private namespace 为 `open`，并存在 owner ref 等于
-lease id 的未释放 `active_capability_lease` hold；签发与每次写认证都会重验，因此 namespace
-close/retire 或 hold release 后旧 bearer 不能再次写。expiry/revoke 返回明确认证失败；Host 不
-自动重放失败命令、续签、换 endpoint 或换 binding。
+C4 source implementation 现在消费该 primitive：Host 只对 frozen intent 预分配的 exact
+publication ref执行 create-if-absent，并在 I/O 前持久化 canonical execution dispatch intent。
+response loss只查询同一ref；confirmed/superseded publication ref没有delete或force-update route。
+read-only namespace audit只比较canonical `PublishedRevision` 与publication prefix，不扫描或提升
+private/historical refs。该源码仍受 `workspace_publication_source_only_dependency_gate@1` 限制，
+不改变 C1/C2 receipt 的历史范围，也不授权production remote I/O或live。
 
-C1 的 `operator/run_local_protocol_acceptance.py` 仅用于本 change 的一次性本地验收：它用
+C5 source implementation 在同一 endpoint/object root 上加入 immutable binding-scoped LFS policy、
+quota reservation/upload session、workspace-generation object links、authoritative read receipts、
+stable closure manifest、fresh verification、publication pins 与 receipt-driven GC；没有第二个 LFS
+server、custom pointer、generic CAS 或 alternate object source。operator 初始化 binding 时必须同时
+提供 closed-schema `--lfs-policy-file`，其 endpoint/version/digest 与 binding 不完全相同则不注册或
+激活。preflight 每次重读 exact policy，并只公开阈值、quota、retention 等安全 facts。
+
+Batch upload 先 reserve quota，再由 action header 携带 exact upload-session id；streaming PUT 重算
+size/SHA-256、fsync incoming file、no-replace promote，之后才提交 metadata与workspace link。
+download 重验 repository-scoped metadata 和实际 bytes 后写 read receipt，不公开 physical path。
+published closure 全量 pin；private GC 必须先完成 whole-generation retirement 与 LFS reachability
+receipt，再 dry-run、提交 exact candidate digest并整体重验。当前 C5 仍受
+`git_lfs_work_product_source_only_dependency_gate@1` 约束：不得把 source snapshot 当成 credential、
+upload/publication/GC authority，真实 native Podman/HPC-login、focused/mainline 与最终 receipt 均延后到
+14 个 change 的统一验收。
+
+`RepositoryCredentialBroker` 的 production path 不接受 caller 构造的
+`ActiveCapabilityLeaseAssertion`。调用方只提交 lease id 与 expected
+session/member/generation/service/target/protocol facts，broker 通过 canonical
+`ActiveAgentCapabilityLeaseValidator` 或等价 typed port 在同一 `BEGIN IMMEDIATE`
+transaction 中重读 active lease、immutable session pin、private namespace/hold，并写
+credential issuance record。任一 identity/profile/target/policy/retirement request/final record
+漂移整体 rollback；
+只有 transaction commit 后才可把 bearer 返回调用进程。
+
+credential 绑定 binding id/version、repository、session、agent member、workspace
+generation、lease id、audience/protocol 和 ref classes。C2 中 token 只在签发响应中短暂
+存在，数据库仅保存 digest/claims；不得写入 persistent workspace/volume、Git repository
+config、public projection、logs 或 Host home。C2 冻结 process-scoped derivation 的 typed
+audience/claims seam，但不声称已经实现由 C3 拥有的真实 capsule process injection。Git/LFS
+read 与 write authentication 每次都重读 canonical active lease。write scope 还要求 exact private
+namespace 为 `open`，并存在 owner ref 等于 lease id 的未释放
+`active_capability_lease` hold。
+
+durable `AgentRetirementRequest` commit 后，同一 exact member 即使 lease row 尚为 `active`，
+broker issuance、Git/LFS authentication-time lease validation与新的 capability hold也必须失败；
+raw SQL trigger 同样拒绝新 issuance/hold。request前既有 credential/hold由最终 member-wide revoke
+transaction统一撤销/释放，不能靠 TTL 或调用方缓存继续授权。
+
+lease revoke transaction 必须在同一笔写入中停止新 issuance、撤销可撤销的 derived
+credentials、释放 matching holds、写 lease 终态与 lifecycle event。提交后，旧 bearer
+即使 TTL 未过也必须在 read/write authentication 失败。credential TTL 只结束该
+credential，不结束 lease；后续显式动作可在同一 active lease 下重签一枚新的短期
+credential，但 Host 不自动续签、重放失败命令、换 endpoint 或换 binding。
+
+C1 的 `operator/run_local_protocol_acceptance.py` 仅用于一次性历史验收：它用
 显式 `c1_acceptance_only` lease assertion与临时 active-lease hold完成 native client 测试，
 随后立即撤销 credential并释放 hold，并在 receipt 中写明
-`production_capability_lease_issuance_proven=false`。它不是产品发证 CLI；生产
-租约 authority 必须等待 C2 `establish-agent-capability-leases` acceptance。
+`production_capability_lease_issuance_proven=false`。这些 row/receipt 只保留为不可升级的
+audit fact，不是产品发证 CLI，不能借它们跳过 C2 canonical validator。
 
 ## 5. Audit、activation、retirement 与恢复
 
@@ -207,7 +252,7 @@ uv run openzyme-repository rehearse-restore \
 process/provider reconstruction 和同文件系统逻辑恢复；生产部署仍须把备份放到独立 failure
 domain，并另行验证 RPO/RTO、host/filesystem loss 与 offsite restore。
 
-## 6. 当前 C1 验收边界
+## 6. 当前 C1/C2 验收边界
 
 C1 已证明 binding persistence、new-session exact pin、native HTTPS Git v2、private ref ACL、
 Git LFS upload/download、credential revoke、process restart 和本地 logical restore。它没有：
@@ -215,9 +260,24 @@ Git LFS upload/download、credential revoke、process restart 和本地 logical 
 - 创建 Podman/HPC agent worktree（C3/C8）；
 - 建立 publish/sync revision（C4）；
 - 把 large work product policy切到 Git LFS（C5）；
-- 完成 C2 production capability lease issuance；
+- 独立证明 C2 canonical production capability lease issuance；
 - 访问或改变 GitHub upstream；
 - 证明跨 filesystem/host 的 production disaster recovery。
 
 这些缺口必须保持可见，不能用临时目录、ambient checkout、测试 credential 或成功的本地
 rehearsal伪装为后继 change 已完成。
+
+C2 的独立 acceptance 只能证明 exact-generation lease lifecycle、canonical repository
+credential issuance/authentication/revocation seam 与相应 non-runnable admission gate。C2 需要显式记录下列
+false claims：
+
+- production independent Git workspace/capsule 未证明；
+- native toolchain、ordinary network（C3 deployment 不使用 Host destination allowlist）与
+  upload/download execution 未证明；
+- publication/shared revision 未证明；
+- remote HPC credential/workspace CRUD、approval-free ordinary job 与 one-occurrence `sbatch`
+  未证明。
+
+C2 不改变旧 Host-supervised execution/AOX sandbox 的无网络语义，也不能在 lease
+missing/pending/revoked 时使用该执行面作为 fallback。C3 readiness 未出现前，正确的
+production 状态是 `provisioning_required` 与 non-runnable。

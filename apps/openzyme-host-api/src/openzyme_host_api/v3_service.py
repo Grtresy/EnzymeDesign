@@ -13,6 +13,7 @@ import threading
 from typing import Any
 from typing import Callable
 from typing import ContextManager
+from typing import Mapping
 from uuid import uuid4
 
 from openzyme_core import CoreRepositories
@@ -22,8 +23,10 @@ from openzyme_core import controlled_operation_artifact_set_digest
 from openzyme_core import current_mutation_write_authority
 from openzyme_core import DurableEventRecord
 from openzyme_core import EngineRegistry
+from openzyme_core import FileWorkspaceProjectionBuilder
 from openzyme_core import HarnessEvent
 from openzyme_core import HarnessStatus
+from openzyme_core import file_workspace_candidate_catalog_digest
 from openzyme_core import LaneManager
 from openzyme_core import MutationScopeService
 from openzyme_core import RestoreFocus
@@ -39,6 +42,10 @@ from openzyme_core import TaskBoardService
 from openzyme_core import TaskMutation
 from openzyme_core import ToolRegistry
 from openzyme_core import AgentRuntimeOutcome
+from openzyme_core import AgentCapabilityPublicProjector
+from openzyme_core import AgentCapabilityLeaseService
+from openzyme_core import AgentCapabilityProvisioningRequiredError
+from openzyme_core import AgentWorkspaceReadinessProvider
 from openzyme_core import AgentRuntimeService
 from openzyme_core import AgentRuntimeScheduler
 from openzyme_core import AgentRuntimeSettlementDisposition
@@ -53,6 +60,8 @@ from openzyme_core import RuntimeDrainProjectionOutcome
 from openzyme_core import ScientificAttemptError
 from openzyme_core import ScientificAttemptService
 from openzyme_core import ScientificWorkflowContractRegistry
+from openzyme_core import WorkspaceRevisionExecutionAdmission
+from openzyme_core import WorkspaceRevisionExecutionAdmissionService
 from openzyme_core import SessionRuntimeLeaseLockedError
 from openzyme_domain import SessionRuntimeLease
 from openzyme_domain import AgentMember
@@ -63,10 +72,12 @@ from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import ContinuationDeliveryState
 from openzyme_domain import ControlledOperationExecutionEvent
+from openzyme_domain import ControlledOperationExecution
 from openzyme_domain import ControlledOperationExecutionLifecycle
 from openzyme_domain import ControlledOperationExecutionPhase
 from openzyme_domain import ControlledOperationExecutionTerminalOutcome
 from openzyme_domain import ControlledOperationOwnerMode
+from openzyme_domain import ControlledOperation
 from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import FailureActorKind
 from openzyme_domain import FailureClass
@@ -85,6 +96,8 @@ from openzyme_domain import Session
 from openzyme_domain import SessionStatus
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
+from openzyme_domain import WorkspaceRevisionCleanObservation
+from openzyme_domain import WorkspaceRevisionExecutionRequest
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import record_failure_observation
 from openzyme_runtime import sanitize_public_diagnostic_text
@@ -388,6 +401,16 @@ class V3HostApiService:
         | None
     ) = None
     repository_binding_service: ProjectRepositoryBindingService | None = None
+    agent_workspace_readiness_providers: Mapping[
+        str, AgentWorkspaceReadinessProvider
+    ] = field(default_factory=dict)
+    session_creation_readiness_provider_id: str | None = None
+    delegation_readiness_provider_id: str | None = None
+    agent_capsule_process_runner: Any | None = None
+    agent_process_credential_router: Any | None = None
+    executor_hpc_workspace_service: Any | None = None
+    workspace_checkpoint_git_reader: Any | None = None
+    agent_git_workspace_recovery_service: Any | None = None
     allow_unpinned_repository_sessions_for_tests: bool = False
     operation_lock: threading.RLock = field(default_factory=threading.RLock)
 
@@ -396,6 +419,62 @@ class V3HostApiService:
 
     def _event_sink(self) -> V3EventStoreSink:
         return V3EventStoreSink(self.event_store)
+
+    def admit_workspace_revision_execution(
+        self,
+        *,
+        operation: ControlledOperation,
+        request: WorkspaceRevisionExecutionRequest,
+        clean_observation: WorkspaceRevisionCleanObservation,
+    ) -> ControlledOperationExecution:
+        if operation.session_id != request.session_id:
+            raise ValueError("workspace execution crossed its session boundary")
+        with self.repositories.atomic(prefix="host_workspace_job_admission"):
+            existing_operation = self.repositories.controlled_operations.get(
+                operation.operation_id
+            )
+            if existing_operation is None:
+                self.repositories.controlled_operations.save(operation)
+            elif existing_operation != operation:
+                existing_execution = (
+                    self.repositories.controlled_operation_executions.get_by_operation_id(
+                        operation.operation_id
+                    )
+                )
+                if existing_execution is None:
+                    raise ValueError("workspace execution operation identity conflicts")
+            execution = WorkspaceRevisionExecutionAdmissionService(
+                self.repositories
+            ).admit(
+                WorkspaceRevisionExecutionAdmission(
+                    operation=operation,
+                    request=request,
+                    clean_observation=clean_observation,
+                )
+            )
+        self.event_store.append(
+            request.session_id,
+            [
+                _event(
+                    "workspace.job.admitted",
+                    request.session_id,
+                    {
+                        "execution_id": execution.execution_id,
+                        "operation_id": execution.operation_id,
+                        "request_id": request.request_id,
+                        "workspace_id": request.executor_hpc_workspace_id,
+                        "source_class": request.source_class.value,
+                        "source_commit": request.source_commit,
+                        "source_tree": request.source_tree,
+                        "requested_mode": request.requested_mode.value,
+                        "pending_human_approval_created": False,
+                    },
+                )
+            ],
+        )
+        if self.durable_work_notifier is not None:
+            self.durable_work_notifier.notify(request.session_id)
+        return execution
 
     def admit_runtime_command(
         self,
@@ -519,7 +598,7 @@ class V3HostApiService:
                 self.repositories.sessions.save(session)
             else:
                 binding_service.create_pinned_session(session)
-            self._ensure_master_agent(session.session_id)
+            self._create_master_agent_with_pending_lease(session.session_id)
             stored_session = self.repositories.sessions.get(session.session_id)
             if stored_session is None:
                 raise RuntimeError("created session cannot be reread")
@@ -634,12 +713,20 @@ class V3HostApiService:
         ):
             yield
 
-    def _ensure_master_agent(self, session_id: str) -> AgentMember:
+    def _create_master_agent_with_pending_lease(
+        self,
+        session_id: str,
+    ) -> AgentMember:
+        if not self.repositories.in_managed_transaction:
+            raise RuntimeError(
+                "master identity and pending capability lease require one transaction"
+            )
         existing = self.repositories.agents.get(session_id, "agent:master")
         if existing is not None:
-            return existing
+            raise RuntimeError("new session already has a canonical master agent")
         now = utc_now_iso()
         master = AgentMember(
+            member_id=_new_id("member"),
             agent_id="agent:master",
             session_id=session_id,
             lane_id=None,
@@ -657,6 +744,35 @@ class V3HostApiService:
             handle="@openzyme",
         )
         self.repositories.agents.save(master)
+        capability_service = AgentCapabilityLeaseService(
+            self.repositories,
+            readiness_providers=self.agent_workspace_readiness_providers,
+        )
+        issuance = capability_service.reserve_and_issue(
+            session_id=session_id,
+            agent_id=master.agent_id,
+            idempotency_key=f"session:{session_id}:master:generation-1",
+            actor_ref="host:session-create",
+        )
+        if self.session_creation_readiness_provider_id is not None:
+            issuance = capability_service.activate_with_provider(
+                lease_id=issuance.lease.lease_id,
+                provider_id=self.session_creation_readiness_provider_id,
+                actor_ref="host:session-create-readiness",
+            )
+        stored = self.repositories.agents.get(session_id, master.agent_id)
+        if stored is None or stored.member_id != issuance.lease.agent_member_id:
+            raise RuntimeError(
+                "master capability lease owner does not match canonical membership"
+            )
+        return stored
+
+    def _require_master_agent(self, session_id: str) -> AgentMember:
+        master = self.repositories.agents.get(session_id, "agent:master")
+        if master is None or master.member_id is None:
+            raise AgentCapabilityProvisioningRequiredError(
+                "session has no canonical master capability owner"
+            )
         return master
 
     def workspace(self, session_id: str) -> dict[str, Any]:
@@ -675,6 +791,38 @@ class V3HostApiService:
                 .build_session_workspace(session_id)
                 .to_dict()
             )
+
+    def file_workspace_candidate(
+        self,
+        session_id: str,
+        *,
+        subject_agent_member_id: str | None,
+    ) -> dict[str, object]:
+        """Build the source-gated public candidate without activating its epoch."""
+
+        with self.operation_lock:
+            self._require_session_repository_binding(
+                session_id,
+                prerequisite="session_restore",
+            )
+            executor = bool(
+                subject_agent_member_id
+                and any(
+                    item.executor_agent_member_id == subject_agent_member_id
+                    for item in self.repositories.executor_hpc_workspaces.list_by_session(
+                        session_id
+                    )
+                )
+            )
+            return FileWorkspaceProjectionBuilder(
+                self.repositories,
+                tool_catalog_digest=file_workspace_candidate_catalog_digest(
+                    executor=executor
+                ),
+            ).build(
+                session_id=session_id,
+                subject_agent_member_id=subject_agent_member_id,
+            ).to_dict()
 
     def _require_session_repository_binding(
         self,
@@ -1410,6 +1558,17 @@ class V3HostApiService:
             durable_route_adapter_policy_ids=dict(
                 self.durable_route_adapter_policy_ids
             ),
+            agent_workspace_readiness_providers=(
+                self.agent_workspace_readiness_providers
+            ),
+            delegation_readiness_provider_id=self.delegation_readiness_provider_id,
+            agent_capsule_process_runner=self.agent_capsule_process_runner,
+            agent_process_credential_router=self.agent_process_credential_router,
+            executor_hpc_workspace_service=self.executor_hpc_workspace_service,
+            workspace_checkpoint_git_reader=self.workspace_checkpoint_git_reader,
+            agent_git_workspace_recovery_service=(
+                self.agent_git_workspace_recovery_service
+            ),
             mutation_writer_scope_factory=self.mutation_writer_scope_factory,
             sandbox_host_binding_factory=self.sandbox_host_binding_factory,
         )
@@ -1448,7 +1607,10 @@ class V3HostApiService:
             self._extend_with_trace_events(session_id, events)
             self._extend_with_activity_events(session_id, events)
             self.event_store.append(session_id, events)
-        return [outcome.to_dict() for outcome in outcomes]
+        public_projector = AgentCapabilityPublicProjector(self.repositories)
+        return [
+            public_projector.project_runtime_outcome(outcome) for outcome in outcomes
+        ]
 
     def _build_scheduler(
         self,
@@ -1816,7 +1978,7 @@ class V3HostApiService:
             session_id,
             prerequisite="agent_workspace",
         )
-        self._ensure_master_agent(session_id)
+        self._require_master_agent(session_id)
         events: list[dict[str, Any]] = []
         message_id = None
         normalized_focus = RestoreFocus(
@@ -1962,7 +2124,7 @@ class V3HostApiService:
                     approval, agent_id=assigned_agent_id, events=events
                 )
             else:
-                self._ensure_master_agent(approval.session_id)
+                self._require_master_agent(approval.session_id)
                 self._enqueue_approval_resolved_signal(
                     approval, agent_id="agent:master", events=events
                 )

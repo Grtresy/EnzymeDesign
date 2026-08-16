@@ -18,11 +18,115 @@ _SAFE_SSH_HOST = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
 _SAFE_SSH_USER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SSH_TRANSPORT_POLICY_SCHEMA_VERSION = "ssh_transport_policy@1"
 RUNNER_EFFECTIVE_CONFIG_SCHEMA_VERSION = "runner_effective_config@1"
+EXECUTOR_WORKSPACE_TARGET_CONFIG_SCHEMA_VERSION = (
+    "executor_workspace_target_config@1"
+)
 
 
 class SshTransportMode(StrEnum):
     DISABLED = "disabled"
     CONTROLMASTER_V1 = "controlmaster_v1"
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutorWorkspaceTargetConfig:
+    activated: bool = False
+    target_profile_id: str = "unconfigured"
+    workspace_root: str = "/var/empty/openzyme-hpc-disabled"
+    sidecar_root: str = "/var/empty/openzyme-hpc-sidecar-disabled"
+    os_principal_policy_id: str = "unconfigured"
+    root_policy_digest: str | None = None
+    isolation_command: str | None = None
+    credential_provider_id: str = "unconfigured"
+    authenticator_id: str = "unconfigured"
+    login_alias: str = "unconfigured"
+    toolchain_digest: str | None = None
+    native_positive_proof_digest: str | None = None
+    native_negative_proof_digest: str | None = None
+
+    def __post_init__(self) -> None:
+        for name in (
+            "target_profile_id",
+            "os_principal_policy_id",
+            "credential_provider_id",
+            "authenticator_id",
+            "login_alias",
+        ):
+            if _SAFE_CONFIG_ID.fullmatch(getattr(self, name)) is None:
+                raise ValueError(f"executor_workspace.{name} is not a safe identifier")
+        for name in ("workspace_root", "sidecar_root"):
+            value = PurePosixPath(getattr(self, name))
+            if (
+                not value.is_absolute()
+                or value.as_posix() == "/"
+                or value.as_posix() != getattr(self, name)
+                or any(part in {"", ".", ".."} for part in value.parts[1:])
+            ):
+                raise ValueError(
+                    f"executor_workspace.{name} must be a protected absolute path"
+                )
+        workspace_root = PurePosixPath(self.workspace_root)
+        sidecar_root = PurePosixPath(self.sidecar_root)
+        if (
+            workspace_root == sidecar_root
+            or workspace_root.is_relative_to(sidecar_root)
+            or sidecar_root.is_relative_to(workspace_root)
+        ):
+            raise ValueError(
+                "executor workspace and runner sidecar roots must not overlap"
+            )
+        digests = (
+            self.root_policy_digest,
+            self.toolchain_digest,
+            self.native_positive_proof_digest,
+            self.native_negative_proof_digest,
+        )
+        if self.activated and any(value is None for value in digests):
+            raise ValueError(
+                "activated executor workspace target requires native positive and negative proofs"
+            )
+        for value in digests:
+            if value is not None and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None:
+                raise ValueError(
+                    "executor workspace target proof identity must be a sha256 digest"
+                )
+        if self.activated and self.isolation_command is None:
+            raise ValueError(
+                "activated executor workspace target requires a target-native isolation command"
+            )
+        if self.isolation_command is not None:
+            command = PurePosixPath(self.isolation_command)
+            if (
+                not command.is_absolute()
+                or command.as_posix() == "/"
+                or command.as_posix() != self.isolation_command
+            ):
+                raise ValueError(
+                    "executor_workspace.isolation_command must be an absolute target path"
+                )
+
+    def to_authority_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": EXECUTOR_WORKSPACE_TARGET_CONFIG_SCHEMA_VERSION,
+            "activated": self.activated,
+            "target_profile_id": self.target_profile_id,
+            "workspace_root": self.workspace_root,
+            "sidecar_root": self.sidecar_root,
+            "os_principal_policy_id": self.os_principal_policy_id,
+            "root_policy_digest": self.root_policy_digest,
+            "isolation_command": self.isolation_command,
+            "credential_provider_id": self.credential_provider_id,
+            "authenticator_id": self.authenticator_id,
+            "login_alias": self.login_alias,
+            "toolchain_digest": self.toolchain_digest,
+            "native_positive_proof_digest": self.native_positive_proof_digest,
+            "native_negative_proof_digest": self.native_negative_proof_digest,
+            "scheduler_submit_enabled": False,
+        }
+
+    @property
+    def target_profile_digest(self) -> str:
+        return _json_digest(self.to_authority_dict())
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,6 +420,9 @@ class RunnerConfig:
     limits: ResourceLimitsConfig = field(default_factory=ResourceLimitsConfig)
     adapters: dict[str, AdapterConfig] = field(default_factory=dict)
     ssh_transport: SshTransportPolicy = field(default_factory=SshTransportPolicy)
+    executor_workspace: ExecutorWorkspaceTargetConfig = field(
+        default_factory=ExecutorWorkspaceTargetConfig
+    )
     deployment_id: str = "local-runner"
     transport_control_root: str = ".mcp_hpc_runner/control"
 
@@ -402,6 +509,7 @@ class RunnerConfig:
                     "max_tail_lines": self.limits.max_tail_lines,
                 },
                 "ssh_transport": self.ssh_transport.to_authority_dict(),
+                "executor_workspace": self.executor_workspace.to_authority_dict(),
                 "logging": {
                     "inline_log_limit": self.logging.inline_log_limit,
                     "redact_patterns": list(self.logging.redact_patterns),
@@ -420,6 +528,7 @@ def _merge_defaults(data: dict[str, Any] | None) -> RunnerConfig:
     limits_raw = data.get("limits", {})
     runner_raw = data.get("runner", {})
     transport_raw = data.get("ssh_transport", {})
+    executor_workspace_raw = data.get("executor_workspace", {})
 
     unexpected_runner = sorted(
         set(runner_raw) - {"deployment_id", "transport_control_root"}
@@ -448,6 +557,29 @@ def _merge_defaults(data: dict[str, Any] | None) -> RunnerConfig:
         raise ValueError(
             "ssh_transport contains unsupported fields: "
             + ", ".join(unexpected_transport)
+        )
+    allowed_executor_workspace_fields = {
+        "activated",
+        "target_profile_id",
+        "workspace_root",
+        "sidecar_root",
+        "os_principal_policy_id",
+        "root_policy_digest",
+        "isolation_command",
+        "credential_provider_id",
+        "authenticator_id",
+        "login_alias",
+        "toolchain_digest",
+        "native_positive_proof_digest",
+        "native_negative_proof_digest",
+    }
+    unexpected_executor_workspace = sorted(
+        set(executor_workspace_raw) - allowed_executor_workspace_fields
+    )
+    if unexpected_executor_workspace:
+        raise ValueError(
+            "executor_workspace contains unsupported fields: "
+            + ", ".join(unexpected_executor_workspace)
         )
 
     adapters: dict[str, AdapterConfig] = {}
@@ -556,6 +688,67 @@ def _merge_defaults(data: dict[str, Any] | None) -> RunnerConfig:
             ),
             shutdown_timeout_seconds=float(
                 transport_raw.get("shutdown_timeout_seconds", 10.0)
+            ),
+        ),
+        executor_workspace=ExecutorWorkspaceTargetConfig(
+            activated=bool(executor_workspace_raw.get("activated", False)),
+            target_profile_id=str(
+                executor_workspace_raw.get("target_profile_id", "unconfigured")
+            ),
+            workspace_root=str(
+                executor_workspace_raw.get(
+                    "workspace_root",
+                    "/var/empty/openzyme-hpc-disabled",
+                )
+            ),
+            sidecar_root=str(
+                executor_workspace_raw.get(
+                    "sidecar_root",
+                    "/var/empty/openzyme-hpc-sidecar-disabled",
+                )
+            ),
+            os_principal_policy_id=str(
+                executor_workspace_raw.get(
+                    "os_principal_policy_id",
+                    "unconfigured",
+                )
+            ),
+            root_policy_digest=(
+                None
+                if executor_workspace_raw.get("root_policy_digest") is None
+                else str(executor_workspace_raw["root_policy_digest"])
+            ),
+            isolation_command=(
+                None
+                if executor_workspace_raw.get("isolation_command") is None
+                else str(executor_workspace_raw["isolation_command"])
+            ),
+            credential_provider_id=str(
+                executor_workspace_raw.get(
+                    "credential_provider_id",
+                    "unconfigured",
+                )
+            ),
+            authenticator_id=str(
+                executor_workspace_raw.get("authenticator_id", "unconfigured")
+            ),
+            login_alias=str(
+                executor_workspace_raw.get("login_alias", "unconfigured")
+            ),
+            toolchain_digest=(
+                None
+                if executor_workspace_raw.get("toolchain_digest") is None
+                else str(executor_workspace_raw["toolchain_digest"])
+            ),
+            native_positive_proof_digest=(
+                None
+                if executor_workspace_raw.get("native_positive_proof_digest") is None
+                else str(executor_workspace_raw["native_positive_proof_digest"])
+            ),
+            native_negative_proof_digest=(
+                None
+                if executor_workspace_raw.get("native_negative_proof_digest") is None
+                else str(executor_workspace_raw["native_negative_proof_digest"])
             ),
         ),
         deployment_id=str(runner_raw.get("deployment_id", "local-runner")),

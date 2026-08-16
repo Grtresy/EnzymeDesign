@@ -90,3 +90,7 @@ Sandbox process 返回真实 exit status 和该进程可见的 stdout/stderr。H
 ## Open Questions
 
 无未决产品问题。具体 container network implementation、tool versions 与 credential provider 是 deployment qualification 项，必须在启用对应 lease scope 前通过，失败即阻止 rollout。
+> **连续源码 gate：** `file_workspace_source_only_deletion_gate@1` 绑定三个直接
+> 前序 source gate 和当前残余 surface inventory。正式 deletion admission、内部
+> activation-ready receipt 与 public cutover 均继续封闭，直到 14 项源码完成后的
+> 统一非 live 验收重建精确证据。

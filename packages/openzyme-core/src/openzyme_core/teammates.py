@@ -8,10 +8,11 @@ from openzyme_domain import AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import MutationWriterKind
-from openzyme_domain import ResearchSummaryStatus
 from openzyme_runtime import AgentStepContext
 from openzyme_runtime import ToolSpec
 
+from .agent_capsule_runtime import agent_capsule_tools_available
+from .agent_capsule_runtime import register_agent_capsule_tools
 from .artifact_boundary import register_artifact_boundary_tools
 from .artifact_tools import register_artifact_tools
 from .bio_research_tools import register_bio_research_tools
@@ -19,6 +20,7 @@ from .bio_research_tools import register_web_research_tools
 from .docs import register_docs_tools
 from .engines import EngineRegistry
 from .failure_tools import register_failure_tools
+from .executor_hpc_workspaces import register_executor_hpc_workspace_tools
 from .harness import HarnessDriver
 from .harness import HarnessInput
 from .harness import HarnessResult
@@ -55,14 +57,17 @@ from .task_board import register_task_board_tools
 from .task_evidence import task_finish_evidence_refs_schema
 from .skills import SkillRegistry
 from .skills import render_selected_workflow_context
+from .tool_catalog import agent_capsule_tool_descriptors
 from .tool_catalog import artifact_tool_descriptors
 from .tool_catalog import engine_tool_descriptors
+from .tool_catalog import executor_hpc_workspace_tool_descriptors
 from .tool_catalog import failure_tool_descriptors
 from .tool_catalog import sandbox_tool_descriptors
 from .tool_catalog import scientific_attempt_tool_descriptors
 from .tool_catalog import ToolDescriptor
 from .tool_catalog import world_tool_descriptors
 from .world_inspection import register_world_inspection_tools
+from .workspace_publication_tools import register_workspace_publication_tools
 from .workflow_knowledge import is_workflow_ref
 from .workflow_knowledge import validate_workflow_requirements
 
@@ -78,6 +83,9 @@ def _web_tool_enabled(adapter: object | None) -> bool:
 def teammate_tool_descriptors(
     *, role: str, research_adapter: object | None = None
 ) -> tuple[ToolDescriptor, ...]:
+    current_artifact_descriptors = (
+        () if role == "researcher" else artifact_tool_descriptors()
+    )
     shared = (
         *failure_tool_descriptors(),
         *scientific_attempt_tool_descriptors(),
@@ -163,7 +171,7 @@ def teammate_tool_descriptors(
             },
         ),
         *world_tool_descriptors(),
-        *artifact_tool_descriptors(),
+        *current_artifact_descriptors,
         ToolDescriptor(
             tool_name="protocol.thread",
             description="Read one team protocol thread by correlation id.",
@@ -175,8 +183,27 @@ def teammate_tool_descriptors(
             },
         ),
         ToolDescriptor(
+            tool_name="protocol.handoff.get",
+            description=(
+                "Read one bounded exact file handoff when this agent is the producer "
+                "or recipient; returns refs only and never file bytes."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"handoff_id": {"type": "string"}},
+                "required": ["handoff_id"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
             tool_name="protocol.send",
-            description="Send a structured protocol message to another teammate or the harness.",
+            description=(
+                "Persist a bounded protocol message and queue only its wakeup. File "
+                "handoffs require message_type='file_handoff' plus a complete "
+                "ProtocolFileHandoff@1; bytes, paths, credentials, branches, URLs, "
+                "artifact aliases, fetch, merge, synchronous run, and task transitions "
+                "are forbidden."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -252,7 +279,8 @@ def teammate_tool_descriptors(
                     tool_name="web.fetch",
                     description=(
                         "Fetch and extract readable content from one web page URL. "
-                        "This does not persist structure artifacts; for RCSB structure pages use rcsb_pdb.download_structure."
+                        "This does not persist a structure file; for RCSB structure "
+                        "pages use rcsb_pdb.download_structure."
                     ),
                     input_schema={
                         "type": "object",
@@ -312,7 +340,10 @@ def teammate_tool_descriptors(
                 ),
                 ToolDescriptor(
                     tool_name="deep_research.dossier",
-                    description="Read the current dossier output for a deep research invocation.",
+                    description=(
+                        "Locate the deep-research workspace files for an invocation; "
+                        "the Host does not return dossier bytes."
+                    ),
                     input_schema={
                         "type": "object",
                         "properties": {"invocation_id": {"type": "string"}},
@@ -358,7 +389,10 @@ def teammate_tool_descriptors(
                 ),
                 ToolDescriptor(
                     tool_name="uniprot.download_fasta",
-                    description="Download a protein FASTA sequence from UniProt and persist it as a workspace artifact.",
+                    description=(
+                        "Download a protein FASTA sequence into the researcher's own "
+                        "Git workspace; commit and publish it before handoff."
+                    ),
                     input_schema={
                         "type": "object",
                         "properties": {"accession": {"type": "string"}},
@@ -381,7 +415,10 @@ def teammate_tool_descriptors(
                 ),
                 ToolDescriptor(
                     tool_name="rcsb_pdb.download_structure",
-                    description="Download a structure file from RCSB PDB and persist it as a workspace artifact.",
+                    description=(
+                        "Download a structure file into the researcher's own Git "
+                        "workspace; commit and publish it before handoff."
+                    ),
                     input_schema={
                         "type": "object",
                         "properties": {
@@ -512,14 +549,18 @@ def teammate_tool_descriptors(
                 ),
                 ToolDescriptor(
                     tool_name="report_draft.update",
-                    description="Create or update the report draft for the assigned task.",
+                    description=(
+                        "Update bounded report metadata and optionally bind an exact "
+                        "published RevisionPathRef@1. Edit body files in the reporter "
+                        "Git workspace; this tool never accepts body bytes."
+                    ),
                     input_schema={
                         "type": "object",
                         "properties": {
                             "task_id": {"type": "string"},
                             "title": {"type": "string"},
                             "summary": {"type": "string"},
-                            "markdown": {"type": "string"},
+                            "content_ref": {"type": "object"},
                             "status": {
                                 "type": "string",
                                 "enum": [
@@ -538,21 +579,28 @@ def teammate_tool_descriptors(
                 ),
                 ToolDescriptor(
                     tool_name="report.publish",
-                    description="Publish the current report draft as a final report.",
+                    description=(
+                        "Create the report business publication from one exact "
+                        "already-published RevisionPathRef@1. This never calls "
+                        "workspace.publish or reads a dirty/private file."
+                    ),
                     input_schema={
                         "type": "object",
                         "properties": {
                             "draft_id": {"type": "string"},
                             "task_id": {"type": "string"},
                             "report_id": {"type": "string"},
+                            "content_ref": {"type": "object"},
+                            "supersedes_report_id": {"type": "string"},
                             "title": {"type": "string"},
                             "summary": {"type": "string"},
                             "stage_summary": {"type": "string"},
                             "status": {
                                 "type": "string",
-                                "enum": ["ready", "published", "failed"],
+                                "enum": ["ready", "published"],
                             },
                         },
+                        "required": ["content_ref"],
                         "additionalProperties": False,
                     },
                 ),
@@ -572,6 +620,16 @@ def validate_teammate_workflow_requirements(
         role=role,
         research_adapter=context.research_adapter,
     )
+    if (
+        context.agent_capsule_process_runner is not None
+        and context.agent_id is not None
+        and agent_capsule_tools_available(
+            context.repositories,
+            session_id=context.snapshot.session.session_id,
+            agent_id=context.agent_id,
+        )
+    ):
+        descriptors = (*descriptors, *agent_capsule_tool_descriptors())
     if role == "executor":
         descriptors = (
             *descriptors,
@@ -600,6 +658,7 @@ def validate_teammate_workflow_requirements(
 def build_teammate_registry(
     *,
     agent_id: str | None = None,
+    role: str | None = None,
     engine_registry: EngineRegistry | None = None,
     sandbox_host_binding: SandboxHostBinding | None = None,
     mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None,
@@ -631,8 +690,9 @@ def build_teammate_registry(
         )
     register_web_research_tools(registry, adapter=research_adapter)
     register_bio_research_tools(registry, service=bio_research_service)
-    register_artifact_tools(registry)
-    register_artifact_boundary_tools(registry)
+    if role != "researcher":
+        register_artifact_tools(registry)
+        register_artifact_boundary_tools(registry)
     register_sandbox_workspace_tools(registry, agent_id=agent_id)
     register_sandbox_runtime_tools(
         registry,
@@ -649,6 +709,10 @@ def build_teammate_registry(
         live_process_registry=live_process_registry,
         signal_notifier=signal_notifier,
     )
+    register_agent_capsule_tools(registry, agent_id=agent_id)
+    if role == "executor":
+        register_executor_hpc_workspace_tools(registry, agent_id=agent_id)
+    register_workspace_publication_tools(registry, agent_id=agent_id)
     register_protocol_tools(registry)
     register_failure_tools(registry)
     register_scientific_attempt_tools(registry)
@@ -809,6 +873,19 @@ class TeammateConversationDriver(HarnessDriver):
             )
             or "none"
         )
+        if self.role == "researcher":
+            artifact_bits = "not projected into the current research path"
+        research_file_bits = (
+            ", ".join(
+                (
+                    f"{item['research_kind']}="
+                    f"{item['revision_path_ref']['publication_id']}:"
+                    f"{item['revision_path_ref']['path']}"
+                )
+                for item in restore.research_files[:8]
+            )
+            or "none"
+        )
         draft_titles = (
             ", ".join(draft.title for draft in restore.report_drafts[:8]) or "none"
         )
@@ -821,6 +898,19 @@ class TeammateConversationDriver(HarnessDriver):
         report_titles = (
             ", ".join(report.title for report in restore.reports[:8]) or "none"
         )
+        hpc_workspace_service = context.executor_hpc_workspace_service
+        hpc_workspace_bits = "none"
+        if self.role == "executor" and hpc_workspace_service is not None:
+            owner_workspaces = hpc_workspace_service.owner_projections_for_agent(
+                session_id=context.snapshot.session.session_id,
+                agent_id=self.agent_id,
+            )
+            if owner_workspaces:
+                hpc_workspace_bits = json.dumps(
+                    owner_workspaces,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                )
         display_name = self._display_name(context)
         handle = self._handle(context) or "none"
         authorized_workflow_refs = tuple(
@@ -832,15 +922,18 @@ class TeammateConversationDriver(HarnessDriver):
             f"Role: {self.role}. Role is a capability type for prompts, tools, and runtime policy; it is not your identity.",
             "You are not user-facing. Do not speak to the user directly.",
             "When coordinating with other agents, prefer their nickname or @handle in natural language, but tool calls must use resolvable agent references that the service can convert to canonical agent_id.",
-            "Work on your assigned task using the shared session workspace and your role-scoped tools.",
+            "Work on your assigned task using your exact generation-owned Git clone and your role-scoped tools. Lanes retain task focus and claim semantics, but lane cwd, branch metadata, and another agent's workspace never select your clone, branch, index, refs, or HEAD.",
             "Use world.inspect when you need structured facts about task state, artifacts, approvals, operations, outcomes, runtime warnings, visible tools, or route policies; it is an observation tool, not a workflow planner.",
             "Prefer tools over narration. When you decide the assigned task stage is completed, blocked, failed, or cancelled, call task.finish with a concise summary and evidence refs instead of natural-language closure or ordinary task.update. task.finish ends your current turn; send protocol updates before it only when useful.",
-            "You may read any session artifact through artifact tools by artifact_id. Compatibility catalog tools such as artifact.create_text, artifact.patch_text, and artifact.diff_text remain available for immutable CODE snapshots. For execution, first inspect your persistent sandbox workspace with sandbox.workspace.status; day-to-day source authoring belongs in that sandbox workspace, while CODE artifacts are audit snapshots when approval, external SDK operations, or provenance require one. Stay focused on your assigned task and lane. Never request or use Host local paths, storage_uri, runner paths, or sandbox host paths.",
+            "When workspace.exec is exposed, use it for ordinary filesystem, shell, Git, Git LFS, and network-client work in your own persistent clone. Its short-lived process container is not the source of durability: tracked, staged, unstaged, untracked, downloaded, Git-object, and private-ref state remain in the owning generation volume. Stay focused on your assigned task and lane. Never request or use Host local paths, storage_uri, runner paths, Host checkout paths, Host home/SSH storage, another agent's volume, or a shared .git.",
+            "Workspace checkpoint contract: unfinished exploration may remain staged, unstaged, or untracked. Before you report a completed research, implementation, or verification step that produced durable files as a durable checkpoint, or cross a publication, handoff, external-job, or task-terminal boundary, you must select the coherent files yourself, create an intentional local commit, and explicitly create or fast-forward that commit to your append-only private ref. A local commit alone is not a durable checkpoint. Never force-update or delete a pushed private ref; create a new private ref when histories diverge.",
+            "The Host never auto-stages, auto-commits, auto-pushes, auto-cleans, stashes, merges, chooses coherent files, changes branches, or publishes for you. Native Git and network errors are returned from the exact process without retry, endpoint substitution, SDK fallback, or reopened approval; decide whether to correct the command, continue dirty exploration, or create another authorized private ref.",
             "Never request more than 3 tool calls in one response.",
             "After every tool call, read ok, status, summary, error_code, hint, and details first. If ok is false, do not assume the requested action completed.",
             "Researcher contract: choose between direct provider/web tools and available research engines based on the assigned task, evidence needs, cost, and uncertainty. No task wording forces one tool to run before another.",
-            "For structure-dependent research, distinguish source refs from persisted workspace artifacts; if you decide a real structure file is needed, use provider/download tools to create a catalog artifact instead of treating a fetched web page as one.",
-            "Executor contract: inspect the persistent sandbox workspace before changing it and use controlled docs when capability details are needed. Author source with sandbox.file.* and run it with sandbox.exec. Every otherwise-valid sandbox.exec invocation that reaches source preflight, including Python -c, package/signature inspection, and diagnostics, first snapshots the entire /workspace/src tree and therefore requires at least one eligible regular source file; never use sandbox.exec as a read-only environment-inspection shortcut. If runtime introspection is still necessary after reading controlled docs, author that inspection source under /workspace/src before executing it. External provider, tool, or HPC work must go through the Host-supervised SDK from inside that sandbox run. Never call a runner, SSH, Slurm, runner config, or external network directly. Do not treat execution.pipeline.start as the required authoring path.",
+            "In ordinary execution, use controlled docs when capability details are needed; documentation informs strategy but never replaces current structured world facts or authority checks.",
+            "For structure-dependent research, distinguish public source metadata from versioned workspace files. If a real structure file is needed, use the provider/download tool, inspect the returned workspace path, then intentionally commit and publish the exact file before handoff; a fetched web page is never a structure file.",
+            "Executor contract: use the generation-owned local clone for ordinary source authoring and native diagnostics. When an exact owner-only HPC login workspace is listed below, workspace.exec may request its scoped credential service and directly use native SSH, rsync/scp, Git/LFS, shell, and file CRUD inside that remote root. Use hpc.workspace.sync_source to obtain an exact private checkpoint or immutable publication ref/commit/tree/LFS identity, then choose and execute fetch, checkout, merge, rebase, or conflict resolution explicitly; the Host never mutates the working tree for you. This native login/file credential never grants scheduler submission. Controlled scientific job dispatch remains a separate Host-supervised boundary: never invoke sbatch, Slurm clients, runner APIs/configuration, or treat login-side mutation as a submitted job, publication, task completion, provenance, or settlement.",
             "Execution evidence must come from the real controlled operation and declared artifacts. Never present synthetic output, a local stand-in, or an undeclared fallback as a successful external/scientific result; return the structured failure and preserve evidence when the required route cannot complete.",
             "A failed tool result does not automatically end your turn. Inspect failure_observation facts, effect_certainty, retry_eligibility, likely_causes, and evidence_refs, then choose a safe repair, replan, request for help/authority, or explicit task.finish.",
             "Use task.finish(status='blocked') for user/operator/authority or harness recovery needs, and status='failed' only when the assigned objective is genuinely impossible. Never replay dispatch_in_doubt external work.",
@@ -856,9 +949,11 @@ class TeammateConversationDriver(HarnessDriver):
             f"Focused task: {restore.focused_task_id or 'none'}",
             f"Focused lane: {restore.focused_lane_id or 'none'}",
             "Artifact catalog: " + artifact_bits,
+            "Published research files: " + research_file_bits,
             "Report draft catalog: " + draft_titles,
             "Report catalog: " + report_titles,
             "Known protocol threads: " + protocol_bits,
+            "Owner-only executor HPC login workspaces: " + hpc_workspace_bits,
             "Ready tasks: "
             + (", ".join(task.task_id for task in restore.ready_tasks) or "none"),
         ]
@@ -907,9 +1002,25 @@ class TeammateConversationDriver(HarnessDriver):
     def _allowed_tools(
         self, context: SessionRuntimeContext
     ) -> tuple[ToolDescriptor, ...]:
-        return teammate_tool_descriptors(
+        descriptors = teammate_tool_descriptors(
             role=self.role, research_adapter=self.research_adapter
         )
+        if (
+            context.agent_capsule_process_runner is not None
+            and context.agent_id is not None
+            and agent_capsule_tools_available(
+                context.repositories,
+                session_id=context.snapshot.session.session_id,
+                agent_id=context.agent_id,
+            )
+        ):
+            descriptors = (*descriptors, *agent_capsule_tool_descriptors())
+        if self.role == "executor" and context.executor_hpc_workspace_service is not None:
+            descriptors = (
+                *descriptors,
+                *executor_hpc_workspace_tool_descriptors(),
+            )
+        return descriptors
 
     def _prepare_step_context(
         self, context: SessionRuntimeContext, *, call_index: int
@@ -1271,6 +1382,7 @@ def run_teammate_loop(
         )
     registry = build_teammate_registry(
         agent_id=agent_id,
+        role=role,
         engine_registry=parent_context.engine_registry,
         sandbox_host_binding=sandbox_host_binding,
         mutation_writer_scope_factory=(parent_context.mutation_writer_scope_factory),
@@ -1326,6 +1438,27 @@ def run_teammate_loop(
         reliability_settings=parent_context.reliability_settings,
         durable_route_adapter_policy_ids=(
             parent_context.durable_route_adapter_policy_ids
+        ),
+        agent_workspace_readiness_providers=(
+            parent_context.agent_workspace_readiness_providers
+        ),
+        delegation_readiness_provider_id=(
+            parent_context.delegation_readiness_provider_id
+        ),
+        agent_capsule_process_runner=(
+            parent_context.agent_capsule_process_runner
+        ),
+        agent_process_credential_router=(
+            parent_context.agent_process_credential_router
+        ),
+        executor_hpc_workspace_service=(
+            parent_context.executor_hpc_workspace_service
+        ),
+        workspace_checkpoint_git_reader=(
+            parent_context.workspace_checkpoint_git_reader
+        ),
+        agent_git_workspace_recovery_service=(
+            parent_context.agent_git_workspace_recovery_service
         ),
         mutation_writer_scope_factory=(parent_context.mutation_writer_scope_factory),
     )
@@ -1597,16 +1730,20 @@ def _recover_terminal_outcome_summary_from_workspace(
                 or payload.get("canonical_summary")
                 or f"{message.sender} completed delegated work."
             )
-    for summary in reversed(
-        context.repositories.research_summaries.list_by_session(
-            context.snapshot.session.session_id
+    indexes = context.repositories.revision_path_handoffs.list_research_indexes(
+        session_id=context.snapshot.session.session_id,
+    )
+    for index in reversed(indexes):
+        if index.get("task_id") != task_id:
+            continue
+        ref = context.repositories.revision_path_handoffs.get_ref(
+            str(index["ref_id"])
         )
-    ):
-        if (
-            summary.task_id == task_id
-            and summary.status is ResearchSummaryStatus.COMPLETED
-        ):
-            return summary.summary
+        if ref is None:
+            raise RuntimeError(
+                "research completion index lost its immutable revision path ref"
+            )
+        return str(index["bounded_summary"])
     return None
 
 

@@ -34,12 +34,18 @@ def is_published_report_link(
     report_id = str(_field(report, "report_id") or "")
     report_task_id = _field(report, "task_id")
     draft_task_id = _field(draft, "task_id")
+    content_ref_id = _field(report, "content_ref_id")
+    file_native_identity_valid = content_ref_id is None or (
+        content_ref_id == _field(draft, "content_ref")
+        and int(_field(report, "report_version") or 0) >= 1
+    )
     return bool(
         report_id
         and is_published_report_status(report)
         and _status_value(draft) == "published"
         and _field(draft, "published_report_id") == report_id
         and _field(draft, "content_ref")
+        and file_native_identity_valid
         and _field(report, "session_id") == _field(draft, "session_id")
         and report_task_id == draft_task_id
         and (task_id is None or report_task_id == task_id)

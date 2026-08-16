@@ -15,6 +15,8 @@ def test_published_report_link_accepts_both_success_terminal_statuses(
         session_id="sess_001",
         task_id="task_report",
         status=SimpleNamespace(value=status),
+        content_ref_id="doc_001",
+        report_version=1,
     )
     draft = SimpleNamespace(
         session_id="sess_001",

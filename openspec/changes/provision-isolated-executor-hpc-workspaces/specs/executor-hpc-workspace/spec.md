@@ -1,5 +1,27 @@
 ## ADDED Requirements
 
+### Requirement: Source implementation does not promote deferred predecessor acceptance
+During the explicitly ordered continuous migration, source implementation MUST remain bounded and MAY begin from an
+`executor_hpc_workspace_source_only_dependency_gate@1` before final C2--C7 acceptance receipts are
+issued. The gate MUST bind immutable C1 acceptance, the current C2 source snapshot, C3--C7
+source-only gates, all deferred validation tasks, and current domain/service/migration/runner
+baseline identities. It MUST state `acceptance_proven=false`, `final_source_revision_bound=false`,
+`production_effect_authorized=false`, and `live_authorized=false`.
+
+The gate permits only continued source, deferred-test, and documentation work. It MUST NOT be
+consumed as a capability lease, SSH/repository/LFS credential, target qualification, provisioning
+intent or receipt, remote workspace identity, runner command, production proof, live authorization,
+or remote-effect authorization. Final acceptance SHALL re-read the combined final source and
+require formal C1--C7 receipts plus every validation declared by this change.
+
+#### Scenario: Continue source work under unified deferred validation
+- **WHEN** immutable C1 acceptance and current C2--C7 source interfaces are snapshotted while final combined predecessor validation remains deferred
+- **THEN** the implementation may add domain, repository, runner, credential-provider, qualification-test, and documentation source without invoking any credential, SSH, Git/LFS network, remote root, runner, cleanup, scheduler, or live effect
+
+#### Scenario: Gate is presented as deployment authority
+- **WHEN** any caller presents the source-only gate to issue a credential, activate a target, provision or inspect a remote workspace, start a runner operation, or satisfy production admission
+- **THEN** the request fails before external effect because the gate proves neither final source identity nor predecessor/current acceptance
+
 ### Requirement: Each executor generation owns one isolated HPC login workspace
 The system MUST provision at most one active `ExecutorHpcWorkspace` for an exact project repository binding version, session, executor agent member, local workspace generation, HPC target profile, and remote workspace generation. The workspace MUST contain an independent full Git clone, independent `.git` and LFS state, and persistent writable scratch/run directories. It MUST NOT use a linked worktree, shared `.git`, another agent's directory, per-run artifact staging root, or ambient remote cwd.
 
@@ -16,7 +38,7 @@ The system MUST provision at most one active `ExecutorHpcWorkspace` for an exact
 - **THEN** the new generation receives a distinct workspace identity and the prior root is not silently rebound to it
 
 ### Requirement: The owning executor can use the remote workspace natively
-An active executor capability lease bound to the exact target and workspace generation MUST allow the owner to use native SSH, Git, Git LFS, rsync, scp, shell, and ordinary file CRUD directly against its HPC login workspace without per-command approval or a Host typed transfer gateway. Credentials MUST be scoped to that executor, target, workspace, and lease lifecycle and MUST NOT grant access to another agent's workspace or runner-private metadata.
+This change SHALL consume C2's canonical lease identity/status/profile seam but SHALL implement the real credential-provider and target-authentication path. An active executor capability lease bound to the exact session, executor, target, and local/remote workspace generation MUST allow the owner to use native SSH, Git, Git LFS, rsync, scp, shell, and ordinary create/read/update/delete operations directly against its HPC login workspace without per-command approval or a Host typed transfer gateway. Short-lived credentials MUST bind the lease id/version, exact executor, target profile, generations, login alias/root, and allowed login/file operation classes. They MUST NOT grant access to another agent or generation, runner-private metadata, or scheduler submission, and MUST NOT be persisted in workspace files or public projections. A C2 receipt or executor role label alone MUST NOT count as an issued or authenticated HPC credential.
 
 #### Scenario: Executor transfers a private file
 - **WHEN** the owning executor uses rsync or scp within its active lease to copy a file to its remote workspace
@@ -25,6 +47,33 @@ An active executor capability lease bound to the exact target and workspace gene
 #### Scenario: Another agent uses the credential
 - **WHEN** a different agent member or workspace generation attempts to use the executor's HPC credential or path
 - **THEN** access is rejected without selecting a shared account, alternate path, or Host transfer proxy
+
+#### Scenario: C2 seam exists but no real target credential exists
+- **WHEN** the canonical lease is active but this change has not issued and authenticated a credential for the exact target/workspace generation
+- **THEN** native HPC login access remains unavailable and the system does not treat the C2 receipt, role, shell, or ordinary network capability as a usable credential
+
+#### Scenario: Lease becomes inactive
+- **WHEN** C2 reports the exact lease inactive because of exact revoke, session/policy bulk revoke, operator subtree revoke, retirement, or expiry
+- **THEN** new credential issuance and native connection admission stop for that exact lease without inferring that an already-started transfer or external job is settled
+
+### Requirement: Target OS and workspace root enforce executor isolation
+Every activated HPC target MUST map the exact executor workspace identity to a target-native OS security principal or equivalent enforcement identity and a canonical protected root. Native SSH shell, Git/LFS, rsync, scp, and file CRUD MUST be authorized by target enforcement, not merely by Host-side path validation. The owner MUST be able to create, read, update, and delete ordinary files inside its root. Other executors and generations MUST be unable to traverse, read, mutate, rename, link into, or delete that root or runner-private sidecars. Path traversal, absolute-path substitution, symlink/hardlink escape, credential replay on another target, and shared-account fallback MUST be rejected. Target activation MUST require native positive and negative proof of these properties; configuration declarations or mocked credential claims alone are insufficient.
+
+#### Scenario: Owner exercises native CRUD
+- **WHEN** the exact target-scoped credential opens a native session in the owning workspace
+- **THEN** create, read, update, delete, Git/LFS, rsync, and scp operations succeed within the canonical root without a Host transfer proxy
+
+#### Scenario: Executor crosses into another root
+- **WHEN** an executor uses shell traversal, an absolute path, rsync/scp destination, or a link to access another executor/generation workspace or runner sidecar
+- **THEN** the target OS/root policy rejects the operation and no alternate shared account or path is selected
+
+#### Scenario: Credential is replayed on another target or generation
+- **WHEN** a valid credential for one target/root/generation is presented to a different target, root, or generation
+- **THEN** target authentication rejects it before native workspace access
+
+#### Scenario: Qualification has only configuration evidence
+- **WHEN** a target declares an OS principal/root policy but lacks native owner-positive and cross-owner/root-escape negative proof
+- **THEN** executor workspace activation remains unavailable for that target
 
 ### Requirement: Remote workspace location is owner-visible and otherwise isolated
 The system MUST expose the usable login alias and remote workspace path or equivalent native handle to the owning executor under its active lease. Other agents, protocol handoffs, task evidence, ordinary public projections, and sanitized diagnostics MUST receive only an opaque workspace id and safe lifecycle facts. Host paths, runner sidecar locations, raw credentials, and other agents' remote paths MUST remain hidden.
@@ -74,7 +123,7 @@ The canonical workspace record MUST NOT derive identity from mutable remote file
 Session end, agent retirement, capability lease revocation, and generation replacement MUST stop new workspace admissions but MUST NOT claim that active jobs, transfers, or remote processes are settled. Cleanup MUST be a separate exact-handle external operation that first proves no active controlled execution or unresolved effect remains and then records an immutable cleanup or retention receipt. Ambiguous cleanup MUST remain uncertain and MUST NOT target another path.
 
 #### Scenario: Lease expires while a job is active
-- **WHEN** an executor lease ends while a controlled HPC job remains nonterminal
+- **WHEN** an executor capability lease is revoked or otherwise becomes inactive while a controlled HPC job remains nonterminal
 - **THEN** new native admissions stop while the existing job is reconciled by its exact external handle and the workspace is retained
 
 #### Scenario: Cleanup response is lost

@@ -1,5 +1,7 @@
 ## Context
 
+连续源码迁移期间使用 `scientific_deliverable_source_only_dependency_gate@1`。它绑定 immutable AOX supersession receipt、当前 predecessor source gates 与 source identities，但不证明前序验收、不可启用 scientific file writer/contract epoch、不可读取 remote Git/LFS bytes、不可创建 publication，也不可触发 provider、HPC、attempt、selection、task、report、GO/NO-GO 或 live effect。正式 prerequisite/completion receipts 必须在 combined final source 的统一验收中重建。
+
 当前科学链把 `SessionArtifactRecord` 同时当作交付物身份、sealed bytes locator、selection 输入、attempt lineage、finalizer 输出和离线验证入口。AOX 又把固定 17-role bundle、source snapshot、operation、selection、attempt closure 与 artifact set digest 原子绑定。前序 changes 已经建立 project repository binding、agent 独立 Git workspace、Git LFS、immutable `PublishedRevision`、revision/path handoff、workspace-revision HPC execution，并将旧 AOX artifact cutover supersede 为不可恢复的 legacy NO-GO。本 change 必须把 scientific truth 切换到 exact repository revision/path 与 Git/LFS bytes，同时完整保留科学 authority、selection、closure、effect certainty 和 verifier 语义。
 
 本 change 只迁 current scientific writer/read path。旧 artifact bytes 的完整历史搬迁由 `migrate-historical-artifacts-to-git-lfs` 负责；artifact schema/storage 的物理删除由 `remove-artifact-control-plane-and-storage` 负责。三者不得合并为一次不可审计的 destructive migration。

@@ -8,6 +8,8 @@ from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignal
 from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import AgentRuntimeSignalStatus
+from openzyme_domain import AgentWorkspaceGenerationReservation
+from openzyme_domain import canonical_capability_digest
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import ControlledOperation
@@ -55,7 +57,65 @@ from openzyme_core import OwnershipError
 from openzyme_core import TaskWriteIntentError
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
+from openzyme_core.agent_capability_service import AgentCapabilityLeaseService
+from openzyme_core.agent_capability_service import AgentWorkspaceReadinessProof
 from openzyme_core.repositories import _coerce_inbox_participant_kind
+
+
+class _RuntimeSignalReadinessProvider:
+    provider_id = "test.runtime-signal-readiness@1"
+
+    def verify_readiness(
+        self,
+        reservation: AgentWorkspaceGenerationReservation,
+    ) -> AgentWorkspaceReadinessProof:
+        return AgentWorkspaceReadinessProof(
+            provider_id=self.provider_id,
+            reservation_id=reservation.reservation_id,
+            reservation_fingerprint=reservation.immutable_fingerprint,
+            session_id=reservation.session_id,
+            agent_member_id=reservation.agent_member_id,
+            agent_id=reservation.agent_id,
+            workspace_generation=reservation.workspace_generation,
+            readiness_ref=f"test-ready:{reservation.reservation_id}",
+            readiness_digest=canonical_capability_digest(
+                {
+                    "provider_id": self.provider_id,
+                    "reservation_id": reservation.reservation_id,
+                    "workspace_generation": reservation.workspace_generation,
+                }
+            ),
+            observed_at="2026-04-16T09:59:01+00:00",
+        )
+
+
+def _activate_test_runtime_signal_capability(
+    repositories: CoreRepositories,
+    *,
+    session_id: str,
+    agent_id: str,
+) -> tuple[str, int]:
+    agent = repositories.agents.get(session_id, agent_id)
+    assert agent is not None
+    assert agent.member_id is not None
+    identity = f"{session_id}:{agent.member_id}:g1"
+    provider = _RuntimeSignalReadinessProvider()
+    service = AgentCapabilityLeaseService(
+        repositories,
+        readiness_providers={provider.provider_id: provider},
+    )
+    issuance = service.reserve_and_issue(
+        session_id=session_id,
+        agent_id=agent_id,
+        idempotency_key=f"issue:{identity}",
+        actor_ref="test:runtime-signal",
+    )
+    active = service.activate_with_provider(
+        lease_id=issuance.lease.lease_id,
+        provider_id=provider.provider_id,
+        actor_ref="test:runtime-signal",
+    )
+    return active.lease.lease_id, active.lease.workspace_generation
 
 
 def test_inbox_participant_kind_coercion_handles_legacy_missing_values() -> None:
@@ -992,6 +1052,13 @@ def test_runtime_signal_repository_claims_leases_and_recovers_stale_claims() -> 
         updated_at="2026-04-16T10:00:00+00:00",
     )
     repositories.agents.save(agent)
+    capability_lease_id, workspace_generation = (
+        _activate_test_runtime_signal_capability(
+            repositories,
+            session_id=session.session_id,
+            agent_id=agent.agent_id,
+        )
+    )
     signal = AgentRuntimeSignal(
         signal_id="sig_lease",
         session_id=session.session_id,
@@ -1000,13 +1067,23 @@ def test_runtime_signal_repository_claims_leases_and_recovers_stale_claims() -> 
         status=AgentRuntimeSignalStatus.PENDING,
         created_at="2026-04-16T10:00:01+00:00",
         source_ref="manual:1",
+        capability_lease_id=capability_lease_id,
+        workspace_generation=workspace_generation,
     )
     repositories.runtime_signals.save(signal)
+    runtime_lease = repositories.session_runtime_leases.acquire(
+        session_id=session.session_id,
+        owner_id="worker:a",
+        mode="manual_drain",
+    ).lease
+    assert runtime_lease is not None
 
     claimed = repositories.runtime_signals.claim_next(
         session_id=session.session_id,
         claimed_by="worker:a",
         lease_seconds=60,
+        session_lease_token=runtime_lease.lease_token,
+        session_fencing_token=runtime_lease.fencing_token,
     )
     assert claimed is not None
     assert claimed.status is AgentRuntimeSignalStatus.CLAIMED
@@ -1016,20 +1093,27 @@ def test_runtime_signal_repository_claims_leases_and_recovers_stale_claims() -> 
     assert repositories.runtime_signals.claim_next(
         session_id=session.session_id,
         claimed_by="worker:b",
+        session_lease_token=runtime_lease.lease_token,
+        session_fencing_token=runtime_lease.fencing_token,
     ) is None
     assert repositories.runtime_signals.find_pending_duplicate(
         session_id=session.session_id,
         agent_id=agent.agent_id,
         reason=AgentRuntimeSignalReason.MANUAL_RESUME,
         source_ref="manual:1",
+        capability_lease_id=capability_lease_id,
+        workspace_generation=workspace_generation,
     ) == claimed
 
-    repositories.runtime_signals.save(
-        replace(claimed, claim_expires_at="2020-01-01T00:00:00+00:00")
-    )
+    with repositories.runtime_write_fence(runtime_lease):
+        repositories.runtime_signals.save(
+            replace(claimed, claim_expires_at="2020-01-01T00:00:00+00:00")
+        )
     reclaimed = repositories.runtime_signals.claim_next(
         session_id=session.session_id,
         claimed_by="worker:b",
+        session_lease_token=runtime_lease.lease_token,
+        session_fencing_token=runtime_lease.fencing_token,
     )
     assert reclaimed is not None
     assert reclaimed.claimed_by == "worker:b"
@@ -1169,6 +1253,13 @@ def test_runtime_signal_fencing_rejects_stale_session_lease_writes() -> None:
             updated_at="2026-04-16T10:00:00+00:00",
         )
     )
+    capability_lease_id, workspace_generation = (
+        _activate_test_runtime_signal_capability(
+            repositories,
+            session_id=session.session_id,
+            agent_id="agent:master",
+        )
+    )
     repositories.runtime_signals.save(
         AgentRuntimeSignal(
             signal_id="sig_fenced",
@@ -1177,6 +1268,8 @@ def test_runtime_signal_fencing_rejects_stale_session_lease_writes() -> None:
             reason=AgentRuntimeSignalReason.MANUAL_RESUME,
             status=AgentRuntimeSignalStatus.PENDING,
             created_at="2026-04-16T10:00:01+00:00",
+            capability_lease_id=capability_lease_id,
+            workspace_generation=workspace_generation,
         )
     )
     first_lease = repositories.session_runtime_leases.acquire(
@@ -1195,13 +1288,14 @@ def test_runtime_signal_fencing_rejects_stale_session_lease_writes() -> None:
         session_fencing_token=first_lease.fencing_token,
     )
     assert claimed_by_a is not None
+    with repositories.runtime_write_fence(first_lease):
+        connection.execute(
+            "UPDATE agent_runtime_signals SET claim_expires_at = ? WHERE signal_id = ?",
+            ("2020-01-01T00:00:00+00:00", "sig_fenced"),
+        )
     connection.execute(
         "UPDATE session_runtime_leases SET expires_at = ? WHERE lease_token = ?",
         ("2020-01-01T00:00:00+00:00", first_lease.lease_token),
-    )
-    connection.execute(
-        "UPDATE agent_runtime_signals SET claim_expires_at = ? WHERE signal_id = ?",
-        ("2020-01-01T00:00:00+00:00", "sig_fenced"),
     )
     connection.commit()
     second_lease = repositories.session_runtime_leases.acquire(
@@ -1248,6 +1342,7 @@ def test_runtime_signal_repository_lists_claimable_sessions() -> None:
     apply_sqlite_migrations(connection)
     repositories = CoreRepositories.from_connection(connection)
     now = "2026-04-16T10:00:00+00:00"
+    capability_bindings: dict[str, tuple[str, int]] = {}
     for session_id in ("sess_claimable_a", "sess_claimable_b", "sess_complete"):
         repositories.sessions.save(
             Session.create(session_id, "proj_001", session_id, session_id)
@@ -1266,6 +1361,11 @@ def test_runtime_signal_repository_lists_claimable_sessions() -> None:
                 updated_at=now,
             )
         )
+        capability_bindings[session_id] = _activate_test_runtime_signal_capability(
+            repositories,
+            session_id=session_id,
+            agent_id="agent:master",
+        )
     repositories.runtime_signals.save(
         AgentRuntimeSignal(
             signal_id="sig_b",
@@ -1274,6 +1374,8 @@ def test_runtime_signal_repository_lists_claimable_sessions() -> None:
             reason=AgentRuntimeSignalReason.MANUAL_RESUME,
             status=AgentRuntimeSignalStatus.PENDING,
             created_at="2026-04-16T10:00:02+00:00",
+            capability_lease_id=capability_bindings["sess_claimable_b"][0],
+            workspace_generation=capability_bindings["sess_claimable_b"][1],
         )
     )
     repositories.runtime_signals.save(
@@ -1285,6 +1387,8 @@ def test_runtime_signal_repository_lists_claimable_sessions() -> None:
             status=AgentRuntimeSignalStatus.CLAIMED,
             created_at="2026-04-16T10:00:01+00:00",
             claim_expires_at="2020-01-01T00:00:00+00:00",
+            capability_lease_id=capability_bindings["sess_claimable_a"][0],
+            workspace_generation=capability_bindings["sess_claimable_a"][1],
         )
     )
     repositories.runtime_signals.save(
@@ -1295,6 +1399,8 @@ def test_runtime_signal_repository_lists_claimable_sessions() -> None:
             reason=AgentRuntimeSignalReason.MANUAL_RESUME,
             status=AgentRuntimeSignalStatus.COMPLETED,
             created_at="2026-04-16T10:00:00+00:00",
+            capability_lease_id=capability_bindings["sess_complete"][0],
+            workspace_generation=capability_bindings["sess_complete"][1],
         )
     )
 
@@ -1369,6 +1475,13 @@ def test_runtime_signals_validate_session_local_agent_identity() -> None:
             updated_at="2026-04-16T10:00:00+00:00",
         )
     )
+    capability_lease_id, workspace_generation = (
+        _activate_test_runtime_signal_capability(
+            repositories,
+            session_id=session_a.session_id,
+            agent_id="agent:researcher:signal",
+        )
+    )
 
     repositories.runtime_signals.save(
         AgentRuntimeSignal(
@@ -1378,6 +1491,8 @@ def test_runtime_signals_validate_session_local_agent_identity() -> None:
             reason=AgentRuntimeSignalReason.MANUAL_RESUME,
             status=AgentRuntimeSignalStatus.PENDING,
             created_at="2026-04-16T10:00:01+00:00",
+            capability_lease_id=capability_lease_id,
+            workspace_generation=workspace_generation,
         )
     )
     try:
@@ -1418,6 +1533,13 @@ def test_runtime_signal_repository_completion_and_retry_failure_are_idempotent()
             updated_at="2026-04-16T10:00:00+00:00",
         )
     )
+    capability_lease_id, workspace_generation = (
+        _activate_test_runtime_signal_capability(
+            repositories,
+            session_id=session.session_id,
+            agent_id="agent:executor:retry",
+        )
+    )
     completed_signal = AgentRuntimeSignal(
         signal_id="sig_complete",
         session_id=session.session_id,
@@ -1425,6 +1547,8 @@ def test_runtime_signal_repository_completion_and_retry_failure_are_idempotent()
         reason=AgentRuntimeSignalReason.MANUAL_RESUME,
         status=AgentRuntimeSignalStatus.PENDING,
         created_at="2026-04-16T10:00:01+00:00",
+        capability_lease_id=capability_lease_id,
+        workspace_generation=workspace_generation,
     )
     retry_signal = replace(completed_signal, signal_id="sig_retry")
     repositories.runtime_signals.save(completed_signal)
@@ -1441,10 +1565,18 @@ def test_runtime_signal_repository_completion_and_retry_failure_are_idempotent()
     assert replayed_insert == second_complete
     assert replayed_insert.status is AgentRuntimeSignalStatus.COMPLETED
 
+    runtime_lease = repositories.session_runtime_leases.acquire(
+        session_id=session.session_id,
+        owner_id="worker:a",
+        mode="manual_drain",
+    ).lease
+    assert runtime_lease is not None
     claimed = repositories.runtime_signals.claim_next(
         session_id=session.session_id,
         claimed_by="worker:a",
         signal_ids={"sig_retry"},
+        session_lease_token=runtime_lease.lease_token,
+        session_fencing_token=runtime_lease.fencing_token,
     )
     assert claimed is not None
     retryable = repositories.runtime_signals.fail(
@@ -1452,6 +1584,8 @@ def test_runtime_signal_repository_completion_and_retry_failure_are_idempotent()
         error_message="transient provider error",
         retryable=True,
         max_attempts=2,
+        expected_session_lease_token=runtime_lease.lease_token,
+        expected_session_fencing_token=runtime_lease.fencing_token,
     )
     assert retryable is not None
     assert retryable.status is AgentRuntimeSignalStatus.PENDING
@@ -1461,6 +1595,8 @@ def test_runtime_signal_repository_completion_and_retry_failure_are_idempotent()
         session_id=session.session_id,
         claimed_by="worker:b",
         signal_ids={"sig_retry"},
+        session_lease_token=runtime_lease.lease_token,
+        session_fencing_token=runtime_lease.fencing_token,
     )
     assert claimed_again is not None
     final = repositories.runtime_signals.fail(
@@ -1468,6 +1604,8 @@ def test_runtime_signal_repository_completion_and_retry_failure_are_idempotent()
         error_message="still failing",
         retryable=True,
         max_attempts=2,
+        expected_session_lease_token=runtime_lease.lease_token,
+        expected_session_fencing_token=runtime_lease.fencing_token,
     )
     assert final is not None
     assert final.status is AgentRuntimeSignalStatus.FAILED

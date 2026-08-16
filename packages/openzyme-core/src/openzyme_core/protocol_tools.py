@@ -5,14 +5,19 @@ from typing import Any
 
 from openzyme_domain import AgentMember
 from openzyme_domain import InboxParticipantKind
+from openzyme_domain import ProtocolFileHandoff
 from openzyme_domain import Task
 
+from .agent_capability_projection import AgentCapabilityPublicProjector
+from .agent_capability_projection import project_agent_runtime_signal_for_public
 from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolRegistry
 from .harness import ToolResult
 from .agent_identity import resolve_agent_reference
 from .protocols import ProtocolService
+from .revision_path_handoffs import RevisionPathHandoffError
+from .revision_path_handoffs import RevisionPathReferenceService
 
 
 _FAILURE_STATUSES = {"failed", "error", "cancelled", "canceled", "max_steps_exceeded"}
@@ -168,6 +173,44 @@ def _thread_observation_details(thread) -> dict[str, Any]:
 
 
 def register_protocol_tools(registry: ToolRegistry) -> None:
+    def handoff_handler(
+        context: SessionRuntimeContext,
+        invocation: ToolInvocation,
+    ) -> ToolResult:
+        handoff_id = str(invocation.arguments["handoff_id"])
+        handoff = context.repositories.revision_path_handoffs.get_handoff(handoff_id)
+        session_id = context.snapshot.session.session_id
+        if handoff is None or handoff.session_id != session_id:
+            return _publication_reference_error(
+                invocation,
+                "file handoff does not exist in the current session",
+            )
+        if context.agent_id is not None and context.agent_id not in {
+            "agent:master",
+            handoff.producer_agent_id,
+            handoff.recipient_agent_id,
+        }:
+            return _publication_reference_error(
+                invocation,
+                "current agent is not a participant in this file handoff",
+            )
+        payload = handoff.to_dict()
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=True,
+            content=json.dumps(payload, sort_keys=True),
+            task_id=invocation.task_id,
+            lane_id=invocation.lane_id,
+            status="protocol_file_handoff_projected",
+            summary="Projected bounded exact revision path refs for one handoff.",
+            details={
+                "handoff_id": handoff.handoff_id,
+                "entry_count": len(handoff.entries),
+                "content_bytes_returned": False,
+            },
+        )
+
     def thread_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
         correlation_id = str(invocation.arguments["correlation_id"])
         protocol = ProtocolService(context.repositories)
@@ -191,8 +234,17 @@ def register_protocol_tools(registry: ToolRegistry) -> None:
         correlation_id = str(invocation.arguments["correlation_id"])
         recipient = str(invocation.arguments["recipient"])
         recipient_kind = InboxParticipantKind(str(invocation.arguments.get("recipient_kind") or InboxParticipantKind.AGENT.value))
-        sender = str(invocation.arguments.get("sender") or "harness")
-        sender_kind = InboxParticipantKind(str(invocation.arguments.get("sender_kind") or InboxParticipantKind.HARNESS.value))
+        sender = str(invocation.arguments.get("sender") or context.agent_id or "harness")
+        sender_kind = InboxParticipantKind(
+            str(
+                invocation.arguments.get("sender_kind")
+                or (
+                    InboxParticipantKind.AGENT.value
+                    if context.agent_id is not None
+                    else InboxParticipantKind.HARNESS.value
+                )
+            )
+        )
         message_type = str(invocation.arguments.get("message_type") or "status_update")
         payload = invocation.arguments.get("payload")
         task_id = invocation.arguments.get("task_id") or invocation.task_id
@@ -255,28 +307,97 @@ def register_protocol_tools(registry: ToolRegistry) -> None:
             task_id = focused_task.task_id if focused_task is not None else task_id
             lane_id = lane_id or (None if focused_task is None else focused_task.lane_id)
         payload_ref = None
+        file_handoff = None
         if isinstance(payload, dict):
-            payload_ref = protocol.persist_payload(
-                session_id=session_id,
-                document_kind="protocol_payload",
-                payload=payload,
+            if message_type == "file_handoff":
+                try:
+                    handoff = ProtocolFileHandoff.from_dict(payload)
+                    if (
+                        context.agent_id is None
+                        or handoff.project_id != context.snapshot.session.project_id
+                        or handoff.session_id != session_id
+                        or handoff.producer_agent_id != context.agent_id
+                        or handoff.producer_agent_id != sender
+                        or handoff.recipient_agent_id != resolved_recipient
+                    ):
+                        raise RevisionPathHandoffError(
+                            "file handoff producer, recipient, project, or session differs"
+                        )
+                    reference_service = RevisionPathReferenceService(
+                        context.repositories
+                    )
+                    for entry in handoff.entries:
+                        reference_service.require_exact(
+                            entry,
+                            project_id=handoff.project_id,
+                            session_id=handoff.session_id,
+                        )
+                    file_handoff = handoff
+                except (RevisionPathHandoffError, TypeError, ValueError) as exc:
+                    return _publication_reference_error(invocation, str(exc))
+            else:
+                if payload.get("schema_version") == "protocol_file_handoff@1" or any(
+                    key in payload
+                    for key in (
+                        "entries",
+                        "publication_reference",
+                        "revision_path_ref",
+                    )
+                ):
+                    return _publication_reference_error(
+                        invocation,
+                        "revision path refs require message_type='file_handoff' and a complete ProtocolFileHandoff@1 payload",
+                    )
+                try:
+                    payload_ref = protocol.persist_payload(
+                        session_id=session_id,
+                        document_kind="protocol_payload",
+                        payload=payload,
+                    )
+                except (TypeError, ValueError) as exc:
+                    return _publication_reference_error(invocation, str(exc))
+        elif payload is not None:
+            return _publication_reference_error(
+                invocation,
+                "protocol payload must be an object or omitted",
             )
-        message = protocol.send_message(
-            session_id=session_id,
-            sender=sender,
-            sender_kind=sender_kind,
-            recipient=resolved_recipient,
-            recipient_kind=recipient_kind,
-            message_type=message_type,
-            correlation_id=correlation_id,
-            payload_ref=payload_ref,
-            task_id=None if task_id is None else str(task_id),
-            lane_id=None if lane_id is None else str(lane_id),
-        )
+        if file_handoff is None:
+            message = protocol.send_message(
+                session_id=session_id,
+                sender=sender,
+                sender_kind=sender_kind,
+                recipient=resolved_recipient,
+                recipient_kind=recipient_kind,
+                message_type=message_type,
+                correlation_id=correlation_id,
+                payload_ref=payload_ref,
+                task_id=None if task_id is None else str(task_id),
+                lane_id=None if lane_id is None else str(lane_id),
+            )
+        else:
+            message = protocol.send_file_handoff(
+                handoff=file_handoff,
+                sender=sender,
+                sender_kind=sender_kind,
+                recipient=resolved_recipient,
+                recipient_kind=recipient_kind,
+                message_type=message_type,
+                correlation_id=correlation_id,
+                task_id=None if task_id is None else str(task_id),
+                lane_id=None if lane_id is None else str(lane_id),
+            )
         runtime_outcomes = []
+        capability_projector = AgentCapabilityPublicProjector(context.repositories)
+        resolved_agent_projection = (
+            None
+            if resolved_agent is None
+            else capability_projector.project_agent(resolved_agent)
+        )
         signals = [
-            signal.to_dict()
-            for signal in context.repositories.runtime_signals.list_by_session(session_id)
+            project_agent_runtime_signal_for_public(signal)
+            for signal in context.repositories.runtime_signals.list_by_session(
+                session_id
+            )
             if signal.source_ref == message.message_id
         ]
         thread = protocol.build_thread(session_id, correlation_id).to_dict()
@@ -284,7 +405,9 @@ def register_protocol_tools(registry: ToolRegistry) -> None:
             "recipient": recipient,
             "resolved_recipient": resolved_recipient,
             "recipient_resolution": recipient_resolution,
-            "resolved_agent": None if resolved_agent is None else resolved_agent.to_dict(),
+            "resolved_agent": (
+                resolved_agent_projection
+            ),
             "message": message.to_dict(),
             "signals": signals,
             "runtime_outcomes": runtime_outcomes,
@@ -301,7 +424,13 @@ def register_protocol_tools(registry: ToolRegistry) -> None:
                 error_code = "wakeup_signal_missing"
                 hint = "The inbox message was persisted, but no inbox_unread wakeup signal exists for the agent."
             else:
-                status = "wakeup_queued"
+                assert resolved_agent_projection is not None
+                if bool(resolved_agent_projection["runnable"]):
+                    status = "wakeup_queued"
+                else:
+                    blocker_code = resolved_agent_projection["blocker_code"]
+                    assert isinstance(blocker_code, str)
+                    status = blocker_code
         summary = (
             f"protocol.send {status}: {recipient!r} resolved to {resolved_recipient!r}; "
             f"{len(signals)} signal(s), {len(runtime_outcomes)} runtime outcome(s), thread={thread.get('status')}."
@@ -328,7 +457,32 @@ def register_protocol_tools(registry: ToolRegistry) -> None:
         )
 
     registry.register("protocol.thread", thread_handler)
+    registry.register("protocol.handoff.get", handoff_handler)
     registry.register("protocol.send", send_handler)
+
+
+def _publication_reference_error(
+    invocation: ToolInvocation,
+    message: str,
+) -> ToolResult:
+    payload = {
+        "error_code": "protocol_file_handoff_invalid",
+        "message": message,
+        "retry_performed": False,
+        "fallback_performed": False,
+    }
+    return ToolResult(
+        call_id=invocation.call_id,
+        tool_name=invocation.tool_name,
+        ok=False,
+        content=json.dumps(payload, sort_keys=True),
+        task_id=invocation.task_id,
+        lane_id=invocation.lane_id,
+        status="protocol_file_handoff_invalid",
+        summary=message,
+        error_code="protocol_file_handoff_invalid",
+        details=payload,
+    )
 
 
 __all__ = ["register_protocol_tools"]

@@ -1,5 +1,7 @@
 ## Why
 
+连续源码迁移期间使用 `scientific_deliverable_source_only_dependency_gate@1`。该 gate 只允许实现和静态审计本 change 的 source；它不是 predecessor completion receipt、scientific writer activation、publication/Git LFS read authority、attempt/selection/task authority或任何 live/cutover authority。正式 prerequisite 与 completion receipts 延后到 14 个 changes 的 combined final source 统一验收。
+
 scientific materialization、selection、attempt closure 和 AOX 17-role bundle 仍以 artifact id/kind/catalog publication 为身份；只迁普通 research/report 会留下第二套顶层文件真相。科学语义必须在不削弱 attempt/selection/verification 的前提下迁到 exact revision/path/LFS bytes。
 
 ## What Changes

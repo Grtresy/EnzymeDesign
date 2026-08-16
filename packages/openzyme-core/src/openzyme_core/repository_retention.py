@@ -8,6 +8,7 @@ import hashlib
 import json
 import sqlite3
 from typing import Any
+from typing import Protocol
 from uuid import uuid4
 
 from openzyme_domain import ProjectRepositoryBinding
@@ -36,6 +37,15 @@ class RepositoryPrivateNamespaceHoldKind(StrEnum):
 
 class RepositoryRetentionError(RuntimeError):
     error_code = "repository_retention_rejected"
+
+
+class PrivateNamespaceReachabilityFinalizer(Protocol):
+    def finalize(
+        self,
+        *,
+        namespace_id: str,
+        created_at: str | None = None,
+    ) -> object: ...
 
 
 def _parse_utc(value: str, *, field_name: str) -> datetime:
@@ -91,6 +101,7 @@ def _row_to_namespace(row: sqlite3.Row) -> RepositoryPrivateNamespace:
 class RepositoryPrivateNamespaceRetentionService:
     connection: sqlite3.Connection
     roots: DurableRepositoryRootManager
+    reachability_finalizer: PrivateNamespaceReachabilityFinalizer | None = None
 
     def open_namespace(
         self,
@@ -347,6 +358,22 @@ class RepositoryPrivateNamespaceRetentionService:
         expected_refs = tuple(
             (str(item["ref_name"]), str(item["commit"])) for item in terminal_refs
         )
+        lfs_policy_exists = self.connection.execute(
+            """
+            SELECT 1 FROM git_lfs_binding_policies
+            WHERE binding_id = ? AND binding_version = ?
+            """,
+            (namespace.binding_id, namespace.binding_version),
+        ).fetchone()
+        if lfs_policy_exists is not None:
+            if self.reachability_finalizer is None:
+                raise RepositoryRetentionError(
+                    "Git LFS namespace retirement requires a reachability finalizer"
+                )
+            self.reachability_finalizer.finalize(
+                namespace_id=namespace.namespace_id,
+                created_at=retired_at,
+            )
         current_refs = self.roots.list_refs(
             binding,
             prefix=f"{namespace.namespace_prefix}/",
@@ -395,6 +422,7 @@ __all__ = [
     "RepositoryPrivateNamespace",
     "RepositoryPrivateNamespaceHoldKind",
     "RepositoryPrivateNamespaceRetentionService",
+    "PrivateNamespaceReachabilityFinalizer",
     "RepositoryPrivateNamespaceStatus",
     "RepositoryRetentionError",
 ]

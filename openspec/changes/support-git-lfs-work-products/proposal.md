@@ -21,3 +21,5 @@
 ## Impact
 
 影响内部 Git/LFS 部署、repository binding、Podman image、HPC login 环境、publication validator、GC/retention 和大文件测试。不会新增通用 ContentStore/CAS 产品接口。
+
+连续迁移实现阶段以 `git_lfs_work_product_source_only_dependency_gate@1` 绑定 C1 正式收据和当前 C2--C4 source/schema/policy/interface 事实。该 gate 固定声明 predecessor acceptance、最终 source revision、production effect 与 live 资格均未证明，只允许继续 C5 源码、未运行测试和文档工作；最终验收仍须在全部连续 change 合并实现后重新核验正式 predecessor receipts 与组合源码。

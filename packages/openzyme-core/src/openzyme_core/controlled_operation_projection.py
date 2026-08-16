@@ -6,7 +6,10 @@ from openzyme_domain import ControlledOperation
 from openzyme_domain import ControlledOperationExecution
 from openzyme_domain import ControlledOperationExecutionLifecycle
 from openzyme_domain import ControlledOperationOwnerMode
+from openzyme_domain import ControlledOperationResultRef
 from openzyme_domain import SessionArtifactRecord
+from openzyme_domain import TaskEvidenceKind
+from openzyme_domain import TaskEvidenceRef
 from openzyme_runtime import sanitize_public_diagnostic_payload
 from openzyme_runtime import sanitize_public_diagnostic_text
 
@@ -67,6 +70,37 @@ def project_controlled_operation_execution(
     )
     result = None
     if result_handle is not None:
+        session = repositories.sessions.get(result_handle.session_id)
+        if session is None:
+            raise RuntimeError("controlled-operation result session is missing")
+        digest_hex = result_handle.result_digest.removeprefix("sha256:")
+        canonical_digest = (
+            result_handle.result_digest.startswith("sha256:")
+            and len(digest_hex) == 64
+            and all(character in "0123456789abcdef" for character in digest_hex)
+        )
+        task_evidence_ref = None
+        if execution.task_id is not None and canonical_digest:
+            controlled_result_ref = ControlledOperationResultRef(
+                result_handle_id=result_handle.result_handle_id,
+                project_id=session.project_id,
+                session_id=result_handle.session_id,
+                task_id=execution.task_id,
+                execution_id=result_handle.execution_id,
+                operation_id=result_handle.operation_id,
+                dispatch_generation=result_handle.dispatch_generation,
+                terminal_outcome=result_handle.terminal_outcome.value,
+                result_digest=result_handle.result_digest,
+            )
+            task_evidence_ref = TaskEvidenceRef(
+                kind=TaskEvidenceKind.CONTROLLED_OPERATION_RESULT,
+                project_id=session.project_id,
+                session_id=result_handle.session_id,
+                task_id=execution.task_id,
+                owner_id=result_handle.result_handle_id,
+                owner_digest=result_handle.result_digest,
+                controlled_operation_result_ref=controlled_result_ref,
+            ).to_dict()
         result = {
             "result_handle_id": result_handle.result_handle_id,
             "terminal_outcome": result_handle.terminal_outcome.value,
@@ -77,6 +111,7 @@ def project_controlled_operation_execution(
                 result_handle.bounded_result_envelope
             ),
             "created_at": result_handle.created_at,
+            "task_evidence_ref": task_evidence_ref,
         }
     payload: dict[str, Any] = {
         "schema_version": "controlled_operation_execution.public@1",

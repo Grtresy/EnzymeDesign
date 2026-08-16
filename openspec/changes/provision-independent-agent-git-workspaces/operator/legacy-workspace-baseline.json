@@ -1,0 +1,131 @@
+{
+  "schema_id": "agent_git_workspace_legacy_baseline@1",
+  "change_id": "provision-independent-agent-git-workspaces",
+  "observed_head": "8ae3d73b3054f2058ff33ea183f62c811b9272a3",
+  "baseline_scope": "source_only_no_runtime_effect",
+  "legacy_control_plane": {
+    "source_path": "packages/openzyme-domain/src/openzyme_domain/control_plane.py",
+    "sha256": "sha256:efb1d6f59dfac2ceb33e0149625788dd4a845805cdef7fd3e75b815d537e25bb",
+    "lane": {
+      "symbol": "Lane",
+      "workspace_like_fields": [
+        "cwd",
+        "branch_name"
+      ],
+      "canonical_workspace_owner": false,
+      "retained_semantics": [
+        "task_focus",
+        "claim",
+        "isolation_metadata"
+      ]
+    },
+    "sandbox_workspace": {
+      "symbol": "SandboxWorkspaceRecord",
+      "identity_fields": [
+        "sandbox_workspace_id",
+        "session_id",
+        "agent_member_id",
+        "agent_id"
+      ],
+      "workspace_generation_field_present": false,
+      "independent_git_identity_present": false,
+      "git_head_present": false,
+      "private_ref_namespace_present": false,
+      "legacy_artifact_fields_present": [
+        "materialized_input_artifact_ids",
+        "registered_artifact_ids",
+        "source_code_artifact_ids"
+      ]
+    }
+  },
+  "legacy_workspace_service": {
+    "source_path": "packages/openzyme-core/src/openzyme_core/sandbox_workspace.py",
+    "sha256": "sha256:414058a0cd8ec031ac582fe12df9dd0f0fbdafed60b690850e51aaf9749f6a61",
+    "service_symbol": "SandboxWorkspaceService",
+    "identity_derivation": "session_id_plus_agent_member_id",
+    "default_image_ref": "localhost/openzyme-pipeline-sandbox:dev",
+    "manifest_version": "s07.workspace_manifest.v1",
+    "workspace_directories": [
+      "src",
+      "input",
+      "work",
+      "output",
+      "logs",
+      "manifest"
+    ],
+    "clone_provisioning_present": false,
+    "independent_dot_git_present": false,
+    "replacement_target": "AgentGitWorkspace"
+  },
+  "legacy_sandbox_runtime": {
+    "source_path": "packages/openzyme-core/src/openzyme_core/sandbox_runtime.py",
+    "sha256": "sha256:10ae5e29deaec18005ea13810e54efe8bcc3b5c094df27f06287417cd482a2f4",
+    "current_workspace_root": "host_managed_sandbox_workspace_root",
+    "current_default_cwd": "/workspace",
+    "current_tools": [
+      "sandbox.workspace.status",
+      "sandbox.file.*",
+      "sandbox.exec"
+    ],
+    "current_source_snapshot_artifact_boundary_present": true,
+    "native_agent_git_workspace_runtime_present": false
+  },
+  "podman_lifecycle": {
+    "runtime_source_path": "packages/openzyme-runtime/src/openzyme_runtime/podman_lifecycle.py",
+    "runtime_sha256": "sha256:adee199f7fe136313d0cffeee431afa4812ec64ac4a7b78451de7750fca6dd08",
+    "lease_symbol": "PodmanContainerLease",
+    "ephemeral_container_identity_present": true,
+    "exact_container_retirement_present": true,
+    "engine_source_path": "packages/openzyme-engines/src/openzyme_engines/podman_sandbox.py",
+    "engine_sha256": "sha256:ae736f7cbcf2fcfe5e32d10fa908a8482ee1ee8ba4f55b8ddad8a6abd658526b",
+    "host_supervised_pipeline_network": "none",
+    "host_supervised_pipeline_read_only_root": true,
+    "host_supervised_pipeline_workspace_mount": "/workspace",
+    "must_remain_separate_from_native_agent_capsule": true
+  },
+  "agent_creation_and_delegation": {
+    "agent_identity_source_path": "packages/openzyme-core/src/openzyme_core/agent_identity.py",
+    "agent_identity_sha256": "sha256:674c969e12f949dc92a627f4d7033bfcc16b2625cf6f77d89637b56ac3a21a44",
+    "creation_symbol": "create_agent_member",
+    "agent_workspace_created_by_identity_function": false,
+    "subagent_source_path": "packages/openzyme-core/src/openzyme_core/subagents.py",
+    "subagent_sha256": "sha256:002bbd7fc02cb9303e112a555ac45936c614f8118184a02941a462ab897ecb99",
+    "c2_generation_reservation_and_pending_lease_present": true,
+    "c3_readiness_provider_present": false,
+    "non_runnable_blocker": "provisioning_required",
+    "protocol_source_path": "packages/openzyme-core/src/openzyme_core/protocols.py",
+    "protocol_sha256": "sha256:e206b67f8fe2817eb97c5f4ce6a6764b11c78cd956006df6b859023e1dc3ec3e"
+  },
+  "tool_and_prompt_baseline": {
+    "source_path": "packages/openzyme-core/src/openzyme_core/teammates.py",
+    "sha256": "sha256:c7ca6cfa6e8748c1b8ff9c1e24d927e6da1e32dc92a722e0c573e6d9da56debc",
+    "lane_create_accepts_cwd_and_branch": true,
+    "sandbox_workspace_status_exposed": true,
+    "executor_prompt_uses_shared_session_workspace_language": true,
+    "executor_prompt_directs_authoring_to_sandbox_file_tools": true,
+    "replacement_required": [
+      "agent_git_workspace_projection",
+      "native_workspace_tool_contract",
+      "lane_metadata_demotion",
+      "git_checkpoint_operating_contract"
+    ]
+  },
+  "forbidden_fallbacks": [
+    "host_repository_mount",
+    "host_checkout_copy",
+    "host_home_mount",
+    "host_ssh_directory_mount",
+    "linked_worktree",
+    "shared_dot_git",
+    "shared_git_alternates",
+    "ambient_origin_or_cwd",
+    "guessed_branch",
+    "empty_repository_initialization",
+    "legacy_sandbox_as_agent_git_workspace",
+    "lane_cwd_or_branch_as_workspace_authority",
+    "role_or_tool_descriptor_as_capability_authority"
+  ],
+  "external_effects": 0,
+  "live_authorized": false,
+  "acceptance_proven": false
+}

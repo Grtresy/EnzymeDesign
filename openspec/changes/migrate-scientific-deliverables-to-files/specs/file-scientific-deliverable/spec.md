@@ -1,5 +1,12 @@
 ## ADDED Requirements
 
+### Requirement: Source-only migration gate has zero scientific or external authority
+During the ordered fourteen-change source migration, `scientific_deliverable_source_only_dependency_gate@1` MAY authorize source edits, deferred tests, documentation, and static audits only. It MUST NOT satisfy predecessor acceptance, activate the scientific file writer or contract epoch, read or publish remote Git/LFS bytes, launch provider/HPC work, grant scientific or AOX live authority, mutate selection/attempt/task/report/campaign state, or satisfy production/cutover admission.
+
+#### Scenario: Source-only gate is presented for scientific work
+- **WHEN** any caller presents the source-only gate to publish or resolve bytes, finalize a bundle, activate a writer, launch external work, or mutate scientific business state
+- **THEN** the request is rejected before effect and no artifact, local checkout, alternate ref, or legacy campaign fallback is selected
+
 ### Requirement: Scientific deliverables have exact published file identity
 The system MUST represent every current scientific deliverable with an immutable versioned `ScientificDeliverableRef` that binds the project repository binding and policy version, publication id and immutable ref, published commit and tree, normalized repository-relative path, Git blob or Git LFS OID and size, canonical content digest, declared scientific role and format contract, producer operation and result, scientific attempt, sealed selection, workspace generation, and publisher. The system MUST reject private refs, mutable branches, dirty workspace paths, Host paths, URLs, runner locators, missing LFS objects, and identity drift.
 

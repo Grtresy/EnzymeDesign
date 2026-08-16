@@ -129,3 +129,6 @@ Global receipt只有在 exact set equality成立时产生。Count相等但 ident
 ## Open Questions
 
 无。6B 已固定“先完整迁移并验证，再由下一 change物理删除”；缺失 bytes、冲突或未映射 lineage均是 migration blocker，不是允许降级的产品选择。
+> **源码 gate：** 在 public cutover completion receipt 与 active epoch 尚未验证时，
+> historical migration 只能形成 domain/schema/inventory/unit/verifier 源码。任何真实
+> snapshot、writer freeze、remote write/read-back、reference rewrite 与 deletion 都封闭。

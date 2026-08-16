@@ -1,10 +1,10 @@
 ## MODIFIED Requirements
 
 ### Requirement: One canonical execution owns each durable controlled operation
-For every controlled operation admitted with `owner_mode = durable_async_v1`, the system MUST create exactly one canonical `ControlledOperationExecution` bound to the operation id, session, admitted operation digest, required authorization basis, route policy, selected backend, route-specific input identity, route-specific result contract, and runtime identity. A workspace-revision HPC route MUST additionally bind the executor capability lease, any separate scientific or operation authorization explicitly required by route policy, executor HPC workspace id/generation, repository binding, private or published commit/tree, LFS closure manifest, clean-state observation, cwd, command, resources, target, runner policy, and absolute deadline. The system MUST reject owner-mode or identity drift and MUST NOT allow a legacy synchronous worker and durable execution worker to dispatch the same operation. `expected_outputs`, artifact ids, artifact sets, `HpcStageRef`, and Host-local file paths MUST NOT form current execution identity.
+For every controlled operation admitted with `owner_mode = durable_async_v1`, the system MUST create exactly one canonical `ControlledOperationExecution` bound to the operation id, session, admitted operation digest, required authorization basis, route policy, selected backend, route-specific input identity, route-specific result contract, and runtime identity. A workspace-revision HPC route MUST additionally bind the executor capability lease, any scientific admitted-attempt basis or separate operation approval explicitly required by route policy, executor HPC workspace id/generation, repository binding, private or published commit/tree, LFS closure manifest, clean-state observation, cwd, command, resources, target, runner policy, and absolute deadline. A scientific admitted-attempt basis MUST include exact `ScientificAttempt.attempt_id` and `state_version`, `admission_request_id`, immutable `ScientificAttemptAdmissionRequest.request_digest`, source `envelope_id`, and workflow-contract/scope/effect/HPC-target identity; it MUST NOT be reduced to the source authorization envelope's current status. The system MUST reject owner-mode or identity drift and MUST NOT allow a legacy synchronous worker and durable execution worker to dispatch the same operation. `expected_outputs`, artifact ids, artifact sets, `HpcStageRef`, and Host-local file paths MUST NOT form current execution identity.
 
 #### Scenario: Admit one durable workspace execution
-- **WHEN** an approved workspace-revision operation is admitted through the durable owner path
+- **WHEN** a workspace-revision operation is admitted through the durable owner path with its exact route-specific basis
 - **THEN** exactly one execution record is created and its immutable workspace, revision, command, resource, authorization basis, route, and runtime fields match the operation
 
 #### Scenario: Reject a second owner
@@ -16,22 +16,32 @@ For every controlled operation admitted with `owner_mode = durable_async_v1`, th
 - **THEN** the system fails the execution closed instead of treating the changed request as the same operation
 
 ### Requirement: Approval gates external-effect readiness
-The system MUST persist the controlled operation, canonical execution, continuation, durable event, capability-lease admission basis, and every separately required authorization before external dispatch. An ordinary non-scientific workspace-revision job within an active executor capability lease and frozen route policy MUST become dispatch-ready without command-level or job-level human approval. When the enclosing workflow or route policy explicitly requires a scientific or operation approval, the execution MUST remain non-dispatchable until that exact authorization is approved. Missing, rejected, expired, or cancelled required authorization MUST produce a terminal `no_effect` outcome without invoking the backend, and a capability lease MUST NOT substitute for that separately declared gate.
+The system MUST persist the controlled operation, canonical execution, continuation, durable event, capability-lease admission basis, and every separately required admission basis before external dispatch. This change SHALL consume C2 only for canonical lease identity/status/profile and SHALL own the actual workspace-job admission route. An ordinary non-scientific workspace-revision job within an active executor capability lease and frozen route policy MUST create or reread one canonical execution and become dispatch-ready without command-level or job-level human approval.
+
+When an enclosing scientific workflow requires scientific authority, the execution MUST bind and validate an exact already-admitted `ScientificAttempt` id/state version, its immutable `ScientificAttemptAdmissionRequest`, source envelope identity/scope provenance, and current workflow-contract dispatch eligibility. The source `ScientificAttemptAuthorization` envelope MAY already be `EXHAUSTED` because admitting that attempt consumed its final allowed attempt; the system MUST NOT require that source envelope to remain `ACTIVE` or manufacture a new authorization. A missing/non-admitted attempt, missing or mismatched admission request/scope, or attempt state that does not permit dispatch MUST produce `no_effect` without backend I/O. When route policy separately requires a non-scientific operation approval, that exact approval MUST be resolved before dispatch. A capability lease, execution record, retry counter, role, or scheduler fact MUST NOT substitute for either route-specific basis.
 
 #### Scenario: Ordinary executor job needs no human approval
 - **WHEN** an executor submits a non-scientific workspace-revision job inside its active target-scoped lease and no separate approval is required by policy
 - **THEN** the Host creates the canonical execution and dispatch-ready durable work without opening a pending human approval
 
-#### Scenario: Required scientific authorization is pending
-- **WHEN** an enclosing scientific workflow requires an exact authorization and that authorization remains pending
+#### Scenario: Scientific job binds an admitted attempt whose source is exhausted
+- **WHEN** the exact scientific attempt state and immutable admission request prove canonical admission and remain dispatch-eligible, while its source authorization envelope became `EXHAUSTED` by admitting that attempt
+- **THEN** the Host accepts the immutable admitted-attempt basis without requiring a new or currently `ACTIVE` source envelope
+
+#### Scenario: Scientific job has no matching admitted attempt
+- **WHEN** a scientific route supplies only a source authorization, role, capability lease, Slurm request, or mismatched attempt/admission-request identity
+- **THEN** the execution remains non-dispatchable or terminates `no_effect` and no runner or scheduler effect occurs
+
+#### Scenario: Required operation approval is pending
+- **WHEN** a non-scientific route explicitly requires an exact operation approval and that approval remains pending
 - **THEN** the execution remains non-dispatchable and no runner or scheduler effect occurs
 
-#### Scenario: Required authorization becomes approved
-- **WHEN** the exact separately required authorization is resolved as approved
+#### Scenario: Required operation approval becomes approved
+- **WHEN** the exact separately required operation approval is resolved as approved
 - **THEN** one short transaction makes the same execution dispatch-ready and emits durable work without invoking the backend in the approval request
 
-#### Scenario: Required authorization does not approve
-- **WHEN** the exact required authorization is missing, rejected, expired, or cancelled
+#### Scenario: Required operation approval does not approve
+- **WHEN** the exact required operation approval is missing, rejected, expired, or cancelled
 - **THEN** the execution terminates with `effect_certainty = no_effect` and no backend dispatch
 
 ### Requirement: Execution leases are independent and fenced
@@ -41,9 +51,9 @@ The system MUST claim controlled-operation work with an execution-specific lease
 - **WHEN** an approved operation waits on a provider or HPC backend
 - **THEN** the execution worker can retain or renew only its execution lease while the session runtime lease remains free for other bounded agent turns
 
-#### Scenario: Agent capability lease expires in flight
-- **WHEN** the agent capability lease stops admitting new work after an exact external job was already dispatched
-- **THEN** the existing execution remains owned and reconciled by its execution lease and handle without treating lease expiry as cancellation or no-effect
+#### Scenario: Agent capability lease becomes inactive in flight
+- **WHEN** the agent capability lease is revoked or otherwise stops admitting new work after an exact external job was already dispatched
+- **THEN** the existing execution remains owned and reconciled by its execution lease and handle without treating capability-lease revocation or inactivity as cancellation or no-effect
 
 #### Scenario: Fence a stale callback
 - **WHEN** an execution lease expires, a higher fencing token is issued, and the old worker later receives a backend response

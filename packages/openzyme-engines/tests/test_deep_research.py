@@ -17,15 +17,12 @@ from openzyme_core import connect_sqlite
 from openzyme_core import engine_tool_descriptors
 from openzyme_core import EngineRegistry
 from openzyme_domain import EngineInvocationStatus
-from openzyme_domain import MemoryScopeKind
-from openzyme_domain import ResearchSummaryStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionStatus
 from openzyme_domain import SourceRefKind
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
-from openzyme_domain import ArtifactKind
 from openzyme_engines import DeepResearchEngine
 from openzyme_engines import EvidenceSynthesis
 from openzyme_engines import EvidenceSynthesisItem
@@ -49,6 +46,56 @@ from openzyme_runtime import ToolSideEffect
 from openzyme_research import ResearchFinding
 from openzyme_research import ResearchSource
 from openzyme_research import ResearchUnitResult
+
+
+class RecordingSessionRuntimeContext(SessionRuntimeContext):
+    __slots__ = ("workspace_files",)
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.workspace_files: dict[str, dict] = {}
+
+    def write_workspace_json(
+        self,
+        *,
+        repository_path: str,
+        payload: dict,
+    ) -> dict[str, object]:
+        self.workspace_files[repository_path] = payload
+        encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
+        return {
+            "schema_version": "workspace_file_write_result@1",
+            "workspace_id": "workspace_test",
+            "workspace_generation": 1,
+            "repository_path": repository_path,
+            "size_bytes": len(encoded),
+            "content_digest": "sha256:" + "a" * 64,
+            "publication_required": True,
+            "commit_performed": False,
+            "publication_performed": False,
+        }
+
+
+class FailingWorkspaceSessionRuntimeContext(RecordingSessionRuntimeContext):
+    __slots__ = ("write_calls",)
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.write_calls = 0
+
+    def write_workspace_json(
+        self,
+        *,
+        repository_path: str,
+        payload: dict,
+    ) -> dict[str, object]:
+        self.write_calls += 1
+        if self.write_calls == 3:
+            raise RuntimeError("injected workspace write failure")
+        return super().write_workspace_json(
+            repository_path=repository_path,
+            payload=payload,
+        )
 
 
 class CapturingDeepResearchInvoker:
@@ -831,7 +878,7 @@ def test_deep_research_graph_synthesis_model_exception_propagates_runtime_failur
         )
 
 
-def test_native_deep_research_runner_uses_graph_and_engine_persists_outputs() -> None:
+def test_native_deep_research_runner_returns_dossier_without_control_plane_copy() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     model_factory = CompletingGraphModelFactory()
@@ -851,7 +898,7 @@ def test_native_deep_research_runner_uses_graph_and_engine_persists_outputs() ->
         invocation_id="inv_graph_native",
     )
 
-    assert started.invocation.status.value == "succeeded"
+    assert started.invocation.status is EngineInvocationStatus.RUNNING
     assert started.dossier.status == "completed"
     assert model_factory.calls == [
         "deep_research_brief",
@@ -862,10 +909,11 @@ def test_native_deep_research_runner_uses_graph_and_engine_persists_outputs() ->
     ]
     assert repositories.research_evidence.list_by_invocation(
         session.session_id, "inv_graph_native"
-    )
-    assert repositories.artifacts.get("inv_graph_native:dossier").metadata[
-        "produced_by"
-    ] == "deep_research"
+    ) == []
+    assert repositories.artifacts.list_by_invocation(
+        session.session_id, "inv_graph_native"
+    ) == []
+    assert started.invocation.output_ref is None
 
 
 def test_native_deep_research_runner_retries_researcher_transient_provider_error() -> None:
@@ -894,7 +942,7 @@ def test_native_deep_research_runner_retries_researcher_transient_provider_error
         purpose="deep_research_researcher",
         kind="tool_calling",
     )
-    assert started.invocation.status is EngineInvocationStatus.SUCCEEDED
+    assert started.invocation.status is EngineInvocationStatus.RUNNING
     assert started.dossier.status == "completed"
     assert model_factory.provider_calls == 3
     retry_record = next(
@@ -922,13 +970,12 @@ def test_native_deep_research_runner_returns_partial_without_source_backed_evide
         invocation_id="inv_graph_no_evidence",
     )
 
-    summary = repositories.research_summaries.get_by_invocation(
-        session.session_id, "inv_graph_no_evidence"
-    )
-    assert started.invocation.status is EngineInvocationStatus.SUCCEEDED
+    assert started.invocation.status is EngineInvocationStatus.RUNNING
     assert started.dossier.status == "partial"
     assert started.dossier.evidence_items == ()
-    assert summary.status is ResearchSummaryStatus.PARTIAL
+    assert repositories.research_summaries.get_by_invocation(
+        session.session_id, "inv_graph_no_evidence"
+    ) is None
 
 
 def test_deep_research_engine_marks_invocation_failed_when_runner_raises() -> None:
@@ -947,17 +994,16 @@ def test_deep_research_engine_marks_invocation_failed_when_runner_raises() -> No
     invocation = repositories.invocations.get("inv_runner_failed")
     assert invocation is not None
     assert invocation.status is EngineInvocationStatus.FAILED
-    assert invocation.output_ref is not None
-    dossier = repositories.engine_documents.get(invocation.output_ref)
-    assert dossier is not None
-    assert dossier.payload["status"] == "failed"
-    assert (
-        dossier.payload["completion_reason"]
-        == "runtime_failure:invalid_or_auth_request"
+    assert invocation.output_ref is None
+    documents = repositories.engine_documents.list_by_invocation(
+        session.session_id, "inv_runner_failed"
     )
+    assert [document.document_kind for document in documents] == [
+        "deep_research_input"
+    ]
 
 
-def test_deep_research_engine_persists_v3_canonical_research_rows() -> None:
+def test_deep_research_engine_does_not_persist_duplicate_research_content() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     engine = DeepResearchEngine(repositories, CompletedDeepResearchRunner())
@@ -970,50 +1016,30 @@ def test_deep_research_engine_persists_v3_canonical_research_rows() -> None:
         idempotency_key="task_001:deep_research:test",
     )
 
-    assert started.invocation.status.value == "succeeded"
+    assert started.invocation.status is EngineInvocationStatus.RUNNING
     assert started.dossier.source_refs[0]["kind"] == "paper"
     assert repositories.engine_documents.list_by_invocation(
         session.session_id, "inv_001"
     )
-    assert (
-        repositories.research_summaries.get_by_invocation(
-            session.session_id, "inv_001"
-        ).status
-        is ResearchSummaryStatus.COMPLETED
-    )
-    assert (
-        repositories.research_evidence.list_by_invocation(
-            session.session_id, "inv_001"
-        )[0].confidence_label
-        == "high"
-    )
+    assert repositories.research_summaries.get_by_invocation(
+        session.session_id, "inv_001"
+    ) is None
+    assert repositories.research_evidence.list_by_invocation(
+        session.session_id, "inv_001"
+    ) == []
     assert repositories.research_source_refs.list_by_invocation(
         session.session_id, "inv_001"
-    )[0].locator.endswith("paper-a")
-    assert (
-        repositories.research_gaps.list_by_invocation(session.session_id, "inv_001")[
-            0
-        ].summary
-        == "Need wet-lab validation"
-    )
-    dossier_artifact = repositories.artifacts.get("inv_001:dossier")
-    assert dossier_artifact.kind is ArtifactKind.RESEARCH_DOSSIER
-    assert (
-        dossier_artifact.storage_uri
-        == f"engine-document://{started.invocation.output_ref}"
-    )
-    assert dossier_artifact.relative_path == "deep-research/inv_001/dossier.json"
-    assert dossier_artifact.metadata["evidence_count"] == 1
-    assert dossier_artifact.metadata["source_ref_count"] == 1
-    assert dossier_artifact.metadata["gap_count"] == 1
-    assert repositories.memory.list_by_scope(
-        session.session_id,
-        scope_kind=MemoryScopeKind.TASK,
-        scope_ref="task_001",
-    )
+    ) == []
+    assert repositories.research_gaps.list_by_invocation(
+        session.session_id, "inv_001"
+    ) == []
+    assert repositories.artifacts.list_by_invocation(
+        session.session_id, "inv_001"
+    ) == []
+    assert started.invocation.output_ref is None
 
 
-def test_deep_research_resume_overwrites_canonical_rows_for_same_invocation() -> None:
+def test_deep_research_resume_returns_new_dossier_without_overwriting_content_rows() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     runner = ClarifyThenCompleteRunner()
@@ -1032,15 +1058,12 @@ def test_deep_research_resume_overwrites_canonical_rows_for_same_invocation() ->
 
     assert first.dossier.status == "needs_clarification"
     assert second.dossier.status == "completed"
-    summary = repositories.research_summaries.get_by_invocation(
+    assert repositories.research_summaries.get_by_invocation(
         session.session_id, "inv_resume"
-    )
-    evidence = repositories.research_evidence.list_by_invocation(
+    ) is None
+    assert repositories.research_evidence.list_by_invocation(
         session.session_id, "inv_resume"
-    )
-    assert summary.status is ResearchSummaryStatus.COMPLETED
-    assert summary.clarification_question is None
-    assert len(evidence) == 1
+    ) == []
     assert runner.calls[1]["resolution"] == "Focus on scaffold family A only."
 
 
@@ -1050,7 +1073,7 @@ def test_deep_research_tools_register_with_tool_registry() -> None:
     engine = DeepResearchEngine(repositories, CompletedDeepResearchRunner())
     registry = ToolRegistry()
     register_deep_research_tools(registry, engine)
-    context = SessionRuntimeContext(
+    context = RecordingSessionRuntimeContext(
         repositories=repositories,
         event_sink=MemoryEventBus(),
         snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
@@ -1096,20 +1119,63 @@ def test_deep_research_tools_register_with_tool_registry() -> None:
     assert missing.status == "invalid_tool_arguments"
     assert result.ok is True
     payload = json.loads(result.content)
-    assert payload["research_brief"] == "collect catalytic evidence"
+    assert payload["summary"] == "Catalytic papers support the selected scaffold family."
     assert payload["invocation_id"].startswith("inv_")
     assert payload["engine_status"] == "succeeded"
-    assert payload["artifact_refs"][0]["artifact_id"] == f"{payload['invocation_id']}:dossier"
-    assert "storage_uri" not in payload["artifact_refs"][0]
+    assert len(payload["workspace_files"]) == 5
+    assert payload["artifact_alias_created"] is False
+    assert payload["engine_document_body_created"] is False
+    assert set(context.workspace_files) == {
+        f"research/{payload['invocation_id']}/{filename}"
+        for filename in (
+            "source-snapshots.json",
+            "citations.json",
+            "notes.json",
+            "analysis.json",
+            "dossier.json",
+        )
+    }
 
 
-def test_deep_research_dossier_and_status_return_artifact_refs() -> None:
+def test_deep_research_workspace_write_failure_never_leaves_success_state() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
-    engine = DeepResearchEngine(repositories, CompletedWithArtifactRunner())
+    engine = DeepResearchEngine(repositories, CompletedDeepResearchRunner())
     registry = ToolRegistry()
     register_deep_research_tools(registry, engine)
-    context = SessionRuntimeContext(
+    context = FailingWorkspaceSessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+    )
+    router, step_context = _researcher_step(context)
+
+    with pytest.raises(RuntimeError, match="workspace file persistence failed"):
+        router.dispatch(
+            step_context,
+            ToolInvocation(
+                call_id="call_workspace_failure",
+                tool_name="deep_research.start",
+                arguments={"task_id": "task_001", "brief": "collect evidence"},
+                task_id="task_001",
+            ),
+        )
+
+    invocations = repositories.invocations.list_by_session(session.session_id)
+    assert len(invocations) == 1
+    assert invocations[0].status is EngineInvocationStatus.FAILED
+    assert invocations[0].output_ref is None
+
+
+def test_deep_research_dossier_requires_workspace_or_published_ref() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    engine = DeepResearchEngine(repositories, CompletedDeepResearchRunner())
+    registry = ToolRegistry()
+    register_deep_research_tools(registry, engine)
+    context = RecordingSessionRuntimeContext(
         repositories=repositories,
         event_sink=MemoryEventBus(),
         snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
@@ -1151,20 +1217,19 @@ def test_deep_research_dossier_and_status_return_artifact_refs() -> None:
         ),
     )
 
-    dossier_payload = json.loads(dossier_result.content)
     status_payload = json.loads(status_result.content)
-    expected_ids = [f"{invocation_id}:dossier", f"{invocation_id}:artifact:1"]
     assert start_result.ok is True
     assert dossier_result.ok is True
     assert status_result.ok is True
-    assert [item["artifact_id"] for item in start_payload["artifact_refs"]] == expected_ids
-    assert [item["artifact_id"] for item in dossier_payload["artifact_refs"]] == expected_ids
-    assert [item["artifact_id"] for item in status_payload["artifact_refs"]] == expected_ids
-    assert dossier_payload["summary"] == "Research completed with one downloaded structure."
+    dossier_payload = json.loads(dossier_result.content)
+    assert dossier_payload["content_bytes_in_control_plane"] is False
+    assert dossier_payload["workspace_layout"][-1].endswith("/dossier.json")
+    assert len(start_payload["workspace_files"]) == 5
     assert status_payload["status"] == "succeeded"
     assert status_payload["engine_status"] == "succeeded"
-    assert "artifacts" not in status_payload
-    assert "storage_uri" not in status_payload["artifact_refs"][1]
+    assert status_payload["artifact_alias_created"] is False
+    assert status_payload["legacy_research_content_read"] is False
+    assert status_payload["workspace_layout"][-1].endswith("/dossier.json")
 
 
 def test_deep_research_engine_tool_descriptors_derive_from_registered_runtimes() -> None:
@@ -1186,35 +1251,19 @@ def test_deep_research_engine_tool_descriptors_derive_from_registered_runtimes()
     assert start.description == "Start deep research for the currently assigned task."
 
 
-def test_deep_research_engine_persists_artifacts_from_dossier() -> None:
+def test_deep_research_engine_rejects_artifact_era_dossier_manifests() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     engine = DeepResearchEngine(repositories, CompletedWithArtifactRunner())
 
-    result = engine.start_research(
-        session_id=session.session_id,
-        task_id="task_001",
-        brief="download a supporting structure",
-        invocation_id="inv_artifacts",
-    )
+    with pytest.raises(RuntimeError, match="artifact-era file manifests"):
+        engine.start_research(
+            session_id=session.session_id,
+            task_id="task_001",
+            brief="download a supporting structure",
+            invocation_id="inv_artifacts",
+        )
 
-    artifacts = repositories.artifacts.list_by_invocation(
+    assert repositories.artifacts.list_by_invocation(
         session.session_id, "inv_artifacts"
-    )
-    artifacts_by_id = {artifact.artifact_id: artifact for artifact in artifacts}
-    assert result.invocation.status.value == "succeeded"
-    assert len(artifacts) == 2
-    assert [artifact.artifact_id for artifact in result.artifact_refs] == [
-        "inv_artifacts:dossier",
-        "inv_artifacts:artifact:1",
-    ]
-    assert {artifact.artifact_id for artifact in result.artifact_refs} == set(
-        artifacts_by_id
-    )
-    assert (
-        artifacts_by_id["inv_artifacts:dossier"].kind is ArtifactKind.RESEARCH_DOSSIER
-    )
-    assert artifacts_by_id["inv_artifacts:artifact:1"].kind is ArtifactKind.STRUCTURE
-    assert (
-        artifacts_by_id["inv_artifacts:artifact:1"].metadata["provider"] == "rcsb_pdb"
-    )
+    ) == []

@@ -28,6 +28,7 @@ class CommandRunner:
         *,
         timeout: float | None = None,
         stage: str | None = None,
+        input_text: str | None = None,
     ) -> CommandResult:
         started_at = time.monotonic()
         try:
@@ -35,6 +36,7 @@ class CommandRunner:
                 args,
                 capture_output=True,
                 text=True,
+                input=input_text,
                 check=False,
                 timeout=timeout,
             )

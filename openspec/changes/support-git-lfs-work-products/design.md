@@ -4,6 +4,8 @@
 
 本设计以 `ProjectRepositoryBinding` 固定的 remote、object format、LFS endpoint 与 binding policy 为前置，也依赖 `PublishedRevision` 的冻结 publication intent 和不可变 publication ref。Podman capsule 与 HPC login workspace 使用原生 `git`/`git-lfs`；compute tree 只接收已经解析并验证的文件 bytes，不安装 Git、Git LFS 或 credential。任意 `curl`、`scp`、`rsync` 等传输只改变私有 workspace，不自动形成共享真相。
 
+在这次明确排序且统一后验验证的连续迁移中，C5 源码实现先消费 `git_lfs_work_product_source_only_dependency_gate@1`。该 gate 绑定 C1 正式收据、C2/C3 source-only gate、C4 frozen intent/whole-tree manifest/validator seam 与现有标准 LFS transport，但明确记录 C2--C4 最终验收仍未完成。它不得启动 LFS writer、发放 credential、执行 publication、删除对象、运行 GC delete 或产生任何 remote/live effect，也不能升级为 predecessor 或 C5 acceptance receipt。
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -23,6 +25,10 @@
 - 不定义 external upstream push、GitHub PR 或公共对象分发。
 
 ## Decisions
+
+### 0. Source-only dependency gate 不提升 predecessor 状态
+
+C5 的源码准入与最终生产验收分离。源码准入可复用 C1 已验收的内部 Git/LFS identity，并快照 C2 active-lease seam、C3 generation-bound clone/credential seam和 C4 frozen publication/validator seam；它只允许实现 domain、migration、repository、transport、closure、quota、retention、GC、测试与文档。全部连续 change 完成后，最终验收必须重新绑定正式 C2--C4 receipts、最终 source revision、真实 client/image 资格与完整验证结果；source-only snapshot 中的 digest、`acceptance_proven=false` 记录或未运行测试不得作为 runtime authority 或 fallback。
 
 ### 1. 仅暴露标准 Git LFS，不建立通用 CAS 产品面
 

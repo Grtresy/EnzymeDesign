@@ -30,6 +30,25 @@ health_check_timeout_seconds = 5.0
 channel_acquire_timeout_seconds = 30.0
 shutdown_timeout_seconds = 10.0
 
+[executor_workspace]
+# Activation requires real credential-provider/authenticator integration plus
+# target-native positive and negative qualification receipts. C2 lease state or
+# configuration alone is never sufficient. Native workspace credentials never
+# carry scheduler-submit/sbatch authority; C9 installs that separate gate.
+activated = false
+target_profile_id = "unconfigured"
+workspace_root = "/var/empty/openzyme-hpc-disabled"
+sidecar_root = "/var/empty/openzyme-hpc-sidecar-disabled"
+os_principal_policy_id = "unconfigured"
+# root_policy_digest = "sha256:..."
+# isolation_command = "/usr/local/libexec/openzyme-workspace-isolation"
+credential_provider_id = "unconfigured"
+authenticator_id = "unconfigured"
+login_alias = "unconfigured"
+# toolchain_digest = "sha256:..."
+# native_positive_proof_digest = "sha256:..."
+# native_negative_proof_digest = "sha256:..."
+
 [slurm]
 default_partition = "" # optional; leave empty to use cluster default
 gpu_partition = ""     # optional; leave empty to use cluster default
@@ -44,6 +63,9 @@ default_mode = "auto"
 create_remote_dir_for_ssh = true
 artifact_root = "../../../.mcp_hpc_runner/artifacts"
 use_rsync = true
+# artifact_root/use_rsync remain historical runner-store settings only. Current
+# workspace RunSpec rejects artifact inputs, HpcStageRef, stage_to, expected
+# output fetch and arbitrary remote paths before external action.
 
 [limits]
 max_cpus = 64

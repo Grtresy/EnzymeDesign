@@ -484,6 +484,21 @@ _OPENZYME_SETTINGS_ENVIRONMENT_FIELDS = (
         safe_generic_default=300,
     ),
     EnvironmentFieldDescriptor(
+        setting_path="agent_capsule.deployment_network",
+        environment_names=("OPENZYME_AGENT_CAPSULE_DEPLOYMENT_NETWORK",),
+        value_kind="string",
+        safe_generic_default=None,
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="agent_capsule.podman_binary",
+        environment_names=("OPENZYME_AGENT_CAPSULE_PODMAN_BINARY",),
+        value_kind="private_string",
+        safe_generic_default=None,
+        identity_mode="private_digest",
+        empty_uses_fallback=False,
+    ),
+    EnvironmentFieldDescriptor(
         setting_path="v3_background_runtime.enabled",
         environment_names=("OPENZYME_V3_BACKGROUND_RUNTIME_ENABLED",),
         value_kind="boolean",
@@ -527,6 +542,38 @@ _OPENZYME_SETTINGS_ENVIRONMENT_FIELDS = (
         value_kind="path",
         safe_generic_default=None,
         identity_mode="path_identity",
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="execution.hpc_credential_provider_id",
+        environment_names=("OPENZYME_HPC_CREDENTIAL_PROVIDER_ID",),
+        value_kind="string",
+        safe_generic_default=None,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="execution.hpc_authenticator_id",
+        environment_names=("OPENZYME_HPC_AUTHENTICATOR_ID",),
+        value_kind="string",
+        safe_generic_default=None,
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="execution.hpc_credential_issue_command",
+        environment_names=("OPENZYME_HPC_CREDENTIAL_ISSUE_COMMAND",),
+        value_kind="string_list",
+        safe_generic_default=[],
+        identity_mode="private_digest",
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="execution.hpc_credential_revoke_command",
+        environment_names=("OPENZYME_HPC_CREDENTIAL_REVOKE_COMMAND",),
+        value_kind="string_list",
+        safe_generic_default=[],
+        identity_mode="private_digest",
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="execution.hpc_credential_timeout_seconds",
+        environment_names=("OPENZYME_HPC_CREDENTIAL_TIMEOUT_SECONDS",),
+        value_kind="integer",
+        safe_generic_default=30,
     ),
     *(
         EnvironmentFieldDescriptor(
@@ -1178,6 +1225,58 @@ class RepositoryServiceSettings:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class AgentCapsuleSettings:
+    deployment_network: str
+    podman_binary: Path
+
+    def __post_init__(self) -> None:
+        if (
+            not self.deployment_network
+            or self.deployment_network.strip() != self.deployment_network
+        ):
+            raise ValueError(
+                "OPENZYME_AGENT_CAPSULE_DEPLOYMENT_NETWORK must be a non-empty exact name"
+            )
+        if not self.podman_binary.is_absolute():
+            raise ValueError(
+                "OPENZYME_AGENT_CAPSULE_PODMAN_BINARY must be an absolute path"
+            )
+
+    @classmethod
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+    ) -> "AgentCapsuleSettings | None":
+        source = os.environ if environ is None else environ
+        deployment_network = _optional_string_value(
+            _environment_field("agent_capsule.deployment_network", source)
+        )
+        podman_binary = _optional_string_value(
+            _environment_field("agent_capsule.podman_binary", source)
+        )
+        configured = {
+            name
+            for name, value in {
+                "deployment_network": deployment_network,
+                "podman_binary": podman_binary,
+            }.items()
+            if value is not None
+        }
+        if not configured:
+            return None
+        missing = sorted({"deployment_network", "podman_binary"} - configured)
+        if missing:
+            raise ValueError(
+                "agent capsule configuration is partial; missing: "
+                + ", ".join(missing)
+            )
+        return cls(
+            deployment_network=str(deployment_network),
+            podman_binary=Path(str(podman_binary)),
+        )
+
+
 def _parse_host_api_principals(
     value: str | None,
 ) -> tuple[HostApiPrincipalSettings, ...]:
@@ -1297,6 +1396,36 @@ class V3BackgroundRuntimeSettings:
 class ExecutionSettings:
     backend: str
     hpc_runner_config: str | None
+    hpc_credential_provider_id: str | None = None
+    hpc_authenticator_id: str | None = None
+    hpc_credential_issue_command: tuple[str, ...] = ()
+    hpc_credential_revoke_command: tuple[str, ...] = ()
+    hpc_credential_timeout_seconds: int = 30
+
+    def __post_init__(self) -> None:
+        credential_values = (
+            self.hpc_credential_provider_id,
+            self.hpc_authenticator_id,
+            self.hpc_credential_issue_command or None,
+            self.hpc_credential_revoke_command or None,
+        )
+        if any(value is not None for value in credential_values) and any(
+            value is None for value in credential_values
+        ):
+            raise ValueError(
+                "HPC credential provider id, authenticator id, issue command, "
+                "and revoke command must be configured together"
+            )
+        for command in (
+            self.hpc_credential_issue_command,
+            self.hpc_credential_revoke_command,
+        ):
+            if command and not Path(command[0]).is_absolute():
+                raise ValueError("HPC credential commands require absolute executables")
+        if not 1 <= self.hpc_credential_timeout_seconds <= 300:
+            raise ValueError(
+                "HPC credential command timeout must be between 1 and 300 seconds"
+            )
 
     @classmethod
     def from_env(
@@ -1308,6 +1437,32 @@ class ExecutionSettings:
             backend=str(_environment_field("execution.backend", source)),
             hpc_runner_config=_optional_string_value(
                 _environment_field("execution.hpc_runner_config", source)
+            ),
+            hpc_credential_provider_id=_optional_string_value(
+                _environment_field("execution.hpc_credential_provider_id", source)
+            ),
+            hpc_authenticator_id=_optional_string_value(
+                _environment_field("execution.hpc_authenticator_id", source)
+            ),
+            hpc_credential_issue_command=tuple(
+                str(value)
+                for value in _environment_field(
+                    "execution.hpc_credential_issue_command",
+                    source,
+                )
+            ),
+            hpc_credential_revoke_command=tuple(
+                str(value)
+                for value in _environment_field(
+                    "execution.hpc_credential_revoke_command",
+                    source,
+                )
+            ),
+            hpc_credential_timeout_seconds=int(
+                _environment_field(
+                    "execution.hpc_credential_timeout_seconds",
+                    source,
+                )
             ),
         )
 
@@ -1427,6 +1582,7 @@ class OpenZymeSettings:
         default_factory=ReliabilityRefactorSettings
     )
     repository_service: RepositoryServiceSettings | None = None
+    agent_capsule: AgentCapsuleSettings | None = None
 
     @classmethod
     def from_env(
@@ -1450,6 +1606,7 @@ class OpenZymeSettings:
             test=TestSettings.from_env(source),
             reliability=ReliabilityRefactorSettings.from_env(source),
             repository_service=RepositoryServiceSettings.from_env(source),
+            agent_capsule=AgentCapsuleSettings.from_env(source),
         )
 
 
@@ -1463,6 +1620,7 @@ def reset_settings_cache() -> None:
 
 
 __all__ = [
+    "AgentCapsuleSettings",
     "DEFAULT_HOST_BASE_URL",
     "DEFAULT_HOST_API_BIND_HOST",
     "DEFAULT_HOST_API_BIND_PORT",

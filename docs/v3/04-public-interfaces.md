@@ -1,5 +1,9 @@
 # OpenZyme V3 公共接口
 
+> `file_workspace_public@1` 的候选投影、owner-only executor locator 与原子 public epoch
+> 规则见 [file-workspace-migration.md](file-workspace-migration.md)。在 public activation
+> receipt 前，candidate Host/UI modules 不是 current endpoint 合同。
+
 ## 1. 总体原则
 
 V3 公共接口以 harness-first 语义为唯一主线。
@@ -16,6 +20,44 @@ V3 公共接口以 harness-first 语义为唯一主线。
 - 旧 `episode`、phase rail、supervisor-route 词汇不得重新进入公共接口
 
 ## 2. API 设计默认值
+
+### 2.0 `workspace.publish` 与显式同步合同
+
+`workspace.publish` 是 agent-facing tool/service seam，不是普通文件上传接口。请求闭集包含 idempotency key、workspace id/generation、repository binding version、expected HEAD/tree、declared base、publication checkpoint、`whole_repository=true` 与可选 parent/supersedes。任何 dirty/partial/uncheckpointed/foreign/policy-drift 请求都在 remote I/O 前失败；Host 不会替调用者 stage、commit、clean、ignore、rewrite 或选择另一个可运行 revision。
+
+成功或可能生效的调用只返回 safe publication/execution facts：publication/intent/execution id、binding version、immutable ref、commit/tree、manifest digest、effect certainty 与 retry eligibility。credential、Host path、private ref、raw Git diagnostic 与 internal endpoint 不公开。`workspace.publication.fetch_identity` 只读取已经 materialize 的 exact ref/commit/tree/manifest identity；它不执行 fetch、checkout 或 merge。`workspace.publication.audit` 只比较 canonical revisions 与 publication namespace，不扫描 private/historical refs，也不修复 drift。
+
+`GET /v3/sessions/{session_id}/workspace` 的 `published_revisions` 只来自 append-only canonical rows。protocol payload 的 `publication_reference` 必须恰含 `publication_id`、exact `revision` 与 manifest 中的 repository-relative `path`；task evidence 使用等价 closed identity。mutable branch、bytes copy 或不存在的 path 被拒绝。publish 不自动 send/wakeup/fetch/integrate/finish。当前接口仍由 source-only gate 限制，不能据此执行生产或 live publication。
+
+当 binding 启用 Git LFS 时，`workspace.publish` 的安全结果额外投影 closure manifest digest、fresh
+verification id/digest；materialized revision 的 `lfs_closure` 还包含 object count、total size 与
+`published` retention class。它们都是 opaque proof identity，不包含 endpoint、bearer、object-store
+path 或 object bytes。`workspace.publication.fetch_identity` 可读取同一 closure safe projection，
+但仍不替 recipient fetch/checkout/merge。
+
+LFS Batch upload 必须先取得 exact quota-bound upload session；`PUT` 与 `verify` 都携带该 session
+header，并重验 binding/session/agent/generation/credential/OID/size/expiry。quota error 返回 bounded
+scope/limit/requested bytes 和 `fallback_performed=false`。download 只在 repository-scoped metadata
+与 actual bytes size/SHA-256 同时成立时返回，并写 object-read receipt；404 不透露其他 repository
+是否拥有相同 OID。普通 native upload/download/private push 永远不创建 `PublishedRevision`。
+
+### 2.0.1 File handoff、report publication 与 task evidence
+
+公共模型只暴露 closed `RevisionPathRef@1`。`protocol.send` 的 file-handoff payload 必须包含 producer、
+recipient 和一组 exact refs；Host 原子写 handoff/inbox/wakeup，但不 fetch 或完成 task。
+`protocol.handoff.get` 只允许 envelope participant 读取。recipient 的 fetch 使用 repository-scoped Git read
+credential；只有 ref 包含 LFS entries 时才另取 LFS read credential。fetch 只建立 inspection ref，冲突或
+identity drift 直接返回模型可读失败，不自动 checkout/merge/rebase/cherry-pick。
+
+`report.publish` 不接受 inline body 或 artifact id，只接受 reporter own published report path。workspace
+publication 的 `already_published` 与 report 业务状态 `ready|published` 分开投影；correction 使用新 report
+identity/version/publication 和 explicit supersedes。`task.finish.evidence_refs` 是 closed nested
+`TaskEvidenceRef@1` 对象，必须 exact task-bound；本阶段支持 revision path、report 与 controlled result，
+scientific variant 直到 C10 都返回 typed unavailable error。
+
+workspace projection 顶层 `research_files` 只显示 published path/commit/digest、index identity 与 bounded
+summary；不内联正文、credential、Host path 或 private locator。source-only gate 不是 public runtime
+authority，也不授权生产 fetch、publication 或 live effect。
 
 建议最小接口按两层理解。
 
@@ -940,3 +982,9 @@ preparation-only authority 和 `runner_operation_occurrence`。public `pin-opera
 query|resume|reconcile` 只处理该 handle；query 只读取，pre-effect `no_effect/same_phase_safe` 才能显式 resume，
 reconcile 只恢复 exact durable outcome 而不重放 payload。uncertain effect 必须 exact reconcile。新 occurrence 还要求 disposition/reconciliation、authority 与 budget，
 不得 hidden retry、loop、strategy selection 或 replacement dispatch。
+
+## 10. C8 executor HPC workspace interface
+
+模型可见C8工具仅为`hpc.workspace.request`、`hpc.workspace.inspect`、`hpc.workspace.verify`和`hpc.workspace.sync_source`，只向executor role暴露。`request`写exact intent后调用same-handle provisioner；response loss返回reconciliation state而不创建replacement。`inspect`遵循owner-only locator授权；`verify`核对target isolation、runner receipt、protected root、independent `.git`、origin与Git LFS；`sync_source`只返回一个private checkpoint或immutable publication identity，不修改working tree。
+
+这些工具不是public HTTP scheduler API，也不授权`sbatch`。`mcp-hpc-runner` current tool schema只接受workspace provision/inspect/verify/cleanup和C9预留的closed workspace RunSpec；C9前`exec.run`、`job.submit`、new reservation和payload resume明确拒绝。旧artifact input、Host path、`stage_to`、catalog ref和output fetch字段没有compatibility coercion。

@@ -18,6 +18,7 @@ from openzyme_core import ProjectRepositoryBindingService
 from openzyme_core import RepositoryRootBoundary
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_domain import ProjectRepositoryBinding
+from openzyme_domain import GitLfsBindingPolicy
 from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime import RepositoryServiceSettings
 
@@ -66,6 +67,13 @@ def _load_binding(path: Path) -> ProjectRepositoryBinding:
     return ProjectRepositoryBinding.from_dict(payload)
 
 
+def _load_lfs_policy(path: Path) -> GitLfsBindingPolicy:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Git LFS policy file must contain one JSON object")
+    return GitLfsBindingPolicy.from_dict(payload)
+
+
 def _write_inventory(
     settings: RepositoryServiceSettings,
     bindings: tuple[ProjectRepositoryBinding, ...],
@@ -98,6 +106,15 @@ def _initialize_binding(args: argparse.Namespace) -> dict[str, Any]:
     settings = _repository_settings()
     roots = _roots(settings)
     binding = _load_binding(args.binding_file)
+    lfs_policy = _load_lfs_policy(args.lfs_policy_file)
+    if (
+        lfs_policy.binding_id != binding.binding_id
+        or lfs_policy.binding_version != binding.binding_version
+        or lfs_policy.repository_id != binding.repository_id
+        or lfs_policy.policy_version != binding.repository_policy_version
+        or lfs_policy.policy_digest != binding.repository_policy_digest
+    ):
+        raise ValueError("Git LFS policy does not match the immutable binding")
     roots.preflight_roots()
     roots.create_bare_repository(binding)
     roots.import_exact_commit_from_repository(
@@ -109,6 +126,7 @@ def _initialize_binding(args: argparse.Namespace) -> dict[str, Any]:
     with provider.write() as scope:
         service = ProjectRepositoryBindingService(scope.repositories, roots)
         service.register(binding)
+        scope.repositories.git_lfs.add_policy(lfs_policy)
         service.activate(
             binding.binding_id,
             actor_ref=args.operator_ref,
@@ -131,6 +149,14 @@ def _activate_binding(args: argparse.Namespace) -> dict[str, Any]:
     provider = SQLiteRepositoryProvider(str(args.database_path))
     with provider.write() as scope:
         service = ProjectRepositoryBindingService(scope.repositories, roots)
+        binding = scope.repositories.project_repository_bindings.get(args.binding_id)
+        if binding is None or scope.repositories.git_lfs.get_policy(
+            binding_id=binding.binding_id,
+            binding_version=binding.binding_version,
+        ) is None:
+            raise RuntimeError(
+                "binding activation requires its exact immutable Git LFS policy"
+            )
         binding = service.activate(
             args.binding_id,
             actor_ref=args.operator_ref,
@@ -344,6 +370,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     initialize.add_argument(
         "--source-repository",
+        type=_absolute_existing_path,
+        required=True,
+    )
+    initialize.add_argument(
+        "--lfs-policy-file",
         type=_absolute_existing_path,
         required=True,
     )

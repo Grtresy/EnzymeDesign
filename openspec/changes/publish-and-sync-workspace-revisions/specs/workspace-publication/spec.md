@@ -1,5 +1,18 @@
 ## ADDED Requirements
 
+### Requirement: Source implementation does not promote deferred predecessor acceptance
+During the explicitly ordered continuous migration, C4 source implementation MAY begin from a `workspace_publication_source_only_dependency_gate@1` before final C2/C3 acceptance receipts are issued. The gate MUST bind immutable C0/C1 receipt identities, current C2/C3 source, schema, policy and interface identities, the controlled-operation baseline, and all deferred predecessor validation tasks. It MUST state `acceptance_proven=false`, `final_source_revision_bound=false`, `production_effect_authorized=false`, and `live_authorized=false`.
+
+The gate permits only continued source, deferred-test, and documentation work. It MUST NOT be consumed as an active capability lease, ready workspace, checkpoint proof, controlled execution owner or fence, Git credential, publication receipt, production proof, live authorization, or remote-effect authorization. Final C4 acceptance SHALL re-read the combined final source and require the formal C0--C3 receipts plus every validation declared by this change.
+
+#### Scenario: Continue C4 source work under unified deferred validation
+- **WHEN** current C2/C3 interfaces and the controlled-operation baseline are snapshotted while their final combined validation remains deferred
+- **THEN** C4 may implement source and write tests without running production publication, remote Git I/O, live work, or external effects
+
+#### Scenario: Present the source-only gate as runtime authority
+- **WHEN** a caller presents the gate to admit or dispatch a publication, issue a credential, create a remote ref, or claim predecessor acceptance
+- **THEN** the system rejects it and performs no fallback, retry, state transition, or external effect
+
 ### Requirement: Publication requires an explicit clean whole-repository intent
 `workspace.publish` SHALL accept only an explicit intent bound to the exact repository binding version, agent, workspace generation, expected HEAD commit, tree, declared base or parent, whole-repository path manifest, current policy digest, and idempotency key. Before any remote effect, the Host MUST prove that the working tree has no staged, unstaged, or untracked changes, HEAD equals the requested commit, and the commit belongs to the pinned repository. It MUST NOT stage, commit, clean, ignore, rewrite, or partially package the workspace.
 
@@ -14,6 +27,35 @@
 #### Scenario: Publish a path subset
 - **WHEN** a caller requests publication of selected files without the complete commit tree
 - **THEN** admission rejects the request and does not create an archive, artifact, synthetic commit, or partial publication
+
+### Requirement: C4 composes publication intent, capability lease, and controlled execution without substitution
+C4 SHALL implement the real publication authority composition and SHALL consume C2 only for the canonical exact `AgentCapabilityLease` identity, profile, generation, and current status. Before creating a publication execution, admission MUST have one exact frozen publication intent and an active matching lease. Those two facts SHALL create or reread exactly one publication-bound `ControlledOperationExecution`, but remote Git I/O MUST remain forbidden until that execution is durable and its current execution owner, fence, state version, and mutation authority are valid. A lease, intent, execution token, publication ref, or prior receipt MUST NOT imply either missing axis. No generic budget or retry counter SHALL count as publication authority.
+
+If C2 reports the exact lease inactive before any possible remote effect, C4 MUST close new dispatch with `no_effect`. If revoke occurs only after dispatch may have happened, C4 MUST stop new dispatch but SHALL keep the original execution responsible for exact-ref reconciliation and materialization of the already-proven publication; revoke MUST NOT be interpreted as remote no-effect or permission to create a replacement execution/ref. C4 SHALL consume C2's canonical revoke outcome without reimplementing exact, session/policy bulk, operator-subtree, or parent/child selection semantics.
+
+#### Scenario: Lease exists without publication intent
+- **WHEN** an agent has an active Git-capable lease but supplies no exact frozen publication intent
+- **THEN** C4 creates no publication execution, remote ref, receipt, or shared revision
+
+#### Scenario: Intent exists without an active exact lease
+- **WHEN** a publication intent is frozen but the exact agent/workspace-generation lease is missing, inactive, or profile-mismatched at admission
+- **THEN** C4 rejects admission before creating an execution or performing Git I/O
+
+#### Scenario: Intent and lease create one execution
+- **WHEN** the exact intent and active matching lease pass C4 admission and no execution exists
+- **THEN** C4 atomically creates or rereads exactly one intent-bound `ControlledOperationExecution` without opening a per-publication human approval
+
+#### Scenario: Existing execution does not match the other axes
+- **WHEN** a supplied or recovered execution names a different intent, binding, publisher, workspace generation, commit, manifest, or policy, or lacks the current execution fence
+- **THEN** C4 reports an identity or fence conflict and performs no remote ref operation or shared-truth mutation
+
+#### Scenario: Lease is revoked before publication dispatch
+- **WHEN** C2 reports the exact lease inactive before the execution has any possible remote effect
+- **THEN** C4 closes that execution with `effect_certainty = no_effect` and does not switch leases, reopen approval, or create another ref
+
+#### Scenario: Lease is revoked after publication may have dispatched
+- **WHEN** the exact ref operation may have occurred before C2 reports the lease inactive
+- **THEN** the original fenced execution reconciles only its preallocated ref and may materialize only the publication proved by that intent, with zero new dispatches
 
 ### Requirement: Published revisions bind exact immutable repository facts
 After exact remote-ref confirmation, the Host SHALL create one append-only `PublishedRevision` binding the publication id, project and session, repository binding version, exact commit and tree, Git parent commits, declared base or parent publication, publisher and workspace generation, immutable publication ref, canonical whole-tree path manifest and digest, policy digest, frozen intent, controlled execution, exact remote receipt, timestamp, and optional `supersedes` identity. The record and remote ref MUST NOT be updated, force-moved, or deleted.
@@ -42,7 +84,7 @@ Local file edits, local commits, local branches, and pushes to agent-private ref
 - **THEN** it reconciles the frozen intent and exact ref before materializing the same canonical publication and does not expose the ref by remote scanning alone
 
 ### Requirement: Publication effects have one owner and honest certainty
-Each publication intent MUST automatically create and bind exactly one canonical `ControlledOperationExecution` as the owner of the create-only remote ref effect after validating the active capability lease and frozen explicit intent. `workspace.publish` MUST NOT require another per-publication human approval. The Host SHALL persist dispatch intent before I/O, use a Host-only credential and compare-and-set ref creation, and record an exact receipt binding remote identity, ref, expected absence, and new commit. Response loss MUST be reconciled only against that exact ref and intent; the Host MUST NOT automatically retry a push, choose another remote or ref, create a replacement publication, or reopen publication intent.
+Each publication intent MUST automatically create and bind exactly one canonical `ControlledOperationExecution` as the owner of the create-only remote ref effect through C4's three-axis composition after validating the active capability lease and frozen explicit intent. `workspace.publish` MUST NOT require another per-publication human approval. The Host SHALL persist dispatch intent before I/O, use a Host-only credential and compare-and-set ref creation, and record an exact receipt binding remote identity, ref, expected absence, and new commit. Response loss MUST be reconciled only against that exact ref and intent; the Host MUST NOT automatically retry a push, choose another remote or ref, create a replacement publication, or reopen publication intent.
 
 #### Scenario: Remote confirms create-only ref update
 - **WHEN** the Git service confirms that the preallocated absent ref was created at the exact intended commit

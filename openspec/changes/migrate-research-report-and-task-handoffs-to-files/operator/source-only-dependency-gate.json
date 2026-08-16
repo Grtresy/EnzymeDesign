@@ -1,0 +1,85 @@
+{
+  "schema_id": "revision_path_handoff_source_only_dependency_gate@1",
+  "change_id": "migrate-research-report-and-task-handoffs-to-files",
+  "gate_scope": "ordered_source_implementation_only",
+  "observed_head": "8ae3d73b3054f2058ff33ea183f62c811b9272a3",
+  "immutable_c1_acceptance": {
+    "path": "openspec/changes/establish-project-repository-bindings/operator/acceptance-receipt.json",
+    "file_sha256": "sha256:f3b548cada970890c5a43a4a764207fe1672a0ae94701de06fbff1db693f1b4f",
+    "schema_id": "project_repository_binding_acceptance@1",
+    "source_revision": "9b78ec6a883f90ec4239d113e9300098120f68bd"
+  },
+  "predecessor_source_gates": [
+    {
+      "change_id": "establish-agent-capability-leases",
+      "path": "openspec/changes/establish-agent-capability-leases/operator/prerequisite-bindings.json",
+      "file_sha256": "sha256:9f15c4d98132245ab114490a08ed67127a973191c51613d544f95d7ba61de1ca",
+      "acceptance_proven": false,
+      "final_source_revision_bound": false
+    },
+    {
+      "change_id": "provision-independent-agent-git-workspaces",
+      "path": "openspec/changes/provision-independent-agent-git-workspaces/operator/source-only-dependency-gate.json",
+      "file_sha256": "sha256:7183538f2a5153baac37f8cf961e494def54dfbe8283c32a02a2f8ef53f67545",
+      "acceptance_proven": false,
+      "final_source_revision_bound": false
+    },
+    {
+      "change_id": "publish-and-sync-workspace-revisions",
+      "path": "openspec/changes/publish-and-sync-workspace-revisions/operator/source-only-dependency-gate.json",
+      "file_sha256": "sha256:dfc00b26923b391b81aaf36c3ca40fbea1bfd51619eaa335990285692c72172f",
+      "acceptance_proven": false,
+      "final_source_revision_bound": false
+    },
+    {
+      "change_id": "support-git-lfs-work-products",
+      "path": "openspec/changes/support-git-lfs-work-products/operator/source-only-dependency-gate.json",
+      "file_sha256": "sha256:4d259412922d6edff11e8046da3caf3faa8a99655f2f9d93210c92b7383d7ff2",
+      "acceptance_proven": false,
+      "final_source_revision_bound": false
+    }
+  ],
+  "current_interface_identities": {
+    "agent_capability_domain_sha256": "sha256:601a7422e26f8093b9fa410077afbcf2a002bf2f79387bd033ae9bd47ffb4ca8",
+    "agent_capability_service_sha256": "sha256:71ae3f73c3294446651d2e72a35015e53cc3cc3516e9186eb3e9c62d1f59224b",
+    "agent_workspace_domain_sha256": "sha256:a42682756e97ba5d975b56c5a093adf6a42abef6ae58d7b73271e711ea37d74e",
+    "workspace_publication_domain_sha256": "sha256:9e05b4281dff24f8fddee47597808370a6b813d22bdbba3c31db22379d65f06a",
+    "workspace_publication_service_sha256": "sha256:5688c738a2678c644ef0f98e17c3327578feb871bc39ce7ae0292107674de0a1",
+    "git_lfs_domain_sha256": "sha256:c009208ea37d8c38239c66493afbe0ee41d039813fbcce7b855177faf34ced1b",
+    "git_lfs_service_sha256": "sha256:d73d9dc7cb6c61486d837d978272e848c8059c04ca17502f9ec39a8b18adb2a2",
+    "agent_capability_migration_sha256": "sha256:74146f6aab10c32368e572050a71c2a68a9a0a6ae551700d8d4528bdb8ecae85",
+    "agent_workspace_migration_sha256": "sha256:4d87dbad40b79398b7bde01cc3afbd180e507d6b61be191cf6237e6245cc577b",
+    "workspace_publication_migration_sha256": "sha256:e919aeabf51e296c991d879edb8bca4b6fdef7dd66312ad3acb103d36db761ab",
+    "git_lfs_migration_sha256": "sha256:30d348dc7d1c50427e62a8dab3c8454e58a995783a4f575b827299feb7cc2186"
+  },
+  "deferred_predecessor_acceptance": [
+    "agent_capability_lease_acceptance@1",
+    "agent_git_workspace_acceptance@1",
+    "workspace_publication_acceptance@1",
+    "git_lfs_work_product_acceptance@1"
+  ],
+  "permitted_actions": [
+    "continue_revision_path_handoff_source_implementation",
+    "add_domain_schema_repository_migration_and_projection_source",
+    "cut_over_research_report_protocol_and_task_writers_in_source",
+    "add_deferred_validation_tests_without_running_them",
+    "update_architecture_and_openspec_documents"
+  ],
+  "forbidden_actions": [
+    "invoke_workspace_publish_or_report_publish",
+    "send_protocol_message_or_enqueue_runtime_signal",
+    "finish_or_transition_task",
+    "issue_repository_or_lfs_credential",
+    "perform_git_or_lfs_network_io",
+    "read_or_write_production_research_report_or_handoff_content",
+    "run_live_or_external_effect",
+    "claim_predecessor_or_current_acceptance",
+    "satisfy_production_or_cutover_gate",
+    "fallback_to_artifact_engine_document_or_host_file_gateway"
+  ],
+  "external_effects": 0,
+  "acceptance_proven": false,
+  "final_source_revision_bound": false,
+  "production_effect_authorized": false,
+  "live_authorized": false
+}

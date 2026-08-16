@@ -17,6 +17,7 @@ from typing import Any
 from typing import Callable
 
 from fastapi.testclient import TestClient
+from openzyme_core import AgentWorkspaceReadinessProof
 from openzyme_core import CoreRepositories
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import sandbox_image_record
@@ -25,9 +26,12 @@ from openzyme_core.sandbox_runtime import S12_ROUTE_POLICIES
 from openzyme_core.sandbox_workspace import DEFAULT_SANDBOX_IMAGE_REF
 from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_domain import ArtifactKind
+from openzyme_domain import AgentWorkspaceGenerationReservation
 from openzyme_domain import RunStatus
 from openzyme_domain import SandboxRunRecord
 from openzyme_domain import SessionArtifactRecord
+from openzyme_domain import canonical_capability_digest
+from openzyme_domain.control_plane import utc_now_iso
 from openzyme_engines import EvidenceSynthesis
 from openzyme_engines import EvidenceSynthesisItem
 from openzyme_engines import ResearchBriefDraft as EngineResearchBriefDraft
@@ -76,6 +80,48 @@ from .tracing import workflow_trace
 
 FoundationBuilder = Callable[[], RuntimeFoundation]
 S15_AOX_HMM_OLD_DELIVERABLES = _S15_AOX_HMM_OLD_DELIVERABLES
+
+
+@dataclass(frozen=True, slots=True)
+class _EvalWorkspaceReadinessProvider:
+    provider_id: str = "test.local-eval-workspace-readiness@1"
+    eval_fixture_non_cutover: bool = True
+
+    def verify_readiness(
+        self,
+        reservation: AgentWorkspaceGenerationReservation,
+    ) -> AgentWorkspaceReadinessProof:
+        return AgentWorkspaceReadinessProof(
+            provider_id=self.provider_id,
+            reservation_id=reservation.reservation_id,
+            reservation_fingerprint=reservation.immutable_fingerprint,
+            session_id=reservation.session_id,
+            agent_member_id=reservation.agent_member_id,
+            agent_id=reservation.agent_id,
+            workspace_generation=reservation.workspace_generation,
+            readiness_ref=f"local-eval-ready:{reservation.reservation_id}",
+            readiness_digest=canonical_capability_digest(
+                {
+                    "provider_id": self.provider_id,
+                    "reservation_id": reservation.reservation_id,
+                    "reservation_fingerprint": reservation.immutable_fingerprint,
+                    "eval_fixture_non_cutover": True,
+                }
+            ),
+            observed_at=utc_now_iso(),
+        )
+
+
+_EVAL_WORKSPACE_READINESS_PROVIDER = _EvalWorkspaceReadinessProvider()
+
+
+def _eval_workspace_readiness_dependencies() -> dict[str, object]:
+    provider = _EVAL_WORKSPACE_READINESS_PROVIDER
+    return {
+        "v3_agent_workspace_readiness_providers": {provider.provider_id: provider},
+        "v3_session_creation_readiness_provider_id": provider.provider_id,
+        "v3_delegation_readiness_provider_id": provider.provider_id,
+    }
 
 
 def _eval_security_policy() -> HostSecurityPolicy:
@@ -702,12 +748,14 @@ S15_AOX_HMM_FIXED_PROMPT = (
     "executor, and reporter teammates. The researcher must obtain required PubMed "
     "evidence with a real PMID (Semantic Scholar and Tavily are enrichment only). "
     "Bounded iterative PubMed searches are allowed. Before task.finish, the researcher "
-    "must adopt exactly one succeeded PubMed evidence artifact as the canonical required "
-    "receipt by including exactly one PubMed artifact:<id> in evidence_refs; exploratory "
-    "PubMed artifacts remain durable history and must not also be listed as accepted "
-    "primary evidence. Enrichment artifacts may be listed separately. The reporter must "
-    "cite a PMID or source from that selected primary artifact and publish a final report "
-    "whose claims link to the research and "
+    "must write the selected PubMed source snapshot into the researcher Git workspace, "
+    "commit and explicitly publish it, register its exact research file index, and finish "
+    "with exactly one task-bound RevisionPathRef evidence object. Exploratory results may "
+    "remain in private workspace history but must not be claimed as accepted primary "
+    "evidence. The reporter must consume that exact published source file, cite its PMID "
+    "or source, explicitly publish the report file, then call report.publish and finish "
+    "with the exact research RevisionPathRef plus ReportRef; report claims also link to "
+    "the "
     "execution artifacts; every teammate must finish its task explicitly. In one "
     "bio.ncbi_fetch_proteins call request these exact 14 identities: "
     + ", ".join(AOX_NCBI_ACCESSIONS)
@@ -1309,16 +1357,23 @@ def _s15_build_evidence_bundle(
     sandbox_runs = repositories.sandbox_runs.list_by_session(session_id)
     tasks = repositories.tasks.list_by_session(session_id)
     agents = repositories.agents.list_by_session(session_id)
-    task_finish_documents = {
-        str(document.payload.get("task_id") or ""): document
-        for document in repositories.engine_documents.list_by_session(session_id)
-        if document.document_kind == "task_finish"
-        and isinstance(document.payload, dict)
-        and document.payload.get("task_id")
+    task_finish_records = {
+        task.task_id: finishes[0]
+        for task in tasks
+        if len(
+            finishes := repositories.revision_path_handoffs.list_task_finishes(
+                task.task_id
+            )
+        )
+        == 1
     }
     reports = repositories.reports.list_by_session(session_id)
     report_drafts = repositories.report_drafts.list_by_session(session_id)
-    research_source_refs = repositories.research_source_refs.list_by_session(session_id)
+    research_file_indexes = (
+        repositories.revision_path_handoffs.list_research_indexes(
+            session_id=session_id
+        )
+    )
     final_answer = _s15_final_answer(workspace)
     operation_trace: list[dict[str, object]] = []
     backend_run_ids: list[str | None] = []
@@ -1398,26 +1453,23 @@ def _s15_build_evidence_bundle(
                 "status": task.status.value,
                 "assigned_ref": task.assigned_ref,
                 "finish_ref": (
-                    task_finish_documents[task.task_id].document_id
-                    if task.task_id in task_finish_documents
+                    task_finish_records[task.task_id]["finish_ref"]
+                    if task.task_id in task_finish_records
                     else None
                 ),
                 "finish_payload_digest": (
-                    _s15_digest(task_finish_documents[task.task_id].payload)
-                    if task.task_id in task_finish_documents
+                    _s15_digest(task_finish_records[task.task_id])
+                    if task.task_id in task_finish_records
                     else None
                 ),
                 "finished_by": (
-                    task_finish_documents[task.task_id].payload.get("finished_by")
-                    if task.task_id in task_finish_documents
+                    task_finish_records[task.task_id].get("finished_by")
+                    if task.task_id in task_finish_records
                     else None
                 ),
                 "evidence_refs": (
-                    list(
-                        task_finish_documents[task.task_id].payload.get("evidence_refs")
-                        or []
-                    )
-                    if task.task_id in task_finish_documents
+                    list(task_finish_records[task.task_id].get("evidence_refs") or [])
+                    if task.task_id in task_finish_records
                     else []
                 ),
             }
@@ -1425,18 +1477,14 @@ def _s15_build_evidence_bundle(
         ],
         "research_source_receipts": [
             {
-                "source_ref_id": source.source_ref_id,
-                "provider": source.provider,
-                "pmid": source.pmid,
-                "doi": source.doi,
-                "request_digest": source.request_digest,
-                "response_digest": source.response_digest,
-                "provider_provenance_digest": _s15_digest(
-                    source.provider_provenance or {}
-                ),
-                "evidence_artifact_id": source.evidence_artifact_id,
+                "index_id": item["index_id"],
+                "invocation_id": item["invocation_id"],
+                "task_id": item["task_id"],
+                "research_kind": item["research_kind"],
+                "revision_path_ref_id": item["ref_id"],
+                "bounded_summary": item["bounded_summary"],
             }
-            for source in research_source_refs
+            for item in research_file_indexes
         ],
         "report_draft_receipts": [
             {
@@ -1454,7 +1502,9 @@ def _s15_build_evidence_bundle(
                 "report_id": report.report_id,
                 "task_id": report.task_id,
                 "status": report.status.value,
-                "artifact_id": report.artifact_id,
+                "content_ref_id": report.content_ref_id,
+                "report_version": report.report_version,
+                "supersedes_report_id": report.supersedes_report_id,
             }
             for report in reports
         ],
@@ -1707,26 +1757,28 @@ def _s15_validate_live_product_path(
             }
         )
     source_receipts = evidence_bundle.get("research_source_receipts")
-    pubmed_receipts = [
+    published_research_receipts = [
         receipt
         for receipt in source_receipts or []
         if isinstance(receipt, dict)
-        and receipt.get("provider") == "pubmed"
-        and isinstance(receipt.get("pmid"), str)
-        and str(receipt.get("pmid") or "").isdigit()
-        and _s15_is_digest(receipt.get("request_digest"))
-        and _s15_is_digest(receipt.get("response_digest"))
-        and receipt.get("evidence_artifact_id")
+        and receipt.get("research_kind")
+        in {"source_snapshot", "citations", "notes", "analysis", "dossier"}
+        and receipt.get("index_id")
+        and receipt.get("invocation_id")
+        and receipt.get("revision_path_ref_id")
     ]
-    if not pubmed_receipts:
-        errors.append({"error_code": "live_pubmed_evidence_missing"})
+    if not published_research_receipts:
+        errors.append(
+            {"error_code": "live_research_revision_path_evidence_missing"}
+        )
     report_receipts = evidence_bundle.get("report_receipts")
     publishable_reports = {
         str(report.get("report_id") or "")
         for report in report_receipts or []
         if isinstance(report, dict)
         and report.get("status") in {"ready", "published"}
-        and report.get("artifact_id")
+        and report.get("content_ref_id")
+        and isinstance(report.get("report_version"), int)
     }
     report_drafts = evidence_bundle.get("report_draft_receipts")
     if not any(
@@ -3440,6 +3492,7 @@ def _run_v3_design_cutover_scenario(
                 v3_repository_provider=v3_repository_provider,
                 v3_background_runtime_enabled=True,
                 v3_allow_unpinned_repository_sessions_for_tests=True,
+                **_eval_workspace_readiness_dependencies(),
             )
         )
         with TestClient(app) as client:
@@ -3621,6 +3674,7 @@ def _run_v3_aox_hmm_prompt_scenario(
                 {
                     "v3_bio_adapter": DeterministicBioDatabaseAdapter(),
                     "v3_allow_bio_fixture_adapter": True,
+                    **_eval_workspace_readiness_dependencies(),
                 }
             )
         app = create_app(HostApiDependencies(**dependencies_kwargs))
@@ -3772,7 +3826,7 @@ def _run_v3_aox_hmm_prompt_scenario(
                     for item in evidence_bundle.get("report_receipts") or []
                     if isinstance(item, dict)
                     and item.get("status") in {"ready", "published"}
-                    and item.get("artifact_id")
+                    and item.get("content_ref_id")
                 }
                 checks = {
                     "single_user_prompt": sum(
@@ -3798,11 +3852,17 @@ def _run_v3_aox_hmm_prompt_scenario(
                         "reporting",
                     }
                     <= completed_task_kinds,
-                    "required_pubmed_evidence": any(
+                    "published_research_files": any(
                         isinstance(item, dict)
-                        and item.get("provider") == "pubmed"
-                        and str(item.get("pmid") or "").isdigit()
-                        and item.get("evidence_artifact_id")
+                        and item.get("research_kind")
+                        in {
+                            "source_snapshot",
+                            "citations",
+                            "notes",
+                            "analysis",
+                            "dossier",
+                        }
+                        and item.get("revision_path_ref_id")
                         for item in evidence_bundle.get("research_source_receipts")
                         or []
                     ),

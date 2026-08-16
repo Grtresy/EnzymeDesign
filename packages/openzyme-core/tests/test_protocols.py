@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignal
@@ -9,6 +11,7 @@ from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import AgentRuntimeSignalStatus
+from openzyme_domain import AgentWorkspaceGenerationReservation
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
 from openzyme_domain import Lane
@@ -18,6 +21,10 @@ from openzyme_domain import SessionStatus
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
+from openzyme_domain import canonical_capability_digest
+from openzyme_domain.control_plane import utc_now_iso
+from openzyme_core import AgentCapabilityLeaseService
+from openzyme_core import AgentWorkspaceReadinessProof
 from openzyme_core import CoreRepositories
 from openzyme_core import AgentRuntimeScheduler
 from openzyme_core import AgentRuntimeService
@@ -35,6 +42,58 @@ from openzyme_core import register_protocol_tools
 from openzyme_core.agent_identity import create_agent_member
 from openzyme_core.agent_identity import display_name_for_agent
 from openzyme_core.agent_identity import handle_for_agent
+
+
+class _ProtocolTestReadinessProvider:
+    provider_id = "test.protocol-workspace-readiness@1"
+
+    def verify_readiness(
+        self,
+        reservation: AgentWorkspaceGenerationReservation,
+    ) -> AgentWorkspaceReadinessProof:
+        return AgentWorkspaceReadinessProof(
+            provider_id=self.provider_id,
+            reservation_id=reservation.reservation_id,
+            reservation_fingerprint=reservation.immutable_fingerprint,
+            session_id=reservation.session_id,
+            agent_member_id=reservation.agent_member_id,
+            agent_id=reservation.agent_id,
+            workspace_generation=reservation.workspace_generation,
+            readiness_ref=f"test-ready:{reservation.reservation_id}",
+            readiness_digest=canonical_capability_digest(
+                {
+                    "provider_id": self.provider_id,
+                    "reservation_id": reservation.reservation_id,
+                }
+            ),
+            observed_at=utc_now_iso(),
+        )
+
+
+def _activate_agent(
+    repositories: CoreRepositories,
+    *,
+    agent: AgentMember,
+    parent_lease_id: str | None = None,
+) -> tuple[str, int]:
+    provider = _ProtocolTestReadinessProvider()
+    service = AgentCapabilityLeaseService(
+        repositories,
+        readiness_providers={provider.provider_id: provider},
+    )
+    issuance = service.reserve_and_issue(
+        session_id=agent.session_id,
+        agent_id=agent.agent_id,
+        idempotency_key=f"protocol-test:{agent.agent_id}:generation-1",
+        actor_ref="test:protocol-issue",
+        parent_lease_id=parent_lease_id,
+    )
+    active = service.activate_with_provider(
+        lease_id=issuance.lease.lease_id,
+        provider_id=provider.provider_id,
+        actor_ref="test:protocol-activate",
+    )
+    return active.lease.lease_id, active.lease.workspace_generation
 
 
 class FakeToolCallingInvoker:
@@ -110,6 +169,23 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             lane_id="lane_001",
         )
     )
+    master = AgentMember(
+        member_id="member_protocol_master",
+        agent_id="agent:master",
+        session_id=session.session_id,
+        lane_id=None,
+        task_id=None,
+        name="OpenZyme",
+        role="master",
+        status=AgentMemberStatus.IDLE,
+        parent_agent_id=None,
+        created_at="2026-04-17T12:00:00+00:00",
+        updated_at="2026-04-17T12:00:00+00:00",
+        runtime_state="idle",
+        idle_since="2026-04-17T12:00:00+00:00",
+    )
+    repositories.agents.save(master)
+    _activate_agent(repositories, agent=master)
     return session
 
 
@@ -121,13 +197,79 @@ def _seed_agent(
     task_id: str | None = None,
     lane_id: str | None = None,
 ) -> AgentMember:
-    return create_agent_member(
+    master = repositories.agents.get(session.session_id, "agent:master")
+    if master is None:
+        timestamp = utc_now_iso()
+        master = AgentMember(
+            member_id=f"member_protocol_master_{session.session_id}",
+            agent_id="agent:master",
+            session_id=session.session_id,
+            lane_id=None,
+            task_id=None,
+            name="OpenZyme",
+            role="master",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at=timestamp,
+            updated_at=timestamp,
+            runtime_state="idle",
+            idle_since=timestamp,
+        )
+        repositories.agents.save(master)
+        _activate_agent(repositories, agent=master)
+    agent = create_agent_member(
         repositories,
         session_id=session.session_id,
         role=role,  # type: ignore[arg-type]
         task_id=task_id,
         lane_id=lane_id,
+        parent_agent_id="agent:master",
     )
+    master = repositories.agents.get(session.session_id, "agent:master")
+    assert master is not None and master.member_id is not None
+    parent_lease = repositories.agent_capability_leases.get_active(
+        session_id=session.session_id,
+        agent_member_id=master.member_id,
+    )
+    assert parent_lease is not None
+    _activate_agent(
+        repositories,
+        agent=agent,
+        parent_lease_id=parent_lease.lease_id,
+    )
+    return agent
+
+
+def _signal_capability_binding(
+    repositories: CoreRepositories,
+    agent: AgentMember,
+) -> dict[str, object]:
+    assert agent.member_id is not None
+    lease = repositories.agent_capability_leases.get_active(
+        session_id=agent.session_id,
+        agent_member_id=agent.member_id,
+    )
+    assert lease is not None
+    return {
+        "capability_lease_id": lease.lease_id,
+        "workspace_generation": lease.workspace_generation,
+    }
+
+
+def _wake_with_session_lease(
+    repositories: CoreRepositories,
+    context: SessionRuntimeContext,
+    signal: AgentRuntimeSignal,
+) -> object:
+    acquired = repositories.session_runtime_leases.acquire(
+        session_id=signal.session_id,
+        owner_id=f"test:protocol:{signal.signal_id}",
+        mode="test",
+    )
+    assert acquired.lease is not None
+    context.session_runtime_lease = acquired.lease
+    with repositories.runtime_write_fence(acquired.lease):
+        return AgentRuntimeService(context).wake_agent(signal)
 
 
 def test_protocol_service_builds_correlation_threads_for_delegation() -> None:
@@ -143,6 +285,7 @@ def test_protocol_service_builds_correlation_threads_for_delegation() -> None:
         role="researcher",
         payload_ref="artifact://delegations/deleg_001.json",
         task_id="task_001",
+        parent_agent_id="agent:master",
         correlation_id="corr_001",
         nickname=agent.nickname,
         display_name=display_name_for_agent(agent),
@@ -174,6 +317,68 @@ def test_protocol_service_builds_correlation_threads_for_delegation() -> None:
     assert signals[0].source_ref == envelope.request_message.message_id
 
 
+def test_protocol_delegation_rolls_back_canonical_and_buffered_event_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    emitted: list[tuple[str, dict[str, object]]] = []
+    service = ProtocolService(
+        repositories,
+        event_emitter=lambda event_type, payload: emitted.append(
+            (event_type, dict(payload))
+        ),
+    )
+
+    def reject_signal_insert(_repository: object, _signal: object) -> object:
+        raise RuntimeError("injected runtime signal insert failure")
+
+    monkeypatch.setattr(
+        type(repositories.runtime_signals),
+        "insert_if_absent",
+        reject_signal_insert,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="injected runtime signal insert failure",
+    ):
+        service.delegate(
+            session_id=session.session_id,
+            agent_id="agent:researcher:rollback",
+            name="Rollback Researcher",
+            role="researcher",
+            payload_ref="doc_delegation_rollback",
+            task_id="task_001",
+            lane_id="lane_001",
+            parent_agent_id="agent:master",
+            correlation_id="corr_rollback",
+        )
+
+    assert repositories.agents.get(
+        session.session_id,
+        "agent:researcher:rollback",
+    ) is None
+    assert repositories.inbox.list_by_session(session.session_id) == []
+    assert repositories.runtime_signals.list_by_session(session.session_id) == []
+    assert repositories.agent_capability_leases.list_by_session(
+        session.session_id
+    ) == repositories.agent_capability_leases.list_by_agent(
+        session_id=session.session_id,
+        agent_member_id="member_protocol_master",
+    )
+    reservation_count = repositories.tasks.connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM agent_workspace_generation_reservations
+        WHERE session_id = ?
+        """,
+        (session.session_id,),
+    ).fetchone()[0]
+    assert reservation_count == 1
+    assert emitted == []
+
+
 def test_protocol_send_to_agent_creates_unread_wakeup_signal() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
@@ -186,6 +391,7 @@ def test_protocol_send_to_agent_creates_unread_wakeup_signal() -> None:
         role="researcher",
         payload_ref="artifact://delegations/deleg_001.json",
         task_id="task_001",
+        parent_agent_id="agent:master",
         correlation_id="corr_001",
         nickname=agent.nickname,
         display_name=display_name_for_agent(agent),
@@ -255,6 +461,66 @@ def test_protocol_send_handle_resolves_existing_teammate_and_wakeup_signal() -> 
     assert saved_agent is not None
     assert saved_agent.status is AgentMemberStatus.IDLE
     assert repositories.inbox.get(content["message"]["message_id"]).status is InboxStatus.UNREAD
+    assert len(content["signals"]) == 1
+
+
+def test_protocol_send_projects_pending_recipient_as_non_runnable() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    master = repositories.agents.get(session.session_id, "agent:master")
+    assert master is not None and master.member_id is not None
+    parent_lease = repositories.agent_capability_leases.get_active(
+        session_id=session.session_id,
+        agent_member_id=master.member_id,
+    )
+    assert parent_lease is not None
+    agent = create_agent_member(
+        repositories,
+        session_id=session.session_id,
+        role="researcher",
+        task_id="task_001",
+        lane_id="lane_001",
+        parent_agent_id=master.agent_id,
+    )
+    AgentCapabilityLeaseService(repositories).reserve_and_issue(
+        session_id=session.session_id,
+        agent_id=agent.agent_id,
+        idempotency_key="protocol-test:pending-recipient:generation-1",
+        actor_ref="test:protocol-pending-recipient",
+        parent_lease_id=parent_lease.lease_id,
+    )
+    registry = ToolRegistry()
+    register_protocol_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001", lane_id="lane_001"),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_send_pending_recipient",
+            tool_name="protocol.send",
+            arguments={
+                "recipient": agent.agent_id,
+                "message_type": "diagnostic_request",
+                "correlation_id": "corr_pending_recipient",
+                "task_id": "task_001",
+                "payload": {"question": "Are you ready?"},
+            },
+            task_id="task_001",
+            lane_id="lane_001",
+        ),
+    )
+
+    content = json.loads(result.content)
+    assert result.ok is True
+    assert result.status == "provisioning_required"
+    assert content["resolved_agent"]["runnable"] is False
+    assert content["resolved_agent"]["blocker_code"] == "provisioning_required"
     assert len(content["signals"]) == 1
 
 
@@ -540,6 +806,7 @@ def test_protocol_send_queues_signal_and_explicit_runtime_drain_runs_agent() -> 
         payload_ref=None,
         task_id="task_001",
         lane_id="lane_001",
+        parent_agent_id="agent:master",
         correlation_id="corr_original",
         nickname=agent.nickname,
         display_name=display_name_for_agent(agent),
@@ -668,6 +935,7 @@ def test_protocol_send_rejects_synchronous_execution_arguments() -> None:
         payload_ref=None,
         task_id="task_001",
         lane_id="lane_001",
+        parent_agent_id="agent:master",
         correlation_id="corr_original",
         nickname=agent.nickname,
         display_name=display_name_for_agent(agent),
@@ -735,7 +1003,7 @@ def test_runtime_missing_focused_task_fails_signal_without_consuming_unread_mess
         model_factory=model_factory,
     )
 
-    outcome = AgentRuntimeService(context).wake_agent(signal)
+    outcome = _wake_with_session_lease(repositories, context, signal)
 
     updated_message = repositories.inbox.get(message.message_id)
     updated_signal = repositories.runtime_signals.get(signal.signal_id)
@@ -782,6 +1050,7 @@ def test_runtime_rejects_blocked_task_wakeup_without_running_teammate_loop() -> 
         source_ref=None,
         status=AgentRuntimeSignalStatus.PENDING,
         created_at="2026-04-17T12:00:04+00:00",
+        **_signal_capability_binding(repositories, agent),
     )
     repositories.runtime_signals.save(signal)
     model_factory = FakeModelFactory({"content": "should not be invoked", "tool_calls": []})
@@ -794,7 +1063,7 @@ def test_runtime_rejects_blocked_task_wakeup_without_running_teammate_loop() -> 
         model_factory=model_factory,
     )
 
-    outcome = AgentRuntimeService(context).wake_agent(signal)
+    outcome = _wake_with_session_lease(repositories, context, signal)
 
     updated_task = repositories.tasks.get("task_blocked")
     updated_signal = repositories.runtime_signals.get("sig_blocked")
@@ -824,6 +1093,7 @@ def test_runtime_task_available_rejects_assigned_task_without_claiming() -> None
         source_ref="task_001",
         status=AgentRuntimeSignalStatus.PENDING,
         created_at="2026-04-17T12:00:04+00:00",
+        **_signal_capability_binding(repositories, agent),
     )
     repositories.runtime_signals.save(signal)
     model_factory = FakeModelFactory({"content": "should not be invoked", "tool_calls": []})
@@ -836,7 +1106,7 @@ def test_runtime_task_available_rejects_assigned_task_without_claiming() -> None
         model_factory=model_factory,
     )
 
-    outcome = AgentRuntimeService(context).wake_agent(signal)
+    outcome = _wake_with_session_lease(repositories, context, signal)
 
     updated_task = repositories.tasks.get("task_001")
     updated_signal = repositories.runtime_signals.get("sig_task_available_assigned")
@@ -886,6 +1156,7 @@ def test_runtime_approval_resolved_can_resume_assigned_approval_blocked_task() -
         source_ref="appr_001",
         status=AgentRuntimeSignalStatus.PENDING,
         created_at="2026-04-17T12:00:04+00:00",
+        **_signal_capability_binding(repositories, agent),
     )
     repositories.runtime_signals.save(signal)
     model_factory = FakeModelFactory({"content": "Approval resumed.", "tool_calls": []})
@@ -898,7 +1169,7 @@ def test_runtime_approval_resolved_can_resume_assigned_approval_blocked_task() -
         model_factory=model_factory,
     )
 
-    outcome = AgentRuntimeService(context).wake_agent(signal)
+    outcome = _wake_with_session_lease(repositories, context, signal)
 
     updated_task = repositories.tasks.get("task_approval")
     updated_signal = repositories.runtime_signals.get("sig_approval")
@@ -920,6 +1191,7 @@ def test_background_completion_updates_agent_and_invocation_state() -> None:
         role="executor",
         payload_ref="artifact://delegations/deleg_002.json",
         task_id="task_001",
+        parent_agent_id="agent:master",
         correlation_id="corr_bg_001",
         nickname=agent.nickname,
         display_name=display_name_for_agent(agent),

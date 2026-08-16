@@ -163,6 +163,7 @@ class ControlledOperationExecutionWorker:
     worker_id: str
     lease_seconds: int = 30
     mutation_writer_scope_factory: MutationWriterScopeFactory | None = None
+    excluded_route_policy_ids: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not self.worker_id or self.worker_id != self.worker_id.strip():
@@ -176,11 +177,15 @@ class ControlledOperationExecutionWorker:
     def run_once(self) -> ControlledOperationExecutionWorkerOutcome:
         try:
             with self.repository_scope_factory() as repositories:
-                candidates = (
-                    repositories.controlled_operation_executions.list_claimable(
-                        now_iso=utc_now_iso(),
-                        limit=1,
+                candidates = tuple(
+                    execution
+                    for execution in (
+                        repositories.controlled_operation_executions.list_claimable(
+                            now_iso=utc_now_iso(),
+                            limit=32,
+                        )
                     )
+                    if execution.route_policy_id not in self.excluded_route_policy_ids
                 )
         except Exception as exc:
             if is_transient_sqlite_contention(exc):

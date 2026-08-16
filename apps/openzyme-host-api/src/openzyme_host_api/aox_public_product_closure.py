@@ -9,6 +9,9 @@ from openzyme_core import build_conversation_projection
 from openzyme_core import canonical_digest
 from openzyme_core import is_published_report_link
 from openzyme_core import is_published_report_status
+from openzyme_core import report_evidence_ref
+from openzyme_domain import TaskEvidenceKind
+from openzyme_domain import TaskEvidenceRef
 from openzyme_pipeline import aox_reference
 
 from .aox_cutover_evidence import FAULT_ARTIFACT_BYTE_FLIP_ID
@@ -51,7 +54,7 @@ def evaluate_aox_source_linked_report(
     session_id: str,
     research_task_id: str,
     report_task_id: str,
-    reporter_evidence_refs: tuple[str, ...],
+    reporter_evidence_refs: tuple[dict[str, Any], ...],
 ) -> dict[str, object]:
     """Evaluate AOX report closure from canonical product state only.
 
@@ -86,107 +89,86 @@ def evaluate_aox_source_linked_report(
     ):
         blocker_codes.append("published_report_link_invalid")
     content_ref = "" if draft is None else str(getattr(draft, "content_ref", "") or "")
-    content_document = (
-        None if not content_ref else repositories.engine_documents.get(content_ref)
-    )
-    content_payload = (
-        {}
-        if content_document is None
-        else dict(getattr(content_document, "payload", None) or {})
+    content_revision = (
+        None
+        if not content_ref
+        else repositories.revision_path_handoffs.get_ref(content_ref)
     )
     if (
-        content_document is None
-        or getattr(content_document, "document_kind", None) != "report_draft_content"
-        or getattr(content_document, "session_id", session_id) != session_id
-        or not str(content_payload.get("markdown") or "").strip()
+        content_revision is None
+        or content_revision.session_id != session_id
+        or report is None
+        or report.content_ref_id != content_revision.ref_id
     ):
         blocker_codes.append("published_report_content_invalid")
     if report is not None and getattr(report, "artifact_id", None) is not None:
         blocker_codes.append("published_report_artifact_invalid")
 
-    research_finish_documents = []
-    for document in repositories.engine_documents.list_by_session(session_id):
-        if getattr(document, "document_kind", None) != "task_finish":
-            continue
-        payload = dict(getattr(document, "payload", None) or {})
-        if payload.get("task_id") == research_task_id and payload.get("status") == "completed":
-            research_finish_documents.append(document)
-    research_finish = (
-        research_finish_documents[0]
-        if len(research_finish_documents) == 1
-        else None
-    )
+    research_finishes = [
+        finish
+        for finish in repositories.revision_path_handoffs.list_task_finishes(
+            research_task_id
+        )
+        if finish["status"] == "completed"
+    ]
+    research_finish = research_finishes[0] if len(research_finishes) == 1 else None
     if research_finish is None:
         blocker_codes.append("research_finish_cardinality_invalid")
     research_evidence_refs = tuple(
-        str(item)
-        for item in (
-            []
-            if research_finish is None
-            else dict(getattr(research_finish, "payload", None) or {}).get(
-                "evidence_refs"
-            )
-            or []
-        )
+        dict(item)
+        for item in ([] if research_finish is None else research_finish["evidence_refs"])
+        if isinstance(item, dict)
     )
-    primary_artifact_refs = tuple(
+    research_indexes = [
+        item
+        for item in repositories.revision_path_handoffs.list_research_indexes(
+            session_id=session_id
+        )
+        if item["task_id"] == research_task_id
+        and item["research_kind"] in {"source_snapshot", "citations", "dossier"}
+    ]
+    indexed_ref_ids = {str(item["ref_id"]) for item in research_indexes}
+    primary_research_refs = tuple(
         item
         for item in research_evidence_refs
-        if item.startswith("artifact:") and len(item) > len("artifact:")
+        if item.get("kind") == TaskEvidenceKind.REVISION_PATH.value
+        and item.get("task_id") == research_task_id
+        and item.get("owner_id") in indexed_ref_ids
     )
-    primary_artifact_ref = (
-        primary_artifact_refs[0] if len(primary_artifact_refs) == 1 else ""
+    primary_research_ref = (
+        primary_research_refs[0] if len(primary_research_refs) == 1 else None
     )
-    if len(primary_artifact_refs) != 1 or len(research_evidence_refs) != 1:
+    if len(primary_research_refs) != 1 or len(research_evidence_refs) != 1:
         blocker_codes.append("primary_pubmed_receipt_invalid")
-    primary_artifact_id = primary_artifact_ref.removeprefix("artifact:")
-    primary_artifact = (
-        None if not primary_artifact_id else repositories.artifacts.get(primary_artifact_id)
+    primary_research_ref_id = (
+        "" if primary_research_ref is None else str(primary_research_ref["owner_id"])
     )
-    metadata = (
-        {}
-        if primary_artifact is None
-        else dict(getattr(primary_artifact, "metadata", None) or {})
+    primary_research_digest = (
+        "" if primary_research_ref is None else str(primary_research_ref["owner_digest"])
     )
-    primary_artifact_digest = str(
-        metadata.get("content_digest") or metadata.get("sealed_digest") or ""
-    )
-    if (
-        primary_artifact is None
-        or getattr(primary_artifact, "session_id", None) != session_id
-        or getattr(primary_artifact, "task_id", None) != research_task_id
-        or metadata.get("provider") != "pubmed"
-        or metadata.get("cutover_eligible") is not True
-        or not primary_artifact_digest.startswith("sha256:")
-        or len(primary_artifact_digest) != 71
-        or any(
-            character not in "0123456789abcdef"
-            for character in primary_artifact_digest[7:]
-        )
-    ):
-        blocker_codes.append("primary_pubmed_artifact_invalid")
-
-    source_refs = [
-        source_ref
-        for source_ref in repositories.research_source_refs.list_by_session(session_id)
-        if getattr(source_ref, "evidence_artifact_id", None) == primary_artifact_id
-    ]
-    if not source_refs or any(
-        getattr(source_ref, "provider", None) != "pubmed"
-        or not str(getattr(source_ref, "pmid", "") or "").isdigit()
-        or getattr(source_ref, "task_id", None) != research_task_id
-        or not str(getattr(source_ref, "source_ref_id", "") or "").strip()
-        for source_ref in source_refs
-    ):
-        blocker_codes.append("primary_pubmed_source_refs_invalid")
-    source_ref_ids = tuple(
-        sorted(str(getattr(source_ref, "source_ref_id")) for source_ref in source_refs)
-    )
+    if primary_research_ref is None:
+        blocker_codes.append("primary_research_revision_invalid")
+    blocker_codes.append("primary_research_scientific_validation_missing")
 
     report_id = "" if report is None else str(getattr(report, "report_id", "") or "")
-    report_ref = f"report:{report_id}" if report_id else ""
+    typed_report_ref = None
+    session = repositories.sessions.get(session_id)
+    if report is not None and report.task_id == report_task_id and session is not None:
+        canonical_report_ref = report_evidence_ref(
+            report,
+            project_id=session.project_id,
+        )
+        typed_report_ref = TaskEvidenceRef(
+            kind=TaskEvidenceKind.REPORT,
+            project_id=session.project_id,
+            session_id=session_id,
+            task_id=report_task_id,
+            owner_id=report.report_id,
+            owner_digest=canonical_report_ref.report_digest,
+            report_ref=canonical_report_ref,
+        ).to_dict()
     required_evidence_refs = tuple(
-        item for item in (report_ref, primary_artifact_ref) if item
+        item for item in (typed_report_ref, primary_research_ref) if item is not None
     )
     missing_evidence_refs = tuple(
         item for item in required_evidence_refs if item not in reporter_evidence_refs
@@ -203,9 +185,11 @@ def evaluate_aox_source_linked_report(
             None if draft is None else str(getattr(draft, "draft_id", "") or "") or None
         ),
         "content_ref": content_ref or None,
-        "primary_artifact_id": primary_artifact_id or None,
-        "primary_artifact_digest": primary_artifact_digest or None,
-        "source_ref_ids": source_ref_ids,
+        "primary_research_ref_id": primary_research_ref_id or None,
+        "primary_research_digest": primary_research_digest or None,
+        "research_index_ids": tuple(
+            sorted(str(item["index_id"]) for item in research_indexes)
+        ),
         "required_evidence_refs": required_evidence_refs,
         "observed_evidence_refs": reporter_evidence_refs,
         "missing_evidence_refs": missing_evidence_refs,
@@ -244,13 +228,10 @@ def _task_receipts(
         for ref in (agent.agent_id, agent.member_id)
         if ref
     }
-    finishes: dict[str, list[Any]] = {task_id: [] for task_id, _, _ in expected}
-    for document in repositories.engine_documents.list_by_session(session_id):
-        if document.document_kind != "task_finish":
-            continue
-        task_id = str(document.payload.get("task_id") or "")
-        if task_id in finishes:
-            finishes[task_id].append(document)
+    finishes = {
+        task_id: repositories.revision_path_handoffs.list_task_finishes(task_id)
+        for task_id, _, _ in expected
+    }
     by_id = {task.task_id: task for task in tasks}
     receipts: list[dict[str, Any]] = []
     assigned_refs: set[str] = set()
@@ -278,7 +259,7 @@ def _task_receipts(
             )
         assigned_refs.add(assigned_ref)
         finish = finish_records[0]
-        finish_payload = dict(finish.payload)
+        finish_payload = dict(finish)
         evidence_refs = finish_payload.get("evidence_refs")
         if not all(
             (
@@ -287,7 +268,7 @@ def _task_receipts(
                 finish_payload.get("finished_by") == assigned_ref,
                 isinstance(evidence_refs, list),
                 isinstance(evidence_refs, list)
-                and all(isinstance(item, str) and item for item in evidence_refs),
+                and all(isinstance(item, dict) and item for item in evidence_refs),
             )
         ):
             _fail(
@@ -302,7 +283,7 @@ def _task_receipts(
                 "status": task.status.value,
                 "assigned_ref": assigned_ref,
                 "lane_id": task.lane_id,
-                "finish_ref": finish.document_id,
+                "finish_ref": finish["finish_ref"],
                 "finish_payload_digest": canonical_digest(finish_payload),
                 "finished_by": finish_payload["finished_by"],
                 "evidence_refs": list(evidence_refs),
@@ -319,7 +300,9 @@ def _report_states(
             "report_id": report.report_id,
             "task_id": report.task_id,
             "status": report.status.value,
-            "artifact_id": report.artifact_id,
+            "content_ref_id": report.content_ref_id,
+            "report_version": report.report_version,
+            "supersedes_report_id": report.supersedes_report_id,
         }
         for report in repositories.reports.list_by_session(session_id)
     ]

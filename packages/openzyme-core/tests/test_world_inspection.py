@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 
+from openzyme_core import AgentCapabilityLeaseService
+from openzyme_core import AgentRuntimeSignalOccurrenceService
+from openzyme_core import AgentWorkspaceReadinessProof
 from openzyme_core import CoreRepositories
 from openzyme_core import EngineDocumentRecord
 from openzyme_core import MemoryEventBus
@@ -19,9 +22,8 @@ from openzyme_core import register_task_board_tools
 from openzyme_core import register_world_inspection_tools
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
-from openzyme_domain import AgentRuntimeSignal
 from openzyme_domain import AgentRuntimeSignalReason
-from openzyme_domain import AgentRuntimeSignalStatus
+from openzyme_domain import AgentWorkspaceGenerationReservation
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import ArtifactKind
@@ -46,12 +48,41 @@ from openzyme_domain import SourceRefKind
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
+from openzyme_domain import canonical_capability_digest
+from openzyme_domain.control_plane import utc_now_iso
 
 
 def _build_repositories() -> CoreRepositories:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)
     return CoreRepositories.from_connection(connection)
+
+
+class WorldInspectionReadinessProvider:
+    provider_id = "test.world-inspection-workspace-readiness@1"
+
+    def verify_readiness(
+        self,
+        reservation: AgentWorkspaceGenerationReservation,
+    ) -> AgentWorkspaceReadinessProof:
+        return AgentWorkspaceReadinessProof(
+            provider_id=self.provider_id,
+            reservation_id=reservation.reservation_id,
+            reservation_fingerprint=reservation.immutable_fingerprint,
+            session_id=reservation.session_id,
+            agent_member_id=reservation.agent_member_id,
+            agent_id=reservation.agent_id,
+            workspace_generation=reservation.workspace_generation,
+            readiness_ref=f"test-ready:{reservation.reservation_id}",
+            readiness_digest=canonical_capability_digest(
+                {
+                    "provider_id": self.provider_id,
+                    "reservation_id": reservation.reservation_id,
+                    "workspace_generation": reservation.workspace_generation,
+                }
+            ),
+            observed_at=utc_now_iso(),
+        )
 
 
 def _seed_world(repositories: CoreRepositories) -> tuple[Session, AgentMember]:
@@ -95,6 +126,24 @@ def _seed_world(repositories: CoreRepositories) -> tuple[Session, AgentMember]:
     repositories.agents.save(agent)
     stored_agent = repositories.agents.get(session.session_id, agent.agent_id)
     assert stored_agent is not None
+    readiness_provider = WorldInspectionReadinessProvider()
+    capability_service = AgentCapabilityLeaseService(
+        repositories,
+        readiness_providers={readiness_provider.provider_id: readiness_provider},
+    )
+    issuance = capability_service.reserve_and_issue(
+        session_id=session.session_id,
+        agent_id=stored_agent.agent_id,
+        idempotency_key="world-inspection:executor:generation-1",
+        actor_ref="test:world-inspection-capability-issue",
+    )
+    active_capability = capability_service.activate_with_provider(
+        lease_id=issuance.lease.lease_id,
+        provider_id=readiness_provider.provider_id,
+        actor_ref="test:world-inspection-capability-activate",
+    )
+    stored_agent = repositories.agents.get(session.session_id, agent.agent_id)
+    assert stored_agent is not None
     approval = ApprovalRequest(
         approval_id="appr_world",
         session_id=session.session_id,
@@ -108,17 +157,23 @@ def _seed_world(repositories: CoreRepositories) -> tuple[Session, AgentMember]:
         created_at="2026-07-05T10:03:00+00:00",
     )
     repositories.approvals.save(approval)
-    repositories.runtime_signals.save(
-        AgentRuntimeSignal(
-            signal_id="sig_world",
-            session_id=session.session_id,
-            agent_id=stored_agent.agent_id,
-            task_id=task.task_id,
-            reason=AgentRuntimeSignalReason.APPROVAL_RESOLVED,
-            status=AgentRuntimeSignalStatus.PENDING,
-            created_at="2026-07-05T10:04:00+00:00",
-            source_ref=approval.approval_id,
-        )
+    signal_occurrence = AgentRuntimeSignalOccurrenceService(repositories).enqueue(
+        signal_id="sig_world",
+        session_id=session.session_id,
+        agent_id=stored_agent.agent_id,
+        task_id=task.task_id,
+        reason=AgentRuntimeSignalReason.APPROVAL_RESOLVED,
+        created_at="2026-07-05T10:04:00+00:00",
+        source_ref=approval.approval_id,
+    )
+    assert signal_occurrence.created is True
+    assert (
+        signal_occurrence.signal.capability_lease_id
+        == active_capability.lease.lease_id
+    )
+    assert (
+        signal_occurrence.signal.workspace_generation
+        == active_capability.lease.workspace_generation
     )
     repositories.sandbox_workspaces.save(
         SandboxWorkspaceRecord(
@@ -304,6 +359,31 @@ def test_world_inspection_exposes_structured_facts_without_recommendations() -> 
     assert payload["strategy_policy"]["harness_recommends_actions"] is False
     assert "recommended_actions" not in json.dumps(payload)
     assert payload["tasks"]["assigned_task"]["task_id"] == "task_world"
+    assert agent.member_id is not None
+    active_capability = repositories.agent_capability_leases.get_active(
+        session_id=session.session_id,
+        agent_member_id=agent.member_id,
+    )
+    assert active_capability is not None
+    projected_agent = payload["agents"][0]
+    projected_capability = projected_agent["capability"]
+    assert projected_agent["runnable"] is True
+    assert projected_agent["blocker_code"] is None
+    assert projected_capability["lease_id"] == active_capability.lease_id
+    assert projected_capability["workspace_generation"] == (
+        active_capability.workspace_generation
+    )
+    assert projected_capability["reservation_status"] == "ready"
+    assert projected_capability["readiness_status"] == "verified"
+    assert projected_capability["lifecycle"]["status"] == "active"
+    assert projected_capability["capabilities"] == [
+        capability.value for capability in active_capability.capabilities
+    ]
+    projected_signal = payload["runtime_signals"]["items"][0]
+    assert projected_signal["capability_lease_id"] == active_capability.lease_id
+    assert projected_signal["workspace_generation"] == (
+        active_capability.workspace_generation
+    )
     assert payload["artifacts"]["items"][0]["digest"] == "sha256:sealed"
     assert "storage_uri" not in json.dumps(payload["artifacts"])
     assert payload["approvals"]["pending"][0]["approval_id"] == "appr_world"

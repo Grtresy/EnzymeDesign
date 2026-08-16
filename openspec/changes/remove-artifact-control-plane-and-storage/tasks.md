@@ -1,3 +1,10 @@
+## 0. 当前 source-only 删除 gate
+
+- [x] 0.1 重读直接前置 `migrate-historical-artifacts-to-git-lfs` 的源码 gate，并绑定其 exact SHA-256；确认它没有正式 completion/global migration receipt，且明确不授权物理删除。
+- [x] 0.2 生成 `artifact_subsystem_removal_source_only_gate@1`，记录 0/13 正式 receipt、未激活 public epoch、缺失 quiescence/backup 和 current legacy source/schema 盘点。
+- [x] 0.3 在 OpenSpec operator 目录实现无 I/O 的 removal manifest、13-change exact receipt 校验、historical exact-set 校验、quiescence/backup 校验和 deterministic dry-run 合同；不注册 executable 或 destructive migration。
+- [x] 0.4 明确冻结：本阶段不得 drop/rebuild schema、删除 storage、移除 current runtime surface、签发 removal receipt 或把候选源码视为 activation/acceptance。
+
 ## 1. 精确 13-change 与历史迁移 receipt 门禁
 
 - [ ] 1.1 实现 removal manifest，依次要求 `supersede-aox-hmm-artifact-cutover`、`establish-project-repository-bindings`、`establish-agent-capability-leases`、`provision-independent-agent-git-workspaces`、`publish-and-sync-workspace-revisions`、`support-git-lfs-work-products`、`migrate-research-report-and-task-handoffs-to-files`、`provision-isolated-executor-hpc-workspaces`、`execute-hpc-jobs-from-workspace-revisions`、`migrate-scientific-deliverables-to-files`、`replace-sandbox-artifact-boundaries-with-files`、`cut-over-workspace-public-interfaces` 与 `migrate-historical-artifacts-to-git-lfs` 的精确 completion/acceptance identity。

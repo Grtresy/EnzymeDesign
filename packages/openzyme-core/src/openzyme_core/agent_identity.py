@@ -157,7 +157,7 @@ def create_agent_member(
     connection = repositories.agents.connection
     # This code path is the repository-level uniqueness backstop for generated
     # nicknames/handles. It reserves against all sessions in the same project.
-    with connection:
+    with repositories.atomic(prefix="agent_member_create"):
         used_nicknames, used_handles = _used_project_identity_values(
             connection,
             project_id=session.project_id,

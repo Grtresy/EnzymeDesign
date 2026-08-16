@@ -4,6 +4,16 @@
 
 目标架构已经为每个 agent 建立独立 Git clone，并通过 `AgentCapabilityLease` 一次授予 scope 内的原生工具。本 change 将相同 `session + agent_member + workspace_generation` 延伸到一个 executor-owned HPC login workspace：它具有独立 clone、可读写工作目录、标准 Git/LFS、SSH 与 rsync/scp 能力。login node 可访问 Host-managed internal Git/LFS remote；compute node 的 Gitless source tree由后续 `execute-hpc-jobs-from-workspace-revisions` 定义。
 
+C2 的责任止于 canonical lease identity/status/profile、executor target eligibility 与 credential-issuance seam；`agent_capability_lease_acceptance@1` 不是可用 SSH credential 或 target isolation 的证明。本 change 拥有真实 deployment closure：credential provider integration、target-scoped credential claims和authentication、target-native OS security principal/root policy，以及native SSH/rsync/scp/Git/LFS/CRUD的正反向资格证明。
+
+本 change 的源码实现处于固定顺序的连续迁移中。C1 acceptance 已不可变；C2--C7 的最终 focused/mainline/strict 验证与正式 receipts 被统一延后。开始源码前必须生成
+`executor_hpc_workspace_source_only_dependency_gate@1`，绑定这些当前 source gates/snapshot 与关键
+domain/service/migration/runner baseline identity，并固定 `acceptance_proven=false`、
+`final_source_revision_bound=false`、`production_effect_authorized=false`、`live_authorized=false`。
+该 gate 不是 capability lease、credential、target qualification、workspace intent/receipt 或 runner authority；
+不得据此连接 SSH、创建 remote root、启动 runner、签发 credential、执行 Git/LFS transfer、cleanup 或 job。
+全部源码完成后，最终统一验证必须从 combined final source 重建正式 prerequisite receipt，不能提升本 gate。
+
 Provision、generation replacement、sync 与 cleanup 都是外部 effect，不能与 Host SQLite 事务原子完成。它们必须使用持久 intent、唯一 idempotency identity、opaque runner handle、immutable receipt 与 exact reconciliation，不能因 response loss 创建第二个目录。
 
 ## Goals / Non-Goals
@@ -12,6 +22,7 @@ Provision、generation replacement、sync 与 cleanup 都是外部 effect，不�
 
 - 为每个 executor workspace generation 和 HPC target provision 一个身份闭合、持久、隔离的 login-side clone/workspace。
 - 允许拥有者在 capability lease scope 内直接使用 Git、Git LFS、SSH、rsync/scp 和普通文件 CRUD。
+- 在真实target上证明credential只能落到exact executor/target/generation root，owner CRUD成功而cross-executor/cross-generation/root-escape访问在OS enforcement处失败。
 - 让 private revisions 通过 agent-private ref namespace同步，让 published revisions 通过 immutable publication refs同步，并保持二者真相边界。
 - 使 owner 可使用其 remote workspace handle/path，同时向其他 agent和普通公共 projection隐藏该定位信息。
 - 以 reliable handle/receipt 处理 provisioning、sync、replacement 与 cleanup，response loss 只 reconcile同一 effect。
@@ -25,6 +36,8 @@ Provision、generation replacement、sync 与 cleanup 都是外部 effect，不�
 - 不定义 Slurm job source tree、job result identity 或 `expected_outputs` 的最终删除；由后续 workspace-revision execution change完成。
 - 不允许 compute node访问 Git/LFS remote、credential或 login clone的 `.git`。
 - 不在 provisioning ambiguity时猜测 directory、重建替代 workspace或改用另一个 target。
+- 不重新实现C2的lease生命周期或exact/session-policy/operator-subtree revoke选择；本change只消费C2对exact lease给出的canonical active/inactive状态。
+- 不实现Slurm one-occurrence submit credential、target-side unregistered `sbatch` rejection或普通job automatic execution admission；这些由后续`execute-hpc-jobs-from-workspace-revisions`拥有，在其receipt通过前job path保持hard-gated。
 
 ## Decisions
 
@@ -46,7 +59,11 @@ Agent可以修改、删除或重建自己 workspace中的普通文件，但 cano
 
 有效 executor `AgentCapabilityLease` 包含 exact target与remote workspace generation后，Podman capsule可获得到该 login account/root的短期 SSH credential，并直接运行 SSH、Git、Git LFS、rsync、scp及普通 shell/file命令。Host不逐命令代理、审批或记录普通 transfer bytes。
 
-Credential必须限制到 executor、target、workspace root和lease lifecycle；不得读取其他 agent workspace或Host runner私有 receipt/metadata。lease revoke/retirement停止新 credential发行并撤销可撤销 credential，但不能由此推断已启动的 transfer/job被取消。
+Credential provider与target authenticator由本change实现。Credential claims必须绑定session、executor member、local与remote workspace generation、target profile digest、canonical login alias/root、lease id/version和明确operation classes（SSH login、rsync、scp、Git/LFS与workspace CRUD），短TTL且不进入workspace文件或公共projection。Credential不得包含`scheduler.submit`/`sbatch` authority，也不得读取其他agent/generation workspace或Host runner私有receipt/metadata。
+
+Target必须把上述identity映射为真实OS security principal或等价target-native isolation identity，并以root ownership、mode/ACL/jail policy或等价OS enforcement限制protected workspace roots。资格证明必须在native SSH、rsync、scp与shell CRUD路径实际验证owner create/read/update/delete和Git/LFS可用，同时证明跨executor、跨generation、跨target、`..`/absolute-path、symlink/hardlink escape与runner-sidecar访问被target拒绝；不能只检查Host配置字符串或remote path前缀。
+
+C2负责把exact、session/policy bulk或operator显式subtree revoke解析为canonical lease状态，并保证child revoke不反向撤销parent；本change只消费该exact状态。lease inactive/retirement停止新credential发行与新native connection admission，并撤销provider支持撤销的credential，但不能由此推断已启动transfer/job已取消或settled。
 
 备选的 Host typed transfer gateway违背已裁决的原生工作方式，故不保留。
 
@@ -62,6 +79,8 @@ Host在任何SSH effect前持久化冻结 `ExecutorHpcWorkspaceProvisionIntent`�
 
 Agent对workspace root可读写，但不能修改runner sidecar receipt。若 response在远端effect后丢失，canonical state进入`dispatch_in_doubt`；reconciler只能按同一 intent/key/handle查询sidecar与exact path。它不得创建第二个目录、改变target或宣布no-effect。若target不能提供权威query与idempotent compare-and-create，该target资格失败。
 
+Provision/sync的有限pre-effect retry count只是versioned recovery policy，不是通用budget authority，也不能替代capability lease、controlled-operation owner/fence或credential scope。
+
 ### 6. Sync 与 repair 不替代 agent 的 Git策略
 
 系统级sync只负责明确请求的exact private/published ref fetch/checkout或workspace identity核验，并同样留下effect receipt。普通agent sync仍由原生Git/rsync完成。系统不自动force-update branch、clean dirty tree、解决冲突、选择另一个ref或把local/private state发布给team。
@@ -74,13 +93,15 @@ Runner API不再接收input artifact、`stage_to`、Host local artifact path或`
 
 Provisioning/sync preflight验证exact workspace handle、generation、owner、target、repository binding、root存在性和所需原生toolchain。普通结果文件留在remote workspace，供executor直接检查、下载、commit与publish。
 
+本change只让workspace provisioning/inspection/native login data plane成为可验收能力；payload/job endpoint在后续job change receipt前必须返回明确`workspace_revision_execution_required`。普通login/file credential即使可以启动native shell，也不因此获得scheduler submit authority；真正的runner-only one-occurrence credential与target-side scheduler gate由后续job change实现和激活。
+
 ### 8. Cleanup 是独立、受保护的外部 effect
 
 Session结束、agent retirement、lease revoke或generation replacement只停止新admission，并将workspace转为retention/cleanup eligible；它们不证明远程job、transfer或process已经settled。Cleanup必须确认该generation无活跃controlled execution和未结算effect，使用exact handle删除或封存同一root，并持久化receipt。ambiguous cleanup保持unknown，不尝试另一个path。
 
 ## Risks / Trade-offs
 
-- [Agent拥有原生SSH和可写remote目录，误操作范围扩大] → 用独立OS principal/root、target-scoped短期credential和workspace generation隔离；不通过恢复Host file proxy来缓解。
+- [Agent拥有原生SSH和可写remote目录，误操作范围扩大] → 用target-native OS principal/root、target-scoped短期credential和workspace generation隔离，并以native positive/negative proof作为每target activation gate；不通过恢复Host file proxy来缓解。
 - [Agent删除或污染自己的remote clone] → canonical record不相信remote mutable marker；preflight明确报告missing/dirty/drift，修复需agent操作或显式新generation。
 - [Provision response loss导致重复目录] → 远端runner-owned idempotency sidecar与same-intent reconciliation；没有可靠query的target不获资格。
 - [Private ref/LFS bytes占用增长] → repository binding和workspace retention/quota管理；publication pin与private retention分离。
@@ -89,10 +110,10 @@ Session结束、agent retirement、lease revoke或generation replacement只停�
 
 ## Migration Plan
 
-1. 先完成 repository binding、AgentCapabilityLease、独立 local clone、Git LFS 和 workspace publication；这些前置 change 已向 capsule 提供原生文件/Git/网络工具，本 change 不依赖后续统一删除 legacy sandbox/artifact surface。HPC target 必须证明 login node 可访问 internal Git/LFS，compute node 无需这些能力。
-2. 为每个target部署runner-owned provisioning sidecar、opaque handle store、idempotency lookup、workspace root/OS principal policy和scoped credential issuance；通过create-response-loss-reconcile、restart、owner isolation与path tamper资格测试。
+1. 先以 source-only gate 绑定 repository binding、AgentCapabilityLease、独立 local clone、Git LFS、workspace publication 与 revision-path handoff 的当前源码；这些前置 change 的最终 acceptance 延后到 combined final source。该 gate 只允许继续源码，不证明 capsule/HPC target 已可用。HPC target 最终必须证明 login node 可访问 internal Git/LFS，compute node 无需这些能力。
+2. 为每个target部署runner-owned provisioning sidecar、opaque handle store、idempotency lookup、真实credential provider/authenticator和workspace root/OS principal policy；通过native SSH/rsync/scp/Git/LFS/CRUD、cross-owner/generation/root-escape denial、create-response-loss-reconcile、restart与path tamper资格测试。仅有C2 lease receipt或config declaration不得激活target。
 3. 增加canonical `ExecutorHpcWorkspace` 与provision/sync/cleanup intent/receipt；所有external callbacks使用existing controlled-operation owner、lease/fence和effect-certainty语义。
-4. Provision新workspace generations，验证independent `.git`、native Git/LFS、SSH/rsync/scp、private ref sync、published ref fetch和owner-only path visibility。
+4. Provision新workspace generations，验证independent `.git`、native Git/LFS、SSH/rsync/scp、完整CRUD、private ref sync、published ref fetch、owner-only path visibility与OS-level isolation。
 5. 将runner从artifact inputs/`HpcStageRef`/Host output fetch切到exact executor workspace handle/generation。任何旧RunSpec进入current endpoint均明确schema rejection。
 6. 与`execute-hpc-jobs-from-workspace-revisions`共同切换job admission/result surface；在后者完成前不得把workspace runner标为current production path。
 7. 停止旧staging writer后保留其历史records只供后续迁移，不允许current read fallback或dual writer。最终数据结构删除由artifact removal change完成。
@@ -101,4 +122,4 @@ Session结束、agent retirement、lease revoke或generation replacement只停�
 
 ## Open Questions
 
-无未决产品问题。每个HPC target的OS principal方式、remote root、Git/LFS版本、SSH credential provider和Slurm authoritative query能力属于显式deployment qualification；任一不满足即阻止该target启用。
+无未决产品问题。本change内每个HPC target的OS principal/isolation方式、remote root、Git/LFS版本、SSH credential provider与native CRUD证明属于显式workspace deployment qualification；任一不满足即阻止该target启用workspace mode。Slurm authoritative query、one-occurrence credential和submit gate不由本change验收，必须等待`execute-hpc-jobs-from-workspace-revisions`独立qualification。

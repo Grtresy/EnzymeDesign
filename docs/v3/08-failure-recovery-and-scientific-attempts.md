@@ -1,5 +1,9 @@
 # Failure observation、显式拒绝与 scientific attempt
 
+> Scientific deliverable 的 publication/path/actual-byte identity 与 historical
+> non-adoption 合同见 [file-workspace-migration.md](file-workspace-migration.md)。候选
+> finalizer 不得绕过 attempt/selection/effect/authority closure。
+
 ## 1. 当前稳定结论
 
 OpenZyme 的 harness 负责忠实、结构化、低摩擦地呈现真实约束；它不替 agent

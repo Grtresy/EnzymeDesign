@@ -1,0 +1,146 @@
+{
+  "schema_id": "agent_capability_policy@1",
+  "change_id": "establish-agent-capability-leases",
+  "policy_version": "agent-capability-policy-v1",
+  "lease_policy": {
+    "schema_version": "agent_capability_policy@1",
+    "policy_version": "agent-capability-policy-v1",
+    "role_profiles": [
+      {
+        "role": "executor",
+        "profile": "executor"
+      },
+      {
+        "role": "master",
+        "profile": "general"
+      },
+      {
+        "role": "reporter",
+        "profile": "general"
+      },
+      {
+        "role": "researcher",
+        "profile": "general"
+      }
+    ],
+    "allowed_child_profiles": [
+      {
+        "role": "executor",
+        "profiles": []
+      },
+      {
+        "role": "master",
+        "profiles": [
+          "general",
+          "executor"
+        ]
+      },
+      {
+        "role": "reporter",
+        "profiles": []
+      },
+      {
+        "role": "researcher",
+        "profiles": []
+      }
+    ],
+    "profile_targets": [
+      {
+        "profile": "general",
+        "target_ids": [
+          "network:deployment",
+          "repository:session-pinned"
+        ]
+      },
+      {
+        "profile": "executor",
+        "target_ids": [
+          "hpc:primary",
+          "network:deployment",
+          "repository:session-pinned"
+        ]
+      }
+    ]
+  },
+  "lease_policy_digest": "sha256:828a721c95481c18ca9eedd26bc5fb04abbc502f4a9cb1cf8f457fca74f2a613",
+  "profiles": {
+    "general": [
+      "filesystem_read",
+      "filesystem_write",
+      "shell_process",
+      "git",
+      "git_lfs",
+      "ordinary_network",
+      "upload",
+      "download"
+    ],
+    "executor": [
+      "filesystem_read",
+      "filesystem_write",
+      "shell_process",
+      "git",
+      "git_lfs",
+      "ordinary_network",
+      "upload",
+      "download",
+      "ssh",
+      "rsync_scp",
+      "hpc_login_workspace_crud",
+      "slurm_operations"
+    ]
+  },
+  "role_profile_map": {
+    "master": "general",
+    "researcher": "general",
+    "executor": "executor",
+    "reporter": "general"
+  },
+  "allowed_child_profiles": {
+    "master": [
+      "general",
+      "executor"
+    ],
+    "researcher": [],
+    "executor": [],
+    "reporter": []
+  },
+  "target_scope_policy": {
+    "lease_target_ids": "explicit_sorted_unique_at_issuance",
+    "safe_target_id_classes": [
+      "internal_repository",
+      "ordinary_network",
+      "remote_hpc"
+    ],
+    "profile_target_classes": {
+      "general": [
+        "internal_repository",
+        "ordinary_network"
+      ],
+      "executor": [
+        "internal_repository",
+        "ordinary_network",
+        "remote_hpc"
+      ]
+    },
+    "safe_projection": "identifier_or_digest_only",
+    "private_locator_projected": false,
+    "ordinary_network": {
+      "runtime_owner": "C3_deployment",
+      "host_destination_allowlist": false,
+      "host_issued_credential_audience": "exact_service_target_protocol"
+    },
+    "remote_hpc_activation_owner": "deferred_remote_hpc_change"
+  },
+  "declaration_consumers": [
+    "policy",
+    "projection",
+    "credential",
+    "admission"
+  ],
+  "declaration_is_runtime_proof": false,
+  "test_readiness_is_production_proof": false,
+  "profile_fallback_allowed": false,
+  "implicit_profile_escalation_allowed": false,
+  "ambient_authority_inference_allowed": false,
+  "document_digest": "sha256:9526cbd82f740e1fa44ba1eda80053011d5d367c0967a5b36fe700ffc7f445de"
+}

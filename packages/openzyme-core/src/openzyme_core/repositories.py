@@ -8,6 +8,7 @@ from datetime import datetime
 from datetime import timedelta
 from enum import Enum
 from enum import StrEnum
+from functools import partial
 import hashlib
 import json
 import os
@@ -78,12 +79,56 @@ from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 
 from .migration_assets import apply_sqlite_migrations
+from .mutation_authority import AgentCapabilityReadinessActivationAuthority
+from .mutation_authority import AgentCapabilityReadinessActivationError
+from .mutation_authority import AgentRetirementLifecycleAuthority
+from .mutation_authority import AgentRetirementLifecycleAuthorityError
 from .mutation_authority import MutationResourceCategory
 from .mutation_authority import MutationWriteAuthority
 from .mutation_authority import MutationWriteFencingError
 from .mutation_authority import writer_allows_resource
 
 if TYPE_CHECKING:
+    from .executor_hpc_workspace_repositories import ExecutorHpcWorkspaceRepository
+    from .workspace_revision_execution_repositories import (
+        WorkspaceRevisionExecutionRepository,
+    )
+    from .scientific_deliverable_repositories import ScientificDeliverableRepository
+    from .historical_artifact_repositories import HistoricalArtifactRepository
+    from .git_lfs_repositories import GitLfsRepository
+    from .agent_git_workspace_repositories import AgentGitWorkspaceRepository
+    from .workspace_checkpoint_repositories import (
+        AgentWorkspaceStateObservationRepository,
+    )
+    from .workspace_checkpoint_repositories import (
+        VerifiedWorkspaceCheckpointRepository,
+    )
+    from .workspace_publication_repositories import PublishedRevisionRepository
+    from .workspace_publication_repositories import (
+        WorkspacePublicationExecutionEventRepository,
+    )
+    from .workspace_publication_repositories import (
+        WorkspacePublicationExecutionRepository,
+    )
+    from .workspace_publication_repositories import (
+        WorkspacePublicationIntentRepository,
+    )
+    from .workspace_publication_repositories import (
+        WorkspacePublicationRemoteReceiptRepository,
+    )
+    from .revision_path_handoffs import RevisionPathHandoffRepository
+    from .agent_capability_repositories import (
+        AgentCapabilityLeaseLifecycleEventRepository,
+    )
+    from .agent_capability_repositories import AgentCapabilityLeaseRepository
+    from .agent_capability_repositories import (
+        AgentRetirementCleanupProofRepository,
+    )
+    from .agent_capability_repositories import AgentRetirementRecordRepository
+    from .agent_capability_repositories import AgentRetirementRequestRepository
+    from .agent_capability_repositories import (
+        AgentWorkspaceGenerationReservationRepository,
+    )
     from .failure_repositories import FailureObservationRepository
     from .durable_coordination_repositories import ContinuationDeliveryRepository
     from .durable_coordination_repositories import MutationScopeRepository
@@ -230,6 +275,12 @@ class _OpenZymeSQLiteConnection(sqlite3.Connection):
         None
     )
     _openzyme_mutation_write_authority: MutationWriteAuthority | None = None
+    _openzyme_agent_capability_readiness_activation_authority: (
+        AgentCapabilityReadinessActivationAuthority | None
+    ) = None
+    _openzyme_agent_retirement_lifecycle_authority: (
+        AgentRetirementLifecycleAuthority | None
+    ) = None
 
 
 def connect_sqlite(
@@ -253,6 +304,8 @@ def connect_sqlite(
     connection._openzyme_runtime_write_fence = None  # type: ignore[attr-defined]
     connection._openzyme_controlled_operation_write_fence = None  # type: ignore[attr-defined]
     connection._openzyme_mutation_write_authority = None  # type: ignore[attr-defined]
+    connection._openzyme_agent_capability_readiness_activation_authority = None  # type: ignore[attr-defined]
+    connection._openzyme_agent_retirement_lifecycle_authority = None  # type: ignore[attr-defined]
     connection.create_function(
         "openzyme_mutation_write_allowed",
         2,
@@ -261,6 +314,29 @@ def connect_sqlite(
             session_id=session_id,
             resource_category=resource_category,
         ),
+    )
+    connection.create_function(
+        "openzyme_agent_capability_readiness_activation_allowed",
+        16,
+        partial(_agent_capability_readiness_activation_allowed, connection),
+    )
+    connection.create_function(
+        "openzyme_runtime_signal_write_fence_allowed",
+        3,
+        lambda session_id, lease_token, fencing_token: int(
+            _runtime_write_fence(connection)
+            == (str(session_id), str(lease_token), int(fencing_token))
+        ),
+    )
+    connection.create_function(
+        "openzyme_runtime_signal_capability_admission_allowed",
+        4,
+        partial(_runtime_signal_capability_admission_allowed, connection),
+    )
+    connection.create_function(
+        "openzyme_agent_retirement_lifecycle_allowed",
+        10,
+        partial(_agent_retirement_lifecycle_allowed, connection),
     )
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
@@ -305,6 +381,34 @@ def _runtime_write_fence(
     return str(session_id), str(lease_token), int(fencing_token)
 
 
+@contextmanager
+def _expected_runtime_write_fence(
+    connection: sqlite3.Connection,
+    *,
+    session_id: str,
+    lease_token: str | None,
+    fencing_token: int | None,
+) -> Iterator[None]:
+    if lease_token is None or fencing_token is None:
+        yield
+        return
+    previous = _runtime_write_fence(connection)
+    candidate = (session_id, lease_token, fencing_token)
+    if previous is not None and previous != candidate:
+        raise RuntimeWriteFencingError(
+            "repository connection is already bound to a different runtime lease"
+        )
+    setattr(connection, "_openzyme_runtime_write_fence", candidate)
+    try:
+        _validate_runtime_write_fence(
+            connection,
+            expected_session_id=session_id,
+        )
+        yield
+    finally:
+        setattr(connection, "_openzyme_runtime_write_fence", previous)
+
+
 def _validate_runtime_write_fence(
     connection: sqlite3.Connection,
     *,
@@ -336,6 +440,56 @@ def _validate_runtime_write_fence(
         raise RuntimeWriteFencingError(
             "session runtime lease fencing rejected a stale business write"
         )
+
+
+def _runtime_signal_capability_admission_allowed(
+    connection: sqlite3.Connection,
+    session_id: object,
+    agent_id: object,
+    capability_lease_id: object,
+    workspace_generation: object,
+) -> int:
+    """Re-run canonical capability admission inside a raw signal claim."""
+
+    if (
+        session_id is None
+        or agent_id is None
+        or capability_lease_id is None
+        or workspace_generation is None
+    ):
+        return 0
+    try:
+        generation = int(workspace_generation)
+    except (TypeError, ValueError):
+        return 0
+    if generation <= 0:
+        return 0
+    admission_sql, admission_params = (
+        _runtime_signal_capability_admission_predicate()
+    )
+    row = connection.execute(
+        f"""
+        WITH agent_runtime_signals (
+            session_id,
+            agent_id,
+            capability_lease_id,
+            workspace_generation
+        ) AS (
+            VALUES (?, ?, ?, ?)
+        )
+        SELECT 1
+        FROM agent_runtime_signals
+        WHERE {admission_sql}
+        """,
+        (
+            str(session_id),
+            str(agent_id),
+            str(capability_lease_id),
+            generation,
+            *admission_params,
+        ),
+    ).fetchone()
+    return int(row is not None)
 
 
 def _controlled_operation_write_fence(
@@ -417,6 +571,373 @@ def _mutation_write_authority(
 ) -> MutationWriteAuthority | None:
     value = getattr(connection, "_openzyme_mutation_write_authority", None)
     return value if isinstance(value, MutationWriteAuthority) else None
+
+
+def _agent_capability_readiness_activation_authority(
+    connection: sqlite3.Connection,
+) -> AgentCapabilityReadinessActivationAuthority | None:
+    value = getattr(
+        connection,
+        "_openzyme_agent_capability_readiness_activation_authority",
+        None,
+    )
+    return (
+        value
+        if isinstance(value, AgentCapabilityReadinessActivationAuthority)
+        else None
+    )
+
+
+def _agent_retirement_lifecycle_authority(
+    connection: sqlite3.Connection,
+) -> AgentRetirementLifecycleAuthority | None:
+    value = getattr(
+        connection,
+        "_openzyme_agent_retirement_lifecycle_authority",
+        None,
+    )
+    return value if isinstance(value, AgentRetirementLifecycleAuthority) else None
+
+
+def _agent_retirement_lifecycle_allowed(
+    connection: sqlite3.Connection,
+    phase: object,
+    record_id: object,
+    record_digest: object,
+    request_id: object,
+    request_digest: object,
+    session_id: object,
+    agent_member_id: object,
+    agent_id: object,
+    workspace_generation: object,
+    capability_lease_id: object,
+) -> int:
+    """SQLite-trigger callback for one exact service-owned retirement phase."""
+
+    try:
+        authority = _agent_retirement_lifecycle_authority(connection)
+        if authority is None or _managed_transaction_depth(connection) <= 0:
+            return 0
+        return int(
+            (
+                str(phase),
+                str(record_id),
+                str(record_digest),
+                str(request_id),
+                str(request_digest),
+                str(session_id),
+                str(agent_member_id),
+                str(agent_id),
+                int(workspace_generation),
+                str(capability_lease_id),
+            )
+            == (
+                authority.phase,
+                authority.record_id,
+                authority.record_digest,
+                authority.request_id,
+                authority.request_digest,
+                authority.session_id,
+                authority.agent_member_id,
+                authority.agent_id,
+                authority.workspace_generation,
+                authority.capability_lease_id,
+            )
+        )
+    except (TypeError, ValueError):
+        return 0
+
+
+def _agent_capability_readiness_activation_allowed(
+    connection: sqlite3.Connection,
+    phase: object,
+    reservation_id: object,
+    lease_id: object,
+    session_id: object,
+    agent_member_id: object,
+    agent_id: object,
+    workspace_generation: object,
+    provider_id: object,
+    readiness_ref: object,
+    readiness_digest: object,
+    activated_at: object,
+    state_version: object,
+    canonical_digest: object,
+    event_id: object,
+    event_digest: object,
+    actor_ref: object,
+) -> int:
+    """SQLite-trigger callback for the exact readiness activation transaction."""
+
+    try:
+        authority = _agent_capability_readiness_activation_authority(connection)
+        if authority is None or _managed_transaction_depth(connection) <= 0:
+            return 0
+        if (
+            str(reservation_id),
+            str(lease_id),
+            str(session_id),
+            str(agent_member_id),
+            str(agent_id),
+            int(workspace_generation),
+            str(provider_id),
+            str(readiness_ref),
+            str(readiness_digest),
+            str(activated_at),
+        ) != (
+            authority.reservation_id,
+            authority.lease_id,
+            authority.session_id,
+            authority.agent_member_id,
+            authority.agent_id,
+            authority.workspace_generation,
+            authority.provider_id,
+            authority.readiness_ref,
+            authority.readiness_digest,
+            authority.activated_at,
+        ):
+            return 0
+        normalized_phase = str(phase)
+        normalized_state_version = int(state_version)
+        if normalized_phase == "reservation_ready":
+            return int(
+                normalized_state_version
+                == authority.reservation_previous_state_version + 1
+                and canonical_digest == authority.reservation_canonical_digest
+                and event_id is None
+                and event_digest is None
+                and actor_ref is None
+            )
+        if normalized_phase == "lease_active":
+            return int(
+                normalized_state_version == authority.lease_previous_state_version + 1
+                and canonical_digest == authority.lease_canonical_digest
+                and event_id is None
+                and event_digest is None
+                and actor_ref is None
+            )
+        if normalized_phase == "activated_event":
+            return int(
+                normalized_state_version == authority.lease_previous_state_version + 1
+                and canonical_digest is None
+                and event_id == authority.event_id
+                and event_digest == authority.event_digest
+                and actor_ref == authority.actor_ref
+            )
+        return 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _validate_agent_capability_readiness_activation_completion(
+    connection: sqlite3.Connection,
+    authority: AgentCapabilityReadinessActivationAuthority,
+) -> None:
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM agent_workspace_generation_reservations AS reservation
+        JOIN agent_capability_lease_records AS lease
+          ON lease.lease_id = ?
+         AND lease.session_id = reservation.session_id
+         AND lease.agent_member_id = reservation.agent_member_id
+         AND lease.agent_id = reservation.agent_id
+         AND lease.workspace_generation = reservation.workspace_generation
+        JOIN agent_capability_lease_lifecycle_events AS event
+          ON event.event_id = ?
+         AND event.lease_id = lease.lease_id
+         AND event.session_id = lease.session_id
+         AND event.agent_member_id = lease.agent_member_id
+         AND event.agent_id = lease.agent_id
+         AND event.workspace_generation = lease.workspace_generation
+        LEFT JOIN agent_git_workspace_records AS workspace
+          ON workspace.reservation_id = reservation.reservation_id
+         AND workspace.capability_lease_id = lease.lease_id
+         AND workspace.session_id = lease.session_id
+         AND workspace.agent_member_id = lease.agent_member_id
+         AND workspace.agent_id = lease.agent_id
+         AND workspace.workspace_generation = lease.workspace_generation
+        JOIN agent_members AS agent
+          ON agent.member_id = lease.agent_member_id
+         AND agent.session_id = lease.session_id
+         AND agent.agent_id = lease.agent_id
+        WHERE reservation.reservation_id = ?
+          AND reservation.session_id = ?
+          AND reservation.agent_member_id = ?
+          AND reservation.agent_id = ?
+          AND reservation.workspace_generation = ?
+          AND reservation.status = 'ready'
+          AND reservation.state_version = ?
+          AND reservation.readiness_owner_kind = 'workspace_provisioner'
+          AND reservation.readiness_owner_ref = ?
+          AND reservation.readiness_ref = ?
+          AND reservation.readiness_digest = ?
+          AND reservation.ready_at = ?
+          AND reservation.canonical_digest = ?
+          AND lease.status = 'active'
+          AND lease.state_version = ?
+          AND lease.activated_at = ?
+          AND lease.canonical_digest = ?
+          AND event.event_kind = 'activated'
+          AND event.previous_status = 'pending_workspace'
+          AND event.status = 'active'
+          AND event.state_version = ?
+          AND event.actor_ref = ?
+          AND event.occurred_at = ?
+          AND event.event_digest = ?
+          AND agent.status = 'idle'
+          AND agent.runtime_state = 'idle'
+          AND (
+              reservation.readiness_ref NOT LIKE 'agent_git_workspace:%'
+              OR (
+                  workspace.status = 'ready'
+                  AND reservation.readiness_ref =
+                      'agent_git_workspace:' || workspace.workspace_id
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM repository_provision_credential_records AS provision_credential
+                      WHERE provision_credential.workspace_id = workspace.workspace_id
+                        AND provision_credential.revoked_at IS NULL
+                  )
+              )
+          )
+        """,
+        (
+            authority.lease_id,
+            authority.event_id,
+            authority.reservation_id,
+            authority.session_id,
+            authority.agent_member_id,
+            authority.agent_id,
+            authority.workspace_generation,
+            authority.reservation_previous_state_version + 1,
+            authority.provider_id,
+            authority.readiness_ref,
+            authority.readiness_digest,
+            authority.activated_at,
+            authority.reservation_canonical_digest,
+            authority.lease_previous_state_version + 1,
+            authority.activated_at,
+            authority.lease_canonical_digest,
+            authority.lease_previous_state_version + 1,
+            authority.actor_ref,
+            authority.activated_at,
+            authority.event_digest,
+        ),
+    ).fetchone()
+    if row is None:
+        raise AgentCapabilityReadinessActivationError(
+            "verified readiness activation did not atomically commit its exact "
+            "ready Git workspace, ready reservation, active lease, cleared "
+            "provisioning blocker, and activated lifecycle event"
+        )
+
+
+def _validate_agent_retirement_lifecycle_completion(
+    connection: sqlite3.Connection,
+    authority: AgentRetirementLifecycleAuthority,
+) -> None:
+    if authority.phase == "request":
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM agent_retirement_requests
+            WHERE request_id = ?
+              AND canonical_digest = ?
+              AND session_id = ?
+              AND agent_member_id = ?
+              AND agent_id = ?
+              AND workspace_generation = ?
+              AND capability_lease_id = ?
+            """,
+            (
+                authority.request_id,
+                authority.request_digest,
+                authority.session_id,
+                authority.agent_member_id,
+                authority.agent_id,
+                authority.workspace_generation,
+                authority.capability_lease_id,
+            ),
+        ).fetchone()
+    elif authority.phase == "cleanup_proof":
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM agent_retirement_cleanup_proofs
+            WHERE proof_id = ?
+              AND canonical_digest = ?
+              AND retirement_request_id = ?
+              AND retirement_request_digest = ?
+              AND session_id = ?
+              AND agent_member_id = ?
+              AND agent_id = ?
+              AND workspace_generation = ?
+              AND capability_lease_id = ?
+            """,
+            (
+                authority.record_id,
+                authority.record_digest,
+                authority.request_id,
+                authority.request_digest,
+                authority.session_id,
+                authority.agent_member_id,
+                authority.agent_id,
+                authority.workspace_generation,
+                authority.capability_lease_id,
+            ),
+        ).fetchone()
+    else:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM agent_retirement_records AS retirement
+            JOIN agent_members AS agent
+              ON agent.session_id = retirement.session_id
+             AND agent.member_id = retirement.agent_member_id
+             AND agent.agent_id = retirement.agent_id
+            WHERE retirement.retirement_id = ?
+              AND retirement.canonical_digest = ?
+              AND retirement.retirement_request_id = ?
+              AND retirement.retirement_request_digest = ?
+              AND retirement.session_id = ?
+              AND retirement.agent_member_id = ?
+              AND retirement.agent_id = ?
+              AND retirement.workspace_generation = ?
+              AND retirement.capability_lease_id = ?
+              AND agent.status = 'shutdown'
+              AND agent.runtime_state = 'retired'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM agent_capability_lease_records AS lease
+                  WHERE lease.session_id = retirement.session_id
+                    AND lease.agent_member_id = retirement.agent_member_id
+                    AND lease.status IN ('pending_workspace', 'active')
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM agent_runtime_signals AS signal
+                  WHERE signal.session_id = retirement.session_id
+                    AND signal.agent_id = retirement.agent_id
+                    AND signal.status = 'claimed'
+              )
+            """,
+            (
+                authority.record_id,
+                authority.record_digest,
+                authority.request_id,
+                authority.request_digest,
+                authority.session_id,
+                authority.agent_member_id,
+                authority.agent_id,
+                authority.workspace_generation,
+                authority.capability_lease_id,
+            ),
+        ).fetchone()
+    if row is None:
+        raise AgentRetirementLifecycleAuthorityError(
+            "agent retirement lifecycle authority did not commit its exact phase"
+        )
 
 
 def _session_has_mutation_scope(
@@ -4383,6 +4904,148 @@ class SessionRuntimeLeaseRepository:
         )
 
 
+def _runtime_signal_capability_admission_predicate() -> tuple[str, tuple[Any, ...]]:
+    """Return the canonical policy predicate used by every signal claim path."""
+
+    from openzyme_domain import capabilities_for_profile
+    from openzyme_domain import capability_set_digest
+    from openzyme_domain import target_scope_digest
+
+    from .agent_capability_service import DEFAULT_AGENT_CAPABILITY_POLICY
+
+    policy = DEFAULT_AGENT_CAPABILITY_POLICY
+    profile_clauses: list[str] = []
+    profile_params: list[Any] = []
+    for role, profile in policy.role_profiles:
+        capabilities = capabilities_for_profile(profile)
+        targets = policy.targets_for_profile(profile)
+        profile_clauses.append(
+            """
+            (
+                admitted_agent.role = ?
+                AND capability_lease.profile = ?
+                AND capability_lease.capabilities_json = ?
+                AND capability_lease.capability_set_digest = ?
+                AND capability_lease.target_ids_json = ?
+                AND capability_lease.target_scope_digest = ?
+            )
+            """
+        )
+        profile_params.extend(
+            (
+                role,
+                profile.value,
+                _json_dumps(
+                    [capability.value for capability in capabilities]
+                ),
+                capability_set_digest(capabilities),
+                _json_dumps(list(targets)),
+                target_scope_digest(targets),
+            )
+        )
+
+    allowed_parent_profile_clauses: list[str] = []
+    allowed_parent_profile_params: list[Any] = []
+    for parent_role, allowed_profiles in policy.allowed_child_profiles:
+        for child_profile in allowed_profiles:
+            allowed_parent_profile_clauses.append(
+                """
+                (
+                    admitted_parent.role = ?
+                    AND capability_lease.profile = ?
+                )
+                """
+            )
+            allowed_parent_profile_params.extend(
+                (parent_role, child_profile.value)
+            )
+    allowed_parent_profile_sql = (
+        " OR ".join(allowed_parent_profile_clauses)
+        if allowed_parent_profile_clauses
+        else "0"
+    )
+
+    predicate = f"""
+        agent_runtime_signals.capability_lease_id IS NOT NULL
+        AND agent_runtime_signals.workspace_generation IS NOT NULL
+        AND EXISTS (
+            SELECT 1
+            FROM agent_capability_lease_records AS capability_lease
+            JOIN agent_members AS admitted_agent
+              ON admitted_agent.member_id = capability_lease.agent_member_id
+             AND admitted_agent.session_id = capability_lease.session_id
+             AND admitted_agent.agent_id = capability_lease.agent_id
+            JOIN agent_workspace_generation_reservations AS current_generation
+              ON current_generation.session_id = capability_lease.session_id
+             AND current_generation.agent_member_id = capability_lease.agent_member_id
+             AND current_generation.agent_id = capability_lease.agent_id
+             AND current_generation.workspace_generation = capability_lease.workspace_generation
+            WHERE capability_lease.lease_id = agent_runtime_signals.capability_lease_id
+              AND capability_lease.session_id = agent_runtime_signals.session_id
+              AND capability_lease.agent_id = agent_runtime_signals.agent_id
+              AND capability_lease.workspace_generation = agent_runtime_signals.workspace_generation
+              AND capability_lease.status = 'active'
+              AND capability_lease.state_version = 2
+              AND capability_lease.activated_at IS NOT NULL
+              AND capability_lease.revoked_at IS NULL
+              AND capability_lease.revocation_scope IS NULL
+              AND capability_lease.revocation_reason IS NULL
+              AND current_generation.status = 'ready'
+              AND current_generation.readiness_owner_kind IS NOT NULL
+              AND current_generation.readiness_owner_ref IS NOT NULL
+              AND current_generation.readiness_ref IS NOT NULL
+              AND current_generation.readiness_digest IS NOT NULL
+              AND current_generation.ready_at IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM agent_retirement_records AS retirement
+                  WHERE retirement.session_id = capability_lease.session_id
+                    AND retirement.agent_member_id = capability_lease.agent_member_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM agent_retirement_requests AS retirement_request
+                  WHERE retirement_request.session_id = capability_lease.session_id
+                    AND retirement_request.agent_member_id = capability_lease.agent_member_id
+              )
+              AND capability_lease.policy_version = ?
+              AND capability_lease.policy_digest = ?
+              AND ({" OR ".join(profile_clauses)})
+              AND (
+                  (
+                      admitted_agent.parent_agent_id IS NULL
+                      AND capability_lease.parent_lease_id IS NULL
+                  )
+                  OR (
+                      admitted_agent.parent_agent_id IS NOT NULL
+                      AND capability_lease.parent_lease_id IS NOT NULL
+                      AND EXISTS (
+                          SELECT 1
+                          FROM agent_capability_lease_records AS parent_lease
+                          JOIN agent_members AS admitted_parent
+                            ON admitted_parent.session_id = parent_lease.session_id
+                           AND admitted_parent.member_id = parent_lease.agent_member_id
+                           AND admitted_parent.agent_id = parent_lease.agent_id
+                          WHERE parent_lease.lease_id = capability_lease.parent_lease_id
+                            AND parent_lease.session_id = capability_lease.session_id
+                            AND parent_lease.agent_id = admitted_agent.parent_agent_id
+                            AND ({allowed_parent_profile_sql})
+                      )
+                  )
+              )
+        )
+    """
+    return (
+        predicate,
+        (
+            policy.policy_version,
+            policy.policy_digest,
+            *profile_params,
+            *allowed_parent_profile_params,
+        ),
+    )
+
+
 @dataclass(slots=True)
 class AgentRuntimeSignalRepository:
     connection: sqlite3.Connection
@@ -4400,6 +5063,54 @@ class AgentRuntimeSignalRepository:
             session_id=signal.session_id,
             agent_id=signal.agent_id,
         )
+        if signal.capability_lease_id is None:
+            raise OwnershipError(
+                "new runtime signal requires a pending or active exact-generation "
+                "capability lease binding"
+            )
+        capability_lease = self.connection.execute(
+            """
+            SELECT 1
+            FROM agent_capability_lease_records
+            WHERE lease_id = ?
+              AND session_id = ?
+              AND agent_id = ?
+              AND workspace_generation = ?
+              AND status IN ('pending_workspace', 'active')
+            """,
+            (
+                signal.capability_lease_id,
+                signal.session_id,
+                signal.agent_id,
+                signal.workspace_generation,
+            ),
+        ).fetchone()
+        if capability_lease is None:
+            raise OwnershipError(
+                "runtime signal capability occurrence binding does not match "
+                "a pending or active exact-generation lease"
+            )
+        retirement_request = self.connection.execute(
+            """
+            SELECT 1
+            FROM agent_retirement_requests AS request
+            JOIN agent_capability_lease_records AS lease
+              ON lease.lease_id = ?
+             AND lease.session_id = request.session_id
+             AND lease.agent_member_id = request.agent_member_id
+             AND lease.agent_id = request.agent_id
+            WHERE request.session_id = ? AND request.agent_id = ?
+            """,
+            (
+                signal.capability_lease_id,
+                signal.session_id,
+                signal.agent_id,
+            ),
+        ).fetchone()
+        if retirement_request is not None:
+            raise OwnershipError(
+                "agent retirement request freezes runtime signal enqueue"
+            )
         if signal.task_id is not None:
             _require_linked_session_id(
                 self.connection,
@@ -4424,9 +5135,10 @@ class AgentRuntimeSignalRepository:
             INSERT INTO agent_runtime_signals (
                 signal_id, session_id, agent_id, task_id, lane_id, correlation_id, reason, source_ref, status,
                 created_at, claimed_at, claimed_by, claim_expires_at, attempt_count,
-                completed_at, error_message, last_error, session_lease_token, session_fencing_token
+                completed_at, error_message, last_error, session_lease_token,
+                session_fencing_token, capability_lease_id, workspace_generation
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(signal_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 agent_id = excluded.agent_id,
@@ -4444,7 +5156,9 @@ class AgentRuntimeSignalRepository:
                 error_message = excluded.error_message,
                 last_error = excluded.last_error,
                 session_lease_token = excluded.session_lease_token,
-                session_fencing_token = excluded.session_fencing_token
+                session_fencing_token = excluded.session_fencing_token,
+                capability_lease_id = excluded.capability_lease_id,
+                workspace_generation = excluded.workspace_generation
             """,
             (
                 signal.signal_id,
@@ -4466,6 +5180,8 @@ class AgentRuntimeSignalRepository:
                 signal.last_error,
                 signal.session_lease_token,
                 signal.session_fencing_token,
+                signal.capability_lease_id,
+                signal.workspace_generation,
             ),
         )
         _commit(self.connection)
@@ -4484,9 +5200,10 @@ class AgentRuntimeSignalRepository:
                 correlation_id, reason, source_ref, status, created_at,
                 claimed_at, claimed_by, claim_expires_at, attempt_count,
                 completed_at, error_message, last_error,
-                session_lease_token, session_fencing_token
+                session_lease_token, session_fencing_token,
+                capability_lease_id, workspace_generation
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal.signal_id,
@@ -4508,6 +5225,8 @@ class AgentRuntimeSignalRepository:
                 signal.last_error,
                 signal.session_lease_token,
                 signal.session_fencing_token,
+                signal.capability_lease_id,
+                signal.workspace_generation,
             ),
         )
         _commit(self.connection)
@@ -4515,6 +5234,38 @@ class AgentRuntimeSignalRepository:
         if saved is None:
             raise RuntimeError(
                 "deterministic runtime signal insert did not materialize"
+            )
+        if (
+            saved.capability_lease_id,
+            saved.workspace_generation,
+        ) != (
+            signal.capability_lease_id,
+            signal.workspace_generation,
+        ):
+            raise ValueError(
+                "deterministic runtime signal identity has a different capability binding"
+            )
+        if (
+            saved.session_id,
+            saved.agent_id,
+            saved.task_id,
+            saved.lane_id,
+            saved.correlation_id,
+            saved.reason,
+            saved.source_ref,
+            saved.created_at,
+        ) != (
+            signal.session_id,
+            signal.agent_id,
+            signal.task_id,
+            signal.lane_id,
+            signal.correlation_id,
+            signal.reason,
+            signal.source_ref,
+            signal.created_at,
+        ):
+            raise ValueError(
+                "deterministic runtime signal identity has different immutable facts"
             )
         return saved
 
@@ -4553,18 +5304,22 @@ class AgentRuntimeSignalRepository:
 
     def list_claimable_session_ids(self, *, limit: int | None = None) -> list[str]:
         now = _utc_now_iso()
+        admission_sql, admission_params = (
+            _runtime_signal_capability_admission_predicate()
+        )
         limit_clause = "" if limit is None else " LIMIT ?"
         params: list[Any] = [
             AgentRuntimeSignalStatus.PENDING.value,
             AgentRuntimeSignalStatus.CLAIMED.value,
             now,
+            *admission_params,
         ]
         if limit is not None:
             if limit <= 0:
                 return []
             params.append(limit)
         rows = self.connection.execute(
-            """
+            f"""
             SELECT session_id, MIN(created_at) AS earliest_created_at
             FROM agent_runtime_signals
             WHERE (
@@ -4575,6 +5330,7 @@ class AgentRuntimeSignalRepository:
                   AND claim_expires_at <= ?
                 )
               )
+              AND {admission_sql}
             GROUP BY session_id
             ORDER BY earliest_created_at, session_id
             """
@@ -4588,23 +5344,32 @@ class AgentRuntimeSignalRepository:
         *,
         session_id: str,
         claimed_by: str,
+        session_lease_token: str,
+        session_fencing_token: int,
         lease_seconds: int = 60,
         signal_ids: set[str] | None = None,
-        session_lease_token: str | None = None,
-        session_fencing_token: int | None = None,
     ) -> AgentRuntimeSignal | None:
         if lease_seconds <= 0:
             raise ValueError("lease_seconds must be positive")
-        if (session_lease_token is None) != (session_fencing_token is None):
-            raise ValueError(
-                "session_lease_token and session_fencing_token must be provided together"
+        session_runtime_leases = SessionRuntimeLeaseRepository(self.connection)
+        if not session_runtime_leases.is_active(
+            session_id=session_id,
+            lease_token=session_lease_token,
+            fencing_token=session_fencing_token,
+        ):
+            raise OwnershipError(
+                "runtime signal claim requires the exact active session runtime lease"
             )
         now = _utc_now_iso()
+        admission_sql, admission_params = (
+            _runtime_signal_capability_admission_predicate()
+        )
         params: list[Any] = [
             session_id,
             AgentRuntimeSignalStatus.PENDING.value,
             AgentRuntimeSignalStatus.CLAIMED.value,
             now,
+            *admission_params,
         ]
         signal_filter = ""
         if signal_ids is not None:
@@ -4626,6 +5391,7 @@ class AgentRuntimeSignalRepository:
                   AND claim_expires_at <= ?
                 )
               )
+              AND {admission_sql}
               {signal_filter}
             ORDER BY created_at, rowid
             LIMIT 1
@@ -4634,46 +5400,74 @@ class AgentRuntimeSignalRepository:
         ).fetchone()
         if row is None:
             return None
-        signal_id = row["signal_id"]
-        cursor = self.connection.execute(
-            """
-            UPDATE agent_runtime_signals
-            SET status = ?,
-                claimed_at = ?,
-                claimed_by = ?,
-                claim_expires_at = ?,
-                attempt_count = attempt_count + 1,
-                completed_at = NULL,
-                error_message = NULL,
-                session_lease_token = ?,
-                session_fencing_token = ?
-            WHERE signal_id = ?
-              AND (
-                status = ?
-                OR (
-                  status = ?
-                  AND claim_expires_at IS NOT NULL
-                  AND claim_expires_at <= ?
-                )
-              )
-            """,
-            (
-                AgentRuntimeSignalStatus.CLAIMED.value,
-                now,
-                claimed_by,
-                _utc_after_iso(lease_seconds),
-                session_lease_token,
-                session_fencing_token,
-                signal_id,
-                AgentRuntimeSignalStatus.PENDING.value,
-                AgentRuntimeSignalStatus.CLAIMED.value,
-                now,
-            ),
-        )
-        _commit(self.connection)
+        signal_id = str(row["signal_id"])
+        with _expected_runtime_write_fence(
+            self.connection,
+            session_id=session_id,
+            lease_token=session_lease_token,
+            fencing_token=session_fencing_token,
+        ):
+            cursor = self.connection.execute(
+                f"""
+                UPDATE agent_runtime_signals
+                SET status = ?,
+                    claimed_at = ?,
+                    claimed_by = ?,
+                    claim_expires_at = ?,
+                    attempt_count = attempt_count + 1,
+                    completed_at = NULL,
+                    error_message = NULL,
+                    session_lease_token = ?,
+                    session_fencing_token = ?
+                WHERE signal_id = ?
+                  AND (
+                    status = ?
+                    OR (
+                      status = ?
+                      AND claim_expires_at IS NOT NULL
+                      AND claim_expires_at <= ?
+                    )
+                  )
+                  AND {admission_sql}
+                  AND EXISTS (
+                    SELECT 1
+                    FROM session_runtime_leases AS runtime_lease
+                    WHERE runtime_lease.session_id = agent_runtime_signals.session_id
+                      AND runtime_lease.lease_token = ?
+                      AND runtime_lease.fencing_token = ?
+                      AND runtime_lease.released_at IS NULL
+                      AND runtime_lease.expires_at > ?
+                  )
+                """,
+                (
+                    AgentRuntimeSignalStatus.CLAIMED.value,
+                    now,
+                    claimed_by,
+                    _utc_after_iso(lease_seconds),
+                    session_lease_token,
+                    session_fencing_token,
+                    signal_id,
+                    AgentRuntimeSignalStatus.PENDING.value,
+                    AgentRuntimeSignalStatus.CLAIMED.value,
+                    now,
+                    *admission_params,
+                    session_lease_token,
+                    session_fencing_token,
+                    now,
+                ),
+            )
+            _commit(self.connection)
         if cursor.rowcount != 1:
+            if not session_runtime_leases.is_active(
+                session_id=session_id,
+                lease_token=session_lease_token,
+                fencing_token=session_fencing_token,
+            ):
+                raise OwnershipError(
+                    "session runtime lease became inactive before signal claim"
+                )
             return None
-        return self.get(str(signal_id))
+        return self.get(signal_id)
 
     def complete(
         self,
@@ -4694,18 +5488,32 @@ class AgentRuntimeSignalRepository:
         if existing.status.is_terminal:
             return existing
         now = _utc_now_iso()
-        self.connection.execute(
-            """
-            UPDATE agent_runtime_signals
-            SET status = ?,
-                completed_at = ?,
-                claim_expires_at = NULL,
-                error_message = NULL
-            WHERE signal_id = ?
-            """,
-            (AgentRuntimeSignalStatus.COMPLETED.value, now, signal_id),
-        )
-        _commit(self.connection)
+        with _expected_runtime_write_fence(
+            self.connection,
+            session_id=existing.session_id,
+            lease_token=expected_session_lease_token,
+            fencing_token=expected_session_fencing_token,
+        ):
+            cursor = self.connection.execute(
+                """
+                UPDATE agent_runtime_signals
+                SET status = ?,
+                    completed_at = ?,
+                    claim_expires_at = NULL,
+                    error_message = NULL
+                WHERE signal_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM agent_retirement_requests AS request
+                      WHERE request.session_id = agent_runtime_signals.session_id
+                        AND request.agent_id = agent_runtime_signals.agent_id
+                  )
+                """,
+                (AgentRuntimeSignalStatus.COMPLETED.value, now, signal_id),
+            )
+            _commit(self.connection)
+        if cursor.rowcount != 1:
+            return None
         return self.get(signal_id)
 
     def fail(
@@ -4737,28 +5545,122 @@ class AgentRuntimeSignalRepository:
         completed_at = (
             None if next_status is AgentRuntimeSignalStatus.PENDING else _utc_now_iso()
         )
-        self.connection.execute(
-            """
-            UPDATE agent_runtime_signals
-            SET status = ?,
-                completed_at = ?,
-                claim_expires_at = NULL,
-                claimed_by = CASE WHEN ? = ? THEN NULL ELSE claimed_by END,
-                error_message = ?,
-                last_error = ?
-            WHERE signal_id = ?
-            """,
-            (
-                next_status.value,
-                completed_at,
-                next_status.value,
-                AgentRuntimeSignalStatus.PENDING.value,
-                error_message,
-                error_message,
-                signal_id,
-            ),
-        )
-        _commit(self.connection)
+        with _expected_runtime_write_fence(
+            self.connection,
+            session_id=existing.session_id,
+            lease_token=expected_session_lease_token,
+            fencing_token=expected_session_fencing_token,
+        ):
+            cursor = self.connection.execute(
+                """
+                UPDATE agent_runtime_signals
+                SET status = ?,
+                    completed_at = ?,
+                    claim_expires_at = NULL,
+                    claimed_by = CASE WHEN ? = ? THEN NULL ELSE claimed_by END,
+                    error_message = ?,
+                    last_error = ?
+                WHERE signal_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM agent_retirement_requests AS request
+                      WHERE request.session_id = agent_runtime_signals.session_id
+                        AND request.agent_id = agent_runtime_signals.agent_id
+                  )
+                """,
+                (
+                    next_status.value,
+                    completed_at,
+                    next_status.value,
+                    AgentRuntimeSignalStatus.PENDING.value,
+                    error_message,
+                    error_message,
+                    signal_id,
+                ),
+            )
+            _commit(self.connection)
+        if cursor.rowcount != 1:
+            return None
+        return self.get(signal_id)
+
+    def settle_retirement_requested(
+        self,
+        signal_id: str,
+        *,
+        expected_session_lease_token: str,
+        expected_session_fencing_token: int,
+    ) -> AgentRuntimeSignal | None:
+        existing = self.get(signal_id)
+        if existing is None:
+            return None
+        if existing.status.is_terminal:
+            if not (
+                existing.status is AgentRuntimeSignalStatus.FAILED
+                and existing.error_message == "agent_retirement_requested"
+                and existing.last_error == "agent_retirement_requested"
+            ):
+                return None
+            request = self.connection.execute(
+                """
+                SELECT 1
+                FROM agent_retirement_requests
+                WHERE session_id = ?
+                  AND agent_id = ?
+                  AND capability_lease_id = ?
+                  AND workspace_generation = ?
+                """,
+                (
+                    existing.session_id,
+                    existing.agent_id,
+                    existing.capability_lease_id,
+                    existing.workspace_generation,
+                ),
+            ).fetchone()
+            return existing if request is not None else None
+        if existing.status is not AgentRuntimeSignalStatus.CLAIMED:
+            return None
+        if not self._fencing_allows_signal_write(
+            existing,
+            expected_session_lease_token=expected_session_lease_token,
+            expected_session_fencing_token=expected_session_fencing_token,
+        ):
+            return None
+        now = _utc_now_iso()
+        with _expected_runtime_write_fence(
+            self.connection,
+            session_id=existing.session_id,
+            lease_token=expected_session_lease_token,
+            fencing_token=expected_session_fencing_token,
+        ):
+            cursor = self.connection.execute(
+                """
+                UPDATE agent_runtime_signals
+                SET status = 'failed',
+                    completed_at = ?,
+                    claim_expires_at = NULL,
+                    error_message = 'agent_retirement_requested',
+                    last_error = 'agent_retirement_requested'
+                WHERE signal_id = ?
+                  AND status = 'claimed'
+                  AND session_lease_token = ?
+                  AND session_fencing_token = ?
+                  AND EXISTS (
+                      SELECT 1
+                      FROM agent_retirement_requests AS request
+                      WHERE request.session_id = agent_runtime_signals.session_id
+                        AND request.agent_id = agent_runtime_signals.agent_id
+                  )
+                """,
+                (
+                    now,
+                    signal_id,
+                    expected_session_lease_token,
+                    expected_session_fencing_token,
+                ),
+            )
+            _commit(self.connection)
+        if cursor.rowcount != 1:
+            return None
         return self.get(signal_id)
 
     def release(
@@ -4779,17 +5681,31 @@ class AgentRuntimeSignalRepository:
             return None
         if existing.status.is_terminal:
             return existing
-        self.connection.execute(
-            """
-            UPDATE agent_runtime_signals
-            SET status = ?,
-                claimed_by = NULL,
-                claim_expires_at = NULL
-            WHERE signal_id = ?
-            """,
-            (AgentRuntimeSignalStatus.PENDING.value, signal_id),
-        )
-        _commit(self.connection)
+        with _expected_runtime_write_fence(
+            self.connection,
+            session_id=existing.session_id,
+            lease_token=expected_session_lease_token,
+            fencing_token=expected_session_fencing_token,
+        ):
+            cursor = self.connection.execute(
+                """
+                UPDATE agent_runtime_signals
+                SET status = ?,
+                    claimed_by = NULL,
+                    claim_expires_at = NULL
+                WHERE signal_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM agent_retirement_requests AS request
+                      WHERE request.session_id = agent_runtime_signals.session_id
+                        AND request.agent_id = agent_runtime_signals.agent_id
+                  )
+                """,
+                (AgentRuntimeSignalStatus.PENDING.value, signal_id),
+            )
+            _commit(self.connection)
+        if cursor.rowcount != 1:
+            return None
         return self.get(signal_id)
 
     def _fencing_allows_signal_write(
@@ -4803,7 +5719,23 @@ class AgentRuntimeSignalRepository:
             expected_session_lease_token is None
             and expected_session_fencing_token is None
         ):
-            return True
+            if signal.status is not AgentRuntimeSignalStatus.CLAIMED:
+                return True
+            fence = _runtime_write_fence(self.connection)
+            if fence is None:
+                return False
+            session_id, lease_token, fencing_token = fence
+            if (
+                session_id != signal.session_id
+                or lease_token != signal.session_lease_token
+                or fencing_token != signal.session_fencing_token
+            ):
+                return False
+            return SessionRuntimeLeaseRepository(self.connection).is_active(
+                session_id=session_id,
+                lease_token=lease_token,
+                fencing_token=fencing_token,
+            )
         if (expected_session_lease_token is None) != (
             expected_session_fencing_token is None
         ):
@@ -4829,14 +5761,26 @@ class AgentRuntimeSignalRepository:
         agent_id: str,
         reason: AgentRuntimeSignalReason,
         source_ref: str | None,
+        capability_lease_id: str | None = None,
+        workspace_generation: int | None = None,
     ) -> AgentRuntimeSignal | None:
+        if (capability_lease_id is None) != (workspace_generation is None):
+            raise ValueError(
+                "capability_lease_id and workspace_generation must be provided together"
+            )
         if source_ref is None:
             return None
         row = self.connection.execute(
             """
             SELECT *
             FROM agent_runtime_signals
-            WHERE session_id = ? AND agent_id = ? AND reason = ? AND source_ref = ? AND status IN (?, ?)
+            WHERE session_id = ?
+              AND agent_id = ?
+              AND reason = ?
+              AND source_ref = ?
+              AND capability_lease_id IS ?
+              AND workspace_generation IS ?
+              AND status IN (?, ?)
             ORDER BY created_at, rowid
             LIMIT 1
             """,
@@ -4845,6 +5789,8 @@ class AgentRuntimeSignalRepository:
                 agent_id,
                 reason.value,
                 source_ref,
+                capability_lease_id,
+                workspace_generation,
                 AgentRuntimeSignalStatus.PENDING.value,
                 AgentRuntimeSignalStatus.CLAIMED.value,
             ),
@@ -4905,6 +5851,10 @@ class AgentRuntimeSignalRepository:
             session_fencing_token=None
             if row["session_fencing_token"] is None
             else int(row["session_fencing_token"]),
+            capability_lease_id=row["capability_lease_id"],
+            workspace_generation=None
+            if row["workspace_generation"] is None
+            else int(row["workspace_generation"]),
         )
 
 
@@ -5772,21 +6722,34 @@ class SessionReportRepository:
                 record_id=report.run_id,
                 expected_session_id=report.session_id,
             )
-        if report.artifact_id is not None:
+        if report.artifact_id is not None and report.content_ref_id is not None:
+            raise OwnershipError(
+                "report publication cannot carry both legacy and file-native identities"
+            )
+        if report.content_ref_id is not None:
             _require_linked_session_id(
                 self.connection,
-                table_name="session_artifact_records",
-                id_column="artifact_id",
-                record_id=report.artifact_id,
+                table_name="revision_path_refs",
+                id_column="ref_id",
+                record_id=report.content_ref_id,
+                expected_session_id=report.session_id,
+            )
+        if report.supersedes_report_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="session_report_records",
+                id_column="report_id",
+                record_id=report.supersedes_report_id,
                 expected_session_id=report.session_id,
             )
         self.connection.execute(
             """
             INSERT INTO session_report_records (
-                report_id, session_id, task_id, lane_id, invocation_id, run_id, artifact_id, status,
-                title, summary, stage_summary, created_at, updated_at
+                report_id, session_id, task_id, lane_id, invocation_id, run_id,
+                artifact_id, status, title, summary, stage_summary, created_at,
+                updated_at, content_ref_id, report_version, supersedes_report_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(report_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 task_id = excluded.task_id,
@@ -5798,7 +6761,10 @@ class SessionReportRepository:
                 title = excluded.title,
                 summary = excluded.summary,
                 stage_summary = excluded.stage_summary,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                content_ref_id = excluded.content_ref_id,
+                report_version = excluded.report_version,
+                supersedes_report_id = excluded.supersedes_report_id
             """,
             (
                 report.report_id,
@@ -5814,6 +6780,9 @@ class SessionReportRepository:
                 report.stage_summary,
                 report.created_at,
                 report.updated_at,
+                report.content_ref_id,
+                report.report_version,
+                report.supersedes_report_id,
             ),
         )
         _commit(self.connection)
@@ -5870,6 +6839,9 @@ class SessionReportRepository:
             stage_summary=row["stage_summary"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            content_ref_id=row["content_ref_id"],
+            report_version=int(row["report_version"]),
+            supersedes_report_id=row["supersedes_report_id"],
         )
 
 
@@ -6535,6 +7507,30 @@ class CoreRepositories:
     sessions: SessionRepository
     project_repository_bindings: ProjectRepositoryBindingRepository
     session_repository_binding_pins: SessionRepositoryBindingPinRepository
+    agent_workspace_generation_reservations: (
+        "AgentWorkspaceGenerationReservationRepository"
+    )
+    agent_git_workspaces: "AgentGitWorkspaceRepository"
+    agent_workspace_state_observations: "AgentWorkspaceStateObservationRepository"
+    verified_workspace_checkpoints: "VerifiedWorkspaceCheckpointRepository"
+    workspace_publication_intents: "WorkspacePublicationIntentRepository"
+    workspace_publication_executions: "WorkspacePublicationExecutionRepository"
+    workspace_publication_execution_events: (
+        "WorkspacePublicationExecutionEventRepository"
+    )
+    workspace_publication_remote_receipts: (
+        "WorkspacePublicationRemoteReceiptRepository"
+    )
+    published_revisions: "PublishedRevisionRepository"
+    revision_path_handoffs: "RevisionPathHandoffRepository"
+    executor_hpc_workspaces: "ExecutorHpcWorkspaceRepository"
+    workspace_revision_executions: "WorkspaceRevisionExecutionRepository"
+    git_lfs: "GitLfsRepository"
+    agent_capability_leases: "AgentCapabilityLeaseRepository"
+    agent_capability_lease_events: "AgentCapabilityLeaseLifecycleEventRepository"
+    agent_retirement_requests: "AgentRetirementRequestRepository"
+    agent_retirement_cleanup_proofs: "AgentRetirementCleanupProofRepository"
+    agent_retirements: "AgentRetirementRecordRepository"
     session_access: SessionAccessRepository
     tasks: TaskRepository
     lanes: LaneRepository
@@ -6577,6 +7573,8 @@ class CoreRepositories:
     scientific_selections: "ScientificSelectionRepository"
     scientific_dispositions: "ScientificDispositionRepository"
     scientific_effect_adoptions: "ScientificEffectAdoptionRepository"
+    scientific_deliverables: "ScientificDeliverableRepository"
+    historical_artifacts: "HistoricalArtifactRepository"
     scientific_artifact_materializations: "ScientificArtifactMaterializationRepository"
     scientific_attempt_closure_requests: "ScientificAttemptClosureRequestRepository"
     scientific_attempt_closures: "ScientificAttemptClosureRepository"
@@ -6596,6 +7594,12 @@ class CoreRepositories:
     research_evidence: ResearchEvidenceRepository
     research_source_refs: ResearchSourceRefRepository
     research_gaps: ResearchGapRepository
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        """Expose the shared connection for bounded repository-level verification."""
+
+        return self.tasks.connection
 
     @property
     def in_managed_transaction(self) -> bool:
@@ -6733,6 +7737,76 @@ class CoreRepositories:
             setattr(connection, "_openzyme_mutation_write_authority", previous)
 
     @contextmanager
+    def _agent_capability_readiness_activation(
+        self,
+        authority: AgentCapabilityReadinessActivationAuthority,
+    ) -> Iterator[None]:
+        """Bind the service-only, exact readiness activation transaction."""
+
+        connection = self.tasks.connection
+        if _managed_transaction_depth(connection) <= 0:
+            raise AgentCapabilityReadinessActivationError(
+                "readiness activation authority requires an owning Host transaction"
+            )
+        previous = _agent_capability_readiness_activation_authority(connection)
+        if previous is not None:
+            raise AgentCapabilityReadinessActivationError(
+                "repository connection already carries readiness activation authority"
+            )
+        setattr(
+            connection,
+            "_openzyme_agent_capability_readiness_activation_authority",
+            authority,
+        )
+        try:
+            yield
+            _validate_agent_capability_readiness_activation_completion(
+                connection,
+                authority,
+            )
+        finally:
+            setattr(
+                connection,
+                "_openzyme_agent_capability_readiness_activation_authority",
+                previous,
+            )
+
+    @contextmanager
+    def _agent_retirement_lifecycle(
+        self,
+        authority: AgentRetirementLifecycleAuthority,
+    ) -> Iterator[None]:
+        """Bind one service-only exact retirement phase to the owning transaction."""
+
+        connection = self.tasks.connection
+        if _managed_transaction_depth(connection) <= 0:
+            raise AgentRetirementLifecycleAuthorityError(
+                "retirement lifecycle authority requires an owning Host transaction"
+            )
+        previous = _agent_retirement_lifecycle_authority(connection)
+        if previous is not None:
+            raise AgentRetirementLifecycleAuthorityError(
+                "repository connection already carries retirement lifecycle authority"
+            )
+        setattr(
+            connection,
+            "_openzyme_agent_retirement_lifecycle_authority",
+            authority,
+        )
+        try:
+            yield
+            _validate_agent_retirement_lifecycle_completion(
+                connection,
+                authority,
+            )
+        finally:
+            setattr(
+                connection,
+                "_openzyme_agent_retirement_lifecycle_authority",
+                previous,
+            )
+
+    @contextmanager
     def atomic(self, *, prefix: str) -> Iterator[None]:
         connection = self.tasks.connection
         previous_depth = _managed_transaction_depth(connection)
@@ -6756,6 +7830,46 @@ class CoreRepositories:
 
     @classmethod
     def from_connection(cls, connection: sqlite3.Connection) -> "CoreRepositories":
+        from .git_lfs_repositories import GitLfsRepository
+        from .agent_capability_repositories import (
+            AgentCapabilityLeaseLifecycleEventRepository,
+        )
+        from .agent_capability_repositories import AgentCapabilityLeaseRepository
+        from .agent_capability_repositories import (
+            AgentRetirementCleanupProofRepository,
+        )
+        from .agent_capability_repositories import AgentRetirementRecordRepository
+        from .agent_capability_repositories import AgentRetirementRequestRepository
+        from .agent_capability_repositories import (
+            AgentWorkspaceGenerationReservationRepository,
+        )
+        from .agent_git_workspace_repositories import AgentGitWorkspaceRepository
+        from .workspace_checkpoint_repositories import (
+            AgentWorkspaceStateObservationRepository,
+        )
+        from .workspace_checkpoint_repositories import (
+            VerifiedWorkspaceCheckpointRepository,
+        )
+        from .workspace_publication_repositories import PublishedRevisionRepository
+        from .workspace_publication_repositories import (
+            WorkspacePublicationExecutionEventRepository,
+        )
+        from .workspace_publication_repositories import (
+            WorkspacePublicationExecutionRepository,
+        )
+        from .workspace_publication_repositories import (
+            WorkspacePublicationIntentRepository,
+        )
+        from .workspace_publication_repositories import (
+            WorkspacePublicationRemoteReceiptRepository,
+        )
+        from .revision_path_handoffs import RevisionPathHandoffRepository
+        from .executor_hpc_workspace_repositories import (
+            ExecutorHpcWorkspaceRepository,
+        )
+        from .workspace_revision_execution_repositories import (
+            WorkspaceRevisionExecutionRepository,
+        )
         from .durable_coordination_repositories import ContinuationDeliveryRepository
         from .durable_coordination_repositories import MutationScopeRepository
         from .durable_coordination_repositories import MutationWriterRepository
@@ -6804,6 +7918,8 @@ class CoreRepositories:
             ScientificEffectAdoptionRepository,
         )
         from .scientific_attempt_repositories import ScientificSelectionRepository
+        from .scientific_deliverable_repositories import ScientificDeliverableRepository
+        from .historical_artifact_repositories import HistoricalArtifactRepository
 
         return cls(
             sessions=SessionRepository(connection),
@@ -6811,6 +7927,44 @@ class CoreRepositories:
             session_repository_binding_pins=SessionRepositoryBindingPinRepository(
                 connection
             ),
+            agent_workspace_generation_reservations=(
+                AgentWorkspaceGenerationReservationRepository(connection)
+            ),
+            agent_git_workspaces=AgentGitWorkspaceRepository(connection),
+            agent_workspace_state_observations=(
+                AgentWorkspaceStateObservationRepository(connection)
+            ),
+            verified_workspace_checkpoints=(
+                VerifiedWorkspaceCheckpointRepository(connection)
+            ),
+            workspace_publication_intents=WorkspacePublicationIntentRepository(
+                connection
+            ),
+            workspace_publication_executions=(
+                WorkspacePublicationExecutionRepository(connection)
+            ),
+            workspace_publication_execution_events=(
+                WorkspacePublicationExecutionEventRepository(connection)
+            ),
+            workspace_publication_remote_receipts=(
+                WorkspacePublicationRemoteReceiptRepository(connection)
+            ),
+            published_revisions=PublishedRevisionRepository(connection),
+            revision_path_handoffs=RevisionPathHandoffRepository(connection),
+            executor_hpc_workspaces=ExecutorHpcWorkspaceRepository(connection),
+            workspace_revision_executions=WorkspaceRevisionExecutionRepository(
+                connection
+            ),
+            git_lfs=GitLfsRepository(connection),
+            agent_capability_leases=AgentCapabilityLeaseRepository(connection),
+            agent_capability_lease_events=(
+                AgentCapabilityLeaseLifecycleEventRepository(connection)
+            ),
+            agent_retirement_requests=AgentRetirementRequestRepository(connection),
+            agent_retirement_cleanup_proofs=(
+                AgentRetirementCleanupProofRepository(connection)
+            ),
+            agent_retirements=AgentRetirementRecordRepository(connection),
             session_access=SessionAccessRepository(connection),
             tasks=TaskRepository(connection),
             lanes=LaneRepository(connection),
@@ -6865,6 +8019,8 @@ class CoreRepositories:
             scientific_selections=ScientificSelectionRepository(connection),
             scientific_dispositions=ScientificDispositionRepository(connection),
             scientific_effect_adoptions=ScientificEffectAdoptionRepository(connection),
+            scientific_deliverables=ScientificDeliverableRepository(connection),
+            historical_artifacts=HistoricalArtifactRepository(connection),
             scientific_artifact_materializations=(
                 ScientificArtifactMaterializationRepository(connection)
             ),

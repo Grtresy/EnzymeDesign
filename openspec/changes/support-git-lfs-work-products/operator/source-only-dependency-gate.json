@@ -1,0 +1,71 @@
+{
+  "schema_id": "git_lfs_work_product_source_only_dependency_gate@1",
+  "change_id": "support-git-lfs-work-products",
+  "gate_scope": "ordered_source_implementation_only",
+  "observed_head": "8ae3d73b3054f2058ff33ea183f62c811b9272a3",
+  "immutable_c1_acceptance": {
+    "path": "openspec/changes/establish-project-repository-bindings/operator/acceptance-receipt.json",
+    "file_sha256": "sha256:f3b548cada970890c5a43a4a764207fe1672a0ae94701de06fbff1db693f1b4f",
+    "schema_id": "project_repository_binding_acceptance@1",
+    "source_revision": "9b78ec6a883f90ec4239d113e9300098120f68bd"
+  },
+  "predecessor_source_gate": {
+    "path": "openspec/changes/publish-and-sync-workspace-revisions/operator/source-only-dependency-gate.json",
+    "file_sha256": "sha256:dfc00b26923b391b81aaf36c3ca40fbea1bfd51619eaa335990285692c72172f",
+    "acceptance_proven": false,
+    "final_source_revision_bound": false
+  },
+  "repository_binding_interfaces": {
+    "domain_sha256": "sha256:bacfac08c08232bdbc1e90b6cae16220148b37d39babce5a4e8aae0ed65f492e",
+    "migration_sha256": "sha256:1e1d354341af5a75ce9c55e2c499cb9a8946fd0391f4a540999521439a42364d",
+    "standard_lfs_batch_v2_basic_observed": true,
+    "durable_internal_lfs_identity_observed": true,
+    "agent_facing_cas_observed": false
+  },
+  "workspace_publication_interfaces": {
+    "domain_sha256": "sha256:9e05b4281dff24f8fddee47597808370a6b813d22bdbba3c31db22379d65f06a",
+    "service_sha256": "sha256:6e20c2f1a6781da6ddbe41dffeefb3cb2dfc3f727ee1bc782287c1c3b2c45959",
+    "migration_sha256": "sha256:e919aeabf51e296c991d879edb8bca4b6fdef7dd66312ad3acb103d36db761ab",
+    "frozen_intent_observed": true,
+    "whole_tree_manifest_observed": true,
+    "hard_manifest_validator_seam_observed": true,
+    "published_revision_observed": true
+  },
+  "lfs_transport_baseline": {
+    "transport_sha256": "sha256:14f22c0e1bee6d0d5064c7bb4625ebab9099aec91495d76dc18ff5b6eb73e6ba",
+    "storage_sha256": "sha256:cdb62b0fe072928104dbacf5a25cabd034fb0d4554f33549c4eb567ba962ad8a",
+    "protocol": "git_lfs_batch_v2_basic",
+    "oid_algorithm": "sha256",
+    "same_endpoint_and_object_root_required": true,
+    "alternate_object_source_allowed": false
+  },
+  "deferred_predecessor_acceptance": [
+    "agent_capability_lease_acceptance@1",
+    "agent_git_workspace_acceptance@1",
+    "workspace_publication_acceptance@1"
+  ],
+  "permitted_actions": [
+    "continue_c5_domain_migration_repository_source_implementation",
+    "extend_existing_lfs_transport_source_without_invoking_it",
+    "implement_publication_closure_quota_retention_gc_source",
+    "add_deferred_validation_tests_without_running_them",
+    "update_architecture_and_openspec_documents"
+  ],
+  "forbidden_actions": [
+    "start_lfs_listener_or_writer",
+    "issue_repository_or_lfs_credential",
+    "perform_git_or_lfs_network_io",
+    "invoke_workspace_publish",
+    "delete_git_or_lfs_object",
+    "run_gc_delete_mode",
+    "run_live_or_external_effect",
+    "claim_predecessor_or_current_acceptance",
+    "satisfy_production_or_cutover_gate",
+    "select_cas_artifact_file_gateway_or_alternate_endpoint_fallback"
+  ],
+  "external_effects": 0,
+  "acceptance_proven": false,
+  "final_source_revision_bound": false,
+  "production_effect_authorized": false,
+  "live_authorized": false
+}

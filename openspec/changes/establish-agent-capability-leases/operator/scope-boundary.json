@@ -1,0 +1,108 @@
+{
+  "schema_id": "agent_capability_lease_scope_boundary@1",
+  "change_id": "establish-agent-capability-leases",
+  "c2_owns": [
+    "workspace_generation_reservation_and_readiness_seam",
+    "pending_active_revoked_capability_lease_control_plane",
+    "closed_profile_target_and_delegation_policy",
+    "credential_and_admission_typed_seams",
+    "canonical_repository_credential_upgrade",
+    "immediate_exact_generation_runtime_and_delegation_gate",
+    "exact_bulk_subtree_revoke_and_retirement_freeze_completion",
+    "safe_projection_and_typed_failure_contract"
+  ],
+  "staged_cutover": {
+    "gate_effective_from": "C2_activation",
+    "requires": "active_exact_generation_lease",
+    "c3_not_ready_state": "provisioning_required",
+    "c3_not_ready_runnable": false,
+    "existing_agents_included": true,
+    "new_agents_included": true,
+    "delegated_child_initial_lease": "pending_workspace"
+  },
+  "deferred_owners": {
+    "C3": {
+      "change_id": "provision-independent-agent-git-workspaces",
+      "owns": [
+        "independent_git_workspace",
+        "versioned_capsule_activation",
+        "native_filesystem_shell_git_lfs_curl",
+        "ordinary_deployment_network",
+        "upload_download_runtime",
+        "process_credential_injection",
+        "production_workspace_readiness"
+      ]
+    },
+    "C4": {
+      "change_id": "publish-and-sync-workspace-revisions",
+      "owns": [
+        "workspace_publication_intent",
+        "published_revision",
+        "publication_ref_and_shared_truth"
+      ]
+    },
+    "remote_hpc": {
+      "change_id": "provision-isolated-executor-hpc-workspaces",
+      "owns": [
+        "real_target_scoped_ssh_credential",
+        "remote_login_workspace_crud",
+        "target_os_and_root_isolation",
+        "native_remote_transfer_proof"
+      ]
+    },
+    "job": {
+      "change_id": "execute-hpc-jobs-from-workspace-revisions",
+      "owns": [
+        "approval_free_ordinary_job_admission",
+        "target_side_submit_guard",
+        "one_occurrence_sbatch_credential"
+      ]
+    }
+  },
+  "deferred_false_claims": {
+    "production_agent_git_workspace_ready_proven": false,
+    "production_capsule_activation_proven": false,
+    "production_capsule_network_or_transfer_proven": false,
+    "production_publication_proven": false,
+    "production_remote_hpc_credential_or_crud_proven": false,
+    "production_approval_free_job_proven": false,
+    "production_one_occurrence_sbatch_proven": false
+  },
+  "test_readiness": {
+    "explicit_test_provider_allowed": true,
+    "production_workspace_proof": false,
+    "production_capsule_activation_proof": false,
+    "may_clear_production_provisioning_required": false
+  },
+  "forbidden_fallbacks": [
+    "legacy_sandbox",
+    "legacy_process",
+    "parent_capsule",
+    "parent_workspace",
+    "parent_or_other_agent_credential",
+    "local_execution_substitution",
+    "route_workspace_or_endpoint_switch",
+    "profile_downgrade_or_upgrade",
+    "automatic_retry_or_command_replay"
+  ],
+  "legacy_execution_noninterference": {
+    "host_supervised_execution_unchanged": true,
+    "aox_network_none_unchanged": true,
+    "may_satisfy_capability_gate": false,
+    "may_act_as_fallback": false
+  },
+  "operator_effects": {
+    "live_authorized": false,
+    "provider_requests": 0,
+    "hpc_connections": 0,
+    "scheduler_submissions": 0,
+    "external_effects": 0
+  },
+  "eligible_successor": {
+    "short_name": "C3",
+    "change_id": "provision-independent-agent-git-workspaces",
+    "eligible_only_after_c2_acceptance": true,
+    "production_readiness_owner": true
+  },
+  "scope_digest": "sha256:8900808bd6c988a9ae1a2cf3db49fbaaff55a14cbbd7bcd79edadca8658828d2"
+}

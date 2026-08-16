@@ -1,0 +1,35 @@
+{
+  "schema_id": "file_workspace_public_source_only_cutover_gate@1",
+  "change_id": "cut-over-workspace-public-interfaces",
+  "decision": "public_contract_source_allowed_activation_forbidden",
+  "direct_predecessors": [
+    {
+      "change_id": "replace-sandbox-artifact-boundaries-with-files",
+      "source_gate_sha256": "a05d2a65d1c156c28b133235f73cf212126d2cc40743d8b6b4ae73d8dc33ca5f",
+      "formal_completion_receipt": "missing"
+    },
+    {
+      "change_id": "migrate-scientific-deliverables-to-files",
+      "source_gate_sha256": "46713ece130e7233dab226962c5fd86e4e15ce3522e87438c4a959bd6e34deca",
+      "formal_completion_receipt": "missing"
+    }
+  ],
+  "allowed": [
+    "file_workspace_public_domain_and_projection_source",
+    "host_cli_sdk_ui_candidate_source",
+    "owner_scoped_executor_view_source",
+    "removed_tool_and_stale_contract_error_source",
+    "deferred_tests_and_documentation_source",
+    "static_source_audit"
+  ],
+  "forbidden": [
+    "public_epoch_activation",
+    "online_artifact_era_session_mutation",
+    "remote_git_lfs_or_publication_effect",
+    "provider_hpc_or_network_effect",
+    "continuation_or_approval_replay",
+    "migration_execution",
+    "tests_build_validation_before_all_changes"
+  ],
+  "activation_rule": "combined_final_source_validation_must_rebuild_exact_predecessor_receipts_and_release_bundle"
+}

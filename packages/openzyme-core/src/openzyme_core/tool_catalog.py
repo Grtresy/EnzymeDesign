@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 from typing import Any
 
 from openzyme_runtime import AgentStepContext
@@ -274,6 +276,85 @@ def artifact_tool_descriptors() -> tuple[ToolDescriptor, ...]:
     )
 
 
+def executor_hpc_workspace_tool_descriptors() -> tuple[ToolDescriptor, ...]:
+    workspace_id_schema = {
+        "type": "object",
+        "properties": {"workspace_id": {"type": "string"}},
+        "required": ["workspace_id"],
+        "additionalProperties": False,
+    }
+    return (
+        ToolDescriptor(
+            tool_name="hpc.workspace.request",
+            description=(
+                "Persist and provision one exact executor-owned HPC login workspace. "
+                "This does not authorize or submit a scheduler job."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "target_profile_id": {"type": "string"},
+                    "remote_workspace_generation": {
+                        "type": "integer",
+                        "minimum": 1,
+                    },
+                    "idempotency_key": {"type": "string"},
+                    "absolute_deadline": {"type": "string"},
+                },
+                "required": [
+                    "target_profile_id",
+                    "remote_workspace_generation",
+                    "idempotency_key",
+                    "absolute_deadline",
+                ],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="hpc.workspace.inspect",
+            description=(
+                "Read the owner-only native login locator and safe workspace facts."
+            ),
+            input_schema=workspace_id_schema,
+        ),
+        ToolDescriptor(
+            tool_name="hpc.workspace.verify",
+            description=(
+                "Verify the exact protected remote root, runner receipt, independent "
+                "Git clone, origin, and Git LFS availability before a formal boundary."
+            ),
+            input_schema=workspace_id_schema,
+        ),
+        ToolDescriptor(
+            tool_name="hpc.workspace.sync_source",
+            description=(
+                "Project one exact private checkpoint or immutable published revision "
+                "for agent-controlled native Git sync. This does not mutate the worktree."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "workspace_id": {"type": "string"},
+                    "checkpoint_id": {"type": "string"},
+                    "publication_id": {"type": "string"},
+                },
+                "required": ["workspace_id"],
+                "oneOf": [
+                    {
+                        "required": ["checkpoint_id"],
+                        "not": {"required": ["publication_id"]},
+                    },
+                    {
+                        "required": ["publication_id"],
+                        "not": {"required": ["checkpoint_id"]},
+                    },
+                ],
+                "additionalProperties": False,
+            },
+        ),
+    )
+
+
 def sandbox_tool_descriptors() -> tuple[ToolDescriptor, ...]:
     return (
         ToolDescriptor(
@@ -380,6 +461,277 @@ def sandbox_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                     },
                 },
                 "required": ["argv"],
+                "additionalProperties": False,
+            },
+        ),
+    )
+
+
+def agent_capsule_tool_descriptors() -> tuple[ToolDescriptor, ...]:
+    return (
+        ToolDescriptor(
+            tool_name="workspace.exec",
+            description=(
+                "Run one native argv in your exact generation-owned Git clone. "
+                "The Host never auto-retries, changes endpoints, stages, commits, "
+                "pushes, cleans, or promotes files. Ordinary credentialless network "
+                "uses deployment reachability; request a Host credential only with "
+                "an exact service, target, protocol, and audience."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "argv": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": 256,
+                    },
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 3600,
+                    },
+                    "credential": {
+                        "type": "object",
+                        "properties": {
+                            "service_id": {"type": "string"},
+                            "target_id": {"type": "string"},
+                            "protocol": {"type": "string"},
+                            "audience": {"type": "string"},
+                        },
+                        "required": [
+                            "service_id",
+                            "target_id",
+                            "protocol",
+                            "audience",
+                        ],
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["argv"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="workspace.status",
+            description=(
+                "Observe the exact local HEAD/tree and clean, staged, unstaged, "
+                "or untracked state of your generation-owned clone without "
+                "projecting private paths or mutating Git state."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="workspace.checkpoint.verify",
+            description=(
+                "Read-only verify that an explicit private-ref create or "
+                "fast-forward observation points to your declared commit/tree. "
+                "This records owner-private checkpoint proof; it does not push, "
+                "publish, send a handoff, launch a job, or finish a task."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "boundary": {
+                        "type": "string",
+                        "enum": [
+                            "durable_checkpoint",
+                            "publication",
+                            "handoff",
+                            "external_job",
+                            "task_terminal",
+                        ],
+                    },
+                    "workspace_generation": {"type": "integer", "minimum": 1},
+                    "commit": {"type": "string"},
+                    "tree": {"type": "string"},
+                    "private_ref": {"type": "string"},
+                    "remote_observation": {
+                        "type": "object",
+                        "properties": {
+                            "service_id": {"type": "string"},
+                            "repository_id": {"type": "string"},
+                            "prior_commit": {"type": ["string", "null"]},
+                            "advance_kind": {
+                                "type": "string",
+                                "enum": ["create", "fast_forward"],
+                            },
+                            "observed_at": {"type": "string"},
+                        },
+                        "required": [
+                            "service_id",
+                            "repository_id",
+                            "prior_commit",
+                            "advance_kind",
+                            "observed_at",
+                        ],
+                        "additionalProperties": False,
+                    },
+                },
+                "required": [
+                    "boundary",
+                    "workspace_generation",
+                    "commit",
+                    "tree",
+                    "private_ref",
+                    "remote_observation",
+                ],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="workspace.publish",
+            description=(
+                "Explicitly publish the exact clean whole-repository checkpoint "
+                "through one Host-owned create-only immutable ref. The Host does "
+                "not stage, commit, clean, rewrite, retry a possible effect, push "
+                "upstream, merge, send a handoff, or finish a task."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "idempotency_key": {"type": "string"},
+                    "workspace_id": {"type": "string"},
+                    "workspace_generation": {"type": "integer", "minimum": 1},
+                    "expected_head_commit": {"type": "string"},
+                    "expected_tree": {"type": "string"},
+                    "declared_base_commit": {"type": "string"},
+                    "checkpoint_id": {"type": "string"},
+                    "whole_repository": {"type": "boolean", "const": True},
+                    "repository_binding_version": {
+                        "type": "integer",
+                        "minimum": 1,
+                    },
+                    "parent_publication_id": {"type": ["string", "null"]},
+                    "supersedes_publication_id": {"type": ["string", "null"]},
+                },
+                "required": [
+                    "idempotency_key",
+                    "workspace_id",
+                    "workspace_generation",
+                    "expected_head_commit",
+                    "expected_tree",
+                    "declared_base_commit",
+                    "checkpoint_id",
+                    "whole_repository",
+                    "repository_binding_version",
+                ],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="workspace.publication.fetch_identity",
+            description=(
+                "Read the exact immutable ref, commit, tree, and manifest identity "
+                "for an already materialized publication. Fetch, checkout, merge, "
+                "rebase, and conflict strategy remain explicit agent actions."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"publication_id": {"type": "string"}},
+                "required": ["publication_id"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="workspace.publication.audit",
+            description=(
+                "Read-only compare canonical publications with their exact "
+                "Host-owned immutable refs. This never scans private or historical "
+                "refs and performs no repair, force-update, deletion, or fallback."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="workspace.publication.path_ref",
+            description=(
+                "Create a closed RevisionPathRef@1 for one exact path in an "
+                "already materialized immutable publication."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "publication_id": {"type": "string"},
+                    "path": {"type": "string"},
+                    "ref_id": {"type": "string"},
+                    "entry_kind": {
+                        "type": "string",
+                        "enum": ["file", "directory"],
+                    },
+                },
+                "required": ["publication_id", "path", "ref_id"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="workspace.publication.verify_path_ref",
+            description=(
+                "Revalidate a complete RevisionPathRef@1 against canonical "
+                "publication, path, Git object, and Git LFS identity."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"revision_path_ref": {"type": "object"}},
+                "required": ["revision_path_ref"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="workspace.publication.fetch_handoff",
+            description=(
+                "As the exact recipient, natively fetch one immutable publication "
+                "from a bounded ProtocolFileHandoff@1 and verify every Git/Git LFS "
+                "identity. This performs no checkout, merge, or task transition."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "handoff_id": {"type": "string"},
+                    "publication_id": {"type": "string"},
+                },
+                "required": ["handoff_id", "publication_id"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="workspace.publication.index_research_file",
+            description=(
+                "Attach bounded research metadata to an exact published "
+                "RevisionPathRef@1 without storing dossier or tool-result bytes."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "index_id": {"type": "string"},
+                    "invocation_id": {"type": "string"},
+                    "research_kind": {
+                        "type": "string",
+                        "enum": [
+                            "source_snapshot",
+                            "citations",
+                            "notes",
+                            "analysis",
+                            "dossier",
+                            "tool_result",
+                        ],
+                    },
+                    "revision_path_ref": {"type": "object"},
+                    "summary": {"type": "string"},
+                },
+                "required": [
+                    "invocation_id",
+                    "research_kind",
+                    "revision_path_ref",
+                ],
                 "additionalProperties": False,
             },
         ),
@@ -863,6 +1215,19 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             },
         ),
         ToolDescriptor(
+            tool_name="protocol.handoff.get",
+            description=(
+                "Read one bounded ProtocolFileHandoff@1 as an authorized participant, "
+                "including exact revision/path refs and no file bytes."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"handoff_id": {"type": "string"}},
+                "required": ["handoff_id"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
             tool_name="protocol.send",
             description=(
                 "Send a structured internal team protocol message to a teammate or the harness. "
@@ -997,12 +1362,72 @@ def top_level_tool_descriptors(
     return builtin_tool_descriptors()
 
 
+_FILE_WORKSPACE_FORBIDDEN_TOOL_PREFIXES = (
+    "artifact.",
+    "artifacts.",
+    "sandbox.file.",
+    "hpc.stage_artifact",
+    "hpc.fetch_outputs",
+)
+
+
+def file_workspace_candidate_tool_descriptors(
+    *,
+    executor: bool = False,
+) -> tuple[ToolDescriptor, ...]:
+    """Return the not-yet-public file-workspace candidate catalog.
+
+    This deliberately does not mutate ``builtin_tool_descriptors`` or advance a
+    public epoch.  The successor public-interface cutover consumes this closed
+    projection after its own admission gate.
+    """
+
+    descriptors = (
+        *builtin_tool_descriptors(),
+        *agent_capsule_tool_descriptors(),
+        *(executor_hpc_workspace_tool_descriptors() if executor else ()),
+    )
+    candidate = tuple(
+        descriptor
+        for descriptor in descriptors
+        if not descriptor.tool_name.startswith(_FILE_WORKSPACE_FORBIDDEN_TOOL_PREFIXES)
+    )
+    names = tuple(descriptor.tool_name for descriptor in candidate)
+    if len(names) != len(set(names)):
+        raise ValueError("file-workspace candidate catalog contains duplicate tools")
+    return candidate
+
+
+def file_workspace_candidate_catalog_digest(*, executor: bool = False) -> str:
+    payload = [
+        {
+            "tool_name": descriptor.tool_name,
+            "description": descriptor.description,
+            "input_schema": descriptor.input_schema,
+        }
+        for descriptor in file_workspace_candidate_tool_descriptors(
+            executor=executor
+        )
+    ]
+    encoded = json.dumps(
+        payload,
+        allow_nan=False,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
 __all__ = [
     "ToolDescriptor",
     "artifact_tool_descriptors",
     "builtin_tool_descriptors",
     "engine_tool_descriptors",
+    "executor_hpc_workspace_tool_descriptors",
     "failure_tool_descriptors",
+    "file_workspace_candidate_tool_descriptors",
+    "file_workspace_candidate_catalog_digest",
     "sandbox_tool_descriptors",
     "scientific_attempt_tool_descriptors",
     "top_level_tool_descriptors",

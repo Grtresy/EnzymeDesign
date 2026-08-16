@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC
-from datetime import datetime
-from datetime import timedelta
 from dataclasses import replace
 import hashlib
 import json
@@ -15,32 +12,26 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 import pytest
 
-from openzyme_core import ActiveCapabilityLeaseAssertion
-from openzyme_core import DurableRepositoryRootManager
-from openzyme_core import RepositoryCredentialBroker
-from openzyme_core import RepositoryCredentialProtocol
-from openzyme_core import RepositoryPrivateNamespaceHoldKind
-from openzyme_core import RepositoryPrivateNamespaceRetentionService
-from openzyme_core import RepositoryRootBoundary
 from openzyme_core import SQLiteRepositoryProvider
+from openzyme_core import DurableLfsObjectStore
+from openzyme_core import GitLfsGarbageCollector
+from openzyme_core import GitLfsPrivateReachabilityFinalizer
+from openzyme_core import RepositoryPrivateNamespaceRetentionService
 from openzyme_domain import GitObjectFormat
 from openzyme_domain import ProjectRepositoryBinding
-from openzyme_domain import RepositoryRefClass
 from openzyme_domain import RepositoryRefNamespacePolicy
 from openzyme_domain import Session
-from openzyme_domain import SessionRepositoryBindingPin
 from openzyme_host_api.repository_transport import RepositoryTransportDependencies
 from openzyme_host_api.repository_transport import _git_backend_response
 from openzyme_host_api.repository_transport import _settle_git_request_task
 from openzyme_host_api.repository_transport import create_repository_transport_app
-from openzyme_host_api.repository_service_preflight import (
-    build_repository_binding_inventory,
-)
 from openzyme_runtime import RepositoryServiceSettings
 from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime import RuntimeFoundation
 from openzyme_host_api import HostApiDependencies
 from openzyme_host_api import create_app
+
+from .repository_test_support import build_repository_test_fixture
 
 
 def _settings(root: Path) -> RepositoryServiceSettings:
@@ -158,112 +149,11 @@ def _binding(commit: str) -> ProjectRepositoryBinding:
 
 
 def _transport_fixture(tmp_path: Path):
-    settings = _settings(tmp_path / "service")
-    checkout = tmp_path / "checkout"
-    cwd = tmp_path / "cwd"
-    checkout.mkdir()
-    cwd.mkdir()
-    roots = DurableRepositoryRootManager(
-        settings,
-        RepositoryRootBoundary(
-            host_checkout=checkout,
-            process_cwd=cwd,
-            temporary_roots=(),
-        ),
+    fixture = build_repository_test_fixture(
+        tmp_path,
+        https_origin="https://localhost:8443",
     )
-    source, commit = _source(tmp_path)
-    binding = _binding(commit)
-    roots.create_bare_repository(binding)
-    roots.import_exact_commit_from_repository(
-        binding,
-        source_repository=source,
-        source_commit=commit,
-    )
-    provider = SQLiteRepositoryProvider(str(tmp_path / "control-plane.sqlite3"))
-    now = datetime.now(tz=UTC)
-    with provider.write() as scope:
-        repositories = scope.repositories
-        repositories.project_repository_bindings.add(binding)
-        repositories.project_repository_bindings.activate(
-            binding.binding_id,
-            actor_ref="operator:c1",
-            activated_at=now.isoformat(),
-        )
-        session = Session.create(
-            "sess_transport",
-            "openzyme",
-            "Transport",
-            "Use standard Git and LFS protocols",
-        )
-        repositories.sessions.save(session)
-        pin = SessionRepositoryBindingPin(
-            session_id=session.session_id,
-            project_id=binding.project_id,
-            binding_id=binding.binding_id,
-            binding_version=binding.binding_version,
-            repository_id=binding.repository_id,
-            resolved_base_commit=binding.default_base_commit,
-            binding_canonical_digest=binding.canonical_digest,
-            pinned_at=now.isoformat(),
-        )
-        repositories.session_repository_binding_pins.add(pin)
-        retention = RepositoryPrivateNamespaceRetentionService(
-            repositories.sessions.connection,
-            roots,
-        )
-        namespace = retention.open_namespace(
-            binding=binding,
-            pin=pin,
-            agent_member_id="agent:executor",
-            workspace_generation=1,
-            retention_deadline=(now + timedelta(days=1)).isoformat(),
-            opened_at=now.isoformat(),
-            namespace_id="namespace_transport_executor_g1",
-        )
-        retention.add_hold(
-            namespace.namespace_id,
-            hold_kind=(RepositoryPrivateNamespaceHoldKind.ACTIVE_CAPABILITY_LEASE),
-            owner_ref="lease_transport",
-            created_at=now.isoformat(),
-            hold_id="hold_namespace_transport_executor_g1_lease_transport",
-        )
-        issued = RepositoryCredentialBroker(
-            connection=repositories.sessions.connection,
-            signing_key_path=settings.credential_signing_key_file,
-            credential_ttl_seconds=settings.credential_ttl_seconds,
-        ).issue(
-            binding=binding,
-            pin=pin,
-            lease=ActiveCapabilityLeaseAssertion(
-                lease_id="lease_transport",
-                session_id=session.session_id,
-                agent_member_id="agent:executor",
-                workspace_generation=1,
-                expires_at=(now + timedelta(minutes=15)).isoformat(),
-            ),
-            protocols=(
-                RepositoryCredentialProtocol.GIT_READ,
-                RepositoryCredentialProtocol.GIT_WRITE,
-                RepositoryCredentialProtocol.LFS_READ,
-                RepositoryCredentialProtocol.LFS_WRITE,
-            ),
-            ref_classes=(RepositoryRefClass.READ, RepositoryRefClass.PRIVATE),
-            now=now,
-        )
-    settings.binding_inventory_file.write_text(
-        json.dumps(
-            build_repository_binding_inventory((binding,)),
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-        encoding="utf-8",
-    )
-    dependencies = RepositoryTransportDependencies(
-        repository_provider=provider,
-        settings=settings,
-        root_boundary=roots.boundary,
-    )
-    return dependencies, binding, issued.token
+    return fixture.dependencies, fixture.binding, fixture.credential.token
 
 
 def test_git_v2_discovery_requires_repository_bearer_and_forwards_protocol(
@@ -539,19 +429,22 @@ def test_lfs_batch_basic_upload_verify_download_and_restart(tmp_path: Path) -> N
     }
     with TestClient(create_repository_transport_app(dependencies)) as client:
         batch = client.post(f"{base}/objects/batch", headers=auth, json=batch_payload)
+        actions = batch.json()["objects"][0]["actions"]
         upload = client.put(
             f"{base}/objects/{oid}",
-            headers={**auth, "Content-Length": str(len(content))},
+            headers={
+                **actions["upload"]["header"],
+                "Content-Length": str(len(content)),
+            },
             content=content,
         )
         verify = client.post(
             f"{base}/objects/{oid}/verify",
-            headers=auth,
+            headers=actions["verify"]["header"],
             json={"oid": oid, "size": len(content)},
         )
 
     assert batch.status_code == 200
-    actions = batch.json()["objects"][0]["actions"]
     assert set(actions) == {"upload", "verify"}
     assert actions["upload"]["href"] == f"{binding.lfs_endpoint}/objects/{oid}"
     assert upload.status_code == 200
@@ -599,9 +492,20 @@ def test_lfs_rejects_wrong_repository_missing_object_and_tampered_bytes(
                 "objects": [{"oid": missing_oid, "size": 1}],
             },
         )
+        reserve_tampered = client.post(
+            f"{base}/objects/batch",
+            headers=auth,
+            json={
+                "operation": "upload",
+                "objects": [{"oid": missing_oid, "size": 5}],
+            },
+        )
+        upload_headers = reserve_tampered.json()["objects"][0]["actions"][
+            "upload"
+        ]["header"]
         tampered = client.put(
             f"{base}/objects/{missing_oid}",
-            headers={**auth, "Content-Length": "5"},
+            headers={**upload_headers, "Content-Length": "5"},
             content=b"wrong",
         )
 
@@ -609,6 +513,207 @@ def test_lfs_rejects_wrong_repository_missing_object_and_tampered_bytes(
     assert missing.status_code == 200
     assert missing.json()["objects"][0]["error"]["code"] == 404
     assert tampered.status_code == 422
+
+
+def test_lfs_upload_requires_batch_reservation_and_deduplicates_exact_oid(
+    tmp_path: Path,
+) -> None:
+    dependencies, binding, token = _transport_fixture(tmp_path)
+    base = f"/repositories/{binding.repository_id}.git/info/lfs"
+    content = b"deduplicated LFS bytes\n"
+    oid = hashlib.sha256(content).hexdigest()
+    auth = {"Authorization": f"Bearer {token}"}
+    payload = {
+        "operation": "upload",
+        "objects": [{"oid": oid, "size": len(content)}],
+    }
+
+    with TestClient(create_repository_transport_app(dependencies)) as client:
+        direct = client.put(
+            f"{base}/objects/{oid}",
+            headers={**auth, "Content-Length": str(len(content))},
+            content=content,
+        )
+        reserved = client.post(
+            f"{base}/objects/batch",
+            headers=auth,
+            json=payload,
+        )
+        actions = reserved.json()["objects"][0]["actions"]
+        uploaded = client.put(
+            f"{base}/objects/{oid}",
+            headers={
+                **actions["upload"]["header"],
+                "Content-Length": str(len(content)),
+            },
+            content=content,
+        )
+        deduplicated = client.post(
+            f"{base}/objects/batch",
+            headers=auth,
+            json=payload,
+        )
+
+    assert direct.status_code == 400
+    assert uploaded.status_code == 200
+    assert "actions" not in deduplicated.json()["objects"][0]
+    with dependencies.repository_provider.read() as scope:
+        assert scope.connection.execute(
+            "SELECT COUNT(*) FROM git_lfs_object_records WHERE oid = ?",
+            (oid,),
+        ).fetchone()[0] == 1
+        assert scope.connection.execute(
+            "SELECT COUNT(*) FROM git_lfs_workspace_object_links WHERE oid = ?",
+            (oid,),
+        ).fetchone()[0] == 1
+
+
+def test_lfs_object_quota_failure_is_bounded_and_performs_no_fallback(
+    tmp_path: Path,
+) -> None:
+    dependencies, binding, token = _transport_fixture(tmp_path)
+    base = f"/repositories/{binding.repository_id}.git/info/lfs"
+    oversized = 64 * 1024 * 1024 + 1
+
+    with TestClient(create_repository_transport_app(dependencies)) as client:
+        response = client.post(
+            f"{base}/objects/batch",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "operation": "upload",
+                "objects": [{"oid": "7" * 64, "size": oversized}],
+            },
+        )
+
+    assert response.status_code == 200
+    error = response.json()["objects"][0]["error"]
+    assert error == {
+        "code": 507,
+        "message": (
+            "Git LFS object quota 67108864 bytes would be exceeded by "
+            "67108865 bytes"
+        ),
+        "openzyme_code": "git_lfs_quota_exceeded",
+        "quota_scope": "object",
+        "limit_bytes": 64 * 1024 * 1024,
+        "requested_bytes": oversized,
+        "fallback_performed": False,
+    }
+    with dependencies.repository_provider.read() as scope:
+        assert scope.connection.execute(
+            "SELECT COUNT(*) FROM git_lfs_quota_reservations WHERE oid = ?",
+            ("7" * 64,),
+        ).fetchone()[0] == 0
+
+
+def test_lfs_gc_requires_retired_generation_receipt_and_exact_dry_run(
+    tmp_path: Path,
+) -> None:
+    dependencies, binding, token = _transport_fixture(tmp_path)
+    base = f"/repositories/{binding.repository_id}.git/info/lfs"
+    content = b"private unreachable object\n"
+    oid = hashlib.sha256(content).hexdigest()
+    auth = {"Authorization": f"Bearer {token}"}
+    with TestClient(create_repository_transport_app(dependencies)) as client:
+        batch = client.post(
+            f"{base}/objects/batch",
+            headers=auth,
+            json={
+                "operation": "upload",
+                "objects": [{"oid": oid, "size": len(content)}],
+            },
+        )
+        upload_headers = batch.json()["objects"][0]["actions"]["upload"][
+            "header"
+        ]
+        uploaded = client.put(
+            f"{base}/objects/{oid}",
+            headers={
+                **upload_headers,
+                "Content-Length": str(len(content)),
+            },
+            content=content,
+        )
+    assert uploaded.status_code == 200
+
+    retired_at = "2030-01-01T00:00:00+00:00"
+    with dependencies.repository_provider.connection_scope() as scope:
+        namespace = scope.connection.execute(
+            """
+            SELECT namespace_id FROM repository_private_namespace_records
+            WHERE session_id = ? AND agent_member_id = ?
+              AND workspace_generation = 1
+            """,
+            ("sess_repository_test", "agent:executor"),
+        ).fetchone()
+        assert namespace is not None
+        hold = scope.connection.execute(
+            """
+            SELECT hold_id FROM repository_private_namespace_holds
+            WHERE namespace_id = ? AND released_at IS NULL
+            """,
+            (namespace["namespace_id"],),
+        ).fetchone()
+        assert hold is not None
+        finalizer = GitLfsPrivateReachabilityFinalizer(
+            repositories=scope.repositories,
+            git_reader=dependencies.roots(),
+            object_store=DurableLfsObjectStore(dependencies.roots()),
+        )
+        retention = RepositoryPrivateNamespaceRetentionService(
+            scope.connection,
+            dependencies.roots(),
+            reachability_finalizer=finalizer,
+        )
+        retention.close_namespace(
+            namespace["namespace_id"],
+            closed_at="2029-12-31T23:59:58+00:00",
+        )
+        retention.release_hold(
+            hold["hold_id"],
+            released_at="2029-12-31T23:59:59+00:00",
+        )
+        retention.retire_namespace(
+            namespace["namespace_id"],
+            binding=binding,
+            retired_at=retired_at,
+            retention_owner_ref="operator:c5-gc-test",
+        )
+
+    with dependencies.repository_provider.write() as scope:
+        collector = GitLfsGarbageCollector(
+            repositories=scope.repositories,
+            object_store=DurableLfsObjectStore(dependencies.roots()),
+        )
+        candidate = collector.dry_run(
+            binding_id=binding.binding_id,
+            binding_version=binding.binding_version,
+            created_at="2030-01-02T00:00:00+00:00",
+        )
+        assert candidate.candidate_oids == (oid,)
+        deletion_digest = collector.delete_exact_candidates(
+            candidate_receipt_id=candidate.receipt_id,
+            expected_receipt_digest=candidate.receipt_digest,
+            created_by="operator:c5-gc-test",
+            observed_at="2030-01-02T00:00:01+00:00",
+        )
+
+    assert deletion_digest.startswith("sha256:")
+    assert not DurableLfsObjectStore(dependencies.roots()).object_path(
+        binding.repository_id,
+        oid,
+    ).exists()
+    with dependencies.repository_provider.read() as scope:
+        row = scope.connection.execute(
+            """
+            SELECT deleted_at, deletion_receipt_id
+            FROM git_lfs_object_records WHERE oid = ?
+            """,
+            (oid,),
+        ).fetchone()
+        assert row is not None
+        assert row["deleted_at"] == "2030-01-02T00:00:01+00:00"
+        assert row["deletion_receipt_id"] is not None
 
 
 def test_v3_session_creation_pins_binding_and_projects_only_safe_identity(

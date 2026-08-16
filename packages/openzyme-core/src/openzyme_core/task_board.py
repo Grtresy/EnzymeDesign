@@ -9,6 +9,7 @@ from uuid import uuid4
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import ScientificAttemptLifecyclePhase
+from openzyme_domain import TaskEvidenceRef
 from openzyme_domain import TaskStatus
 from openzyme_domain.control_plane import utc_now_iso
 
@@ -20,14 +21,13 @@ from .agent_identity import AgentIdentityError
 from .agent_identity import is_teammate_role_alias
 from .agent_identity import resolve_agent_reference
 from .repositories import CoreRepositories
-from .repositories import EngineDocumentRecord
 from .repositories import TaskWriteIntent
+from .revision_path_handoffs import RevisionPathHandoffError
+from .revision_path_handoffs import TaskEvidenceReferenceService
 from .scientific_attempt_lifecycle import (
     ScientificAttemptLifecycleIntegrityError,
 )
 from .scientific_attempt_lifecycle import ScientificAttemptLifecycleResolver
-from .task_evidence import TASK_FINISH_EVIDENCE_REF_FORMAT
-from .task_evidence import TASK_FINISH_EVIDENCE_REF_KINDS
 from .task_evidence import task_finish_evidence_contract_details
 
 _UNSET = object()
@@ -202,87 +202,71 @@ def _scientific_attempt_completion_guard(
     )
 
 
-def _coerce_evidence_refs(value: Any) -> tuple[tuple[str, ...], str | None]:
+def _coerce_evidence_refs(
+    value: Any,
+) -> tuple[tuple[TaskEvidenceRef | str, ...], str | None]:
     if value is None:
         return (), None
     if not isinstance(value, list | tuple):
-        return (), "evidence_refs must be an array of strings."
-    refs: list[str] = []
+        return (), "evidence_refs must be an array of TaskEvidenceRef@1 objects."
+    if len(value) > 64:
+        return (), "evidence_refs cannot contain more than 64 entries."
+    refs: list[TaskEvidenceRef | str] = []
     for item in value:
-        if not isinstance(item, str) or not item.strip():
-            return (), "evidence_refs must contain non-empty strings."
-        refs.append(item.strip())
+        if isinstance(item, str):
+            normalized = item.strip()
+            if normalized.startswith("scientific_closure:") and normalized.partition(
+                ":"
+            )[2]:
+                refs.append(normalized)
+                continue
+            return (), (
+                "legacy evidence strings are source-only compatible only for "
+                "scientific_closure:<closure_id>"
+            )
+        if not isinstance(item, dict):
+            return (), (
+                "evidence_refs must contain only TaskEvidenceRef@1 objects; "
+                "legacy strings and artifact:<id> are invalid."
+            )
+        try:
+            refs.append(TaskEvidenceRef.from_dict(item))
+        except (TypeError, ValueError) as exc:
+            return (), f"invalid TaskEvidenceRef@1: {exc}"
     return tuple(refs), None
 
 
 def _validate_evidence_refs(
     repositories: CoreRepositories,
     *,
-    session_id: str,
-    evidence_refs: tuple[str, ...],
+    task_id: str,
+    evidence_refs: tuple[TaskEvidenceRef | str, ...],
 ) -> str | None:
+    service = TaskEvidenceReferenceService(repositories)
     for ref in evidence_refs:
-        kind, sep, record_id = ref.partition(":")
-        if not sep or not kind or not record_id:
-            return (
-                f"Evidence ref {ref!r} must use "
-                f"{TASK_FINISH_EVIDENCE_REF_FORMAT!r} format. "
-                "Known kinds: "
-                f"{', '.join(TASK_FINISH_EVIDENCE_REF_KINDS)}."
-            )
-        if kind not in TASK_FINISH_EVIDENCE_REF_KINDS:
-            return (
-                f"Evidence ref {ref!r} uses unknown kind {kind!r}. "
-                "Known kinds: "
-                f"{', '.join(TASK_FINISH_EVIDENCE_REF_KINDS)}."
-            )
-        if kind == "artifact":
-            artifact = repositories.artifacts.get(record_id)
-            if artifact is None or artifact.session_id != session_id:
-                return f"Evidence ref {ref!r} does not resolve to a session artifact."
-        elif kind == "document":
-            document = repositories.engine_documents.get(record_id)
-            if document is None or document.session_id != session_id:
-                return f"Evidence ref {ref!r} does not resolve to a session document."
-        elif kind == "invocation":
-            invocation = repositories.invocations.get(record_id)
-            if invocation is None or invocation.session_id != session_id:
-                return f"Evidence ref {ref!r} does not resolve to a session invocation."
-        elif kind == "message":
-            message = repositories.inbox.get(record_id)
-            if message is None or message.session_id != session_id:
-                return f"Evidence ref {ref!r} does not resolve to a session message."
-        elif kind == "protocol":
-            if not any(
-                message.correlation_id == record_id
-                for message in repositories.inbox.list_by_session(session_id)
-            ):
-                return f"Evidence ref {ref!r} does not resolve to a protocol thread."
-        elif kind == "report":
-            report = repositories.reports.get(record_id)
-            if report is None or report.session_id != session_id:
-                return f"Evidence ref {ref!r} does not resolve to a session report."
-        elif kind == "run":
-            run = repositories.runs.get(record_id)
-            if run is None or run.session_id != session_id:
-                return f"Evidence ref {ref!r} does not resolve to a session run."
-        elif kind == "sandbox_run":
-            sandbox_run = repositories.sandbox_runs.get(record_id)
-            if sandbox_run is None or sandbox_run.session_id != session_id:
-                return f"Evidence ref {ref!r} does not resolve to a sandbox run."
-        elif kind == "scientific_closure":
-            closure = repositories.scientific_attempt_closures.get(record_id)
+        if isinstance(ref, str):
+            closure_id = ref.partition(":")[2]
+            closure = repositories.scientific_attempt_closures.get(closure_id)
             attempt = (
                 None
                 if closure is None
                 else repositories.scientific_attempts.get(closure.attempt_id)
             )
-            if attempt is None or attempt.session_id != session_id:
+            if attempt is None or attempt.task_id != task_id:
                 return (
                     f"Evidence ref {ref!r} does not resolve to a scientific "
-                    "attempt closure in this session."
+                    "attempt closure for this task."
                 )
+            continue
+        try:
+            service.require_for_task(ref, task_id=task_id)
+        except RevisionPathHandoffError as exc:
+            return str(exc)
     return None
+
+
+def _evidence_ref_payload(ref: TaskEvidenceRef | str) -> dict[str, Any] | str:
+    return ref if isinstance(ref, str) else ref.to_dict()
 
 
 def _can_finish_task(context: SessionRuntimeContext, task: Task) -> bool:
@@ -327,7 +311,7 @@ def _already_satisfied_task_finish_result(
         "task_id": task.task_id,
         "status": requested_status,
         "summary": str(arguments.get("summary") or "").strip(),
-        "evidence_refs": list(evidence_refs),
+        "evidence_refs": [_evidence_ref_payload(ref) for ref in evidence_refs],
         "failure_summary": (
             None
             if arguments.get("failure_summary") is None
@@ -354,27 +338,26 @@ def _already_satisfied_task_finish_result(
             else str(arguments["next_owner"]).strip()
         ),
     }
-    finish_document = next(
+    finish_record = next(
         (
-            document
-            for document in reversed(
-                context.repositories.engine_documents.list_by_session(task.session_id)
+            record
+            for record in reversed(
+                context.repositories.revision_path_handoffs.list_task_finishes(
+                    task.task_id
+                )
             )
-            if document.document_kind == "task_finish"
-            and document.payload.get("task_id") == task.task_id
-            and all(
-                document.payload.get(key) == value
+            if all(
+                record.get(key) == value
                 for key, value in requested_payload.items()
             )
         ),
         None,
     )
-    if finish_document is None:
+    if finish_record is None:
         return None
     payload = {
         "task": task.to_dict(),
-        "finish_ref": finish_document.document_id,
-        **finish_document.payload,
+        **finish_record,
     }
     terminates_turn = _finish_terminates_current_turn(context, task)
     return ToolResult(
@@ -392,8 +375,8 @@ def _already_satisfied_task_finish_result(
         details={
             "task_id": task.task_id,
             "task_status": task.status.value,
-            "finish_ref": finish_document.document_id,
-            "evidence_refs": list(evidence_refs),
+            "finish_ref": finish_record["finish_ref"],
+            "evidence_refs": [_evidence_ref_payload(ref) for ref in evidence_refs],
             "next_owner": requested_payload["next_owner"],
             "terminates_current_turn": terminates_turn,
             "already_satisfied": True,
@@ -432,7 +415,7 @@ class TaskFinishCommand:
     status: TaskStatus
     finished_by: str
     summary: str = ""
-    evidence_refs: tuple[str, ...] = ()
+    evidence_refs: tuple[TaskEvidenceRef | str, ...] = ()
     failure_summary: str | None = None
     failure_ref: str | None = None
     blocked_reason: str | None = None
@@ -704,7 +687,7 @@ class TaskBoardService:
             raise ValueError("task.finish next_owner must be master, user, or teammate")
         evidence_error = _validate_evidence_refs(
             self.repositories,
-            session_id=task.session_id,
+            task_id=task.task_id,
             evidence_refs=command.evidence_refs,
         )
         if evidence_error is not None:
@@ -715,11 +698,16 @@ class TaskBoardService:
 
         now = utc_now_iso()
         finish_ref = f"task_finish_{uuid4().hex[:12]}"
+        session = self.repositories.sessions.get(task.session_id)
+        if session is None:
+            raise ValueError("task session does not exist")
         finish_payload = {
             "task_id": task.task_id,
             "status": command.status.value,
             "summary": summary,
-            "evidence_refs": list(command.evidence_refs),
+            "evidence_refs": [
+                _evidence_ref_payload(ref) for ref in command.evidence_refs
+            ],
             "failure_summary": failure_summary,
             "failure_ref": failure_ref,
             "blocked_reason": blocked_reason,
@@ -731,15 +719,42 @@ class TaskBoardService:
         }
         previous_task = task
         with self.repositories.atomic(prefix="task_finish"):
-            self.repositories.engine_documents.save(
-                EngineDocumentRecord(
-                    document_id=finish_ref,
-                    session_id=task.session_id,
-                    document_kind="task_finish",
-                    payload=finish_payload,
-                    created_at=now,
-                    updated_at=now,
+            current_task = self.repositories.tasks.get(task.task_id)
+            if current_task != previous_task or (
+                current_task is not None
+                and current_task.status in _TASK_FINISH_STATUSES
+            ):
+                raise ValueError(
+                    "task changed before the atomic finish boundary; refresh and retry"
                 )
+            evidence_error = _validate_evidence_refs(
+                self.repositories,
+                task_id=task.task_id,
+                evidence_refs=command.evidence_refs,
+            )
+            if evidence_error is not None:
+                raise ValueError(evidence_error)
+            self.repositories.revision_path_handoffs.add_task_finish(
+                finish_ref=finish_ref,
+                project_id=session.project_id,
+                session_id=task.session_id,
+                task_id=task.task_id,
+                terminal_status=command.status.value,
+                summary=summary,
+                failure_summary=failure_summary,
+                failure_ref=failure_ref,
+                blocked_reason=blocked_reason,
+                recovery_hint=recovery_hint,
+                next_owner=next_owner,
+                finished_by=finished_by,
+                correlation_id=command.correlation_id,
+                signal_id=command.signal_id,
+                evidence_refs=tuple(
+                    ref
+                    for ref in command.evidence_refs
+                    if isinstance(ref, TaskEvidenceRef)
+                ),
+                created_at=now,
             )
             task = self._apply_mutation(
                 task.task_id,
@@ -765,7 +780,9 @@ class TaskBoardService:
                 "status": task.status.value,
                 "summary": summary,
                 "finish_ref": finish_ref,
-                "evidence_refs": list(command.evidence_refs),
+                "evidence_refs": [
+                    _evidence_ref_payload(ref) for ref in command.evidence_refs
+                ],
                 "next_owner": next_owner,
             },
         )
@@ -1034,6 +1051,21 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
         service = TaskBoardService(context.repositories, event_emitter=context.emit)
         arguments = invocation.arguments
         task_id = str(arguments["task_id"])
+        stale_file_fields = sorted(
+            {"produced_durable_files", "workspace_checkpoint_id"}.intersection(
+                arguments
+            )
+        )
+        if stale_file_fields:
+            return _finish_error_result(
+                invocation,
+                status="legacy_task_finish_file_fields_forbidden",
+                summary=(
+                    "task.finish no longer accepts checkpoint or mutable workspace "
+                    "file fields; use the closed TaskEvidenceRef@1 union."
+                ),
+                details={"task_id": task_id, "forbidden_fields": stale_file_fields},
+            )
         task = service.get_task(task_id)
         if task is None:
             return _finish_error_result(
@@ -1174,7 +1206,7 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
             )
         evidence_validation_error = _validate_evidence_refs(
             context.repositories,
-            session_id=context.snapshot.session.session_id,
+            task_id=task_id,
             evidence_refs=evidence_refs,
         )
         if evidence_validation_error is not None:
@@ -1184,7 +1216,9 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
                 summary=evidence_validation_error,
                 details={
                     "task_id": task_id,
-                    "evidence_refs": list(evidence_refs),
+                    "evidence_refs": [
+                        _evidence_ref_payload(ref) for ref in evidence_refs
+                    ],
                     **task_finish_evidence_contract_details(),
                 },
             )
@@ -1226,7 +1260,9 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
                 "task_id": task.task_id,
                 "task_status": task.status.value,
                 "finish_ref": finish_ref,
-                "evidence_refs": list(evidence_refs),
+                "evidence_refs": [
+                    _evidence_ref_payload(ref) for ref in evidence_refs
+                ],
                 "next_owner": next_owner,
                 "terminates_current_turn": terminates_turn,
             },

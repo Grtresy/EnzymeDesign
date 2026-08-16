@@ -1,5 +1,8 @@
 ## ADDED Requirements
 
+连续源码实现阶段只建立 `file_workspace_public@1` candidate schema 与 release
+bundle；正式 public epoch 必须等待前序 completion receipts 和统一非 live 验收。
+
 ### Requirement: Current public work products use one explicit file-workspace contract
 The Host, CLI, model-visible tool catalog, Pipeline SDK, restore context, events, evals, and Web UI MUST use the same closed `file_workspace_public@1` contract identity and compatible catalog/build digests. The current contract MUST use files, Git revisions, publications, reports, scientific deliverables, external jobs, and capability leases as its only work-product vocabulary. It MUST NOT expose or accept artifact catalog, artifact index, artifact kind, storage URI, artifact-set, or `HpcStageRef` fields.
 

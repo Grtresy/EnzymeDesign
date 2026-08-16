@@ -13,7 +13,6 @@ from uuid import uuid4
 
 from openzyme_domain import AgentRuntimeSignal
 from openzyme_domain import AgentRuntimeSignalReason
-from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ContinuationDeliveryState
 from openzyme_domain import ContinuationResumeStrategy
 from openzyme_domain import ContinuationState
@@ -35,6 +34,7 @@ from .reliability_repositories import OptimisticStateConflictError
 from .reliability_repositories import is_transient_sqlite_contention
 from .repositories import CoreRepositories
 from .repositories import DurableEventRecord
+from .runtime_signal_occurrences import AgentRuntimeSignalOccurrenceService
 
 
 RepositoryScopeFactory = Callable[[], AbstractContextManager[CoreRepositories]]
@@ -105,9 +105,21 @@ class ContinuationWakeService:
         ):
             return None
         signal_id = f"sig_cont_{_stable_suffix(continuation.continuation_id)}"
-        existing = self.repositories.runtime_signals.get(signal_id)
-        if existing is not None:
-            return existing
+        occurrence = AgentRuntimeSignalOccurrenceService(
+            self.repositories
+        ).enqueue_locked(
+            signal_id=signal_id,
+            session_id=continuation.session_id,
+            agent_id=agent_id,
+            task_id=continuation.originating_task_id,
+            lane_id=continuation.originating_lane_id,
+            correlation_id=continuation.continuation_id,
+            reason=AgentRuntimeSignalReason.ENGINE_COMPLETED,
+            source_ref=continuation.continuation_id,
+            created_at=created_at,
+        )
+        if not occurrence.created:
+            return occurrence.signal
         if not recovery_failed:
             execution = (
                 self.repositories.controlled_operation_executions.get_by_operation_id(
@@ -160,19 +172,7 @@ class ContinuationWakeService:
                     },
                     evidence_refs=(continuation.operation_id,),
                 )
-        signal = AgentRuntimeSignal(
-            signal_id=signal_id,
-            session_id=continuation.session_id,
-            agent_id=agent_id,
-            task_id=continuation.originating_task_id,
-            lane_id=continuation.originating_lane_id,
-            correlation_id=continuation.continuation_id,
-            reason=AgentRuntimeSignalReason.ENGINE_COMPLETED,
-            source_ref=continuation.continuation_id,
-            status=AgentRuntimeSignalStatus.PENDING,
-            created_at=created_at,
-        )
-        self.repositories.runtime_signals.save(signal)
+        signal = occurrence.signal
         self.repositories.durable_events.append(
             DurableEventRecord(
                 event_id=(

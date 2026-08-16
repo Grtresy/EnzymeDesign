@@ -6,6 +6,7 @@ from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
+from openzyme_domain import AgentWorkspaceGenerationReservation
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxMessage
@@ -35,6 +36,10 @@ from openzyme_domain import ArtifactKind
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
+from openzyme_domain import canonical_capability_digest
+from openzyme_domain.control_plane import utc_now_iso
+from openzyme_core import AgentCapabilityLeaseService
+from openzyme_core import AgentWorkspaceReadinessProof
 from openzyme_core import CoreRepositories
 from openzyme_core import EngineDocumentRecord
 from openzyme_core import ProtocolService
@@ -42,6 +47,58 @@ from openzyme_core import SessionProjectionBuilder
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_core import persist_conversation_message
+
+
+class _ProjectionTestReadinessProvider:
+    provider_id = "test.projection-workspace-readiness@1"
+
+    def verify_readiness(
+        self,
+        reservation: AgentWorkspaceGenerationReservation,
+    ) -> AgentWorkspaceReadinessProof:
+        return AgentWorkspaceReadinessProof(
+            provider_id=self.provider_id,
+            reservation_id=reservation.reservation_id,
+            reservation_fingerprint=reservation.immutable_fingerprint,
+            session_id=reservation.session_id,
+            agent_member_id=reservation.agent_member_id,
+            agent_id=reservation.agent_id,
+            workspace_generation=reservation.workspace_generation,
+            readiness_ref=f"test-ready:{reservation.reservation_id}",
+            readiness_digest=canonical_capability_digest(
+                {
+                    "provider_id": self.provider_id,
+                    "reservation_id": reservation.reservation_id,
+                }
+            ),
+            observed_at=utc_now_iso(),
+        )
+
+
+def _activate_agent(
+    repositories: CoreRepositories,
+    *,
+    agent: AgentMember,
+    provider: _ProjectionTestReadinessProvider,
+    parent_lease_id: str | None = None,
+) -> str:
+    service = AgentCapabilityLeaseService(
+        repositories,
+        readiness_providers={provider.provider_id: provider},
+    )
+    issuance = service.reserve_and_issue(
+        session_id=agent.session_id,
+        agent_id=agent.agent_id,
+        idempotency_key=f"projection-test:{agent.agent_id}:generation-1",
+        actor_ref="test:projection-issue",
+        parent_lease_id=parent_lease_id,
+    )
+    active = service.activate_with_provider(
+        lease_id=issuance.lease.lease_id,
+        provider_id=provider.provider_id,
+        actor_ref="test:projection-activate",
+    )
+    return active.lease.lease_id
 
 
 def _build_repositories() -> CoreRepositories:
@@ -61,6 +118,28 @@ def _seed_session(repositories: CoreRepositories) -> Session:
         updated_at="2026-04-17T13:00:00+00:00",
     )
     repositories.sessions.save(session)
+    master = AgentMember(
+        member_id="member_projection_master",
+        agent_id="agent:master",
+        session_id=session.session_id,
+        lane_id=None,
+        task_id=None,
+        name="OpenZyme",
+        role="master",
+        status=AgentMemberStatus.IDLE,
+        parent_agent_id=None,
+        created_at="2026-04-17T13:00:00+00:00",
+        updated_at="2026-04-17T13:00:00+00:00",
+        runtime_state="idle",
+        idle_since="2026-04-17T13:00:00+00:00",
+    )
+    repositories.agents.save(master)
+    readiness_provider = _ProjectionTestReadinessProvider()
+    master_lease_id = _activate_agent(
+        repositories,
+        agent=master,
+        provider=readiness_provider,
+    )
     repositories.lanes.save(
         Lane(
             lane_id="lane_001",
@@ -460,14 +539,37 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             finished_at=invocation.finished_at,
         )
     )
+    researcher = AgentMember(
+        member_id="member_projection_researcher",
+        agent_id="agent:researcher:projection",
+        session_id=session.session_id,
+        lane_id=None,
+        task_id=None,
+        name="Researcher",
+        role="researcher",
+        status=AgentMemberStatus.IDLE,
+        parent_agent_id="agent:master",
+        created_at="2026-04-17T13:00:08+00:00",
+        updated_at="2026-04-17T13:00:08+00:00",
+        runtime_state="idle",
+        idle_since="2026-04-17T13:00:08+00:00",
+    )
+    repositories.agents.save(researcher)
+    _activate_agent(
+        repositories,
+        agent=researcher,
+        provider=readiness_provider,
+        parent_lease_id=master_lease_id,
+    )
     service = ProtocolService(repositories)
     service.delegate(
         session_id=session.session_id,
         agent_id="agent:researcher:projection",
         name="Researcher",
-        role="delegate",
+        role="researcher",
         payload_ref="artifact://delegations/deleg_001.json",
         task_id="task_001",
+        parent_agent_id="agent:master",
         correlation_id="corr_001",
     )
     return session

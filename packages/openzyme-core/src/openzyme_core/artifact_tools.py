@@ -464,7 +464,10 @@ def _artifact_resource(context: SessionRuntimeContext, artifact: Any) -> dict[st
             payload["invocation"] = invocation.to_dict()
             if invocation.output_ref is not None:
                 payload["output_document_id"] = invocation.output_ref
-        summary = context.repositories.research_summaries.get_by_invocation(artifact.session_id, artifact.invocation_id)
+        summary = context.repositories.research_summaries.get_by_invocation(
+            artifact.session_id,
+            artifact.invocation_id,
+        )
         if summary is not None:
             payload["canonical_summary"] = summary.to_dict()
     output_ref = _output_ref_from_artifact(artifact)
@@ -496,7 +499,12 @@ def _default_payload(root: dict[str, Any]) -> dict[str, Any]:
         "artifact": root["artifact"],
         "omitted_fields": [],
     }
-    for key in ("invocation", "output_document_id", "output_document", "canonical_summary"):
+    for key in (
+        "invocation",
+        "output_document_id",
+        "output_document",
+        "canonical_summary",
+    ):
         if key in root:
             payload[key] = root[key]
     output_payload = root.get("output_payload")

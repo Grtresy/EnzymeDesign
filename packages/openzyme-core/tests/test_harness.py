@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import base64
 from contextlib import contextmanager
+import hashlib
 import json
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
+from openzyme_domain import AgentMember
+from openzyme_domain import AgentMemberStatus
+from openzyme_domain import AgentGitWorkspaceStatus
 from openzyme_domain import AgentRuntimeSignalReason
+from openzyme_domain import AgentWorkspaceGenerationReservation
 from openzyme_domain import ArtifactKind
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
@@ -24,6 +31,11 @@ from openzyme_domain import SessionStatus
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
+from openzyme_domain import canonical_capability_digest
+from openzyme_domain.control_plane import utc_now_iso
+from openzyme_core import AgentCapabilityLeaseService
+from openzyme_core import AgentCapsuleProcessResult
+from openzyme_core import AgentWorkspaceReadinessProof
 from openzyme_core import CoreRepositories
 from openzyme_core import DeepResearchTaskPlanner
 from openzyme_core import HarnessInput
@@ -69,6 +81,7 @@ from openzyme_core.harness import ensure_prompt_budget_before_model_call
 from openzyme_core.harness import PromptPayload
 from openzyme_core.llm_driver import _parallel_tool_call_limit_result
 from openzyme_core.skills import register_skill_tools
+from openzyme_core.task_evidence import task_finish_evidence_refs_schema
 from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_research import DeterministicBioResearchService
 from openzyme_research import TavilyResearchAdapter
@@ -191,6 +204,83 @@ def _seed_session(repositories: CoreRepositories) -> Session:
     return session
 
 
+class _HarnessTestReadinessProvider:
+    provider_id = "test.harness-workspace-readiness@1"
+
+    def verify_readiness(
+        self,
+        reservation: AgentWorkspaceGenerationReservation,
+    ) -> AgentWorkspaceReadinessProof:
+        return AgentWorkspaceReadinessProof(
+            provider_id=self.provider_id,
+            reservation_id=reservation.reservation_id,
+            reservation_fingerprint=reservation.immutable_fingerprint,
+            session_id=reservation.session_id,
+            agent_member_id=reservation.agent_member_id,
+            agent_id=reservation.agent_id,
+            workspace_generation=reservation.workspace_generation,
+            readiness_ref=f"test-ready:{reservation.reservation_id}",
+            readiness_digest=canonical_capability_digest(
+                {
+                    "provider_id": self.provider_id,
+                    "reservation_id": reservation.reservation_id,
+                }
+            ),
+            observed_at=utc_now_iso(),
+        )
+
+
+def _activate_test_agent(
+    repositories: CoreRepositories,
+    *,
+    agent: AgentMember,
+    parent_lease_id: str | None = None,
+) -> str:
+    provider = _HarnessTestReadinessProvider()
+    service = AgentCapabilityLeaseService(
+        repositories,
+        readiness_providers={provider.provider_id: provider},
+    )
+    issuance = service.reserve_and_issue(
+        session_id=agent.session_id,
+        agent_id=agent.agent_id,
+        idempotency_key=f"harness-test:{agent.agent_id}:generation-1",
+        actor_ref="test:harness-agent-issue",
+        parent_lease_id=parent_lease_id,
+    )
+    active = service.activate_with_provider(
+        lease_id=issuance.lease.lease_id,
+        provider_id=provider.provider_id,
+        actor_ref="test:harness-agent-activate",
+    )
+    return active.lease.lease_id
+
+
+def _seed_active_master(
+    repositories: CoreRepositories,
+    session: Session,
+) -> AgentMember:
+    timestamp = utc_now_iso()
+    master = AgentMember(
+        member_id=f"member_harness_master_{session.session_id}",
+        agent_id="agent:master",
+        session_id=session.session_id,
+        lane_id=None,
+        task_id=None,
+        name="OpenZyme",
+        role="master",
+        status=AgentMemberStatus.IDLE,
+        parent_agent_id=None,
+        created_at=timestamp,
+        updated_at=timestamp,
+        runtime_state="idle",
+        idle_since=timestamp,
+    )
+    repositories.agents.save(master)
+    _activate_test_agent(repositories, agent=master)
+    return master
+
+
 def _seed_agent(
     repositories: CoreRepositories,
     session: Session,
@@ -198,6 +288,7 @@ def _seed_agent(
     role: str = "researcher",
     task_id: str | None = None,
     lane_id: str | None = None,
+    parent_agent_id: str | None = None,
 ):
     return create_agent_member(
         repositories,
@@ -205,7 +296,86 @@ def _seed_agent(
         role=role,  # type: ignore[arg-type]
         task_id=task_id,
         lane_id=lane_id,
+        parent_agent_id=parent_agent_id,
     )
+
+
+class _HarnessWorkspaceRepository:
+    def __init__(self, original: object, workspace: object) -> None:
+        self._original = original
+        self._workspace = workspace
+
+    def get_current(self, *, session_id: str, agent_member_id: str) -> object:
+        del session_id, agent_member_id
+        return self._workspace
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._original, name)
+
+
+class _HarnessWorkspaceProcessRunner:
+    def __init__(self) -> None:
+        self.temporary: dict[str, bytearray] = {}
+        self.files: dict[str, bytes] = {}
+
+    def run(
+        self,
+        *,
+        workspace: object,
+        argv: tuple[str, ...],
+        credential_environment: tuple[tuple[str, str], ...],
+        timeout_seconds: int,
+    ) -> AgentCapsuleProcessResult:
+        del workspace, credential_environment, timeout_seconds
+        script = argv[4]
+        if "noclobber" in script:
+            self.temporary[argv[-1]] = bytearray()
+            return AgentCapsuleProcessResult(0, "", "")
+        if "encoded_chunk" in script:
+            temporary_path = argv[6]
+            for encoded_chunk in argv[7:]:
+                self.temporary[temporary_path].extend(
+                    base64.b64decode(encoded_chunk)
+                )
+            return AgentCapsuleProcessResult(0, "", "")
+        if "OPENZYME_PATH" in script:
+            repository_path, temporary_path, expected_digest = argv[-3:]
+            content = bytes(self.temporary.pop(temporary_path))
+            assert hashlib.sha256(content).hexdigest() == expected_digest
+            self.files[repository_path] = content
+            return AgentCapsuleProcessResult(
+                0,
+                (
+                    f"OPENZYME_PATH={repository_path}\n"
+                    f"OPENZYME_SHA256={expected_digest}\n"
+                ),
+                "",
+            )
+        if "rm -f" in script:
+            self.temporary.pop(argv[-1], None)
+            return AgentCapsuleProcessResult(0, "", "")
+        raise AssertionError("unexpected capsule writer command")
+
+
+def _enable_workspace_file_writes(
+    repositories: CoreRepositories,
+    context: SessionRuntimeContext,
+    session: Session,
+) -> tuple[AgentMember, _HarnessWorkspaceProcessRunner]:
+    agent = _seed_agent(repositories, session, role="researcher")
+    workspace = SimpleNamespace(
+        workspace_id="workspace_harness",
+        workspace_generation=1,
+        status=AgentGitWorkspaceStatus.READY,
+    )
+    repositories.agent_git_workspaces = _HarnessWorkspaceRepository(  # type: ignore[assignment]
+        repositories.agent_git_workspaces,
+        workspace,
+    )
+    runner = _HarnessWorkspaceProcessRunner()
+    context.agent_id = agent.agent_id
+    context.agent_capsule_process_runner = runner
+    return agent, runner
 
 
 def _seed_lane(repositories: CoreRepositories, session: Session) -> Lane:
@@ -416,20 +586,13 @@ def test_llm_preflight_fails_only_after_irreducible_emergency_compaction(
     assert invoker.calls == []
 
 
-def test_oversized_tool_result_is_artifactized_before_next_llm_prompt(
+def test_oversized_tool_result_fails_closed_without_agent_workspace(
     monkeypatch,
 ) -> None:
     monkeypatch.delenv("OPENZYME_LLM_CONTEXT_WINDOW_TOKENS", raising=False)
     monkeypatch.delenv("OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS", raising=False)
     repositories = _build_repositories()
     session = _seed_session(repositories)
-    writer_scopes: list[dict[str, object]] = []
-
-    @contextmanager
-    def writer_scope(**kwargs):  # type: ignore[no-untyped-def]
-        writer_scopes.append(dict(kwargs))
-        yield None
-
     context = SessionRuntimeContext(
         repositories=repositories,
         event_sink=MemoryEventBus(),
@@ -437,7 +600,6 @@ def test_oversized_tool_result_is_artifactized_before_next_llm_prompt(
         tool_registry=ToolRegistry(),
         restore_focus=RestoreFocus(),
         model_factory=BudgetTestModelFactory(RecordingToolInvoker([])),
-        mutation_writer_scope_factory=writer_scope,
     )
     context.refresh_restore_context()
     original = ToolResult(
@@ -464,31 +626,15 @@ def test_oversized_tool_result_is_artifactized_before_next_llm_prompt(
     ]
     observation = budgeted[0]
     observation_prompt = observation.to_tool_message_content()
-    assert artifacts
+    assert artifacts == []
     assert observation.ok is False
-    assert observation.status == "tool_result_context_over_budget"
-    assert observation.details["original_tool_ok"] is True
-    assert "tool_result_context_over_budget" in observation_prompt
-    assert artifacts[0].artifact_id in observation_prompt
+    assert observation.status == "workspace_file_handoff_failed"
+    assert observation.error_code == "workspace_file_handoff_failed"
+    assert "legacy_artifact_fallback_performed" in observation_prompt
     assert "x" * 1000 not in observation_prompt
-    persisted = repositories.engine_documents.get(
-        str(dict(artifacts[0].metadata or {})["output_ref"])
-    )
-    assert persisted is not None
-    assert persisted.document_kind == "tool_result_full"
-    assert persisted.payload["original_tool_ok"] is True
-    assert writer_scopes[0] == {
-        "session_id": session.session_id,
-        "owner_kind": MutationWriterKind.ARTIFACT_PUBLISHER,
-        "owner_ref": "tool-result-artifact:f4470660cba85443",
-        "process_epoch": None,
-    }
-    assert len(writer_scopes) == 2
-    assert writer_scopes[1]["owner_kind"] is MutationWriterKind.EVENT_OUTBOX_PUBLISHER
-    assert str(writer_scopes[1]["owner_ref"]).startswith("event:evt_")
 
 
-def test_tool_result_artifact_observation_survives_prompt_compaction_rebuild(
+def test_tool_result_workspace_observation_survives_prompt_compaction_rebuild(
     monkeypatch,
 ) -> None:
     monkeypatch.delenv("OPENZYME_LLM_CONTEXT_WINDOW_TOKENS", raising=False)
@@ -507,6 +653,7 @@ def test_tool_result_artifact_observation_survives_prompt_compaction_rebuild(
         restore_focus=RestoreFocus(),
         model_factory=BudgetTestModelFactory(invoker),
     )
+    _, runner = _enable_workspace_file_writes(repositories, context, session)
     context.refresh_restore_context()
     marker = "raw-tool-payload-marker"
     original = ToolResult(
@@ -563,7 +710,9 @@ def test_tool_result_artifact_observation_survives_prompt_compaction_rebuild(
     assert preflight.compacted is True
     assert preflight.final_decision.action.value == "ok"
     assert budgeted[0].details["original_tool_ok"] is True
-    assert budgeted[0].details["artifact_id"] in rebuilt_prompt
+    workspace_path = budgeted[0].details["workspace_file"]["repository_path"]
+    assert workspace_path in rebuilt_prompt
+    assert marker in runner.files[workspace_path].decode("utf-8")
     assert "read_hint" in rebuilt_prompt
     assert marker not in rebuilt_prompt
     assert "prior-large-context-" in rebuilt_prompt
@@ -782,13 +931,9 @@ def test_task_finish_completed_updates_task_and_terminates_loop_immediately() ->
     )
 
     task = repositories.tasks.get("task_001")
-    finish_docs = [
-        document
-        for document in repositories.engine_documents.list_by_session(
-            session.session_id
-        )
-        if document.document_kind == "task_finish"
-    ]
+    finish_records = repositories.revision_path_handoffs.list_task_finishes(
+        "task_001"
+    )
     assert result.status is HarnessStatus.COMPLETED
     assert driver.calls == 1
     assert calls == []
@@ -811,8 +956,8 @@ def test_task_finish_completed_updates_task_and_terminates_loop_immediately() ->
         "tool_call_position": 2,
     }
     assert interrupted.failure_observation is not None
-    assert finish_docs
-    assert finish_docs[0].payload["summary"] == "Primary task is complete."
+    assert finish_records
+    assert finish_records[0]["summary"] == "Primary task is complete."
     events = list(result.events)
     assert {event.event_type for event in events} >= {
         "task.updated",
@@ -944,13 +1089,9 @@ def test_task_finish_exact_replay_converges_without_another_mutation() -> None:
             task_id="task_001",
         ),
     )
-    finish_documents = [
-        document
-        for document in repositories.engine_documents.list_by_session(
-            session.session_id
-        )
-        if document.document_kind == "task_finish"
-    ]
+    finish_records = repositories.revision_path_handoffs.list_task_finishes(
+        "task_001"
+    )
 
     assert first.ok is True
     assert replay.ok is True
@@ -958,11 +1099,11 @@ def test_task_finish_exact_replay_converges_without_another_mutation() -> None:
     assert replay.details["already_satisfied"] is True
     assert replay.details["finish_ref"] == first.details["finish_ref"]
     assert len(event_bus.events) == first_event_count
-    assert len(finish_documents) == 1
+    assert len(finish_records) == 1
     assert conflicting.ok is False
     assert conflicting.error_code == "task_already_terminal"
     assert conflicting.failure_observation is not None
-    assert finish_documents[0].payload["summary"] == "Canonical completion."
+    assert finish_records[0]["summary"] == "Canonical completion."
 
 
 class MasterFinishesDelegatedTaskDriver:
@@ -2244,11 +2385,24 @@ def test_tool_registry_returns_runtime_handler_exceptions_to_agent() -> None:
 def test_top_level_default_registry_can_send_protocol_diagnostic_request() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    master = _seed_active_master(repositories, session)
     agent = _seed_agent(
         repositories,
         session,
         role="researcher",
         task_id="task_001",
+        parent_agent_id=master.agent_id,
+    )
+    assert master.member_id is not None
+    parent_lease = repositories.agent_capability_leases.get_active(
+        session_id=session.session_id,
+        agent_member_id=master.member_id,
+    )
+    assert parent_lease is not None
+    _activate_test_agent(
+        repositories,
+        agent=agent,
+        parent_lease_id=parent_lease.lease_id,
     )
     ProtocolService(repositories).delegate(
         session_id=session.session_id,
@@ -2257,6 +2411,7 @@ def test_top_level_default_registry_can_send_protocol_diagnostic_request() -> No
         role="researcher",
         payload_ref=None,
         task_id="task_001",
+        parent_agent_id=master.agent_id,
         correlation_id="corr_original",
         nickname=agent.nickname,
         display_name=display_name_for_agent(agent),
@@ -2294,6 +2449,7 @@ def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent
 ):
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    master = _seed_active_master(repositories, session)
     task = repositories.tasks.get("task_001")
     repositories.tasks.save(
         Task(
@@ -2322,13 +2478,20 @@ def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent
 
     result = run_agent_harness_loop(
         repositories,
-        HarnessInput(session_id=session.session_id, message="delegate research"),
+        HarnessInput(
+            session_id=session.session_id,
+            message="delegate research",
+            agent_id=master.agent_id,
+            actor_kind="master",
+            actor_role="master",
+        ),
         driver=BuiltinDelegationDriver(),
         tool_registry=registry,
     )
 
     delegated_task = repositories.tasks.get("task_001")
     assert result.outputs == ("delegated",)
+    assert result.tool_results[0].status == "provisioning_required"
     assert delegated_task.assigned_ref is not None
     assert delegated_task.status is TaskStatus.IN_PROGRESS
     agent = next(
@@ -2364,6 +2527,7 @@ def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent
 def test_task_delegate_creates_distinct_canonical_agents_for_same_role() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    master = _seed_active_master(repositories, session)
     service = TaskBoardService(repositories)
     for task_id in ("task_research_a", "task_research_b"):
         service.create_task(
@@ -2381,6 +2545,9 @@ def test_task_delegate_creates_distinct_canonical_agents_for_same_role() -> None
         snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
         tool_registry=registry,
         restore_focus=RestoreFocus(),
+        agent_id=master.agent_id,
+        actor_kind="master",
+        actor_role="master",
     )
 
     results = [
@@ -2403,6 +2570,10 @@ def test_task_delegate_creates_distinct_canonical_agents_for_same_role() -> None
         if agent.role == "researcher"
     ]
     assert [result.ok for result in results] == [True, True]
+    assert [result.status for result in results] == [
+        "provisioning_required",
+        "provisioning_required",
+    ]
     assert task_a.assigned_ref != task_b.assigned_ref
     assert {task_a.assigned_ref, task_b.assigned_ref} == {
         agent.agent_id for agent in agents
@@ -2412,9 +2583,164 @@ def test_task_delegate_creates_distinct_canonical_agents_for_same_role() -> None
     assert [agent.nickname for agent in agents] == ["Ada", "Curie"]
 
 
+def test_task_delegate_projects_policy_drift_as_non_runnable() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    master = _seed_active_master(repositories, session)
+    assert master.member_id is not None
+    parent_lease = repositories.agent_capability_leases.get_active(
+        session_id=session.session_id,
+        agent_member_id=master.member_id,
+    )
+    assert parent_lease is not None
+    child = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        parent_agent_id=master.agent_id,
+    )
+    _activate_test_agent(
+        repositories,
+        agent=child,
+        parent_lease_id=parent_lease.lease_id,
+    )
+    repositories.tasks.connection.execute(
+        "UPDATE agent_members SET role = 'executor' WHERE member_id = ?",
+        (child.member_id,),
+    )
+    repositories.tasks.connection.commit()
+    TaskBoardService(repositories).create_task(
+        session_id=session.session_id,
+        task_id="task_delegate_policy_drift",
+        subject="Expose canonical capability drift",
+        description="Do not report a drifted active row as runnable.",
+        kind="execution",
+    )
+    registry = ToolRegistry()
+    register_subagent_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+        agent_id=master.agent_id,
+        actor_kind="master",
+        actor_role="master",
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_delegate_policy_drift",
+            tool_name="task.delegate",
+            arguments={
+                "task_id": "task_delegate_policy_drift",
+                "agent_role": "executor",
+                "agent_ref": child.agent_id,
+                "correlation_id": "corr_delegate_policy_drift",
+            },
+        ),
+    )
+
+    payload = json.loads(result.content)
+    assert result.ok is True
+    assert result.status == "agent_capability_policy_drift"
+    assert payload["status"] == "agent_capability_policy_drift"
+    assert payload["wakeup_queued"] is False
+    assert payload["signal_non_runnable"] is True
+    assert payload["signal_pending_provisioning"] is False
+    assert payload["agent"]["runnable"] is False
+    assert payload["agent"]["blocker_code"] == "agent_capability_policy_drift"
+    assert "workspace provisioning" not in result.summary
+    assert "C3" not in str(result.hint)
+
+
+def test_task_delegate_rolls_back_task_child_payload_signal_and_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    master = _seed_active_master(repositories, session)
+    TaskBoardService(repositories).create_task(
+        session_id=session.session_id,
+        task_id="task_atomic_delegation",
+        subject="Atomic delegation",
+        description="Every canonical side effect must commit together.",
+        kind="research",
+    )
+    event_bus = MemoryEventBus()
+    registry = ToolRegistry()
+    register_subagent_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=event_bus,
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+        agent_id=master.agent_id,
+        actor_kind="master",
+        actor_role="master",
+    )
+
+    def reject_signal_insert(_repository: object, _signal: object) -> object:
+        raise RuntimeError("injected runtime signal insert failure")
+
+    monkeypatch.setattr(
+        type(repositories.runtime_signals),
+        "insert_if_absent",
+        reject_signal_insert,
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_atomic_delegation",
+            tool_name="task.delegate",
+            arguments={
+                "task_id": "task_atomic_delegation",
+                "agent_role": "researcher",
+                "correlation_id": "corr_atomic_delegation",
+            },
+        ),
+    )
+
+    task = repositories.tasks.get("task_atomic_delegation")
+    assert result.ok is False
+    assert result.error_code == "tool_runtime_error"
+    assert task is not None
+    assert task.status is TaskStatus.TODO
+    assert task.assigned_ref is None
+    remaining_agents = repositories.agents.list_by_session(session.session_id)
+    assert [agent.agent_id for agent in remaining_agents] == [master.agent_id]
+    assert repositories.engine_documents.list_by_session(session.session_id) == []
+    assert repositories.inbox.list_by_session(session.session_id) == []
+    assert repositories.runtime_signals.list_by_session(session.session_id) == []
+    assert len(
+        repositories.agent_capability_leases.list_by_session(session.session_id)
+    ) == 1
+    assert repositories.tasks.connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM agent_workspace_generation_reservations
+        WHERE session_id = ?
+        """,
+        (session.session_id,),
+    ).fetchone()[0] == 1
+    assert not {
+        "task.updated",
+        "task.assigned",
+        "agent.spawned",
+        "agent.message.delivered",
+        "agent.inbox_unread",
+        "agent.delegated",
+    }.intersection(event.event_type for event in event_bus.events)
+
+
 def test_task_delegate_normalizes_blank_and_same_role_agent_ref() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    master = _seed_active_master(repositories, session)
     service = TaskBoardService(repositories)
     for task_id in ("task_blank_ref", "task_role_ref"):
         service.create_task(
@@ -2432,6 +2758,9 @@ def test_task_delegate_normalizes_blank_and_same_role_agent_ref() -> None:
         snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
         tool_registry=registry,
         restore_focus=RestoreFocus(),
+        agent_id=master.agent_id,
+        actor_kind="master",
+        actor_role="master",
     )
 
     blank_ref = registry.dispatch(
@@ -2514,6 +2843,7 @@ def test_task_delegate_rejects_mismatched_role_alias_agent_ref() -> None:
 def test_delegate_executor_does_not_rewrite_domain_words_into_a_workflow() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    master = _seed_active_master(repositories, session)
     task = repositories.tasks.get("task_001")
     repositories.tasks.save(
         Task(
@@ -2558,7 +2888,13 @@ def test_delegate_executor_does_not_rewrite_domain_words_into_a_workflow() -> No
 
     result = run_agent_harness_loop(
         repositories,
-        HarnessInput(session_id=session.session_id, message="delegate AOX execution"),
+        HarnessInput(
+            session_id=session.session_id,
+            message="delegate AOX execution",
+            agent_id=master.agent_id,
+            actor_kind="master",
+            actor_role="master",
+        ),
         driver=DelegateAoxExecutorDriver(),
     )
 
@@ -2581,6 +2917,7 @@ def test_explicit_workflow_selection_propagates_through_delegation_to_teammate()
 ):
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    master = _seed_active_master(repositories, session)
     workflow = next(
         manifest
         for manifest in default_workflow_registry().list_manifests()
@@ -2626,6 +2963,9 @@ def test_explicit_workflow_selection_propagates_through_delegation_to_teammate()
         repositories,
         HarnessInput(
             session_id=session.session_id,
+            agent_id=master.agent_id,
+            actor_kind="master",
+            actor_role="master",
             restore_focus=RestoreFocus(
                 task_id="task_workflow",
                 skill_keys=(workflow_ref,),
@@ -2723,6 +3063,7 @@ def test_delegate_without_workflow_binding_does_not_inherit_parent_focus(
 ) -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    master = _seed_active_master(repositories, session)
     workflow_ref = next(
         manifest.selection_ref
         for manifest in default_workflow_registry().list_manifests()
@@ -2749,6 +3090,9 @@ def test_delegate_without_workflow_binding_does_not_inherit_parent_focus(
         ),
         active_skill_keys=(workflow_ref,),
         skill_registry=SkillRegistry(),
+        agent_id=master.agent_id,
+        actor_kind="master",
+        actor_role="master",
     )
     arguments: dict[str, object] = {
         "task_id": task_id,
@@ -3245,6 +3589,7 @@ def test_delegate_tool_rejects_blocked_task_without_side_effects_then_succeeds_w
 ):
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    master = _seed_active_master(repositories, session)
     task_service = TaskBoardService(repositories)
     task_service.create_task(
         session_id=session.session_id,
@@ -3269,6 +3614,9 @@ def test_delegate_tool_rejects_blocked_task_without_side_effects_then_succeeds_w
         snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
         tool_registry=registry,
         restore_focus=RestoreFocus(),
+        agent_id=master.agent_id,
+        actor_kind="master",
+        actor_role="master",
     )
 
     blocked = registry.dispatch(
@@ -3313,7 +3661,7 @@ def test_delegate_tool_rejects_blocked_task_without_side_effects_then_succeeds_w
     )
 
     assert ready.ok is True
-    assert ready.status == "wakeup_queued"
+    assert ready.status == "provisioning_required"
     assert any(
         message.message_type == "delegation_request"
         and message.correlation_id == "corr_ready_delegate"
@@ -3579,7 +3927,7 @@ def test_master_and_teammate_prompts_do_not_request_host_paths() -> None:
         "artifact.list/get/preview/read_text/range/create_text/patch_text/diff_text"
         in master_prompt
     )
-    assert "artifact.create_text" in teammate_prompt
+    assert "generation-owned Git clone" in teammate_prompt
     assert "Never request or use Host local paths" in teammate_prompt
     assert "never request or use Host local paths" in master_prompt
 
@@ -3633,7 +3981,7 @@ def test_executor_descriptor_exposes_sandbox_workspace_status() -> None:
     assert "persistent sandbox workspace" in descriptor.description
 
 
-def test_research_teammate_direct_download_persists_workspace_artifact() -> None:
+def test_research_teammate_direct_download_persists_workspace_file() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     registry = build_teammate_registry(
@@ -3646,6 +3994,7 @@ def test_research_teammate_direct_download_persists_workspace_artifact() -> None
         tool_registry=registry,
         restore_focus=RestoreFocus(task_id="task_001"),
     )
+    _, runner = _enable_workspace_file_writes(repositories, context, session)
 
     result = registry.dispatch(
         context,
@@ -3657,20 +4006,16 @@ def test_research_teammate_direct_download_persists_workspace_artifact() -> None
         ),
     )
 
-    artifact_records = repositories.artifacts.list_by_task(
-        session.session_id, "task_001"
-    )
     payload = json.loads(result.content)
     assert result.ok is True
-    assert artifact_records
     assert payload["status"] == "completed"
-    assert payload["artifacts"][0]["artifact_id"] == artifact_records[0].artifact_id
-    assert "storage_uri" not in json.dumps(payload)
-    assert artifact_records[0].kind is ArtifactKind.SEQUENCE
-    assert artifact_records[0].invocation_id is not None
-    assert artifact_records[0].metadata["provider"] == "uniprot"
-    invocation = repositories.invocations.get(artifact_records[0].invocation_id)
-    assert invocation.engine_name == "research_tool"
+    observation_path = payload["workspace_file"]["repository_path"]
+    observation = json.loads(runner.files[observation_path])
+    download_path = observation["raw_ref"]["workspace_files"][0][
+        "repository_path"
+    ]
+    assert runner.files[download_path].startswith(b">P12345")
+    assert repositories.artifacts.list_by_task(session.session_id, "task_001") == []
 
 
 def test_research_teammate_rejects_fixture_pubmed_from_required_quorum() -> None:
@@ -3686,6 +4031,7 @@ def test_research_teammate_rejects_fixture_pubmed_from_required_quorum() -> None
         tool_registry=registry,
         restore_focus=RestoreFocus(task_id="task_001"),
     )
+    _, runner = _enable_workspace_file_writes(repositories, context, session)
 
     result = registry.dispatch(
         context,
@@ -3704,45 +4050,34 @@ def test_research_teammate_rejects_fixture_pubmed_from_required_quorum() -> None
         if invocation.engine_name == "research_tool"
     ]
     invocation = invocations[0]
-    workspace = (
-        SessionProjectionBuilder(repositories)
-        .build_session_workspace(session.session_id)
-        .to_dict()
-    )
-
     assert result.ok is False
     assert result.error_code == "fixture_non_cutover"
     assert payload["provider"] == "pubmed"
     assert payload["status"] == "failed"
-    assert payload["findings"] == []
+    observation = json.loads(
+        runner.files[payload["workspace_file"]["repository_path"]]
+    )
+    assert observation["findings"] == []
     assert (
-        payload["raw_ref"]["call_local_literature_quorum"]["cutover_eligible"] is False
+        observation["raw_ref"]["call_local_literature_quorum"]["cutover_eligible"]
+        is False
     )
     assert invocation.status is EngineInvocationStatus.FAILED
-    assert (
-        repositories.research_summaries.get_by_invocation(
-            session.session_id, invocation.invocation_id
-        ).summary
-        == (payload["summary"])
-    )
+    assert repositories.research_summaries.get_by_invocation(
+        session.session_id, invocation.invocation_id
+    ) is None
     assert not repositories.research_evidence.list_by_invocation(
         session.session_id, invocation.invocation_id
     )
     assert not repositories.research_source_refs.list_by_invocation(
         session.session_id, invocation.invocation_id
     )
-    artifacts = repositories.artifacts.list_by_invocation(
+    assert repositories.artifacts.list_by_invocation(
         session.session_id, invocation.invocation_id
-    )
-    assert artifacts[0].metadata["cutover_eligible"] is False
-    assert (
-        workspace["capabilities"]["research_tool"][0]["canonical_summary"]["summary"]
-        == payload["summary"]
-    )
-    assert workspace["capabilities"]["research_tool"][0]["source_refs"] == []
+    ) == []
 
 
-def test_research_teammate_direct_web_fetch_persists_canonical_rows() -> None:
+def test_research_teammate_direct_web_fetch_persists_workspace_file() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     adapter = TavilyResearchAdapter(
@@ -3766,6 +4101,7 @@ def test_research_teammate_direct_web_fetch_persists_canonical_rows() -> None:
         restore_focus=RestoreFocus(task_id="task_001"),
         research_adapter=adapter,
     )
+    _, runner = _enable_workspace_file_writes(repositories, context, session)
 
     result = registry.dispatch(
         context,
@@ -3787,14 +4123,17 @@ def test_research_teammate_direct_web_fetch_persists_canonical_rows() -> None:
 
     assert result.ok is True
     assert payload["provider"] == "web"
-    assert payload["findings"][0]["summary"] == "Fetched article content."
-    assert payload["findings"][0]["sources"][0]["kind"] == "web_page"
+    observation = json.loads(
+        runner.files[payload["workspace_file"]["repository_path"]]
+    )
+    assert observation["findings"][0]["summary"] == "Fetched article content."
+    assert observation["findings"][0]["sources"][0]["kind"] == "web_page"
     assert repositories.research_evidence.list_by_invocation(
         session.session_id, invocation.invocation_id
-    )
+    ) == []
     assert repositories.research_source_refs.list_by_invocation(
         session.session_id, invocation.invocation_id
-    )
+    ) == []
 
 
 def test_research_teammate_web_fetch_rejects_private_url_without_projection() -> None:
@@ -3967,6 +4306,7 @@ def test_research_teammate_direct_search_untyped_provider_failure_is_structured(
         tool_registry=registry,
         restore_focus=RestoreFocus(task_id="task_001"),
     )
+    _, runner = _enable_workspace_file_writes(repositories, context, session)
 
     result = registry.dispatch(
         context,
@@ -3988,13 +4328,18 @@ def test_research_teammate_direct_search_untyped_provider_failure_is_structured(
     assert invocations[0].output_ref is not None
     output = repositories.engine_documents.get(invocations[0].output_ref)
     assert output is not None
-    assert output.payload["status"] == "failed"
-    assert output.payload["raw_ref"]["typed_provider_outcome"] is False
+    assert output.document_kind == "research_tool_file_index"
+    observation = json.loads(
+        runner.files[output.payload["workspace_file"]["repository_path"]]
+    )
+    assert observation["status"] == "failed"
+    assert observation["raw_ref"]["typed_provider_outcome"] is False
 
 
 def test_session_workspace_projection_exposes_delegation_threads() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    master = _seed_active_master(repositories, session)
     task = repositories.tasks.get("task_001")
     repositories.tasks.save(
         Task(
@@ -4022,7 +4367,13 @@ def test_session_workspace_projection_exposes_delegation_threads() -> None:
 
     run_agent_harness_loop(
         repositories,
-        HarnessInput(session_id=session.session_id, message="delegate research"),
+        HarnessInput(
+            session_id=session.session_id,
+            message="delegate research",
+            agent_id=master.agent_id,
+            actor_kind="master",
+            actor_role="master",
+        ),
         driver=BuiltinDelegationDriver(),
         tool_registry=registry,
         model_factory=FakeModelFactory(
@@ -4052,7 +4403,11 @@ def test_session_workspace_projection_exposes_delegation_threads() -> None:
         .build_session_workspace(session.session_id)
         .to_dict()
     )
-    delegation = workspace["delegation"]["agents"][0]
+    delegation = next(
+        item
+        for item in workspace["delegation"]["agents"]
+        if item["agent"]["role"] == "researcher"
+    )
 
     assert delegation["agent"]["agent_id"].startswith("agent:researcher:")
     assert delegation["agent"]["nickname"] == "Ada"
@@ -4653,11 +5008,9 @@ def test_tool_router_registers_publishers_only_for_mutating_tools() -> None:
         assert result.ok is True
 
     assert [scope["owner_kind"] for scope in writer_scopes] == [
-        MutationWriterKind.ARTIFACT_PUBLISHER,
         MutationWriterKind.REPORT_PUBLISHER,
     ]
     assert [scope["owner_ref"] for scope in writer_scopes] == [
-        "tool:deep_research.start:79fec9feaccefe68",
         "tool:report.publish:727a8369c4bf79c4",
     ]
 
@@ -5040,21 +5393,7 @@ def test_builtin_tool_catalog_exposes_top_level_mutating_tools() -> None:
 
 
 def test_task_finish_catalog_exposes_canonical_evidence_reference_contract() -> None:
-    expected = {
-        "type": "array",
-        "items": {
-            "type": "string",
-            "pattern": (
-                "^(artifact|document|invocation|message|protocol|report|run|"
-                "sandbox_run|scientific_closure):.+$"
-            ),
-            "description": (
-                "Use '<kind>:<id>'; kinds are exactly the pattern alternatives. "
-                "Examples: 'artifact:<id>', 'report:<id>', "
-                "'scientific_closure:<id>'. Bare ids are invalid."
-            ),
-        },
-    }
+    expected = task_finish_evidence_refs_schema()
     task_finish_descriptors = (
         next(
             descriptor
@@ -6499,21 +6838,11 @@ def test_executor_prompt_uses_docs_driven_execution_contract() -> None:
     assert "when the assigned task asks for fpocket" not in prompt
     assert "runner-backed hpc tool shorthand" not in prompt
     assert "use controlled docs when capability details are needed" in prompt
-    assert "sandbox.workspace.status" in prompt
-    assert "Author source with sandbox.file.* and run it with sandbox.exec" in prompt
-    assert "Every otherwise-valid sandbox.exec invocation" in prompt
-    assert "that reaches source preflight, including Python -c" in prompt
-    assert "requires at least one eligible regular source file" in prompt
-    assert (
-        "never use sandbox.exec as a read-only environment-inspection shortcut"
-        in prompt
-    )
-    assert "author that inspection source under /workspace/src" in prompt
-    assert "Host-supervised SDK from inside that sandbox run" in prompt
-    assert "Never call a runner, SSH, Slurm" in prompt
-    assert (
-        "Do not treat execution.pipeline.start as the required authoring path" in prompt
-    )
+    assert "workspace.exec" in prompt
+    assert "generation-owned local clone" in prompt
+    assert "hpc.workspace.sync_source" in prompt
+    assert "Controlled scientific job dispatch" in prompt
+    assert "never invoke sbatch, Slurm clients, runner APIs/configuration" in prompt
     assert "Never present synthetic output" in prompt
     assert "Do not infer a workflow from task words" in prompt
     assert "AOX" not in prompt

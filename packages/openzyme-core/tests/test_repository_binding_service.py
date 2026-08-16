@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -7,6 +8,8 @@ import subprocess
 import pytest
 
 from openzyme_core import CoreRepositories
+from openzyme_core import AgentCapabilityLeaseService
+from openzyme_core import AgentWorkspaceReadinessProof
 from openzyme_core import DurableRepositoryRootManager
 from openzyme_core import ProjectRepositoryBindingService
 from openzyme_core import RepositoryBindingConflictError
@@ -15,6 +18,8 @@ from openzyme_core import RepositoryBindingRequiredError
 from openzyme_core import RepositoryRootBoundary
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
+from openzyme_core.agent_identity import create_agent_member
+from openzyme_domain import AgentWorkspaceGenerationReservation
 from openzyme_domain import GitObjectFormat
 from openzyme_domain import ProjectRepositoryBinding
 from openzyme_domain import RepositoryBindingDriftKind
@@ -22,7 +27,36 @@ from openzyme_domain import RepositoryBindingLifecycleStatus
 from openzyme_domain import RepositoryRefClass
 from openzyme_domain import RepositoryRefNamespacePolicy
 from openzyme_domain import Session
+from openzyme_domain import canonical_capability_digest
+from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import RepositoryServiceSettings
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkspaceReadinessProvider:
+    provider_id: str = "test.repository-binding-workspace-readiness@1"
+
+    def verify_readiness(
+        self,
+        reservation: AgentWorkspaceGenerationReservation,
+    ) -> AgentWorkspaceReadinessProof:
+        return AgentWorkspaceReadinessProof(
+            provider_id=self.provider_id,
+            reservation_id=reservation.reservation_id,
+            reservation_fingerprint=reservation.immutable_fingerprint,
+            session_id=reservation.session_id,
+            agent_member_id=reservation.agent_member_id,
+            agent_id=reservation.agent_id,
+            workspace_generation=reservation.workspace_generation,
+            readiness_ref=f"test-ready:{reservation.reservation_id}",
+            readiness_digest=canonical_capability_digest(
+                {
+                    "provider_id": self.provider_id,
+                    "reservation_id": reservation.reservation_id,
+                }
+            ),
+            observed_at=utc_now_iso(),
+        )
 
 
 def _settings(root: Path) -> RepositoryServiceSettings:
@@ -581,6 +615,28 @@ def test_raw_retirement_rejects_repository_credential_reference(
         "Retain the immutable repository universe referenced by a credential record",
     )
     service.create_pinned_session(legacy)
+    agent = create_agent_member(
+        service.repositories,
+        session_id=legacy.session_id,
+        role="executor",
+    )
+    assert agent.member_id is not None
+    readiness_provider = _WorkspaceReadinessProvider()
+    capability_service = AgentCapabilityLeaseService(
+        service.repositories,
+        readiness_providers={readiness_provider.provider_id: readiness_provider},
+    )
+    issuance = capability_service.reserve_and_issue(
+        session_id=legacy.session_id,
+        agent_id=agent.agent_id,
+        idempotency_key="repository-binding-reference-generation-1",
+        actor_ref="test:repository-binding-capability-issue",
+    )
+    active_lease = capability_service.activate_with_provider(
+        lease_id=issuance.lease.lease_id,
+        provider_id=readiness_provider.provider_id,
+        actor_ref="test:repository-binding-capability-activate",
+    ).lease
     second = _binding(first.default_base_commit, version=2)
     service.register(second)
     service.activate(
@@ -604,9 +660,9 @@ def test_raw_retirement_rejects_repository_credential_reference(
             first.binding_version,
             first.repository_id,
             legacy.session_id,
-            "agent:executor",
+            agent.member_id,
             1,
-            "lease_binding_reference",
+            active_lease.lease_id,
             '["git_write"]',
             '["private"]',
             f"sha256:{'2' * 64}",

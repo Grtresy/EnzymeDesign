@@ -10,6 +10,7 @@ import time
 import pytest
 
 from openzyme_core import CanonicalRecordConflictError
+from openzyme_core import AgentCapabilityLeaseService
 from openzyme_core import CommandIdempotencyConflictError
 from openzyme_core import ContinuationDeliveryWorker
 from openzyme_core import ControlledOperationWriteFencingError
@@ -235,6 +236,12 @@ def _durable_repositories(
             created_at=NOW,
             updated_at=NOW,
         )
+    )
+    AgentCapabilityLeaseService(repositories).reserve_and_issue(
+        session_id=session.session_id,
+        agent_id="agent:executor",
+        idempotency_key="reliability:agent-executor:generation-1",
+        actor_ref="test:reliability-capability",
     )
     workspace = SandboxWorkspaceRecord(
         sandbox_workspace_id="workspace_reliability",

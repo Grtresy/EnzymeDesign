@@ -21,3 +21,7 @@
 ## Impact
 
 影响 Host API、CLI、Web UI、core projections/world inspection/restore、tool catalog/prompts、pipeline SDK、events/evals、文档与所有相应测试。
+> 连续源码迁移期间使用
+> `operator/source-only-public-cutover-gate.json`。它允许构造
+> `file_workspace_public@1` candidate source，但不推进 public epoch，也不把缺失的
+> C10/C11 completion receipts 视为通过。

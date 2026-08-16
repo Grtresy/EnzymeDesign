@@ -1,5 +1,18 @@
 ## ADDED Requirements
 
+### Requirement: Implementation admission does not promote an unvalidated predecessor
+During one explicitly ordered continuous migration, C3 source implementation MAY begin from an `agent_capability_lease_implementation_snapshot@1` before final `agent_capability_lease_acceptance@1` issuance. The snapshot MUST bind the immutable C0/C1 receipt identities and the currently observed C2 source, schema, policy, and interface identities; enumerate deferred C2 final-validation tasks; and state `acceptance_proven=false`, `final_source_revision_bound=false`, `production_effect_authorized=false`, and `live_authorized=false`. It MUST NOT be stored or consumed as a capability lease, workspace-readiness fact, credential authority, acceptance receipt, or production proof.
+
+The snapshot permits only continued source implementation inside the ordered migration. It MUST NOT authorize a provisioner invocation, volume or clone creation, lease activation, blocker removal, credential issuance, network transfer, live action, external effect, publication, or cutover. Final C3 acceptance SHALL re-read the combined final source and require the formal C2 acceptance receipt plus every C3 validation declared by this change.
+
+#### Scenario: Begin C3 source implementation with deferred combined validation
+- **WHEN** C2 implementation interfaces are present and explicitly snapshotted while C2 focused, strict OpenSpec, mainline, final source binding, and acceptance receipt generation remain deferred to the combined final validation stage
+- **THEN** C3 may modify source against those interfaces, but no production operation, readiness claim, live work, effect, or predecessor acceptance is authorized
+
+#### Scenario: Present the snapshot to a production gate
+- **WHEN** a caller presents the implementation snapshot to provision a workspace, activate a lease, issue a credential, clear `provisioning_required`, or claim predecessor acceptance
+- **THEN** the gate rejects it explicitly and performs no fallback, retry, state transition, or external effect
+
 ### Requirement: Every canonical agent owns one independent full clone per generation
 The Host SHALL provision each canonical agent and subagent with one `AgentGitWorkspace` identified by `session + agent_member + workspace_generation` and bound to the session's exact repository binding version and base commit. Each workspace MUST contain its own complete `.git` directory, index, refs, reflogs, configuration, object database, and working tree and MUST NOT share those mutable Git structures with another workspace.
 
@@ -12,15 +25,30 @@ The Host SHALL provision each canonical agent and subagent with one `AgentGitWor
 - **THEN** provisioning fails before capsule activation and does not relabel or share the existing clone
 
 ### Requirement: Provisioning uses only the pinned internal remote and exact base
-Workspace provisioning MUST clone from the session-pinned internal remote, verify the binding identity, Git object format, exact base commit and tree, private ref namespace, and policy digest, and persist those facts before the workspace becomes ready. It MUST NOT clone or copy from the current Host checkout, ambient cwd or remote, an arbitrary local directory, a guessed branch, or an automatically initialized empty repository.
+Workspace provisioning MUST consume the C2-persisted pending workspace generation and capability-lease intent, clone from the session-pinned internal remote, verify the binding identity, Git object format, exact base commit and tree, private ref namespace, capability-policy digest, and persist those facts before the workspace becomes ready. It MUST NOT clone or copy from the current Host checkout, ambient cwd or remote, an arbitrary local directory, a guessed branch, or an automatically initialized empty repository, and it MUST NOT infer an active lease from a legacy sandbox, runtime lease, process, role, or existing tool exposure.
 
 #### Scenario: Provision a valid workspace
 - **WHEN** the pinned internal remote serves the exact binding and base commit
-- **THEN** the provisioner verifies the clone facts, marks one workspace generation ready, and permits its matching capability lease to activate
+- **THEN** the provisioner verifies the clone facts and presents the exact workspace generation and matching pending capability-lease intent to the atomic readiness transition
 
 #### Scenario: Pinned base is unavailable
 - **WHEN** the internal remote cannot resolve the session's exact base commit or reports a different object format or policy identity
 - **THEN** provisioning records an explicit blocker and creates no fallback clone
+
+### Requirement: Workspace readiness atomically activates the matching C2 lease
+The Host SHALL commit `AgentGitWorkspace.ready`, matching generation-bound `AgentCapabilityLease.active`, and removal of the exact agent's `provisioning_required` blocker as one atomic state transition after every workspace, clone, image, binding, generation, owner, namespace, and policy fact has been verified. Before that commit, the lease MUST remain inactive and native capsule tools MUST remain unavailable. A mismatch or write failure MUST leave the workspace non-ready, the lease inactive, and the blocker present; C3 MUST NOT create a replacement lease or generation implicitly.
+
+#### Scenario: Complete one pending generation
+- **WHEN** an exact pending generation has a qualified image, verified full clone, matching C2 lease intent, and unchanged owner and policy identities
+- **THEN** one atomic commit marks that workspace ready, activates that exact lease, clears its `provisioning_required` blocker, and permits active-lease tool exposure
+
+#### Scenario: Pending lease identity does not match the clone
+- **WHEN** the pending lease names another agent, generation, workspace, profile, policy digest, or repository binding
+- **THEN** readiness fails explicitly with no active lease, no cleared blocker, no alternate lease, and no capsule process
+
+#### Scenario: Atomic readiness commit fails
+- **WHEN** any part of the workspace-ready, lease-active, or blocker-clear persistence operation fails
+- **THEN** none of those three state changes becomes visible and the agent remains non-runnable
 
 ### Requirement: Workspace state survives ephemeral capsule processes
 The complete clone, Git/LFS objects, commits, branches, untracked files, and agent-created directories SHALL reside in a generation-specific persistent volume. The runtime SHALL support short-lived Podman command containers that are removed after each invocation, but container exit, bounded-turn completion, Host process restart, or capsule recreation MUST NOT delete, reset, or replace the workspace volume.
@@ -33,16 +61,60 @@ The complete clone, Git/LFS objects, commits, branches, untracked files, and age
 - **WHEN** the Host restarts with a ready workspace record and intact persistent volume
 - **THEN** recovery revalidates and reuses that exact clone rather than creating another generation
 
-### Requirement: Capsules expose a native file and Git toolchain without Host mounts
-The versioned capsule image SHALL provide native filesystem and shell tools, Git, Git LFS, an OpenSSH client, rsync, scp, and curl or equivalent ordinary transfer tooling. The owning clone MUST be the writable working directory. The capsule MUST NOT mount the Host repository, a shared `.git`, Host home, Host SSH directory, or long-lived Host credential storage.
+### Requirement: Capsules expose a native file, Git, and transfer toolchain without Host mounts
+The versioned capsule image SHALL provide native filesystem and shell tools, Git, Git LFS, an OpenSSH client, rsync, scp, curl or equivalent ordinary upload/download tooling. The owning clone MUST be the writable working directory. Tool exposure and process launch MUST consume the active matching generation-bound capability lease rather than role-only descriptors or ambient configuration. The capsule MUST NOT mount the Host repository, a shared `.git`, Host home, Host SSH directory, or long-lived Host credential storage. Installing an SSH client MUST NOT grant an HPC target credential, remote workspace, CRUD authority, or scheduler authority; those remain owned by successor changes.
 
 #### Scenario: Use native tools in the clone
 - **WHEN** an agent with an active capability lease invokes shell, Git, LFS, SSH-client, or transfer commands
-- **THEN** the commands operate against its own mounted clone and receive only process-scoped authorized credentials
+- **THEN** the commands operate against its own mounted clone and, when a Host-issued credential is required, receive only the process-scoped authorized credential
+
+#### Scenario: Attempt native tool use before lease activation
+- **WHEN** a workspace is still provisioning or ready facts exist without the matching active lease
+- **THEN** filesystem mutation, shell, Git, LFS, upload, and download process launch are rejected before a capsule process starts and no approval or fallback route is created
 
 #### Scenario: Request a forbidden Host mount
 - **WHEN** capsule configuration names a Host checkout, Host home, Host SSH directory, or another workspace's `.git` as a mount
 - **THEN** activation fails before the container starts and no alternate mount is selected
+
+### Requirement: Native capsules use ordinary deployment network without a Host destination allowlist
+The native generation-owned capsule runtime SHALL attach each authorized command process to the configured deployment ordinary network. The Host MUST NOT maintain or evaluate a per-destination allowlist for native upload, download, Git, LFS, or other credentialless network access. Reachability SHALL be determined by the deployed network and endpoint. A reachable action MUST NOT require command-level approval; an unreachable endpoint or native client error MUST fail the exact process visibly without automatic retry, replay, endpoint substitution, SDK-route substitution, or approval reopening. Host-issued credentials MUST remain limited to their exact service, target, protocol, agent, lease, and workspace-generation audience, but credential audience MUST NOT become a general network destination policy.
+
+#### Scenario: Reach an ordinary endpoint
+- **WHEN** an active-lease capsule uses native transfer tooling against an endpoint reachable from its deployment network and no Host-issued credential is needed
+- **THEN** the action runs without a Host destination allowlist lookup or command-level approval and uses the requested endpoint unchanged
+
+#### Scenario: Ordinary endpoint is unreachable
+- **WHEN** the requested endpoint is not reachable from the deployment network
+- **THEN** the native process returns its exact non-success status and diagnostic while the Host starts no retry, fallback endpoint, SDK route, replacement operation, or approval
+
+### Requirement: Host-issued credentials are injected only into the exact process
+Git/LFS and other Host-issued service credentials SHALL be obtained under the active matching C2 capability lease and injected through a process-scoped ephemeral channel bound to the exact agent, workspace generation, service or target, protocol, and audience. Credential material MUST NOT be written to the persistent volume, repository configuration, credential store, Host home or SSH directory, command argv, command logs, artifact/catalog records, or public/workspace projection. Before any process output is persisted or projected, the Host MUST remove the exact secret material issued to that process. Credential expiry or rejection SHALL fail only that explicit action; a later explicit action MAY obtain a new credential under the still-active lease, but the Host MUST NOT automatically retry or replay the failed action.
+
+#### Scenario: Run Git with a scoped credential
+- **WHEN** an active-lease agent performs one authorized Git or LFS action
+- **THEN** only that process receives the exact-audience credential and process completion leaves no credential in the volume, `.git/config`, helper store, Host home, command logs, artifact/catalog, or projection
+
+#### Scenario: Endpoint rejects a scoped credential
+- **WHEN** an endpoint rejects or expires the credential used by one upload, download, Git, or LFS process
+- **THEN** that exact process fails visibly and no command replay, alternate endpoint, downgraded credential, approval, or replacement operation is created
+
+### Requirement: Native private bytes persist without becoming shared truth
+Files created, edited, uploaded, or downloaded by native capsule tools SHALL remain private state of the owning workspace generation across short-lived containers and Host restarts. Their presence, path, digest, or transfer MUST NOT by itself create an artifact/catalog record, engine invocation, scientific result, publication, task transition, protocol message, or another agent's projection. Only a later explicit formal boundary owned by its designated change MAY promote a committed revision or declared output.
+
+#### Scenario: Download and reuse private bytes across containers
+- **WHEN** an active-lease agent downloads a file into its generation volume and the command container exits
+- **THEN** a later container for the same generation can read the identical private bytes while no shared artifact, scientific truth, publication, task transition, or cross-agent projection is created
+
+#### Scenario: Transfer private bytes outward
+- **WHEN** an active-lease agent uploads a private workspace file through native ordinary network tooling
+- **THEN** the transfer occurrence remains generation-owned audit context and does not publish the file or create canonical scientific output
+
+### Requirement: Native capsule networking does not weaken Host-supervised execution isolation
+C3 MUST preserve the existing Host-supervised execution, `openzyme_pipeline` SDK, provider/HPC adapter, scientific execution, and AOX isolation contracts. Their no-network container settings, source/artifact staging, approval, quota, execution lease/fence, handle, and provenance semantics MUST NOT be removed, bypassed, or treated as a fallback implementation of native capsule ordinary network.
+
+#### Scenario: Run a Host-supervised pipeline after native networking is enabled
+- **WHEN** executor code enters the existing supervised execution or AOX path
+- **THEN** that path retains its existing no-network and Host-mediated external-operation policy and does not inherit the native capsule deployment network
 
 ### Requirement: Local commits and private refs remain private
 An agent SHALL be free to keep staged, unstaged, and untracked state while a work step remains in progress. For every research, implementation, or verification step that produces durable files and that the agent or subagent explicitly declares completed, the agent operating contract MUST require the agent to select the coherent files itself, create an incremental local commit, and explicitly create or fast-forward that commit in its authorized append-only private namespace before reporting a durable checkpoint or crossing a publication, handoff, external-job, or task-terminal boundary. The Host MUST NOT automatically stage, commit, or push files. The internal remote MUST reject agent force-updates and deletion of previously pushed private refs so that pushed checkpoints remain traceable. Only the repository retention owner MAY retire a complete closed workspace-generation namespace under the pinned retention contract and immutable receipt defined by the repository binding; it MUST NOT rewrite or selectively prune individual checkpoints. Local commits, branches, and private-ref pushes MUST NOT create a `PublishedRevision`, update team shared projection, appear in another agent's projection, complete a task, or send a protocol message.
@@ -72,7 +144,7 @@ An agent SHALL be free to keep staged, unstaged, and untracked state while a wor
 - **THEN** the complete private namespace may be deleted without treating selected intermediate checkpoints differently
 
 ### Requirement: Dirty exploration is allowed but boundary revisions are clean and exact
-The workspace SHALL permit staged, unstaged, and untracked files during ordinary exploration and SHALL project an exact Git status and HEAD. Before creating a publication or admitting an external job from a private workspace, the Host MUST prove that the working tree is clean, the requested revision equals the expected exact commit, and the commit belongs to the pinned repository binding. Sending a handoff that references an existing immutable `PublishedRevision` MUST validate that publication and path without inspecting or changing the producer's current working tree. The Host MUST NOT automatically add, commit, stash, clean, merge, ignore, or discard files.
+The workspace SHALL permit staged, unstaged, and untracked files during ordinary exploration and SHALL project an exact Git status and HEAD. Before a downstream change creates a publication or admits an external job from a private workspace, the C3 validator MUST prove that the working tree is clean, the requested revision equals the expected exact commit, and the commit belongs to the pinned repository binding, then return only that proof to the downstream owner. C3 MUST NOT create a `PublishedRevision`; publication creation remains owned by C4. Sending a handoff that references an existing immutable `PublishedRevision` MUST validate that publication and path without inspecting or changing the producer's current working tree. The Host MUST NOT automatically add, commit, stash, clean, merge, ignore, or discard files.
 
 #### Scenario: Inspect a dirty workspace
 - **WHEN** an agent has modified tracked files and created untracked files during exploration

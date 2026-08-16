@@ -26,6 +26,7 @@ from openzyme_runtime import sanitize_public_diagnostic_text
 
 from .agent_runtime import AgentRuntimeOutcome
 from .agent_runtime import AgentRuntimeService
+from .agent_capability_service import AgentRetirementRequestedError
 from .engines import EngineRegistry
 from .repositories import CoreRepositories
 from .harness import SessionRuntimeContext
@@ -154,27 +155,49 @@ class AgentRuntimeScheduler:
                 async with session_limiter:
                     async with agent_limiter:
                         try:
-                            outcome = await asyncio.to_thread(
-                                self._wake_signal_in_worker,
-                                signal=signal,
-                                max_steps=max_steps_per_agent,
-                            )
+                            if self.repository_scope_factory is None:
+                                outcome = self._wake_signal_in_worker(
+                                    signal=signal,
+                                    max_steps=max_steps_per_agent,
+                                )
+                            else:
+                                outcome = await asyncio.to_thread(
+                                    self._wake_signal_in_worker,
+                                    signal=signal,
+                                    max_steps=max_steps_per_agent,
+                                )
                         except Exception as exc:
                             classification = classify_llm_provider_error(exc)
                             public_error = sanitize_public_diagnostic_text(str(exc))
-                            failed = (
-                                self.context.repositories.runtime_signals.fail(
-                                    signal.signal_id,
-                                    error_message=public_error,
-                                    retryable=classification.retryable,
-                                    expected_session_lease_token=session_lease.lease_token,
-                                    expected_session_fencing_token=session_lease.fencing_token,
-                                )
-                                or self.context.repositories.runtime_signals.get(
-                                    signal.signal_id
-                                )
-                                or signal
+                            failed = self.context.repositories.runtime_signals.fail(
+                                signal.signal_id,
+                                error_message=public_error,
+                                retryable=classification.retryable,
+                                expected_session_lease_token=session_lease.lease_token,
+                                expected_session_fencing_token=session_lease.fencing_token,
                             )
+                            retirement_settled = False
+                            if failed is None:
+                                current = (
+                                    self.context.repositories.runtime_signals.get(
+                                        signal.signal_id
+                                    )
+                                    or signal
+                                )
+                                if current.status.value == "claimed":
+                                    retirement_failure = self.context.repositories.runtime_signals.settle_retirement_requested(
+                                        signal.signal_id,
+                                        expected_session_lease_token=(
+                                            session_lease.lease_token
+                                        ),
+                                        expected_session_fencing_token=(
+                                            session_lease.fencing_token
+                                        ),
+                                    )
+                                    if retirement_failure is not None:
+                                        failed = retirement_failure
+                                        retirement_settled = True
+                                failed = failed or current
                             if failed.status.value == "claimed":
                                 self.context.emit(
                                     "runtime.fencing_rejected",
@@ -187,8 +210,21 @@ class AgentRuntimeScheduler:
                                         "worker_id": self.worker_id,
                                     },
                                 )
+                            elif retirement_settled:
+                                self.context.emit(
+                                    "signal.failed",
+                                    {
+                                        "signal_id": failed.signal_id,
+                                        "agent_id": failed.agent_id,
+                                        "status": failed.status.value,
+                                        "error_message": failed.error_message,
+                                    },
+                                )
                             agent = None
-                            if failed.status.value != "claimed":
+                            if (
+                                failed.status.value != "claimed"
+                                and not retirement_settled
+                            ):
                                 agent = self._release_agent_after_runtime_exception(
                                     signal
                                 )
@@ -200,11 +236,19 @@ class AgentRuntimeScheduler:
                                     signal.session_id, signal.agent_id
                                 ),
                                 ok=False,
-                                summary=public_error,
+                                summary=(
+                                    "agent runtime capability occurrence was rejected"
+                                    if retirement_settled
+                                    else public_error
+                                ),
                                 teammate_status=(
-                                    "runtime_retry_scheduled"
-                                    if failed.status.value == "pending"
-                                    else "runtime_exception"
+                                    AgentRetirementRequestedError.error_code
+                                    if retirement_settled
+                                    else (
+                                        "runtime_retry_scheduled"
+                                        if failed.status.value == "pending"
+                                        else "runtime_exception"
+                                    )
                                 ),
                             )
             observer = self.context.reliability_shadow_observer

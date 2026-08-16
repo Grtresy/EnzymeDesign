@@ -126,7 +126,8 @@ from ..external_ports import ExternalEffectLedger
 
 _REPO_ROOT = Path(__file__).resolve().parents[5]
 _ACTIVE_CUTOVER_SPEC = (
-    _REPO_ROOT / "openspec/changes/aox-hmm-blank-world-cutover/specs/"
+    _REPO_ROOT / "openspec/changes/archive/"
+    "2026-08-16-aox-hmm-blank-world-cutover/specs/"
     "blank-world-live-cutover/spec.md"
 )
 _ATTEMPT_START_CONTRACT_SOURCES = {

@@ -1506,6 +1506,85 @@ class MutationScopeService:
                 "ON owner.sandbox_workspace_id = resource.sandbox_workspace_id "
                 f"WHERE owner.session_id = ? ORDER BY {order}"
             )
+        elif entry.session_binding == "workspace_id_to_executor_hpc_workspace":
+            sql = (
+                f"SELECT resource.* FROM {table} AS resource "
+                "JOIN executor_hpc_workspace_records AS owner "
+                "ON owner.workspace_id = resource.workspace_id "
+                f"WHERE owner.session_id = ? ORDER BY {order}"
+            )
+        elif entry.session_binding == "request_id_to_workspace_revision_execution":
+            sql = (
+                f"SELECT resource.* FROM {table} AS resource "
+                "JOIN workspace_revision_execution_requests AS owner "
+                "ON owner.request_id = resource.request_id "
+                f"WHERE owner.session_id = ? ORDER BY {order}"
+            )
+        elif entry.session_binding == "execution_id_to_controlled_operation_execution":
+            sql = (
+                f"SELECT resource.* FROM {table} AS resource "
+                "JOIN controlled_operation_execution_records AS owner "
+                "ON owner.execution_id = resource.execution_id "
+                f"WHERE owner.session_id = ? ORDER BY {order}"
+            )
+        elif entry.session_binding == "dispatch_id_to_workspace_job_dispatch":
+            sql = (
+                f"SELECT resource.* FROM {table} AS resource "
+                "JOIN workspace_job_dispatch_intents AS dispatch "
+                "ON dispatch.dispatch_id = resource.dispatch_id "
+                "JOIN workspace_revision_execution_requests AS owner "
+                "ON owner.request_id = dispatch.request_id "
+                f"WHERE owner.session_id = ? ORDER BY {order}"
+            )
+        elif entry.session_binding == "cancellation_id_to_workspace_job_cancellation":
+            sql = (
+                f"SELECT resource.* FROM {table} AS resource "
+                "JOIN workspace_job_cancellation_intents AS cancellation "
+                "ON cancellation.cancellation_id = resource.cancellation_id "
+                "JOIN controlled_operation_execution_records AS owner "
+                "ON owner.execution_id = cancellation.execution_id "
+                f"WHERE owner.session_id = ? ORDER BY {order}"
+            )
+        elif entry.session_binding == "result_id_to_workspace_job_result":
+            sql = (
+                f"SELECT resource.* FROM {table} AS resource "
+                "JOIN workspace_job_results AS result "
+                "ON result.result_id = resource.result_id "
+                "JOIN controlled_operation_execution_records AS owner "
+                "ON owner.execution_id = result.execution_id "
+                f"WHERE owner.session_id = ? ORDER BY {order}"
+            )
+        elif entry.session_binding == "handoff_id_to_protocol_file_handoffs":
+            sql = (
+                f"SELECT resource.* FROM {table} AS resource "
+                "JOIN protocol_file_handoff_records AS owner "
+                "ON owner.handoff_id = resource.handoff_id "
+                f"WHERE owner.session_id = ? ORDER BY {order}"
+            )
+        elif entry.session_binding == "intent_id_to_workspace_publication_intents":
+            sql = (
+                f"SELECT resource.* FROM {table} AS resource "
+                "JOIN workspace_publication_intents AS owner "
+                "ON owner.intent_id = resource.intent_id "
+                f"WHERE owner.session_id = ? ORDER BY {order}"
+            )
+        elif entry.session_binding == "publication_id_to_published_revisions":
+            sql = (
+                f"SELECT resource.* FROM {table} AS resource "
+                "JOIN published_revisions AS owner "
+                "ON owner.publication_id = resource.publication_id "
+                f"WHERE owner.session_id = ? ORDER BY {order}"
+            )
+        elif (
+            entry.session_binding
+            == "successor_publication_id_to_published_revisions"
+        ):
+            sql = (
+                f"SELECT resource.* FROM {table} AS resource "
+                "JOIN published_revisions AS owner "
+                "ON owner.publication_id = resource.successor_publication_id "
+                f"WHERE owner.session_id = ? ORDER BY {order}"
+            )
         elif entry.session_binding == "attempt_id_to_scientific_attempts":
             sql = (
                 f"SELECT resource.* FROM {table} AS resource "

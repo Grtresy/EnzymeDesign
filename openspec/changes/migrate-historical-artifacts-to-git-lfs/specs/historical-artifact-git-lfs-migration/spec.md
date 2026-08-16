@@ -1,5 +1,8 @@
 ## ADDED Requirements
 
+连续源码实现阶段不得执行 migration。本 spec 的 writer freeze、remote Git/LFS、
+reference rewrite、receipt 与 source preservation 只实现为待统一验收的 source contract。
+
 ### Requirement: Historical migration freezes writers and inventories the complete legacy set
 Before copying any legacy bytes, the system MUST stop and fence every artifact writer and MUST create an immutable inventory that binds the database and storage snapshot, schema generation, project repository binding versions, every legacy artifact row and storage object, every materialization/report/research/sandbox/controlled-operation/scientific/HPC/task reference, all declared digests and sizes, orphan rows and objects, and the post-freeze writer high-watermark. Any row, object, reference, or writer drift MUST invalidate the affected inventory.
 

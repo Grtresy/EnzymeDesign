@@ -1,7 +1,18 @@
 ## ADDED Requirements
 
+### Requirement: Source-only sequencing gate has zero job authority
+During the ordered multi-change source migration, the implementation MAY consume `workspace_revision_execution_source_only_dependency_gate@1` only to add source, deferred tests, and documentation. The gate MUST bind current predecessor and interface digests while declaring predecessor/current acceptance unproven. It MUST NOT be accepted as a capability lease, native workspace qualification, scientific admission, controlled-operation execution fence, compute-tree authority, scheduler credential, dispatch occurrence, external handle, or production activation.
+
+#### Scenario: Continue source implementation without a formal predecessor receipt
+- **WHEN** the source-only gate matches the checked-out predecessor and OpenSpec identities
+- **THEN** the implementation may add domain, repository, migration, runner, Host, credential-provider, deferred-test, and documentation source without any remote effect
+
+#### Scenario: Gate is presented for execution
+- **WHEN** any caller presents the source-only gate to construct a compute tree, issue a credential, dispatch or reconcile a payload, activate a target, or satisfy production admission
+- **THEN** the request is rejected before external effect and no fallback route is selected
+
 ### Requirement: Job admission binds one exact clean workspace revision
-Every formal HPC job admission MUST bind the admitted controlled operation, executor capability lease, any separate authorization explicitly required by the enclosing workflow, executor HPC workspace id and generation, project repository binding version, private or published source class, exact commit and tree OID, verified Git LFS closure manifest, clean-state observation, normalized repository-relative cwd, command/environment policy digest, resource request, execution mode, target profile, runner policy, and absolute deadline. An ordinary non-scientific executor job within its lease and route policy MUST create its canonical execution without per-command or per-job human approval. The system MUST verify all required facts against the remote login clone before dispatch and MUST reject dirty or drifting state without stashing, cleaning, committing, snapshotting, or selecting another revision.
+Every formal HPC job admission MUST bind the admitted controlled operation, executor capability lease, any scientific admitted-attempt basis or separate operation approval explicitly required by the enclosing workflow, executor HPC workspace id and generation, project repository binding version, private or published source class, exact commit and tree OID, verified Git LFS closure manifest, clean-state observation, normalized repository-relative cwd, command/environment policy digest, resource request, execution mode, target profile, runner policy, and absolute deadline. This change SHALL consume C2's canonical lease seam but SHALL implement the actual route. An ordinary non-scientific executor job within its active lease and route policy MUST create or reread exactly one canonical execution without per-command or per-job human approval. A scientific route MUST bind exact `ScientificAttempt.attempt_id`/`state_version`, its `admission_request_id` and immutable `ScientificAttemptAdmissionRequest`, source `envelope_id` plus workflow-contract/scope/effect/HPC-target provenance, and current attempt dispatch eligibility; it MUST NOT simply require the source `ScientificAttemptAuthorization` envelope to remain `ACTIVE`. The system MUST verify all required facts against canonical records and the remote login clone before dispatch and MUST reject dirty or drifting state without stashing, cleaning, committing, snapshotting, or selecting another revision.
 
 #### Scenario: Admit a clean private revision
 - **WHEN** policy allows private execution and the owning executor's remote workspace is clean at the requested exact commit with a valid LFS closure
@@ -10,6 +21,18 @@ Every formal HPC job admission MUST bind the admitted controlled operation, exec
 #### Scenario: Admit a published revision
 - **WHEN** the request references an exact immutable publication fetched into the authorized executor workspace
 - **THEN** admission binds that publication's commit, tree, and LFS manifest without using a mutable branch
+
+#### Scenario: Admit an ordinary job without per-job approval
+- **WHEN** an active target-scoped executor lease and frozen non-scientific route policy match an exact clean revision and no separate operation approval is required
+- **THEN** this change creates the unique canonical execution and dispatch-ready work without a pending human approval
+
+#### Scenario: Admit a scientific job from an exhausted source envelope
+- **WHEN** an exact dispatch-eligible `ScientificAttempt` state and its immutable `ScientificAttemptAdmissionRequest` match the route, but admitting it consumed the source authorization into `EXHAUSTED`
+- **THEN** admission uses the already-admitted attempt basis and does not demand a newly `ACTIVE` source envelope
+
+#### Scenario: Scientific route lacks an admitted attempt
+- **WHEN** a scientific job names only a capability lease, source authorization envelope, role, or nonmatching attempt/admission-request identity
+- **THEN** admission produces zero backend effect and does not infer scientific authority from job or scheduler state
 
 #### Scenario: Workspace is dirty
 - **WHEN** the bound remote workspace index, tracked tree, or policy-controlled untracked state is dirty at admission
@@ -46,7 +69,7 @@ Every admitted workspace-revision job MUST be owned by exactly one existing `Con
 - **THEN** it restores the same run and handle evidence instead of creating another job state machine or run identity
 
 ### Requirement: Accepted external jobs have a reliable exact handle
-Before an `sbatch` or bounded direct SSH payload, the system MUST persist an immutable dispatch intent and unique dispatch id bound to the complete execution, mode, and source identity. The qualified target MUST compare-and-create a runner-owned dispatch-ledger entry and accept at most one payload. Slurm mode MUST use an authoritative unique scheduler marker and persist the raw scheduler handle; direct mode MUST persist a queryable process handle and terminal receipt under the same dispatch id. An `ExternalJobHandle` MUST bind that receipt, runner run id, dispatch id, target, workspace generation, source revision/manifest, backend, and acceptance time. Raw scheduler, process, and transport locators MUST remain Host-private. Ordinary executor login/file credentials MUST NOT authorize unregistered scheduler submission.
+Before an `sbatch` or bounded direct SSH payload, the system MUST persist an immutable dispatch intent and unique dispatch id bound to the complete execution, mode, and source identity. The qualified target MUST compare-and-create a runner-owned dispatch-ledger entry and accept at most one payload. Slurm mode MUST reserve one exact ledger occurrence before scheduler I/O, issue only the current fenced runner a short-lived one-occurrence credential bound to execution, dispatch id, target, reservation nonce, marker, payload digest, protected submit-wrapper audience, and expiry, and atomically consume it immediately before native `sbatch`. Reuse, expiry, identity drift, ordinary login/file credentials, ambient runner credentials, and unregistered dispatch MUST be rejected by target enforcement before scheduler acceptance. Slurm mode MUST use an authoritative unique scheduler marker and persist the raw scheduler handle; direct mode MUST persist a queryable process handle and terminal receipt under the same dispatch id. An `ExternalJobHandle` MUST bind that receipt, runner run id, dispatch id, target, workspace generation, source revision/manifest, backend, and acceptance time. Raw scheduler, process, credential, and transport locators MUST remain Host-private. The system MUST NOT discover or adopt bypass jobs by scanning scheduler state.
 
 #### Scenario: Slurm accepts a job normally
 - **WHEN** the remote wrapper records one accepted `sbatch` submission for the frozen dispatch id
@@ -68,8 +91,20 @@ Before an `sbatch` or bounded direct SSH payload, the system MUST persist an imm
 - **WHEN** the executor's ordinary login credential attempts an `sbatch` without the frozen dispatch identity and one-occurrence runner authority
 - **THEN** the target rejects it before scheduler acceptance and the system does not later adopt it by scanning the queue
 
+#### Scenario: Runner submits one registered occurrence
+- **WHEN** the current fenced runner presents the exact unconsumed credential for its reserved dispatch id, marker, target, and payload
+- **THEN** the protected wrapper atomically consumes it, invokes native `sbatch` at most once, and records the matching acceptance receipt and handle
+
+#### Scenario: One-occurrence credential is replayed or drifts
+- **WHEN** a caller reuses a consumed credential or changes its dispatch id, target, reservation, marker, command, or resources
+- **THEN** target enforcement rejects the request before scheduler acceptance and no replacement credential is inferred from retry policy
+
+#### Scenario: Unregistered job appears in scheduler state
+- **WHEN** polling or recovery observes a scheduler job with no matching canonical execution, dispatch-ledger reservation, credential occurrence, and marker receipt
+- **THEN** the system ignores it as noncanonical evidence and does not adopt, cancel, publish, or attach it to an OpenZyme operation
+
 ### Requirement: Dispatch uncertainty never licenses replacement submission
-If a job request may have reached the remote wrapper or scheduler but no matching accepted or no-effect receipt is available, the execution MUST record `effect_certainty = dispatch_in_doubt`, close automatic dispatch retry, and reconcile only the same dispatch id, runner ledger, scheduler marker, and external handle. Timeout, lease expiry, connection loss, runner restart, a missing local receipt, or an empty poll MUST NOT prove no effect. If exact reconciliation cannot prove an outcome, the result MUST remain outcome-unknown with zero replacement submissions.
+If a job request may have reached the remote wrapper or scheduler but no matching accepted or no-effect receipt is available, the execution MUST record `effect_certainty = dispatch_in_doubt`, close automatic dispatch retry, and reconcile only the same dispatch id, runner ledger, scheduler marker, and external handle. Timeout, controlled-operation execution-lease expiry, capability-lease revocation or inactivity, connection loss, runner restart, a missing local receipt, or an empty poll MUST NOT prove no effect. If exact reconciliation cannot prove an outcome, the result MUST remain outcome-unknown with zero replacement submissions.
 
 #### Scenario: Acceptance response is lost
 - **WHEN** `sbatch` may have succeeded but the response does not reach the runner

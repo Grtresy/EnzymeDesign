@@ -4,6 +4,7 @@ research dossier、超大 tool result、report content 和 task evidence 当前�
 
 ## What Changes
 
+- 在这次明确排序、统一后验验证的连续迁移中，先使用 `revision_path_handoff_source_only_dependency_gate@1` 继续源码迁移；该 gate 固定 `acceptance_proven=false`，不替代 C2--C5 最终 receipts，也不授权任何 publication、protocol delivery、task transition、credential、Git/LFS I/O、live 或外部 effect。
 - researcher 将检索结果、source snapshots、分析笔记和 dossier 写入自己的 clone，并通过 explicit publication 交付 executor/reporter。
 - executor/report writer 直接读取 fetched published files；protocol payload 只携带 bounded publication/revision/path refs，不复制文件 bytes。
 - tool result 大内容、research dossier 和 report draft/final content 停止创建 artifact aliases；需要持久交付的内容写入 workspace file 并 commit。

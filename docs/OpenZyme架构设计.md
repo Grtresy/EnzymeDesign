@@ -1,5 +1,11 @@
 # OpenZyme 主线架构设计
 
+> C1--C14 的 repository/workspace/revision/file 迁移目标、资源 owner/lifecycle、
+> public projection、历史 Git/LFS 迁移和 artifact 物理退役 gate 集中记录在
+> [`docs/v3/file-workspace-migration.md`](v3/file-workspace-migration.md)。当前仍是
+> source-only 候选阶段；稳定文档中保留的 artifact-era 描述仍代表尚未完成原子
+> cutover 的 current runtime，不得据此把候选源码解释为 production authority。
+
 ## 1. 文档定位
 
 本文档描述当前根仓库主线的 OpenZyme V3 架构边界与实现事实。
@@ -51,7 +57,7 @@ V3 稳定文档入口见：
 
 当前主线 V3 优先落点：
 
-- `packages/openzyme-domain`：control-plane 领域对象，如 `Session`、`Task`、`Lane`、`ApprovalRequest`、`InboxMessage`、`AgentMember`、`AgentRuntimeSignal`、`ControlledOperationExecution`、`RuntimeCommandRecord`、`ContinuationState`、`MutationScope`、`MutationWriter`、`MutationQuiescenceReceipt`、`EngineInvocation`、`RunRecord`、`SessionArtifactRecord`、`SessionReportDraftRecord`、`SessionReportRecord`
+- `packages/openzyme-domain`：control-plane 领域对象，如 `Session`、`Task`、`Lane`、`ApprovalRequest`、`InboxMessage`、`AgentMember`、`AgentRuntimeSignal`、`ControlledOperationExecution`、`WorkspacePublicationIntent`、`PublishedRevision`、`RuntimeCommandRecord`、`ContinuationState`、`MutationScope`、`MutationWriter`、`MutationQuiescenceReceipt`、`EngineInvocation`、`RunRecord`、`SessionArtifactRecord`、`SessionReportDraftRecord`、`SessionReportRecord`
 - `packages/openzyme-core`：V3 harness、task board、lane manager、protocol、projection、agent runtime、scheduler、tool registry、report draft tools、docs tools；对 runtime SPI 保留旧 public import 的兼容重导出
 - `packages/openzyme-engines`：capability engines，尤其是 execution pipeline engine 与 sandbox supervision；不得依赖 `openzyme-core` 的 concrete harness 类型
 - `packages/openzyme-pipeline`：受控 execution pipeline sandbox 内 SDK
@@ -70,6 +76,52 @@ V3 稳定文档入口见：
 
 ## 3. V3 核心结论
 
+### 3.0 Git publication 是显式且不可变的共享真相
+
+独立 agent clone 中的文件、commit、branch 与 private ref 默认都属于该 generation 的私有状态。只有 agent 显式调用 `workspace.publish`，并由 Host 在任何 Git effect 前验证 exact active capability lease、ready workspace generation、publication-boundary checkpoint、clean HEAD/tree、session pin、whole-tree manifest 与当前 repository policy 后，才冻结一个 `WorkspacePublicationIntent`。该 admission 自动创建且只创建一个 publication-bound `ControlledOperationExecution`，不请求逐 publication 人工 approval。
+
+Host 在 dispatch 前持久化 execution owner、lease 与 fence，只能对预分配的 `refs/openzyme/publications/<publication_id>` 执行 create-if-absent。response loss 后只能查询同一 ref：exact commit 收敛原 execution，different commit 形成 integrity conflict，无法证明则保持 `dispatch_in_doubt`，不得换 ref、重推、fallback upstream 或把 revoke 猜成 remote no-effect。exact ref 已确认后，`PublishedRevision`、remote receipt、outbox 与 durable team event 在同一短事务中 create-once 落库；记录和 ref 都不可更新或删除，修订只能创建带 `supersedes` 的新 publication。
+
+workspace projection 只从 durable `PublishedRevision` 投影共享 revision，不扫描 private/historical/remote branch。recipient 读取 exact fetch identity 后，在自己的 clone 中显式 `git fetch` 并自行选择 inspect、fast-forward、merge、rebase 或 cherry-pick；Host 不自动 checkout、整合或解决冲突。protocol/task evidence 只接受 `publication_id + exact commit + repository-relative manifest path`，而 publish、message/wakeup、dependency 与 `task.finish` 始终正交。
+
+大文件仍属于同一 Git revision，而不是另建 agent-facing CAS 或 artifact 文件真相。每个 repository binding version 固定标准 Git LFS Batch API v2/basic endpoint、path rules、普通 blob 阈值、object/workspace/repository quota、private/published retention 和 policy digest。native Git/LFS upload、download、private push 只形成私有 workspace/ref/object 状态；只有显式 `workspace.publish` 才遍历 exact commit tree、按该 revision 的 `.gitattributes` 解析规范 pointer、逐对象重算实际 size/SHA-256，并冻结稳定 closure manifest 与本次 fresh-read verification。frozen intent proof、`PublishedRevision`、closure link 和全部 LFS pins 必须一致；missing/corrupt/unauthorized object、oversized ordinary blob 或 policy drift 均在共享 revision 出现前失败，系统不改写 commit、不补传替代对象、不切 endpoint。
+
+published LFS closure 永久受 immutable publication pin 保护。private object 只有在其完整 workspace-generation namespace 已关闭、无 hold、写入 terminal retirement receipt，并对 terminal commits 生成 LFS reachability receipt 后，才可进入 repository-scoped GC 计算。GC 必须先产出 dry-run candidate receipt，删除前重算相同 policy、retirement、workspace links、upload sessions 与 publication pins；任一 drift 整批停止。底层相同 OID 可以在同一 repository 物理去重，但 digest 相等不授予跨 repository/binding 读取或 adoption 权限，也不暴露 physical locator。
+
+上述为连续迁移中的 C4 源码合同；当前 `workspace_publication_source_only_dependency_gate@1` 明确保持 `acceptance_proven=false`、`production_effect_authorized=false` 与 `live_authorized=false`。它不能作为 runtime authority、credential、publication receipt 或生产完成证明，最终资格必须等待全部连续 changes 的统一验证与正式 receipts。
+
+### 3.0.1 Research、report 与 task handoff 只引用 revision path
+
+C7 将 research 文件、report 正文与 ordinary task handoff 的共享身份收敛到已发布 revision 中的
+repository-relative path。`RevisionPathRef@1` 必须同时绑定 session、publication、exact commit/tree、
+manifest digest、path、mode、blob OID 与内容 digest；Git LFS 文件还必须绑定 pointer blob、LFS OID、
+实际 size 和本次 publication closure。Host 不接受 mutable branch、裸 path、catalog ref、Host path、
+bytes copy 或只凭 digest 猜测的等价对象。
+
+research provider 与 deep-research engine 只能在 owner generation workspace 的版本化目录中写文件。
+单次 Host-supervised writer 最多接收 16 MiB，按有界 chunk 写入 owner-only 临时文件，校验完整 digest 后
+原子 rename；失败只留下 failed invocation，不发布 partial。research current projection 只来自显式
+`research_tool_file_index` 和 canonical `RevisionPathRef`，不再把 observation、dossier、source snapshot
+或下载正文复制进 `EngineDocument`、artifact catalog 或 session-local内容表。deep-research invocation 只有
+在全部约定文件已持久化后才可进入 `succeeded`。
+
+`ProtocolFileHandoff@1` 是 participant-bound inbox 消息：每个 entry 都携带 canonical
+`RevisionPathRef`，发送、handoff record、inbox 与 wakeup 原子提交。接收者必须用 native Git/Git LFS
+把 exact publication ref fetch 到自己的 inspection ref；Host 不 materialize bytes，也不自动 checkout、
+merge、rebase、cherry-pick、解决冲突、完成 dependency 或结束 task。
+
+`report.publish` 消费 reporter 自己已经发布的 exact report path，并分别持久化 workspace publication
+状态与 report 业务发布状态。修订必须创建新 publication、新 report identity，并显式 `supersedes`；发布
+不修改 task。`task.finish` 只接受 closed `TaskEvidenceRef@1`，并要求 evidence 的 canonical owner、session
+与 exact task 全部一致；ordinary revision path、report 和 controlled-operation result 已启用，scientific
+deliverable variant 在 C10 前显式不可用。runtime idle、tool success、protocol message、report publish 或
+相同 digest 都不能合成 task terminal。
+
+当前 `revision_path_handoff_source_only_dependency_gate@1` 固定
+`acceptance_proven=false`、`final_source_revision_bound=false`、`production_effect_authorized=false` 与
+`live_authorized=false`。session mutation quiescence 覆盖 C7 的 session-owned refs/index/handoff/report/
+task-finish rows；repository-global Git LFS retention/GC 仍由独立 owner 管理，不得塞入 per-session freeze。
+
 ### 3.1 顶层真状态是 Control Plane，不是 Graph
 
 V3 的产品真状态由 Host control plane 持久化，并通过 workspace projection 对外暴露。核心对象包括：
@@ -86,6 +138,7 @@ V3 的产品真状态由 Host control plane 持久化，并通过 workspace proj
 - `continuation_state / continuation_delivery`
 - `mutation_scope / mutation_writer / quiescence_receipt`
 - `project_repository_binding / session_repository_binding_pin`
+- `agent_workspace_generation_reservation / agent_capability_lease / agent_retirement_record`
 - `engine_invocation`
 - `artifact`
 - `run`
@@ -164,9 +217,74 @@ service identity、object format、exact base、policy digest、lifecycle 与 al
 不投影 Host path、upstream URL、private endpoint、signing key 或 token。
 
 internal remote 不持有 upstream effect authority；本地 Git/LFS 失败时不得 fallback 到
-GitHub，也不得自动 push、开 PR 或 release。当前 C1 已证明本地 protocol/restart/logical
-restore，但还没有 C2 production capability lease issuance、C3 agent worktree 或 C4
-publish/sync。local backup 与 Git/LFS 同一 filesystem 的演练不构成 production DR 证明。
+GitHub，也不得自动 push、开 PR 或 release。C1 已证明本地 protocol/restart/logical
+restore，但它的 acceptance-only capability assertion 与临时 hold 不是 production
+lease。C2 只把 production repository credential path 收口到 canonical active-lease
+validator 与原子 issuance/authentication/revocation seam；C3 agent Git workspace/capsule 与 C4
+publish/sync 仍是后继责任。local backup 与 Git/LFS 同一 filesystem 的演练不构成
+production DR 证明。
+
+### 3.3.2 Agent capability lease 的 staged cutover
+
+C2 建立与 runtime/execution/mutation/scientific authority 正交的
+`AgentCapabilityLease` control plane。一枚 lease 精确绑定
+`session + internal agent member + public agent identity + workspace generation`、closed
+profile/capability set、target scope、policy digest、parent provenance 与 idempotency identity；
+lifecycle 只有 `pending_workspace | active | revoked`。相同 immutable fingerprint
+只能收敛到同一 record，generation/profile/target/policy/provenance 漂移必须显式冲突，
+不发一枚替代 lease。
+
+C2 同时只建立最小
+`AgentWorkspaceGenerationReservation`/readiness seam。该 record 只记录 generation
+reservation、严格递增 replacement 与 verified readiness owner/ref/digest；不记录、也不声明
+clone path、volume、`.git`、HEAD、capsule、network 或 toolchain 事实。C3 的真实
+workspace provisioner 是 production readiness owner；C2 test provider、legacy sandbox/process、
+tool exposure、private namespace hold 或 ambient config 不能作为 production ready proof。
+
+这是一个立即生效的 staged gate：从 C2 activation 起，agent runtime claim、turn、
+restore-to-runtime 与 delegation admission 都要按当前
+`session + member + exact generation` 重读 canonical active lease。在 C3 尚未提交真实
+readiness 时，existing/new master 与 teammate 都诚实处于
+`provisioning_required` / non-runnable；`SessionRuntimeLease`、旧进程、legacy sandbox 或
+parent capsule 均不得绕过。delegation 先要求 parent 自身的 exact active lease；Host
+可以原子创建 child identity、generation reservation 与 derived
+`pending_workspace` lease，但在 child 自身 ready/active 前不排队 runnable wakeup，也不借
+parent workspace、token 或 credential 执行。
+
+revocation 拓扑是闭合的：ordinary explicit revoke 默认 exact；session end
+与 policy invalidation 分别按明确 session/policy scope bulk revoke；workspace replacement
+只撤销被替换 generation；operator subtree revoke 只在明确提交 root 与 scope 时递归。
+parent exact revoke 不自动级联，child revoke 不影响 parent/siblings。每次 revoke
+都要在同一 write transaction 内停止新 credential issuance、撤销可撤销的 derived
+credential、释放 matching holds、写 lease 终态与 lifecycle event；不允许 partial
+closure。retirement 先写 immutable `AgentRetirementRequest`，绑定 exact current
+generation/lease 与 cleanup provider，并立即冻结该 member 的新 signal/turn/credential
+admission；它不取消或替代已经 claimed 的 occurrence。只有在旧 occurrence 已按原 runtime
+fence 显式结算后才能持久化与 request 精确绑定的新 cleanup proof；所有进入或离开
+`claimed` 的迁移都由 transaction-local exact runtime fence trigger 约束。request、proof 与
+final record 三相 insert 另有 service-only exact lifecycle authority，generic mutation writer
+或 raw SQL 不能伪造 cleanup provider。最终 transaction 再次验证
+零 claimed signal、撤销全部 live leases并写 immutable `AgentRetirementRecord`，才能触发 exact
+member 跨 generation revoke。过早 proof 不缓存、不在事后升级为 closure。
+`FAILED`、`COMPLETED`、`STOPPED`、task terminal、runtime idle/failure、budget exhaustion、
+shutdown request 或进程消失都不是 retirement。
+
+repository credential 是该 authority 的第一个 consumer：production issuance 在同一
+`BEGIN IMMEDIATE` 中重读 active lease、session pin、private namespace/hold 并写 issuance
+record，commit 后才返回短期 bearer；Git/LFS read/write authentication 每次重读 lease。
+credential TTL 只结束 credential，不结束 lease，也不自动续签或重放失败命令。
+process-scoped credential derivation 只是带 audience 的 typed seam；secret 不进 public
+projection、persistent workspace、repo config 或 Host-home mount。真实 capsule process
+credential injection 仍由 C3 实现，不能把该 seam 写成已经注入。
+
+capability lease 不代替 `SessionRuntimeLease`、`ControlledOperationExecution`
+lease/fence、mutation writer/fence 或 `ScientificAttemptAuthorization`，反向也不成立。
+attempt/MICU/cost/wall-time ceilings 仍由 scientific authorization 拥有；prompt/context/step
+budget 仍是机械 runtime 约束。C2 的 general/executor capability names 只是 policy
+declaration；真实 versioned capsule、native filesystem/shell/Git/LFS/curl、ordinary network、
+upload/download 属于 C3，publication 属于 C4，remote HPC credential/workspace/CRUD 与 job
+admission/one-occurrence `sbatch` 属于后继 changes。当前 Host-supervised execution 与 AOX
+`--network=none` 边界保持不变，并且绝不是 capability gate 缺失时的 fallback。
 
 ### 3.4 No Hidden Fallback
 
@@ -552,6 +670,7 @@ V3 Host Control Plane
   +--> approval protocol
   +--> inbox / team protocols
   +--> agent roster
+  +--> workspace generation reservation / capability lease / retirement
   +--> shared workspace / artifact catalog
   +--> report draft / report records
   +--> event log / projection builder
@@ -561,6 +680,7 @@ Agent Runtime / Scheduler
   |
   +--> durable runtime signals
   +--> claim lease / stale recovery
+  +--> exact-generation capability admission gate
   +--> bounded master turns
   +--> bounded teammate turns
   +--> background signal drain
@@ -623,6 +743,9 @@ Persistence + Infra
 ```text
 POST /v3/sessions
   -> create session
+  -> atomically pin repository binding
+  -> reserve master generation and create pending capability lease
+  -> remain pending/non-runnable until exact C3 readiness activates the lease
   -> workspace projection
 
 POST /v3/sessions/{session_id}/messages
@@ -639,6 +762,8 @@ POST /v3/sessions/{session_id}/runtime/drain
 V3DurableWorkSupervisor / RuntimeCommandWorker
   -> claim one accepted command
   -> AgentRuntimeScheduler claims pending signals with session lease
+  -> re-read target agent current generation and active capability lease
+  -> missing/pending/revoked lease returns provisioning_required before agent execution
   -> if signal is agent:master, run bounded top-level master loop
   -> if signal is teammate, wake focused resident teammate
   -> agent reads task / lane / inbox / protocol / workspace
@@ -663,7 +788,9 @@ GET /v3/sessions/{session_id}/pending-approvals
 
 - `POST /v3/sessions/{session_id}/messages` 是用户到 master 的入口，只持久化用户消息（含该消息显式选择并去重的 `skill_keys`）并排队 `agent:master` wakeup，不直接执行 master loop，也不隐式执行 bounded teammate runtime drain；每条 signal 只从自己的 exact source message 恢复，focus 不跨消息 sticky/union
 - `POST /v3/sessions/{session_id}/runtime/drain` 是 debug/operator/manual recovery 的显式 durable command admission；它必须带 `Idempotency-Key`，只接受 closed limits，始终返回 `202`，不得绕过 command worker 直接运行 agent loop。可选 `Prefer: wait=0..2` 只短暂等待 command 状态，不改变 ownership 或取消语义
+- runtime command/session lease 取得 scheduler 推进权后，仍必须在 claim/restore 目标 agent 前重读 current generation 的 exact active capability lease；缺失时保留 `provisioning_required` 事实并停止，不借 legacy sandbox/process/tool exposure 推进
 - `task.delegate` 是产品-facing delegation tool，但真实写路径是 `ProtocolService.delegate()`
+- `task.delegate` 的 canonical write 先要求 parent exact active lease；child 只能以自己的 generation reservation 和 pending lease 被创建，直到 C3 readiness 激活前不排队 runnable child signal
 - `protocol.send` 只投递消息并排队 wakeup signal，不同步运行 recipient
 - `auto_enqueue_ready_tasks` 默认关闭，只用于显式 operator/debug/recovery 场景
 - approval resolve 只改变 approval/resolution/continuation 状态并排队必要 wakeup，不直接恢复 execution、不直接运行 master loop，也不直接替用户或 agent 批准后续未知动作
@@ -710,6 +837,7 @@ SSE 保留默认的 typed-event 模式，并提供 `envelope=1` 的稳定 generi
 - `report_drafts`
 - `reports`
 - `capabilities`
+- `agent_capability_leases`（不与 engine `capabilities` 混为一个 owner）
 
 Projection 约束：
 
@@ -722,6 +850,7 @@ Projection 约束：
 - 执行相关源码必须可审计：executor 日常编辑发生在 persistent sandbox workspace 内；进入 dry-run、approval、正式执行或报告复用前，Host 必须把相关源码 snapshot 为 `ArtifactKind.CODE` artifact，记录 `metadata.semantic_type="pipeline_source"`、SHA-256 `content_digest`、`sandbox_workspace_id`、entrypoint、file digests 与 version/lineage metadata
 - `report_drafts` 是 reporter 的中间交付面，不是一次 invocation 的临时字符串
 - `capabilities` 按 capability key 承载 research/execution 等投影，避免把 engine 内部状态固化成顶层 contract
+- `agent_capability_leases` 只暴露 lease id、public owner、generation reservation/readiness、closed capability names、safe target/digest、policy digest、parent provenance 与 lifecycle/revocation/retirement facts；不暴露 bearer、signing material、private namespace/service locator 或 Host path
 - `runtime_state` 是 diagnostic-only projection；agent 若需要低摩擦读取完整世界事实，应通过 `world.inspect` 查询 task、artifact、operation、approval、outcome、signal、tool surface 和 route policy，而不是从 prompt 片段或 artifact 名称中猜测
 
 ---
@@ -1760,6 +1889,16 @@ receipts 与 campaign decision，任何旧 identity/effect 都不能满足 succe
 `docs/v3/aox-artifact-cutover-supersession.md`。
 
 ---
+
+### 9.22 isolated executor HPC login workspace 与 C9 hard gate
+
+`ExecutorHpcWorkspace` 是 C8 新增的 canonical login-side resource，身份固定绑定 project repository binding version、session、executor member、local workspace generation、target profile digest 与 remote generation。Host 在任何 SSH create 前写 immutable provision intent；runner 只对同一 intent/idempotency key 分配一个 opaque handle，并在 runner-private local state 与 remote sidecar 记录 exact binding。远端 root 必须由 target-native isolation command 按 OS principal policy分配、验证和清理；配置字符串或mock evidence不能激活target。
+
+owner executor在active exact lease下可看到login alias/path，并通过process-scoped短期credential直接使用SSH、Git/Git LFS、rsync/scp与root内普通CRUD。credential绑定session/member、local/remote generation、target、lease id/version、path/root/principal和operation class，不含scheduler authority；shared workspace、protocol、task evidence和普通diagnostic只显示opaque workspace id与safe lifecycle。
+
+private checkpoint或immutable publication的同步先由`hpc.workspace.sync_source`返回exact ref/commit/tree/LFS closure，再由agent显式选择fetch/checkout/merge/rebase/cherry-pick/conflict resolution。Harness不force-update工作树，也不把login mutation推断为publication、handoff、task completion、job result或settlement。C9正式receipt前，new RunSpec中的artifact staging/Host path/catalog ref/`HpcStageRef`/output fetch均被拒绝，reservation、payload execution、resume与job submit统一返回`workspace_revision_execution_required`。
+
+Provision response loss进入`provision_reconciliation_required`，cleanup response loss进入`cleanup_reconciliation_required`；两者不可互换。session end、retirement、lease revoke与generation replacement只停止新admission并标记retention，不能宣称existing transfer/process/job settled。cleanup必须先得到exact workspace version的zero-unsettled proof，随后只处理同一handle/root并保存target isolation cleanup receipt。
 
 ## 10. Legacy Boundary
 

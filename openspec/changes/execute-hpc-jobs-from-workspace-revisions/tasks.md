@@ -1,17 +1,24 @@
+## 0. 连续源码迁移 gate
+
+- [x] 0.1 读取 C8、Git LFS、controlled-operation、scientific-attempt 与 runner 当前 source identities，确认正式 predecessor receipts 尚未生成且不得宣称 job route 已验收。
+- [x] 0.2 生成 `workspace_revision_execution_source_only_dependency_gate@1`，只授权 domain/repository/migration/runner/Host/credential provider、延后测试与文档源码；明确禁止 compute-tree、credential、SSH、Slurm/direct payload、poll/cancel/reconcile、live/external effect 与 production activation。
+- [x] 0.3 将 source-only gate 写入 proposal/design/spec，正式 1.1--1.4 prerequisite receipt 继续延后到 combined final source 的统一验收。
+
 ## 1. 前置 change receipts
 
 - [ ] 1.1 用 pure verifier 核验 `provision-isolated-executor-hpc-workspaces` change receipt，确认exact owner/generation、remote clone、native login data plane、same-handle provisioning/reconciliation及旧staging hard gate已闭合。
 - [ ] 1.2 用 pure verifier 核验 `support-git-lfs-work-products` change receipt，确认standard Git LFS endpoint、revision closure manifest、actual bytes verification、published pins 与 compute Gitless prerequisite已闭合。
-- [ ] 1.3 重验C8 receipt传递的repository binding、capability lease、independent local workspace和publication receipt chain，确认普通job无逐job人工approval且科学workflow的独立authorization仍为closed gate。
-- [ ] 1.4 生成并验证本 change 的 prerequisite receipt，绑定上述 receipts、当前 commit、design/spec digests，以及每个target对Slurm unique marker/accounting和bounded direct SSH queryable process/terminal receipt的dispatch-ledger qualification inputs；缺失时不得构造compute tree或submit payload。
+- [ ] 1.3 直接pure-verify `agent_capability_lease_acceptance@1`及C8传递的repository binding、independent workspace/publication chain，确认C2只提供canonical executor lease identity/status/profile seam，C8只提供native login/file credential与remote workspace；普通job automatic execution、scientific admitted-attempt gate和scheduler submit credential均不得被这些receipts提前宣称完成。
+- [ ] 1.4 生成并验证本 change 的 prerequisite receipt，绑定上述 receipts、当前 commit、design/spec digests，以及每个target对Slurm protected submit wrapper、one-occurrence credential原子consume、ambient/unregistered pre-scheduler rejection、unique marker/accounting和bounded direct SSH queryable process/terminal receipt的dispatch-ledger qualification inputs；缺失时不得构造compute tree或submit payload。
 
 ## 2. WorkspaceRevisionExecution admission 与 canonical ownership
 
-- [ ] 2.1 在domain/Host schema中实现versioned workspace-revision execution request，绑定operation/admission、executor lease、可选required authorization、workspace id/generation、binding、source class、commit/tree/LFS manifest、clean observation、cwd、command/env/resources/mode/target/policy/deadline。
+- [ ] 2.1 在domain/Host schema中实现versioned workspace-revision execution request，绑定operation/admission、executor lease、可选scientific `attempt_id`/`state_version`/`admission_request_id`/admission-request digest/source envelope与workflow-contract/scope/effect/HPC-target identity或独立operation approval、workspace id/generation、binding、source class、commit/tree/LFS manifest、clean observation、cwd、command/env/resources/mode/target/policy/deadline。
 - [ ] 2.2 修改`ControlledOperationExecution` route identity与repository constraints，保证每个logical job唯一owner且retry/recovery对authorization、workspace、revision、command、resources、target或deadline drift fail closed。
-- [ ] 2.3 实现ordinary non-scientific executor job在active lease/route policy内自动创建dispatch-ready execution，不创建pending human approval；明确required scientific/operation authorization未批准时零backend effect，同时证明该lease不直接授予ambient scheduler submit authority。
+- [ ] 2.3 由本change实现ordinary non-scientific executor job在C2 seam验证active exact lease与frozen route policy后create-or-read唯一dispatch-ready execution，不创建pending human approval；证明C2 receipt、role或retry counter本身都不构成job execution或ambient scheduler submit authority。
 - [ ] 2.4 实现local/canonical/remote login clone三方clean revision validator，覆盖HEAD/index/tracked/untracked、binding、commit/tree、attributes/LFS closure和normalized cwd；不stash、clean、commit、snapshot或substitute revision。
 - [ ] 2.5 实现private与published source class验证及immutability，允许policy内clean private job但不创建team publication，recovery不得在两种source class间替换。
+- [ ] 2.6 实现scientific route的exact admitted-attempt gate：绑定`ScientificAttempt.attempt_id`/`state_version`、`admission_request_id`与immutable `ScientificAttemptAdmissionRequest.request_digest`、source `envelope_id`及workflow-contract/scope/effect/HPC-target identity和current dispatch eligibility；覆盖source envelope因成功admit最后attempt而`EXHAUSTED`仍有效、无matching admitted attempt/admission request、identity drift或terminal-ineligible attempt零backend effect，且不得要求新`ACTIVE` envelope或从Slurm事实推断科学authority。
 
 ## 3. Login-side exact revision 到 Gitless compute tree
 
@@ -23,13 +30,14 @@
 
 ## 4. Unique dispatch ledger、ExternalJobHandle 与 reconciliation
 
-- [ ] 4.1 扩展target qualification，要求Slurm具备runner-owned remote dispatch ledger、unique scheduler marker、atomic same-dispatch create和authoritative `squeue`/`sacct` terminal lookup，并要求bounded direct SSH具备同一ledger绑定的queryable remote process identity与authoritative terminal receipt；任一mode缺少可靠handle/reconcile能力即在dispatch前禁用该mode且不降级。
+- [ ] 4.1 扩展target qualification，要求Slurm具备protected submit wrapper、runner-owned remote dispatch ledger、one-occurrence credential原子consume、ordinary login/ambient/unregistered submit在scheduler前拒绝、unique scheduler marker、atomic same-dispatch create和authoritative `squeue`/`sacct` terminal lookup，并要求bounded direct SSH具备同一ledger绑定的queryable remote process identity与authoritative terminal receipt；任一mode缺少合同即在dispatch前禁用且不降级。
 - [ ] 4.2 为Slurm和bounded direct SSH统一在任何payload前持久化immutable dispatch intent/id，并由remote wrapper compare-and-create单一ledger occurrence；accepted occurrence必须materialize绑定mode/process-or-scheduler identity的Host-private `ExternalJobHandle`。
 - [ ] 4.3 实现accepted-response/local-receipt gap的`dispatch_in_doubt` transition，只按same dispatch id/ledger/marker-or-process/handle reconcile；matching adopt、conflict fail、unprovable unknown且零replacement submit。
 - [ ] 4.4 实现Slurm scheduler handle与direct remote process handle的exact poll、bounded logs和append-only observation/terminal receipts，冻结absolute deadline并保证Host/runner restart不重置或创建第二run/job/process。
-- [ ] 4.5 实现explicit same-handle cancel effect与receipt，cancel request、SSH disconnect、lease expiry或timeout均不得冒充scheduler/process terminal settlement。
+- [ ] 4.5 实现explicit same-handle cancel effect与receipt，cancel request、SSH disconnect、controlled-operation execution lease expiry、capability lease 撤销或失活、以及 timeout 均不得冒充scheduler/process terminal settlement。
 - [ ] 4.6 实现bounded direct SSH remote wrapper、process launch receipt、query/status/log/terminal receipt与restart reconciliation；无法产生queryable process/terminal receipt的target/mode必须qualification fail，不能接受后再以“无handle unknown”收尾或改用`sbatch`。
-- [ ] 4.7 将普通executor login/file credential与scheduler submit authority分离：只有runner对frozen dispatch occurrence签发的one-occurrence credential可调用native `sbatch`，target必须拒绝agent login shell、ambient credential或未登记dispatch id发起的直接Slurm submission。
+- [ ] 4.7 实现runner-only one-occurrence scheduler credential：仅current execution owner/fence可在ledger原子reserve exact dispatch occurrence后签发，claims绑定execution/dispatch/target/reservation nonce/marker/payload digest/protected wrapper audience/expiry；target在native `sbatch`前原子validate+consume，并拒绝replay、expiry与任何identity drift。
+- [ ] 4.8 在target OS/submit-wrapper层拒绝C8 ordinary login/file credential、agent login shell、ambient runner credential和未登记dispatch id的Slurm submission；Host/runner不得扫描、adopt、cancel或attach绕过路径job，credential consume后的response loss只reconcile原ledger/marker/handle且不签发replacement occurrence。
 
 ## 5. Runner API、phase journal 与旧合同删除
 
@@ -50,14 +58,14 @@
 
 ## 7. Migration 与 current cutover
 
-- [ ] 7.1 增加workspace job/dispatch intent/handle/observation/result migrations、immutability/owner-match/fence triggers与rollback guards，旧artifact/expected-output rows保持historical且不可current replay。
+- [ ] 7.1 增加workspace job/scientific admitted-attempt basis/dispatch intent/credential occurrence/handle/observation/result migrations、immutability/owner-match/fence triggers与rollback guards，旧artifact/expected-output rows保持historical且不可current replay。
 - [ ] 7.2 将Host API、engine adapters、pipeline SDK、worker、events和workspace projection一次性切到new job schema，禁止dual writer、missing-new-field fallback和legacy synchronous dispatch。
 - [ ] 7.3 审计并删除current production path中`expected_outputs`、artifact staging/fetch/materialization与replacement submit branches，保留的历史reader必须隔离于current admission。
-- [ ] 7.4 建立target-by-target、mode-by-mode activation gate：Slurm需unique marker/ledger、authoritative accounting和one-occurrence submit credential，direct需queryable process/terminal receipt；任一资格失败保持该mode explicit unavailable且不切换替代mode。
+- [ ] 7.4 建立target-by-target、mode-by-mode activation gate：Slurm需protected wrapper、reservation-bound one-occurrence credential原子consume/replay rejection、ordinary/ambient/unregistered pre-scheduler denial、unique marker/ledger和authoritative accounting，direct需queryable process/terminal receipt；任一资格失败保持该mode explicit unavailable且不切换替代mode。
 
 ## 8. 验证、架构文档与 change receipt
 
-- [ ] 8.1 运行clean/private/published revision、dirty/drift、LFS closure/Gitless tree、duplicate worker、Slurm/direct dispatch response loss、marker/process conflict、poll/cancel/restart/deadline、direct handle qualification failure、ambient/未登记Slurm submit拒绝、one-occurrence credential、no-expected-output和task-separation focused tests及 touched Ruff/integration fixtures，并保存exact results。
+- [ ] 8.1 运行ordinary no-human-approval canonical execution、scientific admitted attempt/source-envelope `EXHAUSTED`/missing-or-drifted attempt、clean/private/published revision、dirty/drift、LFS closure/Gitless tree、duplicate worker、Slurm/direct dispatch response loss、marker/process conflict、poll/cancel/restart/deadline、direct handle qualification failure、ordinary login/ambient/未登记Slurm submit拒绝、one-occurrence credential consume/replay/mismatch、no-scheduler-scan-adoption、no-expected-output和task-separation focused tests及 touched Ruff/integration fixtures，并保存exact results。
 - [ ] 8.2 同步 `docs/OpenZyme架构设计.md`、相关 `docs/v3/` execution/reliability/control-plane/runtime 文档、`docs/v3/execution-pipeline-docs/README.md` 与 `docs/v3/harness-complexity-audit.md`，明确clean revision、Gitless compute、Slurm/direct可靠ExternalJobHandle、runner-only one-occurrence scheduler authority、no-blind-resubmit、无expected_outputs/stage/fetch及普通job无逐job审批。
 - [ ] 8.3 运行 `DO_NOT_TRACK=1 openspec validate execute-hpc-jobs-from-workspace-revisions --strict`、`git diff --check`、forbidden artifact/HpcStageRef/expected_outputs/fetch/fallback/replacement-submit/unhandled-direct/ambient-scheduler-authority audit 与 `./scripts/check-mainline.sh`，不触发真实HPC/live effect。
-- [ ] 8.4 生成并 pure-verify `execute-hpc-jobs-from-workspace-revisions` change receipt，绑定 prerequisite receipts、source/schema/migration/target-profile digests、focused/mainline/docs results、dispatch/recovery invariants和`implementation_complete=true`；receipt 不得证明任何真实job已运行或task/scientific outcome成立。
+- [ ] 8.4 生成并 pure-verify `execute-hpc-jobs-from-workspace-revisions` change receipt，绑定C2/C8 seams、ordinary automatic execution proof、scientific admitted-attempt proof、scheduler credential occurrence/target rejection qualification、source/schema/migration/target-profile digests、focused/mainline/docs results、dispatch/recovery invariants和`implementation_complete=true`；receipt不得把C2/C8当作job implementation，也不得证明任何真实job已运行或task/scientific outcome成立。
